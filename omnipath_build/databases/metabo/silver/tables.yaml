@@ -2,8 +2,7 @@
 # Define the structure of tables that will be created in the silver schema
 
 compounds:
-    resource: VARCHAR
-
+    source_database: VARCHAR
   # Type columns
     is_drug: BOOLEAN DEFAULT FALSE
     is_lipid: BOOLEAN DEFAULT FALSE
@@ -55,3 +54,5 @@ compounds:
     smiles: TEXT
 
     pmids: TEXT
+
+    loaded_at: TIMESTAMP DEFAULT CURRENT_TIMESTAMP

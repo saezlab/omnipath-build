@@ -14,6 +14,7 @@ sys.path.append(str(Path(__file__).parent.parent))
 
 # Import utilities
 from utils import BaseLoader, GoldLoaderError, log_execution_time
+from utils.constants import get_database_path
 from utils.sql_adapter import SQLAdapter, SQLExecutionManager
 
 __all__ = [
@@ -40,7 +41,7 @@ class GoldLoader(BaseLoader):
     def _initialize(self) -> None:
         """Initialize gold-specific attributes."""
         # Path to SQL transforms using database name
-        self.transforms_dir = Path('databases') / self.database_name / 'gold'
+        self.transforms_dir = get_database_path(self.database_name) / 'gold'
 
         if not self.transforms_dir.exists():
             raise GoldLoaderError(

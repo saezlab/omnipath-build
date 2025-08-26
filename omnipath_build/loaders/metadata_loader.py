@@ -16,6 +16,7 @@ sys.path.append(str(Path(__file__).parent.parent))
 
 # Import utilities
 from utils import BaseLoader, LoaderError, log_execution_time
+from utils.constants import get_database_path
 
 __all__ = [
     'MetadataLoader',
@@ -43,7 +44,7 @@ class MetadataLoader(BaseLoader):
         """Initialize metadata-specific attributes."""
         # Use database-specific resource configs structure
         self.resource_configs_dir = (
-            Path('databases') / self.database_name / 'resource'
+            get_database_path(self.database_name) / 'resource'
         )
 
         # Validate that the resource configs directory exists
@@ -113,10 +114,9 @@ class MetadataLoader(BaseLoader):
         # Create schema and tables
         self._create_metadata_tables()
 
-        # Load resources and datasets
-        resources_count, datasets_count = self._load_resources_and_datasets()
+        # Load resources
+        resources_count = self._load_resources()
         results['resources'] = resources_count
-        results['datasets'] = datasets_count
 
         # Validate results
         self.validate_metadata()
@@ -127,7 +127,7 @@ class MetadataLoader(BaseLoader):
     def _get_table_columns(self, table_name: str) -> dict[str, str]:
         """Get column definitions for a specific table from YAML."""
         tables_file = (
-            Path('databases') / self.database_name / 'metadata' / 'tables.yaml'
+            get_database_path(self.database_name) / 'metadata' / 'tables.yaml'
         )
         if not tables_file.exists():
             raise LoaderError(
@@ -188,8 +188,19 @@ class MetadataLoader(BaseLoader):
             Extracted value or None if no suitable value found
         """
         # First check if there's a metadata section and the field is there
-        if 'metadata' in config and column_name in config['metadata']:
-            return config['metadata'][column_name]
+        if 'metadata' in config:
+            metadata = config['metadata']
+            # Handle list-based metadata structure
+            if isinstance(metadata, list):
+                # Merge list of dictionaries into a single dictionary
+                merged_metadata = {}
+                for item in metadata:
+                    if isinstance(item, dict):
+                        merged_metadata.update(item)
+                metadata = merged_metadata
+
+            if isinstance(metadata, dict) and column_name in metadata:
+                return metadata[column_name]
 
         # Direct match strategy (for backward compatibility)
         if column_name in config:
@@ -240,8 +251,7 @@ class MetadataLoader(BaseLoader):
 
             # Load table definitions from YAML
             tables_file = (
-                Path('databases')
-                / self.database_name
+                get_database_path(self.database_name)
                 / 'metadata'
                 / 'tables.yaml'
             )
@@ -278,14 +288,13 @@ class MetadataLoader(BaseLoader):
             self.logger.error(f'Failed to create metadata tables: {e}')
             raise LoaderError(f'Table creation failed: {e}') from e
 
-    def _load_resources_and_datasets(self) -> tuple[int, int]:
-        """Load resources and datasets from YAML files to PostgreSQL."""
+    def _load_resources(self) -> int:
+        """Load resources from YAML files to PostgreSQL."""
         try:
             # Process YAML files
-            resources_df, datasets_df = self._process_resource_files()
+            resources_df = self._process_resource_files()
 
             resources_count = 0
-            datasets_count = 0
 
             # Load resources
             if not resources_df.empty:
@@ -307,40 +316,18 @@ class MetadataLoader(BaseLoader):
             else:
                 self.logger.warning('No resources found to load')
 
-            # Load datasets
-            if not datasets_df.empty:
-                # Register dataframe with DuckDB
-                self.conn.register('temp_datasets', datasets_df)
-
-                # Build dynamic INSERT statement
-                insert_sql = self._build_insert_statement(
-                    'datasets', 'temp_datasets'
-                )
-                self.execute_sql(insert_sql)
-
-                # Cleanup
-                self.conn.unregister('temp_datasets')
-                datasets_count = len(datasets_df)
-                self.logger.info(
-                    f'Loaded {datasets_count} datasets into PostgreSQL'
-                )
-            else:
-                self.logger.warning('No datasets found to load')
-
-            return resources_count, datasets_count
+            return resources_count
 
         except Exception as e:
-            self.logger.error(f'Failed to load resources and datasets: {e}')
-            raise LoaderError(f'Resource/dataset loading failed: {e}') from e
+            self.logger.error(f'Failed to load resources: {e}')
+            raise LoaderError(f'Resource loading failed: {e}') from e
 
-    def _process_resource_files(self) -> tuple[pd.DataFrame, pd.DataFrame]:
-        """Process all resource config files and return dataframes for resources and datasets."""
+    def _process_resource_files(self) -> pd.DataFrame:
+        """Process all resource config files and return dataframe for resources."""
         resources_data = []
-        datasets_data = []
 
         # Get available columns from table schema
         resource_columns = self._get_table_columns('resources')
-        dataset_columns = self._get_table_columns('datasets')
 
         # Process each config file in the directory
         for config_file in self.resource_configs_dir.glob('*.yaml'):
@@ -379,39 +366,15 @@ class MetadataLoader(BaseLoader):
                 resources_data.append(resource)
 
                 # Create dataset entries for each function
-                for func_name, func_config in config.get(
-                    'functions', {}
-                ).items():
-                    # Create dataset entry using generic extraction
-                    dataset = {}
-
-                    # Start with function-level config, but include module context
-                    func_context = func_config.copy()
-                    func_context['module'] = (
-                        module_name  # Add module for resource_id extraction
-                    )
-                    func_context['name'] = (
-                        func_name  # Add function name for name extraction
-                    )
-
-                    for column_name in dataset_columns.keys():
-                        value = self._extract_value_for_column(
-                            column_name, func_context, 'dataset'
-                        )
-                        if value is not None:
-                            dataset[column_name] = value
-
-                    datasets_data.append(dataset)
-                    self.logger.debug(f'  Added dataset: {func_name}')
 
             except yaml.YAMLError as e:
                 self.logger.error(f'Error processing {config_file.name}: {e}')
                 continue
 
         self.logger.info(
-            f'Processed {len(resources_data)} resources and {len(datasets_data)} datasets from resource configs'
+            f'Processed {len(resources_data)} resources from resource configs'
         )
-        return pd.DataFrame(resources_data), pd.DataFrame(datasets_data)
+        return pd.DataFrame(resources_data)
 
     def _load_yaml_file(self, file_path: Path) -> dict[str, Any]:
         """Load a YAML file and return its contents."""
@@ -471,12 +434,6 @@ class MetadataLoader(BaseLoader):
             ).fetchone()[0]
             self.logger.info(f'Resources: {resource_count}')
 
-            # Get dataset count
-            dataset_count = self.execute_sql(
-                'SELECT COUNT(*) FROM pg.metadata.datasets'
-            ).fetchone()[0]
-            self.logger.info(f'Datasets: {dataset_count}')
-
             # Show sample resources (generic approach)
             self.logger.info('\nSample resources:')
             resource_columns = list(self._get_table_columns('resources').keys())
@@ -499,28 +456,6 @@ class MetadataLoader(BaseLoader):
                         display_parts.append(f'{col_name}={resource[i]}')
                 self.logger.info(f'  {", ".join(display_parts)}')
 
-            # Show sample datasets (generic approach)
-            self.logger.info('\nSample datasets:')
-            dataset_columns = list(self._get_table_columns('datasets').keys())
-            dataset_column_list = ', '.join(dataset_columns)
-
-            datasets = self.execute_sql(f"""
-                SELECT {dataset_column_list}
-                FROM pg.metadata.datasets
-                ORDER BY {dataset_columns[0]}
-                LIMIT 5
-            """).fetchall()
-
-            for dataset in datasets:
-                # Display first few columns dynamically
-                display_parts = []
-                for i, col_name in enumerate(
-                    dataset_columns[:3]
-                ):  # Show first 3 columns
-                    if i < len(dataset):
-                        display_parts.append(f'{col_name}={dataset[i]}')
-                self.logger.info(f'  {", ".join(display_parts)}')
-
         except Exception as e:
             self.logger.error(f'Failed to validate metadata: {e}')
             raise LoaderError(f'Metadata validation failed: {e}') from e
@@ -529,12 +464,5 @@ class MetadataLoader(BaseLoader):
         """Get total number of resources."""
         result = self.execute_sql(
             'SELECT COUNT(*) FROM pg.metadata.resources'
-        ).fetchone()
-        return result[0] if result else 0
-
-    def get_dataset_count(self) -> int:
-        """Get total number of datasets."""
-        result = self.execute_sql(
-            'SELECT COUNT(*) FROM pg.metadata.datasets'
         ).fetchone()
         return result[0] if result else 0

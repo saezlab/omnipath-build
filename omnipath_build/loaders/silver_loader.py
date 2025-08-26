@@ -15,6 +15,7 @@ sys.path.append(str(Path(__file__).parent.parent))
 
 # Import utilities
 from utils import BaseLoader, SilverLoaderError, log_execution_time
+from utils.constants import get_database_path
 
 __all__ = [
     'SilverLoader',
@@ -35,7 +36,7 @@ class SilverLoader(BaseLoader):
             db_connector: Database connector instance
         """
         self.database_name = database_name
-        self.silver_config_path = Path('databases') / database_name / 'silver'
+        self.silver_config_path = get_database_path(database_name) / 'silver'
         self.tables_yaml_path = self.silver_config_path / 'tables.yaml'
         self.table_definitions = self._load_table_definitions()
         super().__init__(db_connector=db_connector)
@@ -56,12 +57,12 @@ class SilverLoader(BaseLoader):
         """Initialize silver-specific attributes."""
         # Use database-specific bronze data path
         self.bronze_path = (
-            Path('databases') / self.database_name / 'bronze' / 'data'
+            get_database_path(self.database_name) / 'bronze' / 'data'
         )
 
         # Resource configs directory for reading YAML configurations
         self.resource_configs_path = (
-            Path('databases') / self.database_name / 'resource'
+            get_database_path(self.database_name) / 'resource'
         )
 
         # Load SQL transformation functions
@@ -416,25 +417,28 @@ class SilverLoader(BaseLoader):
         # Get field mappings from data_processing
         field_mappings = data_processing.get('field_mapping', [])
 
-        # Build SELECT clause
-        select_parts = [f"'{resource_info['id']}' as source_database"]
-
         # Get all columns for the silver table from YAML definitions
         if target_table not in self.table_definitions:
             raise SilverLoaderError(f'Unknown target table: {target_table}')
 
         silver_columns = list(self.table_definitions[target_table].keys())
 
+        # Build SELECT clause
+        select_parts = []
+
         # Build expression for each silver column
-        for col in silver_columns[1:]:  # Skip source_database
+        for col in silver_columns:
             if col == 'loaded_at':
                 # Skip loaded_at column as it has a default value
                 continue
-
-            expr = self._build_column_expression(
-                col, field_mappings, available_columns
-            )
-            select_parts.append(f'{expr} as "{col}"')
+            elif col == 'source_database':
+                # Always set source_database to the resource ID
+                select_parts.append(f'\'{resource_info["id"]}\' as "{col}"')
+            else:
+                expr = self._build_column_expression(
+                    col, field_mappings, available_columns, target_table
+                )
+                select_parts.append(f'{expr} as "{col}"')
 
         # Build and execute INSERT query to PostgreSQL
         select_clause = ',\n            '.join(select_parts)
@@ -493,6 +497,7 @@ class SilverLoader(BaseLoader):
         column_name: str,
         field_mappings: list[dict[str, Any]],
         available_columns: set[str],
+        target_table: str,
     ) -> str:
         """Build SQL expression for a single column from field mapping list."""
         # Find mapping for this target column
@@ -504,7 +509,12 @@ class SilverLoader(BaseLoader):
                 if source == '_constant':
                     # Constant value mapping
                     value = mapping.get('value', '')
-                    return f"'{value}'"
+                    if isinstance(value, bool):
+                        return 'TRUE' if value else 'FALSE'
+                    elif isinstance(value, int | float):
+                        return str(value)
+                    else:
+                        return f"'{value}'"
                 elif source == '_metadata':
                     # Metadata mapping
                     value = mapping.get('value', '')
@@ -519,7 +529,22 @@ class SilverLoader(BaseLoader):
                             source, transform, mapping
                         )
                     else:
-                        return f'"{source}"'
+                        # Check if target column is numeric and handle empty strings
+                        target_column_type = self.table_definitions[
+                            target_table
+                        ].get(column_name, '')
+                        if any(
+                            numeric_type in target_column_type.upper()
+                            for numeric_type in [
+                                'FLOAT',
+                                'INTEGER',
+                                'NUMERIC',
+                                'DECIMAL',
+                            ]
+                        ):
+                            return f'CASE WHEN TRIM("{source}") = \'\' OR "{source}" IS NULL THEN NULL ELSE "{source}" END'
+                        else:
+                            return f'"{source}"'
                 else:
                     # Source field not available
                     return 'NULL'

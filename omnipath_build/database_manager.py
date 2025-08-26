@@ -34,6 +34,8 @@ import argparse
 
 import yaml
 
+# Environment variables are loaded by uv run --env-file .env
+
 # Add current directory to path
 sys.path.append(str(Path(__file__).parent))
 
@@ -63,7 +65,7 @@ class DatabaseLifecycleManager:
         self.logger = logging.getLogger(self.__class__.__name__)
 
         # Database paths
-        self.db_base_path = Path('databases') / database_name
+        self.db_base_path = Path(__file__).parent / 'databases' / database_name
         self.metadata_path = self.db_base_path / 'metadata'
         self.resource_path = self.db_base_path / 'resource'
         self.bronze_data_path = self.db_base_path / 'bronze' / 'data'
@@ -480,9 +482,13 @@ resources:
         """
         try:
             if layer == 'metadata':
+                # Create a separate connection for this loader
+                metadata_connector = PostgresDuckDBConnector(
+                    pg_config=self.pg_config, duck_config=self.duck_config
+                )
                 with MetadataLoader(
                     database_name=self.database_name,
-                    db_connector=self.db_connector,
+                    db_connector=metadata_connector,
                 ) as loader:
                     results = loader.load()
                     self.logger.info(
@@ -490,9 +496,13 @@ resources:
                     )
 
             elif layer == 'bronze':
+                # Create a separate connection for this loader
+                bronze_connector = PostgresDuckDBConnector(
+                    pg_config=self.pg_config, duck_config=self.duck_config
+                )
                 with PyPathBronzeLoader(
                     database_name=self.database_name,
-                    db_connector=self.db_connector,
+                    db_connector=bronze_connector,
                 ) as loader:
                     if module:
                         results = loader.load(module_name=module)
@@ -504,9 +514,13 @@ resources:
                     )
 
             elif layer == 'silver':
+                # Create a separate connection for this loader
+                silver_connector = PostgresDuckDBConnector(
+                    pg_config=self.pg_config, duck_config=self.duck_config
+                )
                 with SilverLoader(
                     database_name=self.database_name,
-                    db_connector=self.db_connector,
+                    db_connector=silver_connector,
                 ) as loader:
                     results = loader.load()
                     total_rows = sum(results.values())
@@ -515,9 +529,13 @@ resources:
                     )
 
             elif layer == 'gold':
+                # Create a separate connection for this loader
+                gold_connector = PostgresDuckDBConnector(
+                    pg_config=self.pg_config, duck_config=self.duck_config
+                )
                 with GoldLoader(
                     database_name=self.database_name,
-                    db_connector=self.db_connector,
+                    db_connector=gold_connector,
                 ) as loader:
                     results = loader.load()
                     if results.get('total_rows'):

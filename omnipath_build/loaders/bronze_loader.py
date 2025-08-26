@@ -35,6 +35,7 @@ from utils import (
     BronzeLoaderError,
     log_execution_time,
 )
+from utils.constants import get_database_path
 
 __all__ = [
     'PyPathBronzeLoader',
@@ -61,13 +62,13 @@ class PyPathBronzeLoader(BaseLoader):
         """Initialize pypath bronze loader specific attributes."""
         # Use database-specific bronze data directory
         self.bronze_path = (
-            Path('databases') / self.database_name / 'bronze' / 'data'
+            get_database_path(self.database_name) / 'bronze' / 'data'
         )
         self.bronze_path = self.ensure_directory(self.bronze_path)
 
         # Resource configs directory (replaces old templates directory)
         self.resource_configs_path = (
-            Path('databases') / self.database_name / 'resource'
+            get_database_path(self.database_name) / 'resource'
         )
 
         if not self.resource_configs_path.exists():

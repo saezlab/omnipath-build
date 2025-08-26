@@ -1,11 +1,27 @@
+"""Constants and configuration values for OmniPath 2.0 pipeline.
+
+Centralizes magic numbers, patterns, and repeated values.
+"""
+
+from pathlib import Path
+
 __all__ = [
     'LoaderConstants',
     'SQLPatterns',
+    'get_database_path',
 ]
 
-"""Constants and configuration values for OmniPath 2.0 pipeline.
-Centralizes magic numbers, patterns, and repeated values.
-"""
+
+def get_database_path(database_name: str) -> Path:
+    """Get the path to a database directory relative to the omnipath_build package.
+
+    Args:
+        database_name: Name of the database
+
+    Returns:
+        Path to the database directory
+    """
+    return Path(__file__).parent.parent / 'databases' / database_name
 
 
 class LoaderConstants:
