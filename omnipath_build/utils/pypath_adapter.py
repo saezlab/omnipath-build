@@ -88,6 +88,7 @@ class PyPathAdapter:
                             # Check if it's a function from this package
                             if (
                                 hasattr(attr, '__module__')
+                                and attr.__module__ is not None
                                 and f'pypath.inputs.{modname}'
                                 in attr.__module__
                             ):
@@ -125,7 +126,12 @@ class PyPathAdapter:
                                         f'Could not process method {full_name}: {e}'
                                     )
 
-                    except (ImportError, AttributeError, OSError) as e:
+                    except (
+                        ImportError,
+                        AttributeError,
+                        OSError,
+                        KeyError,
+                    ) as e:
                         self.logger.debug(
                             f'Could not process package {modname}: {e}'
                         )
@@ -138,7 +144,12 @@ class PyPathAdapter:
                         actual_module = __import__(
                             f'pypath.inputs.{modname}', fromlist=['']
                         )
-                    except (ImportError, AttributeError, OSError) as e:
+                    except (
+                        ImportError,
+                        AttributeError,
+                        OSError,
+                        KeyError,
+                    ) as e:
                         self.logger.debug(
                             f'Could not import module {modname}: {e}'
                         )
