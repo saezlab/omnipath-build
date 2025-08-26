@@ -38,11 +38,9 @@ def get_metadata() -> dict:
     meta = {}
 
     for project_dir in (here, here.parent):
-
         toml_path = str(project_dir.joinpath(pyproj_toml).absolute())
 
         if os.path.exists(toml_path):
-
             pyproject = toml.load(toml_path)
 
             meta = {
@@ -56,17 +54,13 @@ def get_metadata() -> dict:
             break
 
     if not meta:
-
         try:
-
             meta = {
-                k.lower():
-                v for k, v in
-                importlib.metadata.metadata(here.name).items()
+                k.lower(): v
+                for k, v in importlib.metadata.metadata(here.name).items()
             }
 
         except importlib.metadata.PackageNotFoundError:
-
             pass
 
     meta['version'] = meta.get('version', None) or _VERSION

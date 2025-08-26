@@ -2,74 +2,74 @@
 # Generated: 2025-08-26
 # Source: pypath_templates/lipidmaps.yaml
 metadata:
-  - name: 'LipidMaps'
-  - description: 'LIPID MAPS Structure Database for lipid structures and annotations'
+-   name: LipidMaps
+-   description: LIPID MAPS Structure Database for lipid structures and annotations
 
 module: lipidmaps
 functions:
-  lipidmaps_lipids:
-    description: Download and open the SDF file with all LipidMaps (LMSD) structures.
-    processing:
-      target_table: compounds
-      field_mapping:
-      - source: 
-        target: is_lipid
-        transform: constant_value
-        transform_args: TRUE
-        description: 'Lipid type flag'
-      - source: id
-        target: lipidmaps_id
-        transform:
-        description: 'LIPID MAPS ID'
-      - source: name
-        target: lipid_name
-        transform:
-        description: 'Lipid name'
-      - source: abbreviation
-        target: lipid_short_name
-        transform:
-        description: 'Lipid abbreviation'
-      - source: formula
-        target: formula
-        transform:
-        description: 'Molecular formula'
-      - source: exact_mass
-        target: exact_mass
-        transform:
-        description: 'Exact molecular mass'
-      - source: category
-        target: lipid_category
-        transform:
-        description: 'Lipid category'
-      - source: main_class
-        target: lipid_class
-        transform:
-        description: 'Lipid main class'
-      - source: smiles
-        target: smiles
-        transform:
-        description: 'SMILES notation'
-      - source: inchi
-        target: inchi
-        transform:
-        description: 'InChI identifier'
-      - source: inchikey
-        target: inchikey
-        transform:
-        description: 'InChI key'
-      - source: synonyms
-        target: synonyms
-        transform:
-        description: 'Lipid synonyms'
-      - source: iupac
-        target: iupac
-        transform:
-        description: 'IUPAC name (mapped to lipid_name)'
-      - source: pubchem
-        target: pubchem_cid
-        transform:
-        description: 'PubChem CID'
-      - source: chebi
-        target: chebi_id
-        transform:
-        description: 'ChEBI identifier'
+    lipidmaps_lipids:
+        description: Download and open the SDF file with all LipidMaps (LMSD) structures.
+        processing:
+            target_table: compounds
+            field_mapping:
+            -   source:
+                target: is_lipid
+                transform: constant_value
+                transform_args: true
+                description: Lipid type flag
+            -   source: id
+                target: lipidmaps_id
+                transform:
+                description: LIPID MAPS ID
+            -   source: name
+                target: lipid_name
+                transform:
+                description: Lipid name
+            -   source: abbreviation
+                target: lipid_short_name
+                transform:
+                description: Lipid abbreviation
+            -   source: formula
+                target: formula
+                transform:
+                description: Molecular formula
+            -   source: exact_mass
+                target: exact_mass
+                transform:
+                description: Exact molecular mass
+            -   source: category
+                target: lipid_category
+                transform:
+                description: Lipid category
+            -   source: main_class
+                target: lipid_class
+                transform:
+                description: Lipid main class
+            -   source: smiles
+                target: smiles
+                transform:
+                description: SMILES notation
+            -   source: inchi
+                target: inchi
+                transform:
+                description: InChI identifier
+            -   source: inchikey
+                target: inchikey
+                transform:
+                description: InChI key
+            -   source: synonyms
+                target: synonyms
+                transform:
+                description: Lipid synonyms
+            -   source: iupac
+                target: iupac
+                transform:
+                description: IUPAC name (mapped to lipid_name)
+            -   source: pubchem
+                target: pubchem_cid
+                transform:
+                description: PubChem CID
+            -   source: chebi
+                target: chebi_id
+                transform:
+                description: ChEBI identifier

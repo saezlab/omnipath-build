@@ -1,4 +1,4 @@
-site_name: 'omnipath_build'
+site_name: omnipath_build
 site_url: https://saezlab.github.io/omnipath_build
 theme:
     name: material
@@ -30,9 +30,9 @@ nav:
 -   Home: index.md
 
 -   About:
-    -   Project: 'omnipath_build-project/project.md'
-    -   Design philosophy: 'omnipath_build-project/design-philosophy.md'
-    -   Use Cases: 'omnipath_build-project/use-cases.md'
+    -   Project: omnipath_build-project/project.md
+    -   Design philosophy: omnipath_build-project/design-philosophy.md
+    -   Use Cases: omnipath_build-project/use-cases.md
     -   About: about.md
 
 -   Get Started:
@@ -50,7 +50,7 @@ nav:
 
 -   Reference:
     -   API Documentation:
-        -   'omnipath_build':
+        -   omnipath_build:
             -   _metadata: reference/source/omnipath_build/_metadata-docs.md
 -   Community:
     -   Join Us: community/index.md

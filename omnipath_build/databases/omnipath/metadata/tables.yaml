@@ -1,23 +1,23 @@
 resources:
-  id: VARCHAR PRIMARY KEY
-  name: VARCHAR
-  description: VARCHAR
-  license: VARCHAR
-  primary_pubmed: VARCHAR
-  health: VARCHAR
-  website: VARCHAR
-  update_category: VARCHAR
-  access_category: VARCHAR
-  created_at: TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    id: VARCHAR PRIMARY KEY
+    name: VARCHAR
+    description: VARCHAR
+    license: VARCHAR
+    primary_pubmed: VARCHAR
+    health: VARCHAR
+    website: VARCHAR
+    update_category: VARCHAR
+    access_category: VARCHAR
+    created_at: TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 
 datasets:
-  resource_id: VARCHAR
-  name: VARCHAR
-  entity_type: VARCHAR
-  category: VARCHAR
-  types: TEXT  # JSON array as text
-  evidence_level: VARCHAR
-  taxon_scope: VARCHAR
-  download: TEXT  # JSON object as text
-  data_processing: TEXT  # Processing/transformation rules as text
-  created_at: TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    resource_id: VARCHAR
+    name: VARCHAR
+    entity_type: VARCHAR
+    category: VARCHAR
+    types: TEXT # JSON array as text
+    evidence_level: VARCHAR
+    taxon_scope: VARCHAR
+    download: TEXT # JSON object as text
+    data_processing: TEXT # Processing/transformation rules as text
+    created_at: TIMESTAMP DEFAULT CURRENT_TIMESTAMP

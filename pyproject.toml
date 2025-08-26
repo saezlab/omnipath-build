@@ -1,16 +1,22 @@
 # ===================================
 # =======        BUILD       ========
 # ===================================
+
 [build-system]
 build-backend = "hatchling.build"
 requires = ["hatchling"]
 
-#===================================
-#=======       PROJECT      ========
-#===================================
+[dependency-groups]
+dev = [
+    "pre-commit>=4.3.0"
+]
+
+# ===================================
+# =======       PROJECT      ========
+# ===================================
 [project]
 authors = [
-  {name = "Jonathan Schaul", email="jonathan.schaul@uni-heidelberg.de"},
+    {name = "Jonathan Schaul", email = "jonathan.schaul@uni-heidelberg.de"}
 ]
 classifiers = [
     # How mature is this project? Common values are
@@ -31,16 +37,17 @@ dependencies = [
     "pandas>=2.0.0",
     "psycopg2-binary>=2.9.0",
     "pypath-omnipath",
-    "toml",
+    "pyyaml>=6.0.2",
+    "toml"
 ]
 description = "A general database builder on top of pypath."
 license = "GPL-3.0-or-later"
 maintainers = [
-    {name="Jonathan Schaul", email="jonathan.schaul@uni-heidelberg.de"},
+    {name = "Jonathan Schaul", email = "jonathan.schaul@uni-heidelberg.de"}
 ]
 name = "omnipath_build"
 # packages = [
-#    { include = "omnipath_build" }
+# { include = "omnipath_build" }
 # ]
 readme = "README.md"
 requires-python = ">=3.12"
@@ -51,7 +58,7 @@ dev = [
     "distlib",
     "pre-commit",
     "bump2version",
-    "twine",
+    "twine"
 ]
 docs = [
     "mkdocs-material>=9.6.14",
@@ -69,7 +76,7 @@ tests = [
     "coverage>=6.0",
     "codecov-cli>=10.2.0",
     "diff_cover",
-    "ruff",
+    "ruff"
 ]
 
 [project.urls]
@@ -78,65 +85,67 @@ Homepage = "https://github.com/saezlab/omnipath_build"
 Issues = "https://github.com/saezlab/omnipath_build/issues"
 Repository = "https://github.com/saezlab/omnipath_build"
 
-
-#===================================
-#=======        TOOL        ========
-#===================================
-#---- Bandit: tool for security analysis
+# ===================================
+# =======        TOOL        ========
+# ===================================
+# ---- Bandit: tool for security analysis
 [tool.bandit]
 exclude_dirs = [".venv", "venv", ".tox", "build", "dist"]
 skips = [
     "B101"  # Name: assert_used
 ]
 
-#---- Coverage: a tool used to measure code coverage of Python programs
+# ---- Coverage: a tool used to measure code coverage of Python programs
+[tool.coverage]
+
 [tool.coverage.run]
 omit = [
-	"**/test_*.py",
+    "**/test_*.py"
 ]
 source = ["omnipath_build"]
 
-#---- Cruft: a tool to manage and update projects based on templates
+# ---- Cruft: a tool to manage and update projects based on templates
 [tool.cruft]
 skip = [
-  "tests",
-  "omnipath_build/__init__.py",
-  "omnipath_build/_metadata.py",
-  "docs/api.md",
-  "docs/changelog.md",
-  "docs/references.bib",
-  "docs/references.md",
-  "docs/notebooks/example.ipynb",
+    "tests",
+    "omnipath_build/__init__.py",
+    "omnipath_build/_metadata.py",
+    "docs/api.md",
+    "docs/changelog.md",
+    "docs/references.bib",
+    "docs/references.md",
+    "docs/notebooks/example.ipynb"
 ]
 
-#--- Pytest: a lightweight and scalable testing tool using the pytest framework
+# --- Pytest: a lightweight and scalable testing tool using the pytest framework
+[tool.pytest]
+
 [tool.pytest.ini_options]
 addopts = [
     # "-Werror",  # if 3rd party libs raise DeprecationWarnings, just use filterwarnings below
-    "--import-mode=importlib",  # allow using test files with same name
+    "--import-mode=importlib"  # allow using test files with same name
 ]
 filterwarnings = [
-    # "ignore:.*U.*mode is deprecated:DeprecationWarning",
 ]
 python_files = "test_*.py"
 testpaths = [
-  "tests",
+    "tests"
 ]
 xfail_strict = true
 
-#---- RSTcheck: a tool to lint reStructuredText (.rst) files.
+# ---- RSTcheck: a tool to lint reStructuredText (.rst) files.
 [tool.rstcheck]
 ignore_directives = [
     "automodule",
-    "toctree",
+    "toctree"
 ]
 ignore_messages = '(Unknown target name:.*|No (directive|role) entry for "(auto)?(class|method|property|function|func|mod|attr)" in module "docutils\.parsers\.rst\.languages\.en"\.)'
 ignore_roles = ["ref"]
 report_level = "INFO"
 
-#---- Ruff: a fast Python linter and formatter.
+# ---- Ruff: a fast Python linter and formatter.
 [tool.ruff]
-extend-include = [ "*.ipynb" ]
+extend-include = ["*.ipynb"]
 line-length = 80
 target-version = "py312"
 
@@ -195,7 +204,7 @@ case-sensitive = false
 combine-as-imports = true
 force-sort-within-sections = true
 force-wrap-aliases = true
-known-first-party = [ "omnipath_build" ]
+known-first-party = ["omnipath_build"]
 known-third-party = ["numpy", "pandas"]
 length-sort = true
 lines-after-imports = 1
@@ -219,7 +228,7 @@ section-order = [
 [tool.ruff.lint.pydocstyle]
 convention = "google"
 
-#---- tox: a tool to automate testing in multiple environments.
+# ---- tox: a tool to automate testing in multiple environments.
 [tool.tox]
 envlist = [
     "covclean",
@@ -329,4 +338,4 @@ python = [
 [tool.uv.sources]
 jupyter-contrib-nbextensions = {git = "https://github.com/deeenes/jupyter_contrib_nbextensions.git", branch = "master"}
 nbsphinx = {git = "https://github.com/deeenes/nbsphinx", branch = "timings"}
-pypath-omnipath = { git = "https://github.com/saezlab/pypath.git" }
+pypath-omnipath = {git = "https://github.com/saezlab/pypath.git"}

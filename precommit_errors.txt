@@ -1,0 +1,2776 @@
+   Building omnipath-build @ file:///Users/jschaul/Code/omnipath_build
+      Built omnipath-build @ file:///Users/jschaul/Code/omnipath_build
+Uninstalled 1 package in 1ms
+Installed 1 package in 0.83ms
+ruff (legacy alias)......................................................Failed
+- hook id: ruff
+- exit code: 1
+
+omnipath_build/database_manager.py:174:16: BLE001 Do not catch blind exception: `Exception`
+    |
+172 |             return True
+173 |
+174 |         except Exception as e:
+    |                ^^^^^^^^^ BLE001
+175 |             self.logger.error(f'Failed to initialize database: {e}')
+176 |             return False
+    |
+
+omnipath_build/database_manager.py:227:16: BLE001 Do not catch blind exception: `Exception`
+    |
+225 |             return True
+226 |
+227 |         except Exception as e:
+    |                ^^^^^^^^^ BLE001
+228 |             self.logger.error(f'Failed to load database: {e}')
+229 |             return False
+    |
+
+omnipath_build/database_manager.py:249:16: BLE001 Do not catch blind exception: `Exception`
+    |
+247 |             return self._load_layer(layer, module)
+248 |
+249 |         except Exception as e:
+    |                ^^^^^^^^^ BLE001
+250 |             self.logger.error(f'Failed to update {layer} layer: {e}')
+251 |             return False
+    |
+
+omnipath_build/database_manager.py:273:20: BLE001 Do not catch blind exception: `Exception`
+    |
+271 |                     validation_results['metadata'] = True
+272 |                     self.logger.info('✓ Metadata validation passed')
+273 |             except Exception as e:
+    |                    ^^^^^^^^^ BLE001
+274 |                 self.logger.error(f'✗ Metadata validation failed: {e}')
+275 |                 validation_results['metadata'] = False
+    |
+
+omnipath_build/database_manager.py:288:16: BLE001 Do not catch blind exception: `Exception`
+    |
+286 |             return all_passed
+287 |
+288 |         except Exception as e:
+    |                ^^^^^^^^^ BLE001
+289 |             self.logger.error(f'Failed to validate database: {e}')
+290 |             return False
+    |
+
+omnipath_build/database_manager.py:335:20: BLE001 Do not catch blind exception: `Exception`
+    |
+333 |                 self.logger.info(f'Metadata schema: {"✓" if result else "✗"}')
+334 |
+335 |             except Exception as e:
+    |                    ^^^^^^^^^ BLE001
+336 |                 self.logger.info(f'PostgreSQL database: ✗ ({str(e)[:50]}...)')
+    |
+
+omnipath_build/database_manager.py:340:16: BLE001 Do not catch blind exception: `Exception`
+    |
+338 |             return True
+339 |
+340 |         except Exception as e:
+    |                ^^^^^^^^^ BLE001
+341 |             self.logger.error(f'Failed to get database status: {e}')
+342 |             return False
+    |
+
+omnipath_build/database_manager.py:419:16: BLE001 Do not catch blind exception: `Exception`
+    |
+417 |                 )
+418 |
+419 |         except Exception as e:
+    |                ^^^^^^^^^ BLE001
+420 |             self.logger.warning(f'Failed to create template files: {e}')
+    |
+
+omnipath_build/database_manager.py:465:16: BLE001 Do not catch blind exception: `Exception`
+    |
+463 |             conn.close()
+464 |
+465 |         except Exception as e:
+    |                ^^^^^^^^^ BLE001
+466 |             self.logger.warning(f'Could not create PostgreSQL database: {e}')
+467 |             self.logger.info(
+    |
+
+omnipath_build/database_manager.py:536:16: BLE001 Do not catch blind exception: `Exception`
+    |
+534 |             return True
+535 |
+536 |         except Exception as e:
+    |                ^^^^^^^^^ BLE001
+537 |             self.logger.error(f'Failed to load {layer} layer: {e}')
+538 |             return False
+    |
+
+omnipath_build/database_manager.py:576:45: UP015 Unnecessary mode argument
+    |
+575 |             # Load metadata table definitions
+576 |             with open(metadata_tables_file, 'r', encoding='utf-8') as f:
+    |                                             ^^^ UP015
+577 |                 metadata_tables = yaml.safe_load(f)
+    |
+    = help: Remove mode argument
+
+omnipath_build/database_manager.py:661:16: BLE001 Do not catch blind exception: `Exception`
+    |
+659 |                 return False
+660 |
+661 |         except Exception as e:
+    |                ^^^^^^^^^ BLE001
+662 |             self.logger.error(f'Failed to add resources: {e}')
+663 |             return False
+    |
+
+omnipath_build/database_manager.py:713:38: UP015 Unnecessary mode argument
+    |
+711 |         try:
+712 |             # Load existing config
+713 |             with open(existing_file, 'r', encoding='utf-8') as f:
+    |                                      ^^^ UP015
+714 |                 existing_config = yaml.safe_load(f)
+    |
+    = help: Remove mode argument
+
+omnipath_build/database_manager.py:748:16: BLE001 Do not catch blind exception: `Exception`
+    |
+746 |             return existing_config
+747 |
+748 |         except Exception as e:
+    |                ^^^^^^^^^ BLE001
+749 |             self.logger.error(
+750 |                 f'Failed to merge with existing config {existing_file}: {e}'
+    |
+
+omnipath_build/database_manager.py:785:16: BLE001 Do not catch blind exception: `Exception`
+    |
+783 |             else:
+784 |                 self.logger.debug('No database connection to close')
+785 |         except Exception as e:
+    |                ^^^^^^^^^ BLE001
+786 |             self.logger.warning(f'Error closing database connections: {e}')
+    |
+
+omnipath_build/database_manager.py:913:12: BLE001 Do not catch blind exception: `Exception`
+    |
+911 |         logging.getLogger().info('Operation cancelled by user')
+912 |         success = False
+913 |     except Exception as e:
+    |            ^^^^^^^^^ BLE001
+914 |         logging.getLogger().error(f'Unexpected error: {e}')
+915 |         success = False
+    |
+
+omnipath_build/loaders/bronze_loader.py:45:5: D205 1 blank line required between summary line and description
+   |
+44 |   class PyPathBronzeLoader(BaseLoader):
+45 | /     """Simplified Bronze Loader that uses only pypath.inputs methods.
+46 | |     Uses two-tier configuration: templates + database-specific configs.
+47 | |     """
+   | |_______^ D205
+48 |
+49 |       def __init__(self, database_name: str, db_connector) -> None:
+   |
+   = help: Insert single blank line
+
+omnipath_build/loaders/bronze_loader.py:49:44: ANN001 Missing type annotation for function argument `db_connector`
+   |
+47 |     """
+48 |
+49 |     def __init__(self, database_name: str, db_connector) -> None:
+   |                                            ^^^^^^^^^^^^ ANN001
+50 |         """Initialize PyPath Bronze Loader.
+   |
+
+omnipath_build/loaders/bronze_loader.py:134:20: BLE001 Do not catch blind exception: `Exception`
+    |
+132 |                     results.update(module_results)
+133 |
+134 |             except Exception as e:
+    |                    ^^^^^^^^^ BLE001
+135 |                 self.logger.error(f'Failed to process module {mod_name}: {e}')
+136 |                 if validate_only:
+    |
+
+omnipath_build/loaders/bronze_loader.py:155:42: UP015 Unnecessary mode argument
+    |
+153 |             for yaml_file in self.resource_configs_path.glob('*.yaml'):
+154 |                 try:
+155 |                     with open(yaml_file, 'r') as f:
+    |                                          ^^^ UP015
+156 |                         config = yaml.safe_load(f)
+157 |                         if config and 'module' in config:
+    |
+    = help: Remove mode argument
+
+omnipath_build/loaders/bronze_loader.py:159:24: BLE001 Do not catch blind exception: `Exception`
+    |
+157 |                         if config and 'module' in config:
+158 |                             modules.append(config['module'])
+159 |                 except Exception as e:
+    |                        ^^^^^^^^^ BLE001
+160 |                     self.logger.warning(
+161 |                         f'Could not parse config file {yaml_file}: {e}'
+    |
+
+omnipath_build/loaders/bronze_loader.py:171:16: BLE001 Do not catch blind exception: `Exception`
+    |
+169 |             return modules
+170 |
+171 |         except Exception as e:
+    |                ^^^^^^^^^ BLE001
+172 |             self.logger.error(f'Could not read configured modules: {e}')
+173 |             return []
+    |
+
+omnipath_build/loaders/bronze_loader.py:184:44: UP015 Unnecessary mode argument
+    |
+182 |             for config_file in self.resource_configs_path.glob('*.yaml'):
+183 |                 try:
+184 |                     with open(config_file, 'r') as f:
+    |                                            ^^^ UP015
+185 |                         config = yaml.safe_load(f)
+186 |                         if config and config.get('module') == module_name:
+    |
+    = help: Remove mode argument
+
+omnipath_build/loaders/bronze_loader.py:189:24: BLE001 Do not catch blind exception: `Exception`
+    |
+187 |                             yaml_file = config_file
+188 |                             break
+189 |                 except Exception as e:
+    |                        ^^^^^^^^^ BLE001
+190 |                     self.logger.warning(
+191 |                         f'Could not parse config file {config_file}: {e}'
+    |
+
+omnipath_build/loaders/bronze_loader.py:202:34: UP015 Unnecessary mode argument
+    |
+201 |             # Load the configuration
+202 |             with open(yaml_file, 'r') as f:
+    |                                  ^^^ UP015
+203 |                 config = yaml.safe_load(f)
+    |
+    = help: Remove mode argument
+
+omnipath_build/loaders/bronze_loader.py:224:16: BLE001 Do not catch blind exception: `Exception`
+    |
+222 |             return functions
+223 |
+224 |         except Exception as e:
+    |                ^^^^^^^^^ BLE001
+225 |             self.logger.error(
+226 |                 f'Could not read module functions for {module_name}: {e}'
+    |
+
+omnipath_build/loaders/bronze_loader.py:299:20: BLE001 Do not catch blind exception: `Exception`
+    |
+297 |                 self.logger.info(f'💾 Saved to parquet: {parquet_file}')
+298 |
+299 |             except Exception as e:
+    |                    ^^^^^^^^^ BLE001
+300 |                 self.logger.error(f'Failed to load function {func_name}: {e}')
+301 |                 results[method_name] = 0
+    |
+
+omnipath_build/loaders/gold_loader.py:2:1: D205 1 blank line required between summary line and description
+  |
+1 |   #!/usr/bin/env python3
+2 | / """Refactored Gold Loader for OmniPath 2.0.
+3 | | Creates final deduplicated and enriched tables from PostgreSQL silver layer data.
+4 | | """
+  | |___^ D205
+5 |
+6 |   import re
+  |
+  = help: Insert single blank line
+
+omnipath_build/loaders/gold_loader.py:24:5: D205 1 blank line required between summary line and description
+   |
+23 |   class GoldLoader(BaseLoader):
+24 | /     """Refactored Gold Loader that creates final tables from silver layer data.
+25 | |     Inherits from BaseLoader for common functionality.
+26 | |     """
+   | |_______^ D205
+27 |
+28 |       def __init__(self, database_name: str, db_connector) -> None:
+   |
+   = help: Insert single blank line
+
+omnipath_build/loaders/gold_loader.py:28:44: ANN001 Missing type annotation for function argument `db_connector`
+   |
+26 |     """
+27 |
+28 |     def __init__(self, database_name: str, db_connector) -> None:
+   |                                            ^^^^^^^^^^^^ ANN001
+29 |         """Initialize GoldLoader with database name and connection.
+   |
+
+omnipath_build/loaders/gold_loader.py:218:20: BLE001 Do not catch blind exception: `Exception`
+    |
+216 |                     self.logger.debug(f'SQL validation passed for {filename}')
+217 |
+218 |             except Exception as e:
+    |                    ^^^^^^^^^ BLE001
+219 |                 results[filename] = False
+220 |                 self.logger.error(f'Error validating {filename}: {e}')
+    |
+
+omnipath_build/loaders/gold_loader.py:243:24: BLE001 Do not catch blind exception: `Exception`
+    |
+241 |                     ).fetchone()
+242 |                     stats[table_name] = count_result[0] if count_result else 0
+243 |                 except Exception as e:
+    |                        ^^^^^^^^^ BLE001
+244 |                     self.logger.warning(
+245 |                         f'Could not get count for {table_name}: {e}'
+    |
+
+omnipath_build/loaders/gold_loader.py:249:16: BLE001 Do not catch blind exception: `Exception`
+    |
+247 |                     stats[table_name] = 0
+248 |
+249 |         except Exception as e:
+    |                ^^^^^^^^^ BLE001
+250 |             self.logger.error(f'Failed to get table statistics: {e}')
+    |
+
+omnipath_build/loaders/gold_loader.py:285:20: BLE001 Do not catch blind exception: `Exception`
+    |
+283 |                         )
+284 |
+285 |             except Exception as e:
+    |                    ^^^^^^^^^ BLE001
+286 |                 self.logger.error(f'  Failed to get sample data: {e}')
+    |
+
+omnipath_build/loaders/metadata_loader.py:2:1: D205 1 blank line required between summary line and description
+  |
+1 |   #!/usr/bin/env python3
+2 | / """Metadata Loader for PyPath-based configurations.
+3 | | Loads YAML configuration files from databases/ structure into PostgreSQL using shared utilities.
+4 | | """
+  | |___^ D205
+5 |
+6 |   import sys
+  |
+  = help: Insert single blank line
+
+omnipath_build/loaders/metadata_loader.py:7:1: UP035 `typing.Dict` is deprecated, use `dict` instead
+  |
+6 | import sys
+7 | from typing import Any, Dict, Tuple
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ UP035
+8 | from pathlib import Path
+  |
+
+omnipath_build/loaders/metadata_loader.py:7:1: UP035 `typing.Tuple` is deprecated, use `tuple` instead
+  |
+6 | import sys
+7 | from typing import Any, Dict, Tuple
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ UP035
+8 | from pathlib import Path
+  |
+
+omnipath_build/loaders/metadata_loader.py:25:5: D205 1 blank line required between summary line and description
+   |
+24 |   class MetadataLoader(BaseLoader):
+25 | /     """Metadata Loader for PyPath-based configurations that loads YAML configurations to PostgreSQL.
+26 | |     Always uses the databases/ directory structure and PyPathConfigValidator for validation.
+27 | |     Inherits from BaseLoader for common functionality.
+28 | |     """
+   | |_______^ D205
+29 |
+30 |       def __init__(self, database_name: str, db_connector) -> None:
+   |
+   = help: Insert single blank line
+
+omnipath_build/loaders/metadata_loader.py:30:44: ANN001 Missing type annotation for function argument `db_connector`
+   |
+28 |     """
+29 |
+30 |     def __init__(self, database_name: str, db_connector) -> None:
+   |                                            ^^^^^^^^^^^^ ANN001
+31 |         """Initialize MetadataLoader with database name and connection.
+   |
+
+omnipath_build/loaders/metadata_loader.py:75:10: UP006 Use `dict` instead of `Dict` for type annotation
+   |
+73 |     def load(
+74 |         self, validate_only: bool = False, yaml_dir: str = None
+75 |     ) -> Dict[str, int]:
+   |          ^^^^ UP006
+76 |         """Load all metadata into PostgreSQL.
+   |
+   = help: Replace with `dict`
+
+omnipath_build/loaders/metadata_loader.py:105:27: UP006 Use `dict` instead of `Dict` for type annotation
+    |
+104 |     @log_execution_time()
+105 |     def load_all(self) -> Dict[str, int]:
+    |                           ^^^^ UP006
+106 |         """Load all metadata into PostgreSQL."""
+107 |         self.logger.info('Starting metadata loading to PostgreSQL...')
+    |
+    = help: Replace with `dict`
+
+omnipath_build/loaders/metadata_loader.py:125:54: UP006 Use `dict` instead of `Dict` for type annotation
+    |
+123 |         return results
+124 |
+125 |     def _get_table_columns(self, table_name: str) -> Dict[str, str]:
+    |                                                      ^^^^ UP006
+126 |         """Get column definitions for a specific table from YAML."""
+127 |         tables_file = (
+    |
+    = help: Replace with `dict`
+
+omnipath_build/loaders/metadata_loader.py:135:32: UP015 Unnecessary mode argument
+    |
+133 |             )
+134 |
+135 |         with open(tables_file, 'r', encoding='utf-8') as f:
+    |                                ^^^ UP015
+136 |             tables_config = yaml.safe_load(f)
+    |
+    = help: Remove mode argument
+
+omnipath_build/loaders/metadata_loader.py:175:17: UP006 Use `dict` instead of `Dict` for type annotation
+    |
+173 |         self,
+174 |         column_name: str,
+175 |         config: Dict[str, Any],
+    |                 ^^^^ UP006
+176 |         context: str = 'resource',
+177 |     ) -> Any:
+    |
+    = help: Replace with `dict`
+
+omnipath_build/loaders/metadata_loader.py:177:10: ANN401 Dynamically typed expressions (typing.Any) are disallowed in `_extract_value_for_column`
+    |
+175 |         config: Dict[str, Any],
+176 |         context: str = 'resource',
+177 |     ) -> Any:
+    |          ^^^ ANN401
+178 |         """Generically extract a value for a given column from config data.
+    |
+
+omnipath_build/loaders/metadata_loader.py:251:36: UP015 Unnecessary mode argument
+    |
+249 |                 )
+250 |
+251 |             with open(tables_file, 'r', encoding='utf-8') as f:
+    |                                    ^^^ UP015
+252 |                 tables_config = yaml.safe_load(f)
+    |
+    = help: Remove mode argument
+
+omnipath_build/loaders/metadata_loader.py:279:47: UP006 Use `tuple` instead of `Tuple` for type annotation
+    |
+277 |             raise LoaderError(f'Table creation failed: {e}') from e
+278 |
+279 |     def _load_resources_and_datasets(self) -> Tuple[int, int]:
+    |                                               ^^^^^ UP006
+280 |         """Load resources and datasets from YAML files to PostgreSQL."""
+281 |         try:
+    |
+    = help: Replace with `tuple`
+
+omnipath_build/loaders/metadata_loader.py:334:42: UP006 Use `tuple` instead of `Tuple` for type annotation
+    |
+332 |             raise LoaderError(f'Resource/dataset loading failed: {e}') from e
+333 |
+334 |     def _process_resource_files(self) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    |                                          ^^^^^ UP006
+335 |         """Process all resource config files and return dataframes for resources and datasets."""
+336 |         resources_data = []
+    |
+    = help: Replace with `tuple`
+
+omnipath_build/loaders/metadata_loader.py:405:20: BLE001 Do not catch blind exception: `Exception`
+    |
+403 |                     self.logger.debug(f'  Added dataset: {func_name}')
+404 |
+405 |             except Exception as e:
+    |                    ^^^^^^^^^ BLE001
+406 |                 self.logger.error(f'Error processing {config_file.name}: {e}')
+407 |                 continue
+    |
+
+omnipath_build/loaders/metadata_loader.py:414:51: UP006 Use `dict` instead of `Dict` for type annotation
+    |
+412 |         return pd.DataFrame(resources_data), pd.DataFrame(datasets_data)
+413 |
+414 |     def _load_yaml_file(self, file_path: Path) -> Dict[str, Any]:
+    |                                                   ^^^^ UP006
+415 |         """Load a YAML file and return its contents."""
+416 |         with open(file_path, 'r', encoding='utf-8') as f:
+    |
+    = help: Replace with `dict`
+
+omnipath_build/loaders/metadata_loader.py:416:30: UP015 Unnecessary mode argument
+    |
+414 |     def _load_yaml_file(self, file_path: Path) -> Dict[str, Any]:
+415 |         """Load a YAML file and return its contents."""
+416 |         with open(file_path, 'r', encoding='utf-8') as f:
+    |                              ^^^ UP015
+417 |             return yaml.safe_load(f)
+    |
+    = help: Remove mode argument
+
+omnipath_build/loaders/metadata_loader.py:419:50: UP006 Use `dict` instead of `Dict` for type annotation
+    |
+417 |             return yaml.safe_load(f)
+418 |
+419 |     def _has_unfilled_placeholders(self, config: Dict[str, Any]) -> bool:
+    |                                                  ^^^^ UP006
+420 |         """Check if config has unfilled '?' placeholders."""
+421 |         for func_config in config.get('functions', {}).values():
+    |
+    = help: Replace with `dict`
+
+omnipath_build/loaders/metadata_loader.py:438:41: ANN401 Dynamically typed expressions (typing.Any) are disallowed in `value`
+    |
+436 |         return False
+437 |
+438 |     def _normalize_to_list(self, value: Any) -> list:
+    |                                         ^^^ ANN401
+439 |         """Normalize field values that might be arrays or strings to a list.
+    |
+
+omnipath_build/loaders/silver_loader.py:2:1: D205 1 blank line required between summary line and description
+  |
+1 |   #!/usr/bin/env python3
+2 | / """Refactored Silver Loader for OmniPath 2.0.
+3 | | Transforms bronze parquet data and loads directly to PostgreSQL using shared utilities.
+4 | | """
+  | |___^ D205
+5 |
+6 |   import sys
+  |
+  = help: Insert single blank line
+
+omnipath_build/loaders/silver_loader.py:7:1: UP035 `typing.Set` is deprecated, use `set` instead
+  |
+6 | import sys
+7 | from typing import Any, Set, Dict, List, Optional
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ UP035
+8 | from pathlib import Path
+  |
+
+omnipath_build/loaders/silver_loader.py:7:1: UP035 `typing.Dict` is deprecated, use `dict` instead
+  |
+6 | import sys
+7 | from typing import Any, Set, Dict, List, Optional
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ UP035
+8 | from pathlib import Path
+  |
+
+omnipath_build/loaders/silver_loader.py:7:1: UP035 `typing.List` is deprecated, use `list` instead
+  |
+6 | import sys
+7 | from typing import Any, Set, Dict, List, Optional
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ UP035
+8 | from pathlib import Path
+  |
+
+omnipath_build/loaders/silver_loader.py:24:5: D205 1 blank line required between summary line and description
+   |
+23 |   class SilverLoader(BaseLoader):
+24 | /     """Refactored Silver Loader that transforms bronze data to silver layer.
+25 | |     Inherits from BaseLoader for common functionality.
+26 | |     """
+   | |_______^ D205
+27 |
+28 |       def __init__(self, database_name: str, db_connector) -> None:
+   |
+   = help: Insert single blank line
+
+omnipath_build/loaders/silver_loader.py:28:44: ANN001 Missing type annotation for function argument `db_connector`
+   |
+26 |     """
+27 |
+28 |     def __init__(self, database_name: str, db_connector) -> None:
+   |                                            ^^^^^^^^^^^^ ANN001
+29 |         """Initialize SilverLoader with database name and connection.
+   |
+
+omnipath_build/loaders/silver_loader.py:41:42: UP006 Use `dict` instead of `Dict` for type annotation
+   |
+39 |         super().__init__(db_connector=db_connector)
+40 |
+41 |     def _load_table_definitions(self) -> Dict[str, Dict[str, str]]:
+   |                                          ^^^^ UP006
+42 |         """Load table definitions from YAML file."""
+43 |         if not self.tables_yaml_path.exists():
+   |
+   = help: Replace with `dict`
+
+omnipath_build/loaders/silver_loader.py:41:52: UP006 Use `dict` instead of `Dict` for type annotation
+   |
+39 |         super().__init__(db_connector=db_connector)
+40 |
+41 |     def _load_table_definitions(self) -> Dict[str, Dict[str, str]]:
+   |                                                    ^^^^ UP006
+42 |         """Load table definitions from YAML file."""
+43 |         if not self.tables_yaml_path.exists():
+   |
+   = help: Replace with `dict`
+
+omnipath_build/loaders/silver_loader.py:50:42: UP015 Unnecessary mode argument
+   |
+48 |         import yaml
+49 |
+50 |         with open(self.tables_yaml_path, 'r') as f:
+   |                                          ^^^ UP015
+51 |             return yaml.safe_load(f)
+   |
+   = help: Remove mode argument
+
+omnipath_build/loaders/silver_loader.py:88:40: UP015 Unnecessary mode argument
+   |
+87 |         try:
+88 |             with open(transforms_path, 'r') as f:
+   |                                        ^^^ UP015
+89 |                 sql_content = f.read()
+   |
+   = help: Remove mode argument
+
+omnipath_build/loaders/silver_loader.py:151:33: UP007 Use `X | Y` for type annotations
+    |
+149 |             raise SilverLoaderError(f'Table creation failed: {e}') from e
+150 |
+151 |     def load(self, resource_id: Optional[str] = None) -> Dict[str, int]:
+    |                                 ^^^^^^^^^^^^^ UP007
+152 |         """Load silver data for one or all resources.
+    |
+    = help: Convert to `X | Y`
+
+omnipath_build/loaders/silver_loader.py:151:58: UP006 Use `dict` instead of `Dict` for type annotation
+    |
+149 |             raise SilverLoaderError(f'Table creation failed: {e}') from e
+150 |
+151 |     def load(self, resource_id: Optional[str] = None) -> Dict[str, int]:
+    |                                                          ^^^^ UP006
+152 |         """Load silver data for one or all resources.
+    |
+    = help: Replace with `dict`
+
+omnipath_build/loaders/silver_loader.py:183:20: BLE001 Do not catch blind exception: `Exception`
+    |
+181 |                 self.logger.info(f'Completed resource {res_id}')
+182 |
+183 |             except Exception as e:
+    |                    ^^^^^^^^^ BLE001
+184 |                 self.logger.error(f'Failed to load resource {res_id}: {e}')
+185 |                 # Continue with other resources
+    |
+
+omnipath_build/loaders/silver_loader.py:190:50: UP006 Use `dict` instead of `Dict` for type annotation
+    |
+189 |     @log_execution_time()
+190 |     def load_resource(self, resource_id: str) -> Dict[str, int]:
+    |                                                  ^^^^ UP006
+191 |         """Load and transform data from bronze to PostgreSQL silver for a resource.
+    |
+    = help: Replace with `dict`
+
+omnipath_build/loaders/silver_loader.py:246:20: BLE001 Do not catch blind exception: `Exception`
+    |
+244 |                 results[key] = row_count
+245 |
+246 |             except Exception as e:
+    |                    ^^^^^^^^^ BLE001
+247 |                 self.logger.error(
+248 |                     f'Failed to transform {dataset["name"]} to {target_table}: {e}'
+    |
+
+omnipath_build/loaders/silver_loader.py:254:36: UP006 Use `list` instead of `List` for type annotation
+    |
+252 |         return results
+253 |
+254 |     def get_all_resources(self) -> List[str]:
+    |                                    ^^^^ UP006
+255 |         """Get all resource IDs from YAML config files."""
+256 |         try:
+    |
+    = help: Replace with `list`
+
+omnipath_build/loaders/silver_loader.py:266:42: UP015 Unnecessary mode argument
+    |
+264 |             for yaml_file in self.resource_configs_path.glob('*.yaml'):
+265 |                 try:
+266 |                     with open(yaml_file, 'r') as f:
+    |                                          ^^^ UP015
+267 |                         config = yaml.safe_load(f)
+268 |                         if (
+    |
+    = help: Remove mode argument
+
+omnipath_build/loaders/silver_loader.py:280:24: BLE001 Do not catch blind exception: `Exception`
+    |
+278 |                             if has_processing:
+279 |                                 resources.append(config['module'])
+280 |                 except Exception as e:
+    |                        ^^^^^^^^^ BLE001
+281 |                     self.logger.warning(
+282 |                         f'Could not parse config file {yaml_file}: {e}'
+    |
+
+omnipath_build/loaders/silver_loader.py:289:16: BLE001 Do not catch blind exception: `Exception`
+    |
+287 |             return resources
+288 |
+289 |         except Exception as e:
+    |                ^^^^^^^^^ BLE001
+290 |             self.logger.error(f'Could not read resource configurations: {e}')
+291 |             return []
+    |
+
+omnipath_build/loaders/silver_loader.py:293:54: UP007 Use `X | Y` for type annotations
+    |
+291 |             return []
+292 |
+293 |     def get_resource_info(self, resource_id: str) -> Optional[Dict[str, Any]]:
+    |                                                      ^^^^^^^^^^^^^^^^^^^^^^^^ UP007
+294 |         """Get resource metadata from YAML config files."""
+295 |         try:
+    |
+    = help: Convert to `X | Y`
+
+omnipath_build/loaders/silver_loader.py:293:63: UP006 Use `dict` instead of `Dict` for type annotation
+    |
+291 |             return []
+292 |
+293 |     def get_resource_info(self, resource_id: str) -> Optional[Dict[str, Any]]:
+    |                                                               ^^^^ UP006
+294 |         """Get resource metadata from YAML config files."""
+295 |         try:
+    |
+    = help: Replace with `dict`
+
+omnipath_build/loaders/silver_loader.py:299:42: UP015 Unnecessary mode argument
+    |
+297 |             for yaml_file in self.resource_configs_path.glob('*.yaml'):
+298 |                 try:
+299 |                     with open(yaml_file, 'r') as f:
+    |                                          ^^^ UP015
+300 |                         config = yaml.safe_load(f)
+301 |                         if config and config.get('module') == resource_id:
+    |
+    = help: Remove mode argument
+
+omnipath_build/loaders/silver_loader.py:307:24: BLE001 Do not catch blind exception: `Exception`
+    |
+305 |                                 'description': f'Resource configuration from {yaml_file.name}',
+306 |                             }
+307 |                 except Exception as e:
+    |                        ^^^^^^^^^ BLE001
+308 |                     self.logger.warning(
+309 |                         f'Could not parse config file {yaml_file}: {e}'
+    |
+
+omnipath_build/loaders/silver_loader.py:313:16: BLE001 Do not catch blind exception: `Exception`
+    |
+311 |                     continue
+312 |
+313 |         except Exception as e:
+    |                ^^^^^^^^^ BLE001
+314 |             self.logger.error(f'Could not read resource configuration: {e}')
+    |
+
+omnipath_build/loaders/silver_loader.py:325:10: UP006 Use `list` instead of `List` for type annotation
+    |
+323 |     def get_datasets_with_processing(
+324 |         self, resource_id: str
+325 |     ) -> List[Dict[str, Any]]:
+    |          ^^^^ UP006
+326 |         """Get datasets with data processing configurations from YAML files."""
+327 |         try:
+    |
+    = help: Replace with `list`
+
+omnipath_build/loaders/silver_loader.py:325:15: UP006 Use `dict` instead of `Dict` for type annotation
+    |
+323 |     def get_datasets_with_processing(
+324 |         self, resource_id: str
+325 |     ) -> List[Dict[str, Any]]:
+    |               ^^^^ UP006
+326 |         """Get datasets with data processing configurations from YAML files."""
+327 |         try:
+    |
+    = help: Replace with `dict`
+
+omnipath_build/loaders/silver_loader.py:331:42: UP015 Unnecessary mode argument
+    |
+329 |             for yaml_file in self.resource_configs_path.glob('*.yaml'):
+330 |                 try:
+331 |                     with open(yaml_file, 'r') as f:
+    |                                          ^^^ UP015
+332 |                         config = yaml.safe_load(f)
+333 |                         if config and config.get('module') == resource_id:
+    |
+    = help: Remove mode argument
+
+omnipath_build/loaders/silver_loader.py:351:24: BLE001 Do not catch blind exception: `Exception`
+    |
+349 |                             return datasets
+350 |
+351 |                 except Exception as e:
+    |                        ^^^^^^^^^ BLE001
+352 |                     self.logger.warning(
+353 |                         f'Could not parse config file {yaml_file}: {e}'
+    |
+
+omnipath_build/loaders/silver_loader.py:359:16: BLE001 Do not catch blind exception: `Exception`
+    |
+357 |             return []
+358 |
+359 |         except Exception as e:
+    |                ^^^^^^^^^ BLE001
+360 |             self.logger.error(f'Could not read dataset configurations: {e}')
+361 |             # Fallback: scan bronze directory for datasets
+    |
+
+omnipath_build/loaders/silver_loader.py:373:10: UP007 Use `X | Y` for type annotations
+    |
+371 |     def get_latest_bronze(
+372 |         self, resource_id: str, dataset_name: str
+373 |     ) -> Optional[Path]:
+    |          ^^^^^^^^^^^^^^ UP007
+374 |         """Get the latest bronze parquet file for a dataset."""
+375 |         dataset_dir = self.bronze_path / resource_id / dataset_name
+    |
+    = help: Convert to `X | Y`
+
+omnipath_build/loaders/silver_loader.py:389:24: UP006 Use `dict` instead of `Dict` for type annotation
+    |
+387 |     def _transform_and_load_to_postgres(
+388 |         self,
+389 |         resource_info: Dict[str, Any],
+    |                        ^^^^ UP006
+390 |         dataset_name: str,
+391 |         bronze_file: Path,
+    |
+    = help: Replace with `dict`
+
+omnipath_build/loaders/silver_loader.py:393:26: UP006 Use `dict` instead of `Dict` for type annotation
+    |
+391 |         bronze_file: Path,
+392 |         target_table: str,
+393 |         data_processing: Dict[str, Any],
+    |                          ^^^^ UP006
+394 |     ) -> int:
+395 |         """Transform data from bronze parquet and load directly to PostgreSQL."""
+    |
+    = help: Replace with `dict`
+
+omnipath_build/loaders/silver_loader.py:472:60: UP006 Use `set` instead of `Set` for type annotation
+    |
+470 |             raise SilverLoaderError(f'Transform failed: {e}') from e
+471 |
+472 |     def _get_available_columns(self, bronze_file: Path) -> Set[str]:
+    |                                                            ^^^ UP006
+473 |         """Get available columns from bronze parquet file."""
+474 |         try:
+    |
+    = help: Replace with `set`
+
+omnipath_build/loaders/silver_loader.py:483:16: BLE001 Do not catch blind exception: `Exception`
+    |
+481 |             return columns
+482 |
+483 |         except Exception as e:
+    |                ^^^^^^^^^ BLE001
+484 |             self.logger.warning(
+485 |                 f'Could not get column names from {bronze_file}: {e}'
+    |
+
+omnipath_build/loaders/silver_loader.py:492:25: UP006 Use `list` instead of `List` for type annotation
+    |
+490 |         self,
+491 |         column_name: str,
+492 |         field_mappings: List[Dict[str, Any]],
+    |                         ^^^^ UP006
+493 |         available_columns: Set[str],
+494 |     ) -> str:
+    |
+    = help: Replace with `list`
+
+omnipath_build/loaders/silver_loader.py:492:30: UP006 Use `dict` instead of `Dict` for type annotation
+    |
+490 |         self,
+491 |         column_name: str,
+492 |         field_mappings: List[Dict[str, Any]],
+    |                              ^^^^ UP006
+493 |         available_columns: Set[str],
+494 |     ) -> str:
+    |
+    = help: Replace with `dict`
+
+omnipath_build/loaders/silver_loader.py:493:28: UP006 Use `set` instead of `Set` for type annotation
+    |
+491 |         column_name: str,
+492 |         field_mappings: List[Dict[str, Any]],
+493 |         available_columns: Set[str],
+    |                            ^^^ UP006
+494 |     ) -> str:
+495 |         """Build SQL expression for a single column from field mapping list."""
+    |
+    = help: Replace with `set`
+
+omnipath_build/loaders/silver_loader.py:529:64: UP006 Use `dict` instead of `Dict` for type annotation
+    |
+528 |     def _build_transform_expression(
+529 |         self, source_field: str, transform_func: str, mapping: Dict[str, Any]
+    |                                                                ^^^^ UP006
+530 |     ) -> str:
+531 |         """Build SQL expression using transformation function."""
+    |
+    = help: Replace with `dict`
+
+omnipath_build/loaders/silver_loader.py:555:18: UP038 Use `X | Y` in `isinstance` call instead of `(X, Y)`
+    |
+553 |                     # String literal
+554 |                     arg_parts.append(f"'{arg_value}'")
+555 |             elif isinstance(arg_value, (int, float)):
+    |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ UP038
+556 |                 arg_parts.append(str(arg_value))
+557 |             elif isinstance(arg_value, bool):
+    |
+    = help: Convert to `X | Y`
+
+omnipath_build/loaders/silver_loader.py:603:20: BLE001 Do not catch blind exception: `Exception`
+    |
+601 |                         )
+602 |
+603 |             except Exception as e:
+    |                    ^^^^^^^^^ BLE001
+604 |                 self.logger.error(f'Failed to validate table {table}: {e}')
+    |
+
+omnipath_build/tools/list_pypath_resources.py:13:1: UP035 `typing.Dict` is deprecated, use `dict` instead
+   |
+12 | import sys
+13 | from typing import Dict, List, Tuple
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ UP035
+14 | import logging
+15 | from pathlib import Path
+   |
+
+omnipath_build/tools/list_pypath_resources.py:13:1: UP035 `typing.List` is deprecated, use `list` instead
+   |
+12 | import sys
+13 | from typing import Dict, List, Tuple
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ UP035
+14 | import logging
+15 | from pathlib import Path
+   |
+
+omnipath_build/tools/list_pypath_resources.py:13:1: UP035 `typing.Tuple` is deprecated, use `tuple` instead
+   |
+12 | import sys
+13 | from typing import Dict, List, Tuple
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ UP035
+14 | import logging
+15 | from pathlib import Path
+   |
+
+omnipath_build/tools/list_pypath_resources.py:32:33: UP006 Use `dict` instead of `Dict` for type annotation
+   |
+32 | def discover_all_resources() -> Dict[str, List[Tuple[str, str]]]:
+   |                                 ^^^^ UP006
+33 |     """Discover all PyPath modules and their callable functions.
+   |
+   = help: Replace with `dict`
+
+omnipath_build/tools/list_pypath_resources.py:32:43: UP006 Use `list` instead of `List` for type annotation
+   |
+32 | def discover_all_resources() -> Dict[str, List[Tuple[str, str]]]:
+   |                                           ^^^^ UP006
+33 |     """Discover all PyPath modules and their callable functions.
+   |
+   = help: Replace with `list`
+
+omnipath_build/tools/list_pypath_resources.py:32:48: UP006 Use `tuple` instead of `Tuple` for type annotation
+   |
+32 | def discover_all_resources() -> Dict[str, List[Tuple[str, str]]]:
+   |                                                ^^^^^ UP006
+33 |     """Discover all PyPath modules and their callable functions.
+   |
+   = help: Replace with `tuple`
+
+omnipath_build/tools/list_pypath_resources.py:83:17: E722 Do not use bare `except`
+   |
+81 |                         # Basic type description
+82 |                         description = f'{type(attr).__name__}'
+83 |                 except:
+   |                 ^^^^^^ E722
+84 |                     description = 'No description'
+   |
+
+omnipath_build/tools/list_pypath_resources.py:92:16: BLE001 Do not catch blind exception: `Exception`
+   |
+90 |                 logger.debug(f'Found {len(functions)} functions in {modname}')
+91 |
+92 |         except Exception as e:
+   |                ^^^^^^^^^ BLE001
+93 |             logger.debug(f'Could not process module {modname}: {e}')
+   |
+
+omnipath_build/tools/list_pypath_resources.py:102:16: UP006 Use `dict` instead of `Dict` for type annotation
+    |
+101 | def write_resources_file(
+102 |     resources: Dict[str, List[Tuple[str, str]]], output_path: Path
+    |                ^^^^ UP006
+103 | ) -> None:
+104 |     """Write resources to a nicely formatted text file.
+    |
+    = help: Replace with `dict`
+
+omnipath_build/tools/list_pypath_resources.py:102:26: UP006 Use `list` instead of `List` for type annotation
+    |
+101 | def write_resources_file(
+102 |     resources: Dict[str, List[Tuple[str, str]]], output_path: Path
+    |                          ^^^^ UP006
+103 | ) -> None:
+104 |     """Write resources to a nicely formatted text file.
+    |
+    = help: Replace with `list`
+
+omnipath_build/tools/list_pypath_resources.py:102:31: UP006 Use `tuple` instead of `Tuple` for type annotation
+    |
+101 | def write_resources_file(
+102 |     resources: Dict[str, List[Tuple[str, str]]], output_path: Path
+    |                               ^^^^^ UP006
+103 | ) -> None:
+104 |     """Write resources to a nicely formatted text file.
+    |
+    = help: Replace with `tuple`
+
+omnipath_build/tools/list_pypath_resources.py:146:16: UP006 Use `dict` instead of `Dict` for type annotation
+    |
+145 | def write_summary_stats(
+146 |     resources: Dict[str, List[Tuple[str, str]]], output_path: Path
+    |                ^^^^ UP006
+147 | ) -> None:
+148 |     """Write summary statistics to console and optionally to file."""
+    |
+    = help: Replace with `dict`
+
+omnipath_build/tools/list_pypath_resources.py:146:26: UP006 Use `list` instead of `List` for type annotation
+    |
+145 | def write_summary_stats(
+146 |     resources: Dict[str, List[Tuple[str, str]]], output_path: Path
+    |                          ^^^^ UP006
+147 | ) -> None:
+148 |     """Write summary statistics to console and optionally to file."""
+    |
+    = help: Replace with `list`
+
+omnipath_build/tools/list_pypath_resources.py:146:31: UP006 Use `tuple` instead of `Tuple` for type annotation
+    |
+145 | def write_summary_stats(
+146 |     resources: Dict[str, List[Tuple[str, str]]], output_path: Path
+    |                               ^^^^^ UP006
+147 | ) -> None:
+148 |     """Write summary statistics to console and optionally to file."""
+    |
+    = help: Replace with `tuple`
+
+omnipath_build/tools/list_pypath_resources.py:174:5: D103 Missing docstring in public function
+    |
+174 | def main() -> None:
+    |     ^^^^ D103
+175 |     parser = argparse.ArgumentParser(
+176 |         description='List all available PyPath resources',
+    |
+
+omnipath_build/utils/base_loader.py:1:1: D205 1 blank line required between summary line and description
+  |
+1 | / """Base loader class for OmniPath 2.0 pipeline.
+2 | | Provides common functionality for all data loaders.
+3 | | """
+  | |___^ D205
+4 |
+5 |   from abc import ABC, abstractmethod
+  |
+  = help: Insert single blank line
+
+omnipath_build/utils/base_loader.py:6:1: UP035 `typing.List` is deprecated, use `list` instead
+  |
+5 | from abc import ABC, abstractmethod
+6 | from typing import Any, List, Optional
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ UP035
+7 | import logging
+8 | from pathlib import Path
+  |
+
+omnipath_build/utils/base_loader.py:28:5: D205 1 blank line required between summary line and description
+   |
+27 |   class BaseLoader(ABC):
+28 | /     """Abstract base class for all data loaders in the pipeline.
+29 | |     Provides common initialization, database connection, and utility methods.
+30 | |     """
+   | |_______^ D205
+31 |
+32 |       def __init__(
+   |
+   = help: Insert single blank line
+
+omnipath_build/utils/base_loader.py:35:22: UP007 Use `X | Y` for type annotations
+   |
+33 |         self,
+34 |         db_connector: PostgresDuckDBConnector,
+35 |         logger_name: Optional[str] = None,
+   |                      ^^^^^^^^^^^^^ UP007
+36 |     ) -> None:
+37 |         """Initialize base loader with provided database connection.
+   |
+   = help: Convert to `X | Y`
+
+omnipath_build/utils/base_loader.py:59:9: D205 1 blank line required between summary line and description
+   |
+57 |       @abstractmethod
+58 |       def _initialize(self) -> None:
+59 | /         """Initialize loader-specific attributes and setup.
+60 | |         Must be implemented by subclasses.
+61 | |         """
+   | |___________^ D205
+62 |           pass
+   |
+   = help: Insert single blank line
+
+omnipath_build/utils/base_loader.py:65:20: ANN002 Missing type annotation for `*args`
+   |
+64 |     @abstractmethod
+65 |     def load(self, *args, **kwargs) -> Any:
+   |                    ^^^^^ ANN002
+66 |         """Main loading method. Must be implemented by subclasses."""
+67 |         pass
+   |
+
+omnipath_build/utils/base_loader.py:65:27: ANN003 Missing type annotation for `**kwargs`
+   |
+64 |     @abstractmethod
+65 |     def load(self, *args, **kwargs) -> Any:
+   |                           ^^^^^^^^ ANN003
+66 |         """Main loading method. Must be implemented by subclasses."""
+67 |         pass
+   |
+
+omnipath_build/utils/base_loader.py:65:40: ANN401 Dynamically typed expressions (typing.Any) are disallowed in `load`
+   |
+64 |     @abstractmethod
+65 |     def load(self, *args, **kwargs) -> Any:
+   |                                        ^^^ ANN401
+66 |         """Main loading method. Must be implemented by subclasses."""
+67 |         pass
+   |
+
+omnipath_build/utils/base_loader.py:81:16: BLE001 Do not catch blind exception: `Exception`
+   |
+79 |             self.conn.execute('SELECT 1').fetchone()
+80 |             self.logger.debug('Database connection validated')
+81 |         except Exception as e:
+   |                ^^^^^^^^^ BLE001
+82 |             self.logger.error(f'Database connection validation failed: {e}')
+83 |             return False
+   |
+
+omnipath_build/utils/base_loader.py:96:49: UP007 Use `X | Y` for type annotations
+   |
+94 |         return True
+95 |
+96 |     def execute_sql(self, sql: str, parameters: Optional[list] = None) -> Any:
+   |                                                 ^^^^^^^^^^^^^^ UP007
+97 |         """Execute SQL query with error handling and logging.
+   |
+   = help: Convert to `X | Y`
+
+omnipath_build/utils/base_loader.py:96:75: ANN401 Dynamically typed expressions (typing.Any) are disallowed in `execute_sql`
+   |
+94 |         return True
+95 |
+96 |     def execute_sql(self, sql: str, parameters: Optional[list] = None) -> Any:
+   |                                                                           ^^^ ANN401
+97 |         """Execute SQL query with error handling and logging.
+   |
+
+omnipath_build/utils/base_loader.py:114:39: UP006 Use `list` instead of `List` for type annotation
+    |
+112 |             raise
+113 |
+114 |     def create_schemas(self, schemas: List[str]) -> None:
+    |                                       ^^^^ UP006
+115 |         """Create multiple schemas if they don't exist.
+    |
+    = help: Replace with `list`
+
+omnipath_build/utils/base_loader.py:125:40: UP007 Use `X | Y` for type annotations
+    |
+124 |     def get_table_row_count(
+125 |         self, table_name: str, schema: Optional[str] = None
+    |                                        ^^^^^^^^^^^^^ UP007
+126 |     ) -> int:
+127 |         """Get row count for a table.
+    |
+    = help: Convert to `X | Y`
+
+omnipath_build/utils/base_loader.py:139:40: UP007 Use `X | Y` for type annotations
+    |
+138 |     def table_exists(
+139 |         self, table_name: str, schema: Optional[str] = None
+    |                                        ^^^^^^^^^^^^^ UP007
+140 |     ) -> bool:
+141 |         """Check if a table exists.
+    |
+    = help: Convert to `X | Y`
+
+omnipath_build/utils/base_loader.py:193:16: UP007 Use `X | Y` for type annotations
+    |
+191 |         self,
+192 |         current: int,
+193 |         total: Optional[int] = None,
+    |                ^^^^^^^^^^^^^ UP007
+194 |         message: str = 'Processing',
+195 |     ) -> None:
+    |
+    = help: Convert to `X | Y`
+
+omnipath_build/utils/base_loader.py:229:9: D205 1 blank line required between summary line and description
+    |
+228 |       def close(self) -> None:
+229 | /         """Close database connections and cleanup resources.
+230 | |         Can be extended by subclasses.
+231 | |         """
+    | |___________^ D205
+232 |           try:
+233 |               self.db_connector.close()
+    |
+    = help: Insert single blank line
+
+omnipath_build/utils/base_loader.py:235:16: BLE001 Do not catch blind exception: `Exception`
+    |
+233 |             self.db_connector.close()
+234 |             self.logger.info(f'{self.__class__.__name__} closed successfully')
+235 |         except Exception as e:
+    |                ^^^^^^^^^ BLE001
+236 |             self.logger.warning(f'Error during cleanup: {e}')
+    |
+
+omnipath_build/utils/base_loader.py:238:9: ANN204 Missing return type annotation for special method `__enter__`
+    |
+236 |             self.logger.warning(f'Error during cleanup: {e}')
+237 |
+238 |     def __enter__(self):
+    |         ^^^^^^^^^ ANN204
+239 |         """Context manager entry."""
+240 |         return self
+    |
+    = help: Add return type annotation
+
+omnipath_build/utils/base_loader.py:242:9: ANN204 Missing return type annotation for special method `__exit__`
+    |
+240 |         return self
+241 |
+242 |     def __exit__(self, exc_type, exc_val, exc_tb):
+    |         ^^^^^^^^ ANN204
+243 |         """Context manager exit with cleanup."""
+244 |         self.close()
+    |
+    = help: Add return type annotation
+
+omnipath_build/utils/base_loader.py:242:24: ANN001 Missing type annotation for function argument `exc_type`
+    |
+240 |         return self
+241 |
+242 |     def __exit__(self, exc_type, exc_val, exc_tb):
+    |                        ^^^^^^^^ ANN001
+243 |         """Context manager exit with cleanup."""
+244 |         self.close()
+    |
+
+omnipath_build/utils/base_loader.py:242:34: ANN001 Missing type annotation for function argument `exc_val`
+    |
+240 |         return self
+241 |
+242 |     def __exit__(self, exc_type, exc_val, exc_tb):
+    |                                  ^^^^^^^ ANN001
+243 |         """Context manager exit with cleanup."""
+244 |         self.close()
+    |
+
+omnipath_build/utils/base_loader.py:242:43: ANN001 Missing type annotation for function argument `exc_tb`
+    |
+240 |         return self
+241 |
+242 |     def __exit__(self, exc_type, exc_val, exc_tb):
+    |                                           ^^^^^^ ANN001
+243 |         """Context manager exit with cleanup."""
+244 |         self.close()
+    |
+
+omnipath_build/utils/bronze_utils.py:1:1: D205 1 blank line required between summary line and description
+  |
+1 | / """Utilities for Bronze layer operations.
+2 | | Provides common functionality for writing to PostgreSQL bronze schema.
+3 | | """
+  | |___^ D205
+4 |
+5 |   from typing import Dict, List, Tuple
+  |
+  = help: Insert single blank line
+
+omnipath_build/utils/bronze_utils.py:5:1: UP035 `typing.Dict` is deprecated, use `dict` instead
+  |
+3 | """
+4 |
+5 | from typing import Dict, List, Tuple
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ UP035
+6 | import logging
+7 | from pathlib import Path
+  |
+
+omnipath_build/utils/bronze_utils.py:5:1: UP035 `typing.List` is deprecated, use `list` instead
+  |
+3 | """
+4 |
+5 | from typing import Dict, List, Tuple
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ UP035
+6 | import logging
+7 | from pathlib import Path
+  |
+
+omnipath_build/utils/bronze_utils.py:5:1: UP035 `typing.Tuple` is deprecated, use `tuple` instead
+  |
+3 | """
+4 |
+5 | from typing import Dict, List, Tuple
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ UP035
+6 | import logging
+7 | from pathlib import Path
+  |
+
+omnipath_build/utils/bronze_utils.py:27:26: UP006 Use `dict` instead of `Dict` for type annotation
+   |
+26 |     def __init__(
+27 |         self, pg_config: Dict[str, str], duckdb_conn: duckdb.DuckDBPyConnection
+   |                          ^^^^ UP006
+28 |     ) -> None:
+29 |         """Initialize Bronze writer.
+   |
+   = help: Replace with `dict`
+
+omnipath_build/utils/bronze_utils.py:51:16: BLE001 Do not catch blind exception: `Exception`
+   |
+49 |                     conn.commit()
+50 |             logger.debug('PostgreSQL bronze schema ready')
+51 |         except Exception as e:
+   |                ^^^^^^^^^ BLE001
+52 |             logger.warning(f'Could not setup PostgreSQL bronze schema: {e}')
+   |
+
+omnipath_build/utils/bronze_utils.py:132:10: UP006 Use `tuple` instead of `Tuple` for type annotation
+    |
+130 |     def _read_csv_sample(
+131 |         self, csv_path: Path, delimiter: str, has_header: bool
+132 |     ) -> Tuple[List[str], List[Tuple]]:
+    |          ^^^^^ UP006
+133 |         """Read sample data from CSV file."""
+134 |         temp_table = (
+    |
+    = help: Replace with `tuple`
+
+omnipath_build/utils/bronze_utils.py:132:16: UP006 Use `list` instead of `List` for type annotation
+    |
+130 |     def _read_csv_sample(
+131 |         self, csv_path: Path, delimiter: str, has_header: bool
+132 |     ) -> Tuple[List[str], List[Tuple]]:
+    |                ^^^^ UP006
+133 |         """Read sample data from CSV file."""
+134 |         temp_table = (
+    |
+    = help: Replace with `list`
+
+omnipath_build/utils/bronze_utils.py:132:27: UP006 Use `list` instead of `List` for type annotation
+    |
+130 |     def _read_csv_sample(
+131 |         self, csv_path: Path, delimiter: str, has_header: bool
+132 |     ) -> Tuple[List[str], List[Tuple]]:
+    |                           ^^^^ UP006
+133 |         """Read sample data from CSV file."""
+134 |         temp_table = (
+    |
+    = help: Replace with `list`
+
+omnipath_build/utils/bronze_utils.py:132:32: UP006 Use `tuple` instead of `Tuple` for type annotation
+    |
+130 |     def _read_csv_sample(
+131 |         self, csv_path: Path, delimiter: str, has_header: bool
+132 |     ) -> Tuple[List[str], List[Tuple]]:
+    |                                ^^^^^ UP006
+133 |         """Read sample data from CSV file."""
+134 |         temp_table = (
+    |
+    = help: Replace with `tuple`
+
+omnipath_build/utils/bronze_utils.py:181:13: E722 Do not use bare `except`
+    |
+179 |             try:
+180 |                 self.duckdb_conn.execute(f'DROP TABLE IF EXISTS {temp_table}')
+181 |             except:
+    |             ^^^^^^ E722
+182 |                 pass
+    |
+
+omnipath_build/utils/bronze_utils.py:186:10: UP006 Use `tuple` instead of `Tuple` for type annotation
+    |
+184 |     def _read_parquet_sample(
+185 |         self, parquet_path: Path
+186 |     ) -> Tuple[List[str], List[Tuple]]:
+    |          ^^^^^ UP006
+187 |         """Read sample data from Parquet file."""
+188 |         temp_table = (
+    |
+    = help: Replace with `tuple`
+
+omnipath_build/utils/bronze_utils.py:186:16: UP006 Use `list` instead of `List` for type annotation
+    |
+184 |     def _read_parquet_sample(
+185 |         self, parquet_path: Path
+186 |     ) -> Tuple[List[str], List[Tuple]]:
+    |                ^^^^ UP006
+187 |         """Read sample data from Parquet file."""
+188 |         temp_table = (
+    |
+    = help: Replace with `list`
+
+omnipath_build/utils/bronze_utils.py:186:27: UP006 Use `list` instead of `List` for type annotation
+    |
+184 |     def _read_parquet_sample(
+185 |         self, parquet_path: Path
+186 |     ) -> Tuple[List[str], List[Tuple]]:
+    |                           ^^^^ UP006
+187 |         """Read sample data from Parquet file."""
+188 |         temp_table = (
+    |
+    = help: Replace with `list`
+
+omnipath_build/utils/bronze_utils.py:186:32: UP006 Use `tuple` instead of `Tuple` for type annotation
+    |
+184 |     def _read_parquet_sample(
+185 |         self, parquet_path: Path
+186 |     ) -> Tuple[List[str], List[Tuple]]:
+    |                                ^^^^^ UP006
+187 |         """Read sample data from Parquet file."""
+188 |         temp_table = (
+    |
+    = help: Replace with `tuple`
+
+omnipath_build/utils/bronze_utils.py:234:13: E722 Do not use bare `except`
+    |
+232 |             try:
+233 |                 self.duckdb_conn.execute(f'DROP TABLE IF EXISTS {temp_table}')
+234 |             except:
+    |             ^^^^^^ E722
+235 |                 pass
+    |
+
+omnipath_build/utils/bronze_utils.py:241:18: UP006 Use `list` instead of `List` for type annotation
+    |
+239 |         cursor: psycopg2.extensions.cursor,
+240 |         table_name: str,
+241 |         columns: List[str],
+    |                  ^^^^ UP006
+242 |     ) -> None:
+243 |         """Create bronze table with metadata columns."""
+    |
+    = help: Replace with `list`
+
+omnipath_build/utils/bronze_utils.py:272:18: UP006 Use `list` instead of `List` for type annotation
+    |
+270 |         cursor: psycopg2.extensions.cursor,
+271 |         table_name: str,
+272 |         columns: List[str],
+    |                  ^^^^ UP006
+273 |         rows: List[Tuple],
+274 |         resource_id: str,
+    |
+    = help: Replace with `list`
+
+omnipath_build/utils/bronze_utils.py:273:15: UP006 Use `list` instead of `List` for type annotation
+    |
+271 |         table_name: str,
+272 |         columns: List[str],
+273 |         rows: List[Tuple],
+    |               ^^^^ UP006
+274 |         resource_id: str,
+275 |         dataset_name: str,
+    |
+    = help: Replace with `list`
+
+omnipath_build/utils/bronze_utils.py:273:20: UP006 Use `tuple` instead of `Tuple` for type annotation
+    |
+271 |         table_name: str,
+272 |         columns: List[str],
+273 |         rows: List[Tuple],
+    |                    ^^^^^ UP006
+274 |         resource_id: str,
+275 |         dataset_name: str,
+    |
+    = help: Replace with `tuple`
+
+omnipath_build/utils/bronze_utils.py:290:22: UP038 Use `X | Y` in `isinstance` call instead of `(X, Y)`
+    |
+288 |                 if val is None:
+289 |                     processed_row.append(None)
+290 |                 elif isinstance(val, (list, tuple, dict)):
+    |                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ UP038
+291 |                     # Convert complex types to JSON strings
+292 |                     import json
+    |
+    = help: Convert to `X | Y`
+
+omnipath_build/utils/bronze_utils.py:297:22: UP038 Use `X | Y` in `isinstance` call instead of `(X, Y)`
+    |
+295 |                 elif val in LoaderConstants.NULL_VALUES:
+296 |                     processed_row.append(None)
+297 |                 elif isinstance(val, (str, int, float, bool)):
+    |                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ UP038
+298 |                     # Handle basic types
+299 |                     processed_row.append(val)
+    |
+    = help: Convert to `X | Y`
+
+omnipath_build/utils/bronze_utils.py:326:17: E722 Do not use bare `except`
+    |
+324 |                         f'DROP TABLE IF EXISTS {table_name}'
+325 |                     )
+326 |                 except:
+    |                 ^^^^^^ E722
+327 |                     pass
+328 |         except:
+    |
+
+omnipath_build/utils/bronze_utils.py:328:9: E722 Do not use bare `except`
+    |
+326 |                 except:
+327 |                     pass
+328 |         except:
+    |         ^^^^^^ E722
+329 |             pass
+    |
+
+omnipath_build/utils/config_validator.py:7:1: UP035 `typing.Dict` is deprecated, use `dict` instead
+  |
+5 | """
+6 |
+7 | from typing import Any, Dict, List, Tuple
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ UP035
+8 | import logging
+9 | from pathlib import Path
+  |
+
+omnipath_build/utils/config_validator.py:7:1: UP035 `typing.List` is deprecated, use `list` instead
+  |
+5 | """
+6 |
+7 | from typing import Any, Dict, List, Tuple
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ UP035
+8 | import logging
+9 | from pathlib import Path
+  |
+
+omnipath_build/utils/config_validator.py:7:1: UP035 `typing.Tuple` is deprecated, use `tuple` instead
+  |
+5 | """
+6 |
+7 | from typing import Any, Dict, List, Tuple
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ UP035
+8 | import logging
+9 | from pathlib import Path
+  |
+
+omnipath_build/utils/config_validator.py:40:10: UP006 Use `tuple` instead of `Tuple` for type annotation
+   |
+38 |     def validate_database_module(
+39 |         self, database_name: str, module_name: str
+40 |     ) -> Tuple[bool, List[str]]:
+   |          ^^^^^ UP006
+41 |         """Validate a specific database/module configuration.
+   |
+   = help: Replace with `tuple`
+
+omnipath_build/utils/config_validator.py:40:22: UP006 Use `list` instead of `List` for type annotation
+   |
+38 |     def validate_database_module(
+39 |         self, database_name: str, module_name: str
+40 |     ) -> Tuple[bool, List[str]]:
+   |                      ^^^^ UP006
+41 |         """Validate a specific database/module configuration.
+   |
+   = help: Replace with `list`
+
+omnipath_build/utils/config_validator.py:85:16: BLE001 Do not catch blind exception: `Exception`
+   |
+83 |             errors.extend(pypath_errors)
+84 |
+85 |         except Exception as e:
+   |                ^^^^^^^^^ BLE001
+86 |             errors.append(f'Error loading config: {e}')
+   |
+
+omnipath_build/utils/config_validator.py:100:50: UP006 Use `dict` instead of `Dict` for type annotation
+    |
+ 98 |         return is_valid, errors
+ 99 |
+100 |     def _validate_config_structure(self, config: Dict[str, Any]) -> List[str]:
+    |                                                  ^^^^ UP006
+101 |         """Validate basic configuration structure."""
+102 |         errors = []
+    |
+    = help: Replace with `dict`
+
+omnipath_build/utils/config_validator.py:100:69: UP006 Use `list` instead of `List` for type annotation
+    |
+ 98 |         return is_valid, errors
+ 99 |
+100 |     def _validate_config_structure(self, config: Dict[str, Any]) -> List[str]:
+    |                                                                     ^^^^ UP006
+101 |         """Validate basic configuration structure."""
+102 |         errors = []
+    |
+    = help: Replace with `list`
+
+omnipath_build/utils/config_validator.py:140:23: UP006 Use `dict` instead of `Dict` for type annotation
+    |
+139 |     def _validate_against_template(
+140 |         self, config: Dict[str, Any], extends_path: str, module_name: str
+    |                       ^^^^ UP006
+141 |     ) -> List[str]:
+142 |         """Validate configuration against its template."""
+    |
+    = help: Replace with `dict`
+
+omnipath_build/utils/config_validator.py:141:10: UP006 Use `list` instead of `List` for type annotation
+    |
+139 |     def _validate_against_template(
+140 |         self, config: Dict[str, Any], extends_path: str, module_name: str
+141 |     ) -> List[str]:
+    |          ^^^^ UP006
+142 |         """Validate configuration against its template."""
+143 |         errors = []
+    |
+    = help: Replace with `list`
+
+omnipath_build/utils/config_validator.py:156:16: BLE001 Do not catch blind exception: `Exception`
+    |
+154 |             with template_path.open() as f:
+155 |                 template = yaml.safe_load(f)
+156 |         except Exception as e:
+    |                ^^^^^^^^^ BLE001
+157 |             return [f'Error loading template {extends_path}: {e}']
+    |
+
+omnipath_build/utils/config_validator.py:187:22: UP006 Use `dict` instead of `Dict` for type annotation
+    |
+185 |         self,
+186 |         func_name: str,
+187 |         func_config: Dict[str, Any],
+    |                      ^^^^ UP006
+188 |         func_template: Dict[str, Any],
+189 |     ) -> List[str]:
+    |
+    = help: Replace with `dict`
+
+omnipath_build/utils/config_validator.py:188:24: UP006 Use `dict` instead of `Dict` for type annotation
+    |
+186 |         func_name: str,
+187 |         func_config: Dict[str, Any],
+188 |         func_template: Dict[str, Any],
+    |                        ^^^^ UP006
+189 |     ) -> List[str]:
+190 |         """Validate function parameters against template."""
+    |
+    = help: Replace with `dict`
+
+omnipath_build/utils/config_validator.py:189:10: UP006 Use `list` instead of `List` for type annotation
+    |
+187 |         func_config: Dict[str, Any],
+188 |         func_template: Dict[str, Any],
+189 |     ) -> List[str]:
+    |          ^^^^ UP006
+190 |         """Validate function parameters against template."""
+191 |         errors = []
+    |
+    = help: Replace with `list`
+
+omnipath_build/utils/config_validator.py:227:23: UP006 Use `dict` instead of `Dict` for type annotation
+    |
+226 |     def _validate_against_pypath(
+227 |         self, config: Dict[str, Any], module_name: str
+    |                       ^^^^ UP006
+228 |     ) -> List[str]:
+229 |         """Validate configuration against actual pypath methods."""
+    |
+    = help: Replace with `dict`
+
+omnipath_build/utils/config_validator.py:228:10: UP006 Use `list` instead of `List` for type annotation
+    |
+226 |     def _validate_against_pypath(
+227 |         self, config: Dict[str, Any], module_name: str
+228 |     ) -> List[str]:
+    |          ^^^^ UP006
+229 |         """Validate configuration against actual pypath methods."""
+230 |         errors = []
+    |
+    = help: Replace with `list`
+
+omnipath_build/utils/config_validator.py:247:10: UP006 Use `tuple` instead of `Tuple` for type annotation
+    |
+245 |     def validate_database(
+246 |         self, database_name: str
+247 |     ) -> Tuple[int, int, Dict[str, List[str]]]:
+    |          ^^^^^ UP006
+248 |         """Validate all modules for a database.
+    |
+    = help: Replace with `tuple`
+
+omnipath_build/utils/config_validator.py:247:26: UP006 Use `dict` instead of `Dict` for type annotation
+    |
+245 |     def validate_database(
+246 |         self, database_name: str
+247 |     ) -> Tuple[int, int, Dict[str, List[str]]]:
+    |                          ^^^^ UP006
+248 |         """Validate all modules for a database.
+    |
+    = help: Replace with `dict`
+
+omnipath_build/utils/config_validator.py:247:36: UP006 Use `list` instead of `List` for type annotation
+    |
+245 |     def validate_database(
+246 |         self, database_name: str
+247 |     ) -> Tuple[int, int, Dict[str, List[str]]]:
+    |                                    ^^^^ UP006
+248 |         """Validate all modules for a database.
+    |
+    = help: Replace with `list`
+
+omnipath_build/utils/database.py:1:1: D205 1 blank line required between summary line and description
+  |
+1 | / """Database connection utilities for OmniPath 2.0 pipeline.
+2 | | Provides a unified interface for DuckDB with PostgreSQL extension.
+3 | | """
+  | |___^ D205
+4 |
+5 |   from typing import Any, Dict, Optional
+  |
+  = help: Insert single blank line
+
+omnipath_build/utils/database.py:5:1: UP035 `typing.Dict` is deprecated, use `dict` instead
+  |
+3 | """
+4 |
+5 | from typing import Any, Dict, Optional
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ UP035
+6 | import logging
+7 | from contextlib import contextmanager
+  |
+
+omnipath_build/utils/database.py:20:5: D205 1 blank line required between summary line and description
+   |
+19 |   class PostgresDuckDBConnector:
+20 | /     """Manages DuckDB connection with PostgreSQL extension for direct read/write operations.
+21 | |     This class provides a unified interface for all loaders to interact with both
+22 | |     DuckDB (for compute) and PostgreSQL (for storage).
+23 | |     """
+   | |_______^ D205
+24 |
+25 |       def __init__(
+   |
+   = help: Insert single blank line
+
+omnipath_build/utils/database.py:27:20: UP006 Use `dict` instead of `Dict` for type annotation
+   |
+25 |     def __init__(
+26 |         self,
+27 |         pg_config: Dict[str, str],
+   |                    ^^^^ UP006
+28 |         duck_config: Optional[Dict[str, Any]] = None,
+29 |         duck_path: str = ':memory:',
+   |
+   = help: Replace with `dict`
+
+omnipath_build/utils/database.py:28:22: UP007 Use `X | Y` for type annotations
+   |
+26 |         self,
+27 |         pg_config: Dict[str, str],
+28 |         duck_config: Optional[Dict[str, Any]] = None,
+   |                      ^^^^^^^^^^^^^^^^^^^^^^^^ UP007
+29 |         duck_path: str = ':memory:',
+30 |     ) -> None:
+   |
+   = help: Convert to `X | Y`
+
+omnipath_build/utils/database.py:28:31: UP006 Use `dict` instead of `Dict` for type annotation
+   |
+26 |         self,
+27 |         pg_config: Dict[str, str],
+28 |         duck_config: Optional[Dict[str, Any]] = None,
+   |                               ^^^^ UP006
+29 |         duck_path: str = ':memory:',
+30 |     ) -> None:
+   |
+   = help: Replace with `dict`
+
+omnipath_build/utils/database.py:124:37: UP007 Use `X | Y` for type annotations
+    |
+123 |     def execute(
+124 |         self, sql: str, parameters: Optional[list] = None
+    |                                     ^^^^^^^^^^^^^^ UP007
+125 |     ) -> duckdb.DuckDBPyRelation:
+126 |         """Execute SQL query with optional parameters.
+    |
+    = help: Convert to `X | Y`
+
+omnipath_build/utils/database.py:167:9: ANN201 Missing return type annotation for public function `temporary_table`
+    |
+166 |     @contextmanager
+167 |     def temporary_table(self, table_name: str):
+    |         ^^^^^^^^^^^^^^^ ANN201
+168 |         """Context manager for temporary tables that are automatically cleaned up.
+    |
+    = help: Add return type annotation
+
+omnipath_build/utils/database.py:182:20: BLE001 Do not catch blind exception: `Exception`
+    |
+180 |                 self.execute(f'DROP TABLE IF EXISTS {table_name}')
+181 |                 logger.debug(f'Cleaned up temporary table: {table_name}')
+182 |             except Exception as e:
+    |                    ^^^^^^^^^ BLE001
+183 |                 logger.warning(
+184 |                     f'Failed to drop temporary table {table_name}: {e}'
+    |
+
+omnipath_build/utils/database.py:215:16: BLE001 Do not catch blind exception: `Exception`
+    |
+213 |             return result[0] > 0 if result else False
+214 |
+215 |         except Exception as e:
+    |                ^^^^^^^^^ BLE001
+216 |             logger.error(f'Failed to check table existence: {e}')
+217 |             return False
+    |
+
+omnipath_build/utils/database.py:236:16: BLE001 Do not catch blind exception: `Exception`
+    |
+234 |             return result[0] if result else 0
+235 |
+236 |         except Exception as e:
+    |                ^^^^^^^^^ BLE001
+237 |             logger.error(f'Failed to get row count for {full_table_name}: {e}')
+238 |             return 0
+    |
+
+omnipath_build/utils/database.py:246:16: BLE001 Do not catch blind exception: `Exception`
+    |
+244 |             logger.debug('Database connection closed')
+245 |
+246 |         except Exception as e:
+    |                ^^^^^^^^^ BLE001
+247 |             logger.warning(f'Error closing database connection: {e}')
+    |
+
+omnipath_build/utils/logging_utils.py:1:1: D205 1 blank line required between summary line and description
+  |
+1 | / """Logging utilities.
+2 | | Provides standardized logging configuration and decorators.
+3 | | """
+  | |___^ D205
+4 |
+5 |   import time
+  |
+  = help: Insert single blank line
+
+omnipath_build/utils/logging_utils.py:6:1: UP035 Import from `collections.abc` instead: `Callable`
+  |
+5 | import time
+6 | from typing import Any, Callable
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ UP035
+7 | import logging
+8 | import functools
+  |
+  = help: Import from `collections.abc`
+
+omnipath_build/utils/logging_utils.py:62:21: ANN002 Missing type annotation for `*args`
+   |
+60 |     def decorator(func: Callable) -> Callable:
+61 |         @functools.wraps(func)
+62 |         def wrapper(*args, **kwargs) -> Any:
+   |                     ^^^^^ ANN002
+63 |             # Get logger
+64 |             nonlocal logger
+   |
+
+omnipath_build/utils/logging_utils.py:62:28: ANN003 Missing type annotation for `**kwargs`
+   |
+60 |     def decorator(func: Callable) -> Callable:
+61 |         @functools.wraps(func)
+62 |         def wrapper(*args, **kwargs) -> Any:
+   |                            ^^^^^^^^ ANN003
+63 |             # Get logger
+64 |             nonlocal logger
+   |
+
+omnipath_build/utils/logging_utils.py:62:41: ANN401 Dynamically typed expressions (typing.Any) are disallowed in `wrapper`
+   |
+60 |     def decorator(func: Callable) -> Callable:
+61 |         @functools.wraps(func)
+62 |         def wrapper(*args, **kwargs) -> Any:
+   |                                         ^^^ ANN401
+63 |             # Get logger
+64 |             nonlocal logger
+   |
+
+omnipath_build/utils/logging_utils.py:107:21: ANN001 Missing type annotation for function argument `self`
+    |
+105 |     def decorator(func: Callable) -> Callable:
+106 |         @functools.wraps(func)
+107 |         def wrapper(self, *args, **kwargs) -> Any:
+    |                     ^^^^ ANN001
+108 |             # Get logger
+109 |             nonlocal logger
+    |
+
+omnipath_build/utils/logging_utils.py:107:27: ANN002 Missing type annotation for `*args`
+    |
+105 |     def decorator(func: Callable) -> Callable:
+106 |         @functools.wraps(func)
+107 |         def wrapper(self, *args, **kwargs) -> Any:
+    |                           ^^^^^ ANN002
+108 |             # Get logger
+109 |             nonlocal logger
+    |
+
+omnipath_build/utils/logging_utils.py:107:34: ANN003 Missing type annotation for `**kwargs`
+    |
+105 |     def decorator(func: Callable) -> Callable:
+106 |         @functools.wraps(func)
+107 |         def wrapper(self, *args, **kwargs) -> Any:
+    |                                  ^^^^^^^^ ANN003
+108 |             # Get logger
+109 |             nonlocal logger
+    |
+
+omnipath_build/utils/logging_utils.py:107:47: ANN401 Dynamically typed expressions (typing.Any) are disallowed in `wrapper`
+    |
+105 |     def decorator(func: Callable) -> Callable:
+106 |         @functools.wraps(func)
+107 |         def wrapper(self, *args, **kwargs) -> Any:
+    |                                               ^^^ ANN401
+108 |             # Get logger
+109 |             nonlocal logger
+    |
+
+omnipath_build/utils/logging_utils.py:137:5: D205 1 blank line required between summary line and description
+    |
+135 |       total: int = None, interval: int = 10000, logger: logging.Logger = None
+136 |   ) -> Callable:
+137 | /     """Decorator for functions that process items in a loop.
+138 | |     Logs progress at regular intervals.
+139 | |
+140 | |     Args:
+141 | |         total: Total number of items (if known)
+142 | |         interval: Log progress every N items
+143 | |         logger: Logger instance to use
+144 | |
+145 | |     Returns:
+146 | |         Decorated function
+147 | |     """
+    | |_______^ D205
+148 |
+149 |       def decorator(func: Callable) -> Callable:
+    |
+    = help: Insert single blank line
+
+omnipath_build/utils/logging_utils.py:151:21: ANN002 Missing type annotation for `*args`
+    |
+149 |     def decorator(func: Callable) -> Callable:
+150 |         @functools.wraps(func)
+151 |         def wrapper(*args, **kwargs) -> Any:
+    |                     ^^^^^ ANN002
+152 |             # Get logger
+153 |             nonlocal logger
+    |
+
+omnipath_build/utils/logging_utils.py:151:28: ANN003 Missing type annotation for `**kwargs`
+    |
+149 |     def decorator(func: Callable) -> Callable:
+150 |         @functools.wraps(func)
+151 |         def wrapper(*args, **kwargs) -> Any:
+    |                            ^^^^^^^^ ANN003
+152 |             # Get logger
+153 |             nonlocal logger
+    |
+
+omnipath_build/utils/logging_utils.py:151:41: ANN401 Dynamically typed expressions (typing.Any) are disallowed in `wrapper`
+    |
+149 |     def decorator(func: Callable) -> Callable:
+150 |         @functools.wraps(func)
+151 |         def wrapper(*args, **kwargs) -> Any:
+    |                                         ^^^ ANN401
+152 |             # Get logger
+153 |             nonlocal logger
+    |
+
+omnipath_build/utils/logging_utils.py:163:52: UP038 Use `X | Y` in `isinstance` call instead of `(X, Y)`
+    |
+161 |               result = func(*args, **kwargs)
+162 |
+163 |               if hasattr(result, '__iter__') and not isinstance(
+    |  ____________________________________________________^
+164 | |                 result, (str, bytes)
+165 | |             ):
+    | |_____________^ UP038
+166 |
+167 |                   def track_progress(items):
+    |
+    = help: Convert to `X | Y`
+
+omnipath_build/utils/logging_utils.py:167:21: ANN202 Missing return type annotation for private function `track_progress`
+    |
+165 |             ):
+166 |
+167 |                 def track_progress(items):
+    |                     ^^^^^^^^^^^^^^ ANN202
+168 |                     for item in items:
+169 |                         progress['count'] += 1
+    |
+    = help: Add return type annotation
+
+omnipath_build/utils/logging_utils.py:167:36: ANN001 Missing type annotation for function argument `items`
+    |
+165 |             ):
+166 |
+167 |                 def track_progress(items):
+    |                                    ^^^^^ ANN001
+168 |                     for item in items:
+169 |                         progress['count'] += 1
+    |
+
+omnipath_build/utils/logging_utils.py:225:9: ANN204 Missing return type annotation for special method `__enter__`
+    |
+223 |         self.old_level = None
+224 |
+225 |     def __enter__(self):
+    |         ^^^^^^^^^ ANN204
+226 |         """Enter context and change log level."""
+227 |         self.old_level = self.logger.level
+    |
+    = help: Add return type annotation
+
+omnipath_build/utils/logging_utils.py:231:9: ANN204 Missing return type annotation for special method `__exit__`
+    |
+229 |         return self
+230 |
+231 |     def __exit__(self, exc_type, exc_val, exc_tb):
+    |         ^^^^^^^^ ANN204
+232 |         """Exit context and restore log level."""
+233 |         self.logger.setLevel(self.old_level)
+    |
+    = help: Add return type annotation
+
+omnipath_build/utils/logging_utils.py:231:24: ANN001 Missing type annotation for function argument `exc_type`
+    |
+229 |         return self
+230 |
+231 |     def __exit__(self, exc_type, exc_val, exc_tb):
+    |                        ^^^^^^^^ ANN001
+232 |         """Exit context and restore log level."""
+233 |         self.logger.setLevel(self.old_level)
+    |
+
+omnipath_build/utils/logging_utils.py:231:34: ANN001 Missing type annotation for function argument `exc_val`
+    |
+229 |         return self
+230 |
+231 |     def __exit__(self, exc_type, exc_val, exc_tb):
+    |                                  ^^^^^^^ ANN001
+232 |         """Exit context and restore log level."""
+233 |         self.logger.setLevel(self.old_level)
+    |
+
+omnipath_build/utils/logging_utils.py:231:43: ANN001 Missing type annotation for function argument `exc_tb`
+    |
+229 |         return self
+230 |
+231 |     def __exit__(self, exc_type, exc_val, exc_tb):
+    |                                           ^^^^^^ ANN001
+232 |         """Exit context and restore log level."""
+233 |         self.logger.setLevel(self.old_level)
+    |
+
+omnipath_build/utils/pypath_adapter.py:14:1: UP035 Import from `collections.abc` instead: `Callable`
+   |
+13 | import ast
+14 | from typing import Any, Dict, List, Tuple, Callable, Optional
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ UP035
+15 | import inspect
+16 | import logging
+   |
+   = help: Import from `collections.abc`
+
+omnipath_build/utils/pypath_adapter.py:14:1: UP035 `typing.Dict` is deprecated, use `dict` instead
+   |
+13 | import ast
+14 | from typing import Any, Dict, List, Tuple, Callable, Optional
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ UP035
+15 | import inspect
+16 | import logging
+   |
+
+omnipath_build/utils/pypath_adapter.py:14:1: UP035 `typing.List` is deprecated, use `list` instead
+   |
+13 | import ast
+14 | from typing import Any, Dict, List, Tuple, Callable, Optional
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ UP035
+15 | import inspect
+16 | import logging
+   |
+
+omnipath_build/utils/pypath_adapter.py:14:1: UP035 `typing.Tuple` is deprecated, use `tuple` instead
+   |
+13 | import ast
+14 | from typing import Any, Dict, List, Tuple, Callable, Optional
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ UP035
+15 | import inspect
+16 | import logging
+   |
+
+omnipath_build/utils/pypath_adapter.py:42:16: UP007 Use `X | Y` for type annotations
+   |
+40 |     method: Callable
+41 |     signature: inspect.Signature
+42 |     docstring: Optional[str]
+   |                ^^^^^^^^^^^^^ UP007
+   |
+   = help: Convert to `X | Y`
+
+omnipath_build/utils/pypath_adapter.py:55:29: UP006 Use `dict` instead of `Dict` for type annotation
+   |
+53 |         """Initialize the PyPath adapter."""
+54 |         self.logger = logging.getLogger(self.__class__.__name__)
+55 |         self._method_cache: Dict[str, PyPathMethodInfo] = {}
+   |                             ^^^^ UP006
+56 |         self._discover_methods()
+   |
+   = help: Replace with `dict`
+
+omnipath_build/utils/pypath_adapter.py:127:28: BLE001 Do not catch blind exception: `Exception`
+    |
+125 |                                     )
+126 |
+127 |                     except Exception as e:
+    |                            ^^^^^^^^^ BLE001
+128 |                         self.logger.debug(
+129 |                             f'Could not process package {modname}: {e}'
+    |
+
+omnipath_build/utils/pypath_adapter.py:140:28: BLE001 Do not catch blind exception: `Exception`
+    |
+138 |                             f'pypath.inputs.{modname}', fromlist=['']
+139 |                         )
+140 |                     except Exception as e:
+    |                            ^^^^^^^^^ BLE001
+141 |                         self.logger.debug(
+142 |                             f'Could not import module {modname}: {e}'
+    |
+
+omnipath_build/utils/pypath_adapter.py:193:20: BLE001 Do not catch blind exception: `Exception`
+    |
+191 |                             )
+192 |
+193 |             except Exception as e:
+    |                    ^^^^^^^^^ BLE001
+194 |                 self.logger.debug(f'Could not process module {modname}: {e}')
+    |
+
+omnipath_build/utils/pypath_adapter.py:199:33: UP007 Use `X | Y` for type annotations
+    |
+198 |     def get_available_methods(
+199 |         self, filter_by_module: Optional[str] = None
+    |                                 ^^^^^^^^^^^^^ UP007
+200 |     ) -> List[PyPathMethodInfo]:
+201 |         """Get list of available pypath.inputs methods.
+    |
+    = help: Convert to `X | Y`
+
+omnipath_build/utils/pypath_adapter.py:200:10: UP006 Use `list` instead of `List` for type annotation
+    |
+198 |     def get_available_methods(
+199 |         self, filter_by_module: Optional[str] = None
+200 |     ) -> List[PyPathMethodInfo]:
+    |          ^^^^ UP006
+201 |         """Get list of available pypath.inputs methods.
+    |
+    = help: Replace with `list`
+
+omnipath_build/utils/pypath_adapter.py:216:52: UP007 Use `X | Y` for type annotations
+    |
+214 |         return sorted(methods, key=lambda x: x.full_name)
+215 |
+216 |     def get_method_info(self, method_name: str) -> Optional[PyPathMethodInfo]:
+    |                                                    ^^^^^^^^^^^^^^^^^^^^^^^^^^ UP007
+217 |         """Get information about a specific method.
+    |
+    = help: Convert to `X | Y`
+
+omnipath_build/utils/pypath_adapter.py:227:51: ANN003 Missing type annotation for `**kwargs`
+    |
+225 |         return self._method_cache.get(method_name)
+226 |
+227 |     def get_resource_data(self, method_name: str, **kwargs) -> pd.DataFrame:
+    |                                                   ^^^^^^^^ ANN003
+228 |         """Get resource data using a pypath.inputs method.
+    |
+
+omnipath_build/utils/pypath_adapter.py:268:21: ANN401 Dynamically typed expressions (typing.Any) are disallowed in `data`
+    |
+267 |     def _convert_to_dataframe(
+268 |         self, data: Any, method_name: str
+    |                     ^^^ ANN401
+269 |     ) -> pd.DataFrame:
+270 |         """Convert pypath method result to pandas DataFrame.
+    |
+
+omnipath_build/utils/pypath_adapter.py:283:14: UP038 Use `X | Y` in `isinstance` call instead of `(X, Y)`
+    |
+281 |             return self._clean_dataframe_for_parquet(data)
+282 |
+283 |         elif isinstance(data, (list, tuple)):
+    |              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ UP038
+284 |             if not data:
+285 |                 return pd.DataFrame()
+    |
+    = help: Convert to `X | Y`
+
+omnipath_build/utils/pypath_adapter.py:293:18: UP038 Use `X | Y` in `isinstance` call instead of `(X, Y)`
+    |
+292 |             # Check if it's a list of tuples/lists (tabular data)
+293 |             elif isinstance(data[0], (list, tuple)):
+    |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ UP038
+294 |                 df = pd.DataFrame(data)
+295 |                 return self._clean_dataframe_for_parquet(df)
+    |
+    = help: Convert to `X | Y`
+
+omnipath_build/utils/pypath_adapter.py:307:48: UP038 Use `X | Y` in `isinstance` call instead of `(X, Y)`
+    |
+305 |             return self._clean_dataframe_for_parquet(df)
+306 |
+307 |         elif hasattr(data, '__iter__') and not isinstance(data, (str, bytes)):
+    |                                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ UP038
+308 |             # Try to convert iterable to list first
+309 |             try:
+    |
+    = help: Convert to `X | Y`
+
+omnipath_build/utils/pypath_adapter.py:312:20: BLE001 Do not catch blind exception: `Exception`
+    |
+310 |                 data_list = list(data)
+311 |                 return self._convert_to_dataframe(data_list, method_name)
+312 |             except Exception as e:
+    |                    ^^^^^^^^^ BLE001
+313 |                 self.logger.warning(
+314 |                     f'Could not convert iterable to DataFrame: {e}'
+    |
+
+omnipath_build/utils/pypath_adapter.py:323:9: D205 1 blank line required between summary line and description
+    |
+322 |       def _clean_dataframe_for_parquet(self, df: pd.DataFrame) -> pd.DataFrame:
+323 | /         """Clean DataFrame by converting complex objects to string representations
+324 | |         that can be saved to parquet format.
+325 | |
+326 | |         Args:
+327 | |             df: Input DataFrame
+328 | |
+329 | |         Returns:
+330 | |             Cleaned DataFrame safe for parquet conversion
+331 | |         """
+    | |___________^ D205
+332 |           df_cleaned = df.copy()
+    |
+    = help: Insert single blank line
+
+omnipath_build/utils/pypath_adapter.py:342:24: BLE001 Do not catch blind exception: `Exception`
+    |
+340 |                 try:
+341 |                     pa.array(df_cleaned[column])
+342 |                 except Exception:
+    |                        ^^^^^^^^^ BLE001
+343 |                     # Convert complex objects to string representation
+344 |                     self.logger.debug(
+    |
+
+omnipath_build/utils/pypath_adapter.py:368:20: BLE001 Do not catch blind exception: `Exception`
+    |
+366 |                         )
+367 |                         df_cleaned[column] = df_cleaned[column].astype(str)
+368 |             except Exception as e:
+    |                    ^^^^^^^^^ BLE001
+369 |                 # Fallback: convert problematic columns to string
+370 |                 self.logger.warning(
+    |
+
+omnipath_build/utils/pypath_adapter.py:383:9: ANN003 Missing type annotation for `**kwargs`
+    |
+381 |         resource_id: str,
+382 |         dataset_name: str,
+383 |         **kwargs,
+    |         ^^^^^^^^ ANN003
+384 |     ) -> Tuple[Path, int]:
+385 |         """Get resource data and save directly to parquet file.
+    |
+
+omnipath_build/utils/pypath_adapter.py:384:10: UP006 Use `tuple` instead of `Tuple` for type annotation
+    |
+382 |         dataset_name: str,
+383 |         **kwargs,
+384 |     ) -> Tuple[Path, int]:
+    |          ^^^^^ UP006
+385 |         """Get resource data and save directly to parquet file.
+    |
+    = help: Replace with `tuple`
+
+omnipath_build/utils/pypath_adapter.py:425:70: ANN003 Missing type annotation for `**kwargs`
+    |
+424 |     def save_to_temp_csv(
+425 |         self, method_name: str, resource_id: str, dataset_name: str, **kwargs
+    |                                                                      ^^^^^^^^ ANN003
+426 |     ) -> Tuple[Path, int]:
+427 |         """Get resource data and save to temporary CSV file.
+    |
+
+omnipath_build/utils/pypath_adapter.py:426:10: UP006 Use `tuple` instead of `Tuple` for type annotation
+    |
+424 |     def save_to_temp_csv(
+425 |         self, method_name: str, resource_id: str, dataset_name: str, **kwargs
+426 |     ) -> Tuple[Path, int]:
+    |          ^^^^^ UP006
+427 |         """Get resource data and save to temporary CSV file.
+    |
+    = help: Replace with `tuple`
+
+omnipath_build/utils/pypath_adapter.py:468:41: UP006 Use `list` instead of `List` for type annotation
+    |
+466 |         return temp_path, row_count
+467 |
+468 |     def list_available_modules(self) -> List[str]:
+    |                                         ^^^^ UP006
+469 |         """Get list of available pypath.inputs modules.
+    |
+    = help: Replace with `list`
+
+omnipath_build/utils/pypath_adapter.py:480:45: UP006 Use `list` instead of `List` for type annotation
+    |
+478 |         return sorted(modules)
+479 |
+480 |     def search_methods(self, query: str) -> List[PyPathMethodInfo]:
+    |                                             ^^^^ UP006
+481 |         """Search for methods by name or docstring.
+    |
+    = help: Replace with `list`
+
+omnipath_build/utils/pypath_adapter.py:507:58: UP006 Use `dict` instead of `Dict` for type annotation
+    |
+505 |         return sorted(matches, key=lambda x: x.full_name)
+506 |
+507 |     def get_method_parameters(self, method_name: str) -> Dict[str, Any]:
+    |                                                          ^^^^ UP006
+508 |         """Get parameter information for a method.
+    |
+    = help: Replace with `dict`
+
+omnipath_build/utils/pypath_adapter.py:567:16: BLE001 Do not catch blind exception: `Exception`
+    |
+565 |             return False
+566 |
+567 |         except Exception:
+    |                ^^^^^^^^^ BLE001
+568 |             # If we can't determine, assume it might return namedtuples for PyPath methods
+569 |             return True
+    |
+
+omnipath_build/utils/pypath_adapter.py:573:10: UP006 Use `dict` instead of `Dict` for type annotation
+    |
+571 |     def extract_namedtuple_from_annotation(
+572 |         self, method_info: PyPathMethodInfo
+573 |     ) -> Dict[str, List[str]]:
+    |          ^^^^ UP006
+574 |         """Extract namedtuple field definitions from function return type annotation.
+    |
+    = help: Replace with `dict`
+
+omnipath_build/utils/pypath_adapter.py:573:20: UP006 Use `list` instead of `List` for type annotation
+    |
+571 |     def extract_namedtuple_from_annotation(
+572 |         self, method_info: PyPathMethodInfo
+573 |     ) -> Dict[str, List[str]]:
+    |                    ^^^^ UP006
+574 |         """Extract namedtuple field definitions from function return type annotation.
+    |
+    = help: Replace with `list`
+
+omnipath_build/utils/pypath_adapter.py:617:16: BLE001 Do not catch blind exception: `Exception`
+    |
+615 |             return namedtuples
+616 |
+617 |         except Exception as e:
+    |                ^^^^^^^^^ BLE001
+618 |             self.logger.debug(
+619 |                 f'Could not extract namedtuple from annotation for {method_info.full_name}: {e}'
+    |
+
+omnipath_build/utils/pypath_adapter.py:623:58: UP006 Use `dict` instead of `Dict` for type annotation
+    |
+621 |             return {}
+622 |
+623 |     def extract_source_fields(self, method_name: str) -> Dict[str, List[str]]:
+    |                                                          ^^^^ UP006
+624 |         """Extract namedtuple field definitions from function source code.
+    |
+    = help: Replace with `dict`
+
+omnipath_build/utils/pypath_adapter.py:623:68: UP006 Use `list` instead of `List` for type annotation
+    |
+621 |             return {}
+622 |
+623 |     def extract_source_fields(self, method_name: str) -> Dict[str, List[str]]:
+    |                                                                    ^^^^ UP006
+624 |         """Extract namedtuple field definitions from function source code.
+    |
+    = help: Replace with `list`
+
+omnipath_build/utils/pypath_adapter.py:676:32: UP038 Use `X | Y` in `isinstance` call instead of `(X, Y)`
+    |
+674 |                             field_arg = node.value.args[1]
+675 |
+676 |                             if isinstance(field_arg, (ast.List, ast.Tuple)):
+    |                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ UP038
+677 |                                 for elt in field_arg.elts:
+678 |                                     if isinstance(elt, ast.Constant):
+    |
+    = help: Convert to `X | Y`
+
+omnipath_build/utils/pypath_adapter.py:698:16: BLE001 Do not catch blind exception: `Exception`
+    |
+696 |             return namedtuples
+697 |
+698 |         except Exception as e:
+    |                ^^^^^^^^^ BLE001
+699 |             self.logger.debug(
+700 |                 f'Could not extract source fields from {method_name}: {e}'
+    |
+
+omnipath_build/utils/simple_template_generator.py:15:1: UP035 `typing.Dict` is deprecated, use `dict` instead
+   |
+13 | """
+14 |
+15 | from typing import Any, Dict, List, Optional
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ UP035
+16 | import inspect
+17 | import logging
+   |
+
+omnipath_build/utils/simple_template_generator.py:15:1: UP035 `typing.List` is deprecated, use `list` instead
+   |
+13 | """
+14 |
+15 | from typing import Any, Dict, List, Optional
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ UP035
+16 | import inspect
+17 | import logging
+   |
+
+omnipath_build/utils/simple_template_generator.py:27:53: UP007 Use `X | Y` for type annotations
+   |
+27 | def generate_pypath_template(resource_name: str) -> Optional[Dict[str, Any]]:
+   |                                                     ^^^^^^^^^^^^^^^^^^^^^^^^ UP007
+28 |     """Generate a resource template for a PyPath resource.
+   |
+   = help: Convert to `X | Y`
+
+omnipath_build/utils/simple_template_generator.py:27:62: UP006 Use `dict` instead of `Dict` for type annotation
+   |
+27 | def generate_pypath_template(resource_name: str) -> Optional[Dict[str, Any]]:
+   |                                                              ^^^^ UP006
+28 |     """Generate a resource template for a PyPath resource.
+   |
+   = help: Replace with `dict`
+
+omnipath_build/utils/simple_template_generator.py:53:6: UP007 Use `X | Y` for type annotations
+   |
+51 | def _generate_function_template(
+52 |     module_name: str, function_name: str
+53 | ) -> Optional[Dict[str, Any]]:
+   |      ^^^^^^^^^^^^^^^^^^^^^^^^ UP007
+54 |     """Generate template for a specific function in a module."""
+55 |     logger = logging.getLogger(__name__)
+   |
+   = help: Convert to `X | Y`
+
+omnipath_build/utils/simple_template_generator.py:53:15: UP006 Use `dict` instead of `Dict` for type annotation
+   |
+51 | def _generate_function_template(
+52 |     module_name: str, function_name: str
+53 | ) -> Optional[Dict[str, Any]]:
+   |               ^^^^ UP006
+54 |     """Generate template for a specific function in a module."""
+55 |     logger = logging.getLogger(__name__)
+   |
+   = help: Replace with `dict`
+
+omnipath_build/utils/simple_template_generator.py:94:12: BLE001 Do not catch blind exception: `Exception`
+   |
+92 |         logger.error(f'Module not found: pypath.inputs.{module_name}')
+93 |         return None
+94 |     except Exception as e:
+   |            ^^^^^^^^^ BLE001
+95 |         logger.error(
+96 |             f'Failed to generate template for {module_name}.{function_name}: {e}'
+   |
+
+omnipath_build/utils/simple_template_generator.py:101:52: UP007 Use `X | Y` for type annotations
+    |
+101 | def _generate_module_template(module_name: str) -> Optional[Dict[str, Any]]:
+    |                                                    ^^^^^^^^^^^^^^^^^^^^^^^^ UP007
+102 |     """Generate template for an entire module (all functions)."""
+103 |     logger = logging.getLogger(__name__)
+    |
+    = help: Convert to `X | Y`
+
+omnipath_build/utils/simple_template_generator.py:101:61: UP006 Use `dict` instead of `Dict` for type annotation
+    |
+101 | def _generate_module_template(module_name: str) -> Optional[Dict[str, Any]]:
+    |                                                             ^^^^ UP006
+102 |     """Generate template for an entire module (all functions)."""
+103 |     logger = logging.getLogger(__name__)
+    |
+    = help: Replace with `dict`
+
+omnipath_build/utils/simple_template_generator.py:127:12: BLE001 Do not catch blind exception: `Exception`
+    |
+125 |         logger.error(f'Module not found: pypath.inputs.{module_name}')
+126 |         return None
+127 |     except Exception as e:
+    |            ^^^^^^^^^ BLE001
+128 |         logger.error(f'Failed to generate template for {module_name}: {e}')
+129 |         return None
+    |
+
+omnipath_build/utils/simple_template_generator.py:133:5: ANN001 Missing type annotation for function argument `module`
+    |
+132 | def _discover_module_functions(
+133 |     module, module_name: str
+    |     ^^^^^^ ANN001
+134 | ) -> Dict[str, Dict[str, Any]]:
+135 |     """Discover all suitable functions in a PyPath module.
+    |
+
+omnipath_build/utils/simple_template_generator.py:134:6: UP006 Use `dict` instead of `Dict` for type annotation
+    |
+132 | def _discover_module_functions(
+133 |     module, module_name: str
+134 | ) -> Dict[str, Dict[str, Any]]:
+    |      ^^^^ UP006
+135 |     """Discover all suitable functions in a PyPath module.
+    |
+    = help: Replace with `dict`
+
+omnipath_build/utils/simple_template_generator.py:134:16: UP006 Use `dict` instead of `Dict` for type annotation
+    |
+132 | def _discover_module_functions(
+133 |     module, module_name: str
+134 | ) -> Dict[str, Dict[str, Any]]:
+    |                ^^^^ UP006
+135 |     """Discover all suitable functions in a PyPath module.
+    |
+    = help: Replace with `dict`
+
+omnipath_build/utils/simple_template_generator.py:178:16: BLE001 Do not catch blind exception: `Exception`
+    |
+176 |                 logger.debug(f'Skipped function (no useful info): {attr_name}')
+177 |
+178 |         except Exception as e:
+    |                ^^^^^^^^^ BLE001
+179 |             logger.debug(f'Error processing function {attr_name}: {e}')
+    |
+
+omnipath_build/utils/simple_template_generator.py:184:50: UP007 Use `X | Y` for type annotations
+    |
+184 | def _find_function_module(function_name: str) -> Optional[str]:
+    |                                                  ^^^^^^^^^^^^^ UP007
+185 |     """Find which module contains a function by searching all pypath.inputs modules."""
+186 |     import pkgutil
+    |
+    = help: Convert to `X | Y`
+
+omnipath_build/utils/simple_template_generator.py:195:9: E722 Do not use bare `except`
+    |
+193 |             if hasattr(module, function_name):
+194 |                 return modname
+195 |         except:
+    |         ^^^^^^ E722
+196 |             continue
+    |
+
+omnipath_build/utils/simple_template_generator.py:201:28: ANN001 Missing type annotation for function argument `func`
+    |
+201 | def _extract_function_info(func) -> Dict[str, Any]:
+    |                            ^^^^ ANN001
+202 |     """Extract all useful information from a PyPath function.
+    |
+
+omnipath_build/utils/simple_template_generator.py:201:37: UP006 Use `dict` instead of `Dict` for type annotation
+    |
+201 | def _extract_function_info(func) -> Dict[str, Any]:
+    |                                     ^^^^ UP006
+202 |     """Extract all useful information from a PyPath function.
+    |
+    = help: Replace with `dict`
+
+omnipath_build/utils/simple_template_generator.py:235:12: BLE001 Do not catch blind exception: `Exception`
+    |
+233 |             info['kwargs'] = params
+234 |
+235 |     except Exception:
+    |            ^^^^^^^^^ BLE001
+236 |         pass
+    |
+
+omnipath_build/utils/simple_template_generator.py:255:29: ANN001 Missing type annotation for function argument `func`
+    |
+255 | def _discover_output_fields(func) -> Optional[List[str]]:
+    |                             ^^^^ ANN001
+256 |     """Discover output fields by actually executing the function.
+    |
+
+omnipath_build/utils/simple_template_generator.py:255:38: UP007 Use `X | Y` for type annotations
+    |
+255 | def _discover_output_fields(func) -> Optional[List[str]]:
+    |                                      ^^^^^^^^^^^^^^^^^^^ UP007
+256 |     """Discover output fields by actually executing the function.
+    |
+    = help: Convert to `X | Y`
+
+omnipath_build/utils/simple_template_generator.py:255:47: UP006 Use `list` instead of `List` for type annotation
+    |
+255 | def _discover_output_fields(func) -> Optional[List[str]]:
+    |                                               ^^^^ UP006
+256 |     """Discover output fields by actually executing the function.
+    |
+    = help: Replace with `list`
+
+omnipath_build/utils/simple_template_generator.py:283:14: UP038 Use `X | Y` in `isinstance` call instead of `(X, Y)`
+    |
+281 |             return fields
+282 |
+283 |         elif isinstance(first_record, (list, tuple)):
+    |              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ UP038
+284 |             # It's a list/tuple - can't easily determine field names
+285 |             logger.debug(
+    |
+    = help: Convert to `X | Y`
+
+omnipath_build/utils/simple_template_generator.py:294:12: BLE001 Do not catch blind exception: `Exception`
+    |
+292 |         return None
+293 |
+294 |     except Exception as e:
+    |            ^^^^^^^^^ BLE001
+295 |         # Function might need required parameters, or network access, etc.
+296 |         logger.debug(f'Could not execute function to discover fields: {e}')
+    |
+
+omnipath_build/utils/simple_template_generator.py:304:38: ANN001 Missing type annotation for function argument `func`
+    |
+304 | def _extract_fields_from_annotations(func) -> Optional[List[str]]:
+    |                                      ^^^^ ANN001
+305 |     """Fallback method: extract field names from function return type annotations."""
+306 |     try:
+    |
+
+omnipath_build/utils/simple_template_generator.py:304:47: UP007 Use `X | Y` for type annotations
+    |
+304 | def _extract_fields_from_annotations(func) -> Optional[List[str]]:
+    |                                               ^^^^^^^^^^^^^^^^^^^ UP007
+305 |     """Fallback method: extract field names from function return type annotations."""
+306 |     try:
+    |
+    = help: Convert to `X | Y`
+
+omnipath_build/utils/simple_template_generator.py:304:56: UP006 Use `list` instead of `List` for type annotation
+    |
+304 | def _extract_fields_from_annotations(func) -> Optional[List[str]]:
+    |                                                        ^^^^ UP006
+305 |     """Fallback method: extract field names from function return type annotations."""
+306 |     try:
+    |
+    = help: Replace with `list`
+
+omnipath_build/utils/simple_template_generator.py:323:12: BLE001 Do not catch blind exception: `Exception`
+    |
+321 |             return list(ret_annotation._fields)
+322 |
+323 |     except Exception:
+    |            ^^^^^^^^^ BLE001
+324 |         pass
+    |
+
+omnipath_build/utils/sql_adapter.py:25:32: UP007 Use `X | Y` for type annotations
+   |
+24 |     def __init__(
+25 |         self, schema_mappings: Optional[dict[str, str]] = None
+   |                                ^^^^^^^^^^^^^^^^^^^^^^^^ UP007
+26 |     ) -> None:
+27 |         """Initialize SQL adapter.
+   |
+   = help: Convert to `X | Y`
+
+omnipath_build/utils/sql_adapter.py:238:42: ANN401 Dynamically typed expressions (typing.Any) are disallowed in `connection`
+    |
+237 |     def execute_sql_file(
+238 |         self, filename: str, connection: Any
+    |                                          ^^^ ANN401
+239 |     ) -> dict[str, any]:
+240 |         """Execute a single SQL file with timing and error handling.
+    |
+
+omnipath_build/utils/sql_adapter.py:290:20: BLE001 Do not catch blind exception: `Exception`
+    |
+288 |                     ).fetchone()
+289 |                     stats['row_count'] = count_result[0] if count_result else 0
+290 |             except Exception as e:
+    |                    ^^^^^^^^^ BLE001
+291 |                 logger.debug(f'Could not get row count for {filename}: {e}')
+    |
+
+Found 273 errors.
+
+ruff format..............................................................Passed
+unexport.................................................................Passed
+check for added large files..............................................Passed
+check python ast.........................................................Passed
+check for case conflicts.................................................Passed
+check for merge conflicts................................................Passed
+check for broken symlinks............................(no files to check)Skipped
+check yaml...............................................................Passed
+detect private key.......................................................Passed
+fix end of files.........................................................Passed
+mixed line ending........................................................Passed
+fix requirements.txt.................................(no files to check)Skipped
+blacken-docs.............................................................Passed
+Pretty format TOML.......................................................Passed
+Pretty format YAML.......................................................Passed

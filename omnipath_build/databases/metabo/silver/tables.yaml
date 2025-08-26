@@ -2,56 +2,56 @@
 # Define the structure of tables that will be created in the silver schema
 
 compounds:
-  resource: VARCHAR
-  
+    resource: VARCHAR
+
   # Type columns
-  is_drug: BOOLEAN DEFAULT FALSE
-  is_lipid: BOOLEAN DEFAULT FALSE
-  is_metabolite: BOOLEAN DEFAULT FALSE
+    is_drug: BOOLEAN DEFAULT FALSE
+    is_lipid: BOOLEAN DEFAULT FALSE
+    is_metabolite: BOOLEAN DEFAULT FALSE
 
-  synonyms: TEXT
+    synonyms: TEXT
   # ID columns - common database identifiers
-  chebi_id: VARCHAR
-  hmdb_id: VARCHAR
-  pubchem_cid: VARCHAR
-  kegg_id: VARCHAR
-  drugbank_id: VARCHAR
-  inchi_key: VARCHAR
-  cas_number: VARCHAR
-  iupac: VARCHAR
+    chebi_id: VARCHAR
+    hmdb_id: VARCHAR
+    pubchem_cid: VARCHAR
+    kegg_id: VARCHAR
+    drugbank_id: VARCHAR
+    inchi_key: VARCHAR
+    cas_number: VARCHAR
+    iupac: VARCHAR
 
-  lipidmaps_id: VARCHAR
-  swisslipids_id: VARCHAR
-  metanetx_id: VARCHAR
-  
+    lipidmaps_id: VARCHAR
+    swisslipids_id: VARCHAR
+    metanetx_id: VARCHAR
 
-  lipid_name: VARCHAR
-  lipid_short_name: VARCHAR
+
+    lipid_name: VARCHAR
+    lipid_short_name: VARCHAR
 
   # Properties columns
-  exact_mass: FLOAT
-  charge: INTEGER
-  molecular_weight: FLOAT
-  logp: FLOAT
-  
+    exact_mass: FLOAT
+    charge: INTEGER
+    molecular_weight: FLOAT
+    logp: FLOAT
+
   # Lipid-specific columns (LIPID MAPS ontology)
-  lipid_category: VARCHAR
-  lipid_class: VARCHAR
-  lipid_subclass: VARCHAR
-  lipid_classification_level: VARCHAR
-  lipid_parent: VARCHAR
-  lipid_components: TEXT
+    lipid_category: VARCHAR
+    lipid_class: VARCHAR
+    lipid_subclass: VARCHAR
+    lipid_classification_level: VARCHAR
+    lipid_parent: VARCHAR
+    lipid_components: TEXT
 
   # Drug-specific columns
-  approval_phase: VARCHAR
-  approval_year: INTEGER
-  atc_codes: TEXT
-  indications: TEXT
-  
-  # Structure columns
-  formula: VARCHAR
-  inchi: TEXT
-  inchikey: VARCHAR
-  smiles: TEXT
+    approval_phase: VARCHAR
+    approval_year: INTEGER
+    atc_codes: TEXT
+    indications: TEXT
 
-  pmids: TEXT
+  # Structure columns
+    formula: VARCHAR
+    inchi: TEXT
+    inchikey: VARCHAR
+    smiles: TEXT
+
+    pmids: TEXT

@@ -1280,6 +1280,7 @@ dependencies = [
     { name = "pandas" },
     { name = "psycopg2-binary" },
     { name = "pypath-omnipath" },
+    { name = "pyyaml" },
     { name = "toml" },
 ]
 
@@ -1309,6 +1310,11 @@ tests = [
     { name = "tox-gh" },
 ]
 
+[package.dev-dependencies]
+dev = [
+    { name = "pre-commit" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "bandit", marker = "extra == 'security'" },
@@ -1327,6 +1333,7 @@ requires-dist = [
     { name = "pypath-omnipath", git = "https://github.com/saezlab/pypath.git" },
     { name = "pytest", marker = "extra == 'tests'", specifier = ">=6.0" },
     { name = "pytest-cov", marker = "extra == 'tests'" },
+    { name = "pyyaml", specifier = ">=6.0.2" },
     { name = "ruff", marker = "extra == 'tests'" },
     { name = "toml" },
     { name = "tox", marker = "extra == 'tests'", specifier = ">=3.20.1" },
@@ -1334,6 +1341,9 @@ requires-dist = [
     { name = "twine", marker = "extra == 'dev'" },
 ]
 provides-extras = ["dev", "docs", "security", "tests"]
+
+[package.metadata.requires-dev]
+dev = [{ name = "pre-commit", specifier = ">=4.3.0" }]
 
 [[package]]
 name = "openpyxl"
