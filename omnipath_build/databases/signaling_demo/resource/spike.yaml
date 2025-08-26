@@ -1,0 +1,43 @@
+# SPIKE Bronze Configuration for signaling_demo database
+# Generated: 2025-08-20
+# Source: pypath_templates/spike.yaml
+metadata:
+  - name: 'SPIKE'
+  - description: 'SPIKE database for protein interactions'
+module: spike
+functions:
+  spike_interactions:
+    description: Downloads SPIKE protein interaction data
+    kwargs:
+      min_confidence: 2
+    processing:
+      target_table: interactions
+      field_mapping:
+      - source: genesymbol_a
+        target: entity_a
+        transform: uppercase
+        description: 'Gene symbol for entity A'
+      - source: genesymbol_b
+        target: entity_b
+        transform: uppercase
+        description: 'Gene symbol for entity B'
+      - source: effect
+        target: effect
+        transform: lowercase
+        description: 'Interaction effect'
+      - source: mechanism
+        target: mechanism
+        transform: lowercase
+        description: 'Interaction mechanism'
+      - source: pmids
+        target: pubmed_ids
+        transform: 
+        description: 'Supporting PubMed IDs'
+      - source: integrity
+        target: confidence
+        transform: spike_confidence
+        description: 'SPIKE integrity score as confidence'
+      - source: metadata_resource
+        target: source_database
+        transform:
+        description: 'Source database name'

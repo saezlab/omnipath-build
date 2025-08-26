@@ -1,0 +1,54 @@
+interactions:
+  source_database: VARCHAR
+  source_identifier: VARCHAR
+  data_source: VARCHAR
+  entity_a: VARCHAR NOT NULL
+  entity_b: VARCHAR NOT NULL
+  entity_a_id_type: VARCHAR
+  entity_b_id_type: VARCHAR
+  entity_a_type: VARCHAR
+  entity_b_type: VARCHAR
+  pubmed_id: VARCHAR
+  interaction_type: VARCHAR
+  detection_methods: VARCHAR
+  evidence_sentence: TEXT
+  causal_mechanism: VARCHAR
+  causal_statement: VARCHAR
+  loaded_at: TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+
+entities:
+  source_database: VARCHAR
+  canonical_identifier: VARCHAR NOT NULL
+  canonical_identifier_type: VARCHAR
+  entity_type: VARCHAR
+  description: TEXT
+  ncbi_tax_id: VARCHAR
+  cv_terms: TEXT
+  alt_id: TEXT
+  members: TEXT
+  sequence: TEXT
+  length: INTEGER
+  mass: INTEGER
+  loaded_at: TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+
+cv_term:
+  source_database: VARCHAR
+  namespace: VARCHAR NOT NULL
+  accession: VARCHAR NOT NULL
+  name: VARCHAR NOT NULL
+  definition: TEXT
+  is_obsolete: BOOLEAN DEFAULT FALSE
+  replaced_by_accession: VARCHAR
+  category_accession: VARCHAR
+  is_a: TEXT
+  comment: TEXT
+  synonyms: TEXT
+  references: TEXT
+  loaded_at: TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+
+id_mapping:
+  source_database: VARCHAR
+  source_id: VARCHAR NOT NULL
+  target_id: VARCHAR NOT NULL
+  mapping_source: VARCHAR NOT NULL
+  loaded_at: TIMESTAMP DEFAULT CURRENT_TIMESTAMP

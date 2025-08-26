@@ -1,0 +1,6 @@
+# Metadata table definitions for metabo
+# Define the structure of tables that will be created in the metadata schema
+
+resources:
+  name: VARCHAR
+  description: TEXT

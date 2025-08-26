@@ -1,0 +1,9 @@
+interactions:
+  source_database: VARCHAR
+  entity_a: VARCHAR NOT NULL
+  entity_b: VARCHAR NOT NULL
+  effect: VARCHAR
+  mechanism: VARCHAR
+  pubmed_ids: VARCHAR
+  confidence: FLOAT
+  loaded_at: TIMESTAMP DEFAULT CURRENT_TIMESTAMP

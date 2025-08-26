@@ -1,0 +1,42 @@
+# SIGNOR Bronze Configuration for signaling_demo database
+# Generated: 2025-08-20
+# Source: pypath_templates/signor.yaml
+metadata:
+  - name: 'Signor'
+  - description: 'Signor database for signaling pathways'
+
+module: signor
+functions:
+  signor_interactions:
+    description: Downloads the full dataset from SIGNOR (https://signor.uniroma2.it/).
+    kwargs:
+      organism: 9606
+      raw_records: false
+      expand_families: 0
+    processing:
+      target_table: interactions
+      field_mapping:
+      - source: source
+        target: entity_a
+        transform: uppercase
+        description: 'Source entity in interaction'
+      - source: target
+        target: entity_b
+        transform: uppercase
+        description: 'Target entity in interaction'
+      - source: effect
+        target: effect
+        transform: lowercase
+        description: 'Interaction effect (activation/inhibition)'
+      - source: mechanism
+        target: mechanism
+        transform: lowercase
+        description: 'Interaction mechanism'
+      - source: pubmeds
+        target: pubmed_ids
+        transform:
+        description: 'Supporting PubMed IDs'
+      - source: metadata_resource
+        target: source_database
+        transform:
+        description: 'Source database name'
