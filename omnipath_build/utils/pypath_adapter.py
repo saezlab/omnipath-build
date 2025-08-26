@@ -7,16 +7,12 @@ from original sources via pypath.
 Usage:
     adapter = PyPathAdapter()
     data = adapter.get_resource_data('uniprot_db.all_uniprots')
-    adapter.get_available_methods()
 """
 
-import ast
 from typing import Any
 import inspect
 import logging
 from pathlib import Path
-import pkgutil
-import tempfile
 from dataclasses import dataclass
 from collections.abc import Callable
 
@@ -53,177 +49,6 @@ class PyPathAdapter:
     def __init__(self) -> None:
         """Initialize the PyPath adapter."""
         self.logger = logging.getLogger(self.__class__.__name__)
-        self._method_cache: dict[str, PyPathMethodInfo] = {}
-        self._discover_methods()
-
-    def _discover_methods(self) -> None:
-        """Discover all available pypath.inputs methods."""
-        self.logger.info('Discovering pypath.inputs methods...')
-
-        method_count = 0
-
-        # Iterate through all submodules in pypath.inputs
-        for _importer, modname, ispkg in pkgutil.iter_modules(
-            pypath.inputs.__path__
-        ):
-            try:
-                if ispkg:
-                    # Handle package modules (folders with __init__.py)
-                    self.logger.debug(f'Processing package module: {modname}')
-                    try:
-                        # Import the package directly
-                        actual_module = __import__(
-                            f'pypath.inputs.{modname}', fromlist=['']
-                        )
-
-                        # Find all callable methods in the package's __init__.py
-                        for attr_name in dir(actual_module):
-                            if attr_name.startswith('_'):
-                                continue
-
-                            attr = getattr(actual_module, attr_name)
-                            if not callable(attr):
-                                continue
-
-                            # Check if it's a function from this package
-                            if (
-                                hasattr(attr, '__module__')
-                                and attr.__module__ is not None
-                                and f'pypath.inputs.{modname}'
-                                in attr.__module__
-                            ):
-                                full_name = f'{modname}.{attr_name}'
-
-                                try:
-                                    signature = inspect.signature(attr)
-                                    docstring = inspect.getdoc(attr)
-
-                                    method_info = PyPathMethodInfo(
-                                        module_name=modname,
-                                        method_name=attr_name,
-                                        full_name=full_name,
-                                        method=attr,
-                                        signature=signature,
-                                        docstring=docstring,
-                                    )
-
-                                    # Only include methods that return namedtuples
-                                    if self._returns_namedtuple(method_info):
-                                        self._method_cache[full_name] = (
-                                            method_info
-                                        )
-                                        method_count += 1
-                                        self.logger.debug(
-                                            f'Found package method: {full_name}'
-                                        )
-                                    else:
-                                        self.logger.debug(
-                                            f"Skipped {full_name} - doesn't return namedtuple"
-                                        )
-
-                                except (ValueError, TypeError) as e:
-                                    self.logger.debug(
-                                        f'Could not process method {full_name}: {e}'
-                                    )
-
-                    except (
-                        ImportError,
-                        AttributeError,
-                        OSError,
-                        KeyError,
-                    ) as e:
-                        self.logger.debug(
-                            f'Could not process package {modname}: {e}'
-                        )
-
-                else:
-                    # Handle regular modules (single .py files)
-                    self.logger.debug(f'Processing regular module: {modname}')
-                    try:
-                        # Direct import of the single-file module
-                        actual_module = __import__(
-                            f'pypath.inputs.{modname}', fromlist=['']
-                        )
-                    except (
-                        ImportError,
-                        AttributeError,
-                        OSError,
-                        KeyError,
-                    ) as e:
-                        self.logger.debug(
-                            f'Could not import module {modname}: {e}'
-                        )
-                        continue
-
-                    # Find all callable methods in the module
-                    for attr_name in dir(actual_module):
-                        if attr_name.startswith('_'):
-                            continue
-
-                        attr = getattr(actual_module, attr_name)
-                        if not callable(attr):
-                            continue
-
-                        # Skip if it's not from this module
-                        if not hasattr(
-                            attr, '__module__'
-                        ) or not attr.__module__.endswith(modname):
-                            continue
-
-                        full_name = f'{modname}.{attr_name}'
-
-                        try:
-                            signature = inspect.signature(attr)
-                            docstring = inspect.getdoc(attr)
-
-                            method_info = PyPathMethodInfo(
-                                module_name=modname,
-                                method_name=attr_name,
-                                full_name=full_name,
-                                method=attr,
-                                signature=signature,
-                                docstring=docstring,
-                            )
-
-                            # Only include methods that return namedtuples
-                            if self._returns_namedtuple(method_info):
-                                self._method_cache[full_name] = method_info
-                                method_count += 1
-                                self.logger.debug(
-                                    f'Found regular method: {full_name}'
-                                )
-                            else:
-                                self.logger.debug(
-                                    f"Skipped {full_name} - doesn't return namedtuple"
-                                )
-
-                        except (ValueError, TypeError) as e:
-                            self.logger.debug(
-                                f'Could not process method {full_name}: {e}'
-                            )
-
-            except (ImportError, AttributeError, OSError) as e:
-                self.logger.debug(f'Could not process module {modname}: {e}')
-
-        self.logger.info(f'Discovered {method_count} pypath.inputs methods')
-
-    def get_available_methods(
-        self, filter_by_module: str | None = None
-    ) -> list[PyPathMethodInfo]:
-        """Get list of available pypath.inputs methods.
-
-        Args:
-            filter_by_module: Optional module name to filter by (e.g., 'uniprot_db')
-
-        Returns:
-            List of PyPathMethodInfo objects
-        """
-        methods = list(self._method_cache.values())
-
-        if filter_by_module:
-            methods = [m for m in methods if m.module_name == filter_by_module]
-
-        return sorted(methods, key=lambda x: x.full_name)
 
     def get_method_info(self, method_name: str) -> PyPathMethodInfo | None:
         """Get information about a specific method.
@@ -234,7 +59,28 @@ class PyPathAdapter:
         Returns:
             PyPathMethodInfo object or None if method not found
         """
-        return self._method_cache.get(method_name)
+        try:
+            # Get the method using pypath's get_method function
+            method = pypath.inputs.get_method(method_name)
+            if method:
+                signature = inspect.signature(method)
+                docstring = inspect.getdoc(method)
+                module_name, func_name = method_name.split('.', 1)
+
+                return PyPathMethodInfo(
+                    module_name=module_name,
+                    method_name=func_name,
+                    full_name=method_name,
+                    method=method,
+                    signature=signature,
+                    docstring=docstring,
+                )
+        except (ImportError, AttributeError, OSError, ValueError) as e:
+            self.logger.debug(
+                f'Could not get method info for {method_name}: {e}'
+            )
+
+        return None
 
     def get_resource_data(
         self,
@@ -441,93 +287,6 @@ class PyPathAdapter:
 
         return output_path, row_count
 
-    def save_to_temp_csv(
-        self,
-        method_name: str,
-        resource_id: str,
-        dataset_name: str,
-        **kwargs: Any,  # noqa: ANN401
-    ) -> tuple[Path, int]:
-        """Get resource data and save to temporary CSV file.
-
-        Args:
-            method_name: Full method name (e.g., 'uniprot_db.all_uniprots')
-            resource_id: Resource identifier for metadata
-            dataset_name: Dataset name for metadata
-            **kwargs: Arguments to pass to the pypath method
-
-        Returns:
-            Tuple of (csv_file_path, row_count)
-        """
-        self.logger.info(f'Saving {method_name} data to temporary CSV')
-
-        # Get data
-        df = self.get_resource_data(method_name, **kwargs)
-
-        if df.empty:
-            self.logger.warning(f'No data returned from {method_name}')
-            # Create empty CSV file
-            temp_path = Path(tempfile.mkstemp(suffix='.csv')[1])
-            df.to_csv(temp_path, index=False)
-            return temp_path, 0
-
-        # Add metadata columns
-        df['metadata_resource'] = resource_id
-        df['metadata_dataset'] = dataset_name
-        df['metadata_loaded_at'] = pd.Timestamp.now().isoformat()
-        df['metadata_row_number'] = range(1, len(df) + 1)
-        df['metadata_pypath_method'] = method_name
-
-        # Save to temporary CSV
-        temp_path = Path(tempfile.mkstemp(suffix='.csv')[1])
-        df.to_csv(temp_path, index=False, sep='\t')
-
-        row_count = len(df)
-        self.logger.info(
-            f'Saved {row_count} rows to temporary CSV: {temp_path}'
-        )
-
-        return temp_path, row_count
-
-    def list_available_modules(self) -> list[str]:
-        """Get list of available pypath.inputs modules.
-
-        Returns:
-            List of module names
-        """
-        modules = {
-            method_info.module_name
-            for method_info in self._method_cache.values()
-        }
-        return sorted(modules)
-
-    def search_methods(self, query: str) -> list[PyPathMethodInfo]:
-        """Search for methods by name or docstring.
-
-        Args:
-            query: Search query string
-
-        Returns:
-            List of matching PyPathMethodInfo objects
-        """
-        query_lower = query.lower()
-        matches = []
-
-        for method_info in self._method_cache.values():
-            # Check method name
-            if query_lower in method_info.full_name.lower():
-                matches.append(method_info)
-                continue
-
-            # Check docstring
-            if (
-                method_info.docstring
-                and query_lower in method_info.docstring.lower()
-            ):
-                matches.append(method_info)
-
-        return sorted(matches, key=lambda x: x.full_name)
-
     def get_method_parameters(self, method_name: str) -> dict[str, Any]:
         """Get parameter information for a method.
 
@@ -555,206 +314,3 @@ class PyPathAdapter:
             }
 
         return params
-
-    def _returns_namedtuple(self, method_info: PyPathMethodInfo) -> bool:
-        """Check if a method returns namedtuples (either directly or in collections).
-
-        Args:
-            method_info: PyPathMethodInfo object containing method information
-
-        Returns:
-            True if the method returns namedtuples, False otherwise
-        """
-        try:
-            ret_annotation = method_info.signature.return_annotation
-
-            if ret_annotation == inspect.Parameter.empty:
-                # No annotation - assume it might return namedtuples for PyPath methods
-                return True
-
-            # Handle Generator, Iterator, List, etc. that contain namedtuples
-            if hasattr(ret_annotation, '__args__') and ret_annotation.__args__:
-                inner_type = ret_annotation.__args__[0]
-                # Check if it's a specific namedtuple
-                if hasattr(inner_type, '_fields'):
-                    return True
-                # Many PyPath methods use list[tuple] but actually return list[NamedTuple]
-                elif inner_type is tuple:
-                    return True
-
-            # Handle direct namedtuple return
-            elif hasattr(ret_annotation, '_fields'):
-                return True
-
-            return False
-
-        except (ImportError, AttributeError, OSError):
-            # If we can't determine, assume it might return namedtuples for PyPath methods
-            return True
-
-    def extract_namedtuple_from_annotation(
-        self, method_info: PyPathMethodInfo
-    ) -> dict[str, list[str]]:
-        """Extract namedtuple field definitions from function return type annotation.
-
-        Args:
-            method_info: PyPathMethodInfo object containing method information
-
-        Returns:
-            Dictionary mapping namedtuple names to their field lists
-            Example: {'BindingdbInteraction': ['ligand', 'target']}
-        """
-        try:
-            # Get return annotation from signature
-            ret_annotation = method_info.signature.return_annotation
-
-            if ret_annotation == inspect.Parameter.empty:
-                return {}
-
-            namedtuples = {}
-
-            # Handle Generator, Iterator, List, etc. that contain namedtuples
-            if hasattr(ret_annotation, '__args__') and ret_annotation.__args__:
-                # Get the inner type (e.g., BindingdbInteraction from Generator[BindingdbInteraction])
-                inner_type = ret_annotation.__args__[0]
-
-                # Check if it's a namedtuple (has _fields attribute)
-                if hasattr(inner_type, '_fields'):
-                    type_name = inner_type.__name__
-                    fields = list(inner_type._fields)
-                    namedtuples[type_name] = fields
-                    self.logger.debug(
-                        f'Extracted namedtuple {type_name} with fields {fields} from annotation'
-                    )
-
-            # Handle direct namedtuple return (less common)
-            elif hasattr(ret_annotation, '_fields'):
-                type_name = ret_annotation.__name__
-                fields = list(ret_annotation._fields)
-                namedtuples[type_name] = fields
-                self.logger.debug(
-                    f'Extracted namedtuple {type_name} with fields {fields} from annotation'
-                )
-
-            return namedtuples
-
-        except (ImportError, AttributeError, OSError) as e:
-            self.logger.debug(
-                f'Could not extract namedtuple from annotation for {method_info.full_name}: {e}'
-            )
-            return {}
-
-    def extract_source_fields(self, method_name: str) -> dict[str, list[str]]:
-        """Extract namedtuple field definitions from function source code.
-
-        Args:
-            method_name: Full method name (e.g., 'biogrid.biogrid_all_interactions')
-
-        Returns:
-            Dictionary mapping namedtuple names to their field lists
-            Example: {'BiogridInteraction': ['partner_a', 'partner_b', 'pmid', ...]}
-        """
-        method_info = self.get_method_info(method_name)
-        if not method_info:
-            return {}
-
-        try:
-            source = inspect.getsource(method_info.method)
-            tree = ast.parse(source)
-
-            namedtuples = {}
-
-            # Walk through AST to find namedtuple definitions
-            for node in ast.walk(tree):
-                if isinstance(node, ast.Assign):
-                    # Check if this is a namedtuple assignment
-                    if isinstance(node.value, ast.Call):
-                        # Check if it's calling namedtuple
-                        func_name = None
-                        if (
-                            hasattr(node.value.func, 'attr')
-                            and node.value.func.attr == 'namedtuple'
-                        ):
-                            func_name = 'namedtuple'
-                        elif (
-                            hasattr(node.value.func, 'id')
-                            and node.value.func.id == 'namedtuple'
-                        ):
-                            func_name = 'namedtuple'
-
-                        if func_name and len(node.value.args) >= 2:
-                            # Get the namedtuple name
-                            tuple_name = None
-                            if isinstance(node.value.args[0], ast.Constant):
-                                tuple_name = node.value.args[0].value
-                            elif isinstance(node.value.args[0], ast.Str):
-                                tuple_name = node.value.args[0].s
-
-                            if not tuple_name:
-                                continue
-
-                            # Get the fields
-                            fields = []
-                            field_arg = node.value.args[1]
-
-                            if isinstance(field_arg, ast.List | ast.Tuple):
-                                for elt in field_arg.elts:
-                                    if isinstance(elt, ast.Constant):
-                                        fields.append(elt.value)
-                                    elif isinstance(elt, ast.Str):
-                                        fields.append(elt.s)
-                            elif isinstance(
-                                field_arg, ast.Constant
-                            ) and isinstance(field_arg.value, str):
-                                # Space-separated string
-                                fields = field_arg.value.split()
-
-                            if fields:
-                                namedtuples[tuple_name] = fields
-
-            if namedtuples:
-                self.logger.debug(
-                    f'Extracted {len(namedtuples)} namedtuple definitions from {method_name}'
-                )
-
-            return namedtuples
-
-        except (ImportError, AttributeError, OSError) as e:
-            self.logger.debug(
-                f'Could not extract source fields from {method_name}: {e}'
-            )
-            return {}
-
-    def print_method_help(self, method_name: str) -> None:
-        """Print help information for a method.
-
-        Args:
-            method_name: Full method name
-        """
-        method_info = self.get_method_info(method_name)
-        if not method_info:
-            print(f'Method not found: {method_name}')
-            return
-
-        print(f'\n=== PyPath Method: {method_name} ===')
-        print(f'Module: {method_info.module_name}')
-        print(f'Method: {method_info.method_name}')
-        print(f'Signature: {method_info.signature}')
-
-        if method_info.docstring:
-            print('\nDocstring:')
-            print(method_info.docstring)
-        else:
-            print('\nNo docstring available')
-
-        # Show parameters
-        params = self.get_method_parameters(method_name)
-        if params:
-            print('\nParameters:')
-            for param_name, param_info in params.items():
-                default_str = (
-                    f' = {param_info["default"]}'
-                    if param_info['default'] is not None
-                    else ''
-                )
-                print(f'  {param_name}{default_str}')

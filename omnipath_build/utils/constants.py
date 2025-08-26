@@ -30,6 +30,7 @@ class LoaderConstants:
     # Batch and sample sizes
     DEFAULT_BATCH_SIZE = 100_000
     BRONZE_SAMPLE_SIZE = 100  # Rows to write to PostgreSQL bronze
+    CSV_SAMPLE_SIZE = 10_000  # DuckDB CSV sample size for type detection
 
     # Memory and performance limits
     DEFAULT_MEMORY_LIMIT = '4GB'

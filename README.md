@@ -248,18 +248,6 @@ uv run --env-file .env python omnipath_build/database_manager.py update --databa
 uv run --env-file .env python omnipath_build/database_manager.py status --database omnipath
 ```
 
-## Key Features
-
-### 🚀 On-Demand Template Generation
-- No pre-generation of 600+ unused templates
-- Templates created only when you need them
-- Always up-to-date with latest PyPath version
-
-### 🔍 Smart Resource Discovery  
-- Automatically executes PyPath functions to discover output structure
-- Works with any PyPath function type (regular, partial, namedtuple, dict returns)
-- Handles complex modules like swisslipids that were previously undetectable
-
 ### 🧩 Incremental Resource Building
 ```bash
 # Add functions one by one to build up module configs
