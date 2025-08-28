@@ -185,6 +185,10 @@ class DatabaseLifecycleManager:
 
         Returns:
             True if successful, False otherwise
+
+        Note:
+            This method will automatically create the PostgreSQL database if it doesn't exist,
+            making it safe to run even when colleagues haven't run 'init' yet.
         """
         try:
             if not self.db_base_path.exists():
@@ -195,6 +199,10 @@ class DatabaseLifecycleManager:
                     "Run 'init' command first to initialize the database"
                 )
                 return False
+
+            # Ensure PostgreSQL database exists (safe to call multiple times)
+            self.logger.info('Ensuring PostgreSQL database exists...')
+            self._create_postgresql_database()
 
             # Default layer order
             all_layers = ['metadata', 'bronze', 'silver', 'gold']
