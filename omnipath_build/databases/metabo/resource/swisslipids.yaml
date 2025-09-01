@@ -12,10 +12,9 @@ functions:
         processing:
             target_table: compounds
             field_mapping:
-            -   source:
+            -   source: _constant
                 target: is_lipid
-                transform: constant_value
-                transform_args: true
+                value: true
                 description: Lipid type flag
             -   source: id
                 target: swisslipids_id
