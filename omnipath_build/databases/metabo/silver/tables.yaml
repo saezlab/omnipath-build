@@ -15,7 +15,6 @@ compounds:
     pubchem_cid: VARCHAR
     kegg_id: VARCHAR
     drugbank_id: VARCHAR
-    inchi_key: VARCHAR
     cas_number: VARCHAR
     iupac: VARCHAR
 
@@ -28,10 +27,10 @@ compounds:
     lipid_short_name: VARCHAR
 
   # Properties columns
-    exact_mass: FLOAT
+    exact_mass: FLOAT8
     charge: INTEGER
-    molecular_weight: FLOAT
-    logp: FLOAT
+    molecular_weight: FLOAT8
+    logp: FLOAT8
 
   # Lipid-specific columns (LIPID MAPS ontology)
     lipid_category: VARCHAR
