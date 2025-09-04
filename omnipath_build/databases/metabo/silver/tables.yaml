@@ -16,7 +16,9 @@ compounds:
     kegg_id: VARCHAR
     drugbank_id: VARCHAR
     cas_number: VARCHAR
-    iupac: VARCHAR
+
+    recommended_iupac: VARCHAR #easier to pronounce by humans
+    standard_iupac: VARCHAR
 
     lipidmaps_id: VARCHAR
     swisslipids_id: VARCHAR

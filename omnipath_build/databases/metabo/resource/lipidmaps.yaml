@@ -61,7 +61,7 @@ functions:
                 transform:
                 description: Lipid synonyms
             -   source: iupac
-                target: iupac
+                target: standard_iupac
                 transform:
                 description: IUPAC name (mapped to lipid_name)
             -   source: pubchem
