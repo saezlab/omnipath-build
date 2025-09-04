@@ -1,5 +1,4 @@
 # Resource Configuration for hmdb.compounds_for_metabo
-# Generated from pypath_templates/hmdb.compounds_for_metabo.yaml
 # Database: metabo
 
 # REQUIRED: Fill in all question marks (?) before loading

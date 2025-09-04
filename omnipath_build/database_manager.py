@@ -784,7 +784,6 @@ resources:
         with open(output_file, 'w', encoding='utf-8') as f:
             # Write header comment
             f.write(f'# Resource Configuration for {resource_name}\n')
-            f.write(f'# Generated from pypath_templates/{resource_name}.yaml\n')
             f.write(f'# Database: {self.database_name}\n\n')
             f.write(
                 '# REQUIRED: Fill in all question marks (?) before loading\n\n'

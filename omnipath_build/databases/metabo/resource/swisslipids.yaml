@@ -1,6 +1,4 @@
 # SwissLipids Bronze Configuration for metabo database
-# Generated: 2025-08-26
-# Source: pypath_templates/swisslipids.yaml
 metadata:
 -   name: SwissLipids
 -   description: SwissLipids database for lipid structures and annotations

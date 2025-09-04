@@ -1,6 +1,3 @@
-# LipidMaps Bronze Configuration for metabo database
-# Generated: 2025-08-26
-# Source: pypath_templates/lipidmaps.yaml
 metadata:
 -   name: LipidMaps
 -   description: LIPID MAPS Structure Database for lipid structures and annotations
