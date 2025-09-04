@@ -339,4 +339,4 @@ python = [
 [tool.uv.sources]
 jupyter-contrib-nbextensions = {git = "https://github.com/deeenes/jupyter_contrib_nbextensions.git", branch = "master"}
 nbsphinx = {git = "https://github.com/deeenes/nbsphinx", branch = "timings"}
-pypath-omnipath = {git = "https://github.com/saezlab/pypath.git"}
+pypath-omnipath = {git = "https://github.com/saezlab/pypath.git", branch = "master"}

@@ -1323,7 +1323,7 @@ requires-dist = [
     { name = "pre-commit", marker = "extra == 'dev'" },
     { name = "psycopg2-binary", specifier = ">=2.9.0" },
     { name = "pymdown-extensions", marker = "extra == 'docs'", specifier = ">=10.15" },
-    { name = "pypath-omnipath", git = "https://github.com/saezlab/pypath.git" },
+    { name = "pypath-omnipath", git = "https://github.com/saezlab/pypath.git?branch=master" },
     { name = "pytest", marker = "extra == 'tests'", specifier = ">=6.0" },
     { name = "pytest-cov", marker = "extra == 'tests'" },
     { name = "pyyaml", specifier = ">=6.0.2" },
@@ -1695,8 +1695,8 @@ dependencies = [
 
 [[package]]
 name = "pypath-omnipath"
-version = "0.16.27"
-source = { git = "https://github.com/saezlab/pypath.git#f64fdd7be20761278f818a6f35d1821520e823e8" }
+version = "0.16.28"
+source = { git = "https://github.com/saezlab/pypath.git?branch=master#2396e155595097175028b157148db1896bbb935e" }
 dependencies = [
     { name = "beautifulsoup4" },
     { name = "cachemanager" },
