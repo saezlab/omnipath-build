@@ -1,0 +1,37 @@
+# Resource Configuration for ramp.ramp_omnipathmetabo
+# Database: metabo
+
+# REQUIRED: Fill in all question marks (?) before loading
+
+metadata:
+  name: RaMP
+  description: RaMP (Relational database of Metabolomics Pathways) for metabolite and gene/protein annotations
+module: ramp
+functions:
+  ramp_omnipathmetabo:
+    description: Retrieve RaMP database contents from its SQLite build for the omnipath.metabo database build.
+    processing:
+      target_table: compounds
+      field_mapping:
+      - source: ramp_id
+        target: ramp_id
+      - source: iso_smiles
+        target: smiles
+      - source: inchi_key
+        target: inchikey
+      - source: inchi
+        target: inchi
+      - source: mw
+        target: molecular_weight
+      - source: monoisotop_mass
+        target: exact_mass
+      - source: common_name
+        target: compound_name
+      - source: mol_formula
+        target: formula
+      - source: synonyms
+        target: synonyms
+      - source: classes
+        target: classes
+      - source: sources
+        target: other_ids

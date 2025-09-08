@@ -15,7 +15,9 @@ compounds:
     pubchem_cid: VARCHAR
     kegg_id: VARCHAR
     drugbank_id: VARCHAR
+    ramp_id: VARCHAR
     cas_number: VARCHAR
+    other_ids: TEXT
 
     recommended_iupac: VARCHAR #easier to pronounce by humans
     standard_iupac: VARCHAR
@@ -24,7 +26,8 @@ compounds:
     swisslipids_id: VARCHAR
     metanetx_id: VARCHAR
 
-
+  # Name columns
+    compound_name: VARCHAR
     lipid_name: VARCHAR
     lipid_short_name: VARCHAR
 
@@ -33,6 +36,9 @@ compounds:
     charge: INTEGER
     molecular_weight: FLOAT8
     logp: FLOAT8
+
+  # classification columns
+    classes: VARCHAR
 
   # Lipid-specific columns (LIPID MAPS ontology)
     lipid_category: VARCHAR
@@ -53,6 +59,7 @@ compounds:
     inchi: TEXT
     inchikey: VARCHAR
     smiles: TEXT
+    chem_source: VARCHAR
 
     pmids: TEXT
 
