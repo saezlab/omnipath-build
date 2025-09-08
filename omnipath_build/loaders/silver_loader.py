@@ -542,7 +542,9 @@ class SilverLoader(BaseLoader):
                                 'DECIMAL',
                             ]
                         ):
-                            return f'CASE WHEN TRIM("{source}") = \'\' OR "{source}" IS NULL THEN NULL ELSE "{source}" END'
+                            return f"""CASE WHEN TRIM("{source}"::TEXT) = \'\' OR "{source}" IS NULL THEN NULL
+                            ELSE "{source}"
+                            END"""
                         else:
                             return f'"{source}"'
                 else:
