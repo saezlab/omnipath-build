@@ -34,4 +34,30 @@ functions:
       - source: classes
         target: classes
       - source: sources
-        target: other_ids
+        target: hmdb_id
+        transform: extract_ids
+        transform_args: {prefix: hmdb}
+      - source: sources
+        target: chebi_id
+        transform: extract_ids
+        transform_args: {prefix: chebi}
+      - source: sources
+        target: kegg_id
+        transform: extract_ids
+        transform_args: {prefix: kegg}
+      - source: sources
+        target: pubchem_cid
+        transform: extract_ids
+        transform_args: {prefix: pubchem}
+      - source: sources
+        target: cas_number
+        transform: extract_ids
+        transform_args: {prefix: CAS}
+      - source: sources
+        target: chemspider_id
+        transform: extract_ids
+        transform_args: {prefix: chemspider}
+      - source: sources
+        target: lipidmaps_id
+        transform: extract_ids
+        transform_args: {prefix: LIPIDMAPS}

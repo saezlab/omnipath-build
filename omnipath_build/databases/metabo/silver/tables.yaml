@@ -16,6 +16,7 @@ compounds:
     kegg_id: VARCHAR
     drugbank_id: VARCHAR
     ramp_id: VARCHAR
+    chemspider_id: VARCHAR
     cas_number: VARCHAR
     other_ids: TEXT
 

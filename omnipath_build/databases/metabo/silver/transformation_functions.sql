@@ -8,3 +8,21 @@
 --     RETURN TRIM(UPPER(raw_name));
 -- END;
 -- $$ LANGUAGE plpgsql;
+
+-- =====================================================
+-- PATTERN EXTRACTION
+-- =====================================================
+
+CREATE OR REPLACE MACRO extract_ids(field, prefix) AS 
+    CASE 
+        WHEN field IS NULL THEN NULL
+        WHEN field LIKE '%' || prefix || ':%' THEN
+            list_distinct( 
+                regexp_extract_all(
+                    field,
+                    prefix || ':([A-Za-z0-9_-]+)',
+                    1
+                )
+            )
+        ELSE NULL
+    END;
