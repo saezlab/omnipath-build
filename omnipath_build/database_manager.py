@@ -45,6 +45,7 @@ from loaders.gold_loader import GoldLoader
 from loaders.bronze_loader import PyPathBronzeLoader
 from loaders.silver_loader import SilverLoader
 from loaders.metadata_loader import MetadataLoader
+from loaders.postgres_exporter import PostgresExporter
 
 __all__ = [
     'DatabaseLifecycleManager',
@@ -87,8 +88,9 @@ class DatabaseLifecycleManager:
             'threads': 4,
         }
 
-        # Lazy initialization - connector will be created when first needed
-        self._db_connector = None
+        # Lazy initialization - connectors will be created when first needed
+        self._duck_connector = None
+        self._pg_connector = None
 
         self.logger.info(f'Database manager initialized for: {database_name}')
         self.logger.info(
@@ -96,16 +98,30 @@ class DatabaseLifecycleManager:
         )
 
     @property
-    def db_connector(self) -> PostgresDuckDBConnector:
-        """Lazy initialization of database connector.
+    def duck_connector(self) -> PostgresDuckDBConnector:
+        """Lazy initialization of DuckDB-only connector for main pipeline.
 
         Creates the connector only when first accessed.
         """
-        if self._db_connector is None:
-            self._db_connector = PostgresDuckDBConnector(
+        if self._duck_connector is None:
+            # Create DuckDB-only connector for main pipeline
+            self._duck_connector = PostgresDuckDBConnector(
+                pg_config=None, duck_config=self.duck_config
+            )
+        return self._duck_connector
+
+    @property
+    def pg_connector(self) -> PostgresDuckDBConnector:
+        """Lazy initialization of PostgreSQL connector for export.
+
+        Creates the connector only when first accessed.
+        """
+        if self._pg_connector is None:
+            # Create PostgreSQL connector for export
+            self._pg_connector = PostgresDuckDBConnector(
                 pg_config=self.pg_config, duck_config=self.duck_config
             )
-        return self._db_connector
+        return self._pg_connector
 
     def init_database(self, force: bool = False) -> bool:
         """Initialize a new database with directory structure and PostgreSQL database.
@@ -138,8 +154,8 @@ class DatabaseLifecycleManager:
             # Create template files (only if they don't exist)
             self._create_template_files()
 
-            # Create PostgreSQL database (only if it doesn't exist)
-            self._create_postgresql_database()
+            # Note: PostgreSQL database creation is now only needed for export
+            # Main pipeline works with DuckDB and Parquet files only
 
             if directory_exists and not force:
                 self.logger.info(
@@ -200,9 +216,8 @@ class DatabaseLifecycleManager:
                 )
                 return False
 
-            # Ensure PostgreSQL database exists (safe to call multiple times)
-            self.logger.info('Ensuring PostgreSQL database exists...')
-            self._create_postgresql_database()
+            # Note: PostgreSQL is no longer required for main pipeline
+            # Main pipeline works with DuckDB and Parquet files only
 
             # Default layer order
             all_layers = ['metadata', 'bronze', 'silver', 'gold']
@@ -275,7 +290,7 @@ class DatabaseLifecycleManager:
             try:
                 with MetadataLoader(
                     database_name=self.database_name,
-                    db_connector=self.db_connector,
+                    db_connector=self.pg_connector,
                 ) as loader:
                     loader.load(validate_only=True)
                     validation_results['metadata'] = True
@@ -328,15 +343,24 @@ class DatabaseLifecycleManager:
                     f'  {name}: {"✓" if exists else "✗"} ({file_count} files)'
                 )
 
-            # Check PostgreSQL database using the unified connector
+            # Check DuckDB connector
             try:
-                result = self.db_connector.execute(
+                result = self.duck_connector.execute(
+                    'SELECT current_database()'
+                ).fetchone()
+                self.logger.info('DuckDB connector: ✓')
+            except (OSError, RuntimeError) as e:
+                self.logger.info(f'DuckDB connector: ✗ ({str(e)[:50]}...)')
+
+            # Check PostgreSQL database (optional for export)
+            try:
+                result = self.pg_connector.execute(
                     'SELECT current_database()'
                 ).fetchone()
                 self.logger.info(f'PostgreSQL database: ✓ ({result[0]})')
 
                 # Check for schemas
-                result = self.db_connector.execute(
+                result = self.pg_connector.execute(
                     "SELECT schema_name FROM information_schema.schemata WHERE schema_name = 'metadata'"
                 ).fetchall()
 
@@ -490,7 +514,7 @@ resources:
         """
         try:
             if layer == 'metadata':
-                # Create a separate connection for this loader
+                # Metadata layer still uses PostgreSQL for compatibility - create separate connection
                 metadata_connector = PostgresDuckDBConnector(
                     pg_config=self.pg_config, duck_config=self.duck_config
                 )
@@ -504,9 +528,9 @@ resources:
                     )
 
             elif layer == 'bronze':
-                # Create a separate connection for this loader
+                # Bronze layer uses DuckDB only - create separate connection
                 bronze_connector = PostgresDuckDBConnector(
-                    pg_config=self.pg_config, duck_config=self.duck_config
+                    pg_config=None, duck_config=self.duck_config
                 )
                 with PyPathBronzeLoader(
                     database_name=self.database_name,
@@ -522,9 +546,9 @@ resources:
                     )
 
             elif layer == 'silver':
-                # Create a separate connection for this loader
+                # Silver layer uses DuckDB only, writes Parquet files - create separate connection
                 silver_connector = PostgresDuckDBConnector(
-                    pg_config=self.pg_config, duck_config=self.duck_config
+                    pg_config=None, duck_config=self.duck_config
                 )
                 with SilverLoader(
                     database_name=self.database_name,
@@ -537,9 +561,9 @@ resources:
                     )
 
             elif layer == 'gold':
-                # Create a separate connection for this loader
+                # Gold layer uses DuckDB only, writes Parquet files - create separate connection
                 gold_connector = PostgresDuckDBConnector(
-                    pg_config=self.pg_config, duck_config=self.duck_config
+                    pg_config=None, duck_config=self.duck_config
                 )
                 with GoldLoader(
                     database_name=self.database_name,
@@ -799,14 +823,104 @@ resources:
                 width=120,
             )
 
+    def export_to_postgres(self, tables: list[str] | None = None) -> bool:
+        """Export gold layer Parquet files to PostgreSQL.
+
+        Args:
+            tables: Specific tables to export (None = all tables)
+
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            self.logger.info(
+                f'Exporting gold layer to PostgreSQL: {self.database_name}'
+            )
+
+            # Ensure PostgreSQL database exists
+            self._create_postgresql_database()
+
+            with PostgresExporter(
+                database_name=self.database_name,
+                db_connector=self.pg_connector,
+            ) as exporter:
+                results = exporter.export(tables)
+                total_rows = sum(results.values())
+                successful_tables = len([r for r in results.values() if r > 0])
+
+                self.logger.info(
+                    f'Export completed: {successful_tables}/{len(results)} tables, '
+                    f'{exporter.format_row_count(total_rows)} total rows'
+                )
+
+                return successful_tables > 0
+
+        except (ImportError, RuntimeError, OSError) as e:
+            self.logger.error(f'Failed to export to PostgreSQL: {e}')
+            return False
+
+    def validate_export(self, tables: list[str] | None = None) -> bool:
+        """Validate PostgreSQL export by comparing with Parquet files.
+
+        Args:
+            tables: Specific tables to validate (None = all tables)
+
+        Returns:
+            True if validation passes, False otherwise
+        """
+        try:
+            with PostgresExporter(
+                database_name=self.database_name,
+                db_connector=self.pg_connector,
+            ) as exporter:
+                results = exporter.validate_export(tables)
+
+                successful = len(
+                    [r for r in results.values() if r['status'] == 'success']
+                )
+                total = len(results)
+
+                if successful == total:
+                    self.logger.info('✓ Export validation passed')
+                    return True
+                else:
+                    self.logger.error(
+                        f'✗ Export validation failed: {successful}/{total} tables valid'
+                    )
+                    return False
+
+        except (ImportError, RuntimeError, OSError) as e:
+            self.logger.error(f'Failed to validate export: {e}')
+            return False
+
+    def show_export_status(self) -> bool:
+        """Show PostgreSQL export status.
+
+        Returns:
+            True if status retrieved successfully
+        """
+        try:
+            with PostgresExporter(
+                database_name=self.database_name,
+                db_connector=self.pg_connector,
+            ) as exporter:
+                exporter.show_export_status()
+                return True
+
+        except (ImportError, RuntimeError, OSError) as e:
+            self.logger.error(f'Failed to get export status: {e}')
+            return False
+
     def close(self) -> None:
         """Close database connections and cleanup resources."""
         try:
-            if self._db_connector is not None:
-                self._db_connector.close()
-                self.logger.info('Database connections closed successfully')
-            else:
-                self.logger.debug('No database connection to close')
+            if self._duck_connector is not None:
+                self._duck_connector.close()
+                self.logger.debug('DuckDB connector closed')
+            if self._pg_connector is not None:
+                self._pg_connector.close()
+                self.logger.debug('PostgreSQL connector closed')
+            self.logger.info('Database connections closed successfully')
         except (OSError, RuntimeError) as e:
             self.logger.warning(f'Error closing database connections: {e}')
 
@@ -847,6 +961,9 @@ Examples:
             'update',
             'validate',
             'status',
+            'export',
+            'validate-export',
+            'export-status',
         ],
         help='Command to execute',
     )
@@ -875,6 +992,11 @@ Examples:
     parser.add_argument(
         '--resources',
         help='Comma-separated list of resources to add (for add-resources command)',
+    )
+
+    parser.add_argument(
+        '--tables',
+        help='Comma-separated list of tables for export commands',
     )
 
     parser.add_argument(
@@ -931,6 +1053,21 @@ Examples:
 
         elif args.command == 'status':
             success = manager.show_status()
+
+        elif args.command == 'export':
+            tables = None
+            if args.tables:
+                tables = [t.strip() for t in args.tables.split(',')]
+            success = manager.export_to_postgres(tables)
+
+        elif args.command == 'validate-export':
+            tables = None
+            if args.tables:
+                tables = [t.strip() for t in args.tables.split(',')]
+            success = manager.validate_export(tables)
+
+        elif args.command == 'export-status':
+            success = manager.show_export_status()
 
     except KeyboardInterrupt:
         logging.getLogger().info('Operation cancelled by user')

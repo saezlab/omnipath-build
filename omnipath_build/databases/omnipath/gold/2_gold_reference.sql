@@ -1,13 +1,14 @@
+-- This query will be executed by DuckDB and written to gold/data/reference.parquet
 -- Gold reference table - Literature references
 -- Maps to Django model: db.models.Reference
 
-CREATE OR REPLACE TABLE gold.reference AS
+
 WITH interaction_references AS (
     -- Get all unique PubMed IDs from interactions
     SELECT DISTINCT
         CAST(pubmed_id AS BIGINT) AS pubmed_id,
         NULL AS doi
-    FROM silver.interactions
+    FROM read_parquet('silver/data/interactions/*.parquet') AS interactions
     WHERE pubmed_id IS NOT NULL
         AND pubmed_id != ''
         AND REGEXP_MATCHES(pubmed_id, '^\d+$')  -- Only valid numeric PubMed IDs
@@ -18,7 +19,7 @@ cv_term_references AS (
     SELECT DISTINCT
         TRY_CAST(ref_id AS BIGINT) AS pubmed_id,
         NULL AS doi
-    FROM silver.cv_term
+    FROM read_parquet('silver/data/cv_term/*.parquet') AS cv_term
     CROSS JOIN UNNEST(STRING_SPLIT("references", '|')) AS t(ref_id)
     WHERE "references" IS NOT NULL 
         AND "references" != ''

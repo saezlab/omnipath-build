@@ -27,7 +27,7 @@ class PostgresDuckDBConnector:
 
     def __init__(
         self,
-        pg_config: dict[str, str],
+        pg_config: dict[str, str] | None = None,
         duck_config: dict[str, Any] | None = None,
         duck_path: str = ':memory:',
     ) -> None:
@@ -36,25 +36,30 @@ class PostgresDuckDBConnector:
         Args:
             pg_config: PostgreSQL connection configuration with keys:
                        host, port, database, user, password
+                       If None, only DuckDB will be available
             duck_config: Optional DuckDB configuration (memory limits, threads, etc.)
             duck_path: Path to DuckDB database file (default: in-memory)
         """
         self.pg_config = pg_config
         self.duck_path = duck_path
         self.duck_config = duck_config or {}
+        self.pg_attached = False
 
         # Create DuckDB connection
         self.conn = self._create_duckdb_connection()
 
-        # Setup PostgreSQL extension
-        self._setup_postgres_extension()
-
-        # Attach PostgreSQL database
-        self._attach_postgres()
-
-        logger.info(
-            f'Initialized PostgresDuckDBConnector (DuckDB: {duck_path})'
-        )
+        # Setup PostgreSQL extension and attach if config provided
+        if self.pg_config:
+            self._setup_postgres_extension()
+            self._attach_postgres()
+            self.pg_attached = True
+            logger.info(
+                f'Initialized PostgresDuckDBConnector with PostgreSQL (DuckDB: {duck_path})'
+            )
+        else:
+            logger.info(
+                f'Initialized DuckDB-only connector (DuckDB: {duck_path})'
+            )
 
     def _create_duckdb_connection(self) -> duckdb.DuckDBPyConnection:
         """Create and configure DuckDB connection."""

@@ -1,7 +1,8 @@
+-- This query will be executed by DuckDB and written to gold/data/cv_namespace.parquet
 -- Gold controlled vocabulary namespace table
 -- Maps to Django model: db.models.ControlledVocabulary
 
-CREATE OR REPLACE TABLE gold.cv_namespace AS
+
 WITH namespaces AS (
     SELECT 'Gene Ontology' as name, 'Gene Ontology' as description
     UNION ALL

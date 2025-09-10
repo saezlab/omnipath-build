@@ -1,7 +1,8 @@
+-- This query will be executed by DuckDB and written to gold/data/interactions.parquet
 -- Gold interactions table - deduplicated and aggregated from silver layer
 -- Maps to final analytics-ready interaction data
 
-CREATE OR REPLACE TABLE gold.interactions AS
+
 WITH deduplicated AS (
     SELECT 
         -- Canonical interaction pair (alphabetically sorted)
@@ -30,7 +31,7 @@ WITH deduplicated AS (
         COUNT(DISTINCT pubmed_ids) as publication_count,
         MAX(loaded_at) as last_updated
         
-    FROM silver.interactions
+    FROM read_parquet('silver/data/interactions/*.parquet') AS interactions
     WHERE entity_a IS NOT NULL AND entity_b IS NOT NULL
     GROUP BY 
         CASE WHEN entity_a <= entity_b THEN entity_a ELSE entity_b END,

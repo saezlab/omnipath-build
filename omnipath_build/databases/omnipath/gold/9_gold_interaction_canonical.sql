@@ -1,12 +1,13 @@
+-- This query will be executed by DuckDB and written to gold/data/interaction_canonical.parquet
 -- Optimized gold_interaction_canonical.sql with aggregated statistics
 -- Maps to Django model: db.models.Interaction
 -- Includes useful aggregated metrics while maintaining performance
 
-CREATE OR REPLACE TABLE gold.interaction_canonical AS
+
 WITH entity_lookup AS (
     -- Create a minimal lookup table with just id and canonical_identifier
     SELECT id, canonical_identifier
-    FROM gold.entity
+    FROM read_parquet('gold/data/entity.parquet') AS entity
 ),
 interaction_pairs AS (
     -- Get all unique interaction pairs with their evidence
@@ -20,7 +21,7 @@ interaction_pairs AS (
         i.pubmed_id,
         i.interaction_type,
         (i.causal_mechanism IS NOT NULL OR i.causal_statement IS NOT NULL) AS is_directed
-    FROM silver.interactions i
+    FROM read_parquet('silver/data/interactions/*.parquet') AS i
     INNER JOIN entity_lookup e1 ON i.entity_a = e1.canonical_identifier
     INNER JOIN entity_lookup e2 ON i.entity_b = e2.canonical_identifier
 ),

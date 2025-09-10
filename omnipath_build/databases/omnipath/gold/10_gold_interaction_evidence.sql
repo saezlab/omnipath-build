@@ -1,17 +1,18 @@
+-- This query will be executed by DuckDB and written to gold/data/interaction_evidence.parquet
 -- Optimized gold_interaction_evidence.sql
 -- Maps to Django model: db.models.InteractionEvidence
 -- Only selects needed columns to minimize memory usage
 
-CREATE OR REPLACE TABLE gold.interaction_evidence AS
+
 WITH entity_lookup AS (
     -- Minimal entity lookup
     SELECT id, canonical_identifier
-    FROM gold.entity
+    FROM read_parquet('gold/data/entity.parquet') AS entity
 ),
 interaction_lookup AS (
     -- Minimal interaction lookup
     SELECT id, entity_a_id, entity_b_id
-    FROM gold.interaction_canonical
+    FROM read_parquet('gold/data/interaction_canonical.parquet') AS interaction_canonical
 ),
 evidence_with_ids AS (
     -- Join interactions with entities and canonical interactions
@@ -20,7 +21,7 @@ evidence_with_ids AS (
         e1.id as entity_a_id,
         e2.id as entity_b_id,
         ic.id as interaction_id
-    FROM silver.interactions i
+    FROM read_parquet('silver/data/interactions/*.parquet') AS i
     INNER JOIN entity_lookup e1 ON i.entity_a = e1.canonical_identifier
     INNER JOIN entity_lookup e2 ON i.entity_b = e2.canonical_identifier
     INNER JOIN interaction_lookup ic ON (
@@ -74,10 +75,10 @@ SELECT
     ne.sign
 FROM normalized_evidence ne
 -- Map CV terms (only select id and accession)
-LEFT JOIN (SELECT id, accession FROM gold.cv_term) ds ON ds.accession = ne.data_source
-LEFT JOIN (SELECT id, accession FROM gold.cv_term) it ON it.accession = ne.interaction_type
-LEFT JOIN (SELECT id, accession FROM gold.cv_term) cm ON cm.accession = ne.causal_mechanism
-LEFT JOIN (SELECT id, accession FROM gold.cv_term) cs ON cs.accession = ne.causal_statement
+LEFT JOIN (SELECT id, accession FROM read_parquet('gold/data/cv_term.parquet')) ds ON ds.accession = ne.data_source
+LEFT JOIN (SELECT id, accession FROM read_parquet('gold/data/cv_term.parquet')) it ON it.accession = ne.interaction_type
+LEFT JOIN (SELECT id, accession FROM read_parquet('gold/data/cv_term.parquet')) cm ON cm.accession = ne.causal_mechanism
+LEFT JOIN (SELECT id, accession FROM read_parquet('gold/data/cv_term.parquet')) cs ON cs.accession = ne.causal_statement
 -- Map reference (only select id and pubmed_id)
-LEFT JOIN (SELECT id, pubmed_id FROM gold.reference) ref ON ref.pubmed_id = TRY_CAST(ne.pubmed_id AS BIGINT)
+LEFT JOIN (SELECT id, pubmed_id FROM read_parquet('gold/data/reference.parquet')) ref ON ref.pubmed_id = TRY_CAST(ne.pubmed_id AS BIGINT)
 ORDER BY id;

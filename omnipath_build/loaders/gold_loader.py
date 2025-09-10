@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Refactored Gold Loader for OmniPath 2.0.
 
-Creates final deduplicated and enriched tables from PostgreSQL silver layer data.
+Creates final deduplicated and enriched Parquet files from silver layer Parquet data.
 """
 
 import re
@@ -43,6 +43,15 @@ class GoldLoader(BaseLoader):
         # Path to SQL transforms using database name
         self.transforms_dir = get_database_path(self.database_name) / 'gold'
 
+        # Gold data output path
+        self.gold_data_path = self.transforms_dir / 'data'
+        self.gold_data_path.mkdir(parents=True, exist_ok=True)
+
+        # Silver data input path
+        self.silver_data_path = (
+            get_database_path(self.database_name) / 'silver' / 'data'
+        )
+
         if not self.transforms_dir.exists():
             raise GoldLoaderError(
                 f'Gold transforms directory not found: {self.transforms_dir}'
@@ -54,14 +63,11 @@ class GoldLoader(BaseLoader):
             self.sql_adapter, self.transforms_dir
         )
 
-        # Create PostgreSQL schemas
-        self._create_postgres_schemas()
-
-        # Initialize execution order from file naming convention
-
         self.logger.info(
             f'Gold loader initialized, transforms dir: {self.transforms_dir}'
         )
+        self.logger.info(f'Gold data path: {self.gold_data_path}')
+        self.logger.info(f'Silver data path: {self.silver_data_path}')
 
     def _get_ordered_sql_files(self) -> list[str]:
         """Get SQL files ordered by numeric prefix in filename."""
@@ -100,15 +106,6 @@ class GoldLoader(BaseLoader):
         self.logger.debug(f'Ordered SQL files: {ordered_filenames}')
         return ordered_filenames
 
-    def _create_postgres_schemas(self) -> None:
-        """Create required schemas in PostgreSQL."""
-        try:
-            self.create_schemas(['gold', 'stage'])
-            self.logger.info('Created PostgreSQL gold and stage schemas')
-        except Exception as e:
-            self.logger.error(f'Failed to create PostgreSQL schemas: {e}')
-            raise GoldLoaderError(f'Schema creation failed: {e}') from e
-
     def load(self, step: int | None = None) -> dict[str, Any]:
         """Execute gold layer transformation.
 
@@ -136,7 +133,7 @@ class GoldLoader(BaseLoader):
             self.logger.info(f'Executing file: {filename}')
 
             try:
-                self.execution_manager.execute_sql_file(filename, self.conn)
+                self._execute_sql_file_to_parquet(filename)
             except Exception as e:
                 self.logger.error(f'Failed to execute {filename}: {e}')
                 raise GoldLoaderError(f'SQL execution failed: {e}') from e
@@ -156,6 +153,57 @@ class GoldLoader(BaseLoader):
 
         return summary
 
+    def _execute_sql_file_to_parquet(self, filename: str) -> None:
+        """Execute a single SQL file and write results to Parquet."""
+        sql_file = self.transforms_dir / filename
+
+        # Read and adapt SQL content
+        sql_content = self.sql_adapter.adapt_sql_file(sql_file)
+
+        # Extract table name from filename (e.g., "5_gold_entity.sql" -> "entity")
+        table_name = self._extract_table_name(filename)
+        output_path = self.gold_data_path / f'{table_name}.parquet'
+
+        self.logger.info(f'Writing {table_name} to {output_path}')
+
+        # Wrap SQL in COPY statement to write to Parquet
+        copy_sql = f"""
+            COPY (
+                {sql_content}
+            ) TO '{output_path}' (FORMAT PARQUET, COMPRESSION ZSTD)
+        """
+
+        # Execute the query
+        self.execute_sql(copy_sql)
+
+        # Log success
+        row_count = self.execute_sql(f"""
+            SELECT COUNT(*) FROM read_parquet('{output_path}')
+        """).fetchone()[0]
+
+        self.logger.info(
+            f'Wrote {self.format_row_count(row_count)} rows to {output_path}'
+        )
+
+    def _extract_table_name(self, filename: str) -> str:
+        """Extract table name from SQL filename."""
+        # Remove numeric prefix and .sql suffix
+        # e.g., "5_gold_entity.sql" -> "entity"
+        base_name = filename.replace('.sql', '')
+
+        # Remove numeric prefix (e.g., "5_")
+        import re
+
+        match = re.match(r'^(\d+_)?(.+)', base_name)
+        if match:
+            name_part = match.group(2)
+            # Remove "gold_" prefix if present
+            if name_part.startswith('gold_'):
+                name_part = name_part[5:]
+            return name_part
+
+        return base_name
+
     def execute_step(self, step: int) -> dict[str, Any]:
         """Execute a specific SQL file by step number (1-based)."""
         ordered_files = self._get_ordered_sql_files()
@@ -169,7 +217,7 @@ class GoldLoader(BaseLoader):
         self.logger.info(f'Executing step {step}: {filename}')
 
         try:
-            self.execution_manager.execute_sql_file(filename, self.conn)
+            self._execute_sql_file_to_parquet(filename)
         except Exception as e:
             self.logger.error(f'Failed to execute {filename}: {e}')
             raise GoldLoaderError(f'SQL execution failed: {e}') from e
@@ -179,7 +227,8 @@ class GoldLoader(BaseLoader):
     def execute_sql_file(self, filename: str) -> dict[str, Any]:
         """Execute a single SQL file."""
         try:
-            return self.execution_manager.execute_sql_file(filename, self.conn)
+            self._execute_sql_file_to_parquet(filename)
+            return {'success': True, 'filename': filename}
         except Exception as e:
             self.logger.error(f'Failed to execute {filename}: {e}')
             raise GoldLoaderError(f'SQL execution failed: {e}') from e
@@ -225,22 +274,26 @@ class GoldLoader(BaseLoader):
         return results
 
     def get_table_stats(self) -> dict[str, int]:
-        """Get statistics for all gold tables."""
+        """Get statistics for all gold Parquet files."""
         stats = {}
 
-        try:
-            tables_result = self.execute_sql("""
-                SELECT table_name
-                FROM information_schema.tables
-                WHERE table_schema = 'gold'
-                ORDER BY table_name
-            """).fetchall()
+        if not self.gold_data_path.exists():
+            self.logger.warning(
+                f'Gold data directory does not exist: {self.gold_data_path}'
+            )
+            return stats
 
-            for row in tables_result:
-                table_name = row[0]
+        try:
+            # Find all .parquet files in gold data directory
+            parquet_files = list(self.gold_data_path.glob('*.parquet'))
+
+            for parquet_file in parquet_files:
+                table_name = (
+                    parquet_file.stem
+                )  # filename without .parquet extension
                 try:
                     count_result = self.execute_sql(
-                        f'SELECT COUNT(*) FROM pg.gold.{table_name}'
+                        f"SELECT COUNT(*) FROM read_parquet('{parquet_file}')"
                     ).fetchone()
                     stats[table_name] = count_result[0] if count_result else 0
                 except (OSError, RuntimeError) as e:
@@ -255,14 +308,14 @@ class GoldLoader(BaseLoader):
         return stats
 
     def validate_gold_data(self) -> None:
-        """Validate gold tables and show statistics."""
+        """Validate gold Parquet files and show statistics."""
         self.logger.info('Validating gold layer data...')
 
         # Get table statistics
         stats = self.get_table_stats()
 
         if not stats:
-            self.logger.warning('No gold tables found')
+            self.logger.warning('No gold Parquet files found')
             return
 
         for table_name, row_count in stats.items():
@@ -273,8 +326,9 @@ class GoldLoader(BaseLoader):
 
             # Show sample data
             try:
+                parquet_file = self.gold_data_path / f'{table_name}.parquet'
                 sample = self.execute_sql(
-                    f'SELECT * FROM pg.gold.{table_name} LIMIT 2'
+                    f"SELECT * FROM read_parquet('{parquet_file}') LIMIT 2"
                 ).fetchall()
 
                 if sample:

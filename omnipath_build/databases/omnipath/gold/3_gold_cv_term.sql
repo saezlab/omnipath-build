@@ -1,7 +1,7 @@
 -- Gold controlled vocabulary term table
 -- Maps to Django model: db.models.ControlledVocabularyTerm
+-- This query will be executed by DuckDB and written to gold/data/cv_term.parquet
 
-CREATE OR REPLACE TABLE gold.cv_term AS
 WITH cv_terms_base AS (
     -- First create base table with IDs
     SELECT
@@ -14,8 +14,8 @@ WITH cv_terms_base AS (
         ct.is_obsolete,
         ct.replaced_by_accession,
         ct.comment
-    FROM silver.cv_term ct
-    INNER JOIN gold.cv_namespace gcn ON ct.namespace = gcn.name
+    FROM read_parquet('silver/data/cv_term/*.parquet') AS ct
+    INNER JOIN read_parquet('gold/data/cv_namespace.parquet') AS gcn ON ct.namespace = gcn.name
 ),
 category_lookup AS (
     -- Create lookup for category IDs

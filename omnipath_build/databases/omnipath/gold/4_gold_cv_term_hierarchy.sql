@@ -1,19 +1,20 @@
+-- This query will be executed by DuckDB and written to gold/data/cv_term_hierarchy.parquet
 -- Gold controlled vocabulary term hierarchy table
 -- Maps parent-child relationships for CV terms
 
-CREATE OR REPLACE TABLE gold.cv_term_hierarchy AS
+
 WITH cv_term_lookup AS (
     -- Get all CV terms with their IDs
     SELECT id, accession
-    FROM gold.cv_term
+    FROM read_parquet('gold/data/cv_term.parquet') AS cv_term
 ),
 hierarchy_expanded AS (
     -- Expand the pipe-delimited is_a field
     SELECT 
         ct.id AS child_id,
         TRIM(parent_acc.value) AS parent_accession
-    FROM silver.cv_term sct
-    JOIN gold.cv_term ct ON sct.accession = ct.accession
+    FROM read_parquet('silver/data/cv_term/*.parquet') AS sct
+    JOIN read_parquet('gold/data/cv_term.parquet') AS ct ON sct.accession = ct.accession
     CROSS JOIN UNNEST(STRING_SPLIT(sct.is_a, '|')) AS parent_acc(value)
     WHERE sct.is_a IS NOT NULL AND sct.is_a != ''
 )

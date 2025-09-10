@@ -25,20 +25,31 @@ class BronzeWriter:
     """Handles writing data to PostgreSQL bronze schema."""
 
     def __init__(
-        self, pg_config: dict[str, str], duckdb_conn: duckdb.DuckDBPyConnection
+        self,
+        pg_config: dict[str, str] | None,
+        duckdb_conn: duckdb.DuckDBPyConnection,
     ) -> None:
         """Initialize Bronze writer.
 
         Args:
-            pg_config: PostgreSQL connection configuration
+            pg_config: PostgreSQL connection configuration (None for DuckDB-only mode)
             duckdb_conn: DuckDB connection for data processing
         """
         self.pg_config = pg_config
         self.duckdb_conn = duckdb_conn
-        self._setup_bronze_schema()
+        self.pg_enabled = pg_config is not None
+
+        if self.pg_enabled:
+            self._setup_bronze_schema()
+        else:
+            logger.info(
+                'PostgreSQL disabled, using DuckDB-only mode for bronze layer'
+            )
 
     def _get_pg_connection(self) -> psycopg2.extensions.connection:
         """Get PostgreSQL connection."""
+        if not self.pg_enabled:
+            raise RuntimeError('PostgreSQL not available in DuckDB-only mode')
         return psycopg2.connect(**self.pg_config)
 
     def _setup_bronze_schema(self) -> None:
@@ -74,6 +85,12 @@ class BronzeWriter:
         Returns:
             Number of rows written
         """
+        if not self.pg_enabled:
+            logger.info(
+                f'Skipping PostgreSQL bronze write for {resource_id}/{dataset_name} (DuckDB-only mode)'
+            )
+            return 0
+
         table_name = self._sanitize_table_name(resource_id, dataset_name)
 
         try:

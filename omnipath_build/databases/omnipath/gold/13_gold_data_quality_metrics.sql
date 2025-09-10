@@ -1,13 +1,13 @@
+-- This query will be executed by DuckDB and written to gold/data/data_quality_metrics.parquet
 -- Gold data quality metrics table - Monitor data completeness and quality
 -- Helps identify potential data issues and track improvements
 
-CREATE OR REPLACE TABLE gold.data_quality_metrics AS
 WITH entity_quality AS (
     SELECT
         'Entities without descriptions' AS metric,
         COUNT(*) AS count,
-        ROUND(100.0 * COUNT(*) / (SELECT COUNT(*) FROM gold.entity), 2) AS percentage
-    FROM gold.entity
+        ROUND(100.0 * COUNT(*) / (SELECT COUNT(*) FROM read_parquet('gold/data/entity.parquet')), 2) AS percentage
+    FROM read_parquet('gold/data/entity.parquet') AS entity
     WHERE description IS NULL OR TRIM(description) = ''
     
     UNION ALL
@@ -15,8 +15,8 @@ WITH entity_quality AS (
     SELECT
         'Entities without taxonomy' AS metric,
         COUNT(*) AS count,
-        ROUND(100.0 * COUNT(*) / (SELECT COUNT(*) FROM gold.entity), 2) AS percentage
-    FROM gold.entity
+        ROUND(100.0 * COUNT(*) / (SELECT COUNT(*) FROM read_parquet('gold/data/entity.parquet')), 2) AS percentage
+    FROM read_parquet('gold/data/entity.parquet') AS entity
     WHERE ncbi_tax_id_id IS NULL
     
     UNION ALL
@@ -24,8 +24,8 @@ WITH entity_quality AS (
     SELECT
         'Entities from interactions only' AS metric,
         COUNT(*) AS count,
-        ROUND(100.0 * COUNT(*) / (SELECT COUNT(*) FROM gold.entity), 2) AS percentage
-    FROM gold.entity
+        ROUND(100.0 * COUNT(*) / (SELECT COUNT(*) FROM read_parquet('gold/data/entity.parquet')), 2) AS percentage
+    FROM read_parquet('gold/data/entity.parquet') AS entity
     WHERE description = 'Entity from interaction data'
 ),
 
@@ -33,11 +33,11 @@ interaction_quality AS (
     SELECT
         'Interactions without publications' AS metric,
         COUNT(DISTINCT ic.id) AS count,
-        ROUND(100.0 * COUNT(DISTINCT ic.id) / (SELECT COUNT(*) FROM gold.interaction_canonical), 2) AS percentage
-    FROM gold.interaction_canonical ic
+        ROUND(100.0 * COUNT(DISTINCT ic.id) / (SELECT COUNT(*) FROM read_parquet('gold/data/interaction_canonical.parquet')), 2) AS percentage
+    FROM read_parquet('gold/data/interaction_canonical.parquet') AS ic
     LEFT JOIN (
         SELECT interaction_id, COUNT(DISTINCT reference_id) as pub_count
-        FROM gold.interaction_evidence
+        FROM read_parquet('gold/data/interaction_evidence.parquet')
         WHERE reference_id IS NOT NULL
         GROUP BY interaction_id
     ) ie ON ic.id = ie.interaction_id
@@ -48,11 +48,11 @@ interaction_quality AS (
     SELECT
         'Interactions from single source' AS metric,
         COUNT(DISTINCT ic.id) AS count,
-        ROUND(100.0 * COUNT(DISTINCT ic.id) / (SELECT COUNT(*) FROM gold.interaction_canonical), 2) AS percentage
-    FROM gold.interaction_canonical ic
+        ROUND(100.0 * COUNT(DISTINCT ic.id) / (SELECT COUNT(*) FROM read_parquet('gold/data/interaction_canonical.parquet')), 2) AS percentage
+    FROM read_parquet('gold/data/interaction_canonical.parquet') AS ic
     JOIN (
         SELECT interaction_id, COUNT(DISTINCT data_source_id) as source_count
-        FROM gold.interaction_evidence
+        FROM read_parquet('gold/data/interaction_evidence.parquet')
         GROUP BY interaction_id
         HAVING COUNT(DISTINCT data_source_id) = 1
     ) ie ON ic.id = ie.interaction_id
@@ -63,8 +63,8 @@ evidence_quality AS (
     SELECT
         'Evidence without references' AS metric,
         COUNT(*) AS count,
-        ROUND(100.0 * COUNT(*) / (SELECT COUNT(*) FROM gold.interaction_evidence), 2) AS percentage
-    FROM gold.interaction_evidence
+        ROUND(100.0 * COUNT(*) / (SELECT COUNT(*) FROM read_parquet('gold/data/interaction_evidence.parquet')), 2) AS percentage
+    FROM read_parquet('gold/data/interaction_evidence.parquet') AS interaction_evidence
     WHERE reference_id IS NULL
     
     UNION ALL
@@ -72,8 +72,8 @@ evidence_quality AS (
     SELECT
         'Evidence without interaction type' AS metric,
         COUNT(*) AS count,
-        ROUND(100.0 * COUNT(*) / (SELECT COUNT(*) FROM gold.interaction_evidence), 2) AS percentage
-    FROM gold.interaction_evidence
+        ROUND(100.0 * COUNT(*) / (SELECT COUNT(*) FROM read_parquet('gold/data/interaction_evidence.parquet')), 2) AS percentage
+    FROM read_parquet('gold/data/interaction_evidence.parquet') AS interaction_evidence
     WHERE interaction_type_id IS NULL
     
     UNION ALL
@@ -81,8 +81,8 @@ evidence_quality AS (
     SELECT
         'Evidence without data source' AS metric,
         COUNT(*) AS count,
-        ROUND(100.0 * COUNT(*) / (SELECT COUNT(*) FROM gold.interaction_evidence), 2) AS percentage
-    FROM gold.interaction_evidence
+        ROUND(100.0 * COUNT(*) / (SELECT COUNT(*) FROM read_parquet('gold/data/interaction_evidence.parquet')), 2) AS percentage
+    FROM read_parquet('gold/data/interaction_evidence.parquet') AS interaction_evidence
     WHERE data_source_id IS NULL
 ),
 
@@ -90,10 +90,10 @@ identifier_quality AS (
     SELECT
         'Entities with single identifier' AS metric,
         COUNT(DISTINCT entity_id) AS count,
-        ROUND(100.0 * COUNT(DISTINCT entity_id) / (SELECT COUNT(*) FROM gold.entity), 2) AS percentage
+        ROUND(100.0 * COUNT(DISTINCT entity_id) / (SELECT COUNT(*) FROM read_parquet('gold/data/entity.parquet')), 2) AS percentage
     FROM (
         SELECT entity_id, COUNT(*) AS id_count
-        FROM gold.entity_identifier
+        FROM read_parquet('gold/data/entity_identifier.parquet')
         GROUP BY entity_id
         HAVING COUNT(*) = 1
     ) single_id_entities
@@ -105,15 +105,15 @@ complex_quality AS (
         COUNT(*) AS count,
         ROUND(100.0 * COUNT(*) / NULLIF((
             SELECT COUNT(*) 
-            FROM gold.entity e
-            JOIN gold.cv_term ct ON e.entity_type_id = ct.id
+            FROM read_parquet('gold/data/entity.parquet') AS e
+            JOIN read_parquet('gold/data/cv_term.parquet') AS ct ON e.entity_type_id = ct.id
             WHERE ct.accession = 'MI:0314'
         ), 0), 2) AS percentage
-    FROM gold.entity e
-    JOIN gold.cv_term ct ON e.entity_type_id = ct.id
+    FROM read_parquet('gold/data/entity.parquet') AS e
+    JOIN read_parquet('gold/data/cv_term.parquet') AS ct ON e.entity_type_id = ct.id
     WHERE ct.accession = 'MI:0314'  -- complex
     AND NOT EXISTS (
-        SELECT 1 FROM gold.entity_membership em
+        SELECT 1 FROM read_parquet('gold/data/entity_membership.parquet') AS em
         WHERE em.parent_entity_id = e.id
     )
 ),

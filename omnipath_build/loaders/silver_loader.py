@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Refactored Silver Loader for OmniPath 2.0.
 
-Transforms bronze parquet data and loads directly to PostgreSQL using shared utilities.
+Transforms bronze parquet data and writes to Parquet files in silver layer.
 """
 
 import sys
@@ -60,6 +60,10 @@ class SilverLoader(BaseLoader):
             get_database_path(self.database_name) / 'bronze' / 'data'
         )
 
+        # Silver data output path
+        self.silver_data_path = self.silver_config_path / 'data'
+        self.silver_data_path.mkdir(parents=True, exist_ok=True)
+
         # Resource configs directory for reading YAML configurations
         self.resource_configs_path = (
             get_database_path(self.database_name) / 'resource'
@@ -71,13 +75,13 @@ class SilverLoader(BaseLoader):
         )
         self._load_transformation_functions(transforms_path)
 
-        # Create PostgreSQL schemas and tables
-        self._create_postgres_schemas()
-        self._create_silver_tables()
+        # Create silver data directories for each table
+        self._create_silver_directories()
 
         self.logger.info(
             f'Silver loader initialized, bronze path: {self.bronze_path}'
         )
+        self.logger.info(f'Silver data path: {self.silver_data_path}')
 
     def _load_transformation_functions(self, transforms_path: Path) -> None:
         """Load SQL transformation functions from file."""
@@ -101,55 +105,18 @@ class SilverLoader(BaseLoader):
             self.logger.error(f'Failed to load transformation functions: {e}')
             raise SilverLoaderError(f'Transform loading failed: {e}') from e
 
-    def _create_postgres_schemas(self) -> None:
-        """Create required schemas in PostgreSQL."""
+    def _create_silver_directories(self) -> None:
+        """Create silver data directories for each table."""
         try:
-            self.create_schemas(['silver', 'metadata'])
-            self.logger.info('Created PostgreSQL schemas')
-        except Exception as e:
-            self.logger.error(f'Failed to create PostgreSQL schemas: {e}')
-            raise SilverLoaderError(f'Schema creation failed: {e}') from e
-
-    def _create_silver_tables(self) -> None:
-        """Create silver tables in PostgreSQL from YAML definitions."""
-        try:
-            # Drop existing tables
             for table_name in self.table_definitions.keys():
-                self.execute_sql(
-                    f'DROP TABLE IF EXISTS pg.silver.{table_name} CASCADE'
-                )
+                table_dir = self.silver_data_path / table_name
+                table_dir.mkdir(parents=True, exist_ok=True)
+                self.logger.debug(f'Created silver directory: {table_dir}')
 
-            # Create tables from YAML definitions
-            for table_name, columns in self.table_definitions.items():
-                column_definitions = []
-                for column_name, column_type in columns.items():
-                    # Handle reserved column names
-                    if column_name == 'references':
-                        column_definitions.append(
-                            f'"{column_name}" {column_type}'
-                        )
-                    else:
-                        column_definitions.append(
-                            f'{column_name} {column_type}'
-                        )
-
-                columns_clause = ',\n                    '.join(
-                    column_definitions
-                )
-                create_sql = f"""
-                    CREATE TABLE pg.silver.{table_name} (
-                        {columns_clause}
-                    )
-                """
-
-                self.execute_sql(create_sql)
-                self.logger.info(f'Created table pg.silver.{table_name}')
-
-            self.logger.info('Created PostgreSQL silver tables')
-
+            self.logger.info('Created silver data directories')
         except Exception as e:
-            self.logger.error(f'Failed to create PostgreSQL silver tables: {e}')
-            raise SilverLoaderError(f'Table creation failed: {e}') from e
+            self.logger.error(f'Failed to create silver directories: {e}')
+            raise SilverLoaderError(f'Directory creation failed: {e}') from e
 
     def load(self, resource_id: str | None = None) -> dict[str, int]:
         """Load silver data for one or all resources.
@@ -233,9 +200,9 @@ class SilverLoader(BaseLoader):
                 )
                 continue
 
-            # Transform and load directly to PostgreSQL
+            # Transform and write to Parquet
             try:
-                row_count = self._transform_and_load_to_postgres(
+                row_count = self._transform_and_write_parquet(
                     resource_info,
                     dataset['name'],
                     bronze_file,
@@ -387,7 +354,7 @@ class SilverLoader(BaseLoader):
         # Sort by filename (timestamp) and return the latest
         return sorted(parquet_files)[-1]
 
-    def _transform_and_load_to_postgres(
+    def _transform_and_write_parquet(
         self,
         resource_info: dict[str, Any],
         dataset_name: str,
@@ -395,11 +362,14 @@ class SilverLoader(BaseLoader):
         target_table: str,
         data_processing: dict[str, Any],
     ) -> int:
-        """Transform data from bronze parquet and load directly to PostgreSQL."""
+        """Transform data from bronze parquet and write to silver Parquet file."""
         # dataset_name is kept for interface consistency but not used in current implementation
-        self.logger.info(
-            f'Transforming {bronze_file} -> pg.silver.{target_table}'
+        source_database = resource_info['id']
+        output_path = (
+            self.silver_data_path / target_table / f'{source_database}.parquet'
         )
+
+        self.logger.info(f'Transforming {bronze_file} -> {output_path}')
 
         # Check if parquet file exists
         if not bronze_file.exists():
@@ -429,45 +399,43 @@ class SilverLoader(BaseLoader):
         # Build expression for each silver column
         for col in silver_columns:
             if col == 'loaded_at':
-                # Skip loaded_at column as it has a default value
-                continue
+                # Set loaded_at to current timestamp
+                select_parts.append(f'CURRENT_TIMESTAMP as "{col}"')
             elif col == 'source_database':
                 # Always set source_database to the resource ID
-                select_parts.append(f'\'{resource_info["id"]}\' as "{col}"')
+                select_parts.append(f'\'{source_database}\' as "{col}"')
             else:
                 expr = self._build_column_expression(
                     col, field_mappings, available_columns, target_table
                 )
                 select_parts.append(f'{expr} as "{col}"')
 
-        # Build and execute INSERT query to PostgreSQL
+        # Ensure output directory exists
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Build and execute COPY query to write Parquet
         select_clause = ',\n            '.join(select_parts)
 
-        # Get column names excluding loaded_at (which has a default value)
-        column_names = [col for col in silver_columns if col != 'loaded_at']
-        columns_clause = ', '.join([f'"{col}"' for col in column_names])
-
-        insert_sql = f"""
-            INSERT INTO pg.silver.{target_table} ({columns_clause})
-            SELECT
-                {select_clause}
-            FROM read_parquet('{bronze_file}')
+        transform_sql = f"""
+            COPY (
+                SELECT
+                    {select_clause}
+                FROM read_parquet('{bronze_file}')
+            ) TO '{output_path}' (FORMAT PARQUET, COMPRESSION ZSTD)
         """
 
-        self.logger.debug(f'Executing SQL:\n{insert_sql}')
+        self.logger.debug(f'Executing SQL:\n{transform_sql}')
 
         try:
-            self.execute_sql(insert_sql)
+            self.execute_sql(transform_sql)
 
-            # Get row count
+            # Get row count from the written file
             row_count = self.execute_sql(f"""
-                SELECT COUNT(*)
-                FROM pg.silver.{target_table}
-                WHERE source_database = '{resource_info['id']}'
+                SELECT COUNT(*) FROM read_parquet('{output_path}')
             """).fetchone()[0]
 
             self.logger.info(
-                f'Inserted {self.format_row_count(row_count)} rows into pg.silver.{target_table}'
+                f'Wrote {self.format_row_count(row_count)} rows to {output_path}'
             )
             return row_count
 
@@ -591,43 +559,58 @@ class SilverLoader(BaseLoader):
         return f'{transform_func}({", ".join(arg_parts)})'
 
     def validate_silver_data(self) -> None:
-        """Validate silver tables in PostgreSQL and show statistics."""
-        self.logger.info('Validating PostgreSQL silver data...')
+        """Validate silver Parquet files and show statistics."""
+        self.logger.info('Validating silver Parquet data...')
 
-        tables = ['interactions', 'entities', 'cv_term', 'id_mapping']
+        if not self.silver_data_path.exists():
+            self.logger.warning(
+                f'Silver data directory does not exist: {self.silver_data_path}'
+            )
+            return
 
-        for table in tables:
-            self.logger.info(f'\n{table.upper()} table:')
+        for table_dir in self.silver_data_path.iterdir():
+            if not table_dir.is_dir():
+                continue
+
+            table_name = table_dir.name
+            self.logger.info(f'\n{table_name.upper()} table:')
 
             try:
-                # Get row counts by source
-                results = self.execute_sql(f"""
-                    SELECT source_database, COUNT(*) as count
-                    FROM pg.silver.{table}
-                    GROUP BY source_database
-                    ORDER BY source_database
-                """).fetchall()
+                parquet_files = list(table_dir.glob('*.parquet'))
+                if not parquet_files:
+                    self.logger.info('  No Parquet files found')
+                    continue
 
-                if results:
-                    for source, count in results:
-                        self.logger.info(
-                            f'  {source}: {self.format_row_count(count)} rows'
-                        )
-                else:
-                    self.logger.info('  No data')
+                # Get row counts by source file
+                total_rows = 0
+                for parquet_file in parquet_files:
+                    source_db = parquet_file.stem
+                    row_count = self.execute_sql(f"""
+                        SELECT COUNT(*) FROM read_parquet('{parquet_file}')
+                    """).fetchone()[0]
 
-                # Show sample data
-                sample = self.execute_sql(f"""
-                    SELECT * FROM pg.silver.{table} LIMIT 2
-                """).fetchall()
+                    self.logger.info(
+                        f'  {source_db}: {self.format_row_count(row_count)} rows'
+                    )
+                    total_rows += row_count
 
-                if sample:
-                    self.logger.info('  Sample rows:')
-                    cols = [desc[0] for desc in self.conn.description]
-                    for row in sample:
-                        self.logger.info(
-                            f'    {dict(zip(cols, row, strict=False))}'
-                        )
+                self.logger.info(
+                    f'  Total: {self.format_row_count(total_rows)} rows'
+                )
+
+                # Show sample data from first file
+                if parquet_files:
+                    sample = self.execute_sql(f"""
+                        SELECT * FROM read_parquet('{parquet_files[0]}') LIMIT 2
+                    """).fetchall()
+
+                    if sample:
+                        self.logger.info('  Sample rows:')
+                        cols = [desc[0] for desc in self.conn.description]
+                        for row in sample:
+                            self.logger.info(
+                                f'    {dict(zip(cols, row, strict=False))}'
+                            )
 
             except RuntimeError as e:
-                self.logger.error(f'Failed to validate table {table}: {e}')
+                self.logger.error(f'Failed to validate table {table_name}: {e}')

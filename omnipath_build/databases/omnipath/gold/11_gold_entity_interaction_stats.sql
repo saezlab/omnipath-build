@@ -1,7 +1,8 @@
+-- This query will be executed by DuckDB and written to gold/data/entity_interaction_stats.parquet
 -- Gold entity interaction statistics table - Pre-computed statistics for entities
 -- Analytical table for quick lookups and performance
 
-CREATE OR REPLACE TABLE gold.entity_interaction_stats AS
+
 WITH interaction_counts AS (
     -- Count interactions per entity
     SELECT
@@ -16,8 +17,8 @@ WITH interaction_counts AS (
             ic.id AS interaction_id,
             ic.entity_b_id AS other_entity_id,
             ie.data_source_id
-        FROM gold.interaction_canonical ic
-        JOIN gold.interaction_evidence ie ON ic.id = ie.interaction_id
+        FROM read_parquet('gold/data/interaction_canonical.parquet') AS ic
+        JOIN read_parquet('gold/data/interaction_evidence.parquet') AS ie ON ic.id = ie.interaction_id
         
         UNION ALL
         
@@ -27,8 +28,8 @@ WITH interaction_counts AS (
             ic.id AS interaction_id,
             ic.entity_a_id AS other_entity_id,
             ie.data_source_id
-        FROM gold.interaction_canonical ic
-        JOIN gold.interaction_evidence ie ON ic.id = ie.interaction_id
+        FROM read_parquet('gold/data/interaction_canonical.parquet') AS ic
+        JOIN read_parquet('gold/data/interaction_evidence.parquet') AS ie ON ic.id = ie.interaction_id
     ) all_interactions
     GROUP BY entity_id
 ),
@@ -48,8 +49,8 @@ entity_stats AS (
             WHEN COALESCE(ic.partner_count, 0) >= 10 THEN 'intermediate'
             ELSE 'peripheral'
         END AS hub_category
-    FROM gold.entity e
-    LEFT JOIN gold.cv_term ct_type ON e.entity_type_id = ct_type.id
+    FROM read_parquet('gold/data/entity.parquet') AS e
+    LEFT JOIN read_parquet('gold/data/cv_term.parquet') AS ct_type ON e.entity_type_id = ct_type.id
     LEFT JOIN interaction_counts ic ON e.id = ic.entity_id
 )
 

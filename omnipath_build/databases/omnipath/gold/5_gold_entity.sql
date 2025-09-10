@@ -1,7 +1,7 @@
 -- Gold entity table using CV term accessions from silver
 -- Maps to Django model: db.models.Entity
+-- This query will be executed by DuckDB and written to gold/data/entity.parquet
 
-CREATE OR REPLACE TABLE gold.entity AS
 WITH silver_entities AS (
     -- All entities from the silver layer (already have CV term accessions)
     SELECT
@@ -12,12 +12,12 @@ WITH silver_entities AS (
         nt.id AS ncbi_tax_id_id,
         e.description,
         e.alt_id
-    FROM silver.entities e
-    LEFT JOIN gold.cv_term cit 
+    FROM read_parquet('silver/data/entities/*.parquet') AS e
+    LEFT JOIN read_parquet('gold/data/cv_term.parquet') AS cit 
         ON cit.accession = e.canonical_identifier_type
-    LEFT JOIN gold.cv_term et 
+    LEFT JOIN read_parquet('gold/data/cv_term.parquet') AS et 
         ON et.accession = e.entity_type
-    LEFT JOIN gold.cv_term nt 
+    LEFT JOIN read_parquet('gold/data/cv_term.parquet') AS nt 
         ON nt.accession = e.ncbi_tax_id
 ),
 
@@ -39,17 +39,17 @@ interaction_only_entities AS (
             entity_a AS entity_id,
             entity_a_type AS entity_type,
             entity_a_id_type AS entity_id_type
-        FROM silver.interactions
+        FROM read_parquet('silver/data/interactions/*.parquet')
         WHERE entity_a_type IS NOT NULL
         UNION
         SELECT 
             entity_b AS entity_id,
             entity_b_type AS entity_type,
             entity_b_id_type AS entity_id_type
-        FROM silver.interactions
+        FROM read_parquet('silver/data/interactions/*.parquet')
         WHERE entity_b_type IS NOT NULL
     ) all_interaction_entities
-    WHERE entity_id NOT IN (SELECT canonical_identifier FROM silver.entities)
+    WHERE entity_id NOT IN (SELECT canonical_identifier FROM read_parquet('silver/data/entities/*.parquet'))
     AND entity_id IS NOT NULL 
     AND TRIM(entity_id) != ''
 ),
@@ -66,9 +66,9 @@ new_entities AS (
         'Entity from interaction data' AS description,
         NULL AS alt_id
     FROM interaction_only_entities ioe
-    LEFT JOIN gold.cv_term cit 
+    LEFT JOIN read_parquet('gold/data/cv_term.parquet') AS cit 
         ON cit.accession = ioe.canonical_identifier_type
-    LEFT JOIN gold.cv_term et 
+    LEFT JOIN read_parquet('gold/data/cv_term.parquet') AS et 
         ON et.accession = ioe.entity_type
 ),
 
