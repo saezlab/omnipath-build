@@ -1,103 +1,102 @@
-import Image from "next/image";
+import Link from 'next/link';
+import { Database, ArrowRight, Layers, Activity, Zap, Shield } from 'lucide-react';
 
 export default function Home() {
   return (
-    <div className="font-sans grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20">
-      <main className="flex flex-col gap-[32px] row-start-2 items-center sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={180}
-          height={38}
-          priority
-        />
-        <ol className="font-mono list-inside list-decimal text-sm/6 text-center sm:text-left">
-          <li className="mb-2 tracking-[-.01em]">
-            Get started by editing{" "}
-            <code className="bg-black/[.05] dark:bg-white/[.06] font-mono font-semibold px-1 py-0.5 rounded">
-              app/page.tsx
-            </code>
-            .
-          </li>
-          <li className="tracking-[-.01em]">
-            Save and see your changes instantly.
-          </li>
-        </ol>
-
-        <div className="flex gap-4 items-center flex-col sm:flex-row">
-          <a
-            className="rounded-full border border-solid border-transparent transition-colors flex items-center justify-center bg-foreground text-background gap-2 hover:bg-[#383838] dark:hover:bg-[#ccc] font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 sm:w-auto"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={20}
-              height={20}
-            />
-            Deploy now
-          </a>
-          <a
-            className="rounded-full border border-solid border-black/[.08] dark:border-white/[.145] transition-colors flex items-center justify-center hover:bg-[#f2f2f2] dark:hover:bg-[#1a1a1a] hover:border-transparent font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 w-full sm:w-auto md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Read our docs
-          </a>
+    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900">
+      <div className="absolute inset-0 bg-[url('/grid.svg')] bg-center [mask-image:linear-gradient(180deg,white,rgba(255,255,255,0))]"></div>
+      
+      <div className="relative">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-20">
+          <div className="text-center">
+            <div className="inline-flex items-center gap-2 px-4 py-2 bg-white/10 backdrop-blur-sm rounded-full text-white/80 text-sm mb-8">
+              <Zap className="w-4 h-4" />
+              <span>Enterprise-grade data pipeline visualization</span>
+            </div>
+            
+            <h1 className="text-5xl sm:text-7xl font-bold text-white mb-6">
+              <span className="bg-gradient-to-r from-blue-400 via-purple-400 to-pink-400 bg-clip-text text-transparent">
+                OmniPath
+              </span>
+              <br />
+              <span className="text-3xl sm:text-5xl text-white/90">
+                Database Visualizer
+              </span>
+            </h1>
+            
+            <p className="text-xl text-white/70 mb-12 max-w-2xl mx-auto">
+              Transform your data journey from Bronze to Gold. Visualize, explore, and understand your data pipeline with our cutting-edge Parquet file viewer.
+            </p>
+            
+            <div className="flex flex-col sm:flex-row gap-4 justify-center mb-20">
+              <Link
+                href="/dashboard"
+                className="inline-flex items-center gap-2 px-8 py-4 bg-gradient-to-r from-blue-600 to-purple-600 text-white rounded-xl font-semibold hover:from-blue-700 hover:to-purple-700 transition-all transform hover:scale-105 shadow-lg"
+              >
+                Launch Dashboard
+                <ArrowRight className="w-5 h-5" />
+              </Link>
+              <a
+                href="https://github.com/hyparam/hyparquet"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-2 px-8 py-4 bg-white/10 backdrop-blur-sm text-white rounded-xl font-semibold hover:bg-white/20 transition-all border border-white/20"
+              >
+                Learn More
+              </a>
+            </div>
+            
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-8 max-w-4xl mx-auto">
+              <div className="bg-white/5 backdrop-blur-sm rounded-2xl p-6 border border-white/10">
+                <div className="w-12 h-12 bg-gradient-to-br from-orange-400 to-amber-600 rounded-lg flex items-center justify-center mb-4 mx-auto">
+                  <Database className="w-6 h-6 text-white" />
+                </div>
+                <h3 className="text-xl font-semibold text-white mb-2">Bronze Layer</h3>
+                <p className="text-white/60">Raw data ingestion and storage</p>
+              </div>
+              
+              <div className="bg-white/5 backdrop-blur-sm rounded-2xl p-6 border border-white/10">
+                <div className="w-12 h-12 bg-gradient-to-br from-gray-400 to-slate-600 rounded-lg flex items-center justify-center mb-4 mx-auto">
+                  <Layers className="w-6 h-6 text-white" />
+                </div>
+                <h3 className="text-xl font-semibold text-white mb-2">Silver Layer</h3>
+                <p className="text-white/60">Cleaned and transformed data</p>
+              </div>
+              
+              <div className="bg-white/5 backdrop-blur-sm rounded-2xl p-6 border border-white/10">
+                <div className="w-12 h-12 bg-gradient-to-br from-yellow-400 to-amber-600 rounded-lg flex items-center justify-center mb-4 mx-auto">
+                  <Activity className="w-6 h-6 text-white" />
+                </div>
+                <h3 className="text-xl font-semibold text-white mb-2">Gold Layer</h3>
+                <p className="text-white/60">Business-ready analytics</p>
+              </div>
+            </div>
+            
+            <div className="mt-20 pt-20 border-t border-white/10">
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-8 text-center">
+                <div>
+                  <div className="text-3xl font-bold text-white">3</div>
+                  <div className="text-white/60">Data Layers</div>
+                </div>
+                <div>
+                  <div className="text-3xl font-bold text-white">10+</div>
+                  <div className="text-white/60">File Formats</div>
+                </div>
+                <div>
+                  <div className="text-3xl font-bold text-white">100%</div>
+                  <div className="text-white/60">Browser Native</div>
+                </div>
+                <div>
+                  <div className="text-3xl font-bold text-white">
+                    <Shield className="w-8 h-8 mx-auto" />
+                  </div>
+                  <div className="text-white/60">Secure</div>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
-      </main>
-      <footer className="row-start-3 flex gap-[24px] flex-wrap items-center justify-center">
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/file.svg"
-            alt="File icon"
-            width={16}
-            height={16}
-          />
-          Learn
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/window.svg"
-            alt="Window icon"
-            width={16}
-            height={16}
-          />
-          Examples
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/globe.svg"
-            alt="Globe icon"
-            width={16}
-            height={16}
-          />
-          Go to nextjs.org →
-        </a>
-      </footer>
+      </div>
     </div>
   );
 }
