@@ -61,7 +61,7 @@ export default function ParquetViewer({ filePath, fileData }: ParquetViewerProps
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-64">
+      <div className="flex items-center justify-center h-full">
         <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
       </div>
     );
@@ -76,8 +76,8 @@ export default function ParquetViewer({ filePath, fileData }: ParquetViewerProps
   }
 
   return (
-    <div className="space-y-4">
-      <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-4">
+    <div className="h-screen flex flex-col p-4">
+      <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-4 flex-1 flex flex-col min-h-0">
         <div className="flex items-center justify-between mb-4">
           <h3 className="text-lg font-semibold text-gray-900 dark:text-white">
             {filePath.split('/').pop()}
@@ -109,14 +109,14 @@ export default function ParquetViewer({ filePath, fileData }: ParquetViewerProps
           </div>
         )}
 
-        <div className="overflow-x-auto">
-          <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
-            <thead className="bg-gray-50 dark:bg-gray-900">
+        <div className="overflow-auto flex-1 min-h-0">
+          <table className="w-full divide-y divide-gray-200 dark:divide-gray-700">
+            <thead className="bg-gray-50 dark:bg-gray-900 sticky top-0">
               <tr>
                 {columns.map((col, colIndex) => (
                   <th
                     key={`${col}-${colIndex}`}
-                    className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider"
+                    className="px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider"
                   >
                     {col}
                   </th>
@@ -127,7 +127,7 @@ export default function ParquetViewer({ filePath, fileData }: ParquetViewerProps
               {currentData.map((row, rowIndex) => (
                 <tr key={`row-${startIndex + rowIndex}`} className="hover:bg-gray-50 dark:hover:bg-gray-700">
                   {columns.map((col, colIndex) => (
-                    <td key={`${rowIndex}-${col}-${colIndex}`} className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-gray-100">
+                    <td key={`${rowIndex}-${col}-${colIndex}`} className="px-4 py-3 text-sm text-gray-900 dark:text-gray-100 max-w-xs truncate">
                       {row[col]?.toString() || '-'}
                     </td>
                   ))}

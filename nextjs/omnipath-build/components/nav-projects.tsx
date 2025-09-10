@@ -1,27 +1,11 @@
 "use client"
 
-import { useState } from "react"
-import {
-  ChevronRight,
-  ChevronDown,
-  Database,
-  Folder,
-  File,
-  FileText,
-  Eye,
-  Download,
-} from "lucide-react"
+import * as React from "react"
+import { ChevronRight, File, Folder, Database, FileText } from "lucide-react"
+import { useRouter } from "next/navigation"
 import { useDatabase } from "@/hooks/use-database-context"
-import Link from "next/link"
 import LayerBadge from "../app/components/LayerBadge"
 
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu"
 import {
   Collapsible,
   CollapsibleContent,
@@ -29,232 +13,245 @@ import {
 } from "@/components/ui/collapsible"
 import {
   SidebarGroup,
+  SidebarGroupContent,
   SidebarGroupLabel,
   SidebarMenu,
-  SidebarMenuAction,
   SidebarMenuButton,
   SidebarMenuItem,
   SidebarMenuSub,
-  SidebarMenuSubButton,
-  SidebarMenuSubItem,
-  useSidebar,
 } from "@/components/ui/sidebar"
 
-interface TreeNode {
-  name: string
-  path: string
-  type: 'database' | 'layer' | 'folder' | 'file'
-  layer?: 'bronze' | 'silver' | 'gold'
-  children?: TreeNode[]
-  size?: number
+// Helper function to build nested folder structure from file paths
+function buildFolderStructure(files: any[], databaseName: string, layer: string) {
+  const structure: { [key: string]: any } = {}
+  
+  files.forEach(file => {
+    // Get the original file path but ensure it starts with database/layer
+    let fullPath = file.path.replace(/^\//, '') // Remove leading slash
+    
+    // Extract relative path from the full path for folder structure
+    let relativePath = file.path.replace(`/${databaseName}/${layer}/`, '').replace(/^\//, '')
+    
+    // Remove /data/ from the path structure for display
+    const cleanRelativePath = relativePath.replace(/\/data\//g, '/').replace(/^data\//, '').replace(/\/data$/, '')
+    
+    // If no nested path, it's a direct file
+    if (!cleanRelativePath.includes('/')) {
+      structure[file.name] = {
+        name: file.name,
+        path: fullPath, // Use the original full path
+        isFile: true
+      }
+      return
+    }
+    
+    // Build nested folder structure
+    const pathParts = cleanRelativePath.split('/').filter((part: string) => part !== 'data' && part !== '')
+    const fileName = pathParts.pop()
+    
+    let current = structure
+    
+    // Create nested folders
+    for (const part of pathParts) {
+      if (!current[part]) {
+        current[part] = {
+          name: part,
+          children: {},
+          isFile: false
+        }
+      }
+      current = current[part].children
+    }
+    
+    // Add the file
+    if (fileName) {
+      current[fileName] = {
+        name: fileName,
+        path: fullPath, // Use the original full path
+        isFile: true
+      }
+    }
+  })
+  
+  // Convert to nested array format
+  function convertToArray(obj: any): any[] {
+    return Object.entries(obj).map(([, value]: [string, any]) => {
+      if (value.isFile) {
+        return {
+          name: value.name,
+          path: value.path
+        }
+      } else {
+        return [value.name, ...convertToArray(value.children)]
+      }
+    })
+  }
+  
+  return convertToArray(structure)
 }
 
-function TreeItem({ 
-  node, 
-  onFileSelect, 
-  depth = 0 
-}: { 
-  node: TreeNode
-  onFileSelect?: (path: string) => void
-  depth?: number 
-}) {
-  const [isExpanded, setIsExpanded] = useState(depth < 2)
-  const { isMobile } = useSidebar()
-
-  const handleClick = () => {
-    if (node.type === 'file') {
-      onFileSelect?.(node.path)
-    } else if (node.children) {
-      setIsExpanded(!isExpanded)
-    }
+// Helper function to convert database files to nested array structure
+function buildDatabaseTree(selectedDatabase: any) {
+  if (!selectedDatabase) return []
+  
+  const tree: any[] = []
+  
+  // Add layers that have files
+  if (selectedDatabase.layers.bronze.length > 0) {
+    const bronzeStructure = buildFolderStructure(selectedDatabase.layers.bronze, selectedDatabase.name, 'bronze')
+    tree.push([
+      "Bronze Layer",
+      ...bronzeStructure,
+      { layer: 'bronze' as const }
+    ])
   }
-
-  const getIcon = () => {
-    if (node.type === 'database') return <Database className="w-4 h-4" />
-    if (node.type === 'folder' || node.type === 'layer') return <Folder className="w-4 h-4" />
-    return <FileText className="w-4 h-4" />
+  
+  if (selectedDatabase.layers.silver.length > 0) {
+    const silverStructure = buildFolderStructure(selectedDatabase.layers.silver, selectedDatabase.name, 'silver')
+    tree.push([
+      "Silver Layer", 
+      ...silverStructure,
+      { layer: 'silver' as const }
+    ])
   }
-
-  const formatSize = (bytes?: number) => {
-    if (!bytes) return ''
-    const mb = bytes / (1024 * 1024)
-    return mb > 1 ? `${mb.toFixed(1)}MB` : `${(bytes / 1024).toFixed(1)}KB`
+  
+  if (selectedDatabase.layers.gold.length > 0) {
+    const goldStructure = buildFolderStructure(selectedDatabase.layers.gold, selectedDatabase.name, 'gold')
+    tree.push([
+      "Gold Layer",
+      ...goldStructure,
+      { layer: 'gold' as const }
+    ])
   }
-
-  if (node.children && node.children.length > 0) {
-    return (
-      <Collapsible open={isExpanded} onOpenChange={setIsExpanded}>
-        <SidebarMenuItem>
-          <CollapsibleTrigger asChild>
-            <SidebarMenuButton 
-              className="w-full justify-start"
-              style={{ paddingLeft: `${depth * 0.75 + 0.5}rem` }}
-            >
-              {isExpanded ? 
-                <ChevronDown className="w-4 h-4 text-muted-foreground" /> : 
-                <ChevronRight className="w-4 h-4 text-muted-foreground" />
-              }
-              {getIcon()}
-              <span className="flex-1 text-left truncate">{node.name}</span>
-              {node.layer && <LayerBadge layer={node.layer} className="scale-75" />}
-              {node.children && (
-                <span className="text-xs text-muted-foreground">
-                  {node.children.length}
-                </span>
-              )}
-            </SidebarMenuButton>
-          </CollapsibleTrigger>
-          <CollapsibleContent>
-            <SidebarMenuSub>
-              {node.children.map((child) => (
-                <TreeItem 
-                  key={child.path} 
-                  node={child} 
-                  onFileSelect={onFileSelect} 
-                  depth={depth + 1} 
-                />
-              ))}
-            </SidebarMenuSub>
-          </CollapsibleContent>
-        </SidebarMenuItem>
-      </Collapsible>
-    )
-  }
-
-  // Leaf node (file)
-  return (
-    <SidebarMenuItem>
-      <SidebarMenuButton 
-        className="w-full justify-start text-blue-600 dark:text-blue-400"
-        style={{ paddingLeft: `${depth * 0.75 + 1.25}rem` }}
-        onClick={handleClick}
-      >
-        <File className="w-4 h-4" />
-        <span className="flex-1 text-left truncate">{node.name}</span>
-        {node.size && (
-          <span className="text-xs text-muted-foreground">
-            {formatSize(node.size)}
-          </span>
-        )}
-      </SidebarMenuButton>
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <SidebarMenuAction showOnHover>
-            <Eye />
-            <span className="sr-only">View file</span>
-          </SidebarMenuAction>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent
-          className="w-48 rounded-lg"
-          side={isMobile ? "bottom" : "right"}
-          align={isMobile ? "end" : "start"}
-        >
-          <DropdownMenuItem onClick={() => onFileSelect?.(node.path)}>
-            <Eye className="text-muted-foreground" />
-            <span>View Data</span>
-          </DropdownMenuItem>
-          <DropdownMenuSeparator />
-          <DropdownMenuItem>
-            <Download className="text-muted-foreground" />
-            <span>Download File</span>
-          </DropdownMenuItem>
-        </DropdownMenuContent>
-      </DropdownMenu>
-    </SidebarMenuItem>
-  )
+  
+  return tree
 }
 
 export function NavDatabaseTree() {
   const { selectedDatabase, loading } = useDatabase()
+  const router = useRouter()
   
   if (loading) {
     return (
-      <SidebarGroup className="group-data-[collapsible=icon]:hidden">
+      <SidebarGroup>
         <SidebarGroupLabel>Database Structure</SidebarGroupLabel>
-        <SidebarMenu>
-          <SidebarMenuItem>
-            <SidebarMenuButton disabled>
-              <FileText className="w-4 h-4 animate-pulse" />
-              <span>Loading...</span>
-            </SidebarMenuButton>
-          </SidebarMenuItem>
-        </SidebarMenu>
+        <SidebarGroupContent>
+          <SidebarMenu>
+            <SidebarMenuItem>
+              <SidebarMenuButton disabled>
+                <FileText className="animate-pulse" />
+                Loading...
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+          </SidebarMenu>
+        </SidebarGroupContent>
       </SidebarGroup>
     )
   }
 
   if (!selectedDatabase) {
     return (
-      <SidebarGroup className="group-data-[collapsible=icon]:hidden">
+      <SidebarGroup>
         <SidebarGroupLabel>Database Structure</SidebarGroupLabel>
-        <SidebarMenu>
-          <SidebarMenuItem>
-            <SidebarMenuButton disabled>
-              <Database className="w-4 h-4 opacity-50" />
-              <span className="text-muted-foreground">No database selected</span>
-            </SidebarMenuButton>
-          </SidebarMenuItem>
-        </SidebarMenu>
+        <SidebarGroupContent>
+          <SidebarMenu>
+            <SidebarMenuItem>
+              <SidebarMenuButton disabled>
+                <Database className="opacity-50" />
+                <span className="text-muted-foreground">No database selected</span>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+          </SidebarMenu>
+        </SidebarGroupContent>
       </SidebarGroup>
     )
   }
 
-  const handleFileSelect = (path: string) => {
-    // Navigate to file view or trigger file viewer
-    console.log('Selected file:', path)
-    // Could implement routing to a file viewer page
+  const handleFileSelect = (filePath: string) => {
+    // Use Next.js router for client-side navigation (no page reload)
+    router.push(`/viewer/${filePath}`)
   }
 
-  const databaseTree: TreeNode = {
-    name: selectedDatabase.name,
-    path: selectedDatabase.path,
-    type: 'database',
-    children: [
-      {
-        name: 'Bronze Layer',
-        path: `${selectedDatabase.path}/bronze`,
-        type: 'layer',
-        layer: 'bronze',
-        children: selectedDatabase.layers.bronze.map(file => ({
-          name: file.name,
-          path: file.path,
-          type: 'file' as const,
-          size: file.size
-        }))
-      },
-      {
-        name: 'Silver Layer', 
-        path: `${selectedDatabase.path}/silver`,
-        type: 'layer',
-        layer: 'silver',
-        children: selectedDatabase.layers.silver.map(file => ({
-          name: file.name,
-          path: file.path,
-          type: 'file' as const,
-          size: file.size
-        }))
-      },
-      {
-        name: 'Gold Layer',
-        path: `${selectedDatabase.path}/gold`, 
-        type: 'layer',
-        layer: 'gold',
-        children: selectedDatabase.layers.gold.map(file => ({
-          name: file.name,
-          path: file.path,
-          type: 'file' as const,
-          size: file.size
-        }))
-      }
-    ].filter(layer => layer.children && layer.children.length > 0)
+  const databaseTree = buildDatabaseTree(selectedDatabase)
+
+  return (
+    <SidebarGroup>
+      <SidebarGroupLabel>Database Structure</SidebarGroupLabel>
+      <SidebarGroupContent>
+        <SidebarMenu>
+          {databaseTree.map((item, index) => (
+            <Tree key={index} item={item} onFileSelect={handleFileSelect} />
+          ))}
+        </SidebarMenu>
+      </SidebarGroupContent>
+    </SidebarGroup>
+  )
+}
+
+function Tree({ 
+  item, 
+  onFileSelect 
+}: { 
+  item: string | any[] | { name: string; path: string }
+  onFileSelect?: (filePath: string) => void 
+}) {
+  // Handle file objects with name and path
+  if (typeof item === 'object' && !Array.isArray(item) && 'name' in item && 'path' in item) {
+    return (
+      <SidebarMenuButton
+        className="data-[active=true]:bg-transparent text-blue-600 dark:text-blue-400"
+        onClick={() => onFileSelect?.(item.path)}
+      >
+        <File />
+        {item.name}
+      </SidebarMenuButton>
+    )
+  }
+
+  if (!Array.isArray(item)) {
+    // This is a simple string file (shouldn't happen with new structure)
+    return (
+      <SidebarMenuButton
+        className="data-[active=true]:bg-transparent text-blue-600 dark:text-blue-400"
+        onClick={() => onFileSelect?.(item)}
+      >
+        <File />
+        {item}
+      </SidebarMenuButton>
+    )
+  }
+
+  // This is a folder (layer)
+  const [name, ...items] = item
+  const layerInfo = items.find(i => typeof i === 'object' && i.layer)
+  const files = items.filter(i => typeof i !== 'object' || !i.layer)
+
+  if (!files.length) {
+    return null
   }
 
   return (
-    <SidebarGroup className="group-data-[collapsible=icon]:hidden">
-      <SidebarGroupLabel>Database Structure</SidebarGroupLabel>
-      <SidebarMenu>
-        <TreeItem node={databaseTree} onFileSelect={handleFileSelect} />
-      </SidebarMenu>
-    </SidebarGroup>
+    <SidebarMenuItem>
+      <Collapsible
+        className="group/collapsible [&[data-state=open]>button>svg:first-child]:rotate-90"
+        defaultOpen={true}
+      >
+        <CollapsibleTrigger asChild>
+          <SidebarMenuButton>
+            <ChevronRight className="transition-transform" />
+            <Folder />
+            {name}
+            {layerInfo && <LayerBadge layer={layerInfo.layer} className="scale-75 ml-auto" />}
+          </SidebarMenuButton>
+        </CollapsibleTrigger>
+        <CollapsibleContent>
+          <SidebarMenuSub>
+            {files.map((fileItem, index) => (
+              <Tree key={index} item={fileItem} onFileSelect={onFileSelect} />
+            ))}
+          </SidebarMenuSub>
+        </CollapsibleContent>
+      </Collapsible>
+    </SidebarMenuItem>
   )
 }
