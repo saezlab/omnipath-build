@@ -243,16 +243,16 @@ class PyPathAdapter:
     def save_to_parquet(
         self,
         method_name: str,
-        output_path: Path,
+        output_path: Path | str,
         resource_id: str,
         dataset_name: str,
         **kwargs: Any,  # noqa: ANN401
-    ) -> tuple[Path, int]:
+    ) -> tuple[Path | str, int]:
         """Get resource data and save directly to parquet file.
 
         Args:
             method_name: Full method name (e.g., 'uniprot_db.all_uniprots')
-            output_path: Path to save the parquet file
+            output_path: Path or S3 URL to save the parquet file
             resource_id: Resource identifier for metadata
             dataset_name: Dataset name for metadata
             **kwargs: Arguments to pass to the pypath method
@@ -276,16 +276,42 @@ class PyPathAdapter:
         df['metadata_row_number'] = range(1, len(df) + 1)
         df['metadata_pypath_method'] = method_name
 
-        # Ensure parent directory exists
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-
-        # Save to parquet
-        df.to_parquet(output_path, index=False)
-
         row_count = len(df)
-        self.logger.info(f'Saved {row_count} rows to {output_path}')
 
+        # Handle S3 vs local paths
+        if isinstance(output_path, str) and output_path.startswith('s3://'):
+            # Save directly to S3 using DuckDB
+            self._save_to_s3_parquet(df, output_path)
+        else:
+            # Ensure parent directory exists for local paths
+            if isinstance(output_path, Path):
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+
+            # Save to local parquet file
+            df.to_parquet(output_path, index=False)
+
+        self.logger.info(f'Saved {row_count} rows to {output_path}')
         return output_path, row_count
+
+    def _save_to_s3_parquet(self, df: pd.DataFrame, s3_path: str) -> None:
+        """Save DataFrame to S3 as parquet using DuckDB.
+
+        Args:
+            df: DataFrame to save
+            s3_path: S3 path for the parquet file
+        """
+        # This method will be overridden by subclasses that have DuckDB connection
+        # For now, save to temp file for bronze loader to handle
+        import tempfile
+
+        with tempfile.NamedTemporaryFile(
+            suffix='.parquet', delete=False
+        ) as temp_file:
+            df.to_parquet(temp_file.name, index=False)
+            temp_path = temp_file.name
+
+        # Store temp path for caller to handle S3 upload
+        self._temp_parquet_path = temp_path
 
     def get_method_parameters(self, method_name: str) -> dict[str, Any]:
         """Get parameter information for a method.

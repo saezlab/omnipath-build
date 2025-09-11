@@ -8,7 +8,7 @@ from typing import Any
 import logging
 from pathlib import Path
 
-from .constants import SQLPatterns
+from .constants import S3Paths, SQLPatterns
 
 __all__ = [
     'SQLAdapter',
@@ -21,13 +21,19 @@ logger = logging.getLogger(__name__)
 class SQLAdapter:
     """Adapts SQL queries for PostgreSQL by adding schema prefixes and handling naming conventions."""
 
-    def __init__(self, schema_mappings: dict[str, str] | None = None) -> None:
+    def __init__(
+        self,
+        schema_mappings: dict[str, str] | None = None,
+        database_name: str | None = None,
+    ) -> None:
         """Initialize SQL adapter.
 
         Args:
             schema_mappings: Custom schema mappings (defaults to PostgreSQL patterns)
+            database_name: Database name for S3 path resolution
         """
         self.schema_mappings = schema_mappings or SQLPatterns.SCHEMA_PREFIXES
+        self.database_name = database_name
 
         # Build replacement patterns
         self.replacement_patterns = self._build_replacement_patterns()
@@ -113,6 +119,55 @@ class SQLAdapter:
         # Log if changes were made
         if adapted_sql != sql:
             logger.debug('SQL adapted with schema prefixes')
+
+        # Apply S3 path replacements if database name is provided
+        if self.database_name:
+            adapted_sql = self._replace_s3_paths(adapted_sql)
+
+        return adapted_sql
+
+    def _replace_s3_paths(self, sql: str) -> str:
+        """Replace local parquet paths with S3 paths.
+
+        Args:
+            sql: SQL content to adapt
+
+        Returns:
+            SQL with S3 paths
+        """
+        if not self.database_name:
+            return sql
+
+        adapted_sql = sql
+
+        # Replace silver layer paths
+        # Pattern: read_parquet('silver/data/tablename/*.parquet')
+        silver_pattern = r"read_parquet\('silver/data/([^/]+)/\*\.parquet'\)"
+
+        def replace_silver(match: re.Match[str]) -> str:
+            table_name = match.group(1)
+            s3_prefix = S3Paths.get_silver_prefix(
+                self.database_name, table_name
+            )
+            return f"read_parquet('{s3_prefix}*.parquet')"
+
+        adapted_sql = re.sub(silver_pattern, replace_silver, adapted_sql)
+
+        # Replace gold layer paths
+        # Pattern: read_parquet('gold/data/tablename.parquet')
+        gold_pattern = r"read_parquet\('gold/data/([^/]+)\.parquet'\)"
+
+        def replace_gold(match: re.Match[str]) -> str:
+            table_name = match.group(1)
+            bucket = S3Paths.get_bucket_name()
+            s3_path = f's3://{bucket}/gold/{self.database_name}/data/{table_name}.parquet'
+            return f"read_parquet('{s3_path}')"
+
+        adapted_sql = re.sub(gold_pattern, replace_gold, adapted_sql)
+
+        # Log if changes were made
+        if adapted_sql != sql:
+            logger.debug('SQL adapted with S3 paths')
 
         return adapted_sql
 

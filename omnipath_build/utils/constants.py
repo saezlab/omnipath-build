@@ -3,11 +3,13 @@
 Centralizes magic numbers, patterns, and repeated values.
 """
 
+import os
 from pathlib import Path
 
 __all__ = [
     'LoaderConstants',
     'SQLPatterns',
+    'S3Paths',
     'get_database_path',
 ]
 
@@ -101,3 +103,53 @@ class SQLPatterns:
         'order',
         'group',
     }
+
+
+class S3Paths:
+    """S3 path constants and utilities."""
+
+    @staticmethod
+    def get_bucket_name() -> str:
+        """Get S3 bucket name from environment."""
+        return os.getenv('DATA_BUCKET', 'database-builder')
+
+    @staticmethod
+    def get_bronze_prefix(resource_id: str, dataset_name: str) -> str:
+        """Get S3 prefix for bronze data (shared across databases).
+
+        Args:
+            resource_id: Resource identifier
+            dataset_name: Dataset name
+
+        Returns:
+            S3 prefix for bronze data
+        """
+        bucket = S3Paths.get_bucket_name()
+        return f's3://{bucket}/bronze/{resource_id}/{dataset_name}/'
+
+    @staticmethod
+    def get_silver_prefix(database_name: str, table_name: str) -> str:
+        """Get S3 prefix for silver data (per database).
+
+        Args:
+            database_name: Database name
+            table_name: Table name
+
+        Returns:
+            S3 prefix for silver data
+        """
+        bucket = S3Paths.get_bucket_name()
+        return f's3://{bucket}/silver/{database_name}/data/{table_name}/'
+
+    @staticmethod
+    def get_gold_prefix(database_name: str) -> str:
+        """Get S3 prefix for gold data (per database).
+
+        Args:
+            database_name: Database name
+
+        Returns:
+            S3 prefix for gold data
+        """
+        bucket = S3Paths.get_bucket_name()
+        return f's3://{bucket}/gold/{database_name}/data/'

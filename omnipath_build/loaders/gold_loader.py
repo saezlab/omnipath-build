@@ -14,7 +14,8 @@ sys.path.append(str(Path(__file__).parent.parent))
 
 # Import utilities
 from utils import BaseLoader, GoldLoaderError, log_execution_time
-from utils.constants import get_database_path
+from utils.constants import S3Paths, get_database_path
+from utils.s3_config import get_s3_gold_path
 from utils.sql_adapter import SQLAdapter, SQLExecutionManager
 
 __all__ = [
@@ -43,14 +44,12 @@ class GoldLoader(BaseLoader):
         # Path to SQL transforms using database name
         self.transforms_dir = get_database_path(self.database_name) / 'gold'
 
-        # Gold data output path
-        self.gold_data_path = self.transforms_dir / 'data'
-        self.gold_data_path.mkdir(parents=True, exist_ok=True)
+        # Gold data will be stored in S3 (per database)
+        # Silver data is also in S3 (per database)
 
-        # Silver data input path
-        self.silver_data_path = (
-            get_database_path(self.database_name) / 'silver' / 'data'
-        )
+        # Keep local gold data path for backwards compatibility (optional)
+        self.local_gold_data_path = self.transforms_dir / 'data'
+        self.local_gold_data_path.mkdir(parents=True, exist_ok=True)
 
         if not self.transforms_dir.exists():
             raise GoldLoaderError(
@@ -58,7 +57,7 @@ class GoldLoader(BaseLoader):
             )
 
         # Initialize SQL adapter and execution manager
-        self.sql_adapter = SQLAdapter()
+        self.sql_adapter = SQLAdapter(database_name=self.database_name)
         self.execution_manager = SQLExecutionManager(
             self.sql_adapter, self.transforms_dir
         )
@@ -66,8 +65,12 @@ class GoldLoader(BaseLoader):
         self.logger.info(
             f'Gold loader initialized, transforms dir: {self.transforms_dir}'
         )
-        self.logger.info(f'Gold data path: {self.gold_data_path}')
-        self.logger.info(f'Silver data path: {self.silver_data_path}')
+        self.logger.info(
+            f'Gold data storage: S3 (per database: {self.database_name})'
+        )
+        self.logger.info(
+            f'Silver data storage: S3 (per database: {self.database_name})'
+        )
 
     def _get_ordered_sql_files(self) -> list[str]:
         """Get SQL files ordered by numeric prefix in filename."""
@@ -154,7 +157,7 @@ class GoldLoader(BaseLoader):
         return summary
 
     def _execute_sql_file_to_parquet(self, filename: str) -> None:
-        """Execute a single SQL file and write results to Parquet."""
+        """Execute a single SQL file and write results to S3 Parquet."""
         sql_file = self.transforms_dir / filename
 
         # Read and adapt SQL content
@@ -162,11 +165,11 @@ class GoldLoader(BaseLoader):
 
         # Extract table name from filename (e.g., "5_gold_entity.sql" -> "entity")
         table_name = self._extract_table_name(filename)
-        output_path = self.gold_data_path / f'{table_name}.parquet'
+        output_path = get_s3_gold_path(self.database_name, table_name)
 
-        self.logger.info(f'Writing {table_name} to {output_path}')
+        self.logger.info(f'Writing {table_name} to S3: {output_path}')
 
-        # Wrap SQL in COPY statement to write to Parquet
+        # Wrap SQL in COPY statement to write to S3 Parquet
         copy_sql = f"""
             COPY (
                 {sql_content}
@@ -182,7 +185,7 @@ class GoldLoader(BaseLoader):
         """).fetchone()[0]
 
         self.logger.info(
-            f'Wrote {self.format_row_count(row_count)} rows to {output_path}'
+            f'Wrote {self.format_row_count(row_count)} rows to S3: {output_path}'
         )
 
     def _extract_table_name(self, filename: str) -> str:
@@ -274,26 +277,21 @@ class GoldLoader(BaseLoader):
         return results
 
     def get_table_stats(self) -> dict[str, int]:
-        """Get statistics for all gold Parquet files."""
+        """Get statistics for all gold S3 Parquet files."""
         stats = {}
 
-        if not self.gold_data_path.exists():
-            self.logger.warning(
-                f'Gold data directory does not exist: {self.gold_data_path}'
-            )
-            return stats
-
         try:
-            # Find all .parquet files in gold data directory
-            parquet_files = list(self.gold_data_path.glob('*.parquet'))
+            # List all gold parquet files in S3
+            s3_prefix = S3Paths.get_gold_prefix(self.database_name)
+            s3_files = self.list_s3_files(s3_prefix)
 
-            for parquet_file in parquet_files:
-                table_name = (
-                    parquet_file.stem
-                )  # filename without .parquet extension
+            for s3_file in s3_files:
+                table_name = Path(
+                    s3_file
+                ).stem  # filename without .parquet extension
                 try:
                     count_result = self.execute_sql(
-                        f"SELECT COUNT(*) FROM read_parquet('{parquet_file}')"
+                        f"SELECT COUNT(*) FROM read_parquet('{s3_file}')"
                     ).fetchone()
                     stats[table_name] = count_result[0] if count_result else 0
                 except (OSError, RuntimeError) as e:
@@ -303,19 +301,19 @@ class GoldLoader(BaseLoader):
                     stats[table_name] = 0
 
         except (OSError, RuntimeError) as e:
-            self.logger.error(f'Failed to get table statistics: {e}')
+            self.logger.error(f'Failed to get table statistics from S3: {e}')
 
         return stats
 
     def validate_gold_data(self) -> None:
-        """Validate gold Parquet files and show statistics."""
-        self.logger.info('Validating gold layer data...')
+        """Validate gold S3 Parquet files and show statistics."""
+        self.logger.info('Validating gold S3 layer data...')
 
         # Get table statistics
         stats = self.get_table_stats()
 
         if not stats:
-            self.logger.warning('No gold Parquet files found')
+            self.logger.warning('No gold Parquet files found in S3')
             return
 
         for table_name, row_count in stats.items():
@@ -326,9 +324,11 @@ class GoldLoader(BaseLoader):
 
             # Show sample data
             try:
-                parquet_file = self.gold_data_path / f'{table_name}.parquet'
+                s3_parquet_file = get_s3_gold_path(
+                    self.database_name, table_name
+                )
                 sample = self.execute_sql(
-                    f"SELECT * FROM read_parquet('{parquet_file}') LIMIT 2"
+                    f"SELECT * FROM read_parquet('{s3_parquet_file}') LIMIT 2"
                 ).fetchall()
 
                 if sample:

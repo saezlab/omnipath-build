@@ -15,7 +15,8 @@ sys.path.append(str(Path(__file__).parent.parent))
 
 # Import utilities
 from utils import BaseLoader, SilverLoaderError, log_execution_time
-from utils.constants import get_database_path
+from utils.constants import S3Paths, get_database_path
+from utils.s3_config import get_s3_silver_path, get_latest_s3_parquet
 
 __all__ = [
     'SilverLoader',
@@ -55,14 +56,12 @@ class SilverLoader(BaseLoader):
 
     def _initialize(self) -> None:
         """Initialize silver-specific attributes."""
-        # Use database-specific bronze data path
-        self.bronze_path = (
-            get_database_path(self.database_name) / 'bronze' / 'data'
-        )
+        # Bronze data is now in S3 (shared across databases)
+        # Silver data will also be stored in S3 (per database)
 
-        # Silver data output path
-        self.silver_data_path = self.silver_config_path / 'data'
-        self.silver_data_path.mkdir(parents=True, exist_ok=True)
+        # Keep local silver data path for backwards compatibility (optional)
+        self.local_silver_data_path = self.silver_config_path / 'data'
+        self.local_silver_data_path.mkdir(parents=True, exist_ok=True)
 
         # Resource configs directory for reading YAML configurations
         self.resource_configs_path = (
@@ -75,13 +74,12 @@ class SilverLoader(BaseLoader):
         )
         self._load_transformation_functions(transforms_path)
 
-        # Create silver data directories for each table
-        self._create_silver_directories()
-
+        self.logger.info('Silver loader initialized')
+        self.logger.info('Bronze data storage: S3 (shared across databases)')
         self.logger.info(
-            f'Silver loader initialized, bronze path: {self.bronze_path}'
+            f'Silver data storage: S3 (per database: {self.database_name})'
         )
-        self.logger.info(f'Silver data path: {self.silver_data_path}')
+        self.logger.info(f'Local silver config path: {self.silver_config_path}')
 
     def _load_transformation_functions(self, transforms_path: Path) -> None:
         """Load SQL transformation functions from file."""
@@ -104,19 +102,6 @@ class SilverLoader(BaseLoader):
         except Exception as e:
             self.logger.error(f'Failed to load transformation functions: {e}')
             raise SilverLoaderError(f'Transform loading failed: {e}') from e
-
-    def _create_silver_directories(self) -> None:
-        """Create silver data directories for each table."""
-        try:
-            for table_name in self.table_definitions.keys():
-                table_dir = self.silver_data_path / table_name
-                table_dir.mkdir(parents=True, exist_ok=True)
-                self.logger.debug(f'Created silver directory: {table_dir}')
-
-            self.logger.info('Created silver data directories')
-        except Exception as e:
-            self.logger.error(f'Failed to create silver directories: {e}')
-            raise SilverLoaderError(f'Directory creation failed: {e}') from e
 
     def load(self, resource_id: str | None = None) -> dict[str, int]:
         """Load silver data for one or all resources.
@@ -182,11 +167,13 @@ class SilverLoader(BaseLoader):
         results = {}
 
         for dataset in datasets:
-            bronze_file = self.get_latest_bronze(resource_id, dataset['name'])
+            bronze_file = self.get_latest_bronze_s3(
+                resource_id, dataset['name']
+            )
 
             if not bronze_file:
                 self.logger.warning(
-                    f'No bronze parquet file found for {resource_id}/{dataset["name"]}'
+                    f'No bronze parquet file found in S3 for {resource_id}/{dataset["name"]}'
                 )
                 continue
 
@@ -200,9 +187,9 @@ class SilverLoader(BaseLoader):
                 )
                 continue
 
-            # Transform and write to Parquet
+            # Transform and write to S3 Parquet
             try:
-                row_count = self._transform_and_write_parquet(
+                row_count = self._transform_and_write_s3_parquet(
                     resource_info,
                     dataset['name'],
                     bronze_file,
@@ -338,50 +325,35 @@ class SilverLoader(BaseLoader):
                 ]
             return []
 
-    def get_latest_bronze(
+    def get_latest_bronze_s3(
         self, resource_id: str, dataset_name: str
-    ) -> Path | None:
-        """Get the latest bronze parquet file for a dataset."""
-        dataset_dir = self.bronze_path / resource_id / dataset_name
+    ) -> str | None:
+        """Get the latest bronze parquet file for a dataset from S3."""
+        return get_latest_s3_parquet(self.conn, resource_id, dataset_name)
 
-        if not dataset_dir.exists():
-            return None
-
-        parquet_files = list(dataset_dir.glob('*.parquet'))
-        if not parquet_files:
-            return None
-
-        # Sort by filename (timestamp) and return the latest
-        return sorted(parquet_files)[-1]
-
-    def _transform_and_write_parquet(
+    def _transform_and_write_s3_parquet(
         self,
         resource_info: dict[str, Any],
         dataset_name: str,
-        bronze_file: Path,
+        bronze_s3_file: str,
         target_table: str,
         data_processing: dict[str, Any],
     ) -> int:
-        """Transform data from bronze parquet and write to silver Parquet file."""
+        """Transform data from bronze S3 parquet and write to silver S3 Parquet file."""
         # dataset_name is kept for interface consistency but not used in current implementation
         source_database = resource_info['id']
-        output_path = (
-            self.silver_data_path / target_table / f'{source_database}.parquet'
+        output_path = get_s3_silver_path(
+            self.database_name, target_table, source_database
         )
 
-        self.logger.info(f'Transforming {bronze_file} -> {output_path}')
+        self.logger.info(f'Transforming {bronze_s3_file} -> {output_path}')
 
-        # Check if parquet file exists
-        if not bronze_file.exists():
-            self.logger.warning(
-                f'Bronze parquet file {bronze_file} does not exist'
-            )
-            return 0
+        # S3 files are always assumed to exist if returned by get_latest_bronze_s3
 
         # Get available columns for validation
-        available_columns = self._get_available_columns(bronze_file)
+        available_columns = self._get_available_columns_s3(bronze_s3_file)
         if not available_columns:
-            self.logger.warning(f'No columns found in {bronze_file}')
+            self.logger.warning(f'No columns found in {bronze_s3_file}')
             return 0
 
         # Get field mappings from data_processing
@@ -410,17 +382,14 @@ class SilverLoader(BaseLoader):
                 )
                 select_parts.append(f'{expr} as "{col}"')
 
-        # Ensure output directory exists
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-
-        # Build and execute COPY query to write Parquet
+        # Build and execute COPY query to write to S3 Parquet
         select_clause = ',\n            '.join(select_parts)
 
         transform_sql = f"""
             COPY (
                 SELECT
                     {select_clause}
-                FROM read_parquet('{bronze_file}')
+                FROM read_parquet('{bronze_s3_file}')
             ) TO '{output_path}' (FORMAT PARQUET, COMPRESSION ZSTD)
         """
 
@@ -442,6 +411,25 @@ class SilverLoader(BaseLoader):
         except Exception as e:
             self.logger.error(f'SQL execution failed: {e}')
             raise SilverLoaderError(f'Transform failed: {e}') from e
+
+    def _get_available_columns_s3(self, bronze_s3_file: str) -> set[str]:
+        """Get available columns from bronze S3 parquet file."""
+        try:
+            result = self.execute_sql(f"""
+                SELECT * FROM read_parquet('{bronze_s3_file}') LIMIT 0
+            """).description
+
+            columns = {desc[0] for desc in result}
+            self.logger.debug(
+                f'Available columns in {bronze_s3_file}: {columns}'
+            )
+            return columns
+
+        except RuntimeError as e:
+            self.logger.warning(
+                f'Could not get column names from {bronze_s3_file}: {e}'
+            )
+            return set()
 
     def _get_available_columns(self, bronze_file: Path) -> set[str]:
         """Get available columns from bronze parquet file."""
@@ -559,34 +547,32 @@ class SilverLoader(BaseLoader):
         return f'{transform_func}({", ".join(arg_parts)})'
 
     def validate_silver_data(self) -> None:
-        """Validate silver Parquet files and show statistics."""
-        self.logger.info('Validating silver Parquet data...')
+        """Validate silver S3 Parquet files and show statistics."""
+        self.logger.info('Validating silver S3 Parquet data...')
 
-        if not self.silver_data_path.exists():
-            self.logger.warning(
-                f'Silver data directory does not exist: {self.silver_data_path}'
-            )
-            return
-
-        for table_dir in self.silver_data_path.iterdir():
-            if not table_dir.is_dir():
-                continue
-
-            table_name = table_dir.name
+        # Get all silver tables from definitions
+        for table_name in self.table_definitions.keys():
             self.logger.info(f'\n{table_name.upper()} table:')
 
             try:
-                parquet_files = list(table_dir.glob('*.parquet'))
-                if not parquet_files:
-                    self.logger.info('  No Parquet files found')
+                # List S3 files for this table
+                s3_prefix = S3Paths.get_silver_prefix(
+                    self.database_name, table_name
+                )
+                s3_files = self.list_s3_files(s3_prefix)
+
+                if not s3_files:
+                    self.logger.info('  No Parquet files found in S3')
                     continue
 
                 # Get row counts by source file
                 total_rows = 0
-                for parquet_file in parquet_files:
-                    source_db = parquet_file.stem
+                for s3_file in s3_files:
+                    source_db = Path(
+                        s3_file
+                    ).stem  # Extract source database from filename
                     row_count = self.execute_sql(f"""
-                        SELECT COUNT(*) FROM read_parquet('{parquet_file}')
+                        SELECT COUNT(*) FROM read_parquet('{s3_file}')
                     """).fetchone()[0]
 
                     self.logger.info(
@@ -599,9 +585,9 @@ class SilverLoader(BaseLoader):
                 )
 
                 # Show sample data from first file
-                if parquet_files:
+                if s3_files:
                     sample = self.execute_sql(f"""
-                        SELECT * FROM read_parquet('{parquet_files[0]}') LIMIT 2
+                        SELECT * FROM read_parquet('{s3_files[0]}') LIMIT 2
                     """).fetchall()
 
                     if sample:

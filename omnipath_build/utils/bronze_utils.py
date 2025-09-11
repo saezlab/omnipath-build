@@ -140,6 +140,68 @@ class BronzeWriter:
             # Clean up any temporary tables
             self._cleanup_temp_tables()
 
+    def write_to_bronze_from_s3(
+        self,
+        resource_id: str,
+        dataset_name: str,
+        s3_parquet_path: str,
+    ) -> int:
+        """Write first N rows to PostgreSQL bronze schema from S3 parquet file.
+
+        Args:
+            resource_id: Resource identifier
+            dataset_name: Dataset name
+            s3_parquet_path: S3 path to parquet file
+
+        Returns:
+            Number of rows written
+        """
+        if not self.pg_enabled:
+            logger.info(
+                f'Skipping PostgreSQL bronze write for {resource_id}/{dataset_name} (DuckDB-only mode)'
+            )
+            return 0
+
+        table_name = self._sanitize_table_name(resource_id, dataset_name)
+
+        try:
+            with self._get_pg_connection() as conn:
+                with conn.cursor() as cur:
+                    # Drop existing table
+                    cur.execute(
+                        f'DROP TABLE IF EXISTS bronze.{table_name} CASCADE'
+                    )
+
+                    # Get sample data from S3 parquet
+                    cols, rows = self._read_s3_parquet_sample(s3_parquet_path)
+
+                    if not cols or not rows:
+                        logger.warning(
+                            f'No data found in S3 parquet for bronze table {table_name}'
+                        )
+                        return 0
+
+                    # Create and populate table
+                    self._create_bronze_table(cur, table_name, cols)
+                    row_count = self._insert_bronze_data(
+                        cur, table_name, cols, rows, resource_id, dataset_name
+                    )
+
+                    conn.commit()
+                    logger.info(
+                        f'✅ Wrote {row_count} rows to PostgreSQL bronze.{table_name} from S3'
+                    )
+                    return row_count
+
+        except Exception as e:
+            logger.error(
+                f'Failed to write to PostgreSQL bronze.{table_name} from S3: {e}'
+            )
+            raise BronzeLoaderError(f'Bronze S3 write failed: {e}') from e
+        finally:
+            # Clean up any temporary tables
+            self._cleanup_temp_tables()
+
     def _sanitize_table_name(self, resource_id: str, dataset_name: str) -> str:
         """Create a valid PostgreSQL table name."""
         combined = f'{resource_id}__{dataset_name}'
@@ -188,6 +250,59 @@ class BronzeWriter:
             # Get data
             rows = self.duckdb_conn.execute(
                 f'SELECT * FROM {temp_table}'
+            ).fetchall()
+
+            return cols, rows
+
+        finally:
+            # Clean up
+            try:
+                self.duckdb_conn.execute(f'DROP TABLE IF EXISTS {temp_table}')
+            except duckdb.Error:
+                pass
+
+    def _read_s3_parquet_sample(
+        self, s3_parquet_path: str
+    ) -> tuple[list[str], list[tuple[Any, ...]]]:
+        """Read sample data from S3 parquet file."""
+        temp_table = (
+            f'temp_bronze_s3_parquet_{datetime.now().strftime("%Y%m%d_%H%M%S")}'
+        )
+
+        try:
+            # Create temporary table with sample data from S3
+            self.duckdb_conn.execute(f"""
+                CREATE TABLE {temp_table} AS
+                SELECT * FROM read_parquet('{s3_parquet_path}')
+                LIMIT {LoaderConstants.BRONZE_SAMPLE_SIZE}
+            """)
+
+            # Get columns (excluding metadata columns)
+            cols = [
+                row[0]
+                for row in self.duckdb_conn.execute(
+                    """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_name = ?
+                  AND column_name NOT LIKE 'metadata_%'
+                ORDER BY ordinal_position
+            """,
+                    [temp_table],
+                ).fetchall()
+            ]
+
+            # Handle empty column list gracefully
+            if not cols:
+                logger.warning(
+                    f'No data columns found in {s3_parquet_path}, only metadata columns exist'
+                )
+                return [], []
+
+            # Get data (only non-metadata columns)
+            col_list = ', '.join(f'"{col}"' for col in cols)
+            rows = self.duckdb_conn.execute(
+                f'SELECT {col_list} FROM {temp_table}'
             ).fetchall()
 
             return cols, rows

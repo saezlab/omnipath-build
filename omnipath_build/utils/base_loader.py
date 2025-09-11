@@ -10,6 +10,7 @@ from pathlib import Path
 
 from .database import PostgresDuckDBConnector
 from .constants import LoaderConstants
+from .s3_config import configure_duckdb_s3, list_s3_parquet_files
 
 __all__ = [
     'BaseLoader',
@@ -50,6 +51,9 @@ class BaseLoader(ABC):
 
         # Convenience reference to connection
         self.conn = self.db_connector.conn
+
+        # Configure DuckDB for S3 access
+        configure_duckdb_s3(self.conn)
 
         # Initialize loader-specific attributes
         self._initialize()
@@ -225,6 +229,17 @@ class BaseLoader(ABC):
         path = Path(path)
         path.mkdir(parents=True, exist_ok=True)
         return path
+
+    def list_s3_files(self, s3_prefix: str) -> list[str]:
+        """List files in S3 with given prefix.
+
+        Args:
+            s3_prefix: S3 prefix to search
+
+        Returns:
+            List of S3 file paths
+        """
+        return list_s3_parquet_files(self.conn, s3_prefix)
 
     def close(self) -> None:
         """Close database connections and cleanup resources.
