@@ -1,5 +1,5 @@
 import Link from 'next/link';
-import { Database, ArrowRight, Layers, Activity, Zap, Shield } from 'lucide-react';
+import { Database, ArrowRight, Layers, Activity, Shield } from 'lucide-react';
 
 export default function Home() {
   return (
@@ -8,12 +8,7 @@ export default function Home() {
       
       <div className="relative">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-20">
-          <div className="text-center">
-            <div className="inline-flex items-center gap-2 px-4 py-2 bg-white/10 backdrop-blur-sm rounded-full text-white/80 text-sm mb-8">
-              <Zap className="w-4 h-4" />
-              <span>Enterprise-grade data pipeline visualization</span>
-            </div>
-            
+          <div className="text-center">            
             <h1 className="text-5xl sm:text-7xl font-bold text-white mb-6">
               <span className="bg-gradient-to-r from-blue-400 via-purple-400 to-pink-400 bg-clip-text text-transparent">
                 OmniPath
@@ -69,29 +64,6 @@ export default function Home() {
                 </div>
                 <h3 className="text-xl font-semibold text-white mb-2">Gold Layer</h3>
                 <p className="text-white/60">Business-ready analytics</p>
-              </div>
-            </div>
-            
-            <div className="mt-20 pt-20 border-t border-white/10">
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-8 text-center">
-                <div>
-                  <div className="text-3xl font-bold text-white">3</div>
-                  <div className="text-white/60">Data Layers</div>
-                </div>
-                <div>
-                  <div className="text-3xl font-bold text-white">10+</div>
-                  <div className="text-white/60">File Formats</div>
-                </div>
-                <div>
-                  <div className="text-3xl font-bold text-white">100%</div>
-                  <div className="text-white/60">Browser Native</div>
-                </div>
-                <div>
-                  <div className="text-3xl font-bold text-white">
-                    <Shield className="w-8 h-8 mx-auto" />
-                  </div>
-                  <div className="text-white/60">Secure</div>
-                </div>
               </div>
             </div>
           </div>
