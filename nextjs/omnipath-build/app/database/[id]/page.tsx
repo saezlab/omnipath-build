@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { ArrowLeft, FileText, Layers, Clock } from 'lucide-react';
+import { ArrowLeft, FileText, Layers, Clock, Network } from 'lucide-react';
 import Link from 'next/link';
 import DatabaseTree from '../../components/DatabaseTree';
 import ParquetViewer from '../../components/ParquetViewer';
@@ -108,12 +108,23 @@ export default function DatabasePage({ params }: { params: Promise<{ id: string 
             Back to Dashboard
           </Link>
           
-          <h1 className="text-4xl font-bold text-gray-900 dark:text-white capitalize">
-            {dbId.replace('_', ' ')} Database
-          </h1>
-          <p className="mt-2 text-gray-600 dark:text-gray-400">
-            Explore data layers and transformations
-          </p>
+          <div className="flex items-center justify-between">
+            <div>
+              <h1 className="text-4xl font-bold text-gray-900 dark:text-white capitalize">
+                {dbId.replace('_', ' ')} Database
+              </h1>
+              <p className="mt-2 text-gray-600 dark:text-gray-400">
+                Explore data layers and transformations
+              </p>
+            </div>
+            <Link
+              href={`/database/${dbId}/mappings`}
+              className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+            >
+              <Network className="w-4 h-4" />
+              View Mappings
+            </Link>
+          </div>
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-4 gap-6 mb-8">
