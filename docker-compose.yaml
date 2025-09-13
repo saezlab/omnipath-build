@@ -1,7 +1,9 @@
 services:
   # PostgreSQL Database
     postgres:
-        image: postgres:16-alpine
+        build:
+            context: .
+            dockerfile: Dockerfile
         restart: unless-stopped
         environment:
             POSTGRES_USER: ${POSTGRES_USER}
