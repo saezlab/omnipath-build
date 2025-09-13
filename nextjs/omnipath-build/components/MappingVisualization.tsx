@@ -46,7 +46,8 @@ export default function MappingVisualization({
     let yPosition = 0;
     const nodeSpacing = 350;
     const bronzeX = 0;
-    const silverX = 600;
+    const transformX = 350;
+    const silverX = 700;
 
     // Group mappings by resource and target table to avoid duplicates
     const resourceGroups = new Map<string, MappingData[]>();
@@ -73,6 +74,7 @@ export default function MappingVisualization({
     resourceGroups.forEach((groupMappings) => {
       const firstMapping = groupMappings[0];
       const bronzeNodeId = `bronze-${nodeIndex}`;
+      const transformNodeId = `transform-${nodeIndex}`;
       const silverNodeId = `silver-${firstMapping.targetTable}-${nodeIndex}`;
       
       // Collect all unique source fields
@@ -147,40 +149,85 @@ export default function MappingVisualization({
         }
       });
       
+      // Collect all unique transformations for this mapping group
+      const transformationsSet = new Set<string>();
+      groupMappings.forEach(mapping => {
+        mapping.fieldMappings.forEach(fm => {
+          if (fm.transform) {
+            transformationsSet.add(fm.transform);
+          }
+        });
+      });
+      
+      // Create transformation node if there are any transformations
+      if (transformationsSet.size > 0) {
+        const transformFields = Array.from(transformationsSet).map((transform, idx) => ({
+          title: transform,
+          type: 'function',
+          key: `${transformNodeId}-transform-${idx}`
+        }));
+        
+        nodes.push({
+          id: transformNodeId,
+          position: { x: transformX, y: yPosition },
+          type: 'databaseSchema',
+          data: {
+            label: `Transformations`,
+            schema: transformFields,
+          },
+          style: {
+            backgroundColor: '#e0f2fe',
+            borderColor: '#0369a1',
+          }
+        });
+      }
+      
       // Create edges for field mappings
       groupMappings.forEach((mapping) => {
         mapping.fieldMappings.forEach((fieldMapping, fieldIndex) => {
-          const edge: Edge = {
-            id: `edge-${nodeIndex}-${fieldIndex}-${fieldMapping.source}-${fieldMapping.target}`,
-            source: bronzeNodeId,
-            target: silverNodeId,
-            sourceHandle: fieldMapping.source,
-            targetHandle: fieldMapping.target,
-            type: 'bezier',
-            markerEnd: {
-              type: MarkerType.ArrowClosed,
-              color: '#3b82f6',
-            },
-          };
-          
-          // Add label if transformation exists
-          if (fieldMapping.transform) {
-            edge.label = fieldMapping.transform;
-            edge.labelStyle = {
-              fontSize: 11,
-              fontWeight: 500,
-              fill: '#6b7280',
-              backgroundColor: 'rgba(255, 255, 255, 0.9)',
-              padding: '2px 6px',
-              borderRadius: '4px',
-              border: '1px solid #e5e7eb',
-            };
-            edge.labelBgStyle = {
-              fill: 'transparent',
-            };
+          if (fieldMapping.transform && transformationsSet.size > 0) {
+            // Bronze → Transform edge
+            edges.push({
+              id: `edge-bronze-transform-${nodeIndex}-${fieldIndex}`,
+              source: bronzeNodeId,
+              target: transformNodeId,
+              sourceHandle: fieldMapping.source,
+              targetHandle: fieldMapping.transform,
+              type: 'bezier',
+              markerEnd: {
+                type: MarkerType.ArrowClosed,
+                color: '#3b82f6',
+              },
+            });
+            
+            // Transform → Silver edge
+            edges.push({
+              id: `edge-transform-silver-${nodeIndex}-${fieldIndex}`,
+              source: transformNodeId,
+              target: silverNodeId,
+              sourceHandle: fieldMapping.transform,
+              targetHandle: fieldMapping.target,
+              type: 'bezier',
+              markerEnd: {
+                type: MarkerType.ArrowClosed,
+                color: '#3b82f6',
+              },
+            });
+          } else {
+            // Direct Bronze → Silver edge (no transformation)
+            edges.push({
+              id: `edge-direct-${nodeIndex}-${fieldIndex}`,
+              source: bronzeNodeId,
+              target: silverNodeId,
+              sourceHandle: fieldMapping.source,
+              targetHandle: fieldMapping.target,
+              type: 'bezier',
+              markerEnd: {
+                type: MarkerType.ArrowClosed,
+                color: '#6b7280',
+              },
+            });
           }
-          
-          edges.push(edge);
         });
       });
       
