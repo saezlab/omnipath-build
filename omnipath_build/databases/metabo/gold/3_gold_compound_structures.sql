@@ -1,9 +1,7 @@
--- Gold compound structure properties aggregated from silver compounds
--- Creates a deduplicated set of SMILES strings and computes RDKit descriptors
+-- Stage 3: create canonical compound structures deduplicated on canonical SMILES
 
 CREATE EXTENSION IF NOT EXISTS rdkit;
 
--- Create table if it doesn't exist
 CREATE TABLE IF NOT EXISTS gold.compound_structures (
     structure_id BIGSERIAL PRIMARY KEY,
     input_smiles TEXT,
@@ -24,7 +22,6 @@ CREATE TABLE IF NOT EXISTS gold.compound_structures (
     computed_at TIMESTAMP DEFAULT NOW()
 );
 
--- Insert only new SMILES not already in the table
 INSERT INTO gold.compound_structures (
     input_smiles,
     mol,
@@ -43,31 +40,41 @@ INSERT INTO gold.compound_structures (
     heavy_atoms,
     computed_at
 )
-WITH source_smiles AS (
-    SELECT DISTINCT
-        trim(smiles) AS input_smiles
-    FROM silver.compounds
-    WHERE smiles IS NOT NULL
-      AND trim(smiles) <> ''
-      -- Only select SMILES not already in the gold table
-      AND trim(smiles) NOT IN (
-          SELECT input_smiles
-          FROM gold.compound_structures
-          WHERE input_smiles IS NOT NULL
-      )
+WITH pending_mappings AS (
+    SELECT
+        m.input_smiles,
+        m.canonical_smiles,
+        m.mol
+    FROM gold.compound_smiles_map m
+    LEFT JOIN gold.compound_structures s
+        ON s.canonical_smiles = m.canonical_smiles
+    WHERE s.canonical_smiles IS NULL
+      AND m.canonical_smiles IS NOT NULL
+      AND m.mol IS NOT NULL
     LIMIT 10000
 ),
-molecule_props AS (
+canonical_groups AS (
     SELECT
-        input_smiles,
-        mol_from_smiles(input_smiles) AS mol
-    FROM source_smiles
+        canonical_smiles,
+        MIN(input_smiles) AS representative_input_smiles
+    FROM pending_mappings
+    GROUP BY canonical_smiles
+),
+representative_molecules AS (
+    SELECT
+        g.representative_input_smiles AS input_smiles,
+        p.canonical_smiles,
+        p.mol
+    FROM canonical_groups g
+    JOIN pending_mappings p
+        ON p.canonical_smiles = g.canonical_smiles
+       AND p.input_smiles = g.representative_input_smiles
 ),
 computed_props AS (
     SELECT
         input_smiles,
         mol,
-        mol_to_smiles(mol)::TEXT AS canonical_smiles,
+        canonical_smiles,
         mol_inchi(mol)::TEXT AS inchi,
         mol_inchikey(mol)::TEXT AS inchikey,
         mol_formula(mol)::TEXT AS formula,
@@ -80,31 +87,7 @@ computed_props AS (
         mol_numrotatablebonds(mol) AS rotatable_bonds,
         mol_numaromaticrings(mol) AS aromatic_rings,
         mol_numheavyatoms(mol) AS heavy_atoms
-    FROM molecule_props
-),
-deduplicated AS (
-    SELECT
-        input_smiles,
-        mol,
-        canonical_smiles,
-        inchi,
-        inchikey,
-        formula,
-        molecular_weight,
-        exact_mass,
-        tpsa,
-        logp,
-        hbd,
-        hba,
-        rotatable_bonds,
-        aromatic_rings,
-        heavy_atoms,
-        ROW_NUMBER() OVER (
-            PARTITION BY COALESCE(canonical_smiles, input_smiles)
-            ORDER BY CASE WHEN canonical_smiles IS NULL THEN 1 ELSE 0 END,
-                     input_smiles
-        ) AS rn
-    FROM computed_props
+    FROM representative_molecules
 )
 SELECT
     input_smiles,
@@ -123,5 +106,4 @@ SELECT
     aromatic_rings,
     heavy_atoms,
     NOW() AS computed_at
-FROM deduplicated
-WHERE rn = 1
+FROM computed_props;
