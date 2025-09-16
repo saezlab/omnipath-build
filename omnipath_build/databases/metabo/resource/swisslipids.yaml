@@ -13,80 +13,18 @@ functions:
             -   source: _constant
                 target: is_lipid
                 value: true
-                description: Lipid type flag
-            -   source: id
-                target: swisslipids_id
-                transform:
-                description: SwissLipids ID
+            -   source: [id, chebi, lipidmaps, hmdb, metanetx, name, synonyms]
+                target: ids
+                transform: combine_compound_ids_swisslipids
             -   source: level
                 target: lipid_classification_level
-                transform:
-                description: Lipid classification level
-            -   source: name
-                target: lipid_name
-                transform:
-                description: Lipid name
-            -   source: abbreviation
-                target: lipid_short_name
-                transform:
-                description: Lipid abbreviation
-            -   source: synonyms
-                target: synonyms
-                transform:
-                description: Lipid synonyms
-            -   source: lipid_class
-                target: lipid_class
-                transform:
-                description: Lipid classification
             -   source: parent
                 target: lipid_parent
-                transform:
-                description: Parent lipid
+            -   source: lipid_class
+                target: classes
             -   source: components
                 target: lipid_components
-                transform:
-                description: Lipid components
             -   source: smiles
                 target: smiles
-                transform:
-                description: SMILES notation
-            -   source: inchi
-                target: inchi
-                transform:
-                description: InChI identifier
-            -   source: inchikey
-                target: inchikey
-                transform:
-                description: InChI key
-            -   source: formula
-                target: formula
-                transform:
-                description: Molecular formula
-            -   source: charge
-                target: charge
-                transform:
-                description: Molecular charge
-            -   source: exact_mass
-                target: exact_mass
-                transform:
-                description: Exact molecular mass
-            -   source: chebi
-                target: chebi_id
-                transform:
-                description: ChEBI identifier
-            -   source: lipidmaps
-                target: lipidmaps_id
-                transform:
-                description: LIPID MAPS identifier
-            -   source: hmdb
-                target: hmdb_id
-                transform:
-                description: HMDB identifier
-            -   source: metanetx
-                target: metanetx_id
-                transform:
-                description: MetaNetX identifier
             -   source: pmids
                 target: pmids
-                transform:
-                description: Supporting PubMed IDs

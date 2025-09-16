@@ -12,34 +12,12 @@ functions:
         processing:
             target_table: compounds
             field_mapping:
-            -   source: synonyms
-                target: synonyms
-            -   source: chebi_id
-                target: chebi_id
-            -   source: accession
-                target: hmdb_id
-            -   source: pubchem_compound_id
-                target: pubchem_cid
-            -   source: kegg_id
-                target: kegg_id
-            -   source: drugbank_id
-                target: drugbank_id
-            -   source: cas_registry_number
-                target: cas_number
-            -   source: traditional_iupac
-                target: recommended_iupac
-            -   source: iupac_name
-                target: standard_iupac
-            -   source: monisotopic_molecular_weight
-                target: exact_mass
-            -   source: average_molecular_weight
-                target: molecular_weight
-            -   source: chemical_formula
-                target: formula
-            -   source: inchi
-                target: inchi
-            -   source: inchikey
-                target: inchikey
+            -   source: _constant
+                target: is_metabolite
+                value: true
+            -   source: [chebi_id, accession, pubchem_compound_id, kegg_id, drugbank_id, cas_registry_number, synonyms]
+                target: ids
+                transform: combine_compound_ids_hmdb
             -   source: smiles
                 target: smiles
             -   source: general_references

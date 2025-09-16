@@ -522,6 +522,27 @@ class SilverLoader(BaseLoader):
                         return 'CURRENT_TIMESTAMP'
                     else:
                         return f"'{value}'"
+                elif isinstance(source, list):
+                    # Array source mapping - all fields must exist
+                    missing_fields = [
+                        field
+                        for field in source
+                        if field not in available_columns
+                    ]
+                    if missing_fields:
+                        self.logger.warning(
+                            f'Missing source fields for {column_name}: {missing_fields}'
+                        )
+                        return 'NULL'
+
+                    if transform:
+                        return self._build_transform_expression(
+                            source, transform, mapping
+                        )
+                    else:
+                        # Array source without transform - concatenate with pipe separator
+                        field_exprs = [f'"{field}"' for field in source]
+                        return f"CONCAT_WS('|', {', '.join(field_exprs)})"
                 elif source in available_columns:
                     # Regular field mapping
                     if transform:
@@ -555,20 +576,26 @@ class SilverLoader(BaseLoader):
         return 'NULL'
 
     def _build_transform_expression(
-        self, source_field: str, transform_func: str, mapping: dict[str, Any]
+        self,
+        source_field: str | list[str],
+        transform_func: str,
+        mapping: dict[str, Any],
     ) -> str:
         """Build SQL expression using transformation function."""
         # Get transform arguments from mapping
         transform_args = mapping.get('transform_args', {})
 
-        if not transform_args:
-            # Simple function call with just the field
-            return f'{transform_func}("{source_field}")'
+        # Build argument list starting with source field(s)
+        if isinstance(source_field, list):
+            # Array source - pass all fields as arguments
+            arg_parts = [f'"{field}"' for field in source_field]
+        else:
+            # Single source field
+            arg_parts = [f'"{source_field}"']
 
-        # Build argument list for multi-parameter functions
-        arg_parts = [
-            f'"{source_field}"'
-        ]  # First argument is always the source field
+        # If no transform_args and single field, use simple function call
+        if not transform_args and not isinstance(source_field, list):
+            return f'{transform_func}("{source_field}")'
 
         # Add additional arguments from transform_args
         for _arg_name, arg_value in transform_args.items():

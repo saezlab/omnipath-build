@@ -12,60 +12,16 @@ functions:
             -   source: _constant
                 target: is_lipid
                 value: true
-                description: Lipid type flag
-            -   source: id
-                target: lipidmaps_id
-                transform:
-                description: LIPID MAPS ID
-            -   source: name
-                target: lipid_name
-                transform:
-                description: Lipid name
-            -   source: abbreviation
-                target: lipid_short_name
-                transform:
-                description: Lipid abbreviation
-            -   source: formula
-                target: formula
-                transform:
-                description: Molecular formula
-            -   source: exact_mass
-                target: exact_mass
-                transform:
-                description: Exact molecular mass
+            -   source: [id, chebi, pubchem, name, synonyms]
+                target: ids
+                transform: combine_compound_ids_lipidmaps
             -   source: category
-                target: lipid_category
-                transform:
-                description: Lipid category
+                target: classes
             -   source: main_class
-                target: lipid_class
-                transform:
-                description: Lipid main class
+                target: lipid_classification_level
+            -   source: name
+                target: lipid_parent
+            -   source: abbreviation
+                target: lipid_components
             -   source: smiles
                 target: smiles
-                transform:
-                description: SMILES notation
-            -   source: inchi
-                target: inchi
-                transform:
-                description: InChI identifier
-            -   source: inchikey
-                target: inchikey
-                transform:
-                description: InChI key
-            -   source: synonyms
-                target: synonyms
-                transform:
-                description: Lipid synonyms
-            -   source: iupac
-                target: standard_iupac
-                transform:
-                description: IUPAC name (mapped to lipid_name)
-            -   source: pubchem
-                target: pubchem_cid
-                transform:
-                description: PubChem CID
-            -   source: chebi
-                target: chebi_id
-                transform:
-                description: ChEBI identifier

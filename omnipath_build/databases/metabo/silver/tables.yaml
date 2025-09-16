@@ -8,15 +8,8 @@ compounds:
     is_lipid: BOOLEAN DEFAULT FALSE
     is_metabolite: BOOLEAN DEFAULT FALSE
 
-    synonyms: TEXT
   # ID columns - common database identifiers
     ids: VARCHAR # all ids in one column, seperated by |
-
-  # Properties columns
-    exact_mass: FLOAT8
-    charge: INTEGER
-    molecular_weight: FLOAT8
-    logp: FLOAT8
 
   # classification columns
     classes: VARCHAR # all classification systems in one column, seperated by |. Within each system, levels are separated by $
@@ -32,11 +25,19 @@ compounds:
     atc_codes: TEXT
     indications: TEXT
 
-  # Structure columns
-    formula: VARCHAR
-    inchi: TEXT
-    inchikey: VARCHAR
+
     smiles: TEXT
+
+    # These columns will be filled with rdkit in the gold layer
+    # Structure columns
+    # formula: VARCHAR
+    # inchi: TEXT
+    # inchikey: VARCHAR
+    # Properties columns
+    # exact_mass: FLOAT8
+    # charge: INTEGER
+    # molecular_weight: FLOAT8
+    # logp: FLOAT8
 
     pmids: TEXT # all pmids in one column, seperated by |
 

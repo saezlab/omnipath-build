@@ -4,60 +4,22 @@
 # REQUIRED: Fill in all question marks (?) before loading
 
 metadata:
-  name: RaMP
-  description: RaMP (Relational database of Metabolomics Pathways) for metabolite and gene/protein annotations
+    name: RaMP
+    description: RaMP (Relational database of Metabolomics Pathways) for metabolite and gene/protein annotations
 module: ramp
 functions:
-  ramp_omnipathmetabo:
-    description: Retrieve RaMP database contents from its SQLite build for the omnipath.metabo database build.
-    processing:
-      target_table: compounds
-      field_mapping:
-      - source: ramp_id
-        target: ramp_id
-      - source: iso_smiles
-        target: smiles
-      - source: inchi_key
-        target: inchikey
-      - source: inchi
-        target: inchi
-      - source: mw
-        target: molecular_weight
-      - source: monoisotop_mass
-        target: exact_mass
-      - source: common_name
-        target: compound_name
-      - source: mol_formula
-        target: formula
-      - source: synonyms
-        target: synonyms
-      - source: classes
-        target: classes
-      - source: sources
-        target: hmdb_id
-        transform: extract_ids
-        transform_args: {prefix: hmdb}
-      - source: sources
-        target: chebi_id
-        transform: extract_ids
-        transform_args: {prefix: chebi}
-      - source: sources
-        target: kegg_id
-        transform: extract_ids
-        transform_args: {prefix: kegg}
-      - source: sources
-        target: pubchem_cid
-        transform: extract_ids
-        transform_args: {prefix: pubchem}
-      - source: sources
-        target: cas_number
-        transform: extract_ids
-        transform_args: {prefix: CAS}
-      - source: sources
-        target: chemspider_id
-        transform: extract_ids
-        transform_args: {prefix: chemspider}
-      - source: sources
-        target: lipidmaps_id
-        transform: extract_ids
-        transform_args: {prefix: LIPIDMAPS}
+    ramp_omnipathmetabo:
+        description: Retrieve RaMP database contents from its SQLite build for the omnipath.metabo database build.
+        processing:
+            target_table: compounds
+            field_mapping:
+            -   source: _constant
+                target: is_metabolite
+                value: true
+            -   source: classes
+                target: classes
+            -   source: [ramp_id, sources, common_name, synonyms]
+                target: ids
+                transform: combine_compound_ids_ramp
+            -   source: iso_smiles
+                target: smiles
