@@ -3,16 +3,22 @@
 Provides a unified interface for DuckDB with PostgreSQL extension.
 """
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 import logging
 from contextlib import contextmanager
 from collections.abc import Iterator
 
+if TYPE_CHECKING:
+    import psycopg2
+
 import duckdb
+import psycopg2
+from psycopg2 import sql as psycopg_sql
 
 __all__ = [
     'ConnectionError',
     'PostgresDuckDBConnector',
+    'PostgresConnector',
 ]
 
 logger = logging.getLogger(__name__)
@@ -248,6 +254,151 @@ class PostgresDuckDBConnector:
 
         except duckdb.Error as e:
             logger.warning(f'Error closing database connection: {e}')
+
+
+class _PsycopgCursorWrapper:
+    """Lightweight wrapper to provide DuckDB-like cursor interface."""
+
+    def __init__(self, cursor: psycopg2.extensions.cursor) -> None:
+        self._cursor = cursor
+        self.description = cursor.description
+
+    def fetchone(self) -> tuple[Any, ...] | None:
+        try:
+            return self._cursor.fetchone()
+        finally:
+            self._cursor.close()
+
+    def fetchall(self) -> list[tuple[Any, ...]]:
+        try:
+            return self._cursor.fetchall()
+        finally:
+            self._cursor.close()
+
+    def __iter__(self) -> Iterator[tuple[Any, ...]]:
+        try:
+            rows = self._cursor.fetchall()
+        finally:
+            self._cursor.close()
+        return iter(rows)
+
+
+class PostgresConnector:
+    """Direct PostgreSQL connector using psycopg2 for gold layer execution."""
+
+    def __init__(self, pg_config: dict[str, str]) -> None:
+        self.pg_config = pg_config
+        try:
+            self.conn = psycopg2.connect(**pg_config)
+            self.conn.autocommit = True
+            logger.debug('Established direct PostgreSQL connection')
+        except psycopg2.Error as e:
+            logger.error(f'Failed to connect to PostgreSQL: {e}')
+            raise ConnectionError(f'PostgreSQL connection failed: {e}') from e
+
+    def execute(
+        self, sql: str, parameters: list | tuple | None = None
+    ) -> _PsycopgCursorWrapper:
+        """Execute SQL query and return cursor wrapper."""
+        cursor = self.conn.cursor()
+        try:
+            if parameters:
+                cursor.execute(sql, parameters)
+            else:
+                cursor.execute(sql)
+            return _PsycopgCursorWrapper(cursor)
+        except psycopg2.Error as e:
+            cursor.close()
+            logger.error(f'SQL execution failed: {e}')
+            logger.debug(f'Failed SQL: {sql}')
+            raise
+
+    def create_schema_if_not_exists(self, schema_name: str) -> None:
+        """Create schema if it doesn't exist."""
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute(
+                psycopg_sql.SQL('CREATE SCHEMA IF NOT EXISTS {}').format(
+                    psycopg_sql.Identifier(schema_name)
+                )
+            )
+            cursor.close()
+            logger.debug(f'Ensured schema exists: {schema_name}')
+        except psycopg2.Error as e:
+            logger.error(f'Failed to create schema {schema_name}: {e}')
+            raise
+
+    @contextmanager
+    def temporary_table(self, table_name: str) -> Iterator[str]:
+        """Context manager for temporary table creation and cleanup."""
+        try:
+            yield table_name
+        finally:
+            try:
+                cursor = self.conn.cursor()
+                cursor.execute(
+                    psycopg_sql.SQL('DROP TABLE IF EXISTS {}').format(
+                        psycopg_sql.Identifier(table_name)
+                    )
+                )
+                cursor.close()
+                logger.debug(f'Cleaned up temporary table: {table_name}')
+            except psycopg2.Error as e:
+                logger.warning(
+                    f'Failed to drop temporary table {table_name}: {e}'
+                )
+
+    def table_exists(self, table_name: str, schema: str = None) -> bool:
+        """Check if table exists in database."""
+        try:
+            cursor = self.conn.cursor()
+            if schema:
+                cursor.execute(
+                    'SELECT COUNT(*) FROM information_schema.tables '
+                    'WHERE table_schema = %s AND table_name = %s',
+                    (schema, table_name),
+                )
+            else:
+                cursor.execute(
+                    'SELECT COUNT(*) FROM information_schema.tables '
+                    'WHERE table_name = %s',
+                    (table_name,),
+                )
+            result = cursor.fetchone()
+            cursor.close()
+            return bool(result and result[0] > 0)
+        except psycopg2.Error as e:
+            logger.error(f'Failed to check table existence: {e}')
+            return False
+
+    def get_row_count(self, table_name: str, schema: str = None) -> int:
+        """Get row count for specified table."""
+        try:
+            cursor = self.conn.cursor()
+            if schema:
+                table_ref = psycopg_sql.SQL('{}.{}').format(
+                    psycopg_sql.Identifier(schema),
+                    psycopg_sql.Identifier(table_name),
+                )
+            else:
+                table_ref = psycopg_sql.Identifier(table_name)
+            cursor.execute(
+                psycopg_sql.SQL('SELECT COUNT(*) FROM {}').format(table_ref)
+            )
+            result = cursor.fetchone()
+            cursor.close()
+            return result[0] if result else 0
+        except psycopg2.Error as e:
+            logger.error(f'Failed to get row count for {table_name}: {e}')
+            return 0
+
+    def close(self) -> None:
+        """Close database connection."""
+        try:
+            self.conn.close()
+            logger.debug('PostgreSQL connection closed')
+        except psycopg2.Error as e:
+            logger.warning(f'Error closing PostgreSQL connection: {e}')
 
 
 class ConnectionError(Exception):

@@ -49,7 +49,10 @@ class GoldLoader(BaseLoader):
             )
 
         # Initialize SQL adapter and execution manager
-        self.sql_adapter = SQLAdapter()
+        schema_mappings = (
+            None if hasattr(self.db_connector, 'duck_path') else {}
+        )
+        self.sql_adapter = SQLAdapter(schema_mappings=schema_mappings)
         self.execution_manager = SQLExecutionManager(
             self.sql_adapter, self.transforms_dir
         )
@@ -136,7 +139,9 @@ class GoldLoader(BaseLoader):
             self.logger.info(f'Executing file: {filename}')
 
             try:
-                self.execution_manager.execute_sql_file(filename, self.conn)
+                self.execution_manager.execute_sql_file(
+                    filename, self.db_connector
+                )
             except Exception as e:
                 self.logger.error(f'Failed to execute {filename}: {e}')
                 raise GoldLoaderError(f'SQL execution failed: {e}') from e
@@ -169,7 +174,7 @@ class GoldLoader(BaseLoader):
         self.logger.info(f'Executing step {step}: {filename}')
 
         try:
-            self.execution_manager.execute_sql_file(filename, self.conn)
+            self.execution_manager.execute_sql_file(filename, self.db_connector)
         except Exception as e:
             self.logger.error(f'Failed to execute {filename}: {e}')
             raise GoldLoaderError(f'SQL execution failed: {e}') from e
@@ -179,7 +184,9 @@ class GoldLoader(BaseLoader):
     def execute_sql_file(self, filename: str) -> dict[str, Any]:
         """Execute a single SQL file."""
         try:
-            return self.execution_manager.execute_sql_file(filename, self.conn)
+            return self.execution_manager.execute_sql_file(
+                filename, self.db_connector
+            )
         except Exception as e:
             self.logger.error(f'Failed to execute {filename}: {e}')
             raise GoldLoaderError(f'SQL execution failed: {e}') from e
@@ -239,8 +246,9 @@ class GoldLoader(BaseLoader):
             for row in tables_result:
                 table_name = row[0]
                 try:
+                    schema_ref = self.sql_adapter.get_schema_reference('gold')
                     count_result = self.execute_sql(
-                        f'SELECT COUNT(*) FROM pg.gold.{table_name}'
+                        f'SELECT COUNT(*) FROM {schema_ref}.{table_name}'
                     ).fetchone()
                     stats[table_name] = count_result[0] if count_result else 0
                 except (OSError, RuntimeError) as e:
@@ -273,13 +281,17 @@ class GoldLoader(BaseLoader):
 
             # Show sample data
             try:
-                sample = self.execute_sql(
-                    f'SELECT * FROM pg.gold.{table_name} LIMIT 2'
-                ).fetchall()
+                schema_ref = self.sql_adapter.get_schema_reference('gold')
+                sample_result = self.execute_sql(
+                    f'SELECT * FROM {schema_ref}.{table_name} LIMIT 2'
+                )
+                sample = sample_result.fetchall()
 
                 if sample:
                     self.logger.info('  Sample rows:')
-                    cols = [desc[0] for desc in self.conn.description]
+                    cols = [
+                        desc[0] for desc in (sample_result.description or [])
+                    ]
                     for row in sample:
                         self.logger.info(
                             f'    {dict(zip(cols, row, strict=False))}'

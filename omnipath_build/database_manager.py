@@ -40,7 +40,7 @@ import yaml
 sys.path.append(str(Path(__file__).parent))
 
 # Import loader classes
-from utils.database import PostgresDuckDBConnector
+from utils.database import PostgresConnector, PostgresDuckDBConnector
 from loaders.gold_loader import GoldLoader
 from loaders.bronze_loader import PyPathBronzeLoader
 from loaders.silver_loader import SilverLoader
@@ -538,9 +538,7 @@ resources:
 
             elif layer == 'gold':
                 # Create a separate connection for this loader
-                gold_connector = PostgresDuckDBConnector(
-                    pg_config=self.pg_config, duck_config=self.duck_config
-                )
+                gold_connector = PostgresConnector(pg_config=self.pg_config)
                 with GoldLoader(
                     database_name=self.database_name,
                     db_connector=gold_connector,

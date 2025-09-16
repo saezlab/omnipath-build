@@ -27,7 +27,10 @@ class SQLAdapter:
         Args:
             schema_mappings: Custom schema mappings (defaults to PostgreSQL patterns)
         """
-        self.schema_mappings = schema_mappings or SQLPatterns.SCHEMA_PREFIXES
+        if schema_mappings is None:
+            self.schema_mappings = SQLPatterns.SCHEMA_PREFIXES.copy()
+        else:
+            self.schema_mappings = schema_mappings
 
         # Build replacement patterns
         self.replacement_patterns = self._build_replacement_patterns()
@@ -205,6 +208,10 @@ class SQLAdapter:
 
         return sorted(schemas)
 
+    def get_schema_reference(self, schema: str) -> str:
+        """Return the mapped schema reference for the adapter."""
+        return self.schema_mappings.get(schema, schema)
+
     def add_schema_mapping(self, schema: str, pg_schema: str) -> None:
         """Add a custom schema mapping.
 
@@ -235,13 +242,13 @@ class SQLExecutionManager:
     def execute_sql_file(
         self,
         filename: str,
-        connection: Any,  # noqa: ANN401
+        executor: Any,  # noqa: ANN401
     ) -> dict[str, Any]:
         """Execute a single SQL file with timing and error handling.
 
         Args:
             filename: SQL file name
-            connection: Database connection
+            executor: Database executor implementing execute()
 
         Returns:
             Execution statistics
@@ -267,7 +274,7 @@ class SQLExecutionManager:
                 )
 
             # Execute SQL
-            connection.execute(adapted_sql)
+            executor.execute(adapted_sql)
             elapsed = time.time() - start_time
 
             # Collect statistics
@@ -283,8 +290,10 @@ class SQLExecutionManager:
             try:
                 table_name = self._extract_table_name(filename)
                 if table_name:
-                    count_result = connection.execute(
-                        f'SELECT COUNT(*) FROM pg.gold.{table_name}'
+                    schema_ref = self.sql_adapter.get_schema_reference('gold')
+                    full_table = f'{schema_ref}.{table_name}'
+                    count_result = executor.execute(
+                        f'SELECT COUNT(*) FROM {full_table}'
                     ).fetchone()
                     stats['row_count'] = count_result[0] if count_result else 0
             except (OSError, RuntimeError) as e:
@@ -319,6 +328,13 @@ class SQLExecutionManager:
     def _extract_table_name(self, filename: str) -> str | None:
         """Extract table name from SQL filename."""
         base_name = filename.replace('.sql', '')
+
+        # Remove numeric prefix (e.g., "1_gold_compound_structures" -> "gold_compound_structures")
+        base_name = re.sub(r'^\d+_', '', base_name)
+
+        # Remove "gold_" prefix if present (tables in gold schema don't need it)
+        if base_name.startswith('gold_'):
+            base_name = base_name[5:]  # Remove "gold_" prefix
 
         # Special case for populate scripts
         if '_populate' in base_name:

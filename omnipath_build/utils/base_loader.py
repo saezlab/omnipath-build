@@ -79,7 +79,7 @@ class BaseLoader(ABC):
 
         # Check database connection
         try:
-            self.conn.execute('SELECT 1').fetchone()
+            self.db_connector.execute('SELECT 1').fetchone()
             self.logger.debug('Database connection validated')
         except (OSError, RuntimeError) as e:
             self.logger.error(f'Database connection validation failed: {e}')

@@ -1,6 +1,10 @@
 """Shared utilities for OmniPath 2.0 database build pipeline."""
 
-from .database import ConnectionError, PostgresDuckDBConnector
+from .database import (
+    ConnectionError,
+    PostgresConnector,
+    PostgresDuckDBConnector,
+)
 from .constants import SQLPatterns, LoaderConstants
 from .exceptions import (
     LoaderError,
@@ -21,6 +25,7 @@ from .config_validator import PyPathConfigValidator
 __all__ = [
     # Database
     'PostgresDuckDBConnector',
+    'PostgresConnector',
     'ConnectionError',
     # Constants
     'LoaderConstants',
