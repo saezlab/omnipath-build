@@ -1,18 +1,6 @@
 -- Transformation functions for metabo silver layer
 -- Define SQL functions that will be used to transform data from bronze to silver
 
--- Example function:
--- CREATE OR REPLACE FUNCTION clean_protein_name(raw_name TEXT)
--- RETURNS TEXT AS $$
--- BEGIN
---     RETURN TRIM(UPPER(raw_name));
--- END;
--- $$ LANGUAGE plpgsql;
-
--- =====================================================
--- PATTERN EXTRACTION
--- =====================================================
-
 -- Normalize RaMP source IDs to consistent separator format
 CREATE OR REPLACE MACRO normalize_ramp_source_ids(sources_field) AS
     CASE
@@ -87,3 +75,30 @@ CREATE OR REPLACE MACRO combine_compound_ids_swisslipids(id, chebi, lipidmaps, h
         CASE WHEN name IS NOT NULL AND name != '' THEN 'NAME:' || name ELSE NULL END,
         CASE WHEN synonyms IS NOT NULL AND synonyms != '' THEN 'SYNONYM:' || replace(synonyms, ' | ', '|SYNONYM:') ELSE NULL END
     );
+
+-- =====================================================
+-- PMID FORMATTING FUNCTIONS
+-- =====================================================
+
+-- Format PMIDs from various formats to pipe-delimited string or NULL
+-- Handles both array types and string types
+CREATE OR REPLACE MACRO format_pmids(pmids_field) AS
+    CASE
+        -- Handle NULL input
+        WHEN pmids_field IS NULL THEN NULL
+        -- Check if it's an array by trying to get its length
+        WHEN len(pmids_field) >= 0 THEN
+            CASE
+                -- Empty array
+                WHEN len(pmids_field) = 0 THEN NULL
+                -- Array with single empty string or NULL
+                WHEN len(pmids_field) = 1 AND (pmids_field[1] = '' OR pmids_field[1] IS NULL) THEN NULL
+                -- Valid array - filter and join
+                ELSE
+                    CASE
+                        WHEN len(list_filter(pmids_field, x -> x IS NOT NULL AND x != '')) = 0 THEN NULL
+                        ELSE array_to_string(list_filter(pmids_field, x -> x IS NOT NULL AND x != ''), '|')
+                    END
+            END
+        ELSE NULL
+    END;

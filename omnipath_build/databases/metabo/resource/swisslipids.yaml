@@ -28,3 +28,4 @@ functions:
                 target: smiles
             -   source: pmids
                 target: pmids
+                transform: format_pmids
