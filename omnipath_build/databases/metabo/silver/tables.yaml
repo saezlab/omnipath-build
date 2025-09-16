@@ -10,27 +10,7 @@ compounds:
 
     synonyms: TEXT
   # ID columns - common database identifiers
-    chebi_id: VARCHAR
-    hmdb_id: VARCHAR
-    pubchem_cid: VARCHAR
-    kegg_id: VARCHAR
-    drugbank_id: VARCHAR
-    ramp_id: VARCHAR
-    chemspider_id: VARCHAR
-    cas_number: VARCHAR
-    other_ids: TEXT
-
-    recommended_iupac: VARCHAR #easier to pronounce by humans
-    standard_iupac: VARCHAR
-
-    lipidmaps_id: VARCHAR
-    swisslipids_id: VARCHAR
-    metanetx_id: VARCHAR
-
-  # Name columns
-    compound_name: VARCHAR
-    lipid_name: VARCHAR
-    lipid_short_name: VARCHAR
+    ids: VARCHAR # all ids in one column, seperated by |
 
   # Properties columns
     exact_mass: FLOAT8
@@ -39,12 +19,9 @@ compounds:
     logp: FLOAT8
 
   # classification columns
-    classes: VARCHAR
+    classes: VARCHAR # all classification systems in one column, seperated by |. Within each system, levels are separated by $
 
-  # Lipid-specific columns (LIPID MAPS ontology)
-    lipid_category: VARCHAR
-    lipid_class: VARCHAR
-    lipid_subclass: VARCHAR
+  # Lipid-specific columns (LIPID MAPS/ SwissLipids ontology)
     lipid_classification_level: VARCHAR
     lipid_parent: VARCHAR
     lipid_components: TEXT
@@ -60,8 +37,7 @@ compounds:
     inchi: TEXT
     inchikey: VARCHAR
     smiles: TEXT
-    chem_source: VARCHAR
 
-    pmids: TEXT
+    pmids: TEXT # all pmids in one column, seperated by |
 
     loaded_at: TIMESTAMP DEFAULT CURRENT_TIMESTAMP
