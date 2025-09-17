@@ -102,8 +102,8 @@ WITH candidate_smiles AS (
     WHERE smiles IS NOT NULL
       AND btrim(smiles) <> ''
   ) d
-  ORDER BY input_smiles           -- deterministic slice; remove or change if desired
-  LIMIT 50000
+  -- ORDER BY input_smiles           -- deterministic slice; remove or change if desired
+  -- LIMIT 50000
 )
 SELECT gold.ingest_smiles(input_smiles)
 FROM candidate_smiles;
