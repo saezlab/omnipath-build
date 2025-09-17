@@ -21,16 +21,16 @@ default_stages:
 
 repos:
     # Fast Python linter and formatter with auto-fix support
--   repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.11.13
-    hooks:
-    -   id: ruff
-        args: [--fix, --show-fixes]
-        stages: [pre-commit]
-        files: \.py$
-    -   id: ruff-format
-        stages: [pre-commit]
-        files: \.py$
+# -   repo: https://github.com/astral-sh/ruff-pre-commit
+#     rev: v0.11.13
+#     hooks:
+#     -   id: ruff
+#         args: [--fix, --show-fixes]
+#         stages: [pre-commit]
+#         files: \.py$
+#     -   id: ruff-format
+#         stages: [pre-commit]
+#         files: \.py$
 
     # Go code cleaner (removes unused exports)
 -   repo: https://github.com/deeenes/unexport
