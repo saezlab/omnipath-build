@@ -292,10 +292,21 @@ class SQLExecutionManager:
                 if table_name:
                     schema_ref = self.sql_adapter.get_schema_reference('gold')
                     full_table = f'{schema_ref}.{table_name}'
-                    count_result = executor.execute(
-                        f'SELECT COUNT(*) FROM {full_table}'
+
+                    # First check if table exists before trying to count
+                    table_exists_result = executor.execute(
+                        "SELECT COUNT(*) FROM information_schema.tables "
+                        f"WHERE table_schema = '{schema_ref.split('.')[0]}' "
+                        f"AND table_name = '{table_name}'"
                     ).fetchone()
-                    stats['row_count'] = count_result[0] if count_result else 0
+
+                    if table_exists_result and table_exists_result[0] > 0:
+                        count_result = executor.execute(
+                            f'SELECT COUNT(*) FROM {full_table}'
+                        ).fetchone()
+                        stats['row_count'] = count_result[0] if count_result else 0
+                    else:
+                        logger.debug(f'Table {full_table} does not exist, skipping row count')
             except (OSError, RuntimeError) as e:
                 logger.debug(f'Could not get row count for {filename}: {e}')
 
@@ -339,6 +350,11 @@ class SQLExecutionManager:
         # Special case for populate scripts
         if '_populate' in base_name:
             return base_name.replace('_populate', '')
+
+        # Special case for indexing, migration, or maintenance scripts that don't create tables
+        non_table_operations = ['indexing', 'migration', 'maintenance', 'cleanup', 'index', 'constraint']
+        if any(op in base_name.lower() for op in non_table_operations):
+            return None
 
         return base_name
 

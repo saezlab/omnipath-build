@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS gold.canonical_structures (
   rotatable_bonds  INTEGER,
   aromatic_rings   INTEGER,
   heavy_atoms      INTEGER,
+  morgan_fp        bfp,
   computed_at      TIMESTAMP DEFAULT NOW()
 );
 
@@ -62,7 +63,7 @@ BEGIN
   INSERT INTO gold.canonical_structures (
     canonical_smiles, mol, inchi, inchikey, formula,
     molecular_weight, exact_mass, tpsa, logp,
-    hbd, hba, rotatable_bonds, aromatic_rings, heavy_atoms, computed_at
+    hbd, hba, rotatable_bonds, aromatic_rings, heavy_atoms, morgan_fp, computed_at
   )
   VALUES (
     v_canonical,
@@ -79,6 +80,7 @@ BEGIN
     mol_numrotatablebonds(v_mol),
     mol_numaromaticrings(v_mol),
     mol_numheavyatoms(v_mol),
+    morganbv_fp(v_mol),
     NOW()
   )
   ON CONFLICT (canonical_smiles)
