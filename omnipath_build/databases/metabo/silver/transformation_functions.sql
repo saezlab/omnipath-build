@@ -48,7 +48,7 @@ CREATE OR REPLACE MACRO combine_compound_ids_lipidmaps(id, chebi, pubchem, name,
         ELSE NULL END,
         CASE WHEN pubchem IS NOT NULL AND pubchem != '' THEN 'PUBCHEM:' || pubchem ELSE NULL END,
         CASE WHEN name IS NOT NULL AND name != '' THEN 'NAME:' || name ELSE NULL END,
-        CASE WHEN synonyms IS NOT NULL AND synonyms != '' THEN 'SYNONYM:' || replace(synonyms, ',', '|SYNONYM:') ELSE NULL END
+        CASE WHEN synonyms IS NOT NULL AND synonyms != '' THEN 'SYNONYM:' || replace(synonyms, '; ', '|SYNONYM:') ELSE NULL END
     );
 
 CREATE OR REPLACE MACRO combine_compound_ids_ramp(ramp_id, sources, common_name, synonyms) AS
@@ -58,7 +58,7 @@ CREATE OR REPLACE MACRO combine_compound_ids_ramp(ramp_id, sources, common_name,
             normalize_ramp_source_ids(sources)
         ELSE NULL END,
         CASE WHEN common_name IS NOT NULL AND common_name != '' THEN 'NAME:' || common_name ELSE NULL END,
-        CASE WHEN synonyms IS NOT NULL AND synonyms != '' THEN 'SYNONYM:' || replace(synonyms, ',', '|SYNONYM:') ELSE NULL END
+        CASE WHEN synonyms IS NOT NULL AND synonyms != '' THEN 'SYNONYM:' || replace(synonyms, ', ', '|SYNONYM:') ELSE NULL END
     );
 
 CREATE OR REPLACE MACRO combine_compound_ids_swisslipids(id, chebi, lipidmaps, hmdb, metanetx, name, synonyms) AS
@@ -73,7 +73,7 @@ CREATE OR REPLACE MACRO combine_compound_ids_swisslipids(id, chebi, lipidmaps, h
         ELSE NULL END,
         CASE WHEN metanetx IS NOT NULL AND metanetx != '' THEN 'METANETX:' || metanetx ELSE NULL END,
         CASE WHEN name IS NOT NULL AND name != '' THEN 'NAME:' || name ELSE NULL END,
-        CASE WHEN synonyms IS NOT NULL AND synonyms != '' THEN 'SYNONYM:' || replace(synonyms, ' | ', '|SYNONYM:') ELSE NULL END
+        CASE WHEN synonyms IS NOT NULL AND synonyms != '' THEN 'SYNONYM:' || replace(synonyms, ', ', '|SYNONYM:') ELSE NULL END
     );
 
 -- =====================================================
