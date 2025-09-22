@@ -1,12 +1,14 @@
 services:
-  # PostgreSQL Database
+# PostgreSQL Database
     postgres:
-        image: postgres:16-alpine
+        build:
+            context: .
+            dockerfile: Dockerfile
         restart: unless-stopped
         environment:
             POSTGRES_USER: ${POSTGRES_USER}
             POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      # No default database - databases are created by database_manager.py
+    # No default database - databases are created by database_manager.py
         ports:
         -   5436:5432
         volumes:
