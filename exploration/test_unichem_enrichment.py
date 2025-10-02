@@ -26,10 +26,10 @@ __all__ = [
 ]
 
 # Define paths to parquet files
-HMDB_PATH = "omnipath_build/databases/metabo/bronze/data/hmdb/compounds_for_metabo/20250904_125751.parquet"
-LIPIDMAPS_PATH = "omnipath_build/databases/metabo/bronze/data/lipidmaps/lipidmaps_lipids/20250826_135514.parquet"
-SWISSLIPIDS_PATH = "omnipath_build/databases/metabo/bronze/data/swisslipids/swisslipids_lipids/20250826_135637.parquet"
-RAMP_PATH = "omnipath_build/databases/metabo/bronze/data/ramp/ramp_omnipathmetabo/20250909_101107.parquet"
+HMDB_PATH = "../databases/metabo/bronze/data/hmdb/compounds_for_metabo/20250904_125751.parquet"
+LIPIDMAPS_PATH = "../databases/metabo/bronze/data/lipidmaps/lipidmaps_lipids/20250826_135514.parquet"
+SWISSLIPIDS_PATH = "../databases/metabo/bronze/data/swisslipids/swisslipids_lipids/20250826_135637.parquet"
+RAMP_PATH = "../databases/metabo/bronze/data/ramp/ramp_omnipathmetabo/20250909_101107.parquet"
 
 # UniChem API base URL
 UNICHEM_BASE = "https://www.ebi.ac.uk/unichem/rest"
