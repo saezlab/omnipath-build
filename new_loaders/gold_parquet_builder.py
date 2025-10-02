@@ -40,18 +40,18 @@ class GoldParquetBuilder:
         'interaction_evidence',
     )
 
-    SEQUENCE_TABLE_COLUMN_MAP: dict[str, tuple[str, str]] = {
-        'seq_cv_namespace': ('cv_namespace', 'id'),
-        'seq_cv_term': ('cv_term', 'id'),
-        'seq_source': ('source', 'id'),
-        'seq_reference': ('reference', 'id'),
-        'seq_provenance': ('provenance', 'id'),
-        'seq_entity': ('entity', 'id'),
-        'seq_entity_identifier': ('entity_identifier', 'id'),
-        'seq_interaction': ('interaction', 'id'),
-        'seq_annotation_record': ('annotation_record', 'id'),
-        'seq_annotation': ('annotation', 'id'),
-        'seq_interaction_evidence': ('interaction_evidence', 'id'),
+    ID_COLUMN_MAP: dict[str, tuple[str, str]] = {
+        'cv_namespace': ('cv_namespace', 'id'),
+        'cv_term': ('cv_term', 'id'),
+        'source': ('source', 'id'),
+        'reference': ('reference', 'id'),
+        'provenance': ('provenance', 'id'),
+        'entity': ('entity', 'id'),
+        'entity_identifier': ('entity_identifier', 'id'),
+        'interaction': ('interaction', 'id'),
+        'annotation_record': ('annotation_record', 'id'),
+        'annotation': ('annotation', 'id'),
+        'interaction_evidence': ('interaction_evidence', 'id'),
     }
 
     def __init__(self, source_name: str, output_dir: Path):
@@ -68,6 +68,7 @@ class GoldParquetBuilder:
         # Create gold schema tables in DuckDB
         self._create_gold_schema()
         self._load_existing_data()
+        self._init_id_counters()
 
         logger.info(f"GoldParquetBuilder initialized for source: {source_name}")
 
@@ -87,19 +88,6 @@ class GoldParquetBuilder:
         so we use explicit sequences and manually generate IDs.
         """
         logger.info("Creating gold schema in DuckDB...")
-
-        # Create sequences for ID generation
-        self.conn.execute("CREATE SEQUENCE seq_cv_namespace START 1")
-        self.conn.execute("CREATE SEQUENCE seq_cv_term START 1")
-        self.conn.execute("CREATE SEQUENCE seq_source START 1")
-        self.conn.execute("CREATE SEQUENCE seq_reference START 1")
-        self.conn.execute("CREATE SEQUENCE seq_provenance START 1")
-        self.conn.execute("CREATE SEQUENCE seq_entity START 1")
-        self.conn.execute("CREATE SEQUENCE seq_entity_identifier START 1")
-        self.conn.execute("CREATE SEQUENCE seq_interaction START 1")
-        self.conn.execute("CREATE SEQUENCE seq_annotation_record START 1")
-        self.conn.execute("CREATE SEQUENCE seq_annotation START 1")
-        self.conn.execute("CREATE SEQUENCE seq_interaction_evidence START 1")
 
         # Create tables (without FK constraints for simplicity, we enforce at insert time)
 
@@ -284,44 +272,58 @@ class GoldParquetBuilder:
                 continue
 
             logger.info(f"Loading existing data for {table} from {parquet_path}")
+            parquet_literal = self._sql_literal(parquet_path.as_posix())
             self.conn.execute(
-                f"INSERT INTO {table} SELECT * FROM read_parquet(?)",
-                [str(parquet_path)]
-            )
-
-        self._reset_sequences_from_data()
-
-    def _reset_sequences_from_data(self) -> None:
-        """Reset DuckDB sequences to avoid ID collisions after loading data."""
-        for sequence_name, (table_name, column_name) in self.SEQUENCE_TABLE_COLUMN_MAP.items():
-            max_id = self.conn.execute(
-                f"SELECT COALESCE(MAX({column_name}), 0) FROM {table_name}"
-            ).fetchone()[0]
-
-            # DuckDB sequences restart at the provided value, so add 1 for the next id
-            next_value = max_id + 1
-            self.conn.execute(
-                f"ALTER SEQUENCE {sequence_name} RESTART WITH {next_value}"
+                f"INSERT INTO {table} SELECT * FROM read_parquet({parquet_literal})"
             )
 
     # ========================================================================
     # Helper methods for building data
     # ========================================================================
 
+    def _init_id_counters(self) -> None:
+        """Initialise ID counters for tables that require synthetic keys."""
+        self._id_counters: dict[str, int] = {}
+        for table_key, (table_name, column_name) in self.ID_COLUMN_MAP.items():
+            max_id = self.conn.execute(
+                f"SELECT COALESCE(MAX({column_name}), 0) FROM {table_name}"
+            ).fetchone()[0]
+            self._id_counters[table_key] = max_id + 1
+
+    def _reserve_ids(self, table_key: str, count: int = 1) -> int:
+        """Reserve a block of IDs for a table and return the starting ID."""
+        if count <= 0:
+            return self._id_counters.get(table_key, 1)
+
+        start_id = self._id_counters.get(table_key, 1)
+        self._id_counters[table_key] = start_id + count
+        return start_id
+
+    @staticmethod
+    def _sql_literal(value) -> str:
+        """Return a SQL literal representation for embedding values safely."""
+        if value is None:
+            return 'NULL'
+        if isinstance(value, bool):
+            return 'TRUE' if value else 'FALSE'
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return repr(value)
+        # Handle paths and other objects by converting to string
+        text = str(value).replace("'", "''")
+        return f"'{text}'"
+
     def _ensure_namespace(self, namespace_name: str) -> int:
         """Get or create namespace, return namespace_id."""
         result = self.conn.execute(
-            "SELECT id FROM cv_namespace WHERE name = ?",
-            [namespace_name]
+            f"SELECT id FROM cv_namespace WHERE name = {self._sql_literal(namespace_name)}"
         ).fetchone()
 
         if result:
             return result[0]
         else:
-            namespace_id = self.conn.execute("SELECT nextval('seq_cv_namespace')").fetchone()[0]
+            namespace_id = self._reserve_ids('cv_namespace')
             self.conn.execute(
-                "INSERT INTO cv_namespace (id, name) VALUES (?, ?)",
-                [namespace_id, namespace_name]
+                f"INSERT INTO cv_namespace (id, name) VALUES ({namespace_id}, {self._sql_literal(namespace_name)})"
             )
             logger.debug(f"Created namespace: {namespace_name} (id={namespace_id})")
             return namespace_id
@@ -329,17 +331,17 @@ class GoldParquetBuilder:
     def _ensure_source(self, source_name: str, url: str = None, description: str = None) -> int:
         """Get or create source, return source_id."""
         result = self.conn.execute(
-            "SELECT id FROM source WHERE name = ?",
-            [source_name]
+            f"SELECT id FROM source WHERE name = {self._sql_literal(source_name)}"
         ).fetchone()
 
         if result:
             return result[0]
         else:
-            source_id = self.conn.execute("SELECT nextval('seq_source')").fetchone()[0]
+            source_id = self._reserve_ids('source')
             self.conn.execute(
-                "INSERT INTO source (id, name, url, description, created_at) VALUES (?, ?, ?, ?, NOW())",
-                [source_id, source_name, url, description]
+                "INSERT INTO source (id, name, url, description, created_at) "
+                f"VALUES ({source_id}, {self._sql_literal(source_name)}, "
+                f"{self._sql_literal(url)}, {self._sql_literal(description)}, NOW())"
             )
             logger.debug(f"Created source: {source_name} (id={source_id})")
             return source_id
@@ -348,22 +350,30 @@ class GoldParquetBuilder:
                           primary_source_id: int = None) -> int:
         """Get or create provenance, return provenance_id."""
         # Check if exists
+        conditions = [f"source_id = {source_id}"]
+        if reference_id is None:
+            conditions.append("reference_id IS NULL")
+        else:
+            conditions.append(f"reference_id = {reference_id}")
+
+        if primary_source_id is None:
+            conditions.append("primary_source_id IS NULL")
+        else:
+            conditions.append(f"primary_source_id = {primary_source_id}")
+
+        where_clause = " AND ".join(conditions)
         result = self.conn.execute(
-            """SELECT id FROM provenance
-               WHERE source_id = ?
-               AND (reference_id IS NULL AND ? IS NULL OR reference_id = ?)
-               AND (primary_source_id IS NULL AND ? IS NULL OR primary_source_id = ?)""",
-            [source_id, reference_id, reference_id, primary_source_id, primary_source_id]
+            f"SELECT id FROM provenance WHERE {where_clause} LIMIT 1"
         ).fetchone()
 
         if result:
             return result[0]
         else:
-            provenance_id = self.conn.execute("SELECT nextval('seq_provenance')").fetchone()[0]
+            provenance_id = self._reserve_ids('provenance')
             self.conn.execute(
-                """INSERT INTO provenance (id, source_id, primary_source_id, reference_id, created_at)
-                   VALUES (?, ?, ?, ?, NOW())""",
-                [provenance_id, source_id, primary_source_id, reference_id]
+                "INSERT INTO provenance (id, source_id, primary_source_id, reference_id, created_at) "
+                f"VALUES ({provenance_id}, {source_id}, {self._sql_literal(primary_source_id)}, "
+                f"{self._sql_literal(reference_id)}, NOW())"
             )
             logger.debug(f"Created provenance (id={provenance_id}, source_id={source_id})")
             return provenance_id
@@ -374,18 +384,24 @@ class GoldParquetBuilder:
         namespace_id = self._ensure_namespace(namespace_name)
 
         result = self.conn.execute(
-            "SELECT id FROM cv_term WHERE namespace_id = ? AND name = ?",
-            [namespace_id, term_name]
+            "SELECT id FROM cv_term "
+            f"WHERE namespace_id = {namespace_id} AND name = {self._sql_literal(term_name)}"
         ).fetchone()
 
         if result:
             return result[0]
         else:
-            cv_term_id = self.conn.execute("SELECT nextval('seq_cv_term')").fetchone()[0]
-            self.conn.execute("""
-                INSERT INTO cv_term (id, namespace_id, accession, name, description, is_obsolete)
-                VALUES (?, ?, ?, ?, ?, FALSE)
-            """, [cv_term_id, namespace_id, accession, term_name, description])
+            cv_term_id = self._reserve_ids('cv_term')
+            self.conn.execute(
+                "INSERT INTO cv_term (id, namespace_id, accession, name, description, is_obsolete) "
+                "VALUES ({id}, {namespace_id}, {accession}, {name}, {description}, FALSE)".format(
+                    id=cv_term_id,
+                    namespace_id=namespace_id,
+                    accession=self._sql_literal(accession),
+                    name=self._sql_literal(term_name),
+                    description=self._sql_literal(description)
+                )
+            )
             logger.debug(f"Created CV term: {namespace_name}:{term_name} (id={cv_term_id})")
             return cv_term_id
 
@@ -394,18 +410,16 @@ class GoldParquetBuilder:
         result = self.conn.execute("""
             SELECT entity_id
             FROM entity_identifier
-            WHERE identifier = ?
-            LIMIT 1
-        """, [identifier]).fetchone()
+        """ + f" WHERE identifier = {self._sql_literal(identifier)} LIMIT 1").fetchone()
         return result[0] if result else None
 
     def _create_entity(self, cv_term_id: int) -> int:
         """Create entity and return entity_id."""
-        entity_id = self.conn.execute("SELECT nextval('seq_entity')").fetchone()[0]
+        entity_id = self._reserve_ids('entity')
         self.conn.execute("""
             INSERT INTO entity (id, cv_term_id, created_at)
-            VALUES (?, ?, NOW())
-        """, [entity_id, cv_term_id])
+            VALUES ({entity_id}, {cv_term_id}, NOW())
+        """)
         logger.debug(f"Created entity (id={entity_id}, cv_term_id={cv_term_id})")
         return entity_id
 
@@ -415,22 +429,31 @@ class GoldParquetBuilder:
         # Check if exists (to avoid duplicates)
         result = self.conn.execute("""
             SELECT 1 FROM entity_identifier
-            WHERE entity_id = ? AND identifier = ? AND provenance_id = ?
-        """, [entity_id, identifier, provenance_id]).fetchone()
+        """ + f" WHERE entity_id = {entity_id} AND identifier = {self._sql_literal(identifier)} "
+               f"AND provenance_id = {provenance_id}").fetchone()
 
         if result is None:
-            identifier_id = self.conn.execute("SELECT nextval('seq_entity_identifier')").fetchone()[0]
+            identifier_id = self._reserve_ids('entity_identifier')
             self.conn.execute("""
                 INSERT INTO entity_identifier
                 (id, entity_id, cv_term_id, identifier, provenance_id, created_at)
-                VALUES (?, ?, ?, ?, ?, NOW())
-            """, [identifier_id, entity_id, cv_term_id, identifier, provenance_id])
+                VALUES (
+                    {identifier_id},
+                    {entity_id},
+                    {cv_term_id},
+                    {self._sql_literal(identifier)},
+                    {provenance_id},
+                    NOW()
+                )
+            """)
             logger.debug(f"Added identifier: {identifier} to entity {entity_id}")
 
     def _upsert_compound(self, entity_id: int, row: dict) -> None:
         """Insert or update compound-specific data."""
         # Check if exists
-        result = self.conn.execute("SELECT 1 FROM compound WHERE entity_id = ?", [entity_id]).fetchone()
+        result = self.conn.execute(
+            f"SELECT 1 FROM compound WHERE entity_id = {entity_id}"
+        ).fetchone()
 
         if result is None:
             # Insert
@@ -439,49 +462,43 @@ class GoldParquetBuilder:
                     entity_id, formula, molecular_weight, exact_mass,
                     tpsa, logp, hbd, hba, rotatable_bonds, aromatic_rings, heavy_atoms
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, [
-                entity_id,
-                row.get('compound_formula'),
-                row.get('molecular_weight'),
-                row.get('exact_mass'),
-                row.get('tpsa'),
-                row.get('logp'),
-                row.get('hbd'),
-                row.get('hba'),
-                row.get('rotatable_bonds'),
-                row.get('aromatic_rings'),
-                row.get('heavy_atoms')
-            ])
+            """ + " VALUES ("
+                f"{entity_id}, {self._sql_literal(row.get('compound_formula'))}, "
+                f"{self._sql_literal(row.get('molecular_weight'))}, {self._sql_literal(row.get('exact_mass'))}, "
+                f"{self._sql_literal(row.get('tpsa'))}, {self._sql_literal(row.get('logp'))}, "
+                f"{self._sql_literal(row.get('hbd'))}, {self._sql_literal(row.get('hba'))}, "
+                f"{self._sql_literal(row.get('rotatable_bonds'))}, {self._sql_literal(row.get('aromatic_rings'))}, "
+                f"{self._sql_literal(row.get('heavy_atoms'))})"
+            )
             logger.debug(f"Inserted compound data for entity {entity_id}")
         else:
             # Update with COALESCE logic (keep existing if new is NULL)
             self.conn.execute("""
                 UPDATE compound SET
-                    formula = COALESCE(?, formula),
-                    molecular_weight = COALESCE(?, molecular_weight),
-                    exact_mass = COALESCE(?, exact_mass),
-                    tpsa = COALESCE(?, tpsa),
-                    logp = COALESCE(?, logp),
-                    hbd = COALESCE(?, hbd),
-                    hba = COALESCE(?, hba),
-                    rotatable_bonds = COALESCE(?, rotatable_bonds),
-                    aromatic_rings = COALESCE(?, aromatic_rings),
-                    heavy_atoms = COALESCE(?, heavy_atoms)
-                WHERE entity_id = ?
-            """, [
-                row.get('compound_formula'),
-                row.get('molecular_weight'),
-                row.get('exact_mass'),
-                row.get('tpsa'),
-                row.get('logp'),
-                row.get('hbd'),
-                row.get('hba'),
-                row.get('rotatable_bonds'),
-                row.get('aromatic_rings'),
-                row.get('heavy_atoms'),
-                entity_id
-            ])
+                    formula = COALESCE({formula}, formula),
+                    molecular_weight = COALESCE({mw}, molecular_weight),
+                    exact_mass = COALESCE({exact_mass}, exact_mass),
+                    tpsa = COALESCE({tpsa}, tpsa),
+                    logp = COALESCE({logp}, logp),
+                    hbd = COALESCE({hbd}, hbd),
+                    hba = COALESCE({hba}, hba),
+                    rotatable_bonds = COALESCE({rotatable}, rotatable_bonds),
+                    aromatic_rings = COALESCE({aromatic}, aromatic_rings),
+                    heavy_atoms = COALESCE({heavy}, heavy_atoms)
+                WHERE entity_id = {entity_id}
+            """.format(
+                formula=self._sql_literal(row.get('compound_formula')),
+                mw=self._sql_literal(row.get('molecular_weight')),
+                exact_mass=self._sql_literal(row.get('exact_mass')),
+                tpsa=self._sql_literal(row.get('tpsa')),
+                logp=self._sql_literal(row.get('logp')),
+                hbd=self._sql_literal(row.get('hbd')),
+                hba=self._sql_literal(row.get('hba')),
+                rotatable=self._sql_literal(row.get('rotatable_bonds')),
+                aromatic=self._sql_literal(row.get('aromatic_rings')),
+                heavy=self._sql_literal(row.get('heavy_atoms')),
+                entity_id=entity_id
+            ))
             logger.debug(f"Updated compound data for entity {entity_id}")
 
     # ========================================================================
@@ -623,11 +640,9 @@ class GoldParquetBuilder:
             "SELECT COUNT(*) FROM dedup_candidates"
         ).fetchone()[0]
 
-        self.conn.execute(f"""
-            CREATE TEMP TABLE unique_entities AS
-            SELECT
-                nextval('seq_entity') AS entity_id,
-                candidate.*
+        self.conn.execute("""
+            CREATE TEMP TABLE new_entity_candidates AS
+            SELECT *
             FROM dedup_candidates AS candidate
             WHERE candidate.canonical_id IS NULL
                 OR NOT EXISTS (
@@ -637,7 +652,16 @@ class GoldParquetBuilder:
                 )
         """)
 
-        unique_count = self.conn.execute("SELECT COUNT(*) FROM unique_entities").fetchone()[0]
+        unique_count = self.conn.execute("SELECT COUNT(*) FROM new_entity_candidates").fetchone()[0]
+        start_entity_id = self._reserve_ids('entity', unique_count)
+
+        self.conn.execute(f"""
+            CREATE TEMP TABLE unique_entities AS
+            SELECT
+                {start_entity_id} + ROW_NUMBER() OVER () - 1 AS entity_id,
+                candidate.*
+            FROM new_entity_candidates AS candidate
+        """)
         skipped_existing = candidate_count - unique_count
         logger.info(
             "  %s new unique entities (from %s total; skipped %s already in gold)",
@@ -696,7 +720,10 @@ class GoldParquetBuilder:
         # Bulk insert canonical identifiers - pre-calculate IDs to avoid nextval() overhead
         logger.info("  Creating canonical identifiers...")
         inchi_cv_term_id = identifier_types.get('inchi')
-        next_identifier_id = self.conn.execute("SELECT nextval('seq_entity_identifier')").fetchone()[0]
+        identifiers_needed = self.conn.execute(
+            "SELECT COUNT(*) FROM canonical_mapping WHERE canonical_id IS NOT NULL"
+        ).fetchone()[0]
+        start_identifier_id = self._reserve_ids('entity_identifier', identifiers_needed)
 
         # Build cv_term_id expression based on available types
         if inchi_cv_term_id and default_cv_term_id:
@@ -715,7 +742,7 @@ class GoldParquetBuilder:
         self.conn.execute(f"""
             INSERT INTO entity_identifier (id, entity_id, cv_term_id, identifier, provenance_id, created_at)
             SELECT
-                {next_identifier_id} + ROW_NUMBER() OVER () - 1 as id,
+                {start_identifier_id} + ROW_NUMBER() OVER () - 1 as id,
                 entity_id,
                 {cv_term_expr} as cv_term_id,
                 canonical_id as identifier,
@@ -763,6 +790,7 @@ class GoldParquetBuilder:
         # Cleanup temp tables and views
         self.conn.execute(f"DROP VIEW IF EXISTS {temp_table}")
         self.conn.execute("DROP TABLE IF EXISTS dedup_candidates")
+        self.conn.execute("DROP TABLE IF EXISTS new_entity_candidates")
         self.conn.execute("DROP TABLE IF EXISTS unique_entities")
         self.conn.execute("DROP TABLE IF EXISTS canonical_mapping")
 
