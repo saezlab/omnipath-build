@@ -1,4 +1,5 @@
 version = 1
+revision = 1
 requires-python = ">=3.12"
 
 [[package]]
@@ -1332,6 +1333,7 @@ requires-dist = [
     { name = "tox-gh", marker = "extra == 'tests'", specifier = ">=1.5.0" },
     { name = "twine", marker = "extra == 'dev'" },
 ]
+provides-extras = ["dev", "docs", "security", "tests"]
 
 [package.metadata.requires-dev]
 dev = [{ name = "pre-commit", specifier = ">=4.3.0" }]
@@ -1694,7 +1696,7 @@ dependencies = [
 [[package]]
 name = "pypath-omnipath"
 version = "0.16.28"
-source = { git = "https://github.com/saezlab/pypath.git?branch=master#1546e5d133bfa8b685f8097713c86076b6a30585" }
+source = { git = "https://github.com/saezlab/pypath.git?branch=master#32febdc113870e1a5e6b247655e6b32755c1af4a" }
 dependencies = [
     { name = "beautifulsoup4" },
     { name = "cachemanager" },

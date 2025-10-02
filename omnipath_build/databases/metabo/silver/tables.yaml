@@ -14,16 +14,16 @@ silver_entities:
   # Identifiers (cleaned/validated)
     identifier: VARCHAR(255)           # Primary identifier from source
     identifier_type: VARCHAR(100)      # 'uniprot', 'chebi', 'kegg', etc.
-    additional_identifiers: JSONB      # [{"type": "uniprot", "value": "P12345"}]
+    additional_identifiers: JSON      # [{"type": "uniprot", "value": "P12345"}]
 
   # Names (cleaned)
     name: TEXT
-    name_variants: JSONB               # ["synonym1", "synonym2"]
+    name_variants: JSON               # ["synonym1", "synonym2"]
 
   # Protein-specific fields (cleaned/validated)
     protein_sequence: TEXT
     protein_class: VARCHAR(255)
-    protein_features: JSONB
+    protein_features: JSON
 
   # Compound-specific fields (cleaned/validated)
     compound_formula: VARCHAR(255)
@@ -48,15 +48,15 @@ silver_entities:
 
   # Complex/membership info (as provided by source)
     is_complex: BOOLEAN
-    complex_members: JSONB             # [{"member_id": "...", "stoichiometry": 2, "role": "..."}]
-    parent_complex_ids: JSONB          # IDs of complexes this belongs to
+    complex_members: JSON             # [{"member_id": "...", "stoichiometry": 2, "role": "..."}]
+    parent_complex_ids: JSON          # IDs of complexes this belongs to
 
   # Annotations (as provided by source)
-    annotations: JSONB                 # [{"term": "...", "value": "...", "units": "..."}]
+    annotations: JSON                 # [{"term": "...", "value": "...", "units": "..."}]
 
   # Data quality (validation only, no scores)
     is_valid: BOOLEAN
-    validation_errors: JSONB           # [{"field": "sequence", "error": "invalid characters"}]
+    validation_errors: JSON           # [{"field": "sequence", "error": "invalid characters"}]
 
   # Metadata
     created_at: TIMESTAMP
@@ -88,9 +88,9 @@ silver_interactions:
     sentence: TEXT                     # Extracted sentence from paper
 
   # Annotations (cleaned)
-    interaction_annotations: JSONB     # General interaction annotations
-    entity_a_context: JSONB            # Context annotations for entity A
-    entity_b_context: JSONB            # Context annotations for entity B
+    interaction_annotations: JSON     # General interaction annotations
+    entity_a_context: JSON            # Context annotations for entity A
+    entity_b_context: JSON            # Context annotations for entity B
 
   # Provenance (cleaned/validated)
     source_name: VARCHAR(255)
@@ -108,7 +108,7 @@ silver_interactions:
 
   # Data quality (validation only)
     is_valid: BOOLEAN
-    validation_errors: JSONB           # [{"field": "direction", "error": "conflicting values"}]
+    validation_errors: JSON           # [{"field": "direction", "error": "conflicting values"}]
 
   # Metadata
     evidence_date: TIMESTAMP           # When evidence was created/published
@@ -123,14 +123,13 @@ silver_interactions:
 # Controlled vocabulary terms from sources (one row per source term)
 silver_cv_terms:
   # Term identification
-    namespace: VARCHAR(100) PRIMARY KEY # 'entity_type', 'interaction_type', 'GO', 'ChEBI', etc.
     term_name: VARCHAR(500) PRIMARY KEY # The actual term/value
     term_accession: VARCHAR(100)       # Formal accession if available (e.g., 'GO:0008150')
 
   # Term metadata (if provided by source)
     term_definition: TEXT
-    term_synonyms: JSONB               # ["synonym1", "synonym2"]
-    term_parent_accessions: JSONB      # ["GO:0008150", "GO:0009987"]
+    term_synonyms: JSON               # ["synonym1", "synonym2"]
+    term_parent_accessions: JSON      # ["GO:0008150", "GO:0009987"]
 
   # Metadata
     created_at: TIMESTAMP

@@ -3,7 +3,7 @@
 # Streamlined developer experience with just 5 essential commands
 
 .DEFAULT_GOAL := help
-.PHONY: help setup start new run stop
+.PHONY: help setup start new add run stop
 
 # Colors for output
 GREEN := \033[32m
@@ -20,16 +20,18 @@ help: ## Show this help message
 	@echo "$(GREEN)OmniPath Build - Developer Commands$(RESET)"
 	@echo ""
 	@echo "$(BLUE)Essential Commands:$(RESET)"
-	@echo "  $(GREEN)make setup$(RESET)     - One-time complete setup (install deps, start postgres, etc.)"
-	@echo "  $(GREEN)make start$(RESET)     - Daily startup (ensure postgres running, show status)"
-	@echo "  $(GREEN)make new DB=mydb$(RESET) - Create & configure a new database with resources"
-	@echo "  $(GREEN)make run DB=mydb$(RESET) - Run/update an existing database"
-	@echo "  $(GREEN)make stop$(RESET)      - Clean shutdown (stop postgres, cleanup logs)"
+	@echo "  $(GREEN)make setup$(RESET)              - One-time complete setup (install deps, start postgres, etc.)"
+	@echo "  $(GREEN)make start$(RESET)              - Daily startup (ensure postgres running, show status)"
+	@echo "  $(GREEN)make new DB=mydb$(RESET)        - Create & configure a new database"
+	@echo "  $(GREEN)make add DB=mydb RES=x.y$(RESET) - Add resources to a database"
+	@echo "  $(GREEN)make run DB=mydb$(RESET)        - Run/update an existing database"
+	@echo "  $(GREEN)make stop$(RESET)               - Clean shutdown (stop postgres, cleanup logs)"
 	@echo ""
 	@echo "$(BLUE)Examples:$(RESET)"
-	@echo "  make setup                    # First time setup"
-	@echo "  make new DB=signaling        # Create signaling database"
-	@echo "  make run DB=signaling        # Update signaling database"
+	@echo "  make setup                              # First time setup"
+	@echo "  make new DB=signaling                  # Create signaling database"
+	@echo "  make add DB=signaling RES=signor.signor_interactions  # Add a resource"
+	@echo "  make run DB=signaling                  # Update signaling database"
 	@echo ""
 
 setup: ## Complete one-time setup
@@ -197,12 +199,47 @@ new: ## Create and configure a new database
 	@echo ""
 	@echo "$(YELLOW)📝 Next steps:$(RESET)"
 	@echo "1. Add resources to your database:"
-	@echo "   $(GREEN)uv run --env-file .env python omnipath_build/database_manager.py add-resources --database $(DB) --resources signor.signor_interactions$(RESET)"
+	@echo "   $(GREEN)make add DB=$(DB) RES=signor.signor_interactions$(RESET)"
 	@echo ""
 	@echo "2. Load the data:"
 	@echo "   $(GREEN)make run DB=$(DB)$(RESET)"
 	@echo ""
 	@echo "3. Or see all resources: $(GREEN)cat pypath_resources.txt$(RESET)"
+
+add: ## Add resources to a database
+	@if [ -z "$(DB)" ]; then \
+		echo "$(RED)Please specify a database name: make add DB=myproject RES=resource.name$(RESET)"; \
+		exit 1; \
+	fi
+
+	@if [ ! -d "omnipath_build/databases/$(DB)" ]; then \
+		echo "$(RED)Database $(DB) not found. Create it first with: make new DB=$(DB)$(RESET)"; \
+		exit 1; \
+	fi
+
+	@if [ -z "$(RES)" ]; then \
+		echo "$(RED)Please specify resources: make add DB=$(DB) RES=resource.name$(RESET)"; \
+		echo ""; \
+		echo "$(BLUE)Available resources (showing first 20):$(RESET)"; \
+		if [ -f pypath_resources.txt ]; then \
+			head -20 pypath_resources.txt | tail -15; \
+		else \
+			uv run python omnipath_build/tools/list_pypath_resources.py; \
+			head -20 pypath_resources.txt | tail -15; \
+		fi; \
+		echo ""; \
+		echo "See all: $(GREEN)cat pypath_resources.txt$(RESET)"; \
+		exit 1; \
+	fi
+
+	@echo "$(BLUE)➕ Adding resources to database: $(DB)$(RESET)"
+	@echo ""
+	@uv run --env-file .env python omnipath_build/database_manager.py add-resources --database $(DB) --resources $(RES)
+	@echo ""
+	@echo "$(GREEN)✓ Resources added to $(DB)$(RESET)"
+	@echo ""
+	@echo "$(BLUE)Next step:$(RESET)"
+	@echo "  $(GREEN)make run DB=$(DB)$(RESET)  # Load the data"
 
 run: ## Run/update an existing database
 	@if [ -z "$(DB)" ]; then \
