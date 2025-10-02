@@ -23,8 +23,8 @@ BEGIN
         ns.name,
         t.name,
         t.id
-    FROM cv_term t
-    JOIN cv_namespace ns ON t.namespace_id = ns.id
+    FROM gold.cv_term t
+    JOIN gold.cv_namespace ns ON t.namespace_id = ns.id
     ON CONFLICT DO NOTHING;
 
     -- ✨ Now process with fast JOINs
@@ -46,20 +46,34 @@ BEGIN
             si.title,
             si.journal,
             si.year
-        FROM silver_interactions si
-        JOIN entity_identifier eia ON eia.identifier = si.entity_a_identifier
-        JOIN entity ea ON ea.id = eia.entity_id
-        JOIN entity_identifier eib ON eib.identifier = si.entity_b_identifier
-        JOIN entity eb ON eb.id = eib.entity_id
+        FROM silver.silver_interactions si
+        JOIN gold.entity_identifier eia ON eia.identifier = si.entity_a_identifier
+        JOIN gold.entity ea ON ea.id = eia.entity_id
+        JOIN gold.entity_identifier eib ON eib.identifier = si.entity_b_identifier
+        JOIN gold.entity eb ON eb.id = eib.entity_id
         WHERE si.is_valid = TRUE
         AND NOT EXISTS (
-            SELECT 1 FROM interaction_evidence ie
+            SELECT 1 FROM gold.interaction_evidence ie
             WHERE ie.sentence = si.sentence
         )
     ),
     
+    requested_sources AS (
+        SELECT DISTINCT COALESCE(ist.source_name, 'OmniPath') AS source_name
+        FROM interaction_staging ist
+    ),
+
+    source_upserts AS (
+        INSERT INTO gold.source (name)
+        SELECT source_name
+        FROM requested_sources
+        WHERE source_name IS NOT NULL
+        ON CONFLICT (name) DO NOTHING
+        RETURNING id, name
+    ),
+    
     interaction_upserts AS (
-        INSERT INTO interaction (entity_a_id, entity_b_id)
+        INSERT INTO gold.interaction (entity_a_id, entity_b_id)
         SELECT DISTINCT
             LEAST(entity_a_id, entity_b_id),
             GREATEST(entity_a_id, entity_b_id)
@@ -72,7 +86,7 @@ BEGIN
         SELECT 
             ist.*,
             COALESCE(
-                (SELECT i.id FROM interaction i 
+                (SELECT i.id FROM gold.interaction i 
                  WHERE i.entity_a_id = LEAST(ist.entity_a_id, ist.entity_b_id)
                  AND i.entity_b_id = GREATEST(ist.entity_a_id, ist.entity_b_id)
                  LIMIT 1),
@@ -85,7 +99,7 @@ BEGIN
     ),
     
     reference_upserts AS (
-        INSERT INTO reference (
+        INSERT INTO gold.reference (
             type_id, 
             value, 
             citation, 
@@ -101,46 +115,87 @@ BEGIN
             im.journal,
             im.title
         FROM interaction_mapping im
-        JOIN temp_cv_cache tcc 
-            ON tcc.namespace = 'reference_type' 
-            AND tcc.term_name = im.reference_type
+        JOIN LATERAL (
+            SELECT term_id
+            FROM temp_cv_cache tcc
+            WHERE tcc.term_name = im.reference_type
+              AND tcc.namespace IN ('reference_type', 'OmniPath')
+            ORDER BY CASE WHEN tcc.namespace = 'reference_type' THEN 0 ELSE 1 END
+            LIMIT 1
+        ) tcc ON TRUE
         WHERE im.reference_value IS NOT NULL
         ON CONFLICT (value) DO NOTHING
         RETURNING id, value
     ),
+
+    reference_lookup AS (
+        SELECT DISTINCT
+            im.reference_value,
+            gr.id AS reference_id
+        FROM interaction_mapping im
+        LEFT JOIN gold.reference gr ON gr.value = im.reference_value
+    ),
     
     provenance_upserts AS (
-        INSERT INTO provenance (
+        INSERT INTO gold.provenance (
             source_id,
             primary_source_id,
             reference_id,
             created_at
         )
         SELECT DISTINCT
-            (SELECT id FROM source WHERE name = im.source_name),
-            CASE WHEN im.is_primary_source THEN 
-                (SELECT id FROM source WHERE name = im.source_name)
-            END,
-            COALESCE(
-                (SELECT id FROM reference WHERE value = im.reference_value),
-                ru.id
-            ),
+            gs.id,
+            CASE WHEN im.is_primary_source THEN gs.id END,
+            rl.reference_id,
             NOW()
         FROM interaction_mapping im
-        LEFT JOIN reference_upserts ru ON ru.value = im.reference_value
-        ON CONFLICT DO NOTHING
+        JOIN gold.source gs ON gs.name = COALESCE(im.source_name, 'OmniPath')
+        LEFT JOIN reference_lookup rl
+            ON rl.reference_value IS NOT DISTINCT FROM im.reference_value
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM gold.provenance pr
+            WHERE pr.source_id = gs.id
+              AND pr.reference_id IS NOT DISTINCT FROM rl.reference_id
+        )
         RETURNING id, source_id, reference_id
     ),
     
+    provenance_lookup AS (
+        SELECT DISTINCT
+            COALESCE(im.source_name, 'OmniPath') AS source_name,
+            im.reference_value,
+            pr.id AS provenance_id
+        FROM interaction_mapping im
+        JOIN gold.source gs ON gs.name = COALESCE(im.source_name, 'OmniPath')
+        JOIN gold.provenance pr ON pr.source_id = gs.id
+        LEFT JOIN reference_lookup rl
+            ON rl.reference_id IS NOT DISTINCT FROM pr.reference_id
+        WHERE rl.reference_value IS NOT DISTINCT FROM im.reference_value
+    ),
+
     annotation_record_upserts AS (
-        INSERT INTO annotation_record (provenance_id, created_at)
-        SELECT DISTINCT pu.id, NOW()
-        FROM provenance_upserts pu
+        INSERT INTO gold.annotation_record (provenance_id, created_at)
+        SELECT DISTINCT pl.provenance_id, NOW()
+        FROM provenance_lookup pl
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM gold.annotation_record ar
+            WHERE ar.provenance_id = pl.provenance_id
+        )
         RETURNING id, provenance_id
+    ),
+
+    annotation_record_lookup AS (
+        SELECT DISTINCT
+            ar.provenance_id,
+            ar.id AS annotation_record_id
+        FROM gold.annotation_record ar
+        WHERE ar.provenance_id IN (SELECT provenance_id FROM provenance_lookup)
     ),
     
     evidence_inserts AS (
-        INSERT INTO interaction_evidence (
+        INSERT INTO gold.interaction_evidence (
             interaction_id,
             provenance_id,
             annotation_record_id,
@@ -154,8 +209,8 @@ BEGIN
         )
         SELECT 
             im.interaction_id,
-            pu.id,
-            ar.id,
+            pl.provenance_id,
+            ar.annotation_record_id,
             tcc_type.term_id,          -- ✨ FAST JOIN!
             tcc_dir.term_id,            -- ✨ FAST JOIN!
             tcc_sign.term_id,           -- ✨ FAST JOIN!
@@ -164,24 +219,42 @@ BEGIN
             im.is_directed,
             NOW()
         FROM interaction_mapping im
-        JOIN temp_cv_cache tcc_type 
-            ON tcc_type.namespace = 'interaction_type' 
-            AND tcc_type.term_name = im.interaction_type
-        LEFT JOIN temp_cv_cache tcc_dir 
-            ON tcc_dir.namespace = 'direction' 
-            AND tcc_dir.term_name = im.direction
-        LEFT JOIN temp_cv_cache tcc_sign 
-            ON tcc_sign.namespace = 'sign' 
-            AND tcc_sign.term_name = im.sign
-        LEFT JOIN temp_cv_cache tcc_mech 
-            ON tcc_mech.namespace = 'causal_mechanism' 
-            AND tcc_mech.term_name = im.causal_mechanism
-        JOIN provenance_upserts pu ON pu.source_id = (
-            SELECT id FROM source WHERE name = im.source_name
-        )
-        AND (pu.reference_id = (SELECT id FROM reference WHERE value = im.reference_value)
-             OR (pu.reference_id IS NULL AND im.reference_value IS NULL))
-        JOIN annotation_record_upserts ar ON ar.provenance_id = pu.id
+        JOIN LATERAL (
+            SELECT term_id
+            FROM temp_cv_cache tcc
+            WHERE tcc.term_name = im.interaction_type
+              AND tcc.namespace IN ('interaction_type', 'OmniPath')
+            ORDER BY CASE WHEN tcc.namespace = 'interaction_type' THEN 0 ELSE 1 END
+            LIMIT 1
+        ) tcc_type ON TRUE
+        LEFT JOIN LATERAL (
+            SELECT term_id
+            FROM temp_cv_cache tcc
+            WHERE tcc.term_name = im.direction
+              AND tcc.namespace IN ('direction', 'OmniPath')
+            ORDER BY CASE WHEN tcc.namespace = 'direction' THEN 0 ELSE 1 END
+            LIMIT 1
+        ) tcc_dir ON TRUE
+        LEFT JOIN LATERAL (
+            SELECT term_id
+            FROM temp_cv_cache tcc
+            WHERE tcc.term_name = im.sign
+              AND tcc.namespace IN ('sign', 'OmniPath')
+            ORDER BY CASE WHEN tcc.namespace = 'sign' THEN 0 ELSE 1 END
+            LIMIT 1
+        ) tcc_sign ON TRUE
+        LEFT JOIN LATERAL (
+            SELECT term_id
+            FROM temp_cv_cache tcc
+            WHERE tcc.term_name = im.causal_mechanism
+              AND tcc.namespace IN ('causal_mechanism', 'OmniPath')
+            ORDER BY CASE WHEN tcc.namespace = 'causal_mechanism' THEN 0 ELSE 1 END
+            LIMIT 1
+        ) tcc_mech ON TRUE
+        JOIN provenance_lookup pl
+            ON pl.source_name = COALESCE(im.source_name, 'OmniPath')
+           AND pl.reference_value IS NOT DISTINCT FROM im.reference_value
+        JOIN annotation_record_lookup ar ON ar.provenance_id = pl.provenance_id
         ON CONFLICT DO NOTHING
         RETURNING id
     )
@@ -195,3 +268,15 @@ BEGIN
     RETURN QUERY SELECT v_processed, v_inserted, v_evidence;
 END;
 $$ LANGUAGE plpgsql;
+
+-- Execute the function
+DO $$
+DECLARE
+    v_processed INT;
+    v_inserted INT;
+    v_evidence INT;
+BEGIN
+    SELECT * INTO v_processed, v_inserted, v_evidence FROM process_interactions_to_gold();
+    RAISE NOTICE 'Processed % interactions: % inserted, % evidence records added', v_processed, v_inserted, v_evidence;
+END;
+$$;

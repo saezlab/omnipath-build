@@ -5,10 +5,13 @@
 -- 1. CRITICAL: Entity Identifier Lookups
 -- ============================================================================
 
--- Composite index for fast identifier lookups (most common query pattern)
--- Enables: WHERE cv_term_id = X AND identifier = 'Y'
-CREATE INDEX IF NOT EXISTS idx_entity_identifier_type_value
-ON gold.entity_identifier(cv_term_id, identifier);
+-- Note: Composite index (cv_term_id, identifier) removed due to btree size limits
+-- Long identifiers (InChI >2704 bytes) exceed btree v4 maximum
+-- Use separate indexes instead
+
+-- Index on identifier type only
+CREATE INDEX IF NOT EXISTS idx_entity_identifier_type
+ON gold.entity_identifier(cv_term_id);
 
 -- Index for reverse lookups: given entity, find all identifiers
 CREATE INDEX IF NOT EXISTS idx_entity_identifier_entity_id
