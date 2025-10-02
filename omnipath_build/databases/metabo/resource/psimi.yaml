@@ -15,6 +15,9 @@ functions:
         processing:
             target_table: silver_cv_terms
             field_mapping:
+            -   source: _constant
+                target: namespace
+                value: PSI-MI
             -   source: id
                 target: term_accession
             -   source: name
@@ -23,11 +26,35 @@ functions:
                 target: term_definition
             -   source: definition_refs
                 target: term_definition_refs
+                transform: parse_bracketed_list
             -   source: parent_ids
                 target: term_parent_accessions
+                transform: split_string_to_json
+                transform_args:
+                    delimiter: '|'
             -   source: parent_names
                 target: term_parent_names
+                transform: split_string_to_json
+                transform_args:
+                    delimiter: '|'
             -   source: synonyms
                 target: term_synonyms
+                transform: split_string_to_json
+                transform_args:
+                    delimiter: '|'
             -   source: alt_ids
                 target: term_alt_ids
+                transform: split_string_to_json
+                transform_args:
+                    delimiter: '|'
+            -   source: _constant
+                target: processed_by
+                value: psimi_ontology
+            -   source: metadata_row_number
+                target: bronze_record_id
+            -   source: _metadata
+                target: created_at
+                value: current_timestamp
+            -   source: _metadata
+                target: updated_at
+                value: current_timestamp

@@ -1,27 +1,52 @@
 metadata:
--   name: LipidMaps
--   description: LIPID MAPS Structure Database for lipid structures and annotations
+    name: LipidMaps
+    description: LIPID MAPS Structure Database for lipid structures and annotations
 
 module: lipidmaps
 functions:
     lipidmaps_lipids:
         description: Download and open the SDF file with all LipidMaps (LMSD) structures.
         processing:
-            target_table: compounds
+            target_table: silver_entities
             field_mapping:
             -   source: _constant
-                target: is_lipid
-                value: true
-            -   source: [id, chebi, pubchem, name, synonyms]
-                target: ids
-                transform: combine_compound_ids_lipidmaps
-            -   source: category
-                target: classes
-            -   source: main_class
-                target: lipid_classification_level
+                target: entity_type
+                value: compound
+            -   source: id
+                target: identifier
+            -   source: _constant
+                target: identifier_type
+                value: lipidmaps
+            -   source: [chebi, pubchem, inchikey, inchi]
+                target: additional_identifiers
+                transform: build_identifier_list_lipidmaps
             -   source: name
-                target: lipid_parent
-            -   source: abbreviation
-                target: lipid_components
+                target: name
+            -   source: [synonyms, abbreviation]
+                target: name_variants
+                transform: build_lipidmaps_name_variants
+            -   source: formula
+                target: compound_formula
             -   source: smiles
-                target: smiles
+                target: compound_smiles
+            -   source: inchi
+                target: compound_inchi
+            -   source: exact_mass
+                target: exact_mass
+            -   source: [category, main_class]
+                target: annotations
+                transform: build_lipidmaps_annotations
+            -   source: _constant
+                target: is_valid
+                value: true
+            -   source: _constant
+                target: processed_by
+                value: lipidmaps_lipids
+            -   source: metadata_row_number
+                target: bronze_record_id
+            -   source: _metadata
+                target: created_at
+                value: current_timestamp
+            -   source: _metadata
+                target: updated_at
+                value: current_timestamp

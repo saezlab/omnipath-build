@@ -59,6 +59,7 @@ silver_entities:
     validation_errors: JSON           # [{"field": "sequence", "error": "invalid characters"}]
 
   # Metadata
+    source_database: VARCHAR(100)
     created_at: TIMESTAMP
     updated_at: TIMESTAMP
     processed_by: VARCHAR(100)
@@ -111,6 +112,7 @@ silver_interactions:
     validation_errors: JSON           # [{"field": "direction", "error": "conflicting values"}]
 
   # Metadata
+    source_database: VARCHAR(100)
     evidence_date: TIMESTAMP           # When evidence was created/published
     created_at: TIMESTAMP
     updated_at: TIMESTAMP
@@ -123,14 +125,21 @@ silver_interactions:
 # Controlled vocabulary terms from sources (one row per source term)
 silver_cv_terms:
   # Term identification
-    term_name: VARCHAR(500) PRIMARY KEY # The actual term/value
-    term_accession: VARCHAR(100)       # Formal accession if available (e.g., 'GO:0008150')
+    term_name: VARCHAR(500)           # The actual term/value
+    term_accession: VARCHAR(100) PRIMARY KEY # Formal accession if available (e.g., 'GO:0008150')
+    namespace: VARCHAR(255)
 
   # Term metadata (if provided by source)
     term_definition: TEXT
+    term_definition_refs: JSON
     term_synonyms: JSON               # ["synonym1", "synonym2"]
     term_parent_accessions: JSON      # ["GO:0008150", "GO:0009987"]
+    term_parent_names: JSON
+    term_alt_ids: JSON
 
   # Metadata
+    source_database: VARCHAR(100)
     created_at: TIMESTAMP
     updated_at: TIMESTAMP
+    processed_by: VARCHAR(100)
+    bronze_record_id: BIGINT
