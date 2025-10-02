@@ -274,7 +274,7 @@ class SourceProcessor:
         """
         from .gold_parquet_builder import GoldParquetBuilder
 
-        gold_output_dir = self.base_path / 'gold' / self.source_module
+        gold_output_dir = self.base_path / 'gold_parquet'
 
         with GoldParquetBuilder(self.source_module, gold_output_dir) as builder:
             for function_name, silver_file in silver_files.items():

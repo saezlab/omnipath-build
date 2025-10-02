@@ -21,6 +21,39 @@ class GoldParquetBuilder:
     PostgreSQL gold schema, then exports each table to a separate Parquet file.
     """
 
+    TABLES: tuple[str, ...] = (
+        'cv_namespace',
+        'cv_term',
+        'source',
+        'reference',
+        'provenance',
+        'entity',
+        'entity_identifier',
+        'compound',
+        'protein',
+        'reaction_detail',
+        'interaction',
+        'membership',
+        'annotation_record',
+        'annotation',
+        'entity_annotation_record',
+        'interaction_evidence',
+    )
+
+    SEQUENCE_TABLE_COLUMN_MAP: dict[str, tuple[str, str]] = {
+        'seq_cv_namespace': ('cv_namespace', 'id'),
+        'seq_cv_term': ('cv_term', 'id'),
+        'seq_source': ('source', 'id'),
+        'seq_reference': ('reference', 'id'),
+        'seq_provenance': ('provenance', 'id'),
+        'seq_entity': ('entity', 'id'),
+        'seq_entity_identifier': ('entity_identifier', 'id'),
+        'seq_interaction': ('interaction', 'id'),
+        'seq_annotation_record': ('annotation_record', 'id'),
+        'seq_annotation': ('annotation', 'id'),
+        'seq_interaction_evidence': ('interaction_evidence', 'id'),
+    }
+
     def __init__(self, source_name: str, output_dir: Path):
         """Initialize the builder with source name and output directory.
 
@@ -34,6 +67,7 @@ class GoldParquetBuilder:
 
         # Create gold schema tables in DuckDB
         self._create_gold_schema()
+        self._load_existing_data()
 
         logger.info(f"GoldParquetBuilder initialized for source: {source_name}")
 
@@ -238,6 +272,37 @@ class GoldParquetBuilder:
         """)
 
         logger.info("✓ Gold schema created successfully")
+
+    def _load_existing_data(self) -> None:
+        """Load existing gold Parquet data so tables are shared across sources."""
+        if not self.output_dir.exists():
+            return
+
+        for table in self.TABLES:
+            parquet_path = self.output_dir / f"{table}.parquet"
+            if not parquet_path.exists():
+                continue
+
+            logger.info(f"Loading existing data for {table} from {parquet_path}")
+            self.conn.execute(
+                f"INSERT INTO {table} SELECT * FROM read_parquet(?)",
+                [str(parquet_path)]
+            )
+
+        self._reset_sequences_from_data()
+
+    def _reset_sequences_from_data(self) -> None:
+        """Reset DuckDB sequences to avoid ID collisions after loading data."""
+        for sequence_name, (table_name, column_name) in self.SEQUENCE_TABLE_COLUMN_MAP.items():
+            max_id = self.conn.execute(
+                f"SELECT COALESCE(MAX({column_name}), 0) FROM {table_name}"
+            ).fetchone()[0]
+
+            # DuckDB sequences restart at the provided value, so add 1 for the next id
+            next_value = max_id + 1
+            self.conn.execute(
+                f"ALTER SEQUENCE {sequence_name} RESTART WITH {next_value}"
+            )
 
     # ========================================================================
     # Helper methods for building data
@@ -477,6 +542,11 @@ class GoldParquetBuilder:
         result = self.conn.execute(f"SELECT * FROM '{silver_parquet_path}' LIMIT 0")
         available_columns = {desc[0] for desc in result.description}
 
+        # Track counts so we can report how much this source contributes
+        entity_count_before = self.conn.execute("SELECT COUNT(*) FROM entity").fetchone()[0]
+        identifier_count_before = self.conn.execute("SELECT COUNT(*) FROM entity_identifier").fetchone()[0]
+        compound_count_before = self.conn.execute("SELECT COUNT(*) FROM compound").fetchone()[0]
+
         # Core columns (required)
         core_columns = ['entity_type', 'identifier', 'identifier_type', 'additional_identifiers']
 
@@ -543,19 +613,38 @@ class GoldParquetBuilder:
         # Step 5: Deduplicate by canonical_id (keep first occurrence) - pure SQL!
         logger.info("  Deduplicating entities by canonical identifier...")
         self.conn.execute(f"""
+            CREATE TEMP TABLE dedup_candidates AS
+            SELECT DISTINCT ON (canonical_id) *
+            FROM {temp_table}
+            ORDER BY canonical_id
+        """)
+
+        candidate_count = self.conn.execute(
+            "SELECT COUNT(*) FROM dedup_candidates"
+        ).fetchone()[0]
+
+        self.conn.execute(f"""
             CREATE TEMP TABLE unique_entities AS
             SELECT
                 nextval('seq_entity') AS entity_id,
-                dedup.*
-            FROM (
-                SELECT DISTINCT ON (canonical_id) *
-                FROM {temp_table}
-                ORDER BY canonical_id
-            ) AS dedup
+                candidate.*
+            FROM dedup_candidates AS candidate
+            WHERE candidate.canonical_id IS NULL
+                OR NOT EXISTS (
+                    SELECT 1
+                    FROM entity_identifier existing
+                    WHERE existing.identifier = candidate.canonical_id
+                )
         """)
 
         unique_count = self.conn.execute("SELECT COUNT(*) FROM unique_entities").fetchone()[0]
-        logger.info(f"  {unique_count:,} unique entities (from {total_count:,} total)")
+        skipped_existing = candidate_count - unique_count
+        logger.info(
+            "  %s new unique entities (from %s total; skipped %s already in gold)",
+            f"{unique_count:,}",
+            f"{total_count:,}",
+            f"{max(skipped_existing, 0):,}"
+        )
 
         # Bulk insert entities
         logger.info("  Creating entities...")
@@ -568,7 +657,8 @@ class GoldParquetBuilder:
             FROM unique_entities
         """)
 
-        entities_created = self.conn.execute("SELECT COUNT(*) FROM entity").fetchone()[0]
+        entities_after = self.conn.execute("SELECT COUNT(*) FROM entity").fetchone()[0]
+        entities_created = entities_after - entity_count_before
         logger.info(f"  ✓ Created {entities_created:,} entities")
 
         # Map canonical identifiers directly to their generated entity IDs
@@ -635,7 +725,10 @@ class GoldParquetBuilder:
             WHERE canonical_id IS NOT NULL
         """)
 
-        canonical_id_count = unique_count
+        identifiers_after = self.conn.execute(
+            "SELECT COUNT(*) FROM entity_identifier"
+        ).fetchone()[0]
+        canonical_id_count = identifiers_after - identifier_count_before
         logger.info(f"  ✓ Created {canonical_id_count:,} canonical identifiers")
 
         # Bulk insert compound data - NO JOIN, data is already in canonical_mapping!
@@ -660,7 +753,8 @@ class GoldParquetBuilder:
             FROM canonical_mapping
         """)
 
-        compound_count = unique_count
+        compounds_after = self.conn.execute("SELECT COUNT(*) FROM compound").fetchone()[0]
+        compound_count = compounds_after - compound_count_before
         logger.info(f"  ✓ Created {compound_count:,} compound records")
 
         # TODO: Handle additional_identifiers (JSON parsing is complex in SQL, skip for now or handle in separate pass)
@@ -668,6 +762,7 @@ class GoldParquetBuilder:
 
         # Cleanup temp tables and views
         self.conn.execute(f"DROP VIEW IF EXISTS {temp_table}")
+        self.conn.execute("DROP TABLE IF EXISTS dedup_candidates")
         self.conn.execute("DROP TABLE IF EXISTS unique_entities")
         self.conn.execute("DROP TABLE IF EXISTS canonical_mapping")
 
@@ -675,7 +770,7 @@ class GoldParquetBuilder:
 
         return {
             'entities_created': entities_created,
-            'identifiers_added': 0,  # TODO: implement additional_identifiers
+            'identifiers_added': canonical_id_count,
             'total': total_count
         }
 
@@ -689,14 +784,7 @@ class GoldParquetBuilder:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         exported = {}
 
-        tables = [
-            'cv_namespace', 'cv_term', 'source', 'reference', 'provenance',
-            'entity', 'entity_identifier', 'compound', 'protein', 'reaction_detail',
-            'interaction', 'membership', 'annotation_record', 'annotation',
-            'entity_annotation_record', 'interaction_evidence'
-        ]
-
-        for table in tables:
+        for table in self.TABLES:
             # Check if table has data
             count = self.conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
             if count == 0:
