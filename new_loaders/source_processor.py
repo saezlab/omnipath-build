@@ -272,11 +272,11 @@ class SourceProcessor:
         Returns:
             Dict mapping table names to gold parquet paths
         """
-        from .gold_parquet_builder import GoldParquetBuilder
+        from .gold_parquet_builder_v2 import GoldParquetBuilderV2
 
         gold_output_dir = self.base_path / 'gold_parquet'
 
-        with GoldParquetBuilder(self.source_module, gold_output_dir) as builder:
+        with GoldParquetBuilderV2(self.source_module, gold_output_dir) as builder:
             for function_name, silver_file in silver_files.items():
                 function_config = self.config['functions'][function_name]
                 target_table = function_config['processing']['target_table']
@@ -293,90 +293,6 @@ class SourceProcessor:
 
             # Export all tables to Parquet
             return builder.export_all_tables()
-
-    def _process_entities_to_gold(self, sources: list[dict], gold_path: Path) -> Path:
-        """Process entity silver files to gold."""
-        logger.info("  Processing entities with deduplication...")
-
-        # Union all source files
-        union_parts = []
-        for source in sources:
-            union_parts.append(f"SELECT * FROM '{source['file']}'")
-
-        union_query = " UNION ALL ".join(union_parts)
-
-        # Deduplicate by identifier (keep first occurrence)
-        output_file = gold_path / f"gold_entities_{self.source_module}.parquet"
-
-        query = f"""
-        COPY (
-            SELECT DISTINCT ON (identifier)
-                *
-            FROM ({union_query}) AS combined
-            ORDER BY identifier, created_at DESC
-        ) TO '{output_file}' (FORMAT PARQUET)
-        """
-
-        self.conn.execute(query)
-        count = self.conn.execute(f"SELECT COUNT(*) FROM '{output_file}'").fetchone()[0]
-        logger.info(f"  ✓ Created {output_file.name} with {count:,} rows")
-
-        return output_file
-
-    def _process_cv_terms_to_gold(self, sources: list[dict], gold_path: Path) -> Path:
-        """Process CV term silver files to gold."""
-        logger.info("  Processing CV terms with deduplication...")
-
-        # Union all source files
-        union_parts = []
-        for source in sources:
-            union_parts.append(f"SELECT * FROM '{source['file']}'")
-
-        union_query = " UNION ALL ".join(union_parts)
-
-        # Deduplicate by term_accession (keep first occurrence)
-        output_file = gold_path / f"gold_cv_terms_{self.source_module}.parquet"
-
-        query = f"""
-        COPY (
-            SELECT DISTINCT ON (term_accession)
-                *
-            FROM ({union_query}) AS combined
-            ORDER BY term_accession, created_at DESC
-        ) TO '{output_file}' (FORMAT PARQUET)
-        """
-
-        self.conn.execute(query)
-        count = self.conn.execute(f"SELECT COUNT(*) FROM '{output_file}'").fetchone()[0]
-        logger.info(f"  ✓ Created {output_file.name} with {count:,} rows")
-
-        return output_file
-
-    def _process_generic_to_gold(self, table_name: str, sources: list[dict], gold_path: Path) -> Path:
-        """Process generic table silver files to gold."""
-        logger.info(f"  Processing {table_name} (generic)...")
-
-        # Union all source files
-        union_parts = []
-        for source in sources:
-            union_parts.append(f"SELECT * FROM '{source['file']}'")
-
-        union_query = " UNION ALL ".join(union_parts)
-
-        # Just combine, no deduplication for generic tables
-        output_file = gold_path / f"gold_{table_name}_{self.source_module}.parquet"
-
-        query = f"""
-        COPY (
-            SELECT * FROM ({union_query}) AS combined
-        ) TO '{output_file}' (FORMAT PARQUET)
-        """
-
-        self.conn.execute(query)
-        count = self.conn.execute(f"SELECT COUNT(*) FROM '{output_file}'").fetchone()[0]
-        logger.info(f"  ✓ Created {output_file.name} with {count:,} rows")
-
-        return output_file
 
     def process_full_pipeline(self) -> dict[str, Any]:
         """Run the full bronze → silver → gold pipeline.
