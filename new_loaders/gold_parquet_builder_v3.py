@@ -58,7 +58,10 @@ class GoldParquetBuilderV3:
             Path to the created pass1 parquet file
         """
 
-        output_path = self.output_dir / f"{table_name}_pass1_{source_name}.parquet"
+        # Create pass1 subdirectory
+        pass1_dir = self.output_dir / "pass1"
+        pass1_dir.mkdir(exist_ok=True)
+        output_path = pass1_dir / f"{table_name}_pass1_{source_name}.parquet"
 
         # Execute the extraction query
         self.conn.execute(
@@ -93,8 +96,9 @@ class GoldParquetBuilderV3:
         table_def = gold_tables[table_name]
 
         # Find all pass1 files for this table
+        pass1_dir = self.output_dir / "pass1"
         pattern = f"{table_name}_pass1_*.parquet"
-        pass1_files = list(self.output_dir.glob(pattern))
+        pass1_files = list(pass1_dir.glob(pattern)) if pass1_dir.exists() else []
 
         if not pass1_files:
             logger.warning("No pass1 files found for %s (pattern: %s)", table_name, pattern)
@@ -112,7 +116,10 @@ class GoldParquetBuilderV3:
         # Build ORDER BY clause
         order_clause = ', '.join(priority_columns) if priority_columns else ', '.join(dedup_keys)
 
-        output_path = self.output_dir / f"{table_name}_deduped.parquet"
+        # Create deduped subdirectory
+        deduped_dir = self.output_dir / "deduped"
+        deduped_dir.mkdir(exist_ok=True)
+        output_path = deduped_dir / f"{table_name}_deduped.parquet"
 
         # Deduplicate using DISTINCT ON and add auto-increment id
         self.conn.execute(
@@ -121,7 +128,7 @@ class GoldParquetBuilderV3:
                 SELECT ROW_NUMBER() OVER ()::INTEGER AS id, deduped.*
                 FROM (
                     SELECT DISTINCT ON ({', '.join(dedup_keys)}) *
-                    FROM read_parquet('{self.output_dir}/{pattern}')
+                    FROM read_parquet('{pass1_dir}/{pattern}')
                     ORDER BY {order_clause}
                 ) AS deduped
             ) TO '{output_path}' (FORMAT PARQUET)
@@ -138,7 +145,159 @@ class GoldParquetBuilderV3:
             output_path = self.deduplicate_table(table_name)
             if output_path:
                 results[table_name] = output_path
+
+        # Clean up pass1 files after successful deduplication
+        pass1_dir = self.output_dir / "pass1"
+        if pass1_dir.exists():
+            import shutil
+            shutil.rmtree(pass1_dir)
+            logger.info("✓ Cleaned up pass1 files")
+
         return results
+
+    # ------------------------------------------------------------------
+    # Phase 2.5: Enrich CV Terms
+    # ------------------------------------------------------------------
+    def enrich_cv_terms(self) -> None:
+        """Scan deduped files and auto-generate missing cv_terms.
+
+        This runs after deduplication but before FK resolution.
+        It scans all deduped files for cv_term references and ensures
+        those terms exist in cv_term_deduped.
+        """
+        deduped_dir = self.output_dir / "deduped"
+        cv_namespace_deduped = deduped_dir / "cv_namespace_deduped.parquet"
+        cv_term_deduped = deduped_dir / "cv_term_deduped.parquet"
+
+        if not cv_namespace_deduped.exists() or not cv_term_deduped.exists():
+            logger.info("Skipping cv_term enrichment - cv_namespace or cv_term not found")
+            return
+
+        logger.info("Enriching cv_terms from deduped files...")
+
+        # Collect all namespace/term references from deduped files
+        missing_namespaces = set()
+        missing_terms = []  # [(namespace, name, description)]
+
+        # Check entity table for entity types
+        entity_deduped = deduped_dir / "entity_deduped.parquet"
+        if entity_deduped.exists():
+            result = self.conn.execute(f"""
+                SELECT DISTINCT
+                    entity_type_namespace_name as namespace,
+                    entity_type_name as name
+                FROM read_parquet('{entity_deduped}')
+                WHERE entity_type_namespace_name IS NOT NULL
+                  AND entity_type_name IS NOT NULL
+            """).fetchall()
+
+            for namespace, name in result:
+                missing_namespaces.add(namespace)
+                missing_terms.append((namespace, name, 'Auto-generated entity type'))
+
+        # Check entity_identifier table for identifier types
+        entity_identifier_deduped = deduped_dir / "entity_identifier_deduped.parquet"
+        if entity_identifier_deduped.exists():
+            result = self.conn.execute(f"""
+                SELECT DISTINCT
+                    identifier_type_namespace_name as namespace,
+                    identifier_type_name as name
+                FROM read_parquet('{entity_identifier_deduped}')
+                WHERE identifier_type_namespace_name IS NOT NULL
+                  AND identifier_type_name IS NOT NULL
+            """).fetchall()
+
+            for namespace, name in result:
+                missing_namespaces.add(namespace)
+                missing_terms.append((namespace, name, 'Auto-generated identifier type'))
+
+        # Check reference table for reference types
+        reference_deduped = deduped_dir / "reference_deduped.parquet"
+        if reference_deduped.exists():
+            result = self.conn.execute(f"""
+                SELECT DISTINCT
+                    type_namespace_name as namespace,
+                    type_name as name
+                FROM read_parquet('{reference_deduped}')
+                WHERE type_namespace_name IS NOT NULL
+                  AND type_name IS NOT NULL
+            """).fetchall()
+
+            for namespace, name in result:
+                missing_namespaces.add(namespace)
+                missing_terms.append((namespace, name, 'Auto-generated reference type'))
+
+        # Filter out namespaces that already exist
+        existing_namespaces = set(
+            row[0] for row in self.conn.execute(f"""
+                SELECT DISTINCT name FROM read_parquet('{cv_namespace_deduped}')
+            """).fetchall()
+        )
+
+        new_namespaces = missing_namespaces - existing_namespaces
+
+        # Filter out terms that already exist
+        existing_terms = set(
+            (row[0], row[1]) for row in self.conn.execute(f"""
+                SELECT DISTINCT namespace_name, name
+                FROM read_parquet('{cv_term_deduped}')
+            """).fetchall()
+        )
+
+        new_terms = [(ns, name, desc) for ns, name, desc in missing_terms
+                     if (ns, name) not in existing_terms]
+
+        if not new_namespaces and not new_terms:
+            logger.info("✓ No missing cv_terms to enrich")
+            return
+
+        # Insert missing namespaces
+        if new_namespaces:
+            logger.info(f"Adding {len(new_namespaces)} missing namespaces: {new_namespaces}")
+
+            # Get current max ID
+            max_id = self.conn.execute(f"""
+                SELECT COALESCE(MAX(id), 0) FROM read_parquet('{cv_namespace_deduped}')
+            """).fetchone()[0]
+
+            # Create temp table with new namespaces
+            namespace_values = ', '.join(f"({max_id + i + 1}, '{ns}')"
+                                        for i, ns in enumerate(sorted(new_namespaces)))
+
+            # Append to existing file
+            self.conn.execute(f"""
+                COPY (
+                    SELECT * FROM read_parquet('{cv_namespace_deduped}')
+                    UNION ALL
+                    SELECT * FROM (VALUES {namespace_values}) AS t(id, name)
+                ) TO '{cv_namespace_deduped}' (FORMAT PARQUET)
+            """)
+
+        # Insert missing terms
+        if new_terms:
+            logger.info(f"Adding {len(new_terms)} missing cv_terms")
+
+            # Get current max ID
+            max_id = self.conn.execute(f"""
+                SELECT COALESCE(MAX(id), 0) FROM read_parquet('{cv_term_deduped}')
+            """).fetchone()[0]
+
+            # Create temp table with new terms
+            term_values = ', '.join(
+                f"({max_id + i + 1}, '{name}', NULL, '{desc}', FALSE, '{ns}', NULL, NULL)"
+                for i, (ns, name, desc) in enumerate(new_terms)
+            )
+
+            # Append to existing file
+            self.conn.execute(f"""
+                COPY (
+                    SELECT * FROM read_parquet('{cv_term_deduped}')
+                    UNION ALL
+                    SELECT * FROM (VALUES {term_values}) AS t(id, name, accession, description, is_obsolete, namespace_name, replaces_accession, replaced_by_accession)
+                ) TO '{cv_term_deduped}' (FORMAT PARQUET)
+            """)
+
+        logger.info(f"✓ Enriched cv_terms: +{len(new_namespaces)} namespaces, +{len(new_terms)} terms")
 
     # ------------------------------------------------------------------
     # Phase 3: Foreign Key Resolution
@@ -154,7 +313,8 @@ class GoldParquetBuilderV3:
         """
         table_def = gold_tables[table_name]
 
-        deduped_path = self.output_dir / f"{table_name}_deduped.parquet"
+        deduped_dir = self.output_dir / "deduped"
+        deduped_path = deduped_dir / f"{table_name}_deduped.parquet"
         if not deduped_path.exists():
             raise FileNotFoundError(f"Deduped file not found: {deduped_path}")
 
@@ -170,7 +330,7 @@ class GoldParquetBuilderV3:
             target_table, join_condition = self._parse_fk_link(link_text)
 
             # Skip FK if target table doesn't exist
-            target_deduped = self.output_dir / f"{target_table}_deduped.parquet"
+            target_deduped = deduped_dir / f"{target_table}_deduped.parquet"
             if not target_deduped.exists():
                 logger.warning(f"Skipping FK {fk_id} for {table_name} - target table {target_table} not found")
                 fk_select_cols.append(f"NULL AS {fk_id}")
@@ -192,7 +352,7 @@ class GoldParquetBuilderV3:
 
             fk_select_cols.append(f"{alias}.id AS {fk_id}")
 
-        # Get main columns (excluding temp columns)
+        # Get main columns only (temp columns are dropped in final tables)
         main_cols = list(table_def["columns"]["main"].keys())
 
         # Build SELECT clause
@@ -228,8 +388,9 @@ class GoldParquetBuilderV3:
         Note: All deduped tables are available, so no topological ordering needed.
         """
         results = {}
+        deduped_dir = self.output_dir / "deduped"
         for table_name in gold_tables.keys():
-            deduped_path = self.output_dir / f"{table_name}_deduped.parquet"
+            deduped_path = deduped_dir / f"{table_name}_deduped.parquet"
             if deduped_path.exists():
                 results[table_name] = self.resolve_foreign_keys_table(table_name)
 
@@ -306,16 +467,8 @@ class GoldParquetBuilderV3:
             condition_part = condition_part[1:-1].strip()
 
         # Replace bare column references with main.column
-        # Pattern: match "= columnname" or "columnname AND" where columnname doesn't have a dot
-        def add_main_prefix(match):
-            col = match.group(1)
-            # Don't prefix if it already has a table prefix (contains a dot)
-            if '.' in col:
-                return match.group(0)
-            return match.group(0).replace(col, f'main.{col}')
-
-        # Match: "= column" or "column AND" or "column)"
-        condition_part = re.sub(r'= (\w+)', lambda m: f'= main.{m.group(1)}', condition_part)
+        # and use IS NOT DISTINCT FROM for NULL-safe equality
+        condition_part = re.sub(r'= (\w+)', lambda m: f'IS NOT DISTINCT FROM main.{m.group(1)}', condition_part)
 
         return target_table, condition_part
 
@@ -335,18 +488,19 @@ class GoldParquetBuilderV3:
         # Only extract from tables that reference silver tables we have
         available_silver_tables = set(silver_files.keys())
 
-        for table_name, config in silver_gold_map.items():
+        for extraction_name, config in silver_gold_map.items():
             select_sql = config['select']
-            source_name = config['source_table']
+            source_table = config['source_table']
+            target_gold_table = config.get('target_gold_table', extraction_name)
 
             # Skip if the source table doesn't exist
-            if source_name not in available_silver_tables:
-                logger.debug(f"Skipping {table_name} - source table {source_name} not available")
+            if source_table not in available_silver_tables:
+                logger.debug(f"Skipping {extraction_name} - source table {source_table} not available")
                 continue
 
             self.extract_pass1(
-                table_name=table_name,
-                source_name=source_name,
+                table_name=target_gold_table,
+                source_name=extraction_name,
                 select_sql=select_sql
             )
 
@@ -370,6 +524,12 @@ class GoldParquetBuilderV3:
         logger.info("Phase 2: Deduplication")
         logger.info("=" * 70)
         self.deduplicate_all_tables()
+
+        # Phase 2.5: Enrich CV Terms
+        logger.info("=" * 70)
+        logger.info("Phase 2.5: CV Term Enrichment")
+        logger.info("=" * 70)
+        self.enrich_cv_terms()
 
         # Phase 3: Resolve FKs
         logger.info("=" * 70)

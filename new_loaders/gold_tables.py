@@ -217,13 +217,23 @@ silver_gold_map = {
         FROM silver_interactions
         WHERE reference_value IS NOT NULL'''
     },
-    'provenance': {
+    'provenance_from_interactions': {
         'source_table': 'silver_interactions',
+        'target_gold_table': 'provenance',
         'select': '''SELECT DISTINCT
             source as source_name,
             primary_source as primary_source_name,
             reference_value
         FROM silver_interactions'''
+    },
+    'provenance_from_entities': {
+        'source_table': 'silver_entities',
+        'target_gold_table': 'provenance',
+        'select': '''SELECT DISTINCT
+            source_database as source_name,
+            source_database as primary_source_name,
+            NULL::VARCHAR as reference_value
+        FROM silver_entities'''
     },
     'entity': {
         'source_table': 'silver_entities',
