@@ -32,10 +32,9 @@ export async function GET(
 ) {
   try {
     const { id } = await params;
-    const projectRoot = path.join(process.cwd(), '..', '..');
+    const projectRoot = path.join(process.cwd(), '..');
     const resourcePath = path.join(
       projectRoot,
-      'omnipath_build',
       'databases',
       id,
       'resource'
@@ -86,24 +85,21 @@ export async function GET(
     // Also check for bronze and silver parquet files to get actual table structures
     const bronzePath = path.join(
       projectRoot,
-      'omnipath_build',
       'databases',
       id,
       'bronze',
       'data'
     );
-    
+
     const silverPath = path.join(
       projectRoot,
-      'omnipath_build',
       'databases',
       id,
-      'silver',
-      'data'
+      'silver_parquet'
     );
 
-    let bronzeTables = [];
-    let silverTables = [];
+    const bronzeTables = [];
+    const silverTables = [];
 
     // Get bronze tables
     try {
@@ -132,16 +128,16 @@ export async function GET(
       console.error('Error reading bronze tables:', error);
     }
 
-    // Get silver tables
+    // Get silver tables (now parquet files directly in silver_parquet/)
     try {
       const silverExists = await fs.access(silverPath).then(() => true).catch(() => false);
       if (silverExists) {
-        const silverDirs = await fs.readdir(silverPath);
-        for (const dir of silverDirs) {
-          const dirPath = path.join(silverPath, dir);
-          const stat = await fs.stat(dirPath);
-          if (stat.isDirectory()) {
-            silverTables.push(dir);
+        const silverFiles = await fs.readdir(silverPath);
+        for (const file of silverFiles) {
+          if (file.endsWith('.parquet')) {
+            // Extract table name from filename (e.g., hmdb_compounds_for_metabo_silver_entities.parquet)
+            const tableName = file.replace('.parquet', '');
+            silverTables.push(tableName);
           }
         }
       }
@@ -150,10 +146,9 @@ export async function GET(
     }
     
     // Load silver table definitions from YAML if available
-    let silverTableDefinitions: any = {};
+    let silverTableDefinitions: Record<string, unknown> = {};
     const silverTablesYamlPath = path.join(
       projectRoot,
-      'omnipath_build',
       'databases',
       id,
       'silver',
@@ -164,7 +159,7 @@ export async function GET(
       const silverTablesYamlExists = await fs.access(silverTablesYamlPath).then(() => true).catch(() => false);
       if (silverTablesYamlExists) {
         const content = await fs.readFile(silverTablesYamlPath, 'utf8');
-        silverTableDefinitions = yaml.load(content) as any;
+        silverTableDefinitions = yaml.load(content) as Record<string, unknown>;
       }
     } catch (error) {
       console.error('Error reading silver table definitions:', error);

@@ -23,12 +23,12 @@ export interface DatabaseInfo {
   totalSize: number;
 }
 
-const DATABASES_PATH = path.join(process.cwd(), '..', '..', 'omnipath_build', 'databases');
+const DATABASES_PATH = path.join(process.cwd(), '..', 'databases');
 
 function getLayerFromPath(filePath: string): 'bronze' | 'silver' | 'gold' | null {
   if (filePath.includes('/bronze/')) return 'bronze';
-  if (filePath.includes('/silver/')) return 'silver';
-  if (filePath.includes('/gold/')) return 'gold';
+  if (filePath.includes('/silver_parquet/')) return 'silver';
+  if (filePath.includes('/gold_parquet/')) return 'gold';
   return null;
 }
 
@@ -100,27 +100,33 @@ export function scanDatabases(): DatabaseInfo[] {
   return databases;
 }
 
+interface DirStructure {
+  _type: 'folder' | 'file';
+  children?: { [key: string]: DirStructure };
+  file?: DatabaseFile;
+}
+
 function buildDirectoryStructure(files: DatabaseFile[], layerPath: string, dbName: string): TreeNode[] {
-  const structure: { [key: string]: any } = {};
-  
+  const structure: { [key: string]: DirStructure } = {};
+
   files.forEach(file => {
     const relativePath = file.path.replace(layerPath, '').replace(/^\//, '');
     let pathParts = relativePath.split('/').filter(part => part !== '');
-    
+
     // Remove common redundant folders
     pathParts = pathParts.filter(part => part !== 'data' && part !== dbName);
-    
-    let current = structure;
-    
+
+    let current: { [key: string]: DirStructure } = structure;
+
     // Build nested structure
     for (let i = 0; i < pathParts.length - 1; i++) {
       const part = pathParts[i];
       if (!current[part]) {
         current[part] = { _type: 'folder', children: {} };
       }
-      current = current[part].children;
+      current = current[part].children!;
     }
-    
+
     // Add the file
     const fileName = pathParts[pathParts.length - 1];
     current[fileName] = {
@@ -128,16 +134,16 @@ function buildDirectoryStructure(files: DatabaseFile[], layerPath: string, dbNam
       file: file
     };
   });
-  
+
   // Convert structure to TreeNode array
-  function convertToTreeNodes(obj: any, basePath: string = ''): TreeNode[] {
-    return Object.entries(obj).map(([name, data]: [string, any]) => {
+  function convertToTreeNodes(obj: { [key: string]: DirStructure }, basePath: string = ''): TreeNode[] {
+    return Object.entries(obj).map(([name, data]) => {
       const fullPath = basePath ? `${basePath}/${name}` : name;
-      
+
       if (data._type === 'file') {
         return {
-          name: data.file.name,
-          path: data.file.path,
+          name: data.file!.name,
+          path: data.file!.path,
           type: 'file' as const
         };
       } else {
@@ -145,12 +151,12 @@ function buildDirectoryStructure(files: DatabaseFile[], layerPath: string, dbNam
           name: name,
           path: fullPath,
           type: 'folder' as const,
-          children: convertToTreeNodes(data.children, fullPath)
+          children: convertToTreeNodes(data.children!, fullPath)
         };
       }
     });
   }
-  
+
   return convertToTreeNodes(structure);
 }
 
@@ -169,17 +175,17 @@ export function buildDatabaseTree(databases: DatabaseInfo[]): TreeNode[] {
       },
       {
         name: 'Silver Layer',
-        path: `${db.path}/silver`,
+        path: `${db.path}/silver_parquet`,
         type: 'layer' as const,
         layer: 'silver' as const,
-        children: buildDirectoryStructure(db.layers.silver, `/silver`, db.name)
+        children: buildDirectoryStructure(db.layers.silver, `/silver_parquet`, db.name)
       },
       {
         name: 'Gold Layer',
-        path: `${db.path}/gold`,
+        path: `${db.path}/gold_parquet`,
         type: 'layer' as const,
         layer: 'gold' as const,
-        children: buildDirectoryStructure(db.layers.gold, `/gold`, db.name)
+        children: buildDirectoryStructure(db.layers.gold, `/gold_parquet`, db.name)
       }
     ].filter(layer => layer.children && layer.children.length > 0)
   }));
