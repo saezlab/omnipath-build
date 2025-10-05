@@ -18,6 +18,7 @@ import yaml
 import duckdb
 
 from .gold_parquet_builder_v3 import GoldParquetBuilderV3
+from .utils import PathManager
 
 __all__ = [
     'SourceProcessor',
@@ -45,16 +46,15 @@ class SourceProcessor:
         self.database_name = database_name
         self.source_module = source_module
 
-        # Set up paths
-        if base_path is None:
-            base_path = Path(__file__).parent.parent / "omnipath_build" / "databases" / database_name
-        self.base_path = base_path
+        # Use PathManager for all paths
+        self.path_manager = PathManager(database_name, base_path)
+        self.base_path = self.path_manager.db_path
 
-        self.bronze_path = base_path / "bronze" / "data" / source_module
-        self.silver_path = base_path / "silver_parquet"
-        self.gold_path = base_path / "gold_parquet"
-        self.resource_config_path = base_path / "resource" / f"{source_module}.yaml"
-        self.transform_sql_path = base_path / "silver" / "transformation_functions.sql"
+        self.bronze_path = self.path_manager.bronze_module_path(source_module)
+        self.silver_path = self.path_manager.silver_parquet_path()
+        self.gold_path = self.path_manager.gold_parquet_path()
+        self.resource_config_path = self.path_manager.resource_config_file(source_module)
+        self.transform_sql_path = self.path_manager.transformation_functions_file()
 
         # Create silver output directory
         self.silver_path.mkdir(parents=True, exist_ok=True)
@@ -262,7 +262,9 @@ class SourceProcessor:
 
             # Build and execute query
             target_table = processing.get('target_table', function_name)
-            output_file = self.silver_path / f"{self.source_module}_{function_name}_{target_table}.parquet"
+            output_file = self.path_manager.silver_parquet_file(
+                self.source_module, function_name, target_table
+            )
 
             select_clause = ',\n'.join(select_expressions)
             query = f"""
@@ -314,7 +316,7 @@ class SourceProcessor:
         logger.info("Processing %s silver → gold parquet (builder v3)", self.source_module)
 
         # Use the simplified pipeline
-        with GoldParquetBuilderV3(self.gold_path) as builder:
+        with GoldParquetBuilderV3(self.gold_path, self.path_manager) as builder:
             return builder.run_full_pipeline(silver_table_map)
 
     def process_full_pipeline(self) -> dict[str, dict[str, Path]]:

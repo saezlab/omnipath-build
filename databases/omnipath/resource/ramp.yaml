@@ -1,0 +1,60 @@
+# Resource Configuration for ramp.ramp_omnipathmetabo
+# Database: metabo
+
+# REQUIRED: Fill in all question marks (?) before loading
+
+metadata:
+    name: RaMP
+    description: RaMP (Relational database of Metabolomics Pathways) for metabolite and gene/protein annotations
+module: ramp
+functions:
+    ramp_omnipathmetabo:
+        description: Retrieve RaMP database contents from its SQLite build for the omnipath.metabo database build.
+        processing:
+            target_table: silver_entities
+            field_mapping:
+            -   source: _constant
+                target: entity_type
+                value: compound
+            -   source: ramp_id
+                target: identifier
+            -   source: _constant
+                target: identifier_type
+                value: ramp
+            -   source: [ramp_id, sources, chem_data_source, chem_source_id, inchi_key, inchi]
+                target: additional_identifiers
+                transform: build_identifier_list_ramp
+            -   source: common_name
+                target: name
+            -   source: synonyms
+                target: name_variants
+                transform: split_string_to_json
+                transform_args:
+                    delimiter: ', '
+            -   source: mol_formula
+                target: compound_formula
+            -   source: iso_smiles
+                target: compound_smiles
+            -   source: inchi
+                target: compound_inchi
+            -   source: mw
+                target: molecular_weight
+            -   source: monoisotop_mass
+                target: exact_mass
+            -   source: classes
+                target: annotations
+                transform: build_ramp_annotations
+            -   source: _constant
+                target: is_valid
+                value: true
+            -   source: _constant
+                target: processed_by
+                value: ramp_omnipathmetabo
+            -   source: metadata_row_number
+                target: bronze_record_id
+            -   source: _metadata
+                target: created_at
+                value: current_timestamp
+            -   source: _metadata
+                target: updated_at
+                value: current_timestamp

@@ -3,7 +3,7 @@
 from pathlib import Path
 from typing import Optional
 
-from .gold_parquet_builder_v2 import GoldParquetBuilderV2
+from .gold_parquet_builder_v3 import GoldParquetBuilderV3
 from .source_processor import SourceProcessor
 
 __all__ = [
@@ -29,6 +29,16 @@ def build_gold_from_silver_dir(
         Mapping of gold table names to the exported parquet paths.
     """
 
-    with GoldParquetBuilderV2(source_filter or 'bulk', output_dir) as builder:
-        builder.ingest_silver_directory(silver_dir, source_filter)
-        return builder.export_all_tables()
+    with GoldParquetBuilderV3(output_dir) as builder:
+        # Load silver files
+        silver_files = {}
+        for parquet_file in silver_dir.glob('*.parquet'):
+            if source_filter and not parquet_file.stem.startswith(source_filter):
+                continue
+            # Extract table name from filename (assumes format: source_function_table.parquet)
+            parts = parquet_file.stem.split('_')
+            if len(parts) >= 3:
+                table_name = parts[-1]
+                silver_files[table_name] = parquet_file
+
+        return builder.run_full_pipeline(silver_files)

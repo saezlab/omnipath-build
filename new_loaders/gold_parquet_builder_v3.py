@@ -11,6 +11,7 @@ from typing import Any
 import duckdb
 
 from new_loaders.gold_tables import gold_tables, silver_gold_map
+from new_loaders.utils import PathManager
 
 logger = logging.getLogger(__name__)
 
@@ -23,9 +24,10 @@ class GoldParquetBuilderV3:
     Phase 3: Resolve foreign keys and create final tables
     """
 
-    def __init__(self, output_dir: Path):
+    def __init__(self, output_dir: Path, path_manager: PathManager | None = None):
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.path_manager = path_manager
         self.conn = duckdb.connect(':memory:')
         logger.info("GoldParquetBuilderV3 initialized with output_dir=%s", output_dir)
 
@@ -58,10 +60,14 @@ class GoldParquetBuilderV3:
             Path to the created pass1 parquet file
         """
 
-        # Create pass1 subdirectory
-        pass1_dir = self.output_dir / "pass1"
-        pass1_dir.mkdir(exist_ok=True)
-        output_path = pass1_dir / f"{table_name}_pass1_{source_name}.parquet"
+        # Use PathManager if available, otherwise use legacy paths
+        if self.path_manager:
+            output_path = self.path_manager.gold_pass1_file(table_name, source_name)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+        else:
+            pass1_dir = self.output_dir / PathManager.PASS1
+            pass1_dir.mkdir(exist_ok=True)
+            output_path = pass1_dir / f"{table_name}_pass1_{source_name}.parquet"
 
         # Execute the extraction query
         self.conn.execute(
@@ -96,7 +102,10 @@ class GoldParquetBuilderV3:
         table_def = gold_tables[table_name]
 
         # Find all pass1 files for this table
-        pass1_dir = self.output_dir / "pass1"
+        if self.path_manager:
+            pass1_dir = self.path_manager.gold_pass1_path()
+        else:
+            pass1_dir = self.output_dir / PathManager.PASS1
         pattern = f"{table_name}_pass1_*.parquet"
         pass1_files = list(pass1_dir.glob(pattern)) if pass1_dir.exists() else []
 
@@ -117,9 +126,13 @@ class GoldParquetBuilderV3:
         order_clause = ', '.join(priority_columns) if priority_columns else ', '.join(dedup_keys)
 
         # Create deduped subdirectory
-        deduped_dir = self.output_dir / "deduped"
-        deduped_dir.mkdir(exist_ok=True)
-        output_path = deduped_dir / f"{table_name}_deduped.parquet"
+        if self.path_manager:
+            output_path = self.path_manager.gold_deduped_file(table_name)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+        else:
+            deduped_dir = self.output_dir / PathManager.DEDUPED
+            deduped_dir.mkdir(exist_ok=True)
+            output_path = deduped_dir / f"{table_name}_deduped.parquet"
 
         # Deduplicate using DISTINCT ON and add auto-increment id
         self.conn.execute(
@@ -147,7 +160,10 @@ class GoldParquetBuilderV3:
                 results[table_name] = output_path
 
         # Clean up pass1 files after successful deduplication
-        pass1_dir = self.output_dir / "pass1"
+        if self.path_manager:
+            pass1_dir = self.path_manager.gold_pass1_path()
+        else:
+            pass1_dir = self.output_dir / PathManager.PASS1
         if pass1_dir.exists():
             import shutil
             shutil.rmtree(pass1_dir)
@@ -177,7 +193,10 @@ class GoldParquetBuilderV3:
         table_def = gold_tables[table_name]
 
         # Find all pass1 files for this table
-        pass1_dir = self.output_dir / "pass1"
+        if self.path_manager:
+            pass1_dir = self.path_manager.gold_pass1_path()
+        else:
+            pass1_dir = self.output_dir / PathManager.PASS1
         pattern = f"{table_name}_pass1_*.parquet"
         pass1_files = list(pass1_dir.glob(pattern)) if pass1_dir.exists() else []
 
@@ -198,9 +217,13 @@ class GoldParquetBuilderV3:
         order_clause = ', '.join(priority_columns) if priority_columns else ', '.join(dedup_keys)
 
         # Check if deduped file already exists
-        deduped_dir = self.output_dir / "deduped"
-        deduped_dir.mkdir(exist_ok=True)
-        output_path = deduped_dir / f"{table_name}_deduped.parquet"
+        if self.path_manager:
+            output_path = self.path_manager.gold_deduped_file(table_name)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+        else:
+            deduped_dir = self.output_dir / PathManager.DEDUPED
+            deduped_dir.mkdir(exist_ok=True)
+            output_path = deduped_dir / f"{table_name}_deduped.parquet"
 
         # Build union query: existing deduped + new pass1 files
         if output_path.exists():
@@ -246,7 +269,10 @@ class GoldParquetBuilderV3:
                 results[table_name] = output_path
 
         # Clean up pass1 files after successful deduplication
-        pass1_dir = self.output_dir / "pass1"
+        if self.path_manager:
+            pass1_dir = self.path_manager.gold_pass1_path()
+        else:
+            pass1_dir = self.output_dir / PathManager.PASS1
         if pass1_dir.exists():
             import shutil
             shutil.rmtree(pass1_dir)
@@ -264,7 +290,10 @@ class GoldParquetBuilderV3:
         It scans all deduped files for cv_term references and ensures
         those terms exist in cv_term_deduped.
         """
-        deduped_dir = self.output_dir / "deduped"
+        if self.path_manager:
+            deduped_dir = self.path_manager.gold_deduped_path()
+        else:
+            deduped_dir = self.output_dir / PathManager.DEDUPED
         cv_namespace_deduped = deduped_dir / "cv_namespace_deduped.parquet"
         cv_term_deduped = deduped_dir / "cv_term_deduped.parquet"
 
@@ -412,8 +441,12 @@ class GoldParquetBuilderV3:
         """
         table_def = gold_tables[table_name]
 
-        deduped_dir = self.output_dir / "deduped"
-        deduped_path = deduped_dir / f"{table_name}_deduped.parquet"
+        if self.path_manager:
+            deduped_path = self.path_manager.gold_deduped_file(table_name)
+            deduped_dir = self.path_manager.gold_deduped_path()
+        else:
+            deduped_dir = self.output_dir / PathManager.DEDUPED
+            deduped_path = deduped_dir / f"{table_name}_deduped.parquet"
         if not deduped_path.exists():
             raise FileNotFoundError(f"Deduped file not found: {deduped_path}")
 
@@ -464,7 +497,10 @@ class GoldParquetBuilderV3:
         all_select = ', '.join(select_parts)
 
         # Build final query
-        output_path = self.output_dir / f"{table_name}.parquet"
+        if self.path_manager:
+            output_path = self.path_manager.gold_final_file(table_name)
+        else:
+            output_path = self.output_dir / f"{table_name}.parquet"
 
         query = f"""
             COPY (
@@ -487,7 +523,10 @@ class GoldParquetBuilderV3:
         Note: All deduped tables are available, so no topological ordering needed.
         """
         results = {}
-        deduped_dir = self.output_dir / "deduped"
+        if self.path_manager:
+            deduped_dir = self.path_manager.gold_deduped_path()
+        else:
+            deduped_dir = self.output_dir / PathManager.DEDUPED
         for table_name in gold_tables.keys():
             deduped_path = deduped_dir / f"{table_name}_deduped.parquet"
             if deduped_path.exists():

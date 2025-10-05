@@ -1,0 +1,145 @@
+# Silver layer table definitions for metabo
+# Cleaned and validated data from bronze layer (before deduplication/aggregation)
+
+# Note: This YAML represents the silver layer tables as SQL schemas
+# These tables will contain cleaned entity records (one row per source record)
+
+## 1. silver_entities
+
+# Cleaned entity records (one row per source record, before deduplication)
+silver_entities:
+  # Primary identification
+    entity_type: VARCHAR(50)           # 'protein', 'compound', 'reaction', 'complex'
+
+  # Identifiers (cleaned/validated)
+    identifier: VARCHAR(255)           # Primary identifier from source
+    identifier_type: VARCHAR(100)      # 'uniprot', 'chebi', 'kegg', etc.
+    additional_identifiers: JSON      # [{"type": "uniprot", "value": "P12345"}]
+
+  # Names (cleaned)
+    name: TEXT
+    name_variants: JSON               # ["synonym1", "synonym2"]
+
+  # Protein-specific fields (cleaned/validated)
+    protein_sequence: TEXT
+    protein_class: VARCHAR(255)
+    protein_features: JSON
+
+  # Compound-specific fields (cleaned/validated)
+    compound_formula: VARCHAR(255)
+    compound_smiles: TEXT
+    compound_inchi: TEXT
+    molecular_weight: FLOAT
+    exact_mass: FLOAT
+    tpsa: FLOAT
+    logp: FLOAT
+    hbd: INT
+    hba: INT
+    rotatable_bonds: INT
+    aromatic_rings: INT
+    heavy_atoms: INT
+
+  # Reaction-specific fields (cleaned/validated)
+    reaction_equation: TEXT
+    reaction_directionality: VARCHAR(50)
+    reaction_pathway: VARCHAR(255)
+    reaction_ec_number: VARCHAR(50)
+    reaction_smiles: TEXT
+
+  # Complex/membership info (as provided by source)
+    is_complex: BOOLEAN
+    complex_members: JSON             # [{"member_id": "...", "stoichiometry": 2, "role": "..."}]
+    parent_complex_ids: JSON          # IDs of complexes this belongs to
+
+  # Annotations (as provided by source)
+    annotations: JSON                 # [{"term": "...", "value": "...", "units": "..."}]
+
+  # Data quality (validation only, no scores)
+    is_valid: BOOLEAN
+    validation_errors: JSON           # [{"field": "sequence", "error": "invalid characters"}]
+
+  # Metadata
+    source_database: VARCHAR(100)
+    created_at: TIMESTAMP
+    updated_at: TIMESTAMP
+    processed_by: VARCHAR(100)
+    bronze_record_id: BIGINT           # Link back to bronze/raw data
+
+
+## 2. silver_interactions
+
+# Cleaned interaction records (one row per source evidence record, before deduplication)
+silver_interactions:
+  # Interaction participants (cleaned references)
+    entity_a_identifier: VARCHAR(255)
+    entity_a_identifier_type: VARCHAR(100)
+    entity_a_name: TEXT
+    entity_b_identifier: VARCHAR(255)
+    entity_b_identifier_type: VARCHAR(100)
+    entity_b_name: TEXT
+
+  # Evidence details (cleaned/normalized)
+    interaction_type: VARCHAR(100)     # 'physical association', 'phosphorylation', etc.
+    detection_method: VARCHAR(255)
+    is_directed: BOOLEAN
+    direction: VARCHAR(50)             # 'a_to_b', 'b_to_a', 'bidirectional', 'unknown'
+    sign: VARCHAR(50)                  # 'positive', 'negative', 'neutral', 'unknown'
+    causal_mechanism: VARCHAR(255)
+    causal_statement: TEXT
+    sentence: TEXT                     # Extracted sentence from paper
+
+  # Annotations (cleaned)
+    interaction_annotations: JSON     # General interaction annotations
+    entity_a_context: JSON            # Context annotations for entity A
+    entity_b_context: JSON            # Context annotations for entity B
+
+  # Provenance (cleaned/validated)
+    source_name: VARCHAR(255)
+    source_url: TEXT
+    source_description: TEXT
+    is_primary_source: BOOLEAN
+
+  # Reference (cleaned/normalized)
+    reference_type: VARCHAR(50)        # 'pubmed', 'doi', 'isbn', etc.
+    reference_value: TEXT              # PMID, DOI, etc. (normalized format)
+    citation: TEXT
+    title: TEXT
+    journal: TEXT
+    year: INT
+
+  # Data quality (validation only)
+    is_valid: BOOLEAN
+    validation_errors: JSON           # [{"field": "direction", "error": "conflicting values"}]
+
+  # Metadata
+    source_database: VARCHAR(100)
+    evidence_date: TIMESTAMP           # When evidence was created/published
+    created_at: TIMESTAMP
+    updated_at: TIMESTAMP
+    processed_by: VARCHAR(100)
+    bronze_record_id: BIGINT           # Link back to bronze/raw data
+
+
+## 3. silver_cv_terms
+
+# Controlled vocabulary terms from sources (one row per source term)
+silver_cv_terms:
+  # Term identification
+    term_name: VARCHAR(500)           # The actual term/value
+    term_accession: VARCHAR(100) PRIMARY KEY # Formal accession if available (e.g., 'GO:0008150')
+    namespace: VARCHAR(255)
+
+  # Term metadata (if provided by source)
+    term_definition: TEXT
+    term_definition_refs: JSON
+    term_synonyms: JSON               # ["synonym1", "synonym2"]
+    term_parent_accessions: JSON      # ["GO:0008150", "GO:0009987"]
+    term_parent_names: JSON
+    term_alt_ids: JSON
+
+  # Metadata
+    source_database: VARCHAR(100)
+    created_at: TIMESTAMP
+    updated_at: TIMESTAMP
+    processed_by: VARCHAR(100)
+    bronze_record_id: BIGINT

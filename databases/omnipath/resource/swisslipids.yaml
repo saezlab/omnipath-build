@@ -1,0 +1,53 @@
+# SwissLipids Bronze Configuration for metabo database
+metadata:
+    name: SwissLipids
+    description: SwissLipids database for lipid structures and annotations
+
+module: swisslipids
+functions:
+    swisslipids_lipids:
+        description: Downloads the full dataset from SwissLipids (https://www.swisslipids.org/).
+        processing:
+            target_table: silver_entities
+            field_mapping:
+            -   source: _constant
+                target: entity_type
+                value: compound
+            -   source: id
+                target: identifier
+            -   source: _constant
+                target: identifier_type
+                value: swisslipids
+            -   source: [chebi, lipidmaps, hmdb, metanetx, inchikey, inchi]
+                target: additional_identifiers
+                transform: build_identifier_list_swisslipids
+            -   source: name
+                target: name
+            -   source: [synonyms, abbreviation]
+                target: name_variants
+                transform: build_swisslipids_name_variants
+            -   source: formula
+                target: compound_formula
+            -   source: smiles
+                target: compound_smiles
+            -   source: inchi
+                target: compound_inchi
+            -   source: exact_mass
+                target: exact_mass
+            -   source: [level, lipid_class, parent, components, pmids, charge]
+                target: annotations
+                transform: build_swisslipids_annotations
+            -   source: _constant
+                target: is_valid
+                value: true
+            -   source: _constant
+                target: processed_by
+                value: swisslipids_lipids
+            -   source: metadata_row_number
+                target: bronze_record_id
+            -   source: _metadata
+                target: created_at
+                value: current_timestamp
+            -   source: _metadata
+                target: updated_at
+                value: current_timestamp
