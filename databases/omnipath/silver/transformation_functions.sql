@@ -310,7 +310,7 @@ CREATE OR REPLACE MACRO build_identifier_list_swisslipids(
     FROM (
         SELECT list_filter([
             CASE
-                WHEN chebi IS NOT NULL AND TRIM(chebi) != '' THEN struct_pack(
+                WHEN chebi IS NOT NULL AND chebi != '' AND TRIM(chebi) NOT IN ('', 'CHEBI:', 'chebi:') THEN struct_pack(
                     type := 'chebi',
                     value := CASE WHEN UPPER(chebi) LIKE 'CHEBI:%' THEN chebi ELSE 'CHEBI:' || chebi END
                 )
