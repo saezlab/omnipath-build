@@ -482,7 +482,15 @@ class GoldParquetBuilderV3:
                 """
             )
 
-            fk_select_cols.append(f"{alias}.id AS {fk_id}")
+            main_columns = {match.group(1) for match in re.finditer(r'main\.([A-Za-z_][A-Za-z0-9_]*)', join_condition_with_alias)}
+
+            if main_columns:
+                null_guard = ' AND '.join(f"main.{col} IS NULL" for col in sorted(main_columns))
+                fk_select_cols.append(
+                    f"CASE WHEN {null_guard} THEN NULL ELSE {alias}.id END AS {fk_id}"
+                )
+            else:
+                fk_select_cols.append(f"{alias}.id AS {fk_id}")
 
         # Get main columns only (temp columns are dropped in final tables)
         main_cols = list(table_def["columns"]["main"].keys())
