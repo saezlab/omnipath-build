@@ -316,7 +316,10 @@ class SourceProcessor:
 
         # Run only pass1 extraction
         with GoldParquetBuilderV3(self.gold_path, self.path_manager) as builder:
-            return builder.run_pass1_only(silver_table_map)
+            return builder.run_pass1_only(
+                silver_table_map,
+                source_label=self.source_module,
+            )
 
     def process_to_gold(self, silver_files: dict[str, Path]) -> dict[str, Path]:
         """Process silver → gold Parquet files using three-phase pipeline.
@@ -342,7 +345,10 @@ class SourceProcessor:
 
         # Use the simplified pipeline
         with GoldParquetBuilderV3(self.gold_path, self.path_manager) as builder:
-            return builder.run_full_pipeline(silver_table_map)
+            return builder.run_full_pipeline(
+                silver_table_map,
+                source_label=self.source_module,
+            )
 
     def process_full_pipeline(self) -> dict[str, dict[str, Path]]:
         """Run full pipeline: bronze → silver → gold.

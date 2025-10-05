@@ -620,7 +620,11 @@ class GoldParquetBuilderV3:
     # ------------------------------------------------------------------
     # High-level pipeline
     # ------------------------------------------------------------------
-    def extract_from_silver_parquet(self, silver_files: dict[str, Path]) -> None:
+    def extract_from_silver_parquet(
+        self,
+        silver_files: dict[str, Path],
+        source_label: str | None = None,
+    ) -> None:
         """Extract all tables from silver parquet files using silver_gold_map.
 
         Args:
@@ -643,13 +647,22 @@ class GoldParquetBuilderV3:
                 logger.debug(f"Skipping {extraction_name} - source table {source_table} not available")
                 continue
 
+            if source_label:
+                pass1_source_name = f"{source_label}__{extraction_name}"
+            else:
+                pass1_source_name = extraction_name
+
             self.extract_pass1(
                 table_name=target_gold_table,
-                source_name=extraction_name,
+                source_name=pass1_source_name,
                 select_sql=select_sql
             )
 
-    def run_pass1_only(self, silver_files: dict[str, Path]) -> dict[str, list[Path]]:
+    def run_pass1_only(
+        self,
+        silver_files: dict[str, Path],
+        source_label: str | None = None,
+    ) -> dict[str, list[Path]]:
         """Run only Phase 1: Extract pass1 files from silver parquet.
 
         This is used for parallel processing where each source creates its pass1 files
@@ -664,7 +677,7 @@ class GoldParquetBuilderV3:
         logger.info("=" * 70)
         logger.info("Phase 1: Source Extraction (Pass1 only)")
         logger.info("=" * 70)
-        self.extract_from_silver_parquet(silver_files)
+        self.extract_from_silver_parquet(silver_files, source_label=source_label)
 
         # Return mapping of table names to their pass1 files
         pass1_files = {}
@@ -711,7 +724,11 @@ class GoldParquetBuilderV3:
         logger.info("=" * 70)
         return self.resolve_foreign_keys_all()
 
-    def run_full_pipeline(self, silver_files: dict[str, Path]) -> dict[str, Path]:
+    def run_full_pipeline(
+        self,
+        silver_files: dict[str, Path],
+        source_label: str | None = None,
+    ) -> dict[str, Path]:
         """Run the full three-phase pipeline from silver parquet files.
 
         Args:
@@ -724,7 +741,7 @@ class GoldParquetBuilderV3:
         logger.info("=" * 70)
         logger.info("Phase 1: Source Extraction")
         logger.info("=" * 70)
-        self.extract_from_silver_parquet(silver_files)
+        self.extract_from_silver_parquet(silver_files, source_label=source_label)
 
         # Phase 2: Deduplicate
         logger.info("=" * 70)
