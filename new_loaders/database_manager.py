@@ -29,6 +29,7 @@ Usage:
 import argparse
 import logging
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
@@ -203,11 +204,61 @@ class ParquetDatabaseManager:
             self.logger.error(f'Failed to load bronze data: {e}')
             return False
 
-    def process_sources(self, source: str | None = None) -> bool:
+    def _process_single_source_to_pass1(self, source_name: str) -> tuple[str, dict[str, Any]]:
+        """Process a single source through bronze → silver → gold pass1.
+
+        Args:
+            source_name: Name of the source module to process
+
+        Returns:
+            Tuple of (source_name, results_dict) where results contains silver and gold pass1 files
+        """
+        from .source_processor import SourceProcessor
+
+        self.logger.info(f'Processing source: {source_name}')
+        try:
+            with SourceProcessor(
+                database_name=self.database_name,
+                source_module=source_name,
+                base_path=self.path_manager.base_path,
+            ) as processor:
+                # Process bronze → silver
+                silver_files = processor.process_to_silver()
+
+                # Process silver → gold pass1 ONLY (no dedup/FK resolution)
+                pass1_files = processor.process_to_gold_pass1(silver_files)
+
+                silver_count = len(silver_files)
+                pass1_count = sum(len(files) for files in pass1_files.values())
+                self.logger.info(
+                    f'✓ Completed: {source_name} ({silver_count} silver, {pass1_count} gold pass1 files)'
+                )
+
+                return source_name, {
+                    'silver': silver_files,
+                    'pass1': pass1_files,
+                    'success': True
+                }
+
+        except (RuntimeError, OSError) as e:
+            self.logger.error(f'Failed to process {source_name}: {e}')
+            return source_name, {'success': False, 'error': str(e)}
+
+    def process_sources(
+        self,
+        source: str | None = None,
+        max_workers: int | None = None,
+        parallel: bool = True
+    ) -> bool:
         """Process sources through silver and gold transformations.
+
+        Bronze → Silver → Gold Pass1 runs in parallel for each source.
+        Gold deduplication and FK resolution happen after all sources complete.
 
         Args:
             source: Specific source module to process (None = all sources)
+            max_workers: Max parallel workers (None = auto based on CPU count)
+            parallel: If True, process sources in parallel (default: True)
 
         Returns:
             True if successful, False otherwise
@@ -235,26 +286,62 @@ class ParquetDatabaseManager:
                 return False
 
             # Import source processor
-            from new_loaders.source_processor import SourceProcessor
+            from .source_processor import SourceProcessor
 
-            # Process each source
-            for source_name in sources:
-                self.logger.info(f'Processing source: {source_name}')
-                try:
-                    with SourceProcessor(
-                        database_name=self.database_name,
-                        source_module=source_name,
-                        base_path=self.path_manager.base_path,
-                    ) as processor:
-                        results = processor.process_full_pipeline()
-                        silver_count = len(results.get('silver', {}))
-                        gold_count = len(results.get('gold', {}))
-                        self.logger.info(f'✓ Completed: {source_name} ({silver_count} silver, {gold_count} gold tables)')
-                except (RuntimeError, OSError) as e:
-                    self.logger.error(f'Failed to process {source_name}: {e}')
-                    return False
+            # Phase 1: Process all sources to Pass1 in parallel
+            all_results = {}
 
-            self.logger.info('✓ All sources processed successfully')
+            if parallel and len(sources) > 1:
+                self.logger.info(f'Processing {len(sources)} sources in parallel (max_workers={max_workers or "auto"})')
+
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    # Submit all source processing tasks
+                    future_to_source = {
+                        executor.submit(self._process_single_source_to_pass1, src): src
+                        for src in sources
+                    }
+
+                    # Collect results as they complete
+                    for future in as_completed(future_to_source):
+                        source_name, result = future.result()
+                        all_results[source_name] = result
+
+                        if not result.get('success', False):
+                            self.logger.error(f'Source {source_name} failed: {result.get("error", "Unknown error")}')
+                            return False
+            else:
+                # Sequential processing
+                if not parallel:
+                    self.logger.info('Processing sources sequentially (parallel=False)')
+
+                for source_name in sources:
+                    source_name, result = self._process_single_source_to_pass1(source_name)
+                    all_results[source_name] = result
+
+                    if not result.get('success', False):
+                        return False
+
+            self.logger.info('✓ All sources processed to Pass1 successfully')
+
+            # Phase 2: Cross-source deduplication and FK resolution
+            self.logger.info('=' * 70)
+            self.logger.info('Starting cross-source deduplication and FK resolution')
+            self.logger.info('=' * 70)
+
+            try:
+                from .gold_parquet_builder_v3 import GoldParquetBuilderV3
+
+                gold_path = self.path_manager.gold_parquet_path()
+                with GoldParquetBuilderV3(gold_path, self.path_manager) as builder:
+                    final_gold_files = builder.run_dedup_and_fk_resolution()
+
+                gold_count = len(final_gold_files)
+                self.logger.info(f'✓ Cross-source dedup complete: {gold_count} final gold tables')
+
+            except (RuntimeError, OSError) as e:
+                self.logger.error(f'Failed to run cross-source deduplication: {e}')
+                return False
+
             return True
 
         except (ImportError, RuntimeError, OSError) as e:

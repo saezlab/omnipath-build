@@ -649,6 +649,68 @@ class GoldParquetBuilderV3:
                 select_sql=select_sql
             )
 
+    def run_pass1_only(self, silver_files: dict[str, Path]) -> dict[str, list[Path]]:
+        """Run only Phase 1: Extract pass1 files from silver parquet.
+
+        This is used for parallel processing where each source creates its pass1 files
+        independently, and deduplication happens later across all sources.
+
+        Args:
+            silver_files: Dict mapping table names to silver parquet paths
+
+        Returns:
+            Dict mapping table_name → list of pass1 parquet paths created
+        """
+        logger.info("=" * 70)
+        logger.info("Phase 1: Source Extraction (Pass1 only)")
+        logger.info("=" * 70)
+        self.extract_from_silver_parquet(silver_files)
+
+        # Return mapping of table names to their pass1 files
+        pass1_files = {}
+        if self.path_manager:
+            pass1_dir = self.path_manager.gold_pass1_path()
+        else:
+            pass1_dir = self.output_dir / PathManager.PASS1
+
+        if pass1_dir.exists():
+            for parquet_file in pass1_dir.glob("*_pass1_*.parquet"):
+                # Extract table name from filename: {table}_pass1_{source}.parquet
+                table_name = parquet_file.name.split('_pass1_')[0]
+                if table_name not in pass1_files:
+                    pass1_files[table_name] = []
+                pass1_files[table_name].append(parquet_file)
+
+        return pass1_files
+
+    def run_dedup_and_fk_resolution(self) -> dict[str, Path]:
+        """Run Phase 2 & 3: Deduplicate all pass1 files and resolve foreign keys.
+
+        This is the cross-source phase that runs after all sources have completed
+        their pass1 extraction. It reads all pass1 files from the pass1 directory
+        and creates the final deduplicated gold parquet files.
+
+        Returns:
+            Dict mapping table_name → final parquet path
+        """
+        # Phase 2: Deduplicate
+        logger.info("=" * 70)
+        logger.info("Phase 2: Cross-Source Deduplication")
+        logger.info("=" * 70)
+        self.deduplicate_all_tables()
+
+        # Phase 2.5: Enrich CV Terms
+        logger.info("=" * 70)
+        logger.info("Phase 2.5: CV Term Enrichment")
+        logger.info("=" * 70)
+        self.enrich_cv_terms()
+
+        # Phase 3: Resolve FKs
+        logger.info("=" * 70)
+        logger.info("Phase 3: Foreign Key Resolution")
+        logger.info("=" * 70)
+        return self.resolve_foreign_keys_all()
+
     def run_full_pipeline(self, silver_files: dict[str, Path]) -> dict[str, Path]:
         """Run the full three-phase pipeline from silver parquet files.
 

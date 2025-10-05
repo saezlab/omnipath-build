@@ -293,6 +293,31 @@ class SourceProcessor:
 
         return results
 
+    def process_to_gold_pass1(self, silver_files: dict[str, Path]) -> dict[str, list[Path]]:
+        """Process silver → gold Pass1 only (extraction, no deduplication).
+
+        This method is used for parallel processing where each source creates its
+        pass1 files independently, and deduplication happens later across all sources.
+
+        Args:
+            silver_files: Dict mapping function names to silver parquet paths
+
+        Returns:
+            Dict mapping table names to list of pass1 parquet paths
+        """
+        if not silver_files:
+            logger.warning("No silver files supplied for gold processing")
+            return {}
+
+        # Map function names to target table names
+        silver_table_map = self._map_silver_files_to_tables(silver_files)
+
+        logger.info("Processing %s silver → gold pass1 (extraction only)", self.source_module)
+
+        # Run only pass1 extraction
+        with GoldParquetBuilderV3(self.gold_path, self.path_manager) as builder:
+            return builder.run_pass1_only(silver_table_map)
+
     def process_to_gold(self, silver_files: dict[str, Path]) -> dict[str, Path]:
         """Process silver → gold Parquet files using three-phase pipeline.
 
