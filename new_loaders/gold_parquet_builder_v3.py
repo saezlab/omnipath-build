@@ -155,6 +155,105 @@ class GoldParquetBuilderV3:
 
         return results
 
+    def deduplicate_table_incremental(
+        self,
+        table_name: str,
+        priority_columns: list[str] | None = None,
+    ) -> Path:
+        """Append new pass1 files to existing deduped file and re-deduplicate.
+
+        This method is used for incremental source processing. It:
+        1. Loads existing deduped file (if exists)
+        2. Appends new pass1 data
+        3. Re-deduplicates the combined dataset
+
+        Args:
+            table_name: Name of the gold table
+            priority_columns: Optional columns for ordering during deduplication
+
+        Returns:
+            Path to the deduplicated parquet file
+        """
+        table_def = gold_tables[table_name]
+
+        # Find all pass1 files for this table
+        pass1_dir = self.output_dir / "pass1"
+        pattern = f"{table_name}_pass1_*.parquet"
+        pass1_files = list(pass1_dir.glob(pattern)) if pass1_dir.exists() else []
+
+        if not pass1_files:
+            logger.warning("No pass1 files found for %s (pattern: %s)", table_name, pattern)
+            return None
+
+        # Parse constraints to extract deduplication keys
+        pass1_constraints = table_def["constraints"]["pass1"]
+        dedup_keys = self._extract_dedup_keys(pass1_constraints)
+
+        if not dedup_keys:
+            logger.warning("No deduplication keys found for %s, using all columns", table_name)
+            all_columns = {**table_def["columns"]["main"], **table_def["columns"]["temp"]}
+            dedup_keys = list(all_columns.keys())
+
+        # Build ORDER BY clause
+        order_clause = ', '.join(priority_columns) if priority_columns else ', '.join(dedup_keys)
+
+        # Check if deduped file already exists
+        deduped_dir = self.output_dir / "deduped"
+        deduped_dir.mkdir(exist_ok=True)
+        output_path = deduped_dir / f"{table_name}_deduped.parquet"
+
+        # Build union query: existing deduped + new pass1 files
+        if output_path.exists():
+            # Drop the auto-increment id column from existing deduped file before union
+            union_query = f"""
+                SELECT * EXCLUDE (id) FROM read_parquet('{output_path}')
+                UNION ALL
+                SELECT * FROM read_parquet('{pass1_dir}/{pattern}')
+            """
+            logger.info("Appending to existing deduped file: %s", table_name)
+        else:
+            # No existing deduped file, just use pass1 files
+            union_query = f"SELECT * FROM read_parquet('{pass1_dir}/{pattern}')"
+            logger.info("Creating new deduped file: %s", table_name)
+
+        # Deduplicate the combined dataset and add auto-increment id
+        self.conn.execute(
+            f"""
+            COPY (
+                SELECT ROW_NUMBER() OVER ()::INTEGER AS id, deduped.*
+                FROM (
+                    SELECT DISTINCT ON ({', '.join(dedup_keys)}) *
+                    FROM ({union_query})
+                    ORDER BY {order_clause}
+                ) AS deduped
+            ) TO '{output_path}' (FORMAT PARQUET)
+            """
+        )
+
+        logger.info("✓ Pass2 (incremental dedup): %s ← %d new files → %s",
+                   table_name, len(pass1_files), output_path.name)
+        return output_path
+
+    def deduplicate_all_tables_incremental(self) -> dict[str, Path]:
+        """Incrementally deduplicate all tables that have pass1 files.
+
+        Appends new pass1 data to existing deduped files and re-deduplicates.
+        """
+        results = {}
+        for table_name in gold_tables.keys():
+            output_path = self.deduplicate_table_incremental(table_name)
+            if output_path:
+                results[table_name] = output_path
+
+        # Clean up pass1 files after successful deduplication
+        pass1_dir = self.output_dir / "pass1"
+        if pass1_dir.exists():
+            import shutil
+            shutil.rmtree(pass1_dir)
+            logger.info("✓ Cleaned up pass1 files")
+
+        return results
+
     # ------------------------------------------------------------------
     # Phase 2.5: Enrich CV Terms
     # ------------------------------------------------------------------
@@ -406,6 +505,9 @@ class GoldParquetBuilderV3:
     ) -> dict[str, Path]:
         """Add a new source incrementally without reprocessing existing sources.
 
+        This method appends new source data to existing deduped files and re-deduplicates,
+        avoiding the need to regenerate everything from scratch.
+
         Args:
             source_name: Name of the new source
             extraction_functions: Dict mapping table_name → extraction function
@@ -419,11 +521,15 @@ class GoldParquetBuilderV3:
         for table_name, extract_fn in extraction_functions.items():
             extract_fn(self, source_name)
 
-        # 2. Rerun deduplication (picks up new files automatically)
-        logger.info("Rerunning deduplication phase")
-        self.deduplicate_all_tables()
+        # 2. Incrementally append to existing deduped files and re-deduplicate
+        logger.info("Incrementally deduplicating (appending to existing deduped files)")
+        self.deduplicate_all_tables_incremental()
 
-        # 3. Rerun pass2 (FK resolution)
+        # 3. Enrich cv_terms if needed
+        logger.info("Enriching cv_terms")
+        self.enrich_cv_terms()
+
+        # 4. Rerun FK resolution
         logger.info("Rerunning FK resolution phase")
         return self.resolve_foreign_keys_all()
 
