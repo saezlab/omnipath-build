@@ -6,11 +6,13 @@ __all__ = [
 def fk(id_col, link_text):
     return {"id": id_col, "link": link_text}
 
-plan = {
+gold_tables = {
     "cv_namespace": {
         "columns": {
-            "main": ["name"],
-            "temp": []
+            "main": {
+                "name": "VARCHAR(255)"
+            },
+            "temp": {}
         },
         "foreign_keys": [],
         "constraints": {
@@ -21,8 +23,17 @@ plan = {
 
     "cv_term": {
         "columns": {
-            "main": ["name", "accession", "description", "is_obsolete"],
-            "temp": ["namespace_name", "replaces_accession", "replaced_by_accession"]
+            "main": {
+                "name": "VARCHAR(255)",
+                "accession": "VARCHAR(100)",
+                "description": "TEXT",
+                "is_obsolete": "BOOLEAN"
+            },
+            "temp": {
+                "namespace_name": "VARCHAR(255)",
+                "replaces_accession": "VARCHAR(100)",
+                "replaced_by_accession": "VARCHAR(100)"
+            }
         },
         "foreign_keys": [
             fk("namespace_id", "links to cv_namespace via cv_namespace.name = namespace_name"),
@@ -37,8 +48,12 @@ plan = {
 
     "source": {
         "columns": {
-            "main": ["name", "url", "description"],
-            "temp": []
+            "main": {
+                "name": "VARCHAR(255)",
+                "url": "VARCHAR(500)",
+                "description": "TEXT"
+            },
+            "temp": {}
         },
         "foreign_keys": [],
         "constraints": {
@@ -49,8 +64,17 @@ plan = {
 
     "reference": {
         "columns": {
-            "main": ["identifier", "citation", "published_year", "journal", "title"],
-            "temp": ["type_namespace_name", "type_name"]
+            "main": {
+                "identifier": "TEXT",
+                "citation": "TEXT",
+                "published_year": "INT",
+                "journal": "TEXT",
+                "title": "TEXT"
+            },
+            "temp": {
+                "type_namespace_name": "VARCHAR(255)",
+                "type_name": "VARCHAR(255)"
+            }
         },
         "foreign_keys": [
             fk("type_id", "links to cv_term via (cv_namespace.name = type_namespace_name AND cv_term.name = type_name)")
@@ -63,8 +87,12 @@ plan = {
 
     "provenance": {
         "columns": {
-            "main": [],
-            "temp": ["source_name", "primary_source_name", "reference_value"]
+            "main": {},
+            "temp": {
+                "source_name": "VARCHAR(255)",
+                "primary_source_name": "VARCHAR(255)",
+                "reference_value": "TEXT"
+            }
         },
         "foreign_keys": [
             fk("source_id", "links to source via source.name = source_name"),
@@ -79,11 +107,16 @@ plan = {
 
     "entity": {
         "columns": {
-            "main": [],
-            "temp": ["deduplication_identifier", "deduplication_identifier_type", "entity_type_namespace_name", "entity_type_name"]
+            "main": {},
+            "temp": {
+                "deduplication_identifier": "TEXT",
+                "deduplication_identifier_type": "VARCHAR(255)",
+                "entity_type_namespace_name": "VARCHAR(255)",
+                "entity_type_name": "VARCHAR(255)"
+            }
         },
         "foreign_keys": [
-            fk("type_id", "links to cv_term via (cv_namespace.name = entity_type_namespace_name AND cv_term.name = entity_type_name)")
+            fk("type_id", "links to cv_term via (cv_term.namespace_name = entity_type_namespace_name AND cv_term.name = entity_type_name)")
         ],
         "constraints": {
             "pass1": ["unique on (deduplication_identifier, deduplication_identifier_type)"],
@@ -93,17 +126,23 @@ plan = {
 
     "entity_identifier": {
         "columns": {
-            "main": ["identifier", "is_canonical"],
-            "temp": [
-                "entity_deduplication_identifier", "entity_deduplication_identifier_type",
-                "identifier_type_namespace_name", "identifier_type_name",
-                "source_name", "reference_value"
-            ]
+            "main": {
+                "identifier": "TEXT",
+                "is_canonical": "BOOLEAN"
+            },
+            "temp": {
+                "entity_deduplication_identifier": "TEXT",
+                "entity_deduplication_identifier_type": "VARCHAR(255)",
+                "identifier_type_namespace_name": "VARCHAR(255)",
+                "identifier_type_name": "VARCHAR(255)",
+                "source_name": "VARCHAR(255)",
+                "reference_value": "TEXT"
+            }
         },
         "foreign_keys": [
             fk("entity_id", "links to entity via (entity.deduplication_identifier = entity_deduplication_identifier AND entity.deduplication_identifier_type = entity_deduplication_identifier_type)"),
-            fk("type_id", "links to cv_term via (cv_namespace.name = identifier_type_namespace_name AND cv_term.name = identifier_type_name)"),
-            fk("provenance_id", "links to provenance via (source.name = source_name AND reference.identifier = reference_value)")
+            fk("type_id", "links to cv_term via (cv_term.namespace_name = identifier_type_namespace_name AND cv_term.name = identifier_type_name)"),
+            fk("provenance_id", "links to provenance via (provenance.source_name = source_name AND provenance.reference_value = reference_value)")
         ],
         "constraints": {
             "pass1": [],
@@ -113,9 +152,22 @@ plan = {
 
     "compound": {
         "columns": {
-            "main": ["formula", "molecular_weight", "exact_mass", "tpsa", "logp",
-                     "hbd", "hba", "rotatable_bonds", "aromatic_rings", "heavy_atoms"],
-            "temp": ["entity_deduplication_identifier", "entity_deduplication_identifier_type"]
+            "main": {
+                "formula": "VARCHAR(255)",
+                "molecular_weight": "FLOAT",
+                "exact_mass": "FLOAT",
+                "tpsa": "FLOAT",
+                "logp": "FLOAT",
+                "hbd": "INT",
+                "hba": "INT",
+                "rotatable_bonds": "INT",
+                "aromatic_rings": "INT",
+                "heavy_atoms": "INT"
+            },
+            "temp": {
+                "entity_deduplication_identifier": "TEXT",
+                "entity_deduplication_identifier_type": "VARCHAR(255)"
+            }
         },
         "foreign_keys": [
             fk("entity_id", "links to entity via (entity.deduplication_identifier = entity_deduplication_identifier AND entity.deduplication_identifier_type = entity_deduplication_identifier_type)")
@@ -124,5 +176,94 @@ plan = {
             "pass1": [],
             "pass2": ["unique on (entity_id)"]  # if you enforce 1:1
         }
+    }
+}
+
+silver_gold_map = {
+    'cv_namespace': {
+        'source_table': 'silver_cv_terms',
+        'select': 'SELECT DISTINCT namespace as name FROM silver_cv_terms'
+    },
+    'cv_term': {
+        'source_table': 'silver_cv_terms',
+        'select': '''SELECT DISTINCT
+            term_name as name,
+            term_accession as accession,
+            term_definition as description,
+            FALSE as is_obsolete,
+            namespace as namespace_name,
+            NULL::VARCHAR as replaces_accession,
+            NULL::VARCHAR as replaced_by_accession
+        FROM silver_cv_terms'''
+    },
+    'source': {
+        'source_table': 'silver_entities',
+        'select': '''SELECT DISTINCT
+            source_database as name,
+            NULL as url,
+            NULL as description
+        FROM silver_entities'''
+    },
+    'reference': {
+        'source_table': 'silver_interactions',
+        'select': '''SELECT DISTINCT
+            reference_value as identifier,
+            NULL as citation,
+            NULL as published_year,
+            NULL as journal,
+            NULL as title,
+            'OmniPath' as type_namespace_name,
+            reference_type as type_name
+        FROM silver_interactions
+        WHERE reference_value IS NOT NULL'''
+    },
+    'provenance': {
+        'source_table': 'silver_interactions',
+        'select': '''SELECT DISTINCT
+            source as source_name,
+            primary_source as primary_source_name,
+            reference_value
+        FROM silver_interactions'''
+    },
+    'entity': {
+        'source_table': 'silver_entities',
+        'select': '''SELECT DISTINCT
+            identifier as deduplication_identifier,
+            identifier_type as deduplication_identifier_type,
+            'OmniPath' as entity_type_namespace_name,
+            entity_type as entity_type_name
+        FROM silver_entities'''
+    },
+    'entity_identifier': {
+        'source_table': 'silver_entities',
+        'select': '''
+            -- Main identifier (canonical)
+            SELECT DISTINCT
+                identifier,
+                TRUE as is_canonical,
+                identifier as entity_deduplication_identifier,
+                identifier_type as entity_deduplication_identifier_type,
+                'OmniPath' as identifier_type_namespace_name,
+                identifier_type as identifier_type_name,
+                source_database as source_name,
+                NULL::VARCHAR as reference_value
+            FROM silver_entities
+
+            UNION ALL
+
+            -- Additional identifiers (unnested from JSON array)
+            SELECT DISTINCT
+                CAST(json_extract_string(unnest(json_extract(additional_identifiers, '$[*]')), 'value') AS VARCHAR) as identifier,
+                FALSE as is_canonical,
+                identifier as entity_deduplication_identifier,
+                identifier_type as entity_deduplication_identifier_type,
+                'OmniPath' as identifier_type_namespace_name,
+                CAST(json_extract_string(unnest(json_extract(additional_identifiers, '$[*]')), 'type') AS VARCHAR) as identifier_type_name,
+                source_database as source_name,
+                NULL::VARCHAR as reference_value
+            FROM silver_entities
+            WHERE additional_identifiers IS NOT NULL
+              AND additional_identifiers != '[]'
+        '''
     }
 }

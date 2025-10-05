@@ -13,10 +13,11 @@ import logging
 import os
 from pathlib import Path
 from typing import Any
-from datetime import datetime
 
 import yaml
 import duckdb
+
+from .gold_parquet_builder_v3 import GoldParquetBuilderV3
 
 __all__ = [
     'SourceProcessor',
@@ -51,11 +52,13 @@ class SourceProcessor:
 
         self.bronze_path = base_path / "bronze" / "data" / source_module
         self.silver_path = base_path / "silver_parquet"
+        self.gold_path = base_path / "gold_parquet"
         self.resource_config_path = base_path / "resource" / f"{source_module}.yaml"
         self.transform_sql_path = base_path / "silver" / "transformation_functions.sql"
 
         # Create silver output directory
         self.silver_path.mkdir(parents=True, exist_ok=True)
+        self.gold_path.mkdir(parents=True, exist_ok=True)
 
         # Load resource configuration
         self.config = self._load_config()
@@ -64,6 +67,16 @@ class SourceProcessor:
         self.conn = None
 
         logger.info(f"Initialized SourceProcessor for {source_module} in {database_name}")
+
+    def __enter__(self):
+        """Context manager entry."""
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Context manager exit - cleanup DuckDB connection."""
+        if self.conn:
+            self.conn.close()
+            self.conn = None
 
     def _load_config(self) -> dict[str, Any]:
         """Load resource configuration from YAML."""
@@ -186,6 +199,24 @@ class SourceProcessor:
 
         return f"{expr} AS \"{target}\""
 
+
+    def _map_silver_files_to_tables(self, silver_files: dict[str, Path]) -> dict[str, Path]:
+        """Map function names to their target table names.
+
+        Args:
+            silver_files: Dict mapping function names to silver parquet paths
+
+        Returns:
+            Dict mapping target table names to silver parquet paths
+        """
+        table_map = {}
+        for function_name, parquet_path in silver_files.items():
+            processing_cfg = self.config.get('functions', {}).get(function_name, {}).get('processing', {})
+            target_table = processing_cfg.get('target_table', function_name)
+            table_map[target_table] = parquet_path
+
+        return table_map
+
     def process_to_silver(self) -> dict[str, Path]:
         """Process bronze → silver for all functions in this source.
 
@@ -261,10 +292,11 @@ class SourceProcessor:
         return results
 
     def process_to_gold(self, silver_files: dict[str, Path]) -> dict[str, Path]:
-        """Process silver → gold Parquet files.
+        """Process silver → gold Parquet files using three-phase pipeline.
 
-        Uses GoldParquetBuilder to create structured relational Parquet files
-        that match the PostgreSQL gold schema.
+        Phase 1: Extract from silver files (pass1)
+        Phase 2: Deduplicate
+        Phase 3: Resolve foreign keys
 
         Args:
             silver_files: Dict mapping function names to silver parquet paths
@@ -272,66 +304,32 @@ class SourceProcessor:
         Returns:
             Dict mapping table names to gold parquet paths
         """
-        from .gold_parquet_builder_v2 import GoldParquetBuilderV2
+        if not silver_files:
+            logger.warning("No silver files supplied for gold processing")
+            return {}
 
-        gold_output_dir = self.base_path / 'gold_parquet'
+        # Map function names to target table names
+        silver_table_map = self._map_silver_files_to_tables(silver_files)
 
-        with GoldParquetBuilderV2(self.source_module, gold_output_dir) as builder:
-            for function_name, silver_file in silver_files.items():
-                function_config = self.config['functions'][function_name]
-                target_table = function_config['processing']['target_table']
+        logger.info("Processing %s silver → gold parquet (builder v3)", self.source_module)
 
-                logger.info(f"\nProcessing {function_name} → gold tables")
+        # Use the simplified pipeline
+        with GoldParquetBuilderV3(self.gold_path) as builder:
+            return builder.run_full_pipeline(silver_table_map)
 
-                if target_table == 'silver_entities':
-                    builder.build_entities(silver_file)
-                elif target_table == 'silver_cv_terms':
-                    builder.build_cv_terms(silver_file)
-                else:
-                    logger.warning(f"Unknown target table: {target_table}, skipping")
-                    continue
-
-            # Export all tables to Parquet
-            return builder.export_all_tables()
-
-    def process_full_pipeline(self) -> dict[str, Any]:
-        """Run the full bronze → silver → gold pipeline.
+    def process_full_pipeline(self) -> dict[str, dict[str, Path]]:
+        """Run full pipeline: bronze → silver → gold.
 
         Returns:
-            Dict with 'silver' and 'gold' results
+            Dict with 'silver' and 'gold' keys mapping to their respective outputs
         """
-        logger.info("=" * 60)
-        logger.info(f"Processing full pipeline for {self.source_module}")
-        logger.info("=" * 60)
-
-        # Step 1: Bronze → Silver
-        logger.info("\n📊 Step 1: Bronze → Silver")
+        # Process bronze → silver
         silver_files = self.process_to_silver()
 
-        # Step 2: Silver → Gold
-        logger.info("\n🏆 Step 2: Silver → Gold")
+        # Process silver → gold
         gold_files = self.process_to_gold(silver_files)
-
-        logger.info("\n" + "=" * 60)
-        logger.info("✅ Full pipeline completed!")
-        logger.info("=" * 60)
 
         return {
             'silver': silver_files,
             'gold': gold_files
         }
-
-    def close(self):
-        """Close DuckDB connection."""
-        if self.conn:
-            self.conn.close()
-            self.conn = None
-            logger.debug("Closed DuckDB connection")
-
-    def __enter__(self):
-        """Context manager entry."""
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        """Context manager exit."""
-        self.close()
