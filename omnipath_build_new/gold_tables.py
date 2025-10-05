@@ -127,8 +127,7 @@ gold_tables = {
     "entity_identifier": {
         "columns": {
             "main": {
-                "identifier": "TEXT",
-                "is_canonical": "BOOLEAN"
+                "identifier": "TEXT"
             },
             "temp": {
                 "entity_deduplication_identifier": "TEXT",
@@ -247,10 +246,9 @@ silver_gold_map = {
     'entity_identifier': {
         'source_table': 'silver_entities',
         'select': '''
-            -- Main identifier (canonical)
+            -- Main identifier
             SELECT DISTINCT
                 identifier,
-                TRUE as is_canonical,
                 identifier as entity_deduplication_identifier,
                 identifier_type as entity_deduplication_identifier_type,
                 'OmniPath' as identifier_type_namespace_name,
@@ -264,7 +262,6 @@ silver_gold_map = {
             -- Additional identifiers (unnested from JSON array)
             SELECT DISTINCT
                 CAST(json_extract_string(unnest(json_extract(additional_identifiers, '$[*]')), 'value') AS VARCHAR) as identifier,
-                FALSE as is_canonical,
                 identifier as entity_deduplication_identifier,
                 identifier_type as entity_deduplication_identifier_type,
                 'OmniPath' as identifier_type_namespace_name,

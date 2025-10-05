@@ -48,6 +48,15 @@ CREATE OR REPLACE MACRO build_identifier_list_hmdb(
     cas_registry_number,
     inchikey
 ) AS (
+    WITH cleaned AS (
+        SELECT
+            chebi_id,
+            pubchem_compound_id,
+            kegg_id,
+            drugbank_id,
+            cas_registry_number,
+            clean_inchikey(inchikey) AS clean_inchikey_val
+    )
     SELECT CASE
         WHEN len(identifier_list) = 0 THEN NULL
         ELSE to_json(list_distinct(identifier_list))
@@ -97,12 +106,13 @@ CREATE OR REPLACE MACRO build_identifier_list_hmdb(
                 )
             END,
             CASE
-                WHEN inchikey IS NOT NULL AND TRIM(inchikey) != '' THEN struct_pack(
+                WHEN clean_inchikey_val IS NOT NULL THEN struct_pack(
                     type := 'inchikey',
-                    value := TRIM(inchikey)
+                    value := clean_inchikey_val
                 )
             END
         ], x -> x IS NOT NULL) AS identifier_list
+        FROM cleaned
     )
 );
 
@@ -204,6 +214,13 @@ CREATE OR REPLACE MACRO build_identifier_list_lipidmaps(
     inchikey,
     inchi
 ) AS (
+    WITH cleaned AS (
+        SELECT
+            chebi,
+            pubchem,
+            clean_inchikey(inchikey) AS clean_inchikey_val,
+            clean_inchi(inchi) AS clean_inchi_val
+    )
     SELECT CASE
         WHEN len(identifier_list) = 0 THEN NULL
         ELSE to_json(list_distinct(identifier_list))
@@ -223,18 +240,19 @@ CREATE OR REPLACE MACRO build_identifier_list_lipidmaps(
                 )
             END,
             CASE
-                WHEN inchikey IS NOT NULL AND TRIM(inchikey) != '' THEN struct_pack(
+                WHEN clean_inchikey_val IS NOT NULL THEN struct_pack(
                     type := 'inchikey',
-                    value := TRIM(inchikey)
+                    value := clean_inchikey_val
                 )
             END,
             CASE
-                WHEN inchi IS NOT NULL AND TRIM(inchi) != '' THEN struct_pack(
+                WHEN clean_inchi_val IS NOT NULL THEN struct_pack(
                     type := 'inchi',
-                    value := TRIM(inchi)
+                    value := clean_inchi_val
                 )
             END
         ], x -> x IS NOT NULL) AS identifier_list
+        FROM cleaned
     )
 );
 
@@ -246,6 +264,15 @@ CREATE OR REPLACE MACRO build_identifier_list_ramp(
     inchi_key,
     inchi
 ) AS (
+    WITH cleaned AS (
+        SELECT
+            ramp_id,
+            sources,
+            chem_data_source,
+            chem_source_id,
+            clean_inchikey(inchi_key) AS clean_inchikey_val,
+            clean_inchi(inchi) AS clean_inchi_val
+    )
     SELECT CASE
         WHEN len(identifier_list) = 0 THEN NULL
         ELSE to_json(list_distinct(identifier_list))
@@ -279,18 +306,19 @@ CREATE OR REPLACE MACRO build_identifier_list_ramp(
                     )
                 END,
                 CASE
-                    WHEN inchi_key IS NOT NULL AND TRIM(inchi_key) != '' THEN struct_pack(
+                    WHEN clean_inchikey_val IS NOT NULL THEN struct_pack(
                         type := 'inchikey',
-                        value := TRIM(inchi_key)
+                        value := clean_inchikey_val
                     )
                 END,
                 CASE
-                    WHEN inchi IS NOT NULL AND TRIM(inchi) != '' THEN struct_pack(
+                    WHEN clean_inchi_val IS NOT NULL THEN struct_pack(
                         type := 'inchi',
-                        value := TRIM(inchi)
+                        value := clean_inchi_val
                     )
                 END
             ], x -> x IS NOT NULL) AS base_entries
+            FROM cleaned
         )
     )
 );
@@ -303,6 +331,15 @@ CREATE OR REPLACE MACRO build_identifier_list_swisslipids(
     inchikey,
     inchi
 ) AS (
+    WITH cleaned AS (
+        SELECT
+            chebi,
+            lipidmaps,
+            hmdb,
+            metanetx,
+            clean_inchikey(inchikey) AS clean_inchikey_val,
+            clean_inchi(inchi) AS clean_inchi_val
+    )
     SELECT CASE
         WHEN len(identifier_list) = 0 THEN NULL
         ELSE to_json(list_distinct(identifier_list))
@@ -334,18 +371,19 @@ CREATE OR REPLACE MACRO build_identifier_list_swisslipids(
                 )
             END,
             CASE
-                WHEN inchikey IS NOT NULL AND TRIM(inchikey) != '' THEN struct_pack(
+                WHEN clean_inchikey_val IS NOT NULL THEN struct_pack(
                     type := 'inchikey',
-                    value := TRIM(inchikey)
+                    value := clean_inchikey_val
                 )
             END,
             CASE
-                WHEN inchi IS NOT NULL AND TRIM(inchi) != '' THEN struct_pack(
+                WHEN clean_inchi_val IS NOT NULL THEN struct_pack(
                     type := 'inchi',
-                    value := TRIM(inchi)
+                    value := clean_inchi_val
                 )
             END
         ], x -> x IS NOT NULL) AS identifier_list
+        FROM cleaned
     )
 );
 
@@ -517,6 +555,29 @@ CREATE OR REPLACE MACRO build_swisslipids_annotations(level, lipid_class, parent
         )
     )
 );
+
+-- =====================================================
+-- IDENTIFIER CLEANING FUNCTIONS
+-- =====================================================
+
+-- Clean and validate InChI identifiers
+CREATE OR REPLACE MACRO clean_inchi(inchi_value) AS
+    CASE
+        WHEN inchi_value IS NULL THEN NULL
+        WHEN TRIM(inchi_value) = '' THEN NULL
+        WHEN UPPER(TRIM(inchi_value)) IN ('INCHI=NONE', 'NONE', 'N/A', 'NA') THEN NULL
+        WHEN TRIM(inchi_value) = 'InChI=' THEN NULL
+        ELSE TRIM(inchi_value)
+    END;
+
+-- Clean and validate InChIKey identifiers
+CREATE OR REPLACE MACRO clean_inchikey(inchikey_value) AS
+    CASE
+        WHEN inchikey_value IS NULL THEN NULL
+        WHEN TRIM(inchikey_value) = '' THEN NULL
+        WHEN UPPER(TRIM(inchikey_value)) IN ('NONE', 'N/A', 'NA') THEN NULL
+        ELSE TRIM(inchikey_value)
+    END;
 
 -- =====================================================
 -- PMID FORMATTING FUNCTIONS
