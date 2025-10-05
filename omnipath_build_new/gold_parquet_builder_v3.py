@@ -10,8 +10,8 @@ from typing import Any
 
 import duckdb
 
-from new_loaders.gold_tables import gold_tables, silver_gold_map
-from new_loaders.utils import PathManager
+from omnipath_build_new.gold_tables import gold_tables, silver_gold_map
+from omnipath_build_new.utils import PathManager
 
 logger = logging.getLogger(__name__)
 

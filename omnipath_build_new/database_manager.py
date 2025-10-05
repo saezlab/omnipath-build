@@ -155,7 +155,7 @@ class ParquetDatabaseManager:
             self.logger.info(f'Loading bronze data for {self.database_name}')
 
             # Import bronze loader
-            from new_loaders.bronze_loader import PyPathBronzeLoader
+            from omnipath_build_new.bronze_loader import PyPathBronzeLoader
 
             # Note: bronze_loader still uses db_connector for DuckDB operations
             # We create a minimal config for DuckDB-only usage
