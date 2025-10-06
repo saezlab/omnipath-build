@@ -90,40 +90,62 @@ function buildFolderStructure(files: any[], databaseName: string, layer: string)
   return convertToArray(structure)
 }
 
-// Helper function to convert database files to nested array structure
+// Helper function to convert database sources to nested array structure
 function buildDatabaseTree(selectedDatabase: any) {
-  if (!selectedDatabase) return []
-  
+  if (!selectedDatabase || !selectedDatabase.sources) return []
+
   const tree: any[] = []
-  
-  // Add layers that have files
-  if (selectedDatabase.layers.bronze.length > 0) {
-    const bronzeStructure = buildFolderStructure(selectedDatabase.layers.bronze, selectedDatabase.name, 'bronze')
-    tree.push([
-      "Bronze Layer",
-      ...bronzeStructure,
-      { layer: 'bronze' as const }
-    ])
-  }
-  
-  if (selectedDatabase.layers.silver.length > 0) {
-    const silverStructure = buildFolderStructure(selectedDatabase.layers.silver, selectedDatabase.name, 'silver')
-    tree.push([
-      "Silver Layer", 
-      ...silverStructure,
-      { layer: 'silver' as const }
-    ])
-  }
-  
-  if (selectedDatabase.layers.gold.length > 0) {
-    const goldStructure = buildFolderStructure(selectedDatabase.layers.gold, selectedDatabase.name, 'gold')
-    tree.push([
-      "Gold Layer",
-      ...goldStructure,
-      { layer: 'gold' as const }
-    ])
-  }
-  
+
+  // Add each source as a top-level item
+  selectedDatabase.sources.forEach((source: any) => {
+    const sourceTree: any[] = []
+
+    // Add layers that have files
+    if (source.layers.bronze.length > 0) {
+      const bronzeStructure = buildFolderStructure(source.layers.bronze, source.name, 'bronze')
+      sourceTree.push([
+        "Bronze Layer",
+        ...bronzeStructure,
+        { layer: 'bronze' as const }
+      ])
+    }
+
+    if (source.layers.silver.length > 0) {
+      const silverStructure = buildFolderStructure(source.layers.silver, source.name, 'silver')
+      sourceTree.push([
+        "Silver Layer",
+        ...silverStructure,
+        { layer: 'silver' as const }
+      ])
+    }
+
+    if (source.layers.gold.length > 0) {
+      const goldStructure = buildFolderStructure(source.layers.gold, source.name, 'gold')
+      sourceTree.push([
+        "Gold Layer",
+        ...goldStructure,
+        { layer: 'gold' as const }
+      ])
+    }
+
+    if (source.layers.pass1.length > 0) {
+      const pass1Structure = buildFolderStructure(source.layers.pass1, source.name, 'pass1')
+      sourceTree.push([
+        "Pass1 Layer",
+        ...pass1Structure,
+        { layer: 'pass1' as const }
+      ])
+    }
+
+    // Add source with its layers
+    if (sourceTree.length > 0) {
+      tree.push([
+        source.name.replace(/_/g, ' '),
+        ...sourceTree
+      ])
+    }
+  })
+
   return tree
 }
 

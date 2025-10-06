@@ -8,7 +8,7 @@ export interface TreeNode {
   name: string;
   path: string;
   type: 'database' | 'layer' | 'folder' | 'file';
-  layer?: 'bronze' | 'silver' | 'gold';
+  layer?: 'bronze' | 'silver' | 'gold' | 'pass1';
   children?: TreeNode[];
 }
 

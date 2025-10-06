@@ -17,7 +17,7 @@ import LayerBadge from '../components/LayerBadge';
 import Link from 'next/link';
 
 export default function DashboardPage() {
-  const { databases, loading } = useDatabase();
+  const { databases, sources, loading } = useDatabase();
 
   if (loading) {
     return (
@@ -53,11 +53,12 @@ export default function DashboardPage() {
     );
   }
   
-  const totalFiles = databases.reduce((sum, db) => sum + db.totalFiles, 0);
-  const totalSize = databases.reduce((sum, db) => sum + db.totalSize, 0);
-  const totalBronze = databases.reduce((sum, db) => sum + db.layers.bronze.length, 0);
-  const totalSilver = databases.reduce((sum, db) => sum + db.layers.silver.length, 0);
-  const totalGold = databases.reduce((sum, db) => sum + db.layers.gold.length, 0);
+  const totalFiles = sources.reduce((sum, source) => sum + source.totalFiles, 0);
+  const totalSize = sources.reduce((sum, source) => sum + source.totalSize, 0);
+  const totalBronze = sources.reduce((sum, source) => sum + source.layers.bronze.length, 0);
+  const totalSilver = sources.reduce((sum, source) => sum + source.layers.silver.length, 0);
+  const totalGold = sources.reduce((sum, source) => sum + source.layers.gold.length, 0);
+  const totalPass1 = sources.reduce((sum, source) => sum + source.layers.pass1.length, 0);
 
   return (
     <>
@@ -95,10 +96,10 @@ export default function DashboardPage() {
 
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
           <StatsCard
-            title="Total Databases"
-            value={databases.length}
+            title="Total Sources"
+            value={sources.length}
             icon={Database}
-            description="Active database pipelines"
+            description="Active data sources"
           />
           <StatsCard
             title="Total Files"
@@ -108,9 +109,9 @@ export default function DashboardPage() {
           />
           <StatsCard
             title="Pipeline Layers"
-            value="3"
+            value="4"
             icon={Layers}
-            description="Bronze → Silver → Gold"
+            description="Bronze → Silver → Gold → Pass1"
           />
           <StatsCard
             title="Total Size"
@@ -123,7 +124,7 @@ export default function DashboardPage() {
         <div className="mb-8">
           <h2 className="text-2xl font-bold text-gray-900 dark:text-white mb-4">Layer Distribution</h2>
           <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 p-6">
-            <div className="grid grid-cols-3 gap-4">
+            <div className="grid grid-cols-4 gap-4">
               <div className="text-center">
                 <LayerBadge layer="bronze" className="mb-2" />
                 <p className="text-2xl font-bold text-gray-900 dark:text-white">{totalBronze}</p>
@@ -139,17 +140,22 @@ export default function DashboardPage() {
                 <p className="text-2xl font-bold text-gray-900 dark:text-white">{totalGold}</p>
                 <p className="text-sm text-gray-500 dark:text-gray-400">Analytics ready</p>
               </div>
+              <div className="text-center">
+                <LayerBadge layer="pass1" className="mb-2" />
+                <p className="text-2xl font-bold text-gray-900 dark:text-white">{totalPass1}</p>
+                <p className="text-sm text-gray-500 dark:text-gray-400">Pass1 files</p>
+              </div>
             </div>
           </div>
         </div>
 
         <div>
-          <h2 className="text-2xl font-bold text-gray-900 dark:text-white mb-4">Databases</h2>
+          <h2 className="text-2xl font-bold text-gray-900 dark:text-white mb-4">Data Sources</h2>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-            {databases.map((db) => (
+            {sources.map((source) => (
               <Link
-                key={db.name}
-                href={`/database/${db.name}`}
+                key={source.name}
+                href={`/source/${source.name}`}
                 className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 p-6 hover:shadow-lg transition-all hover:scale-105"
               >
                 <div className="flex items-center justify-between mb-4">
@@ -158,41 +164,47 @@ export default function DashboardPage() {
                       <Database className="w-6 h-6 text-blue-600 dark:text-blue-400" />
                     </div>
                     <h3 className="text-lg font-semibold text-gray-900 dark:text-white capitalize">
-                      {db.name.replace('_', ' ')}
+                      {source.name.replace(/_/g, ' ')}
                     </h3>
                   </div>
                 </div>
-                
+
                 <div className="space-y-2 mb-4">
                   <div className="flex justify-between text-sm">
                     <span className="text-gray-500 dark:text-gray-400">Total Files</span>
-                    <span className="font-medium text-gray-900 dark:text-white">{db.totalFiles}</span>
+                    <span className="font-medium text-gray-900 dark:text-white">{source.totalFiles}</span>
                   </div>
                   <div className="flex justify-between text-sm">
                     <span className="text-gray-500 dark:text-gray-400">Size</span>
                     <span className="font-medium text-gray-900 dark:text-white">
-                      {(db.totalSize / 1024 / 1024).toFixed(2)} MB
+                      {(source.totalSize / 1024 / 1024).toFixed(2)} MB
                     </span>
                   </div>
                 </div>
 
-                <div className="flex gap-2">
-                  {db.layers.bronze.length > 0 && (
+                <div className="flex gap-2 flex-wrap">
+                  {source.layers.bronze.length > 0 && (
                     <div className="flex items-center gap-1">
                       <LayerBadge layer="bronze" className="scale-75" />
-                      <span className="text-xs text-gray-600 dark:text-gray-400">{db.layers.bronze.length}</span>
+                      <span className="text-xs text-gray-600 dark:text-gray-400">{source.layers.bronze.length}</span>
                     </div>
                   )}
-                  {db.layers.silver.length > 0 && (
+                  {source.layers.silver.length > 0 && (
                     <div className="flex items-center gap-1">
                       <LayerBadge layer="silver" className="scale-75" />
-                      <span className="text-xs text-gray-600 dark:text-gray-400">{db.layers.silver.length}</span>
+                      <span className="text-xs text-gray-600 dark:text-gray-400">{source.layers.silver.length}</span>
                     </div>
                   )}
-                  {db.layers.gold.length > 0 && (
+                  {source.layers.gold.length > 0 && (
                     <div className="flex items-center gap-1">
                       <LayerBadge layer="gold" className="scale-75" />
-                      <span className="text-xs text-gray-600 dark:text-gray-400">{db.layers.gold.length}</span>
+                      <span className="text-xs text-gray-600 dark:text-gray-400">{source.layers.gold.length}</span>
+                    </div>
+                  )}
+                  {source.layers.pass1.length > 0 && (
+                    <div className="flex items-center gap-1">
+                      <LayerBadge layer="pass1" className="scale-75" />
+                      <span className="text-xs text-gray-600 dark:text-gray-400">{source.layers.pass1.length}</span>
                     </div>
                   )}
                 </div>

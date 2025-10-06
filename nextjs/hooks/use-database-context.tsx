@@ -1,10 +1,11 @@
 'use client';
 
 import { createContext, useContext, useState, useEffect, ReactNode } from 'react';
-import { DatabaseInfo } from '../app/lib/database-scanner';
+import { DatabaseInfo, SourceInfo } from '../app/lib/database-scanner';
 
 interface DatabaseContextType {
   databases: DatabaseInfo[];
+  sources: SourceInfo[];
   selectedDatabase: DatabaseInfo | null;
   setSelectedDatabase: (database: DatabaseInfo | null) => void;
   loading: boolean;
@@ -16,6 +17,7 @@ const DatabaseContext = createContext<DatabaseContextType | undefined>(undefined
 
 export function DatabaseProvider({ children }: { children: ReactNode }) {
   const [databases, setDatabases] = useState<DatabaseInfo[]>([]);
+  const [sources, setSources] = useState<SourceInfo[]>([]);
   const [selectedDatabase, setSelectedDatabase] = useState<DatabaseInfo | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -24,27 +26,16 @@ export function DatabaseProvider({ children }: { children: ReactNode }) {
     try {
       setLoading(true);
       setError(null);
-      const response = await fetch('/api/databases');
+      const response = await fetch('/api/sources');
       if (!response.ok) throw new Error('Failed to fetch databases');
-      
+
       const data = await response.json();
-      setDatabases(data);
-      
-      // Auto-select first database if none selected and databases exist
-      if (!selectedDatabase && data.length > 0) {
-        setSelectedDatabase(data[0]);
-      }
-      
-      // Update selected database if it still exists in the new data
-      if (selectedDatabase) {
-        const updatedSelected = data.find((db: DatabaseInfo) => db.name === selectedDatabase.name);
-        if (updatedSelected) {
-          setSelectedDatabase(updatedSelected);
-        } else if (data.length > 0) {
-          setSelectedDatabase(data[0]);
-        } else {
-          setSelectedDatabase(null);
-        }
+      setDatabases([data.database]);
+      setSources(data.sources || []);
+
+      // Auto-select omnipath database
+      if (!selectedDatabase && data.database) {
+        setSelectedDatabase(data.database);
       }
     } catch (error) {
       console.error('Error fetching databases:', error);
@@ -66,6 +57,7 @@ export function DatabaseProvider({ children }: { children: ReactNode }) {
     <DatabaseContext.Provider
       value={{
         databases,
+        sources,
         selectedDatabase,
         setSelectedDatabase,
         loading,

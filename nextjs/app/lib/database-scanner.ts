@@ -5,45 +5,55 @@ import { TreeNode } from '../components/DatabaseTree';
 export interface DatabaseFile {
   path: string;
   name: string;
-  layer: 'bronze' | 'silver' | 'gold';
-  database: string;
+  layer: 'bronze' | 'silver' | 'gold' | 'pass1';
+  source: string;
   size: number;
   modified: Date;
 }
 
-export interface DatabaseInfo {
+export interface SourceInfo {
   name: string;
   path: string;
   layers: {
     bronze: DatabaseFile[];
     silver: DatabaseFile[];
     gold: DatabaseFile[];
+    pass1: DatabaseFile[];
   };
   totalFiles: number;
   totalSize: number;
 }
 
-const DATABASES_PATH = path.join(process.cwd(), '..', 'databases');
+export interface DatabaseInfo {
+  name: string;
+  path: string;
+  sources: SourceInfo[];
+  totalFiles: number;
+  totalSize: number;
+}
 
-function getLayerFromPath(filePath: string): 'bronze' | 'silver' | 'gold' | null {
+const DATABASES_PATH = path.join(process.cwd(), '..', 'databases', 'omnipath', 'data');
+
+function getLayerFromPath(filePath: string): 'bronze' | 'silver' | 'gold' | 'pass1' | null {
   if (filePath.includes('/bronze/')) return 'bronze';
-  if (filePath.includes('/silver_parquet/')) return 'silver';
-  if (filePath.includes('/gold_parquet/')) return 'gold';
+  if (filePath.includes('/silver/')) return 'silver';
+  if (filePath.includes('/gold/')) return 'gold';
+  if (filePath.includes('/pass1/')) return 'pass1';
   return null;
 }
 
-function scanDirectory(dirPath: string, baseDir: string = ''): DatabaseFile[] {
+function scanDirectory(dirPath: string, sourceName: string = ''): DatabaseFile[] {
   const files: DatabaseFile[] = [];
-  
+
   try {
     const items = fs.readdirSync(dirPath);
-    
+
     for (const item of items) {
       const fullPath = path.join(dirPath, item);
       const stat = fs.statSync(fullPath);
-      
+
       if (stat.isDirectory()) {
-        files.push(...scanDirectory(fullPath, baseDir));
+        files.push(...scanDirectory(fullPath, sourceName));
       } else if (item.endsWith('.parquet')) {
         const layer = getLayerFromPath(fullPath);
         if (layer) {
@@ -51,7 +61,7 @@ function scanDirectory(dirPath: string, baseDir: string = ''): DatabaseFile[] {
             path: fullPath.replace(DATABASES_PATH, ''),
             name: item,
             layer,
-            database: baseDir,
+            source: sourceName,
             size: stat.size,
             modified: stat.mtime
           });
@@ -61,43 +71,72 @@ function scanDirectory(dirPath: string, baseDir: string = ''): DatabaseFile[] {
   } catch (error) {
     console.error(`Error scanning directory ${dirPath}:`, error);
   }
-  
+
   return files;
 }
 
 export function scanDatabases(): DatabaseInfo[] {
-  const databases: DatabaseInfo[] = [];
-  
+  const sources: SourceInfo[] = [];
+
   try {
-    const items = fs.readdirSync(DATABASES_PATH);
-    
-    for (const item of items) {
-      const dbPath = path.join(DATABASES_PATH, item);
-      const stat = fs.statSync(dbPath);
-      
+    const sourceTypes = fs.readdirSync(DATABASES_PATH);
+
+    for (const sourceType of sourceTypes) {
+      const sourceTypePath = path.join(DATABASES_PATH, sourceType);
+      const stat = fs.statSync(sourceTypePath);
+
       if (stat.isDirectory()) {
-        const files = scanDirectory(dbPath, item);
-        
-        const dbInfo: DatabaseInfo = {
-          name: item,
-          path: dbPath,
-          layers: {
-            bronze: files.filter(f => f.layer === 'bronze'),
-            silver: files.filter(f => f.layer === 'silver'),
-            gold: files.filter(f => f.layer === 'gold')
-          },
-          totalFiles: files.length,
-          totalSize: files.reduce((sum, f) => sum + f.size, 0)
-        };
-        
-        databases.push(dbInfo);
+        // Each source type directory contains subdirectories (e.g., lipidmaps/lipidmaps_lipids)
+        const sourceSubdirs = fs.readdirSync(sourceTypePath);
+
+        for (const subdir of sourceSubdirs) {
+          const subdirPath = path.join(sourceTypePath, subdir);
+          const subdirStat = fs.statSync(subdirPath);
+
+          if (subdirStat.isDirectory()) {
+            const files = scanDirectory(subdirPath, subdir);
+
+            const sourceInfo: SourceInfo = {
+              name: subdir,
+              path: subdirPath,
+              layers: {
+                bronze: files.filter(f => f.layer === 'bronze'),
+                silver: files.filter(f => f.layer === 'silver'),
+                gold: files.filter(f => f.layer === 'gold'),
+                pass1: files.filter(f => f.layer === 'pass1')
+              },
+              totalFiles: files.length,
+              totalSize: files.reduce((sum, f) => sum + f.size, 0)
+            };
+
+            sources.push(sourceInfo);
+          }
+        }
       }
     }
   } catch (error) {
     console.error('Error scanning databases:', error);
   }
-  
-  return databases;
+
+  // Return omnipath as a single database with all sources
+  const totalFiles = sources.reduce((sum, s) => sum + s.totalFiles, 0);
+  const totalSize = sources.reduce((sum, s) => sum + s.totalSize, 0);
+
+  return [{
+    name: 'omnipath',
+    path: DATABASES_PATH,
+    sources,
+    totalFiles,
+    totalSize
+  }];
+}
+
+export function getSource(sourceName: string): SourceInfo | null {
+  const databases = scanDatabases();
+  if (databases.length === 0) return null;
+
+  const omnipath = databases[0];
+  return omnipath.sources.find(s => s.name === sourceName) || null;
 }
 
 interface DirStructure {
@@ -165,34 +204,49 @@ export function buildDatabaseTree(databases: DatabaseInfo[]): TreeNode[] {
     name: db.name,
     path: db.path,
     type: 'database' as const,
-    children: [
-      {
-        name: 'Bronze Layer',
-        path: `${db.path}/bronze`,
-        type: 'layer' as const,
-        layer: 'bronze' as const,
-        children: buildDirectoryStructure(db.layers.bronze, `/bronze`, db.name)
-      },
-      {
-        name: 'Silver Layer',
-        path: `${db.path}/silver_parquet`,
-        type: 'layer' as const,
-        layer: 'silver' as const,
-        children: buildDirectoryStructure(db.layers.silver, `/silver_parquet`, db.name)
-      },
-      {
-        name: 'Gold Layer',
-        path: `${db.path}/gold_parquet`,
-        type: 'layer' as const,
-        layer: 'gold' as const,
-        children: buildDirectoryStructure(db.layers.gold, `/gold_parquet`, db.name)
-      }
-    ].filter(layer => layer.children && layer.children.length > 0)
+    children: db.sources.map(source => ({
+      name: source.name,
+      path: source.path,
+      type: 'folder' as const,
+      children: [
+        {
+          name: 'Bronze Layer',
+          path: `${source.path}/bronze`,
+          type: 'layer' as const,
+          layer: 'bronze' as const,
+          children: buildDirectoryStructure(source.layers.bronze, `/bronze`, source.name)
+        },
+        {
+          name: 'Silver Layer',
+          path: `${source.path}/silver`,
+          type: 'layer' as const,
+          layer: 'silver' as const,
+          children: buildDirectoryStructure(source.layers.silver, `/silver`, source.name)
+        },
+        {
+          name: 'Gold Layer',
+          path: `${source.path}/gold`,
+          type: 'layer' as const,
+          layer: 'gold' as const,
+          children: buildDirectoryStructure(source.layers.gold, `/gold`, source.name)
+        },
+        {
+          name: 'Pass1 Layer',
+          path: `${source.path}/pass1`,
+          type: 'layer' as const,
+          layer: 'pass1' as const,
+          children: buildDirectoryStructure(source.layers.pass1, `/pass1`, source.name)
+        }
+      ].filter(layer => layer.children && layer.children.length > 0)
+    }))
   }));
 }
 
 export async function loadParquetFile(filePath: string): Promise<ArrayBuffer> {
-  const fullPath = path.join(DATABASES_PATH, filePath);
+  // If filePath already includes databases/omnipath, use it directly
+  const fullPath = filePath.startsWith('/databases/omnipath')
+    ? path.join(process.cwd(), '..', filePath)
+    : path.join(DATABASES_PATH, filePath);
   const buffer = await fs.promises.readFile(fullPath);
   // Convert Buffer to ArrayBuffer properly
   const arrayBuffer = new ArrayBuffer(buffer.length);
