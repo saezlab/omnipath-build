@@ -50,15 +50,10 @@ class SourceProcessor:
         self.path_manager = PathManager(database_name, base_path)
         self.base_path = self.path_manager.db_path
 
-        self.bronze_path = self.path_manager.bronze_module_path(source_module)
-        self.silver_path = self.path_manager.silver_parquet_path()
-        self.gold_path = self.path_manager.gold_parquet_path()
         self.resource_config_path = self.path_manager.resource_config_file(source_module)
-        self.transform_sql_path = self.path_manager.transformation_functions_file()
 
-        # Create silver output directory
-        self.silver_path.mkdir(parents=True, exist_ok=True)
-        self.gold_path.mkdir(parents=True, exist_ok=True)
+        # Path to transformation functions SQL file (in resource directory now)
+        self.transform_sql_path = self.path_manager.resource_path() / 'transformation_functions.sql'
 
         # Load resource configuration
         self.config = self._load_config()
@@ -91,19 +86,13 @@ class SourceProcessor:
 
     def _get_latest_bronze_parquet(self, function_name: str) -> Path:
         """Get the latest bronze parquet file for a function."""
-        function_path = self.bronze_path / function_name
+        bronze_file = self.path_manager.bronze_latest_file(self.source_module, function_name)
 
-        if not function_path.exists():
-            raise FileNotFoundError(f"Bronze data not found: {function_path}")
+        if not bronze_file.exists():
+            raise FileNotFoundError(f"Bronze data not found: {bronze_file}")
 
-        parquet_files = list(function_path.glob("*.parquet"))
-        if not parquet_files:
-            raise FileNotFoundError(f"No parquet files in: {function_path}")
-
-        # Return latest by timestamp
-        latest = sorted(parquet_files)[-1]
-        logger.debug(f"Latest bronze file: {latest}")
-        return latest
+        logger.debug(f"Bronze file: {bronze_file}")
+        return bronze_file
 
     def _init_duckdb(self):
         """Initialize DuckDB connection and load transformation functions."""
@@ -262,9 +251,10 @@ class SourceProcessor:
 
             # Build and execute query
             target_table = processing.get('target_table', function_name)
-            output_file = self.path_manager.silver_parquet_file(
+            output_file = self.path_manager.silver_file(
                 self.source_module, function_name, target_table
             )
+            output_file.parent.mkdir(parents=True, exist_ok=True)
 
             select_clause = ',\n'.join(select_expressions)
             query = f"""
@@ -312,10 +302,10 @@ class SourceProcessor:
         # Map function names to target table names
         silver_table_map = self._map_silver_files_to_tables(silver_files)
 
-        logger.info("Processing %s silver → gold pass1 (extraction only)", self.source_module)
+        logger.info("Processing %s silver → gold (extraction only)", self.source_module)
 
         # Run only pass1 extraction
-        with GoldParquetBuilderV3(self.gold_path, self.path_manager) as builder:
+        with GoldParquetBuilderV3(self.path_manager) as builder:
             return builder.run_pass1_only(
                 silver_table_map,
                 source_label=self.source_module,
@@ -324,7 +314,7 @@ class SourceProcessor:
     def process_to_gold(self, silver_files: dict[str, Path]) -> dict[str, Path]:
         """Process silver → gold Parquet files using three-phase pipeline.
 
-        Phase 1: Extract from silver files (pass1)
+        Phase 1: Extract from silver files
         Phase 2: Deduplicate
         Phase 3: Resolve foreign keys
 
@@ -344,7 +334,7 @@ class SourceProcessor:
         logger.info("Processing %s silver → gold parquet (builder v3)", self.source_module)
 
         # Use the simplified pipeline
-        with GoldParquetBuilderV3(self.gold_path, self.path_manager) as builder:
+        with GoldParquetBuilderV3(self.path_manager) as builder:
             return builder.run_full_pipeline(
                 silver_table_map,
                 source_label=self.source_module,

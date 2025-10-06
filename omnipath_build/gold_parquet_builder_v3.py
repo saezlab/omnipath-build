@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import glob
 import logging
 import re
 from pathlib import Path
@@ -24,12 +25,53 @@ class GoldParquetBuilderV3:
     Phase 3: Resolve foreign keys and create final tables
     """
 
-    def __init__(self, output_dir: Path, path_manager: PathManager | None = None):
-        self.output_dir = Path(output_dir)
-        self.output_dir.mkdir(parents=True, exist_ok=True)
-        self.path_manager = path_manager
+    PASS1_DIR_NAME = 'pass1'
+    DEDUPED_DIR_NAME = 'deduped'
+
+    def __init__(
+        self,
+        path_or_manager: Path | PathManager,
+        path_manager: PathManager | None = None,
+    ) -> None:
+        """Initialize the builder.
+
+        Args:
+            path_or_manager: Either a PathManager (preferred) or a legacy output directory.
+            path_manager: Optional explicit PathManager when the first argument is a Path.
+        """
+
+        if isinstance(path_or_manager, PathManager) or hasattr(path_or_manager, 'gold_final_path'):
+            if path_manager is not None:
+                raise ValueError('Provide either a PathManager or output path + path_manager, not both')
+            self.path_manager = path_or_manager  # type: ignore[assignment]
+            self.output_dir = None
+        else:
+            self.output_dir = Path(path_or_manager)
+            self.output_dir.mkdir(parents=True, exist_ok=True)
+            self.path_manager = path_manager
+
+        if self.path_manager is not None:
+            self.gold_final_dir = self.path_manager.gold_final_path()
+        elif self.output_dir is not None:
+            self.gold_final_dir = self.output_dir
+        else:
+            raise ValueError('GoldParquetBuilderV3 requires either a PathManager or an output directory')
+
+        self.gold_final_dir.mkdir(parents=True, exist_ok=True)
+        self.deduped_dir = self.gold_final_dir / self.DEDUPED_DIR_NAME
+        self.deduped_dir.mkdir(parents=True, exist_ok=True)
+
+        # Legacy pass1 directory support when path manager is not supplied
+        self._legacy_pass1_dir = None
+        if self.path_manager is None and self.output_dir is not None:
+            self._legacy_pass1_dir = self.output_dir / self.PASS1_DIR_NAME
+
         self.conn = duckdb.connect(':memory:')
-        logger.info("GoldParquetBuilderV3 initialized with output_dir=%s", output_dir)
+        logger.info(
+            "GoldParquetBuilderV3 initialized (path_manager=%s, output_dir=%s)",
+            bool(self.path_manager),
+            self.output_dir,
+        )
 
     def __enter__(self) -> 'GoldParquetBuilderV3':
         return self
@@ -62,19 +104,26 @@ class GoldParquetBuilderV3:
 
         # Use PathManager if available, otherwise use legacy paths
         if self.path_manager:
-            output_path = self.path_manager.gold_pass1_file(table_name, source_name)
+            source_module, function_name = self._split_source_key(source_name, table_name)
+            output_path = self.path_manager.gold_file(
+                source_module,
+                function_name,
+                table_name,
+            )
             output_path.parent.mkdir(parents=True, exist_ok=True)
         else:
-            pass1_dir = self.output_dir / PathManager.PASS1
-            pass1_dir.mkdir(exist_ok=True)
-            output_path = pass1_dir / f"{table_name}_pass1_{source_name}.parquet"
+            if self._legacy_pass1_dir is None:
+                raise ValueError('Legacy pass1 directory is unavailable without an output directory')
+            self._legacy_pass1_dir.mkdir(exist_ok=True)
+            output_path = self._legacy_pass1_dir / f"{table_name}_pass1_{source_name}.parquet"
 
         # Execute the extraction query
+        output_path_literal = self._duckdb_path_literal(output_path)
         self.conn.execute(
             f"""
             COPY (
                 {select_sql}
-            ) TO '{output_path}' (FORMAT PARQUET)
+            ) TO '{output_path_literal}' (FORMAT PARQUET)
             """,
             params or [],
         )
@@ -102,15 +151,10 @@ class GoldParquetBuilderV3:
         table_def = gold_tables[table_name]
 
         # Find all pass1 files for this table
-        if self.path_manager:
-            pass1_dir = self.path_manager.gold_pass1_path()
-        else:
-            pass1_dir = self.output_dir / PathManager.PASS1
-        pattern = f"{table_name}_pass1_*.parquet"
-        pass1_files = list(pass1_dir.glob(pattern)) if pass1_dir.exists() else []
+        pass1_read_expr, pass1_files = self._get_pass1_read_source(table_name)
 
         if not pass1_files:
-            logger.warning("No pass1 files found for %s (pattern: %s)", table_name, pattern)
+            logger.warning("No pass1 files found for %s", table_name)
             return None
 
         # Parse constraints to extract deduplication keys
@@ -125,14 +169,10 @@ class GoldParquetBuilderV3:
         # Build ORDER BY clause
         order_clause = ', '.join(priority_columns) if priority_columns else ', '.join(dedup_keys)
 
-        # Create deduped subdirectory
-        if self.path_manager:
-            output_path = self.path_manager.gold_deduped_file(table_name)
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-        else:
-            deduped_dir = self.output_dir / PathManager.DEDUPED
-            deduped_dir.mkdir(exist_ok=True)
-            output_path = deduped_dir / f"{table_name}_deduped.parquet"
+        # Prepare deduped output path
+        output_path = self._deduped_file_path(table_name)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path_literal = self._duckdb_path_literal(output_path)
 
         # Deduplicate using DISTINCT ON and add auto-increment id
         self.conn.execute(
@@ -141,10 +181,10 @@ class GoldParquetBuilderV3:
                 SELECT ROW_NUMBER() OVER ()::INTEGER AS id, deduped.*
                 FROM (
                     SELECT DISTINCT ON ({', '.join(dedup_keys)}) *
-                    FROM read_parquet('{pass1_dir}/{pattern}')
+                    FROM {pass1_read_expr}
                     ORDER BY {order_clause}
                 ) AS deduped
-            ) TO '{output_path}' (FORMAT PARQUET)
+            ) TO '{output_path_literal}' (FORMAT PARQUET)
             """
         )
 
@@ -158,16 +198,6 @@ class GoldParquetBuilderV3:
             output_path = self.deduplicate_table(table_name)
             if output_path:
                 results[table_name] = output_path
-
-        # Clean up pass1 files after successful deduplication
-        if self.path_manager:
-            pass1_dir = self.path_manager.gold_pass1_path()
-        else:
-            pass1_dir = self.output_dir / PathManager.PASS1
-        if pass1_dir.exists():
-            import shutil
-            shutil.rmtree(pass1_dir)
-            logger.info("✓ Cleaned up pass1 files")
 
         return results
 
@@ -193,15 +223,10 @@ class GoldParquetBuilderV3:
         table_def = gold_tables[table_name]
 
         # Find all pass1 files for this table
-        if self.path_manager:
-            pass1_dir = self.path_manager.gold_pass1_path()
-        else:
-            pass1_dir = self.output_dir / PathManager.PASS1
-        pattern = f"{table_name}_pass1_*.parquet"
-        pass1_files = list(pass1_dir.glob(pattern)) if pass1_dir.exists() else []
+        pass1_read_expr, pass1_files = self._get_pass1_read_source(table_name)
 
         if not pass1_files:
-            logger.warning("No pass1 files found for %s (pattern: %s)", table_name, pattern)
+            logger.warning("No pass1 files found for %s", table_name)
             return None
 
         # Parse constraints to extract deduplication keys
@@ -217,26 +242,22 @@ class GoldParquetBuilderV3:
         order_clause = ', '.join(priority_columns) if priority_columns else ', '.join(dedup_keys)
 
         # Check if deduped file already exists
-        if self.path_manager:
-            output_path = self.path_manager.gold_deduped_file(table_name)
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-        else:
-            deduped_dir = self.output_dir / PathManager.DEDUPED
-            deduped_dir.mkdir(exist_ok=True)
-            output_path = deduped_dir / f"{table_name}_deduped.parquet"
+        output_path = self._deduped_file_path(table_name)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path_literal = self._duckdb_path_literal(output_path)
 
         # Build union query: existing deduped + new pass1 files
         if output_path.exists():
             # Drop the auto-increment id column from existing deduped file before union
             union_query = f"""
-                SELECT * EXCLUDE (id) FROM read_parquet('{output_path}')
+                SELECT * EXCLUDE (id) FROM read_parquet('{output_path_literal}')
                 UNION ALL
-                SELECT * FROM read_parquet('{pass1_dir}/{pattern}')
+                SELECT * FROM {pass1_read_expr}
             """
             logger.info("Appending to existing deduped file: %s", table_name)
         else:
             # No existing deduped file, just use pass1 files
-            union_query = f"SELECT * FROM read_parquet('{pass1_dir}/{pattern}')"
+            union_query = f"SELECT * FROM {pass1_read_expr}"
             logger.info("Creating new deduped file: %s", table_name)
 
         # Deduplicate the combined dataset and add auto-increment id
@@ -249,7 +270,7 @@ class GoldParquetBuilderV3:
                     FROM ({union_query})
                     ORDER BY {order_clause}
                 ) AS deduped
-            ) TO '{output_path}' (FORMAT PARQUET)
+            ) TO '{output_path_literal}' (FORMAT PARQUET)
             """
         )
 
@@ -268,16 +289,6 @@ class GoldParquetBuilderV3:
             if output_path:
                 results[table_name] = output_path
 
-        # Clean up pass1 files after successful deduplication
-        if self.path_manager:
-            pass1_dir = self.path_manager.gold_pass1_path()
-        else:
-            pass1_dir = self.output_dir / PathManager.PASS1
-        if pass1_dir.exists():
-            import shutil
-            shutil.rmtree(pass1_dir)
-            logger.info("✓ Cleaned up pass1 files")
-
         return results
 
     # ------------------------------------------------------------------
@@ -290,12 +301,11 @@ class GoldParquetBuilderV3:
         It scans all deduped files for cv_term references and ensures
         those terms exist in cv_term_deduped.
         """
-        if self.path_manager:
-            deduped_dir = self.path_manager.gold_deduped_path()
-        else:
-            deduped_dir = self.output_dir / PathManager.DEDUPED
+        deduped_dir = self.deduped_dir
         cv_namespace_deduped = deduped_dir / "cv_namespace_deduped.parquet"
         cv_term_deduped = deduped_dir / "cv_term_deduped.parquet"
+        namespace_literal = self._duckdb_path_literal(cv_namespace_deduped)
+        term_literal = self._duckdb_path_literal(cv_term_deduped)
 
         if not cv_namespace_deduped.exists() or not cv_term_deduped.exists():
             logger.info("Skipping cv_term enrichment - cv_namespace or cv_term not found")
@@ -314,7 +324,7 @@ class GoldParquetBuilderV3:
                 SELECT DISTINCT
                     entity_type_namespace_name as namespace,
                     entity_type_name as name
-                FROM read_parquet('{entity_deduped}')
+                FROM read_parquet('{self._duckdb_path_literal(entity_deduped)}')
                 WHERE entity_type_namespace_name IS NOT NULL
                   AND entity_type_name IS NOT NULL
             """).fetchall()
@@ -330,7 +340,7 @@ class GoldParquetBuilderV3:
                 SELECT DISTINCT
                     identifier_type_namespace_name as namespace,
                     identifier_type_name as name
-                FROM read_parquet('{entity_identifier_deduped}')
+                FROM read_parquet('{self._duckdb_path_literal(entity_identifier_deduped)}')
                 WHERE identifier_type_namespace_name IS NOT NULL
                   AND identifier_type_name IS NOT NULL
             """).fetchall()
@@ -346,7 +356,7 @@ class GoldParquetBuilderV3:
                 SELECT DISTINCT
                     type_namespace_name as namespace,
                     type_name as name
-                FROM read_parquet('{reference_deduped}')
+                FROM read_parquet('{self._duckdb_path_literal(reference_deduped)}')
                 WHERE type_namespace_name IS NOT NULL
                   AND type_name IS NOT NULL
             """).fetchall()
@@ -358,7 +368,7 @@ class GoldParquetBuilderV3:
         # Filter out namespaces that already exist
         existing_namespaces = set(
             row[0] for row in self.conn.execute(f"""
-                SELECT DISTINCT name FROM read_parquet('{cv_namespace_deduped}')
+                SELECT DISTINCT name FROM read_parquet('{namespace_literal}')
             """).fetchall()
         )
 
@@ -368,7 +378,7 @@ class GoldParquetBuilderV3:
         existing_terms = set(
             (row[0], row[1]) for row in self.conn.execute(f"""
                 SELECT DISTINCT namespace_name, name
-                FROM read_parquet('{cv_term_deduped}')
+                FROM read_parquet('{term_literal}')
             """).fetchall()
         )
 
@@ -385,20 +395,22 @@ class GoldParquetBuilderV3:
 
             # Get current max ID
             max_id = self.conn.execute(f"""
-                SELECT COALESCE(MAX(id), 0) FROM read_parquet('{cv_namespace_deduped}')
+                SELECT COALESCE(MAX(id), 0) FROM read_parquet('{namespace_literal}')
             """).fetchone()[0]
 
             # Create temp table with new namespaces
-            namespace_values = ', '.join(f"({max_id + i + 1}, '{ns}')"
-                                        for i, ns in enumerate(sorted(new_namespaces)))
+            namespace_values = ', '.join(
+                f"({max_id + i + 1}, {self._sql_quote(ns)})"
+                for i, ns in enumerate(sorted(new_namespaces))
+            )
 
             # Append to existing file
             self.conn.execute(f"""
                 COPY (
-                    SELECT * FROM read_parquet('{cv_namespace_deduped}')
+                    SELECT * FROM read_parquet('{namespace_literal}')
                     UNION ALL
                     SELECT * FROM (VALUES {namespace_values}) AS t(id, name)
-                ) TO '{cv_namespace_deduped}' (FORMAT PARQUET)
+                ) TO '{namespace_literal}' (FORMAT PARQUET)
             """)
 
         # Insert missing terms
@@ -407,22 +419,22 @@ class GoldParquetBuilderV3:
 
             # Get current max ID
             max_id = self.conn.execute(f"""
-                SELECT COALESCE(MAX(id), 0) FROM read_parquet('{cv_term_deduped}')
+                SELECT COALESCE(MAX(id), 0) FROM read_parquet('{term_literal}')
             """).fetchone()[0]
 
             # Create temp table with new terms
             term_values = ', '.join(
-                f"({max_id + i + 1}, '{name}', NULL, '{desc}', FALSE, '{ns}', NULL, NULL)"
+                f"({max_id + i + 1}, {self._sql_quote(name)}, NULL, {self._sql_quote(desc)}, FALSE, {self._sql_quote(ns)}, NULL, NULL)"
                 for i, (ns, name, desc) in enumerate(new_terms)
             )
 
             # Append to existing file
             self.conn.execute(f"""
                 COPY (
-                    SELECT * FROM read_parquet('{cv_term_deduped}')
+                    SELECT * FROM read_parquet('{term_literal}')
                     UNION ALL
                     SELECT * FROM (VALUES {term_values}) AS t(id, name, accession, description, is_obsolete, namespace_name, replaces_accession, replaced_by_accession)
-                ) TO '{cv_term_deduped}' (FORMAT PARQUET)
+                ) TO '{term_literal}' (FORMAT PARQUET)
             """)
 
         logger.info(f"✓ Enriched cv_terms: +{len(new_namespaces)} namespaces, +{len(new_terms)} terms")
@@ -441,12 +453,9 @@ class GoldParquetBuilderV3:
         """
         table_def = gold_tables[table_name]
 
-        if self.path_manager:
-            deduped_path = self.path_manager.gold_deduped_file(table_name)
-            deduped_dir = self.path_manager.gold_deduped_path()
-        else:
-            deduped_dir = self.output_dir / PathManager.DEDUPED
-            deduped_path = deduped_dir / f"{table_name}_deduped.parquet"
+        deduped_dir = self.deduped_dir
+        deduped_path = deduped_dir / f"{table_name}_deduped.parquet"
+        deduped_path_literal = self._duckdb_path_literal(deduped_path)
         if not deduped_path.exists():
             raise FileNotFoundError(f"Deduped file not found: {deduped_path}")
 
@@ -468,6 +477,8 @@ class GoldParquetBuilderV3:
                 fk_select_cols.append(f"NULL AS {fk_id}")
                 continue
 
+            target_literal = self._duckdb_path_literal(target_deduped)
+
             # Use FK ID as unique alias to avoid ambiguous table names
             alias = f"{target_table}_{fk_id}"
 
@@ -477,7 +488,7 @@ class GoldParquetBuilderV3:
             # Build join
             joins.append(
                 f"""
-                LEFT JOIN read_parquet('{target_deduped}') AS {alias}
+                LEFT JOIN read_parquet('{target_literal}') AS {alias}
                 ON {join_condition_with_alias}
                 """
             )
@@ -505,17 +516,16 @@ class GoldParquetBuilderV3:
         all_select = ', '.join(select_parts)
 
         # Build final query
-        if self.path_manager:
-            output_path = self.path_manager.gold_final_file(table_name)
-        else:
-            output_path = self.output_dir / f"{table_name}.parquet"
+        output_path = self.gold_final_dir / f"{table_name}.parquet"
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_literal = self._duckdb_path_literal(output_path)
 
         query = f"""
             COPY (
                 SELECT {all_select}
-                FROM read_parquet('{deduped_path}') AS main
+                FROM read_parquet('{deduped_path_literal}') AS main
                 {' '.join(joins)}
-            ) TO '{output_path}' (FORMAT PARQUET)
+            ) TO '{output_literal}' (FORMAT PARQUET)
             """
 
         logger.debug(f"FK resolution query for {table_name}:\n{query}")
@@ -531,10 +541,7 @@ class GoldParquetBuilderV3:
         Note: All deduped tables are available, so no topological ordering needed.
         """
         results = {}
-        if self.path_manager:
-            deduped_dir = self.path_manager.gold_deduped_path()
-        else:
-            deduped_dir = self.output_dir / PathManager.DEDUPED
+        deduped_dir = self.deduped_dir
         for table_name in gold_tables.keys():
             deduped_path = deduped_dir / f"{table_name}_deduped.parquet"
             if deduped_path.exists():
@@ -583,6 +590,92 @@ class GoldParquetBuilderV3:
     # ------------------------------------------------------------------
     # Utility methods
     # ------------------------------------------------------------------
+    def _split_source_key(self, source_name: str, fallback_func: str) -> tuple[str, str]:
+        """Split a pass1 source key into (source_module, function_name)."""
+        if '__' in source_name:
+            return source_name.split('__', 1)
+        return source_name, fallback_func
+
+    def _collect_pass1_paths(self, table_name: str) -> list[Path]:
+        """Collect all pass1 parquet files contributing to a gold table."""
+        if self.path_manager:
+            data_root = self.path_manager.data_path()
+            pattern = data_root / '*' / '*' / PathManager.GOLD / f'{table_name}.parquet'
+            return [Path(p) for p in sorted(glob.glob(str(pattern)))]
+
+        if self._legacy_pass1_dir and self._legacy_pass1_dir.exists():
+            pattern = f'{table_name}_pass1_*.parquet'
+            return sorted(self._legacy_pass1_dir.glob(pattern))
+
+        return []
+
+    def _get_pass1_read_source(self, table_name: str) -> tuple[str, list[Path]]:
+        """Return DuckDB read expression and matching files for a table."""
+        pass1_files = self._collect_pass1_paths(table_name)
+        if not pass1_files:
+            return '', []
+
+        if self.path_manager:
+            data_root = self.path_manager.data_path()
+            pattern = self._duckdb_path_literal(
+                data_root / '*' / '*' / PathManager.GOLD / f'{table_name}.parquet'
+            )
+            return f"read_parquet('{pattern}')", pass1_files
+
+        if self._legacy_pass1_dir is None:
+            raise ValueError('Legacy pass1 directory unavailable without output dir')
+
+        pattern = self._duckdb_path_literal(
+            self._legacy_pass1_dir / f'{table_name}_pass1_*.parquet'
+        )
+        return f"read_parquet('{pattern}')", pass1_files
+
+    def _deduped_file_path(self, table_name: str) -> Path:
+        """Return the deduped parquet path for a gold table."""
+        return self.deduped_dir / f'{table_name}_deduped.parquet'
+
+    @staticmethod
+    def _duckdb_path_literal(path: Path | str) -> str:
+        """Escape a filesystem path for embedding in DuckDB SQL."""
+        return str(path).replace("'", "''")
+
+    @staticmethod
+    def _sql_quote(value: str | None) -> str:
+        """Quote a string value for SQL values blocks."""
+        if value is None:
+            return 'NULL'
+        return "'" + value.replace("'", "''") + "'"
+
+    def _list_pass1_files_by_table(self) -> dict[str, list[Path]]:
+        """Return table → pass1 files mapping based on storage backend."""
+        pass1_map: dict[str, list[Path]] = {}
+
+        if self.path_manager:
+            data_root = self.path_manager.data_path()
+            if not data_root.exists():
+                return {}
+
+            for source_dir in data_root.iterdir():
+                if not source_dir.is_dir():
+                    continue
+                for function_dir in source_dir.iterdir():
+                    if not function_dir.is_dir():
+                        continue
+                    gold_dir = function_dir / PathManager.GOLD
+                    if not gold_dir.exists():
+                        continue
+                    for parquet_file in gold_dir.glob('*.parquet'):
+                        pass1_map.setdefault(parquet_file.stem, []).append(parquet_file)
+
+            return pass1_map
+
+        if self._legacy_pass1_dir and self._legacy_pass1_dir.exists():
+            for parquet_file in self._legacy_pass1_dir.glob('*_pass1_*.parquet'):
+                table_name = parquet_file.name.split('_pass1_')[0]
+                pass1_map.setdefault(table_name, []).append(parquet_file)
+
+        return pass1_map
+
     def _extract_dedup_keys(self, constraints: list[str]) -> list[str]:
         """Extract column names from constraint definitions.
 
@@ -687,22 +780,7 @@ class GoldParquetBuilderV3:
         logger.info("=" * 70)
         self.extract_from_silver_parquet(silver_files, source_label=source_label)
 
-        # Return mapping of table names to their pass1 files
-        pass1_files = {}
-        if self.path_manager:
-            pass1_dir = self.path_manager.gold_pass1_path()
-        else:
-            pass1_dir = self.output_dir / PathManager.PASS1
-
-        if pass1_dir.exists():
-            for parquet_file in pass1_dir.glob("*_pass1_*.parquet"):
-                # Extract table name from filename: {table}_pass1_{source}.parquet
-                table_name = parquet_file.name.split('_pass1_')[0]
-                if table_name not in pass1_files:
-                    pass1_files[table_name] = []
-                pass1_files[table_name].append(parquet_file)
-
-        return pass1_files
+        return self._list_pass1_files_by_table()
 
     def run_dedup_and_fk_resolution(self) -> dict[str, Path]:
         """Run Phase 2 & 3: Deduplicate all pass1 files and resolve foreign keys.

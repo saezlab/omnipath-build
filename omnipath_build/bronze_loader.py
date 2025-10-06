@@ -62,8 +62,8 @@ class PyPathBronzeLoader(BaseLoader):
     def _initialize(self) -> None:
         """Initialize pypath bronze loader specific attributes."""
         # Use path manager for all paths
-        self.bronze_path = self.path_manager.bronze_data_path()
-        self.bronze_path = self.ensure_directory(self.bronze_path)
+        self.data_path = self.path_manager.data_path()
+        self.data_path = self.ensure_directory(self.data_path)
 
         self.resource_configs_path = self.path_manager.resource_path()
 
@@ -83,7 +83,7 @@ class PyPathBronzeLoader(BaseLoader):
         self.logger.info('PyPath Bronze Loader initialized')
         self.logger.info(f'  Database: {self.database_name}')
         self.logger.info(f'  Resource configs: {self.resource_configs_path}')
-        self.logger.info(f'  Bronze data dir: {self.bronze_path}')
+        self.logger.info(f'  Data dir: {self.data_path}')
 
     def load(
         self,
@@ -367,28 +367,17 @@ class PyPathBronzeLoader(BaseLoader):
         return parquet_file, row_count
 
     def _generate_parquet_path(self, module_name: str, func_name: str) -> Path:
-        """Generate parquet file path with timestamp."""
-        dataset_dir = self.path_manager.bronze_function_path(module_name, func_name)
-        self.ensure_directory(dataset_dir)
-
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        return dataset_dir / f'{timestamp}.parquet'
+        """Generate parquet file path (always latest.parquet)."""
+        bronze_dir = self.path_manager.source_bronze_path(module_name, func_name)
+        self.ensure_directory(bronze_dir)
+        return self.path_manager.bronze_latest_file(module_name, func_name)
 
     def get_latest_parquet_file(
         self, module_name: str, func_name: str
     ) -> Path | None:
-        """Get the most recent parquet file for a function."""
-        dataset_dir = self.path_manager.bronze_function_path(module_name, func_name)
-
-        if not dataset_dir.exists():
-            return None
-
-        parquet_files = list(dataset_dir.glob('*.parquet'))
-        if not parquet_files:
-            return None
-
-        # Sort by filename (timestamp) and return the latest
-        return sorted(parquet_files)[-1]
+        """Get the latest parquet file for a function."""
+        parquet_file = self.path_manager.bronze_latest_file(module_name, func_name)
+        return parquet_file if parquet_file.exists() else None
 
     def get_parquet_row_count(self, parquet_file: Path) -> int:
         """Get row count from parquet file."""

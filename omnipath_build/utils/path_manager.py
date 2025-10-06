@@ -11,13 +11,11 @@ class PathManager:
     # Directory names
     DATABASES = 'databases'
     RESOURCE = 'resource'
+    DATA = 'data'
     BRONZE = 'bronze'
-    BRONZE_DATA = 'data'
     SILVER = 'silver'
-    SILVER_PARQUET = 'silver_parquet'
-    GOLD_PARQUET = 'gold_parquet'
-    PASS1 = 'pass1'
-    DEDUPED = 'deduped'
+    GOLD = 'gold'
+    GOLD_FINAL = 'gold_final'
 
     def __init__(self, database_name: str, base_path: Path | None = None) -> None:
         """Initialize path manager.
@@ -37,53 +35,58 @@ class PathManager:
 
     # Main directories
     def resource_path(self) -> Path:
+        """Get path to resource configs directory."""
         return self.db_path / self.RESOURCE
 
-    def bronze_data_path(self) -> Path:
-        return self.db_path / self.BRONZE / self.BRONZE_DATA
+    def data_path(self) -> Path:
+        """Get path to data directory (contains source-specific folders)."""
+        return self.db_path / self.DATA
 
-    def silver_config_path(self) -> Path:
-        return self.db_path / self.SILVER
+    def gold_final_path(self) -> Path:
+        """Get path to gold_final directory (cross-source deduplicated)."""
+        return self.db_path / self.GOLD_FINAL
 
-    def silver_parquet_path(self) -> Path:
-        return self.db_path / self.SILVER_PARQUET
+    # Source-specific paths
+    def source_path(self, source_name: str) -> Path:
+        """Get path to a source directory."""
+        return self.data_path() / source_name
 
-    def gold_parquet_path(self) -> Path:
-        return self.db_path / self.GOLD_PARQUET
+    def source_function_path(self, source_name: str, function_name: str) -> Path:
+        """Get path to a source function directory."""
+        return self.source_path(source_name) / function_name
 
-    # Module-level paths
-    def bronze_module_path(self, module_name: str) -> Path:
-        return self.bronze_data_path() / module_name
+    def source_bronze_path(self, source_name: str, function_name: str) -> Path:
+        """Get path to bronze directory for a source function."""
+        return self.source_function_path(source_name, function_name) / self.BRONZE
 
-    def bronze_function_path(self, module_name: str, function_name: str) -> Path:
-        return self.bronze_module_path(module_name) / function_name
+    def source_silver_path(self, source_name: str, function_name: str) -> Path:
+        """Get path to silver directory for a source function."""
+        return self.source_function_path(source_name, function_name) / self.SILVER
 
-    def resource_config_file(self, module_name: str) -> Path:
-        return self.resource_path() / f"{module_name}.yaml"
+    def source_gold_path(self, source_name: str, function_name: str) -> Path:
+        """Get path to gold directory for a source function."""
+        return self.source_function_path(source_name, function_name) / self.GOLD
 
-    def transformation_functions_file(self) -> Path:
-        return self.silver_config_path() / 'transformation_functions.sql'
+    # File paths
+    def bronze_latest_file(self, source_name: str, function_name: str) -> Path:
+        """Get path to latest bronze parquet file."""
+        bronze_dir = self.source_bronze_path(source_name, function_name)
+        return bronze_dir / 'latest.parquet'
 
-    def silver_parquet_file(
-        self, module_name: str, function_name: str, target_table: str
-    ) -> Path:
-        return (
-            self.silver_parquet_path()
-            / f"{module_name}_{function_name}_{target_table}.parquet"
-        )
+    def silver_file(self, source_name: str, function_name: str, table_name: str) -> Path:
+        """Get path to silver parquet file."""
+        silver_dir = self.source_silver_path(source_name, function_name)
+        return silver_dir / f"{table_name}.parquet"
 
-    # Gold builder paths
-    def gold_pass1_path(self) -> Path:
-        return self.gold_parquet_path() / self.PASS1
-
-    def gold_deduped_path(self) -> Path:
-        return self.gold_parquet_path() / self.DEDUPED
-
-    def gold_pass1_file(self, table_name: str, source_name: str) -> Path:
-        return self.gold_pass1_path() / f"{table_name}_pass1_{source_name}.parquet"
-
-    def gold_deduped_file(self, table_name: str) -> Path:
-        return self.gold_deduped_path() / f"{table_name}_deduped.parquet"
+    def gold_file(self, source_name: str, function_name: str, table_name: str) -> Path:
+        """Get path to source-specific gold parquet file."""
+        gold_dir = self.source_gold_path(source_name, function_name)
+        return gold_dir / f"{table_name}.parquet"
 
     def gold_final_file(self, table_name: str) -> Path:
-        return self.gold_parquet_path() / f"{table_name}.parquet"
+        """Get path to final cross-source deduplicated gold file."""
+        return self.gold_final_path() / f"{table_name}.parquet"
+
+    def resource_config_file(self, module_name: str) -> Path:
+        """Get path to resource config YAML file."""
+        return self.resource_path() / f"{module_name}.yaml"

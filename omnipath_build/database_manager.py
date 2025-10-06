@@ -62,10 +62,8 @@ class ParquetDatabaseManager:
         self.path_manager = PathManager(database_name, base_path)
         self.db_base_path = self.path_manager.db_path
         self.resource_path = self.path_manager.resource_path()
-        self.bronze_path = self.path_manager.bronze_data_path()
-        self.silver_path = self.path_manager.silver_config_path()
-        self.silver_parquet_path = self.path_manager.silver_parquet_path()
-        self.gold_parquet_path = self.path_manager.gold_parquet_path()
+        self.data_path = self.path_manager.data_path()
+        self.gold_final_path = self.path_manager.gold_final_path()
 
         self.logger.info(f'Database manager initialized for: {database_name}')
         self.logger.info(f'Base path: {self.db_base_path}')
@@ -115,13 +113,10 @@ class ParquetDatabaseManager:
                     f'  1. Add resources: python database_manager.py add-resources --database {self.database_name} --resources <resource_list>'
                 )
                 self.logger.info(
-                    f'  2. Configure silver transformations in {self.silver_path}/transformation_functions.sql'
+                    f'  2. Load bronze data: python database_manager.py load-bronze --database {self.database_name}'
                 )
                 self.logger.info(
-                    f'  3. Load bronze data: python database_manager.py load-bronze --database {self.database_name}'
-                )
-                self.logger.info(
-                    f'  4. Process sources: python database_manager.py process --database {self.database_name}'
+                    f'  3. Process sources: python database_manager.py process --database {self.database_name}'
                 )
 
             return True
@@ -331,8 +326,7 @@ class ParquetDatabaseManager:
             try:
                 from .gold_parquet_builder_v3 import GoldParquetBuilderV3
 
-                gold_path = self.path_manager.gold_parquet_path()
-                with GoldParquetBuilderV3(gold_path, self.path_manager) as builder:
+                with GoldParquetBuilderV3(self.path_manager) as builder:
                     final_gold_files = builder.run_dedup_and_fk_resolution()
 
                 gold_count = len(final_gold_files)
@@ -367,15 +361,13 @@ class ParquetDatabaseManager:
             # Check subdirectories
             for subdir, name in [
                 (self.resource_path, 'resource configs'),
-                (self.bronze_path, 'bronze parquet'),
-                (self.silver_path, 'silver config'),
-                (self.silver_parquet_path, 'silver parquet'),
-                (self.gold_parquet_path, 'gold parquet'),
+                (self.data_path, 'data (source-specific)'),
+                (self.gold_final_path, 'gold_final (deduplicated)'),
             ]:
                 exists = subdir.exists()
                 file_count = len(list(subdir.glob('*'))) if exists else 0
                 self.logger.info(
-                    f'  {name}: {"✓" if exists else "✗"} ({file_count} files)'
+                    f'  {name}: {"✓" if exists else "✗"} ({file_count} files/dirs)'
                 )
 
             # Check configured sources
@@ -385,21 +377,15 @@ class ParquetDatabaseManager:
                 for source in sources:
                     self.logger.info(f'  - {source}')
 
-            # Check bronze data
-            if self.bronze_path.exists():
-                bronze_modules = [
-                    d.name for d in self.bronze_path.iterdir() if d.is_dir()
-                ]
-                if bronze_modules:
-                    self.logger.info(f'Bronze data modules: {len(bronze_modules)}')
-                    for module in bronze_modules:
-                        module_path = self.bronze_path / module
-                        functions = [
-                            d.name for d in module_path.iterdir() if d.is_dir()
-                        ]
-                        self.logger.info(
-                            f'  - {module}: {len(functions)} functions'
-                        )
+            # Check data directories
+            if self.data_path.exists():
+                sources = [d.name for d in self.data_path.iterdir() if d.is_dir()]
+                if sources:
+                    self.logger.info(f'Data sources: {len(sources)}')
+                    for source in sources:
+                        source_path = self.data_path / source
+                        functions = [d.name for d in source_path.iterdir() if d.is_dir()]
+                        self.logger.info(f'  - {source}: {len(functions)} functions')
 
             return True
 
@@ -486,10 +472,9 @@ class ParquetDatabaseManager:
                     f'Successfully added {added_count} resource configurations'
                 )
                 self.logger.info('Next steps:')
-                self.logger.info(f'  1. Edit resource configs in {self.resource_path}/')
-                self.logger.info('  2. Configure field mappings if needed')
+                self.logger.info(f'  1. Edit resource configs in {self.resource_path}/ if needed')
                 self.logger.info(
-                    f'  3. Run: python database_manager.py load-bronze --database {self.database_name}'
+                    f'  2. Run: python database_manager.py load-bronze --database {self.database_name}'
                 )
                 return True
             else:
@@ -504,10 +489,8 @@ class ParquetDatabaseManager:
         """Create the database directory structure."""
         directories = [
             self.resource_path,
-            self.bronze_path,
-            self.silver_path,
-            self.silver_parquet_path,
-            self.gold_parquet_path,
+            self.data_path,
+            self.gold_final_path,
         ]
 
         for directory in directories:
@@ -516,28 +499,8 @@ class ParquetDatabaseManager:
 
     def _create_template_files(self) -> None:
         """Create template configuration files for the database."""
-        try:
-            # Create silver/transformation_functions.sql (empty template)
-            silver_functions_file = self.path_manager.transformation_functions_file()
-            if not silver_functions_file.exists():
-                functions_content = f"""-- Transformation functions for {self.database_name} silver layer
--- Define SQL functions that will be used to transform data from bronze to silver
--- These functions are loaded into DuckDB for transformations
-
--- Example function:
--- CREATE OR REPLACE FUNCTION clean_protein_name(raw_name TEXT)
--- RETURNS TEXT AS (
---     TRIM(UPPER(raw_name))
--- );
-"""
-                with open(silver_functions_file, 'w', encoding='utf-8') as f:
-                    f.write(functions_content)
-                self.logger.info(
-                    f'Created silver transformation functions template: {silver_functions_file}'
-                )
-
-        except (OSError, yaml.YAMLError) as e:
-            self.logger.warning(f'Failed to create template files: {e}')
+        # No template files needed in new structure
+        pass
 
     def _get_configured_sources(self) -> list[str]:
         """Get list of configured sources from YAML files."""
