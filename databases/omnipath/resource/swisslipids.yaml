@@ -13,12 +13,12 @@ functions:
             -   source: _constant
                 target: entity_type
                 value: compound
-            -   source: id
+            -   source: inchikey
                 target: identifier
             -   source: _constant
                 target: identifier_type
-                value: swisslipids
-            -   source: [chebi, lipidmaps, hmdb, metanetx, inchikey, inchi]
+                value: inchikey
+            -   source: [id, chebi, lipidmaps, hmdb, metanetx, inchi]
                 target: additional_identifiers
                 transform: build_identifier_list_swisslipids
             -   source: name

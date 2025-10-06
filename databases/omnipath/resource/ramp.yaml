@@ -16,12 +16,12 @@ functions:
             -   source: _constant
                 target: entity_type
                 value: compound
-            -   source: ramp_id
+            -   source: inchi_key
                 target: identifier
             -   source: _constant
                 target: identifier_type
-                value: ramp
-            -   source: [ramp_id, sources, chem_data_source, chem_source_id, inchi_key, inchi]
+                value: inchikey
+            -   source: [ramp_id, sources, chem_data_source, chem_source_id, inchi]
                 target: additional_identifiers
                 transform: build_identifier_list_ramp
             -   source: common_name

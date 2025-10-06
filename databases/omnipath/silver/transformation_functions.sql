@@ -41,28 +41,28 @@ CREATE OR REPLACE MACRO combine_compound_ids_hmdb(chebi_id, accession, pubchem_c
     );
 
 CREATE OR REPLACE MACRO build_identifier_list_hmdb(
+    accession,
     chebi_id,
     pubchem_compound_id,
     kegg_id,
     drugbank_id,
-    cas_registry_number,
-    inchikey
+    cas_registry_number
 ) AS (
-    WITH cleaned AS (
-        SELECT
-            chebi_id,
-            pubchem_compound_id,
-            kegg_id,
-            drugbank_id,
-            cas_registry_number,
-            clean_inchikey(inchikey) AS clean_inchikey_val
-    )
     SELECT CASE
         WHEN len(identifier_list) = 0 THEN NULL
         ELSE to_json(list_distinct(identifier_list))
     END
     FROM (
         SELECT list_filter([
+            CASE
+                WHEN accession IS NOT NULL AND TRIM(accession) != '' THEN struct_pack(
+                    type := 'hmdb',
+                    value := CASE
+                        WHEN UPPER(accession) LIKE 'HMDB:%' THEN accession
+                        ELSE 'HMDB:' || accession
+                    END
+                )
+            END,
             CASE
                 WHEN chebi_id IS NOT NULL AND TRIM(chebi_id) != '' THEN struct_pack(
                     type := 'chebi',
@@ -104,15 +104,8 @@ CREATE OR REPLACE MACRO build_identifier_list_hmdb(
                     type := 'cas',
                     value := TRIM(cas_registry_number)
                 )
-            END,
-            CASE
-                WHEN clean_inchikey_val IS NOT NULL THEN struct_pack(
-                    type := 'inchikey',
-                    value := clean_inchikey_val
-                )
             END
         ], x -> x IS NOT NULL) AS identifier_list
-        FROM cleaned
     )
 );
 
@@ -209,16 +202,16 @@ CREATE OR REPLACE MACRO parse_prefixed_identifier_list(list_text) AS (
 );
 
 CREATE OR REPLACE MACRO build_identifier_list_lipidmaps(
+    lipidmaps_id,
     chebi,
     pubchem,
-    inchikey,
     inchi
 ) AS (
     WITH cleaned AS (
         SELECT
+            lipidmaps_id,
             chebi,
             pubchem,
-            clean_inchikey(inchikey) AS clean_inchikey_val,
             clean_inchi(inchi) AS clean_inchi_val
     )
     SELECT CASE
@@ -227,6 +220,12 @@ CREATE OR REPLACE MACRO build_identifier_list_lipidmaps(
     END
     FROM (
         SELECT list_filter([
+            CASE
+                WHEN lipidmaps_id IS NOT NULL AND TRIM(lipidmaps_id) != '' THEN struct_pack(
+                    type := 'lipidmaps',
+                    value := CASE WHEN UPPER(lipidmaps_id) LIKE 'LIPIDMAPS:%' THEN lipidmaps_id ELSE 'LIPIDMAPS:' || lipidmaps_id END
+                )
+            END,
             CASE
                 WHEN chebi IS NOT NULL AND TRIM(chebi) != '' THEN struct_pack(
                     type := 'chebi',
@@ -237,12 +236,6 @@ CREATE OR REPLACE MACRO build_identifier_list_lipidmaps(
                 WHEN pubchem IS NOT NULL AND TRIM(pubchem) != '' THEN struct_pack(
                     type := 'pubchem',
                     value := CASE WHEN UPPER(pubchem) LIKE 'PUBCHEM:%' THEN pubchem ELSE 'PUBCHEM:' || pubchem END
-                )
-            END,
-            CASE
-                WHEN clean_inchikey_val IS NOT NULL THEN struct_pack(
-                    type := 'inchikey',
-                    value := clean_inchikey_val
                 )
             END,
             CASE
@@ -261,7 +254,6 @@ CREATE OR REPLACE MACRO build_identifier_list_ramp(
     sources,
     chem_data_source,
     chem_source_id,
-    inchi_key,
     inchi
 ) AS (
     WITH cleaned AS (
@@ -270,7 +262,6 @@ CREATE OR REPLACE MACRO build_identifier_list_ramp(
             sources,
             chem_data_source,
             chem_source_id,
-            clean_inchikey(inchi_key) AS clean_inchikey_val,
             clean_inchi(inchi) AS clean_inchi_val
     )
     SELECT CASE
@@ -306,12 +297,6 @@ CREATE OR REPLACE MACRO build_identifier_list_ramp(
                     )
                 END,
                 CASE
-                    WHEN clean_inchikey_val IS NOT NULL THEN struct_pack(
-                        type := 'inchikey',
-                        value := clean_inchikey_val
-                    )
-                END,
-                CASE
                     WHEN clean_inchi_val IS NOT NULL THEN struct_pack(
                         type := 'inchi',
                         value := clean_inchi_val
@@ -324,20 +309,20 @@ CREATE OR REPLACE MACRO build_identifier_list_ramp(
 );
 
 CREATE OR REPLACE MACRO build_identifier_list_swisslipids(
+    swisslipids_id,
     chebi,
     lipidmaps,
     hmdb,
     metanetx,
-    inchikey,
     inchi
 ) AS (
     WITH cleaned AS (
         SELECT
+            swisslipids_id,
             chebi,
             lipidmaps,
             hmdb,
             metanetx,
-            clean_inchikey(inchikey) AS clean_inchikey_val,
             clean_inchi(inchi) AS clean_inchi_val
     )
     SELECT CASE
@@ -346,6 +331,12 @@ CREATE OR REPLACE MACRO build_identifier_list_swisslipids(
     END
     FROM (
         SELECT list_filter([
+            CASE
+                WHEN swisslipids_id IS NOT NULL AND TRIM(swisslipids_id) != '' THEN struct_pack(
+                    type := 'swisslipids',
+                    value := CASE WHEN UPPER(swisslipids_id) LIKE 'SWISSLIPIDS:%' THEN swisslipids_id ELSE 'SWISSLIPIDS:' || swisslipids_id END
+                )
+            END,
             CASE
                 WHEN chebi IS NOT NULL AND chebi != '' AND TRIM(chebi) NOT IN ('', 'CHEBI:', 'chebi:') THEN struct_pack(
                     type := 'chebi',
@@ -368,12 +359,6 @@ CREATE OR REPLACE MACRO build_identifier_list_swisslipids(
                 WHEN metanetx IS NOT NULL AND TRIM(metanetx) != '' THEN struct_pack(
                     type := 'metanetx',
                     value := CASE WHEN UPPER(metanetx) LIKE 'METANETX:%' THEN metanetx ELSE 'METANETX:' || metanetx END
-                )
-            END,
-            CASE
-                WHEN clean_inchikey_val IS NOT NULL THEN struct_pack(
-                    type := 'inchikey',
-                    value := clean_inchikey_val
                 )
             END,
             CASE

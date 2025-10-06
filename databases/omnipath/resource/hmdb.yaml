@@ -15,12 +15,12 @@ functions:
             -   source: _constant
                 target: entity_type
                 value: compound
-            -   source: accession
+            -   source: inchikey
                 target: identifier
             -   source: _constant
                 target: identifier_type
-                value: hmdb
-            -   source: [chebi_id, pubchem_compound_id, kegg_id, drugbank_id, cas_registry_number, inchikey]
+                value: inchikey
+            -   source: [accession, chebi_id, pubchem_compound_id, kegg_id, drugbank_id, cas_registry_number]
                 target: additional_identifiers
                 transform: build_identifier_list_hmdb
             -   source: [iupac_name, traditional_iupac]
