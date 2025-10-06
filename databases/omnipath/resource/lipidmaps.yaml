@@ -24,7 +24,7 @@ functions:
                 target: name
             -   source: [synonyms, abbreviation]
                 target: name_variants
-                transform: build_lipidmaps_name_variants
+                transform: build_name_variants
             -   source: formula
                 target: compound_formula
             -   source: smiles
