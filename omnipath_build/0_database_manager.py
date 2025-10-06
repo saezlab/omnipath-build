@@ -40,12 +40,12 @@ sys.path.insert(0, str(Path(__file__).parent))
 from utils import PathManager
 
 __all__ = [
-    'ParquetDatabaseManager',
+    'DatabaseManager',
     'main',
 ]
 
 
-class ParquetDatabaseManager:
+class DatabaseManager:
     """Manages parquet-based database lifecycle."""
 
     def __init__(self, database_name: str, base_path: Path | None = None) -> None:
@@ -150,7 +150,7 @@ class ParquetDatabaseManager:
             self.logger.info(f'Loading bronze data for {self.database_name}')
 
             # Import bronze loader
-            from omnipath_build.bronze_loader import PyPathBronzeLoader
+            from omnipath_build import PyPathBronzeLoader
 
             # Note: bronze_loader still uses db_connector for DuckDB operations
             # We create a minimal config for DuckDB-only usage
@@ -208,32 +208,38 @@ class ParquetDatabaseManager:
         Returns:
             Tuple of (source_name, results_dict) where results contains silver and gold pass1 files
         """
-        from .source_processor import SourceProcessor
+        from omnipath_build import SilverLoader, GoldLoader
 
         self.logger.info(f'Processing source: {source_name}')
         try:
-            with SourceProcessor(
+            # Process bronze → silver
+            with SilverLoader(
                 database_name=self.database_name,
                 source_module=source_name,
                 base_path=self.path_manager.base_path,
-            ) as processor:
-                # Process bronze → silver
-                silver_files = processor.process_to_silver()
+            ) as silver_loader:
+                silver_files = silver_loader.load()
+                table_function_map = silver_loader.get_table_function_map(silver_files)
 
-                # Process silver → gold pass1 ONLY (no dedup/FK resolution)
-                pass1_files = processor.process_to_gold_pass1(silver_files)
-
-                silver_count = len(silver_files)
-                pass1_count = sum(len(files) for files in pass1_files.values())
-                self.logger.info(
-                    f'✓ Completed: {source_name} ({silver_count} silver, {pass1_count} gold pass1 files)'
+            # Process silver → gold pass1 ONLY (no dedup/FK resolution)
+            with GoldLoader(self.path_manager) as gold_loader:
+                pass1_files = gold_loader.run_pass1_only(
+                    silver_files,
+                    source_label=source_name,
+                    table_function_map=table_function_map,
                 )
 
-                return source_name, {
-                    'silver': silver_files,
-                    'pass1': pass1_files,
-                    'success': True
-                }
+            silver_count = len(silver_files)
+            pass1_count = sum(len(files) for files in pass1_files.values())
+            self.logger.info(
+                f'✓ Completed: {source_name} ({silver_count} silver, {pass1_count} gold pass1 files)'
+            )
+
+            return source_name, {
+                'silver': silver_files,
+                'pass1': pass1_files,
+                'success': True
+            }
 
         except (RuntimeError, OSError) as e:
             self.logger.error(f'Failed to process {source_name}: {e}')
@@ -280,9 +286,6 @@ class ParquetDatabaseManager:
                 self.logger.error('No sources found to process')
                 return False
 
-            # Import source processor
-            from .source_processor import SourceProcessor
-
             # Phase 1: Process all sources to Pass1 in parallel
             all_results = {}
 
@@ -324,10 +327,10 @@ class ParquetDatabaseManager:
             self.logger.info('=' * 70)
 
             try:
-                from .gold_parquet_builder_v3 import GoldParquetBuilderV3
+                from omnipath_build import GoldLoader
 
-                with GoldParquetBuilderV3(self.path_manager) as builder:
-                    final_gold_files = builder.run_dedup_and_fk_resolution()
+                with GoldLoader(self.path_manager) as gold_loader:
+                    final_gold_files = gold_loader.run_dedup_and_fk_resolution()
 
                 gold_count = len(final_gold_files)
                 self.logger.info(f'✓ Cross-source dedup complete: {gold_count} final gold tables')
@@ -663,7 +666,7 @@ Examples:
     )
 
     # Create manager
-    manager = ParquetDatabaseManager(args.database)
+    manager = DatabaseManager(args.database)
 
     # Execute command
     try:

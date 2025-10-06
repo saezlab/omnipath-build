@@ -1,34 +1,34 @@
 #!/usr/bin/env python3
-"""Source-by-source processor using DuckDB for all transformations.
+"""Silver Loader: Bronze → Silver transformations.
 
-This processor handles the complete pipeline for a single source:
-1. Read bronze Parquet
-2. Apply silver transformations
-3. Write silver Parquet
-4. Apply gold transformations
-5. Write to PostgreSQL gold
+This loader handles the transformation of bronze parquet files to silver parquet files
+using field mappings defined in resource configuration YAML files.
+
+Usage:
+    from omnipath_build import SilverLoader
+
+    with SilverLoader('metabo', 'hmdb') as loader:
+        silver_files = loader.load()
 """
 
 import logging
-import os
 from pathlib import Path
 from typing import Any
 
 import yaml
 import duckdb
 
-from .gold_parquet_builder_v3 import GoldParquetBuilderV3
 from .utils import PathManager
 
 __all__ = [
-    'SourceProcessor',
+    'SilverLoader',
 ]
 
 logger = logging.getLogger(__name__)
 
 
-class SourceProcessor:
-    """Processes a single source through bronze → silver → gold pipeline."""
+class SilverLoader:
+    """Loads and transforms bronze parquet files to silver parquet format."""
 
     def __init__(
         self,
@@ -36,7 +36,7 @@ class SourceProcessor:
         source_module: str,
         base_path: Path | None = None
     ):
-        """Initialize source processor.
+        """Initialize silver loader.
 
         Args:
             database_name: Name of database (e.g., 'metabo')
@@ -61,7 +61,7 @@ class SourceProcessor:
         # Initialize DuckDB connection
         self.conn = None
 
-        logger.info(f"Initialized SourceProcessor for {source_module} in {database_name}")
+        logger.info(f"Initialized SilverLoader for {source_module} in {database_name}")
 
     def __enter__(self):
         """Context manager entry."""
@@ -188,33 +188,8 @@ class SourceProcessor:
 
         return f"{expr} AS \"{target}\""
 
-
-    def _map_silver_files_to_tables(
-        self,
-        silver_files: dict[str, Path]
-    ) -> tuple[dict[str, Path], dict[str, str]]:
-        """Map function names to their target table names.
-
-        Args:
-            silver_files: Dict mapping function names to silver parquet paths
-
-        Returns:
-            Tuple of:
-                - dict mapping target table names to silver parquet paths
-                - dict mapping target table names to originating function names
-        """
-        table_map: dict[str, Path] = {}
-        table_function_map: dict[str, str] = {}
-        for function_name, parquet_path in silver_files.items():
-            processing_cfg = self.config.get('functions', {}).get(function_name, {}).get('processing', {})
-            target_table = processing_cfg.get('target_table', function_name)
-            table_map[target_table] = parquet_path
-            table_function_map[target_table] = function_name
-
-        return table_map, table_function_map
-
-    def process_to_silver(self) -> dict[str, Path]:
-        """Process bronze → silver for all functions in this source.
+    def load(self) -> dict[str, Path]:
+        """Load bronze → silver for all functions in this source.
 
         Returns:
             Dict mapping function names to silver parquet paths
@@ -290,78 +265,19 @@ class SourceProcessor:
 
         return results
 
-    def process_to_gold_pass1(self, silver_files: dict[str, Path]) -> dict[str, list[Path]]:
-        """Process silver → gold Pass1 only (extraction, no deduplication).
-
-        This method is used for parallel processing where each source creates its
-        pass1 files independently, and deduplication happens later across all sources.
+    def get_table_function_map(self, silver_files: dict[str, Path]) -> dict[str, str]:
+        """Map target table names to originating function names.
 
         Args:
             silver_files: Dict mapping function names to silver parquet paths
 
         Returns:
-            Dict mapping table names to list of pass1 parquet paths
+            Dict mapping target table names to function names
         """
-        if not silver_files:
-            logger.warning("No silver files supplied for gold processing")
-            return {}
+        table_function_map: dict[str, str] = {}
+        for function_name in silver_files.keys():
+            processing_cfg = self.config.get('functions', {}).get(function_name, {}).get('processing', {})
+            target_table = processing_cfg.get('target_table', function_name)
+            table_function_map[target_table] = function_name
 
-        # Map function names to target table names
-        silver_table_map, table_function_map = self._map_silver_files_to_tables(silver_files)
-
-        logger.info("Processing %s silver → gold (extraction only)", self.source_module)
-
-        # Run only pass1 extraction
-        with GoldParquetBuilderV3(self.path_manager) as builder:
-            return builder.run_pass1_only(
-                silver_table_map,
-                source_label=self.source_module,
-                table_function_map=table_function_map,
-            )
-
-    def process_to_gold(self, silver_files: dict[str, Path]) -> dict[str, Path]:
-        """Process silver → gold Parquet files using three-phase pipeline.
-
-        Phase 1: Extract from silver files
-        Phase 2: Deduplicate
-        Phase 3: Resolve foreign keys
-
-        Args:
-            silver_files: Dict mapping function names to silver parquet paths
-
-        Returns:
-            Dict mapping table names to gold parquet paths
-        """
-        if not silver_files:
-            logger.warning("No silver files supplied for gold processing")
-            return {}
-
-        # Map function names to target table names
-        silver_table_map, table_function_map = self._map_silver_files_to_tables(silver_files)
-
-        logger.info("Processing %s silver → gold parquet (builder v3)", self.source_module)
-
-        # Use the simplified pipeline
-        with GoldParquetBuilderV3(self.path_manager) as builder:
-            return builder.run_full_pipeline(
-                silver_table_map,
-                source_label=self.source_module,
-                table_function_map=table_function_map,
-            )
-
-    def process_full_pipeline(self) -> dict[str, dict[str, Path]]:
-        """Run full pipeline: bronze → silver → gold.
-
-        Returns:
-            Dict with 'silver' and 'gold' keys mapping to their respective outputs
-        """
-        # Process bronze → silver
-        silver_files = self.process_to_silver()
-
-        # Process silver → gold
-        gold_files = self.process_to_gold(silver_files)
-
-        return {
-            'silver': silver_files,
-            'gold': gold_files
-        }
+        return table_function_map

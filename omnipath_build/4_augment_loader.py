@@ -142,7 +142,7 @@ class CrossrefPublicationFetcher:
         return ". ".join(components) + "." if components else None
 
 
-class DataAugmentor:
+class AugmentLoader:
     """Augments deduplicated gold inputs with computed or fetched metadata."""
 
     CV_TERM_SPECS: tuple[CVReferenceSpec, ...] = (
@@ -519,7 +519,7 @@ __all__ = [
     'CVReferenceSpec',
     'CrossrefPublicationFetcher',
     'DEFAULT_SMILES_IDENTIFIER_NAMES',
-    'DataAugmentor',
+    'AugmentLoader',
     'PublicationFetcher',
     'RDKit_AVAILABLE',
 ]

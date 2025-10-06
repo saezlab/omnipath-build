@@ -1,5 +1,13 @@
 #!/usr/bin/env python3
-"""Gold parquet builder using three-phase pipeline: extract → deduplicate → resolve FKs."""
+"""Gold Loader: Silver → Gold transformations using three-phase pipeline.
+
+This loader handles the transformation of silver parquet files to gold parquet files
+through a three-phase pipeline: extract → deduplicate → resolve foreign keys.
+
+Phase 1: Extract from sources to individual parquet files (parallel)
+Phase 2: Combine and deduplicate pass1 files
+Phase 3: Resolve foreign keys and create final tables
+"""
 
 from __future__ import annotations
 
@@ -10,15 +18,21 @@ from pathlib import Path
 from typing import Any
 
 import duckdb
+import importlib
 
-from omnipath_build.data_augmentation import DataAugmentor
 from omnipath_build.gold_tables import gold_tables, silver_gold_map
 from omnipath_build.utils import PathManager
+
+# Delayed import to avoid circular dependency
+def _get_augment_loader_class():
+    """Lazy import AugmentLoader to avoid circular dependency."""
+    augment_module = importlib.import_module('.4_augment_loader', package='omnipath_build')
+    return augment_module.AugmentLoader
 
 logger = logging.getLogger(__name__)
 
 
-class GoldParquetBuilderV3:
+class GoldLoader:
     """Builds gold parquet files using a three-phase pipeline.
 
     Phase 1: Extract from sources to individual parquet files (parallel)
@@ -36,11 +50,12 @@ class GoldParquetBuilderV3:
         *,
         compound_limit: int | None = 1000,
     ) -> None:
-        """Initialize the builder.
+        """Initialize the gold loader.
 
         Args:
             path_or_manager: Either a PathManager (preferred) or a legacy output directory.
             path_manager: Optional explicit PathManager when the first argument is a Path.
+            compound_limit: Maximum number of compounds to augment (default: 1000)
         """
 
         if isinstance(path_or_manager, PathManager) or hasattr(path_or_manager, 'gold_final_path'):
@@ -58,7 +73,7 @@ class GoldParquetBuilderV3:
         elif self.output_dir is not None:
             self.gold_final_dir = self.output_dir
         else:
-            raise ValueError('GoldParquetBuilderV3 requires either a PathManager or an output directory')
+            raise ValueError('GoldLoader requires either a PathManager or an output directory')
 
         self.gold_final_dir.mkdir(parents=True, exist_ok=True)
         self.deduped_dir = self.gold_final_dir / self.DEDUPED_DIR_NAME
@@ -71,14 +86,14 @@ class GoldParquetBuilderV3:
 
         self.conn = duckdb.connect(':memory:')
         logger.info(
-            "GoldParquetBuilderV3 initialized (path_manager=%s, output_dir=%s)",
+            "GoldLoader initialized (path_manager=%s, output_dir=%s)",
             bool(self.path_manager),
             self.output_dir,
         )
-        self._augmentor: DataAugmentor | None = None
+        self._augmentor = None  # Will be AugmentLoader when created
         self.compound_limit = compound_limit
 
-    def __enter__(self) -> 'GoldParquetBuilderV3':
+    def __enter__(self) -> 'GoldLoader':
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
@@ -470,9 +485,11 @@ class GoldParquetBuilderV3:
     # ------------------------------------------------------------------
     # Utility methods
     # ------------------------------------------------------------------
-    def _get_data_augmentor(self) -> DataAugmentor:
+    def _get_data_augmentor(self):
+        """Get or create AugmentLoader instance (lazy import to avoid circular dependency)."""
         if self._augmentor is None:
-            self._augmentor = DataAugmentor(
+            AugmentLoaderClass = _get_augment_loader_class()
+            self._augmentor = AugmentLoaderClass(
                 self.conn,
                 self.deduped_dir,
                 compound_limit=self.compound_limit,
@@ -756,5 +773,5 @@ class GoldParquetBuilderV3:
 
 
 __all__ = [
-    'GoldParquetBuilderV3',
+    'GoldLoader',
 ]
