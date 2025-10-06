@@ -15,6 +15,7 @@ functions:
                 value: compound
             -   source: inchikey
                 target: identifier
+                transform: clean_inchikey
             -   source: _constant
                 target: identifier_type
                 value: inchikey

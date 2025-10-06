@@ -466,3 +466,12 @@ CREATE OR REPLACE MACRO clean_inchi(inchi_value) AS
         WHEN TRIM(inchi_value) = 'InChI=' THEN NULL
         ELSE TRIM(inchi_value)
     END;
+
+-- Clean InChIKey by removing InChIKey= prefix
+CREATE OR REPLACE MACRO clean_inchikey(inchikey_value) AS
+    CASE
+        WHEN inchikey_value IS NULL THEN NULL
+        WHEN TRIM(inchikey_value) = '' THEN NULL
+        WHEN UPPER(TRIM(inchikey_value)) LIKE 'INCHIKEY=%' THEN SUBSTRING(TRIM(inchikey_value), 10)
+        ELSE TRIM(inchikey_value)
+    END;
