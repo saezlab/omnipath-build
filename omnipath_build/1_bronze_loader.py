@@ -65,7 +65,7 @@ class PyPathBronzeLoader(BaseLoader):
         self.data_path = self.path_manager.data_path()
         self.data_path = self.ensure_directory(self.data_path)
 
-        self.resource_configs_path = self.path_manager.resource_path()
+        self.resource_configs_path = self.path_manager.resources_path()
 
         if not self.resource_configs_path.exists():
             raise BronzeLoaderError(

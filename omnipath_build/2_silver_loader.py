@@ -52,8 +52,8 @@ class SilverLoader:
 
         self.resource_config_path = self.path_manager.resource_config_file(source_module)
 
-        # Path to transformation functions SQL file (in resource directory now)
-        self.transform_sql_path = self.path_manager.resource_path() / 'transformation_functions.sql'
+        # Path to transformation functions SQL file (in configuration directory now)
+        self.transform_sql_path = self.path_manager.configuration_path() / 'transformation_functions.sql'
 
         # Load resource configuration
         self.config = self._load_config()

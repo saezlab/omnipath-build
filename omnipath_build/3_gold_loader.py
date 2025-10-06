@@ -20,7 +20,13 @@ from typing import Any
 import duckdb
 import importlib
 
-from omnipath_build.gold_tables import gold_tables, silver_gold_map
+import sys
+from pathlib import Path as PathType
+
+# Import gold_tables from configuration directory
+sys.path.insert(0, str(PathType(__file__).parent.parent / 'databases' / 'omnipath' / 'configuration'))
+from gold_tables import gold_tables, silver_gold_map
+
 from omnipath_build.utils import PathManager
 
 # Delayed import to avoid circular dependency

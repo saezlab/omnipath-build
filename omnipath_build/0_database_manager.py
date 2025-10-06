@@ -61,9 +61,9 @@ class DatabaseManager:
         # Use PathManager for all paths
         self.path_manager = PathManager(database_name, base_path)
         self.db_base_path = self.path_manager.db_path
-        self.resource_path = self.path_manager.resource_path()
+        self.resource_path = self.path_manager.resources_path()
         self.data_path = self.path_manager.data_path()
-        self.gold_final_path = self.path_manager.gold_final_path()
+        self.gold_final_path = self.path_manager.output_path()
 
         self.logger.info(f'Database manager initialized for: {database_name}')
         self.logger.info(f'Base path: {self.db_base_path}')

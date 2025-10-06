@@ -10,12 +10,13 @@ class PathManager:
 
     # Directory names
     DATABASES = 'databases'
-    RESOURCE = 'resource'
+    CONFIGURATION = 'configuration'
+    RESOURCES = 'resources'
     DATA = 'data'
     BRONZE = 'bronze'
     SILVER = 'silver'
     GOLD = 'gold'
-    GOLD_FINAL = 'gold_final'
+    OUTPUT = 'output'
 
     def __init__(self, database_name: str, base_path: Path | None = None) -> None:
         """Initialize path manager.
@@ -34,17 +35,30 @@ class PathManager:
         self.db_path = self.base_path / database_name
 
     # Main directories
-    def resource_path(self) -> Path:
-        """Get path to resource configs directory."""
-        return self.db_path / self.RESOURCE
+    def configuration_path(self) -> Path:
+        """Get path to configuration directory."""
+        return self.db_path / self.CONFIGURATION
+
+    def resources_path(self) -> Path:
+        """Get path to resources configs directory."""
+        return self.configuration_path() / self.RESOURCES
 
     def data_path(self) -> Path:
         """Get path to data directory (contains source-specific folders)."""
         return self.db_path / self.DATA
 
+    def output_path(self) -> Path:
+        """Get path to output directory (cross-source deduplicated final tables)."""
+        return self.db_path / self.OUTPUT
+
+    # Legacy compatibility
+    def resource_path(self) -> Path:
+        """Get path to resource configs directory (legacy - use resources_path instead)."""
+        return self.resources_path()
+
     def gold_final_path(self) -> Path:
-        """Get path to gold_final directory (cross-source deduplicated)."""
-        return self.db_path / self.GOLD_FINAL
+        """Get path to output directory (legacy - use output_path instead)."""
+        return self.output_path()
 
     # Source-specific paths
     def source_path(self, source_name: str) -> Path:
@@ -83,10 +97,22 @@ class PathManager:
         gold_dir = self.source_gold_path(source_name, function_name)
         return gold_dir / f"{table_name}.parquet"
 
+    def output_file(self, table_name: str) -> Path:
+        """Get path to final cross-source deduplicated output file."""
+        return self.output_path() / f"{table_name}.parquet"
+
     def gold_final_file(self, table_name: str) -> Path:
-        """Get path to final cross-source deduplicated gold file."""
-        return self.gold_final_path() / f"{table_name}.parquet"
+        """Get path to final cross-source deduplicated file (legacy - use output_file instead)."""
+        return self.output_file(table_name)
 
     def resource_config_file(self, module_name: str) -> Path:
         """Get path to resource config YAML file."""
-        return self.resource_path() / f"{module_name}.yaml"
+        return self.resources_path() / f"{module_name}.yaml"
+
+    def silver_tables_config(self) -> Path:
+        """Get path to silver tables configuration YAML."""
+        return self.configuration_path() / 'silver_tables.yaml'
+
+    def gold_tables_config(self) -> Path:
+        """Get path to gold tables configuration Python file."""
+        return self.configuration_path() / 'gold_tables.py'
