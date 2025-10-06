@@ -21,32 +21,12 @@ functions:
             -   source: _constant
                 target: identifier_type
                 value: inchikey
-            -   source: [ramp_id, sources, chem_data_source, chem_source_id, inchi]
+            -   source: [ramp_id, sources, chem_data_source, chem_source_id, inchi, iso_smiles, common_name, synonyms]
                 target: additional_identifiers
                 transform: build_identifier_list_ramp
-            -   source: common_name
-                target: name
-            -   source: synonyms
-                target: name_variants
-                transform: split_string_to_json
-                transform_args:
-                    delimiter: ', '
-            -   source: mol_formula
-                target: compound_formula
-            -   source: iso_smiles
-                target: compound_smiles
-            -   source: inchi
-                target: compound_inchi
-            -   source: mw
-                target: molecular_weight
-            -   source: monoisotop_mass
-                target: exact_mass
             -   source: classes
                 target: annotations
                 transform: build_ramp_annotations
-            -   source: _constant
-                target: is_valid
-                value: true
             -   source: _constant
                 target: processed_by
                 value: ramp_omnipathmetabo

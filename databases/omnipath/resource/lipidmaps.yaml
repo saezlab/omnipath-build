@@ -17,28 +17,12 @@ functions:
             -   source: _constant
                 target: identifier_type
                 value: inchikey
-            -   source: [id, chebi, pubchem, inchi]
+            -   source: [id, chebi, pubchem, inchi, smiles, name, synonyms, abbreviation]
                 target: additional_identifiers
                 transform: build_identifier_list_lipidmaps
-            -   source: name
-                target: name
-            -   source: [synonyms, abbreviation]
-                target: name_variants
-                transform: build_name_variants
-            -   source: formula
-                target: compound_formula
-            -   source: smiles
-                target: compound_smiles
-            -   source: inchi
-                target: compound_inchi
-            -   source: exact_mass
-                target: exact_mass
             -   source: [category, main_class]
                 target: annotations
                 transform: build_lipidmaps_annotations
-            -   source: _constant
-                target: is_valid
-                value: true
             -   source: _constant
                 target: processed_by
                 value: lipidmaps_lipids

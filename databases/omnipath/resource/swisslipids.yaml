@@ -19,28 +19,12 @@ functions:
             -   source: _constant
                 target: identifier_type
                 value: inchikey
-            -   source: [id, chebi, lipidmaps, hmdb, metanetx, inchi]
+            -   source: [id, chebi, lipidmaps, hmdb, metanetx, inchi, smiles, name, synonyms, abbreviation]
                 target: additional_identifiers
                 transform: build_identifier_list_swisslipids
-            -   source: name
-                target: name
-            -   source: [synonyms, abbreviation]
-                target: name_variants
-                transform: build_name_variants
-            -   source: formula
-                target: compound_formula
-            -   source: smiles
-                target: compound_smiles
-            -   source: inchi
-                target: compound_inchi
-            -   source: exact_mass
-                target: exact_mass
             -   source: [level, lipid_class, parent, components, pmids, charge]
                 target: annotations
                 transform: build_swisslipids_annotations
-            -   source: _constant
-                target: is_valid
-                value: true
             -   source: _constant
                 target: processed_by
                 value: swisslipids_lipids

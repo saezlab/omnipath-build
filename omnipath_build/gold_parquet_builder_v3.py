@@ -11,6 +11,7 @@ from typing import Any
 
 import duckdb
 
+from omnipath_build.data_augmentation import DataAugmentor
 from omnipath_build.gold_tables import gold_tables, silver_gold_map
 from omnipath_build.utils import PathManager
 
@@ -32,6 +33,8 @@ class GoldParquetBuilderV3:
         self,
         path_or_manager: Path | PathManager,
         path_manager: PathManager | None = None,
+        *,
+        compound_limit: int | None = 1000,
     ) -> None:
         """Initialize the builder.
 
@@ -72,6 +75,8 @@ class GoldParquetBuilderV3:
             bool(self.path_manager),
             self.output_dir,
         )
+        self._augmentor: DataAugmentor | None = None
+        self.compound_limit = compound_limit
 
     def __enter__(self) -> 'GoldParquetBuilderV3':
         return self
@@ -79,6 +84,7 @@ class GoldParquetBuilderV3:
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
         if self.conn:
             self.conn.close()
+        self._augmentor = None
 
     # ------------------------------------------------------------------
     # Phase 1: Source Extraction (Parallel)
@@ -294,150 +300,20 @@ class GoldParquetBuilderV3:
     # ------------------------------------------------------------------
     # Phase 2.5: Enrich CV Terms
     # ------------------------------------------------------------------
+    def run_data_augmentation(self, cv_terms_only: bool = False) -> None:
+        """Augment deduplicated data with derived metadata before FK resolution."""
+
+        augmentor = self._get_data_augmentor()
+        if cv_terms_only:
+            augmentor.ensure_cv_terms()
+        else:
+            augmentor.run_all()
+
     def enrich_cv_terms(self) -> None:
-        """Scan deduped files and auto-generate missing cv_terms.
+        """Backward-compatible wrapper for legacy callers."""
 
-        This runs after deduplication but before FK resolution.
-        It scans all deduped files for cv_term references and ensures
-        those terms exist in cv_term_deduped.
-        """
-        deduped_dir = self.deduped_dir
-        cv_namespace_deduped = deduped_dir / "cv_namespace_deduped.parquet"
-        cv_term_deduped = deduped_dir / "cv_term_deduped.parquet"
-        namespace_literal = self._duckdb_path_literal(cv_namespace_deduped)
-        term_literal = self._duckdb_path_literal(cv_term_deduped)
-
-        if not cv_namespace_deduped.exists() or not cv_term_deduped.exists():
-            logger.info("Skipping cv_term enrichment - cv_namespace or cv_term not found")
-            return
-
-        logger.info("Enriching cv_terms from deduped files...")
-
-        # Collect all namespace/term references from deduped files
-        missing_namespaces = set()
-        missing_terms = []  # [(namespace, name, description)]
-
-        # Check entity table for entity types
-        entity_deduped = deduped_dir / "entity_deduped.parquet"
-        if entity_deduped.exists():
-            result = self.conn.execute(f"""
-                SELECT DISTINCT
-                    entity_type_namespace_name as namespace,
-                    entity_type_name as name
-                FROM read_parquet('{self._duckdb_path_literal(entity_deduped)}')
-                WHERE entity_type_namespace_name IS NOT NULL
-                  AND entity_type_name IS NOT NULL
-            """).fetchall()
-
-            for namespace, name in result:
-                missing_namespaces.add(namespace)
-                missing_terms.append((namespace, name, 'Auto-generated entity type'))
-
-        # Check entity_identifier table for identifier types
-        entity_identifier_deduped = deduped_dir / "entity_identifier_deduped.parquet"
-        if entity_identifier_deduped.exists():
-            result = self.conn.execute(f"""
-                SELECT DISTINCT
-                    identifier_type_namespace_name as namespace,
-                    identifier_type_name as name
-                FROM read_parquet('{self._duckdb_path_literal(entity_identifier_deduped)}')
-                WHERE identifier_type_namespace_name IS NOT NULL
-                  AND identifier_type_name IS NOT NULL
-            """).fetchall()
-
-            for namespace, name in result:
-                missing_namespaces.add(namespace)
-                missing_terms.append((namespace, name, 'Auto-generated identifier type'))
-
-        # Check reference table for reference types
-        reference_deduped = deduped_dir / "reference_deduped.parquet"
-        if reference_deduped.exists():
-            result = self.conn.execute(f"""
-                SELECT DISTINCT
-                    type_namespace_name as namespace,
-                    type_name as name
-                FROM read_parquet('{self._duckdb_path_literal(reference_deduped)}')
-                WHERE type_namespace_name IS NOT NULL
-                  AND type_name IS NOT NULL
-            """).fetchall()
-
-            for namespace, name in result:
-                missing_namespaces.add(namespace)
-                missing_terms.append((namespace, name, 'Auto-generated reference type'))
-
-        # Filter out namespaces that already exist
-        existing_namespaces = set(
-            row[0] for row in self.conn.execute(f"""
-                SELECT DISTINCT name FROM read_parquet('{namespace_literal}')
-            """).fetchall()
-        )
-
-        new_namespaces = missing_namespaces - existing_namespaces
-
-        # Filter out terms that already exist
-        existing_terms = set(
-            (row[0], row[1]) for row in self.conn.execute(f"""
-                SELECT DISTINCT namespace_name, name
-                FROM read_parquet('{term_literal}')
-            """).fetchall()
-        )
-
-        new_terms = [(ns, name, desc) for ns, name, desc in missing_terms
-                     if (ns, name) not in existing_terms]
-
-        if not new_namespaces and not new_terms:
-            logger.info("✓ No missing cv_terms to enrich")
-            return
-
-        # Insert missing namespaces
-        if new_namespaces:
-            logger.info(f"Adding {len(new_namespaces)} missing namespaces: {new_namespaces}")
-
-            # Get current max ID
-            max_id = self.conn.execute(f"""
-                SELECT COALESCE(MAX(id), 0) FROM read_parquet('{namespace_literal}')
-            """).fetchone()[0]
-
-            # Create temp table with new namespaces
-            namespace_values = ', '.join(
-                f"({max_id + i + 1}, {self._sql_quote(ns)})"
-                for i, ns in enumerate(sorted(new_namespaces))
-            )
-
-            # Append to existing file
-            self.conn.execute(f"""
-                COPY (
-                    SELECT * FROM read_parquet('{namespace_literal}')
-                    UNION ALL
-                    SELECT * FROM (VALUES {namespace_values}) AS t(id, name)
-                ) TO '{namespace_literal}' (FORMAT PARQUET)
-            """)
-
-        # Insert missing terms
-        if new_terms:
-            logger.info(f"Adding {len(new_terms)} missing cv_terms")
-
-            # Get current max ID
-            max_id = self.conn.execute(f"""
-                SELECT COALESCE(MAX(id), 0) FROM read_parquet('{term_literal}')
-            """).fetchone()[0]
-
-            # Create temp table with new terms
-            term_values = ', '.join(
-                f"({max_id + i + 1}, {self._sql_quote(name)}, NULL, {self._sql_quote(desc)}, FALSE, {self._sql_quote(ns)}, NULL, NULL)"
-                for i, (ns, name, desc) in enumerate(new_terms)
-            )
-
-            # Append to existing file
-            self.conn.execute(f"""
-                COPY (
-                    SELECT * FROM read_parquet('{term_literal}')
-                    UNION ALL
-                    SELECT * FROM (VALUES {term_values}) AS t(id, name, accession, description, is_obsolete, namespace_name, replaces_accession, replaced_by_accession)
-                ) TO '{term_literal}' (FORMAT PARQUET)
-            """)
-
-        logger.info(f"✓ Enriched cv_terms: +{len(new_namespaces)} namespaces, +{len(new_terms)} terms")
+        logger.debug("enrich_cv_terms() is deprecated – using DataAugmentor.ensure_cv_terms")
+        self.run_data_augmentation(cv_terms_only=True)
 
     # ------------------------------------------------------------------
     # Phase 3: Foreign Key Resolution
@@ -579,9 +455,9 @@ class GoldParquetBuilderV3:
         logger.info("Incrementally deduplicating (appending to existing deduped files)")
         self.deduplicate_all_tables_incremental()
 
-        # 3. Enrich cv_terms if needed
-        logger.info("Enriching cv_terms")
-        self.enrich_cv_terms()
+        # 3. Augment deduped data before FK resolution
+        logger.info("Running data augmentation")
+        self.run_data_augmentation()
 
         # 4. Rerun FK resolution
         logger.info("Rerunning FK resolution phase")
@@ -590,6 +466,15 @@ class GoldParquetBuilderV3:
     # ------------------------------------------------------------------
     # Utility methods
     # ------------------------------------------------------------------
+    def _get_data_augmentor(self) -> DataAugmentor:
+        if self._augmentor is None:
+            self._augmentor = DataAugmentor(
+                self.conn,
+                self.deduped_dir,
+                compound_limit=self.compound_limit,
+            )
+        return self._augmentor
+
     def _split_source_key(self, source_name: str, fallback_func: str) -> tuple[str, str]:
         """Split a pass1 source key into (source_module, function_name)."""
         if '__' in source_name:
@@ -638,13 +523,6 @@ class GoldParquetBuilderV3:
     def _duckdb_path_literal(path: Path | str) -> str:
         """Escape a filesystem path for embedding in DuckDB SQL."""
         return str(path).replace("'", "''")
-
-    @staticmethod
-    def _sql_quote(value: str | None) -> str:
-        """Quote a string value for SQL values blocks."""
-        if value is None:
-            return 'NULL'
-        return "'" + value.replace("'", "''") + "'"
 
     def _list_pass1_files_by_table(self) -> dict[str, list[Path]]:
         """Return table → pass1 files mapping based on storage backend."""
@@ -798,11 +676,11 @@ class GoldParquetBuilderV3:
         logger.info("=" * 70)
         self.deduplicate_all_tables()
 
-        # Phase 2.5: Enrich CV Terms
+        # Phase 2.5: Data augmentation
         logger.info("=" * 70)
-        logger.info("Phase 2.5: CV Term Enrichment")
+        logger.info("Phase 2.5: Data Augmentation")
         logger.info("=" * 70)
-        self.enrich_cv_terms()
+        self.run_data_augmentation()
 
         # Phase 3: Resolve FKs
         logger.info("=" * 70)
@@ -835,11 +713,11 @@ class GoldParquetBuilderV3:
         logger.info("=" * 70)
         self.deduplicate_all_tables()
 
-        # Phase 2.5: Enrich CV Terms
+        # Phase 2.5: Data augmentation
         logger.info("=" * 70)
-        logger.info("Phase 2.5: CV Term Enrichment")
+        logger.info("Phase 2.5: Data Augmentation")
         logger.info("=" * 70)
-        self.enrich_cv_terms()
+        self.run_data_augmentation()
 
         # Phase 3: Resolve FKs
         logger.info("=" * 70)

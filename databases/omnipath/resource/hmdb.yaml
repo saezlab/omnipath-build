@@ -20,28 +20,9 @@ functions:
             -   source: _constant
                 target: identifier_type
                 value: inchikey
-            -   source: [accession, chebi_id, pubchem_compound_id, kegg_id, drugbank_id, cas_registry_number]
+            -   source: [accession, chebi_id, pubchem_compound_id, kegg_id, drugbank_id, cas_registry_number, smiles, iupac_name, traditional_iupac, synonyms]
                 target: additional_identifiers
                 transform: build_identifier_list_hmdb
-            -   source: [iupac_name, traditional_iupac]
-                target: name
-                transform: coalesce
-            -   source: synonyms
-                target: name_variants
-                transform: to_json
-            -   source: chemical_formula
-                target: compound_formula
-            -   source: smiles
-                target: compound_smiles
-            -   source: inchi
-                target: compound_inchi
-            -   source: average_molecular_weight
-                target: molecular_weight
-            -   source: monisotopic_molecular_weight
-                target: exact_mass
-            -   source: _constant
-                target: is_valid
-                value: true
             -   source: _constant
                 target: processed_by
                 value: hmdb_compounds_for_metabo
