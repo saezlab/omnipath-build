@@ -189,22 +189,29 @@ class SourceProcessor:
         return f"{expr} AS \"{target}\""
 
 
-    def _map_silver_files_to_tables(self, silver_files: dict[str, Path]) -> dict[str, Path]:
+    def _map_silver_files_to_tables(
+        self,
+        silver_files: dict[str, Path]
+    ) -> tuple[dict[str, Path], dict[str, str]]:
         """Map function names to their target table names.
 
         Args:
             silver_files: Dict mapping function names to silver parquet paths
 
         Returns:
-            Dict mapping target table names to silver parquet paths
+            Tuple of:
+                - dict mapping target table names to silver parquet paths
+                - dict mapping target table names to originating function names
         """
-        table_map = {}
+        table_map: dict[str, Path] = {}
+        table_function_map: dict[str, str] = {}
         for function_name, parquet_path in silver_files.items():
             processing_cfg = self.config.get('functions', {}).get(function_name, {}).get('processing', {})
             target_table = processing_cfg.get('target_table', function_name)
             table_map[target_table] = parquet_path
+            table_function_map[target_table] = function_name
 
-        return table_map
+        return table_map, table_function_map
 
     def process_to_silver(self) -> dict[str, Path]:
         """Process bronze → silver for all functions in this source.
@@ -300,7 +307,7 @@ class SourceProcessor:
             return {}
 
         # Map function names to target table names
-        silver_table_map = self._map_silver_files_to_tables(silver_files)
+        silver_table_map, table_function_map = self._map_silver_files_to_tables(silver_files)
 
         logger.info("Processing %s silver → gold (extraction only)", self.source_module)
 
@@ -309,6 +316,7 @@ class SourceProcessor:
             return builder.run_pass1_only(
                 silver_table_map,
                 source_label=self.source_module,
+                table_function_map=table_function_map,
             )
 
     def process_to_gold(self, silver_files: dict[str, Path]) -> dict[str, Path]:
@@ -329,7 +337,7 @@ class SourceProcessor:
             return {}
 
         # Map function names to target table names
-        silver_table_map = self._map_silver_files_to_tables(silver_files)
+        silver_table_map, table_function_map = self._map_silver_files_to_tables(silver_files)
 
         logger.info("Processing %s silver → gold parquet (builder v3)", self.source_module)
 
@@ -338,6 +346,7 @@ class SourceProcessor:
             return builder.run_full_pipeline(
                 silver_table_map,
                 source_label=self.source_module,
+                table_function_map=table_function_map,
             )
 
     def process_full_pipeline(self) -> dict[str, dict[str, Path]]:

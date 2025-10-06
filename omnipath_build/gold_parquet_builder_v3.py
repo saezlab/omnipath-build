@@ -606,6 +606,7 @@ class GoldParquetBuilderV3:
         self,
         silver_files: dict[str, Path],
         source_label: str | None = None,
+        table_function_map: dict[str, str] | None = None,
     ) -> None:
         """Extract all tables from silver parquet files using silver_gold_map.
 
@@ -629,10 +630,25 @@ class GoldParquetBuilderV3:
                 logger.debug(f"Skipping {extraction_name} - source table {source_table} not available")
                 continue
 
+            pass1_source_name = extraction_name
             if source_label:
-                pass1_source_name = f"{source_label}__{extraction_name}"
-            else:
-                pass1_source_name = extraction_name
+                function_name: str | None = None
+                if table_function_map:
+                    function_name = table_function_map.get(source_table)
+
+                if function_name is None:
+                    parquet_path = silver_files.get(source_table)
+                    if parquet_path:
+                        silver_dir = parquet_path.parent
+                        function_dir = silver_dir.parent if silver_dir.name == PathManager.SILVER else silver_dir
+                        # Avoid using the root path name ("/")
+                        if function_dir != function_dir.parent:
+                            function_name = function_dir.name
+
+                if function_name:
+                    pass1_source_name = f"{source_label}__{function_name}"
+                else:
+                    pass1_source_name = f"{source_label}__{extraction_name}"
 
             self.extract_pass1(
                 table_name=target_gold_table,
@@ -644,6 +660,7 @@ class GoldParquetBuilderV3:
         self,
         silver_files: dict[str, Path],
         source_label: str | None = None,
+        table_function_map: dict[str, str] | None = None,
     ) -> dict[str, list[Path]]:
         """Run only Phase 1: Extract pass1 files from silver parquet.
 
@@ -659,7 +676,11 @@ class GoldParquetBuilderV3:
         logger.info("=" * 70)
         logger.info("Phase 1: Source Extraction (Pass1 only)")
         logger.info("=" * 70)
-        self.extract_from_silver_parquet(silver_files, source_label=source_label)
+        self.extract_from_silver_parquet(
+            silver_files,
+            source_label=source_label,
+            table_function_map=table_function_map,
+        )
 
         return self._list_pass1_files_by_table()
 
@@ -695,6 +716,7 @@ class GoldParquetBuilderV3:
         self,
         silver_files: dict[str, Path],
         source_label: str | None = None,
+        table_function_map: dict[str, str] | None = None,
     ) -> dict[str, Path]:
         """Run the full three-phase pipeline from silver parquet files.
 
@@ -708,7 +730,11 @@ class GoldParquetBuilderV3:
         logger.info("=" * 70)
         logger.info("Phase 1: Source Extraction")
         logger.info("=" * 70)
-        self.extract_from_silver_parquet(silver_files, source_label=source_label)
+        self.extract_from_silver_parquet(
+            silver_files,
+            source_label=source_label,
+            table_function_map=table_function_map,
+        )
 
         # Phase 2: Deduplicate
         logger.info("=" * 70)
