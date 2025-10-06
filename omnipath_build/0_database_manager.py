@@ -22,6 +22,17 @@ Usage:
     # Process sources (Bronze → Silver → Gold Parquet)
     python database_manager.py process --database metabo
 
+    # Process specific source only
+    python database_manager.py process --database metabo --source hmdb
+
+    # Process specific layers only
+    python database_manager.py process --database metabo --layers silver,gold_pass1
+    python database_manager.py process --database metabo --layers gold_final
+
+    # Control parallelization
+    python database_manager.py process --database metabo --max-workers 4
+    python database_manager.py process --database metabo --no-parallel
+
     # Show database status
     python database_manager.py status --database metabo
 """
@@ -249,7 +260,8 @@ class DatabaseManager:
         self,
         source: str | None = None,
         max_workers: int | None = None,
-        parallel: bool = True
+        parallel: bool = True,
+        layers: list[str] | None = None,
     ) -> bool:
         """Process sources through silver and gold transformations.
 
@@ -260,6 +272,7 @@ class DatabaseManager:
             source: Specific source module to process (None = all sources)
             max_workers: Max parallel workers (None = auto based on CPU count)
             parallel: If True, process sources in parallel (default: True)
+            layers: Specific layers to process ['silver', 'gold_pass1', 'gold_final'] (None = all)
 
         Returns:
             True if successful, False otherwise
@@ -271,9 +284,22 @@ class DatabaseManager:
                 )
                 return False
 
+            # Validate and normalize layer specification
+            valid_layers = {'silver', 'gold_pass1', 'gold_final'}
+            if layers is None:
+                layers_to_run = valid_layers
+            else:
+                layers_to_run = set(layers)
+                invalid = layers_to_run - valid_layers
+                if invalid:
+                    self.logger.error(f'Invalid layers: {invalid}. Valid: {valid_layers}')
+                    return False
+
+            layer_desc = ', '.join(sorted(layers_to_run)) if layers else 'all layers'
             self.logger.info(
                 f'Processing sources for {self.database_name}'
                 + (f' (source: {source})' if source else '')
+                + f' (layers: {layer_desc})'
             )
 
             # Get list of sources to process
@@ -286,58 +312,60 @@ class DatabaseManager:
                 self.logger.error('No sources found to process')
                 return False
 
-            # Phase 1: Process all sources to Pass1 in parallel
-            all_results = {}
+            # Phase 1: Process sources to Pass1 (silver + gold_pass1)
+            if 'silver' in layers_to_run or 'gold_pass1' in layers_to_run:
+                all_results = {}
 
-            if parallel and len(sources) > 1:
-                self.logger.info(f'Processing {len(sources)} sources in parallel (max_workers={max_workers or "auto"})')
+                if parallel and len(sources) > 1:
+                    self.logger.info(f'Processing {len(sources)} sources in parallel (max_workers={max_workers or "auto"})')
 
-                with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                    # Submit all source processing tasks
-                    future_to_source = {
-                        executor.submit(self._process_single_source_to_pass1, src): src
-                        for src in sources
-                    }
+                    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                        # Submit all source processing tasks
+                        future_to_source = {
+                            executor.submit(self._process_single_source_to_pass1, src): src
+                            for src in sources
+                        }
 
-                    # Collect results as they complete
-                    for future in as_completed(future_to_source):
-                        source_name, result = future.result()
+                        # Collect results as they complete
+                        for future in as_completed(future_to_source):
+                            source_name, result = future.result()
+                            all_results[source_name] = result
+
+                            if not result.get('success', False):
+                                self.logger.error(f'Source {source_name} failed: {result.get("error", "Unknown error")}')
+                                return False
+                else:
+                    # Sequential processing
+                    if not parallel:
+                        self.logger.info('Processing sources sequentially (parallel=False)')
+
+                    for source_name in sources:
+                        source_name, result = self._process_single_source_to_pass1(source_name)
                         all_results[source_name] = result
 
                         if not result.get('success', False):
-                            self.logger.error(f'Source {source_name} failed: {result.get("error", "Unknown error")}')
                             return False
-            else:
-                # Sequential processing
-                if not parallel:
-                    self.logger.info('Processing sources sequentially (parallel=False)')
 
-                for source_name in sources:
-                    source_name, result = self._process_single_source_to_pass1(source_name)
-                    all_results[source_name] = result
-
-                    if not result.get('success', False):
-                        return False
-
-            self.logger.info('✓ All sources processed to Pass1 successfully')
+                self.logger.info('✓ All sources processed to Pass1 successfully')
 
             # Phase 2: Cross-source deduplication and FK resolution
-            self.logger.info('=' * 70)
-            self.logger.info('Starting cross-source deduplication and FK resolution')
-            self.logger.info('=' * 70)
+            if 'gold_final' in layers_to_run:
+                self.logger.info('=' * 70)
+                self.logger.info('Starting cross-source deduplication and FK resolution')
+                self.logger.info('=' * 70)
 
-            try:
-                from omnipath_build import GoldLoader
+                try:
+                    from omnipath_build import GoldLoader
 
-                with GoldLoader(self.path_manager) as gold_loader:
-                    final_gold_files = gold_loader.run_dedup_and_fk_resolution()
+                    with GoldLoader(self.path_manager) as gold_loader:
+                        final_gold_files = gold_loader.run_dedup_and_fk_resolution()
 
-                gold_count = len(final_gold_files)
-                self.logger.info(f'✓ Cross-source dedup complete: {gold_count} final gold tables')
+                    gold_count = len(final_gold_files)
+                    self.logger.info(f'✓ Cross-source dedup complete: {gold_count} final gold tables')
 
-            except (RuntimeError, OSError) as e:
-                self.logger.error(f'Failed to run cross-source deduplication: {e}')
-                return False
+                except (RuntimeError, OSError) as e:
+                    self.logger.error(f'Failed to run cross-source deduplication: {e}')
+                    return False
 
             return True
 
@@ -603,8 +631,22 @@ Examples:
   # Load bronze data
   python database_manager.py load-bronze --database metabo
 
-  # Process sources (bronze → silver → gold)
+  # Process all sources through all layers
   python database_manager.py process --database metabo
+
+  # Process specific source only
+  python database_manager.py process --database metabo --source hmdb
+
+  # Process specific layers (useful for incremental updates)
+  python database_manager.py process --database metabo --layers silver,gold_pass1
+  python database_manager.py process --database metabo --layers gold_final
+
+  # Control parallel processing
+  python database_manager.py process --database metabo --max-workers 4
+  python database_manager.py process --database metabo --no-parallel
+
+  # Combined: process one source through silver only
+  python database_manager.py process --database metabo --source hmdb --layers silver
 
   # Show status
   python database_manager.py status --database metabo
@@ -640,6 +682,23 @@ Examples:
     parser.add_argument(
         '--resources',
         help='Comma-separated list of resources to add (for add-resources command)',
+    )
+
+    parser.add_argument(
+        '--layers',
+        help='Comma-separated list of layers to process: silver,gold_pass1,gold_final (for process command)',
+    )
+
+    parser.add_argument(
+        '--max-workers',
+        type=int,
+        help='Maximum number of parallel workers (for process command)',
+    )
+
+    parser.add_argument(
+        '--no-parallel',
+        action='store_true',
+        help='Disable parallel processing (for process command)',
     )
 
     parser.add_argument(
@@ -685,7 +744,17 @@ Examples:
             success = manager.load_bronze(module=args.module, force=args.force)
 
         elif args.command == 'process':
-            success = manager.process_sources(source=args.source)
+            # Parse layers if provided
+            layers = None
+            if args.layers:
+                layers = [layer.strip() for layer in args.layers.split(',')]
+
+            success = manager.process_sources(
+                source=args.source,
+                max_workers=args.max_workers,
+                parallel=not args.no_parallel,
+                layers=layers,
+            )
 
         elif args.command == 'status':
             success = manager.show_status()
