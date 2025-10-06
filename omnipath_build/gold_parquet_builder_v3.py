@@ -361,6 +361,12 @@ class GoldParquetBuilderV3:
             # Update join condition to use the alias
             join_condition_with_alias = join_condition.replace(f"{target_table}.", f"{alias}.")
 
+            # Track which main table columns participate in the join
+            main_columns = {
+                match.group(1)
+                for match in re.finditer(r'main\.([A-Za-z_][A-Za-z0-9_]*)', join_condition_with_alias)
+            }
+
             # Build join
             joins.append(
                 f"""
@@ -368,8 +374,6 @@ class GoldParquetBuilderV3:
                 ON {join_condition_with_alias}
                 """
             )
-
-            main_columns = {match.group(1) for match in re.finditer(r'main\.([A-Za-z_][A-Za-z0-9_]*)', join_condition_with_alias)}
 
             if main_columns:
                 null_guard = ' AND '.join(f"main.{col} IS NULL" for col in sorted(main_columns))
@@ -591,8 +595,7 @@ class GoldParquetBuilderV3:
             condition_part = condition_part[1:-1].strip()
 
         # Replace bare column references with main.column
-        # and use IS NOT DISTINCT FROM for NULL-safe equality
-        condition_part = re.sub(r'= (\w+)', lambda m: f'IS NOT DISTINCT FROM main.{m.group(1)}', condition_part)
+        condition_part = re.sub(r'= (\w+)', lambda m: f'= main.{m.group(1)}', condition_part)
 
         return target_table, condition_part
 
