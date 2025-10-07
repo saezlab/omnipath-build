@@ -376,6 +376,67 @@ class GoldLoader:
 
             target_literal = self._duckdb_path_literal(target_deduped)
 
+            # Check if this is an entity_identifier fallback FK
+            if join_condition.startswith("__ENTITY_IDENTIFIER_FALLBACK__:"):
+                # Parse: "__ENTITY_IDENTIFIER_FALLBACK__:col1,col2:direct_condition"
+                parts = join_condition.split(":", 2)
+                column_list = parts[1]
+                direct_condition = parts[2]
+
+                identifier_col, type_col = [c.strip() for c in column_list.split(',')]
+
+                # Check if entity_identifier table exists
+                entity_identifier_deduped = deduped_dir / "entity_identifier_deduped.parquet"
+                if not entity_identifier_deduped.exists():
+                    logger.warning(f"entity_identifier table not found - falling back to direct match only for {fk_id}")
+                    # Fall back to direct match only
+                    alias = f"{target_table}_{fk_id}"
+                    direct_condition_with_main = re.sub(r'= (\w+)', lambda m: f'= main.{m.group(1)}', direct_condition)
+                    direct_condition_with_alias = direct_condition_with_main.replace(f"{target_table}.", f"{alias}.")
+                    joins.append(f"""
+                        LEFT JOIN read_parquet('{target_literal}') AS {alias}
+                        ON {direct_condition_with_alias}
+                    """)
+                    fk_select_cols.append(f"{alias}.id AS {fk_id}")
+                else:
+                    # Two-stage join: direct match OR entity_identifier lookup
+                    entity_identifier_literal = self._duckdb_path_literal(entity_identifier_deduped)
+
+                    alias_direct = f"{target_table}_direct_{fk_id}"
+                    alias_ei = f"entity_identifier_{fk_id}"
+                    alias_via_ei = f"{target_table}_via_ei_{fk_id}"
+
+                    # Prepare direct condition with proper table references
+                    direct_condition_with_main = re.sub(r'= (\w+)', lambda m: f'= main.{m.group(1)}', direct_condition)
+                    direct_condition_with_alias = direct_condition_with_main.replace(f"{target_table}.", f"{alias_direct}.")
+
+                    # Join 1: Direct match on entity table
+                    joins.append(f"""
+                        LEFT JOIN read_parquet('{target_literal}') AS {alias_direct}
+                        ON {direct_condition_with_alias}
+                    """)
+
+                    # Join 2: Lookup via entity_identifier
+                    joins.append(f"""
+                        LEFT JOIN read_parquet('{entity_identifier_literal}') AS {alias_ei}
+                        ON {alias_ei}.identifier IS NOT DISTINCT FROM main.{identifier_col}
+                       AND {alias_ei}.type_name IS NOT DISTINCT FROM main.{type_col}
+                    """)
+
+                    # Join 3: Get entity via entity_identifier.entity_id
+                    joins.append(f"""
+                        LEFT JOIN read_parquet('{target_literal}') AS {alias_via_ei}
+                        ON {alias_via_ei}.id = {alias_ei}.entity_id
+                    """)
+
+                    # COALESCE: prefer direct match, fallback to entity_identifier lookup
+                    fk_select_cols.append(f"""
+                        COALESCE({alias_direct}.id, {alias_via_ei}.id) AS {fk_id}
+                    """)
+
+                continue
+
+            # Standard FK resolution (non-entity_identifier fallback)
             # Use FK ID as unique alias to avoid ambiguous table names
             alias = f"{target_table}_{fk_id}"
 
@@ -610,7 +671,14 @@ class GoldLoader:
 
             "links to cv_term via (cv_namespace.name = type_namespace_name AND cv_term.name = type_name)"
             → ("cv_term", "cv_namespace.name = main.type_namespace_name AND cv_term.name = main.type_name")
+
+            "links to entity via (...) OR via entity_identifier (col1, col2)"
+            → ("entity", special handling - returns marker for two-stage join)
         """
+        # Check for entity_identifier fallback pattern
+        if "OR via entity_identifier" in link_text:
+            return self._parse_fk_with_entity_identifier_fallback(link_text)
+
         # Extract table name: "links to TABLE via ..."
         table_match = re.search(r'links to (\w+) via (.+)', link_text, re.IGNORECASE)
         if not table_match:
@@ -627,6 +695,41 @@ class GoldLoader:
         condition_part = re.sub(r'= (\w+)', lambda m: f'= main.{m.group(1)}', condition_part)
 
         return target_table, condition_part
+
+    def _parse_fk_with_entity_identifier_fallback(self, link_text: str) -> tuple[str, str]:
+        """Parse FK link with entity_identifier fallback.
+
+        Example link:
+            "links to entity via (entity.deduplication_identifier = entity_deduplication_identifier
+             AND entity.deduplication_identifier_type = entity_deduplication_identifier_type)
+             OR via entity_identifier (entity_deduplication_identifier, entity_deduplication_identifier_type)"
+
+        Returns:
+            ("entity", "__ENTITY_IDENTIFIER_FALLBACK__:identifier_col,type_col")
+
+        This marker signals to resolve_foreign_keys_table() to use the two-stage lookup.
+        """
+        # Extract the columns for entity_identifier lookup
+        match = re.search(r'OR via entity_identifier \(([^)]+)\)', link_text, re.IGNORECASE)
+        if not match:
+            raise ValueError(f"Cannot parse entity_identifier fallback in: {link_text}")
+
+        column_list = match.group(1).strip()
+
+        # Parse the direct match condition (before "OR via entity_identifier")
+        direct_match = re.search(r'links to (\w+) via (.+?) OR via entity_identifier', link_text, re.IGNORECASE)
+        if not direct_match:
+            raise ValueError(f"Cannot parse entity FK direct match in: {link_text}")
+
+        target_table = direct_match.group(1)
+        direct_condition = direct_match.group(2).strip()
+
+        # Remove outer parentheses
+        if direct_condition.startswith('(') and direct_condition.endswith(')'):
+            direct_condition = direct_condition[1:-1].strip()
+
+        # Return special marker that includes both the direct condition and the fallback columns
+        return target_table, f"__ENTITY_IDENTIFIER_FALLBACK__:{column_list}:{direct_condition}"
 
     # ------------------------------------------------------------------
     # High-level pipeline

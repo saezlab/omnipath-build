@@ -139,7 +139,7 @@ gold_tables = {
             }
         },
         "foreign_keys": [
-            fk("entity_id", "links to entity via (entity.deduplication_identifier = entity_deduplication_identifier AND entity.deduplication_identifier_type = entity_deduplication_identifier_type)"),
+            fk("entity_id", "links to entity via (entity.deduplication_identifier = entity_deduplication_identifier AND entity.deduplication_identifier_type = entity_deduplication_identifier_type) OR via entity_identifier (entity_deduplication_identifier, entity_deduplication_identifier_type)"),
             fk("type_id", "links to cv_term via (cv_term.namespace_name = identifier_type_namespace_name AND cv_term.name = identifier_type_name)"),
             fk("provenance_id", "links to provenance via (provenance.source_name = source_name AND provenance.reference_value = reference_value)")
         ],
@@ -169,7 +169,7 @@ gold_tables = {
             }
         },
         "foreign_keys": [
-            fk("entity_id", "links to entity via (entity.deduplication_identifier = entity_deduplication_identifier AND entity.deduplication_identifier_type = entity_deduplication_identifier_type)")
+            fk("entity_id", "links to entity via (entity.deduplication_identifier = entity_deduplication_identifier AND entity.deduplication_identifier_type = entity_deduplication_identifier_type) OR via entity_identifier (entity_deduplication_identifier, entity_deduplication_identifier_type)")
         ],
         "constraints": {
             "pass1": [],
