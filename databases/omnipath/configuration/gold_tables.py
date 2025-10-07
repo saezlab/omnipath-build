@@ -3,8 +3,11 @@ __all__ = [
 ]
 
 # helper for readability
-def fk(id_col, link_text):
-    return {"id": id_col, "link": link_text}
+def fk(id_col, link_text, null_equal_columns: tuple[str, ...] | None = None):
+    fk_def = {"id": id_col, "link": link_text}
+    if null_equal_columns:
+        fk_def["null_equal_columns"] = tuple(null_equal_columns)
+    return fk_def
 
 gold_tables = {
     "cv_namespace": {
@@ -159,7 +162,11 @@ gold_tables = {
         },
         "foreign_keys": [
             fk("entity_identifier_id", "links to entity_identifier via (entity_identifier.identifier = identifier AND entity_identifier.identifier_type_namespace_name = identifier_type_namespace_name AND entity_identifier.identifier_type_name = identifier_type_name)"),
-            fk("provenance_id", "links to provenance via (provenance.source_name = source_name AND provenance.reference_value = reference_value)")
+            fk(
+                "provenance_id",
+                "links to provenance via (provenance.source_name = source_name AND provenance.reference_value = reference_value)",
+                null_equal_columns=("reference_value",)
+            )
         ],
         "constraints": {
             "pass1": [],

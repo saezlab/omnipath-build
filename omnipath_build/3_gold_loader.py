@@ -382,11 +382,12 @@ class GoldLoader:
             # Update join condition to use the alias
             join_condition_with_alias = join_condition.replace(f"{target_table}.", f"{alias}.")
 
-            # Use "IS NOT DISTINCT FROM" for FK comparisons so NULLs match when appropriate
-            join_condition_with_alias = join_condition_with_alias.replace(
-                ' = main.',
-                ' IS NOT DISTINCT FROM main.',
-            )
+            null_equal_columns = set(fk_def.get("null_equal_columns") or ())
+            if null_equal_columns:
+                join_condition_with_alias = self._apply_null_safe_equals(
+                    join_condition_with_alias,
+                    null_equal_columns,
+                )
 
             # Track which main table columns participate in the join
             main_columns = {
@@ -394,7 +395,7 @@ class GoldLoader:
                 for match in re.finditer(r'main\.([A-Za-z_][A-Za-z0-9_]*)', join_condition_with_alias)
             }
 
-            # Build join
+            # Build join (null-safe comparators are injected per-column when requested)
             joins.append(
                 f"""
                 LEFT JOIN read_parquet('{target_literal}') AS {alias}
@@ -600,6 +601,32 @@ class GoldLoader:
                 cols = [c.strip() for c in match.group(1).split(',')]
                 return cols
         return []
+
+    @staticmethod
+    def _apply_null_safe_equals(join_condition: str, null_equal_columns: set[str]) -> str:
+        """Wrap selected equality comparisons with null-safe semantics."""
+
+        if not null_equal_columns:
+            return join_condition
+
+        equality_pattern = re.compile(
+            r'(?P<lhs>[A-Za-z_][A-Za-z0-9_\.]*)\s*=\s*(?P<rhs>[A-Za-z_][A-Za-z0-9_\.]*)'
+        )
+
+        def replacer(match) -> str:
+            lhs = match.group('lhs')
+            rhs = match.group('rhs')
+
+            lhs_col = lhs.split('.', 1)[1] if lhs.startswith('main.') and '.' in lhs else None
+            rhs_col = rhs.split('.', 1)[1] if rhs.startswith('main.') and '.' in rhs else None
+
+            main_col = lhs_col or rhs_col
+            if main_col and main_col in null_equal_columns:
+                return f"(({lhs} = {rhs}) OR ({lhs} IS NULL AND {rhs} IS NULL))"
+
+            return match.group(0)
+
+        return equality_pattern.sub(replacer, join_condition)
 
     def _parse_fk_link(self, link_text: str) -> tuple[str, str]:
         """Parse FK link text into table name and join condition.
