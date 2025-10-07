@@ -113,7 +113,6 @@ silver_interactions:
 
   # Metadata
     source_database: VARCHAR(100)
-    evidence_date: TIMESTAMP           # When evidence was created/published
     created_at: TIMESTAMP
     updated_at: TIMESTAMP
     processed_by: VARCHAR(100)
