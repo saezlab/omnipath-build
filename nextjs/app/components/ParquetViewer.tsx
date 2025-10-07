@@ -32,7 +32,7 @@ export default function ParquetViewer({ filePath, fileData }: ParquetViewerProps
         setMetadata(meta);
         
         const cols = meta.schema
-          .filter((s: any) => s.name !== 'schema')
+          .filter((s: any) => s.name !== 'schema' && s.name !== 'duckdb_schema')
           .map((s: any) => s.name);
         setColumns(cols);
         
