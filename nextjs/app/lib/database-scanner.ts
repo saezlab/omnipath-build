@@ -24,15 +24,24 @@ export interface SourceInfo {
   totalSize: number;
 }
 
+export interface CombinedTable {
+  name: string;
+  path: string;
+  size: number;
+  modified: Date;
+}
+
 export interface DatabaseInfo {
   name: string;
   path: string;
   sources: SourceInfo[];
+  combinedTables: CombinedTable[];
   totalFiles: number;
   totalSize: number;
 }
 
 const DATABASES_PATH = path.join(process.cwd(), '..', 'databases', 'omnipath', 'data');
+const OUTPUT_PATH = path.join(process.cwd(), '..', 'databases', 'omnipath', 'output');
 
 function getLayerFromPath(filePath: string): 'bronze' | 'silver' | 'gold' | 'pass1' | null {
   if (filePath.includes('/bronze/')) return 'bronze';
@@ -73,6 +82,36 @@ function scanDirectory(dirPath: string, sourceName: string = ''): DatabaseFile[]
   }
 
   return files;
+}
+
+function scanCombinedTables(): CombinedTable[] {
+  const tables: CombinedTable[] = [];
+
+  try {
+    if (!fs.existsSync(OUTPUT_PATH)) {
+      return tables;
+    }
+
+    const items = fs.readdirSync(OUTPUT_PATH);
+
+    for (const item of items) {
+      if (item.endsWith('.parquet')) {
+        const fullPath = path.join(OUTPUT_PATH, item);
+        const stat = fs.statSync(fullPath);
+
+        tables.push({
+          name: item.replace('.parquet', ''),
+          path: fullPath,
+          size: stat.size,
+          modified: stat.mtime
+        });
+      }
+    }
+  } catch (error) {
+    console.error('Error scanning combined tables:', error);
+  }
+
+  return tables;
 }
 
 export function scanDatabases(): DatabaseInfo[] {
@@ -118,6 +157,9 @@ export function scanDatabases(): DatabaseInfo[] {
     console.error('Error scanning databases:', error);
   }
 
+  // Scan combined output tables
+  const combinedTables = scanCombinedTables();
+
   // Return omnipath as a single database with all sources
   const totalFiles = sources.reduce((sum, s) => sum + s.totalFiles, 0);
   const totalSize = sources.reduce((sum, s) => sum + s.totalSize, 0);
@@ -126,6 +168,7 @@ export function scanDatabases(): DatabaseInfo[] {
     name: 'omnipath',
     path: DATABASES_PATH,
     sources,
+    combinedTables,
     totalFiles,
     totalSize
   }];
@@ -243,10 +286,25 @@ export function buildDatabaseTree(databases: DatabaseInfo[]): TreeNode[] {
 }
 
 export async function loadParquetFile(filePath: string): Promise<ArrayBuffer> {
+  let fullPath: string;
+
+  // Check if it's an absolute path pointing to the output directory (combined tables)
+  if (path.isAbsolute(filePath) && filePath.includes('/output/')) {
+    fullPath = filePath;
+  }
+  // If filePath starts with / but is relative to DATABASES_PATH (source-specific files)
+  else if (filePath.startsWith('/') && !filePath.includes('/output/')) {
+    fullPath = path.join(DATABASES_PATH, filePath);
+  }
   // If filePath already includes databases/omnipath, use it directly
-  const fullPath = filePath.startsWith('/databases/omnipath')
-    ? path.join(process.cwd(), '..', filePath)
-    : path.join(DATABASES_PATH, filePath);
+  else if (filePath.includes('databases/omnipath')) {
+    fullPath = path.join(process.cwd(), '..', filePath);
+  }
+  // Otherwise, relative to DATABASES_PATH
+  else {
+    fullPath = path.join(DATABASES_PATH, filePath);
+  }
+
   const buffer = await fs.promises.readFile(fullPath);
   // Convert Buffer to ArrayBuffer properly
   const arrayBuffer = new ArrayBuffer(buffer.length);

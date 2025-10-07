@@ -8,7 +8,8 @@ export async function GET() {
 
     return NextResponse.json({
       database: omnipath,
-      sources: omnipath?.sources || []
+      sources: omnipath?.sources || [],
+      combinedTables: omnipath?.combinedTables || []
     });
   } catch (error) {
     console.error('Error scanning databases:', error);
