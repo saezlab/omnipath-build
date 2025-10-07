@@ -302,6 +302,73 @@ class TestGoldLoaderPhase3:
         assert path.parent == loader.deduped_dir
         assert path.name == 'test_table_deduped.parquet'
 
+    def test_resolve_fk_with_null_reference(self, tmp_path):
+        """Entity identifiers should link to provenance rows even when reference is NULL."""
+        pm = PathManager('test_db', base_path=tmp_path)
+        loader = GoldLoader(pm)
+
+        entity_file = loader.deduped_dir / 'entity_deduped.parquet'
+        loader.conn.execute(f"""
+            COPY (
+                SELECT
+                    1 AS id,
+                    'E1' AS deduplication_identifier,
+                    'primary' AS deduplication_identifier_type,
+                    'OmniPath' AS entity_type_namespace_name,
+                    'Gene' AS entity_type_name
+            ) TO '{entity_file}' (FORMAT PARQUET)
+        """)
+
+        cv_term_file = loader.deduped_dir / 'cv_term_deduped.parquet'
+        loader.conn.execute(f"""
+            COPY (
+                SELECT
+                    1 AS id,
+                    'OmniPath' AS namespace_name,
+                    'Gene' AS name,
+                    'ACC1' AS accession,
+                    'desc' AS description,
+                    FALSE AS is_obsolete,
+                    NULL::VARCHAR AS replaces_accession,
+                    NULL::VARCHAR AS replaced_by_accession
+            ) TO '{cv_term_file}' (FORMAT PARQUET)
+        """)
+
+        provenance_file = loader.deduped_dir / 'provenance_deduped.parquet'
+        loader.conn.execute(f"""
+            COPY (
+                SELECT
+                    1 AS id,
+                    'SourceA' AS source_name,
+                    'SourceA' AS primary_source_name,
+                    NULL::VARCHAR AS reference_value
+            ) TO '{provenance_file}' (FORMAT PARQUET)
+        """)
+
+        entity_identifier_file = loader.deduped_dir / 'entity_identifier_deduped.parquet'
+        loader.conn.execute(f"""
+            COPY (
+                SELECT
+                    1 AS id,
+                    'ID123' AS identifier,
+                    'E1' AS entity_deduplication_identifier,
+                    'primary' AS entity_deduplication_identifier_type,
+                    'OmniPath' AS identifier_type_namespace_name,
+                    'Gene' AS identifier_type_name,
+                    'SourceA' AS source_name,
+                    NULL::VARCHAR AS reference_value
+            ) TO '{entity_identifier_file}' (FORMAT PARQUET)
+        """)
+
+        output_path = loader.resolve_foreign_keys_table('entity_identifier')
+        output_literal = loader._duckdb_path_literal(output_path)
+
+        result = loader.conn.execute(
+            f"SELECT identifier, entity_id, type_id, provenance_id FROM read_parquet('{output_literal}')"
+        ).fetchall()
+
+        assert result == [('ID123', 1, 1, 1)]
+
 
 class TestGoldLoaderIntegration:
     """Integration tests for the full gold pipeline."""

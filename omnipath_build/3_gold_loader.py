@@ -382,6 +382,12 @@ class GoldLoader:
             # Update join condition to use the alias
             join_condition_with_alias = join_condition.replace(f"{target_table}.", f"{alias}.")
 
+            # Use "IS NOT DISTINCT FROM" for FK comparisons so NULLs match when appropriate
+            join_condition_with_alias = join_condition_with_alias.replace(
+                ' = main.',
+                ' IS NOT DISTINCT FROM main.',
+            )
+
             # Track which main table columns participate in the join
             main_columns = {
                 match.group(1)
