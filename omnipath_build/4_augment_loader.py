@@ -21,6 +21,12 @@ try:  # pragma: no cover - exercised via tests when rdkit is installed
 except ImportError:  # pragma: no cover - environment without rdkit
     RDKit_AVAILABLE = False
 
+try:
+    from tqdm import tqdm
+    TQDM_AVAILABLE = True
+except ImportError:
+    TQDM_AVAILABLE = False
+
 logger = logging.getLogger(__name__)
 
 PublicationFetcher = Callable[[str], dict[str, Any] | None]
@@ -189,6 +195,7 @@ class AugmentLoader:
         publication_fetcher: PublicationFetcher | None = None,
         smiles_identifier_names: Iterable[str] | None = None,
         compound_limit: int | None = 1000,
+        compound_cache_dir: Path | None = None,
     ) -> None:
         self.conn = conn
         self.deduped_dir = Path(deduped_dir)
@@ -196,6 +203,7 @@ class AugmentLoader:
         names = smiles_identifier_names or DEFAULT_SMILES_IDENTIFIER_NAMES
         self.smiles_identifier_names = {name.upper() for name in names}
         self.compound_limit = compound_limit
+        self.compound_cache_dir = Path(compound_cache_dir) if compound_cache_dir else self.deduped_dir / "compound_cache"
 
     # ------------------------------------------------------------------
     # Public orchestration
@@ -321,7 +329,13 @@ class AugmentLoader:
     # ------------------------------------------------------------------
     # Compound feature augmentation
     # ------------------------------------------------------------------
-    def augment_compound_properties(self) -> None:
+    def augment_compound_properties(self, *, use_cache: bool = True, save_cache: bool = True) -> None:
+        """Augment compound properties from SMILES strings.
+
+        Args:
+            use_cache: If True, load previously computed results from cache
+            save_cache: If True, save newly computed results to cache
+        """
         if not RDKit_AVAILABLE:
             logger.info("Skipping compound augmentation – RDKit not available")
             return
@@ -330,6 +344,13 @@ class AugmentLoader:
         if not source_path.exists():
             logger.info("Skipping compound augmentation – entity identifier table missing")
             return
+
+        # Load cache if available and requested
+        cached_records = {}
+        if use_cache:
+            cached_records = self._load_compound_cache()
+            if cached_records:
+                logger.info("Loaded %d cached compound computations", len(cached_records))
 
         literal = self._duckdb_path_literal(source_path)
         rows = self.conn.execute(
@@ -363,18 +384,38 @@ class AugmentLoader:
             return
 
         items = sorted(smile_map.items())
-        if self.compound_limit is not None and len(items) > self.compound_limit:
+
+        # Filter out already cached items if using cache
+        if use_cache and cached_records:
+            items_to_compute = [(k, v) for k, v in items if k not in cached_records]
+            logger.info(
+                "Found %d compounds in cache, %d new compounds to compute",
+                len([k for k, _ in items if k in cached_records]),
+                len(items_to_compute)
+            )
+        else:
+            items_to_compute = items
+
+        if self.compound_limit is not None and len(items_to_compute) > self.compound_limit:
             logger.info(
                 "Limiting compound augmentation to first %d SMILES (out of %d)",
                 self.compound_limit,
-                len(items),
+                len(items_to_compute),
             )
-            items = items[: self.compound_limit]
+            items_to_compute = items_to_compute[: self.compound_limit]
 
         new_records = {}
         failed = []
 
-        for key, smiles in items:
+        # Use tqdm for progress bar if available
+        items_iter = tqdm(
+            items_to_compute,
+            desc="Computing compound properties",
+            unit="compound",
+            disable=not TQDM_AVAILABLE
+        ) if TQDM_AVAILABLE else items_to_compute
+
+        for key, smiles in items_iter:
             mol = Chem.MolFromSmiles(smiles)
             if mol is None:
                 failed.append(key)
@@ -403,7 +444,15 @@ class AugmentLoader:
                 len(failed),
             )
 
-        if not new_records:
+        # Save new computations to cache if requested
+        if save_cache and new_records:
+            self._save_compound_cache(new_records)
+            logger.info("Saved %d new compound computations to cache", len(new_records))
+
+        # Merge cached and newly computed records
+        all_computed_records = {**cached_records, **new_records}
+
+        if not all_computed_records:
             logger.info("Skipping compound augmentation – no valid SMILES available")
             return
 
@@ -415,7 +464,7 @@ class AugmentLoader:
             for row in existing_df.to_dict("records")
         }
 
-        existing_map.update(new_records)
+        existing_map.update(all_computed_records)
 
         merged_records = list(existing_map.values())
         merged_records.sort(key=lambda rec: (rec["entity_deduplication_identifier"], rec["entity_deduplication_identifier_type"]))
@@ -426,9 +475,10 @@ class AugmentLoader:
         self._write_dataframe(compound_path, merged_df)
 
         logger.info(
-            "✓ Compound augmentation refreshed %d records (computed %d SMILES)",
+            "✓ Compound augmentation refreshed %d records (computed %d SMILES, %d from cache)",
             len(merged_records),
-            len(items) - len(failed),
+            len(items_to_compute) - len(failed),
+            len(cached_records)
         )
 
     # ------------------------------------------------------------------
@@ -482,6 +532,69 @@ class AugmentLoader:
             logger.info("Publication augmentation found no metadata to apply")
 
     # ------------------------------------------------------------------
+    # Compound cache management
+    # ------------------------------------------------------------------
+    def _load_compound_cache(self) -> dict[tuple[str, str], dict[str, Any]]:
+        """Load compound properties from cache parquet file.
+
+        Returns:
+            Dictionary mapping (dedup_id, dedup_type) -> compound record
+        """
+        self.compound_cache_dir.mkdir(parents=True, exist_ok=True)
+        cache_path = self.compound_cache_dir / "compound_properties.parquet"
+
+        if not cache_path.exists():
+            return {}
+
+        try:
+            df = self._read_parquet(cache_path)
+            if df.empty:
+                return {}
+
+            cached_records = {}
+            for row in df.to_dict("records"):
+                key = (row["entity_deduplication_identifier"], row["entity_deduplication_identifier_type"])
+                cached_records[key] = row
+
+            return cached_records
+
+        except Exception as e:
+            logger.warning("Failed to load compound cache: %s", e)
+            return {}
+
+    def _save_compound_cache(self, new_records: dict[tuple[str, str], dict[str, Any]]) -> None:
+        """Save newly computed compound properties to cache.
+
+        Args:
+            new_records: Dictionary of newly computed records to add to cache
+        """
+        self.compound_cache_dir.mkdir(parents=True, exist_ok=True)
+        cache_path = self.compound_cache_dir / "compound_properties.parquet"
+
+        try:
+            # Load existing cache
+            existing_records = {}
+            if cache_path.exists():
+                existing_df = self._read_parquet(cache_path)
+                if not existing_df.empty:
+                    for row in existing_df.to_dict("records"):
+                        key = (row["entity_deduplication_identifier"], row["entity_deduplication_identifier_type"])
+                        existing_records[key] = row
+
+            # Merge with new records
+            existing_records.update(new_records)
+
+            # Create DataFrame and save
+            merged_records = list(existing_records.values())
+            merged_records.sort(key=lambda rec: (rec["entity_deduplication_identifier"], rec["entity_deduplication_identifier_type"]))
+
+            merged_df = pd.DataFrame(merged_records, columns=self.COMPOUND_COLUMNS)
+            self._write_dataframe(cache_path, merged_df)
+
+        except Exception as e:
+            logger.warning("Failed to save compound cache: %s", e)
+
+    # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
     def _read_parquet(self, path: Path) -> pd.DataFrame:
@@ -522,4 +635,5 @@ __all__ = [
     'AugmentLoader',
     'PublicationFetcher',
     'RDKit_AVAILABLE',
+    'TQDM_AVAILABLE',
 ]

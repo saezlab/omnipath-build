@@ -33,6 +33,11 @@ Usage:
     python database_manager.py process --database metabo --max-workers 4
     python database_manager.py process --database metabo --no-parallel
 
+    # Augment compounds (compute and cache expensive compound properties)
+    python database_manager.py augment-compounds --database metabo
+    python database_manager.py augment-compounds --database metabo --no-limit
+    python database_manager.py augment-compounds --database metabo --compound-limit 5000
+
     # Show database status
     python database_manager.py status --database metabo
 """
@@ -373,6 +378,115 @@ class DatabaseManager:
             self.logger.error(f'Failed to process sources: {e}')
             return False
 
+    def augment_compounds(
+        self,
+        use_cache: bool = True,
+        save_cache: bool = True,
+        limit: int | None = None,
+        no_limit: bool = False,
+    ) -> bool:
+        """Compute and cache compound properties from SMILES.
+
+        Args:
+            use_cache: Use cached compound computations if available
+            save_cache: Save newly computed results to cache
+            limit: Maximum number of compounds to compute
+            no_limit: Process all compounds (overrides limit)
+
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            if not self.db_base_path.exists():
+                self.logger.error(
+                    f'Database directory not found: {self.db_base_path}'
+                )
+                return False
+
+            gold_final_path = self.path_manager.output_path()
+            if not gold_final_path.exists():
+                self.logger.error(
+                    f'Gold final directory not found: {gold_final_path}'
+                )
+                self.logger.error('Run process command first to generate gold data')
+                return False
+
+            # Deduped files are in output/deduped/ subdirectory
+            deduped_dir = gold_final_path / "deduped"
+            if not deduped_dir.exists():
+                self.logger.error(
+                    f'Deduped directory not found: {deduped_dir}'
+                )
+                self.logger.error('Run process command with gold_final layer first')
+                return False
+
+            entity_identifier_path = deduped_dir / "entity_identifier_deduped.parquet"
+            if not entity_identifier_path.exists():
+                self.logger.error(
+                    f'Entity identifier file not found: {entity_identifier_path}'
+                )
+                self.logger.error('This file is required to extract SMILES identifiers')
+                return False
+
+            # Import required modules
+            from omnipath_build import AugmentLoader, RDKit_AVAILABLE
+            import duckdb
+
+            if not RDKit_AVAILABLE:
+                self.logger.error('RDKit is not available')
+                self.logger.error('Please install rdkit: pip install rdkit')
+                return False
+
+            # Determine compound limit
+            compound_limit = None
+            if not no_limit:
+                compound_limit = limit if limit is not None else 1000
+                self.logger.info(f'Compound limit: {compound_limit}')
+            else:
+                self.logger.info('No compound limit - processing all compounds')
+
+            # Create DuckDB connection
+            conn = duckdb.connect(':memory:')
+            conn.execute("SET memory_limit='4GB'")
+            conn.execute("SET threads=4")
+
+            try:
+                # Create augment loader
+                augmentor = AugmentLoader(
+                    conn=conn,
+                    deduped_dir=deduped_dir,
+                    compound_limit=compound_limit,
+                )
+
+                # Run compound augmentation
+                self.logger.info('=' * 70)
+                self.logger.info('Starting compound property computation')
+                self.logger.info('=' * 70)
+
+                augmentor.augment_compound_properties(
+                    use_cache=use_cache,
+                    save_cache=save_cache,
+                )
+
+                self.logger.info('=' * 70)
+                self.logger.info('✓ Compound augmentation completed successfully!')
+                self.logger.info('=' * 70)
+
+                # Show cache location
+                cache_path = augmentor.compound_cache_dir / "compound_properties.parquet"
+                if cache_path.exists():
+                    self.logger.info(f'Cache file: {cache_path}')
+                    self.logger.info(f'Output file: {deduped_dir / "compound_deduped.parquet"}')
+
+                return True
+
+            finally:
+                conn.close()
+
+        except (ImportError, RuntimeError, OSError) as e:
+            self.logger.error(f'Failed to augment compounds: {e}')
+            return False
+
     def show_status(self) -> bool:
         """Show the current status of the database.
 
@@ -648,6 +762,12 @@ Examples:
   # Combined: process one source through silver only
   python database_manager.py process --database metabo --source hmdb --layers silver
 
+  # Augment compounds (compute and cache expensive compound properties)
+  python database_manager.py augment-compounds --database metabo
+  python database_manager.py augment-compounds --database metabo --no-limit
+  python database_manager.py augment-compounds --database metabo --compound-limit 5000
+  python database_manager.py augment-compounds --database metabo --no-cache
+
   # Show status
   python database_manager.py status --database metabo
         """,
@@ -660,6 +780,7 @@ Examples:
             'add-resources',
             'load-bronze',
             'process',
+            'augment-compounds',
             'status',
         ],
         help='Command to execute',
@@ -699,6 +820,30 @@ Examples:
         '--no-parallel',
         action='store_true',
         help='Disable parallel processing (for process command)',
+    )
+
+    parser.add_argument(
+        '--no-cache',
+        action='store_true',
+        help='Do not use cached compound computations (for augment-compounds command)',
+    )
+
+    parser.add_argument(
+        '--no-save-cache',
+        action='store_true',
+        help='Do not save newly computed compound results to cache (for augment-compounds command)',
+    )
+
+    parser.add_argument(
+        '--no-limit',
+        action='store_true',
+        help='Process all compounds without limit (for augment-compounds command)',
+    )
+
+    parser.add_argument(
+        '--compound-limit',
+        type=int,
+        help='Maximum number of compounds to compute (for augment-compounds command)',
     )
 
     parser.add_argument(
@@ -754,6 +899,14 @@ Examples:
                 max_workers=args.max_workers,
                 parallel=not args.no_parallel,
                 layers=layers,
+            )
+
+        elif args.command == 'augment-compounds':
+            success = manager.augment_compounds(
+                use_cache=not args.no_cache,
+                save_cache=not args.no_save_cache,
+                limit=args.compound_limit,
+                no_limit=args.no_limit,
             )
 
         elif args.command == 'status':

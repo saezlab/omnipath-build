@@ -28,6 +28,7 @@ GoldLoader = _gold.GoldLoader
 
 _augment = importlib.import_module('.4_augment_loader', package='omnipath_build')
 AugmentLoader = _augment.AugmentLoader
+RDKit_AVAILABLE = _augment.RDKit_AVAILABLE
 
 __all__ = [
     'DatabaseManager',
@@ -35,6 +36,7 @@ __all__ = [
     'SilverLoader',
     'GoldLoader',
     'AugmentLoader',
+    'RDKit_AVAILABLE',
     'build_gold_from_silver_dir',
 ]
 
