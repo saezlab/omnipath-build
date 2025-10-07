@@ -640,14 +640,29 @@ class GoldLoader:
         """Extract all tables from silver parquet files using silver_gold_map.
 
         Args:
-            silver_files: Dict mapping table names to silver parquet paths
+            silver_files: Dict mapping function names to silver parquet paths
+            table_function_map: Dict mapping target table names to function names
         """
-        # Create views for each silver parquet file
-        for table_name, parquet_path in silver_files.items():
+        # Convert silver_files from function-name-keyed to table-name-keyed
+        # silver_files comes in as {function_name: path}, but we need {table_name: path}
+        # to match the source_table references in silver_gold_map
+        table_keyed_files: dict[str, Path] = {}
+        if table_function_map:
+            # Invert the table_function_map: {table_name: function_name} -> {function_name: table_name}
+            function_to_table = {func: table for table, func in table_function_map.items()}
+            for function_name, parquet_path in silver_files.items():
+                table_name = function_to_table.get(function_name, function_name)
+                table_keyed_files[table_name] = parquet_path
+        else:
+            # No mapping available, use as-is (legacy behavior)
+            table_keyed_files = silver_files
+
+        # Create views for each silver parquet file using table names
+        for table_name, parquet_path in table_keyed_files.items():
             self.conn.execute(f"CREATE OR REPLACE VIEW {table_name} AS SELECT * FROM read_parquet('{parquet_path}')")
 
         # Only extract from tables that reference silver tables we have
-        available_silver_tables = set(silver_files.keys())
+        available_silver_tables = set(table_keyed_files.keys())
 
         for extraction_name, config in silver_gold_map.items():
             select_sql = config['select']
@@ -666,7 +681,7 @@ class GoldLoader:
                     function_name = table_function_map.get(source_table)
 
                 if function_name is None:
-                    parquet_path = silver_files.get(source_table)
+                    parquet_path = table_keyed_files.get(source_table)
                     if parquet_path:
                         silver_dir = parquet_path.parent
                         function_dir = silver_dir.parent if silver_dir.name == PathManager.SILVER else silver_dir
