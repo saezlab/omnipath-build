@@ -133,19 +133,37 @@ gold_tables = {
                 "entity_deduplication_identifier": "TEXT",
                 "entity_deduplication_identifier_type": "VARCHAR(255)",
                 "identifier_type_namespace_name": "VARCHAR(255)",
+                "identifier_type_name": "VARCHAR(255)"
+            }
+        },
+        "foreign_keys": [
+            fk("entity_id", "links to entity via (entity.deduplication_identifier = entity_deduplication_identifier AND entity.deduplication_identifier_type = entity_deduplication_identifier_type)"),
+            fk("type_id", "links to cv_term via (cv_term.namespace_name = identifier_type_namespace_name AND cv_term.name = identifier_type_name)")
+        ],
+        "constraints": {
+            "pass1": [],
+            "pass2": ["unique on (identifier, identifier_type_namespace_name, identifier_type_name)"]
+        }
+    },
+
+    "entity_identifier_provenance": {
+        "columns": {
+            "main": {},
+            "temp": {
+                "identifier": "TEXT",
+                "identifier_type_namespace_name": "VARCHAR(255)",
                 "identifier_type_name": "VARCHAR(255)",
                 "source_name": "VARCHAR(255)",
                 "reference_value": "TEXT"
             }
         },
         "foreign_keys": [
-            fk("entity_id", "links to entity via (entity.deduplication_identifier = entity_deduplication_identifier AND entity.deduplication_identifier_type = entity_deduplication_identifier_type) OR via entity_identifier (entity_deduplication_identifier, entity_deduplication_identifier_type)"),
-            fk("type_id", "links to cv_term via (cv_term.namespace_name = identifier_type_namespace_name AND cv_term.name = identifier_type_name)"),
+            fk("entity_identifier_id", "links to entity_identifier via (entity_identifier.identifier = identifier AND entity_identifier.identifier_type_namespace_name = identifier_type_namespace_name AND entity_identifier.identifier_type_name = identifier_type_name)"),
             fk("provenance_id", "links to provenance via (provenance.source_name = source_name AND provenance.reference_value = reference_value)")
         ],
         "constraints": {
             "pass1": [],
-            "pass2": []  # define later if you want canonical/uniqueness per entity+type
+            "pass2": ["unique on (entity_identifier_id, provenance_id)"]
         }
     },
 
@@ -169,7 +187,7 @@ gold_tables = {
             }
         },
         "foreign_keys": [
-            fk("entity_id", "links to entity via (entity.deduplication_identifier = entity_deduplication_identifier AND entity.deduplication_identifier_type = entity_deduplication_identifier_type) OR via entity_identifier (entity_deduplication_identifier, entity_deduplication_identifier_type)")
+            fk("entity_id", "links to entity via (entity.deduplication_identifier = entity_deduplication_identifier AND entity.deduplication_identifier_type = entity_deduplication_identifier_type)")
         ],
         "constraints": {
             "pass1": [],
@@ -252,9 +270,7 @@ silver_gold_map = {
                 identifier as entity_deduplication_identifier,
                 identifier_type as entity_deduplication_identifier_type,
                 'OmniPath' as identifier_type_namespace_name,
-                identifier_type as identifier_type_name,
-                source_database as source_name,
-                NULL::VARCHAR as reference_value
+                identifier_type as identifier_type_name
             FROM silver_entities
 
             UNION ALL
@@ -264,6 +280,30 @@ silver_gold_map = {
                 CAST(json_extract_string(unnest(json_extract(additional_identifiers, '$[*]')), 'value') AS VARCHAR) as identifier,
                 identifier as entity_deduplication_identifier,
                 identifier_type as entity_deduplication_identifier_type,
+                'OmniPath' as identifier_type_namespace_name,
+                CAST(json_extract_string(unnest(json_extract(additional_identifiers, '$[*]')), 'type') AS VARCHAR) as identifier_type_name
+            FROM silver_entities
+            WHERE additional_identifiers IS NOT NULL
+              AND additional_identifiers != '[]'
+        '''
+    },
+    'entity_identifier_provenance': {
+        'source_table': 'silver_entities',
+        'select': '''
+            -- Main identifier provenance
+            SELECT DISTINCT
+                identifier,
+                'OmniPath' as identifier_type_namespace_name,
+                identifier_type as identifier_type_name,
+                source_database as source_name,
+                NULL::VARCHAR as reference_value
+            FROM silver_entities
+
+            UNION ALL
+
+            -- Additional identifiers provenance (unnested from JSON array)
+            SELECT DISTINCT
+                CAST(json_extract_string(unnest(json_extract(additional_identifiers, '$[*]')), 'value') AS VARCHAR) as identifier,
                 'OmniPath' as identifier_type_namespace_name,
                 CAST(json_extract_string(unnest(json_extract(additional_identifiers, '$[*]')), 'type') AS VARCHAR) as identifier_type_name,
                 source_database as source_name,
