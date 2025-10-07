@@ -3,6 +3,7 @@
 import * as React from "react"
 import {
   Home,
+  Settings,
 } from "lucide-react"
 
 import { NavMain } from "@/components/nav-main"
@@ -29,6 +30,12 @@ const navigationData = {
       url: "/",
       icon: Home,
       isActive: true,
+    },
+    {
+      title: "Configuration",
+      url: "/config",
+      icon: Settings,
+      isActive: false,
     },
   ],
 }
