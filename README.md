@@ -36,8 +36,8 @@ PyPath Resources → On-Demand Templates → Bronze → Silver → Gold
 ```
 
 - **Bronze Layer**: Raw data ingestion from PyPath sources stored as Parquet files
-- **Silver Layer**: Cleaned, transformed data in PostgreSQL with standardized schema  
-- **Gold Layer**: Final analytical tables with deduplication, enrichment, and aggregations
+- **Silver Layer**: Cleaned, transformed data with standardized schema
+- **Gold Layer**: Final analytical tables with deduplication, foreign key resolution, and enrichment
 
 ## Quick Start
 
@@ -115,15 +115,14 @@ uv run --env-file .env python omnipath_build/database_manager.py init --database
 
 This creates:
 ```
-omnipath_build/databases/omnipath/
-├── bronze/data/         # Raw parquet files (auto-generated)
-├── silver/
-│   ├── tables.yaml              # Silver schema definitions  
-│   └── transformation_functions.sql  # Custom SQL functions
-├── gold/                # Final transformation SQL scripts
-├── resource/            # Resource configurations (auto-generated)
-└── metadata/
-    └── tables.yaml      # Metadata schema definitions
+databases/omnipath/
+├── configuration/
+│   ├── gold_tables.py       # Gold schema & mappings (Python)
+│   └── resources/           # Resource YAML configs (auto-generated)
+├── data/                    # Bronze: Raw parquet files
+│   └── {module}/{function}/
+└── output/
+    └── deduped/            # Gold: Final analytical parquet files
 ```
 
 ### Step 3: Add Resources with Auto-Generated Templates
@@ -145,9 +144,9 @@ This automatically:
 - Discovers the PyPath function
 - Executes it to inspect output structure
 - Generates a complete YAML template with all fields
-- Saves it to `omnipath_build/databases/omnipath/resource/modulename.yaml`
+- Saves it to `databases/omnipath/configuration/resources/modulename.yaml`
 
-Example auto-generated template (`omnipath_build/databases/omnipath/resource/signor.yaml`):
+Example auto-generated template (`databases/omnipath/configuration/resources/signor.yaml`):
 ```yaml
 # Resource Configuration for signor.signor_interactions
 # Database: omnipath
@@ -184,8 +183,8 @@ Edit the auto-generated templates to specify target tables and field mappings:
 
 ```bash
 # Edit resource configurations
-vim omnipath_build/databases/omnipath/resource/signor.yaml
-vim omnipath_build/databases/omnipath/resource/biogrid.yaml
+vim databases/omnipath/configuration/resources/signor.yaml
+vim databases/omnipath/configuration/resources/biogrid.yaml
 ```
 
 Fill in the `'?'` placeholders:
@@ -215,20 +214,36 @@ functions:
         target: pmid
 ```
 
-### Step 5: Define Database Schema
+### Step 5: Define Gold Schema (Optional)
 
-Define your silver layer tables in `omnipath_build/databases/omnipath/silver/tables.yaml`:
+The gold layer schema is defined in Python at `databases/omnipath/configuration/gold_tables.py`:
 
-```yaml
-interactions:
-  entity_a: "VARCHAR(50)"
-  entity_b: "VARCHAR(50)" 
-  interaction_type: "VARCHAR(50)"
-  mechanism: "TEXT"
-  pmid: "VARCHAR(20)"
-  source_database: "VARCHAR(50)"
-  loaded_at: "TIMESTAMP DEFAULT CURRENT_TIMESTAMP"
+```python
+gold_tables = {
+    "entity": {
+        "columns": {
+            "main": {"name": "VARCHAR(255)"},  # Additional columns...
+            "temp": {"deduplication_identifier": "TEXT"},  # Additional temp columns...
+        },
+        "foreign_keys": [{"id": "type_id", "link": "links to cv_term..."}],
+        "constraints": {
+            "pass1": ["unique on (deduplication_identifier)"],
+            "pass2": ["unique on (entity_id)"],
+        },
+    },
+    # Additional tables: cv_term, source, reference, compound, etc.
+}
+
+silver_gold_map = {
+    "entity": {
+        "source_table": "silver_entities",
+        "select": "SELECT DISTINCT identifier, identifier_type FROM silver_entities",
+    },
+    # Additional mappings for other tables...
+}
 ```
+
+This configuration defines the final analytical tables and how data flows from silver to gold.
 
 ### Step 6: Load and Process Data
 
@@ -266,24 +281,25 @@ uv run --env-file .env python omnipath_build/database_manager.py add-resources -
 
 ### Bronze Layer
 - **Purpose**: Raw data ingestion and storage
-- **Format**: Parquet files organized by module/function  
-- **Location**: `omnipath_build/databases/{db_name}/bronze/data/`
-- **Configuration**: Auto-generated, user-customized YAML files
+- **Format**: Parquet files organized by module/function
+- **Location**: `databases/{db_name}/data/{module}/{function}/`
+- **Configuration**: YAML files in `databases/{db_name}/configuration/resources/`
 
 **Example Bronze Processing**:
 - Calls `pypath.inputs.signor.signor_interactions(organism=9606)`
-- Stores results as `omnipath_build/databases/omnipath/bronze/data/signor/signor_interactions/YYYYMMDD_HHMMSS.parquet`
+- Stores results as `databases/omnipath/data/signor/signor_interactions/YYYYMMDD_HHMMSS.parquet`
 
-### Silver Layer  
-- **Purpose**: Data cleaning, standardization
-- **Schema**: Defined in `omnipath_build/databases/{db_name}/silver/tables.yaml`
-- **Transformations**: Custom SQL functions in `transformation_functions.sql`
-- **Storage**: PostgreSQL `silver` schema
+### Silver Layer
+- **Purpose**: Data cleaning, standardization, and transformation
+- **Processing**: Field mappings and transformations defined in resource YAML files
+- **Transformations**: DuckDB SQL queries for data cleaning
+- **Storage**: Intermediate parquet files (processed in-memory for gold layer)
 
 ### Gold Layer
-- **Purpose**: Final deduplicated and integrated tables
-- **Processing**: SQL scripts in `omnipath_build/databases/{db_name}/gold/`  
-- **Storage**: PostgreSQL `gold` schema
+- **Purpose**: Final deduplicated and integrated tables with foreign key resolution
+- **Schema**: Python-based definitions in `databases/{db_name}/configuration/gold_tables.py`
+- **Processing**: Three-pass algorithm (extract → dedup → FK resolve)
+- **Storage**: Final parquet files in `databases/{db_name}/output/deduped/`
 
 ## Command Reference
 
@@ -350,25 +366,27 @@ uv run --env-file .env python omnipath_build/database_manager.py add-resources -
 omnipath_build/
 ├── tools/
 │   └── list_pypath_resources.py       # Resource discovery
-├── loaders/                            # Data processing pipeline
-│   ├── bronze_loader.py               # Raw data ingestion
-│   ├── silver_loader.py               # Data cleaning & standardization  
-│   ├── gold_loader.py                 # Final table creation
-│   └── metadata_loader.py             # Metadata management
+├── 0_database_manager.py              # Database lifecycle orchestration
+├── 1_bronze_loader.py                 # PyPath → Bronze parquet
+├── 2_silver_loader.py                 # Bronze → Silver transformations
+├── 3_gold_loader.py                   # Silver → Gold (3-pass: extract/dedup/FK)
+├── 4_augment_loader.py                # Data augmentation (compounds, etc.)
 ├── utils/                             # Shared utilities
-│   ├── simple_template_generator.py   # On-demand template generation
-│   ├── database.py                    # Database connections
-│   └── base_loader.py                 # Common loader functionality  
+│   ├── simple_template_generator.py   # Auto-generate resource configs
+│   ├── database.py                    # DuckDB connections
+│   ├── base_loader.py                 # Common loader functionality
+│   └── pypath_adapter.py              # PyPath integration
 ├── databases/                         # Database instances
 │   └── {database_name}/
-│       ├── bronze/data/               # Raw parquet files (auto-generated)
-│       ├── resource/                  # Resource configurations (auto-generated)
-│       ├── silver/                    # Schema & transformations
-│       ├── gold/                      # Final processing scripts  
-│       └── metadata/                  # Metadata definitions
-├── database_manager.py               # Unified management interface
-├── Makefile                          # Developer commands
-└── docker-compose.yaml               # PostgreSQL service
+│       ├── configuration/
+│       │   ├── gold_tables.py         # Gold schema (Python)
+│       │   └── resources/             # Resource YAML configs
+│       ├── data/                      # Bronze: Raw parquet files
+│       │   └── {module}/{function}/
+│       └── output/
+│           └── deduped/               # Gold: Final parquet files
+├── Makefile                           # Developer commands
+└── docker-compose.yaml                # PostgreSQL service (optional)
 ```
 
 ## Complete Example: Signaling Database
@@ -384,12 +402,12 @@ make new DB=signaling_demo
 # 3. Add resources (auto-generates templates)
 uv run --env-file .env python omnipath_build/database_manager.py add-resources --database signaling_demo --resources signor.signor_interactions,biogrid.biogrid_interactions
 
-# 4. Customize resource configurations  
-vim omnipath_build/databases/signaling_demo/resource/signor.yaml
-vim omnipath_build/databases/signaling_demo/resource/biogrid.yaml
+# 4. Customize resource configurations
+vim databases/signaling_demo/configuration/resources/signor.yaml
+vim databases/signaling_demo/configuration/resources/biogrid.yaml
 
-# 5. Define silver schema
-vim omnipath_build/databases/signaling_demo/silver/tables.yaml
+# 5. (Optional) Customize gold schema if needed
+vim databases/signaling_demo/configuration/gold_tables.py
 
 # 6. Load data
 make run DB=signaling_demo
@@ -452,24 +470,30 @@ uv run --env-file .env python omnipath_build/database_manager.py init --database
 
 ### Custom Transformations
 
-Add SQL functions to `silver/transformation_functions.sql`:
-```sql
-CREATE OR REPLACE MACRO standardize_protein_id(field) AS 
-    UPPER(TRIM(field));
-
-CREATE OR REPLACE MACRO normalize_effect(field, default_value) AS 
-    CASE 
-        WHEN field IS NULL OR field = '' THEN default_value
-        ELSE LOWER(TRIM(field))
-    END;
-```
-
-Use in field mappings:
+Define transformations in resource YAML field mappings:
 ```yaml
 field_mapping:
-- source: gene_symbol
-  target: normalized_symbol
-  transform: standardize_protein_id
+  - source: gene_symbol
+    target: normalized_symbol
+    transform: "UPPER(TRIM({}))"  # DuckDB SQL expression
+  - source: effect
+    target: effect_normalized
+    transform: "COALESCE(LOWER(TRIM({})), 'unknown')"
+```
+
+Or modify the gold schema in `databases/{db_name}/configuration/gold_tables.py`:
+```python
+silver_gold_map = {
+    "entity": {
+        "source_table": "silver_entities",
+        "select": """
+            SELECT DISTINCT
+                UPPER(TRIM(identifier)) as deduplication_identifier,
+                ...
+            FROM silver_entities
+        """,
+    }
+}
 ```
 
 ### Incremental Updates

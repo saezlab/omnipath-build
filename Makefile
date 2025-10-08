@@ -158,8 +158,8 @@ start: ## Daily startup - ensure everything is running
 	
 	# Show available databases
 	@echo "$(BLUE)ℹ Available database configurations:$(RESET)"
-	@if [ -d "omnipath_build/databases" ]; then \
-		ls -1 omnipath_build/databases/ | sed 's/^/  - /'; \
+	@if [ -d "databases" ]; then \
+		ls -1 databases/ | sed 's/^/  - /'; \
 	else \
 		echo "  (no databases configured yet)"; \
 	fi
@@ -212,7 +212,7 @@ add: ## Add resources to a database
 		exit 1; \
 	fi
 
-	@if [ ! -d "omnipath_build/databases/$(DB)" ]; then \
+	@if [ ! -d "databases/$(DB)" ]; then \
 		echo "$(RED)Database $(DB) not found. Create it first with: make new DB=$(DB)$(RESET)"; \
 		exit 1; \
 	fi
@@ -247,7 +247,7 @@ run: ## Run/update an existing database
 		exit 1; \
 	fi
 	
-	@if [ ! -d "omnipath_build/databases/$(DB)" ]; then \
+	@if [ ! -d "databases/$(DB)" ]; then \
 		echo "$(RED)Database $(DB) not found. Create it first with: make new DB=$(DB)$(RESET)"; \
 		exit 1; \
 	fi
