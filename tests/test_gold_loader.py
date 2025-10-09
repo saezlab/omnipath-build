@@ -312,10 +312,10 @@ class TestGoldLoaderPhase3:
             COPY (
                 SELECT
                     1 AS id,
-                    'E1' AS deduplication_identifier,
-                    'primary' AS deduplication_identifier_type,
+                    'AAAAAAAAAAAAAA-AAAAAAAAAA-A' AS deduplication_identifier,
+                    'inchikey' AS deduplication_identifier_type,
                     'OmniPath' AS entity_type_namespace_name,
-                    'Gene' AS entity_type_name
+                    'Compound' AS entity_type_name
             ) TO '{entity_file}' (FORMAT PARQUET)
         """)
 
@@ -325,7 +325,7 @@ class TestGoldLoaderPhase3:
                 SELECT
                     1 AS id,
                     'OmniPath' AS namespace_name,
-                    'Gene' AS name,
+                    'Compound' AS name,
                     'ACC1' AS accession,
                     'desc' AS description,
                     FALSE AS is_obsolete,
@@ -350,11 +350,11 @@ class TestGoldLoaderPhase3:
             COPY (
                 SELECT
                     1 AS id,
-                    'ID123' AS identifier,
-                    'E1' AS entity_deduplication_identifier,
-                    'primary' AS entity_deduplication_identifier_type,
+                    'AAAAAAAAAAAAAA-AAAAAAAAAA-A' AS identifier,
+                    'AAAAAAAAAAAAAA-AAAAAAAAAA-A' AS entity_deduplication_identifier,
+                    'inchikey' AS entity_deduplication_identifier_type,
                     'OmniPath' AS identifier_type_namespace_name,
-                    'Gene' AS identifier_type_name,
+                    'inchikey' AS identifier_type_name,
                     'SourceA' AS source_name,
                     NULL::VARCHAR AS reference_value
             ) TO '{entity_identifier_file}' (FORMAT PARQUET)
@@ -367,7 +367,7 @@ class TestGoldLoaderPhase3:
             f"SELECT identifier, entity_id, type_id, provenance_id FROM read_parquet('{output_literal}')"
         ).fetchall()
 
-        assert result == [('ID123', 1, 1, 1)]
+        assert result == [('AAAAAAAAAAAAAA-AAAAAAAAAA-A', 1, 1, 1)]
 
 
 class TestGoldLoaderIntegration:

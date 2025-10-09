@@ -101,9 +101,11 @@ class TestRealDataIntegration:
         # Verify silver schema
         expected_cols = [
             'entity_type',
-            'identifier',
-            'identifier_type',
-            'additional_identifiers',
+            'dedup_identifier',
+            'dedup_identifier_type',
+            'inchikey',
+            'lipidmaps_id',
+            'chebi_id',
             'source_database'
         ]
         for col in expected_cols:
@@ -126,12 +128,45 @@ class TestRealDataIntegration:
         assert len(result) > 0
         assert result[0][0] == 'compound', "Entity type should be 'compound'"
 
-        # Check identifier_type is set correctly
-        result = conn.execute(
-            f"SELECT DISTINCT identifier_type FROM '{silver_file}'"
-        ).fetchall()
+        # Check inchikey values are normalized
+        invalid_inchikeys = conn.execute(
+            f"""
+            SELECT COUNT(*) FROM '{silver_file}'
+            WHERE inchikey IS NOT NULL
+              AND NOT (inchikey ~ '^[A-Z0-9]{{14}}-[A-Z0-9]{{10}}-[A-Z]$')
+            """
+        ).fetchone()[0]
+        assert invalid_inchikeys == 0, "All inchikey values should be normalized"
 
-        assert result[0][0] == 'inchikey', "Identifier type should be 'inchikey'"
+        # Check LipidMaps identifiers are normalized
+        invalid_lipidmaps_ids = conn.execute(
+            f"""
+            SELECT COUNT(*) FROM '{silver_file}'
+            WHERE lipidmaps_id IS NOT NULL
+              AND NOT (lipidmaps_id LIKE 'LIPIDMAPS:%')
+            """
+        ).fetchone()[0]
+        assert invalid_lipidmaps_ids == 0, "LipidMaps identifiers should use LIPIDMAPS: prefix"
+
+        # Check deduplication columns are populated and aligned with inchikey
+        dedup_mismatch = conn.execute(
+            f"""
+            SELECT COUNT(*) FROM '{silver_file}'
+            WHERE dedup_identifier IS NOT NULL
+              AND inchikey IS NOT NULL
+              AND dedup_identifier != inchikey
+            """
+        ).fetchone()[0]
+        assert dedup_mismatch == 0, "Dedup identifier should match inchikey for LipidMaps sources"
+
+        dedup_type_counts = conn.execute(
+            f"""
+            SELECT COUNT(*) FROM '{silver_file}'
+            WHERE dedup_identifier IS NOT NULL
+              AND dedup_identifier_type != 'inchikey'
+            """
+        ).fetchone()[0]
+        assert dedup_type_counts == 0, "Dedup identifier type should be 'inchikey'"
 
         # Check source_database is set
         result = conn.execute(
@@ -141,34 +176,6 @@ class TestRealDataIntegration:
         assert result[0][0] == 'lipidmaps', "Source database should be 'lipidmaps'"
 
         conn.close()
-
-    def test_lipidmaps_additional_identifiers_json(self, omnipath_data_path):
-        """Test that additional_identifiers is valid JSON."""
-        silver_file = omnipath_data_path / 'lipidmaps' / 'lipidmaps_lipids' / 'silver' / 'silver_entities.parquet'
-
-        if not silver_file.exists():
-            pytest.skip("LipidMaps silver data not found")
-
-        conn = duckdb.connect(':memory:')
-
-        # Get a sample of additional_identifiers
-        result = conn.execute(
-            f"""
-            SELECT additional_identifiers
-            FROM '{silver_file}'
-            WHERE additional_identifiers IS NOT NULL
-            LIMIT 5
-            """
-        ).fetchall()
-
-        conn.close()
-
-        assert len(result) > 0, "Should have additional identifiers"
-
-        # Verify it's valid JSON (DuckDB should parse it as JSON type)
-        for row in result:
-            json_data = row[0]
-            assert json_data is not None
 
     def test_psimi_ontology_bronze_to_silver(self, omnipath_data_path):
         """Test PSI-MI ontology data pipeline."""

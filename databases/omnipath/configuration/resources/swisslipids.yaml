@@ -14,14 +14,41 @@ functions:
                 target: entity_type
                 value: compound
             -   source: inchikey
-                target: identifier
-                transform: clean_inchikey
+                target: inchikey
+                transform: normalize_inchikey_value
+            -   source: inchikey
+                target: dedup_identifier
+                transform: normalize_inchikey_value
             -   source: _constant
-                target: identifier_type
+                target: dedup_identifier_type
                 value: inchikey
-            -   source: [id, chebi, lipidmaps, hmdb, metanetx, inchi, smiles, name, synonyms, abbreviation]
-                target: additional_identifiers
-                transform: build_identifier_list_swisslipids
+            -   source: id
+                target: swisslipids_id
+                transform: normalize_swisslipids_id
+            -   source: chebi
+                target: chebi_id
+                transform: normalize_chebi_id
+            -   source: lipidmaps
+                target: lipidmaps_id
+                transform: normalize_lipidmaps_id
+            -   source: hmdb
+                target: hmdb_id
+                transform: normalize_hmdb_id
+            -   source: metanetx
+                target: metanetx_id
+                transform: normalize_metanetx_id
+            -   source: inchi
+                target: compound_inchi
+                transform: normalize_inchi_value
+            -   source: smiles
+                target: compound_smiles
+            -   source: name
+                target: name
+            -   source: synonyms
+                target: name_variants
+                transform: split_string_to_json
+                transform_args:
+                    delimiter: '; '
             -   source: [level, lipid_class, parent, components, pmids, charge]
                 target: annotations
                 transform: build_swisslipids_annotations

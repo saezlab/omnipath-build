@@ -1,4 +1,7 @@
 __all__ = [
+    'ENTITY_IDENTIFIER_PROVENANCE_UNIONS',
+    'ENTITY_IDENTIFIER_UNIONS',
+    'IDENTIFIER_COLUMNS',
     'fk',
 ]
 
@@ -8,6 +11,46 @@ def fk(id_col, link_text, null_equal_columns: tuple[str, ...] | None = None):
     if null_equal_columns:
         fk_def["null_equal_columns"] = tuple(null_equal_columns)
     return fk_def
+
+IDENTIFIER_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("inchikey", "'inchikey'"),
+    ("hmdb_id", "'hmdb'"),
+    ("chebi_id", "'chebi'"),
+    ("pubchem_cid", "'pubchem'"),
+    ("lipidmaps_id", "'lipidmaps'"),
+    ("swisslipids_id", "'swisslipids'"),
+    ("metanetx_id", "'metanetx'"),
+    ("ramp_id", "'ramp'"),
+    ("kegg_id", "'kegg'"),
+    ("drugbank_id", "'drugbank'"),
+    ("cas_number", "'cas'"),
+)
+
+ENTITY_IDENTIFIER_UNIONS = "\n        UNION ALL\n        ".join(
+    f"""SELECT DISTINCT
+                {column} AS identifier,
+                dedup_identifier AS entity_deduplication_identifier,
+                dedup_identifier_type AS entity_deduplication_identifier_type,
+                'OmniPath' AS identifier_type_namespace_name,
+                {label} AS identifier_type_name
+            FROM silver_entities
+            WHERE {column} IS NOT NULL
+              AND dedup_identifier IS NOT NULL
+              AND dedup_identifier_type IS NOT NULL"""
+    for column, label in IDENTIFIER_COLUMNS
+)
+
+ENTITY_IDENTIFIER_PROVENANCE_UNIONS = "\n        UNION ALL\n        ".join(
+    f"""SELECT DISTINCT
+                {column} AS identifier,
+                'OmniPath' AS identifier_type_namespace_name,
+                {label} AS identifier_type_name,
+                source_database AS source_name,
+                NULL::VARCHAR AS reference_value
+            FROM silver_entities
+            WHERE {column} IS NOT NULL"""
+    for column, label in IDENTIFIER_COLUMNS
+)
 
 gold_tables = {
     "cv_namespace": {
@@ -423,76 +466,40 @@ silver_gold_map = {
     'entity': {
         'source_table': 'silver_entities',
         'select': '''SELECT DISTINCT
-            identifier as deduplication_identifier,
-            identifier_type as deduplication_identifier_type,
-            'OmniPath' as entity_type_namespace_name,
-            entity_type as entity_type_name
-        FROM silver_entities'''
+            dedup_identifier AS deduplication_identifier,
+            dedup_identifier_type AS deduplication_identifier_type,
+            'OmniPath' AS entity_type_namespace_name,
+            entity_type AS entity_type_name
+        FROM silver_entities
+        WHERE dedup_identifier IS NOT NULL
+          AND dedup_identifier_type IS NOT NULL'''
     },
     'entity_identifier': {
         'source_table': 'silver_entities',
-        'select': '''
-            -- Main identifier
-            SELECT DISTINCT
-                identifier,
-                identifier as entity_deduplication_identifier,
-                identifier_type as entity_deduplication_identifier_type,
-                'OmniPath' as identifier_type_namespace_name,
-                identifier_type as identifier_type_name
-            FROM silver_entities
-
-            UNION ALL
-
-            -- Additional identifiers (unnested from JSON array)
-            SELECT DISTINCT
-                CAST(json_extract_string(unnest(json_extract(additional_identifiers, '$[*]')), 'value') AS VARCHAR) as identifier,
-                identifier as entity_deduplication_identifier,
-                identifier_type as entity_deduplication_identifier_type,
-                'OmniPath' as identifier_type_namespace_name,
-                CAST(json_extract_string(unnest(json_extract(additional_identifiers, '$[*]')), 'type') AS VARCHAR) as identifier_type_name
-            FROM silver_entities
-            WHERE additional_identifiers IS NOT NULL
-              AND additional_identifiers != '[]'
+        'select': f'''
+            {ENTITY_IDENTIFIER_UNIONS}
         '''
     },
     'entity_identifier_provenance': {
         'source_table': 'silver_entities',
-        'select': '''
-            -- Main identifier provenance
-            SELECT DISTINCT
-                identifier,
-                'OmniPath' as identifier_type_namespace_name,
-                identifier_type as identifier_type_name,
-                source_database as source_name,
-                NULL::VARCHAR as reference_value
-            FROM silver_entities
-
-            UNION ALL
-
-            -- Additional identifiers provenance (unnested from JSON array)
-            SELECT DISTINCT
-                CAST(json_extract_string(unnest(json_extract(additional_identifiers, '$[*]')), 'value') AS VARCHAR) as identifier,
-                'OmniPath' as identifier_type_namespace_name,
-                CAST(json_extract_string(unnest(json_extract(additional_identifiers, '$[*]')), 'type') AS VARCHAR) as identifier_type_name,
-                source_database as source_name,
-                NULL::VARCHAR as reference_value
-            FROM silver_entities
-            WHERE additional_identifiers IS NOT NULL
-              AND additional_identifiers != '[]'
+        'select': f'''
+            {ENTITY_IDENTIFIER_PROVENANCE_UNIONS}
         '''
     },
     'entity_evidence': {
         'source_table': 'silver_entities',
         'select': '''
             SELECT DISTINCT
-                identifier as entity_deduplication_identifier,
-                identifier_type as entity_deduplication_identifier_type,
-                source_database as source_name,
-                NULL::VARCHAR as reference_value,
+                dedup_identifier AS entity_deduplication_identifier,
+                dedup_identifier_type AS entity_deduplication_identifier_type,
+                source_database AS source_name,
+                NULL::VARCHAR AS reference_value,
                 annotations
             FROM silver_entities
             WHERE annotations IS NOT NULL
-              AND annotations != '{}'
+              AND annotations::VARCHAR != '{}'
+              AND dedup_identifier IS NOT NULL
+              AND dedup_identifier_type IS NOT NULL
         '''
     },
     'membership': {
@@ -500,9 +507,9 @@ silver_gold_map = {
         'select': '''
             SELECT DISTINCT
                 CAST(json_extract_string(member, 'member_id') AS VARCHAR) as member_deduplication_identifier,
-                identifier_type as member_deduplication_identifier_type,
-                identifier as parent_deduplication_identifier,
-                identifier_type as parent_deduplication_identifier_type,
+                dedup_identifier_type as member_deduplication_identifier_type,
+                dedup_identifier as parent_deduplication_identifier,
+                dedup_identifier_type as parent_deduplication_identifier_type,
                 'OmniPath' as role_namespace_name,
                 COALESCE(CAST(json_extract_string(member, 'role') AS VARCHAR), 'member') as role_name,
                 CAST(json_extract_string(member, 'stoichiometry') AS FLOAT) as stoichiometry,
@@ -512,6 +519,9 @@ silver_gold_map = {
                  unnest(json_extract(complex_members, '$[*]')) as member
             WHERE complex_members IS NOT NULL
               AND complex_members != '[]'
+              AND dedup_identifier IS NOT NULL
+              AND dedup_identifier_type IS NOT NULL
+              AND CAST(json_extract_string(member, 'member_id') AS VARCHAR) IS NOT NULL
         '''
     },
     'interaction': {
@@ -553,20 +563,22 @@ silver_gold_map = {
         'source_table': 'silver_entities',
         'select': '''
             SELECT DISTINCT
-                identifier as entity_deduplication_identifier,
-                identifier_type as entity_deduplication_identifier_type,
+                dedup_identifier AS entity_deduplication_identifier,
+                dedup_identifier_type AS entity_deduplication_identifier_type,
                 protein_sequence as sequence,
                 protein_class
             FROM silver_entities
             WHERE entity_type = 'protein'
+              AND dedup_identifier IS NOT NULL
+              AND dedup_identifier_type IS NOT NULL
         '''
     },
     'reaction': {
         'source_table': 'silver_entities',
         'select': '''
             SELECT DISTINCT
-                identifier as entity_deduplication_identifier,
-                identifier_type as entity_deduplication_identifier_type,
+                dedup_identifier AS entity_deduplication_identifier,
+                dedup_identifier_type AS entity_deduplication_identifier_type,
                 reaction_equation as equation,
                 reaction_directionality as directionality,
                 reaction_pathway as pathway,
@@ -574,6 +586,8 @@ silver_gold_map = {
                 reaction_smiles as smiles
             FROM silver_entities
             WHERE entity_type = 'reaction'
+              AND dedup_identifier IS NOT NULL
+              AND dedup_identifier_type IS NOT NULL
         '''
     }
 }

@@ -58,6 +58,9 @@ class SilverLoader:
         # Load resource configuration
         self.config = self._load_config()
 
+        # Load expected silver table schemas
+        self.expected_columns = self._load_expected_columns()
+
         # Initialize DuckDB connection
         self.conn = None
 
@@ -83,6 +86,23 @@ class SilverLoader:
 
         logger.debug(f"Loaded config for {self.source_module}")
         return config
+
+    def _load_expected_columns(self) -> dict[str, list[str]]:
+        """Load expected column names for each silver table from schema config."""
+        config_path = self.path_manager.silver_tables_config()
+        if not config_path.exists():
+            logger.warning("Silver tables config not found at %s", config_path)
+            return {}
+
+        with open(config_path) as f:
+            schema_config = yaml.safe_load(f) or {}
+
+        expected: dict[str, list[str]] = {}
+        for table_name, columns in schema_config.items():
+            if isinstance(columns, dict):
+                expected[table_name] = list(columns.keys())
+
+        return expected
 
     def _get_latest_bronze_parquet(self, function_name: str) -> Path:
         """Get the latest bronze parquet file for a function."""
@@ -131,7 +151,9 @@ class SilverLoader:
         # Handle special source types
         if source == '_constant':
             # Constant value
-            if isinstance(value, bool):
+            if value is None:
+                expr = 'NULL'
+            elif isinstance(value, bool):
                 expr = 'TRUE' if value else 'FALSE'
             elif isinstance(value, (int, float)):
                 expr = str(value)
@@ -228,11 +250,26 @@ class SilverLoader:
                 expr = self._build_select_expression(mapping, available_columns)
                 select_expressions.append(f"    {expr}")
 
+            # Determine target table name
+            target_table = processing.get('target_table', function_name)
+
             # Add source_database column
             select_expressions.append(f"    '{self.source_module}' AS \"source_database\"")
 
+            # Fill in any missing columns defined in silver schema with NULLs
+            expected_columns = set(self.expected_columns.get(target_table, []))
+            mapped_columns = {
+                mapping.get('target')
+                for mapping in field_mappings
+                if isinstance(mapping, dict) and mapping.get('target')
+            }
+            mapped_columns.add('source_database')
+
+            missing_columns = expected_columns - mapped_columns
+            for column in sorted(missing_columns):
+                select_expressions.append(f"    NULL AS \"{column}\"")
+
             # Build and execute query
-            target_table = processing.get('target_table', function_name)
             output_file = self.path_manager.silver_file(
                 self.source_module, function_name, target_table
             )

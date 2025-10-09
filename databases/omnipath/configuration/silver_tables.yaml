@@ -11,10 +11,23 @@ silver_entities:
   # Primary identification
     entity_type: VARCHAR(50)           # 'protein', 'compound', 'reaction', 'complex'
 
+  # Deduplication identifier (explicitly chosen per source)
+    dedup_identifier: VARCHAR(255)
+    dedup_identifier_type: VARCHAR(100)
+
   # Identifiers (cleaned/validated)
-    identifier: VARCHAR(255)           # Primary identifier from source
-    identifier_type: VARCHAR(100)      # 'uniprot', 'chebi', 'kegg', etc.
-    additional_identifiers: JSON      # [{"type": "uniprot", "value": "P12345"}]
+    inchikey: VARCHAR(27)             # Primary structural identifier when available
+    hmdb_id: VARCHAR(32)
+    chebi_id: VARCHAR(32)
+    pubchem_cid: VARCHAR(32)
+    kegg_id: VARCHAR(32)
+    drugbank_id: VARCHAR(32)
+    cas_number: VARCHAR(32)
+    lipidmaps_id: VARCHAR(32)
+    swisslipids_id: VARCHAR(32)
+    metanetx_id: VARCHAR(32)
+    ramp_id: VARCHAR(64)
+    other_identifiers: JSON           # {"source": ["value1", "value2"]}
 
   # Names (cleaned)
     name: TEXT

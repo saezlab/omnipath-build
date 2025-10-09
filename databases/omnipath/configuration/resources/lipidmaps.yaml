@@ -13,13 +13,35 @@ functions:
                 target: entity_type
                 value: compound
             -   source: inchikey
-                target: identifier
+                target: inchikey
+                transform: normalize_inchikey_value
+            -   source: inchikey
+                target: dedup_identifier
+                transform: normalize_inchikey_value
             -   source: _constant
-                target: identifier_type
+                target: dedup_identifier_type
                 value: inchikey
-            -   source: [id, chebi, pubchem, inchi, smiles, name, synonyms, abbreviation]
-                target: additional_identifiers
-                transform: build_identifier_list_lipidmaps
+            -   source: id
+                target: lipidmaps_id
+                transform: normalize_lipidmaps_id
+            -   source: chebi
+                target: chebi_id
+                transform: normalize_chebi_id
+            -   source: pubchem
+                target: pubchem_cid
+                transform: normalize_pubchem_cid
+            -   source: inchi
+                target: compound_inchi
+                transform: normalize_inchi_value
+            -   source: smiles
+                target: compound_smiles
+            -   source: name
+                target: name
+            -   source: synonyms
+                target: name_variants
+                transform: split_string_to_json
+                transform_args:
+                    delimiter: '; '
             -   source: [category, main_class]
                 target: annotations
                 transform: build_lipidmaps_annotations

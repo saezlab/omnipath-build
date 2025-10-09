@@ -539,7 +539,7 @@ class GoldLoader:
             pattern = self._duckdb_path_literal(
                 data_root / '*' / '*' / PathManager.GOLD / f'{table_name}.parquet'
             )
-            return f"read_parquet('{pattern}')", pass1_files
+            return f"read_parquet('{pattern}', union_by_name=True)", pass1_files
 
         if self._legacy_pass1_dir is None:
             raise ValueError('Legacy pass1 directory unavailable without output dir')
@@ -547,7 +547,7 @@ class GoldLoader:
         pattern = self._duckdb_path_literal(
             self._legacy_pass1_dir / f'{table_name}_pass1_*.parquet'
         )
-        return f"read_parquet('{pattern}')", pass1_files
+        return f"read_parquet('{pattern}', union_by_name=True)", pass1_files
 
     def _deduped_file_path(self, table_name: str) -> Path:
         """Return the deduped parquet path for a gold table."""

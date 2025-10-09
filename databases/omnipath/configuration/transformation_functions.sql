@@ -5,11 +5,6 @@
 -- CORE NORMALIZATION FUNCTIONS
 -- =====================================================
 
--- Normalize separators: collapse any of [ , ; | ] (with spaces) into a single |
-CREATE OR REPLACE MACRO normalize_separators(s) AS
-    NULLIF(regexp_replace(TRIM(s), '\s*[,;|]\s*', '|', 'g'), '');
-
--- Normalize a single identifier by namespace with regex
 CREATE OR REPLACE MACRO normalize_id(ns, raw) AS (
     CASE
         WHEN raw IS NULL OR TRIM(raw) = '' THEN NULL
@@ -18,205 +13,100 @@ CREATE OR REPLACE MACRO normalize_id(ns, raw) AS (
             CASE
                 WHEN regexp_extract(TRIM(raw), '(?i)^(?:HMDB:)?(?:HMDB)?(\d{5,7})$', 1) IS NOT NULL
                      AND regexp_extract(TRIM(raw), '(?i)^(?:HMDB:)?(?:HMDB)?(\d{5,7})$', 1) != ''
-                    THEN struct_pack(
-                        type := 'hmdb',
-                        value := 'HMDB:' || regexp_extract(TRIM(raw), '(?i)^(?:HMDB:)?(?:HMDB)?(\d{5,7})$', 1)
-                    )
+                    THEN 'HMDB:' || regexp_extract(TRIM(raw), '(?i)^(?:HMDB:)?(?:HMDB)?(\d{5,7})$', 1)
             END
 
         WHEN lower(ns) = 'chebi' THEN
             CASE
                 WHEN regexp_extract(TRIM(raw), '(?i)^(?:CHEBI:)?(\d+)$', 1) IS NOT NULL
                      AND regexp_extract(TRIM(raw), '(?i)^(?:CHEBI:)?(\d+)$', 1) != ''
-                    THEN struct_pack(
-                        type := 'chebi',
-                        value := 'CHEBI:' || regexp_extract(TRIM(raw), '(?i)^(?:CHEBI:)?(\d+)$', 1)
-                    )
+                    THEN 'CHEBI:' || regexp_extract(TRIM(raw), '(?i)^(?:CHEBI:)?(\d+)$', 1)
             END
 
         WHEN lower(ns) = 'pubchem' THEN
             CASE
                 WHEN regexp_extract(TRIM(raw), '(?i)^(?:PUBCHEM:|CID:?)?(\d+)$', 1) IS NOT NULL
                      AND regexp_extract(TRIM(raw), '(?i)^(?:PUBCHEM:|CID:?)?(\d+)$', 1) != ''
-                    THEN struct_pack(
-                        type := 'pubchem',
-                        value := 'PUBCHEM:' || regexp_extract(TRIM(raw), '(?i)^(?:PUBCHEM:|CID:?)?(\d+)$', 1)
-                    )
+                    THEN 'PUBCHEM:' || regexp_extract(TRIM(raw), '(?i)^(?:PUBCHEM:|CID:?)?(\d+)$', 1)
             END
 
         WHEN lower(ns) = 'kegg' THEN
             CASE
                 WHEN regexp_extract(TRIM(raw), '(?i)^(?:KEGG:)?([CD]\d{5})$', 1) IS NOT NULL
                      AND regexp_extract(TRIM(raw), '(?i)^(?:KEGG:)?([CD]\d{5})$', 1) != ''
-                    THEN struct_pack(
-                        type := 'kegg',
-                        value := 'KEGG:' || upper(regexp_extract(TRIM(raw), '(?i)^(?:KEGG:)?([CD]\d{5})$', 1))
-                    )
+                    THEN 'KEGG:' || upper(regexp_extract(TRIM(raw), '(?i)^(?:KEGG:)?([CD]\d{5})$', 1))
             END
 
         WHEN lower(ns) = 'drugbank' THEN
             CASE
                 WHEN regexp_extract(TRIM(raw), '(?i)^(?:DRUGBANK:)?(DB\d{5})$', 1) IS NOT NULL
                      AND regexp_extract(TRIM(raw), '(?i)^(?:DRUGBANK:)?(DB\d{5})$', 1) != ''
-                    THEN struct_pack(
-                        type := 'drugbank',
-                        value := 'DRUGBANK:' || upper(regexp_extract(TRIM(raw), '(?i)^(?:DRUGBANK:)?(DB\d{5})$', 1))
-                    )
+                    THEN 'DRUGBANK:' || upper(regexp_extract(TRIM(raw), '(?i)^(?:DRUGBANK:)?(DB\d{5})$', 1))
             END
 
         WHEN lower(ns) = 'cas' THEN
             CASE
                 WHEN regexp_extract(TRIM(raw), '^(\d{2,7}-\d{2}-\d)$', 1) IS NOT NULL
                      AND regexp_extract(TRIM(raw), '^(\d{2,7}-\d{2}-\d)$', 1) != ''
-                    THEN struct_pack(
-                        type := 'cas',
-                        value := regexp_extract(TRIM(raw), '^(\d{2,7}-\d{2}-\d)$', 1)
-                    )
+                    THEN regexp_extract(TRIM(raw), '^(\d{2,7}-\d{2}-\d)$', 1)
             END
 
         WHEN lower(ns) = 'inchikey' THEN
             CASE
                 WHEN regexp_extract(upper(TRIM(raw)), '^(?:INCHIKEY=)?([A-Z]{14}-[A-Z]{10}-[A-Z])$', 1) IS NOT NULL
                      AND regexp_extract(upper(TRIM(raw)), '^(?:INCHIKEY=)?([A-Z]{14}-[A-Z]{10}-[A-Z])$', 1) != ''
-                    THEN struct_pack(
-                        type := 'inchikey',
-                        value := regexp_extract(upper(TRIM(raw)), '^(?:INCHIKEY=)?([A-Z]{14}-[A-Z]{10}-[A-Z])$', 1)
-                    )
+                    THEN regexp_extract(upper(TRIM(raw)), '^(?:INCHIKEY=)?([A-Z]{14}-[A-Z]{10}-[A-Z])$', 1)
             END
 
         WHEN lower(ns) = 'inchi' THEN
             CASE
                 WHEN upper(TRIM(raw)) IN ('INCHI=NONE','NONE','N/A','NA') OR TRIM(raw) = 'InChI=' THEN NULL
                 WHEN regexp_extract(TRIM(raw), '(?i)^InChI=(.+)$', 1) IS NOT NULL
-                    THEN struct_pack(
-                        type := 'inchi',
-                        value := 'InChI=' || regexp_extract(TRIM(raw), '(?i)^InChI=(.+)$', 1)
-                    )
-                ELSE struct_pack(type := 'inchi', value := TRIM(raw))
+                    THEN 'InChI=' || regexp_extract(TRIM(raw), '(?i)^InChI=(.+)$', 1)
+                ELSE TRIM(raw)
             END
 
         WHEN lower(ns) = 'lipidmaps' THEN
             CASE
                 WHEN regexp_extract(upper(TRIM(raw)), '(?i)^(?:LIPIDMAPS:)?(LM[A-Z]{2}\d{8})$', 1) IS NOT NULL
                      AND regexp_extract(upper(TRIM(raw)), '(?i)^(?:LIPIDMAPS:)?(LM[A-Z]{2}\d{8})$', 1) != ''
-                    THEN struct_pack(
-                        type := 'lipidmaps',
-                        value := 'LIPIDMAPS:' || regexp_extract(upper(TRIM(raw)), '(?i)^(?:LIPIDMAPS:)?(LM[A-Z]{2}\d{8})$', 1)
-                    )
+                    THEN 'LIPIDMAPS:' || regexp_extract(upper(TRIM(raw)), '(?i)^(?:LIPIDMAPS:)?(LM[A-Z]{2}\d{8})$', 1)
             END
 
         WHEN lower(ns) = 'swisslipids' THEN
             CASE
                 WHEN regexp_extract(TRIM(raw), '(?i)^(?:SWISSLIPIDS:|SLM:)?(\d{6,})$', 1) IS NOT NULL
                      AND regexp_extract(TRIM(raw), '(?i)^(?:SWISSLIPIDS:|SLM:)?(\d{6,})$', 1) != ''
-                    THEN struct_pack(
-                        type := 'swisslipids',
-                        value := 'SWISSLIPIDS:' || regexp_extract(TRIM(raw), '(?i)^(?:SWISSLIPIDS:|SLM:)?(\d{6,})$', 1)
-                    )
+                    THEN 'SWISSLIPIDS:' || regexp_extract(TRIM(raw), '(?i)^(?:SWISSLIPIDS:|SLM:)?(\d{6,})$', 1)
             END
 
         WHEN lower(ns) = 'metanetx' THEN
             CASE
                 WHEN regexp_extract(TRIM(raw), '(?i)^(?:METANETX:)?(MNXM\d+)$', 1) IS NOT NULL
                      AND regexp_extract(TRIM(raw), '(?i)^(?:METANETX:)?(MNXM\d+)$', 1) != ''
-                    THEN struct_pack(
-                        type := 'metanetx',
-                        value := 'METANETX:' || upper(regexp_extract(TRIM(raw), '(?i)^(?:METANETX:)?(MNXM\d+)$', 1))
-                    )
+                    THEN 'METANETX:' || upper(regexp_extract(TRIM(raw), '(?i)^(?:METANETX:)?(MNXM\d+)$', 1))
             END
 
         WHEN lower(ns) = 'ramp' THEN
-            CASE WHEN TRIM(raw) != '' THEN struct_pack(type := 'ramp', value := TRIM(raw)) END
+            CASE
+                WHEN TRIM(raw) = '' THEN NULL
+                ELSE TRIM(raw)
+            END
     END
 );
 
--- Parse a prefixed list like "hmdb:123, pubchem:45 | chebi:7"
-CREATE OR REPLACE MACRO parse_prefixed_identifier_list(text) AS (
-    CASE
-        WHEN text IS NULL OR TRIM(text) = '' THEN CAST(list_value() AS STRUCT(type VARCHAR, value VARCHAR)[])
-        ELSE list_filter(
-            list_transform(
-                str_split(normalize_separators(text), '|'),
-                entry -> CASE
-                    WHEN TRIM(entry) = '' THEN NULL
-                    WHEN strpos(entry, ':') > 0 THEN
-                        normalize_id(split_part(entry, ':', 1), substring(entry, strpos(entry, ':') + 1))
-                    ELSE NULL
-                END
-            ),
-            x -> x IS NOT NULL
-        )
-    END
-);
-
--- =====================================================
--- ID CONSOLIDATION FUNCTIONS
--- =====================================================
-
-CREATE OR REPLACE MACRO build_identifier_list_hmdb(
-    accession,
-    chebi_id,
-    pubchem_compound_id,
-    kegg_id,
-    drugbank_id,
-    cas_registry_number,
-    smiles,
-    iupac_name,
-    traditional_iupac,
-    synonyms
-) AS (
-    SELECT CASE
-        WHEN len(identifier_list) = 0 THEN NULL
-        ELSE to_json(list_distinct(identifier_list))
-    END
-    FROM (
-        SELECT list_filter(
-            list_concat(
-                list_filter([
-                    normalize_id('hmdb', accession),
-                    normalize_id('chebi', chebi_id),
-                    normalize_id('pubchem', pubchem_compound_id),
-                    normalize_id('kegg', kegg_id),
-                    normalize_id('drugbank', drugbank_id),
-                    normalize_id('cas', cas_registry_number)
-                ], x -> x IS NOT NULL),
-                list_concat(
-                    CASE
-                        WHEN smiles IS NOT NULL AND TRIM(smiles) != '' THEN
-                            list_value(struct_pack(type := 'canonical_smiles', value := TRIM(smiles)))
-                        ELSE CAST(list_value() AS STRUCT(type VARCHAR, value VARCHAR)[])
-                    END,
-                    list_concat(
-                        CASE
-                            WHEN COALESCE(iupac_name, traditional_iupac) IS NOT NULL
-                                 AND TRIM(COALESCE(iupac_name, traditional_iupac)) != '' THEN
-                                list_value(struct_pack(
-                                    type := 'name',
-                                    value := TRIM(COALESCE(iupac_name, traditional_iupac))
-                                ))
-                            ELSE CAST(list_value() AS STRUCT(type VARCHAR, value VARCHAR)[])
-                        END,
-                        CASE
-                            WHEN synonyms IS NOT NULL THEN
-                                list_filter(
-                                    list_transform(
-                                        CAST(synonyms AS VARCHAR[]),
-                                        s -> CASE
-                                            WHEN s IS NOT NULL AND TRIM(s) != '' THEN
-                                                struct_pack(type := 'synonym', value := TRIM(s))
-                                        END
-                                    ),
-                                    x -> x IS NOT NULL
-                                )
-                            ELSE CAST(list_value() AS STRUCT(type VARCHAR, value VARCHAR)[])
-                        END
-                    )
-                )
-            ),
-            x -> x IS NOT NULL
-        ) AS identifier_list
-    )
-);
+CREATE OR REPLACE MACRO normalize_hmdb_id(raw) AS normalize_id('hmdb', raw);
+CREATE OR REPLACE MACRO normalize_chebi_id(raw) AS normalize_id('chebi', raw);
+CREATE OR REPLACE MACRO normalize_pubchem_cid(raw) AS normalize_id('pubchem', raw);
+CREATE OR REPLACE MACRO normalize_kegg_id(raw) AS normalize_id('kegg', raw);
+CREATE OR REPLACE MACRO normalize_drugbank_id(raw) AS normalize_id('drugbank', raw);
+CREATE OR REPLACE MACRO normalize_cas_number(raw) AS normalize_id('cas', raw);
+CREATE OR REPLACE MACRO normalize_inchi_value(raw) AS normalize_id('inchi', raw);
+CREATE OR REPLACE MACRO normalize_lipidmaps_id(raw) AS normalize_id('lipidmaps', raw);
+CREATE OR REPLACE MACRO normalize_swisslipids_id(raw) AS normalize_id('swisslipids', raw);
+CREATE OR REPLACE MACRO normalize_metanetx_id(raw) AS normalize_id('metanetx', raw);
+CREATE OR REPLACE MACRO normalize_ramp_id(raw) AS normalize_id('ramp', raw);
+CREATE OR REPLACE MACRO normalize_inchikey_value(raw) AS normalize_id('inchikey', raw);
 
 -- =====================================================
 -- SILVER ENTITY HELPER FUNCTIONS
@@ -251,197 +141,6 @@ CREATE OR REPLACE MACRO parse_bracketed_list(value) AS
             ','
         )
     END;
-
-CREATE OR REPLACE MACRO build_identifier_list_lipidmaps(
-    lipidmaps_id,
-    chebi,
-    pubchem,
-    inchi,
-    smiles,
-    name,
-    synonyms,
-    abbreviation
-) AS (
-    SELECT CASE
-        WHEN len(identifier_list) = 0 THEN NULL
-        ELSE to_json(list_distinct(identifier_list))
-    END
-    FROM (
-        SELECT list_filter(
-            list_concat(
-                list_filter([
-                    normalize_id('lipidmaps', lipidmaps_id),
-                    normalize_id('chebi', chebi),
-                    normalize_id('pubchem', pubchem),
-                    normalize_id('inchi', inchi)
-                ], x -> x IS NOT NULL),
-                list_concat(
-                    CASE
-                        WHEN smiles IS NOT NULL AND TRIM(smiles) != '' THEN
-                            list_value(struct_pack(type := 'canonical_smiles', value := TRIM(smiles)))
-                        ELSE CAST(list_value() AS STRUCT(type VARCHAR, value VARCHAR)[])
-                    END,
-                    list_concat(
-                        CASE
-                            WHEN name IS NOT NULL AND TRIM(name) != '' THEN
-                                list_value(struct_pack(type := 'name', value := TRIM(name)))
-                            ELSE CAST(list_value() AS STRUCT(type VARCHAR, value VARCHAR)[])
-                        END,
-                        list_concat(
-                            CASE
-                                WHEN abbreviation IS NOT NULL AND TRIM(abbreviation) != '' THEN
-                                    list_value(struct_pack(type := 'synonym', value := TRIM(abbreviation)))
-                                ELSE CAST(list_value() AS STRUCT(type VARCHAR, value VARCHAR)[])
-                            END,
-                            CASE
-                                WHEN synonyms IS NOT NULL AND TRIM(synonyms) != '' THEN
-                                    list_filter(
-                                        list_transform(
-                                            str_split(synonyms, '; '),
-                                            s -> CASE
-                                                WHEN s IS NOT NULL AND TRIM(s) != '' THEN
-                                                    struct_pack(type := 'synonym', value := TRIM(s))
-                                            END
-                                        ),
-                                        x -> x IS NOT NULL
-                                    )
-                                ELSE CAST(list_value() AS STRUCT(type VARCHAR, value VARCHAR)[])
-                            END
-                        )
-                    )
-                )
-            ),
-            x -> x IS NOT NULL
-        ) AS identifier_list
-    )
-);
-
-CREATE OR REPLACE MACRO build_identifier_list_ramp(
-    ramp_id,
-    sources,
-    chem_data_source,
-    chem_source_id,
-    inchi,
-    smiles,
-    common_name,
-    synonyms
-) AS (
-    SELECT CASE
-        WHEN len(identifier_list) = 0 THEN NULL
-        ELSE to_json(list_distinct(identifier_list))
-    END
-    FROM (
-        SELECT list_filter(
-            list_concat(
-                list_filter(
-                    list_concat([
-                        normalize_id('ramp', ramp_id),
-                        normalize_id(chem_data_source, chem_source_id),
-                        normalize_id('inchi', inchi)
-                    ], parse_prefixed_identifier_list(sources)),
-                    x -> x IS NOT NULL
-                ),
-                list_concat(
-                    CASE
-                        WHEN smiles IS NOT NULL AND TRIM(smiles) != '' THEN
-                            list_value(struct_pack(type := 'canonical_smiles', value := TRIM(smiles)))
-                        ELSE CAST(list_value() AS STRUCT(type VARCHAR, value VARCHAR)[])
-                    END,
-                    list_concat(
-                        CASE
-                            WHEN common_name IS NOT NULL AND TRIM(common_name) != '' THEN
-                                list_value(struct_pack(type := 'name', value := TRIM(common_name)))
-                            ELSE CAST(list_value() AS STRUCT(type VARCHAR, value VARCHAR)[])
-                        END,
-                        CASE
-                            WHEN synonyms IS NOT NULL AND TRIM(synonyms) != '' THEN
-                                list_filter(
-                                    list_transform(
-                                        str_split(COALESCE(normalize_separators(synonyms), ''), '|'),
-                                        s -> CASE
-                                            WHEN s IS NOT NULL AND TRIM(s) != '' THEN
-                                                struct_pack(type := 'synonym', value := TRIM(s))
-                                        END
-                                    ),
-                                    x -> x IS NOT NULL
-                                )
-                            ELSE CAST(list_value() AS STRUCT(type VARCHAR, value VARCHAR)[])
-                        END
-                    )
-                )
-            ),
-            x -> x IS NOT NULL
-        ) AS identifier_list
-    )
-);
-
-CREATE OR REPLACE MACRO build_identifier_list_swisslipids(
-    swisslipids_id,
-    chebi,
-    lipidmaps,
-    hmdb,
-    metanetx,
-    inchi,
-    smiles,
-    name,
-    synonyms,
-    abbreviation
-) AS (
-    SELECT CASE
-        WHEN len(identifier_list) = 0 THEN NULL
-        ELSE to_json(list_distinct(identifier_list))
-    END
-    FROM (
-        SELECT list_filter(
-            list_concat(
-                list_filter([
-                    normalize_id('swisslipids', swisslipids_id),
-                    normalize_id('chebi', chebi),
-                    normalize_id('lipidmaps', lipidmaps),
-                    normalize_id('hmdb', hmdb),
-                    normalize_id('metanetx', metanetx),
-                    normalize_id('inchi', inchi)
-                ], x -> x IS NOT NULL),
-                list_concat(
-                    CASE
-                        WHEN smiles IS NOT NULL AND TRIM(smiles) != '' THEN
-                            list_value(struct_pack(type := 'canonical_smiles', value := TRIM(smiles)))
-                        ELSE CAST(list_value() AS STRUCT(type VARCHAR, value VARCHAR)[])
-                    END,
-                    list_concat(
-                        CASE
-                            WHEN name IS NOT NULL AND TRIM(name) != '' THEN
-                                list_value(struct_pack(type := 'name', value := TRIM(name)))
-                            ELSE CAST(list_value() AS STRUCT(type VARCHAR, value VARCHAR)[])
-                        END,
-                        list_concat(
-                            CASE
-                                WHEN abbreviation IS NOT NULL AND TRIM(abbreviation) != '' THEN
-                                    list_value(struct_pack(type := 'synonym', value := TRIM(abbreviation)))
-                                ELSE CAST(list_value() AS STRUCT(type VARCHAR, value VARCHAR)[])
-                            END,
-                            CASE
-                                WHEN synonyms IS NOT NULL AND TRIM(synonyms) != '' THEN
-                                    list_filter(
-                                        list_transform(
-                                            str_split(synonyms, '; '),
-                                            s -> CASE
-                                                WHEN s IS NOT NULL AND TRIM(s) != '' THEN
-                                                    struct_pack(type := 'synonym', value := TRIM(s))
-                                            END
-                                        ),
-                                        x -> x IS NOT NULL
-                                    )
-                                ELSE CAST(list_value() AS STRUCT(type VARCHAR, value VARCHAR)[])
-                            END
-                        )
-                    )
-                )
-            ),
-            x -> x IS NOT NULL
-        ) AS identifier_list
-    )
-);
 
 CREATE OR REPLACE MACRO build_lipidmaps_annotations(category, main_class) AS (
     SELECT CASE

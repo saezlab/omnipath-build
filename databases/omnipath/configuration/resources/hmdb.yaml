@@ -16,13 +16,32 @@ functions:
                 target: entity_type
                 value: compound
             -   source: inchikey
-                target: identifier
+                target: inchikey
+                transform: normalize_inchikey_value
+            -   source: inchikey
+                target: dedup_identifier
+                transform: normalize_inchikey_value
             -   source: _constant
-                target: identifier_type
+                target: dedup_identifier_type
                 value: inchikey
-            -   source: [accession, chebi_id, pubchem_compound_id, kegg_id, drugbank_id, cas_registry_number, smiles, iupac_name, traditional_iupac, synonyms]
-                target: additional_identifiers
-                transform: build_identifier_list_hmdb
+            -   source: accession
+                target: hmdb_id
+                transform: normalize_hmdb_id
+            -   source: chebi_id
+                target: chebi_id
+                transform: normalize_chebi_id
+            -   source: pubchem_compound_id
+                target: pubchem_cid
+                transform: normalize_pubchem_cid
+            -   source: kegg_id
+                target: kegg_id
+                transform: normalize_kegg_id
+            -   source: drugbank_id
+                target: drugbank_id
+                transform: normalize_drugbank_id
+            -   source: cas_registry_number
+                target: cas_number
+                transform: normalize_cas_number
             -   source: _constant
                 target: processed_by
                 value: hmdb_compounds_for_metabo
