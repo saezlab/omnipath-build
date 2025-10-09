@@ -174,6 +174,32 @@ gold_tables = {
         }
     },
 
+    "entity_evidence": {
+        "columns": {
+            "main": {
+                "annotations": "JSON"   # All annotations from this source: {"gene_name": "EGFR", "tissue": ["liver"], ...}
+            },
+            "temp": {
+                "entity_deduplication_identifier": "TEXT",
+                "entity_deduplication_identifier_type": "VARCHAR(255)",
+                "source_name": "VARCHAR(255)",
+                "reference_value": "TEXT"
+            }
+        },
+        "foreign_keys": [
+            fk("entity_id", "links to entity via (entity.deduplication_identifier = entity_deduplication_identifier AND entity.deduplication_identifier_type = entity_deduplication_identifier_type)"),
+            fk(
+                "provenance_id",
+                "links to provenance via (provenance.source_name = source_name AND provenance.reference_value = reference_value)",
+                null_equal_columns=("reference_value",)
+            )
+        ],
+        "constraints": {
+            "pass1": [],
+            "pass2": ["unique on (entity_id, provenance_id)"]
+        }
+    },
+
     "compound": {
         "columns": {
             "main": {
@@ -199,6 +225,141 @@ gold_tables = {
         "constraints": {
             "pass1": [],
             "pass2": ["unique on (entity_id)"]  # if you enforce 1:1
+        }
+    },
+
+    "membership": {
+        "columns": {
+            "main": {
+                "stoichiometry": "FLOAT"
+            },
+            "temp": {
+                "parent_deduplication_identifier": "TEXT",
+                "parent_deduplication_identifier_type": "VARCHAR(255)",
+                "member_deduplication_identifier": "TEXT",
+                "member_deduplication_identifier_type": "VARCHAR(255)",
+                "role_namespace_name": "VARCHAR(255)",
+                "role_name": "VARCHAR(255)",
+                "source_name": "VARCHAR(255)",
+                "reference_value": "TEXT"
+            }
+        },
+        "foreign_keys": [
+            fk("parent_id", "links to entity via (entity.deduplication_identifier = parent_deduplication_identifier AND entity.deduplication_identifier_type = parent_deduplication_identifier_type)"),
+            fk("member_id", "links to entity via (entity.deduplication_identifier = member_deduplication_identifier AND entity.deduplication_identifier_type = member_deduplication_identifier_type)"),
+            fk("role_id", "links to cv_term via (cv_term.namespace_name = role_namespace_name AND cv_term.name = role_name)"),
+            fk(
+                "provenance_id",
+                "links to provenance via (provenance.source_name = source_name AND provenance.reference_value = reference_value)",
+                null_equal_columns=("reference_value",)
+            )
+        ],
+        "constraints": {
+            "pass1": [],
+            "pass2": ["unique on (parent_id, member_id, role_id, provenance_id)"]
+        }
+    },
+
+    "interaction": {
+        "columns": {
+            "main": {
+            },
+            "temp": {
+                "entity_a_deduplication_identifier": "TEXT",
+                "entity_a_deduplication_identifier_type": "VARCHAR(255)",
+                "entity_b_deduplication_identifier": "TEXT",
+                "entity_b_deduplication_identifier_type": "VARCHAR(255)",
+                "type_namespace_name": "VARCHAR(255)",
+                "type_name": "VARCHAR(255)"
+            }
+        },
+        "foreign_keys": [
+            fk("entity_a_id", "links to entity via (entity.deduplication_identifier = entity_a_deduplication_identifier AND entity.deduplication_identifier_type = entity_a_deduplication_identifier_type)"),
+            fk("entity_b_id", "links to entity via (entity.deduplication_identifier = entity_b_deduplication_identifier AND entity.deduplication_identifier_type = entity_b_deduplication_identifier_type)"),
+                fk("type_id", "links to cv_term via (cv_term.namespace_name = type_namespace_name AND cv_term.name = type_name)")
+            ],
+            "constraints": {
+                "pass1": [],
+            "pass2": ["unique on (entity_a_id, entity_b_id, type_id)"]
+        }
+    },
+
+    "interaction_evidence": {
+        "columns": {
+            "main": {
+                "detection_method": "VARCHAR(255)",
+                "causal_statement": "TEXT",
+                "sentence": "TEXT",
+                "is_directed": "BOOLEAN",
+                "annotations": "JSON",        # General interaction annotations
+                "entity_a_context": "JSON",   # Context annotations for entity A
+                "entity_b_context": "JSON"    # Context annotations for entity B
+            },
+            "temp": {
+                "entity_a_deduplication_identifier": "TEXT",
+                "entity_a_deduplication_identifier_type": "VARCHAR(255)",
+                "entity_b_deduplication_identifier": "TEXT",
+                "entity_b_deduplication_identifier_type": "VARCHAR(255)",
+                "type_namespace_name": "VARCHAR(255)",
+                "type_name": "VARCHAR(255)",
+                "source_name": "VARCHAR(255)",
+                "reference_value": "TEXT"
+            }
+        },
+        "foreign_keys": [
+            fk("interaction_id", "links to interaction via (interaction.entity_a_deduplication_identifier = entity_a_deduplication_identifier AND interaction.entity_a_deduplication_identifier_type = entity_a_deduplication_identifier_type AND interaction.entity_b_deduplication_identifier = entity_b_deduplication_identifier AND interaction.entity_b_deduplication_identifier_type = entity_b_deduplication_identifier_type AND interaction.type_namespace_name = type_namespace_name AND interaction.type_name = type_name)"),
+            fk(
+                "provenance_id",
+                "links to provenance via (provenance.source_name = source_name AND provenance.reference_value = reference_value)",
+                null_equal_columns=("reference_value",)
+            )
+        ],
+        "constraints": {
+            "pass1": [],
+            "pass2": ["unique on (interaction_id, provenance_id, detection_method)"]
+        }
+    },
+
+    "protein": {
+        "columns": {
+            "main": {
+                "sequence": "TEXT",
+                "protein_class": "VARCHAR(255)"
+            },
+            "temp": {
+                "entity_deduplication_identifier": "TEXT",
+                "entity_deduplication_identifier_type": "VARCHAR(255)"
+            }
+        },
+        "foreign_keys": [
+            fk("entity_id", "links to entity via (entity.deduplication_identifier = entity_deduplication_identifier AND entity.deduplication_identifier_type = entity_deduplication_identifier_type)")
+        ],
+        "constraints": {
+            "pass1": [],
+            "pass2": ["unique on (entity_id)"]
+        }
+    },
+
+    "reaction": {
+        "columns": {
+            "main": {
+                "equation": "TEXT",
+                "directionality": "VARCHAR(50)",
+                "pathway": "VARCHAR(255)",
+                "ec_number": "VARCHAR(50)",
+                "smiles": "TEXT"
+            },
+            "temp": {
+                "entity_deduplication_identifier": "TEXT",
+                "entity_deduplication_identifier_type": "VARCHAR(255)"
+            }
+        },
+        "foreign_keys": [
+            fk("entity_id", "links to entity via (entity.deduplication_identifier = entity_deduplication_identifier AND entity.deduplication_identifier_type = entity_deduplication_identifier_type)")
+        ],
+        "constraints": {
+            "pass1": [],
+            "pass2": ["unique on (entity_id)"]
         }
     }
 }
@@ -318,6 +479,101 @@ silver_gold_map = {
             FROM silver_entities
             WHERE additional_identifiers IS NOT NULL
               AND additional_identifiers != '[]'
+        '''
+    },
+    'entity_evidence': {
+        'source_table': 'silver_entities',
+        'select': '''
+            SELECT DISTINCT
+                identifier as entity_deduplication_identifier,
+                identifier_type as entity_deduplication_identifier_type,
+                source_database as source_name,
+                NULL::VARCHAR as reference_value,
+                annotations
+            FROM silver_entities
+            WHERE annotations IS NOT NULL
+              AND annotations != '{}'
+        '''
+    },
+    'membership': {
+        'source_table': 'silver_entities',
+        'select': '''
+            SELECT DISTINCT
+                CAST(json_extract_string(member, 'member_id') AS VARCHAR) as member_deduplication_identifier,
+                identifier_type as member_deduplication_identifier_type,
+                identifier as parent_deduplication_identifier,
+                identifier_type as parent_deduplication_identifier_type,
+                'OmniPath' as role_namespace_name,
+                COALESCE(CAST(json_extract_string(member, 'role') AS VARCHAR), 'member') as role_name,
+                CAST(json_extract_string(member, 'stoichiometry') AS FLOAT) as stoichiometry,
+                source_database as source_name,
+                NULL::VARCHAR as reference_value
+            FROM silver_entities,
+                 unnest(json_extract(complex_members, '$[*]')) as member
+            WHERE complex_members IS NOT NULL
+              AND complex_members != '[]'
+        '''
+    },
+    'interaction': {
+        'source_table': 'silver_interactions',
+        'select': '''
+            SELECT DISTINCT
+                entity_a_identifier as entity_a_deduplication_identifier,
+                entity_a_identifier_type as entity_a_deduplication_identifier_type,
+                entity_b_identifier as entity_b_deduplication_identifier,
+                entity_b_identifier_type as entity_b_deduplication_identifier_type,
+                'OmniPath' as type_namespace_name,
+                interaction_type as type_name,
+            FROM silver_interactions
+        '''
+    },
+    'interaction_evidence': {
+        'source_table': 'silver_interactions',
+        'select': '''
+            SELECT DISTINCT
+                entity_a_identifier as entity_a_deduplication_identifier,
+                entity_a_identifier_type as entity_a_deduplication_identifier_type,
+                entity_b_identifier as entity_b_deduplication_identifier,
+                entity_b_identifier_type as entity_b_deduplication_identifier_type,
+                'OmniPath' as type_namespace_name,
+                interaction_type as type_name,
+                detection_method,
+                causal_statement,
+                sentence,
+                is_directed,
+                interaction_annotations as annotations,
+                entity_a_context,
+                entity_b_context,
+                source_name,
+                reference_value
+            FROM silver_interactions
+        '''
+    },
+    'protein': {
+        'source_table': 'silver_entities',
+        'select': '''
+            SELECT DISTINCT
+                identifier as entity_deduplication_identifier,
+                identifier_type as entity_deduplication_identifier_type,
+                protein_sequence as sequence,
+                protein_class
+            FROM silver_entities
+            WHERE entity_type = 'protein'
+        '''
+    },
+    'reaction': {
+        'source_table': 'silver_entities',
+        'select': '''
+            SELECT DISTINCT
+                identifier as entity_deduplication_identifier,
+                identifier_type as entity_deduplication_identifier_type,
+                reaction_equation as equation,
+                reaction_directionality as directionality,
+                reaction_pathway as pathway,
+                reaction_ec_number as ec_number,
+                reaction_smiles as smiles
+            FROM silver_entities
+            WHERE entity_type = 'reaction'
         '''
     }
 }
