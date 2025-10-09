@@ -1,6 +1,8 @@
 __all__ = [
     'ENTITY_IDENTIFIER_PROVENANCE_UNIONS',
+    'ENTITY_IDENTIFIER_PROVENANCE_UNION_SELECTS',
     'ENTITY_IDENTIFIER_UNIONS',
+    'ENTITY_IDENTIFIER_UNION_SELECTS',
     'IDENTIFIER_COLUMNS',
     'fk',
 ]
@@ -13,6 +15,7 @@ def fk(id_col, link_text, null_equal_columns: tuple[str, ...] | None = None):
     return fk_def
 
 IDENTIFIER_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("name", "'name'"),
     ("inchikey", "'inchikey'"),
     ("hmdb_id", "'hmdb'"),
     ("chebi_id", "'chebi'"),
@@ -26,7 +29,7 @@ IDENTIFIER_COLUMNS: tuple[tuple[str, str], ...] = (
     ("cas_number", "'cas'"),
 )
 
-ENTITY_IDENTIFIER_UNIONS = "\n        UNION ALL\n        ".join(
+ENTITY_IDENTIFIER_UNION_SELECTS = [
     f"""SELECT DISTINCT
                 {column} AS identifier,
                 dedup_identifier AS entity_deduplication_identifier,
@@ -38,9 +41,27 @@ ENTITY_IDENTIFIER_UNIONS = "\n        UNION ALL\n        ".join(
               AND dedup_identifier IS NOT NULL
               AND dedup_identifier_type IS NOT NULL"""
     for column, label in IDENTIFIER_COLUMNS
+]
+
+ENTITY_IDENTIFIER_UNION_SELECTS.append(
+    """SELECT DISTINCT
+                json_extract_string(synonym_json, '$') AS identifier,
+                dedup_identifier AS entity_deduplication_identifier,
+                dedup_identifier_type AS entity_deduplication_identifier_type,
+                'OmniPath' AS identifier_type_namespace_name,
+                'synonym' AS identifier_type_name
+            FROM silver_entities,
+                 unnest(json_extract(name_variants, '$[*]')) AS synonym_json
+            WHERE name_variants IS NOT NULL
+              AND name_variants != '[]'
+              AND json_extract_string(synonym_json, '$') IS NOT NULL
+              AND dedup_identifier IS NOT NULL
+              AND dedup_identifier_type IS NOT NULL"""
 )
 
-ENTITY_IDENTIFIER_PROVENANCE_UNIONS = "\n        UNION ALL\n        ".join(
+ENTITY_IDENTIFIER_UNIONS = "\n        UNION ALL\n        ".join(ENTITY_IDENTIFIER_UNION_SELECTS)
+
+ENTITY_IDENTIFIER_PROVENANCE_UNION_SELECTS = [
     f"""SELECT DISTINCT
                 {column} AS identifier,
                 'OmniPath' AS identifier_type_namespace_name,
@@ -50,7 +71,23 @@ ENTITY_IDENTIFIER_PROVENANCE_UNIONS = "\n        UNION ALL\n        ".join(
             FROM silver_entities
             WHERE {column} IS NOT NULL"""
     for column, label in IDENTIFIER_COLUMNS
+]
+
+ENTITY_IDENTIFIER_PROVENANCE_UNION_SELECTS.append(
+    """SELECT DISTINCT
+                json_extract_string(synonym_json, '$') AS identifier,
+                'OmniPath' AS identifier_type_namespace_name,
+                'synonym' AS identifier_type_name,
+                source_database AS source_name,
+                NULL::VARCHAR AS reference_value
+            FROM silver_entities,
+                 unnest(json_extract(name_variants, '$[*]')) AS synonym_json
+            WHERE name_variants IS NOT NULL
+              AND name_variants != '[]'
+              AND json_extract_string(synonym_json, '$') IS NOT NULL"""
 )
+
+ENTITY_IDENTIFIER_PROVENANCE_UNIONS = "\n        UNION ALL\n        ".join(ENTITY_IDENTIFIER_PROVENANCE_UNION_SELECTS)
 
 gold_tables = {
     "cv_namespace": {
