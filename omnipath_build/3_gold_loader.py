@@ -48,6 +48,7 @@ class GoldLoader:
 
     PASS1_DIR_NAME = 'pass1'
     DEDUPED_DIR_NAME = 'deduped'
+    PREFERRED_IDENTIFIER_TYPES: tuple[str, ...] = ('uniprot', 'inchikey')
 
     def __init__(
         self,
@@ -178,7 +179,7 @@ class GoldLoader:
         """
         table_def = gold_tables[table_name]
 
-        if table_name == 'entity':
+        if table_name in self._tables_requiring_entity_alias():
             self._ensure_entity_identifier_deduped()
 
         # Find all pass1 files for this table
@@ -188,7 +189,7 @@ class GoldLoader:
             logger.warning("No pass1 files found for %s", table_name)
             return None
 
-        pass1_read_expr, pass1_requires_alias = self._maybe_apply_entity_alias_mapping(
+        pass1_read_expr, pass1_requires_alias = self._maybe_apply_alias_mapping(
             table_name,
             pass1_read_expr,
         )
@@ -203,8 +204,13 @@ class GoldLoader:
             all_columns = {**table_def["columns"]["main"], **table_def["columns"]["temp"]}
             dedup_keys = list(all_columns.keys())
 
-        # Build ORDER BY clause
-        order_clause = ', '.join(priority_columns) if priority_columns else ', '.join(dedup_keys)
+        # Build ORDER BY clause with table-specific priorities
+        priority_exprs: list[str] = []
+        if priority_columns:
+            priority_exprs.extend(priority_columns)
+        priority_exprs.extend(self._dedup_priority_expressions(table_name))
+        order_components = priority_exprs + dedup_keys if priority_exprs else dedup_keys
+        order_clause = ', '.join(order_components)
 
         # Prepare deduped output path
         output_path = self._deduped_file_path(table_name)
@@ -259,7 +265,7 @@ class GoldLoader:
         """
         table_def = gold_tables[table_name]
 
-        if table_name == 'entity':
+        if table_name in self._tables_requiring_entity_alias():
             self._ensure_entity_identifier_deduped()
 
         # Find all pass1 files for this table
@@ -269,7 +275,7 @@ class GoldLoader:
             logger.warning("No pass1 files found for %s", table_name)
             return None
 
-        pass1_read_expr, pass1_requires_alias = self._maybe_apply_entity_alias_mapping(
+        pass1_read_expr, pass1_requires_alias = self._maybe_apply_alias_mapping(
             table_name,
             pass1_read_expr,
         )
@@ -284,8 +290,13 @@ class GoldLoader:
             all_columns = {**table_def["columns"]["main"], **table_def["columns"]["temp"]}
             dedup_keys = list(all_columns.keys())
 
-        # Build ORDER BY clause
-        order_clause = ', '.join(priority_columns) if priority_columns else ', '.join(dedup_keys)
+        # Build ORDER BY clause with table-specific priorities
+        priority_exprs: list[str] = []
+        if priority_columns:
+            priority_exprs.extend(priority_columns)
+        priority_exprs.extend(self._dedup_priority_expressions(table_name))
+        order_components = priority_exprs + dedup_keys if priority_exprs else dedup_keys
+        order_clause = ', '.join(order_components)
 
         # Check if deduped file already exists
         output_path = self._deduped_file_path(table_name)
@@ -573,15 +584,31 @@ class GoldLoader:
         return self.deduped_dir / f'{table_name}_deduped.parquet'
 
     def _dedup_table_order(self) -> list[str]:
-        """Return gold table order with entity_identifier preceding entity for alias reuse."""
+        """Return gold table order with entity-related tables prioritized for alias reuse."""
         tables = list(gold_tables.keys())
-        priority = ['entity_identifier', 'entity']
+        priority = ['entity_identifier', 'entity', 'interaction', 'interaction_evidence']
         ordered: list[str] = []
         for name in priority:
             if name in tables:
                 ordered.append(name)
         ordered.extend(name for name in tables if name not in ordered)
         return ordered
+
+    @staticmethod
+    def _tables_requiring_entity_alias() -> set[str]:
+        """Tables whose pass1 rows need alias-based entity remapping."""
+        return {'entity', 'interaction', 'interaction_evidence'}
+
+    @classmethod
+    def _dedup_priority_expressions(cls, table_name: str) -> list[str]:
+        """Return table-specific ORDER BY expressions to prioritise canonical rows."""
+        preferred_list = ', '.join(f"'{id_type}'" for id_type in cls.PREFERRED_IDENTIFIER_TYPES) or "''"
+        priority_map: dict[str, list[str]] = {
+            'entity_identifier': [
+                f"CASE WHEN entity_deduplication_identifier_type IN ({preferred_list}) THEN 0 ELSE 99 END"
+            ],
+        }
+        return priority_map.get(table_name, [])
 
     def _ensure_entity_identifier_deduped(self) -> Path | None:
         """Ensure deduped entity_identifier parquet exists before deduping entities."""
@@ -600,9 +627,9 @@ class GoldLoader:
 
         return alias_path if alias_path.exists() else None
 
-    def _maybe_apply_entity_alias_mapping(self, table_name: str, pass1_expr: str) -> tuple[str, bool]:
-        """Replace entity dedup identifiers using existing entity_identifier mappings."""
-        if table_name != 'entity':
+    def _maybe_apply_alias_mapping(self, table_name: str, pass1_expr: str) -> tuple[str, bool]:
+        """Replace entity-related identifiers using existing entity_identifier mappings."""
+        if table_name not in self._tables_requiring_entity_alias():
             return pass1_expr, False
 
         alias_path = self._deduped_file_path('entity_identifier')
@@ -610,15 +637,40 @@ class GoldLoader:
             return pass1_expr, False
 
         alias_literal = self._duckdb_path_literal(alias_path)
-        mapped_expr = f"""SELECT
-                main.* EXCLUDE (deduplication_identifier, deduplication_identifier_type),
-                COALESCE(alias.entity_deduplication_identifier, main.deduplication_identifier) AS deduplication_identifier,
-                COALESCE(alias.entity_deduplication_identifier_type, main.deduplication_identifier_type) AS deduplication_identifier_type
-            FROM {pass1_expr} AS main
-            LEFT JOIN read_parquet('{alias_literal}') AS alias
-              ON main.deduplication_identifier = alias.identifier
-             AND main.deduplication_identifier_type = alias.identifier_type_name"""
-        return mapped_expr, True
+        if table_name == 'entity':
+            mapped_expr = f"""SELECT
+                    main.* EXCLUDE (deduplication_identifier, deduplication_identifier_type),
+                    COALESCE(alias.entity_deduplication_identifier, main.deduplication_identifier) AS deduplication_identifier,
+                    COALESCE(alias.entity_deduplication_identifier_type, main.deduplication_identifier_type) AS deduplication_identifier_type
+                FROM {pass1_expr} AS main
+                LEFT JOIN read_parquet('{alias_literal}') AS alias
+                  ON main.deduplication_identifier = alias.identifier
+                 AND main.deduplication_identifier_type = alias.identifier_type_name"""
+            return mapped_expr, True
+
+        if table_name in {'interaction', 'interaction_evidence'}:
+            mapped_expr = f"""SELECT
+                    main.* EXCLUDE (
+                        entity_a_deduplication_identifier,
+                        entity_a_deduplication_identifier_type,
+                        entity_b_deduplication_identifier,
+                        entity_b_deduplication_identifier_type
+                    ),
+                    COALESCE(alias_a.entity_deduplication_identifier, main.entity_a_deduplication_identifier) AS entity_a_deduplication_identifier,
+                    COALESCE(alias_a.entity_deduplication_identifier_type, main.entity_a_deduplication_identifier_type) AS entity_a_deduplication_identifier_type,
+                    COALESCE(alias_b.entity_deduplication_identifier, main.entity_b_deduplication_identifier) AS entity_b_deduplication_identifier,
+                    COALESCE(alias_b.entity_deduplication_identifier_type, main.entity_b_deduplication_identifier_type) AS entity_b_deduplication_identifier_type
+                FROM {pass1_expr} AS main
+                LEFT JOIN read_parquet('{alias_literal}') AS alias_a
+                  ON main.entity_a_deduplication_identifier = alias_a.identifier
+                 AND main.entity_a_deduplication_identifier_type = alias_a.identifier_type_name
+                LEFT JOIN read_parquet('{alias_literal}') AS alias_b
+                  ON main.entity_b_deduplication_identifier = alias_b.identifier
+                 AND main.entity_b_deduplication_identifier_type = alias_b.identifier_type_name"""
+            return mapped_expr, True
+
+        # Other tables (currently none) fall back to original expression.
+        return pass1_expr, False
 
     @staticmethod
     def _wrap_relation(expr: str, alias: str, needs_alias: bool) -> str:

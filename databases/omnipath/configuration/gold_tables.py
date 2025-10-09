@@ -225,7 +225,7 @@ gold_tables = {
         ],
         "constraints": {
             "pass1": [],
-            "pass2": ["unique on (identifier, identifier_type_namespace_name, identifier_type_name)"]
+            "pass2": ["unique on (identifier, type_id)"]
         }
     },
 
