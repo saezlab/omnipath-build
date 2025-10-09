@@ -98,6 +98,7 @@ class GoldLoader:
         )
         self._augmentor = None  # Will be AugmentLoader when created
         self.compound_limit = compound_limit
+        self._ensuring_entity_identifier = False
 
     def __enter__(self) -> 'GoldLoader':
         return self
@@ -177,12 +178,21 @@ class GoldLoader:
         """
         table_def = gold_tables[table_name]
 
+        if table_name == 'entity':
+            self._ensure_entity_identifier_deduped()
+
         # Find all pass1 files for this table
         pass1_read_expr, pass1_files = self._get_pass1_read_source(table_name)
 
         if not pass1_files:
             logger.warning("No pass1 files found for %s", table_name)
             return None
+
+        pass1_read_expr, pass1_requires_alias = self._maybe_apply_entity_alias_mapping(
+            table_name,
+            pass1_read_expr,
+        )
+        pass1_from_clause = self._wrap_relation(pass1_read_expr, 'entity_pass1', pass1_requires_alias)
 
         # Parse constraints to extract deduplication keys
         pass1_constraints = table_def["constraints"]["pass1"]
@@ -208,7 +218,7 @@ class GoldLoader:
                 SELECT ROW_NUMBER() OVER ()::INTEGER AS id, deduped.*
                 FROM (
                     SELECT DISTINCT ON ({', '.join(dedup_keys)}) *
-                    FROM {pass1_read_expr}
+                    FROM {pass1_from_clause}
                     ORDER BY {order_clause}
                 ) AS deduped
             ) TO '{output_path_literal}' (FORMAT PARQUET)
@@ -221,7 +231,7 @@ class GoldLoader:
     def deduplicate_all_tables(self) -> dict[str, Path]:
         """Deduplicate all tables that have pass1 files."""
         results = {}
-        for table_name in gold_tables.keys():
+        for table_name in self._dedup_table_order():
             output_path = self.deduplicate_table(table_name)
             if output_path:
                 results[table_name] = output_path
@@ -249,12 +259,21 @@ class GoldLoader:
         """
         table_def = gold_tables[table_name]
 
+        if table_name == 'entity':
+            self._ensure_entity_identifier_deduped()
+
         # Find all pass1 files for this table
         pass1_read_expr, pass1_files = self._get_pass1_read_source(table_name)
 
         if not pass1_files:
             logger.warning("No pass1 files found for %s", table_name)
             return None
+
+        pass1_read_expr, pass1_requires_alias = self._maybe_apply_entity_alias_mapping(
+            table_name,
+            pass1_read_expr,
+        )
+        pass1_from_clause = self._wrap_relation(pass1_read_expr, 'entity_pass1', pass1_requires_alias)
 
         # Parse constraints to extract deduplication keys
         pass1_constraints = table_def["constraints"]["pass1"]
@@ -279,12 +298,12 @@ class GoldLoader:
             union_query = f"""
                 SELECT * EXCLUDE (id) FROM read_parquet('{output_path_literal}')
                 UNION ALL
-                SELECT * FROM {pass1_read_expr}
+                SELECT * FROM {pass1_from_clause}
             """
             logger.info("Appending to existing deduped file: %s", table_name)
         else:
             # No existing deduped file, just use pass1 files
-            union_query = f"SELECT * FROM {pass1_read_expr}"
+            union_query = f"SELECT * FROM {pass1_from_clause}"
             logger.info("Creating new deduped file: %s", table_name)
 
         # Deduplicate the combined dataset and add auto-increment id
@@ -311,7 +330,7 @@ class GoldLoader:
         Appends new pass1 data to existing deduped files and re-deduplicates.
         """
         results = {}
-        for table_name in gold_tables.keys():
+        for table_name in self._dedup_table_order():
             output_path = self.deduplicate_table_incremental(table_name)
             if output_path:
                 results[table_name] = output_path
@@ -552,6 +571,61 @@ class GoldLoader:
     def _deduped_file_path(self, table_name: str) -> Path:
         """Return the deduped parquet path for a gold table."""
         return self.deduped_dir / f'{table_name}_deduped.parquet'
+
+    def _dedup_table_order(self) -> list[str]:
+        """Return gold table order with entity_identifier preceding entity for alias reuse."""
+        tables = list(gold_tables.keys())
+        priority = ['entity_identifier', 'entity']
+        ordered: list[str] = []
+        for name in priority:
+            if name in tables:
+                ordered.append(name)
+        ordered.extend(name for name in tables if name not in ordered)
+        return ordered
+
+    def _ensure_entity_identifier_deduped(self) -> Path | None:
+        """Ensure deduped entity_identifier parquet exists before deduping entities."""
+        alias_path = self._deduped_file_path('entity_identifier')
+        if alias_path.exists():
+            return alias_path
+
+        if self._ensuring_entity_identifier:
+            return alias_path if alias_path.exists() else None
+
+        self._ensuring_entity_identifier = True
+        try:
+            self.deduplicate_table('entity_identifier')
+        finally:
+            self._ensuring_entity_identifier = False
+
+        return alias_path if alias_path.exists() else None
+
+    def _maybe_apply_entity_alias_mapping(self, table_name: str, pass1_expr: str) -> tuple[str, bool]:
+        """Replace entity dedup identifiers using existing entity_identifier mappings."""
+        if table_name != 'entity':
+            return pass1_expr, False
+
+        alias_path = self._deduped_file_path('entity_identifier')
+        if not alias_path.exists():
+            return pass1_expr, False
+
+        alias_literal = self._duckdb_path_literal(alias_path)
+        mapped_expr = f"""SELECT
+                main.* EXCLUDE (deduplication_identifier, deduplication_identifier_type),
+                COALESCE(alias.entity_deduplication_identifier, main.deduplication_identifier) AS deduplication_identifier,
+                COALESCE(alias.entity_deduplication_identifier_type, main.deduplication_identifier_type) AS deduplication_identifier_type
+            FROM {pass1_expr} AS main
+            LEFT JOIN read_parquet('{alias_literal}') AS alias
+              ON main.deduplication_identifier = alias.identifier
+             AND main.deduplication_identifier_type = alias.identifier_type_name"""
+        return mapped_expr, True
+
+    @staticmethod
+    def _wrap_relation(expr: str, alias: str, needs_alias: bool) -> str:
+        """Return a relation expression, aliasing when required."""
+        if needs_alias:
+            return f"({expr}) AS {alias}"
+        return expr
 
     @staticmethod
     def _duckdb_path_literal(path: Path | str) -> str:
