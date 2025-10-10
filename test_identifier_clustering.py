@@ -2,8 +2,10 @@
 """
 Test script for identifier clustering using union-find algorithm.
 
-Goal: Create connected components of identifiers, excluding name/synonym from initial clustering
-but deduplicating them within their cluster.
+Goal: Create connected components of identifiers from silver_entities tables,
+where each row represents an entity with multiple identifiers.
+Identifiers that appear together in a row are grouped, and transitively connected
+through shared identifiers.
 """
 
 import polars as pl
@@ -67,10 +69,10 @@ class UnionFind:
 
 def cluster_identifiers(data_root: Path):
     """
-    Cluster identifiers from pass1 entity_identifier files.
+    Cluster identifiers from silver_entities files.
 
     Args:
-        data_root: Path to data directory containing pass1 files
+        data_root: Path to data directory containing silver files
 
     Returns:
         polars.DataFrame with columns:
@@ -80,144 +82,147 @@ def cluster_identifiers(data_root: Path):
             - identifier_type_name: type (e.g., 'inchikey', 'uniprot', 'name')
             - entity_id: the cluster ID this identifier belongs to
     """
-    print("Step 1: Reading all entity_identifier pass1 files...")
-    # Read all entity_identifier parquet files
-    pattern = str(data_root / "*" / "*" / "gold" / "entity_identifier.parquet")
-    all_identifiers = pl.read_parquet(pattern)
+    print("Step 1: Reading all silver_entities files...")
+    # Read all silver_entities parquet files - need to align schemas
+    pattern = str(data_root / "*" / "*" / "silver" / "silver_entities.parquet")
 
-    print(f"  Total identifiers: {len(all_identifiers):,}")
-    print(f"  Columns: {all_identifiers.columns}")
+    # Read with schema inference to handle mismatched types
+    from glob import glob
+    parquet_files = glob(pattern)
 
-    # Step 2: Separate identifiers into clustering vs. name/synonym
-    print("\nStep 2: Separating clustering identifiers from name/synonym...")
-    clustering_df = all_identifiers.filter(
-        ~pl.col("identifier_type_name").is_in(["name", "synonym"])
-    )
-    name_synonym_df = all_identifiers.filter(
-        pl.col("identifier_type_name").is_in(["name", "synonym"])
-    )
+    if not parquet_files:
+        raise FileNotFoundError(f"No silver_entities files found at {pattern}")
 
-    print(f"  Clustering identifiers: {len(clustering_df):,}")
-    print(f"  Name/synonym identifiers: {len(name_synonym_df):,}")
+    # Read all files - select only the columns we need
+    dfs = []
+    identifier_cols = ['inchikey', 'lipidmaps_id', 'chebi_id', 'pubchem_cid',
+                      'compound_inchi', 'compound_smiles', 'name',
+                      'cas_number', 'drugbank_id', 'hmdb_id', 'kegg_id',
+                      'metanetx_id', 'ramp_id', 'swisslipids_id']
 
-    # Step 3: Build union-find structure
-    print("\nStep 3: Building identifier clusters using union-find...")
+    for file in parquet_files:
+        df = pl.read_parquet(file)
+        # Select and cast identifier columns to strings
+        select_exprs = []
+        for col in identifier_cols:
+            if col in df.columns:
+                select_exprs.append(pl.col(col).cast(pl.String).alias(col))
+        if select_exprs:
+            df = df.select(select_exprs)
+            dfs.append(df)
+
+    silver_entities = pl.concat(dfs, how="diagonal_relaxed")
+
+    print(f"  Total entities: {len(silver_entities):,}")
+    print(f"  Columns: {silver_entities.columns}")
+
+    # Step 2: Build union-find structure
+    print("\nStep 2: Building identifier clusters using union-find...")
     uf = UnionFind()
 
-    # Create a unique key for each identifier: (identifier, identifier_type_name)
-    # Group by entity_deduplication to find connected components
-    grouped = (
-        clustering_df
-        .group_by(["entity_deduplication_identifier", "entity_deduplication_identifier_type"])
-        .agg([
-            pl.col("identifier"),
-            pl.col("identifier_type_name")
-        ])
-    )
+    # Define identifier columns and their types (exclude name/synonym-like columns for now)
+    identifier_columns = {
+        'inchikey': 'inchikey',
+        'lipidmaps_id': 'lipidmaps_id',
+        'chebi_id': 'chebi_id',
+        'pubchem_cid': 'pubchem_cid',
+        'compound_inchi': 'inchi',
+        'compound_smiles': 'smiles',
+        'cas_number': 'cas',
+        'drugbank_id': 'drugbank_id',
+        'hmdb_id': 'hmdb_id',
+        'kegg_id': 'kegg_id',
+        'metanetx_id': 'metanetx_id',
+        'ramp_id': 'ramp_id',
+        'swisslipids_id': 'swisslipids_id',
+    }
 
-    # Union all identifiers that share the same entity_deduplication_identifier
-    for row in grouped.iter_rows(named=True):
-        identifiers = row["identifier"]
-        types = row["identifier_type_name"]
+    # For each row, union all non-null identifiers together
+    print("  Processing entities and grouping identifiers...")
+    row_count = 0
+    for row in silver_entities.iter_rows(named=True):
+        row_count += 1
+        if row_count % 10000 == 0:
+            print(f"    Processed {row_count:,} entities...")
 
-        if len(identifiers) < 2:
-            # Single identifier, just register it
-            if len(identifiers) == 1:
-                key = (identifiers[0], types[0])
-                uf.find(key)
-            continue
+        # Collect all identifiers from this row
+        identifiers = []
+        for col, id_type in identifier_columns.items():
+            if col in row and row[col] is not None:
+                value = str(row[col])
+                if value and value != 'null':
+                    identifiers.append((value, id_type))
 
-        # Union all pairs
-        keys = [(id_val, type_val) for id_val, type_val in zip(identifiers, types)]
-        for i in range(len(keys) - 1):
-            uf.union(keys[i], keys[i + 1])
+        # Union all pairs of identifiers in this row
+        if len(identifiers) >= 2:
+            for i in range(len(identifiers) - 1):
+                uf.union(identifiers[i], identifiers[i + 1])
+        elif len(identifiers) == 1:
+            # Just register single identifiers
+            uf.find(identifiers[0])
 
-    print(f"  Total unique identifier keys: {len(uf.parent):,}")
+    print(f"  Total unique identifiers registered: {len(uf.parent):,}")
 
-    # Step 4: Get cluster assignments
-    print("\nStep 4: Assigning cluster IDs...")
+    # Step 3: Get cluster assignments
+    print("\nStep 3: Assigning cluster IDs...")
     clusters = uf.get_clusters()
+    print(f"  Total clusters: {max(clusters.values()) if clusters else 0:,}")
 
-    print(f"  Total clusters: {max(clusters.values()):,}")
-
-    # Create a mapping dataframe
-    cluster_mapping = pl.DataFrame([
-        {
-            "identifier": key[0],
-            "identifier_type_name": key[1],
+    # Step 4: Create output dataframe
+    print("\nStep 4: Creating output dataframe...")
+    rows = []
+    for (identifier, id_type), cluster_id in clusters.items():
+        rows.append({
+            "identifier": identifier,
+            "identifier_type_namespace_name": "OmniPath",
+            "identifier_type_name": id_type,
             "entity_id": cluster_id
-        }
-        for key, cluster_id in clusters.items()
-    ])
+        })
 
-    # Join back to get full data with cluster IDs
-    clustered_df = (
-        clustering_df
-        .select(["identifier", "identifier_type_namespace_name", "identifier_type_name",
-                 "entity_deduplication_identifier", "entity_deduplication_identifier_type"])
-        .join(
-            cluster_mapping,
-            on=["identifier", "identifier_type_name"],
-            how="left"
-        )
-        .select(["identifier", "identifier_type_namespace_name", "identifier_type_name", "entity_id"])
-    )
+    result = pl.DataFrame(rows)
 
-    # Step 5: Handle name/synonym identifiers
+    # Step 5: Handle name/synonym columns
     print("\nStep 5: Processing name/synonym identifiers...")
+    name_rows = []
+    name_id_offset = max(clusters.values()) if clusters else 0
 
-    # For name/synonym, map them to the cluster of their original entity_dedup_id
-    # Build a lookup: (entity_dedup_id, entity_dedup_type) -> entity_id (cluster)
-    dedup_to_cluster = (
-        clustering_df
-        .select(["identifier", "identifier_type_name",
-                 "entity_deduplication_identifier", "entity_deduplication_identifier_type"])
-        .join(cluster_mapping, on=["identifier", "identifier_type_name"], how="left")
-        .select([
-            pl.col("entity_deduplication_identifier").alias("dedup_id"),
-            pl.col("entity_deduplication_identifier_type").alias("dedup_type"),
-            "entity_id"
-        ])
-        .unique(subset=["dedup_id", "dedup_type"])
-    )
+    # Map entity identifiers to their cluster IDs
+    identifier_to_cluster = {}
+    for row in silver_entities.iter_rows(named=True):
+        # Find which cluster this entity belongs to
+        entity_cluster = None
+        for col, id_type in identifier_columns.items():
+            if col in row and row[col] is not None:
+                value = str(row[col])
+                if value and value != 'null':
+                    key = (value, id_type)
+                    if key in clusters:
+                        entity_cluster = clusters[key]
+                        break
 
-    # Map name/synonym to clusters
-    name_synonym_with_cluster = (
-        name_synonym_df
-        .join(
-            dedup_to_cluster,
-            left_on=["entity_deduplication_identifier", "entity_deduplication_identifier_type"],
-            right_on=["dedup_id", "dedup_type"],
-            how="left"
-        )
-        .select(["identifier", "identifier_type_namespace_name", "identifier_type_name", "entity_id"])
-    )
+        # Add names to that cluster
+        if entity_cluster and row.get('name'):
+            name_rows.append({
+                "identifier": row['name'],
+                "identifier_type_namespace_name": "OmniPath",
+                "identifier_type_name": "name",
+                "entity_id": entity_cluster
+            })
 
-    print(f"  Name/synonym identifiers mapped to clusters: {len(name_synonym_with_cluster):,}")
+    if name_rows:
+        name_df = pl.DataFrame(name_rows).unique(subset=["identifier", "entity_id"])
+        print(f"  Name identifiers: {len(name_df):,}")
+        result = pl.concat([result, name_df])
 
-    # Deduplicate name/synonym within their cluster
-    name_synonym_deduped = name_synonym_with_cluster.unique(
-        subset=["identifier", "identifier_type_name", "entity_id"]
-    )
-
-    print(f"  Name/synonym after deduplication: {len(name_synonym_deduped):,}")
-
-    # Step 6: Combine all results
-    print("\nStep 6: Combining all results...")
-    final_result = pl.concat([
-        clustered_df,
-        name_synonym_deduped
-    ])
-
-    print(f"  Final total identifiers: {len(final_result):,}")
+    print(f"  Final total identifiers: {len(result):,}")
 
     # Sort by entity_id, then by identifier for consistency
-    final_result = final_result.sort(["entity_id", "identifier"])
+    result = result.sort(["entity_id", "identifier"])
 
     # Add sequential ID
-    final_result = final_result.with_row_index("id", offset=1)
+    result = result.with_row_index("id", offset=1)
 
-    return final_result
+    return result
 
 
 def main():
