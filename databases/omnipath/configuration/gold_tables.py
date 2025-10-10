@@ -399,49 +399,6 @@ gold_tables = {
             "pass2": ["unique on (interaction_id, provenance_id, detection_method)"]
         }
     },
-
-    "protein": {
-        "columns": {
-            "main": {
-                "sequence": "TEXT",
-                "protein_class": "VARCHAR(255)"
-            },
-            "temp": {
-                "entity_deduplication_identifier": "TEXT",
-                "entity_deduplication_identifier_type": "VARCHAR(255)"
-            }
-        },
-        "foreign_keys": [
-            fk("entity_id", "links to entity via (entity.deduplication_identifier = entity_deduplication_identifier AND entity.deduplication_identifier_type = entity_deduplication_identifier_type)")
-        ],
-        "constraints": {
-            "pass1": [],
-            "pass2": ["unique on (entity_id)"]
-        }
-    },
-
-    "reaction": {
-        "columns": {
-            "main": {
-                "equation": "TEXT",
-                "directionality": "VARCHAR(50)",
-                "pathway": "VARCHAR(255)",
-                "ec_number": "VARCHAR(50)",
-                "smiles": "TEXT"
-            },
-            "temp": {
-                "entity_deduplication_identifier": "TEXT",
-                "entity_deduplication_identifier_type": "VARCHAR(255)"
-            }
-        },
-        "foreign_keys": [
-            fk("entity_id", "links to entity via (entity.deduplication_identifier = entity_deduplication_identifier AND entity.deduplication_identifier_type = entity_deduplication_identifier_type)")
-        ],
-        "constraints": {
-            "pass1": [],
-            "pass2": ["unique on (entity_id)"]
-        }
-    }
 }
 
 silver_gold_map = {
@@ -596,35 +553,4 @@ silver_gold_map = {
             FROM silver_interactions
         '''
     },
-    'protein': {
-        'source_table': 'silver_entities',
-        'select': '''
-            SELECT DISTINCT
-                dedup_identifier AS entity_deduplication_identifier,
-                dedup_identifier_type AS entity_deduplication_identifier_type,
-                protein_sequence as sequence,
-                protein_class
-            FROM silver_entities
-            WHERE entity_type = 'protein'
-              AND dedup_identifier IS NOT NULL
-              AND dedup_identifier_type IS NOT NULL
-        '''
-    },
-    'reaction': {
-        'source_table': 'silver_entities',
-        'select': '''
-            SELECT DISTINCT
-                dedup_identifier AS entity_deduplication_identifier,
-                dedup_identifier_type AS entity_deduplication_identifier_type,
-                reaction_equation as equation,
-                reaction_directionality as directionality,
-                reaction_pathway as pathway,
-                reaction_ec_number as ec_number,
-                reaction_smiles as smiles
-            FROM silver_entities
-            WHERE entity_type = 'reaction'
-              AND dedup_identifier IS NOT NULL
-              AND dedup_identifier_type IS NOT NULL
-        '''
-    }
 }

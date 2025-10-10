@@ -1,21 +1,5 @@
-# Silver layer table definitions for metabo
-# Cleaned and validated data from bronze layer (before deduplication/aggregation)
-
-# Note: This YAML represents the silver layer tables as SQL schemas
-# These tables will contain cleaned entity records (one row per source record)
-
-## 1. silver_entities
-
-# Cleaned entity records (one row per source record, before deduplication)
 silver_entities:
-  # Primary identification
-    entity_type: VARCHAR(50)           # 'protein', 'compound', 'reaction', 'complex'
-
-  # Deduplication identifier (explicitly chosen per source)
-    dedup_identifier: VARCHAR(255)
-    dedup_identifier_type: VARCHAR(100)
-
-  # Identifiers (cleaned/validated)
+  # Identifiers (cleaned)
     inchikey: VARCHAR(27)             # Primary structural identifier when available
     hmdb_id: VARCHAR(32)
     chebi_id: VARCHAR(32)
@@ -27,56 +11,23 @@ silver_entities:
     swisslipids_id: VARCHAR(32)
     metanetx_id: VARCHAR(32)
     ramp_id: VARCHAR(64)
+    ec_number: VARCHAR(64)            # for reactions
     other_identifiers: JSON           # {"source": ["value1", "value2"]}
 
   # Names (cleaned)
     name: TEXT
     name_variants: JSON               # ["synonym1", "synonym2"]
 
-  # Protein-specific fields (cleaned/validated)
-    protein_sequence: TEXT
-    protein_class: VARCHAR(255)
-    protein_features: JSON
-
-  # Compound-specific fields (cleaned/validated)
-    compound_formula: VARCHAR(255)
-    compound_smiles: TEXT
-    compound_inchi: TEXT
-    molecular_weight: FLOAT
-    exact_mass: FLOAT
-    tpsa: FLOAT
-    logp: FLOAT
-    hbd: INT
-    hba: INT
-    rotatable_bonds: INT
-    aromatic_rings: INT
-    heavy_atoms: INT
-
-  # Reaction-specific fields (cleaned/validated)
-    reaction_equation: TEXT
-    reaction_directionality: VARCHAR(50)
-    reaction_pathway: VARCHAR(255)
-    reaction_ec_number: VARCHAR(50)
-    reaction_smiles: TEXT
-
   # Complex/membership info (as provided by source)
     is_complex: BOOLEAN
-    complex_members: JSON             # [{"member_id": "...", "stoichiometry": 2, "role": "..."}]
+    complex_members: JSON             # [{"member_id": "...", "member_id_type": "...", "stoichiometry": 2, "role": "..."}]
     parent_complex_ids: JSON          # IDs of complexes this belongs to
 
   # Annotations (as provided by source)
     annotations: JSON                 # [{"term": "...", "value": "...", "units": "..."}]
 
-  # Data quality (validation only, no scores)
-    is_valid: BOOLEAN
-    validation_errors: JSON           # [{"field": "sequence", "error": "invalid characters"}]
-
   # Metadata
     source_database: VARCHAR(100)
-    created_at: TIMESTAMP
-    updated_at: TIMESTAMP
-    processed_by: VARCHAR(100)
-    bronze_record_id: BIGINT           # Link back to bronze/raw data
 
 
 ## 2. silver_interactions
@@ -92,11 +43,11 @@ silver_interactions:
     entity_b_name: TEXT
 
   # Evidence details (cleaned/normalized)
-    interaction_type: VARCHAR(100)     # 'physical association', 'phosphorylation', etc.
+    interaction_type: VARCHAR(100)     # 'physical association', 'phosphorylation', etc. accessions
     detection_method: VARCHAR(255)
     is_directed: BOOLEAN
-    direction: VARCHAR(50)             # 'a_to_b', 'b_to_a', 'bidirectional', 'unknown'
-    sign: VARCHAR(50)                  # 'positive', 'negative', 'neutral', 'unknown'
+    direction: VARCHAR(50)             # optional ('a_to_b', 'b_to_a', 'bidirectional')
+    sign: VARCHAR(50)                  # 'positive', 'negative', 'neutral', 'unknown' accessions
     causal_mechanism: VARCHAR(255)
     causal_statement: TEXT
     sentence: TEXT                     # Extracted sentence from paper
@@ -106,30 +57,12 @@ silver_interactions:
     entity_a_context: JSON            # Context annotations for entity A
     entity_b_context: JSON            # Context annotations for entity B
 
-  # Provenance (cleaned/validated)
-    source_name: VARCHAR(255)
-    source_url: TEXT
-    source_description: TEXT
-    is_primary_source: BOOLEAN
-
   # Reference (cleaned/normalized)
     reference_type: VARCHAR(50)        # 'pubmed', 'doi', 'isbn', etc.
     reference_value: TEXT              # PMID, DOI, etc. (normalized format)
-    citation: TEXT
-    title: TEXT
-    journal: TEXT
-    year: INT
-
-  # Data quality (validation only)
-    is_valid: BOOLEAN
-    validation_errors: JSON           # [{"field": "direction", "error": "conflicting values"}]
 
   # Metadata
     source_database: VARCHAR(100)
-    created_at: TIMESTAMP
-    updated_at: TIMESTAMP
-    processed_by: VARCHAR(100)
-    bronze_record_id: BIGINT           # Link back to bronze/raw data
 
 
 ## 3. silver_cv_terms
@@ -151,7 +84,3 @@ silver_cv_terms:
 
   # Metadata
     source_database: VARCHAR(100)
-    created_at: TIMESTAMP
-    updated_at: TIMESTAMP
-    processed_by: VARCHAR(100)
-    bronze_record_id: BIGINT
