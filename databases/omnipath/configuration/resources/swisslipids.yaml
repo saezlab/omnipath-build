@@ -16,12 +16,6 @@ functions:
             -   source: inchikey
                 target: inchikey
                 transform: normalize_inchikey_value
-            -   source: inchikey
-                target: dedup_identifier
-                transform: normalize_inchikey_value
-            -   source: _constant
-                target: dedup_identifier_type
-                value: inchikey
             -   source: id
                 target: swisslipids_id
                 transform: normalize_swisslipids_id

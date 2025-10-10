@@ -19,12 +19,6 @@ functions:
             -   source: inchi_key
                 target: inchikey
                 transform: normalize_inchikey_value
-            -   source: inchi_key
-                target: dedup_identifier
-                transform: normalize_inchikey_value
-            -   source: _constant
-                target: dedup_identifier_type
-                value: inchikey
             -   source: ramp_id
                 target: ramp_id
                 transform: normalize_ramp_id
