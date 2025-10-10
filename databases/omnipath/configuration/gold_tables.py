@@ -45,7 +45,7 @@ ENTITY_IDENTIFIER_UNION_SELECTS = [
 
 ENTITY_IDENTIFIER_UNION_SELECTS.append(
     """SELECT DISTINCT
-                json_extract_string(synonym_json, '$') AS identifier,
+                json_extract_string(synonym_json.unnest, '$') AS identifier,
                 dedup_identifier AS entity_deduplication_identifier,
                 dedup_identifier_type AS entity_deduplication_identifier_type,
                 'OmniPath' AS identifier_type_namespace_name,
@@ -54,7 +54,7 @@ ENTITY_IDENTIFIER_UNION_SELECTS.append(
                  unnest(json_extract(name_variants, '$[*]')) AS synonym_json
             WHERE name_variants IS NOT NULL
               AND name_variants != '[]'
-              AND json_extract_string(synonym_json, '$') IS NOT NULL
+              AND json_extract_string(synonym_json.unnest, '$') IS NOT NULL
               AND dedup_identifier IS NOT NULL
               AND dedup_identifier_type IS NOT NULL"""
 )
@@ -75,7 +75,7 @@ ENTITY_IDENTIFIER_PROVENANCE_UNION_SELECTS = [
 
 ENTITY_IDENTIFIER_PROVENANCE_UNION_SELECTS.append(
     """SELECT DISTINCT
-                json_extract_string(synonym_json, '$') AS identifier,
+                json_extract_string(synonym_json.unnest, '$') AS identifier,
                 'OmniPath' AS identifier_type_namespace_name,
                 'synonym' AS identifier_type_name,
                 source_database AS source_name,
@@ -84,7 +84,7 @@ ENTITY_IDENTIFIER_PROVENANCE_UNION_SELECTS.append(
                  unnest(json_extract(name_variants, '$[*]')) AS synonym_json
             WHERE name_variants IS NOT NULL
               AND name_variants != '[]'
-              AND json_extract_string(synonym_json, '$') IS NOT NULL"""
+              AND json_extract_string(synonym_json.unnest, '$') IS NOT NULL"""
 )
 
 ENTITY_IDENTIFIER_PROVENANCE_UNIONS = "\n        UNION ALL\n        ".join(ENTITY_IDENTIFIER_PROVENANCE_UNION_SELECTS)
