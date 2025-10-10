@@ -69,7 +69,7 @@ class UnionFind:
 
 def cluster_identifiers(data_root: Path):
     """
-    Cluster identifiers from silver_entities files.
+    Cluster identifiers from silver_entities, complex_members, and silver_interactions files.
 
     Args:
         data_root: Path to data directory containing silver files
@@ -88,6 +88,8 @@ def cluster_identifiers(data_root: Path):
 
     # Read with schema inference to handle mismatched types
     from glob import glob
+    import json
+
     parquet_files = glob(pattern)
 
     if not parquet_files:
@@ -96,17 +98,21 @@ def cluster_identifiers(data_root: Path):
     # Read all files - select only the columns we need
     dfs = []
     identifier_cols = ['inchikey', 'lipidmaps_id', 'chebi_id', 'pubchem_cid',
-                      'compound_inchi', 'compound_smiles', 'name',
                       'cas_number', 'drugbank_id', 'hmdb_id', 'kegg_id',
-                      'metanetx_id', 'ramp_id', 'swisslipids_id']
+                      'metanetx_id', 'ramp_id', 'swisslipids_id', 'ec_number']
 
     for file in parquet_files:
         df = pl.read_parquet(file)
-        # Select and cast identifier columns to strings
+        # Select and cast identifier columns to strings, plus complex_members JSON
         select_exprs = []
         for col in identifier_cols:
             if col in df.columns:
                 select_exprs.append(pl.col(col).cast(pl.String).alias(col))
+
+        # Also include complex_members if they exist (name will be added later)
+        if 'complex_members' in df.columns:
+            select_exprs.append(pl.col('complex_members'))
+
         if select_exprs:
             df = df.select(select_exprs)
             dfs.append(df)
@@ -126,20 +132,21 @@ def cluster_identifiers(data_root: Path):
         'lipidmaps_id': 'lipidmaps_id',
         'chebi_id': 'chebi_id',
         'pubchem_cid': 'pubchem_cid',
-        'compound_inchi': 'inchi',
-        'compound_smiles': 'smiles',
-        'cas_number': 'cas',
+        'cas_number': 'cas_number',
         'drugbank_id': 'drugbank_id',
         'hmdb_id': 'hmdb_id',
         'kegg_id': 'kegg_id',
         'metanetx_id': 'metanetx_id',
         'ramp_id': 'ramp_id',
         'swisslipids_id': 'swisslipids_id',
+        'ec_number': 'ec_number',
     }
 
     # For each row, union all non-null identifiers together
     print("  Processing entities and grouping identifiers...")
     row_count = 0
+    complex_member_count = 0
+
     for row in silver_entities.iter_rows(named=True):
         row_count += 1
         if row_count % 10000 == 0:
@@ -160,6 +167,62 @@ def cluster_identifiers(data_root: Path):
         elif len(identifiers) == 1:
             # Just register single identifiers
             uf.find(identifiers[0])
+
+        # Process complex_members JSON if present
+        if row.get('complex_members') is not None:
+            try:
+                members_json = row['complex_members']
+                # Handle both string JSON and already-parsed objects
+                if isinstance(members_json, str):
+                    members = json.loads(members_json)
+                else:
+                    members = members_json
+
+                if isinstance(members, list):
+                    for member in members:
+                        if isinstance(member, dict):
+                            member_id = member.get('member_id')
+                            member_id_type = member.get('member_id_type')
+
+                            if member_id and member_id_type:
+                                # Register this member identifier
+                                member_identifier = (str(member_id), str(member_id_type))
+                                uf.find(member_identifier)
+                                complex_member_count += 1
+            except (json.JSONDecodeError, TypeError):
+                # Skip malformed JSON
+                pass
+
+    print(f"  Total unique identifiers from entities: {len(uf.parent):,}")
+    print(f"  Complex member identifiers found: {complex_member_count:,}")
+
+    # Step 2b: Process silver_interactions files if they exist
+    print("\nStep 2b: Processing silver_interactions files...")
+    interaction_pattern = str(data_root / "*" / "*" / "silver" / "silver_interactions.parquet")
+    interaction_files = glob(interaction_pattern)
+
+    interaction_count = 0
+    if interaction_files:
+        print(f"  Found {len(interaction_files)} silver_interactions files")
+        for file in interaction_files:
+            df_int = pl.read_parquet(file)
+            for row in df_int.iter_rows(named=True):
+                # Entity A
+                entity_a_id = row.get('entity_a_identifier')
+                entity_a_type = row.get('entity_a_identifier_type')
+                if entity_a_id and entity_a_type:
+                    uf.find((str(entity_a_id), str(entity_a_type)))
+                    interaction_count += 1
+
+                # Entity B
+                entity_b_id = row.get('entity_b_identifier')
+                entity_b_type = row.get('entity_b_identifier_type')
+                if entity_b_id and entity_b_type:
+                    uf.find((str(entity_b_id), str(entity_b_type)))
+                    interaction_count += 1
+        print(f"  Interaction entity identifiers found: {interaction_count:,}")
+    else:
+        print(f"  No silver_interactions files found (this is expected if no interaction sources exist yet)")
 
     print(f"  Total unique identifiers registered: {len(uf.parent):,}")
 
@@ -184,10 +247,6 @@ def cluster_identifiers(data_root: Path):
     # Step 5: Handle name/synonym columns
     print("\nStep 5: Processing name/synonym identifiers...")
     name_rows = []
-    name_id_offset = max(clusters.values()) if clusters else 0
-
-    # Map entity identifiers to their cluster IDs
-    identifier_to_cluster = {}
     for row in silver_entities.iter_rows(named=True):
         # Find which cluster this entity belongs to
         entity_cluster = None
