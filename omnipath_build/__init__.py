@@ -8,9 +8,6 @@ Pipeline stages:
 4. Augment Loader  - Data augmentation (CV terms, compounds, publications)
 """
 
-from pathlib import Path
-from typing import Optional
-
 # Import numbered loaders using importlib (Python requires this for numeric module names)
 import importlib
 
@@ -24,50 +21,13 @@ _silver = importlib.import_module('.2_silver_loader', package='omnipath_build')
 SilverLoader = _silver.SilverLoader
 
 _gold = importlib.import_module('.3_gold_loader', package='omnipath_build')
-GoldLoader = _gold.GoldLoader
+run_gold_loader = _gold.run_gold_loader
 
-_augment = importlib.import_module('.4_augment_loader', package='omnipath_build')
-AugmentLoader = _augment.AugmentLoader
-RDKit_AVAILABLE = _augment.RDKit_AVAILABLE
 
 __all__ = [
     'DatabaseManager',
     'PyPathBronzeLoader',
     'SilverLoader',
-    'GoldLoader',
-    'AugmentLoader',
+    'run_gold_loader',
     'RDKit_AVAILABLE',
-    'build_gold_from_silver_dir',
 ]
-
-
-def build_gold_from_silver_dir(
-    silver_dir: Path,
-    output_dir: Path,
-    source_filter: Optional[str] = None,
-):
-    """Load all silver parquet files (optionally filtered by source) into gold.
-
-    Args:
-        silver_dir: Directory containing silver parquet artefacts.
-        output_dir: Directory where gold parquet files should be written.
-        source_filter: Optional source name; when provided only silver files whose
-            leading token matches the filter are processed.
-
-    Returns:
-        Mapping of gold table names to the exported parquet paths.
-    """
-
-    with GoldLoader(output_dir) as builder:
-        # Load silver files
-        silver_files = {}
-        for parquet_file in silver_dir.glob('*.parquet'):
-            if source_filter and not parquet_file.stem.startswith(source_filter):
-                continue
-            # Extract table name from filename (assumes format: source_function_table.parquet)
-            parts = parquet_file.stem.split('_')
-            if len(parts) >= 3:
-                table_name = parts[-1]
-                silver_files[table_name] = parquet_file
-
-        return builder.run_full_pipeline(silver_files)

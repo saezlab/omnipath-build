@@ -6,40 +6,6 @@ This manager handles the parquet-based workflow:
 - Load bronze data (PyPath → Parquet)
 - Process sources through silver transformations
 - Build gold parquet files
-
-No PostgreSQL required - everything works with Parquet files.
-
-Usage:
-    # Initialize a new database
-    python database_manager.py init --database metabo
-
-    # Add resources from PyPath
-    python database_manager.py add-resources --database metabo --resources hmdb,chebi
-
-    # Load bronze data (PyPath → Parquet)
-    python database_manager.py load-bronze --database metabo
-
-    # Process sources (Bronze → Silver → Gold Parquet)
-    python database_manager.py process --database metabo
-
-    # Process specific source only
-    python database_manager.py process --database metabo --source hmdb
-
-    # Process specific layers only
-    python database_manager.py process --database metabo --layers silver,gold_pass1
-    python database_manager.py process --database metabo --layers gold_final
-
-    # Control parallelization
-    python database_manager.py process --database metabo --max-workers 4
-    python database_manager.py process --database metabo --no-parallel
-
-    # Augment compounds (compute and cache expensive compound properties)
-    python database_manager.py augment-compounds --database metabo
-    python database_manager.py augment-compounds --database metabo --no-limit
-    python database_manager.py augment-compounds --database metabo --compound-limit 5000
-
-    # Show database status
-    python database_manager.py status --database metabo
 """
 
 import argparse
@@ -215,16 +181,16 @@ class DatabaseManager:
             self.logger.error(f'Failed to load bronze data: {e}')
             return False
 
-    def _process_single_source_to_pass1(self, source_name: str) -> tuple[str, dict[str, Any]]:
-        """Process a single source through bronze → silver → gold pass1.
+    def _process_single_source_to_silver(self, source_name: str) -> tuple[str, dict[str, Any]]:
+        """Process a single source through bronze → silver.
 
         Args:
             source_name: Name of the source module to process
 
         Returns:
-            Tuple of (source_name, results_dict) where results contains silver and gold pass1 files
+            Tuple of (source_name, results_dict) where results contains silver files
         """
-        from omnipath_build import SilverLoader, GoldLoader
+        from omnipath_build import SilverLoader
 
         self.logger.info(f'Processing source: {source_name}')
         try:
@@ -235,25 +201,14 @@ class DatabaseManager:
                 base_path=self.path_manager.base_path,
             ) as silver_loader:
                 silver_files = silver_loader.load()
-                table_function_map = silver_loader.get_table_function_map(silver_files)
-
-            # Process silver → gold pass1 ONLY (no dedup/FK resolution)
-            with GoldLoader(self.path_manager) as gold_loader:
-                pass1_files = gold_loader.run_pass1_only(
-                    silver_files,
-                    source_label=source_name,
-                    table_function_map=table_function_map,
-                )
 
             silver_count = len(silver_files)
-            pass1_count = sum(len(files) for files in pass1_files.values())
             self.logger.info(
-                f'✓ Completed: {source_name} ({silver_count} silver, {pass1_count} gold pass1 files)'
+                f'✓ Completed: {source_name} ({silver_count} silver files)'
             )
 
             return source_name, {
                 'silver': silver_files,
-                'pass1': pass1_files,
                 'success': True
             }
 
@@ -270,14 +225,14 @@ class DatabaseManager:
     ) -> bool:
         """Process sources through silver and gold transformations.
 
-        Bronze → Silver → Gold Pass1 runs in parallel for each source.
+        Bronze → Silver runs in parallel for each source.
         Gold deduplication and FK resolution happen after all sources complete.
 
         Args:
             source: Specific source module to process (None = all sources)
             max_workers: Max parallel workers (None = auto based on CPU count)
             parallel: If True, process sources in parallel (default: True)
-            layers: Specific layers to process ['silver', 'gold_pass1', 'gold_final'] (None = all)
+            layers: Specific layers to process ['silver', 'gold_final'] (None = all)
 
         Returns:
             True if successful, False otherwise
@@ -290,7 +245,7 @@ class DatabaseManager:
                 return False
 
             # Validate and normalize layer specification
-            valid_layers = {'silver', 'gold_pass1', 'gold_final'}
+            valid_layers = {'silver', 'gold_final'}
             if layers is None:
                 layers_to_run = valid_layers
             else:
@@ -317,8 +272,8 @@ class DatabaseManager:
                 self.logger.error('No sources found to process')
                 return False
 
-            # Phase 1: Process sources to Pass1 (silver + gold_pass1)
-            if 'silver' in layers_to_run or 'gold_pass1' in layers_to_run:
+            # Phase 1: Process sources to silver (bronze → silver)
+            if 'silver' in layers_to_run:
                 all_results = {}
 
                 if parallel and len(sources) > 1:
@@ -327,7 +282,7 @@ class DatabaseManager:
                     with ThreadPoolExecutor(max_workers=max_workers) as executor:
                         # Submit all source processing tasks
                         future_to_source = {
-                            executor.submit(self._process_single_source_to_pass1, src): src
+                            executor.submit(self._process_single_source_to_silver, src): src
                             for src in sources
                         }
 
@@ -345,146 +300,46 @@ class DatabaseManager:
                         self.logger.info('Processing sources sequentially (parallel=False)')
 
                     for source_name in sources:
-                        source_name, result = self._process_single_source_to_pass1(source_name)
+                        source_name, result = self._process_single_source_to_silver(source_name)
                         all_results[source_name] = result
 
                         if not result.get('success', False):
                             return False
 
-                self.logger.info('✓ All sources processed to Pass1 successfully')
+                self.logger.info('✓ All sources processed to silver successfully')
 
-            # Phase 2: Cross-source deduplication and FK resolution
+            # Phase 2: Cross-source deduplication and FK resolution (silver → gold_final)
             if 'gold_final' in layers_to_run:
                 self.logger.info('=' * 70)
-                self.logger.info('Starting cross-source deduplication and FK resolution')
+                self.logger.info('Starting cross-source gold table build')
                 self.logger.info('=' * 70)
 
                 try:
-                    from omnipath_build import GoldLoader
+                    import importlib
+                    gold_module = importlib.import_module('.3_gold_loader', package='omnipath_build')
+                    run_gold_loader = gold_module.run_gold_loader
 
-                    with GoldLoader(self.path_manager) as gold_loader:
-                        final_gold_files = gold_loader.run_dedup_and_fk_resolution()
+                    # Run the gold loader with all phases (1, 2, and 3)
+                    run_gold_loader(
+                        data_root=self.data_path,
+                        output_dir=self.gold_final_path,
+                        phase=None,  # Run all phases
+                        compound_limit=None,
+                    )
 
-                    gold_count = len(final_gold_files)
-                    self.logger.info(f'✓ Cross-source dedup complete: {gold_count} final gold tables')
+                    # Count the generated gold files
+                    gold_files = list(self.gold_final_path.glob('*.parquet'))
+                    gold_count = len(gold_files)
+                    self.logger.info(f'✓ Gold build complete: {gold_count} gold tables')
 
                 except (RuntimeError, OSError) as e:
-                    self.logger.error(f'Failed to run cross-source deduplication: {e}')
+                    self.logger.error(f'Failed to build gold tables: {e}')
                     return False
 
             return True
 
         except (ImportError, RuntimeError, OSError) as e:
             self.logger.error(f'Failed to process sources: {e}')
-            return False
-
-    def augment_compounds(
-        self,
-        use_cache: bool = True,
-        save_cache: bool = True,
-        limit: int | None = None,
-        no_limit: bool = False,
-    ) -> bool:
-        """Compute and cache compound properties from SMILES.
-
-        Args:
-            use_cache: Use cached compound computations if available
-            save_cache: Save newly computed results to cache
-            limit: Maximum number of compounds to compute
-            no_limit: Process all compounds (overrides limit)
-
-        Returns:
-            True if successful, False otherwise
-        """
-        try:
-            if not self.db_base_path.exists():
-                self.logger.error(
-                    f'Database directory not found: {self.db_base_path}'
-                )
-                return False
-
-            gold_final_path = self.path_manager.output_path()
-            if not gold_final_path.exists():
-                self.logger.error(
-                    f'Gold final directory not found: {gold_final_path}'
-                )
-                self.logger.error('Run process command first to generate gold data')
-                return False
-
-            # Deduped files are in output/deduped/ subdirectory
-            deduped_dir = gold_final_path / "deduped"
-            if not deduped_dir.exists():
-                self.logger.error(
-                    f'Deduped directory not found: {deduped_dir}'
-                )
-                self.logger.error('Run process command with gold_final layer first')
-                return False
-
-            entity_identifier_path = deduped_dir / "entity_identifier_deduped.parquet"
-            if not entity_identifier_path.exists():
-                self.logger.error(
-                    f'Entity identifier file not found: {entity_identifier_path}'
-                )
-                self.logger.error('This file is required to extract SMILES identifiers')
-                return False
-
-            # Import required modules
-            from omnipath_build import AugmentLoader, RDKit_AVAILABLE
-            import duckdb
-
-            if not RDKit_AVAILABLE:
-                self.logger.error('RDKit is not available')
-                self.logger.error('Please install rdkit: pip install rdkit')
-                return False
-
-            # Determine compound limit
-            compound_limit = None
-            if not no_limit:
-                compound_limit = limit if limit is not None else 1000
-                self.logger.info(f'Compound limit: {compound_limit}')
-            else:
-                self.logger.info('No compound limit - processing all compounds')
-
-            # Create DuckDB connection
-            conn = duckdb.connect(':memory:')
-            conn.execute("SET memory_limit='4GB'")
-            conn.execute("SET threads=4")
-
-            try:
-                # Create augment loader
-                augmentor = AugmentLoader(
-                    conn=conn,
-                    deduped_dir=deduped_dir,
-                    compound_limit=compound_limit,
-                )
-
-                # Run compound augmentation
-                self.logger.info('=' * 70)
-                self.logger.info('Starting compound property computation')
-                self.logger.info('=' * 70)
-
-                augmentor.augment_compound_properties(
-                    use_cache=use_cache,
-                    save_cache=save_cache,
-                )
-
-                self.logger.info('=' * 70)
-                self.logger.info('✓ Compound augmentation completed successfully!')
-                self.logger.info('=' * 70)
-
-                # Show cache location
-                cache_path = augmentor.compound_cache_dir / "compound_properties.parquet"
-                if cache_path.exists():
-                    self.logger.info(f'Cache file: {cache_path}')
-                    self.logger.info(f'Output file: {deduped_dir / "compound_deduped.parquet"}')
-
-                return True
-
-            finally:
-                conn.close()
-
-        except (ImportError, RuntimeError, OSError) as e:
-            self.logger.error(f'Failed to augment compounds: {e}')
             return False
 
     def show_status(self) -> bool:
@@ -734,43 +589,6 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description='Parquet Database Manager - Manage parquet-based database lifecycle',
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  # Initialize new database
-  python database_manager.py init --database metabo
-
-  # Add resources from PyPath
-  python database_manager.py add-resources --database metabo --resources hmdb,chebi
-
-  # Load bronze data
-  python database_manager.py load-bronze --database metabo
-
-  # Process all sources through all layers
-  python database_manager.py process --database metabo
-
-  # Process specific source only
-  python database_manager.py process --database metabo --source hmdb
-
-  # Process specific layers (useful for incremental updates)
-  python database_manager.py process --database metabo --layers silver,gold_pass1
-  python database_manager.py process --database metabo --layers gold_final
-
-  # Control parallel processing
-  python database_manager.py process --database metabo --max-workers 4
-  python database_manager.py process --database metabo --no-parallel
-
-  # Combined: process one source through silver only
-  python database_manager.py process --database metabo --source hmdb --layers silver
-
-  # Augment compounds (compute and cache expensive compound properties)
-  python database_manager.py augment-compounds --database metabo
-  python database_manager.py augment-compounds --database metabo --no-limit
-  python database_manager.py augment-compounds --database metabo --compound-limit 5000
-  python database_manager.py augment-compounds --database metabo --no-cache
-
-  # Show status
-  python database_manager.py status --database metabo
-        """,
     )
 
     parser.add_argument(
@@ -787,7 +605,7 @@ Examples:
     )
 
     parser.add_argument(
-        '--database', '-d', required=True, help='Database name (e.g., metabo)'
+        '--database', '-d', default='omnipath', help='Database name (default: omnipath)'
     )
 
     parser.add_argument(
@@ -807,7 +625,7 @@ Examples:
 
     parser.add_argument(
         '--layers',
-        help='Comma-separated list of layers to process: silver,gold_pass1,gold_final (for process command)',
+        help='Comma-separated list of layers to process: silver,gold_final (for process command)',
     )
 
     parser.add_argument(

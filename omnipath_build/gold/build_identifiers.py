@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Test script for identifier clustering using union-find algorithm.
+Script for identifier clustering using union-find algorithm.
 
 Goal: Create connected components of identifiers from silver_entities tables,
 where each row represents an entity with multiple identifiers.
