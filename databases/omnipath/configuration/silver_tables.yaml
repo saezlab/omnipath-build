@@ -15,6 +15,8 @@ silver_entities:
     ec_number: VARCHAR(64)            # for reactions
     other_identifiers: JSON           # {"source": ["value1", "value2"]}
 
+  # Entity type
+    entity_type: VARCHAR(50)          # 'protein', 'gene', 'compound',
   # Names (cleaned)
     name: TEXT
     name_variants: JSON               # ["synonym1", "synonym2"]

@@ -38,14 +38,3 @@ functions:
             -   source: cas_registry_number
                 target: cas_number
                 transform: normalize_cas_number
-            -   source: _constant
-                target: processed_by
-                value: hmdb_compounds_for_metabo
-            -   source: metadata_row_number
-                target: bronze_record_id
-            -   source: _metadata
-                target: created_at
-                value: current_timestamp
-            -   source: _metadata
-                target: updated_at
-                value: current_timestamp

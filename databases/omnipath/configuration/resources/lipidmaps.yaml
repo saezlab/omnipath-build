@@ -39,14 +39,3 @@ functions:
             -   source: [category, main_class]
                 target: annotations
                 transform: build_lipidmaps_annotations
-            -   source: _constant
-                target: processed_by
-                value: lipidmaps_lipids
-            -   source: metadata_row_number
-                target: bronze_record_id
-            -   source: _metadata
-                target: created_at
-                value: current_timestamp
-            -   source: _metadata
-                target: updated_at
-                value: current_timestamp

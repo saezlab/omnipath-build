@@ -32,14 +32,3 @@ functions:
             -   source: classes
                 target: annotations
                 transform: build_ramp_annotations
-            -   source: _constant
-                target: processed_by
-                value: ramp_omnipathmetabo
-            -   source: metadata_row_number
-                target: bronze_record_id
-            -   source: _metadata
-                target: created_at
-                value: current_timestamp
-            -   source: _metadata
-                target: updated_at
-                value: current_timestamp

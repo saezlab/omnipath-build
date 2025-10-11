@@ -46,14 +46,3 @@ functions:
             -   source: [level, lipid_class, parent, components, pmids, charge]
                 target: annotations
                 transform: build_swisslipids_annotations
-            -   source: _constant
-                target: processed_by
-                value: swisslipids_lipids
-            -   source: metadata_row_number
-                target: bronze_record_id
-            -   source: _metadata
-                target: created_at
-                value: current_timestamp
-            -   source: _metadata
-                target: updated_at
-                value: current_timestamp
