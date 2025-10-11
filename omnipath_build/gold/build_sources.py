@@ -17,7 +17,6 @@ import sys
 
 __all__ = [
     'build_sources',
-    'main',
 ]
 
 
@@ -78,79 +77,3 @@ def build_sources(data_root: Path, output_dir: Path) -> pl.DataFrame:
     print(f"  Total unique sources: {len(result)}")
 
     return result
-
-
-def main():
-    """Command-line interface."""
-    parser = argparse.ArgumentParser(
-        description="Build sources table from silver_entities files",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-    # Build sources table
-    python build_sources.py --data-root databases/omnipath/data --output-dir output/gold
-        """
-    )
-
-    parser.add_argument(
-        '--data-root',
-        type=Path,
-        default=Path("databases/omnipath/data"),
-        help='Path to data directory containing silver files (default: databases/omnipath/data)'
-    )
-
-    parser.add_argument(
-        '--output-dir',
-        type=Path,
-        default=Path("output/gold"),
-        help='Path to output directory for gold tables (default: output/gold)'
-    )
-
-    args = parser.parse_args()
-
-    # Validate data root exists
-    if not args.data_root.exists():
-        print(f"Error: Data root not found: {args.data_root}", file=sys.stderr)
-        sys.exit(1)
-
-    # Ensure output directory exists
-    args.output_dir.mkdir(parents=True, exist_ok=True)
-
-    print("=" * 70)
-    print("BUILD SOURCES TABLE")
-    print("=" * 70)
-    print(f"Data root: {args.data_root}")
-    print(f"Output directory: {args.output_dir}")
-
-    # Build sources table
-    try:
-        sources = build_sources(args.data_root, args.output_dir)
-
-        # Save to output directory
-        print("\nStep 4: Saving sources table...")
-        output_path = args.output_dir / "source.parquet"
-        sources.write_parquet(output_path)
-        print(f"  Saved to: {output_path}")
-
-        # Print summary
-        print("\n" + "=" * 70)
-        print("Summary:")
-        print("=" * 70)
-        print(f"  Total sources: {len(sources)}")
-        print("\n  Sources list:")
-        for row in sources.iter_rows(named=True):
-            print(f"    {row['id']}: {row['name']}")
-
-        print("\n" + "=" * 70)
-        print("DONE")
-        print("=" * 70)
-
-    except Exception as e:
-        print(f"\nError: {e}", file=sys.stderr)
-        import traceback
-        traceback.print_exc()
-        sys.exit(1)
-
-
-if __name__ == "__main__":
-    main()

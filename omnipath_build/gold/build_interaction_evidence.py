@@ -29,7 +29,6 @@ import sys
 
 __all__ = [
     'build_interaction_evidence',
-    'main',
 ]
 
 
@@ -395,83 +394,3 @@ def build_interaction_evidence(data_root: Path, output_dir: Path) -> pl.DataFram
     print(f"  Final interaction evidence records: {len(result)}")
 
     return result
-
-
-def main():
-    """Command-line interface."""
-    parser = argparse.ArgumentParser(
-        description="Build interaction_evidence table from silver_interactions",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-    # Build interaction_evidence table
-    python build_interaction_evidence.py --data-root databases/omnipath/data --output-dir output/gold
-        """
-    )
-
-    parser.add_argument(
-        '--data-root',
-        type=Path,
-        default=Path("databases/omnipath/data"),
-        help='Path to data directory containing silver files (default: databases/omnipath/data)'
-    )
-
-    parser.add_argument(
-        '--output-dir',
-        type=Path,
-        default=Path("output/gold"),
-        help='Path to output directory for gold tables (default: output/gold)'
-    )
-
-    args = parser.parse_args()
-
-    # Validate data root exists
-    if not args.data_root.exists():
-        print(f"Error: Data root not found: {args.data_root}", file=sys.stderr)
-        sys.exit(1)
-
-    # Ensure output directory exists
-    args.output_dir.mkdir(parents=True, exist_ok=True)
-
-    print("=" * 70)
-    print("BUILD INTERACTION_EVIDENCE TABLE")
-    print("=" * 70)
-    print(f"Data root: {args.data_root}")
-    print(f"Output directory: {args.output_dir}")
-
-    # Build interaction_evidence table
-    try:
-        interaction_evidence = build_interaction_evidence(args.data_root, args.output_dir)
-
-        # Save to output directory
-        print("\nStep 7: Saving interaction_evidence table...")
-        output_path = args.output_dir / "interaction_evidence.parquet"
-        interaction_evidence.write_parquet(output_path)
-        print(f"  Saved to: {output_path}")
-
-        # Print summary
-        print("\n" + "=" * 70)
-        print("Summary:")
-        print("=" * 70)
-        print(f"  Total interaction evidence records: {len(interaction_evidence)}")
-
-        if len(interaction_evidence) > 0:
-            print(f"\n  Unique interactions with evidence: {interaction_evidence['interaction_id'].n_unique()}")
-            print(f"  Unique provenance sources: {interaction_evidence['provenance_id'].n_unique()}")
-
-            print("\n  Sample interaction evidence records:")
-            print(interaction_evidence.head(5))
-
-        print("\n" + "=" * 70)
-        print("DONE")
-        print("=" * 70)
-
-    except Exception as e:
-        print(f"\nError: {e}", file=sys.stderr)
-        import traceback
-        traceback.print_exc()
-        sys.exit(1)
-
-
-if __name__ == "__main__":
-    main()

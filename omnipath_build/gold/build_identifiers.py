@@ -14,7 +14,6 @@ from pathlib import Path
 __all__ = [
     'UnionFind',
     'cluster_identifiers',
-    'main',
 ]
 
 
@@ -283,61 +282,3 @@ def cluster_identifiers(data_root: Path):
     result = result.with_row_index("id", offset=1)
 
     return result
-
-
-def main():
-    """Test the clustering on actual data."""
-    import sys
-    from pathlib import Path
-
-    # Default to current working directory
-    data_root = Path("/Users/jschaul/Code/omnipath_build/databases/omnipath/data")
-
-    if not data_root.exists():
-        print(f"Error: Data root not found: {data_root}")
-        sys.exit(1)
-
-    print(f"Using data root: {data_root}")
-    print("=" * 70)
-
-    # Run clustering
-    result = cluster_identifiers(data_root)
-
-    print("\n" + "=" * 70)
-    print("Clustering complete!")
-    print("=" * 70)
-    print(f"\nFinal shape: {result.shape}")
-    print(f"\nColumn names: {result.columns}")
-    print("\nSample of results:")
-    print(result.head(10))
-
-    # Show some statistics
-    print("\n" + "=" * 70)
-    print("Statistics:")
-    print("=" * 70)
-
-    entity_counts = result.group_by("entity_id").agg(
-        pl.len().alias("identifier_count")
-    ).sort("identifier_count", descending=True)
-
-    print(f"\nTop entities (clusters) by identifier count:")
-    print(entity_counts.head(10))
-
-    type_counts = result.group_by("identifier_type_name").agg(
-        pl.len().alias("count")
-    ).sort("count", descending=True)
-
-    print(f"\nIdentifier type distribution:")
-    print(type_counts)
-
-    # Show number of unique clusters
-    print(f"\nTotal unique entity_id (clusters): {result['entity_id'].n_unique():,}")
-
-    # Optionally save to parquet
-    output_path = Path("test_clustered_entity_identifier.parquet")
-    result.write_parquet(output_path)
-    print(f"\nResults saved to: {output_path}")
-
-
-if __name__ == "__main__":
-    main()

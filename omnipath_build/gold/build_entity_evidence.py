@@ -22,7 +22,6 @@ import sys
 
 __all__ = [
     'build_entity_evidence',
-    'main',
 ]
 
 
@@ -220,83 +219,3 @@ def build_entity_evidence(data_root: Path, output_dir: Path) -> pl.DataFrame:
     print(f"  Final entity evidence records: {len(result)}")
 
     return result
-
-
-def main():
-    """Command-line interface."""
-    parser = argparse.ArgumentParser(
-        description="Build entity_evidence table from silver_entities",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-    # Build entity_evidence table
-    python build_entity_evidence.py --data-root databases/omnipath/data --output-dir output/gold
-        """
-    )
-
-    parser.add_argument(
-        '--data-root',
-        type=Path,
-        default=Path("databases/omnipath/data"),
-        help='Path to data directory containing silver files (default: databases/omnipath/data)'
-    )
-
-    parser.add_argument(
-        '--output-dir',
-        type=Path,
-        default=Path("output/gold"),
-        help='Path to output directory for gold tables (default: output/gold)'
-    )
-
-    args = parser.parse_args()
-
-    # Validate data root exists
-    if not args.data_root.exists():
-        print(f"Error: Data root not found: {args.data_root}", file=sys.stderr)
-        sys.exit(1)
-
-    # Ensure output directory exists
-    args.output_dir.mkdir(parents=True, exist_ok=True)
-
-    print("=" * 70)
-    print("BUILD ENTITY_EVIDENCE TABLE")
-    print("=" * 70)
-    print(f"Data root: {args.data_root}")
-    print(f"Output directory: {args.output_dir}")
-
-    # Build entity_evidence table
-    try:
-        entity_evidence = build_entity_evidence(args.data_root, args.output_dir)
-
-        # Save to output directory
-        print("\nStep 6: Saving entity_evidence table...")
-        output_path = args.output_dir / "entity_evidence.parquet"
-        entity_evidence.write_parquet(output_path)
-        print(f"  Saved to: {output_path}")
-
-        # Print summary
-        print("\n" + "=" * 70)
-        print("Summary:")
-        print("=" * 70)
-        print(f"  Total entity evidence records: {len(entity_evidence)}")
-
-        if len(entity_evidence) > 0:
-            print(f"\n  Unique entities with evidence: {entity_evidence['entity_id'].n_unique()}")
-            print(f"  Unique provenance sources: {entity_evidence['provenance_id'].n_unique()}")
-
-            print("\n  Sample entity evidence records:")
-            print(entity_evidence.head(5))
-
-        print("\n" + "=" * 70)
-        print("DONE")
-        print("=" * 70)
-
-    except Exception as e:
-        print(f"\nError: {e}", file=sys.stderr)
-        import traceback
-        traceback.print_exc()
-        sys.exit(1)
-
-
-if __name__ == "__main__":
-    main()

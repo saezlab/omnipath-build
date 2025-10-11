@@ -16,7 +16,6 @@ from typing import Tuple
 
 __all__ = [
     'build_cv_terms',
-    'main',
 ]
 
 
@@ -210,62 +209,3 @@ def build_cv_terms(data_root: Path, output_dir: Path) -> Tuple[pl.DataFrame, pl.
     print(f"  Total CV terms: {len(cv_term):,}")
 
     return cv_namespace, cv_term
-
-
-def main():
-    """Test the CV terms building on actual data."""
-    import sys
-    from pathlib import Path
-
-    # Default to current working directory
-    data_root = Path("databases/omnipath/data")
-    output_dir = Path("output/gold")
-
-    if not data_root.exists():
-        print(f"Error: Data root not found: {data_root}")
-        sys.exit(1)
-
-    print(f"Using data root: {data_root}")
-    print(f"Using output dir: {output_dir}")
-    print("=" * 70)
-
-    # Run CV terms building
-    cv_namespace, cv_term = build_cv_terms(data_root, output_dir)
-
-    print("\n" + "=" * 70)
-    print("CV Terms Building Complete!")
-    print("=" * 70)
-
-    if len(cv_namespace) > 0:
-        print(f"\ncv_namespace shape: {cv_namespace.shape}")
-        print("\ncv_namespace:")
-        print(cv_namespace)
-
-        print(f"\ncv_term shape: {cv_term.shape}")
-        print("\nSample cv_terms:")
-        print(cv_term.head(10))
-
-        # Show statistics
-        print("\n" + "=" * 70)
-        print("Statistics:")
-        print("=" * 70)
-        print(f"  Total CV terms: {len(cv_term):,}")
-        print(f"  Total namespaces: {len(cv_namespace):,}")
-
-        # Distribution by namespace
-        print("\n  Distribution by namespace:")
-        namespace_dist = cv_term.group_by('namespace_id').agg(
-            pl.len().alias('count')
-        ).join(
-            cv_namespace.select(['id', 'name']),
-            left_on='namespace_id',
-            right_on='id',
-            how='left'
-        ).select(['name', 'count']).sort('count', descending=True)
-
-        for row in namespace_dist.iter_rows(named=True):
-            print(f"    {row['name']}: {row['count']:,}")
-
-
-if __name__ == "__main__":
-    main()

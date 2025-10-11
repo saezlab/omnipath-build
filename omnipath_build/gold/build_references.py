@@ -17,7 +17,6 @@ import sys
 
 __all__ = [
     'build_references',
-    'main',
 ]
 
 
@@ -132,81 +131,3 @@ def build_references(data_root: Path, output_dir: Path) -> pl.DataFrame:
             print(f"    {row['type_name']}: {row['count']:,}")
 
     return result
-
-
-def main():
-    """Command-line interface."""
-    parser = argparse.ArgumentParser(
-        description="Build references table from silver_interactions files",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-    # Build references table
-    python build_references.py --data-root databases/omnipath/data --output-dir output/gold
-        """
-    )
-
-    parser.add_argument(
-        '--data-root',
-        type=Path,
-        default=Path("databases/omnipath/data"),
-        help='Path to data directory containing silver files (default: databases/omnipath/data)'
-    )
-
-    parser.add_argument(
-        '--output-dir',
-        type=Path,
-        default=Path("output/gold"),
-        help='Path to output directory for gold tables (default: output/gold)'
-    )
-
-    args = parser.parse_args()
-
-    # Validate data root exists
-    if not args.data_root.exists():
-        print(f"Error: Data root not found: {args.data_root}", file=sys.stderr)
-        sys.exit(1)
-
-    # Ensure output directory exists
-    args.output_dir.mkdir(parents=True, exist_ok=True)
-
-    print("=" * 70)
-    print("BUILD REFERENCES TABLE")
-    print("=" * 70)
-    print(f"Data root: {args.data_root}")
-    print(f"Output directory: {args.output_dir}")
-
-    # Build references table
-    try:
-        references = build_references(args.data_root, args.output_dir)
-
-        # Save to output directory
-        print("\nStep 4: Saving references table...")
-        output_path = args.output_dir / "reference.parquet"
-        references.write_parquet(output_path)
-        print(f"  Saved to: {output_path}")
-
-        # Print summary
-        print("\n" + "=" * 70)
-        print("Summary:")
-        print("=" * 70)
-        print(f"  Total references: {len(references)}")
-
-        if len(references) > 0:
-            print("\n  Sample references (first 5):")
-            for row in references.head(5).iter_rows(named=True):
-                print(f"    [{row['type_name']}] {row['identifier'][:60]}...")
-
-        print("\n" + "=" * 70)
-        print("DONE")
-        print("=" * 70)
-
-    except Exception as e:
-        print(f"\nError: {e}", file=sys.stderr)
-        import traceback
-        traceback.print_exc()
-        sys.exit(1)
-
-
-if __name__ == "__main__":
-    main()
