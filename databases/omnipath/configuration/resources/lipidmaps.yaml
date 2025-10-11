@@ -28,7 +28,7 @@ functions:
                 target: compound_inchi
                 transform: normalize_inchi_value
             -   source: smiles
-                target: compound_smiles
+                target: smiles
             -   source: name
                 target: name
             -   source: synonyms

@@ -26,7 +26,7 @@ functions:
                 target: compound_inchi
                 transform: normalize_inchi_value
             -   source: iso_smiles
-                target: compound_smiles
+                target: smiles
             -   source: common_name
                 target: name
             -   source: classes

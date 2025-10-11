@@ -24,6 +24,8 @@ functions:
             -   source: chebi_id
                 target: chebi_id
                 transform: normalize_chebi_id
+            -   source: smiles
+                target: smiles
             -   source: pubchem_compound_id
                 target: pubchem_cid
                 transform: normalize_pubchem_cid

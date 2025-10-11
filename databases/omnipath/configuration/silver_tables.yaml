@@ -1,6 +1,7 @@
 silver_entities:
   # Identifiers (cleaned)
     inchikey: VARCHAR(27)             # Primary structural identifier when available
+    smiles: TEXT
     hmdb_id: VARCHAR(32)
     chebi_id: VARCHAR(32)
     pubchem_cid: VARCHAR(32)

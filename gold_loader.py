@@ -2,17 +2,21 @@
 """
 Gold Loader - Build gold tables from silver tables.
 
-This script orchestrates the entire gold table building process in 2 phases:
+This script orchestrates the entire gold table building process in 3 phases:
 1. Phase 1: Cross-source processing (entity clustering, cv_terms, sources, references, interactions)
 2. Phase 2: Evidence extraction (provenance, entity_evidence, membership, interaction_evidence)
    - Automatically combines data from all sources using pl.concat()
+3. Phase 3: Compound properties (optional, requires RDKit)
+   - Computes molecular properties from SMILES identifiers
 
 All gold tables are final and ready to use after Phase 2.
+Phase 3 is optional and adds computed compound properties.
 
 Usage:
     python gold_loader.py --data-root /path/to/data --output-dir /path/to/output
     python gold_loader.py --phase 1  # Run only Phase 1
     python gold_loader.py --phase 2  # Run only Phase 2
+    python gold_loader.py --phase 3  # Run only Phase 3 (requires Phase 1 output)
 """
 
 import polars as pl
@@ -31,8 +35,10 @@ from build_provenance import build_provenance
 from build_entity_evidence import build_entity_evidence
 from build_membership import build_membership
 from build_interaction_evidence import build_interaction_evidence
+from build_compounds import build_compounds, RDKIT_AVAILABLE
 
 __all__ = [
+    'build_compounds_table',
     'build_cv_terms_table',
     'build_entity_evidence_table',
     'build_entity_identifier_table',
@@ -297,10 +303,60 @@ def build_interaction_evidence_table(data_root: Path, output_dir: Path) -> pl.Da
     return interaction_evidence
 
 
+def build_compounds_table(
+    output_dir: Path,
+    entity_identifiers: Optional[pl.DataFrame] = None,
+    compound_limit: Optional[int] = None,
+) -> pl.DataFrame:
+    """
+    Phase 3: Build compound table with computed molecular properties.
+
+    This computes chemical properties from SMILES identifiers using RDKit.
+    Requires entity_identifier table from Phase 1.
+
+    Args:
+        output_dir: Path to output directory for gold tables
+        entity_identifiers: Optional pre-loaded entity_identifier table
+        compound_limit: Optional limit on number of compounds to process
+
+    Returns:
+        DataFrame with compound properties
+    """
+    print("\n" + "=" * 70)
+    print("PHASE 3: Compound Properties")
+    print("=" * 70)
+
+    if not RDKIT_AVAILABLE:
+        print("\n⚠️  Skipping compound properties - RDKit not available")
+        print("   Install with: pip install rdkit")
+        return pl.DataFrame()
+
+    # Use the build_compounds module
+    compounds = build_compounds(
+        output_dir=output_dir,
+        entity_identifiers=entity_identifiers,
+        compound_limit=compound_limit,
+        use_cache=True,
+    )
+
+    if len(compounds) == 0:
+        print("\n⚠️  No compounds generated")
+        return compounds
+
+    # Save to output directory
+    output_path = output_dir / "compound.parquet"
+    compounds.write_parquet(output_path)
+    print(f"\nSaved compound table to: {output_path}")
+    print(f"Total compounds: {len(compounds):,}")
+
+    return compounds
+
+
 def run_gold_loader(
     data_root: Path,
     output_dir: Path,
-    phase: Optional[str] = None
+    phase: Optional[str] = None,
+    compound_limit: Optional[int] = None,
 ) -> None:
     """
     Main orchestration function for building gold tables.
@@ -309,6 +365,7 @@ def run_gold_loader(
         data_root: Path to data directory containing silver files
         output_dir: Path to output directory for gold tables
         phase: Optional phase to run (1, 2, or 3). If None, run all phases.
+        compound_limit: Optional limit on number of compounds to process in Phase 3
     """
     # Ensure output directory exists
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -362,6 +419,27 @@ def run_gold_loader(
         # Step 4: Interaction evidence
         interaction_evidence = build_interaction_evidence_table(data_root, output_dir)
 
+    # PHASE 3: Compound properties (optional, requires RDKit)
+    if phase is None or phase == "3":
+        print("\n")
+        print("┌" + "─" * 68 + "┐")
+        print("│" + " " * 20 + "PHASE 3: COMPOUND PROPERTIES" + " " * 20 + "│")
+        print("└" + "─" * 68 + "┘")
+
+        # Load entity_identifiers if not already loaded
+        entity_identifiers = None
+        if phase == "3":
+            entity_id_path = output_dir / "entity_identifier.parquet"
+            if entity_id_path.exists():
+                entity_identifiers = pl.read_parquet(entity_id_path)
+
+        # Build compounds table
+        compounds = build_compounds_table(
+            output_dir=output_dir,
+            entity_identifiers=entity_identifiers,
+            compound_limit=compound_limit,
+        )
+
     print("\n")
     print("╔" + "=" * 68 + "╗")
     print("║" + " " * 25 + "PIPELINE COMPLETE" + " " * 26 + "║")
@@ -376,7 +454,7 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-    # Run full pipeline (both phases)
+    # Run full pipeline (all phases)
     python gold_loader.py --data-root databases/omnipath/data --output-dir output/gold
 
     # Run only Phase 1 (cross-source processing)
@@ -384,6 +462,12 @@ Examples:
 
     # Run only Phase 2 (evidence extraction - requires Phase 1 output)
     python gold_loader.py --data-root databases/omnipath/data --output-dir output/gold --phase 2
+
+    # Run only Phase 3 (compound properties - requires Phase 1 output and RDKit)
+    python gold_loader.py --data-root databases/omnipath/data --output-dir output/gold --phase 3
+
+    # Run Phase 3 with a limit (useful for testing)
+    python gold_loader.py --phase 3 --compound-limit 1000
         """
     )
 
@@ -404,8 +488,14 @@ Examples:
     parser.add_argument(
         '--phase',
         type=str,
-        choices=['1', '2'],
-        help='Run only a specific phase (1=cross-source, 2=per-source evidence)'
+        choices=['1', '2', '3'],
+        help='Run only a specific phase (1=cross-source, 2=per-source evidence, 3=compound properties)'
+    )
+
+    parser.add_argument(
+        '--compound-limit',
+        type=int,
+        help='Limit number of compounds to process in Phase 3 (default: no limit)'
     )
 
     args = parser.parse_args()
@@ -417,7 +507,7 @@ Examples:
 
     # Run the pipeline
     try:
-        run_gold_loader(args.data_root, args.output_dir, args.phase)
+        run_gold_loader(args.data_root, args.output_dir, args.phase, args.compound_limit)
     except Exception as e:
         print(f"\nError: {e}", file=sys.stderr)
         import traceback
