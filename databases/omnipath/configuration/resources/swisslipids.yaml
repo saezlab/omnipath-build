@@ -32,7 +32,7 @@ functions:
                 target: metanetx_id
                 transform: normalize_metanetx_id
             -   source: inchi
-                target: compound_inchi
+                target: inchi
                 transform: normalize_inchi_value
             -   source: smiles
                 target: smiles

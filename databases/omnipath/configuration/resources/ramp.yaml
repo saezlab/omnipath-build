@@ -23,7 +23,7 @@ functions:
                 target: ramp_id
                 transform: normalize_ramp_id
             -   source: inchi
-                target: compound_inchi
+                target: inchi
                 transform: normalize_inchi_value
             -   source: iso_smiles
                 target: smiles
@@ -32,3 +32,5 @@ functions:
             -   source: classes
                 target: annotations
                 transform: build_ramp_annotations
+            -   source: chem_data_source
+                target: primary_source_database

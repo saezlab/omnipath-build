@@ -2,6 +2,7 @@ silver_entities:
   # Identifiers (cleaned)
     inchikey: VARCHAR(27)             # Primary structural identifier when available
     smiles: TEXT
+    inchi: TEXT
     hmdb_id: VARCHAR(32)
     chebi_id: VARCHAR(32)
     pubchem_cid: VARCHAR(32)
@@ -31,6 +32,7 @@ silver_entities:
 
   # Metadata
     source_database: VARCHAR(100)
+    primary_source_database: VARCHAR(100)
 
 
 ## 2. silver_interactions

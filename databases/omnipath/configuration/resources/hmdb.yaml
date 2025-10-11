@@ -18,6 +18,9 @@ functions:
             -   source: inchikey
                 target: inchikey
                 transform: normalize_inchikey_value
+            -   source: inchi
+                target: inchi
+                transform: normalize_inchi_value
             -   source: accession
                 target: hmdb_id
                 transform: normalize_hmdb_id

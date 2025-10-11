@@ -25,7 +25,7 @@ functions:
                 target: pubchem_cid
                 transform: normalize_pubchem_cid
             -   source: inchi
-                target: compound_inchi
+                target: inchi
                 transform: normalize_inchi_value
             -   source: smiles
                 target: smiles
