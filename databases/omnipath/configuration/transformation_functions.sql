@@ -262,6 +262,45 @@ CREATE OR REPLACE MACRO build_swisslipids_annotations(level, lipid_class, parent
 );
 
 -- =====================================================
+-- GENERIC ID EXTRACTION FROM CURIE-FORMATTED LISTS
+-- =====================================================
+
+-- Extract all distinct IDs of a specific type from a comma-separated CURIE list
+-- Returns an array of all unique IDs, or NULL if none found
+--
+-- Arguments:
+--   field: String containing comma-separated CURIEs (e.g., "hmdb:HMDB0000001, chebi:123, hmdb:HMDB0000001")
+--   prefix: ID type prefix to match (e.g., "hmdb", "chebi", "LIPIDMAPS")
+--
+-- Returns: Array of distinct ID values, or NULL if not found
+--
+-- Usage examples:
+--   extract_ids('hmdb:HMDB0000001, chebi:123', 'hmdb') -> ['HMDB0000001']
+--   extract_ids('hmdb:HMDB0000001, hmdb:HMDB0000002', 'hmdb') -> ['HMDB0000001', 'HMDB0000002']
+--   extract_ids('hmdb:HMDB0000001, hmdb:HMDB0000001, chebi:123', 'hmdb') -> ['HMDB0000001'] (deduplicated)
+--   extract_ids('swisslipids:SLM:000012241, chebi:123', 'swisslipids') -> ['SLM:000012241']
+CREATE OR REPLACE MACRO extract_ids(field, prefix) AS (
+    CASE
+        WHEN field IS NULL OR TRIM(field) = '' THEN NULL
+        WHEN field LIKE '%' || prefix || ':%' THEN (
+            SELECT CASE
+                WHEN ids IS NULL OR len(ids) = 0 THEN NULL
+                ELSE ids  -- Return all distinct IDs as array
+            END
+            FROM (
+                SELECT list_distinct(
+                    list_transform(
+                        regexp_extract_all(field, prefix || ':([^,]+)', 1),
+                        id -> TRIM(id)
+                    )
+                ) AS ids
+            )
+        )
+        ELSE NULL
+    END
+);
+
+-- =====================================================
 -- IDENTIFIER CLEANING FUNCTIONS
 -- =====================================================
 

@@ -96,7 +96,7 @@ def cluster_identifiers(data_root: Path):
 
     # Read all files - select only the columns we need
     dfs = []
-    identifier_cols = ['inchikey', 'smiles', 'lipidmaps_id', 'chebi_id', 'pubchem_cid',
+    identifier_cols = ['inchikey', 'inchi', 'smiles', 'lipidmaps_id', 'chebi_id', 'pubchem_cid',
                       'cas_number', 'drugbank_id', 'hmdb_id', 'kegg_id',
                       'metanetx_id', 'ramp_id', 'swisslipids_id', 'ec_number']
 
@@ -128,6 +128,7 @@ def cluster_identifiers(data_root: Path):
     # Define identifier columns and their types (exclude name/synonym-like columns for now)
     identifier_columns = {
         'inchikey': 'inchikey',
+        'inchi': 'inchi',
         'smiles': 'smiles',
         'lipidmaps_id': 'lipidmaps_id',
         'chebi_id': 'chebi_id',
