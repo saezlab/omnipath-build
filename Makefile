@@ -12,9 +12,6 @@ BLUE := \033[34m
 RED := \033[31m
 RESET := \033[0m
 
-# Default database if none specified
-DB ?= omnipath
-
 
 help: ## Show this help message
 	@echo "$(GREEN)OmniPath Build - Developer Commands$(RESET)"
@@ -22,9 +19,9 @@ help: ## Show this help message
 	@echo "$(BLUE)Essential Commands:$(RESET)"
 	@echo "  $(GREEN)make setup$(RESET)              - One-time complete setup (install deps, start postgres, etc.)"
 	@echo "  $(GREEN)make start$(RESET)              - Daily startup (ensure postgres running, show status)"
-	@echo "  $(GREEN)make new DB=mydb$(RESET)        - Create & configure a new database"
-	@echo "  $(GREEN)make add DB=mydb RES=x.y$(RESET) - Add resources to a database"
-	@echo "  $(GREEN)make run DB=mydb$(RESET)        - Run/update an existing database"
+	@echo "  $(GREEN)make new [DB=mydb]$(RESET)      - Create & configure a new database (default: omnipath)"
+	@echo "  $(GREEN)make add [DB=mydb] RES=x.y$(RESET) - Add resources to a database (default: omnipath)"
+	@echo "  $(GREEN)make run [DB=mydb]$(RESET)      - Run/update an existing database (default: omnipath)"
 	@echo "  $(GREEN)make stop$(RESET)               - Clean shutdown (stop postgres, cleanup logs)"
 	@echo ""
 	@echo "$(BLUE)Examples:$(RESET)"
@@ -173,18 +170,17 @@ start: ## Daily startup - ensure everything is running
 	@echo "  make help               # Show all commands"
 
 new: ## Create and configure a new database
-	@if [ -z "$(DB)" ] || [ "$(DB)" = "omnipath" ]; then \
-		echo "$(RED)Please specify a database name: make new DB=myproject$(RESET)"; \
-		exit 1; \
-	fi
-	
-	@echo "$(BLUE)🆕 Creating new database: $(DB)$(RESET)"
+	@echo "$(BLUE)🆕 Creating new database$(RESET)"
 	@echo ""
-	
+
 	# Initialize database structure
 	@echo "$(BLUE)ℹ Initializing database structure...$(RESET)"
-	@uv run --env-file .env python omnipath_build/database_manager.py init --database $(DB)
-	@echo "$(GREEN)✓ Database $(DB) initialized$(RESET)"
+	@if [ -n "$(DB)" ]; then \
+		uv run --env-file .env python omnipath_build/0_database_manager.py init --database $(DB); \
+	else \
+		uv run --env-file .env python omnipath_build/0_database_manager.py init; \
+	fi
+	@echo "$(GREEN)✓ Database initialized$(RESET)"
 	
 	# Show available resources
 	@echo ""
@@ -199,26 +195,16 @@ new: ## Create and configure a new database
 	@echo ""
 	@echo "$(YELLOW)📝 Next steps:$(RESET)"
 	@echo "1. Add resources to your database:"
-	@echo "   $(GREEN)make add DB=$(DB) RES=signor.signor_interactions$(RESET)"
+	@echo "   $(GREEN)make add RES=signor.signor_interactions$(RESET)"
 	@echo ""
-	@echo "2. Load the data:"
-	@echo "   $(GREEN)make run DB=$(DB)$(RESET)"
+	@echo "2. Load and process the data:"
+	@echo "   $(GREEN)make run$(RESET)"
 	@echo ""
 	@echo "3. Or see all resources: $(GREEN)cat pypath_resources.txt$(RESET)"
 
 add: ## Add resources to a database
-	@if [ -z "$(DB)" ]; then \
-		echo "$(RED)Please specify a database name: make add DB=myproject RES=resource.name$(RESET)"; \
-		exit 1; \
-	fi
-
-	@if [ ! -d "databases/$(DB)" ]; then \
-		echo "$(RED)Database $(DB) not found. Create it first with: make new DB=$(DB)$(RESET)"; \
-		exit 1; \
-	fi
-
 	@if [ -z "$(RES)" ]; then \
-		echo "$(RED)Please specify resources: make add DB=$(DB) RES=resource.name$(RESET)"; \
+		echo "$(RED)Please specify resources: make add [DB=mydb] RES=resource.name$(RESET)"; \
 		echo ""; \
 		echo "$(BLUE)Available resources (showing first 20):$(RESET)"; \
 		if [ -f pypath_resources.txt ]; then \
@@ -232,40 +218,50 @@ add: ## Add resources to a database
 		exit 1; \
 	fi
 
-	@echo "$(BLUE)➕ Adding resources to database: $(DB)$(RESET)"
+	@echo "$(BLUE)➕ Adding resources to database$(RESET)"
 	@echo ""
-	@uv run --env-file .env python omnipath_build/database_manager.py add-resources --database $(DB) --resources $(RES)
+	@if [ -n "$(DB)" ]; then \
+		uv run --env-file .env python omnipath_build/0_database_manager.py add-resources --database $(DB) --resources $(RES); \
+	else \
+		uv run --env-file .env python omnipath_build/0_database_manager.py add-resources --resources $(RES); \
+	fi
 	@echo ""
-	@echo "$(GREEN)✓ Resources added to $(DB)$(RESET)"
+	@echo "$(GREEN)✓ Resources added$(RESET)"
 	@echo ""
 	@echo "$(BLUE)Next step:$(RESET)"
-	@echo "  $(GREEN)make run DB=$(DB)$(RESET)  # Load the data"
+	@echo "  $(GREEN)make run$(RESET)  # Load and process the data"
 
 run: ## Run/update an existing database
-	@if [ -z "$(DB)" ]; then \
-		echo "$(RED)Please specify a database name: make run DB=myproject$(RESET)"; \
-		exit 1; \
-	fi
-	
-	@if [ ! -d "databases/$(DB)" ]; then \
-		echo "$(RED)Database $(DB) not found. Create it first with: make new DB=$(DB)$(RESET)"; \
-		exit 1; \
-	fi
-	
-	@echo "$(BLUE)🔄 Running database: $(DB)$(RESET)"
+	@echo "$(BLUE)🔄 Running database pipeline$(RESET)"
 	@echo ""
-	
-	# Load all data layers
-	@echo "$(BLUE)ℹ Loading all data layers...$(RESET)"
-	@uv run --env-file .env python omnipath_build/database_manager.py load --database $(DB) --log-level DEBUG
-	
+
+	# Load bronze data (PyPath → Parquet)
+	@echo "$(BLUE)ℹ Loading bronze data from PyPath...$(RESET)"
+	@if [ -n "$(DB)" ]; then \
+		uv run --env-file .env python omnipath_build/0_database_manager.py load-bronze --database $(DB) --log-level DEBUG; \
+	else \
+		uv run --env-file .env python omnipath_build/0_database_manager.py load-bronze --log-level DEBUG; \
+	fi
+
 	@echo ""
-	@echo "$(GREEN)✓ Database $(DB) processing complete!$(RESET)"
-	
+	@echo "$(BLUE)ℹ Processing sources through silver and gold layers...$(RESET)"
+	@if [ -n "$(DB)" ]; then \
+		uv run --env-file .env python omnipath_build/0_database_manager.py process --database $(DB) --log-level DEBUG; \
+	else \
+		uv run --env-file .env python omnipath_build/0_database_manager.py process --log-level DEBUG; \
+	fi
+
+	@echo ""
+	@echo "$(GREEN)✓ Database processing complete!$(RESET)"
+
 	# Show status
 	@echo ""
 	@echo "$(BLUE)ℹ Database status:$(RESET)"
-	@uv run --env-file .env python omnipath_build/database_manager.py status --database $(DB)
+	@if [ -n "$(DB)" ]; then \
+		uv run --env-file .env python omnipath_build/0_database_manager.py status --database $(DB); \
+	else \
+		uv run --env-file .env python omnipath_build/0_database_manager.py status; \
+	fi
 
 stop: ## Clean shutdown
 	@echo "$(BLUE)🛑 Shutting down development environment...$(RESET)"
