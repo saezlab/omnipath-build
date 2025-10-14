@@ -10,10 +10,10 @@ import pyarrow as pa
 __all__ = [
     'SilverEntity',
     'SilverInteraction',
+    'SilverCvTerm',
     'SILVER_ENTITY_SCHEMA',
     'SILVER_INTERACTION_SCHEMA',
-    'get_entity_schema',
-    'get_interaction_schema',
+    'SILVER_CV_TERM_SCHEMA',
 ]
 
 
@@ -76,6 +76,23 @@ class SilverInteraction(NamedTuple):
     # Optional reference
     reference_type: Optional[str] = None
     reference_value: Optional[str] = None
+
+
+class SilverCvTerm(NamedTuple):
+    """Silver CV term record matching silver_cv_terms schema."""
+    # Required fields
+    source: str
+    term_accession: str
+    namespace: str
+
+    # Optional term information
+    term_name: Optional[str] = None
+    term_definition: Optional[str] = None
+    term_definition_refs: Optional[List[str]] = None
+    term_synonyms: Optional[List[str]] = None
+    term_parent_accessions: Optional[List[str]] = None
+    term_parent_names: Optional[List[str]] = None
+    term_alt_ids: Optional[List[str]] = None
 
 
 SILVER_ENTITY_SCHEMA = pa.schema([
@@ -154,12 +171,15 @@ SILVER_INTERACTION_SCHEMA = pa.schema([
     pa.field('reference_value', pa.string()),
 ])
 
-
-def get_entity_schema() -> pa.Schema:
-    """Return PyArrow schema for the silver_entities table."""
-    return SILVER_ENTITY_SCHEMA
-
-
-def get_interaction_schema() -> pa.Schema:
-    """Return PyArrow schema for the silver_interactions table."""
-    return SILVER_INTERACTION_SCHEMA
+SILVER_CV_TERM_SCHEMA = pa.schema([
+    pa.field('source', pa.string(), nullable=False),
+    pa.field('term_accession', pa.string(), nullable=False),
+    pa.field('namespace', pa.string(), nullable=False),
+    pa.field('term_name', pa.string()),
+    pa.field('term_definition', pa.string()),
+    pa.field('term_definition_refs', pa.list_(pa.string())),
+    pa.field('term_synonyms', pa.list_(pa.string())),
+    pa.field('term_parent_accessions', pa.list_(pa.string())),
+    pa.field('term_parent_names', pa.list_(pa.string())),
+    pa.field('term_alt_ids', pa.list_(pa.string())),
+])
