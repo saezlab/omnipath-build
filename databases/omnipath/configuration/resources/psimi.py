@@ -3,7 +3,7 @@ PSI-MI ontology to silver transformation.
 
 Simple generator that maps PyPath namedtuples to SilverCvTerm namedtuples.
 """
-from silver_schema import SilverCvTerm
+from omnipath_build.utils.silver_schema import SilverCvTerm
 
 __all__ = [
     'psimi_ontology',

@@ -3,7 +3,7 @@ HMDB to silver transformation.
 
 Simple generator that maps PyPath namedtuples to SilverEntity namedtuples.
 """
-from silver_schema import SilverEntity
+from omnipath_build.utils.silver_schema import SilverEntity
 
 __all__ = [
     'hmdb_entities',
