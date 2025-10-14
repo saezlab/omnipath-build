@@ -59,8 +59,14 @@ def _handle_silver(args: argparse.Namespace) -> int:
 
 def _handle_gold(args: argparse.Namespace) -> int:
     """Execute gold loader workflow based on CLI arguments."""
+    project_root = Path(__file__).resolve().parent.parent
+
     data_root: Path = args.data_root
+    if not data_root.is_absolute():
+        data_root = project_root / data_root
     output_dir: Path = args.output_dir
+    if not output_dir.is_absolute():
+        output_dir = project_root / output_dir
 
     if not data_root.exists():
         print(f'Error: data root not found: {data_root}', file=sys.stderr)
@@ -114,8 +120,8 @@ def _build_parser() -> argparse.ArgumentParser:
     gold_parser.add_argument(
         '--output-dir',
         type=Path,
-        default=Path('output/gold'),
-        help='Path to output directory for gold tables (default: output/gold)',
+        default=Path('databases/omnipath/output'),
+        help='Path to output directory for gold tables (default: databases/omnipath/output)',
     )
     gold_parser.add_argument(
         '--phase',
