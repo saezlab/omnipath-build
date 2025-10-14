@@ -1,8 +1,3 @@
-"""
-HMDB to silver transformation.
-
-Simple generator that maps PyPath namedtuples to SilverEntity namedtuples.
-"""
 from omnipath_build.utils.silver_schema import SilverEntity
 
 __all__ = [
@@ -10,12 +5,6 @@ __all__ = [
 ]
 
 def hmdb_entities():
-    """
-    Generator that yields SilverEntity records from HMDB PyPath data.
-
-    Yields:
-        SilverEntity namedtuples
-    """
     from pypath.inputs.hmdb.metabolites import compounds_for_metabo
 
     for rec in compounds_for_metabo():
