@@ -27,7 +27,6 @@ erDiagram
         bigint id PK
         bigint entity_id FK
         int source_id FK
-        varchar accession
         json annotations
     }
 
@@ -140,8 +139,8 @@ erDiagram
 
 - `entity.id` values come directly from the identifier clustering step; a dedicated entity dimension table is not materialised yet.
 - All former namespace/name pairs now resolve to integer foreign keys referencing `cv_term.id`.
-- `entity_evidence.accession` captures the primary accession reported for that entity by the source.
 - The compound table is optional and only populated when RDKit is available during the gold build.
 - `evidence_reference` allows a reference to be associated with any evidence record; only one of the three evidence foreign keys is populated per row.
 - `entity_identifier` now carries a `source_id` and `identifier_kind` (e.g. `source_accession`, `cross_reference`) so the build pipeline can distinguish cluster-safe identifiers from reported cross references.
 - TODO: ensure the clustering step and downstream loaders treat only cluster-safe identifier kinds as eligible for entity merges. -> initially only source accessions and standard inchi. but be careful, we dont deduplicate entity evidence.
+- references can be stored at the moment with arbitrary values (e.g. doi, pmid, chembl_id -> we will fix / merge that in the future, where we will load the chembl documents that link chembl_id to doi and pmid and maybe the same for pmid only ones where we can load additional facts from crossref or so)
