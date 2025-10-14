@@ -189,6 +189,20 @@ def _normalize_record(record: object) -> dict:
     raise TypeError(f'Cannot normalize record of type {type(record)!r}')
 
 
+def _coerce_list_fields(record: dict, schema: pa.Schema) -> None:
+    """Ensure list-typed schema fields receive list values."""
+    for field in schema:
+        if not pa.types.is_list(field.type):
+            continue
+        value = record.get(field.name)
+        if value is None or isinstance(value, list):
+            continue
+        if isinstance(value, tuple):
+            record[field.name] = list(value)
+            continue
+        record[field.name] = [value]
+
+
 def _ensure_schema(schema_type: str | None) -> tuple[str, pa.Schema, str]:
     """Validate schema type and return (type, pyarrow schema, table name)."""
     if schema_type is None:
@@ -245,6 +259,8 @@ def process_resource_function(
         if record is None:
             continue
 
+        normalized = _normalize_record(record)
+
         if schema_type is None:
             schema_type = _schema_from_record(record)
             schema_type, schema, table_name = _ensure_schema(schema_type)
@@ -252,7 +268,10 @@ def process_resource_function(
             # Schema type was discovered earlier but schema not yet materialized.
             schema_type, schema, table_name = _ensure_schema(schema_type)
 
-        batch.append(_normalize_record(record))
+        if schema is not None:
+            _coerce_list_fields(normalized, schema)
+
+        batch.append(normalized)
 
         if len(batch) >= batch_size:
             if dry_run:
