@@ -160,32 +160,24 @@ functions:
         kwargs:
             max_pages:
         processing:
-            target_table: '?'
+            target_table: silver_entities
             field_mapping:
+            -   source: _constant
+                target: source
+                value: ChEMBL
             -   source: molecule_chembl_id
-                target: '?'
+                target: accession
             -   source: preferred_name
-                target: '?'
-            -   source: molecule_type
-                target: '?'
-            -   source: structure_type
-                target: '?'
-            -   source: chirality
-                target: '?'
-            -   source: biotherapeutic
-                target: '?'
-            -   source: inorganic_flag
-                target: '?'
-            -   source: natural_flag
-                target: '?'
-            -   source: polymer_flag
-                target: '?'
-            -   source: helm_notation
-                target: '?'
-            -   source: molecule_properties
-                target: '?'
-            -   source: structure
-                target: '?'
+                target: name
+            -   source: [molecule_type, structure_type, chirality, natural_flag, polymer_flag, biotherapeutic, helm_notation]
+                target: annotations
+                transform: build_key_value_annotations
+            -   source: canonical_smiles
+                target: smiles
+            -   source: standard_inchi
+                target: inchi
+            -   source: standard_inchi_key
+                target: inchikey
     target:
         description: Retrieves target data from ChEMBL.
         kwargs:
