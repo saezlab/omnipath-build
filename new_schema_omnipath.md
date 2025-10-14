@@ -5,193 +5,143 @@ config:
 erDiagram
     entity {
         bigint id PK
-        int cv_term_id FK
-        timestamp created_at
     }
 
-membership {
-    bigint id PK
-    bigint parent_id FK
-    bigint member_id FK
-    float stoichiometry
-    int role_id FK
-    bigint annotation_record_id FK
-    bigint provenance_id FK
-}
+    interaction {
+        bigint id PK
+        bigint entity_a_id FK
+        bigint entity_b_id FK
+        int type_id FK
+    }
 
-interaction {
-    bigint id PK
-    bigint entity_a_id FK
-    bigint entity_b_id FK
-}
+    entity_identifier {
+        bigint id PK
+        bigint entity_id FK
+        varchar identifier
+        int source_id FK
+        int identifier_type_id FK
+        varchar identifier_kind
+    }
 
-entity_identifier {
-    bigint id PK
-    bigint entity_id FK
-    int cv_term_id FK
-    varchar identifier
-    timestamp created_at
-    bigint provenance_id FK
-}
+    entity_evidence {
+        bigint id PK
+        bigint entity_id FK
+        int source_id FK
+        varchar accession
+        json annotations
+    }
 
-provenance {
-    bigint id PK
-    int source_id FK
-    int primary_source_id FK
-    bigint reference_id FK
-    timestamp created_at
-}
+    cv_namespace {
+        int id PK
+        varchar name
+        text uri
+        text description
+    }
 
-interaction_evidence {
-    bigint id PK
-    bigint interaction_id FK
-    bigint provenance_id FK
-    bigint annotation_record_id FK
-    bigint entity_a_annotation_record_id FK
-    bigint entity_b_annotation_record_id FK
-    int type_id FK
-    int direction_id FK
-    int sign_id FK
-    int causal_mechanism_id FK
-    int causal_statement_id FK
-    text sentence
-    boolean is_directed
-    timestamp created_at
-}
+    cv_term {
+        int id PK
+        int namespace_id FK
+        varchar accession
+        varchar name
+        text description
+        boolean is_obsolete
+        varchar replaces
+        varchar replaced_by
+    }
 
-annotation_record {
-    bigint id PK
-    bigint provenance_id FK
-    timestamp created_at
-    text note
-}
+    source {
+        int id PK
+        varchar name
+        varchar url
+        text description
+    }
 
-annotation {
-    bigint id PK
-    bigint record_id FK
-    int term_id FK
-    int value_term_id FK
-    text value_text
-    float value_num
-    varchar units
-    timestamp created_at
-}
+    reference {
+        int id PK
+        varchar identifier
+        text citation
+        int published_year
+        varchar journal
+        text title
+        int type_id FK
+    }
 
-entity_annotation_record {
-    bigint entity_id FK
-    bigint annotation_record_id FK
-    varchar role
-}
+    membership {
+        bigint id PK
+        bigint parent_id FK
+        bigint member_id FK
+        int role_id FK
+        float stoichiometry
+        int source_id FK
+    }
 
-reference {
-    bigint id PK
-    int type_id FK
-    text value
-    text citation
-    int year
-    text journal
-    text title
-}
+    interaction_evidence {
+        bigint id PK
+        bigint interaction_id FK
+        int detection_method_id FK
+        text causal_statement
+        text sentence
+        boolean is_directed
+        json annotations
+        json entity_a_context
+        json entity_b_context
+        int source_id FK
+    }
 
-source {
-    int id PK
-    varchar name
-    varchar url
-    text description
-    timestamp created_at
-}
+    compound {
+        int id PK
+        bigint entity_id FK
+        varchar formula
+        float molecular_weight
+        float exact_mass
+        float tpsa
+        float logp
+        int hbd
+        int hba
+        int rotatable_bonds
+        int aromatic_rings
+        int heavy_atoms
+    }
 
-cv_namespace {
-    int id PK
-    varchar name
-    text uri
-    text description
-}
+    evidence_reference {
+        int id PK
+        int reference_id FK
+        bigint entity_evidence_id FK
+        bigint interaction_evidence_id FK
+        bigint membership_id FK
+    }
 
-cv_term {
-    int id PK
-    int namespace_id FK
-    varchar accession
-    varchar name
-    text description
-    boolean is_obsolete
-    int replaces
-    int replaced_by
-}
+    entity ||--o{ entity_identifier : "has identifiers"
+    entity ||--o{ interaction : "entity A"
+    entity ||--o{ interaction : "entity B"
+    entity ||--o{ entity_evidence : "described by"
+    entity ||--o{ membership : "as parent"
+    entity ||--o{ membership : "as member"
+    entity ||--o{ compound : "has properties"
 
-protein {
-    bigint entity_id PK
-    text name
-    varchar class
-    text sequence
-}
+    cv_namespace ||--o{ cv_term : "has terms"
+    cv_term ||--o{ entity_identifier : "identifier type"
+    cv_term ||--o{ membership : "role"
+    cv_term ||--o{ interaction : "interaction type"
+    cv_term ||--o{ reference : "reference type"
+    cv_term ||--o{ interaction_evidence : "detection method"
 
-compound {
-    bigint entity_id PK
-    varchar formula
-    float molecular_weight
-    float exact_mass
-    float tpsa
-    float logp
-    int hbd
-    int hba
-    int rotatable_bonds
-    int aromatic_rings
-    int heavy_atoms
-}
+    source ||--o{ entity_evidence : "from"
+    source ||--o{ membership : "from"
+    source ||--o{ interaction_evidence : "from"
+    interaction ||--o{ interaction_evidence : "supported by"
 
-reaction {
-    bigint entity_id PK
-    text equation
-    varchar directionality
-    varchar pathway
-    varchar ec_number
-    text smiles
-}
+    reference ||--o{ evidence_reference : "linked"
+    entity_evidence ||--o{ evidence_reference : "cites"
+    membership ||--o{ evidence_reference : "cites"
+    interaction_evidence ||--o{ evidence_reference : "cites"
 
-%% Relationships
+---
 
-entity ||--o{ entity_identifier : "has identifiers"
-entity_identifier }o--|| cv_term : "type"
-entity_identifier }o--|| provenance : "has provenance"
-
-entity ||--o{ membership : "has members"
-membership }o--|| entity : "member entity"
-membership }o--|| annotation_record : "has annotations"
-
-entity ||--o{ interaction : "participates in"
-
-interaction ||--o{ interaction_evidence : "supported by"
-interaction_evidence }o--|| provenance : "has provenance"
-
-entity ||--o{ entity_annotation_record : "has annotations"
-entity_annotation_record }o--|| annotation_record : ""
-
-annotation_record ||--o{ annotation : "contains"
-annotation_record }o--|| provenance : "has provenance"
-
-provenance }o--|| source : "source"
-provenance }o--o| source : "primary source"
-provenance }o--o| reference : "cites"
-
-cv_namespace ||--o{ cv_term : "has terms"
-annotation }o--|| cv_term : "typed by"
-annotation }o--|| cv_term : "qualifier"
-membership }o--|| cv_term : "role"
-entity }o--|| cv_term : "typed by"
-interaction_evidence }o--|| cv_term : "type"
-interaction_evidence }o--|| cv_term : "causal mechanism"
-interaction_evidence }o--|| cv_term : "causal statement"
-interaction_evidence }o--|| cv_term : "direction"
-interaction_evidence }o--|| cv_term : "sign"
-
-%% Evidence-level annotations
-interaction_evidence }o--|| annotation_record : "has annotation"
-interaction_evidence }o--|| annotation_record : "entity A context"
-interaction_evidence }o--|| annotation_record : "entity B context"
-
-reference }o--|| cv_term : "type"
-
-entity ||--|| protein : "protein details"
-entity ||--|| compound : "compound details"
-entity ||--|| reaction : "reaction details"
+- `entity.id` values come directly from the identifier clustering step; a dedicated entity dimension table is not materialised yet.
+- All former namespace/name pairs now resolve to integer foreign keys referencing `cv_term.id`.
+- `entity_evidence.accession` captures the primary accession reported for that entity by the source.
+- The compound table is optional and only populated when RDKit is available during the gold build.
+- `evidence_reference` allows a reference to be associated with any evidence record; only one of the three evidence foreign keys is populated per row.
+- `entity_identifier` now carries a `source_id` and `identifier_kind` (e.g. `source_accession`, `cross_reference`) so the build pipeline can distinguish cluster-safe identifiers from reported cross references.
+- TODO: ensure the clustering step and downstream loaders treat only cluster-safe identifier kinds as eligible for entity merges. -> initially only source accessions and standard inchi. but be careful, we dont deduplicate entity evidence.

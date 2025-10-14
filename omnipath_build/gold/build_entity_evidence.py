@@ -17,8 +17,6 @@ Usage:
 import polars as pl
 from pathlib import Path
 from glob import glob
-import argparse
-import sys
 
 __all__ = [
     'build_entity_evidence',
