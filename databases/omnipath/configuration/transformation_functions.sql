@@ -190,6 +190,58 @@ CREATE OR REPLACE MACRO build_ramp_annotations(classes) AS (
     )
 );
 
+CREATE OR REPLACE MACRO build_cross_references(
+    chebi_id,
+    pubchem_cid,
+    kegg_id,
+    drugbank_id,
+    cas_number,
+    lipidmaps_id,
+    swisslipids_id,
+    metanetx_id
+) AS (
+    SELECT CASE
+        WHEN len(xref_list) = 0 THEN NULL
+        ELSE to_json(xref_list)
+    END
+    FROM (
+        SELECT list_filter([
+            CASE
+                WHEN normalize_chebi_id(chebi_id) IS NOT NULL
+                    THEN struct_pack(type := 'chebi', value := normalize_chebi_id(chebi_id))
+            END,
+            CASE
+                WHEN normalize_pubchem_cid(pubchem_cid) IS NOT NULL
+                    THEN struct_pack(type := 'pubchem_cid', value := normalize_pubchem_cid(pubchem_cid))
+            END,
+            CASE
+                WHEN normalize_kegg_id(kegg_id) IS NOT NULL
+                    THEN struct_pack(type := 'kegg_compound', value := normalize_kegg_id(kegg_id))
+            END,
+            CASE
+                WHEN normalize_drugbank_id(drugbank_id) IS NOT NULL
+                    THEN struct_pack(type := 'drugbank', value := normalize_drugbank_id(drugbank_id))
+            END,
+            CASE
+                WHEN normalize_cas_number(cas_number) IS NOT NULL
+                    THEN struct_pack(type := 'cas', value := normalize_cas_number(cas_number))
+            END,
+            CASE
+                WHEN normalize_lipidmaps_id(lipidmaps_id) IS NOT NULL
+                    THEN struct_pack(type := 'lipidmaps', value := normalize_lipidmaps_id(lipidmaps_id))
+            END,
+            CASE
+                WHEN normalize_swisslipids_id(swisslipids_id) IS NOT NULL
+                    THEN struct_pack(type := 'swisslipids', value := normalize_swisslipids_id(swisslipids_id))
+            END,
+            CASE
+                WHEN normalize_metanetx_id(metanetx_id) IS NOT NULL
+                    THEN struct_pack(type := 'metanetx', value := normalize_metanetx_id(metanetx_id))
+            END
+        ], x -> x IS NOT NULL) AS xref_list
+    )
+);
+
 CREATE OR REPLACE MACRO build_swisslipids_annotations(level, lipid_class, parent, components, pmids, charge) AS (
     SELECT CASE
         WHEN len(annotation_list) = 0 THEN NULL

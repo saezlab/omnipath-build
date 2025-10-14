@@ -13,31 +13,22 @@ functions:
             target_table: silver_entities
             field_mapping:
             -   source: _constant
-                target: entity_type
-                value: compound
+                target: source
+                value: HMDB
+            -   source: accession
+                target: accession
+                transform: normalize_hmdb_id
             -   source: inchikey
                 target: inchikey
                 transform: normalize_inchikey_value
+            -   source: smiles
+                target: smiles
             -   source: inchi
                 target: inchi
                 transform: normalize_inchi_value
-            -   source: accession
-                target: hmdb_id
-                transform: normalize_hmdb_id
-            -   source: chebi_id
-                target: chebi_id
-                transform: normalize_chebi_id
-            -   source: smiles
-                target: smiles
-            -   source: pubchem_compound_id
-                target: pubchem_cid
-                transform: normalize_pubchem_cid
-            -   source: kegg_id
-                target: kegg_id
-                transform: normalize_kegg_id
-            -   source: drugbank_id
-                target: drugbank_id
-                transform: normalize_drugbank_id
-            -   source: cas_registry_number
-                target: cas_number
-                transform: normalize_cas_number
+            -   source: [chebi_id, pubchem_compound_id, kegg_id, drugbank_id, cas_registry_number, null, null, null]
+                target: cross_references
+                transform: build_cross_references
+            -   source: _constant
+                target: entity_type
+                value: compound

@@ -10,25 +10,25 @@ functions:
             target_table: silver_entities
             field_mapping:
             -   source: _constant
-                target: entity_type
-                value: compound
+                target: source
+                value: LipidMaps
+            -   source: id
+                target: accession
+                transform: normalize_lipidmaps_id
             -   source: inchikey
                 target: inchikey
                 transform: normalize_inchikey_value
-            -   source: id
-                target: lipidmaps_id
-                transform: normalize_lipidmaps_id
-            -   source: chebi
-                target: chebi_id
-                transform: normalize_chebi_id
-            -   source: pubchem
-                target: pubchem_cid
-                transform: normalize_pubchem_cid
+            -   source: smiles
+                target: smiles
             -   source: inchi
                 target: inchi
                 transform: normalize_inchi_value
-            -   source: smiles
-                target: smiles
+            -   source: [chebi, pubchem, null, null, null, null, null, null]
+                target: cross_references
+                transform: build_cross_references
+            -   source: _constant
+                target: entity_type
+                value: compound
             -   source: name
                 target: name
             -   source: synonyms
