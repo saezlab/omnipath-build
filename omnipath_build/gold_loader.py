@@ -2,27 +2,22 @@
 """
 Gold Loader - Build gold tables from silver tables.
 
-This script orchestrates the entire gold table building process in 3 phases:
-1. Phase 1: Cross-source processing (entity clustering, cv_terms, sources, references, interactions)
-2. Phase 2: Evidence extraction (provenance, entity_evidence, membership, interaction_evidence)
-   - Automatically combines data from all sources using pl.concat()
-3. Phase 3: Compound properties (optional, requires RDKit)
-   - Computes molecular properties from SMILES identifiers
+This module orchestrates the entire gold table building process in three
+phases:
+1. Phase 1: Cross-source processing (entity clustering, cv_terms, sources,
+   references, interactions)
+2. Phase 2: Evidence extraction (provenance, entity_evidence, membership,
+   interaction_evidence) - Automatically combines data from all sources using
+   ``pl.concat``.
+3. Phase 3: Compound properties (optional, requires RDKit) - Computes
+   molecular properties from SMILES identifiers.
 
-All gold tables are final and ready to use after Phase 2.
-Phase 3 is optional and adds computed compound properties.
-
-Usage:
-    python gold_loader.py --data-root /path/to/data --output-dir /path/to/output
-    python gold_loader.py --phase 1  # Run only Phase 1
-    python gold_loader.py --phase 2  # Run only Phase 2
-    python gold_loader.py --phase 3  # Run only Phase 3 (requires Phase 1 output)
+All gold tables are final and ready to use after Phase 2. Phase 3 is optional
+and adds computed compound properties.
 """
 
 import polars as pl
 from pathlib import Path
-import argparse
-import sys
 from typing import Optional
 
 # Import our modular functions
@@ -48,7 +43,6 @@ __all__ = [
     'build_provenance_table',
     'build_references_table',
     'build_sources_table',
-    'main',
     'run_gold_loader',
 ]
 
@@ -445,75 +439,3 @@ def run_gold_loader(
     print("║" + " " * 25 + "PIPELINE COMPLETE" + " " * 26 + "║")
     print("╚" + "=" * 68 + "╝")
     print()
-
-
-def main():
-    """Command-line interface."""
-    parser = argparse.ArgumentParser(
-        description="Build gold tables from silver tables",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-    # Run full pipeline (all phases)
-    python gold_loader.py --data-root databases/omnipath/data --output-dir output/gold
-
-    # Run only Phase 1 (cross-source processing)
-    python gold_loader.py --data-root databases/omnipath/data --output-dir output/gold --phase 1
-
-    # Run only Phase 2 (evidence extraction - requires Phase 1 output)
-    python gold_loader.py --data-root databases/omnipath/data --output-dir output/gold --phase 2
-
-    # Run only Phase 3 (compound properties - requires Phase 1 output and RDKit)
-    python gold_loader.py --data-root databases/omnipath/data --output-dir output/gold --phase 3
-
-    # Run Phase 3 with a limit (useful for testing)
-    python gold_loader.py --phase 3 --compound-limit 1000
-        """
-    )
-
-    parser.add_argument(
-        '--data-root',
-        type=Path,
-        default=Path("databases/omnipath/data"),
-        help='Path to data directory containing silver files (default: databases/omnipath/data)'
-    )
-
-    parser.add_argument(
-        '--output-dir',
-        type=Path,
-        default=Path("output/gold"),
-        help='Path to output directory for gold tables (default: output/gold)'
-    )
-
-    parser.add_argument(
-        '--phase',
-        type=str,
-        choices=['1', '2', '3'],
-        help='Run only a specific phase (1=cross-source, 2=per-source evidence, 3=compound properties)'
-    )
-
-    parser.add_argument(
-        '--compound-limit',
-        type=int,
-        help='Limit number of compounds to process in Phase 3 (default: no limit)'
-    )
-
-    args = parser.parse_args()
-
-    # Validate data root exists
-    if not args.data_root.exists():
-        print(f"Error: Data root not found: {args.data_root}", file=sys.stderr)
-        sys.exit(1)
-
-    # Run the pipeline
-    try:
-        run_gold_loader(args.data_root, args.output_dir, args.phase, args.compound_limit)
-    except Exception as e:
-        print(f"\nError: {e}", file=sys.stderr)
-        import traceback
-        traceback.print_exc()
-        sys.exit(1)
-
-
-if __name__ == "__main__":
-    main()
