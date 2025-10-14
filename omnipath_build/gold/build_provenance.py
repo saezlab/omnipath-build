@@ -32,7 +32,7 @@ def build_provenance(data_root: Path, output_dir: Path) -> pl.DataFrame:
     Build provenance table from silver data.
 
     This function:
-    1. Reads silver_entities for entity provenance (source_database, no reference)
+    1. Reads silver_entities for entity provenance (source, no reference)
     2. Reads silver_interactions for interaction provenance (source, primary_source, reference)
     3. Combines and deduplicates
     4. Maps to source_id and reference_id using the gold tables
@@ -73,8 +73,8 @@ def build_provenance(data_root: Path, output_dir: Path) -> pl.DataFrame:
 
         for file in entity_files:
             df = pl.scan_parquet(file).select([
-                pl.col("source_database").alias("source_name"),
-                pl.col("source_database").alias("primary_source_name"),
+                pl.col("source").alias("source_name"),
+                pl.col("source").alias("primary_source_name"),
                 pl.lit(None, dtype=pl.Utf8).alias("reference_value")
             ]).unique().collect()
 

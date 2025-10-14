@@ -32,7 +32,7 @@ functions:
             -   source: name
                 target: name
             -   source: synonyms
-                target: name_variants
+                target: synonyms
                 transform: split_string_to_json
                 transform_args:
                     delimiter: '; '

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Build membership table from silver_entities complex_members.
+Build membership table from silver_entities members.
 
 The membership table stores complex member relationships.
 Each row represents a member of a complex (parent-child relationship).
@@ -30,11 +30,11 @@ __all__ = [
 
 def build_membership(data_root: Path, output_dir: Path) -> pl.DataFrame:
     """
-    Build membership table from silver_entities complex_members.
+    Build membership table from silver_entities members.
 
     This function:
     1. Reads silver_entities files
-    2. Extracts complex_members JSON field
+    2. Extracts members JSON field
     3. Maps parent and member identifiers to entity_id
     4. Maps role to role_id (CV term)
     5. Maps (source, reference) to provenance_id
@@ -96,7 +96,7 @@ def build_membership(data_root: Path, output_dir: Path) -> pl.DataFrame:
 
     print(f"  Loaded {len(provenance)} provenance records")
 
-    print("\nStep 2: Collecting membership from silver_entities complex_members...")
+    print("\nStep 2: Collecting membership from silver_entities members...")
     # Pattern for entity files
     entity_pattern = str(data_root / "*" / "*" / "silver" / "silver_entities.parquet")
     entity_files = glob(entity_pattern)
@@ -120,23 +120,23 @@ def build_membership(data_root: Path, output_dir: Path) -> pl.DataFrame:
     for file in entity_files:
         print(f"  Processing {Path(file).parent.parent.name}...")
 
-        # Read entities with complex_members
+        # Read entities with members
         df = pl.read_parquet(file)
 
-        # Check if complex_members column exists
-        if 'complex_members' not in df.columns:
-            print(f"    No complex_members column")
+        # Check if members column exists
+        if 'members' not in df.columns:
+            print(f"    No members column")
             continue
 
-        # Filter for entities with complex_members
+        # Filter for entities with members
         df = df.filter(
-            pl.col("complex_members").is_not_null() &
-            (pl.col("complex_members").cast(pl.Utf8) != "null") &
-            (pl.col("complex_members").cast(pl.Utf8) != "[]")
+            pl.col("members").is_not_null() &
+            (pl.col("members").cast(pl.Utf8) != "null") &
+            (pl.col("members").cast(pl.Utf8) != "[]")
         )
 
         if len(df) == 0:
-            print(f"    No entities with complex_members")
+            print(f"    No entities with members")
             continue
 
         # Create identifier columns for mapping (we'll use the first available identifier as parent)
@@ -144,7 +144,7 @@ def build_membership(data_root: Path, output_dir: Path) -> pl.DataFrame:
                           'hmdb_id', 'kegg_id', 'metanetx_id', 'ramp_id',
                           'swisslipids_id', 'drugbank_id', 'cas_number']
 
-        # Parse complex_members JSON and create membership records
+        # Parse members JSON and create membership records
         membership_records = []
         for row in df.iter_rows(named=True):
             # Find the parent identifier
@@ -159,9 +159,9 @@ def build_membership(data_root: Path, output_dir: Path) -> pl.DataFrame:
             if parent_identifier is None:
                 continue
 
-            # Parse complex_members JSON
+            # Parse members JSON
             try:
-                members_json = row['complex_members']
+                members_json = row['members']
                 if isinstance(members_json, str):
                     members = json.loads(members_json)
                 elif isinstance(members_json, bytes):
@@ -192,7 +192,7 @@ def build_membership(data_root: Path, output_dir: Path) -> pl.DataFrame:
                         'member_identifier_type': str(member_id_type),
                         'role_name': str(role) if role else 'member',
                         'stoichiometry': float(stoichiometry) if stoichiometry is not None else None,
-                        'source_name': row['source_database']
+                        'source_name': row['source']
                     })
 
             except (json.JSONDecodeError, TypeError, AttributeError) as e:

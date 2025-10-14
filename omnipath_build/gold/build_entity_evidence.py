@@ -135,7 +135,7 @@ def build_entity_evidence(data_root: Path, output_dir: Path) -> pl.DataFrame:
             evidence_records.append({
                 'identifier': identifier,
                 'identifier_type_name': identifier_type,
-                'source_name': row['source_database'],
+                'source_name': row['source'],
                 'annotations': row['annotations']
             })
 

@@ -1,38 +1,27 @@
 silver_entities:
   # Identifiers (cleaned)
+    source: VARCHAR(100)
+    accession: VARCHAR(255)          # Unique within source
     inchikey: VARCHAR(27)             # Primary structural identifier when available
     smiles: TEXT
     inchi: TEXT
-    hmdb_id: VARCHAR(32)
-    chebi_id: VARCHAR(32)
-    pubchem_cid: VARCHAR(32)
-    kegg_id: VARCHAR(32)
-    drugbank_id: VARCHAR(32)
-    cas_number: VARCHAR(32)
-    lipidmaps_id: VARCHAR(32)
-    swisslipids_id: VARCHAR(32)
-    metanetx_id: VARCHAR(32)
-    ramp_id: VARCHAR(64)
-    ec_number: VARCHAR(64)            # for reactions
-    other_identifiers: JSON           # {"source": ["value1", "value2"]}
 
+    cross_references: JSON         # "identifiers": [ {"type": "chebi", "value": "CHEBI:12345"},{"type": "kegg_compound", "value": "C00001"}, {"type": "kegg_compound", "value": "C00002"}]
   # Entity type
     entity_type: VARCHAR(50)          # 'protein', 'gene', 'compound',
   # Names (cleaned)
     name: TEXT
-    name_variants: JSON               # ["synonym1", "synonym2"]
+    synonyms: JSON               # ["synonym1", "synonym2"]
 
   # Complex/membership info (as provided by source)
-    is_complex: BOOLEAN
-    complex_members: JSON             # [{"member_id": "...", "member_id_type": "...", "stoichiometry": 2, "role": "..."}]
-    parent_complex_ids: JSON          # IDs of complexes this belongs to
+    members: JSON             # [{"member_id": "...", "member_id_type": "...", "stoichiometry": 2, "role": "..."}]
 
   # Annotations (as provided by source)
     annotations: JSON                 # [{"term": "...", "value": "...", "units": "..."}]
+    references: JSON                 # [12345678, 23456789] (PMIDs e.g.)
 
-  # Metadata
-    source_database: VARCHAR(100)
-    primary_source_database: VARCHAR(100)
+  # Metadata (if provided by meta database)
+    secondary_source: VARCHAR(100)
 
 
 ## 2. silver_interactions
@@ -67,7 +56,7 @@ silver_interactions:
     reference_value: TEXT              # PMID, DOI, etc. (normalized format)
 
   # Metadata
-    source_database: VARCHAR(100)
+    source: VARCHAR(100)
 
 
 ## 3. silver_cv_terms
@@ -88,4 +77,4 @@ silver_cv_terms:
     term_alt_ids: JSON
 
   # Metadata
-    source_database: VARCHAR(100)
+    source: VARCHAR(100)

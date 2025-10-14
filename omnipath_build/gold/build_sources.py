@@ -24,7 +24,7 @@ def build_sources(data_root: Path, output_dir: Path) -> pl.DataFrame:
     """
     Build sources table from all silver_entities files.
 
-    Aggregates unique source_database values from all silver_entities files
+    Aggregates unique source values from all silver_entities files
     and creates a sources table with name, url, and description columns.
 
     Args:
@@ -50,9 +50,9 @@ def build_sources(data_root: Path, output_dir: Path) -> pl.DataFrame:
     for file_path in parquet_files:
         df = pl.scan_parquet(file_path)
 
-        # Extract unique source_database values from this file
+        # Extract unique source values from this file
         sources = df.select([
-            pl.col("source_database").alias("name")
+            pl.col("source").alias("name")
         ]).unique().collect()
 
         all_sources.append(sources)

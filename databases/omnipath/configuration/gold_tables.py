@@ -51,9 +51,9 @@ ENTITY_IDENTIFIER_UNION_SELECTS.append(
                 'OmniPath' AS identifier_type_namespace_name,
                 'synonym' AS identifier_type_name
             FROM silver_entities,
-                 unnest(json_extract(name_variants, '$[*]')) AS synonym_json
-            WHERE name_variants IS NOT NULL
-              AND name_variants != '[]'
+                 unnest(json_extract(synonyms, '$[*]')) AS synonym_json
+            WHERE synonyms IS NOT NULL
+              AND synonyms != '[]'
               AND json_extract_string(synonym_json.unnest, '$') IS NOT NULL
               AND dedup_identifier IS NOT NULL
               AND dedup_identifier_type IS NOT NULL"""
@@ -66,7 +66,7 @@ ENTITY_IDENTIFIER_PROVENANCE_UNION_SELECTS = [
                 {column} AS identifier,
                 'OmniPath' AS identifier_type_namespace_name,
                 {label} AS identifier_type_name,
-                source_database AS source_name,
+                source AS source_name,
                 NULL::VARCHAR AS reference_value
             FROM silver_entities
             WHERE {column} IS NOT NULL"""
@@ -78,12 +78,12 @@ ENTITY_IDENTIFIER_PROVENANCE_UNION_SELECTS.append(
                 json_extract_string(synonym_json.unnest, '$') AS identifier,
                 'OmniPath' AS identifier_type_namespace_name,
                 'synonym' AS identifier_type_name,
-                source_database AS source_name,
+                source AS source_name,
                 NULL::VARCHAR AS reference_value
             FROM silver_entities,
-                 unnest(json_extract(name_variants, '$[*]')) AS synonym_json
-            WHERE name_variants IS NOT NULL
-              AND name_variants != '[]'
+                 unnest(json_extract(synonyms, '$[*]')) AS synonym_json
+            WHERE synonyms IS NOT NULL
+              AND synonyms != '[]'
               AND json_extract_string(synonym_json.unnest, '$') IS NOT NULL"""
 )
 
@@ -421,7 +421,7 @@ silver_gold_map = {
     'source': {
         'source_table': 'silver_entities',
         'select': '''SELECT DISTINCT
-            source_database as name,
+            source as name,
             NULL as url,
             NULL as description
         FROM silver_entities'''
@@ -452,8 +452,8 @@ silver_gold_map = {
         'source_table': 'silver_entities',
         'target_gold_table': 'provenance',
         'select': '''SELECT DISTINCT
-            source_database as source_name,
-            source_database as primary_source_name,
+            source as source_name,
+            source as primary_source_name,
             NULL::VARCHAR as reference_value
         FROM silver_entities'''
     },
@@ -486,7 +486,7 @@ silver_gold_map = {
             SELECT DISTINCT
                 dedup_identifier AS entity_deduplication_identifier,
                 dedup_identifier_type AS entity_deduplication_identifier_type,
-                source_database AS source_name,
+                source AS source_name,
                 NULL::VARCHAR AS reference_value,
                 annotations
             FROM silver_entities
@@ -507,12 +507,12 @@ silver_gold_map = {
                 'OmniPath' as role_namespace_name,
                 COALESCE(CAST(json_extract_string(member, 'role') AS VARCHAR), 'member') as role_name,
                 CAST(json_extract_string(member, 'stoichiometry') AS FLOAT) as stoichiometry,
-                source_database as source_name,
+                source as source_name,
                 NULL::VARCHAR as reference_value
             FROM silver_entities,
-                 unnest(json_extract(complex_members, '$[*]')) as member
-            WHERE complex_members IS NOT NULL
-              AND complex_members != '[]'
+                 unnest(json_extract(members, '$[*]')) as member
+            WHERE members IS NOT NULL
+              AND members != '[]'
               AND dedup_identifier IS NOT NULL
               AND dedup_identifier_type IS NOT NULL
               AND CAST(json_extract_string(member, 'member_id') AS VARCHAR) IS NOT NULL

@@ -59,7 +59,7 @@ def build_entity_identifier_table(data_root: Path, output_dir: Path) -> pl.DataF
 
     This clusters all identifiers from:
     - silver_entities (identifier columns)
-    - silver_entities.complex_members (JSON)
+    - silver_entities.members (JSON)
     - silver_interactions (entity_a/b identifiers)
 
     Returns:

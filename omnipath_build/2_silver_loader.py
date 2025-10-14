@@ -253,8 +253,8 @@ class SilverLoader:
             # Determine target table name
             target_table = processing.get('target_table', function_name)
 
-            # Add source_database column
-            select_expressions.append(f"    '{self.source_module}' AS \"source_database\"")
+            # Add source column
+            select_expressions.append(f"    '{self.source_module}' AS \"source\"")
 
             # Fill in any missing columns defined in silver schema with NULLs
             expected_columns = set(self.expected_columns.get(target_table, []))
@@ -263,7 +263,7 @@ class SilverLoader:
                 for mapping in field_mappings
                 if isinstance(mapping, dict) and mapping.get('target')
             }
-            mapped_columns.add('source_database')
+            mapped_columns.add('source')
 
             missing_columns = expected_columns - mapped_columns
             for column in sorted(missing_columns):

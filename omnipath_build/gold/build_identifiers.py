@@ -68,7 +68,7 @@ class UnionFind:
 
 def cluster_identifiers(data_root: Path):
     """
-    Cluster identifiers from silver_entities, complex_members, and silver_interactions files.
+    Cluster identifiers from silver_entities, members, and silver_interactions files.
 
     Args:
         data_root: Path to data directory containing silver files
@@ -102,15 +102,15 @@ def cluster_identifiers(data_root: Path):
 
     for file in parquet_files:
         df = pl.read_parquet(file)
-        # Select and cast identifier columns to strings, plus complex_members JSON
+        # Select and cast identifier columns to strings, plus members JSON
         select_exprs = []
         for col in identifier_cols:
             if col in df.columns:
                 select_exprs.append(pl.col(col).cast(pl.String).alias(col))
 
-        # Also include complex_members if they exist (name will be added later)
-        if 'complex_members' in df.columns:
-            select_exprs.append(pl.col('complex_members'))
+        # Also include members if they exist (name will be added later)
+        if 'members' in df.columns:
+            select_exprs.append(pl.col('members'))
 
         if select_exprs:
             df = df.select(select_exprs)
@@ -169,10 +169,10 @@ def cluster_identifiers(data_root: Path):
             # Just register single identifiers
             uf.find(identifiers[0])
 
-        # Process complex_members JSON if present
-        if row.get('complex_members') is not None:
+        # Process members JSON if present
+        if row.get('members') is not None:
             try:
-                members_json = row['complex_members']
+                members_json = row['members']
                 # Handle both string JSON and already-parsed objects
                 if isinstance(members_json, str):
                     members = json.loads(members_json)

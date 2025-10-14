@@ -106,7 +106,7 @@ class TestRealDataIntegration:
             'inchikey',
             'lipidmaps_id',
             'chebi_id',
-            'source_database'
+            'source'
         ]
         for col in expected_cols:
             assert col in columns, f"Expected column '{col}' not found in silver data"
@@ -168,9 +168,9 @@ class TestRealDataIntegration:
         ).fetchone()[0]
         assert dedup_type_counts == 0, "Dedup identifier type should be 'inchikey'"
 
-        # Check source_database is set
+        # Check source is set
         result = conn.execute(
-            f"SELECT DISTINCT source_database FROM '{silver_file}'"
+            f"SELECT DISTINCT source FROM '{silver_file}'"
         ).fetchall()
 
         assert result[0][0] == 'lipidmaps', "Source database should be 'lipidmaps'"

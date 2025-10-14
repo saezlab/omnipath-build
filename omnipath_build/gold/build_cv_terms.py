@@ -59,7 +59,7 @@ def build_cv_terms(data_root: Path, output_dir: Path) -> Tuple[pl.DataFrame, pl.
                 'term_name',
                 'namespace',
                 'term_definition',
-                'source_database'
+                'source'
             ])
             # Convert to records for easier handling
             for row in df.iter_rows(named=True):

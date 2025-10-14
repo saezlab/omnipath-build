@@ -166,7 +166,7 @@ The gold loader pipeline consists of **2 phases**:
 - **Status**: ✅ Working and tested
 - **Data sources processed**:
   - `silver_entities.parquet` - All identifier columns (inchikey, hmdb_id, chebi_id, etc.)
-  - `silver_entities.complex_members` - JSON field with member identifiers
+  - `silver_entities.members` - JSON field with member identifiers
   - `silver_interactions.parquet` - entity_a/b identifier pairs (when files exist)
 - **Algorithm**: Union-Find with path compression and union by rank
 - **Output**: `output/gold/entity_identifier.parquet`
@@ -197,9 +197,9 @@ The gold loader pipeline consists of **2 phases**:
 - **Status**: ✅ Working and tested
 - **Modular**: Standalone module that can run independently
 - **Data sources processed**:
-  - `silver_entities.source_database` - All silver_entities files
+  - `silver_entities.source` - All silver_entities files
 - **Approach**:
-  - Extracts unique source_database values from all silver_entities files
+  - Extracts unique source values from all silver_entities files
   - Creates source records with id, name, url (null), description (null)
   - Deduplicates and sorts alphabetically
 - **Output**: `output/gold/source.parquet`
@@ -250,7 +250,7 @@ All Phase 1 cross-source processing steps are implemented and tested:
 - **Implementation**: [build_provenance.py](build_provenance.py) + [gold_loader.py](gold_loader.py)
 - **Status**: ✅ Working and tested
 - **Data sources processed**:
-  - `silver_entities.source_database` - Entity provenance (no references)
+  - `silver_entities.source` - Entity provenance (no references)
   - `silver_interactions.source + reference_value` - Interaction provenance (when available)
 - **Approach**:
   - Collects unique (source_name, primary_source_name, reference_value) tuples
@@ -281,9 +281,9 @@ All Phase 1 cross-source processing steps are implemented and tested:
 - **Implementation**: [build_membership.py](build_membership.py) + [gold_loader.py](gold_loader.py)
 - **Status**: ✅ Working and tested
 - **Data sources processed**:
-  - `silver_entities.complex_members` - JSON field with complex member relationships
+  - `silver_entities.members` - JSON field with complex member relationships
 - **Approach**:
-  - Parses complex_members JSON arrays
+  - Parses members JSON arrays
   - Maps parent and member identifiers to entity_id
   - Maps role names to role_id (CV term)
   - Maps source to provenance_id
@@ -362,7 +362,7 @@ databases/omnipath/data/
 See [databases/omnipath/configuration/silver_tables.yaml](databases/omnipath/configuration/silver_tables.yaml) for complete schemas.
 
 **Key fields for identifier clustering**:
-- `silver_entities`: Individual identifier columns + `complex_members` JSON
+- `silver_entities`: Individual identifier columns + `members` JSON
 - `silver_interactions`: `entity_a_identifier`, `entity_a_identifier_type`, `entity_b_identifier`, `entity_b_identifier_type`
 
 ### Test Output
@@ -461,11 +461,11 @@ python gold_loader.py --phase 2    # Run only Phase 2
     - Filters non-empty annotations
     - Generates entity_evidence.parquet with 993K records (92% entity coverage)
   - Created [build_membership.py](build_membership.py) - Complex member relationships builder
-    - Parses complex_members JSON arrays from silver_entities
+    - Parses members JSON arrays from silver_entities
     - Maps parent and member identifiers to entity_id
     - Maps role names to role_id (CV terms)
     - Handles stoichiometry values
-    - Gracefully handles missing complex_members (0 records in current dataset)
+    - Gracefully handles missing members (0 records in current dataset)
   - Created [build_interaction_evidence.py](build_interaction_evidence.py) - Interaction evidence extractor
     - Extracts all interaction evidence fields from silver_interactions
     - Maps entity identifiers to entity_id and interaction_id
@@ -503,7 +503,7 @@ python gold_loader.py --phase 2    # Run only Phase 2
     - Covers 909K unique entities (92% of all entities)
     - Distribution: swisslipids (779K), ramp (166K), lipidmaps (48K)
   - Created [build_membership.py](build_membership.py) - Membership builder
-    - Parses complex_members JSON arrays
+    - Parses members JSON arrays
     - Maps parent/member identifiers to entity_id
     - Maps role names to CV term IDs
     - **Automatically combines all sources** using `pl.concat()`
@@ -531,7 +531,7 @@ python gold_loader.py --phase 2    # Run only Phase 2
 ### 2025-10-10 - Session 3
 - ✅ **Completed Phase 1, Steps 3-5: Sources, References, Interactions**
   - Created [build_sources.py](build_sources.py) - Modular sources builder
-    - Extracts unique source_database values from all silver_entities files
+    - Extracts unique source values from all silver_entities files
     - Generates source.parquet with 4 sources
   - Created [build_references.py](build_references.py) - Modular references builder
     - Extracts unique reference pairs from silver_interactions files
@@ -563,7 +563,7 @@ python gold_loader.py --phase 2    # Run only Phase 2
 ### 2025-10-10 - Session 2
 - ✅ **Completed Phase 1, Step 1: Entity Identifier Clustering**
   - Extended [test_identifier_clustering.py](test_identifier_clustering.py) to handle:
-    - `silver_entities.complex_members` JSON field parsing
+    - `silver_entities.members` JSON field parsing
     - `silver_interactions` entity identifier pairs (gracefully handles missing files)
   - Created [gold_loader.py](gold_loader.py) main orchestration script
     - Clean phase-based structure with TODO placeholders for remaining steps

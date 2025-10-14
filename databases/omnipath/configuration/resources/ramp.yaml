@@ -33,7 +33,7 @@ functions:
                 target: annotations
                 transform: build_ramp_annotations
             -   source: chem_data_source
-                target: primary_source_database
+                target: primary_source
             # Extract cross-reference IDs from sources column
             # Sources contains comma-separated CURIEs like: "hmdb:HMDB0000001, pubchem:441294, chebi:28624, ..."
             # Using extract_ids() to get ALL distinct IDs of each type as arrays
