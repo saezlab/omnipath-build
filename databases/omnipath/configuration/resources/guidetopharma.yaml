@@ -1,0 +1,47 @@
+# Resource Configuration for guidetopharma
+# Database: omnipath
+
+module: guidetopharma
+functions:
+    interactions:
+        description: Interactions from Guide to Pharmacology.
+        kwargs:
+            organism: human
+            endogenous:
+        processing:
+            target_table: '?'
+            field_mapping:
+            -   source: ligand
+                target: '?'
+            -   source: target
+                target: '?'
+            -   source: action
+                target: '?'
+            -   source: action_type
+                target: '?'
+            -   source: is_stimulation
+                target: '?'
+            -   source: is_inhibition
+                target: '?'
+            -   source: endogenous
+                target: '?'
+            -   source: affinity_high
+                target: '?'
+            -   source: affinity_low
+                target: '?'
+            -   source: affinity_median
+                target: '?'
+            -   source: affinity_units
+                target: '?'
+            -   source: primary_target
+                target: '?'
+            -   source: pubmed
+                target: '?'
+    ligands:
+        description: Downloads ligands from Guide2Pharma 'ligands' table.
+    protein_targets:
+        description: Downloads protein targets from Guide2Pharma 'targets_and_families' table.
+    table:
+        description: Downloads a table from Guide2Pharma.
+        kwargs:
+            name: '?'

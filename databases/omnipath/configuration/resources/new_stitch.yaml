@@ -1,0 +1,90 @@
+# Resource Configuration for new_stitch
+# Database: omnipath
+
+module: new_stitch
+functions:
+    actions:
+        description: Downloads the 'actions' file from STITCH and formats the data.
+        kwargs:
+            max_lines:
+            ncbi_tax_id: 9606
+        processing:
+            target_table: '?'
+            field_mapping:
+            -   source: source
+                target: '?'
+            -   source: target
+                target: '?'
+            -   source: directed
+                target: '?'
+            -   source: mode
+                target: '?'
+            -   source: activation
+                target: '?'
+            -   source: inhibition
+                target: '?'
+            -   source: score
+                target: '?'
+    interactions:
+        description: Merges the actions and links tables into a single interactions table
+        kwargs:
+            max_lines:
+            ncbi_tax_id: 9606
+        processing:
+            target_table: '?'
+            field_mapping:
+            -   source: source
+                target: '?'
+            -   source: target
+                target: '?'
+            -   source: directed
+                target: '?'
+            -   source: mode
+                target: '?'
+            -   source: activation
+                target: '?'
+            -   source: inhibition
+                target: '?'
+            -   source: experimental
+                target: '?'
+            -   source: prediction
+                target: '?'
+            -   source: database
+                target: '?'
+            -   source: textmining
+                target: '?'
+            -   source: combined_score
+                target: '?'
+            -   source: final_score
+                target: '?'
+    links:
+        description: Downloads the 'links' file from STITCH and formats the data.
+        kwargs:
+            max_lines:
+            ncbi_tax_id: 9606
+        processing:
+            target_table: '?'
+            field_mapping:
+            -   source: chemical_id
+                target: '?'
+            -   source: protein_id
+                target: '?'
+            -   source: experimental
+                target: '?'
+            -   source: prediction
+                target: '?'
+            -   source: database
+                target: '?'
+            -   source: textmining
+                target: '?'
+            -   source: combined_score
+                target: '?'
+            -   source: ncbi_tax_id
+                target: '?'
+            -   source: stereospecific
+                target: '?'
+    tables:
+        description: Reads a tab-separated values file from the given URL and returns its
+        kwargs:
+            url: '?'
+            max_lines:

@@ -1,0 +1,130 @@
+# Resource Configuration for bindingdb
+# Database: omnipath
+
+module: bindingdb
+functions:
+    interactions:
+        description: Yields interactions from BindingDB.
+        kwargs:
+            dataset: All
+            max_lines:
+        processing:
+            target_table: '?'
+            field_mapping:
+            -   source: ligand
+                target: '?'
+            -   source: target
+                target: '?'
+    mapping:
+        description: Reads a tab-separated values file from the given URL and returns its
+        kwargs:
+            dataset: UniProt
+    table:
+        description: Reads a tab-separated values file from the given URL and returns its
+        kwargs:
+            dataset: All
+            id_mapping: false
+            max_lines:
+        processing:
+            target_table: '?'
+            field_mapping:
+            -   source: BindingDB Reactant_set_id
+                target: '?'
+            -   source: Ligand SMILES
+                target: '?'
+            -   source: Ligand InChI
+                target: '?'
+            -   source: Ligand InChI Key
+                target: '?'
+            -   source: BindingDB MonomerID
+                target: '?'
+            -   source: BindingDB Ligand Name
+                target: '?'
+            -   source: Target Name
+                target: '?'
+            -   source: Target Source Organism According to Curator or DataSource
+                target: '?'
+            -   source: Ki (nM)
+                target: '?'
+            -   source: IC50 (nM)
+                target: '?'
+            -   source: Kd (nM)
+                target: '?'
+            -   source: EC50 (nM)
+                target: '?'
+            -   source: kon (M-1-s-1)
+                target: '?'
+            -   source: koff (s-1)
+                target: '?'
+            -   source: pH
+                target: '?'
+            -   source: Temp (C)
+                target: '?'
+            -   source: Curation/DataSource
+                target: '?'
+            -   source: Article DOI
+                target: '?'
+            -   source: BindingDB Entry DOI
+                target: '?'
+            -   source: PMID
+                target: '?'
+            -   source: PubChem AID
+                target: '?'
+            -   source: Patent Number
+                target: '?'
+            -   source: Authors
+                target: '?'
+            -   source: Institution
+                target: '?'
+            -   source: Link to Ligand in BindingDB
+                target: '?'
+            -   source: Link to Target in BindingDB
+                target: '?'
+            -   source: Link to Ligand-Target Pair in BindingDB
+                target: '?'
+            -   source: Ligand HET ID in PDB
+                target: '?'
+            -   source: PDB ID(s) for Ligand-Target Complex
+                target: '?'
+            -   source: PubChem CID
+                target: '?'
+            -   source: PubChem SID
+                target: '?'
+            -   source: ChEBI ID of Ligand
+                target: '?'
+            -   source: ChEMBL ID of Ligand
+                target: '?'
+            -   source: DrugBank ID of Ligand
+                target: '?'
+            -   source: IUPHAR_GRAC ID of Ligand
+                target: '?'
+            -   source: KEGG ID of Ligand
+                target: '?'
+            -   source: ZINC ID of Ligand
+                target: '?'
+            -   source: Number of Protein Chains in Target (>1 implies a multichain complex)
+                target: '?'
+            -   source: BindingDB Target Chain Sequence
+                target: '?'
+            -   source: PDB ID(s) of Target Chain
+                target: '?'
+            -   source: UniProt (SwissProt) Recommended Name of Target Chain
+                target: '?'
+            -   source: UniProt (SwissProt) Entry Name of Target Chain
+                target: '?'
+            -   source: UniProt (SwissProt) Primary ID of Target Chain
+                target: '?'
+            -   source: UniProt (SwissProt) Secondary ID(s) of Target Chain
+                target: '?'
+            -   source: UniProt (SwissProt) Alternative ID(s) of Target Chain
+                target: '?'
+            -   source: UniProt (TrEMBL) Submitted Name of Target Chain
+                target: '?'
+            -   source: UniProt (TrEMBL) Entry Name of Target Chain
+                target: '?'
+            -   source: UniProt (TrEMBL) Primary ID of Target Chain
+                target: '?'
+            -   source: UniProt (TrEMBL) Secondary ID(s) of Target Chain
+                target: '?'
+            -   source: UniProt (TrEMBL) Alternative ID(s) of Target Chain
+                target: '?'

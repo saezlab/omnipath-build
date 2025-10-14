@@ -1,0 +1,209 @@
+# Resource Configuration for chembl
+# Database: omnipath
+
+module: chembl
+functions:
+    activity:
+        description: Retrieves activity data from Chembl.
+        kwargs:
+            max_pages:
+        processing:
+            target_table: '?'
+            field_mapping:
+            -   source: activity_id
+                target: '?'
+            -   source: action_type
+                target: '?'
+            -   source: standard_relation
+                target: '?'
+            -   source: standard_value
+                target: '?'
+            -   source: standard_upper_value
+                target: '?'
+            -   source: standard_units
+                target: '?'
+            -   source: standard_type
+                target: '?'
+            -   source: ligand_efficiency
+                target: '?'
+            -   source: validity_comment
+                target: '?'
+            -   source: potential_duplicate
+                target: '?'
+            -   source: pchembl_value
+                target: '?'
+            -   source: source_id
+                target: '?'
+            -   source: molecule_chembl_id
+                target: '?'
+            -   source: target_chembl_id
+                target: '?'
+            -   source: target_taxa_id
+                target: '?'
+            -   source: assay_id
+                target: '?'
+            -   source: document_chembl_id
+                target: '?'
+    assay:
+        description: Retrieves assay data from ChEMBL.
+        kwargs:
+            max_pages:
+        processing:
+            target_table: '?'
+            field_mapping:
+            -   source: assay_chembl_id
+                target: '?'
+            -   source: assay_type
+                target: '?'
+            -   source: assay_type_description
+                target: '?'
+            -   source: assay_category
+                target: '?'
+            -   source: target_chembl_id
+                target: '?'
+            -   source: organism
+                target: '?'
+            -   source: tax_id
+                target: '?'
+            -   source: tissue
+                target: '?'
+            -   source: cell_type
+                target: '?'
+            -   source: subcellular_fraction
+                target: '?'
+            -   source: parameters
+                target: '?'
+            -   source: source_id
+                target: '?'
+            -   source: confidence_score
+                target: '?'
+            -   source: confidence_description
+                target: '?'
+            -   source: document_chembl_id
+                target: '?'
+            -   source: description
+                target: '?'
+    document:
+        description: Retrieves the Chembl document information.
+        kwargs:
+            max_pages:
+        processing:
+            target_table: '?'
+            field_mapping:
+            -   source: document_chembl_id
+                target: '?'
+            -   source: pubmed_id
+                target: '?'
+            -   source: patent_id
+                target: '?'
+            -   source: doc_type
+                target: '?'
+            -   source: journal
+                target: '?'
+            -   source: year
+                target: '?'
+            -   source: doi
+                target: '?'
+    indication:
+        description: Retrieves drug indications from ChEMBL.
+        kwargs:
+            max_pages:
+        processing:
+            target_table: '?'
+            field_mapping:
+            -   source: chembl_id
+                target: '?'
+            -   source: efo_id
+                target: '?'
+            -   source: efo_term
+                target: '?'
+            -   source: mesh_id
+                target: '?'
+            -   source: mesh_term
+                target: '?'
+            -   source: max_phase
+                target: '?'
+            -   source: refs
+                target: '?'
+    json_pages:
+        description: Retrieves data from ChEMBL.
+        kwargs:
+            data_type: '?'
+            max_pages:
+    mechanism:
+        description: Retrieves mechanism data from ChEMBL.
+        kwargs:
+            max_pages:
+        processing:
+            target_table: '?'
+            field_mapping:
+            -   source: action_type
+                target: '?'
+            -   source: molecule_chembl_id
+                target: '?'
+            -   source: target_chembl_id
+                target: '?'
+            -   source: mechanism_id
+                target: '?'
+            -   source: drug_rec_id
+                target: '?'
+            -   source: direct_interaction
+                target: '?'
+            -   source: variant_sequence
+                target: '?'
+            -   source: molecular_mechanism
+                target: '?'
+            -   source: mechanism_refs
+                target: '?'
+    molecule:
+        description: Retrieves molecule information from ChEMBL
+        kwargs:
+            max_pages:
+        processing:
+            target_table: '?'
+            field_mapping:
+            -   source: molecule_chembl_id
+                target: '?'
+            -   source: preferred_name
+                target: '?'
+            -   source: molecule_type
+                target: '?'
+            -   source: structure_type
+                target: '?'
+            -   source: chirality
+                target: '?'
+            -   source: biotherapeutic
+                target: '?'
+            -   source: inorganic_flag
+                target: '?'
+            -   source: natural_flag
+                target: '?'
+            -   source: polymer_flag
+                target: '?'
+            -   source: helm_notation
+                target: '?'
+            -   source: molecule_properties
+                target: '?'
+            -   source: structure
+                target: '?'
+    target:
+        description: Retrieves target data from ChEMBL.
+        kwargs:
+            max_pages:
+        processing:
+            target_table: '?'
+            field_mapping:
+            -   source: chembl_id
+                target: '?'
+            -   source: target_type
+                target: '?'
+            -   source: preferred_name
+                target: '?'
+            -   source: ncbi_taxa_id
+                target: '?'
+            -   source: organism
+                target: '?'
+            -   source: components
+                target: '?'
+            -   source: num_components
+                target: '?'
