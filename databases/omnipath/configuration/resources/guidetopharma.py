@@ -10,24 +10,28 @@ def guidetopharma_ligands():
     from pypath.inputs.guidetopharma import ligands
 
     for ligand_id, rec in ligands().items():
-        # Skip protein entities, only include compounds
-        if rec.entity_type != 'compound':
-            continue
-
         yield SilverEntity(
             source='guidetopharma',
-            entity_type='compound',
+            entity_type=rec.entity_type,
             accession=str(ligand_id),
-            inchi=rec.inchi,
-            smiles=rec.smiles,
+            inchi=getattr(rec, 'inchi', None),
+            smiles=getattr(rec, 'smiles', None),
             name=rec.name,
             identifiers=[
-                {"type": "pubchem_compound", "value": str(rec.pubchem)} if rec.pubchem else None,
-                {"type": "chembl", "value": rec.chembl} if rec.chembl else None,
+                {"type": "pubchem_compound", "value": str(rec.pubchem)} if getattr(rec, 'pubchem', None) else None,
+                {"type": "chembl", "value": rec.chembl} if getattr(rec, 'chembl', None) else None,
+                {"type": "uniprot", "value": rec.uniprot} if getattr(rec, 'uniprot', None) else None,
+                {"type": "entrez", "value": str(rec.entrez)} if getattr(rec, 'entrez', None) else None,
+                {"type": "ensembl", "value": rec.ensembl} if getattr(rec, 'ensembl', None) else None,
+                {"type": "refseq", "value": rec.refseq} if getattr(rec, 'refseq', None) else None,
+                {"type": "refseqp", "value": rec.refseqp} if getattr(rec, 'refseqp', None) else None,
             ],
             annotations=[
-                {"term": "iupac_name", "value": rec.iupac} if rec.iupac else None,
-                {"term": "subtype", "value": rec.subtype} if rec.subtype else None,
+                {"term": "iupac_name", "value": rec.iupac} if getattr(rec, 'iupac', None) else None,
+                {"term": "subtype", "value": rec.subtype} if getattr(rec, 'subtype', None) else None,
+                {"term": "organism", "value": str(rec.organism)} if getattr(rec, 'organism', None) else None,
+                {"term": "symbol", "value": rec.symbol} if getattr(rec, 'symbol', None) else None,
+                {"term": "family", "value": rec.family} if getattr(rec, 'family', None) else None,
             ],
         )
 
@@ -36,32 +40,28 @@ def guidetopharma_targets():
 
     for target_id, target_list in protein_targets().items():
         for rec in target_list:
-            # Only include proteins
-            if rec.entity_type != 'protein':
-                continue
-
-            # Use first available identifier as accession
-            accession = rec.uniprot or rec.ensembl or rec.entrez or rec.refseqp or rec.refseq
-
-            if not accession:
-                continue
-
             yield SilverEntity(
                 source='guidetopharma',
-                entity_type='protein',
-                accession=accession,
+                entity_type=rec.entity_type,
+                accession=str(target_id),
+                inchi=getattr(rec, 'inchi', None),
+                smiles=getattr(rec, 'smiles', None),
+                name=getattr(rec, 'name', None),
                 identifiers=[
-                    {"type": "uniprot", "value": rec.uniprot} if rec.uniprot else None,
-                    {"type": "entrez", "value": str(rec.entrez)} if rec.entrez else None,
-                    {"type": "ensembl", "value": rec.ensembl} if rec.ensembl else None,
-                    {"type": "refseq", "value": rec.refseq} if rec.refseq else None,
-                    {"type": "refseqp", "value": rec.refseqp} if rec.refseqp else None,
+                    {"type": "uniprot", "value": rec.uniprot} if getattr(rec, 'uniprot', None) else None,
+                    {"type": "entrez", "value": str(rec.entrez)} if getattr(rec, 'entrez', None) else None,
+                    {"type": "ensembl", "value": rec.ensembl} if getattr(rec, 'ensembl', None) else None,
+                    {"type": "refseq", "value": rec.refseq} if getattr(rec, 'refseq', None) else None,
+                    {"type": "refseqp", "value": rec.refseqp} if getattr(rec, 'refseqp', None) else None,
+                    {"type": "pubchem_compound", "value": str(rec.pubchem)} if getattr(rec, 'pubchem', None) else None,
+                    {"type": "chembl", "value": rec.chembl} if getattr(rec, 'chembl', None) else None,
                 ],
                 annotations=[
-                    {"term": "organism", "value": str(rec.organism)} if rec.organism else None,
-                    {"term": "symbol", "value": rec.symbol} if rec.symbol else None,
-                    {"term": "family", "value": rec.family} if rec.family else None,
-                    {"term": "target_type", "value": rec.target_type} if rec.target_type else None,
+                    {"term": "organism", "value": str(rec.organism)} if getattr(rec, 'organism', None) else None,
+                    {"term": "symbol", "value": rec.symbol} if getattr(rec, 'symbol', None) else None,
+                    {"term": "family", "value": rec.family} if getattr(rec, 'family', None) else None,
+                    {"term": "target_type", "value": rec.target_type} if getattr(rec, 'target_type', None) else None,
+                    {"term": "iupac_name", "value": rec.iupac} if getattr(rec, 'iupac', None) else None,
                 ],
             )
 
@@ -69,38 +69,27 @@ def guidetopharma_interactions():
     from pypath.inputs.guidetopharma import interactions
 
     for interaction_rec in interactions():
-        # Extract ligand and target identifiers
-        ligand_id = interaction_rec.ligand.pubchem if interaction_rec.ligand.pubchem else None
-
-        # Use first available identifier for target (coalescing)
+        ligand = interaction_rec.ligand
         target = interaction_rec.target
 
-        # Handle different target types (protein vs compound)
-        if target.entity_type == 'protein':
-            target_id = target.uniprot or target.ensembl or target.entrez or target.refseqp or target.refseq
-            # Determine the identifier type based on which one we got
-            if target.uniprot:
-                target_id_type = 'uniprot'
-            elif target.ensembl:
-                target_id_type = 'ensembl'
-            elif target.entrez:
-                target_id_type = 'entrez'
-            elif target.refseqp:
-                target_id_type = 'refseqp'
-            elif target.refseq:
-                target_id_type = 'refseq'
-            else:
-                target_id_type = None
-        elif target.entity_type == 'compound':
-            target_id = target.pubchem or target.chembl
-            if target.pubchem:
-                target_id_type = 'pubchem_compound'
-            elif target.chembl:
-                target_id_type = 'chembl'
-            else:
-                target_id_type = None
-        else:
-            continue
+        # Get first available identifier for ligand
+        ligand_id = getattr(ligand, 'pubchem', None) or getattr(ligand, 'uniprot', None) or getattr(ligand, 'ensembl', None) or getattr(ligand, 'entrez', None)
+        ligand_id_type = (
+            'pubchem_compound' if getattr(ligand, 'pubchem', None) else
+            'uniprot' if getattr(ligand, 'uniprot', None) else
+            'ensembl' if getattr(ligand, 'ensembl', None) else
+            'entrez' if getattr(ligand, 'entrez', None) else None
+        )
+
+        # Get first available identifier for target
+        target_id = getattr(target, 'uniprot', None) or getattr(target, 'ensembl', None) or getattr(target, 'entrez', None) or getattr(target, 'pubchem', None) or getattr(target, 'chembl', None)
+        target_id_type = (
+            'uniprot' if getattr(target, 'uniprot', None) else
+            'ensembl' if getattr(target, 'ensembl', None) else
+            'entrez' if getattr(target, 'entrez', None) else
+            'pubchem_compound' if getattr(target, 'pubchem', None) else
+            'chembl' if getattr(target, 'chembl', None) else None
+        )
 
         if not ligand_id or not target_id:
             continue
@@ -115,8 +104,8 @@ def guidetopharma_interactions():
         yield SilverInteraction(
             source='guidetopharma',
             entity_a_identifier=str(ligand_id),
-            entity_a_identifier_type='pubchem_compound',
-            entity_b_identifier=target_id,
+            entity_a_identifier_type=ligand_id_type,
+            entity_b_identifier=str(target_id),
             entity_b_identifier_type=target_id_type,
             interaction_type=interaction_rec.action if interaction_rec.action else None,
             is_directed=True,
