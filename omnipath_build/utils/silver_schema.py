@@ -30,12 +30,13 @@ class SilverEntity(NamedTuple):
     inchi: Optional[str] = None
 
     # Optional identifiers and names
-    cross_references: Optional[List[Dict[str, str]]] = None  # [{"type": "chebi", "value": "CHEBI:12345"}, ...]
+    identifiers: Optional[List[Dict[str, str]]] = None  # [{"type": "chebi", "value": "CHEBI:12345"}, ...]
     name: Optional[str] = None
     synonyms: Optional[List[str]] = None  # ["synonym1", "synonym2"]
 
     # Optional complex/membership info (as provided by source)
     members: Optional[List[Dict[str, Any]]] = None  # [{"member_id": "...", "member_id_type": "...", "stoichiometry": 2, "role": "..."}]
+    parent_accession: Optional[str] = None  # For entities that are part of a complex
 
     # Optional annotations (as provided by source)
     annotations: Optional[List[Dict[str, Any]]] = None  # [{"term": "...", "value": "...", "units": "..."}]
@@ -59,10 +60,6 @@ class SilverInteraction(NamedTuple):
     entity_b_identifier: str
     entity_b_identifier_type: str
 
-    # Optional participant names
-    entity_a_name: Optional[str] = None
-    entity_b_name: Optional[str] = None
-
     # Optional evidence details
     interaction_type: Optional[str] = None  # 'physical association', 'phosphorylation', etc. accessions
     detection_method: Optional[str] = None
@@ -75,8 +72,6 @@ class SilverInteraction(NamedTuple):
 
     # Optional annotations
     interaction_annotations: Optional[List[Dict[str, Any]]] = None  # General interaction annotations
-    entity_a_context: Optional[List[Dict[str, Any]]] = None  # Context annotations for entity A
-    entity_b_context: Optional[List[Dict[str, Any]]] = None  # Context annotations for entity B
 
     # Optional reference
     references: Optional[List[str]] = None  # [12345678, 23456789] (PMIDs e.g.)
@@ -112,7 +107,7 @@ SILVER_ENTITY_SCHEMA = pa.schema([
     pa.field('smiles', pa.string()),
     pa.field('inchi', pa.string()),
     pa.field(
-        'cross_references',
+        'identifiers',
         pa.list_(pa.struct([
             pa.field('type', pa.string()),
             pa.field('value', pa.string()),
@@ -127,6 +122,7 @@ SILVER_ENTITY_SCHEMA = pa.schema([
             pa.field('value', pa.string()),
         ])),
     ),
+    pa.field('parent_accession', pa.string()),
     pa.field(
         'annotations',
         pa.list_(pa.struct([
@@ -145,8 +141,6 @@ SILVER_INTERACTION_SCHEMA = pa.schema([
     pa.field('entity_a_identifier_type', pa.string(), nullable=False),
     pa.field('entity_b_identifier', pa.string(), nullable=False),
     pa.field('entity_b_identifier_type', pa.string(), nullable=False),
-    pa.field('entity_a_name', pa.string()),
-    pa.field('entity_b_name', pa.string()),
     pa.field('interaction_type', pa.string()),
     pa.field('detection_method', pa.string()),
     pa.field('is_directed', pa.bool_()),
@@ -157,20 +151,6 @@ SILVER_INTERACTION_SCHEMA = pa.schema([
     pa.field('sentence', pa.string()),
     pa.field(
         'interaction_annotations',
-        pa.list_(pa.struct([
-            pa.field('key', pa.string()),
-            pa.field('value', pa.string()),
-        ])),
-    ),
-    pa.field(
-        'entity_a_context',
-        pa.list_(pa.struct([
-            pa.field('key', pa.string()),
-            pa.field('value', pa.string()),
-        ])),
-    ),
-    pa.field(
-        'entity_b_context',
         pa.list_(pa.struct([
             pa.field('key', pa.string()),
             pa.field('value', pa.string()),

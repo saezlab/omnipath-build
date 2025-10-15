@@ -6,7 +6,7 @@ from typing import Optional, List, Dict, Any
 
 __all__ = [
     'build_annotations',
-    'build_cross_references',
+    'build_identifiers',
     'clean_synonyms',
     'normalize_id',
     'normalize_inchi',
@@ -64,7 +64,7 @@ def clean_synonyms(synonyms: Optional[List[str]]) -> Optional[List[str]]:
     return cleaned if cleaned else None
 
 
-def build_cross_references(
+def build_identifiers(
     chebi: Optional[str] = None,
     pubchem_compound: Optional[str] = None,
     kegg: Optional[str] = None,

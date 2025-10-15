@@ -25,8 +25,8 @@ functions:
                 target: inchi
                 transform: normalize_inchi_value
             -   source: [chebi, null, null, null, null, lipidmaps, null, metanetx]
-                target: cross_references
-                transform: build_cross_references
+                target: identifiers
+                transform: build_identifiers
             -   source: _constant
                 target: entity_type
                 value: compound

@@ -27,8 +27,8 @@ functions:
                 target: inchi
                 transform: normalize_inchi_value
             -   source: [chebi_id, pubchem_compound_id, kegg_id, drugbank_id, cas_registry_number, null, null, null]
-                target: cross_references
-                transform: build_cross_references
+                target: identifiers
+                transform: build_identifiers
             -   source: _constant
                 target: entity_type
                 value: compound

@@ -21,7 +21,7 @@ def guidetopharma_ligands():
             inchi=rec.inchi,
             smiles=rec.smiles,
             name=rec.name,
-            cross_references=[
+            identifiers=[
                 {"type": "pubchem_compound", "value": str(rec.pubchem)} if rec.pubchem else None,
                 {"type": "chembl", "value": rec.chembl} if rec.chembl else None,
             ],
@@ -40,11 +40,18 @@ def guidetopharma_targets():
             if rec.entity_type != 'protein':
                 continue
 
+            # Use first available identifier as accession
+            accession = rec.uniprot or rec.ensembl or rec.entrez or rec.refseqp or rec.refseq
+
+            if not accession:
+                continue
+
             yield SilverEntity(
                 source='guidetopharma',
                 entity_type='protein',
-                accession=rec.uniprot,
-                cross_references=[
+                accession=accession,
+                identifiers=[
+                    {"type": "uniprot", "value": rec.uniprot} if rec.uniprot else None,
                     {"type": "entrez", "value": str(rec.entrez)} if rec.entrez else None,
                     {"type": "ensembl", "value": rec.ensembl} if rec.ensembl else None,
                     {"type": "refseq", "value": rec.refseq} if rec.refseq else None,
@@ -64,9 +71,38 @@ def guidetopharma_interactions():
     for interaction_rec in interactions():
         # Extract ligand and target identifiers
         ligand_id = interaction_rec.ligand.pubchem if interaction_rec.ligand.pubchem else None
-        target_uniprot = interaction_rec.target.uniprot if interaction_rec.target.uniprot else None
 
-        if not ligand_id or not target_uniprot:
+        # Use first available identifier for target (coalescing)
+        target = interaction_rec.target
+
+        # Handle different target types (protein vs compound)
+        if target.entity_type == 'protein':
+            target_id = target.uniprot or target.ensembl or target.entrez or target.refseqp or target.refseq
+            # Determine the identifier type based on which one we got
+            if target.uniprot:
+                target_id_type = 'uniprot'
+            elif target.ensembl:
+                target_id_type = 'ensembl'
+            elif target.entrez:
+                target_id_type = 'entrez'
+            elif target.refseqp:
+                target_id_type = 'refseqp'
+            elif target.refseq:
+                target_id_type = 'refseq'
+            else:
+                target_id_type = None
+        elif target.entity_type == 'compound':
+            target_id = target.pubchem or target.chembl
+            if target.pubchem:
+                target_id_type = 'pubchem_compound'
+            elif target.chembl:
+                target_id_type = 'chembl'
+            else:
+                target_id_type = None
+        else:
+            continue
+
+        if not ligand_id or not target_id:
             continue
 
         # Determine sign based on stimulation/inhibition
@@ -76,18 +112,12 @@ def guidetopharma_interactions():
         elif interaction_rec.is_inhibition:
             sign = 'negative'
 
-        # Extract names
-        ligand_name = interaction_rec.ligand.name if hasattr(interaction_rec.ligand, 'name') and interaction_rec.ligand.name else None
-        target_symbol = interaction_rec.target.symbol if hasattr(interaction_rec.target, 'symbol') and interaction_rec.target.symbol else None
-
         yield SilverInteraction(
             source='guidetopharma',
             entity_a_identifier=str(ligand_id),
             entity_a_identifier_type='pubchem_compound',
-            entity_a_name=ligand_name,
-            entity_b_identifier=target_uniprot,
-            entity_b_identifier_type='uniprot',
-            entity_b_name=target_symbol,
+            entity_b_identifier=target_id,
+            entity_b_identifier_type=target_id_type,
             interaction_type=interaction_rec.action if interaction_rec.action else None,
             is_directed=True,
             direction='a_to_b',

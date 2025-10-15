@@ -17,7 +17,7 @@ def hmdb_entities():
             smiles=rec.smiles,
             name=rec.traditional_iupac,
             synonyms=rec.synonyms,
-            cross_references=[
+            identifiers=[
                 {"type": "chebi", "value": f"CHEBI:{rec.chebi_id}"} if rec.chebi_id else None,
                 {"type": "pubchem_compound", "value": rec.pubchem_compound_id} if rec.pubchem_compound_id else None,
                 {"type": "kegg_compound", "value": rec.kegg_id} if rec.kegg_id else None,

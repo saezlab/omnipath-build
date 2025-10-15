@@ -303,6 +303,40 @@ def process_resource_function(
 
     is_multi_output = _is_multi_output_record(first_record)
 
+    # For multi-output functions without override, check if all output files exist
+    if is_multi_output and not override:
+        output_names = first_record.keys()
+        existing_files = {}
+        all_exist = True
+
+        for output_name in output_names:
+            # Infer schema type from first record's output
+            output_record = first_record[output_name]
+            if output_record is None:
+                continue
+
+            try:
+                schema_type = _schema_from_record(output_record)
+                _, _, table_name = _ensure_schema(schema_type)
+                potential_file = path_manager.silver_file(
+                    resource_fn.source,
+                    output_name,
+                    table_name,
+                )
+                if potential_file.exists():
+                    existing_files[output_name] = potential_file
+                else:
+                    all_exist = False
+                    break
+            except (ValueError, TypeError):
+                all_exist = False
+                break
+
+        if all_exist and existing_files:
+            output_list = ', '.join(existing_files.keys())
+            print(f'[{resource_fn.source}.{resource_fn.function_name}] skipping (multi-output files exist: {output_list})')
+            return existing_files
+
     if is_multi_output:
         # Process as multi-output function
         return _process_multi_output(

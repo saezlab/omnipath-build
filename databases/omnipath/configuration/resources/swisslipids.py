@@ -17,7 +17,7 @@ def swisslipids_lipids():
             smiles=rec.smiles if rec.smiles else None,
             name=rec.name,
             synonyms=[s.strip() for s in rec.synonyms.split(';') if s.strip()] if rec.synonyms else None,
-            cross_references=[
+            identifiers=[
                 {"type": "chebi", "value": rec.chebi} if rec.chebi else None,
                 {"type": "lipidmaps", "value": rec.lipidmaps} if rec.lipidmaps else None,
                 {"type": "hmdb", "value": rec.hmdb} if rec.hmdb else None,

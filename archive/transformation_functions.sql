@@ -190,7 +190,7 @@ CREATE OR REPLACE MACRO build_ramp_annotations(classes) AS (
     )
 );
 
-CREATE OR REPLACE MACRO build_cross_references(
+CREATE OR REPLACE MACRO build_identifiers(
     chebi_id,
     pubchem_cid,
     kegg_id,

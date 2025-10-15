@@ -38,7 +38,7 @@ def bindingdb():
                 inchi=ligand.inchi,
                 smiles=ligand.smiles,
                 name=ligand.name,
-                cross_references=[
+                identifiers=[
                     {"type": "pubchem_compound", "value": str(ligand.pubchem)} if ligand.pubchem else None,
                 ],
             )
@@ -52,7 +52,7 @@ def bindingdb():
                 entity_type='protein',
                 accession=target.uniprot,
                 name=target.name,
-                cross_references=[
+                identifiers=[
                     {"type": "ncbi_tax_id", "value": str(target.ncbi_tax_id)} if target.ncbi_tax_id else None,
                 ],
                 annotations=[
@@ -67,10 +67,8 @@ def bindingdb():
                 source='bindingdb',
                 entity_a_identifier=ligand.inchi_key,
                 entity_a_identifier_type='inchikey',
-                entity_a_name=ligand.name if ligand.name else None,
                 entity_b_identifier=target.uniprot,
                 entity_b_identifier_type='uniprot',
-                entity_b_name=target.name if target.name else None,
                 interaction_type='binding',
                 is_directed=False,
                 interaction_annotations=[
