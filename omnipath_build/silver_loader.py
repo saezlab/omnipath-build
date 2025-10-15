@@ -190,17 +190,48 @@ def _normalize_record(record: object) -> dict:
 
 
 def _coerce_list_fields(record: dict, schema: pa.Schema) -> None:
-    """Ensure list-typed schema fields receive list values."""
+    """Ensure list-typed schema fields receive list values and proper types."""
     for field in schema:
         if not pa.types.is_list(field.type):
             continue
         value = record.get(field.name)
-        if value is None or isinstance(value, list):
+        if value is None:
             continue
+
+        # Convert tuples to lists
         if isinstance(value, tuple):
-            record[field.name] = list(value)
-            continue
-        record[field.name] = [value]
+            value = list(value)
+        elif not isinstance(value, list):
+            value = [value]
+
+        # For list of structs, ensure nested field types match schema
+        if pa.types.is_struct(field.type.value_type):
+            struct_type = field.type.value_type
+            coerced_list = []
+            for item in value:
+                if item is None:
+                    continue
+                if not isinstance(item, dict):
+                    coerced_list.append(item)
+                    continue
+
+                coerced_item = {}
+                for struct_field in struct_type:
+                    field_name = struct_field.name
+                    field_value = item.get(field_name)
+
+                    if field_value is None:
+                        coerced_item[field_name] = None
+                    elif pa.types.is_string(struct_field.type):
+                        # Convert to string if schema expects string
+                        coerced_item[field_name] = str(field_value)
+                    else:
+                        coerced_item[field_name] = field_value
+
+                coerced_list.append(coerced_item)
+            value = coerced_list
+
+        record[field.name] = value
 
 
 def _ensure_schema(schema_type: str | None) -> tuple[str, pa.Schema, str]:
@@ -272,6 +303,10 @@ def process_resource_function(
             _coerce_list_fields(normalized, schema)
 
         batch.append(normalized)
+
+        # Print progress every 10 records
+        if len(batch) % 10 == 0:
+            print(f'[{resource_fn.source}.{resource_fn.function_name}] collected {total_records + len(batch):,} records...')
 
         if len(batch) >= batch_size:
             if dry_run:
