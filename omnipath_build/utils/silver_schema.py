@@ -21,34 +21,39 @@ class SilverEntity(NamedTuple):
     """Silver entity record matching silver_entities schema."""
     # Required fields
     source: str
-    accession: str
-    entity_type: str
+    accession: str  # Unique within source
+    entity_type: str  # 'protein', 'gene', 'compound', etc.
 
     # Optional structural identifiers
-    inchikey: Optional[str] = None
+    inchikey: Optional[str] = None  # Primary structural identifier when available
     smiles: Optional[str] = None
     inchi: Optional[str] = None
 
     # Optional identifiers and names
-    cross_references: Optional[List[Dict[str, str]]] = None
+    cross_references: Optional[List[Dict[str, str]]] = None  # [{"type": "chebi", "value": "CHEBI:12345"}, ...]
     name: Optional[str] = None
-    synonyms: Optional[List[str]] = None
+    synonyms: Optional[List[str]] = None  # ["synonym1", "synonym2"]
 
-    # Optional complex/membership
-    members: Optional[List[Dict[str, Any]]] = None
+    # Optional complex/membership info (as provided by source)
+    members: Optional[List[Dict[str, Any]]] = None  # [{"member_id": "...", "member_id_type": "...", "stoichiometry": 2, "role": "..."}]
 
-    # Optional annotations
-    annotations: Optional[List[Dict[str, Any]]] = None
-    references: Optional[List[str]] = None
+    # Optional annotations (as provided by source)
+    annotations: Optional[List[Dict[str, Any]]] = None  # [{"term": "...", "value": "...", "units": "..."}]
+    references: Optional[List[str]] = None  # [12345678, 23456789] (PMIDs e.g.)
 
-    # Optional metadata
+    # Optional metadata (if provided by meta database)
     secondary_source: Optional[str] = None
 
 
 class SilverInteraction(NamedTuple):
-    """Silver interaction record matching silver_interactions schema."""
-    # Required fields
+    """
+    Cleaned interaction records (one row per source evidence record, before deduplication).
+    Silver interaction record matching silver_interactions schema.
+    """
+    # Required fields - metadata
     source: str
+
+    # Required fields - interaction participants
     entity_a_identifier: str
     entity_a_identifier_type: str
     entity_b_identifier: str
@@ -59,38 +64,42 @@ class SilverInteraction(NamedTuple):
     entity_b_name: Optional[str] = None
 
     # Optional evidence details
-    interaction_type: Optional[str] = None
+    interaction_type: Optional[str] = None  # 'physical association', 'phosphorylation', etc. accessions
     detection_method: Optional[str] = None
     is_directed: Optional[bool] = None
-    direction: Optional[str] = None
-    sign: Optional[str] = None
+    direction: Optional[str] = None  # 'a_to_b', 'b_to_a', 'bidirectional'
+    sign: Optional[str] = None  # 'positive', 'negative', 'neutral', 'unknown' accessions
     causal_mechanism: Optional[str] = None
     causal_statement: Optional[str] = None
-    sentence: Optional[str] = None
+    sentence: Optional[str] = None  # Extracted sentence from paper
 
     # Optional annotations
-    interaction_annotations: Optional[List[Dict[str, Any]]] = None
-    entity_a_context: Optional[List[Dict[str, Any]]] = None
-    entity_b_context: Optional[List[Dict[str, Any]]] = None
+    interaction_annotations: Optional[List[Dict[str, Any]]] = None  # General interaction annotations
+    entity_a_context: Optional[List[Dict[str, Any]]] = None  # Context annotations for entity A
+    entity_b_context: Optional[List[Dict[str, Any]]] = None  # Context annotations for entity B
 
     # Optional reference
-    reference_type: Optional[str] = None
-    reference_value: Optional[str] = None
+    references: Optional[List[str]] = None  # [12345678, 23456789] (PMIDs e.g.)
 
 
 class SilverCvTerm(NamedTuple):
-    """Silver CV term record matching silver_cv_terms schema."""
-    # Required fields
+    """
+    Controlled vocabulary terms from sources (one row per source term).
+    Silver CV term record matching silver_cv_terms schema.
+    """
+    # Required fields - metadata
     source: str
-    term_accession: str
+
+    # Required fields - term identification
+    term_accession: str  # Formal accession if available (e.g., 'GO:0008150')
     namespace: str
 
-    # Optional term information
-    term_name: Optional[str] = None
+    # Optional term information (if provided by source)
+    term_name: Optional[str] = None  # The actual term/value
     term_definition: Optional[str] = None
     term_definition_refs: Optional[List[str]] = None
-    term_synonyms: Optional[List[str]] = None
-    term_parent_accessions: Optional[List[str]] = None
+    term_synonyms: Optional[List[str]] = None  # ["synonym1", "synonym2"]
+    term_parent_accessions: Optional[List[str]] = None  # ["GO:0008150", "GO:0009987"]
     term_parent_names: Optional[List[str]] = None
     term_alt_ids: Optional[List[str]] = None
 
@@ -167,8 +176,7 @@ SILVER_INTERACTION_SCHEMA = pa.schema([
             pa.field('value', pa.string()),
         ])),
     ),
-    pa.field('reference_type', pa.string()),
-    pa.field('reference_value', pa.string()),
+    pa.field('references', pa.list_(pa.string())),
 ])
 
 SILVER_CV_TERM_SCHEMA = pa.schema([
