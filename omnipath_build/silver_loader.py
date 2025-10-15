@@ -246,14 +246,24 @@ def _ensure_schema(schema_type: str | None) -> tuple[str, pa.Schema, str]:
     return schema_type, schema, table_name
 
 
+def _is_multi_output_record(record: object) -> bool:
+    """Check if record is a multi-output dict (not a namedtuple with _asdict)."""
+    return isinstance(record, dict) and not hasattr(record, '_asdict')
+
+
 def process_resource_function(
     resource_fn: ResourceFunction,
     path_manager: PathManager,
     batch_size: int = 10_000,
     dry_run: bool = False,
     override: bool = False,
-) -> Optional[Path]:
-    """Stream records from a resource function into a parquet file."""
+) -> Optional[Path] | Dict[str, Path]:
+    """Stream records from a resource function into parquet file(s).
+
+    Returns:
+        - Optional[Path] for single-output functions
+        - Dict[str, Path] for multi-output functions (yields dicts with named outputs)
+    """
     # Check if output file already exists and skip if not overriding
     if not override:
         schema_type = resource_fn.schema_type
@@ -271,6 +281,49 @@ def process_resource_function(
             except ValueError:
                 pass  # Schema type not yet determined, continue with processing
 
+    try:
+        records = resource_fn.call()
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(
+            f'Failed to execute {resource_fn.source}.{resource_fn.function_name}: {exc}'
+        ) from exc
+
+    # Peek at first record to detect multi-output
+    first_record = None
+    records_iter = iter(records)
+    for rec in records_iter:
+        if rec is not None:
+            first_record = rec
+            break
+
+    if first_record is None:
+        # No records at all
+        print(f'[{resource_fn.source}.{resource_fn.function_name}] no records generated')
+        return None
+
+    is_multi_output = _is_multi_output_record(first_record)
+
+    if is_multi_output:
+        # Process as multi-output function
+        return _process_multi_output(
+            resource_fn, path_manager, first_record, records_iter, batch_size, dry_run
+        )
+    else:
+        # Process as single-output function (existing logic)
+        return _process_single_output(
+            resource_fn, path_manager, first_record, records_iter, batch_size, dry_run
+        )
+
+
+def _process_single_output(
+    resource_fn: ResourceFunction,
+    path_manager: PathManager,
+    first_record: object,
+    records_iter: Iterator,
+    batch_size: int,
+    dry_run: bool,
+) -> Optional[Path]:
+    """Process single-output function (original logic)."""
     schema_type = resource_fn.schema_type
     schema = None
     table_name = None
@@ -279,14 +332,20 @@ def process_resource_function(
     total_records = 0
     batch: List[dict] = []
 
-    try:
-        records = resource_fn.call()
-    except Exception as exc:  # noqa: BLE001
-        raise RuntimeError(
-            f'Failed to execute {resource_fn.source}.{resource_fn.function_name}: {exc}'
-        ) from exc
+    # Process first record
+    normalized = _normalize_record(first_record)
+    if schema_type is None:
+        schema_type = _schema_from_record(first_record)
+        schema_type, schema, table_name = _ensure_schema(schema_type)
+    elif schema is None:
+        schema_type, schema, table_name = _ensure_schema(schema_type)
 
-    for record in records:
+    if schema is not None:
+        _coerce_list_fields(normalized, schema)
+    batch.append(normalized)
+
+    # Process remaining records
+    for record in records_iter:
         if record is None:
             continue
 
@@ -296,7 +355,6 @@ def process_resource_function(
             schema_type = _schema_from_record(record)
             schema_type, schema, table_name = _ensure_schema(schema_type)
         elif schema is None:
-            # Schema type was discovered earlier but schema not yet materialized.
             schema_type, schema, table_name = _ensure_schema(schema_type)
 
         if schema is not None:
@@ -305,7 +363,7 @@ def process_resource_function(
         batch.append(normalized)
 
         # Print progress every 10 records
-        if len(batch) % 10 == 0:
+        if len(batch) % 10000 == 0:
             print(f'[{resource_fn.source}.{resource_fn.function_name}] collected {total_records + len(batch):,} records...')
 
         if len(batch) >= batch_size:
@@ -336,7 +394,6 @@ def process_resource_function(
             print(f'[{resource_fn.source}.{resource_fn.function_name}] dry-run complete (no write)')
             return None
         if total_records == 0 and schema is not None and not dry_run:
-            # Create empty parquet with schema so downstream steps can rely on file presence.
             output_file = path_manager.silver_file(
                 resource_fn.source,
                 resource_fn.function_name,
@@ -375,6 +432,138 @@ def process_resource_function(
 
     print(f'[{resource_fn.source}.{resource_fn.function_name}] wrote {total_records:,} records to {output_file}')
     return output_file
+
+
+def _process_multi_output(
+    resource_fn: ResourceFunction,
+    path_manager: PathManager,
+    first_record: dict,
+    records_iter: Iterator,
+    batch_size: int,
+    dry_run: bool,
+) -> Dict[str, Path]:
+    """Process multi-output function that yields dicts with named outputs."""
+    # Multi-output state tracking
+    batches: Dict[str, List[dict]] = {}
+    schemas: Dict[str, pa.Schema] = {}
+    table_names: Dict[str, str] = {}
+    writers: Dict[str, pq.ParquetWriter] = {}
+    output_files: Dict[str, Path] = {}
+    record_counts: Dict[str, int] = {}
+    schema_types: Dict[str, str] = {}
+
+    def process_output_record(output_name: str, output_record: object) -> None:
+        """Process a single output record."""
+        # Initialize structures for this output if first time
+        if output_name not in batches:
+            batches[output_name] = []
+            record_counts[output_name] = 0
+
+        # Normalize record
+        normalized = _normalize_record(output_record)
+
+        # Determine schema if needed
+        if output_name not in schemas:
+            schema_type = _schema_from_record(output_record)
+            schema_type_key, schema, table_name = _ensure_schema(schema_type)
+            schemas[output_name] = schema
+            table_names[output_name] = table_name
+            schema_types[output_name] = schema_type_key
+
+        # Coerce fields
+        _coerce_list_fields(normalized, schemas[output_name])
+        batches[output_name].append(normalized)
+
+        # Print progress
+        if len(batches[output_name]) % 10000 == 0:
+            total = record_counts[output_name] + len(batches[output_name])
+            print(f'[{resource_fn.source}.{resource_fn.function_name}:{output_name}] collected {total:,} records...')
+
+        # Flush if batch is full
+        if len(batches[output_name]) >= batch_size:
+            if not dry_run:
+                # Initialize output file and writer if needed
+                if output_name not in output_files:
+                    output_files[output_name] = path_manager.silver_file(
+                        resource_fn.source,
+                        output_name,
+                        table_names[output_name],
+                    )
+                    output_files[output_name].parent.mkdir(parents=True, exist_ok=True)
+
+                if output_name not in writers:
+                    writers[output_name] = pq.ParquetWriter(
+                        output_files[output_name],
+                        schemas[output_name],
+                    )
+
+                # Write batch
+                table = pa.Table.from_pylist(batches[output_name], schema=schemas[output_name])
+                writers[output_name].write_table(table)
+
+            record_counts[output_name] += len(batches[output_name])
+            print(f'[{resource_fn.source}.{resource_fn.function_name}:{output_name}] processed {record_counts[output_name]:,} records...')
+            batches[output_name].clear()
+
+    # Process first record
+    for output_name, output_record in first_record.items():
+        if output_record is not None:
+            process_output_record(output_name, output_record)
+
+    # Process remaining records
+    for record in records_iter:
+        if record is None:
+            continue
+
+        if not _is_multi_output_record(record):
+            raise ValueError(
+                f'Mixed single/multi output in {resource_fn.source}.{resource_fn.function_name}: '
+                'all records must be dicts or all must be single records'
+            )
+
+        for output_name, output_record in record.items():
+            if output_record is not None:
+                process_output_record(output_name, output_record)
+
+    # Flush remaining batches
+    for output_name, batch in batches.items():
+        if not batch:
+            continue
+
+        if not dry_run:
+            # Initialize if needed
+            if output_name not in output_files:
+                output_files[output_name] = path_manager.silver_file(
+                    resource_fn.source,
+                    output_name,
+                    table_names[output_name],
+                )
+                output_files[output_name].parent.mkdir(parents=True, exist_ok=True)
+
+            if output_name not in writers:
+                writers[output_name] = pq.ParquetWriter(
+                    output_files[output_name],
+                    schemas[output_name],
+                )
+
+            # Write final batch
+            table = pa.Table.from_pylist(batch, schema=schemas[output_name])
+            writers[output_name].write_table(table)
+
+        record_counts[output_name] += len(batch)
+
+    # Close all writers
+    for output_name, writer in writers.items():
+        writer.close()
+        print(f'[{resource_fn.source}.{resource_fn.function_name}:{output_name}] wrote {record_counts[output_name]:,} records to {output_files[output_name]}')
+
+    if dry_run:
+        print(f'[{resource_fn.source}.{resource_fn.function_name}] dry-run complete:')
+        for output_name in batches.keys():
+            print(f'  {output_name}: {record_counts[output_name]:,} records')
+        return {}
+
+    return output_files
 
 
 def run_silver_loader(
