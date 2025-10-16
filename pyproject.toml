@@ -118,6 +118,14 @@ skip = [
     "docs/notebooks/example.ipynb"
 ]
 
+# ===================================
+# =======       HATCH        ========
+# ===================================
+[tool.hatch]
+
+[tool.hatch.build.targets.wheel]
+packages = ["omnipath_build"]
+
 # --- Pytest: a lightweight and scalable testing tool using the pytest framework
 [tool.pytest]
 
