@@ -32,6 +32,6 @@ download_manager_log/
 cache_manager_log/
 node_modules/
 *.parquet
-
+pypath-data/
 .env
 *.tsv
