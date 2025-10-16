@@ -7,9 +7,7 @@ build-backend = "hatchling.build"
 requires = ["hatchling"]
 
 [dependency-groups]
-dev = [
-    "pre-commit>=4.3.0"
-]
+dev = []
 
 # ===================================
 # =======       PROJECT      ========
@@ -57,8 +55,6 @@ version = "0.0.1"
 [project.optional-dependencies]
 dev = [
     "distlib",
-    "pre-commit",
-    "bump2version",
     "twine"
 ]
 docs = [
@@ -70,13 +66,6 @@ security = [
     "bandit"
 ]
 tests = [
-    "pytest>=6.0",
-    "pytest-cov",
-    "tox>=3.20.1",
-    "tox-gh>=1.5.0",
-    "coverage>=6.0",
-    "codecov-cli>=10.2.0",
-    "diff_cover",
     "ruff"
 ]
 
@@ -95,15 +84,6 @@ exclude_dirs = [".venv", "venv", ".tox", "build", "dist"]
 skips = [
     "B101"  # Name: assert_used
 ]
-
-# ---- Coverage: a tool used to measure code coverage of Python programs
-[tool.coverage]
-
-[tool.coverage.run]
-omit = [
-    "**/test_*.py"
-]
-source = ["omnipath_build"]
 
 # ---- Cruft: a tool to manage and update projects based on templates
 [tool.cruft]
@@ -126,21 +106,6 @@ skip = [
 [tool.hatch.build.targets.wheel]
 packages = ["omnipath_build"]
 
-# --- Pytest: a lightweight and scalable testing tool using the pytest framework
-[tool.pytest]
-
-[tool.pytest.ini_options]
-addopts = [
-    # "-Werror",  # if 3rd party libs raise DeprecationWarnings, just use filterwarnings below
-    "--import-mode=importlib"  # allow using test files with same name
-]
-filterwarnings = [
-]
-python_files = "test_*.py"
-testpaths = [
-    "tests"
-]
-xfail_strict = true
 
 # ---- RSTcheck: a tool to lint reStructuredText (.rst) files.
 [tool.rstcheck]
@@ -229,120 +194,10 @@ section-order = [
 
 [tool.ruff.lint.per-file-ignores]
 "*/__init__.py" = ["D104", "F401"]
-"docs/*" = ["I"]
-"docs/src/conf.py" = ["D100"]
-"tests/*" = ["D"]
-"tests/conftest.py" = ["D101", "D102", "D103", "E402"]
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"
 
-# ---- tox: a tool to automate testing in multiple environments.
-[tool.tox]
-envlist = [
-    "covclean",
-    "lint",
-    "py{39,310,311,312,313}",
-    "coverage",
-    "readme",
-    "docs"
-]
-isolated_build = true
-min_version = "3.20.0"
-skip_missing_interpreters = true
-
-[tool.tox.envs]
-base_python = [
-    "py39: python3.9",
-    "py310: python3.10",
-    "py311: python3.11",
-    "py312: python3.12",
-    "py313: python3.13"
-]
-commands = [
-    "pytest --cov --cov-append --cov-config={toxinidir}/.coveragerc --ignore docs/ {posargs:-vv {env:_PYTEST_TOX_POSARGS:}}"
-]
-deps = [
-    ".[tests]"
-]
-passenv = "TOXENV,CI,CODECOV_*,GITHUB_ACTIONS"
-platform = [
-    "linux: linux",
-    "macos: (macos|osx|darwin)"
-]
-usedevelop = true
-
-[tool.tox.envs.clean-docs]
-allowlist_externals = ["make"]
-changedir = "{toxinidir}/docs"
-commands = [
-    "make clean"
-]
-description = "Clean the documentation artifacts."
-skip_install = true
-
-[tool.tox.envs.covclean]
-commands = [
-    "coverage erase"
-]
-deps = [".[tests]"]
-description = "Clean coverage files."
-skip_install = true
-
-[tool.tox.envs.coverage]
-commands = [
-    "coverage report --omit=\"tox/*\"",
-    "coverage xml --omit=\"tox/*\" -o {toxinidir}/coverage.xml",
-    "diff-cover --compare-branch origin/main {toxinidir}/coverage.xml"
-]
-depends = "py{39,310,311,312,313}"
-deps = [".[tests]"]
-description = "Report the coverage difference."
-parallel_show_output = true
-skip_install = true
-
-[tool.tox.envs.docs]
-allowlist_externals = ["uv"]
-commands = [
-    "uv sync --extra docs",
-    "uv run sphinx-build --color -b html {toxinidir}/docs/source {toxinidir}/docs/build/html",
-    "python -c 'import pathlib; print(f\"Documentation is available under:\", pathlib.Path(f\"{toxinidir}\") / \"docs\" / \"build\" / \"html\" / \"index.html\")'"
-]
-description = "Build the documentation."
-skip_install = true
-
-[tool.tox.envs.lint]
-commands = [
-    "pre-commit run --all-files --show-diff-on-failure {posargs:}"
-]
-deps = [".[dev]"]
-description = "Perform linting."
-skip_install = true
-
-[tool.tox.envs.py313]
-setenv = "_PYTEST_TOX_POSARGS=--log-cli-level=ERROR"
-
-[tool.tox.envs.readme]
-allowlist_externals = ["uv"]
-commands = [
-    "uv build --wheel --out-dir {envtmpdir}/build",
-    "twine check {envtmpdir}/build/*"
-]
-deps = [".[dev]"]
-description = "Check if README renders on PyPI."
-skip_install = true
-
-[tool.tox-gh-actions]
-env = [
-    "py313: covclean, lint, coverage, readme, docs"
-]
-python = [
-    "3.9: py39",
-    "3.10: py310",
-    "3.11: py311",
-    "3.12: py312",
-    "3.13: py313"
-]
 
 [tool.uv.sources]
 jupyter-contrib-nbextensions = {git = "https://github.com/deeenes/jupyter_contrib_nbextensions.git", branch = "master"}

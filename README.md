@@ -1,17 +1,3 @@
-![project-banner](./docs/assets/project-banner-readme.png)
-
-# omnipath_build
-
-
-[![Tests](https://img.shields.io/github/actions/workflow/status/saezlab/omnipath_build/test.yml?branch=master)](https://github.com/saezlab/omnipath_build/actions/workflows/test.yml)
-[![Docs](https://img.shields.io/badge/docs-MkDocs-blue)](https://saezlab.github.io/omnipath_build/)
-![Pre-commit](https://img.shields.io/badge/pre--commit-enabled-brightgreen?logo=pre-commit)
-![PyPI](https://img.shields.io/pypi/v/omnipath_build)
-![Python](https://img.shields.io/pypi/pyversions/omnipath_build)
-![License](https://img.shields.io/github/license/saezlab/omnipath_build)
-![Issues](https://img.shields.io/github/issues/saezlab/omnipath_build)
-![Last Commit](https://img.shields.io/github/last-commit/saezlab/omnipath_build)
-
 ## Description
 
 # Database Builder System
