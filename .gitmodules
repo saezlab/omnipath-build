@@ -1,0 +1,6 @@
+[submodule "pypath"]
+	path = pypath
+	url = https://github.com/saezlab/pypath
+[submodule "download-manager"]
+	path = download-manager
+	url = https://github.com/saezlab/download-manager
