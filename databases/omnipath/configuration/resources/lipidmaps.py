@@ -6,7 +6,6 @@ __all__ = [
 
 def lipidmaps_lipids():
     from pypath.inputs.lipidmaps import lipidmaps_lipids as pypath_lipids
-
     for rec in pypath_lipids():
         yield SilverEntity(
             source='lipidmaps',

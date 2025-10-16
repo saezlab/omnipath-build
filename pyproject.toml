@@ -38,7 +38,6 @@ dependencies = [
     "paramiko<3.0",
     "polars>=1.34.0",
     "psycopg2-binary>=2.9.0",
-    "pypath-omnipath",
     "pyyaml>=6.0.2",
     "toml"
 ]
@@ -340,4 +339,3 @@ python = [
 [tool.uv.sources]
 jupyter-contrib-nbextensions = {git = "https://github.com/deeenes/jupyter_contrib_nbextensions.git", branch = "master"}
 nbsphinx = {git = "https://github.com/deeenes/nbsphinx", branch = "timings"}
-pypath-omnipath = {git = "https://github.com/saezlab/pypath.git", branch = "master"}
