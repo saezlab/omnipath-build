@@ -1,8 +1,20 @@
-from omnipath_build.utils.silver_schema import SilverEntity
+from omnipath_build.utils.silver_schema import SilverEntity, IdentifierType
+from omnipath_build.utils.identifier_builders import build_identifiers
+from omnipath_build.utils.annotation_builders import build_annotations
 
 __all__ = [
     'lipidmaps_lipids',
 ]
+
+# Identifier mapping for LipidMaps
+LIPIDMAPS_IDENTIFIERS = {
+    'id': IdentifierType.LIPIDMAPS,
+    'inchikey': IdentifierType.INCHIKEY,
+    'inchi': IdentifierType.INCHI,
+    'smiles': IdentifierType.SMILES,
+    'chebi': IdentifierType.CHEBI,
+    'pubchem': IdentifierType.PUBCHEM,
+}
 
 def lipidmaps_lipids():
     from pypath.inputs.lipidmaps import lipidmaps_lipids as pypath_lipids
@@ -10,22 +22,16 @@ def lipidmaps_lipids():
         yield SilverEntity(
             source='lipidmaps',
             entity_type='compound',
-            accession=rec.id,
-            inchikey=rec.inchikey if rec.inchikey else None,
-            inchi=rec.inchi if rec.inchi else None,
-            smiles=rec.smiles if rec.smiles else None,
             name=rec.name,
             synonyms=[s.strip() for s in rec.synonyms.split('; ') if s.strip()] if rec.synonyms else None,
-            identifiers=[
-                {"type": "chebi", "value": rec.chebi} if rec.chebi else None,
-                {"type": "pubchem", "value": rec.pubchem} if rec.pubchem else None,
-            ],
-            annotations=[
-                {"term": "category", "value": rec.category} if rec.category else None,
-                {"term": "main_class", "value": rec.main_class} if rec.main_class else None,
-                {"term": "abbreviation", "value": rec.abbreviation} if rec.abbreviation else None,
-                {"term": "chemical_formula", "value": rec.formula} if rec.formula else None,
-                {"term": "exact_mass", "value": rec.exact_mass} if rec.exact_mass else None,
-                {"term": "iupac_name", "value": rec.iupac} if rec.iupac else None,
-            ],
+            identifiers=build_identifiers(rec, mapping=LIPIDMAPS_IDENTIFIERS, accession_attr='id'),
+            annotations=build_annotations(
+                rec,
+                'category',
+                'main_class',
+                'abbreviation',
+                ('formula', 'chemical_formula'),
+                'exact_mass',
+                ('iupac', 'iupac_name'),
+            ),
         )

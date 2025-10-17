@@ -1,8 +1,22 @@
-from omnipath_build.utils.silver_schema import SilverEntity, SilverInteraction
+from omnipath_build.utils.silver_schema import SilverEntity, SilverInteraction, IdentifierType
+from omnipath_build.utils.identifier_builders import build_identifiers
+from omnipath_build.utils.annotation_builders import build_annotations
 
 __all__ = [
     'bindingdb',
 ]
+
+# Identifier mappings for BindingDB
+BINDINGDB_LIGAND_IDENTIFIERS = {
+    'inchi_key': IdentifierType.INCHIKEY,
+    'inchi': IdentifierType.INCHI,
+    'smiles': IdentifierType.SMILES,
+    'pubchem': IdentifierType.PUBCHEM_COMPOUND,
+}
+
+BINDINGDB_TARGET_IDENTIFIERS = {
+    'uniprot': IdentifierType.UNIPROT,
+}
 
 def bindingdb():
     """
@@ -17,64 +31,50 @@ def bindingdb():
     """
     from pypath.inputs.bindingdb import interactions
 
-    seen_ligands = set()
-    seen_targets = set()
-
     for interaction in interactions():
         ligand = interaction.ligand
         target = interaction.target
 
         result = {}
 
-        # Add ligand entity if not seen before
-        if ligand.inchi_key and ligand.inchi_key not in seen_ligands:
-            seen_ligands.add(ligand.inchi_key)
-
-            result['bindingdb_ligands'] = SilverEntity(
-                source='bindingdb',
-                entity_type='compound',
-                accession=ligand.inchi_key,
-                inchikey=ligand.inchi_key,
-                inchi=ligand.inchi,
-                smiles=ligand.smiles,
-                name=ligand.name,
-                identifiers=[
-                    {"type": "pubchem_compound", "value": str(ligand.pubchem)} if ligand.pubchem else None,
-                ],
-            )
-
-        # Add target entity if not seen before and has UniProt
-        if target.uniprot and target.uniprot not in seen_targets:
-            seen_targets.add(target.uniprot)
-
-            result['bindingdb_targets'] = SilverEntity(
-                source='bindingdb',
-                entity_type='protein',
-                accession=target.uniprot,
-                name=target.name,
-                identifiers=[
-                    {"type": "ncbi_tax_id", "value": str(target.ncbi_tax_id)} if target.ncbi_tax_id else None,
-                ],
-                annotations=[
-                    {"term": "organism", "value": target.organism} if target.organism else None,
-                    {"term": "regions_mutations", "value": str(target.regions_mutations)} if target.regions_mutations else None,
-                ],
-            )
-
         # Add interaction if both identifiers are present
         if ligand.inchi_key and target.uniprot:
             result['bindingdb_interactions'] = SilverInteraction(
                 source='bindingdb',
-                entity_a_identifier=ligand.inchi_key,
-                entity_a_identifier_type='inchikey',
-                entity_b_identifier=target.uniprot,
-                entity_b_identifier_type='uniprot',
+                entity_a=SilverEntity(
+                    source='bindingdb',
+                    entity_type='compound',
+                    name=ligand.name,
+                    identifiers=build_identifiers(
+                        ligand,
+                        mapping=BINDINGDB_LIGAND_IDENTIFIERS,
+                        transformers={'pubchem': str},
+                        accession_attr='inchi_key',
+                    ),
+                ),
+                entity_b=SilverEntity(
+                    source='bindingdb',
+                    entity_type='protein',
+                    name=target.name,
+                    identifiers=build_identifiers(
+                        target,
+                        mapping=BINDINGDB_TARGET_IDENTIFIERS,
+                        accession_attr='uniprot',
+                    ),
+                    annotations=build_annotations(
+                        target,
+                        ('ncbi_tax_id', 'ncbi_tax_id', None, str),
+                        'organism',
+                        ('regions_mutations', 'regions_mutations', None, str),
+                    ),
+                ),
                 interaction_type='binding',
                 is_directed=False,
-                interaction_annotations=[
-                    {"key": "target_organism", "value": target.organism} if target.organism else None,
-                    {"key": "regions_mutations", "value": str(target.regions_mutations)} if target.regions_mutations else None,
-                ],
+                interaction_annotations=build_annotations(
+                    target,
+                    ('organism', 'target_organism'),
+                    ('regions_mutations', 'regions_mutations', None, str),
+                ),
             )
 
         # Only yield if we have at least one record

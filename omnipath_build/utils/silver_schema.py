@@ -5,9 +5,12 @@ Keeping the PyArrow schema objects and the namedtuple helpers in one place
 avoids accidental divergence across the pipeline.
 """
 from typing import Optional, List, Dict, Any, NamedTuple
+from enum import Enum
 import pyarrow as pa
 
 __all__ = [
+    'IdentifierType',
+    'Identifier',
     'SilverEntity',
     'SilverInteraction',
     'SilverCvTerm',
@@ -17,28 +20,64 @@ __all__ = [
 ]
 
 
+class IdentifierType(str, Enum):
+    """Enumeration of known identifier types for entities."""
+    # Source-specific accessions
+    ACCESSION = "accession"
+
+    # Structural identifiers
+    INCHIKEY = "inchikey"
+    INCHI = "inchi"
+    SMILES = "smiles"
+
+    # Protein/gene databases
+    UNIPROT = "uniprot"
+    ENTREZ = "entrez"
+    ENSEMBL = "ensembl"
+    HGNC = "hgnc"
+    REFSEQ = "refseq"
+    REFSEQP = "refseqp"
+
+    # Chemical databases
+    CHEBI = "chebi"
+    PUBCHEM = "pubchem"
+    PUBCHEM_COMPOUND = "pubchem_compound"
+    CHEMBL = "chembl"
+    DRUGBANK = "drugbank"
+    LIPIDMAPS = "lipidmaps"
+    HMDB = "hmdb"
+    KEGG = "kegg"
+    CAS = "cas"
+    METANETX = "metanetx"
+
+    # Other
+    OTHER = "other"
+
+
+class Identifier(NamedTuple):
+    """An identifier with its type."""
+    type: IdentifierType
+    value: str
+
+
 class SilverEntity(NamedTuple):
     """Silver entity record matching silver_entities schema."""
     # Required fields
     source: str
-    accession: str  # Unique within source
     entity_type: str  # 'protein', 'gene', 'compound', etc.
 
-    # Optional structural identifiers
-    inchikey: Optional[str] = None  # Primary structural identifier when available
-    smiles: Optional[str] = None
-    inchi: Optional[str] = None
+    # All identifiers consolidated here using the IdentifierType enum
+    identifiers: Optional[List[Identifier]] = None
 
-    # Optional identifiers and names
-    identifiers: Optional[List[Dict[str, str]]] = None  # [{"type": "chebi", "value": "CHEBI:12345"}, ...]
+    # Names
     name: Optional[str] = None
     synonyms: Optional[List[str]] = None  # ["synonym1", "synonym2"]
 
-    # Optional complex/membership info (as provided by source)
+    # Optional membership info
     members: Optional[List[Dict[str, Any]]] = None  # [{"member_id": "...", "member_id_type": "...", "stoichiometry": 2, "role": "..."}]
-    parent_accession: Optional[str] = None  # For entities that are part of a complex
+    parent_accession: Optional[str] = None  # For entities that are part of another entity (e.g., protein complex)
 
-    # Optional annotations (as provided by source)
+    # Optional annotations
     annotations: Optional[List[Dict[str, Any]]] = None  # [{"term": "...", "value": "...", "units": "..."}]
     references: Optional[List[str]] = None  # [12345678, 23456789] (PMIDs e.g.)
 
@@ -55,10 +94,8 @@ class SilverInteraction(NamedTuple):
     source: str
 
     # Required fields - interaction participants
-    entity_a_identifier: str
-    entity_a_identifier_type: str
-    entity_b_identifier: str
-    entity_b_identifier_type: str
+    entity_a: SilverEntity
+    entity_b: SilverEntity
 
     # Optional evidence details
     interaction_type: Optional[str] = None  # 'physical association', 'phosphorylation', etc. accessions
@@ -99,17 +136,13 @@ class SilverCvTerm(NamedTuple):
     term_alt_ids: Optional[List[str]] = None
 
 
-SILVER_ENTITY_SCHEMA = pa.schema([
+SILVER_ENTITY_FIELDS = [
     pa.field('source', pa.string(), nullable=False),
-    pa.field('accession', pa.string(), nullable=False),
     pa.field('entity_type', pa.string(), nullable=False),
-    pa.field('inchikey', pa.string()),
-    pa.field('smiles', pa.string()),
-    pa.field('inchi', pa.string()),
     pa.field(
         'identifiers',
         pa.list_(pa.struct([
-            pa.field('type', pa.string()),
+            pa.field('type', pa.string()),  # Use IdentifierType enum values
             pa.field('value', pa.string()),
         ])),
     ),
@@ -133,14 +166,14 @@ SILVER_ENTITY_SCHEMA = pa.schema([
     ),
     pa.field('references', pa.list_(pa.string())),
     pa.field('secondary_source', pa.string()),
-])
+]
+
+SILVER_ENTITY_SCHEMA = pa.schema(SILVER_ENTITY_FIELDS)
 
 SILVER_INTERACTION_SCHEMA = pa.schema([
     pa.field('source', pa.string(), nullable=False),
-    pa.field('entity_a_identifier', pa.string(), nullable=False),
-    pa.field('entity_a_identifier_type', pa.string(), nullable=False),
-    pa.field('entity_b_identifier', pa.string(), nullable=False),
-    pa.field('entity_b_identifier_type', pa.string(), nullable=False),
+    pa.field('entity_a', pa.struct(SILVER_ENTITY_FIELDS), nullable=False),
+    pa.field('entity_b', pa.struct(SILVER_ENTITY_FIELDS), nullable=False),
     pa.field('interaction_type', pa.string()),
     pa.field('detection_method', pa.string()),
     pa.field('is_directed', pa.bool_()),

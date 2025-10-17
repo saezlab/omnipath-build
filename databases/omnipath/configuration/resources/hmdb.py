@@ -1,8 +1,22 @@
-from omnipath_build.utils.silver_schema import SilverEntity
+from omnipath_build.utils.silver_schema import SilverEntity, IdentifierType
+from omnipath_build.utils.identifier_builders import build_identifiers
+from omnipath_build.utils.annotation_builders import build_annotations
 
 __all__ = [
     'hmdb_entities',
 ]
+
+# Identifier mapping for HMDB
+HMDB_IDENTIFIERS = {
+    'inchikey': IdentifierType.INCHIKEY,
+    'inchi': IdentifierType.INCHI,
+    'smiles': IdentifierType.SMILES,
+    'chebi_id': IdentifierType.CHEBI,
+    'pubchem_compound_id': IdentifierType.PUBCHEM,
+    'kegg_id': IdentifierType.KEGG,
+    'drugbank_id': IdentifierType.DRUGBANK,
+    'cas_registry_number': IdentifierType.CAS,
+}
 
 def hmdb_entities():
     from pypath.inputs.hmdb.metabolites import compounds_for_metabo
@@ -11,24 +25,20 @@ def hmdb_entities():
         yield SilverEntity(
             source='hmdb',
             entity_type='compound',
-            accession=rec.accession,
-            inchikey=rec.inchikey,
-            inchi=rec.inchi,
-            smiles=rec.smiles,
             name=rec.traditional_iupac,
             synonyms=rec.synonyms,
-            identifiers=[
-                {"type": "chebi", "value": f"CHEBI:{rec.chebi_id}"} if rec.chebi_id else None,
-                {"type": "pubchem_compound", "value": rec.pubchem_compound_id} if rec.pubchem_compound_id else None,
-                {"type": "kegg_compound", "value": rec.kegg_id} if rec.kegg_id else None,
-                {"type": "drugbank", "value": rec.drugbank_id} if rec.drugbank_id else None,
-                {"type": "cas", "value": rec.cas_registry_number} if rec.cas_registry_number else None,
-            ],
-            annotations=[
-                {"term": "monoisotopic_molecular_weight", "value": rec.monisotopic_molecular_weight, "units": "Da"} if rec.monisotopic_molecular_weight else None,
-                {"term": "average_molecular_weight", "value": rec.average_molecular_weight, "units": "Da"} if rec.average_molecular_weight else None,
-                {"term": "chemical_formula", "value": rec.chemical_formula} if rec.chemical_formula else None,
-                {"term": "iupac_name", "value": rec.iupac_name} if rec.iupac_name else None,
-            ],
+            identifiers=build_identifiers(
+                rec,
+                mapping=HMDB_IDENTIFIERS,
+                transformers={'chebi_id': lambda x: f"CHEBI:{x}"},
+                accession_attr='accession',
+            ),
+            annotations=build_annotations(
+                rec,
+                ('monisotopic_molecular_weight', 'monoisotopic_molecular_weight', 'Da'),
+                ('average_molecular_weight', 'average_molecular_weight', 'Da'),
+                'chemical_formula',
+                'iupac_name',
+            ),
             references=rec.general_references,
         )

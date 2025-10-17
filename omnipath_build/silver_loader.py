@@ -183,9 +183,30 @@ def _schema_from_record(record: object) -> str:
 def _normalize_record(record: object) -> dict:
     """Convert a namedtuple-like record into a plain dictionary."""
     if hasattr(record, '_asdict'):
-        return record._asdict()
+        normalized = record._asdict()
+        # Recursively normalize nested structures (e.g., SilverEntity inside SilverInteraction)
+        for key, value in list(normalized.items()):
+            if hasattr(value, '_asdict'):
+                normalized[key] = _normalize_record(value)
+            elif isinstance(value, list):
+                normalized[key] = [
+                    _normalize_record(item) if hasattr(item, '_asdict') else item
+                    for item in value
+                ]
+        return normalized
     if isinstance(record, dict):
-        return record
+        normalized = {}
+        for key, value in record.items():
+            if hasattr(value, '_asdict'):
+                normalized[key] = _normalize_record(value)
+            elif isinstance(value, list):
+                normalized[key] = [
+                    _normalize_record(item) if hasattr(item, '_asdict') else item
+                    for item in value
+                ]
+            else:
+                normalized[key] = value
+        return normalized
     raise TypeError(f'Cannot normalize record of type {type(record)!r}')
 
 
