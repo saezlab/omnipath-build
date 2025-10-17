@@ -70,7 +70,6 @@ def bindingdb():
                     ),
                 ),
                 interaction_type='binding',
-                is_directed=False,
                 interaction_annotations=build_annotations(
                     target,
                     ('organism', 'target_organism'),

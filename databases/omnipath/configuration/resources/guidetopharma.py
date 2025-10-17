@@ -93,7 +93,6 @@ def guidetopharma_interactions():
             entity_a=ligand_entity,
             entity_b=target_entity,
             interaction_type=interaction_rec.action if interaction_rec.action else None,
-            is_directed=True,
             direction='a_to_b',
             sign=sign,
             interaction_annotations=build_annotations(
