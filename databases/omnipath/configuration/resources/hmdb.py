@@ -1,4 +1,5 @@
-from omnipath_build.utils.silver_schema import SilverEntity, IdentifierType
+from omnipath_build.utils.cv_term_enums import IdentifierNamespaceCv
+from omnipath_build.utils.silver_schema import SilverEntity
 from omnipath_build.utils.identifier_builders import build_identifiers
 from omnipath_build.utils.annotation_builders import build_annotations
 
@@ -8,14 +9,14 @@ __all__ = [
 
 # Identifier mapping for HMDB
 HMDB_IDENTIFIERS = {
-    'inchikey': IdentifierType.INCHIKEY,
-    'inchi': IdentifierType.INCHI,
-    'smiles': IdentifierType.SMILES,
-    'chebi_id': IdentifierType.CHEBI,
-    'pubchem_compound_id': IdentifierType.PUBCHEM,
-    'kegg_id': IdentifierType.KEGG,
-    'drugbank_id': IdentifierType.DRUGBANK,
-    'cas_registry_number': IdentifierType.CAS,
+    'inchikey': IdentifierNamespaceCv.INCHIKEY,
+    'inchi': IdentifierNamespaceCv.INCHI,
+    'smiles': IdentifierNamespaceCv.SMILES,
+    'chebi_id': IdentifierNamespaceCv.CHEBI,
+    'pubchem_compound_id': IdentifierNamespaceCv.PUBCHEM,
+    'kegg_id': IdentifierNamespaceCv.KEGG,
+    'drugbank_id': IdentifierNamespaceCv.DRUGBANK,
+    'cas_registry_number': IdentifierNamespaceCv.CAS,
 }
 
 def hmdb_entities():

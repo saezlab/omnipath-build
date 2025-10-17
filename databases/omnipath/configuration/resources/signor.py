@@ -1,4 +1,5 @@
-from omnipath_build.utils.silver_schema import SilverEntity, SilverInteraction, IdentifierType
+from omnipath_build.utils.cv_term_enums import IdentifierNamespaceCv
+from omnipath_build.utils.silver_schema import Identifier, SilverEntity, SilverInteraction
 from omnipath_build.utils.identifier_builders import build_identifiers
 from omnipath_build.utils.annotation_builders import build_annotations
 
@@ -12,7 +13,7 @@ __all__ = [
 
 # Identifier mappings for SIGNOR
 SIGNOR_PROTEIN_IDENTIFIERS = {
-    'uniprot': IdentifierType.UNIPROT,
+    'uniprot': IdentifierNamespaceCv.UNIPROT,
 }
 
 
@@ -75,19 +76,17 @@ def signor_interactions():
         entity_a_type = interactor_type_to_entity_type(entity_a_type_raw)
         entity_b_type = interactor_type_to_entity_type(entity_b_type_raw)
 
-        from omnipath_build.utils.silver_schema import Identifier
-
         entity_a_entity = SilverEntity(
             source='signor',
             entity_type=entity_a_type,
-            identifiers=[Identifier(type=IdentifierType.UNIPROT, value=entity_a_id)],
+            identifiers=[Identifier(type=IdentifierNamespaceCv.UNIPROT, value=entity_a_id)],
             annotations=[{"term": "mitab_interactor_type", "value": entity_a_type_raw}] if entity_a_type_raw else None,
         )
 
         entity_b_entity = SilverEntity(
             source='signor',
             entity_type=entity_b_type,
-            identifiers=[Identifier(type=IdentifierType.UNIPROT, value=entity_b_id)],
+            identifiers=[Identifier(type=IdentifierNamespaceCv.UNIPROT, value=entity_b_id)],
             annotations=[{"term": "mitab_interactor_type", "value": entity_b_type_raw}] if entity_b_type_raw else None,
         )
 
@@ -152,7 +151,7 @@ def signor_complexes():
             source='signor',
             entity_type='complex',
             name=rec.name,
-            identifiers=[Identifier(type=IdentifierType.ACCESSION, value=rec.complex_id)],
+            identifiers=[Identifier(type=IdentifierNamespaceCv.ACCESSION, value=rec.complex_id)],
             annotations=build_annotations(
                 rec,
                 ('components', 'components', None, lambda x: ','.join(x)),
@@ -173,7 +172,7 @@ def signor_protein_families():
             source='signor',
             entity_type='protein_family',
             name=rec.name,
-            identifiers=[Identifier(type=IdentifierType.ACCESSION, value=rec.family_id)],
+            identifiers=[Identifier(type=IdentifierNamespaceCv.ACCESSION, value=rec.family_id)],
             annotations=build_annotations(
                 rec,
                 ('members', 'members', None, lambda x: ','.join(x)),
@@ -194,7 +193,7 @@ def signor_phenotypes():
             source='signor',
             entity_type='phenotype',
             name=rec.name,
-            identifiers=[Identifier(type=IdentifierType.ACCESSION, value=rec.phenotype_id)],
+            identifiers=[Identifier(type=IdentifierNamespaceCv.ACCESSION, value=rec.phenotype_id)],
             annotations=build_annotations(rec, 'description'),
         )
 
@@ -211,6 +210,6 @@ def signor_stimuli():
             source='signor',
             entity_type='stimulus',
             name=rec.name,
-            identifiers=[Identifier(type=IdentifierType.ACCESSION, value=rec.stimulus_id)],
+            identifiers=[Identifier(type=IdentifierNamespaceCv.ACCESSION, value=rec.stimulus_id)],
             annotations=build_annotations(rec, 'description'),
         )

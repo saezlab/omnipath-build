@@ -1,12 +1,13 @@
 """Utilities for building identifier lists from source records."""
 
 from typing import Any, Callable
-from omnipath_build.utils.silver_schema import Identifier, IdentifierType
+from omnipath_build.utils.cv_term_enums import IdentifierNamespaceCv
+from omnipath_build.utils.silver_schema import Identifier
 
 
 def build_identifiers(
     record: Any,
-    mapping: dict[str, IdentifierType],
+    mapping: dict[str, IdentifierNamespaceCv],
     transformers: dict[str, Callable] | None = None,
     filters: dict[str, Callable] | None = None,
     accession_attr: str | None = None,
@@ -16,7 +17,7 @@ def build_identifiers(
 
     Args:
         record: Object with identifier attributes
-        mapping: Dict mapping attr_name -> IdentifierType (e.g. {'inchi': IdentifierType.INCHI})
+        mapping: Dict mapping attr_name -> IdentifierNamespaceCv (e.g. {'inchi': IdentifierNamespaceCv.INCHI})
         transformers: Optional dict of attr_name -> transformer functions for values
         filters: Optional dict of attr_name -> filter functions (return False to skip)
         accession_attr: If provided, adds an ACCESSION identifier using this attribute
@@ -27,12 +28,12 @@ def build_identifiers(
     Example:
         # Define mapping in resource file
         LIPIDMAPS_IDENTIFIERS = {
-            'id': IdentifierType.LIPIDMAPS,
-            'inchikey': IdentifierType.INCHIKEY,
-            'inchi': IdentifierType.INCHI,
-            'smiles': IdentifierType.SMILES,
-            'chebi': IdentifierType.CHEBI,
-            'pubchem': IdentifierType.PUBCHEM,
+            'id': IdentifierNamespaceCv.LIPIDMAPS,
+            'inchikey': IdentifierNamespaceCv.INCHIKEY,
+            'inchi': IdentifierNamespaceCv.INCHI,
+            'smiles': IdentifierNamespaceCv.SMILES,
+            'chebi': IdentifierNamespaceCv.CHEBI,
+            'pubchem': IdentifierNamespaceCv.PUBCHEM,
         }
 
         identifiers = build_identifiers(
@@ -55,7 +56,7 @@ def build_identifiers(
             # Convert to string for numeric values
             if isinstance(accession_value, (int, float)):
                 accession_value = str(accession_value)
-            identifiers.append(Identifier(type=IdentifierType.ACCESSION, value=accession_value))
+            identifiers.append(Identifier(type=IdentifierNamespaceCv.ACCESSION, value=accession_value))
 
     # Add other identifiers
     for attr_name, id_type in mapping.items():

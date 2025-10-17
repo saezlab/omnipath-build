@@ -1,4 +1,5 @@
-from omnipath_build.utils.silver_schema import SilverEntity, SilverInteraction, IdentifierType
+from omnipath_build.utils.cv_term_enums import IdentifierNamespaceCv
+from omnipath_build.utils.silver_schema import SilverEntity, SilverInteraction
 from omnipath_build.utils.identifier_builders import build_identifiers
 from omnipath_build.utils.annotation_builders import build_annotations
 
@@ -8,14 +9,14 @@ __all__ = [
 
 # Identifier mappings for BindingDB
 BINDINGDB_LIGAND_IDENTIFIERS = {
-    'inchi_key': IdentifierType.INCHIKEY,
-    'inchi': IdentifierType.INCHI,
-    'smiles': IdentifierType.SMILES,
-    'pubchem': IdentifierType.PUBCHEM_COMPOUND,
+    'inchi_key': IdentifierNamespaceCv.INCHIKEY,
+    'inchi': IdentifierNamespaceCv.INCHI,
+    'smiles': IdentifierNamespaceCv.SMILES,
+    'pubchem': IdentifierNamespaceCv.PUBCHEM_COMPOUND,
 }
 
 BINDINGDB_TARGET_IDENTIFIERS = {
-    'uniprot': IdentifierType.UNIPROT,
+    'uniprot': IdentifierNamespaceCv.UNIPROT,
 }
 
 def bindingdb():

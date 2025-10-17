@@ -1,4 +1,5 @@
-from omnipath_build.utils.silver_schema import SilverEntity, SilverInteraction, IdentifierType
+from omnipath_build.utils.cv_term_enums import IdentifierNamespaceCv
+from omnipath_build.utils.silver_schema import SilverEntity, SilverInteraction
 from omnipath_build.utils.identifier_builders import build_identifiers
 from omnipath_build.utils.annotation_builders import build_annotations
 
@@ -8,27 +9,27 @@ __all__ = [
 
 # Identifier mappings for GuideToPharmacology
 GUIDETOPHARMA_LIGAND_IDENTIFIERS = {
-    'inchi': IdentifierType.INCHI,
-    'smiles': IdentifierType.SMILES,
-    'pubchem': IdentifierType.PUBCHEM_COMPOUND,
-    'chembl': IdentifierType.CHEMBL,
-    'uniprot': IdentifierType.UNIPROT,
-    'entrez': IdentifierType.ENTREZ,
-    'ensembl': IdentifierType.ENSEMBL,
-    'refseq': IdentifierType.REFSEQ,
-    'refseqp': IdentifierType.REFSEQP,
+    'inchi': IdentifierNamespaceCv.INCHI,
+    'smiles': IdentifierNamespaceCv.SMILES,
+    'pubchem': IdentifierNamespaceCv.PUBCHEM_COMPOUND,
+    'chembl': IdentifierNamespaceCv.CHEMBL,
+    'uniprot': IdentifierNamespaceCv.UNIPROT,
+    'entrez': IdentifierNamespaceCv.ENTREZ,
+    'ensembl': IdentifierNamespaceCv.ENSEMBL,
+    'refseq': IdentifierNamespaceCv.REFSEQ,
+    'refseqp': IdentifierNamespaceCv.REFSEQ_PROTEIN,
 }
 
 GUIDETOPHARMA_TARGET_IDENTIFIERS = {
-    'inchi': IdentifierType.INCHI,
-    'smiles': IdentifierType.SMILES,
-    'uniprot': IdentifierType.UNIPROT,
-    'ensembl': IdentifierType.ENSEMBL,
-    'entrez': IdentifierType.ENTREZ,
-    'pubchem': IdentifierType.PUBCHEM_COMPOUND,
-    'chembl': IdentifierType.CHEMBL,
-    'refseq': IdentifierType.REFSEQ,
-    'refseqp': IdentifierType.REFSEQP,
+    'inchi': IdentifierNamespaceCv.INCHI,
+    'smiles': IdentifierNamespaceCv.SMILES,
+    'uniprot': IdentifierNamespaceCv.UNIPROT,
+    'ensembl': IdentifierNamespaceCv.ENSEMBL,
+    'entrez': IdentifierNamespaceCv.ENTREZ,
+    'pubchem': IdentifierNamespaceCv.PUBCHEM_COMPOUND,
+    'chembl': IdentifierNamespaceCv.CHEMBL,
+    'refseq': IdentifierNamespaceCv.REFSEQ,
+    'refseqp': IdentifierNamespaceCv.REFSEQ_PROTEIN,
 }
 
 def guidetopharma_interactions():
