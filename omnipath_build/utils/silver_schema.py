@@ -41,16 +41,6 @@ class Member(NamedTuple):
     identifier_type: IdentifierNamespaceCv
     role: BiologicalRoleCv | None = None
     stoichiometry: float | None = None
-    
-class EntityType(str, Enum):
-    """Enumeration of known entity types."""
-
-    PROTEIN = "protein"
-    GENE = "gene"
-    COMPOUND = "compound"
-    COMPLEX = "complex"
-    RNA = "rna"
-    OTHER = "other"
 
 
 class Identifier(NamedTuple):
@@ -101,7 +91,6 @@ class InteractionParticipant(SilverEntity):
     experimental_role: ExperimentalRoleCv | None = None
     stoichiometry: float | None = None
     identification_method: IdentificationMethodCv | None = None
-    biological_effect: BiologicalEffectCv | None = None
 
 
 class SilverInteraction(NamedTuple):

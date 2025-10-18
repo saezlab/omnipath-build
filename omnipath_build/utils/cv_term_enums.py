@@ -30,33 +30,42 @@ class EntityTypeCv(str, Enum):
     PROTEIN = "MI:0326"
     GENE = "MI:0250"
     RNA = "MI:0320"
-    COMPLEX = "MI:0314"
+    PROTEIN_COMPLEX = "MI:0315"
     SMALL_MOLECULE = "MI:0328"
+    PHENOTYPE = "MI:2261"
+    STIMULUS = "MI:2260"
 
 
 class IdentifierNamespaceCv(str, Enum):
     """Identifier namespace terms backed by PSI-MI accessions."""
 
-    ACCESSION = "MI:0360"
-    UNIPROT = "MI:0486"
+    UNIPROT_SWISS_PROT = "MI:1098"
+    UNIPROT_TREMBL = "MI:1099"
     ENTREZ = "MI:0477"
     ENSEMBL = "MI:0476"
     HGNC = "MI:1095"
     REFSEQ = "MI:0481"
-    REFSEQ_PROTEIN = "MI:0481"
     CHEBI = "MI:0474"
     PUBCHEM = "MI:0730"
-    PUBCHEM_COMPOUND = "MI:0730"
-    CHEMBL = "MI:0967"
+    CHEMBL_COMPOUND = "MI:0967"
+    CHEMBL_TARGET = "MI:1348"
     DRUGBANK = "MI:2002"
     KEGG = "MI:0470"
+    KEGG_COMPOUND = "MI:2012"
     CAS = "MI:2011"
-    INCHI = "MI:2010"
-    INCHIKEY = "MI:0970"
-    SMILES = "MI:2039"
-    LIPIDMAPS = "MI:0489"
-    HMDB = "MI:0489"
-    METANETX = "MI:0489"
+    
+    REFSEQ_PROTEIN = "OM:0001"
+    PUBCHEM_COMPOUND = "OM:0002"
+    LIPIDMAPS = "OM:0003"
+    HMDB = "OM:0004"
+    METANETX = "OM:0005"
+
+class StructureRepresentationCv(str, Enum):
+    """Example structure representation terms."""
+
+    SMILES = "MI:0239"
+    STANDARD_INCHI_KEY = "MI:1101"
+    STANDARD_INCHI = "MI:2010"
 
 class BiologicalRoleCv(str, Enum):
     """Example biological role terms for interaction participants."""
@@ -64,7 +73,7 @@ class BiologicalRoleCv(str, Enum):
     ENZYME = "MI:0501"
     SUBSTRATE = "MI:0502"
     INHIBITOR = "MI:0586"
-    NEUTRAL_COMPONENT = "MI:0497"
+    STIMULATOR = "MI:0840"
 
 
 class ExperimentalRoleCv(str, Enum):
@@ -73,6 +82,7 @@ class ExperimentalRoleCv(str, Enum):
     BAIT = "MI:0496"
     PREY = "MI:0498"
     NEUTRAL_COMPONENT = "MI:0497"
+    UNSPECIFIED_ROLE = "MI:0499"
 
 
 class IdentificationMethodCv(str, Enum):
@@ -95,10 +105,13 @@ class BiologicalEffectCv(str, Enum):
 class InteractionTypeCv(str, Enum):
     """Example interaction type terms."""
 
+    COLOCALIZATION = "MI:0403"
+    FUNCTIONAL_ASSOCIATION = "MI:2286"
     PHYSICAL_ASSOCIATION = "MI:0915"
     DIRECT_INTERACTION = "MI:0407"
-    PHOSPHORYLATION = "MI:0217"
-    CAUSAL_INTERACTION = "MI:2233"
+    PHOSPHORYLATION_REACTION = "MI:0217"
+    PHENOTYPE_RESULT = "MI:2283"
+
 
 
 class DetectionMethodCv(str, Enum):
@@ -107,27 +120,37 @@ class DetectionMethodCv(str, Enum):
     AFFINITY_CHROMATOGRAPHY = "MI:0004"
     COIMMUNOPRECIPITATION = "MI:0019"
     PULL_DOWN = "MI:0096"
+    INFERRED_BY_CURATOR = "MI:0364"
 
 
 class CausalMechanismCv(str, Enum):
     """Example causal mechanism terms."""
 
-    CAUSAL_REGULATORY_MECHANISM = "MI:2245"
-    INDIRECT_CAUSAL_REGULATION = "MI:2246"
-    DIRECT_CAUSAL_REGULATION = "MI:2250"
+    TRANSCRIPTIONAL_REGULATION = "MI:2247"
+    TRANSLATION_REGULATION = "MI:2248"
+    POST_TRANSLATIONAL_REGULATION = "MI:2249"
 
 
 class CausalStatementCv(str, Enum):
     """Example causal statement terms."""
 
-    CAUSAL_STATEMENT = "MI:2234"
-
+    DOWN_REGULATES = "MI:2240"
+    DOWN_REGULATES_ACTIVITY = "MI:2241"
+    DOWN_REGULATES_QUANTITY = "MI:2242"
+    DOWN_REGULATES_QUANTITY_BY_DESTABLIZATION = "MI:2244"
+    DOWN_REGULATES_QUANTITY_BY_REPRESSION = "MI:2243"
+    UP_REGULATES = "MI:2235"
+    UP_REGULATES_ACTIVITY = "MI:2236"
+    UP_REGULATES_QUANTITY = "MI:2237"
+    UP_REGULATES_QUANTITY_BY_EXPRESSION = "MI:2238"
+    UP_REGULATES_QUANTITY_BY_STABILIZATION = "MI:2239"
 
 class ComplexExpansionCv(str, Enum):
     """Example complex expansion strategies."""
 
-    COMPLEX_EXPANSION = "MI:1059"
+    BIPARTITE_EXPANSION = "MI:1062"
     MATRIX_EXPANSION = "MI:1061"
+    SPOKE_EXPANSION = "MI:1060"
 
 
 class ReferenceTypeCv(str, Enum):
@@ -136,4 +159,4 @@ class ReferenceTypeCv(str, Enum):
     PUBMED = "MI:0446"
     PUBMED_CENTRAL = "MI:1042"
     DOI = "MI:0574"
-    IMEX = "MI:0670"
+    BIORXIV = "MI:2347"
