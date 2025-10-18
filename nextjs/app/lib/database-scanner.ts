@@ -38,7 +38,7 @@ export interface DatabaseInfo {
 }
 
 const DATABASES_PATH = path.join(process.cwd(), '..', 'databases', 'omnipath', 'data');
-const GOLD_PATH = path.join(process.cwd(), '..', 'omnipath_build', 'gold_duckdb');
+const GOLD_PATH = path.join(process.cwd(), '..', 'databases', 'omnipath', 'output');
 
 function getLayerFromPath(_filePath: string): 'silver' | null {
   // All parquet files in source directories are silver files
@@ -246,12 +246,12 @@ export function buildDatabaseTree(databases: DatabaseInfo[]): TreeNode[] {
 export async function loadParquetFile(filePath: string): Promise<ArrayBuffer> {
   let fullPath: string;
 
-  // Check if it's an absolute path pointing to the gold directory (combined tables)
-  if (path.isAbsolute(filePath) && filePath.includes('/gold_duckdb/')) {
+  // Check if it's an absolute path pointing to the gold/output directory (combined tables)
+  if (path.isAbsolute(filePath) && filePath.includes('/output/')) {
     fullPath = filePath;
   }
   // If filePath starts with / but is relative to DATABASES_PATH (source-specific files)
-  else if (filePath.startsWith('/') && !filePath.includes('/gold_duckdb/')) {
+  else if (filePath.startsWith('/') && !filePath.includes('/output/')) {
     fullPath = path.join(DATABASES_PATH, filePath);
   }
   // If filePath already includes databases/omnipath, use it directly

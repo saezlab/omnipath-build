@@ -7,6 +7,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Spinner } from "@/components/ui/spinner"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Badge } from "@/components/ui/badge"
+import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card"
 import { Database, FileText, AlertCircle } from "lucide-react"
 import * as duckdb from "@duckdb/duckdb-wasm"
 
@@ -124,6 +125,58 @@ export function ParquetViewer({ file }: ParquetViewerProps) {
     )
   }
 
+  // Helper function to format cell value
+  const formatCellValue = (value: any): string => {
+    if (value === null || value === undefined) return "null"
+    if (typeof value === "object") {
+      return JSON.stringify(value, null, 2)
+    }
+    return String(value)
+  }
+
+  // Helper function to check if value should be truncated
+  const shouldTruncate = (value: string): boolean => {
+    return value.length > 50
+  }
+
+  // Helper function to truncate value
+  const truncateValue = (value: string): string => {
+    return value.length > 50 ? value.slice(0, 47) + "..." : value
+  }
+
+  // Component to render cell with optional hover card
+  const CellContent = ({ value }: { value: any }) => {
+    const formattedValue = formatCellValue(value)
+    const isNull = value === null || value === undefined
+    const isStruct = typeof value === "object" && value !== null
+
+    if (isNull) {
+      return <span className="text-muted-foreground italic">null</span>
+    }
+
+    if (!shouldTruncate(formattedValue)) {
+      return <span className={isStruct ? "font-mono text-xs" : ""}>{formattedValue}</span>
+    }
+
+    // Truncated value with hover card
+    return (
+      <HoverCard>
+        <HoverCardTrigger asChild>
+          <span className={`cursor-help ${isStruct ? "font-mono text-xs" : ""}`}>
+            {truncateValue(formattedValue)}
+          </span>
+        </HoverCardTrigger>
+        <HoverCardContent className="w-96 max-h-96 overflow-auto" side="top">
+          {isStruct ? (
+            <pre className="text-xs whitespace-pre-wrap break-words">{formattedValue}</pre>
+          ) : (
+            <p className="text-sm whitespace-pre-wrap break-words">{formattedValue}</p>
+          )}
+        </HoverCardContent>
+      </HoverCard>
+    )
+  }
+
   return (
     <Tabs defaultValue="data" className="space-y-4">
       <TabsList>
@@ -149,7 +202,7 @@ export function ParquetViewer({ file }: ParquetViewerProps) {
                 <TableHeader>
                   <TableRow>
                     {schema.map((col) => (
-                      <TableHead key={col.column_name} className="whitespace-nowrap">
+                      <TableHead key={col.column_name} className="whitespace-nowrap max-w-xs">
                         {col.column_name}
                       </TableHead>
                     ))}
@@ -159,12 +212,8 @@ export function ParquetViewer({ file }: ParquetViewerProps) {
                   {data.map((row, idx) => (
                     <TableRow key={idx}>
                       {schema.map((col) => (
-                        <TableCell key={col.column_name} className="whitespace-nowrap">
-                          {row[col.column_name] === null ? (
-                            <span className="text-muted-foreground italic">null</span>
-                          ) : (
-                            String(row[col.column_name])
-                          )}
+                        <TableCell key={col.column_name} className="max-w-xs">
+                          <CellContent value={row[col.column_name]} />
                         </TableCell>
                       ))}
                     </TableRow>

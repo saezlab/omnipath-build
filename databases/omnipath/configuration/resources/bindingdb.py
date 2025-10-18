@@ -80,11 +80,6 @@ def bindingdb():
                 ),
                 interaction_type=InteractionTypeCv.DIRECT_INTERACTION,
                 detection_method=DetectionMethodCv.INFERRED_BY_CURATOR,
-                interaction_annotations=build_annotations(
-                    target,
-                    ('organism', 'target_organism'),
-                    ('regions_mutations', 'regions_mutations', None, str),
-                ),
             )
 
         # Only yield if we have at least one record
