@@ -39,6 +39,8 @@ dependencies = [
     "pyarrow>=21.0.0",
     "pyyaml>=6.0.2",
     "toml",
+    "pypath-omnipath",
+    "download-manager",
 ]
 description = "A general database builder on top of pypath."
 license = "GPL-3.0-or-later"
@@ -203,3 +205,5 @@ convention = "google"
 [tool.uv.sources]
 jupyter-contrib-nbextensions = {git = "https://github.com/deeenes/jupyter_contrib_nbextensions.git", branch = "master"}
 nbsphinx = {git = "https://github.com/deeenes/nbsphinx", branch = "timings"}
+pypath-omnipath = {path = "pypath", editable = true}
+download-manager = {path = "download-manager", editable = true}
