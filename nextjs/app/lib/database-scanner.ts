@@ -5,7 +5,7 @@ import { TreeNode } from '../components/DatabaseTree';
 export interface DatabaseFile {
   path: string;
   name: string;
-  layer: 'bronze' | 'silver' | 'gold' | 'pass1';
+  layer: 'silver';
   source: string;
   size: number;
   modified: Date;
@@ -15,10 +15,7 @@ export interface SourceInfo {
   name: string;
   path: string;
   layers: {
-    bronze: DatabaseFile[];
     silver: DatabaseFile[];
-    gold: DatabaseFile[];
-    pass1: DatabaseFile[];
   };
   totalFiles: number;
   totalSize: number;
@@ -43,12 +40,10 @@ export interface DatabaseInfo {
 const DATABASES_PATH = path.join(process.cwd(), '..', 'databases', 'omnipath', 'data');
 const GOLD_PATH = path.join(process.cwd(), '..', 'omnipath_build', 'gold_duckdb');
 
-function getLayerFromPath(filePath: string): 'bronze' | 'silver' | 'gold' | 'pass1' | null {
-  if (filePath.includes('/bronze/')) return 'bronze';
-  if (filePath.includes('/silver/')) return 'silver';
-  if (filePath.includes('/gold/')) return 'gold';
-  if (filePath.includes('/pass1/')) return 'pass1';
-  return null;
+function getLayerFromPath(_filePath: string): 'silver' | null {
+  // All parquet files in source directories are silver files
+  // Pattern: /source_name/file.parquet
+  return 'silver';
 }
 
 function scanDirectory(dirPath: string, sourceName: string = ''): DatabaseFile[] {
@@ -118,38 +113,29 @@ export function scanDatabases(): DatabaseInfo[] {
   const sources: SourceInfo[] = [];
 
   try {
-    const sourceTypes = fs.readdirSync(DATABASES_PATH);
+    const sourceNames = fs.readdirSync(DATABASES_PATH);
 
-    for (const sourceType of sourceTypes) {
-      const sourceTypePath = path.join(DATABASES_PATH, sourceType);
-      const stat = fs.statSync(sourceTypePath);
+    for (const sourceName of sourceNames) {
+      const sourcePath = path.join(DATABASES_PATH, sourceName);
+      const stat = fs.statSync(sourcePath);
 
       if (stat.isDirectory()) {
-        // Each source type directory contains subdirectories (e.g., lipidmaps/lipidmaps_lipids)
-        const sourceSubdirs = fs.readdirSync(sourceTypePath);
+        // Scan for parquet files directly in the source directory
+        const files = scanDirectory(sourcePath, sourceName);
 
-        for (const subdir of sourceSubdirs) {
-          const subdirPath = path.join(sourceTypePath, subdir);
-          const subdirStat = fs.statSync(subdirPath);
+        const sourceInfo: SourceInfo = {
+          name: sourceName,
+          path: sourcePath,
+          layers: {
+            silver: files.filter(f => f.layer === 'silver')
+          },
+          totalFiles: files.length,
+          totalSize: files.reduce((sum, f) => sum + f.size, 0)
+        };
 
-          if (subdirStat.isDirectory()) {
-            const files = scanDirectory(subdirPath, subdir);
-
-            const sourceInfo: SourceInfo = {
-              name: subdir,
-              path: subdirPath,
-              layers: {
-                bronze: files.filter(f => f.layer === 'bronze'),
-                silver: files.filter(f => f.layer === 'silver'),
-                gold: files.filter(f => f.layer === 'gold'),
-                pass1: files.filter(f => f.layer === 'pass1')
-              },
-              totalFiles: files.length,
-              totalSize: files.reduce((sum, f) => sum + f.size, 0)
-            };
-
-            sources.push(sourceInfo);
-          }
+        // Only add sources that have files
+        if (files.length > 0) {
+          sources.push(sourceInfo);
         }
       }
     }
@@ -251,36 +237,8 @@ export function buildDatabaseTree(databases: DatabaseInfo[]): TreeNode[] {
       name: source.name,
       path: source.path,
       type: 'folder' as const,
-      children: [
-        {
-          name: 'Bronze Layer',
-          path: `${source.path}/bronze`,
-          type: 'layer' as const,
-          layer: 'bronze' as const,
-          children: buildDirectoryStructure(source.layers.bronze, `/bronze`, source.name)
-        },
-        {
-          name: 'Silver Layer',
-          path: `${source.path}/silver`,
-          type: 'layer' as const,
-          layer: 'silver' as const,
-          children: buildDirectoryStructure(source.layers.silver, `/silver`, source.name)
-        },
-        {
-          name: 'Gold Layer',
-          path: `${source.path}/gold`,
-          type: 'layer' as const,
-          layer: 'gold' as const,
-          children: buildDirectoryStructure(source.layers.gold, `/gold`, source.name)
-        },
-        {
-          name: 'Pass1 Layer',
-          path: `${source.path}/pass1`,
-          type: 'layer' as const,
-          layer: 'pass1' as const,
-          children: buildDirectoryStructure(source.layers.pass1, `/pass1`, source.name)
-        }
-      ].filter(layer => layer.children && layer.children.length > 0)
+      // Files are directly in the source folder, no layer subdirectories
+      children: buildDirectoryStructure(source.layers.silver, '', source.name)
     }))
   }));
 }

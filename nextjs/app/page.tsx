@@ -6,17 +6,9 @@ import { SidebarTrigger } from "@/components/ui/sidebar";
 import {
   Breadcrumb,
   BreadcrumbItem,
-  BreadcrumbLink,
   BreadcrumbList,
   BreadcrumbPage,
 } from "@/components/ui/breadcrumb";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { ParquetViewer } from '@/components/parquet-viewer';
 import { useDatabase } from "@/hooks/use-database-context";
 
@@ -32,18 +24,22 @@ interface GoldTable {
 export default function DashboardPage() {
   const { sources, loading } = useDatabase();
   const [viewMode, setViewMode] = useState<ViewMode>('gold');
-  const [selectedSource, setSelectedSource] = useState<string>('');
   const [activeGoldTable, setActiveGoldTable] = useState<string>('');
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [parquetFile, setParquetFile] = useState<File | null>(null);
   const [fileLoading, setFileLoading] = useState(false);
   const [goldTables, setGoldTables] = useState<GoldTable[]>([]);
 
-  // Helper function to get silver files for a source
-  const getSilverFiles = (sourceName: string) => {
-    const source = sources.find(s => s.name === sourceName);
-    if (!source) return [];
-    return source.layers.silver || [];
+  // Get all silver files from all sources
+  const getAllSilverFiles = () => {
+    const allFiles: Array<{ file: any; sourceName: string }> = [];
+    sources.forEach(source => {
+      const files = source.layers.silver || [];
+      files.forEach(file => {
+        allFiles.push({ file, sourceName: source.name });
+      });
+    });
+    return allFiles;
   };
 
   // Fetch gold tables
@@ -78,25 +74,18 @@ export default function DashboardPage() {
     }
   }, [activeGoldTable, viewMode, goldTables]);
 
-  // Auto-load first file when switching source in silver mode
+  // Auto-load first file when switching to silver mode
   useEffect(() => {
-    if (viewMode === 'silver' && selectedSource) {
-      const files = getSilverFiles(selectedSource);
-      if (files.length > 0) {
-        handleFileSelect(files[0].path);
+    if (viewMode === 'silver') {
+      const allFiles = getAllSilverFiles();
+      if (allFiles.length > 0) {
+        handleFileSelect(allFiles[0].file.path);
       } else {
         setSelectedFile(null);
         setParquetFile(null);
       }
     }
-  }, [selectedSource, viewMode, sources]);
-
-  // Set initial source
-  useEffect(() => {
-    if (sources.length > 0 && !selectedSource) {
-      setSelectedSource(sources[0].name);
-    }
-  }, [sources, selectedSource]);
+  }, [viewMode, sources]);
 
   const handleFileSelect = async (path: string) => {
     setSelectedFile(path);
@@ -141,9 +130,8 @@ export default function DashboardPage() {
     );
   }
 
-  const currentSource = sources.find(s => s.name === selectedSource);
   const currentGoldTable = goldTables.find(t => t.name === activeGoldTable);
-  const currentSilverFiles = getSilverFiles(selectedSource);
+  const allSilverFiles = getAllSilverFiles();
 
   return (
     <>
@@ -256,44 +244,24 @@ export default function DashboardPage() {
         ) : (
           <>
             {/* Silver Layer - Source-Specific */}
-            <div className="mb-4 flex items-center justify-between">
-              <div>
-                <h1 className="text-3xl font-bold text-gray-900 dark:text-white">
-                  Silver Layer - Source-Specific Data
-                </h1>
-                <p className="mt-1 text-gray-600 dark:text-gray-400">
-                  Processed data from individual sources
-                </p>
-              </div>
-
-              {/* Source Dropdown */}
-              <Select value={selectedSource} onValueChange={(value: string) => {
-                setSelectedSource(value);
-                setSelectedFile(null);
-                setParquetFile(null);
-              }}>
-                <SelectTrigger className="w-[280px]">
-                  <SelectValue placeholder="Select source" />
-                </SelectTrigger>
-                <SelectContent>
-                  {sources.map((source) => (
-                    <SelectItem key={source.name} value={source.name}>
-                      <span className="capitalize">{source.name.replace(/_/g, ' ')}</span>
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+            <div className="mb-4">
+              <h1 className="text-3xl font-bold text-gray-900 dark:text-white">
+                Silver Layer - Source-Specific Data
+              </h1>
+              <p className="mt-1 text-gray-600 dark:text-gray-400">
+                Processed data from individual sources
+              </p>
             </div>
 
             {/* File Grid */}
             <div className="grid grid-cols-1 lg:grid-cols-4 gap-6 flex-1">
               <div className="lg:col-span-1">
-                <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-4 h-full">
-                  <h3 className="text-lg font-medium text-gray-900 dark:text-white mb-4">
-                    Silver Files ({currentSilverFiles.length})
+                <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-4 h-full overflow-y-auto">
+                  <h3 className="text-lg font-medium text-gray-900 dark:text-white mb-4 sticky top-0 bg-white dark:bg-gray-800 pb-2">
+                    Silver Files ({allSilverFiles.length})
                   </h3>
                   <div className="space-y-2">
-                    {currentSilverFiles.map((file: any) => (
+                    {allSilverFiles.map(({ file, sourceName }) => (
                       <button
                         key={file.path}
                         onClick={() => handleFileSelect(file.path)}
@@ -307,13 +275,13 @@ export default function DashboardPage() {
                       >
                         <div className="font-medium">{file.name}</div>
                         <div className="text-xs text-gray-500 dark:text-gray-400">
-                          {(file.size / 1024).toFixed(2)} KB
+                          {sourceName} • {(file.size / 1024).toFixed(2)} KB
                         </div>
                       </button>
                     ))}
-                    {currentSilverFiles.length === 0 && (
+                    {allSilverFiles.length === 0 && (
                       <p className="text-sm text-gray-500 dark:text-gray-400 text-center py-4">
-                        No silver files for this source
+                        No silver files available
                       </p>
                     )}
                   </div>

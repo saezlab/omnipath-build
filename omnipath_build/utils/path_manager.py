@@ -88,9 +88,13 @@ class PathManager:
         return bronze_dir / 'latest.parquet'
 
     def silver_file(self, source_name: str, function_name: str, table_name: str) -> Path:
-        """Get path to silver parquet file."""
-        silver_dir = self.source_silver_path(source_name, function_name)
-        return silver_dir / f"{table_name}.parquet"
+        """Get path to silver parquet file (directly in source directory).
+
+        Note: function_name parameter is kept for API compatibility but not used.
+        Files are named by table_name and placed directly in the source directory.
+        """
+        source_dir = self.source_path(source_name)
+        return source_dir / f"{table_name}.parquet"
 
     def gold_file(self, source_name: str, function_name: str, table_name: str) -> Path:
         """Get path to source-specific gold parquet file."""

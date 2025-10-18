@@ -40,11 +40,12 @@ __all__ = [
     'run_silver_loader',
 ]
 
-# Mapping of schema type identifiers to pyarrow schema and table name.
+# Mapping of schema type identifiers to pyarrow schema.
+# Note: table names are now derived from function names, not hardcoded here.
 SCHEMA_LOOKUP = {
-    'entity': (SILVER_ENTITY_SCHEMA, 'silver_entities'),
-    'interaction': (SILVER_INTERACTION_SCHEMA, 'silver_interactions'),
-    'cv_term': (SILVER_CV_TERM_SCHEMA, 'silver_cv_terms'),
+    'entity': SILVER_ENTITY_SCHEMA,
+    'interaction': SILVER_INTERACTION_SCHEMA,
+    'cv_term': SILVER_CV_TERM_SCHEMA,
 }
 
 # Strings used when inspecting function source code to infer schema type.
@@ -262,16 +263,16 @@ def _coerce_list_fields(record: dict, schema: pa.Schema) -> None:
         record[field.name] = value
 
 
-def _ensure_schema(schema_type: str | None) -> tuple[str, pa.Schema, str]:
-    """Validate schema type and return (type, pyarrow schema, table name)."""
+def _ensure_schema(schema_type: str | None) -> tuple[str, pa.Schema]:
+    """Validate schema type and return (type, pyarrow schema)."""
     if schema_type is None:
         raise ValueError('Unable to determine schema type for records')
 
     if schema_type not in SCHEMA_LOOKUP:
         raise ValueError(f'Unsupported schema type: {schema_type}')
 
-    schema, table_name = SCHEMA_LOOKUP[schema_type]
-    return schema_type, schema, table_name
+    schema = SCHEMA_LOOKUP[schema_type]
+    return schema_type, schema
 
 
 def _is_multi_output_record(record: object) -> bool:
@@ -297,11 +298,11 @@ def process_resource_function(
         schema_type = resource_fn.schema_type
         if schema_type:
             try:
-                _, _, table_name = _ensure_schema(schema_type)
+                _ = _ensure_schema(schema_type)
                 potential_output = path_manager.silver_file(
                     resource_fn.source,
                     resource_fn.function_name,
-                    table_name,
+                    resource_fn.function_name,  # Use function name as table name
                 )
                 if potential_output.exists():
                     print(f'[{resource_fn.source}.{resource_fn.function_name}] skipping (file exists: {potential_output})')
@@ -345,11 +346,11 @@ def process_resource_function(
 
             try:
                 schema_type = _schema_from_record(output_record)
-                _, _, table_name = _ensure_schema(schema_type)
+                _ = _ensure_schema(schema_type)
                 potential_file = path_manager.silver_file(
                     resource_fn.source,
                     output_name,
-                    table_name,
+                    output_name,  # Use output name as table name
                 )
                 if potential_file.exists():
                     existing_files[output_name] = potential_file
@@ -388,7 +389,6 @@ def _process_single_output(
     """Process single-output function (original logic)."""
     schema_type = resource_fn.schema_type
     schema = None
-    table_name = None
     output_file: Optional[Path] = None
     writer: Optional[pq.ParquetWriter] = None
     total_records = 0
@@ -398,9 +398,9 @@ def _process_single_output(
     normalized = _normalize_record(first_record)
     if schema_type is None:
         schema_type = _schema_from_record(first_record)
-        schema_type, schema, table_name = _ensure_schema(schema_type)
+        schema_type, schema = _ensure_schema(schema_type)
     elif schema is None:
-        schema_type, schema, table_name = _ensure_schema(schema_type)
+        schema_type, schema = _ensure_schema(schema_type)
 
     if schema is not None:
         _coerce_list_fields(normalized, schema)
@@ -415,9 +415,9 @@ def _process_single_output(
 
         if schema_type is None:
             schema_type = _schema_from_record(record)
-            schema_type, schema, table_name = _ensure_schema(schema_type)
+            schema_type, schema = _ensure_schema(schema_type)
         elif schema is None:
-            schema_type, schema, table_name = _ensure_schema(schema_type)
+            schema_type, schema = _ensure_schema(schema_type)
 
         if schema is not None:
             _coerce_list_fields(normalized, schema)
@@ -438,7 +438,7 @@ def _process_single_output(
                 output_file = path_manager.silver_file(
                     resource_fn.source,
                     resource_fn.function_name,
-                    table_name,
+                    resource_fn.function_name,  # Use function name as table name
                 )
                 output_file.parent.mkdir(parents=True, exist_ok=True)
 
@@ -459,7 +459,7 @@ def _process_single_output(
             output_file = path_manager.silver_file(
                 resource_fn.source,
                 resource_fn.function_name,
-                table_name,
+                resource_fn.function_name,  # Use function name as table name
             )
             output_file.parent.mkdir(parents=True, exist_ok=True)
             pq.write_table(pa.Table.from_pylist([], schema=schema), output_file)
@@ -480,7 +480,7 @@ def _process_single_output(
         output_file = path_manager.silver_file(
             resource_fn.source,
             resource_fn.function_name,
-            table_name,
+            resource_fn.function_name,  # Use function name as table name
         )
         output_file.parent.mkdir(parents=True, exist_ok=True)
 
@@ -508,7 +508,6 @@ def _process_multi_output(
     # Multi-output state tracking
     batches: Dict[str, List[dict]] = {}
     schemas: Dict[str, pa.Schema] = {}
-    table_names: Dict[str, str] = {}
     writers: Dict[str, pq.ParquetWriter] = {}
     output_files: Dict[str, Path] = {}
     record_counts: Dict[str, int] = {}
@@ -527,9 +526,8 @@ def _process_multi_output(
         # Determine schema if needed
         if output_name not in schemas:
             schema_type = _schema_from_record(output_record)
-            schema_type_key, schema, table_name = _ensure_schema(schema_type)
+            schema_type_key, schema = _ensure_schema(schema_type)
             schemas[output_name] = schema
-            table_names[output_name] = table_name
             schema_types[output_name] = schema_type_key
 
         # Coerce fields
@@ -549,7 +547,7 @@ def _process_multi_output(
                     output_files[output_name] = path_manager.silver_file(
                         resource_fn.source,
                         output_name,
-                        table_names[output_name],
+                        output_name,  # Use output name as table name
                     )
                     output_files[output_name].parent.mkdir(parents=True, exist_ok=True)
 
@@ -598,7 +596,7 @@ def _process_multi_output(
                 output_files[output_name] = path_manager.silver_file(
                     resource_fn.source,
                     output_name,
-                    table_names[output_name],
+                    output_name,  # Use output name as table name
                 )
                 output_files[output_name].parent.mkdir(parents=True, exist_ok=True)
 
