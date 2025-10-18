@@ -9,6 +9,7 @@ from enum import Enum
 __all__ = [
     'EntityTypeCv',
     'IdentifierNamespaceCv',
+    'StructureRepresentationCv',
     'MemberIdTypeCv',
     'ParentIdentifierTypeCv',
     'BiologicalRoleCv',
@@ -35,18 +36,22 @@ class EntityTypeCv(str, Enum):
     PHENOTYPE = "MI:2261"
     STIMULUS = "MI:2260"
 
+    # OmniPath-specific terms
+    PROTEIN_FAMILY = "OM:0010"
+    LIPID = "OM:0011"
+
 
 class IdentifierNamespaceCv(str, Enum):
     """Identifier namespace terms backed by PSI-MI accessions."""
 
-    UNIPROT_SWISS_PROT = "MI:1098"
-    UNIPROT_TREMBL = "MI:1099"
+    UNIPROT = "MI:1097"
     ENTREZ = "MI:0477"
     ENSEMBL = "MI:0476"
     HGNC = "MI:1095"
     REFSEQ = "MI:0481"
     CHEBI = "MI:0474"
     PUBCHEM = "MI:0730"
+    CHEMBL = "MI:1349"
     CHEMBL_COMPOUND = "MI:0967"
     CHEMBL_TARGET = "MI:1348"
     DRUGBANK = "MI:2002"
@@ -59,10 +64,12 @@ class IdentifierNamespaceCv(str, Enum):
     LIPIDMAPS = "OM:0003"
     HMDB = "OM:0004"
     METANETX = "OM:0005"
+    BINDINGDB = "OM:0006"
+    SIGNOR = "OM:0007"
+    GUIDETOPHARMA = "OM:0008"
+    SWISSLIPIDS = "OM:0009"
 
-class StructureRepresentationCv(str, Enum):
-    """Example structure representation terms."""
-
+    #structure representations
     SMILES = "MI:0239"
     STANDARD_INCHI_KEY = "MI:1101"
     STANDARD_INCHI = "MI:2010"
@@ -74,6 +81,8 @@ class BiologicalRoleCv(str, Enum):
     SUBSTRATE = "MI:0502"
     INHIBITOR = "MI:0586"
     STIMULATOR = "MI:0840"
+    ALLOSTERIC_EFFECTOR = "MI:1160"
+    REGULATOR_TARGET = "MI:2275"
 
 
 class ExperimentalRoleCv(str, Enum):

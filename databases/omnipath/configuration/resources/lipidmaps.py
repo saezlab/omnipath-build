@@ -1,4 +1,7 @@
-from omnipath_build.utils.cv_term_enums import IdentifierNamespaceCv
+from omnipath_build.utils.cv_term_enums import (
+    IdentifierNamespaceCv,
+    EntityTypeCv,
+)
 from omnipath_build.utils.silver_schema import SilverEntity
 from omnipath_build.utils.identifier_builders import build_identifiers
 from omnipath_build.utils.annotation_builders import build_annotations
@@ -10,8 +13,8 @@ __all__ = [
 # Identifier mapping for LipidMaps
 LIPIDMAPS_IDENTIFIERS = {
     'id': IdentifierNamespaceCv.LIPIDMAPS,
-    'inchikey': IdentifierNamespaceCv.INCHIKEY,
-    'inchi': IdentifierNamespaceCv.INCHI,
+    'inchikey': IdentifierNamespaceCv.STANDARD_INCHI_KEY,
+    'inchi': IdentifierNamespaceCv.STANDARD_INCHI,
     'smiles': IdentifierNamespaceCv.SMILES,
     'chebi': IdentifierNamespaceCv.CHEBI,
     'pubchem': IdentifierNamespaceCv.PUBCHEM,
@@ -22,7 +25,7 @@ def lipidmaps_lipids():
     for rec in pypath_lipids():
         yield SilverEntity(
             source='lipidmaps',
-            entity_type='compound',
+            entity_type=EntityTypeCv.LIPID,
             name=rec.name,
             synonyms=[s.strip() for s in rec.synonyms.split('; ') if s.strip()] if rec.synonyms else None,
             identifiers=build_identifiers(rec, mapping=LIPIDMAPS_IDENTIFIERS, accession_attr='id'),

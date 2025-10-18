@@ -1,4 +1,7 @@
-from omnipath_build.utils.cv_term_enums import IdentifierNamespaceCv
+from omnipath_build.utils.cv_term_enums import (
+    IdentifierNamespaceCv,
+    EntityTypeCv,
+)
 from omnipath_build.utils.silver_schema import SilverEntity
 from omnipath_build.utils.identifier_builders import build_identifiers
 from omnipath_build.utils.annotation_builders import build_annotations
@@ -9,8 +12,9 @@ __all__ = [
 
 # Identifier mapping for HMDB
 HMDB_IDENTIFIERS = {
-    'inchikey': IdentifierNamespaceCv.INCHIKEY,
-    'inchi': IdentifierNamespaceCv.INCHI,
+    'accession': IdentifierNamespaceCv.HMDB,
+    'inchikey': IdentifierNamespaceCv.STANDARD_INCHI_KEY,
+    'inchi': IdentifierNamespaceCv.STANDARD_INCHI,
     'smiles': IdentifierNamespaceCv.SMILES,
     'chebi_id': IdentifierNamespaceCv.CHEBI,
     'pubchem_compound_id': IdentifierNamespaceCv.PUBCHEM,
@@ -25,7 +29,7 @@ def hmdb_entities():
     for rec in compounds_for_metabo():
         yield SilverEntity(
             source='hmdb',
-            entity_type='compound',
+            entity_type=EntityTypeCv.SMALL_MOLECULE,
             name=rec.traditional_iupac,
             synonyms=rec.synonyms,
             identifiers=build_identifiers(

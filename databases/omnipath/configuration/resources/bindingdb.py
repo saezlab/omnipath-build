@@ -1,5 +1,14 @@
-from omnipath_build.utils.cv_term_enums import IdentifierNamespaceCv
-from omnipath_build.utils.silver_schema import SilverEntity, SilverInteraction
+from omnipath_build.utils.cv_term_enums import (
+    IdentifierNamespaceCv,
+    EntityTypeCv,
+    InteractionTypeCv,
+    BiologicalRoleCv,
+    DetectionMethodCv,
+)
+from omnipath_build.utils.silver_schema import (
+    SilverInteraction,
+    InteractionParticipant,
+)
 from omnipath_build.utils.identifier_builders import build_identifiers
 from omnipath_build.utils.annotation_builders import build_annotations
 
@@ -9,8 +18,8 @@ __all__ = [
 
 # Identifier mappings for BindingDB
 BINDINGDB_LIGAND_IDENTIFIERS = {
-    'inchi_key': IdentifierNamespaceCv.INCHIKEY,
-    'inchi': IdentifierNamespaceCv.INCHI,
+    'inchi_key': IdentifierNamespaceCv.STANDARD_INCHI_KEY,
+    'inchi': IdentifierNamespaceCv.STANDARD_INCHI,
     'smiles': IdentifierNamespaceCv.SMILES,
     'pubchem': IdentifierNamespaceCv.PUBCHEM_COMPOUND,
 }
@@ -42,9 +51,10 @@ def bindingdb():
         if ligand.inchi_key and target.uniprot:
             result['bindingdb_interactions'] = SilverInteraction(
                 source='bindingdb',
-                entity_a=SilverEntity(
+                entity_a=InteractionParticipant(
                     source='bindingdb',
-                    entity_type='compound',
+                    entity_type=EntityTypeCv.SMALL_MOLECULE,
+                    biological_role=BiologicalRoleCv.ALLOSTERIC_EFFECTOR,
                     name=ligand.name,
                     identifiers=build_identifiers(
                         ligand,
@@ -53,9 +63,10 @@ def bindingdb():
                         accession_attr='inchi_key',
                     ),
                 ),
-                entity_b=SilverEntity(
+                entity_b=InteractionParticipant(
                     source='bindingdb',
-                    entity_type='protein',
+                    entity_type=EntityTypeCv.PROTEIN,
+                    biological_role=BiologicalRoleCv.REGULATOR_TARGET,
                     name=target.name,
                     identifiers=build_identifiers(
                         target,
@@ -69,7 +80,8 @@ def bindingdb():
                         ('regions_mutations', 'regions_mutations', None, str),
                     ),
                 ),
-                interaction_type='binding',
+                interaction_type=InteractionTypeCv.DIRECT_INTERACTION,
+                detection_method=DetectionMethodCv.INFERRED_BY_CURATOR,
                 interaction_annotations=build_annotations(
                     target,
                     ('organism', 'target_organism'),

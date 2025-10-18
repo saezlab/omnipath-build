@@ -1,4 +1,7 @@
-from omnipath_build.utils.cv_term_enums import IdentifierNamespaceCv
+from omnipath_build.utils.cv_term_enums import (
+    IdentifierNamespaceCv,
+    EntityTypeCv,
+)
 from omnipath_build.utils.silver_schema import SilverEntity
 from omnipath_build.utils.identifier_builders import build_identifiers
 from omnipath_build.utils.annotation_builders import build_annotations
@@ -25,9 +28,9 @@ def signor_complexes():
     for rec in pypath_complexes():
         yield SilverEntity(
             source='signor',
-            entity_type='complex',
+            entity_type=EntityTypeCv.PROTEIN_COMPLEX,
             name=rec.name,
-            identifiers=[Identifier(type=IdentifierNamespaceCv.ACCESSION, value=rec.complex_id)],
+            identifiers=[Identifier(type=IdentifierNamespaceCv.SIGNOR, value=rec.complex_id)],
             annotations=build_annotations(
                 rec,
                 ('components', 'components', None, lambda x: ','.join(x)),
@@ -46,9 +49,9 @@ def signor_protein_families():
     for rec in pypath_families():
         yield SilverEntity(
             source='signor',
-            entity_type='protein_family',
+            entity_type=EntityTypeCv.PROTEIN_FAMILY,
             name=rec.name,
-            identifiers=[Identifier(type=IdentifierNamespaceCv.ACCESSION, value=rec.family_id)],
+            identifiers=[Identifier(type=IdentifierNamespaceCv.SIGNOR, value=rec.family_id)],
             annotations=build_annotations(
                 rec,
                 ('members', 'members', None, lambda x: ','.join(x)),
@@ -67,9 +70,9 @@ def signor_phenotypes():
     for rec in pypath_phenotypes():
         yield SilverEntity(
             source='signor',
-            entity_type='phenotype',
+            entity_type=EntityTypeCv.PHENOTYPE,
             name=rec.name,
-            identifiers=[Identifier(type=IdentifierNamespaceCv.ACCESSION, value=rec.phenotype_id)],
+            identifiers=[Identifier(type=IdentifierNamespaceCv.SIGNOR, value=rec.phenotype_id)],
             annotations=build_annotations(rec, 'description'),
         )
 
@@ -84,8 +87,8 @@ def signor_stimuli():
     for rec in pypath_stimuli():
         yield SilverEntity(
             source='signor',
-            entity_type='stimulus',
+            entity_type=EntityTypeCv.STIMULUS,
             name=rec.name,
-            identifiers=[Identifier(type=IdentifierNamespaceCv.ACCESSION, value=rec.stimulus_id)],
+            identifiers=[Identifier(type=IdentifierNamespaceCv.SIGNOR, value=rec.stimulus_id)],
             annotations=build_annotations(rec, 'description'),
         )

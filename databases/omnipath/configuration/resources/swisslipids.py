@@ -1,5 +1,9 @@
-from omnipath_build.utils.cv_term_enums import IdentifierNamespaceCv
-from omnipath_build.utils.silver_schema import SilverEntity
+from omnipath_build.utils.cv_term_enums import (
+    IdentifierNamespaceCv,
+    EntityTypeCv,
+    ReferenceTypeCv,
+)
+from omnipath_build.utils.silver_schema import SilverEntity, Reference
 from omnipath_build.utils.identifier_builders import build_identifiers
 from omnipath_build.utils.annotation_builders import build_annotations
 
@@ -9,8 +13,9 @@ __all__ = [
 
 # Identifier mapping for SwissLipids
 SWISSLIPIDS_IDENTIFIERS = {
-    'inchikey': IdentifierNamespaceCv.INCHIKEY,
-    'inchi': IdentifierNamespaceCv.INCHI,
+    'id': IdentifierNamespaceCv.SWISSLIPIDS,
+    'inchikey': IdentifierNamespaceCv.STANDARD_INCHI_KEY,
+    'inchi': IdentifierNamespaceCv.STANDARD_INCHI,
     'smiles': IdentifierNamespaceCv.SMILES,
     'chebi': IdentifierNamespaceCv.CHEBI,
     'lipidmaps': IdentifierNamespaceCv.LIPIDMAPS,
@@ -24,7 +29,7 @@ def swisslipids_lipids():
     for rec in swisslipids_lipids():
         yield SilverEntity(
             source='swisslipids',
-            entity_type='compound',
+            entity_type=EntityTypeCv.LIPID,
             name=rec.name,
             synonyms=[s.strip() for s in rec.synonyms.split(';') if s.strip()] if rec.synonyms else None,
             identifiers=build_identifiers(
@@ -44,5 +49,5 @@ def swisslipids_lipids():
                 'exact_mass',
                 'abbreviation',
             ),
-            references=[pmid for pmid in rec.pmids if pmid and pmid.strip()] if rec.pmids else None,
+            references=[Reference(type=ReferenceTypeCv.PUBMED, value=pmid) for pmid in rec.pmids if pmid and pmid.strip()] if rec.pmids else None,
         )

@@ -15,7 +15,6 @@ from omnipath_build.utils.cv_term_enums import (
     BiologicalRoleCv,
     ExperimentalRoleCv,
     IdentificationMethodCv,
-    BiologicalEffectCv,
     InteractionTypeCv,
     DetectionMethodCv,
     CausalMechanismCv,
