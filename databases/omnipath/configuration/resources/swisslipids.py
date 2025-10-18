@@ -36,7 +36,6 @@ def swisslipids_lipids():
                 rec,
                 mapping=SWISSLIPIDS_IDENTIFIERS,
                 filters={'inchi': lambda x: x != 'InChI=none'},
-                accession_attr='id',
             ),
             annotations=build_annotations(
                 rec,

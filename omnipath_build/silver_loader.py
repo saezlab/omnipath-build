@@ -49,9 +49,9 @@ SCHEMA_LOOKUP = {
 
 # Strings used when inspecting function source code to infer schema type.
 SCHEMA_SOURCE_HINTS = [
-    ('SilverEntity', 'entity'),
     ('SilverInteraction', 'interaction'),
     ('SilverCvTerm', 'cv_term'),
+    ('SilverEntity', 'entity'),
 ]
 
 
@@ -84,7 +84,7 @@ def load_module_from_path(module_path: Path) -> ModuleType:
 
 
 def _infer_schema_from_function_source(func: Callable) -> Optional[str]:
-    """Infer schema type by inspecting the function source code."""
+    """Infer schema type by inspecting the function source code for yield statements."""
     # Direct attribute on the function takes precedence if available.
     direct_schema = getattr(func, 'schema_type', None)
     if isinstance(direct_schema, str):
@@ -95,6 +95,13 @@ def _infer_schema_from_function_source(func: Callable) -> Optional[str]:
     except (OSError, TypeError):
         source = ''
 
+    # Look for what's actually being yielded by checking yield statements
+    for hint, schema_type in SCHEMA_SOURCE_HINTS:
+        # Check if the hint appears in a yield statement (e.g., "yield SilverInteraction(")
+        if f'yield {hint}(' in source:
+            return schema_type
+
+    # Fallback: if no yield statement found, check if hint appears anywhere in source
     for hint, schema_type in SCHEMA_SOURCE_HINTS:
         if hint in source:
             return schema_type

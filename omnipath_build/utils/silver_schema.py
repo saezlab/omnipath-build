@@ -77,15 +77,13 @@ class SilverEntity(NamedTuple):
 
     # Optional annotations
     annotations: List[Dict[str, Any]] | None = None
-    references: List[str] | None = None
+    references: List[Reference] | None = None
 
     # Optional metadata (if provided by meta database)
     secondary_source: str | None = None
 
-
-class InteractionParticipant(SilverEntity):
-    """Entity participating in an interaction with contextual role information."""
-
+    # Optional interaction participant role information
+    # These fields are only populated when the entity participates in an interaction
     biological_role: BiologicalRoleCv | None = None
     experimental_role: ExperimentalRoleCv | None = None
     stoichiometry: float | None = None
@@ -99,8 +97,8 @@ class SilverInteraction(NamedTuple):
     source: str
 
     # Required fields - interaction participants
-    entity_a: InteractionParticipant
-    entity_b: InteractionParticipant
+    entity_a: SilverEntity
+    entity_b: SilverEntity
 
     # Optional evidence details
     interaction_type: InteractionTypeCv | None = None
@@ -116,7 +114,7 @@ class SilverInteraction(NamedTuple):
     interaction_annotations: List[Dict[str, Any]] | None = None
 
     # Optional reference
-    references: Reference | None = None
+    references: List[Reference] | None = None
 
 
 class SilverCvTerm(NamedTuple):
@@ -167,7 +165,13 @@ SILVER_ENTITY_FIELDS = [
             pa.field('units', pa.string()),
         ])),
     ),
-    pa.field('references', pa.list_(pa.string())),
+    pa.field(
+        'references',
+        pa.list_(pa.struct([
+            pa.field('type', pa.string()),
+            pa.field('value', pa.string()),
+        ])),
+    ),
     pa.field('secondary_source', pa.string()),
 ]
 
@@ -192,7 +196,13 @@ SILVER_INTERACTION_SCHEMA = pa.schema([
             pa.field('value', pa.string()),
         ])),
     ),
-    pa.field('references', pa.list_(pa.string())),
+    pa.field(
+        'references',
+        pa.list_(pa.struct([
+            pa.field('type', pa.string()),
+            pa.field('value', pa.string()),
+        ])),
+    ),
 ])
 
 SILVER_CV_TERM_SCHEMA = pa.schema([

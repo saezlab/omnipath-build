@@ -10,17 +10,15 @@ def build_identifiers(
     mapping: dict[str, IdentifierNamespaceCv],
     transformers: dict[str, Callable] | None = None,
     filters: dict[str, Callable] | None = None,
-    accession_attr: str | None = None,
 ) -> list[Identifier] | None:
     """
     Build list of identifiers from a record object.
 
     Args:
         record: Object with identifier attributes
-        mapping: Dict mapping attr_name -> IdentifierNamespaceCv (e.g. {'inchi': IdentifierNamespaceCv.INCHI})
+        mapping: Dict mapping attr_name -> IdentifierNamespaceCv (e.g. {'inchi': IdentifierNamespaceCv.STANDARD_INCHI})
         transformers: Optional dict of attr_name -> transformer functions for values
         filters: Optional dict of attr_name -> filter functions (return False to skip)
-        accession_attr: If provided, adds an ACCESSION identifier using this attribute
 
     Returns:
         List of Identifier objects, or None if empty
@@ -29,36 +27,23 @@ def build_identifiers(
         # Define mapping in resource file
         LIPIDMAPS_IDENTIFIERS = {
             'id': IdentifierNamespaceCv.LIPIDMAPS,
-            'inchikey': IdentifierNamespaceCv.INCHIKEY,
-            'inchi': IdentifierNamespaceCv.INCHI,
+            'inchikey': IdentifierNamespaceCv.STANDARD_INCHI_KEY,
+            'inchi': IdentifierNamespaceCv.STANDARD_INCHI,
             'smiles': IdentifierNamespaceCv.SMILES,
             'chebi': IdentifierNamespaceCv.CHEBI,
-            'pubchem': IdentifierNamespaceCv.PUBCHEM,
+            'pubchem': IdentifierNamespaceCv.PUBCHEM_COMPOUND,
         }
 
         identifiers = build_identifiers(
             rec,
             mapping=LIPIDMAPS_IDENTIFIERS,
-            accession_attr='id'
         )
     """
     transformers = transformers or {}
     filters = filters or {}
     identifiers = []
 
-    # Add ACCESSION first if specified
-    if accession_attr:
-        accession_value = getattr(record, accession_attr, None)
-        if accession_value:
-            # Apply transformer if exists
-            if accession_attr in transformers:
-                accession_value = transformers[accession_attr](accession_value)
-            # Convert to string for numeric values
-            if isinstance(accession_value, (int, float)):
-                accession_value = str(accession_value)
-            identifiers.append(Identifier(type=IdentifierNamespaceCv.ACCESSION, value=accession_value))
-
-    # Add other identifiers
+    # Add identifiers from mapping
     for attr_name, id_type in mapping.items():
         value = getattr(record, attr_name, None)
 

@@ -1,8 +1,9 @@
 from omnipath_build.utils.cv_term_enums import (
     IdentifierNamespaceCv,
     EntityTypeCv,
+    ReferenceTypeCv,
 )
-from omnipath_build.utils.silver_schema import SilverEntity
+from omnipath_build.utils.silver_schema import SilverEntity, Reference
 from omnipath_build.utils.identifier_builders import build_identifiers
 from omnipath_build.utils.annotation_builders import build_annotations
 
@@ -36,7 +37,6 @@ def hmdb_entities():
                 rec,
                 mapping=HMDB_IDENTIFIERS,
                 transformers={'chebi_id': lambda x: f"CHEBI:{x}"},
-                accession_attr='accession',
             ),
             annotations=build_annotations(
                 rec,
@@ -45,5 +45,5 @@ def hmdb_entities():
                 'chemical_formula',
                 'iupac_name',
             ),
-            references=rec.general_references,
+            references=[Reference(type=ReferenceTypeCv.PUBMED, value=pmid) for pmid in rec.general_references if pmid and pmid.strip()] if rec.general_references else None,
         )

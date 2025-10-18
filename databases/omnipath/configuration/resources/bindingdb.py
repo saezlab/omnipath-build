@@ -7,7 +7,7 @@ from omnipath_build.utils.cv_term_enums import (
 )
 from omnipath_build.utils.silver_schema import (
     SilverInteraction,
-    InteractionParticipant,
+    SilverEntity,
 )
 from omnipath_build.utils.identifier_builders import build_identifiers
 from omnipath_build.utils.annotation_builders import build_annotations
@@ -51,7 +51,7 @@ def bindingdb():
         if ligand.inchi_key and target.uniprot:
             result['bindingdb_interactions'] = SilverInteraction(
                 source='bindingdb',
-                entity_a=InteractionParticipant(
+                entity_a=SilverEntity(
                     source='bindingdb',
                     entity_type=EntityTypeCv.SMALL_MOLECULE,
                     biological_role=BiologicalRoleCv.ALLOSTERIC_EFFECTOR,
@@ -60,10 +60,9 @@ def bindingdb():
                         ligand,
                         mapping=BINDINGDB_LIGAND_IDENTIFIERS,
                         transformers={'pubchem': str},
-                        accession_attr='inchi_key',
                     ),
                 ),
-                entity_b=InteractionParticipant(
+                entity_b=SilverEntity(
                     source='bindingdb',
                     entity_type=EntityTypeCv.PROTEIN,
                     biological_role=BiologicalRoleCv.REGULATOR_TARGET,
@@ -71,7 +70,6 @@ def bindingdb():
                     identifiers=build_identifiers(
                         target,
                         mapping=BINDINGDB_TARGET_IDENTIFIERS,
-                        accession_attr='uniprot',
                     ),
                     annotations=build_annotations(
                         target,

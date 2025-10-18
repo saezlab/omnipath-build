@@ -9,7 +9,7 @@ from omnipath_build.utils.cv_term_enums import (
 )
 from omnipath_build.utils.silver_schema import (
     SilverInteraction,
-    InteractionParticipant,
+    SilverEntity,
     Reference,
 )
 from omnipath_build.utils.identifier_builders import build_identifiers
@@ -57,7 +57,7 @@ def guidetopharma_interactions():
         elif interaction_rec.is_inhibition:
             causal_statement = CausalStatementCv.DOWN_REGULATES
 
-        ligand_entity = InteractionParticipant(
+        ligand_entity = SilverEntity(
             source='guidetopharma',
             entity_type=ENTITY_TYPE_MAP.get(ligand.entity_type, EntityTypeCv.SMALL_MOLECULE),
             biological_role=BiologicalRoleCv.ALLOSTERIC_EFFECTOR,
@@ -77,11 +77,10 @@ def guidetopharma_interactions():
             ),
         )
 
-        target_entity = InteractionParticipant(
+        target_entity = SilverEntity(
             source='guidetopharma',
             entity_type=ENTITY_TYPE_MAP.get(target.entity_type, EntityTypeCv.PROTEIN),
             biological_role=BiologicalRoleCv.REGULATOR_TARGET,
-            name=target.name,
             identifiers=build_identifiers(
                 target,
                 mapping=GUIDETOPHARMA_IDENTIFIERS,
@@ -116,5 +115,5 @@ def guidetopharma_interactions():
                 ('affinity_low', 'affinity_low', None, str),
                 'affinity_units',
             ),
-            references=Reference(type=ReferenceTypeCv.PUBMED, value=str(interaction_rec.pubmed)) if interaction_rec.pubmed else None,
+            references=[Reference(type=ReferenceTypeCv.PUBMED, value=str(interaction_rec.pubmed))] if interaction_rec.pubmed else None,
         )

@@ -28,7 +28,7 @@ def lipidmaps_lipids():
             entity_type=EntityTypeCv.LIPID,
             name=rec.name,
             synonyms=[s.strip() for s in rec.synonyms.split('; ') if s.strip()] if rec.synonyms else None,
-            identifiers=build_identifiers(rec, mapping=LIPIDMAPS_IDENTIFIERS, accession_attr='id'),
+            identifiers=build_identifiers(rec, mapping=LIPIDMAPS_IDENTIFIERS),
             annotations=build_annotations(
                 rec,
                 'category',
