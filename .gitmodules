@@ -1,8 +1,6 @@
 [submodule "pypath"]
 	path = pypath
 	url = https://github.com/saezlab/pypath
-	branch = download-manager-experiment
 [submodule "download-manager"]
 	path = download-manager
 	url = https://github.com/saezlab/download-manager
-	branch = download-manager-experiment
