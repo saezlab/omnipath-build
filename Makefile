@@ -1,6 +1,7 @@
 .PHONY: setup silver visualize
 
 setup:
+	git submodule update --init --recursive --remote
 	uv sync
 	pnpm --dir nextjs install
 
