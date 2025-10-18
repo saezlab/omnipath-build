@@ -17,13 +17,12 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import ParquetViewer from './components/ParquetViewer';
+import { ParquetViewer } from '@/components/parquet-viewer';
 import { useDatabase } from "@/hooks/use-database-context";
 
-type ViewMode = 'combined' | 'source-specific';
-type Layer = 'bronze' | 'silver' | 'gold';
+type ViewMode = 'gold' | 'silver';
 
-interface CombinedTable {
+interface GoldTable {
   name: string;
   path: string;
   size: number;
@@ -32,71 +31,72 @@ interface CombinedTable {
 
 export default function DashboardPage() {
   const { sources, loading } = useDatabase();
-  const [viewMode, setViewMode] = useState<ViewMode>('combined');
+  const [viewMode, setViewMode] = useState<ViewMode>('gold');
   const [selectedSource, setSelectedSource] = useState<string>('');
-  const [activeLayer, setActiveLayer] = useState<Layer>('bronze');
-  const [activeCombinedTable, setActiveCombinedTable] = useState<string>('');
+  const [activeGoldTable, setActiveGoldTable] = useState<string>('');
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
-  const [fileData, setFileData] = useState<ArrayBuffer | null>(null);
+  const [parquetFile, setParquetFile] = useState<File | null>(null);
   const [fileLoading, setFileLoading] = useState(false);
-  const [combinedTables, setCombinedTables] = useState<CombinedTable[]>([]);
+  const [goldTables, setGoldTables] = useState<GoldTable[]>([]);
 
-  // Helper functions
-  const getSourceLayerFiles = (sourceName: string, layer: Layer) => {
+  // Helper function to get silver files for a source
+  const getSilverFiles = (sourceName: string) => {
     const source = sources.find(s => s.name === sourceName);
     if (!source) return [];
-    return source.layers[layer] || [];
+    return source.layers.silver || [];
   };
 
-  // Fetch combined tables
+  // Fetch gold tables
   useEffect(() => {
-    const fetchCombinedTables = async () => {
+    const fetchGoldTables = async () => {
       try {
         const response = await fetch('/api/sources');
         if (!response.ok) throw new Error('Failed to fetch data');
         const data = await response.json();
-        setCombinedTables(data.combinedTables || []);
+        setGoldTables(data.combinedTables || []);
       } catch (error) {
-        console.error('Error fetching combined tables:', error);
+        console.error('Error fetching gold tables:', error);
       }
     };
-    fetchCombinedTables();
+    fetchGoldTables();
   }, []);
 
+  // Set initial gold table
   useEffect(() => {
-    if (combinedTables.length > 0 && !activeCombinedTable) {
-      setActiveCombinedTable(combinedTables[0].name);
+    if (goldTables.length > 0 && !activeGoldTable) {
+      setActiveGoldTable(goldTables[0].name);
     }
-  }, [combinedTables]);
+  }, [goldTables, activeGoldTable]);
 
-  // Auto-load table when switching tabs in combined mode
+  // Auto-load table when switching tabs in gold mode
   useEffect(() => {
-    if (viewMode === 'combined' && activeCombinedTable) {
-      const table = combinedTables.find(t => t.name === activeCombinedTable);
+    if (viewMode === 'gold' && activeGoldTable) {
+      const table = goldTables.find(t => t.name === activeGoldTable);
       if (table) {
         handleFileSelect(table.path);
       }
     }
-  }, [activeCombinedTable, viewMode]);
+  }, [activeGoldTable, viewMode, goldTables]);
 
-  // Auto-load first file when switching source or layer in source-specific mode
+  // Auto-load first file when switching source in silver mode
   useEffect(() => {
-    if (viewMode === 'source-specific' && selectedSource && activeLayer) {
-      const files = getSourceLayerFiles(selectedSource, activeLayer);
+    if (viewMode === 'silver' && selectedSource) {
+      const files = getSilverFiles(selectedSource);
       if (files.length > 0) {
         handleFileSelect(files[0].path);
       } else {
         setSelectedFile(null);
-        setFileData(null);
+        setParquetFile(null);
       }
     }
-  }, [selectedSource, activeLayer, viewMode]);
+  }, [selectedSource, viewMode, sources]);
 
+  // Set initial source
   useEffect(() => {
     if (sources.length > 0 && !selectedSource) {
       setSelectedSource(sources[0].name);
     }
-  }, [sources]);
+  }, [sources, selectedSource]);
 
   const handleFileSelect = async (path: string) => {
     setSelectedFile(path);
@@ -105,7 +105,10 @@ export default function DashboardPage() {
       const response = await fetch(`/api/parquet?path=${encodeURIComponent(path)}`);
       if (!response.ok) throw new Error('Failed to load file');
       const data = await response.arrayBuffer();
-      setFileData(data);
+      // Convert ArrayBuffer to File object for the new ParquetViewer
+      const fileName = path.split('/').pop() || 'data.parquet';
+      const file = new File([data], fileName, { type: 'application/octet-stream' });
+      setParquetFile(file);
     } catch (error) {
       console.error('Error loading file:', error);
     } finally {
@@ -138,14 +141,9 @@ export default function DashboardPage() {
     );
   }
 
-  // Get the current combined table
-  const getCurrentCombinedTable = () => {
-    return combinedTables.find(t => t.name === activeCombinedTable);
-  };
-
   const currentSource = sources.find(s => s.name === selectedSource);
-  const currentCombinedTable = getCurrentCombinedTable();
-  const currentSourceFiles = getSourceLayerFiles(selectedSource, activeLayer);
+  const currentGoldTable = goldTables.find(t => t.name === activeGoldTable);
+  const currentSilverFiles = getSilverFiles(selectedSource);
 
   return (
     <>
@@ -165,63 +163,63 @@ export default function DashboardPage() {
           <div className="ml-auto flex gap-2">
             <button
               onClick={() => {
-                setViewMode('combined');
+                setViewMode('gold');
                 setSelectedFile(null);
-                setFileData(null);
+                setParquetFile(null);
               }}
               className={`px-4 py-2 rounded-lg font-medium transition-colors ${
-                viewMode === 'combined'
+                viewMode === 'gold'
                   ? 'bg-blue-600 text-white'
                   : 'bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-600'
               }`}
             >
-              Combined Tables
+              Gold (Combined)
             </button>
             <button
               onClick={() => {
-                setViewMode('source-specific');
+                setViewMode('silver');
                 setSelectedFile(null);
-                setFileData(null);
+                setParquetFile(null);
               }}
               className={`px-4 py-2 rounded-lg font-medium transition-colors ${
-                viewMode === 'source-specific'
+                viewMode === 'silver'
                   ? 'bg-blue-600 text-white'
                   : 'bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-600'
               }`}
             >
-              Source-Specific
+              Silver (Source-Specific)
             </button>
           </div>
         </div>
       </header>
 
       <div className="flex flex-1 flex-col gap-4 p-4 pt-0">
-        {viewMode === 'combined' ? (
+        {viewMode === 'gold' ? (
           <>
-            {/* Combined Output Tables Mode */}
+            {/* Gold Layer - Combined Tables */}
             <div className="mb-4">
               <h1 className="text-3xl font-bold text-gray-900 dark:text-white">
-                Combined Output Tables
+                Gold Layer - Combined Tables
               </h1>
               <p className="mt-1 text-gray-600 dark:text-gray-400">
-                View final combined data across all sources
+                Final integrated data from all sources
               </p>
             </div>
 
             {/* Table Tabs */}
             <div className="border-b border-gray-200 dark:border-gray-700">
               <nav className="-mb-px flex space-x-4 overflow-x-auto">
-                {combinedTables.map((table) => (
+                {goldTables.map((table) => (
                   <button
                     key={table.name}
                     onClick={() => {
-                      setActiveCombinedTable(table.name);
+                      setActiveGoldTable(table.name);
                       setSelectedFile(null);
-                      setFileData(null);
+                      setParquetFile(null);
                     }}
                     className={`
                       whitespace-nowrap py-3 px-3 border-b-2 font-medium text-sm
-                      ${activeCombinedTable === table.name
+                      ${activeGoldTable === table.name
                         ? 'border-blue-500 text-blue-600 dark:text-blue-400'
                         : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300 dark:text-gray-400 dark:hover:text-gray-300'
                       }
@@ -239,16 +237,16 @@ export default function DashboardPage() {
                 <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-8 flex items-center justify-center" style={{ minHeight: '500px' }}>
                   <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
                 </div>
-              ) : selectedFile && fileData ? (
-                <ParquetViewer filePath={selectedFile} fileData={fileData} />
-              ) : combinedTables.length === 0 ? (
+              ) : parquetFile ? (
+                <ParquetViewer file={parquetFile} />
+              ) : goldTables.length === 0 ? (
                 <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-8 h-full flex items-center justify-center">
                   <div className="text-center">
                     <h3 className="text-lg font-medium text-gray-900 dark:text-white mb-2">
-                      No combined tables available
+                      No gold tables available
                     </h3>
                     <p className="text-sm text-gray-500 dark:text-gray-400">
-                      Check the omnipath/output/ directory
+                      Check the omnipath_build/gold_duckdb/ directory
                     </p>
                   </div>
                 </div>
@@ -257,22 +255,22 @@ export default function DashboardPage() {
           </>
         ) : (
           <>
-            {/* Source-Specific Mode */}
+            {/* Silver Layer - Source-Specific */}
             <div className="mb-4 flex items-center justify-between">
               <div>
                 <h1 className="text-3xl font-bold text-gray-900 dark:text-white">
-                  Source-Specific Processing
+                  Silver Layer - Source-Specific Data
                 </h1>
                 <p className="mt-1 text-gray-600 dark:text-gray-400">
-                  View Bronze → Silver → Gold pipeline for a specific source
+                  Processed data from individual sources
                 </p>
               </div>
 
               {/* Source Dropdown */}
-              <Select value={selectedSource} onValueChange={(value) => {
+              <Select value={selectedSource} onValueChange={(value: string) => {
                 setSelectedSource(value);
                 setSelectedFile(null);
-                setFileData(null);
+                setParquetFile(null);
               }}>
                 <SelectTrigger className="w-[280px]">
                   <SelectValue placeholder="Select source" />
@@ -287,43 +285,15 @@ export default function DashboardPage() {
               </Select>
             </div>
 
-            {/* Layer Tabs */}
-            <div className="border-b border-gray-200 dark:border-gray-700">
-              <nav className="-mb-px flex space-x-8">
-                {(['bronze', 'silver', 'gold'] as Layer[]).map((layer) => {
-                  const layerFiles = getSourceLayerFiles(selectedSource, layer);
-                  return (
-                    <button
-                      key={layer}
-                      onClick={() => {
-                        setActiveLayer(layer);
-                        setSelectedFile(null);
-                        setFileData(null);
-                      }}
-                      className={`
-                        whitespace-nowrap py-3 px-1 border-b-2 font-medium text-sm capitalize
-                        ${activeLayer === layer
-                          ? 'border-blue-500 text-blue-600 dark:text-blue-400'
-                          : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300 dark:text-gray-400 dark:hover:text-gray-300'
-                        }
-                      `}
-                    >
-                      {layer} ({layerFiles.length})
-                    </button>
-                  );
-                })}
-              </nav>
-            </div>
-
             {/* File Grid */}
             <div className="grid grid-cols-1 lg:grid-cols-4 gap-6 flex-1">
               <div className="lg:col-span-1">
                 <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-4 h-full">
-                  <h3 className="text-lg font-medium text-gray-900 dark:text-white mb-4 capitalize">
-                    {activeLayer} Files ({currentSourceFiles.length})
+                  <h3 className="text-lg font-medium text-gray-900 dark:text-white mb-4">
+                    Silver Files ({currentSilverFiles.length})
                   </h3>
                   <div className="space-y-2">
-                    {currentSourceFiles.map((file: any) => (
+                    {currentSilverFiles.map((file: any) => (
                       <button
                         key={file.path}
                         onClick={() => handleFileSelect(file.path)}
@@ -341,9 +311,9 @@ export default function DashboardPage() {
                         </div>
                       </button>
                     ))}
-                    {currentSourceFiles.length === 0 && (
+                    {currentSilverFiles.length === 0 && (
                       <p className="text-sm text-gray-500 dark:text-gray-400 text-center py-4">
-                        No {activeLayer} files
+                        No silver files for this source
                       </p>
                     )}
                   </div>
@@ -355,8 +325,8 @@ export default function DashboardPage() {
                   <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-8 h-full flex items-center justify-center">
                     <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
                   </div>
-                ) : selectedFile && fileData ? (
-                  <ParquetViewer filePath={selectedFile} fileData={fileData} />
+                ) : parquetFile ? (
+                  <ParquetViewer file={parquetFile} />
                 ) : (
                   <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-8 h-full flex items-center justify-center">
                     <div className="text-center">
@@ -364,7 +334,7 @@ export default function DashboardPage() {
                         Select a file to view
                       </h3>
                       <p className="text-sm text-gray-500 dark:text-gray-400">
-                        Choose a {activeLayer} file from the list
+                        Choose a silver file from the list
                       </p>
                     </div>
                   </div>

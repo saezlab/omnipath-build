@@ -41,7 +41,7 @@ export interface DatabaseInfo {
 }
 
 const DATABASES_PATH = path.join(process.cwd(), '..', 'databases', 'omnipath', 'data');
-const OUTPUT_PATH = path.join(process.cwd(), '..', 'databases', 'omnipath', 'output');
+const GOLD_PATH = path.join(process.cwd(), '..', 'omnipath_build', 'gold_duckdb');
 
 function getLayerFromPath(filePath: string): 'bronze' | 'silver' | 'gold' | 'pass1' | null {
   if (filePath.includes('/bronze/')) return 'bronze';
@@ -88,15 +88,15 @@ function scanCombinedTables(): CombinedTable[] {
   const tables: CombinedTable[] = [];
 
   try {
-    if (!fs.existsSync(OUTPUT_PATH)) {
+    if (!fs.existsSync(GOLD_PATH)) {
       return tables;
     }
 
-    const items = fs.readdirSync(OUTPUT_PATH);
+    const items = fs.readdirSync(GOLD_PATH);
 
     for (const item of items) {
       if (item.endsWith('.parquet')) {
-        const fullPath = path.join(OUTPUT_PATH, item);
+        const fullPath = path.join(GOLD_PATH, item);
         const stat = fs.statSync(fullPath);
 
         tables.push({
@@ -108,7 +108,7 @@ function scanCombinedTables(): CombinedTable[] {
       }
     }
   } catch (error) {
-    console.error('Error scanning combined tables:', error);
+    console.error('Error scanning gold tables:', error);
   }
 
   return tables;
@@ -288,12 +288,12 @@ export function buildDatabaseTree(databases: DatabaseInfo[]): TreeNode[] {
 export async function loadParquetFile(filePath: string): Promise<ArrayBuffer> {
   let fullPath: string;
 
-  // Check if it's an absolute path pointing to the output directory (combined tables)
-  if (path.isAbsolute(filePath) && filePath.includes('/output/')) {
+  // Check if it's an absolute path pointing to the gold directory (combined tables)
+  if (path.isAbsolute(filePath) && filePath.includes('/gold_duckdb/')) {
     fullPath = filePath;
   }
   // If filePath starts with / but is relative to DATABASES_PATH (source-specific files)
-  else if (filePath.startsWith('/') && !filePath.includes('/output/')) {
+  else if (filePath.startsWith('/') && !filePath.includes('/gold_duckdb/')) {
     fullPath = path.join(DATABASES_PATH, filePath);
   }
   // If filePath already includes databases/omnipath, use it directly
