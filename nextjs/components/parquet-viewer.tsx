@@ -193,7 +193,6 @@ export function ParquetViewer({ file }: ParquetViewerProps) {
       <TabsContent value="data" className="space-y-4">
         <Card>
           <CardHeader>
-            <CardTitle>Data Preview</CardTitle>
             <CardDescription>Showing first 100 rows of {rowCount.toLocaleString()} total rows</CardDescription>
           </CardHeader>
           <CardContent>

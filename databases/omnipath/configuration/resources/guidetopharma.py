@@ -114,6 +114,8 @@ def guidetopharma_interactions():
                 ('affinity_high', 'affinity_high', None, str),
                 ('affinity_low', 'affinity_low', None, str),
                 'affinity_units',
+                term_field='key',
+                units_field=None,
             ),
             references=[Reference(type=ReferenceTypeCv.PUBMED, value=str(interaction_rec.pubmed))] if interaction_rec.pubmed else None,
         )

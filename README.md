@@ -1,5 +1,5 @@
 ## Description
-
+TODO NEED TO UPDATE THIS TO CURRENT ARCHITECTURE.
 # Database Builder System
 
 A flexible, scalable database construction system that automatically discovers PyPath biological data sources and creates structured PostgreSQL databases through a three-tier data processing pipeline (Bronze → Silver → Gold).

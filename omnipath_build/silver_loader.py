@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
 from typing import Callable, Dict, Iterable, Iterator, List, Optional
+from enum import Enum
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -252,7 +253,9 @@ def _coerce_list_fields(record: dict, schema: pa.Schema) -> None:
                     if field_value is None:
                         coerced_item[field_name] = None
                     elif pa.types.is_string(struct_field.type):
-                        # Convert to string if schema expects string
+                        # Normalize Enum values before string conversion
+                        if isinstance(field_value, Enum):
+                            field_value = field_value.value
                         coerced_item[field_name] = str(field_value)
                     else:
                         coerced_item[field_name] = field_value
