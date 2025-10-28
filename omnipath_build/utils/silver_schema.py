@@ -64,11 +64,8 @@ class SilverEntity(NamedTuple):
     entity_type: EntityTypeCv
 
     # All identifiers consolidated here using PSI-MI identifier namespaces
+    # (including names and synonyms via IdentifierNamespaceCv.NAME and .SYNONYM)
     identifiers: List[Identifier] | None = None
-
-    # Names
-    name: str | None = None
-    synonyms: List[str] | None = None
 
     # Optional membership info
     members: List[Member] | None = None
@@ -147,8 +144,6 @@ SILVER_ENTITY_FIELDS = [
             pa.field('value', pa.string()),
         ])),
     ),
-    pa.field('name', pa.string()),
-    pa.field('synonyms', pa.list_(pa.string())),
     pa.field(
         'members',
         pa.list_(pa.struct([

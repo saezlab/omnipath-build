@@ -90,21 +90,26 @@ def uniprot_proteins():
                         ))
 
         # Parse protein name and extract synonyms from parentheses
-        primary_name = None
-        protein_synonyms = []
-
         if rec.protein_name:
             # Extract primary name (text before first parenthesis)
             primary_name_match = re.match(r'^([^(]+)', rec.protein_name)
             if primary_name_match:
                 primary_name = primary_name_match.group(1).strip()
+                if primary_name:
+                    identifiers.append(Identifier(
+                        type=IdentifierNamespaceCv.NAME,
+                        value=primary_name
+                    ))
 
             # Extract all text within parentheses as protein name synonyms
             synonym_matches = re.findall(r'\(([^)]+)\)', rec.protein_name)
             for synonym in synonym_matches:
                 synonym = synonym.strip()
                 if synonym:
-                    protein_synonyms.append(synonym)
+                    identifiers.append(Identifier(
+                        type=IdentifierNamespaceCv.SYNONYM,
+                        value=synonym
+                    ))
 
         # Build comprehensive annotations
         annotations = build_annotations(
@@ -141,8 +146,6 @@ def uniprot_proteins():
             source='uniprot',
             entity_type=EntityTypeCv.PROTEIN,
             identifiers=identifiers if identifiers else None,
-            name=primary_name,
-            synonyms=protein_synonyms if protein_synonyms else None,
             annotations=annotations,
             references=references,
         )

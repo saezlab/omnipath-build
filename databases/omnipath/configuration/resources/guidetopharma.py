@@ -21,6 +21,7 @@ __all__ = [
 
 # Identifier mappings for GuideToPharmacology
 GUIDETOPHARMA_IDENTIFIERS = {
+    'name': IdentifierNamespaceCv.NAME,
     'inchi': IdentifierNamespaceCv.STANDARD_INCHI,
     'smiles': IdentifierNamespaceCv.SMILES,
     'pubchem': IdentifierNamespaceCv.PUBCHEM_COMPOUND,
@@ -61,7 +62,6 @@ def guidetopharma_interactions():
             source='guidetopharma',
             entity_type=ENTITY_TYPE_MAP.get(ligand.entity_type, EntityTypeCv.SMALL_MOLECULE),
             biological_role=BiologicalRoleCv.ALLOSTERIC_EFFECTOR,
-            name=ligand.name,
             identifiers=build_identifiers(
                 ligand,
                 mapping=GUIDETOPHARMA_IDENTIFIERS,

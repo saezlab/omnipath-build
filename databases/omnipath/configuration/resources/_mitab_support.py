@@ -230,12 +230,17 @@ def _build_entity(record: MitabInteraction, role_prefix: str, source: str) -> Si
 
     name, synonyms = _parse_synonyms(getattr(record, f'aliases_{role_prefix}', None))
 
+    # Add name and synonyms to identifiers list
+    if name:
+        identifiers.append(Identifier(type=IdentifierNamespaceCv.NAME, value=name))
+    if synonyms:
+        for syn in synonyms:
+            identifiers.append(Identifier(type=IdentifierNamespaceCv.SYNONYM, value=syn))
+
     return SilverEntity(
         source=source,
         entity_type=entity_type,
-        identifiers=identifiers,
-        name=name,
-        synonyms=synonyms,
+        identifiers=identifiers if identifiers else None,
         biological_role=_parse_role(
             getattr(record, f'biological_role_{role_prefix}', None),
             BiologicalRoleCv,

@@ -78,6 +78,10 @@ class IdentifierNamespaceCv(str, Enum):
     GENE_NAME_PRIMARY = "OM:0200"
     GENE_NAME_SYNONYM = "OM:0201"
 
+    # Generic name identifiers (for any entity type)
+    NAME = "OM:0202"
+    SYNONYM = "OM:0203"
+
     #structure representations
     SMILES = "MI:0239"
     STANDARD_INCHI_KEY = "MI:1101"

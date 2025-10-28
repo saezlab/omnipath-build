@@ -58,10 +58,15 @@ def build_identifiers(
         if attr_name in transformers:
             value = transformers[attr_name](value)
 
-        # Convert to string for numeric values
-        if isinstance(value, (int, float)):
-            value = str(value)
-
-        identifiers.append(Identifier(type=id_type, value=value))
+        # Handle list values (e.g., synonyms) - create one identifier per item
+        if isinstance(value, list):
+            for item in value:
+                if item:  # Skip empty items
+                    identifiers.append(Identifier(type=id_type, value=str(item)))
+        else:
+            # Convert to string for numeric values
+            if isinstance(value, (int, float)):
+                value = str(value)
+            identifiers.append(Identifier(type=id_type, value=value))
 
     return identifiers if identifiers else None

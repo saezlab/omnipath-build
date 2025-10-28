@@ -41,8 +41,10 @@ def signor_complexes():
         yield SilverEntity(
             source='signor',
             entity_type=EntityTypeCv.PROTEIN_COMPLEX,
-            name=rec.name,
-            identifiers=[Identifier(type=IdentifierNamespaceCv.SIGNOR, value=rec.complex_id)],
+            identifiers=[
+                Identifier(type=IdentifierNamespaceCv.SIGNOR, value=rec.complex_id),
+                Identifier(type=IdentifierNamespaceCv.NAME, value=rec.name),
+            ],
             members=members,
         )
 
@@ -67,8 +69,10 @@ def signor_protein_families():
         yield SilverEntity(
             source='signor',
             entity_type=EntityTypeCv.PROTEIN_FAMILY,
-            name=rec.name,
-            identifiers=[Identifier(type=IdentifierNamespaceCv.SIGNOR, value=rec.family_id)],
+            identifiers=[
+                Identifier(type=IdentifierNamespaceCv.SIGNOR, value=rec.family_id),
+                Identifier(type=IdentifierNamespaceCv.NAME, value=rec.name),
+            ],
             members=members,
         )
 
@@ -84,8 +88,10 @@ def signor_phenotypes():
         yield SilverEntity(
             source='signor',
             entity_type=EntityTypeCv.PHENOTYPE,
-            name=rec.name,
-            identifiers=[Identifier(type=IdentifierNamespaceCv.SIGNOR, value=rec.phenotype_id)],
+            identifiers=[
+                Identifier(type=IdentifierNamespaceCv.SIGNOR, value=rec.phenotype_id),
+                Identifier(type=IdentifierNamespaceCv.NAME, value=rec.name),
+            ],
             annotations=build_annotations(rec, 'description'),
         )
 
@@ -101,8 +107,10 @@ def signor_stimuli():
         yield SilverEntity(
             source='signor',
             entity_type=EntityTypeCv.STIMULUS,
-            name=rec.name,
-            identifiers=[Identifier(type=IdentifierNamespaceCv.SIGNOR, value=rec.stimulus_id)],
+            identifiers=[
+                Identifier(type=IdentifierNamespaceCv.SIGNOR, value=rec.stimulus_id),
+                Identifier(type=IdentifierNamespaceCv.NAME, value=rec.name),
+            ],
         )
 
 

@@ -22,10 +22,12 @@ BINDINGDB_LIGAND_IDENTIFIERS = {
     'inchi': IdentifierNamespaceCv.STANDARD_INCHI,
     'smiles': IdentifierNamespaceCv.SMILES,
     'pubchem': IdentifierNamespaceCv.PUBCHEM_COMPOUND,
+    'name': IdentifierNamespaceCv.NAME,
 }
 
 BINDINGDB_TARGET_IDENTIFIERS = {
     'uniprot': IdentifierNamespaceCv.UNIPROT,
+    'name': IdentifierNamespaceCv.NAME,
 }
 
 def bindingdb():
@@ -55,7 +57,6 @@ def bindingdb():
                     source='bindingdb',
                     entity_type=EntityTypeCv.SMALL_MOLECULE,
                     biological_role=BiologicalRoleCv.ALLOSTERIC_EFFECTOR,
-                    name=ligand.name,
                     identifiers=build_identifiers(
                         ligand,
                         mapping=BINDINGDB_LIGAND_IDENTIFIERS,
@@ -66,7 +67,6 @@ def bindingdb():
                     source='bindingdb',
                     entity_type=EntityTypeCv.PROTEIN,
                     biological_role=BiologicalRoleCv.REGULATOR_TARGET,
-                    name=target.name,
                     identifiers=build_identifiers(
                         target,
                         mapping=BINDINGDB_TARGET_IDENTIFIERS,

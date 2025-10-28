@@ -14,6 +14,8 @@ __all__ = [
 # Identifier mapping for HMDB
 HMDB_IDENTIFIERS = {
     'accession': IdentifierNamespaceCv.HMDB,
+    'traditional_iupac': IdentifierNamespaceCv.NAME,
+    'synonyms': IdentifierNamespaceCv.SYNONYM,
     'inchikey': IdentifierNamespaceCv.STANDARD_INCHI_KEY,
     'inchi': IdentifierNamespaceCv.STANDARD_INCHI,
     'smiles': IdentifierNamespaceCv.SMILES,
@@ -31,8 +33,6 @@ def hmdb_entities():
         yield SilverEntity(
             source='hmdb',
             entity_type=EntityTypeCv.SMALL_MOLECULE,
-            name=rec.traditional_iupac,
-            synonyms=rec.synonyms,
             identifiers=build_identifiers(
                 rec,
                 mapping=HMDB_IDENTIFIERS,

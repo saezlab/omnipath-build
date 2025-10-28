@@ -3,7 +3,7 @@ from omnipath_build.utils.cv_term_enums import (
     EntityTypeCv,
     ReferenceTypeCv,
 )
-from omnipath_build.utils.silver_schema import SilverEntity, Reference
+from omnipath_build.utils.silver_schema import SilverEntity, Reference, Identifier
 from omnipath_build.utils.identifier_builders import build_identifiers
 from omnipath_build.utils.annotation_builders import build_annotations
 
@@ -14,6 +14,7 @@ __all__ = [
 # Identifier mapping for SwissLipids
 SWISSLIPIDS_IDENTIFIERS = {
     'id': IdentifierNamespaceCv.SWISSLIPIDS,
+    'name': IdentifierNamespaceCv.NAME,
     'inchikey': IdentifierNamespaceCv.STANDARD_INCHI_KEY,
     'inchi': IdentifierNamespaceCv.STANDARD_INCHI,
     'smiles': IdentifierNamespaceCv.SMILES,
@@ -27,16 +28,24 @@ def swisslipids_lipids():
     from pypath.inputs.swisslipids import swisslipids_lipids
 
     for rec in swisslipids_lipids():
+        # Parse synonyms from semicolon-separated string
+        synonyms = [s.strip() for s in rec.synonyms.split(';') if s.strip()] if rec.synonyms else None
+
+        # Build base identifiers
+        identifiers = build_identifiers(
+            rec,
+            mapping=SWISSLIPIDS_IDENTIFIERS,
+            filters={'inchi': lambda x: x != 'InChI=none'},
+        ) or []
+
+        # Add synonyms as identifiers
+        if synonyms:
+            identifiers.extend([Identifier(type=IdentifierNamespaceCv.SYNONYM, value=syn) for syn in synonyms])
+
         yield SilverEntity(
             source='swisslipids',
             entity_type=EntityTypeCv.LIPID,
-            name=rec.name,
-            synonyms=[s.strip() for s in rec.synonyms.split(';') if s.strip()] if rec.synonyms else None,
-            identifiers=build_identifiers(
-                rec,
-                mapping=SWISSLIPIDS_IDENTIFIERS,
-                filters={'inchi': lambda x: x != 'InChI=none'},
-            ),
+            identifiers=identifiers if identifiers else None,
             annotations=build_annotations(
                 rec,
                 'level',
