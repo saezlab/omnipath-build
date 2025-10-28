@@ -152,8 +152,10 @@ SILVER_ENTITY_FIELDS = [
     pa.field(
         'members',
         pa.list_(pa.struct([
-            pa.field('key', pa.string()),
-            pa.field('value', pa.string()),
+            pa.field('identifier', pa.string()),
+            pa.field('identifier_type', pa.string()),
+            pa.field('role', pa.string()),
+            pa.field('stoichiometry', pa.float64()),
         ])),
     ),
     pa.field('parent_accession', pa.string()),

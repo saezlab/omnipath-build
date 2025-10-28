@@ -100,5 +100,4 @@ def signor_stimuli():
             entity_type=EntityTypeCv.STIMULUS,
             name=rec.name,
             identifiers=[Identifier(type=IdentifierNamespaceCv.SIGNOR, value=rec.stimulus_id)],
-            annotations=build_annotations(rec, 'description'),
         )

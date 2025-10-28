@@ -1,4 +1,4 @@
-.PHONY: setup silver visualize
+.PHONY: setup silver silver-reprocess visualize
 
 setup:
 	git submodule add -b download-manager-experiment https://github.com/saezlab/pypath.git pypath || true
@@ -10,7 +10,13 @@ setup:
 	pnpm --dir nextjs install
 
 silver:
-	uv run -m omnipath_build.database_manager silver
+	@uv run -m omnipath_build.database_manager silver $(if $(filter-out $@,$(MAKECMDGOALS)),--source $(filter-out $@,$(MAKECMDGOALS)))
+
+silver-reprocess:
+	@uv run -m omnipath_build.database_manager silver --override $(if $(filter-out $@,$(MAKECMDGOALS)),--source $(filter-out $@,$(MAKECMDGOALS)))
+
+%:
+	@:
 
 visualize:
 	pnpm --dir nextjs dev
