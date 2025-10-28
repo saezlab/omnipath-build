@@ -50,7 +50,7 @@ def uniprot_proteins():
             ))
             # Also add as HGNC_SYMBOL for compatibility
             identifiers.append(Identifier(
-                type=IdentifierNamespaceCv.HGNC_SYMBOL,
+                type=IdentifierNamespaceCv.HGNC,
                 value=rec.gene_primary
             ))
 

@@ -5,7 +5,6 @@ from typing import Optional, Type
 
 from pypath.inputs.mitab import (
     MitabInteraction,
-    mitab_field_list,
     mitab_parse_identifiers,
     mitab_parse_mi_term,
 )
@@ -44,6 +43,10 @@ MITAB_DB_TO_IDENTIFIER_NAMESPACE: dict[str, IdentifierNamespaceCv] = {
     'biogrid': IdentifierNamespaceCv.BIOGRID,
     'complexportal': IdentifierNamespaceCv.COMPLEXPORTAL,
     'complex portal': IdentifierNamespaceCv.COMPLEXPORTAL,
+    # Name and synonym identifiers
+    'display_long': IdentifierNamespaceCv.NAME,
+    'display_short': IdentifierNamespaceCv.SYNONYM,
+    'gene name': IdentifierNamespaceCv.SYNONYM,
 }
 
 REFERENCE_DB_TO_TYPE: dict[str, ReferenceTypeCv] = {
@@ -100,14 +103,72 @@ def _parse_identifiers(*fields: str) -> list[Identifier] | None:
     return identifiers or None
 
 
-def _parse_synonyms(field: str) -> tuple[str | None, list[str] | None]:
-    names = [name for name in mitab_field_list(field) if name]
-    if not names:
-        return None, None
+def _parse_synonyms(field: str) -> list[Identifier] | None:
+    """Parse MITAB aliases field into name and synonym identifiers.
 
-    name = names[0]
-    synonyms = names[1:] if len(names) > 1 else None
-    return name, synonyms
+    Only looks at the last parentheses pair to determine the alias type.
+    Format: database:name(type) where type is extracted from the last (...)
+    """
+    if not field or field == '-':
+        return None
+
+    identifiers: list[Identifier] = []
+
+    # Split by pipe to get individual aliases
+    for item in field.split('|'):
+        item = item.strip()
+        if not item or item == '-':
+            continue
+
+        # Split by colon to get database:value
+        if ':' not in item:
+            continue
+
+        _, value_with_type = item.split(':', 1)
+        value_with_type = value_with_type.strip()
+
+        # Extract type from the LAST parentheses pair
+        if '(' in value_with_type and value_with_type.endswith(')'):
+            # Find the last opening parenthesis
+            last_open_paren = value_with_type.rfind('(')
+            name = value_with_type[:last_open_paren].strip()
+            alias_type = value_with_type[last_open_paren + 1:-1].strip().lower()
+        else:
+            # No type specified, skip
+            continue
+
+        if not name or not alias_type:
+            continue
+
+        # Map alias types to identifier namespaces
+        # Generic NAME (OM:0202) - primary display name
+        if alias_type in ('display_long', 'display long'):
+            id_type = IdentifierNamespaceCv.NAME
+        # Gene-specific identifiers
+        elif alias_type in ('gene name', 'gene_name'):
+            id_type = IdentifierNamespaceCv.GENE_NAME_PRIMARY
+        elif alias_type in ('gene name synonym', 'gene_name_synonym'):
+            id_type = IdentifierNamespaceCv.GENE_NAME_SYNONYM
+        # Generic SYNONYM (OM:0203) - other names/synonyms
+        elif alias_type in (
+            'display_short', 'display short',
+            'orf name', 'orf_name',
+            'isoform synonym', 'isoform_synonym',
+            'locus name', 'locus_name',
+            'shortlabel', 'short_label',
+            'iupac name', 'iupac_name',
+            'synonym',
+        ):
+            id_type = IdentifierNamespaceCv.SYNONYM
+        else:
+            # Skip unknown alias types
+            continue
+
+        name = name.strip().strip('"')
+        if name:
+            identifiers.append(Identifier(type=id_type, value=name))
+
+    return identifiers or None
 
 
 def _parse_role(field: str, enum_cls):
@@ -228,14 +289,10 @@ def _build_entity(record: MitabInteraction, role_prefix: str, source: str) -> Si
     if not entity_type:
         entity_type = _infer_entity_type(identifiers)
 
-    name, synonyms = _parse_synonyms(getattr(record, f'aliases_{role_prefix}', None))
-
-    # Add name and synonyms to identifiers list
-    if name:
-        identifiers.append(Identifier(type=IdentifierNamespaceCv.NAME, value=name))
-    if synonyms:
-        for syn in synonyms:
-            identifiers.append(Identifier(type=IdentifierNamespaceCv.SYNONYM, value=syn))
+    # Parse and add name and synonym identifiers from aliases
+    alias_identifiers = _parse_synonyms(getattr(record, f'aliases_{role_prefix}', None))
+    if alias_identifiers:
+        identifiers.extend(alias_identifiers)
 
     return SilverEntity(
         source=source,
@@ -282,6 +339,10 @@ def mitab_to_silver_interaction(
     direction: Optional[str]
     if direction_mode == 'causal':
         direction = 'a_to_b' if causal_statement else 'undirected'
+    elif direction_mode == 'undirected':
+        direction = 'undirected'
+    else:
+        direction = None
 
     annotations: list[dict] = []
     for field in (
