@@ -1,4 +1,4 @@
-.PHONY: setup silver silver-reprocess visualize
+.PHONY: setup silver silver-reprocess gold visualize
 
 setup:
 	git submodule add -b download-manager-experiment https://github.com/saezlab/pypath.git pypath || true
@@ -14,6 +14,9 @@ silver:
 
 silver-reprocess:
 	@uv run -m omnipath_build.database_manager silver --override $(if $(filter-out $@,$(MAKECMDGOALS)),--source $(filter-out $@,$(MAKECMDGOALS)))
+
+gold:
+	@uv run -m omnipath_build.database_manager gold $(if $(PHASE),--phase $(PHASE))
 
 %:
 	@:

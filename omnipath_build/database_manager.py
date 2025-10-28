@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from omnipath_build.gold_loader import run_gold_loader
+from omnipath_build.gold_loader_new import run_gold_loader_new
 from omnipath_build.silver_loader import DiscoveryError, run_silver_loader
 
 __all__ = [
@@ -73,11 +73,10 @@ def _handle_gold(args: argparse.Namespace) -> int:
         return 1
 
     try:
-        run_gold_loader(
+        run_gold_loader_new(
             data_root=data_root,
             output_dir=output_dir,
             phase=args.phase,
-            compound_limit=args.compound_limit,
         )
     except Exception as exc:  # noqa: BLE001
         print(f'Unexpected error: {exc}', file=sys.stderr)
@@ -128,11 +127,6 @@ def _build_parser() -> argparse.ArgumentParser:
         type=str,
         choices=['1', '2', '3'],
         help='Run only a specific phase (1=cross-source, 2=evidence extraction, 3=compound properties)',
-    )
-    gold_parser.add_argument(
-        '--compound-limit',
-        type=int,
-        help='Limit number of compounds to process in Phase 3 (default: no limit)',
     )
     gold_parser.set_defaults(handler=_handle_gold)
 
