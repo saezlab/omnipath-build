@@ -58,6 +58,11 @@ class IdentifierNamespaceCv(str, Enum):
     KEGG = "MI:0470"
     KEGG_COMPOUND = "MI:2012"
     CAS = "MI:2011"
+    PDB = "OM:0101"
+    ALPHAFOLDDB = "OM:0102"
+    INTACT = "OM:0103"
+    BIOGRID = "OM:0104"
+    COMPLEXPORTAL = "OM:0105"
     
     REFSEQ_PROTEIN = "OM:0001"
     PUBCHEM_COMPOUND = "OM:0002"
@@ -68,6 +73,10 @@ class IdentifierNamespaceCv(str, Enum):
     SIGNOR = "OM:0007"
     GUIDETOPHARMA = "OM:0008"
     SWISSLIPIDS = "OM:0009"
+
+    # Gene and protein name identifiers
+    GENE_NAME_PRIMARY = "OM:0200"
+    GENE_NAME_SYNONYM = "OM:0201"
 
     #structure representations
     SMILES = "MI:0239"

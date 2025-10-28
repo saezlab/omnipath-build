@@ -74,13 +74,26 @@ class DiscoveryError(RuntimeError):
 
 def load_module_from_path(module_path: Path) -> ModuleType:
     """Import a module directly from its file path."""
+    # Use the module's parent directory as the package name to support relative imports
+    parent_dir = module_path.parent
+    package_name = parent_dir.name
+    module_name = f'{package_name}.{module_path.stem}'
+
     spec = importlib.util.spec_from_file_location(
-        f'omnipath.resources.{module_path.stem}',
+        module_name,
         module_path,
     )
     if spec is None or spec.loader is None:
         raise DiscoveryError(f'Unable to load module from {module_path}')
+
+    # Register parent package in sys.modules if it doesn't exist
+    if package_name not in sys.modules:
+        parent_module = ModuleType(package_name)
+        parent_module.__path__ = [str(parent_dir)]
+        sys.modules[package_name] = parent_module
+
     module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
     spec.loader.exec_module(module)  # type: ignore[call-arg]
     return module
 

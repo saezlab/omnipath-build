@@ -1,16 +1,19 @@
 from omnipath_build.utils.cv_term_enums import (
     IdentifierNamespaceCv,
     EntityTypeCv,
+    InteractionTypeCv,
+    DetectionMethodCv,
 )
 from omnipath_build.utils.silver_schema import SilverEntity
-from omnipath_build.utils.identifier_builders import build_identifiers
 from omnipath_build.utils.annotation_builders import build_annotations
+from ._mitab_support import mitab_to_silver_interaction
 
 __all__ = [
     'signor_complexes',
     'signor_protein_families',
     'signor_phenotypes',
     'signor_stimuli',
+    'signor_interactions',
 ]
 
 # Identifier mappings for SIGNOR
@@ -100,4 +103,20 @@ def signor_stimuli():
             entity_type=EntityTypeCv.STIMULUS,
             name=rec.name,
             identifiers=[Identifier(type=IdentifierNamespaceCv.SIGNOR, value=rec.stimulus_id)],
+        )
+
+
+def signor_interactions():
+    """
+    Yields SIGNOR causal interactions as SilverInteraction objects.
+    """
+    from pypath.inputs.new_signor import signor_interactions as pypath_interactions
+
+    for record in pypath_interactions():
+        yield mitab_to_silver_interaction(
+            record,
+            source='signor',
+            direction_mode='causal',
+            fallback_interaction_type=InteractionTypeCv.FUNCTIONAL_ASSOCIATION,
+            fallback_detection_method=DetectionMethodCv.INFERRED_BY_CURATOR,
         )
