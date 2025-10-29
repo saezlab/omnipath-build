@@ -19,16 +19,30 @@ This version works with the updated silver schema that uses structured
 identifiers, members, and references fields.
 """
 
+import logging
 import polars as pl
 from pathlib import Path
 from typing import Optional
 
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+logger = logging.getLogger(__name__)
+
 # Import our modular functions from the gold_new/ directory
 # These have been adapted to work with the new silver schema
 from omnipath_build.gold_new.build_sources import build_sources
+from omnipath_build.gold_new.build_cv_terms import build_cv_terms
+from omnipath_build.gold_new.build_entity_identifiers import build_entity_identifiers
 
+#from omnipath_build.gold_new.build_entity_identifier_duckdb import build_entity_identifiers_duckdb
 __all__ = [
     'build_sources_table',
+    'build_cv_terms_tables',
+    'build_entity_identifier_tables',
     'run_gold_loader_new',
 ]
 
@@ -63,6 +77,59 @@ def build_sources_table(data_root: Path, output_dir: Path) -> pl.DataFrame:
     return sources
 
 
+def build_cv_terms_tables(
+    data_root: Path, output_dir: Path
+) -> tuple[pl.DataFrame, pl.DataFrame]:
+    """
+    Phase 1, Step 2: Build CV namespace and term tables.
+
+    Args:
+        data_root: Path to data directory containing silver files
+        output_dir: Path to output directory for gold tables
+
+    Returns:
+        Tuple of (cv_namespace_df, cv_term_df)
+    """
+    print("\n" + "=" * 70)
+    print("PHASE 1, STEP 2: CV Terms Tables")
+    print("=" * 70)
+
+    cv_namespace, cv_term = build_cv_terms(data_root, output_dir)
+
+    print(f"\nTotal namespaces: {len(cv_namespace):,}")
+    print(f"Total CV terms: {len(cv_term):,}")
+
+    return cv_namespace, cv_term
+
+
+def build_entity_identifier_tables(
+    data_root: Path,
+    output_dir: Path,
+) -> tuple[pl.DataFrame, int]:
+    """
+    Phase 1, Step 3: Build entity identifier tables.
+
+    Args:
+        data_root: Path to data directory containing silver files
+        output_dir: Path to output directory for gold tables
+
+    Returns:
+        Tuple of (edges_df, num_entities) where:
+        - edges_df: DataFrame with equivalence edges between identifiers
+        - num_entities: Number of unique entities (connected components)
+    """
+    print("\n" + "=" * 70)
+    print("PHASE 1, STEP 3: Entity Identifier Tables")
+    print("=" * 70)
+    edges_df, num_entities = build_entity_identifiers(
+        data_root=data_root,
+    )
+    print(f"\nTotal edges in equivalence graph: {len(edges_df):,}")
+    print(f"Total unique entities: {num_entities:,}")
+
+    return edges_df, num_entities
+
+
 def run_gold_loader_new(
     data_root: Path,
     output_dir: Path,
@@ -87,6 +154,8 @@ def run_gold_loader_new(
     print(f"Output directory: {output_dir}")
     print()
 
+    logger.info(f"Starting gold loader pipeline - Data root: {data_root}, Output: {output_dir}")
+
     # PHASE 1: Cross-source processing
     if phase is None or phase == "1":
         print("\n")
@@ -97,9 +166,15 @@ def run_gold_loader_new(
         # Step 1: Sources
         sources = build_sources_table(data_root, output_dir)
 
+        # Step 2: CV terms
+        cv_namespace, cv_term = build_cv_terms_tables(data_root, output_dir)
+
+        # Step 3: Entity identifiers
+        entity_edges, num_entities = build_entity_identifier_tables(
+            data_root, output_dir
+        )
+
         # TODO: Add remaining Phase 1 steps as we adapt them
-        # - Entity identifier clustering
-        # - CV terms
         # - References
         # - Interactions
 

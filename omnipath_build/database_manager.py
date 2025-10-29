@@ -4,12 +4,20 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import sys
 from pathlib import Path
 from typing import Optional
 
 from omnipath_build.gold_loader_new import run_gold_loader_new
 from omnipath_build.silver_loader import DiscoveryError, run_silver_loader
+
+# Configure logging for the entire application
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
 
 __all__ = [
     'main',
