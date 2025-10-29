@@ -35,7 +35,10 @@ def swisslipids_lipids():
         identifiers = build_identifiers(
             rec,
             mapping=SWISSLIPIDS_IDENTIFIERS,
-            filters={'inchi': lambda x: x != 'InChI=none'},
+            filters={
+                'inchi': lambda x: x != 'InChI=none',
+                'inchikey': lambda x: x != 'InChIKey=none',
+            },
         ) or []
 
         # Add synonyms as identifiers

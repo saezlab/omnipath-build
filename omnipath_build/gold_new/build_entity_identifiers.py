@@ -21,8 +21,8 @@ class UnionFind:
     """Union-Find data structure for tracking connected components."""
 
     def __init__(self):
-        self.parent = {}
-        self.rank = {}
+        self.parent: dict[tuple[str, str], tuple[str, str]] = {}
+        self.rank: dict[tuple[str, str], int] = {}
         self._num_components = 0
 
     def find(self, x: tuple[str, str]) -> tuple[str, str]:
@@ -67,7 +67,10 @@ class UnionFind:
         """Get the total number of nodes."""
         return len(self.parent)
 
-__all__ = ['MERGE_SAFE_IDENTIFIER_TYPES', 'build_entity_identifiers']
+__all__ = [
+    'MERGE_SAFE_IDENTIFIER_TYPES',
+    'build_entity_identifier_unified',
+]
 
 logger = logging.getLogger(__name__)
 
@@ -90,11 +93,9 @@ def _iter_parquet_files(root: Path) -> Iterable[Path]:
             yield from sorted(d.glob('*.parquet'))
 
 
-
-
 def _load_source_data(data_root: Path) -> dict[str, list[tuple[Path, pl.LazyFrame]]]:
     """Load all source data files into lazy frames, organized by source."""
-    sources_data = {}
+    sources_data: dict[str, list[tuple[Path, pl.LazyFrame]]] = {}
 
     for path in _iter_parquet_files(data_root):
         source_name = path.parent.name
@@ -157,55 +158,112 @@ def _extract_identifiers_from_file(
 
 
 # --------------------------------------------------------------------------- #
-# Step 1: Extract merge-safe identifiers per source
+# Step 1: Extract identifiers (all + merge-safe) and assign local IDs
 # --------------------------------------------------------------------------- #
 
-def _extract_merge_safe_identifiers_for_source(
+def _prepare_local_entities_for_source(
     source_name: str,
     file_list: list[tuple[Path, pl.LazyFrame]],
     merge_safe_types: frozenset[str],
-) -> pl.DataFrame | None:
-    """Extract merge-safe identifiers for a single source.
+) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame] | None:
+    """Prepare per-source local entities and edges.
 
-    Args:
-        source_name: Name of the source
-        file_list: List of (path, LazyFrame) tuples for this source
-        merge_safe_types: Frozenset of merge-safe identifier type accessions
+    Returns a tuple of:
+    - deduped_local (source_name, local_entity_id, merge_safe_identifiers)
+    - local_ms_edges (source_name, local_entity_id, id_type, id_value)
+    - local_all_edges (source_name, local_entity_id, id_type, id_value)
 
-    Returns:
-        DataFrame with columns [source_name, identifiers] or None if no identifiers found
+    or None if the source has no identifiers.
     """
     merge_safe_set = set(merge_safe_types)
 
     # Extract identifier groups from all files for this source
-    all_identifiers = []
+    all_identifiers_lfs: list[pl.LazyFrame] = []
     for _, lf in file_list:
         identifiers = _extract_identifiers_from_file(lf, source_name)
         if identifiers is not None:
-            all_identifiers.append(identifiers)
+            all_identifiers_lfs.append(identifiers)
 
-    if not all_identifiers:
+    if not all_identifiers_lfs:
         return None
 
-    # Combine all identifier groups for this source
-    combined = pl.concat(all_identifiers, how='diagonal_relaxed').collect()
+    # Combine all identifier groups for this source (all identifiers per record)
+    combined_all = pl.concat(all_identifiers_lfs, how='diagonal_relaxed').collect()
 
-    # Filter to keep only merge-safe identifiers
-    # Each record keeps only the identifiers whose 'type' is in merge_safe_types
-    filtered = (
-        combined
+    # Build a frame with both all and merge-safe identifiers per original record
+    # Drop identifiers where type or value is null; cast values to string for consistency
+    combined = (
+        combined_all
         .with_columns([
-            pl.col('identifiers').list.filter(
-                pl.element().struct.field('type').is_in(list(merge_safe_set))
-            ).alias('identifiers')
+            pl.col('identifiers').list.eval(
+                pl.when(
+                    pl.element().struct.field('type').is_not_null()
+                    & pl.element().struct.field('value').is_not_null()
+                )
+                .then(pl.element())
+                .otherwise(None)
+            ).list.drop_nulls().alias('all_identifiers'),
+            pl.col('identifiers').list.eval(
+                pl.when(
+                    pl.element().struct.field('type').is_in(list(merge_safe_set))
+                    & pl.element().struct.field('value').is_not_null()
+                )
+                .then(pl.element())
+                .otherwise(None)
+            ).list.drop_nulls().alias('merge_safe_identifiers'),
         ])
-        .filter(pl.col('identifiers').list.len() > 0)  # Drop records with no merge-safe IDs
     )
 
-    # Deduplicate: remove duplicate identifier lists
-    deduped = filtered.unique(subset=['source_name', 'identifiers'])
+    # Deduplicate by full identifier list (keeps non-merge-safe-only entities)
+    deduped_local = (
+        combined
+        .select(['source_name', 'all_identifiers', 'merge_safe_identifiers'])
+        .unique(subset=['source_name', 'all_identifiers'])
+        .with_row_index('local_entity_idx')
+        .with_columns([
+            (pl.col('source_name') + '_' + pl.col('local_entity_idx').cast(pl.Utf8)).alias('local_entity_id')
+        ])
+    )
 
-    return deduped
+    # Map local_entity_id -> merge-safe identifiers (flattened) and drop any residual nulls; cast values to Utf8
+    local_ms_edges = (
+        deduped_local
+        .explode('merge_safe_identifiers')
+        .select([
+            'source_name',
+            'local_entity_id',
+            pl.col('merge_safe_identifiers').struct.field('type').cast(pl.Utf8).alias('id_type'),
+            pl.col('merge_safe_identifiers').struct.field('value').cast(pl.Utf8).alias('id_value'),
+        ])
+        .filter(pl.col('id_type').is_not_null() & pl.col('id_value').is_not_null())
+        .unique()
+    )
+
+    # Map local_entity_id -> ALL identifiers by joining back original records via all_identifiers
+    local_all_edges = (
+        combined
+        .join(
+            deduped_local.select('source_name', 'all_identifiers', 'local_entity_id'),
+            on=['source_name', 'all_identifiers'],
+            how='inner'
+        )
+        .select([
+            'source_name',
+            'local_entity_id',
+            pl.col('all_identifiers').alias('identifiers')
+        ])
+        .explode('identifiers')
+        .select([
+            'source_name',
+            'local_entity_id',
+            pl.col('identifiers').struct.field('type').cast(pl.Utf8).alias('id_type'),
+            pl.col('identifiers').struct.field('value').cast(pl.Utf8).alias('id_value'),
+        ])
+        .filter(pl.col('id_type').is_not_null() & pl.col('id_value').is_not_null())
+        .unique()
+    )
+
+    return deduped_local, local_ms_edges, local_all_edges
 
 
 # --------------------------------------------------------------------------- #
@@ -215,47 +273,64 @@ def _extract_merge_safe_identifiers_for_source(
 def _build_edges_from_identifiers(
     df: pl.DataFrame,
     source_name: str,
+    identifiers_col: str = 'identifiers',
 ) -> pl.DataFrame:
     """Build edges from a DataFrame of identifier lists.
 
     For each record, creates edges between all pairs of identifiers that co-occur.
 
     Args:
-        df: DataFrame with columns [source_name, identifiers]
+        df: DataFrame with columns [source_name, <identifiers_col>]
         source_name: Name of the source (for logging)
+        identifiers_col: Column name containing list[struct{type,value}]
 
     Returns:
         DataFrame with edges [id_a, id_b, source_name]
     """
-    # For each record, create all pairwise edges between identifiers
+    if identifiers_col != 'identifiers' and identifiers_col in df.columns:
+        work_df = df.rename({identifiers_col: 'identifiers'})
+    else:
+        work_df = df
+
+    # For each record, create normalized rows per identifier
     edges = (
-        df
+        work_df
         .with_row_index('record_id')
         .explode('identifiers')
         .select([
             'record_id',
             'source_name',
-            pl.col('identifiers').alias('identifier')
+            pl.col('identifiers').struct.field('type').cast(pl.Utf8).alias('id_type'),
+            pl.col('identifiers').struct.field('value').cast(pl.Utf8).alias('id_value'),
         ])
+        .filter(
+            pl.col('id_type').is_not_null()
+            & pl.col('id_value').is_not_null()
+            & (pl.col('id_value').str.len_chars() > 0)
+        )
     )
 
-    # Self-join to create all pairs within each record
+    # Self-join to create all distinct pairs within each record
     edges_paired = (
         edges
         .join(edges, on=['record_id', 'source_name'], suffix='_b')
         .filter(
-            # Keep only distinct pairs (avoid self-loops and duplicates)
-            # Use lexicographic ordering to avoid duplicate pairs
-            (pl.col('identifier').struct.field('type') < pl.col('identifier_b').struct.field('type')) |
-            (
-                (pl.col('identifier').struct.field('type') == pl.col('identifier_b').struct.field('type')) &
-                (pl.col('identifier').struct.field('value') < pl.col('identifier_b').struct.field('value'))
+            (pl.col('id_type') < pl.col('id_type_b'))
+            | (
+                (pl.col('id_type') == pl.col('id_type_b'))
+                & (pl.col('id_value') < pl.col('id_value_b'))
             )
         )
         .select([
             'source_name',
-            pl.col('identifier').alias('id_a'),
-            pl.col('identifier_b').alias('id_b'),
+            pl.struct([
+                pl.col('id_type').alias('type'),
+                pl.col('id_value').alias('value'),
+            ]).alias('id_a'),
+            pl.struct([
+                pl.col('id_type_b').alias('type'),
+                pl.col('id_value_b').alias('value'),
+            ]).alias('id_b'),
         ])
         .unique()
     )
@@ -267,6 +342,7 @@ def _merge_edges_into_graph(
     global_graph: pl.DataFrame | None,
     new_edges: pl.DataFrame,
     union_find: UnionFind,
+    nodes_to_register: pl.DataFrame | None = None,
 ) -> pl.DataFrame:
     """Merge new edges into the global graph and update connected components.
 
@@ -274,10 +350,16 @@ def _merge_edges_into_graph(
         global_graph: Current global graph (or None if first source)
         new_edges: New edges to merge [source_name, id_a, id_b]
         union_find: UnionFind structure for tracking connected components
+        nodes_to_register: Optional DataFrame with columns [id_type, id_value] to ensure singletons are registered
 
     Returns:
         Updated global graph [id_a, id_b, sources]
     """
+    # Register singleton nodes (if provided)
+    if nodes_to_register is not None and len(nodes_to_register) > 0:
+        for t, v in nodes_to_register.iter_rows():
+            union_find.find((t, v))
+
     # Update union-find with new edges
     for row in new_edges.iter_rows(named=True):
         id_a = (row['id_a']['type'], row['id_a']['value'])
@@ -322,110 +404,165 @@ def _merge_edges_into_graph(
 
 
 # --------------------------------------------------------------------------- #
-# Public entry point
+# Utilities to convert union-find to mapping
 # --------------------------------------------------------------------------- #
 
-def build_entity_identifiers(
+def _union_find_to_safe_clusters(uf: UnionFind) -> pl.DataFrame:
+    """Convert UnionFind state into a mapping of (id_type,id_value) -> entity_id.
+
+    Returns DataFrame columns: [id_type, id_value, entity_id]
+    entity_id is a sequential integer starting at 1.
+    """
+    # Ensure path compression
+    roots: dict[tuple[str, str], tuple[str, str]] = {}
+    for node in list(uf.parent.keys()):
+        roots[node] = uf.find(node)
+
+    # Map unique roots to sequential ints
+    unique_roots = sorted(set(roots.values()))
+    root_to_entity = {root: i + 1 for i, root in enumerate(unique_roots)}
+
+    rows = [
+        {
+            'id_type': t,
+            'id_value': v,
+            'entity_id': root_to_entity[roots[(t, v)]],
+        }
+        for (t, v) in roots.keys()
+    ]
+    return pl.DataFrame(rows)
+
+# --------------------------------------------------------------------------- #
+# Public entry point (full unified table with provenance)
+# --------------------------------------------------------------------------- #
+
+def build_entity_identifier_unified(
     data_root: Path,
     merge_safe_types: frozenset[str] = MERGE_SAFE_IDENTIFIER_TYPES,
-) -> tuple[pl.DataFrame, int]:
-    """Build entity identifiers using graph-based equivalence detection.
+) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]:
+    """Build unified identifier tables with canonical entity IDs and provenance.
 
-    Processes sources iteratively to minimize memory usage:
-    1. For each source: extract merge-safe identifiers
-    2. For each source: build edges from co-occurring identifiers
-    3. Incrementally merge edges into global graph
-    4. Release source data after processing
-
-    Args:
-        data_root: Root directory containing source parquet files
-        merge_safe_types: Frozenset of CV accessions for merge-safe identifier types
-
-    Returns:
-        Tuple of (edges_df, num_entities) where:
-        - edges_df: DataFrame with global edges [id_a, id_b, sources]
-          Each edge represents an equivalence between two identifiers
-        - num_entities: Number of unique entities (connected components)
+    Returns a tuple of:
+      - safe_clusters: (id_type, id_value) -> entity_id mapping
+      - record_to_global: (source_name, local_entity_id) -> [global_entity_ids], entity_id (resolved or null), has_conflict
+      - final_identifiers: (entity_id, id_type, id_value) with sources provenance
     """
     data_root = Path(data_root)
-
-    logger.info("=" * 80)
-    logger.info("Building entity identifiers (iterative mode)")
-    logger.info("=" * 80)
-    logger.info(f"Data root: {data_root}")
-    logger.info(f"Merge-safe types: {sorted(merge_safe_types)}")
-
-    # Load source data
     sources_data = _load_source_data(data_root)
-    num_sources = len(sources_data)
-    logger.info(f"Found {num_sources} sources to process")
 
-    # Initialize global graph and union-find
-    global_graph: pl.DataFrame | None = None
     union_find = UnionFind()
+    all_local_ms_edges: list[pl.DataFrame] = []
+    all_local_all_edges: list[pl.DataFrame] = []
+
+    num_sources = len(sources_data)
     sources_processed = 0
 
-    # Track merge statistics per source
-    merge_stats = []
-
-    # Process each source iteratively
     for source_name, file_list in sorted(sources_data.items()):
         logger.info("=" * 80)
         logger.info(f"Processing source [{sources_processed + 1}/{num_sources}]: {source_name}")
         logger.info("=" * 80)
 
-        # Step 1: Extract merge-safe identifiers
-        identifiers_df = _extract_merge_safe_identifiers_for_source(
-            source_name, file_list, merge_safe_types
-        )
-
-        if identifiers_df is None:
+        prepared = _prepare_local_entities_for_source(source_name, file_list, merge_safe_types)
+        if prepared is None:
             logger.warning(f"  No identifier columns found in {source_name}, skipping")
             sources_processed += 1
             continue
+        deduped_local, local_ms_edges, local_all_edges = prepared
 
-        num_records = len(identifiers_df)
-        logger.info(f"  Records: {num_records:,}")
+        # Local entity stats
+        n_local = len(deduped_local)
+        n_with_ms = len(deduped_local.filter(pl.col('merge_safe_identifiers').list.len() > 0))
+        n_without_ms = n_local - n_with_ms
+        logger.info(f"  Local entities: {n_local:,} (with MS: {n_with_ms:,}, without MS: {n_without_ms:,})")
 
-        # Track components before processing this source
+        # Register nodes; build and merge pairwise edges
+        ms_nodes = local_ms_edges.select(['id_type', 'id_value']).unique()
+        edges = _build_edges_from_identifiers(
+            deduped_local.rename({'merge_safe_identifiers': 'identifiers'}),
+            source_name,
+            identifiers_col='identifiers',
+        )
         components_before = union_find.num_components
-
-        # Step 2: Build edges from co-occurring identifiers
-        edges = _build_edges_from_identifiers(identifiers_df, source_name)
-
-        # Step 3: Merge into global graph
-        global_graph = _merge_edges_into_graph(global_graph, edges, union_find)
-
-        # Track components after processing this source
+        _merge_edges_into_graph(global_graph=None, new_edges=edges, union_find=union_find, nodes_to_register=ms_nodes)
         components_after = union_find.num_components
-        new_components = components_after - components_before
-        merged_records = num_records - new_components
+        logger.info(f"  Merge-safe nodes: {len(ms_nodes):,}, edges: {len(edges):,}")
+        logger.info(f"  Entities after UF: {components_after:,} (+{components_after - components_before:,})")
 
-        logger.info(f"  Entities: {components_after:,} (+{new_components:,})")
-        logger.info(f"  Merged: {merged_records:,} ({merged_records / num_records * 100:.1f}%)")
-
-        # Store stats
-        merge_stats.append({
-            'source_name': source_name,
-            'num_records': num_records,
-            'merged_records': merged_records,
-            'merge_percentage': (merged_records / num_records * 100) if num_records > 0 else 0
-        })
-
+        all_local_ms_edges.append(local_ms_edges)
+        all_local_all_edges.append(local_all_edges)
         sources_processed += 1
 
-        # Free memory
-        del identifiers_df
-        del edges
+    # Build safe cluster mapping
+    safe_clusters = _union_find_to_safe_clusters(union_find)
 
-    logger.info("=" * 80)
-    logger.info("Entity identifier building complete!")
-    logger.info("=" * 80)
+    if not all_local_ms_edges or not all_local_all_edges:
+        # No data
+        return safe_clusters, pl.DataFrame(), pl.DataFrame()
 
-    if global_graph is None:
-        logger.warning("No edges were created from any source")
-        empty_df = pl.DataFrame(schema={'id_a': pl.Struct, 'id_b': pl.Struct, 'sources': pl.List(pl.Utf8)})
-        return empty_df, 0
+    local_ms_edges_all = pl.concat(all_local_ms_edges, how='diagonal_relaxed')
+    local_all_edges_all = pl.concat(all_local_all_edges, how='diagonal_relaxed')
 
-    num_components = union_find.num_components
-    return global_graph, num_components
+    # Map local entities to global entity IDs via merge-safe identifiers
+    record_to_global = (
+        local_ms_edges_all
+        .join(safe_clusters, on=['id_type', 'id_value'], how='inner')
+        .group_by(['source_name', 'local_entity_id'])
+        .agg([
+            pl.col('entity_id').unique().sort().alias('global_entity_ids'),
+        ])
+        .with_columns([
+            pl.col('global_entity_ids').list.len().alias('num_global_ids'),
+            (pl.col('global_entity_ids').list.len() > 1).alias('has_conflict'),
+            # Resolve entity_id only if exactly one
+            pl.when(pl.col('global_entity_ids').list.len() == 1)
+              .then(pl.col('global_entity_ids').list.first())
+              .otherwise(pl.lit(None, dtype=pl.Int64))
+              .alias('entity_id')
+        ])
+    )
+
+    # Include local entities with no merge-safe IDs as first-class entities
+    all_local_entities = local_all_edges_all.select(['source_name', 'local_entity_id']).unique()
+    unresolved = all_local_entities.join(
+        record_to_global.select(['source_name', 'local_entity_id']),
+        on=['source_name', 'local_entity_id'],
+        how='anti'
+    )
+
+    # Assign new entity IDs after the max existing entity_id from safe clusters
+    max_ent = 0
+    if len(safe_clusters) > 0:
+        max_val = safe_clusters.select(pl.col('entity_id').max()).item()
+        max_ent = int(max_val) if max_val is not None else 0
+
+    if len(unresolved) > 0:
+        unresolved = (
+            unresolved
+            .with_row_index('row_idx')
+            .with_columns([
+                (pl.col('row_idx') + max_ent + 1).cast(pl.Int64).alias('entity_id'),
+                pl.lit([], dtype=pl.List(pl.Int64)).alias('global_entity_ids'),
+                pl.lit(0, dtype=pl.Int64).alias('num_global_ids'),
+                pl.lit(False).alias('has_conflict'),
+            ])
+            .drop('row_idx')
+        )
+        record_to_global = pl.concat([record_to_global, unresolved], how='diagonal_relaxed')
+        logger.info(f"Added unresolved local entities (no MS): {len(unresolved):,}")
+
+    # Propagate entity_id to all identifiers and aggregate provenance
+    final_identifiers = (
+        local_all_edges_all
+        .join(
+            record_to_global.select(['source_name', 'local_entity_id', 'entity_id']),
+            on=['source_name', 'local_entity_id'],
+            how='inner'
+        )
+        .group_by(['entity_id', 'id_type', 'id_value'])
+        .agg([
+            pl.col('source_name').unique().sort().alias('sources')
+        ])
+        .sort(['entity_id', 'id_type', 'id_value'])
+    )
+
+    return safe_clusters, record_to_global, final_identifiers

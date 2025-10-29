@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 # These have been adapted to work with the new silver schema
 from omnipath_build.gold_new.build_sources import build_sources
 from omnipath_build.gold_new.build_cv_terms import build_cv_terms
-from omnipath_build.gold_new.build_entity_identifiers import build_entity_identifiers
+from omnipath_build.gold_new.build_entity_identifiers import build_entity_identifier_unified
 
 #from omnipath_build.gold_new.build_entity_identifier_duckdb import build_entity_identifiers_duckdb
 __all__ = [
@@ -105,29 +105,48 @@ def build_cv_terms_tables(
 def build_entity_identifier_tables(
     data_root: Path,
     output_dir: Path,
-) -> tuple[pl.DataFrame, int]:
+) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]:
     """
-    Phase 1, Step 3: Build entity identifier tables.
+    Phase 1, Step 3: Build entity identifier tables (unified with provenance).
 
     Args:
         data_root: Path to data directory containing silver files
         output_dir: Path to output directory for gold tables
 
     Returns:
-        Tuple of (edges_df, num_entities) where:
-        - edges_df: DataFrame with equivalence edges between identifiers
-        - num_entities: Number of unique entities (connected components)
+        Tuple of (safe_clusters, record_to_global, final_identifiers)
     """
     print("\n" + "=" * 70)
     print("PHASE 1, STEP 3: Entity Identifier Tables")
     print("=" * 70)
-    edges_df, num_entities = build_entity_identifiers(
+
+    safe_clusters, record_to_global, final_identifiers = build_entity_identifier_unified(
         data_root=data_root,
     )
-    print(f"\nTotal edges in equivalence graph: {len(edges_df):,}")
-    print(f"Total unique entities: {num_entities:,}")
 
-    return edges_df, num_entities
+    # Compute quick stats
+    n_entities = record_to_global.select(pl.col('entity_id').n_unique()).item() if len(record_to_global) > 0 else 0
+    n_records = len(record_to_global)
+    n_conflicts = len(record_to_global.filter(pl.col('has_conflict'))) if n_records else 0
+
+    print(f"\nTotal unified entities: {n_entities:,}")
+    print(f"Record→global mappings: {n_records:,} (conflicts: {n_conflicts:,})")
+    print(f"Final identifiers: {len(final_identifiers):,}")
+
+    # Write outputs
+    clusters_path = output_dir / "entity_identifier_safe_clusters.parquet"
+    mapping_path = output_dir / "entity_identifier_record_to_global.parquet"
+    final_ids_path = output_dir / "entity_identifiers.parquet"
+
+    safe_clusters.write_parquet(clusters_path)
+    record_to_global.write_parquet(mapping_path)
+    final_identifiers.write_parquet(final_ids_path)
+
+    print(f"\nSaved: {clusters_path}")
+    print(f"Saved: {mapping_path}")
+    print(f"Saved: {final_ids_path}")
+
+    return safe_clusters, record_to_global, final_identifiers
 
 
 def run_gold_loader_new(
@@ -170,7 +189,7 @@ def run_gold_loader_new(
         cv_namespace, cv_term = build_cv_terms_tables(data_root, output_dir)
 
         # Step 3: Entity identifiers
-        entity_edges, num_entities = build_entity_identifier_tables(
+        safe_clusters, record_to_global, final_identifiers = build_entity_identifier_tables(
             data_root, output_dir
         )
 
