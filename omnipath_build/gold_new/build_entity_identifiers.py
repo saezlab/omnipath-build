@@ -428,28 +428,4 @@ def build_entity_identifiers(
         return empty_df, 0
 
     num_components = union_find.num_components
-
-    # Display merge statistics summary
-    if merge_stats:
-        logger.info("")
-        logger.info("-" * 80)
-        logger.info(f"{'Source':<30} {'Records':>10} {'Merges':>10} {'%':>10}")
-        logger.info("-" * 80)
-        for stat in sorted(merge_stats, key=lambda x: x['merge_percentage'], reverse=True):
-            logger.info(
-                f"{stat['source_name']:<30} "
-                f"{stat['num_records']:>10,} "
-                f"{stat['merged_records']:>10,} "
-                f"{stat['merge_percentage']:>9.1f}%"
-            )
-        logger.info("-" * 80)
-
-        # Overall merge stats
-        total_records = sum(s['num_records'] for s in merge_stats)
-        total_merges = sum(s['merged_records'] for s in merge_stats)
-        overall_percentage = (total_merges / total_records * 100) if total_records > 0 else 0
-        logger.info(f"{'TOTAL':<30} {total_records:>10,} {total_merges:>10,} {overall_percentage:>9.1f}%")
-        logger.info("-" * 80)
-        logger.info(f"Total entities: {num_components:,}")
-
     return global_graph, num_components
