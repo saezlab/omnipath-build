@@ -236,7 +236,7 @@ def run_gold_loader_new(
             elif step == 'entity_identifiers':
                 # Load dependencies
                 cv_term = pl.read_parquet(output_dir / "cv_term.parquet")
-                sources = pl.read_parquet(output_dir / "sources.parquet")
+                sources = pl.read_parquet(output_dir / "source.parquet")
                 build_entity_identifier_tables(
                     data_root, output_dir, cv_term_df=cv_term, sources_df=sources
                 )
