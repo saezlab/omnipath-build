@@ -148,6 +148,35 @@ def _extract_identifiers_from_file(
             )
             lfs.append(extracted)
 
+    # Extract from members (complex components)
+    # Each member represents a separate entity, so we explode and convert to identifier format
+    if 'members' in cols:
+        extracted = (
+            lf.select([
+                pl.col('members')
+            ])
+            .filter(
+                pl.col('members').is_not_null() &
+                (pl.col('members').list.len() > 0)
+            )
+            .explode('members')
+            .filter(
+                pl.col('members').struct.field('identifier_type').is_not_null() &
+                pl.col('members').struct.field('identifier').is_not_null()
+            )
+            # Convert each member identifier to the standard identifier list format
+            # We need to create a list containing a single struct element
+            .select([
+                pl.concat_list([
+                    pl.struct([
+                        pl.col('members').struct.field('identifier_type').alias('type'),
+                        pl.col('members').struct.field('identifier').alias('value'),
+                    ])
+                ]).alias('identifiers')
+            ])
+        )
+        lfs.append(extracted)
+
     if not lfs:
         return None
 

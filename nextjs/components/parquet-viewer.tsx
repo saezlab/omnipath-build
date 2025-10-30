@@ -128,8 +128,9 @@ export function ParquetViewer({ file }: ParquetViewerProps) {
   // Helper function to format cell value
   const formatCellValue = (value: any): string => {
     if (value === null || value === undefined) return "null"
+    if (typeof value === "bigint") return value.toString()
     if (typeof value === "object") {
-      return JSON.stringify(value, null, 2)
+      return JSON.stringify(value, (_, v) => typeof v === "bigint" ? v.toString() : v, 2)
     }
     return String(value)
   }
