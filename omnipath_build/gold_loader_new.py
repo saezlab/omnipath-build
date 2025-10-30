@@ -6,7 +6,7 @@ This module orchestrates the entire gold table building process in three
 phases:
 1. Phase 1: Cross-source processing (entity clustering, cv_terms, sources,
    references, interactions)
-2. Phase 2: Evidence extraction (provenance, entity_evidence, membership,
+2. Phase 2: Evidence extraction (entity_evidence, membership,
    interaction_evidence) - Automatically combines data from all sources using
    ``pl.concat``.
 3. Phase 3: Compound properties (optional, requires RDKit) - Computes
@@ -105,6 +105,8 @@ def build_cv_terms_tables(
 def build_entity_identifier_tables(
     data_root: Path,
     output_dir: Path,
+    cv_term_df: pl.DataFrame | None = None,
+    sources_df: pl.DataFrame | None = None,
 ) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]:
     """
     Phase 1, Step 3: Build entity identifier tables (unified with provenance).
@@ -112,6 +114,8 @@ def build_entity_identifier_tables(
     Args:
         data_root: Path to data directory containing silver files
         output_dir: Path to output directory for gold tables
+        cv_term_df: Optional CV term DataFrame for type_id mapping
+        sources_df: Optional sources DataFrame for source_id mapping
 
     Returns:
         Tuple of (safe_clusters, record_to_global, final_identifiers)
@@ -122,6 +126,8 @@ def build_entity_identifier_tables(
 
     safe_clusters, record_to_global, final_identifiers = build_entity_identifier_unified(
         data_root=data_root,
+        cv_term_df=cv_term_df,
+        sources_df=sources_df,
     )
 
     # Compute quick stats
@@ -187,9 +193,9 @@ def run_gold_loader_new(
         # Step 2: CV terms
         cv_namespace, cv_term = build_cv_terms_tables(data_root, output_dir)
 
-        # Step 3: Entity identifiers
+        # Step 3: Entity identifiers (pass cv_term and sources for efficient integer usage)
         safe_clusters, record_to_global, final_identifiers = build_entity_identifier_tables(
-            data_root, output_dir
+            data_root, output_dir, cv_term_df=cv_term, sources_df=sources
         )
 
         # TODO: Add remaining Phase 1 steps as we adapt them
