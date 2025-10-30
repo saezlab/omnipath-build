@@ -127,10 +127,9 @@ def build_entity_identifier_tables(
     # Compute quick stats
     n_entities = record_to_global.select(pl.col('entity_id').n_unique()).item() if len(record_to_global) > 0 else 0
     n_records = len(record_to_global)
-    n_conflicts = len(record_to_global.filter(pl.col('has_conflict'))) if n_records else 0
 
     print(f"\nTotal unified entities: {n_entities:,}")
-    print(f"Record→global mappings: {n_records:,} (conflicts: {n_conflicts:,})")
+    print(f"Record→global mappings: {n_records:,}")
     print(f"Final identifiers: {len(final_identifiers):,}")
 
     # Write outputs

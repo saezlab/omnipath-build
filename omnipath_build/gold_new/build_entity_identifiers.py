@@ -473,7 +473,7 @@ def build_entity_identifier_unified(
 
     Returns a tuple of:
       - safe_clusters: (id_type, id_value) -> entity_id mapping
-      - record_to_global: (source_name, local_entity_id) -> [global_entity_ids], entity_id (resolved or null), has_conflict
+      - record_to_global: (source_name, local_entity_id) -> entity_id
       - final_identifiers: (entity_id, id_type, id_value) with sources provenance
     """
     data_root = Path(data_root)
@@ -532,21 +532,13 @@ def build_entity_identifier_unified(
     local_all_edges_all = pl.concat(all_local_all_edges, how='diagonal_relaxed')
 
     # Map local entities to global entity IDs via merge-safe identifiers
+    # By design, there are no conflicts, so each local entity maps to exactly one entity_id
     record_to_global = (
         local_ms_edges_all
         .join(safe_clusters, on=['id_type', 'id_value'], how='inner')
         .group_by(['source_name', 'local_entity_id'])
         .agg([
-            pl.col('entity_id').unique().sort().alias('global_entity_ids'),
-        ])
-        .with_columns([
-            pl.col('global_entity_ids').list.len().alias('num_global_ids'),
-            (pl.col('global_entity_ids').list.len() > 1).alias('has_conflict'),
-            # Resolve entity_id only if exactly one
-            pl.when(pl.col('global_entity_ids').list.len() == 1)
-              .then(pl.col('global_entity_ids').list.first())
-              .otherwise(pl.lit(None, dtype=pl.Int64))
-              .alias('entity_id')
+            pl.col('entity_id').first().alias('entity_id'),
         ])
     )
 
@@ -570,9 +562,6 @@ def build_entity_identifier_unified(
             .with_row_index('row_idx')
             .with_columns([
                 (pl.col('row_idx') + max_ent + 1).cast(pl.Int64).alias('entity_id'),
-                pl.lit([], dtype=pl.List(pl.Int64)).alias('global_entity_ids'),
-                pl.lit(0, dtype=pl.Int64).alias('num_global_ids'),
-                pl.lit(False).alias('has_conflict'),
             ])
             .drop('row_idx')
         )
