@@ -16,7 +16,7 @@ silver-reprocess:
 	@uv run -m omnipath_build.database_manager silver --override $(if $(filter-out $@,$(MAKECMDGOALS)),--source $(filter-out $@,$(MAKECMDGOALS)))
 
 gold:
-	@uv run -m omnipath_build.database_manager gold $(if $(PHASE),--phase $(PHASE))
+	@uv run -m omnipath_build.database_manager gold $(if $(filter-out $@,$(MAKECMDGOALS)),--step $(filter-out $@,$(MAKECMDGOALS))) $(if $(PHASE),--phase $(PHASE))
 
 %:
 	@:

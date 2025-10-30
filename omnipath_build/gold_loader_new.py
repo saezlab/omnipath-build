@@ -37,12 +37,14 @@ logger = logging.getLogger(__name__)
 from omnipath_build.gold_new.build_sources import build_sources
 from omnipath_build.gold_new.build_cv_terms import build_cv_terms
 from omnipath_build.gold_new.build_entity_identifiers import build_entity_identifier_unified
+from omnipath_build.gold_new.build_references import build_references
 
 #from omnipath_build.gold_new.build_entity_identifier_duckdb import build_entity_identifiers_duckdb
 __all__ = [
     'build_sources_table',
     'build_cv_terms_tables',
     'build_entity_identifier_tables',
+    'build_references_table',
     'run_gold_loader_new',
 ]
 
@@ -154,10 +156,44 @@ def build_entity_identifier_tables(
     return safe_clusters, record_to_global, final_identifiers
 
 
+def build_references_table(
+    data_root: Path, output_dir: Path, cv_term_df: pl.DataFrame
+) -> pl.DataFrame:
+    """
+    Phase 1, Step 4: Build references table.
+
+    This function aggregates all unique references from silver files
+    (both entities and interactions) and creates the gold references table.
+
+    Args:
+        data_root: Path to data directory containing silver files
+        output_dir: Path to output directory for gold tables
+        cv_term_df: CV term DataFrame for reference type_id mapping
+
+    Returns:
+        DataFrame with columns: id, type_id, value
+    """
+    print("\n" + "=" * 70)
+    print("PHASE 1, STEP 4: References Table")
+    print("=" * 70)
+
+    # Use the existing build_references module
+    references = build_references(data_root, output_dir, cv_term_df)
+
+    # Save to output directory
+    output_path = output_dir / "references.parquet"
+    references.write_parquet(output_path)
+    print(f"\nSaved references table to: {output_path}")
+    print(f"Total references: {len(references):,}")
+
+    return references
+
+
 def run_gold_loader_new(
     data_root: Path,
     output_dir: Path,
     phase: Optional[str] = None,
+    step: Optional[str] = None,
 ) -> None:
     """
     Main orchestration function for building gold tables with new schema.
@@ -166,6 +202,8 @@ def run_gold_loader_new(
         data_root: Path to data directory containing silver files
         output_dir: Path to output directory for gold tables
         phase: Optional phase to run (1, 2, or 3). If None, run all phases.
+        step: Optional specific step to run within phase 1. If provided, only that step runs.
+              Valid values: 'sources', 'cv_terms', 'entity_identifiers', 'references'
     """
     # Ensure output directory exists
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -176,6 +214,8 @@ def run_gold_loader_new(
     print("╚" + "=" * 68 + "╝")
     print(f"\nData root: {data_root}")
     print(f"Output directory: {output_dir}")
+    if step:
+        print(f"Running single step: {step}")
     print()
 
     logger.info(f"Starting gold loader pipeline - Data root: {data_root}, Output: {output_dir}")
@@ -187,20 +227,41 @@ def run_gold_loader_new(
         print("│" + " " * 18 + "PHASE 1: CROSS-SOURCE PROCESSING" + " " * 18 + "│")
         print("└" + "─" * 68 + "┘")
 
-        # Step 1: Sources
-        sources = build_sources_table(data_root, output_dir)
+        # If a specific step is requested, only run that step
+        if step:
+            if step == 'sources':
+                build_sources_table(data_root, output_dir)
+            elif step == 'cv_terms':
+                build_cv_terms_tables(data_root, output_dir)
+            elif step == 'entity_identifiers':
+                # Load dependencies
+                cv_term = pl.read_parquet(output_dir / "cv_term.parquet")
+                sources = pl.read_parquet(output_dir / "sources.parquet")
+                build_entity_identifier_tables(
+                    data_root, output_dir, cv_term_df=cv_term, sources_df=sources
+                )
+            elif step == 'references':
+                # Load dependencies
+                cv_term = pl.read_parquet(output_dir / "cv_term.parquet")
+                build_references_table(data_root, output_dir, cv_term_df=cv_term)
+        else:
+            # Run all steps in order
+            # Step 1: Sources
+            sources = build_sources_table(data_root, output_dir)
 
-        # Step 2: CV terms
-        cv_namespace, cv_term = build_cv_terms_tables(data_root, output_dir)
+            # Step 2: CV terms
+            cv_namespace, cv_term = build_cv_terms_tables(data_root, output_dir)
 
-        # Step 3: Entity identifiers (pass cv_term and sources for efficient integer usage)
-        safe_clusters, record_to_global, final_identifiers = build_entity_identifier_tables(
-            data_root, output_dir, cv_term_df=cv_term, sources_df=sources
-        )
+            # Step 3: Entity identifiers (pass cv_term and sources for efficient integer usage)
+            safe_clusters, record_to_global, final_identifiers = build_entity_identifier_tables(
+                data_root, output_dir, cv_term_df=cv_term, sources_df=sources
+            )
 
-        # TODO: Add remaining Phase 1 steps as we adapt them
-        # - References
-        # - Interactions
+            # Step 4: References
+            references = build_references_table(data_root, output_dir, cv_term_df=cv_term)
+
+            # TODO: Add remaining Phase 1 steps as we adapt them
+            # - Interactions
 
     # TODO: PHASE 2: Per-source evidence extraction
     # TODO: PHASE 3: Compound properties

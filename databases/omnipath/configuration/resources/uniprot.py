@@ -1,6 +1,7 @@
 from omnipath_build.utils.cv_term_enums import (
     IdentifierNamespaceCv,
     EntityTypeCv,
+    ReferenceTypeCv,
 )
 from omnipath_build.utils.silver_schema import SilverEntity, Identifier, Reference
 from omnipath_build.utils.annotation_builders import build_annotations
@@ -138,7 +139,7 @@ def uniprot_proteins():
                 pmid = pmid.strip()
                 if pmid:
                     references.append(Reference(
-                        type='pmid',
+                        type=ReferenceTypeCv.PUBMED,
                         value=pmid
                     ))
 

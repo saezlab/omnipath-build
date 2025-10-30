@@ -85,6 +85,7 @@ def _handle_gold(args: argparse.Namespace) -> int:
             data_root=data_root,
             output_dir=output_dir,
             phase=args.phase,
+            step=args.step,
         )
     except Exception as exc:  # noqa: BLE001
         print(f'Unexpected error: {exc}', file=sys.stderr)
@@ -135,6 +136,12 @@ def _build_parser() -> argparse.ArgumentParser:
         type=str,
         choices=['1', '2', '3'],
         help='Run only a specific phase (1=cross-source, 2=evidence extraction, 3=compound properties)',
+    )
+    gold_parser.add_argument(
+        '--step',
+        type=str,
+        choices=['sources', 'cv_terms', 'entity_identifiers', 'references'],
+        help='Run only a specific step within phase 1 (sources, cv_terms, entity_identifiers, references)',
     )
     gold_parser.set_defaults(handler=_handle_gold)
 
