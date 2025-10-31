@@ -16,7 +16,13 @@ silver-reprocess:
 	@uv run -m omnipath_build.database_manager silver --override $(if $(filter-out $@,$(MAKECMDGOALS)),--source $(filter-out $@,$(MAKECMDGOALS)))
 
 gold:
-	@uv run -m omnipath_build.database_manager gold $(if $(filter-out $@,$(MAKECMDGOALS)),--step $(filter-out $@,$(MAKECMDGOALS))) $(if $(PHASE),--phase $(PHASE))
+	@if [ "$(filter-out $@,$(MAKECMDGOALS))" = "global_tables" ]; then \
+		uv run -m omnipath_build.database_manager gold --phase 2; \
+	elif [ -n "$(filter-out $@,$(MAKECMDGOALS))" ]; then \
+		uv run -m omnipath_build.database_manager gold --step $(filter-out $@,$(MAKECMDGOALS)) $(if $(PHASE),--phase $(PHASE)); \
+	else \
+		uv run -m omnipath_build.database_manager gold $(if $(PHASE),--phase $(PHASE)); \
+	fi
 
 %:
 	@:

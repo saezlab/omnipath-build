@@ -39,6 +39,7 @@ from omnipath_build.gold_new.build_cv_terms import build_cv_terms
 from omnipath_build.gold_new.build_local_tables import build_local_tables
 from omnipath_build.gold_new.build_entity_identifiers import build_entity_identifiers
 from omnipath_build.gold_new.build_references import build_references
+from omnipath_build.gold_new.build_global_tables import build_global_tables
 
 #from omnipath_build.gold_new.build_entity_identifier_duckdb import build_entity_identifiers_duckdb
 __all__ = [
@@ -47,6 +48,7 @@ __all__ = [
     'build_local_tables_step',
     'build_entity_identifier_tables',
     'build_references_table',
+    'build_global_tables_step',
     'run_gold_loader_new',
 ]
 
@@ -232,6 +234,48 @@ def build_references_table(
     return references
 
 
+def build_global_tables_step(output_dir: Path) -> None:
+    """
+    Phase 2, Step 1: Build global evidence tables.
+
+    This function joins local tables with the entity_id mapping to create
+    global evidence tables that combine data from all sources.
+
+    Creates three global tables:
+    - entity_evidence.parquet: Entity records with global entity_id
+    - interaction_evidence.parquet: Interaction records with global entity_ids
+    - membership.parquet: Membership relationships with global entity_ids
+
+    Args:
+        output_dir: Path to output directory containing local tables and mapping
+    """
+    print("\n" + "=" * 70)
+    print("PHASE 2, STEP 1: Global Evidence Tables")
+    print("=" * 70)
+
+    local_tables_dir = output_dir / "local_tables"
+    mapping_file = output_dir / "entity_identifier_record_to_global.parquet"
+    global_tables_dir = output_dir / "global_tables"
+
+    # Verify required inputs exist
+    if not local_tables_dir.exists():
+        raise FileNotFoundError(f"Local tables directory not found: {local_tables_dir}")
+    if not mapping_file.exists():
+        raise FileNotFoundError(f"Entity mapping file not found: {mapping_file}")
+
+    # Build global tables
+    build_global_tables(
+        local_dir=local_tables_dir,
+        mapping_file=mapping_file,
+        out_dir=global_tables_dir
+    )
+
+    print(f"\nGlobal tables saved to: {global_tables_dir}")
+    print("Generated files:")
+    for table_file in sorted(global_tables_dir.glob("*.parquet")):
+        print(f"  - {table_file.name}")
+
+
 def run_gold_loader_new(
     data_root: Path,
     output_dir: Path,
@@ -240,6 +284,11 @@ def run_gold_loader_new(
 ) -> None:
     """
     Main orchestration function for building gold tables with new schema.
+
+    Phases:
+    1. Cross-source processing: sources, cv_terms, local_tables, entity_identifiers, references
+    2. Evidence extraction: Build global tables by joining local tables with entity mapping
+    3. Compound properties: (TODO) Compute molecular properties from SMILES
 
     Args:
         data_root: Path to data directory containing silver files
@@ -318,7 +367,16 @@ def run_gold_loader_new(
             # TODO: Add remaining Phase 1 steps as we adapt them
             # - Interactions
 
-    # TODO: PHASE 2: Per-source evidence extraction
+    # PHASE 2: Evidence extraction (join local tables with global entity_ids)
+    if phase is None or phase == "2":
+        print("\n")
+        print("┌" + "─" * 68 + "┐")
+        print("│" + " " * 18 + "PHASE 2: EVIDENCE EXTRACTION" + " " * 22 + "│")
+        print("└" + "─" * 68 + "┘")
+
+        # Build global tables by joining local tables with entity mapping
+        build_global_tables_step(output_dir)
+
     # TODO: PHASE 3: Compound properties
 
     print("\n")

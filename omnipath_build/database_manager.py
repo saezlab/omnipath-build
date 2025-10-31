@@ -135,7 +135,7 @@ def _build_parser() -> argparse.ArgumentParser:
         '--phase',
         type=str,
         choices=['1', '2', '3'],
-        help='Run only a specific phase (1=cross-source, 2=evidence extraction, 3=compound properties)',
+        help='Run only a specific phase (1=cross-source, 2=global tables, 3=compound properties)',
     )
     gold_parser.add_argument(
         '--step',
