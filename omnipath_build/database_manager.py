@@ -84,7 +84,6 @@ def _handle_gold(args: argparse.Namespace) -> int:
         run_gold_loader_new(
             data_root=data_root,
             output_dir=output_dir,
-            phase=args.phase,
             step=args.step,
         )
     except Exception as exc:  # noqa: BLE001
@@ -132,16 +131,10 @@ def _build_parser() -> argparse.ArgumentParser:
         help='Path to output directory for gold tables (default: databases/omnipath/output)',
     )
     gold_parser.add_argument(
-        '--phase',
-        type=str,
-        choices=['1', '2', '3'],
-        help='Run only a specific phase (1=cross-source, 2=global tables, 3=compound properties)',
-    )
-    gold_parser.add_argument(
         '--step',
         type=str,
-        choices=['sources', 'cv_terms', 'local_tables', 'entity_identifiers', 'references'],
-        help='Run only a specific step within phase 1 (sources, cv_terms, local_tables, entity_identifiers, references)',
+        choices=['sources', 'cv_terms', 'local_tables', 'entity_identifiers', 'references', 'global_tables'],
+        help='Run only a specific step (sources, cv_terms, local_tables, entity_identifiers, references, global_tables)',
     )
     gold_parser.set_defaults(handler=_handle_gold)
 

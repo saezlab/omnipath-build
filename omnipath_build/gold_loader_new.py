@@ -2,18 +2,17 @@
 """
 Gold Loader (New) - Build gold tables from silver tables with updated schema.
 
-This module orchestrates the entire gold table building process in three
-phases:
-1. Phase 1: Cross-source processing (entity clustering, cv_terms, sources,
-   references, interactions)
-2. Phase 2: Evidence extraction (entity_evidence, membership,
-   interaction_evidence) - Automatically combines data from all sources using
-   ``pl.concat``.
-3. Phase 3: Compound properties (optional, requires RDKit) - Computes
-   molecular properties from SMILES identifiers.
+This module orchestrates the entire gold table building process through the
+following steps:
+1. sources: Build sources table
+2. cv_terms: Build CV namespace and term tables
+3. local_tables: Build per-source local tables
+4. entity_identifiers: Build entity identifier tables with provenance
+5. references: Build references table
+6. global_tables: Build global evidence tables by joining local tables with entity mapping
 
-All gold tables are final and ready to use after Phase 2. Phase 3 is optional
-and adds computed compound properties.
+All steps can be run individually or together. The global_tables step requires
+all previous steps to have completed.
 
 This version works with the updated silver schema that uses structured
 identifiers, members, and references fields.
@@ -55,7 +54,7 @@ __all__ = [
 
 def build_sources_table(data_root: Path, output_dir: Path) -> pl.DataFrame:
     """
-    Phase 1, Step 1: Build sources table.
+    Build sources table.
 
     This function works with the new silver schema where sources are still
     stored as simple string values in the 'source' column.
@@ -68,7 +67,7 @@ def build_sources_table(data_root: Path, output_dir: Path) -> pl.DataFrame:
         DataFrame with columns: id, name, url, description
     """
     print("=" * 70)
-    print("PHASE 1, STEP 1: Sources Table")
+    print("STEP: Sources Table")
     print("=" * 70)
 
     # Use the existing build_sources module (it should still work)
@@ -87,7 +86,7 @@ def build_cv_terms_tables(
     data_root: Path, output_dir: Path
 ) -> tuple[pl.DataFrame, pl.DataFrame]:
     """
-    Phase 1, Step 2: Build CV namespace and term tables.
+    Build CV namespace and term tables.
 
     Args:
         data_root: Path to data directory containing silver files
@@ -97,7 +96,7 @@ def build_cv_terms_tables(
         Tuple of (cv_namespace_df, cv_term_df)
     """
     print("\n" + "=" * 70)
-    print("PHASE 1, STEP 2: CV Terms Tables")
+    print("STEP: CV Terms Tables")
     print("=" * 70)
 
     cv_namespace, cv_term = build_cv_terms(data_root, output_dir)
@@ -115,7 +114,7 @@ def build_local_tables_step(
     cv_term_df: pl.DataFrame,
 ) -> dict[str, pl.DataFrame]:
     """
-    Phase 1, Step 3: Build local tables per source.
+    Build local tables per source.
 
     This step processes each source independently to create:
     - local_entity_evidence: Per-source entity records with annotations
@@ -133,7 +132,7 @@ def build_local_tables_step(
         Dictionary containing the four local tables
     """
     print("\n" + "=" * 70)
-    print("PHASE 1, STEP 3: Local Tables (Per-Source)")
+    print("STEP: Local Tables (Per-Source)")
     print("=" * 70)
 
     # Build local tables for all sources
@@ -158,7 +157,7 @@ def build_entity_identifier_tables(
     sources_df: pl.DataFrame | None = None,
 ) -> tuple[pl.DataFrame, pl.DataFrame]:
     """
-    Phase 1, Step 4: Build entity identifier tables (unified with provenance).
+    Build entity identifier tables (unified with provenance).
 
     Args:
         data_root: Path to data directory containing silver files (not used - kept for compatibility)
@@ -170,7 +169,7 @@ def build_entity_identifier_tables(
         Tuple of (record_to_global, final_identifiers)
     """
     print("\n" + "=" * 70)
-    print("PHASE 1, STEP 3: Entity Identifier Tables")
+    print("STEP: Entity Identifier Tables")
     print("=" * 70)
 
     # Build from local tables (pre-built by build_local_tables_step)
@@ -205,7 +204,7 @@ def build_references_table(
     data_root: Path, output_dir: Path, cv_term_df: pl.DataFrame
 ) -> pl.DataFrame:
     """
-    Phase 1, Step 5: Build references table.
+    Build references table.
 
     This function aggregates all unique references from silver files
     (both entities and interactions) and creates the gold references table.
@@ -219,7 +218,7 @@ def build_references_table(
         DataFrame with columns: id, type_id, value
     """
     print("\n" + "=" * 70)
-    print("PHASE 1, STEP 4: References Table")
+    print("STEP: References Table")
     print("=" * 70)
 
     # Use the existing build_references module
@@ -236,7 +235,7 @@ def build_references_table(
 
 def build_global_tables_step(output_dir: Path) -> None:
     """
-    Phase 2, Step 1: Build global evidence tables.
+    Build global evidence tables.
 
     This function joins local tables with the entity_id mapping to create
     global evidence tables that combine data from all sources.
@@ -250,12 +249,11 @@ def build_global_tables_step(output_dir: Path) -> None:
         output_dir: Path to output directory containing local tables and mapping
     """
     print("\n" + "=" * 70)
-    print("PHASE 2, STEP 1: Global Evidence Tables")
+    print("STEP: Global Evidence Tables")
     print("=" * 70)
 
     local_tables_dir = output_dir / "local_tables"
     mapping_file = output_dir / "entity_identifier_record_to_global.parquet"
-    global_tables_dir = output_dir / "global_tables"
 
     # Verify required inputs exist
     if not local_tables_dir.exists():
@@ -267,35 +265,36 @@ def build_global_tables_step(output_dir: Path) -> None:
     build_global_tables(
         local_dir=local_tables_dir,
         mapping_file=mapping_file,
-        out_dir=global_tables_dir
+        out_dir=output_dir
     )
 
-    print(f"\nGlobal tables saved to: {global_tables_dir}")
+    print(f"\nGlobal tables saved to: {output_dir}")
     print("Generated files:")
-    for table_file in sorted(global_tables_dir.glob("*.parquet")):
+    for table_file in sorted(output_dir.glob("*.parquet")):
         print(f"  - {table_file.name}")
 
 
 def run_gold_loader_new(
     data_root: Path,
     output_dir: Path,
-    phase: Optional[str] = None,
     step: Optional[str] = None,
 ) -> None:
     """
     Main orchestration function for building gold tables with new schema.
 
-    Phases:
-    1. Cross-source processing: sources, cv_terms, local_tables, entity_identifiers, references
-    2. Evidence extraction: Build global tables by joining local tables with entity mapping
-    3. Compound properties: (TODO) Compute molecular properties from SMILES
+    Steps:
+    1. sources: Build sources table
+    2. cv_terms: Build CV namespace and term tables
+    3. local_tables: Build per-source local tables
+    4. entity_identifiers: Build entity identifier tables with provenance
+    5. references: Build references table
+    6. global_tables: Build global evidence tables by joining local tables with entity mapping
 
     Args:
         data_root: Path to data directory containing silver files
         output_dir: Path to output directory for gold tables
-        phase: Optional phase to run (1, 2, or 3). If None, run all phases.
-        step: Optional specific step to run within phase 1. If provided, only that step runs.
-              Valid values: 'sources', 'cv_terms', 'local_tables', 'entity_identifiers', 'references'
+        step: Optional specific step to run. If None, run all steps.
+              Valid values: 'sources', 'cv_terms', 'local_tables', 'entity_identifiers', 'references', 'global_tables'
     """
     # Ensure output directory exists
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -312,72 +311,56 @@ def run_gold_loader_new(
 
     logger.info(f"Starting gold loader pipeline - Data root: {data_root}, Output: {output_dir}")
 
-    # PHASE 1: Cross-source processing
-    if phase is None or phase == "1":
-        print("\n")
-        print("┌" + "─" * 68 + "┐")
-        print("│" + " " * 18 + "PHASE 1: CROSS-SOURCE PROCESSING" + " " * 18 + "│")
-        print("└" + "─" * 68 + "┘")
-
-        # If a specific step is requested, only run that step
-        if step:
-            if step == 'sources':
-                build_sources_table(data_root, output_dir)
-            elif step == 'cv_terms':
-                build_cv_terms_tables(data_root, output_dir)
-            elif step == 'local_tables':
-                # Load dependencies
-                cv_term = pl.read_parquet(output_dir / "cv_term.parquet")
-                sources = pl.read_parquet(output_dir / "source.parquet")
-                build_local_tables_step(
-                    data_root, output_dir, sources_df=sources, cv_term_df=cv_term
-                )
-            elif step == 'entity_identifiers':
-                # Load dependencies
-                cv_term = pl.read_parquet(output_dir / "cv_term.parquet")
-                sources = pl.read_parquet(output_dir / "source.parquet")
-                build_entity_identifier_tables(
-                    data_root, output_dir, cv_term_df=cv_term, sources_df=sources
-                )
-            elif step == 'references':
-                # Load dependencies
-                cv_term = pl.read_parquet(output_dir / "cv_term.parquet")
-                build_references_table(data_root, output_dir, cv_term_df=cv_term)
-        else:
-            # Run all steps in order
-            # Step 1: Sources
-            sources = build_sources_table(data_root, output_dir)
-
-            # Step 2: CV terms
-            cv_namespace, cv_term = build_cv_terms_tables(data_root, output_dir)
-
-            # Step 3: Local tables (per-source processing)
-            local_tables = build_local_tables_step(
+    # If a specific step is requested, only run that step
+    if step:
+        if step == 'sources':
+            build_sources_table(data_root, output_dir)
+        elif step == 'cv_terms':
+            build_cv_terms_tables(data_root, output_dir)
+        elif step == 'local_tables':
+            # Load dependencies
+            cv_term = pl.read_parquet(output_dir / "cv_term.parquet")
+            sources = pl.read_parquet(output_dir / "source.parquet")
+            build_local_tables_step(
                 data_root, output_dir, sources_df=sources, cv_term_df=cv_term
             )
-
-            # Step 4: Entity identifiers (pass cv_term for efficient integer usage)
-            record_to_global, final_identifiers = build_entity_identifier_tables(
+        elif step == 'entity_identifiers':
+            # Load dependencies
+            cv_term = pl.read_parquet(output_dir / "cv_term.parquet")
+            sources = pl.read_parquet(output_dir / "source.parquet")
+            build_entity_identifier_tables(
                 data_root, output_dir, cv_term_df=cv_term, sources_df=sources
             )
+        elif step == 'references':
+            # Load dependencies
+            cv_term = pl.read_parquet(output_dir / "cv_term.parquet")
+            build_references_table(data_root, output_dir, cv_term_df=cv_term)
+        elif step == 'global_tables':
+            # Build global tables by joining local tables with entity mapping
+            build_global_tables_step(output_dir)
+    else:
+        # Run all steps in order
+        # Step 1: Sources
+        sources = build_sources_table(data_root, output_dir)
 
-            # Step 5: References
-            references = build_references_table(data_root, output_dir, cv_term_df=cv_term)
+        # Step 2: CV terms
+        cv_namespace, cv_term = build_cv_terms_tables(data_root, output_dir)
 
-            # TODO: Add remaining Phase 1 steps as we adapt them
-            # - Interactions
+        # Step 3: Local tables (per-source processing)
+        local_tables = build_local_tables_step(
+            data_root, output_dir, sources_df=sources, cv_term_df=cv_term
+        )
 
-    # PHASE 2: Evidence extraction (join local tables with global entity_ids)
-    if phase is None or phase == "2":
-        print("\n")
-        print("┌" + "─" * 68 + "┐")
-        print("│" + " " * 18 + "PHASE 2: EVIDENCE EXTRACTION" + " " * 22 + "│")
-        print("└" + "─" * 68 + "┘")
+        # Step 4: Entity identifiers (pass cv_term for efficient integer usage)
+        record_to_global, final_identifiers = build_entity_identifier_tables(
+            data_root, output_dir, cv_term_df=cv_term, sources_df=sources
+        )
 
-        # Build global tables by joining local tables with entity mapping
+        # Step 5: References
+        references = build_references_table(data_root, output_dir, cv_term_df=cv_term)
+
+        # Step 6: Global tables (join local tables with entity mapping)
         build_global_tables_step(output_dir)
-
-    # TODO: PHASE 3: Compound properties
 
     print("\n")
     print("╔" + "=" * 68 + "╗")

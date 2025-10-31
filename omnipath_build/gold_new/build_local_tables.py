@@ -131,21 +131,27 @@ def _process_members(df: pl.DataFrame, next_id: int):
 
     return m, membership, next_id
 
-def _map_terms(df: pl.DataFrame, sid: int, cv: pl.DataFrame) -> pl.DataFrame:
+def _map_terms(df: pl.DataFrame, sid: int, cv: pl.DataFrame, is_interaction: bool = True) -> pl.DataFrame:
     if not len(df):
         return df
     amap = {r["accession"]: r["id"] for r in cv.iter_rows(named=True)}
     f = lambda x: amap.get(x) if x else None
-    return df.with_columns(
-        pl.lit(sid).alias("source_id"),
-        pl.col("interaction_type").map_elements(f, return_dtype=pl.Int64).alias("interaction_type_id"),
-        pl.col("detection_method").map_elements(f, return_dtype=pl.Int64).alias("detection_method_id"),
-    ).select(
-        "source_id", "local_entity_id_a", "local_entity_id_b",
-        "interaction_type_id", "detection_method_id", "is_directed", "direction",
-        "sign", "causal_mechanism", "causal_statement", "sentence",
-        "interaction_annotations", "references",
-    )
+
+    if is_interaction:
+        return df.with_columns(
+            pl.lit(sid).alias("source_id"),
+            pl.col("interaction_type").map_elements(f, return_dtype=pl.Int64).alias("interaction_type_id"),
+            pl.col("detection_method").map_elements(f, return_dtype=pl.Int64).alias("detection_method_id"),
+        ).select(
+            "source_id", "local_entity_id_a", "local_entity_id_b",
+            "interaction_type_id", "detection_method_id", "is_directed", "direction",
+            "sign", "causal_mechanism", "causal_statement", "sentence",
+            "interaction_annotations", "references",
+        )
+    else:
+        return df.with_columns(
+            pl.col("entity_type").map_elements(f, return_dtype=pl.Int64).alias("entity_type_id")
+        )
 
 # --- main --------------------------------------------------------------------
 
@@ -191,8 +197,11 @@ def build_local_tables(data_root: Path, output_dir: Path, sources_df: pl.DataFra
         # Add source_id
         ents = ents.with_columns(pl.lit(sid).alias("source_id"))
 
+        # Map entity_type to entity_type_id via cv_terms
+        ents = _map_terms(ents, sid, cv_term_df, is_interaction=False)
+
         # ✅ Evidence & Identifiers now include new member rows
-        ev = ents.select("source_id", "local_entity_id", "entity_type", "annotations")
+        ev = ents.select("source_id", "local_entity_id", "entity_type_id", "annotations")
         ids = ents.select("source_id", "local_entity_id", "identifiers")
 
         # Save

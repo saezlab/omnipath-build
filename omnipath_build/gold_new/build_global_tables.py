@@ -8,7 +8,6 @@ Input:
   record_to_global.parquet   (from build_entity_identifiers)
 
 Output:
-  global_tables/
     entity_evidence.parquet
     interaction_evidence.parquet
     membership.parquet
