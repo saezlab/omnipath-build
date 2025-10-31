@@ -10,10 +10,10 @@ This module contains:
 from omnipath_build.gold_new.build_cv_terms import build_cv_terms
 from omnipath_build.gold_new.build_compounds import build_compounds
 from omnipath_build.gold_new.build_sources import build_sources
-from omnipath_build.gold_new.build_entity_identifiers import build_entity_identifier_unified
+from omnipath_build.gold_new.build_entity_identifiers import build_entity_identifiers
 __all__ = [
     'build_cv_terms',
-    'build_entity_identifier_unified',
+    'build_entity_identifiers',
     'build_sources',
     'build_compounds',
 ]

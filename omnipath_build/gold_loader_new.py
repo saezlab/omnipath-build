@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 from omnipath_build.gold_new.build_sources import build_sources
 from omnipath_build.gold_new.build_cv_terms import build_cv_terms
 from omnipath_build.gold_new.build_local_tables import build_local_tables
-from omnipath_build.gold_new.build_entity_identifiers import build_entity_identifier_unified
+from omnipath_build.gold_new.build_entity_identifiers import build_entity_identifiers
 from omnipath_build.gold_new.build_references import build_references
 
 #from omnipath_build.gold_new.build_entity_identifier_duckdb import build_entity_identifiers_duckdb
@@ -154,27 +154,28 @@ def build_entity_identifier_tables(
     output_dir: Path,
     cv_term_df: pl.DataFrame | None = None,
     sources_df: pl.DataFrame | None = None,
-) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]:
+) -> tuple[pl.DataFrame, pl.DataFrame]:
     """
     Phase 1, Step 4: Build entity identifier tables (unified with provenance).
 
     Args:
-        data_root: Path to data directory containing silver files
+        data_root: Path to data directory containing silver files (not used - kept for compatibility)
         output_dir: Path to output directory for gold tables
         cv_term_df: Optional CV term DataFrame for type_id mapping
-        sources_df: Optional sources DataFrame for source_id mapping
+        sources_df: Optional sources DataFrame for source_id mapping (not used)
 
     Returns:
-        Tuple of (safe_clusters, record_to_global, final_identifiers)
+        Tuple of (record_to_global, final_identifiers)
     """
     print("\n" + "=" * 70)
     print("PHASE 1, STEP 3: Entity Identifier Tables")
     print("=" * 70)
 
-    safe_clusters, record_to_global, final_identifiers = build_entity_identifier_unified(
-        data_root=data_root,
+    # Build from local tables (pre-built by build_local_tables_step)
+    local_tables_dir = output_dir / "local_tables"
+    record_to_global, final_identifiers = build_entity_identifiers(
+        local_tables_dir=local_tables_dir,
         cv_term_df=cv_term_df,
-        sources_df=sources_df,
     )
 
     # Compute quick stats
@@ -185,20 +186,17 @@ def build_entity_identifier_tables(
     print(f"Record→global mappings: {n_records:,}")
     print(f"Final identifiers: {len(final_identifiers):,}")
 
-    # Write outputs
-    clusters_path = output_dir / "entity_identifier_safe_clusters.parquet"
+    # Write outputs (note: safe_clusters table is no longer generated)
     mapping_path = output_dir / "entity_identifier_record_to_global.parquet"
     final_ids_path = output_dir / "entity_identifiers.parquet"
 
-    safe_clusters.write_parquet(clusters_path)
     record_to_global.write_parquet(mapping_path)
     final_identifiers.write_parquet(final_ids_path)
 
-    print(f"\nSaved: {clusters_path}")
     print(f"Saved: {mapping_path}")
     print(f"Saved: {final_ids_path}")
 
-    return safe_clusters, record_to_global, final_identifiers
+    return record_to_global, final_identifiers
 
 
 def build_references_table(
@@ -309,8 +307,8 @@ def run_gold_loader_new(
                 data_root, output_dir, sources_df=sources, cv_term_df=cv_term
             )
 
-            # Step 4: Entity identifiers (pass cv_term and sources for efficient integer usage)
-            safe_clusters, record_to_global, final_identifiers = build_entity_identifier_tables(
+            # Step 4: Entity identifiers (pass cv_term for efficient integer usage)
+            record_to_global, final_identifiers = build_entity_identifier_tables(
                 data_root, output_dir, cv_term_df=cv_term, sources_df=sources
             )
 
