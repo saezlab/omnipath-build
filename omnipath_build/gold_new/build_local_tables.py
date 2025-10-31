@@ -124,7 +124,7 @@ def _process_members(df: pl.DataFrame, next_id: int):
         "parent_local_entity_id",
         "role",
         "stoichiometry"
-    )
+    ).with_row_index("local_membership_id", offset=1)
 
     logger.info(f"    Created {len(m):,} member entity records")
     logger.info(f"    Created {len(membership):,} membership relationships")
@@ -153,11 +153,65 @@ def _map_terms(df: pl.DataFrame, sid: int, cv: pl.DataFrame, is_interaction: boo
             pl.col("entity_type").map_elements(f, return_dtype=pl.Int64).alias("entity_type_id")
         )
 
+
+def _collect_reference_links(
+    df: pl.DataFrame,
+    id_col: str,
+    ref_lookup: pl.DataFrame,
+    accession_to_id: dict[str, int],
+) -> pl.DataFrame:
+    """Explode `references` column and map to reference_id for evidence tables."""
+    if not len(df) or "references" not in df.columns or not len(ref_lookup):
+        return pl.DataFrame()
+
+    exploded = (
+        df.select(["source_id", id_col, "references"])
+        .filter(pl.col("references").list.len() > 0)
+        .explode("references")
+        .select(
+            "source_id",
+            id_col,
+            pl.col("references").struct.field("type").alias("type_accession"),
+            pl.col("references").struct.field("value").alias("value"),
+        )
+        .filter(pl.col("type_accession").is_not_null() & pl.col("value").is_not_null())
+    )
+
+    if not len(exploded):
+        return pl.DataFrame()
+
+    exploded = exploded.with_columns(
+        pl.col("type_accession").map_elements(
+            lambda x: accession_to_id.get(x),
+            return_dtype=pl.Int64,
+        ).alias("type_id")
+    ).filter(pl.col("type_id").is_not_null())
+
+    if not len(exploded):
+        return pl.DataFrame()
+
+    joined = exploded.join(ref_lookup, on=["type_id", "value"], how="inner")
+    if not len(joined):
+        return pl.DataFrame()
+
+    return joined.select("source_id", id_col, "reference_id").unique()
+
 # --- main --------------------------------------------------------------------
 
-def build_local_tables(data_root: Path, output_dir: Path, sources_df: pl.DataFrame, cv_term_df: pl.DataFrame):
+def build_local_tables(
+    data_root: Path,
+    output_dir: Path,
+    sources_df: pl.DataFrame,
+    cv_term_df: pl.DataFrame,
+    references_df: pl.DataFrame,
+):
     data = _load_source_data(data_root)
     name2id = {r["name"]: r["id"] for r in sources_df.iter_rows(named=True)}
+    accession_to_id = {r["accession"]: r["id"] for r in cv_term_df.iter_rows(named=True)}
+    ref_lookup = (
+        references_df.rename({"id": "reference_id"})
+        .select(["reference_id", "type_id", "value"])
+    )
     d = output_dir / "local_tables"; d.mkdir(parents=True, exist_ok=True)
 
     for sname, files in data.items():
@@ -200,6 +254,14 @@ def build_local_tables(data_root: Path, output_dir: Path, sources_df: pl.DataFra
         # Map entity_type to entity_type_id via cv_terms
         ents = _map_terms(ents, sid, cv_term_df, is_interaction=False)
 
+        # Build local reference bridge for entity evidence
+        entity_refs = _collect_reference_links(
+            ents,
+            id_col="local_entity_id",
+            ref_lookup=ref_lookup,
+            accession_to_id=accession_to_id,
+        )
+
         # ✅ Evidence & Identifiers now include new member rows
         ev = ents.select("source_id", "local_entity_id", "entity_type_id", "annotations")
         ids = ents.select("source_id", "local_entity_id", "identifiers")
@@ -207,6 +269,12 @@ def build_local_tables(data_root: Path, output_dir: Path, sources_df: pl.DataFra
         # Save
         ev.write_parquet(d / f"local_entity_evidence_{sname}.parquet")
         ids.write_parquet(d / f"local_entity_identifiers_{sname}.parquet")
+
+        if len(entity_refs):
+            entity_refs.write_parquet(
+                d / f"local_entity_evidence_reference_{sname}.parquet"
+            )
+            logger.info(f"  Saved {sname} entity references: {len(entity_refs):,} rows")
 
         logger.info(f"  Saved evidence ({len(ev):,}) & identifiers ({len(ids):,}) for {sname}")
 
@@ -219,5 +287,22 @@ def build_local_tables(data_root: Path, output_dir: Path, sources_df: pl.DataFra
         if inters:
             inters = pl.concat(inters, how="diagonal_relaxed")
             inters = _map_terms(inters, sid, cv_term_df)
+            inters = inters.with_row_index("local_interaction_id", offset=1)
+
+            interaction_refs = _collect_reference_links(
+                inters,
+                id_col="local_interaction_id",
+                ref_lookup=ref_lookup,
+                accession_to_id=accession_to_id,
+            )
+
             inters.write_parquet(d / f"local_interaction_evidence_{sname}.parquet")
             logger.info(f"  Saved {sname} interactions: {len(inters):,} rows")
+
+            if len(interaction_refs):
+                interaction_refs.write_parquet(
+                    d / f"local_interaction_evidence_reference_{sname}.parquet"
+                )
+                logger.info(
+                    f"  Saved {sname} interaction references: {len(interaction_refs):,} rows"
+                )

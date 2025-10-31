@@ -6,9 +6,9 @@ This module orchestrates the entire gold table building process through the
 following steps:
 1. sources: Build sources table
 2. cv_terms: Build CV namespace and term tables
-3. local_tables: Build per-source local tables
-4. entity_identifiers: Build entity identifier tables with provenance
-5. references: Build references table
+3. references: Build references table
+4. local_tables: Build per-source local tables
+5. entity_identifiers: Build entity identifier tables with provenance
 6. global_tables: Build global evidence tables by joining local tables with entity mapping
 
 All steps can be run individually or together. The global_tables step requires
@@ -114,6 +114,7 @@ def build_local_tables_step(
     output_dir: Path,
     sources_df: pl.DataFrame,
     cv_term_df: pl.DataFrame,
+    references_df: pl.DataFrame | None = None,
 ) -> dict[str, pl.DataFrame]:
     """
     Build local tables per source.
@@ -137,6 +138,14 @@ def build_local_tables_step(
     print("STEP: Local Tables (Per-Source)")
     print("=" * 70)
 
+    if references_df is None:
+        references_path = output_dir / "references.parquet"
+        if not references_path.exists():
+            raise FileNotFoundError(
+                "References table not found. Run the references step before local tables."
+            )
+        references_df = pl.read_parquet(references_path)
+
     # Build local tables for all sources
     # Note: This saves per-source files to output_dir/local_tables/
     # and returns empty DataFrames (we keep tables source-specific)
@@ -145,6 +154,7 @@ def build_local_tables_step(
         output_dir=output_dir,
         sources_df=sources_df,
         cv_term_df=cv_term_df,
+        references_df=references_df,
     )
 
     print("\nLocal tables built successfully (per-source files saved)")
@@ -347,9 +357,9 @@ def run_gold_loader_new(
     Steps:
     1. sources: Build sources table
     2. cv_terms: Build CV namespace and term tables
-    3. local_tables: Build per-source local tables
-    4. entity_identifiers: Build entity identifier tables with provenance
-    5. references: Build references table
+    3. references: Build references table
+    4. local_tables: Build per-source local tables (requires references)
+    5. entity_identifiers: Build entity identifier tables with provenance
     6. global_tables: Build global evidence tables by joining local tables with entity mapping
     7. compounds: Build compound properties table from chemical structure identifiers
 
@@ -384,8 +394,13 @@ def run_gold_loader_new(
             # Load dependencies
             cv_term = pl.read_parquet(output_dir / "cv_term.parquet")
             sources = pl.read_parquet(output_dir / "source.parquet")
+            references = pl.read_parquet(output_dir / "references.parquet")
             build_local_tables_step(
-                data_root, output_dir, sources_df=sources, cv_term_df=cv_term
+                data_root,
+                output_dir,
+                sources_df=sources,
+                cv_term_df=cv_term,
+                references_df=references,
             )
         elif step == 'entity_identifiers':
             # Load dependencies
@@ -415,18 +430,22 @@ def run_gold_loader_new(
         # Step 2: CV terms
         cv_namespace, cv_term = build_cv_terms_tables(data_root, output_dir)
 
-        # Step 3: Local tables (per-source processing)
+        # Step 3: References (needed for local table joins)
+        references = build_references_table(data_root, output_dir, cv_term_df=cv_term)
+
+        # Step 4: Local tables (per-source processing)
         local_tables = build_local_tables_step(
-            data_root, output_dir, sources_df=sources, cv_term_df=cv_term
+            data_root,
+            output_dir,
+            sources_df=sources,
+            cv_term_df=cv_term,
+            references_df=references,
         )
 
-        # Step 4: Entity identifiers (pass cv_term for efficient integer usage)
+        # Step 5: Entity identifiers (pass cv_term for efficient integer usage)
         record_to_global, final_identifiers = build_entity_identifier_tables(
             data_root, output_dir, cv_term_df=cv_term, sources_df=sources
         )
-
-        # Step 5: References
-        references = build_references_table(data_root, output_dir, cv_term_df=cv_term)
 
         # Step 6: Global tables (join local tables with entity mapping)
         build_global_tables_step(output_dir)
