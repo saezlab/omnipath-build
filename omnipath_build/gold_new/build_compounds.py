@@ -12,6 +12,7 @@ from SMILES strings using RDKit. It creates a compound table with properties lik
 - Rotatable bonds
 - Aromatic rings
 - Heavy atoms
+- Molfile (Mol block format for RDKit compatibility)
 
 The compound table links to entities via entity_id.
 """
@@ -20,6 +21,7 @@ import polars as pl
 from pathlib import Path
 from typing import Optional
 import logging
+import shutil
 
 from omnipath_build.utils.cv_term_enums import IdentifierNamespaceCv
 
@@ -80,6 +82,7 @@ def _compute_compound_properties(structure: str, structure_type: str) -> Optiona
             "rotatable_bonds": int(Lipinski.NumRotatableBonds(mol)),
             "aromatic_rings": int(rdMolDescriptors.CalcNumAromaticRings(mol)),
             "heavy_atoms": int(mol.GetNumHeavyAtoms()),
+            "molfile": Chem.MolToMolBlock(mol),
         }
     except Exception as e:
         logger.debug(f"Failed to compute properties for {structure_type} '{structure}': {e}")
@@ -92,6 +95,7 @@ def build_compounds(
     compound_limit: Optional[int] = None,
     use_cache: bool = True,
     cache_dir: Optional[Path] = None,
+    chunk_size: int = 10000,
 ) -> pl.DataFrame:
     """
     Build compound table with computed molecular properties.
@@ -101,20 +105,21 @@ def build_compounds(
     2. Prefers Standard InChI over SMILES (avoids duplicate computation)
     3. Computes molecular properties using RDKit
     4. Creates a compound table linked to entity_id
-    5. Uses caching to avoid recomputing properties
+    5. Uses existing compound.parquet file as cache to avoid recomputing properties
 
     Args:
         entity_identifiers: DataFrame from build_entity_identifiers output
                            (columns: entity_id, type_id, id_value, sources)
         cv_term_df: CV terms DataFrame for looking up identifier type_ids
         compound_limit: Optional limit on number of compounds to process
-        use_cache: Whether to use cached compound properties
-        cache_dir: Optional directory for caching computed properties
+        use_cache: Whether to use existing compound.parquet as cache
+        cache_dir: Optional directory where compound.parquet is located (defaults to cwd)
+        chunk_size: Number of compounds to process in each chunk (default: 10000)
 
     Returns:
         DataFrame with compound properties (columns: id, entity_id, formula,
         molecular_weight, exact_mass, tpsa, logp, hbd, hba, rotatable_bonds,
-        aromatic_rings, heavy_atoms)
+        aromatic_rings, heavy_atoms, molfile)
     """
     if not RDKIT_AVAILABLE:
         print("⚠️  RDKit not available - skipping compound property computation")
@@ -132,6 +137,7 @@ def build_compounds(
             "rotatable_bonds": pl.Int32,
             "aromatic_rings": pl.Int32,
             "heavy_atoms": pl.Int32,
+            "molfile": pl.Utf8,
         })
 
     print("\nStep 1: Looking up chemical structure identifier types...")
@@ -204,115 +210,144 @@ def build_compounds(
         print(f"\n  ⚠️  Limiting to first {compound_limit:,} compounds (out of {len(structure_identifiers):,})")
         structure_identifiers = structure_identifiers.head(compound_limit)
 
-    # Setup cache
+    # Setup cache - use the output compound.parquet file itself as cache
     if cache_dir is None:
-        cache_dir = Path.cwd() / "compound_cache"
+        cache_dir = Path.cwd()
     cache_dir = Path(cache_dir)
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    cache_path = cache_dir / "compound_properties.parquet"
+    cache_path = cache_dir / "compound.parquet"
 
-    # Load cache if available (keyed by structure string)
-    cached_props = {}
+    # Load existing compound table if available (create structure -> properties lookup)
+    cached_structures = set()
     if use_cache and cache_path.exists():
-        print(f"\nStep 3: Loading cached compound properties...")
+        print(f"\nStep 3: Loading existing compound table...")
         try:
             cached_df = pl.read_parquet(cache_path)
-            for row in cached_df.iter_rows(named=True):
-                cached_props[row['structure']] = row
-            print(f"  Loaded {len(cached_props):,} cached compound properties")
+            # Join with structure_identifiers to get structure strings
+            cached_with_structure = cached_df.join(
+                structure_identifiers.select(['entity_id', 'structure']),
+                on='entity_id',
+                how='inner'
+            )
+            # Only store the structure strings (not full properties) to save memory
+            cached_structures = set(cached_with_structure.select('structure').to_series())
+            print(f"  Found {len(cached_structures):,} cached structures")
+            del cached_df, cached_with_structure  # Free memory
         except Exception as e:
-            print(f"  ⚠️  Failed to load cache: {e}")
+            print(f"  ⚠️  Failed to load existing compounds: {e}")
 
-    print(f"\nStep 4: Computing molecular properties...")
+    print(f"\nStep 4: Computing molecular properties (chunked processing)...")
 
     # Filter out cached structures
     to_compute = structure_identifiers.filter(
-        ~pl.col('structure').is_in(list(cached_props.keys()))
+        ~pl.col('structure').is_in(list(cached_structures))
     )
 
     if len(to_compute) > 0:
         print(f"  Computing properties for {len(to_compute):,} new compounds...")
+        print(f"  Processing in chunks of {chunk_size:,}")
     else:
         print(f"  All compounds already cached!")
 
-    new_props = []
+    # Process in chunks and write to separate parquet files
+    temp_dir = cache_dir / "compound_temp_chunks"
+    temp_dir.mkdir(exist_ok=True)
+
     failed = 0
+    num_new = 0
+    total_chunks = (len(to_compute) + chunk_size - 1) // chunk_size
+    chunk_files = []
 
-    # Setup progress bar
-    items = to_compute.iter_rows(named=True)
-    if TQDM_AVAILABLE:
-        items = tqdm(
-            list(items),
-            desc="  Processing compounds",
-            unit="compound"
-        )
+    for chunk_idx in range(total_chunks):
+        start_idx = chunk_idx * chunk_size
+        end_idx = min(start_idx + chunk_size, len(to_compute))
+        chunk_df = to_compute.slice(start_idx, end_idx - start_idx)
 
-    for row in items:
-        entity_id = row['entity_id']
-        structure = row['structure']
-        structure_type = row['structure_type']
+        chunk_props = []
 
-        props = _compute_compound_properties(structure, structure_type)
-        if props is None:
-            failed += 1
-            continue
+        # Setup progress bar for this chunk
+        items = chunk_df.iter_rows(named=True)
+        if TQDM_AVAILABLE:
+            items = tqdm(
+                list(items),
+                desc=f"  Chunk {chunk_idx + 1}/{total_chunks}",
+                unit="compound"
+            )
 
-        props['entity_id'] = entity_id
-        props['structure'] = structure
-        new_props.append(props)
+        for row in items:
+            entity_id = row['entity_id']
+            structure = row['structure']
+            structure_type = row['structure_type']
+
+            props = _compute_compound_properties(structure, structure_type)
+            if props is None:
+                failed += 1
+                continue
+
+            props['entity_id'] = entity_id
+            chunk_props.append(props)
+
+        if chunk_props:
+            # Create DataFrame for this chunk
+            chunk_result = pl.DataFrame(chunk_props).select([
+                'entity_id',
+                'formula',
+                'molecular_weight',
+                'exact_mass',
+                'tpsa',
+                'logp',
+                'hbd',
+                'hba',
+                'rotatable_bonds',
+                'aromatic_rings',
+                'heavy_atoms',
+                'molfile',
+            ])
+
+            # Write each chunk to a separate file (no reading back!)
+            chunk_file = temp_dir / f"chunk_{chunk_idx:06d}.parquet"
+            chunk_result.write_parquet(chunk_file)
+            chunk_files.append(chunk_file)
+
+            num_new += len(chunk_props)
+            del chunk_props, chunk_result  # Free memory
 
     if failed > 0:
         print(f"  ⚠️  Failed to compute properties for {failed:,} compounds (invalid structures)")
 
-    # Save new computations to cache
-    if new_props and use_cache:
-        print(f"\nStep 5: Saving {len(new_props):,} new computations to cache...")
-        new_cache_df = pl.DataFrame(new_props)
+    # Combine cached and new compounds
+    result_parts = []
 
-        if cached_props:
-            # Merge with existing cache
-            old_cache_df = pl.DataFrame(list(cached_props.values()))
-            combined_cache = pl.concat([old_cache_df, new_cache_df], how='diagonal_relaxed')
-        else:
-            combined_cache = new_cache_df
+    # Load cached compounds if they exist
+    if use_cache and cache_path.exists() and len(cached_structures) > 0:
+        cached_df = pl.read_parquet(cache_path)
+        # Only keep cached compounds that are in our current structure_identifiers
+        cached_df = cached_df.join(
+            structure_identifiers.select('entity_id'),
+            on='entity_id',
+            how='inner'
+        )
+        result_parts.append(cached_df)
+        num_cached = len(cached_df)
+    else:
+        num_cached = 0
 
-        combined_cache.write_parquet(cache_path)
+    # Load new compounds if any were computed
+    if num_new > 0 and chunk_files:
+        # Read all chunk files using Polars' efficient multi-file read
+        new_df = pl.read_parquet(chunk_files)
+        result_parts.append(new_df)
 
-    # Build entity_id -> cached properties lookup
-    entity_to_structure = {
-        row['entity_id']: row['structure']
-        for row in structure_identifiers.iter_rows(named=True)
-    }
+        # Clean up chunk files and directory
+        shutil.rmtree(temp_dir)
 
-    # Combine cached and new properties
-    all_props = []
-    for entity_id, structure in entity_to_structure.items():
-        if structure in cached_props:
-            props = dict(cached_props[structure])
-            props['entity_id'] = entity_id
-            all_props.append(props)
-
-    # Add newly computed properties
-    all_props.extend(new_props)
-
-    if not all_props:
+    if not result_parts:
         print("  ⚠️  No valid compound properties computed")
         return pl.DataFrame()
 
-    # Create final DataFrame
-    compound_df = pl.DataFrame(all_props).select([
-        'entity_id',
-        'formula',
-        'molecular_weight',
-        'exact_mass',
-        'tpsa',
-        'logp',
-        'hbd',
-        'hba',
-        'rotatable_bonds',
-        'aromatic_rings',
-        'heavy_atoms',
-    ]).unique(subset=['entity_id']).sort('entity_id')
+    # Combine all parts
+    compound_df = pl.concat(result_parts, how='diagonal_relaxed').unique(
+        subset=['entity_id']
+    ).sort('entity_id')
 
     # Add sequential IDs
     compound_df = compound_df.with_row_index(name='id', offset=1).with_columns([
@@ -330,10 +365,8 @@ def build_compounds(
         'rotatable_bonds',
         'aromatic_rings',
         'heavy_atoms',
+        'molfile',
     ])
-
-    num_cached = sum(1 for _, struct in entity_to_structure.items() if struct in cached_props)
-    num_new = len(new_props)
 
     print(f"\n✓ Computed properties for {len(compound_df):,} compounds")
     print(f"  ({num_cached:,} from cache, {num_new:,} newly computed)")

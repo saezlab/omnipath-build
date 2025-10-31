@@ -326,6 +326,10 @@ def build_compounds_table(
     print(f"Loaded entity identifiers from: {entity_ids_path}")
 
     # Build compounds table
+    # Note: cache_dir should be output_dir so it uses compound.parquet as cache
+    if cache_dir is None:
+        cache_dir = output_dir
+
     compounds = build_compounds(
         entity_identifiers=entity_identifiers,
         cv_term_df=cv_term_df,
