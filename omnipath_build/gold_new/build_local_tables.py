@@ -103,8 +103,8 @@ def _process_members(df: pl.DataFrame, next_id: int):
          .then(
              pl.concat_list([
                  pl.struct([
-                     pl.col("members").struct.field("identifier"),
-                     pl.col("members").struct.field("identifier_type")
+                     pl.col("members").struct.field("identifier_type").alias("type"),
+                     pl.col("members").struct.field("identifier").alias("value")
                  ])
              ])
          )
