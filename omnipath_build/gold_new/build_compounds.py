@@ -21,6 +21,8 @@ from pathlib import Path
 from typing import Optional
 import logging
 
+from omnipath_build.utils.cv_term_enums import IdentifierNamespaceCv
+
 try:
     from rdkit import Chem
     from rdkit.Chem import Descriptors, Lipinski, rdMolDescriptors
@@ -36,31 +38,33 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-# SMILES identifier type
-SMILES_IDENTIFIER_TYPE = "smiles"
-
 __all__ = [
     'RDKIT_AVAILABLE',
-    'SMILES_IDENTIFIER_TYPE',
     'TQDM_AVAILABLE',
     'build_compounds',
 ]
 
 
-def _compute_compound_properties(smiles: str) -> Optional[dict]:
+def _compute_compound_properties(structure: str, structure_type: str) -> Optional[dict]:
     """
-    Compute molecular properties from a SMILES string.
+    Compute molecular properties from a chemical structure string.
 
     Args:
-        smiles: SMILES string to parse
+        structure: Chemical structure string (SMILES or InChI)
+        structure_type: Type of structure ('smiles' or 'inchi')
 
     Returns:
-        Dictionary with computed properties, or None if SMILES is invalid
+        Dictionary with computed properties, or None if structure is invalid
     """
     if not RDKIT_AVAILABLE:
         return None
 
-    mol = Chem.MolFromSmiles(smiles)
+    # Parse structure based on type
+    if structure_type == 'inchi':
+        mol = Chem.MolFromInchi(structure)
+    else:  # smiles
+        mol = Chem.MolFromSmiles(structure)
+
     if mol is None:
         return None
 
@@ -78,13 +82,13 @@ def _compute_compound_properties(smiles: str) -> Optional[dict]:
             "heavy_atoms": int(mol.GetNumHeavyAtoms()),
         }
     except Exception as e:
-        logger.debug(f"Failed to compute properties for SMILES '{smiles}': {e}")
+        logger.debug(f"Failed to compute properties for {structure_type} '{structure}': {e}")
         return None
 
 
 def build_compounds(
-    output_dir: Path,
-    entity_identifiers: Optional[pl.DataFrame] = None,
+    entity_identifiers: pl.DataFrame,
+    cv_term_df: pl.DataFrame,
     compound_limit: Optional[int] = None,
     use_cache: bool = True,
     cache_dir: Optional[Path] = None,
@@ -93,20 +97,24 @@ def build_compounds(
     Build compound table with computed molecular properties.
 
     This function:
-    1. Reads SMILES identifiers from entity_identifier table
-    2. Computes molecular properties using RDKit
-    3. Creates a compound table linked to entity_id
-    4. Uses caching to avoid recomputing properties
+    1. Extracts chemical structure identifiers (InChI or SMILES) from entity_identifiers table
+    2. Prefers Standard InChI over SMILES (avoids duplicate computation)
+    3. Computes molecular properties using RDKit
+    4. Creates a compound table linked to entity_id
+    5. Uses caching to avoid recomputing properties
 
     Args:
-        output_dir: Path to output directory for gold tables
-        entity_identifiers: Optional pre-loaded entity_identifier table
+        entity_identifiers: DataFrame from build_entity_identifiers output
+                           (columns: entity_id, type_id, id_value, sources)
+        cv_term_df: CV terms DataFrame for looking up identifier type_ids
         compound_limit: Optional limit on number of compounds to process
         use_cache: Whether to use cached compound properties
         cache_dir: Optional directory for caching computed properties
 
     Returns:
-        DataFrame with compound properties
+        DataFrame with compound properties (columns: id, entity_id, formula,
+        molecular_weight, exact_mass, tpsa, logp, hbd, hba, rotatable_bonds,
+        aromatic_rings, heavy_atoms)
     """
     if not RDKIT_AVAILABLE:
         print("⚠️  RDKit not available - skipping compound property computation")
@@ -126,65 +134,100 @@ def build_compounds(
             "heavy_atoms": pl.Int32,
         })
 
-    print("\nStep 1: Loading entity identifiers...")
-    if entity_identifiers is None:
-        entity_id_path = output_dir / "entity_identifier.parquet"
-        if not entity_id_path.exists():
-            print(f"  ⚠️  entity_identifier table not found at {entity_id_path}")
-            return pl.DataFrame()
-        entity_identifiers = pl.read_parquet(entity_id_path)
+    print("\nStep 1: Looking up chemical structure identifier types...")
 
-    print(f"  Loaded {len(entity_identifiers):,} entity identifiers")
+    # Look up type_ids for chemical structure identifiers
+    standard_inchi_type_id = cv_term_df.filter(
+        pl.col('accession') == IdentifierNamespaceCv.STANDARD_INCHI.value
+    ).select('id').to_series()
 
-    print("\nStep 2: Extracting SMILES identifiers...")
+    smiles_type_id = cv_term_df.filter(
+        pl.col('accession') == IdentifierNamespaceCv.SMILES.value
+    ).select('id').to_series()
 
-    # Filter for SMILES identifier type
-    # These are stored with identifier_type_name = 'smiles'
-    smiles_identifiers = entity_identifiers.filter(
-        pl.col('identifier_type_name') == SMILES_IDENTIFIER_TYPE
-    ).select([
-        'entity_id',
-        pl.col('identifier').alias('smiles'),
-    ])
-
-    if len(smiles_identifiers) == 0:
-        print("  ⚠️  No SMILES identifiers found in entity_identifier table")
-        print(f"     (Looking for identifier_type_name = '{SMILES_IDENTIFIER_TYPE}')")
+    if len(standard_inchi_type_id) == 0 and len(smiles_type_id) == 0:
+        print("  ⚠️  No STANDARD_INCHI or SMILES CV terms found")
         return pl.DataFrame()
 
-    # Deduplicate by entity_id (keep first SMILES per entity)
-    smiles_with_entities = smiles_identifiers.unique(subset=['entity_id'], keep='first')
+    standard_inchi_type_id = standard_inchi_type_id[0] if len(standard_inchi_type_id) > 0 else None
+    smiles_type_id = smiles_type_id[0] if len(smiles_type_id) > 0 else None
 
-    print(f"  Found {len(smiles_with_entities):,} entities with SMILES")
+    print(f"  Standard InChI type_id: {standard_inchi_type_id}")
+    print(f"  SMILES type_id: {smiles_type_id}")
+
+    print("\nStep 2: Extracting chemical structure identifiers...")
+    print("  Priority: Standard InChI (preferred) > SMILES (fallback)")
+
+    structure_parts = []
+
+    # Get entities with Standard InChI (preferred)
+    if standard_inchi_type_id is not None:
+        inchi_entities = entity_identifiers.filter(
+            pl.col('type_id') == standard_inchi_type_id
+        ).select([
+            'entity_id',
+            pl.col('id_value').alias('structure'),
+            pl.lit('inchi').alias('structure_type'),
+        ])
+        structure_parts.append(inchi_entities)
+        print(f"  Found {len(inchi_entities):,} entities with Standard InChI")
+
+    # Get entities with SMILES (fallback)
+    if smiles_type_id is not None:
+        smiles_entities = entity_identifiers.filter(
+            pl.col('type_id') == smiles_type_id
+        ).select([
+            'entity_id',
+            pl.col('id_value').alias('structure'),
+            pl.lit('smiles').alias('structure_type'),
+        ])
+        structure_parts.append(smiles_entities)
+        print(f"  Found {len(smiles_entities):,} entities with SMILES")
+
+    if not structure_parts:
+        print("  ⚠️  No chemical structure identifiers found")
+        return pl.DataFrame()
+
+    # Combine and deduplicate (prefer InChI: keep='first' and InChI is added first)
+    structure_identifiers = pl.concat(structure_parts, how='diagonal_relaxed')
+    structure_identifiers = structure_identifiers.unique(subset=['entity_id'], keep='first')
+
+    print(f"  Total entities with structures (after deduplication): {len(structure_identifiers):,}")
+
+    # Count how many of each type we're using
+    type_counts = structure_identifiers.group_by('structure_type').agg(pl.count().alias('count'))
+    for row in type_counts.iter_rows(named=True):
+        print(f"    - {row['structure_type']}: {row['count']:,}")
 
     # Apply limit if specified
-    if compound_limit is not None and len(smiles_with_entities) > compound_limit:
-        print(f"\n  ⚠️  Limiting to first {compound_limit:,} compounds (out of {len(smiles_with_entities):,})")
-        smiles_with_entities = smiles_with_entities.head(compound_limit)
+    if compound_limit is not None and len(structure_identifiers) > compound_limit:
+        print(f"\n  ⚠️  Limiting to first {compound_limit:,} compounds (out of {len(structure_identifiers):,})")
+        structure_identifiers = structure_identifiers.head(compound_limit)
 
     # Setup cache
     if cache_dir is None:
-        cache_dir = output_dir / "compound_cache"
+        cache_dir = Path.cwd() / "compound_cache"
+    cache_dir = Path(cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
     cache_path = cache_dir / "compound_properties.parquet"
 
-    # Load cache if available
+    # Load cache if available (keyed by structure string)
     cached_props = {}
     if use_cache and cache_path.exists():
-        print(f"\nStep 5: Loading cached compound properties...")
+        print(f"\nStep 3: Loading cached compound properties...")
         try:
             cached_df = pl.read_parquet(cache_path)
             for row in cached_df.iter_rows(named=True):
-                cached_props[row['entity_id']] = row
+                cached_props[row['structure']] = row
             print(f"  Loaded {len(cached_props):,} cached compound properties")
         except Exception as e:
             print(f"  ⚠️  Failed to load cache: {e}")
 
-    print(f"\nStep 6: Computing molecular properties...")
+    print(f"\nStep 4: Computing molecular properties...")
 
-    # Filter out cached entities
-    to_compute = smiles_with_entities.filter(
-        ~pl.col('entity_id').is_in(list(cached_props.keys()))
+    # Filter out cached structures
+    to_compute = structure_identifiers.filter(
+        ~pl.col('structure').is_in(list(cached_props.keys()))
     )
 
     if len(to_compute) > 0:
@@ -206,44 +249,58 @@ def build_compounds(
 
     for row in items:
         entity_id = row['entity_id']
-        smiles = row['smiles']
+        structure = row['structure']
+        structure_type = row['structure_type']
 
-        props = _compute_compound_properties(smiles)
+        props = _compute_compound_properties(structure, structure_type)
         if props is None:
             failed += 1
             continue
 
         props['entity_id'] = entity_id
+        props['structure'] = structure
         new_props.append(props)
 
     if failed > 0:
-        print(f"  ⚠️  Failed to compute properties for {failed:,} compounds (invalid SMILES)")
+        print(f"  ⚠️  Failed to compute properties for {failed:,} compounds (invalid structures)")
 
     # Save new computations to cache
     if new_props and use_cache:
-        print(f"\nStep 7: Saving {len(new_props):,} new computations to cache...")
+        print(f"\nStep 5: Saving {len(new_props):,} new computations to cache...")
         new_cache_df = pl.DataFrame(new_props)
 
         if cached_props:
             # Merge with existing cache
             old_cache_df = pl.DataFrame(list(cached_props.values()))
-            combined_cache = pl.concat([old_cache_df, new_cache_df])
+            combined_cache = pl.concat([old_cache_df, new_cache_df], how='diagonal_relaxed')
         else:
             combined_cache = new_cache_df
 
         combined_cache.write_parquet(cache_path)
 
+    # Build entity_id -> cached properties lookup
+    entity_to_structure = {
+        row['entity_id']: row['structure']
+        for row in structure_identifiers.iter_rows(named=True)
+    }
+
     # Combine cached and new properties
-    all_props = list(cached_props.values()) + new_props
+    all_props = []
+    for entity_id, structure in entity_to_structure.items():
+        if structure in cached_props:
+            props = dict(cached_props[structure])
+            props['entity_id'] = entity_id
+            all_props.append(props)
+
+    # Add newly computed properties
+    all_props.extend(new_props)
 
     if not all_props:
         print("  ⚠️  No valid compound properties computed")
         return pl.DataFrame()
 
     # Create final DataFrame
-    compound_df = pl.DataFrame(all_props).with_columns([
-        pl.lit(None).cast(pl.UInt32).alias('id')  # Placeholder, will be set below
-    ]).select([
+    compound_df = pl.DataFrame(all_props).select([
         'entity_id',
         'formula',
         'molecular_weight',
@@ -255,10 +312,10 @@ def build_compounds(
         'rotatable_bonds',
         'aromatic_rings',
         'heavy_atoms',
-    ]).sort('entity_id')
+    ]).unique(subset=['entity_id']).sort('entity_id')
 
     # Add sequential IDs
-    compound_df = compound_df.with_row_count(name='id', offset=1).with_columns([
+    compound_df = compound_df.with_row_index(name='id', offset=1).with_columns([
         pl.col('id').cast(pl.UInt32)
     ]).select([
         'id',
@@ -275,7 +332,10 @@ def build_compounds(
         'heavy_atoms',
     ])
 
+    num_cached = sum(1 for _, struct in entity_to_structure.items() if struct in cached_props)
+    num_new = len(new_props)
+
     print(f"\n✓ Computed properties for {len(compound_df):,} compounds")
-    print(f"  ({len(cached_props):,} from cache, {len(new_props):,} newly computed)")
+    print(f"  ({num_cached:,} from cache, {num_new:,} newly computed)")
 
     return compound_df

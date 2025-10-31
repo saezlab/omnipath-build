@@ -39,6 +39,7 @@ from omnipath_build.gold_new.build_local_tables import build_local_tables
 from omnipath_build.gold_new.build_entity_identifiers import build_entity_identifiers
 from omnipath_build.gold_new.build_references import build_references
 from omnipath_build.gold_new.build_global_tables import build_global_tables
+from omnipath_build.gold_new.build_compounds import build_compounds
 
 #from omnipath_build.gold_new.build_entity_identifier_duckdb import build_entity_identifiers_duckdb
 __all__ = [
@@ -48,6 +49,7 @@ __all__ = [
     'build_entity_identifier_tables',
     'build_references_table',
     'build_global_tables_step',
+    'build_compounds_table',
     'run_gold_loader_new',
 ]
 
@@ -274,6 +276,66 @@ def build_global_tables_step(output_dir: Path) -> None:
         print(f"  - {table_file.name}")
 
 
+def build_compounds_table(
+    output_dir: Path,
+    cv_term_df: pl.DataFrame,
+    compound_limit: Optional[int] = None,
+    use_cache: bool = True,
+    cache_dir: Optional[Path] = None,
+) -> pl.DataFrame:
+    """
+    Build compounds table with computed molecular properties.
+
+    This function computes chemical properties (molecular weight, formula, etc.)
+    from chemical structure identifiers (Standard InChI or SMILES) in the
+    entity_identifiers table.
+
+    Prefers Standard InChI over SMILES to avoid duplicate computation for
+    entities that have both identifiers.
+
+    Args:
+        output_dir: Path to output directory containing entity_identifiers.parquet
+        cv_term_df: CV terms DataFrame for looking up identifier type_ids
+        compound_limit: Optional limit on number of compounds to process (for testing)
+        use_cache: Whether to use cached compound properties (default: True)
+        cache_dir: Optional directory for caching computed properties
+
+    Returns:
+        DataFrame with compound properties
+    """
+    print("\n" + "=" * 70)
+    print("STEP: Compounds Table")
+    print("=" * 70)
+
+    # Load entity_identifiers table
+    entity_ids_path = output_dir / "entity_identifiers.parquet"
+    if not entity_ids_path.exists():
+        raise FileNotFoundError(f"Entity identifiers table not found: {entity_ids_path}")
+
+    entity_identifiers = pl.read_parquet(entity_ids_path)
+    print(f"Loaded entity identifiers from: {entity_ids_path}")
+
+    # Build compounds table
+    compounds = build_compounds(
+        entity_identifiers=entity_identifiers,
+        cv_term_df=cv_term_df,
+        compound_limit=compound_limit,
+        use_cache=use_cache,
+        cache_dir=cache_dir,
+    )
+
+    # Save to output directory
+    if len(compounds) > 0:
+        output_path = output_dir / "compound.parquet"
+        compounds.write_parquet(output_path)
+        print(f"\nSaved compound table to: {output_path}")
+        print(f"Total compounds: {len(compounds):,}")
+    else:
+        print("\n⚠️  No compounds generated (RDKit not available or no structure identifiers found)")
+
+    return compounds
+
+
 def run_gold_loader_new(
     data_root: Path,
     output_dir: Path,
@@ -289,12 +351,13 @@ def run_gold_loader_new(
     4. entity_identifiers: Build entity identifier tables with provenance
     5. references: Build references table
     6. global_tables: Build global evidence tables by joining local tables with entity mapping
+    7. compounds: Build compound properties table from chemical structure identifiers
 
     Args:
         data_root: Path to data directory containing silver files
         output_dir: Path to output directory for gold tables
         step: Optional specific step to run. If None, run all steps.
-              Valid values: 'sources', 'cv_terms', 'local_tables', 'entity_identifiers', 'references', 'global_tables'
+              Valid values: 'sources', 'cv_terms', 'local_tables', 'entity_identifiers', 'references', 'global_tables', 'compounds'
     """
     # Ensure output directory exists
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -338,6 +401,12 @@ def run_gold_loader_new(
         elif step == 'global_tables':
             # Build global tables by joining local tables with entity mapping
             build_global_tables_step(output_dir)
+        elif step == 'compounds':
+            # Load dependencies
+            cv_term = pl.read_parquet(output_dir / "cv_term.parquet")
+            build_compounds_table(output_dir, cv_term_df=cv_term)
+        else:
+            raise ValueError(f"Unknown step: {step}")
     else:
         # Run all steps in order
         # Step 1: Sources
@@ -361,6 +430,9 @@ def run_gold_loader_new(
 
         # Step 6: Global tables (join local tables with entity mapping)
         build_global_tables_step(output_dir)
+
+        # Step 7: Compounds (compute molecular properties from structures)
+        build_compounds_table(output_dir, cv_term_df=cv_term)
 
     print("\n")
     print("╔" + "=" * 68 + "╗")
