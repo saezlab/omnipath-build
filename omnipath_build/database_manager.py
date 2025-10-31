@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Optional
 
 from omnipath_build.gold_loader_new import run_gold_loader_new
+from omnipath_build.postgres_loader import load_tables_to_postgres
 from omnipath_build.silver_loader import DiscoveryError, run_silver_loader
 
 # Configure logging for the entire application
@@ -93,6 +94,26 @@ def _handle_gold(args: argparse.Namespace) -> int:
     return 0
 
 
+def _handle_postgres(args: argparse.Namespace) -> int:
+    """Execute PostgreSQL loader workflow based on CLI arguments."""
+    project_root = Path(__file__).resolve().parent.parent
+
+    output_dir: Path = args.output_dir
+    if not output_dir.is_absolute():
+        output_dir = project_root / output_dir
+
+    try:
+        return load_tables_to_postgres(
+            output_dir=output_dir,
+            postgres_uri=args.postgres_uri,
+            schema=args.schema,
+            drop_existing=args.drop_existing,
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f'Unexpected error: {exc}', file=sys.stderr)
+        return 1
+
+
 def _build_parser() -> argparse.ArgumentParser:
     """Configure the top-level argument parser."""
     parser = argparse.ArgumentParser(
@@ -137,6 +158,35 @@ def _build_parser() -> argparse.ArgumentParser:
         help='Run only a specific step (sources, cv_terms, local_tables, entity_identifiers, references, global_tables, compounds)',
     )
     gold_parser.set_defaults(handler=_handle_gold)
+
+    postgres_parser = subparsers.add_parser(
+        'postgres',
+        help='Load gold tables from parquet files to PostgreSQL.',
+    )
+    postgres_parser.add_argument(
+        '--output-dir',
+        type=Path,
+        default=Path('databases/omnipath/output'),
+        help='Path to output directory containing parquet files (default: databases/omnipath/output)',
+    )
+    postgres_parser.add_argument(
+        '--postgres-uri',
+        type=str,
+        required=True,
+        help='PostgreSQL connection string (e.g., postgresql://user:pass@localhost:5432/dbname)',
+    )
+    postgres_parser.add_argument(
+        '--schema',
+        type=str,
+        default='public',
+        help='Target schema in PostgreSQL (default: public)',
+    )
+    postgres_parser.add_argument(
+        '--drop-existing',
+        action='store_true',
+        help='Drop existing tables before creating new ones',
+    )
+    postgres_parser.set_defaults(handler=_handle_postgres)
 
     return parser
 

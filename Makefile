@@ -1,4 +1,4 @@
-.PHONY: setup silver silver-reprocess gold visualize
+.PHONY: setup silver silver-reprocess gold postgres visualize
 
 setup:
 	git submodule add -b download-manager-experiment https://github.com/saezlab/pypath.git pypath || true
@@ -21,6 +21,12 @@ gold:
 	else \
 		uv run -m omnipath_build.database_manager gold; \
 	fi
+
+postgres:
+	@. .env && uv run -m omnipath_build.database_manager postgres \
+		--postgres-uri "postgresql://$${POSTGRES_USER}:$${POSTGRES_PASSWORD}@localhost:$${POSTGRES_PORT}/omnipath" \
+		--schema public \
+		$(if $(DROP),--drop-existing)
 
 %:
 	@:
