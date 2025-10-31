@@ -8,8 +8,10 @@ import logging
 import sys
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlparse
 
 import duckdb
+import psycopg2
 
 logging.basicConfig(
     level=logging.INFO,
@@ -43,6 +45,184 @@ TABLES_WITH_COMPLEX_TYPES = {
 COLUMNS_TO_EXCLUDE = {
     'interaction_evidence': ['references'],
 }
+
+# Primary keys to add after table creation
+# Format: (table_name, primary_key_column)
+PRIMARY_KEY_CONSTRAINTS = [
+    ('cv_namespace', 'id'),
+    ('cv_term', 'id'),
+    ('source', 'id'),
+    ('references', 'id'),
+    ('entity_evidence', 'id'),
+    ('membership', 'id'),
+    ('interaction_evidence', 'id'),
+    ('evidence_reference', 'id'),
+    ('compound', 'id'),
+]
+
+# Foreign key constraints to add after table creation
+# Format: (table_name, column_name, referenced_table, referenced_column)
+FOREIGN_KEY_CONSTRAINTS = [
+    # cv_term table
+    ('cv_term', 'namespace_id', 'cv_namespace', 'id'),
+
+    # entity_identifiers table
+    ('entity_identifiers', 'type_id', 'cv_term', 'id'),
+
+    # entity_evidence table
+    ('entity_evidence', 'source_id', 'source', 'id'),
+
+    # membership table todo, need to add these when we fix membership parquet export
+    #('membership', 'role_id', 'cv_term', 'id'),
+    #('membership', 'source_id', 'source', 'id'),
+
+    # interaction_evidence table
+    ('interaction_evidence', 'interaction_type_id', 'cv_term', 'id'),
+    ('interaction_evidence', 'detection_method_id', 'cv_term', 'id'),
+
+    # evidence_reference table
+    ('evidence_reference', 'reference_id', 'references', 'id'),
+    ('evidence_reference', 'entity_evidence_id', 'entity_evidence', 'id'),
+    ('evidence_reference', 'interaction_evidence_id', 'interaction_evidence', 'id'),
+    ('evidence_reference', 'membership_id', 'membership', 'id'),
+]
+
+
+def add_primary_keys(
+    postgres_uri: str,
+    schema: str = 'public',
+) -> None:
+    """
+    Add primary key constraints to the PostgreSQL tables using native PostgreSQL connection.
+
+    Args:
+        postgres_uri: PostgreSQL connection string
+        schema: Target schema in PostgreSQL
+    """
+    logger.info('Adding primary key constraints...')
+
+    # Parse the postgres_uri to get connection parameters
+    # Format: postgresql://user:pass@host:port/dbname
+    parsed = urlparse(postgres_uri)
+
+    conn = psycopg2.connect(
+        host=parsed.hostname,
+        port=parsed.port or 5432,
+        user=parsed.username,
+        password=parsed.password,
+        database=parsed.path.lstrip('/'),
+    )
+
+    try:
+        cur = conn.cursor()
+
+        for table_name, pk_column in PRIMARY_KEY_CONSTRAINTS:
+            constraint_name = f'pk_{table_name}'
+
+            # Check if primary key already exists
+            check_sql = f"""
+                SELECT constraint_name
+                FROM information_schema.table_constraints
+                WHERE table_schema = '{schema}'
+                AND table_name = '{table_name}'
+                AND constraint_type = 'PRIMARY KEY'
+            """
+            cur.execute(check_sql)
+            existing_pk = cur.fetchone()
+
+            if existing_pk:
+                logger.info(f'  Skipping PK: {table_name}.{pk_column} (already exists)')
+                continue
+
+            sql = f"""
+                ALTER TABLE {schema}.{table_name}
+                ADD CONSTRAINT {constraint_name}
+                PRIMARY KEY ({pk_column})
+            """
+            try:
+                logger.info(f'  Adding PK: {table_name}.{pk_column}')
+                cur.execute(sql)
+                conn.commit()
+            except Exception as exc:
+                logger.error(f'  Failed to add PK {constraint_name}: {exc}')
+                conn.rollback()
+                raise
+
+        logger.info('✓ All primary key constraints added successfully')
+
+    finally:
+        cur.close()
+        conn.close()
+
+
+def add_foreign_keys(
+    postgres_uri: str,
+    schema: str = 'public',
+) -> None:
+    """
+    Add foreign key constraints to the PostgreSQL tables using native PostgreSQL connection.
+
+    Args:
+        postgres_uri: PostgreSQL connection string
+        schema: Target schema in PostgreSQL
+    """
+    logger.info('Adding foreign key constraints...')
+
+    # Parse the postgres_uri to get connection parameters
+    # Format: postgresql://user:pass@host:port/dbname
+    parsed = urlparse(postgres_uri)
+
+    conn = psycopg2.connect(
+        host=parsed.hostname,
+        port=parsed.port or 5432,
+        user=parsed.username,
+        password=parsed.password,
+        database=parsed.path.lstrip('/'),
+    )
+
+    try:
+        cur = conn.cursor()
+
+        for table_name, column_name, ref_table, ref_column in FOREIGN_KEY_CONSTRAINTS:
+            constraint_name = f'fk_{table_name}_{column_name}'
+
+            # Check if foreign key already exists
+            check_sql = f"""
+                SELECT constraint_name
+                FROM information_schema.table_constraints
+                WHERE table_schema = '{schema}'
+                AND table_name = '{table_name}'
+                AND constraint_name = '{constraint_name}'
+                AND constraint_type = 'FOREIGN KEY'
+            """
+            cur.execute(check_sql)
+            existing_fk = cur.fetchone()
+
+            if existing_fk:
+                logger.info(f'  Skipping FK: {table_name}.{column_name} -> {ref_table}.{ref_column} (already exists)')
+                continue
+
+            sql = f"""
+                ALTER TABLE {schema}.{table_name}
+                ADD CONSTRAINT {constraint_name}
+                FOREIGN KEY ({column_name})
+                REFERENCES {schema}.{ref_table}({ref_column})
+                ON DELETE RESTRICT
+            """
+            try:
+                logger.info(f'  Adding FK: {table_name}.{column_name} -> {ref_table}.{ref_column}')
+                cur.execute(sql)
+                conn.commit()
+            except Exception as exc:
+                logger.error(f'  Failed to add FK {constraint_name}: {exc}')
+                conn.rollback()
+                raise
+
+        logger.info('✓ All foreign key constraints added successfully')
+
+    finally:
+        cur.close()
+        conn.close()
 
 
 def load_tables_to_postgres(
@@ -139,6 +319,13 @@ def load_tables_to_postgres(
             logger.info(f'  ✓ Successfully loaded {table_name}')
 
         logger.info('All tables loaded successfully!')
+
+        # Add primary key constraints first (required for foreign keys)
+        add_primary_keys(postgres_uri, schema)
+
+        # Add foreign key constraints using native PostgreSQL connection
+        add_foreign_keys(postgres_uri, schema)
+
         return 0
 
     except Exception as exc:
