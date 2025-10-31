@@ -36,6 +36,7 @@ logger = logging.getLogger(__name__)
 # These have been adapted to work with the new silver schema
 from omnipath_build.gold_new.build_sources import build_sources
 from omnipath_build.gold_new.build_cv_terms import build_cv_terms
+from omnipath_build.gold_new.build_local_tables import build_local_tables
 from omnipath_build.gold_new.build_entity_identifiers import build_entity_identifier_unified
 from omnipath_build.gold_new.build_references import build_references
 
@@ -43,6 +44,7 @@ from omnipath_build.gold_new.build_references import build_references
 __all__ = [
     'build_sources_table',
     'build_cv_terms_tables',
+    'build_local_tables_step',
     'build_entity_identifier_tables',
     'build_references_table',
     'run_gold_loader_new',
@@ -104,6 +106,49 @@ def build_cv_terms_tables(
     return cv_namespace, cv_term
 
 
+def build_local_tables_step(
+    data_root: Path,
+    output_dir: Path,
+    sources_df: pl.DataFrame,
+    cv_term_df: pl.DataFrame,
+) -> dict[str, pl.DataFrame]:
+    """
+    Phase 1, Step 3: Build local tables per source.
+
+    This step processes each source independently to create:
+    - local_entity_evidence: Per-source entity records with annotations
+    - local_entity_identifiers: Per-source entity identifiers
+    - local_membership: Per-source membership relationships
+    - local_interaction_evidence: Per-source interaction records
+
+    Args:
+        data_root: Path to data directory containing silver files
+        output_dir: Path to output directory for gold tables
+        sources_df: Sources DataFrame for source_id mapping
+        cv_term_df: CV term DataFrame for type_id mapping
+
+    Returns:
+        Dictionary containing the four local tables
+    """
+    print("\n" + "=" * 70)
+    print("PHASE 1, STEP 3: Local Tables (Per-Source)")
+    print("=" * 70)
+
+    # Build local tables for all sources
+    # Note: This saves per-source files to output_dir/local_tables/
+    # and returns empty DataFrames (we keep tables source-specific)
+    local_tables = build_local_tables(
+        data_root=data_root,
+        output_dir=output_dir,
+        sources_df=sources_df,
+        cv_term_df=cv_term_df,
+    )
+
+    print("\nLocal tables built successfully (per-source files saved)")
+
+    return local_tables
+
+
 def build_entity_identifier_tables(
     data_root: Path,
     output_dir: Path,
@@ -111,7 +156,7 @@ def build_entity_identifier_tables(
     sources_df: pl.DataFrame | None = None,
 ) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]:
     """
-    Phase 1, Step 3: Build entity identifier tables (unified with provenance).
+    Phase 1, Step 4: Build entity identifier tables (unified with provenance).
 
     Args:
         data_root: Path to data directory containing silver files
@@ -160,7 +205,7 @@ def build_references_table(
     data_root: Path, output_dir: Path, cv_term_df: pl.DataFrame
 ) -> pl.DataFrame:
     """
-    Phase 1, Step 4: Build references table.
+    Phase 1, Step 5: Build references table.
 
     This function aggregates all unique references from silver files
     (both entities and interactions) and creates the gold references table.
@@ -203,7 +248,7 @@ def run_gold_loader_new(
         output_dir: Path to output directory for gold tables
         phase: Optional phase to run (1, 2, or 3). If None, run all phases.
         step: Optional specific step to run within phase 1. If provided, only that step runs.
-              Valid values: 'sources', 'cv_terms', 'entity_identifiers', 'references'
+              Valid values: 'sources', 'cv_terms', 'local_tables', 'entity_identifiers', 'references'
     """
     # Ensure output directory exists
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -233,6 +278,13 @@ def run_gold_loader_new(
                 build_sources_table(data_root, output_dir)
             elif step == 'cv_terms':
                 build_cv_terms_tables(data_root, output_dir)
+            elif step == 'local_tables':
+                # Load dependencies
+                cv_term = pl.read_parquet(output_dir / "cv_term.parquet")
+                sources = pl.read_parquet(output_dir / "source.parquet")
+                build_local_tables_step(
+                    data_root, output_dir, sources_df=sources, cv_term_df=cv_term
+                )
             elif step == 'entity_identifiers':
                 # Load dependencies
                 cv_term = pl.read_parquet(output_dir / "cv_term.parquet")
@@ -252,12 +304,17 @@ def run_gold_loader_new(
             # Step 2: CV terms
             cv_namespace, cv_term = build_cv_terms_tables(data_root, output_dir)
 
-            # Step 3: Entity identifiers (pass cv_term and sources for efficient integer usage)
+            # Step 3: Local tables (per-source processing)
+            local_tables = build_local_tables_step(
+                data_root, output_dir, sources_df=sources, cv_term_df=cv_term
+            )
+
+            # Step 4: Entity identifiers (pass cv_term and sources for efficient integer usage)
             safe_clusters, record_to_global, final_identifiers = build_entity_identifier_tables(
                 data_root, output_dir, cv_term_df=cv_term, sources_df=sources
             )
 
-            # Step 4: References
+            # Step 5: References
             references = build_references_table(data_root, output_dir, cv_term_df=cv_term)
 
             # TODO: Add remaining Phase 1 steps as we adapt them
