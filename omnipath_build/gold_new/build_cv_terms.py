@@ -284,9 +284,46 @@ def build_cv_terms(data_root: Path, output_dir: Path | None = None) -> tuple[pl.
     print(f"  Derived {len(cv_namespace):,} namespace(s).")
 
     term_with_ns = _attach_namespace_ids(term_records, cv_namespace)
+    term_with_ids = term_with_ns.with_row_index("id", offset=1).with_columns(pl.col("id").cast(pl.Int64))
+
+    accession_lookup = term_with_ids.select(
+        [
+            pl.col("accession").alias("lookup_accession"),
+            pl.col("id").alias("lookup_id"),
+        ]
+    )
+
+    term_with_relations = (
+        term_with_ids.join(
+            accession_lookup.rename(
+                {
+                    "lookup_accession": "replaces",
+                    "lookup_id": "replaces_id",
+                }
+            ),
+            on="replaces",
+            how="left",
+        )
+        .join(
+            accession_lookup.rename(
+                {
+                    "lookup_accession": "replaced_by",
+                    "lookup_id": "replaced_by_id",
+                }
+            ),
+            on="replaced_by",
+            how="left",
+        )
+        .with_columns(
+            [
+                pl.col("replaces_id").cast(pl.Int64),
+                pl.col("replaced_by_id").cast(pl.Int64),
+            ]
+        )
+    )
+
     cv_term = (
-        term_with_ns.with_row_index("id", offset=1)
-        .select(
+        term_with_relations.select(
             [
                 "id",
                 "namespace_id",
@@ -294,8 +331,8 @@ def build_cv_terms(data_root: Path, output_dir: Path | None = None) -> tuple[pl.
                 pl.col("name"),
                 pl.col("description"),
                 pl.col("is_obsolete"),
-                pl.col("replaces"),
-                pl.col("replaced_by"),
+                pl.col("replaces_id"),
+                pl.col("replaced_by_id"),
             ]
         )
         .sort(["namespace_id", "accession"])

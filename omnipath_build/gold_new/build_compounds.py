@@ -26,8 +26,10 @@ import shutil
 from omnipath_build.utils.cv_term_enums import IdentifierNamespaceCv
 
 try:
-    from rdkit import Chem
-    from rdkit.Chem import Descriptors, Lipinski, rdMolDescriptors
+    from rdkit import Chem, DataStructs
+    from rdkit.Chem import Descriptors, Lipinski, rdMolDescriptors, rdFingerprintGenerator
+    from rdkit.Chem.MolStandardize import rdMolStandardize
+    MORGAN_GENERATOR = rdFingerprintGenerator.GetMorganGenerator(radius=2, fpSize=2048)
     RDKIT_AVAILABLE = True
 except ImportError:
     RDKIT_AVAILABLE = False
@@ -71,6 +73,13 @@ def _compute_compound_properties(structure: str, structure_type: str) -> Optiona
         return None
 
     try:
+        # Compute Morgan fingerprint (radius=2, 2048 bits)
+        morgan_fp = MORGAN_GENERATOR.GetFingerprint(mol)
+
+        # Convert to binary format for PostgreSQL RDKit cartridge
+        # Use DataStructs.BitVectToBinaryText() for compatibility with bfp_from_binary_text()
+        morgan_fp_bytes = DataStructs.BitVectToBinaryText(morgan_fp)
+
         return {
             "formula": rdMolDescriptors.CalcMolFormula(mol),
             "molecular_weight": float(Descriptors.MolWt(mol)),
@@ -83,6 +92,7 @@ def _compute_compound_properties(structure: str, structure_type: str) -> Optiona
             "aromatic_rings": int(rdMolDescriptors.CalcNumAromaticRings(mol)),
             "heavy_atoms": int(mol.GetNumHeavyAtoms()),
             "molfile": Chem.MolToMolBlock(mol),
+            "morgan_fp": morgan_fp_bytes,
         }
     except Exception as e:
         logger.debug(f"Failed to compute properties for {structure_type} '{structure}': {e}")
@@ -138,6 +148,7 @@ def build_compounds(
             "aromatic_rings": pl.Int32,
             "heavy_atoms": pl.Int32,
             "molfile": pl.Utf8,
+            "morgan_fp": pl.Binary,
         })
 
     print("\nStep 1: Looking up chemical structure identifier types...")
@@ -301,6 +312,7 @@ def build_compounds(
                 'aromatic_rings',
                 'heavy_atoms',
                 'molfile',
+                'morgan_fp',
             ])
 
             # Write each chunk to a separate file (no reading back!)
@@ -366,6 +378,7 @@ def build_compounds(
         'aromatic_rings',
         'heavy_atoms',
         'molfile',
+        'morgan_fp',
     ])
 
     print(f"\n✓ Computed properties for {len(compound_df):,} compounds")

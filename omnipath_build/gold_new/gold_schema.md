@@ -16,6 +16,7 @@
     entity_evidence {
         bigint id PK
         bigint entity_id FK
+        int entity_type_id FK
         int source_id FK
         json annotations
     }

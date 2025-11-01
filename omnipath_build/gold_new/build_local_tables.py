@@ -84,7 +84,7 @@ def _process_entities(files, next_id: int):
     return ents, next_id
 
 
-def _process_members(df: pl.DataFrame, next_id: int):
+def _process_members(df: pl.DataFrame, next_id: int, accession_to_id: dict[str, int]):
     has = df.filter(pl.col("members").list.len() > 0)
     if not len(has):
         return pl.DataFrame(), pl.DataFrame(), next_id
@@ -119,10 +119,12 @@ def _process_members(df: pl.DataFrame, next_id: int):
 
     next_id += len(m)
 
+    # Map role to role_id using cv_term lookup
+    f = lambda x: accession_to_id.get(x) if x else None
     membership = m.select(
         "local_entity_id",
         "parent_local_entity_id",
-        "role",
+        pl.col("role").map_elements(f, return_dtype=pl.Int64).alias("role_id"),
         "stoichiometry"
     ).with_row_index("local_membership_id", offset=1)
 
@@ -149,8 +151,11 @@ def _map_terms(df: pl.DataFrame, sid: int, cv: pl.DataFrame, is_interaction: boo
             "interaction_annotations", "references",
         )
     else:
-        return df.with_columns(
-            pl.col("entity_type").map_elements(f, return_dtype=pl.Int64).alias("entity_type_id")
+        return (
+            df.with_columns(
+                pl.col("entity_type").map_elements(f, return_dtype=pl.Int64).alias("entity_type_id")
+            )
+            .drop("entity_type", strict=False)
         )
 
 
@@ -243,7 +248,7 @@ def build_local_tables(
             logger.info(f"  Total interactions for {sname}: {total_interactions:,}")
 
         # ✅ INCLUDE MEMBER ENTITIES
-        ments, memb, nid = _process_members(ents, nid)
+        ments, memb, nid = _process_members(ents, nid, accession_to_id)
         if len(ments):
             ents = pl.concat([ents, ments], how="diagonal_relaxed")
             logger.info(f"  Total entities including members: {len(ents):,}")

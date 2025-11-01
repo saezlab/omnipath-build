@@ -46,6 +46,15 @@ COLUMNS_TO_EXCLUDE = {
     'interaction_evidence': ['references'],
 }
 
+# Columns that need special conversion for RDKit types
+# Format: table_name -> {column_name: conversion_function}
+RDKIT_CONVERSIONS = {
+    'compound': {
+        'molfile': 'mol_from_ctab',  # Convert molfile text to mol type
+        'morgan_fp': 'bfp_from_binary_text',  # Convert binary to bfp type
+    }
+}
+
 # Primary keys to add after table creation
 # Format: (table_name, primary_key_column)
 PRIMARY_KEY_CONSTRAINTS = [
@@ -65,16 +74,19 @@ PRIMARY_KEY_CONSTRAINTS = [
 FOREIGN_KEY_CONSTRAINTS = [
     # cv_term table
     ('cv_term', 'namespace_id', 'cv_namespace', 'id'),
+    ('cv_term', 'replaces_id', 'cv_term', 'id'),
+    ('cv_term', 'replaced_by_id', 'cv_term', 'id'),
 
     # entity_identifiers table
     ('entity_identifiers', 'type_id', 'cv_term', 'id'),
 
     # entity_evidence table
     ('entity_evidence', 'source_id', 'source', 'id'),
+    ('entity_evidence', 'entity_type_id', 'cv_term', 'id'),
 
-    # membership table todo, need to add these when we fix membership parquet export
-    #('membership', 'role_id', 'cv_term', 'id'),
-    #('membership', 'source_id', 'source', 'id'),
+    # membership table
+    ('membership', 'role_id', 'cv_term', 'id'),
+    ('membership', 'source_id', 'source', 'id'),
 
     # interaction_evidence table
     ('interaction_evidence', 'interaction_type_id', 'cv_term', 'id'),
@@ -86,6 +98,107 @@ FOREIGN_KEY_CONSTRAINTS = [
     ('evidence_reference', 'interaction_evidence_id', 'interaction_evidence', 'id'),
     ('evidence_reference', 'membership_id', 'membership', 'id'),
 ]
+
+
+def apply_rdkit_conversions(
+    postgres_uri: str,
+    schema: str = 'public',
+) -> None:
+    """
+    Apply RDKit type conversions to compound table columns.
+
+    Replaces:
+    - molfile (text) -> mol (RDKit mol type) using mol_from_ctab()
+    - morgan_fp (bytea) -> morgan_fp (RDKit bfp type) using bfp_from_binary_text()
+
+    Args:
+        postgres_uri: PostgreSQL connection string
+        schema: Target schema in PostgreSQL
+    """
+    logger.info('Applying RDKit type conversions...')
+
+    # Parse the postgres_uri to get connection parameters
+    parsed = urlparse(postgres_uri)
+
+    conn = psycopg2.connect(
+        host=parsed.hostname,
+        port=parsed.port or 5432,
+        user=parsed.username,
+        password=parsed.password,
+        database=parsed.path.lstrip('/'),
+    )
+
+    try:
+        cur = conn.cursor()
+
+        # Check if compound table exists and has columns to convert
+        cur.execute(f"""
+            SELECT column_name, data_type
+            FROM information_schema.columns
+            WHERE table_schema = '{schema}'
+            AND table_name = 'compound'
+            AND column_name IN ('molfile', 'morgan_fp', 'mol')
+            ORDER BY column_name
+        """)
+        columns = {row[0]: row[1] for row in cur.fetchall()}
+
+        if not columns:
+            logger.info('  Compound table not found or no RDKit columns present')
+            return
+
+        # Check if already converted
+        if 'mol' in columns and 'molfile' not in columns:
+            logger.info('  RDKit conversions already applied')
+            return
+
+        # Convert molfile -> mol
+        if 'molfile' in columns:
+            logger.info('  Converting molfile -> mol using mol_from_ctab()')
+
+            # Add new mol column
+            cur.execute(f"ALTER TABLE {schema}.compound ADD COLUMN mol mol")
+
+            # Populate mol column
+            cur.execute(f"""
+                UPDATE {schema}.compound
+                SET mol = mol_from_ctab(molfile::cstring)
+            """)
+
+            # Drop old molfile column
+            cur.execute(f"ALTER TABLE {schema}.compound DROP COLUMN molfile")
+            conn.commit()
+            logger.info('  ✓ Replaced molfile with mol type')
+
+        # Convert morgan_fp bytea -> morgan_fp bfp
+        if 'morgan_fp' in columns and columns['morgan_fp'] == 'bytea':
+            logger.info('  Converting morgan_fp (bytea) -> morgan_fp (bfp) using bfp_from_binary_text()')
+
+            # Rename old column
+            cur.execute(f"ALTER TABLE {schema}.compound RENAME COLUMN morgan_fp TO morgan_fp_old")
+
+            # Add new morgan_fp column with bfp type
+            cur.execute(f"ALTER TABLE {schema}.compound ADD COLUMN morgan_fp bfp")
+
+            # Populate new column
+            cur.execute(f"""
+                UPDATE {schema}.compound
+                SET morgan_fp = bfp_from_binary_text(morgan_fp_old)
+            """)
+
+            # Drop old column
+            cur.execute(f"ALTER TABLE {schema}.compound DROP COLUMN morgan_fp_old")
+            conn.commit()
+            logger.info('  ✓ Replaced morgan_fp with bfp type')
+
+        logger.info('✓ RDKit type conversions completed')
+
+    except Exception as exc:
+        logger.error(f'Failed to apply RDKit conversions: {exc}')
+        conn.rollback()
+        raise
+    finally:
+        cur.close()
+        conn.close()
 
 
 def add_primary_keys(
@@ -292,6 +405,11 @@ def load_tables_to_postgres(
             if complex_columns:
                 logger.info(f'  Converting complex columns to JSON: {", ".join(complex_columns)}')
 
+            # Check if table has RDKit columns (will be converted later in PostgreSQL)
+            rdkit_columns = RDKIT_CONVERSIONS.get(table_name, {})
+            if rdkit_columns:
+                logger.info(f'  Note: RDKit columns will be converted after loading: {", ".join(rdkit_columns.keys())}')
+
             # Build SELECT clause
             if columns_to_exclude or complex_columns:
                 select_parts = []
@@ -319,6 +437,9 @@ def load_tables_to_postgres(
             logger.info(f'  ✓ Successfully loaded {table_name}')
 
         logger.info('All tables loaded successfully!')
+
+        # Apply RDKit type conversions to compound table
+        apply_rdkit_conversions(postgres_uri, schema)
 
         # Add primary key constraints first (required for foreign keys)
         add_primary_keys(postgres_uri, schema)
