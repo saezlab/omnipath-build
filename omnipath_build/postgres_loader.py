@@ -41,10 +41,7 @@ TABLES_WITH_COMPLEX_TYPES = {
 }
 
 # Columns to exclude from loading
-# TODO dont even write these to parquet in the first place
-COLUMNS_TO_EXCLUDE = {
-    'interaction_evidence': ['references'],
-}
+COLUMNS_TO_EXCLUDE = {}
 
 # Columns that need special conversion for RDKit types
 # Format: table_name -> {column_name: conversion_function}
@@ -91,6 +88,8 @@ FOREIGN_KEY_CONSTRAINTS = [
     # interaction_evidence table
     ('interaction_evidence', 'interaction_type_id', 'cv_term', 'id'),
     ('interaction_evidence', 'detection_method_id', 'cv_term', 'id'),
+    ('interaction_evidence', 'causal_mechanism_id', 'cv_term', 'id'),
+    ('interaction_evidence', 'causal_statement_id', 'cv_term', 'id'),
 
     # evidence_reference table
     ('evidence_reference', 'reference_id', 'references', 'id'),

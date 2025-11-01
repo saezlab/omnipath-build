@@ -124,7 +124,6 @@ def signor_interactions():
         yield mitab_to_silver_interaction(
             record,
             source='signor',
-            direction_mode='causal',
             fallback_interaction_type=InteractionTypeCv.FUNCTIONAL_ASSOCIATION,
             fallback_detection_method=DetectionMethodCv.INFERRED_BY_CURATOR,
         )

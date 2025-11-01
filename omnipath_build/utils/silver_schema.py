@@ -100,7 +100,6 @@ class SilverInteraction(NamedTuple):
     # Optional evidence details
     interaction_type: InteractionTypeCv | None = None
     detection_method: DetectionMethodCv | None = None
-    direction: str | None = None  # 'a_to_b', 'b_to_a', 'bidirectional', 'undirected'
     causal_mechanism: CausalMechanismCv | None = None
     causal_statement: CausalStatementCv | None = None
     sentence: str | None = None
@@ -180,9 +179,6 @@ SILVER_INTERACTION_SCHEMA = pa.schema([
     pa.field('entity_b', pa.struct(SILVER_ENTITY_FIELDS), nullable=False),
     pa.field('interaction_type', pa.string()),
     pa.field('detection_method', pa.string()),
-    pa.field('is_directed', pa.bool_()),
-    pa.field('direction', pa.string()),
-    pa.field('sign', pa.string()),
     pa.field('causal_mechanism', pa.string()),
     pa.field('causal_statement', pa.string()),
     pa.field('sentence', pa.string()),

@@ -16,6 +16,5 @@ def intact_interactions():
         yield mitab_to_silver_interaction(
             record,
             source='intact',
-            direction_mode='undirected',
             fallback_interaction_type=InteractionTypeCv.PHYSICAL_ASSOCIATION,
         )

@@ -69,13 +69,12 @@
     interaction_evidence {
         bigint id PK
         bigint interaction_id FK
-        bigint detection_method FK
-        bigint causal_statement FK
+        bigint interaction_type_id FK
+        bigint detection_method_id FK
+        bigint causal_mechanism_id FK
+        bigint causal_statement_id FK
         text sentence
-        boolean is_directed
-        json annotations
-        json entity_a_context
-        json entity_b_context
+        json interaction_annotations
         int source_id FK
     }
 

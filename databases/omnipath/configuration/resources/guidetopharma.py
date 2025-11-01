@@ -102,7 +102,6 @@ def guidetopharma_interactions():
             entity_b=target_entity,
             interaction_type=InteractionTypeCv.FUNCTIONAL_ASSOCIATION,
             detection_method=DetectionMethodCv.INFERRED_BY_CURATOR,
-            direction='a_to_b',
             causal_statement=causal_statement,
             interaction_annotations=build_annotations(
                 interaction_rec,

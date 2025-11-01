@@ -317,7 +317,6 @@ def mitab_to_silver_interaction(
     record: MitabInteraction,
     source: str,
     *,
-    direction_mode: str = 'undirected',
     fallback_interaction_type: InteractionTypeCv | None = None,
     fallback_detection_method: DetectionMethodCv | None = None,
 ) -> SilverInteraction:
@@ -335,14 +334,6 @@ def mitab_to_silver_interaction(
     causal_statement = _mi_to_enum(record.causal_statement, CausalStatementCv)
     causal_mechanism = _mi_to_enum(record.causal_regulatory_mechanism, CausalMechanismCv)
     complex_expansion = _mi_to_enum(record.complex_expansion, ComplexExpansionCv)
-
-    direction: Optional[str]
-    if direction_mode == 'causal':
-        direction = 'a_to_b' if causal_statement else 'undirected'
-    elif direction_mode == 'undirected':
-        direction = 'undirected'
-    else:
-        direction = None
 
     annotations: list[dict] = []
     for field in (
@@ -374,7 +365,6 @@ def mitab_to_silver_interaction(
         entity_b=entity_b,
         interaction_type=interaction_type,
         detection_method=detection_method,
-        direction=direction,
         causal_mechanism=causal_mechanism,
         causal_statement=causal_statement,
         sentence=sentence,

@@ -62,9 +62,8 @@ def _process_files(files, next_id: int):
             df.select(
                 (pl.col("row") * 2 + next_id).alias("local_entity_id_a"),
                 (pl.col("row") * 2 + next_id + 1).alias("local_entity_id_b"),
-                "interaction_type", "detection_method", "is_directed", "direction",
-                "sign", "causal_mechanism", "causal_statement", "sentence",
-                "interaction_annotations", "references",
+                "interaction_type", "detection_method", "causal_mechanism",
+                "causal_statement", "sentence", "interaction_annotations", "references",
             )
         )
         next_id += len(df) * 2
@@ -144,11 +143,12 @@ def _map_terms(df: pl.DataFrame, sid: int, cv: pl.DataFrame, is_interaction: boo
             pl.lit(sid).alias("source_id"),
             pl.col("interaction_type").map_elements(f, return_dtype=pl.Int64).alias("interaction_type_id"),
             pl.col("detection_method").map_elements(f, return_dtype=pl.Int64).alias("detection_method_id"),
+            pl.col("causal_mechanism").map_elements(f, return_dtype=pl.Int64).alias("causal_mechanism_id"),
+            pl.col("causal_statement").map_elements(f, return_dtype=pl.Int64).alias("causal_statement_id"),
         ).select(
             "source_id", "local_entity_id_a", "local_entity_id_b",
-            "interaction_type_id", "detection_method_id", "is_directed", "direction",
-            "sign", "causal_mechanism", "causal_statement", "sentence",
-            "interaction_annotations", "references",
+            "interaction_type_id", "detection_method_id", "causal_mechanism_id",
+            "causal_statement_id", "sentence", "interaction_annotations", "references",
         )
     else:
         return (
@@ -300,6 +300,9 @@ def build_local_tables(
                 ref_lookup=ref_lookup,
                 accession_to_id=accession_to_id,
             )
+
+            # Drop references column after extracting reference links
+            inters = inters.drop("references")
 
             inters.write_parquet(d / f"local_interaction_evidence_{sname}.parquet")
             logger.info(f"  Saved {sname} interactions: {len(inters):,} rows")
