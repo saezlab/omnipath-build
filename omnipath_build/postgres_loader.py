@@ -130,6 +130,11 @@ def apply_rdkit_conversions(
     try:
         cur = conn.cursor()
 
+        # Create RDKit extension if it doesn't exist
+        logger.info('  Ensuring RDKit extension is created...')
+        cur.execute(f"CREATE EXTENSION IF NOT EXISTS rdkit SCHEMA {schema}")
+        conn.commit()
+
         # Check if compound table exists and has columns to convert
         cur.execute(f"""
             SELECT column_name, data_type
@@ -372,6 +377,13 @@ def load_tables_to_postgres(
         logger.info(f'Connecting to PostgreSQL: {postgres_uri}')
         con.execute(f"ATTACH '{postgres_uri}' AS pg (TYPE POSTGRES)")
 
+        # If drop_existing, drop and recreate the entire schema to avoid FK dependencies
+        if drop_existing:
+            logger.info(f'Dropping schema {schema} CASCADE...')
+            con.execute(f"DROP SCHEMA IF EXISTS pg.{schema} CASCADE")
+            logger.info(f'Creating schema {schema}...')
+            con.execute(f"CREATE SCHEMA pg.{schema}")
+
         # Process each table
         for table_name in TABLES_TO_LOAD:
             parquet_file = output_dir / f'{table_name}.parquet'
@@ -381,11 +393,6 @@ def load_tables_to_postgres(
                 continue
 
             logger.info(f'Processing table: {table_name}')
-
-            # Drop table if requested
-            if drop_existing:
-                logger.info(f'  Dropping existing table {schema}.{table_name} if it exists...')
-                con.execute(f"DROP TABLE IF EXISTS pg.{schema}.{table_name}")
 
             # Load parquet into a temporary view
             logger.info(f'  Reading parquet file: {parquet_file}')
