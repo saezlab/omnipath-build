@@ -17,10 +17,8 @@ import pyarrow.parquet as pq
 
 from omnipath_build.utils.path_manager import PathManager
 from omnipath_build.utils.silver_schema import (
-    SilverCvTerm,
     SilverEntity,
     SilverInteraction,
-    SILVER_CV_TERM_SCHEMA,
     SILVER_ENTITY_SCHEMA,
     SILVER_INTERACTION_SCHEMA,
 )
@@ -46,13 +44,11 @@ __all__ = [
 SCHEMA_LOOKUP = {
     'entity': SILVER_ENTITY_SCHEMA,
     'interaction': SILVER_INTERACTION_SCHEMA,
-    'cv_term': SILVER_CV_TERM_SCHEMA,
 }
 
 # Strings used when inspecting function source code to infer schema type.
 SCHEMA_SOURCE_HINTS = [
     ('SilverInteraction', 'interaction'),
-    ('SilverCvTerm', 'cv_term'),
     ('SilverEntity', 'entity'),
 ]
 

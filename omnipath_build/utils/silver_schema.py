@@ -12,6 +12,7 @@ import pyarrow as pa
 from omnipath_build.utils.cv_term_enums import (
     EntityTypeCv,
     IdentifierNamespaceCv,
+    MembershipRoleCv,
     BiologicalRoleCv,
     ExperimentalRoleCv,
     IdentificationMethodCv,
@@ -40,6 +41,14 @@ class Member(NamedTuple):
     identifier_type: IdentifierNamespaceCv
     role: BiologicalRoleCv | None = None
     stoichiometry: float | None = None
+
+
+class MemberOf(NamedTuple):
+    """Parent entity that this entity is a member of (inverse of Member)."""
+
+    identifier: str
+    identifier_type: IdentifierNamespaceCv
+    role: MembershipRoleCv | None = None
 
 
 class Identifier(NamedTuple):
@@ -71,6 +80,7 @@ class SilverEntity(NamedTuple):
     members: List[Member] | None = None
     parent_identifier: str | None = None
     parent_identifier_type: IdentifierNamespaceCv | None = None
+    is_member_of: List[MemberOf] | None = None
 
     # Optional annotations
     annotations: List[Dict[str, Any]] | None = None
@@ -153,6 +163,14 @@ SILVER_ENTITY_FIELDS = [
         ])),
     ),
     pa.field('parent_accession', pa.string()),
+    pa.field(
+        'is_member_of',
+        pa.list_(pa.struct([
+            pa.field('identifier', pa.string()),
+            pa.field('identifier_type', pa.string()),
+            pa.field('role', pa.string()),
+        ])),
+    ),
     pa.field(
         'annotations',
         pa.list_(pa.struct([

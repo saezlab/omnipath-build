@@ -12,6 +12,7 @@ __all__ = [
     'StructureRepresentationCv',
     'MemberIdTypeCv',
     'ParentIdentifierTypeCv',
+    'MembershipRoleCv',
     'BiologicalRoleCv',
     'ExperimentalRoleCv',
     'IdentificationMethodCv',
@@ -39,6 +40,7 @@ class EntityTypeCv(str, Enum):
     # OmniPath-specific terms
     PROTEIN_FAMILY = "OM:0010"
     LIPID = "OM:0011"
+    CV_TERM = "OM:0012"
 
 
 class IdentifierNamespaceCv(str, Enum):
@@ -82,10 +84,22 @@ class IdentifierNamespaceCv(str, Enum):
     NAME = "OM:0202"
     SYNONYM = "OM:0203"
 
+    # CV term accession
+    CV_TERM_ACCESSION = "OM:0204"
+
     #structure representations
     SMILES = "MI:0239"
     STANDARD_INCHI_KEY = "MI:1101"
     STANDARD_INCHI = "MI:2010"
+
+class MembershipRoleCv(str, Enum):
+    """Relationship types for entity membership (is_member_of field)."""
+
+    # Ontological relationships
+    IS_A = "OM:0300"  # Hierarchical parent-child relationship (e.g., in ontologies)
+    PART_OF = "OM:0301"  # Component relationship
+    MEMBER_OF = "OM:0302"  # Generic membership
+
 
 class BiologicalRoleCv(str, Enum):
     """Example biological role terms for interaction participants."""
