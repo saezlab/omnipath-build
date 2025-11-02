@@ -123,26 +123,6 @@ class SilverInteraction(NamedTuple):
     references: List[Reference] | None = None
 
 
-class SilverCvTerm(NamedTuple):
-    """Controlled vocabulary terms from sources (one row per source term)."""
-
-    # Required fields - metadata
-    source: str
-
-    # Required fields - term identification
-    term_accession: str  # Formal accession if available (e.g., 'GO:0008150')
-    namespace: str
-
-    # Optional term information (if provided by source)
-    term_name: str | None = None
-    term_definition: str | None = None
-    term_definition_refs: List[str] | None = None
-    term_synonyms: List[str] | None = None
-    term_parent_accessions: List[str] | None = None
-    term_parent_names: List[str] | None = None
-    term_alt_ids: List[str] | None = None
-
-
 SILVER_ENTITY_FIELDS = [
     pa.field('source', pa.string(), nullable=False),
     pa.field('entity_type', pa.string(), nullable=False),
@@ -216,15 +196,3 @@ SILVER_INTERACTION_SCHEMA = pa.schema([
     ),
 ])
 
-SILVER_CV_TERM_SCHEMA = pa.schema([
-    pa.field('source', pa.string(), nullable=False),
-    pa.field('term_accession', pa.string(), nullable=False),
-    pa.field('namespace', pa.string(), nullable=False),
-    pa.field('term_name', pa.string()),
-    pa.field('term_definition', pa.string()),
-    pa.field('term_definition_refs', pa.list_(pa.string())),
-    pa.field('term_synonyms', pa.list_(pa.string())),
-    pa.field('term_parent_accessions', pa.list_(pa.string())),
-    pa.field('term_parent_names', pa.list_(pa.string())),
-    pa.field('term_alt_ids', pa.list_(pa.string())),
-])

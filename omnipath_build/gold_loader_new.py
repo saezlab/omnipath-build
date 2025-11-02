@@ -5,11 +5,10 @@ Gold Loader (New) - Build gold tables from silver tables with updated schema.
 This module orchestrates the entire gold table building process through the
 following steps:
 1. sources: Build sources table
-2. cv_terms: Build CV namespace and term tables
-3. references: Build references table
-4. local_tables: Build per-source local tables
-5. entity_identifiers: Build entity identifier tables with provenance
-6. global_tables: Build global evidence tables by joining local tables with entity mapping
+2. references: Build references table
+3. local_tables: Build per-source local tables
+4. entity_identifiers: Build entity identifier tables with provenance
+5. global_tables: Build global evidence tables by joining local tables with entity mapping
 
 All steps can be run individually or together. The global_tables step requires
 all previous steps to have completed.
@@ -34,7 +33,6 @@ logger = logging.getLogger(__name__)
 # Import our modular functions from the gold_new/ directory
 # These have been adapted to work with the new silver schema
 from omnipath_build.gold_new.build_sources import build_sources
-from omnipath_build.gold_new.build_cv_terms import build_cv_terms
 from omnipath_build.gold_new.build_local_tables import build_local_tables
 from omnipath_build.gold_new.build_entity_identifiers import build_entity_identifiers
 from omnipath_build.gold_new.build_references import build_references
@@ -44,7 +42,6 @@ from omnipath_build.gold_new.build_compounds import build_compounds
 #from omnipath_build.gold_new.build_entity_identifier_duckdb import build_entity_identifiers_duckdb
 __all__ = [
     'build_sources_table',
-    'build_cv_terms_tables',
     'build_local_tables_step',
     'build_entity_identifier_tables',
     'build_references_table',
@@ -84,29 +81,6 @@ def build_sources_table(data_root: Path, output_dir: Path) -> pl.DataFrame:
     return sources
 
 
-def build_cv_terms_tables(
-    data_root: Path, output_dir: Path
-) -> tuple[pl.DataFrame, pl.DataFrame]:
-    """
-    Build CV namespace and term tables.
-
-    Args:
-        data_root: Path to data directory containing silver files
-        output_dir: Path to output directory for gold tables
-
-    Returns:
-        Tuple of (cv_namespace_df, cv_term_df)
-    """
-    print("\n" + "=" * 70)
-    print("STEP: CV Terms Tables")
-    print("=" * 70)
-
-    cv_namespace, cv_term = build_cv_terms(data_root, output_dir)
-
-    print(f"\nTotal namespaces: {len(cv_namespace):,}")
-    print(f"Total CV terms: {len(cv_term):,}")
-
-    return cv_namespace, cv_term
 
 
 def build_local_tables_step(
@@ -357,18 +331,17 @@ def run_gold_loader_new(
 
     Steps:
     1. sources: Build sources table
-    2. cv_terms: Build CV namespace and term tables
-    3. references: Build references table
-    4. local_tables: Build per-source local tables (requires references)
-    5. entity_identifiers: Build entity identifier tables with provenance
-    6. global_tables: Build global evidence tables by joining local tables with entity mapping
-    7. compounds: Build compound properties table from chemical structure identifiers
+    2. references: Build references table
+    3. local_tables: Build per-source local tables (requires references)
+    4. entity_identifiers: Build entity identifier tables with provenance
+    5. global_tables: Build global evidence tables by joining local tables with entity mapping
+    6. compounds: Build compound properties table from chemical structure identifiers
 
     Args:
         data_root: Path to data directory containing silver files
         output_dir: Path to output directory for gold tables
         step: Optional specific step to run. If None, run all steps.
-              Valid values: 'sources', 'cv_terms', 'local_tables', 'entity_identifiers', 'references', 'global_tables', 'compounds'
+              Valid values: 'sources', 'local_tables', 'entity_identifiers', 'references', 'global_tables', 'compounds'
     """
     # Ensure output directory exists
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -389,8 +362,6 @@ def run_gold_loader_new(
     if step:
         if step == 'sources':
             build_sources_table(data_root, output_dir)
-        elif step == 'cv_terms':
-            build_cv_terms_tables(data_root, output_dir)
         elif step == 'local_tables':
             # Load dependencies
             sources = pl.read_parquet(output_dir / "source.parquet")
@@ -417,30 +388,26 @@ def run_gold_loader_new(
         # Step 1: Sources
         sources = build_sources_table(data_root, output_dir)
 
-        # Step 2: CV terms
-        cv_namespace, cv_term = build_cv_terms_tables(data_root, output_dir)
-
-        # Step 3: References (needed for local table joins)
+        # Step 2: References (needed for local table joins)
         references = build_references_table(data_root, output_dir)
 
-        # Step 4: Local tables (per-source processing)
+        # Step 3: Local tables (per-source processing)
         local_tables = build_local_tables_step(
             data_root,
             output_dir,
             sources_df=sources,
-            #cv_term_df=cv_term,
             references_df=references,
         )
 
-        # Step 5: Entity identifiers (using accession strings from local tables)
+        # Step 4: Entity identifiers (using accession strings from local tables)
         record_to_global, final_identifiers = build_entity_identifier_tables(
             data_root, output_dir
         )
 
-        # Step 6: Global tables (join local tables with entity mapping)
+        # Step 5: Global tables (join local tables with entity mapping)
         build_global_tables_step(output_dir)
 
-        # Step 7: Compounds (compute molecular properties from structures)
+        # Step 6: Compounds (compute molecular properties from structures)
         build_compounds_table(output_dir)
 
     print("\n")
