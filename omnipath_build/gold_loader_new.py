@@ -164,8 +164,6 @@ def build_local_tables_step(
 def build_entity_identifier_tables(
     data_root: Path,
     output_dir: Path,
-    cv_term_df: pl.DataFrame | None = None,
-    sources_df: pl.DataFrame | None = None,
 ) -> tuple[pl.DataFrame, pl.DataFrame]:
     """
     Build entity identifier tables (unified with provenance).
@@ -173,11 +171,11 @@ def build_entity_identifier_tables(
     Args:
         data_root: Path to data directory containing silver files (not used - kept for compatibility)
         output_dir: Path to output directory for gold tables
-        cv_term_df: Optional CV term DataFrame for type_id mapping
-        sources_df: Optional sources DataFrame for source_id mapping (not used)
 
     Returns:
         Tuple of (record_to_global, final_identifiers)
+        - record_to_global: Maps (source_id, local_entity_id) to entity_id
+        - final_identifiers: Contains (entity_id, id_type, id_value) where id_type is accession string
     """
     print("\n" + "=" * 70)
     print("STEP: Entity Identifier Tables")
@@ -187,7 +185,6 @@ def build_entity_identifier_tables(
     local_tables_dir = output_dir / "local_tables"
     record_to_global, final_identifiers = build_entity_identifiers(
         local_tables_dir=local_tables_dir,
-        cv_term_df=cv_term_df,
     )
 
     # Compute quick stats
@@ -250,10 +247,11 @@ def build_global_tables_step(output_dir: Path) -> None:
     This function joins local tables with the entity_id mapping to create
     global evidence tables that combine data from all sources.
 
-    Creates three global tables:
+    Creates global tables:
     - entity_evidence.parquet: Entity records with global entity_id
     - interaction_evidence.parquet: Interaction records with global entity_ids
     - membership.parquet: Membership relationships with global entity_ids
+    - is_member_of.parquet: Entity hierarchy relationships with global entity_ids
 
     Args:
         output_dir: Path to output directory containing local tables and mapping
@@ -264,18 +262,22 @@ def build_global_tables_step(output_dir: Path) -> None:
 
     local_tables_dir = output_dir / "local_tables"
     mapping_file = output_dir / "entity_identifier_record_to_global.parquet"
+    entity_identifiers_file = output_dir / "entity_identifiers.parquet"
 
     # Verify required inputs exist
     if not local_tables_dir.exists():
         raise FileNotFoundError(f"Local tables directory not found: {local_tables_dir}")
     if not mapping_file.exists():
         raise FileNotFoundError(f"Entity mapping file not found: {mapping_file}")
+    if not entity_identifiers_file.exists():
+        raise FileNotFoundError(f"Entity identifiers file not found: {entity_identifiers_file}")
 
-    # Build global tables
+    # Build global tables (CV term mapping built from entity_identifiers)
     build_global_tables(
         local_dir=local_tables_dir,
         mapping_file=mapping_file,
-        out_dir=output_dir
+        out_dir=output_dir,
+        entity_identifiers_file=entity_identifiers_file,
     )
 
     print(f"\nGlobal tables saved to: {output_dir}")
@@ -286,7 +288,6 @@ def build_global_tables_step(output_dir: Path) -> None:
 
 def build_compounds_table(
     output_dir: Path,
-    cv_term_df: pl.DataFrame,
     compound_limit: Optional[int] = None,
     use_cache: bool = True,
     cache_dir: Optional[Path] = None,
@@ -303,7 +304,6 @@ def build_compounds_table(
 
     Args:
         output_dir: Path to output directory containing entity_identifiers.parquet
-        cv_term_df: CV terms DataFrame for looking up identifier type_ids
         compound_limit: Optional limit on number of compounds to process (for testing)
         use_cache: Whether to use cached compound properties (default: True)
         cache_dir: Optional directory for caching computed properties
@@ -330,7 +330,6 @@ def build_compounds_table(
 
     compounds = build_compounds(
         entity_identifiers=entity_identifiers,
-        cv_term_df=cv_term_df,
         compound_limit=compound_limit,
         use_cache=use_cache,
         cache_dir=cache_dir,
@@ -394,32 +393,23 @@ def run_gold_loader_new(
             build_cv_terms_tables(data_root, output_dir)
         elif step == 'local_tables':
             # Load dependencies
-            cv_term = pl.read_parquet(output_dir / "cv_term.parquet")
             sources = pl.read_parquet(output_dir / "source.parquet")
             references = pl.read_parquet(output_dir / "references.parquet")
             build_local_tables_step(
                 data_root,
                 output_dir,
                 sources_df=sources,
-                #cv_term_df=cv_term,
                 references_df=references,
             )
         elif step == 'entity_identifiers':
-            # Load dependencies
-            cv_term = pl.read_parquet(output_dir / "cv_term.parquet")
-            sources = pl.read_parquet(output_dir / "source.parquet")
-            build_entity_identifier_tables(
-                data_root, output_dir, cv_term_df=cv_term, sources_df=sources
-            )
+            build_entity_identifier_tables(data_root, output_dir)
         elif step == 'references':
             build_references_table(data_root, output_dir)
         elif step == 'global_tables':
             # Build global tables by joining local tables with entity mapping
             build_global_tables_step(output_dir)
         elif step == 'compounds':
-            # Load dependencies
-            cv_term = pl.read_parquet(output_dir / "cv_term.parquet")
-            build_compounds_table(output_dir, cv_term_df=cv_term)
+            build_compounds_table(output_dir)
         else:
             raise ValueError(f"Unknown step: {step}")
     else:
@@ -442,16 +432,16 @@ def run_gold_loader_new(
             references_df=references,
         )
 
-        # Step 5: Entity identifiers (pass cv_term for efficient integer usage)
+        # Step 5: Entity identifiers (using accession strings from local tables)
         record_to_global, final_identifiers = build_entity_identifier_tables(
-            data_root, output_dir, cv_term_df=cv_term, sources_df=sources
+            data_root, output_dir
         )
 
         # Step 6: Global tables (join local tables with entity mapping)
         build_global_tables_step(output_dir)
 
         # Step 7: Compounds (compute molecular properties from structures)
-        build_compounds_table(output_dir, cv_term_df=cv_term)
+        build_compounds_table(output_dir)
 
     print("\n")
     print("╔" + "=" * 68 + "╗")

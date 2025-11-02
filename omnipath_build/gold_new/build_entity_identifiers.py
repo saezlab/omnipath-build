@@ -20,17 +20,17 @@ from omnipath_build.utils.cv_term_enums import IdentifierNamespaceCv
 class UnionFind:
     """Union-Find data structure for tracking connected components.
 
-    Nodes are identified by (type_id, id_value) tuples where:
-    - type_id can be either an int (when CV terms are used) or str (fallback)
+    Nodes are identified by (id_type, id_value) tuples where:
+    - id_type is a CV term accession string (e.g., "MI:0326", "OM:0204")
     - id_value is always a str
     """
 
     def __init__(self):
-        self.parent: dict[tuple[int | str, str], tuple[int | str, str]] = {}
-        self.rank: dict[tuple[int | str, str], int] = {}
+        self.parent: dict[tuple[str, str], tuple[str, str]] = {}
+        self.rank: dict[tuple[str, str], int] = {}
         self._num_components = 0
 
-    def find(self, x: tuple[int | str, str]) -> tuple[int | str, str]:
+    def find(self, x: tuple[str, str]) -> tuple[str, str]:
         """Find the root of x with path compression."""
         if x not in self.parent:
             self.parent[x] = x
@@ -42,7 +42,7 @@ class UnionFind:
             self.parent[x] = self.find(self.parent[x])
         return self.parent[x]
 
-    def union(self, x: tuple[int | str, str], y: tuple[int | str, str]) -> bool:
+    def union(self, x: tuple[str, str], y: tuple[str, str]) -> bool:
         """Union two elements. Returns True if they were in different components."""
         root_x = self.find(x)
         root_y = self.find(y)
@@ -205,7 +205,6 @@ def _build_edges_from_identifiers(
     df: pl.DataFrame,
     source_name: str,
     identifiers_col: str = 'identifiers',
-    cv_id_type_mapping: pl.DataFrame | None = None,
 ) -> pl.DataFrame:
     """Build edges from a DataFrame of identifier lists.
 
@@ -215,11 +214,11 @@ def _build_edges_from_identifiers(
         df: DataFrame with columns [source_name, <identifiers_col>]
         source_name: Name of the source (for logging)
         identifiers_col: Column name containing list[struct{type,value}]
-        cv_id_type_mapping: Optional CV term mapping to convert id_type to type_id
+                        where 'type' is a CV term accession string (e.g., "MI:0326")
 
     Returns:
         DataFrame with edges [id_a, id_b, source_name]
-        id_a and id_b are structs with 'type' (int or str) and 'value' (str)
+        id_a and id_b are structs with 'type' (str) and 'value' (str)
     """
     if identifiers_col != 'identifiers' and identifiers_col in df.columns:
         work_df = df.rename({identifiers_col: 'identifiers'})
@@ -234,7 +233,7 @@ def _build_edges_from_identifiers(
         .select([
             'record_id',
             'source_name',
-            pl.col('identifiers').struct.field('type').alias('id_type'),  # Keep original type (int or str)
+            pl.col('identifiers').struct.field('type').alias('id_type'),  # CV term accession string
             pl.col('identifiers').struct.field('value').cast(pl.Utf8).alias('id_value'),
         ])
         .filter(
@@ -244,36 +243,25 @@ def _build_edges_from_identifiers(
         )
     )
 
-    # Join with CV mapping if provided
-    if cv_id_type_mapping is not None:
-        edges = (
-            edges
-            .join(cv_id_type_mapping, on='id_type', how='left')
-            .select(['record_id', 'source_name', 'type_id', 'id_value'])
-        )
-        type_col = 'type_id'
-    else:
-        type_col = 'id_type'
-
     # Self-join to create all distinct pairs within each record
     edges_paired = (
         edges
         .join(edges, on=['record_id', 'source_name'], suffix='_b')
         .filter(
-            (pl.col(type_col) < pl.col(f'{type_col}_b'))
+            (pl.col('id_type') < pl.col('id_type_b'))
             | (
-                (pl.col(type_col) == pl.col(f'{type_col}_b'))
+                (pl.col('id_type') == pl.col('id_type_b'))
                 & (pl.col('id_value') < pl.col('id_value_b'))
             )
         )
         .select([
             'source_name',
             pl.struct([
-                pl.col(type_col).alias('type'),
+                pl.col('id_type').alias('type'),
                 pl.col('id_value').alias('value'),
             ]).alias('id_a'),
             pl.struct([
-                pl.col(f'{type_col}_b').alias('type'),
+                pl.col('id_type_b').alias('type'),
                 pl.col('id_value_b').alias('value'),
             ]).alias('id_b'),
         ])
@@ -353,14 +341,15 @@ def _merge_edges_into_graph(
 # --------------------------------------------------------------------------- #
 
 def _union_find_to_safe_clusters(uf: UnionFind) -> pl.DataFrame:
-    """Convert UnionFind state into a mapping of (type_id,id_value) -> entity_id.
+    """Convert UnionFind state into a mapping of (id_type, id_value) -> entity_id.
 
     Returns DataFrame columns: [type_id, id_value, entity_id]
-    entity_id is a sequential integer starting at 1.
-    type_id can be either int (when CV terms used) or str (fallback).
+    - type_id is a CV term accession string (e.g., "MI:0326")
+    - id_value is the identifier value
+    - entity_id is a sequential integer starting at 1
     """
     # Ensure path compression
-    roots: dict[tuple[int | str, str], tuple[int | str, str]] = {}
+    roots: dict[tuple[str, str], tuple[str, str]] = {}
     for node in list(uf.parent.keys()):
         roots[node] = uf.find(node)
 
@@ -385,19 +374,17 @@ def _union_find_to_safe_clusters(uf: UnionFind) -> pl.DataFrame:
 def build_entity_identifiers(
     local_tables_dir: Path,
     merge_safe_types: frozenset[str] = MERGE_SAFE_IDENTIFIER_TYPES,
-    cv_term_df: pl.DataFrame | None = None,
 ) -> tuple[pl.DataFrame, pl.DataFrame]:
     """Build unified identifier tables with canonical entity IDs from local tables.
 
     Args:
         local_tables_dir: Directory containing local_entity_identifiers_*.parquet files
-        merge_safe_types: Set of identifier types safe for cross-source merging
-        cv_term_df: Optional DataFrame with CV terms (columns: 'id', 'accession')
-                    If provided, type_id (integer) will be used for identifier types
+        merge_safe_types: Set of identifier types (accession strings) safe for cross-source merging
 
     Returns a tuple of:
       - record_to_global: (source_id, local_entity_id) -> entity_id
-      - final_identifiers: (entity_id, type_id, id_value) with sources provenance
+      - final_identifiers: (entity_id, id_type, id_value) with sources provenance
+                          where id_type is an accession string (e.g., "MI:0326")
     """
     local_tables_dir = Path(local_tables_dir)
     sources_data = _load_local_tables(local_tables_dir)
@@ -405,15 +392,6 @@ def build_entity_identifiers(
     if not sources_data:
         logger.warning("No local tables found, returning empty results")
         return pl.DataFrame(), pl.DataFrame()
-
-    # Prepare CV term mapping if provided
-    cv_id_type_mapping: pl.DataFrame | None = None
-    if cv_term_df is not None:
-        cv_id_type_mapping = cv_term_df.select([
-            pl.col('accession').alias('id_type'),
-            pl.col('id').alias('type_id')
-        ])
-        logger.info(f"Using CV term mapping with {len(cv_id_type_mapping)} identifier types")
 
     union_find = UnionFind()
     all_local_ms_edges: list[pl.DataFrame] = []
@@ -434,19 +412,6 @@ def build_entity_identifiers(
             continue
         local_ms_edges, local_all_edges = prepared
 
-        # Join with CV terms to replace id_type with type_id (if mapping provided)
-        if cv_id_type_mapping is not None:
-            local_ms_edges = (
-                local_ms_edges
-                .join(cv_id_type_mapping, on='id_type', how='left')
-                .select(['source_id', 'local_entity_id', 'type_id', 'id_value'])
-            )
-            local_all_edges = (
-                local_all_edges
-                .join(cv_id_type_mapping, on='id_type', how='left')
-                .select(['source_id', 'local_entity_id', 'type_id', 'id_value'])
-            )
-
         # Local entity stats
         n_local = local_df.select('local_entity_id').n_unique()
         n_with_ms = len(local_ms_edges.select('local_entity_id').unique())
@@ -455,7 +420,8 @@ def build_entity_identifiers(
 
         # Build edges from merge-safe identifiers
         # Optimization: Group by unique identifier sets to avoid processing duplicates
-        type_col = 'type_id' if cv_id_type_mapping is not None else 'id_type'
+        # Note: id_type is now an accession string (e.g., "MI:0326")
+        type_col = 'id_type'
 
         # First, create identifier lists per local entity
         ms_edges_with_lists = (
@@ -497,7 +463,6 @@ def build_entity_identifiers(
             ms_edges_grouped,
             f"source_{source_id}",
             identifiers_col='identifiers',
-            cv_id_type_mapping=None,  # Already mapped above if needed
         )
 
         components_before = union_find.num_components
@@ -521,7 +486,8 @@ def build_entity_identifiers(
     local_all_edges_all = pl.concat(all_local_all_edges, how='diagonal_relaxed')
 
     # Map local entities to global entity IDs via merge-safe identifiers
-    type_col = 'type_id' if cv_id_type_mapping is not None else 'id_type'
+    # Note: Both edges and safe_clusters use id_type (accession string)
+    type_col = 'id_type'
     join_cols = [type_col, 'id_value']
     record_to_global = (
         local_ms_edges_all

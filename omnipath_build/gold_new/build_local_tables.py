@@ -147,11 +147,14 @@ def _process_members(df: pl.DataFrame, next_id: int):
     next_id += len(m)
 
     # Keep role as accession string (no ID mapping)
+    # Add NULL parent_identifier fields for compatibility with unified schema
     membership = m.select(
         "local_entity_id",
         "parent_local_entity_id",
         "role",
-        "stoichiometry"
+        "stoichiometry",
+        pl.lit(None, dtype=pl.String).alias("parent_identifier"),
+        pl.lit(None, dtype=pl.String).alias("parent_identifier_type"),
     ).with_row_index("local_membership_id", offset=1)
 
     logger.info(f"    Created {len(m):,} member entity records")
@@ -163,11 +166,13 @@ def _process_members(df: pl.DataFrame, next_id: int):
 def _extract_is_member_of(df: pl.DataFrame) -> pl.DataFrame:
     """Extract is_member_of relationships from entities.
 
-    Returns DataFrame with columns:
-        - local_entity_id
-        - parent_identifier
-        - parent_identifier_type
-        - role
+    Returns DataFrame with membership-compatible schema:
+        - local_entity_id (child)
+        - parent_local_entity_id (NULL - to be resolved in global stage)
+        - role (CV term accession)
+        - stoichiometry (NULL)
+        - parent_identifier (for resolution)
+        - parent_identifier_type (for resolution)
     """
     # Check if is_member_of column exists and has any data
     if "is_member_of" not in df.columns:
@@ -186,15 +191,17 @@ def _extract_is_member_of(df: pl.DataFrame) -> pl.DataFrame:
     # Explode is_member_of list to get one row per parent relationship
     exploded = has.select(["local_entity_id", "is_member_of"]).explode("is_member_of")
 
-    # Extract fields from the struct and keep as accession strings
+    # Extract fields to match membership schema
     relationships = exploded.select(
         pl.col("local_entity_id"),
+        pl.lit(None, dtype=pl.UInt32).alias("parent_local_entity_id"),  # NULL - resolve in global
+        pl.col("is_member_of").struct.field("role").alias("role"),
+        pl.lit(None, dtype=pl.Float64).alias("stoichiometry"),  # NULL
         pl.col("is_member_of").struct.field("identifier").alias("parent_identifier"),
         pl.col("is_member_of").struct.field("identifier_type").alias("parent_identifier_type"),
-        pl.col("is_member_of").struct.field("role").alias("role"),
     )
 
-    logger.info(f"    Extracted {len(relationships):,} is_member_of relationships")
+    logger.info(f"    Extracted {len(relationships):,} is_member_of relationships (as membership records)")
 
     return relationships
 
@@ -285,6 +292,7 @@ def build_local_tables(
         ents = ents.with_columns(pl.lit(sid).alias("source_id"))
 
         # Extract is_member_of relationships (keep accessions, no ID mapping)
+        # These will be merged with membership relationships
         is_member_of_rels = _extract_is_member_of(ents)
 
         # Build local reference bridge for entity evidence
@@ -311,17 +319,31 @@ def build_local_tables(
 
         logger.info(f"  Saved evidence ({len(ev):,}) & identifiers ({len(ids):,}) for {sname}")
 
+        # Combine membership and is_member_of into single unified table
+        membership_parts = []
         if len(memb):
-            memb.with_columns(pl.lit(sid).alias("source_id")).write_parquet(
+            membership_parts.append(memb)
+        if len(is_member_of_rels):
+            membership_parts.append(is_member_of_rels)
+
+        if membership_parts:
+            # Concatenate all membership relationships
+            unified_membership = pl.concat(membership_parts, how="diagonal_relaxed")
+            # Re-index with sequential IDs
+            unified_membership = (
+                unified_membership
+                .drop("local_membership_id", strict=False)  # Drop old IDs if present
+                .with_row_index("local_membership_id", offset=1)
+                .with_columns(pl.lit(sid).alias("source_id"))
+            )
+
+            unified_membership.write_parquet(
                 d / f"local_membership_{sname}.parquet"
             )
-            logger.info(f"  Saved {sname} membership: {len(memb):,} rows")
-
-        if len(is_member_of_rels):
-            is_member_of_rels.with_columns(pl.lit(sid).alias("source_id")).write_parquet(
-                d / f"local_is_member_of_{sname}.parquet"
+            logger.info(
+                f"  Saved {sname} unified membership: {len(unified_membership):,} rows "
+                f"({len(memb)} from members + {len(is_member_of_rels)} from is_member_of)"
             )
-            logger.info(f"  Saved {sname} is_member_of: {len(is_member_of_rels):,} rows")
 
         if inters:
             inters = pl.concat(inters, how="diagonal_relaxed")

@@ -101,7 +101,6 @@ def _compute_compound_properties(structure: str, structure_type: str) -> Optiona
 
 def build_compounds(
     entity_identifiers: pl.DataFrame,
-    cv_term_df: pl.DataFrame,
     compound_limit: Optional[int] = None,
     use_cache: bool = True,
     cache_dir: Optional[Path] = None,
@@ -119,8 +118,7 @@ def build_compounds(
 
     Args:
         entity_identifiers: DataFrame from build_entity_identifiers output
-                           (columns: entity_id, type_id, id_value, sources)
-        cv_term_df: CV terms DataFrame for looking up identifier type_ids
+                           (columns: entity_id, id_type, id_value, sources)
         compound_limit: Optional limit on number of compounds to process
         use_cache: Whether to use existing compound.parquet as cache
         cache_dir: Optional directory where compound.parquet is located (defaults to cwd)
@@ -152,25 +150,14 @@ def build_compounds(
         })
 
     print("\nStep 1: Looking up chemical structure identifier types...")
+    print("  (Using id_type accession strings from entity_identifiers)")
 
-    # Look up type_ids for chemical structure identifiers
-    standard_inchi_type_id = cv_term_df.filter(
-        pl.col('accession') == IdentifierNamespaceCv.STANDARD_INCHI.value
-    ).select('id').to_series()
+    # Get identifier type accession strings
+    standard_inchi_type = IdentifierNamespaceCv.STANDARD_INCHI.value
+    smiles_type = IdentifierNamespaceCv.SMILES.value
 
-    smiles_type_id = cv_term_df.filter(
-        pl.col('accession') == IdentifierNamespaceCv.SMILES.value
-    ).select('id').to_series()
-
-    if len(standard_inchi_type_id) == 0 and len(smiles_type_id) == 0:
-        print("  ⚠️  No STANDARD_INCHI or SMILES CV terms found")
-        return pl.DataFrame()
-
-    standard_inchi_type_id = standard_inchi_type_id[0] if len(standard_inchi_type_id) > 0 else None
-    smiles_type_id = smiles_type_id[0] if len(smiles_type_id) > 0 else None
-
-    print(f"  Standard InChI type_id: {standard_inchi_type_id}")
-    print(f"  SMILES type_id: {smiles_type_id}")
+    print(f"  Standard InChI type: {standard_inchi_type}")
+    print(f"  SMILES type: {smiles_type}")
 
     print("\nStep 2: Extracting chemical structure identifiers...")
     print("  Priority: Standard InChI (preferred) > SMILES (fallback)")
@@ -178,26 +165,26 @@ def build_compounds(
     structure_parts = []
 
     # Get entities with Standard InChI (preferred)
-    if standard_inchi_type_id is not None:
-        inchi_entities = entity_identifiers.filter(
-            pl.col('type_id') == standard_inchi_type_id
-        ).select([
-            'entity_id',
-            pl.col('id_value').alias('structure'),
-            pl.lit('inchi').alias('structure_type'),
-        ])
+    inchi_entities = entity_identifiers.filter(
+        pl.col('id_type') == standard_inchi_type
+    ).select([
+        'entity_id',
+        pl.col('id_value').alias('structure'),
+        pl.lit('inchi').alias('structure_type'),
+    ])
+    if len(inchi_entities) > 0:
         structure_parts.append(inchi_entities)
         print(f"  Found {len(inchi_entities):,} entities with Standard InChI")
 
     # Get entities with SMILES (fallback)
-    if smiles_type_id is not None:
-        smiles_entities = entity_identifiers.filter(
-            pl.col('type_id') == smiles_type_id
-        ).select([
-            'entity_id',
-            pl.col('id_value').alias('structure'),
-            pl.lit('smiles').alias('structure_type'),
-        ])
+    smiles_entities = entity_identifiers.filter(
+        pl.col('id_type') == smiles_type
+    ).select([
+        'entity_id',
+        pl.col('id_value').alias('structure'),
+        pl.lit('smiles').alias('structure_type'),
+    ])
+    if len(smiles_entities) > 0:
         structure_parts.append(smiles_entities)
         print(f"  Found {len(smiles_entities):,} entities with SMILES")
 
