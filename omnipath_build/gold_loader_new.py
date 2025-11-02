@@ -224,7 +224,7 @@ def build_global_tables_step(output_dir: Path) -> None:
     Creates global tables:
     - entity_evidence.parquet: Entity records with global entity_id
     - interaction_evidence.parquet: Interaction records with global entity_ids
-    - membership.parquet: Membership relationships with global entity_ids
+    - membership_evidence.parquet: Membership relationships with global entity_ids
     - is_member_of.parquet: Entity hierarchy relationships with global entity_ids
 
     Args:

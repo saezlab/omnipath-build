@@ -12,7 +12,7 @@ Input:
 Output:
     entity_evidence.parquet      (with entity_type_id instead of entity_type)
     interaction_evidence.parquet (with interaction_type_id, detection_method_id, etc.)
-    membership.parquet           (with role_id instead of role)
+    membership_evidence.parquet  (with role_id instead of role)
     is_member_of.parquet        (new: entity hierarchy relationships)
     evidence_reference.parquet
 
@@ -196,10 +196,10 @@ def build_global_tables(
     logger.info(f"✅ interaction_evidence: {len(interaction_output):,} rows")
 
     #
-    # ============== MEMBERSHIP (UNIFIED) ==============
+    # ============== MEMBERSHIP EVIDENCE (UNIFIED) ==============
     #
     files = sorted(local_dir.glob("local_membership_*.parquet"))
-    logger.info(f"\nProcessing unified membership ({len(files)} files)")
+    logger.info(f"\nProcessing unified membership evidence ({len(files)} files)")
     membership_parts: list[pl.DataFrame] = []
 
     # Pre-build parent mapping for resolving parent_identifier (performance optimization)
@@ -270,10 +270,10 @@ def build_global_tables(
             "membership_id": pl.Int64,
         })
 
-    membership_output.write_parquet(out_dir / "membership.parquet")
-    logger.info(f"✅ membership (unified): {len(membership_output):,} rows")
+    membership_output.write_parquet(out_dir / "membership_evidence.parquet")
+    logger.info(f"✅ membership_evidence (unified): {len(membership_output):,} rows")
 
-    # NOTE: is_member_of relationships are now unified into the membership table above
+    # NOTE: is_member_of relationships are now unified into the membership_evidence table above
     # No separate is_member_of table is created
 
     #
