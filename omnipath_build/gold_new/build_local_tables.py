@@ -43,20 +43,48 @@ def _process_files(files, next_id: int):
             continue
         logger.info(f"    Processed {len(df):,} interactions from {p.name} -> {len(df)*2:,} entities")
         df = df.with_row_index("row", offset=0)
-        a = df.select(
+
+        # Check if is_member_of field exists in the struct
+        schema = df.schema
+        entity_a_fields = schema["entity_a"].fields
+        has_is_member_of = any(f.name == "is_member_of" for f in entity_a_fields)
+
+        # Build select expressions with conditional is_member_of
+        select_expr_a = [
             (pl.col("row") * 2 + next_id).alias("local_entity_id"),
-            pl.col("entity_a").struct.field("source"), pl.col("entity_a").struct.field("entity_type"),
-            pl.col("entity_a").struct.field("identifiers"), pl.col("entity_a").struct.field("members"),
-            pl.col("entity_a").struct.field("parent_accession"), pl.col("entity_a").struct.field("annotations"),
-            pl.col("entity_a").struct.field("references"), pl.col("entity_a").struct.field("secondary_source"),
-        )
-        b = df.select(
+            pl.col("entity_a").struct.field("source"),
+            pl.col("entity_a").struct.field("entity_type"),
+            pl.col("entity_a").struct.field("identifiers"),
+            pl.col("entity_a").struct.field("members"),
+            pl.col("entity_a").struct.field("parent_accession"),
+            pl.col("entity_a").struct.field("annotations"),
+            pl.col("entity_a").struct.field("references"),
+            pl.col("entity_a").struct.field("secondary_source"),
+        ]
+
+        select_expr_b = [
             (pl.col("row") * 2 + next_id + 1).alias("local_entity_id"),
-            pl.col("entity_b").struct.field("source"), pl.col("entity_b").struct.field("entity_type"),
-            pl.col("entity_b").struct.field("identifiers"), pl.col("entity_b").struct.field("members"),
-            pl.col("entity_b").struct.field("parent_accession"), pl.col("entity_b").struct.field("annotations"),
-            pl.col("entity_b").struct.field("references"), pl.col("entity_b").struct.field("secondary_source"),
-        )
+            pl.col("entity_b").struct.field("source"),
+            pl.col("entity_b").struct.field("entity_type"),
+            pl.col("entity_b").struct.field("identifiers"),
+            pl.col("entity_b").struct.field("members"),
+            pl.col("entity_b").struct.field("parent_accession"),
+            pl.col("entity_b").struct.field("annotations"),
+            pl.col("entity_b").struct.field("references"),
+            pl.col("entity_b").struct.field("secondary_source"),
+        ]
+
+        if has_is_member_of:
+            select_expr_a.append(pl.col("entity_a").struct.field("is_member_of"))
+            select_expr_b.append(pl.col("entity_b").struct.field("is_member_of"))
+        else:
+            # Add empty list column if field doesn't exist
+            select_expr_a.append(pl.lit([]).alias("is_member_of"))
+            select_expr_b.append(pl.lit([]).alias("is_member_of"))
+
+        a = df.select(select_expr_a)
+        b = df.select(select_expr_b)
+
         ents += [a, b]
         inters.append(
             df.select(
@@ -83,7 +111,7 @@ def _process_entities(files, next_id: int):
     return ents, next_id
 
 
-def _process_members(df: pl.DataFrame, next_id: int, accession_to_id: dict[str, int]):
+def _process_members(df: pl.DataFrame, next_id: int):
     has = df.filter(pl.col("members").list.len() > 0)
     if not len(has):
         return pl.DataFrame(), pl.DataFrame(), next_id
@@ -118,12 +146,11 @@ def _process_members(df: pl.DataFrame, next_id: int, accession_to_id: dict[str, 
 
     next_id += len(m)
 
-    # Map role to role_id using cv_term lookup
-    f = lambda x: accession_to_id.get(x) if x else None
+    # Keep role as accession string (no ID mapping)
     membership = m.select(
         "local_entity_id",
         "parent_local_entity_id",
-        pl.col("role").map_elements(f, return_dtype=pl.Int64).alias("role_id"),
+        "role",
         "stoichiometry"
     ).with_row_index("local_membership_id", offset=1)
 
@@ -132,38 +159,50 @@ def _process_members(df: pl.DataFrame, next_id: int, accession_to_id: dict[str, 
 
     return m, membership, next_id
 
-def _map_terms(df: pl.DataFrame, sid: int, cv: pl.DataFrame, is_interaction: bool = True) -> pl.DataFrame:
-    if not len(df):
-        return df
-    amap = {r["accession"]: r["id"] for r in cv.iter_rows(named=True)}
-    f = lambda x: amap.get(x) if x else None
 
-    if is_interaction:
-        return df.with_columns(
-            pl.lit(sid).alias("source_id"),
-            pl.col("interaction_type").map_elements(f, return_dtype=pl.Int64).alias("interaction_type_id"),
-            pl.col("detection_method").map_elements(f, return_dtype=pl.Int64).alias("detection_method_id"),
-            pl.col("causal_mechanism").map_elements(f, return_dtype=pl.Int64).alias("causal_mechanism_id"),
-            pl.col("causal_statement").map_elements(f, return_dtype=pl.Int64).alias("causal_statement_id"),
-        ).select(
-            "source_id", "local_entity_id_a", "local_entity_id_b",
-            "interaction_type_id", "detection_method_id", "causal_mechanism_id",
-            "causal_statement_id", "sentence", "interaction_annotations", "references",
-        )
-    else:
-        return (
-            df.with_columns(
-                pl.col("entity_type").map_elements(f, return_dtype=pl.Int64).alias("entity_type_id")
-            )
-            .drop("entity_type", strict=False)
-        )
+def _extract_is_member_of(df: pl.DataFrame) -> pl.DataFrame:
+    """Extract is_member_of relationships from entities.
+
+    Returns DataFrame with columns:
+        - local_entity_id
+        - parent_identifier
+        - parent_identifier_type
+        - role
+    """
+    # Check if is_member_of column exists and has any data
+    if "is_member_of" not in df.columns:
+        return pl.DataFrame()
+
+    has = df.filter(
+        pl.col("is_member_of").is_not_null() &
+        (pl.col("is_member_of").list.len() > 0)
+    )
+    if not len(has):
+        return pl.DataFrame()
+
+    total_relationships = has.select(pl.col("is_member_of").list.len().sum()).item()
+    logger.info(f"  Entities with is_member_of: {len(has):,} (total relationships: {total_relationships:,})")
+
+    # Explode is_member_of list to get one row per parent relationship
+    exploded = has.select(["local_entity_id", "is_member_of"]).explode("is_member_of")
+
+    # Extract fields from the struct and keep as accession strings
+    relationships = exploded.select(
+        pl.col("local_entity_id"),
+        pl.col("is_member_of").struct.field("identifier").alias("parent_identifier"),
+        pl.col("is_member_of").struct.field("identifier_type").alias("parent_identifier_type"),
+        pl.col("is_member_of").struct.field("role").alias("role"),
+    )
+
+    logger.info(f"    Extracted {len(relationships):,} is_member_of relationships")
+
+    return relationships
 
 
 def _collect_reference_links(
     df: pl.DataFrame,
     id_col: str,
     ref_lookup: pl.DataFrame,
-    accession_to_id: dict[str, int],
 ) -> pl.DataFrame:
     """Explode `references` column and map to reference_id for evidence tables."""
     if not len(df) or "references" not in df.columns or not len(ref_lookup):
@@ -176,26 +215,17 @@ def _collect_reference_links(
         .select(
             "source_id",
             id_col,
-            pl.col("references").struct.field("type").alias("type_accession"),
+            pl.col("references").struct.field("type").alias("type"),
             pl.col("references").struct.field("value").alias("value"),
         )
-        .filter(pl.col("type_accession").is_not_null() & pl.col("value").is_not_null())
+        .filter(pl.col("type").is_not_null() & pl.col("value").is_not_null())
     )
 
     if not len(exploded):
         return pl.DataFrame()
 
-    exploded = exploded.with_columns(
-        pl.col("type_accession").map_elements(
-            lambda x: accession_to_id.get(x),
-            return_dtype=pl.Int64,
-        ).alias("type_id")
-    ).filter(pl.col("type_id").is_not_null())
-
-    if not len(exploded):
-        return pl.DataFrame()
-
-    joined = exploded.join(ref_lookup, on=["type_id", "value"], how="inner")
+    # Join with ref_lookup on type (accession string) and value
+    joined = exploded.join(ref_lookup, on=["type", "value"], how="inner")
     if not len(joined):
         return pl.DataFrame()
 
@@ -207,15 +237,13 @@ def build_local_tables(
     data_root: Path,
     output_dir: Path,
     sources_df: pl.DataFrame,
-    cv_term_df: pl.DataFrame,
     references_df: pl.DataFrame,
 ):
     data = _load_source_data(data_root)
     name2id = {r["name"]: r["id"] for r in sources_df.iter_rows(named=True)}
-    accession_to_id = {r["accession"]: r["id"] for r in cv_term_df.iter_rows(named=True)}
     ref_lookup = (
         references_df.rename({"id": "reference_id"})
-        .select(["reference_id", "type_id", "value"])
+        .select(["reference_id", "type", "value"])
     )
     d = output_dir / "local_tables"; d.mkdir(parents=True, exist_ok=True)
 
@@ -248,7 +276,7 @@ def build_local_tables(
             logger.info(f"  Total interactions for {sname}: {total_interactions:,}")
 
         # ✅ INCLUDE MEMBER ENTITIES
-        ments, memb, nid = _process_members(ents, nid, accession_to_id)
+        ments, memb, nid = _process_members(ents, nid)
         if len(ments):
             ents = pl.concat([ents, ments], how="diagonal_relaxed")
             logger.info(f"  Total entities including members: {len(ents):,}")
@@ -256,19 +284,19 @@ def build_local_tables(
         # Add source_id
         ents = ents.with_columns(pl.lit(sid).alias("source_id"))
 
-        # Map entity_type to entity_type_id via cv_terms
-        ents = _map_terms(ents, sid, cv_term_df, is_interaction=False)
+        # Extract is_member_of relationships (keep accessions, no ID mapping)
+        is_member_of_rels = _extract_is_member_of(ents)
 
         # Build local reference bridge for entity evidence
         entity_refs = _collect_reference_links(
             ents,
             id_col="local_entity_id",
             ref_lookup=ref_lookup,
-            accession_to_id=accession_to_id,
         )
 
         # ✅ Evidence & Identifiers now include new member rows
-        ev = ents.select("source_id", "local_entity_id", "entity_type_id", "annotations")
+        # Keep entity_type as accession string (no ID mapping)
+        ev = ents.select("source_id", "local_entity_id", "entity_type", "annotations")
         ids = ents.select("source_id", "local_entity_id", "identifiers")
 
         # Save
@@ -289,20 +317,30 @@ def build_local_tables(
             )
             logger.info(f"  Saved {sname} membership: {len(memb):,} rows")
 
+        if len(is_member_of_rels):
+            is_member_of_rels.with_columns(pl.lit(sid).alias("source_id")).write_parquet(
+                d / f"local_is_member_of_{sname}.parquet"
+            )
+            logger.info(f"  Saved {sname} is_member_of: {len(is_member_of_rels):,} rows")
+
         if inters:
             inters = pl.concat(inters, how="diagonal_relaxed")
-            inters = _map_terms(inters, sid, cv_term_df)
+            # Add source_id and keep CV term fields as accessions
+            inters = inters.with_columns(pl.lit(sid).alias("source_id"))
             inters = inters.with_row_index("local_interaction_id", offset=1)
 
             interaction_refs = _collect_reference_links(
                 inters,
                 id_col="local_interaction_id",
                 ref_lookup=ref_lookup,
-                accession_to_id=accession_to_id,
             )
 
-            # Drop references column after extracting reference links
-            inters = inters.drop("references")
+            # Select columns for interaction evidence (keep CV terms as accessions)
+            inters = inters.select(
+                "source_id", "local_entity_id_a", "local_entity_id_b", "local_interaction_id",
+                "interaction_type", "detection_method", "causal_mechanism",
+                "causal_statement", "sentence", "interaction_annotations",
+            )
 
             inters.write_parquet(d / f"local_interaction_evidence_{sname}.parquet")
             logger.info(f"  Saved {sname} interactions: {len(inters):,} rows")

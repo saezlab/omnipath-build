@@ -24,7 +24,7 @@ __all__ = [
 ]
 
 
-def build_references(data_root: Path, output_dir: Path, cv_terms: pl.DataFrame) -> pl.DataFrame:
+def build_references(data_root: Path, output_dir: Path) -> pl.DataFrame:
     """
     Build references table from all silver files (both entities and interactions).
 
@@ -34,10 +34,9 @@ def build_references(data_root: Path, output_dir: Path, cv_terms: pl.DataFrame) 
     Args:
         data_root: Path to data directory containing silver files
         output_dir: Path to output directory for gold tables
-        cv_terms: DataFrame with CV terms for reference types
 
     Returns:
-        DataFrame with columns: id, type_id, value
+        DataFrame with columns: id, type, value (type is CV term accession string)
     """
     print("\nStep 1: Finding all silver files...")
     # Silver files are in data/source/function_name.parquet
@@ -88,46 +87,21 @@ def build_references(data_root: Path, output_dir: Path, cv_terms: pl.DataFrame) 
 
     print(f"  Total unique references: {len(combined)}")
 
-    print("\nStep 4: Joining with CV terms to get type IDs...")
-    # Join with CV terms by matching the reference type name (accession) with cv_term.accession
-    # References use accession values like 'MI:0446' which match cv_term.accession
-    result = combined.join(
-        cv_terms.select(["id", "accession", "name"]),
-        left_on="type_name",
-        right_on="accession",
-        how="left"
-    ).rename({"id": "type_id"})
-
-    # Check for any references with unknown types
-    unknown_types = result.filter(pl.col("type_id").is_null())
-    if len(unknown_types) > 0:
-        print(f"\n  WARNING: Found {len(unknown_types)} references with unknown types:")
-        type_counts = unknown_types.group_by("type_name").agg(pl.count().alias("count")).sort("count", descending=True)
-        print(type_counts)
-        print("\n  All unique unknown type names:")
-        for row in type_counts.iter_rows(named=True):
-            print(f"    - {row['type_name']}: {row['count']} references")
-        print("\n  These will be filtered out unless mapped in resources/.")
-
-        # Filter out unknown types
-        result = result.filter(pl.col("type_id").is_not_null())
-
     # Add id column (1-based index)
-    result = result.with_row_index(name="id", offset=1)
+    result = combined.with_row_index(name="id", offset=1)
 
-    # Select final columns: id, type_id, value
-    result = result.select(["id", "type_id", "value"])
+    # Rename type_name to type and select final columns: id, type, value
+    # Keep type as accession string (defer ID mapping to global stage)
+    result = result.select([
+        "id",
+        pl.col("type_name").alias("type"),
+        "value"
+    ])
 
     print(f"  Final reference count: {len(result)}")
     print(f"\n  References by type:")
-    # For summary, rejoin with cv_terms to show the type names
-    type_summary = result.join(
-        cv_terms.select(["id", "name"]),
-        left_on="type_id",
-        right_on="id",
-        how="left"
-    ).group_by("name").agg(pl.count().alias("count")).sort("count", descending=True)
+    type_summary = result.group_by("type").agg(pl.count().alias("count")).sort("count", descending=True)
     for row in type_summary.iter_rows(named=True):
-        print(f"    {row['name']}: {row['count']}")
+        print(f"    {row['type']}: {row['count']}")
 
     return result

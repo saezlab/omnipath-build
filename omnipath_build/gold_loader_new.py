@@ -113,7 +113,6 @@ def build_local_tables_step(
     data_root: Path,
     output_dir: Path,
     sources_df: pl.DataFrame,
-    cv_term_df: pl.DataFrame,
     references_df: pl.DataFrame | None = None,
 ) -> dict[str, pl.DataFrame]:
     """
@@ -124,15 +123,16 @@ def build_local_tables_step(
     - local_entity_identifiers: Per-source entity identifiers
     - local_membership: Per-source membership relationships
     - local_interaction_evidence: Per-source interaction records
+    - local_is_member_of: Per-source entity hierarchy relationships
 
     Args:
         data_root: Path to data directory containing silver files
         output_dir: Path to output directory for gold tables
         sources_df: Sources DataFrame for source_id mapping
-        cv_term_df: CV term DataFrame for type_id mapping
+        references_df: References DataFrame (optional, will load from disk if not provided)
 
     Returns:
-        Dictionary containing the four local tables
+        Dictionary containing the local tables
     """
     print("\n" + "=" * 70)
     print("STEP: Local Tables (Per-Source)")
@@ -153,7 +153,6 @@ def build_local_tables_step(
         data_root=data_root,
         output_dir=output_dir,
         sources_df=sources_df,
-        cv_term_df=cv_term_df,
         references_df=references_df,
     )
 
@@ -213,7 +212,7 @@ def build_entity_identifier_tables(
 
 
 def build_references_table(
-    data_root: Path, output_dir: Path, cv_term_df: pl.DataFrame
+    data_root: Path, output_dir: Path
 ) -> pl.DataFrame:
     """
     Build references table.
@@ -224,17 +223,16 @@ def build_references_table(
     Args:
         data_root: Path to data directory containing silver files
         output_dir: Path to output directory for gold tables
-        cv_term_df: CV term DataFrame for reference type_id mapping
 
     Returns:
-        DataFrame with columns: id, type_id, value
+        DataFrame with columns: id, type, value (type is CV term accession string)
     """
     print("\n" + "=" * 70)
     print("STEP: References Table")
     print("=" * 70)
 
     # Use the existing build_references module
-    references = build_references(data_root, output_dir, cv_term_df)
+    references = build_references(data_root, output_dir)
 
     # Save to output directory
     output_path = output_dir / "references.parquet"
@@ -403,7 +401,7 @@ def run_gold_loader_new(
                 data_root,
                 output_dir,
                 sources_df=sources,
-                cv_term_df=cv_term,
+                #cv_term_df=cv_term,
                 references_df=references,
             )
         elif step == 'entity_identifiers':
@@ -414,9 +412,7 @@ def run_gold_loader_new(
                 data_root, output_dir, cv_term_df=cv_term, sources_df=sources
             )
         elif step == 'references':
-            # Load dependencies
-            cv_term = pl.read_parquet(output_dir / "cv_term.parquet")
-            build_references_table(data_root, output_dir, cv_term_df=cv_term)
+            build_references_table(data_root, output_dir)
         elif step == 'global_tables':
             # Build global tables by joining local tables with entity mapping
             build_global_tables_step(output_dir)
@@ -435,14 +431,14 @@ def run_gold_loader_new(
         cv_namespace, cv_term = build_cv_terms_tables(data_root, output_dir)
 
         # Step 3: References (needed for local table joins)
-        references = build_references_table(data_root, output_dir, cv_term_df=cv_term)
+        references = build_references_table(data_root, output_dir)
 
         # Step 4: Local tables (per-source processing)
         local_tables = build_local_tables_step(
             data_root,
             output_dir,
             sources_df=sources,
-            cv_term_df=cv_term,
+            #cv_term_df=cv_term,
             references_df=references,
         )
 
