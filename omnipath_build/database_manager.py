@@ -154,8 +154,21 @@ def _build_parser() -> argparse.ArgumentParser:
     gold_parser.add_argument(
         '--step',
         type=str,
-        choices=['sources', 'cv_terms', 'local_tables', 'entity_identifiers', 'references', 'global_tables', 'compounds'],
-        help='Run only a specific step (sources, cv_terms, local_tables, entity_identifiers, references, global_tables, compounds)',
+        choices=[
+            'sources',
+            'cv_terms',
+            'local_tables',
+            'entity_identifiers',
+            'references',
+            'global_tables',
+            'aggregates',
+            'compounds',
+        ],
+        help=(
+            'Run only a specific step '
+            '(sources, cv_terms, local_tables, entity_identifiers, references, '
+            'global_tables, aggregates, compounds)'
+        ),
     )
     gold_parser.set_defaults(handler=_handle_gold)
 

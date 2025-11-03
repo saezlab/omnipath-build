@@ -9,6 +9,7 @@ following steps:
 3. local_tables: Build per-source local tables
 4. entity_identifiers: Build entity identifier tables with provenance
 5. global_tables: Build global evidence tables by joining local tables with entity mapping
+6. aggregates: Summarise global evidence into dimension tables and bridges
 
 All steps can be run individually or together. The global_tables step requires
 all previous steps to have completed.
@@ -38,6 +39,7 @@ from omnipath_build.gold_new.build_entity_identifiers import build_entity_identi
 from omnipath_build.gold_new.build_references import build_references
 from omnipath_build.gold_new.build_global_tables import build_global_tables
 from omnipath_build.gold_new.build_compounds import build_compounds
+from omnipath_build.gold_new.build_aggregate_tables import build_aggregate_tables
 
 #from omnipath_build.gold_new.build_entity_identifier_duckdb import build_entity_identifiers_duckdb
 __all__ = [
@@ -46,6 +48,7 @@ __all__ = [
     'build_entity_identifier_tables',
     'build_references_table',
     'build_global_tables_step',
+    'build_aggregate_tables_step',
     'build_compounds_table',
     'run_gold_loader_new',
 ]
@@ -214,6 +217,32 @@ def build_references_table(
     return references
 
 
+def build_aggregate_tables_step(
+    output_dir: Path,
+) -> dict[str, pl.DataFrame]:
+    """
+    Build aggregate dimension tables and bridge mappings from global evidence.
+
+    Args:
+        output_dir: Path to directory containing global evidence parquet files.
+
+    Returns:
+        Dictionary containing the aggregate and bridge DataFrames keyed by name.
+    """
+    print("\n" + "=" * 70)
+    print("STEP: Aggregates (Entities / Interactions / Memberships)")
+    print("=" * 70)
+
+    aggregates = build_aggregate_tables(global_dir=output_dir, out_dir=output_dir)
+
+    for name, df in aggregates.items():
+        size = len(df) if hasattr(df, "__len__") else "?"
+        print(f"  {name}: {size:,}" if isinstance(size, int) else f"  {name}")
+
+    print("\nAggregate tables saved to output directory.")
+    return aggregates
+
+
 def build_global_tables_step(output_dir: Path) -> None:
     """
     Build global evidence tables.
@@ -335,13 +364,14 @@ def run_gold_loader_new(
     3. local_tables: Build per-source local tables (requires references)
     4. entity_identifiers: Build entity identifier tables with provenance
     5. global_tables: Build global evidence tables by joining local tables with entity mapping
-    6. compounds: Build compound properties table from chemical structure identifiers
+    6. aggregates: Summarise global evidence into aggregate dimensions and bridges
+    7. compounds: Build compound properties table from chemical structure identifiers
 
     Args:
         data_root: Path to data directory containing silver files
         output_dir: Path to output directory for gold tables
         step: Optional specific step to run. If None, run all steps.
-              Valid values: 'sources', 'local_tables', 'entity_identifiers', 'references', 'global_tables', 'compounds'
+              Valid values: 'sources', 'local_tables', 'entity_identifiers', 'references', 'global_tables', 'aggregates', 'compounds'
     """
     # Ensure output directory exists
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -379,6 +409,8 @@ def run_gold_loader_new(
         elif step == 'global_tables':
             # Build global tables by joining local tables with entity mapping
             build_global_tables_step(output_dir)
+        elif step == 'aggregates':
+            build_aggregate_tables_step(output_dir)
         elif step == 'compounds':
             build_compounds_table(output_dir)
         else:
@@ -407,7 +439,10 @@ def run_gold_loader_new(
         # Step 5: Global tables (join local tables with entity mapping)
         build_global_tables_step(output_dir)
 
-        # Step 6: Compounds (compute molecular properties from structures)
+        # Step 6: Aggregates (dimension tables & evidence bridges)
+        build_aggregate_tables_step(output_dir)
+
+        # Step 7: Compounds (compute molecular properties from structures)
         build_compounds_table(output_dir)
 
     print("\n")
