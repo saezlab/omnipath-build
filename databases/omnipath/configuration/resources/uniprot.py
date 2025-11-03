@@ -2,8 +2,9 @@ from omnipath_build.utils.cv_term_enums import (
     IdentifierNamespaceCv,
     EntityTypeCv,
     ReferenceTypeCv,
+    MembershipRoleCv,
 )
-from omnipath_build.utils.silver_schema import SilverEntity, Identifier, Reference
+from omnipath_build.utils.silver_schema import SilverEntity, Identifier, Reference, MemberOf
 from omnipath_build.utils.annotation_builders import build_annotations
 
 __all__ = [
@@ -126,10 +127,29 @@ def uniprot_proteins():
             ('ft_mutagen', 'mutagenesis'),
             ('ft_transmem', 'transmembrane'),
             ('protein_families', 'protein_family'),
-            ('keyword', 'keywords'),
             ('ec', 'ec_number'),
-            ('go', 'gene_ontology'),
         )
+
+        # Build is_member_of list from Gene Ontology IDs and UniProt keywords
+        is_member_of = []
+
+        # Add Gene Ontology terms
+        if rec.go:
+            for go_id in rec.go:
+                is_member_of.append(MemberOf(
+                    identifier=go_id,
+                    identifier_type=IdentifierNamespaceCv.CV_TERM_ACCESSION,
+                    role=MembershipRoleCv.IS_ANNOTATED_AS
+                ))
+
+        # Add UniProt keyword IDs
+        if rec.keyword:
+            for keyword_id in rec.keyword:
+                is_member_of.append(MemberOf(
+                    identifier=keyword_id,
+                    identifier_type=IdentifierNamespaceCv.CV_TERM_ACCESSION,
+                    role=MembershipRoleCv.IS_ANNOTATED_AS
+                ))
 
         # Build references from PubMed IDs
         references = None
@@ -147,6 +167,8 @@ def uniprot_proteins():
             source='uniprot',
             entity_type=EntityTypeCv.PROTEIN,
             identifiers=identifiers if identifiers else None,
+            organism=rec.organism_id,
+            is_member_of=is_member_of if is_member_of else None,
             annotations=annotations,
             references=references,
         )

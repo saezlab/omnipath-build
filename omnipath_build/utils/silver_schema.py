@@ -76,6 +76,9 @@ class SilverEntity(NamedTuple):
     # (including names and synonyms via IdentifierNamespaceCv.NAME and .SYNONYM)
     identifiers: List[Identifier] | None = None
 
+    # Optional organism (NCBI Taxonomy ID)
+    organism: int | None = None
+
     # Optional membership info
     members: List[Member] | None = None
     parent_identifier: str | None = None
@@ -133,6 +136,7 @@ SILVER_ENTITY_FIELDS = [
             pa.field('value', pa.string()),
         ])),
     ),
+    pa.field('organism', pa.int64()),
     pa.field(
         'members',
         pa.list_(pa.struct([

@@ -42,15 +42,6 @@ class EntityTypeCv(str, Enum):
     LIPID = "OM:0011"
     CV_TERM = "OM:0012"
 
-class OrganismCv(str, Enum):
-    """Common organism terms backed by NCBI Taxonomy accessions."""
-
-    HUMAN = 9606
-    MOUSE = 10090
-    RAT = 10116
-    YEAST = 559292
-    E_COLI = 562
-
 class IdentifierNamespaceCv(str, Enum):
     """Identifier namespace terms backed by PSI-MI accessions."""
 
@@ -107,6 +98,7 @@ class MembershipRoleCv(str, Enum):
     IS_A = "OM:0300"  # Hierarchical parent-child relationship (e.g., in ontologies)
     PART_OF = "OM:0301"  # Component relationship
     MEMBER_OF = "OM:0302"  # Generic membership
+    IS_ANNOTATED_AS = "OM:0303"  # Annotation relationship
 
 
 class BiologicalRoleCv(str, Enum):
