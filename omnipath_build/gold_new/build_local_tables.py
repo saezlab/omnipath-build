@@ -163,47 +163,99 @@ def _process_members(df: pl.DataFrame, next_id: int):
     return m, membership, next_id
 
 
-def _extract_is_member_of(df: pl.DataFrame) -> pl.DataFrame:
-    """Extract is_member_of relationships from entities.
+def _extract_is_member_of(df: pl.DataFrame, next_id: int) -> tuple[pl.DataFrame, pl.DataFrame, int]:
+    """Extract is_member_of relationships from entities and create CV term entities.
 
-    Returns DataFrame with membership-compatible schema:
-        - local_entity_id (child)
-        - parent_local_entity_id (NULL - to be resolved in global stage)
-        - role (CV term accession)
-        - stoichiometry (NULL)
-        - parent_identifier (for resolution)
-        - parent_identifier_type (for resolution)
+    Returns:
+        - CV term entities (to be added to entity table)
+        - Membership relationships (with parent_local_entity_id pointing to CV term entities)
+        - Updated next_id
     """
     # Check if is_member_of column exists and has any data
     if "is_member_of" not in df.columns:
-        return pl.DataFrame()
+        return pl.DataFrame(), pl.DataFrame(), next_id
 
     has = df.filter(
         pl.col("is_member_of").is_not_null() &
         (pl.col("is_member_of").list.len() > 0)
     )
     if not len(has):
-        return pl.DataFrame()
+        return pl.DataFrame(), pl.DataFrame(), next_id
 
     total_relationships = has.select(pl.col("is_member_of").list.len().sum()).item()
     logger.info(f"  Entities with is_member_of: {len(has):,} (total relationships: {total_relationships:,})")
 
     # Explode is_member_of list to get one row per parent relationship
-    exploded = has.select(["local_entity_id", "is_member_of"]).explode("is_member_of")
+    exploded = has.select(["local_entity_id", "source", "is_member_of"]).explode("is_member_of")
 
-    # Extract fields to match membership schema
-    relationships = exploded.select(
-        pl.col("local_entity_id"),
-        pl.lit(None, dtype=pl.UInt32).alias("parent_local_entity_id"),  # NULL - resolve in global
-        pl.col("is_member_of").struct.field("role").alias("role"),
-        pl.lit(None, dtype=pl.Float64).alias("stoichiometry"),  # NULL
-        pl.col("is_member_of").struct.field("identifier").alias("parent_identifier"),
-        pl.col("is_member_of").struct.field("identifier_type").alias("parent_identifier_type"),
+    # Extract unique CV terms (parent entities) to create entity records
+    cv_terms = (
+        exploded
+        .select([
+            pl.col("source"),
+            pl.col("is_member_of").struct.field("identifier").alias("identifier"),
+            pl.col("is_member_of").struct.field("identifier_type").alias("identifier_type"),
+        ])
+        .unique(subset=["identifier", "identifier_type"])
     )
 
-    logger.info(f"    Extracted {len(relationships):,} is_member_of relationships (as membership records)")
+    # Create entity records for CV terms
+    # identifiers must match upstream ents schema: list[struct]
+    cv_term_entities = cv_terms.select(
+        pl.col("source"),
+        pl.lit("OM:0012").alias("entity_type"),  # CV_TERM entity type
+        pl.concat_list([
+            pl.struct([
+                pl.col("identifier_type").alias("type"),
+                pl.col("identifier").alias("value")
+            ])
+        ]).alias("identifiers"),
+        pl.lit(None).alias("annotations"),
+        pl.lit(None).alias("members"),
+        pl.lit(None).alias("parent_accession"),
+        pl.lit(None).alias("references"),
+        pl.lit(None).alias("secondary_source"),
+        pl.lit([]).alias("is_member_of"),
+    ).with_row_index("local_entity_id", offset=next_id)
 
-    return relationships
+    # Create mapping from CV term identifier to local_entity_id
+    cv_term_mapping = cv_term_entities.select([
+        pl.col("identifiers").list.first().struct.field("type").alias("identifier_type"),
+        pl.col("identifiers").list.first().struct.field("value").alias("identifier"),
+        pl.col("local_entity_id"),
+    ])
+
+    next_id += len(cv_term_entities)
+
+    # Extract membership relationships and join with CV term mapping to get parent_local_entity_id
+    relationships = (
+        exploded
+        .select([
+            pl.col("local_entity_id"),
+            pl.col("is_member_of").struct.field("identifier").alias("parent_identifier"),
+            pl.col("is_member_of").struct.field("identifier_type").alias("parent_identifier_type"),
+            pl.col("is_member_of").struct.field("role").alias("role"),
+        ])
+        .join(
+            cv_term_mapping,
+            left_on=["parent_identifier", "parent_identifier_type"],
+            right_on=["identifier", "identifier_type"],
+            how="left"
+        )
+        .select([
+            pl.col("local_entity_id"),
+            pl.col("local_entity_id_right").alias("parent_local_entity_id"),
+            pl.col("role"),
+            pl.lit(None, dtype=pl.Float64).alias("stoichiometry"),
+            pl.lit(None, dtype=pl.String).alias("parent_identifier"),
+            pl.lit(None, dtype=pl.String).alias("parent_identifier_type"),
+        ])
+    )
+
+    logger.info(f"    Created {len(cv_term_entities):,} CV term entity records")
+    logger.info(f"    Extracted {len(relationships):,} is_member_of relationships")
+
+    return cv_term_entities, relationships, next_id
 
 
 def _collect_reference_links(
@@ -288,12 +340,15 @@ def build_local_tables(
             ents = pl.concat([ents, ments], how="diagonal_relaxed")
             logger.info(f"  Total entities including members: {len(ents):,}")
 
+        # ✅ EXTRACT IS_MEMBER_OF RELATIONSHIPS AND CREATE CV TERM ENTITIES
+        # This creates entity records for any CV terms referenced in is_member_of
+        cv_term_ents, is_member_of_rels, nid = _extract_is_member_of(ents, nid)
+        if len(cv_term_ents):
+            ents = pl.concat([ents, cv_term_ents], how="diagonal_relaxed")
+            logger.info(f"  Total entities including CV terms: {len(ents):,}")
+
         # Add source_id
         ents = ents.with_columns(pl.lit(sid).alias("source_id"))
-
-        # Extract is_member_of relationships (keep accessions, no ID mapping)
-        # These will be merged with membership relationships
-        is_member_of_rels = _extract_is_member_of(ents)
 
         # Build local reference bridge for entity evidence
         entity_refs = _collect_reference_links(

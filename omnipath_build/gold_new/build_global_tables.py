@@ -202,39 +202,16 @@ def build_global_tables(
     logger.info(f"\nProcessing unified membership evidence ({len(files)} files)")
     membership_parts: list[pl.DataFrame] = []
 
-    # Pre-build parent mapping for resolving parent_identifier (performance optimization)
-    # Used for is_member_of relationships that need identifier-based resolution
-    parent_mapping = entity_identifiers.select([
-        pl.col("id_type").alias("parent_identifier_type"),
-        pl.col("id_value").alias("parent_identifier"),
-        pl.col("entity_id").alias("resolved_parent_entity_id")
-    ])
-
     for f in files:
         df = pl.read_parquet(f)
         logger.info(f"  {f.name}: {len(df):,}")
 
-        # Case 1: Rows with parent_local_entity_id (from members field)
-        # Join with record_to_global to resolve local parent ID to global parent_entity_id
+        # Join parent entity with record_to_global to resolve parent_local_entity_id to global parent_entity_id
         df = df.join(
             mapping.rename({"local_entity_id": "parent_local_entity_id"}),
             on=["source_id", "parent_local_entity_id"],
             how="left"
-        ).rename({"entity_id": "parent_entity_id_from_local"})
-
-        # Case 2: Rows with parent_identifier (from is_member_of field)
-        # Join with entity_identifiers to resolve identifier to global parent_entity_id
-        df = df.join(
-            parent_mapping,
-            on=["parent_identifier_type", "parent_identifier"],
-            how="left"
-        )
-
-        # Coalesce: use local if available, otherwise use resolved
-        df = df.with_columns(
-            pl.coalesce(["parent_entity_id_from_local", "resolved_parent_entity_id"])
-            .alias("parent_entity_id")
-        )
+        ).rename({"entity_id": "parent_entity_id"})
 
         # Join child entity with record_to_global
         df = df.join(
@@ -247,14 +224,10 @@ def build_global_tables(
 
     if membership_parts:
         membership = pl.concat(membership_parts, how="diagonal_relaxed")
-        # Drop temporary and local columns
+        # Drop local columns
         membership = membership.drop(
             "parent_local_entity_id",
             "local_entity_id",
-            "parent_identifier",
-            "parent_identifier_type",
-            "parent_entity_id_from_local",
-            "resolved_parent_entity_id"
         )
         membership = membership.with_row_index("id", offset=1)
         membership_map = membership.select(["source_id", "local_membership_id", "id"]).rename({"id": "membership_id"})
