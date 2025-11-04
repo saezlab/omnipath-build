@@ -193,6 +193,10 @@ INDEXES = [
     ('entity_to_evidence', 'idx_entity_to_evidence_entity_source', '(entity_id, source_id)', 'btree', None),
     ('interaction_to_evidence', 'idx_interaction_to_evidence_int_source', '(interaction_id, source_id)', 'btree', None),
     ('membership_to_evidence', 'idx_membership_to_evidence_mem_source', '(membership_id, source_id)', 'btree', None),
+
+    # Compound table - RDKit structure searches
+    ('compound', 'idx_compound_mol_gist', '(mol)', 'gist', None),
+    ('compound', 'idx_compound_morgan_fp_gist', '(morgan_fp)', 'gist', None),
 ]
 
 
@@ -290,6 +294,11 @@ def apply_rdkit_conversions(
             cur.execute(f"ALTER TABLE {schema}.compound DROP COLUMN morgan_fp_old")
             conn.commit()
             logger.info('  ✓ Replaced morgan_fp with bfp type')
+
+        # Ensure RDKit-specific indexes can be created later
+        logger.info('  Ensuring rdkit extension is available for molecular indexes...')
+        cur.execute("CREATE EXTENSION IF NOT EXISTS rdkit")
+        conn.commit()
 
         logger.info('✓ RDKit type conversions completed')
 
