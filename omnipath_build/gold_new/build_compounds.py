@@ -12,24 +12,25 @@ from SMILES strings using RDKit. It creates a compound table with properties lik
 - Rotatable bonds
 - Aromatic rings
 - Heavy atoms
-- Molfile (Mol block format for RDKit compatibility)
+- Canonical SMILES and InChI (where available)
 
-The compound table links to entities via entity_id.
+The compound table links to entities via an entity_compound bridge table.
 """
 
 import polars as pl
 from pathlib import Path
 from typing import Optional
 import logging
-import shutil
+from multiprocessing import Pool, cpu_count
 
 from omnipath_build.utils.cv_term_enums import IdentifierNamespaceCv
 
 try:
-    from rdkit import Chem, DataStructs
-    from rdkit.Chem import Descriptors, Lipinski, rdMolDescriptors, rdFingerprintGenerator
+    from rdkit import Chem, RDLogger
+    from rdkit.Chem import Descriptors, Lipinski, rdMolDescriptors
     from rdkit.Chem.MolStandardize import rdMolStandardize
-    MORGAN_GENERATOR = rdFingerprintGenerator.GetMorganGenerator(radius=2, fpSize=2048)
+    # Disable RDKit warnings and info messages
+    RDLogger.DisableLog('rdApp.*')
     RDKIT_AVAILABLE = True
 except ImportError:
     RDKIT_AVAILABLE = False
@@ -41,6 +42,8 @@ except ImportError:
     TQDM_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
+# Enable logging to see errors
+logging.basicConfig(level=logging.ERROR)
 
 __all__ = [
     'RDKIT_AVAILABLE',
@@ -64,23 +67,47 @@ def _compute_compound_properties(structure: str, structure_type: str) -> Optiona
         return None
 
     # Parse structure based on type
-    if structure_type == 'inchi':
-        mol = Chem.MolFromInchi(structure)
-    else:  # smiles
-        mol = Chem.MolFromSmiles(structure)
+    try:
+        if structure_type == 'inchi':
+            mol = Chem.MolFromInchi(structure)
+        else:  # smiles
+            mol = Chem.MolFromSmiles(structure)
+    except Exception as e:
+        logger.error(f"Exception parsing {structure_type}: {e}")
+        return None
 
     if mol is None:
         return None
 
     try:
-        # Compute Morgan fingerprint (radius=2, 2048 bits)
-        morgan_fp = MORGAN_GENERATOR.GetFingerprint(mol)
+        # Standardize the molecule to ensure consistent fingerprints/descriptors
+        cleaned_mol = rdMolStandardize.Cleanup(mol)
+        if cleaned_mol is None:
+            # Cleanup failed, use original molecule
+            cleaned_mol = mol
+        mol = cleaned_mol
 
-        # Convert to binary format for PostgreSQL RDKit cartridge
-        # Use DataStructs.BitVectToBinaryText() for compatibility with bfp_from_binary_text()
-        morgan_fp_bytes = DataStructs.BitVectToBinaryText(morgan_fp)
+        # Canonical SMILES serves as a stable structure representation
+        canonical_smiles = Chem.MolToSmiles(mol, canonical=True)
+
+        # Compute optional InChI (may fail if RDKit built without InChI support)
+        try:
+            inchi = Chem.MolToInchi(mol)
+        except Exception as e:
+            logger.debug(f"Failed to compute InChI: {e}")
+            inchi = None
+
+        # Prefer InChIKey for deduplication when available, fall back to canonical SMILES
+        try:
+            structure_key = Chem.MolToInchiKey(mol)
+        except Exception as e:
+            logger.debug(f"Failed to compute InChIKey, using canonical SMILES: {e}")
+            structure_key = canonical_smiles or structure
 
         return {
+            "structure_key": structure_key,
+            "canonical_smiles": canonical_smiles,
+            "inchi": inchi,
             "formula": rdMolDescriptors.CalcMolFormula(mol),
             "molecular_weight": float(Descriptors.MolWt(mol)),
             "exact_mass": float(Descriptors.ExactMolWt(mol)),
@@ -91,12 +118,49 @@ def _compute_compound_properties(structure: str, structure_type: str) -> Optiona
             "rotatable_bonds": int(Lipinski.NumRotatableBonds(mol)),
             "aromatic_rings": int(rdMolDescriptors.CalcNumAromaticRings(mol)),
             "heavy_atoms": int(mol.GetNumHeavyAtoms()),
-            "molfile": Chem.MolToMolBlock(mol),
-            "morgan_fp": morgan_fp_bytes,
         }
     except Exception as e:
-        logger.debug(f"Failed to compute properties for {structure_type} '{structure}': {e}")
+        import traceback
+        logger.error(f"Failed to compute properties for {structure_type} '{structure[:100]}...': {e}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
         return None
+
+
+def _process_batch(batch_data: list[tuple[int, str, str]]) -> tuple[list[tuple[int, str]], dict[str, dict], int, list[str]]:
+    """
+    Process a batch of structures and compute their properties.
+
+    Args:
+        batch_data: List of (entity_id, structure, structure_type) tuples
+
+    Returns:
+        Tuple of (entity_structure_pairs, new_compounds, failed_count, sample_errors)
+    """
+    # Verify RDKit is available in worker process
+    if not RDKIT_AVAILABLE:
+        return [], {}, len(batch_data), ["RDKit not available in worker process"]
+
+    entity_structure_pairs = []
+    new_compounds = {}
+    failed = 0
+    sample_errors = []
+
+    for entity_id, structure, structure_type in batch_data:
+        props = _compute_compound_properties(structure, structure_type)
+        if props is None:
+            failed += 1
+            # Collect first few errors for debugging
+            if len(sample_errors) < 5:
+                sample_errors.append(f"{structure_type}: {structure[:50]}...")
+            continue
+
+        structure_key = props['structure_key']
+        entity_structure_pairs.append((entity_id, structure_key))
+
+        if structure_key not in new_compounds:
+            new_compounds[structure_key] = props
+
+    return entity_structure_pairs, new_compounds, failed, sample_errors
 
 
 def build_compounds(
@@ -105,7 +169,8 @@ def build_compounds(
     use_cache: bool = True,
     cache_dir: Optional[Path] = None,
     chunk_size: int = 10000,
-) -> pl.DataFrame:
+    num_workers: Optional[int] = None,
+) -> tuple[pl.DataFrame, pl.DataFrame]:
     """
     Build compound table with computed molecular properties.
 
@@ -113,7 +178,7 @@ def build_compounds(
     1. Extracts chemical structure identifiers (InChI or SMILES) from entity_identifiers table
     2. Prefers Standard InChI over SMILES (avoids duplicate computation)
     3. Computes molecular properties using RDKit
-    4. Creates a compound table linked to entity_id
+    4. Creates a deduplicated compound table and an entity_compound join table
     5. Uses existing compound.parquet file as cache to avoid recomputing properties
 
     Args:
@@ -123,41 +188,90 @@ def build_compounds(
         use_cache: Whether to use existing compound.parquet as cache
         cache_dir: Optional directory where compound.parquet is located (defaults to cwd)
         chunk_size: Number of compounds to process in each chunk (default: 10000)
+        num_workers: Number of worker processes for parallel processing (default: CPU count)
 
     Returns:
-        DataFrame with compound properties (columns: id, entity_id, formula,
-        molecular_weight, exact_mass, tpsa, logp, hbd, hba, rotatable_bonds,
-        aromatic_rings, heavy_atoms, molfile)
+        Tuple of:
+            - DataFrame with unique compound properties (columns: id, structure_key,
+              canonical_smiles, inchi, molecular descriptors)
+            - DataFrame mapping entity_id to compound_id
     """
+    empty_compound_schema = {
+        "id": pl.UInt32,
+        "structure_key": pl.Utf8,
+        "canonical_smiles": pl.Utf8,
+        "inchi": pl.Utf8,
+        "formula": pl.Utf8,
+        "molecular_weight": pl.Float64,
+        "exact_mass": pl.Float64,
+        "tpsa": pl.Float64,
+        "logp": pl.Float64,
+        "hbd": pl.Int32,
+        "hba": pl.Int32,
+        "rotatable_bonds": pl.Int32,
+        "aromatic_rings": pl.Int32,
+        "heavy_atoms": pl.Int32,
+    }
+    empty_entity_compound_schema = {
+        "entity_id": pl.Int64,
+        "compound_id": pl.UInt32,
+    }
+
+    def _empty_tables() -> tuple[pl.DataFrame, pl.DataFrame]:
+        return (
+            pl.DataFrame(schema=empty_compound_schema),
+            pl.DataFrame(schema=empty_entity_compound_schema),
+        )
+
     if not RDKIT_AVAILABLE:
         print("⚠️  RDKit not available - skipping compound property computation")
         print("   Install with: pip install rdkit")
-        return pl.DataFrame(schema={
-            "id": pl.UInt32,
-            "entity_id": pl.Int64,
-            "formula": pl.Utf8,
-            "molecular_weight": pl.Float64,
-            "exact_mass": pl.Float64,
-            "tpsa": pl.Float64,
-            "logp": pl.Float64,
-            "hbd": pl.Int32,
-            "hba": pl.Int32,
-            "rotatable_bonds": pl.Int32,
-            "aromatic_rings": pl.Int32,
-            "heavy_atoms": pl.Int32,
-            "molfile": pl.Utf8,
-            "morgan_fp": pl.Binary,
-        })
+        return _empty_tables()
 
     print("\nStep 1: Looking up chemical structure identifier types...")
-    print("  (Using id_type accession strings from entity_identifiers)")
+    print("  (Resolving CV term accessions to entity IDs)")
 
     # Get identifier type accession strings
-    standard_inchi_type = IdentifierNamespaceCv.STANDARD_INCHI.value
-    smiles_type = IdentifierNamespaceCv.SMILES.value
+    standard_inchi_accession = IdentifierNamespaceCv.STANDARD_INCHI.value
+    smiles_accession = IdentifierNamespaceCv.SMILES.value
 
-    print(f"  Standard InChI type: {standard_inchi_type}")
-    print(f"  SMILES type: {smiles_type}")
+    print(f"  Standard InChI accession: {standard_inchi_accession}")
+    print(f"  SMILES accession: {smiles_accession}")
+
+    # Resolve CV term accessions to entity IDs
+    # CV terms have id_type = "OM:0204" (CV_TERM_ACCESSION)
+
+    # Find the entity_id for Standard InChI
+    standard_inchi_id = (
+        entity_identifiers
+        .filter(
+            (pl.col('id_value') == standard_inchi_accession) &
+            (pl.col('id_type_id').is_not_null())
+        )
+        .select(pl.col('entity_id').first())
+    )
+    if len(standard_inchi_id) == 0:
+        print(f"  ⚠️  Could not find entity_id for {standard_inchi_accession}")
+        standard_inchi_id = None
+    else:
+        standard_inchi_id = standard_inchi_id.item()
+        print(f"  Standard InChI entity_id: {standard_inchi_id}")
+
+    # Find the entity_id for SMILES
+    smiles_id = (
+        entity_identifiers
+        .filter(
+            (pl.col('id_value') == smiles_accession) &
+            (pl.col('id_type_id').is_not_null())
+        )
+        .select(pl.col('entity_id').first())
+    )
+    if len(smiles_id) == 0:
+        print(f"  ⚠️  Could not find entity_id for {smiles_accession}")
+        smiles_id = None
+    else:
+        smiles_id = smiles_id.item()
+        print(f"  SMILES entity_id: {smiles_id}")
 
     print("\nStep 2: Extracting chemical structure identifiers...")
     print("  Priority: Standard InChI (preferred) > SMILES (fallback)")
@@ -165,32 +279,34 @@ def build_compounds(
     structure_parts = []
 
     # Get entities with Standard InChI (preferred)
-    inchi_entities = entity_identifiers.filter(
-        pl.col('id_type') == standard_inchi_type
-    ).select([
-        'entity_id',
-        pl.col('id_value').alias('structure'),
-        pl.lit('inchi').alias('structure_type'),
-    ])
-    if len(inchi_entities) > 0:
-        structure_parts.append(inchi_entities)
-        print(f"  Found {len(inchi_entities):,} entities with Standard InChI")
+    if standard_inchi_id is not None:
+        inchi_entities = entity_identifiers.filter(
+            pl.col('id_type_id') == standard_inchi_id
+        ).select([
+            'entity_id',
+            pl.col('id_value').alias('structure'),
+            pl.lit('inchi').alias('structure_type'),
+        ])
+        if len(inchi_entities) > 0:
+            structure_parts.append(inchi_entities)
+            print(f"  Found {len(inchi_entities):,} entities with Standard InChI")
 
     # Get entities with SMILES (fallback)
-    smiles_entities = entity_identifiers.filter(
-        pl.col('id_type') == smiles_type
-    ).select([
-        'entity_id',
-        pl.col('id_value').alias('structure'),
-        pl.lit('smiles').alias('structure_type'),
-    ])
-    if len(smiles_entities) > 0:
-        structure_parts.append(smiles_entities)
-        print(f"  Found {len(smiles_entities):,} entities with SMILES")
+    if smiles_id is not None:
+        smiles_entities = entity_identifiers.filter(
+            pl.col('id_type_id') == smiles_id
+        ).select([
+            'entity_id',
+            pl.col('id_value').alias('structure'),
+            pl.lit('smiles').alias('structure_type'),
+        ])
+        if len(smiles_entities) > 0:
+            structure_parts.append(smiles_entities)
+            print(f"  Found {len(smiles_entities):,} entities with SMILES")
 
     if not structure_parts:
         print("  ⚠️  No chemical structure identifiers found")
-        return pl.DataFrame()
+        return _empty_tables()
 
     # Combine and deduplicate (prefer InChI: keep='first' and InChI is added first)
     structure_identifiers = pl.concat(structure_parts, how='diagonal_relaxed')
@@ -208,167 +324,196 @@ def build_compounds(
         print(f"\n  ⚠️  Limiting to first {compound_limit:,} compounds (out of {len(structure_identifiers):,})")
         structure_identifiers = structure_identifiers.head(compound_limit)
 
-    # Setup cache - use the output compound.parquet file itself as cache
+    # Setup cache - stored unique compounds keyed by standardized structure
     if cache_dir is None:
         cache_dir = Path.cwd()
     cache_dir = Path(cache_dir)
     cache_path = cache_dir / "compound.parquet"
-
-    # Load existing compound table if available (create structure -> properties lookup)
-    cached_structures = set()
+    # Load existing compounds if available (structure_key -> id mapping)
+    cached_compounds_df: Optional[pl.DataFrame] = None
+    cached_structure_to_id: dict[str, int] = {}
     if use_cache and cache_path.exists():
-        print(f"\nStep 3: Loading existing compound table...")
+        print(f"\nStep 3: Loading existing compound table cache...")
         try:
-            cached_df = pl.read_parquet(cache_path)
-            # Join with structure_identifiers to get structure strings
-            cached_with_structure = cached_df.join(
-                structure_identifiers.select(['entity_id', 'structure']),
-                on='entity_id',
-                how='inner'
-            )
-            # Only store the structure strings (not full properties) to save memory
-            cached_structures = set(cached_with_structure.select('structure').to_series())
-            print(f"  Found {len(cached_structures):,} cached structures")
-            del cached_df, cached_with_structure  # Free memory
+            cached_compounds_df = pl.read_parquet(cache_path)
+
+            if 'structure_key' not in cached_compounds_df.columns or 'id' not in cached_compounds_df.columns:
+                print("  ⚠️  Existing cache missing structure_key/id columns; ignoring cached compounds")
+                cached_compounds_df = None
+            else:
+                cached_structure_to_id = dict(zip(
+                    cached_compounds_df['structure_key'].to_list(),
+                    cached_compounds_df['id'].to_list(),
+                ))
+                print(f"  Loaded {len(cached_structure_to_id):,} cached compounds")
         except Exception as e:
-            print(f"  ⚠️  Failed to load existing compounds: {e}")
+            print(f"  ⚠️  Failed to load existing compounds cache: {e}")
+            cached_compounds_df = None
+            cached_structure_to_id = {}
 
-    print(f"\nStep 4: Computing molecular properties (chunked processing)...")
+    print(f"\nStep 4: Computing molecular properties (parallel processing)...")
 
-    # Filter out cached structures
-    to_compute = structure_identifiers.filter(
-        ~pl.col('structure').is_in(list(cached_structures))
-    )
+    if len(structure_identifiers) == 0:
+        print("  ⚠️  No structures to process")
+        return _empty_tables()
 
-    if len(to_compute) > 0:
-        print(f"  Computing properties for {len(to_compute):,} new compounds...")
-        print(f"  Processing in chunks of {chunk_size:,}")
-    else:
-        print(f"  All compounds already cached!")
+    # Quick test with first structure to ensure RDKit is working
+    test_row = structure_identifiers.head(1).row(0, named=True)
+    test_props = _compute_compound_properties(test_row['structure'], test_row['structure_type'])
+    if test_props is None:
+        print(f"  ⚠️  Failed to process test structure - RDKit may not be working properly")
+        return _empty_tables()
 
-    # Process in chunks and write to separate parquet files
-    temp_dir = cache_dir / "compound_temp_chunks"
-    temp_dir.mkdir(exist_ok=True)
+    # Determine number of workers
+    if num_workers is None:
+        num_workers = min(4,cpu_count()-1)
 
+    print(f"\n  Processing {len(structure_identifiers):,} entity structures")
+    print(f"  Using {num_workers} worker processes with chunk size {chunk_size:,}")
+
+    # Prepare data for parallel processing
+    # Convert to list of tuples: (entity_id, structure, structure_type)
+    all_data = [
+        (row['entity_id'], row['structure'], row['structure_type'])
+        for row in structure_identifiers.iter_rows(named=True)
+    ]
+
+    # Split into chunks for parallel processing
+    total_chunks = (len(all_data) + chunk_size - 1) // chunk_size
+    chunks = [
+        all_data[i * chunk_size:(i + 1) * chunk_size]
+        for i in range(total_chunks)
+    ]
+
+    # Process chunks in parallel
     failed = 0
-    num_new = 0
-    total_chunks = (len(to_compute) + chunk_size - 1) // chunk_size
-    chunk_files = []
+    entity_structure_pairs: list[tuple[int, str]] = []
+    new_compounds: dict[str, dict] = {}
 
-    for chunk_idx in range(total_chunks):
-        start_idx = chunk_idx * chunk_size
-        end_idx = min(start_idx + chunk_size, len(to_compute))
-        chunk_df = to_compute.slice(start_idx, end_idx - start_idx)
-
-        chunk_props = []
-
-        # Setup progress bar for this chunk
-        items = chunk_df.iter_rows(named=True)
+    with Pool(processes=num_workers) as pool:
+        # Submit all chunks to the pool
         if TQDM_AVAILABLE:
-            items = tqdm(
-                list(items),
-                desc=f"  Chunk {chunk_idx + 1}/{total_chunks}",
-                unit="compound"
-            )
+            results = list(tqdm(
+                pool.imap(_process_batch, chunks),
+                total=len(chunks),
+                desc="  Processing chunks",
+                unit="chunk"
+            ))
+        else:
+            results = pool.map(_process_batch, chunks)
 
-        for row in items:
-            entity_id = row['entity_id']
-            structure = row['structure']
-            structure_type = row['structure_type']
+    # Merge results from all chunks
+    all_sample_errors = []
+    for pairs, compounds, fail_count, sample_errors in results:
+        entity_structure_pairs.extend(pairs)
+        failed += fail_count
+        all_sample_errors.extend(sample_errors)
 
-            props = _compute_compound_properties(structure, structure_type)
-            if props is None:
-                failed += 1
-                continue
-
-            props['entity_id'] = entity_id
-            chunk_props.append(props)
-
-        if chunk_props:
-            # Create DataFrame for this chunk
-            chunk_result = pl.DataFrame(chunk_props).select([
-                'entity_id',
-                'formula',
-                'molecular_weight',
-                'exact_mass',
-                'tpsa',
-                'logp',
-                'hbd',
-                'hba',
-                'rotatable_bonds',
-                'aromatic_rings',
-                'heavy_atoms',
-                'molfile',
-                'morgan_fp',
-            ])
-
-            # Write each chunk to a separate file (no reading back!)
-            chunk_file = temp_dir / f"chunk_{chunk_idx:06d}.parquet"
-            chunk_result.write_parquet(chunk_file)
-            chunk_files.append(chunk_file)
-
-            num_new += len(chunk_props)
-            del chunk_props, chunk_result  # Free memory
+        # Merge new compounds, avoiding duplicates
+        for structure_key, props in compounds.items():
+            if structure_key not in cached_structure_to_id and structure_key not in new_compounds:
+                new_compounds[structure_key] = props
 
     if failed > 0:
         print(f"  ⚠️  Failed to compute properties for {failed:,} compounds (invalid structures)")
+        if all_sample_errors:
+            print(f"  Sample of failed structures (first 10):")
+            for err in all_sample_errors[:10]:
+                print(f"    - {err}")
 
-    # Combine cached and new compounds
-    result_parts = []
+    print(f"  Successfully processed {len(entity_structure_pairs):,} structures")
 
-    # Load cached compounds if they exist
-    if use_cache and cache_path.exists() and len(cached_structures) > 0:
-        cached_df = pl.read_parquet(cache_path)
-        # Only keep cached compounds that are in our current structure_identifiers
-        cached_df = cached_df.join(
-            structure_identifiers.select('entity_id'),
-            on='entity_id',
-            how='inner'
+    if not entity_structure_pairs:
+        print("  ⚠️  No valid structures processed")
+        return _empty_tables()
+
+    used_structure_keys = {pair[1] for pair in entity_structure_pairs}
+
+    compound_parts = []
+    num_cached = 0
+
+    if cached_compounds_df is not None and len(cached_compounds_df) > 0:
+        cached_compounds_df = cached_compounds_df.filter(
+            pl.col('structure_key').is_in(list(used_structure_keys))
         )
-        result_parts.append(cached_df)
-        num_cached = len(cached_df)
+        if len(cached_compounds_df) > 0:
+            compound_parts.append(cached_compounds_df)
+            num_cached = len(cached_compounds_df)
+            cached_structure_to_id = dict(zip(
+                cached_compounds_df['structure_key'].to_list(),
+                cached_compounds_df['id'].to_list(),
+            ))
+        else:
+            cached_structure_to_id = {}
     else:
-        num_cached = 0
+        cached_structure_to_id = {}
 
-    # Load new compounds if any were computed
-    if num_new > 0 and chunk_files:
-        # Read all chunk files using Polars' efficient multi-file read
-        new_df = pl.read_parquet(chunk_files)
-        result_parts.append(new_df)
+    # Assign IDs to newly discovered compounds
+    new_rows = []
+    next_id = (max(cached_structure_to_id.values()) if cached_structure_to_id else 0) + 1
+    for structure_key, props in new_compounds.items():
+        row = dict(props)
+        row['id'] = next_id
+        new_rows.append(row)
+        cached_structure_to_id[structure_key] = next_id
+        next_id += 1
 
-        # Clean up chunk files and directory
-        shutil.rmtree(temp_dir)
+    if new_rows:
+        new_compounds_df = pl.DataFrame(new_rows).select([
+            'id',
+            'structure_key',
+            'canonical_smiles',
+            'inchi',
+            'formula',
+            'molecular_weight',
+            'exact_mass',
+            'tpsa',
+            'logp',
+            'hbd',
+            'hba',
+            'rotatable_bonds',
+            'aromatic_rings',
+            'heavy_atoms',
+        ])
+        compound_parts.append(new_compounds_df)
+        num_new = len(new_rows)
+    else:
+        num_new = 0
 
-    if not result_parts:
+    if not compound_parts:
         print("  ⚠️  No valid compound properties computed")
-        return pl.DataFrame()
+        compound_df = pl.DataFrame(schema=empty_compound_schema)
+    else:
+        compound_df = pl.concat(compound_parts, how='diagonal_relaxed').sort('id').with_columns([
+            pl.col('id').cast(pl.UInt32),
+        ])
 
-    # Combine all parts
-    compound_df = pl.concat(result_parts, how='diagonal_relaxed').unique(
-        subset=['entity_id']
-    ).sort('entity_id')
+    # Build entity-compound join table
+    entity_compound_rows = []
+    missing_keys = 0
+    for entity_id, structure_key in entity_structure_pairs:
+        compound_id = cached_structure_to_id.get(structure_key)
+        if compound_id is None:
+            missing_keys += 1
+            continue
+        entity_compound_rows.append({
+            "entity_id": entity_id,
+            "compound_id": compound_id,
+        })
 
-    # Add sequential IDs
-    compound_df = compound_df.with_row_index(name='id', offset=1).with_columns([
-        pl.col('id').cast(pl.UInt32)
-    ]).select([
-        'id',
-        'entity_id',
-        'formula',
-        'molecular_weight',
-        'exact_mass',
-        'tpsa',
-        'logp',
-        'hbd',
-        'hba',
-        'rotatable_bonds',
-        'aromatic_rings',
-        'heavy_atoms',
-        'molfile',
-        'morgan_fp',
-    ])
+    if missing_keys > 0:
+        print(f"  ⚠️  Missing compound IDs for {missing_keys:,} entity mappings")
 
-    print(f"\n✓ Computed properties for {len(compound_df):,} compounds")
-    print(f"  ({num_cached:,} from cache, {num_new:,} newly computed)")
+    if entity_compound_rows:
+        entity_compound_df = pl.DataFrame(entity_compound_rows).with_columns([
+            pl.col('compound_id').cast(pl.UInt32),
+        ]).sort('entity_id')
+    else:
+        entity_compound_df = pl.DataFrame(schema=empty_entity_compound_schema)
 
-    return compound_df
+    print(f"\n✓ Structures processed: {len(entity_structure_pairs):,}")
+    print(f"  - Compounds reused from cache: {num_cached:,}")
+    print(f"  - Compounds newly computed: {num_new:,}")
+    print(f"  - Total unique compounds: {len(compound_df):,}")
+
+    return compound_df, entity_compound_df

@@ -294,7 +294,7 @@ def build_compounds_table(
     compound_limit: Optional[int] = None,
     use_cache: bool = True,
     cache_dir: Optional[Path] = None,
-) -> pl.DataFrame:
+) -> tuple[pl.DataFrame, pl.DataFrame]:
     """
     Build compounds table with computed molecular properties.
 
@@ -312,7 +312,7 @@ def build_compounds_table(
         cache_dir: Optional directory for caching computed properties
 
     Returns:
-        DataFrame with compound properties
+        Tuple of (compound dataframe, entity-compound dataframe)
     """
     print("\n" + "=" * 70)
     print("STEP: Compounds Table")
@@ -331,7 +331,7 @@ def build_compounds_table(
     if cache_dir is None:
         cache_dir = output_dir
 
-    compounds = build_compounds(
+    compounds, entity_compound = build_compounds(
         entity_identifiers=entity_identifiers,
         compound_limit=compound_limit,
         use_cache=use_cache,
@@ -339,15 +339,24 @@ def build_compounds_table(
     )
 
     # Save to output directory
+    compound_output_path = output_dir / "compound.parquet"
+    entity_compound_output_path = output_dir / "entity_compound.parquet"
+
     if len(compounds) > 0:
-        output_path = output_dir / "compound.parquet"
-        compounds.write_parquet(output_path)
-        print(f"\nSaved compound table to: {output_path}")
+        compounds.write_parquet(compound_output_path)
+        print(f"\nSaved compound table to: {compound_output_path}")
         print(f"Total compounds: {len(compounds):,}")
     else:
         print("\n⚠️  No compounds generated (RDKit not available or no structure identifiers found)")
 
-    return compounds
+    if len(entity_compound) > 0:
+        entity_compound.write_parquet(entity_compound_output_path)
+        print(f"Saved entity-compound mappings to: {entity_compound_output_path}")
+        print(f"Total entity-compound links: {len(entity_compound):,}")
+    else:
+        print("⚠️  No entity-compound mappings generated")
+
+    return compounds, entity_compound
 
 
 def run_gold_loader_new(

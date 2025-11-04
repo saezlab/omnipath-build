@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 # Tables to load (excluding entity_identifier_record_to_global.parquet)
 TABLES_TO_LOAD = [
     'compound',
+    'entity_compound',
     'entity_evidence',
     'entity_identifiers',
     'evidence_reference',
@@ -55,8 +56,8 @@ COLUMNS_TO_EXCLUDE = {}
 # Format: table_name -> {column_name: conversion_function}
 RDKIT_CONVERSIONS = {
     'compound': {
-        'molfile': 'mol_from_ctab',  # Convert molfile text to mol type
-        'morgan_fp': 'bfp_from_binary_text',  # Convert binary to bfp type
+        'canonical_smiles': 'mol_from_smiles',  # Will create mol column from canonical_smiles
+        'morgan_fp': 'morganbv_fp',             # Compute morgan_fp from mol column
     }
 }
 
@@ -73,6 +74,7 @@ PRIMARY_KEY_CONSTRAINTS = [
     ('interaction_evidence', 'id'),
     ('evidence_reference', 'id'),
     ('compound', 'id'),
+    ('entity_compound', 'entity_id, compound_id'),
     # Aggregate tables (using new names without _aggregate suffix)
     ('entity', 'entity_id'),
     ('interaction', 'interaction_id'),
@@ -114,9 +116,6 @@ FOREIGN_KEY_CONSTRAINTS = [
     ('evidence_reference', 'interaction_evidence_id', 'interaction_evidence', 'id'),
     ('evidence_reference', 'membership_evidence_id', 'membership_evidence', 'id'),
 
-    # compound table
-    ('compound', 'entity_id', 'entity', 'entity_id'),
-
     # entity table (self-referencing for entity_type_id)
     ('entity', 'entity_type_id', 'entity', 'entity_id'),
 
@@ -142,6 +141,10 @@ FOREIGN_KEY_CONSTRAINTS = [
     ('membership_to_evidence', 'membership_id', 'membership', 'membership_id'),
     ('membership_to_evidence', 'membership_evidence_id', 'membership_evidence', 'id'),
     ('membership_to_evidence', 'source_id', 'source', 'id'),
+
+    # entity_compound bridge table
+    ('entity_compound', 'entity_id', 'entity', 'entity_id'),
+    ('entity_compound', 'compound_id', 'compound', 'id'),
 ]
 
 # Indexes to create for query performance
@@ -194,6 +197,10 @@ INDEXES = [
     ('interaction_to_evidence', 'idx_interaction_to_evidence_int_source', '(interaction_id, source_id)', 'btree', None),
     ('membership_to_evidence', 'idx_membership_to_evidence_mem_source', '(membership_id, source_id)', 'btree', None),
 
+    # Entity-compound bridge table
+    ('entity_compound', 'idx_entity_compound_entity_id', '(entity_id)', 'btree', None),
+    ('entity_compound', 'idx_entity_compound_compound_id', '(compound_id)', 'btree', None),
+
     # Compound table - RDKit structure searches
     ('compound', 'idx_compound_mol_gist', '(mol)', 'gist', None),
     ('compound', 'idx_compound_morgan_fp_gist', '(morgan_fp)', 'gist', None),
@@ -207,9 +214,9 @@ def apply_rdkit_conversions(
     """
     Apply RDKit type conversions to compound table columns.
 
-    Replaces:
-    - molfile (text) -> mol (RDKit mol type) using mol_from_ctab()
-    - morgan_fp (bytea) -> morgan_fp (RDKit bfp type) using bfp_from_binary_text()
+    Operations:
+    - Create mol column from canonical_smiles using mol_from_smiles()
+    - Compute morgan_fp column from mol using morganbv_fp()
 
     Args:
         postgres_uri: PostgreSQL connection string
@@ -242,7 +249,7 @@ def apply_rdkit_conversions(
             FROM information_schema.columns
             WHERE table_schema = '{schema}'
             AND table_name = 'compound'
-            AND column_name IN ('molfile', 'morgan_fp', 'mol')
+            AND column_name IN ('canonical_smiles', 'morgan_fp', 'mol')
             ORDER BY column_name
         """)
         columns = {row[0]: row[1] for row in cur.fetchall()}
@@ -251,49 +258,41 @@ def apply_rdkit_conversions(
             logger.info('  Compound table not found or no RDKit columns present')
             return
 
-        # Check if already converted
-        if 'mol' in columns and 'molfile' not in columns:
-            logger.info('  RDKit conversions already applied')
-            return
+        # Ensure mol column exists
+        if 'mol' not in columns:
+            if 'canonical_smiles' in columns:
+                logger.info('  Creating mol column from canonical_smiles using mol_from_smiles()')
+                cur.execute(f"ALTER TABLE {schema}.compound ADD COLUMN mol mol")
+                cur.execute(f"""
+                    UPDATE {schema}.compound
+                    SET mol = mol_from_smiles(canonical_smiles)
+                    WHERE canonical_smiles IS NOT NULL
+                """)
+                conn.commit()
+                logger.info('  ✓ Added mol column')
+            else:
+                logger.warning('  canonical_smiles column not found; skipping mol column creation')
+        else:
+            logger.info('  mol column already present')
 
-        # Convert molfile -> mol
-        if 'molfile' in columns:
-            logger.info('  Converting molfile -> mol using mol_from_ctab()')
+        # Compute morgan_fp from mol column (if not already present)
+        if 'morgan_fp' not in columns:
+            logger.info('  Computing morgan_fp column from mol using morganbv_fp()')
 
-            # Add new mol column
-            cur.execute(f"ALTER TABLE {schema}.compound ADD COLUMN mol mol")
-
-            # Populate mol column
-            cur.execute(f"""
-                UPDATE {schema}.compound
-                SET mol = mol_from_ctab(molfile::cstring)
-            """)
-
-            # Drop old molfile column
-            cur.execute(f"ALTER TABLE {schema}.compound DROP COLUMN molfile")
-            conn.commit()
-            logger.info('  ✓ Replaced molfile with mol type')
-
-        # Convert morgan_fp bytea -> morgan_fp bfp
-        if 'morgan_fp' in columns and columns['morgan_fp'] == 'bytea':
-            logger.info('  Converting morgan_fp (bytea) -> morgan_fp (bfp) using bfp_from_binary_text()')
-
-            # Rename old column
-            cur.execute(f"ALTER TABLE {schema}.compound RENAME COLUMN morgan_fp TO morgan_fp_old")
-
-            # Add new morgan_fp column with bfp type
+            # Add morgan_fp column with bfp type
             cur.execute(f"ALTER TABLE {schema}.compound ADD COLUMN morgan_fp bfp")
 
-            # Populate new column
+            # Populate morgan_fp from mol column using morganbv_fp
             cur.execute(f"""
                 UPDATE {schema}.compound
-                SET morgan_fp = bfp_from_binary_text(morgan_fp_old)
+                SET morgan_fp = morganbv_fp(mol)
+                WHERE mol IS NOT NULL
             """)
 
-            # Drop old column
-            cur.execute(f"ALTER TABLE {schema}.compound DROP COLUMN morgan_fp_old")
             conn.commit()
-            logger.info('  ✓ Replaced morgan_fp with bfp type')
+            logger.info('  ✓ Computed morgan_fp column')
+        else:
+            logger.info('  morgan_fp column already present, skipping computation')
 
         # Ensure RDKit-specific indexes can be created later
         logger.info('  Ensuring rdkit extension is available for molecular indexes...')
