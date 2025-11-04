@@ -108,16 +108,52 @@ def build_global_tables(
     # ---- build CV term mapping from entity_identifiers ----
     # CV terms are now entities with id_type = "OM:0204" (CV_TERM_ACCESSION)
     # Extract CV term accessions and map them to entity_ids
-    cv_terms = (
-        entity_identifiers
-        .filter(pl.col("id_type") == "OM:0204")  # CV_TERM_ACCESSION
-        .select([
-            pl.col("entity_id").alias("id"),
-            pl.col("id_value").alias("accession"),
-        ])
-        .unique(subset=["accession"])
-    )
+    # Handle both id_type (string) and id_type_id (already resolved) cases
+    if "id_type" in entity_identifiers.columns:
+        cv_terms = (
+            entity_identifiers
+            .filter(pl.col("id_type") == "OM:0204")  # CV_TERM_ACCESSION
+            .select([
+                pl.col("entity_id").alias("id"),
+                pl.col("id_value").alias("accession"),
+            ])
+            .unique(subset=["accession"])
+        )
+    else:
+        # Already resolved: find the entity_id for "OM:0204" type and get all CV terms
+        om0204_entity_id = (
+            entity_identifiers
+            .filter(pl.col("id_value") == "OM:0204")
+            .select(pl.col("id_type_id").first())
+            .item()
+        )
+        cv_terms = (
+            entity_identifiers
+            .filter(pl.col("id_type_id") == om0204_entity_id)
+            .select([
+                pl.col("entity_id").alias("id"),
+                pl.col("id_value").alias("accession"),
+            ])
+            .unique(subset=["accession"])
+        )
     logger.info(f"Built CV term mapping with {len(cv_terms):,} unique accessions")
+
+    # ---- resolve id_type to id_type_id in entity_identifiers ----
+    # Map id_type (string accession) to id_type_id (entity_id)
+    # Only if id_type column exists (idempotency check)
+    if "id_type" in entity_identifiers.columns:
+        logger.info("Resolving id_type to id_type_id in entity_identifiers")
+        entity_identifiers_resolved = _map_cv_term_columns(
+            entity_identifiers,
+            cv_terms,
+            ["id_type"]
+        )
+        entity_identifiers_resolved.write_parquet(out_dir / "entity_identifiers.parquet")
+        logger.info(f"✅ entity_identifiers: {len(entity_identifiers_resolved):,} rows (id_type resolved to id_type_id)")
+    else:
+        logger.info("entity_identifiers already has id_type_id (skipping resolution)")
+        entity_identifiers.write_parquet(out_dir / "entity_identifiers.parquet")
+        logger.info(f"✅ entity_identifiers: {len(entity_identifiers):,} rows")
 
     #
     # ============== ENTITY EVIDENCE ==============
@@ -230,7 +266,7 @@ def build_global_tables(
             "local_entity_id",
         )
         membership = membership.with_row_index("id", offset=1)
-        membership_map = membership.select(["source_id", "local_membership_id", "id"]).rename({"id": "membership_id"})
+        membership_map = membership.select(["source_id", "local_membership_id", "id"]).rename({"id": "membership_evidence_id"})
 
         # Map role (accession) -> role_id and drop role
         membership_output = _map_cv_term_columns(membership, cv_terms, ["role"])
@@ -240,7 +276,7 @@ def build_global_tables(
         membership_map = _empty_mapping({
             "source_id": pl.Int64,
             "local_membership_id": pl.Int64,
-            "membership_id": pl.Int64,
+            "membership_evidence_id": pl.Int64,
         })
 
     membership_output.write_parquet(out_dir / "membership_evidence.parquet")
@@ -270,7 +306,7 @@ def build_global_tables(
                 pl.col("reference_id"),
                 pl.col("entity_evidence_id"),
                 pl.lit(None, dtype=pl.Int64).alias("interaction_evidence_id"),
-                pl.lit(None, dtype=pl.Int64).alias("membership_id"),
+                pl.lit(None, dtype=pl.Int64).alias("membership_evidence_id"),
             )
         )
 
@@ -289,7 +325,7 @@ def build_global_tables(
                 pl.col("reference_id"),
                 pl.lit(None, dtype=pl.Int64).alias("entity_evidence_id"),
                 pl.col("interaction_evidence_id"),
-                pl.lit(None, dtype=pl.Int64).alias("membership_id"),
+                pl.lit(None, dtype=pl.Int64).alias("membership_evidence_id"),
             )
         )
 
@@ -309,7 +345,7 @@ def build_global_tables(
                 pl.col("reference_id"),
                 pl.lit(None, dtype=pl.Int64).alias("entity_evidence_id"),
                 pl.lit(None, dtype=pl.Int64).alias("interaction_evidence_id"),
-                pl.col("membership_id"),
+                pl.col("membership_evidence_id"),
             )
         )
 
@@ -322,7 +358,7 @@ def build_global_tables(
                 "reference_id",
                 "entity_evidence_id",
                 "interaction_evidence_id",
-                "membership_id",
+                "membership_evidence_id",
             ]
         )
     else:
@@ -331,7 +367,7 @@ def build_global_tables(
             "reference_id": pl.Series("reference_id", [], dtype=pl.Int64),
             "entity_evidence_id": pl.Series("entity_evidence_id", [], dtype=pl.Int64),
             "interaction_evidence_id": pl.Series("interaction_evidence_id", [], dtype=pl.Int64),
-            "membership_id": pl.Series("membership_id", [], dtype=pl.Int64),
+            "membership_evidence_id": pl.Series("membership_evidence_id", [], dtype=pl.Int64),
         })
 
     evidence_reference.write_parquet(out_dir / "evidence_reference.parquet")

@@ -23,21 +23,29 @@ logger = logging.getLogger(__name__)
 # Tables to load (excluding entity_identifier_record_to_global.parquet)
 TABLES_TO_LOAD = [
     'compound',
-    'cv_namespace',
-    'cv_term',
     'entity_evidence',
     'entity_identifiers',
     'evidence_reference',
     'interaction_evidence',
-    'membership',
+    'membership_evidence',
     'references',
     'source',
+    # Aggregate tables (renamed without _aggregate suffix)
+    'entity_aggregate:entity',
+    'interaction_aggregate:interaction',
+    'membership_aggregate:membership',
+    # Bridge tables
+    'entity_to_evidence',
+    'interaction_to_evidence',
+    'membership_to_evidence',
 ]
 
 # Tables with complex types that need JSON conversion
+# Use the parquet file name as the key
 TABLES_WITH_COMPLEX_TYPES = {
     'entity_evidence': ['annotations'],
     'interaction_evidence': ['interaction_annotations'],
+    'entity_aggregate': ['annotation_union'],  # parquet file name
 }
 
 # Columns to exclude from loading
@@ -52,50 +60,139 @@ RDKIT_CONVERSIONS = {
     }
 }
 
+MAX_INDEXED_IDENTIFIER_OCTETS = 1000
+
 # Primary keys to add after table creation
 # Format: (table_name, primary_key_column)
+# Use the PostgreSQL table name (not parquet file name)
 PRIMARY_KEY_CONSTRAINTS = [
-    ('cv_namespace', 'id'),
-    ('cv_term', 'id'),
     ('source', 'id'),
     ('references', 'id'),
     ('entity_evidence', 'id'),
-    ('membership', 'id'),
+    ('membership_evidence', 'id'),
     ('interaction_evidence', 'id'),
     ('evidence_reference', 'id'),
     ('compound', 'id'),
+    # Aggregate tables (using new names without _aggregate suffix)
+    ('entity', 'entity_id'),
+    ('interaction', 'interaction_id'),
+    ('membership', 'membership_id'),
 ]
 
 # Foreign key constraints to add after table creation
 # Format: (table_name, column_name, referenced_table, referenced_column)
+# Note: CV terms are now entities, so all type/role/namespace references point to entity table
+# Use the PostgreSQL table name (not parquet file name)
 FOREIGN_KEY_CONSTRAINTS = [
-    # cv_term table
-    ('cv_term', 'namespace_id', 'cv_namespace', 'id'),
-    ('cv_term', 'replaces_id', 'cv_term', 'id'),
-    ('cv_term', 'replaced_by_id', 'cv_term', 'id'),
-
     # entity_identifiers table
-    ('entity_identifiers', 'type_id', 'cv_term', 'id'),
+    ('entity_identifiers', 'id_type_id', 'entity', 'entity_id'),
+    ('entity_identifiers', 'entity_id', 'entity', 'entity_id'),
 
     # entity_evidence table
     ('entity_evidence', 'source_id', 'source', 'id'),
-    ('entity_evidence', 'entity_type_id', 'cv_term', 'id'),
+    ('entity_evidence', 'entity_type_id', 'entity', 'entity_id'),
+    ('entity_evidence', 'entity_id', 'entity', 'entity_id'),
 
-    # membership table
-    ('membership', 'role_id', 'cv_term', 'id'),
-    ('membership', 'source_id', 'source', 'id'),
+    # membership_evidence table
+    ('membership_evidence', 'role_id', 'entity', 'entity_id'),
+    ('membership_evidence', 'source_id', 'source', 'id'),
+    ('membership_evidence', 'parent_entity_id', 'entity', 'entity_id'),
+    ('membership_evidence', 'entity_id', 'entity', 'entity_id'),
 
     # interaction_evidence table
-    ('interaction_evidence', 'interaction_type_id', 'cv_term', 'id'),
-    ('interaction_evidence', 'detection_method_id', 'cv_term', 'id'),
-    ('interaction_evidence', 'causal_mechanism_id', 'cv_term', 'id'),
-    ('interaction_evidence', 'causal_statement_id', 'cv_term', 'id'),
+    ('interaction_evidence', 'entity_id_a', 'entity', 'entity_id'),
+    ('interaction_evidence', 'entity_id_b', 'entity', 'entity_id'),
+    ('interaction_evidence', 'interaction_type_id', 'entity', 'entity_id'),
+    ('interaction_evidence', 'detection_method_id', 'entity', 'entity_id'),
+    ('interaction_evidence', 'causal_mechanism_id', 'entity', 'entity_id'),
+    ('interaction_evidence', 'causal_statement_id', 'entity', 'entity_id'),
+    ('interaction_evidence', 'source_id', 'source', 'id'),
 
     # evidence_reference table
     ('evidence_reference', 'reference_id', 'references', 'id'),
     ('evidence_reference', 'entity_evidence_id', 'entity_evidence', 'id'),
     ('evidence_reference', 'interaction_evidence_id', 'interaction_evidence', 'id'),
-    ('evidence_reference', 'membership_id', 'membership', 'id'),
+    ('evidence_reference', 'membership_evidence_id', 'membership_evidence', 'id'),
+
+    # compound table
+    ('compound', 'entity_id', 'entity', 'entity_id'),
+
+    # entity table (self-referencing for entity_type_id)
+    ('entity', 'entity_type_id', 'entity', 'entity_id'),
+
+    # interaction table
+    ('interaction', 'a_id', 'entity', 'entity_id'),
+    ('interaction', 'b_id', 'entity', 'entity_id'),
+
+    # membership table (note: role_ids is a list, can't have FK on array column)
+    ('membership', 'parent_entity_id', 'entity', 'entity_id'),
+    ('membership', 'entity_id', 'entity', 'entity_id'),
+
+    # entity_to_evidence bridge table
+    ('entity_to_evidence', 'entity_id', 'entity', 'entity_id'),
+    ('entity_to_evidence', 'entity_evidence_id', 'entity_evidence', 'id'),
+    ('entity_to_evidence', 'source_id', 'source', 'id'),
+
+    # interaction_to_evidence bridge table
+    ('interaction_to_evidence', 'interaction_id', 'interaction', 'interaction_id'),
+    ('interaction_to_evidence', 'interaction_evidence_id', 'interaction_evidence', 'id'),
+    ('interaction_to_evidence', 'source_id', 'source', 'id'),
+
+    # membership_to_evidence bridge table
+    ('membership_to_evidence', 'membership_id', 'membership', 'membership_id'),
+    ('membership_to_evidence', 'membership_evidence_id', 'membership_evidence', 'id'),
+    ('membership_to_evidence', 'source_id', 'source', 'id'),
+]
+
+# Indexes to create for query performance
+# Format: (table_name, index_name, columns, index_type, where_clause)
+# where_clause can be used to create partial indexes
+INDEXES = [
+    # entity_identifiers - target generated column that excludes oversized identifiers
+    (
+        'entity_identifiers',
+        'idx_entity_identifiers_type_value_small',
+        '(id_type_id, id_value_small text_pattern_ops) INCLUDE (entity_id, id_value)',
+        'btree',
+        'id_value_small IS NOT NULL',
+    ),
+    (
+        'entity_identifiers',
+        'idx_entity_identifiers_value_small_pattern',
+        '(id_value_small text_pattern_ops) INCLUDE (id_type_id, entity_id, id_value)',
+        'btree',
+        'id_value_small IS NOT NULL',
+    ),
+    ('entity_identifiers', 'idx_entity_identifiers_entity_id', '(entity_id)', 'btree', None),
+
+    # interaction - for filtering by participants and retrieving top evidence rows
+    (
+        'interaction',
+        'idx_interaction_a_id_inc',
+        '(a_id) INCLUDE (interaction_id, b_id, evidence_count)',
+        'btree',
+        None,
+    ),
+    (
+        'interaction',
+        'idx_interaction_b_id_inc',
+        '(b_id) INCLUDE (interaction_id, a_id, evidence_count)',
+        'btree',
+        None,
+    ),
+    ('interaction', 'idx_interaction_evidence_desc', '(evidence_count DESC, interaction_id)', 'btree', None),
+
+    # interaction_evidence - for evidence queries
+    ('interaction_evidence', 'idx_interaction_evidence_source_id', '(source_id)', 'btree', None),
+
+    # membership - for membership lookups
+    ('membership', 'idx_membership_entity_id', '(entity_id)', 'btree', None),
+    ('membership', 'idx_membership_parent_entity_id', '(parent_entity_id)', 'btree', None),
+
+    # Bridge tables - for joins and filtering
+    ('entity_to_evidence', 'idx_entity_to_evidence_entity_source', '(entity_id, source_id)', 'btree', None),
+    ('interaction_to_evidence', 'idx_interaction_to_evidence_int_source', '(interaction_id, source_id)', 'btree', None),
+    ('membership_to_evidence', 'idx_membership_to_evidence_mem_source', '(membership_id, source_id)', 'btree', None),
 ]
 
 
@@ -342,6 +439,143 @@ def add_foreign_keys(
         conn.close()
 
 
+def ensure_entity_identifier_helpers(
+    postgres_uri: str,
+    schema: str = 'public',
+) -> None:
+    """
+    Ensure helper structures on entity_identifiers for performant indexing.
+
+    Adds a generated column that nulls out identifiers exceeding the allowed size so that
+    indexes can remain compact without sacrificing correctness.
+    """
+    logger.info('Ensuring helper columns on entity_identifiers...')
+
+    parsed = urlparse(postgres_uri)
+
+    conn = psycopg2.connect(
+        host=parsed.hostname,
+        port=parsed.port or 5432,
+        user=parsed.username,
+        password=parsed.password,
+        database=parsed.path.lstrip('/'),
+    )
+
+    try:
+        cur = conn.cursor()
+
+        cur.execute(
+            """
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_schema = %s
+              AND table_name = 'entity_identifiers'
+              AND column_name = 'id_value_small'
+            """,
+            (schema,),
+        )
+        exists = cur.fetchone() is not None
+
+        if not exists:
+            logger.info(
+                '  Adding generated column id_value_small (<= %d bytes) ...',
+                MAX_INDEXED_IDENTIFIER_OCTETS,
+            )
+            cur.execute(
+                f"""
+                ALTER TABLE {schema}.entity_identifiers
+                ADD COLUMN id_value_small text
+                GENERATED ALWAYS AS (
+                    CASE
+                        WHEN octet_length(id_value) <= {MAX_INDEXED_IDENTIFIER_OCTETS}
+                        THEN id_value
+                    END
+                ) STORED
+                """
+            )
+            conn.commit()
+        else:
+            logger.info('  Generated column id_value_small already present')
+
+    except Exception as exc:
+        logger.error('Failed to ensure helper column id_value_small: %s', exc)
+        conn.rollback()
+        raise
+    finally:
+        cur.close()
+        conn.close()
+
+
+def create_indexes(
+    postgres_uri: str,
+    schema: str = 'public',
+) -> None:
+    """
+    Create indexes on PostgreSQL tables for query performance.
+
+    Args:
+        postgres_uri: PostgreSQL connection string
+        schema: Target schema in PostgreSQL
+    """
+    logger.info('Creating indexes...')
+
+    # Parse the postgres_uri to get connection parameters
+    parsed = urlparse(postgres_uri)
+
+    conn = psycopg2.connect(
+        host=parsed.hostname,
+        port=parsed.port or 5432,
+        user=parsed.username,
+        password=parsed.password,
+        database=parsed.path.lstrip('/'),
+    )
+
+    try:
+        cur = conn.cursor()
+
+        for table_name, index_name, columns, index_type, where_clause in INDEXES:
+            # Check if index already exists
+            check_sql = f"""
+                SELECT indexname
+                FROM pg_indexes
+                WHERE schemaname = '{schema}'
+                AND tablename = '{table_name}'
+                AND indexname = '{index_name}'
+            """
+            cur.execute(check_sql)
+            existing_idx = cur.fetchone()
+
+            if existing_idx:
+                logger.info(f'  Skipping index: {index_name} on {table_name} (already exists)')
+                continue
+
+            # Build CREATE INDEX statement
+            using_clause = f'USING {index_type}' if index_type else ''
+            where_clause_sql = f'WHERE {where_clause}' if where_clause else ''
+            sql = f"""
+                CREATE INDEX {index_name}
+                ON {schema}.{table_name}
+                {using_clause}
+                {columns}
+                {where_clause_sql}
+            """
+            try:
+                logger.info(f'  Creating index: {index_name} on {table_name}{columns}' +
+                          (f' WHERE {where_clause}' if where_clause else ''))
+                cur.execute(sql)
+                conn.commit()
+            except Exception as exc:
+                logger.error(f'  Failed to create index {index_name}: {exc}')
+                conn.rollback()
+                raise
+
+        logger.info('✓ All indexes created successfully')
+
+    finally:
+        cur.close()
+        conn.close()
+
+
 def load_tables_to_postgres(
     output_dir: Path,
     postgres_uri: str,
@@ -385,14 +619,20 @@ def load_tables_to_postgres(
             con.execute(f"CREATE SCHEMA pg.{schema}")
 
         # Process each table
-        for table_name in TABLES_TO_LOAD:
-            parquet_file = output_dir / f'{table_name}.parquet'
+        for table_spec in TABLES_TO_LOAD:
+            # Handle table name mapping (parquet_file:postgres_table)
+            if ':' in table_spec:
+                parquet_name, postgres_table_name = table_spec.split(':', 1)
+            else:
+                parquet_name = postgres_table_name = table_spec
+
+            parquet_file = output_dir / f'{parquet_name}.parquet'
 
             if not parquet_file.exists():
-                logger.warning(f'Skipping {table_name}: file not found at {parquet_file}')
+                logger.warning(f'Skipping {parquet_name}: file not found at {parquet_file}')
                 continue
 
-            logger.info(f'Processing table: {table_name}')
+            logger.info(f'Processing table: {parquet_name} -> {postgres_table_name}')
 
             # Load parquet into a temporary view
             logger.info(f'  Reading parquet file: {parquet_file}')
@@ -401,18 +641,18 @@ def load_tables_to_postgres(
             schema_info = con.execute(f"DESCRIBE SELECT * FROM read_parquet('{parquet_file}')").fetchall()
             all_columns = [row[0] for row in schema_info]
 
-            # Determine which columns to exclude
-            columns_to_exclude = COLUMNS_TO_EXCLUDE.get(table_name, [])
+            # Determine which columns to exclude (use parquet name for lookups)
+            columns_to_exclude = COLUMNS_TO_EXCLUDE.get(parquet_name, [])
             if columns_to_exclude:
                 logger.info(f'  Excluding columns: {", ".join(columns_to_exclude)}')
 
-            # Check if table has complex types that need conversion
-            complex_columns = TABLES_WITH_COMPLEX_TYPES.get(table_name, [])
+            # Check if table has complex types that need conversion (use parquet name for lookups)
+            complex_columns = TABLES_WITH_COMPLEX_TYPES.get(parquet_name, [])
             if complex_columns:
                 logger.info(f'  Converting complex columns to JSON: {", ".join(complex_columns)}')
 
             # Check if table has RDKit columns (will be converted later in PostgreSQL)
-            rdkit_columns = RDKIT_CONVERSIONS.get(table_name, {})
+            rdkit_columns = RDKIT_CONVERSIONS.get(parquet_name, {})
             if rdkit_columns:
                 logger.info(f'  Note: RDKit columns will be converted after loading: {", ".join(rdkit_columns.keys())}')
 
@@ -428,19 +668,19 @@ def load_tables_to_postgres(
                         select_parts.append(col)
 
                 select_clause = ", ".join(select_parts)
-                con.execute(f"CREATE OR REPLACE VIEW temp_{table_name} AS SELECT {select_clause} FROM read_parquet('{parquet_file}')")
+                con.execute(f"CREATE OR REPLACE VIEW temp_{parquet_name} AS SELECT {select_clause} FROM read_parquet('{parquet_file}')")
             else:
-                con.execute(f"CREATE OR REPLACE VIEW temp_{table_name} AS SELECT * FROM read_parquet('{parquet_file}')")
+                con.execute(f"CREATE OR REPLACE VIEW temp_{parquet_name} AS SELECT * FROM read_parquet('{parquet_file}')")
 
             # Get row count
-            row_count = con.execute(f"SELECT COUNT(*) FROM temp_{table_name}").fetchone()[0]
+            row_count = con.execute(f"SELECT COUNT(*) FROM temp_{parquet_name}").fetchone()[0]
             logger.info(f'  Found {row_count:,} rows')
 
-            # Create table in PostgreSQL from parquet data
-            logger.info(f'  Writing to PostgreSQL table: {schema}.{table_name}')
-            con.execute(f"CREATE TABLE IF NOT EXISTS pg.{schema}.{table_name} AS SELECT * FROM temp_{table_name}")
+            # Create table in PostgreSQL from parquet data (use postgres_table_name)
+            logger.info(f'  Writing to PostgreSQL table: {schema}.{postgres_table_name}')
+            con.execute(f"CREATE TABLE IF NOT EXISTS pg.{schema}.{postgres_table_name} AS SELECT * FROM temp_{parquet_name}")
 
-            logger.info(f'  ✓ Successfully loaded {table_name}')
+            logger.info(f'  ✓ Successfully loaded {postgres_table_name}')
 
         logger.info('All tables loaded successfully!')
 
@@ -452,6 +692,12 @@ def load_tables_to_postgres(
 
         # Add foreign key constraints using native PostgreSQL connection
         add_foreign_keys(postgres_uri, schema)
+
+        # Ensure helper generated columns exist prior to indexing
+        ensure_entity_identifier_helpers(postgres_uri, schema)
+
+        # Create indexes for query performance
+        create_indexes(postgres_uri, schema)
 
         return 0
 
