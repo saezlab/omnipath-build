@@ -4,24 +4,17 @@ Canonical definitions for silver-layer schemas.
 Keeping the PyArrow schema objects and the namedtuple helpers in one place
 avoids accidental divergence across the pipeline.
 """
-from typing import List, Dict, Any, NamedTuple
-from enum import Enum
+from typing import List, NamedTuple, Self
+
 
 import pyarrow as pa
 
-from omnipath_build.utils.cv_term_enums import (
+from omnipath_build.utils.cv_terms import (
     EntityTypeCv,
     IdentifierNamespaceCv,
-    MembershipRoleCv,
-    BiologicalRoleCv,
-    ExperimentalRoleCv,
-    IdentificationMethodCv,
-    InteractionTypeCv,
-    DetectionMethodCv,
-    CausalMechanismCv,
-    CausalStatementCv,
-    ComplexExpansionCv,
-    ReferenceTypeCv,
+    AnnotationTypeCv,  # This is the Union of all annotation CV terms
+    LicenseCV,
+    UpdateCategoryCV,
 )
 
 __all__ = [
@@ -34,21 +27,13 @@ __all__ = [
     'SILVER_CV_TERM_SCHEMA',
 ]
 
-class Member(NamedTuple):
-    """Member of a complex or group entity."""
 
-    identifier: str
-    identifier_type: IdentifierNamespaceCv
-    role: BiologicalRoleCv | None = None
-    stoichiometry: float | None = None
+class DownloadConfig(NamedTuple):
+    """ Configuration for source database downloads."""
 
-
-class MemberOf(NamedTuple):
-    """Parent entity that this entity is a member of (inverse of Member)."""
-
-    identifier: str
-    identifier_type: IdentifierNamespaceCv
-    role: MembershipRoleCv | None = None
+    url: str  # Download URL
+    method: str  # e.g. 'http', 'ftp', 's3', 'api'
+    additional_params: dict | None = None  # e.g. headers, auth, etc.
 
 
 class Identifier(NamedTuple):
@@ -56,74 +41,43 @@ class Identifier(NamedTuple):
 
     type: IdentifierNamespaceCv
     value: str
+    
+class Annotation(NamedTuple):
+    """Annotation for an interaction or entity."""
 
+    term: AnnotationTypeCv
+    value: str | float | None = None
+    units: str | None = None
 
-class Reference(NamedTuple):
-    """Reference for an interaction or entity."""
+class Membership(NamedTuple):
+    member: 'Entity'  # Forward reference since Entity is defined below
+    annotations: list[Annotation] | None = None
 
-    type: ReferenceTypeCv
-    value: str  # e.g., '12345678' for pmid
-
-
-class SilverEntity(NamedTuple):
-    """Silver entity record matching silver_entities schema."""
+class Entity(NamedTuple):
+    """ Entity record matching entities schema."""
 
     # Required fields
     source: str
-    entity_type: EntityTypeCv
+    type: EntityTypeCv # e.g. EntityTypeCv.INTERACTION, EntityTypeCv.CV_TERM
+    identifiers: List[Identifier]  # e.g. IdentifierNamespaceCv.NAME and .SYNONYM)
+    annotations: List[Annotation] | None = None
 
-    # All identifiers consolidated here using PSI-MI identifier namespaces
-    # (including names and synonyms via IdentifierNamespaceCv.NAME and .SYNONYM)
-    identifiers: List[Identifier] | None = None
+    members: List[Membership] | None = None # e.g. for complexes and families
+    is_member_of: List[Membership] | None = None # e.g. for proteins that are part of complexes or families
+  
+class Source(NamedTuple):
+    """ Source database record."""
 
-    # Optional organism (NCBI Taxonomy ID)
-    organism: int | None = None
+    id: str  # e.g. 'uniprot'
+    name: str  # e.g. 'UniProt'
+    download_config: DownloadConfig
+    license: LicenseCV
+    update_category: UpdateCategoryCV
+    
+    publication: str | None = None
+    url: str | None = None
+    description: str | None = None
 
-    # Optional membership info
-    members: List[Member] | None = None
-    parent_identifier: str | None = None
-    parent_identifier_type: IdentifierNamespaceCv | None = None
-    is_member_of: List[MemberOf] | None = None
-
-    # Optional annotations
-    annotations: List[Dict[str, Any]] | None = None
-    references: List[Reference] | None = None
-
-    # Optional metadata (if provided by meta database)
-    secondary_source: str | None = None
-
-    # Optional interaction participant role information
-    # These fields are only populated when the entity participates in an interaction
-    biological_role: BiologicalRoleCv | None = None
-    experimental_role: ExperimentalRoleCv | None = None
-    stoichiometry: float | None = None
-    identification_method: IdentificationMethodCv | None = None
-
-
-class SilverInteraction(NamedTuple):
-    """Cleaned interaction records (one row per source evidence record)."""
-
-    # Required fields - metadata
-    source: str
-
-    # Required fields - interaction participants
-    entity_a: SilverEntity
-    entity_b: SilverEntity
-
-    # Optional evidence details
-    interaction_type: InteractionTypeCv | None = None
-    detection_method: DetectionMethodCv | None = None
-    causal_mechanism: CausalMechanismCv | None = None
-    causal_statement: CausalStatementCv | None = None
-    sentence: str | None = None
-
-    complex_expansion: ComplexExpansionCv | None = None
-
-    # Optional annotations
-    interaction_annotations: List[Dict[str, Any]] | None = None
-
-    # Optional reference
-    references: List[Reference] | None = None
 
 
 SILVER_ENTITY_FIELDS = [

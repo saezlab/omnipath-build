@@ -5,6 +5,7 @@ callers can work with descriptive names while we still capture the required
 MI identifiers in the data model.
 """
 from enum import Enum
+from typing import Union
 
 __all__ = [
     'EntityTypeCv',
@@ -23,6 +24,8 @@ __all__ = [
     'CausalStatementCv',
     'ComplexExpansionCv',
     'ReferenceTypeCv',
+    'CurationCv',
+    'AnnotationTypeCv',
 ]
 
 
@@ -41,6 +44,7 @@ class EntityTypeCv(str, Enum):
     PROTEIN_FAMILY = "OM:0010"
     LIPID = "OM:0011"
     CV_TERM = "OM:0012"
+    INTERACTION = "OM:0013"
 
 class IdentifierNamespaceCv(str, Enum):
     """Identifier namespace terms backed by PSI-MI accessions."""
@@ -86,10 +90,12 @@ class IdentifierNamespaceCv(str, Enum):
     # CV term accession
     CV_TERM_ACCESSION = "OM:0204"
 
-    #structure representations
+    # Structure representations
     SMILES = "MI:0239"
     STANDARD_INCHI_KEY = "MI:1101"
     STANDARD_INCHI = "MI:2010"
+
+    NCBI_TAX_ID = "OM:0205"
 
 class MembershipRoleCv(str, Enum):
     """Relationship types for entity membership (is_member_of field)."""
@@ -99,6 +105,7 @@ class MembershipRoleCv(str, Enum):
     PART_OF = "OM:0301"  # Component relationship
     MEMBER_OF = "OM:0302"  # Generic membership
     IS_ANNOTATED_AS = "OM:0303"  # Annotation relationship
+
 
 
 class BiologicalRoleCv(str, Enum):
@@ -196,3 +203,29 @@ class ReferenceTypeCv(str, Enum):
     PUBMED_CENTRAL = "MI:1042"
     DOI = "MI:0574"
     BIORXIV = "MI:2347"
+
+
+class CurationCv(str, Enum):
+    """Curation and annotation metadata terms."""
+
+    EVIDENCE_SENTENCE = "OM:0400"  # Sentence from literature supporting the interaction
+    COMMENT = "MI:0612"  # General comment or remark
+
+
+# Type alias for all CV terms that can be used in Annotation.term
+AnnotationTypeCv = Union[
+    BiologicalRoleCv,
+    ExperimentalRoleCv,
+    IdentificationMethodCv,
+    BiologicalEffectCv,
+    InteractionTypeCv,
+    DetectionMethodCv,
+    CausalMechanismCv,
+    CausalStatementCv,
+    ComplexExpansionCv,
+    EntityTypeCv,
+    IdentifierNamespaceCv,
+    MembershipRoleCv,
+    ReferenceTypeCv,
+    CurationCv,
+]
