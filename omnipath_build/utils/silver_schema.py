@@ -41,7 +41,7 @@ class Identifier(NamedTuple):
 
     type: IdentifierNamespaceCv
     value: str
-    
+
 class Annotation(NamedTuple):
     """Annotation for an interaction or entity."""
 
@@ -77,7 +77,6 @@ class Source(NamedTuple):
     publication: str | None = None
     url: str | None = None
     description: str | None = None
-
 
 
 SILVER_ENTITY_FIELDS = [
