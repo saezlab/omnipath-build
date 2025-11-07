@@ -19,12 +19,13 @@ from omnipath_build.utils.cv_terms import (
 
 __all__ = [
     'Identifier',
-    'SilverEntity',
-    'SilverInteraction',
-    'SilverCvTerm',
-    'SILVER_ENTITY_SCHEMA',
-    'SILVER_INTERACTION_SCHEMA',
-    'SILVER_CV_TERM_SCHEMA',
+    'Annotation',
+    'Membership',
+    'Entity',
+    'DownloadConfig',
+    'Source',
+    'ENTITY_SCHEMA',
+    'SOURCE_SCHEMA',
 ]
 
 
@@ -78,78 +79,62 @@ class Source(NamedTuple):
     url: str | None = None
     description: str | None = None
 
+#### PyArrow Schemas (needed for parquet files) ####
 
-SILVER_ENTITY_FIELDS = [
-    pa.field('source', pa.string(), nullable=False),
-    pa.field('entity_type', pa.string(), nullable=False),
-    pa.field(
-        'identifiers',
-        pa.list_(pa.struct([
-            pa.field('type', pa.string()),
-            pa.field('value', pa.string()),
-        ])),
-    ),
-    pa.field('organism', pa.int64()),
-    pa.field(
-        'members',
-        pa.list_(pa.struct([
-            pa.field('identifier', pa.string()),
-            pa.field('identifier_type', pa.string()),
-            pa.field('role', pa.string()),
-            pa.field('stoichiometry', pa.float64()),
-        ])),
-    ),
-    pa.field('parent_accession', pa.string()),
-    pa.field(
-        'is_member_of',
-        pa.list_(pa.struct([
-            pa.field('identifier', pa.string()),
-            pa.field('identifier_type', pa.string()),
-            pa.field('role', pa.string()),
-        ])),
-    ),
-    pa.field(
-        'annotations',
-        pa.list_(pa.struct([
-            pa.field('term', pa.string()),
-            pa.field('value', pa.string()),
-            pa.field('units', pa.string()),
-        ])),
-    ),
-    pa.field(
-        'references',
-        pa.list_(pa.struct([
-            pa.field('type', pa.string()),
-            pa.field('value', pa.string()),
-        ])),
-    ),
-    pa.field('secondary_source', pa.string()),
+# Reusable field definitions
+IDENTIFIER_FIELDS = [
+    pa.field('type', pa.string()),
+    pa.field('value', pa.string()),
 ]
 
-SILVER_ENTITY_SCHEMA = pa.schema(SILVER_ENTITY_FIELDS)
+ANNOTATION_FIELDS = [
+    pa.field('term', pa.string()),
+    pa.field('value', pa.string()),
+    pa.field('units', pa.string()),
+]
 
-SILVER_INTERACTION_SCHEMA = pa.schema([
+# Base entity fields (without members/is_member_of to avoid circular reference)
+BASE_ENTITY_FIELDS = [
+    pa.field('source', pa.string()),
+    pa.field('type', pa.string()),
+    pa.field('identifiers', pa.list_(pa.struct(IDENTIFIER_FIELDS))),
+]
+
+# Membership structure (entity + annotations)
+MEMBERSHIP_FIELDS = [
+    pa.field('member', pa.struct(BASE_ENTITY_FIELDS)),
+    pa.field('annotations', pa.list_(pa.struct(ANNOTATION_FIELDS))),
+]
+
+# Full entity schema
+ENTITY_FIELDS = [
     pa.field('source', pa.string(), nullable=False),
-    pa.field('entity_a', pa.struct(SILVER_ENTITY_FIELDS), nullable=False),
-    pa.field('entity_b', pa.struct(SILVER_ENTITY_FIELDS), nullable=False),
-    pa.field('interaction_type', pa.string()),
-    pa.field('detection_method', pa.string()),
-    pa.field('causal_mechanism', pa.string()),
-    pa.field('causal_statement', pa.string()),
-    pa.field('sentence', pa.string()),
-    pa.field(
-        'interaction_annotations',
-        pa.list_(pa.struct([
-            pa.field('key', pa.string()),
-            pa.field('value', pa.string()),
-        ])),
-    ),
-    pa.field(
-        'references',
-        pa.list_(pa.struct([
-            pa.field('type', pa.string()),
-            pa.field('value', pa.string()),
-        ])),
-    ),
-])
+    pa.field('type', pa.string(), nullable=False),
+    pa.field('identifiers', pa.list_(pa.struct(IDENTIFIER_FIELDS)), nullable=False),
+    pa.field('annotations', pa.list_(pa.struct(ANNOTATION_FIELDS))),
+    pa.field('members', pa.list_(pa.struct(MEMBERSHIP_FIELDS))),
+    pa.field('is_member_of', pa.list_(pa.struct(MEMBERSHIP_FIELDS))),
+]
 
+ENTITY_SCHEMA = pa.schema(ENTITY_FIELDS)
+
+# Download config fields
+DOWNLOAD_CONFIG_FIELDS = [
+    pa.field('url', pa.string()),
+    pa.field('method', pa.string()),
+    pa.field('additional_params', pa.map_(pa.string(), pa.string())),
+]
+
+# Source schema
+SOURCE_FIELDS = [
+    pa.field('id', pa.string(), nullable=False),
+    pa.field('name', pa.string(), nullable=False),
+    pa.field('download_config', pa.struct(DOWNLOAD_CONFIG_FIELDS), nullable=False),
+    pa.field('license', pa.string(), nullable=False),
+    pa.field('update_category', pa.string(), nullable=False),
+    pa.field('publication', pa.string()),
+    pa.field('url', pa.string()),
+    pa.field('description', pa.string()),
+]
+
+SOURCE_SCHEMA = pa.schema(SOURCE_FIELDS)
