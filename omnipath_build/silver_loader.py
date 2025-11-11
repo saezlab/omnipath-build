@@ -3,12 +3,11 @@
 
 from __future__ import annotations
 
-import importlib.util
+import importlib
 import inspect
-import sys
+import pkgutil
 from dataclasses import dataclass
 from pathlib import Path
-from types import ModuleType
 from typing import Callable, Dict, Iterable, Iterator, List, Optional
 from enum import Enum
 
@@ -16,42 +15,19 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from omnipath_build.utils.path_manager import PathManager
-from omnipath_build.utils.silver_schema import (
-    SilverEntity,
-    SilverInteraction,
-    SILVER_ENTITY_SCHEMA,
-    SILVER_INTERACTION_SCHEMA,
+from pypath.internals.silver_schema import (
+    Entity as SilverEntity,
+    Resource,
+    ENTITY_SCHEMA,
 )
-
-# Ensure legacy imports (from silver_schema import SilverEntity) keep working
-from omnipath_build.utils import silver_schema as canonical_silver_schema  # noqa: E402
-
-sys.modules.setdefault('silver_schema', canonical_silver_schema)
 
 __all__ = [
     'DiscoveryError',
     'ResourceFunction',
-    'SCHEMA_LOOKUP',
-    'SCHEMA_SOURCE_HINTS',
     'discover_resources',
-    'load_module_from_path',
     'process_resource_function',
     'run_silver_loader',
 ]
-
-# Mapping of schema type identifiers to pyarrow schema.
-# Note: table names are now derived from function names, not hardcoded here.
-SCHEMA_LOOKUP = {
-    'entity': SILVER_ENTITY_SCHEMA,
-    'interaction': SILVER_INTERACTION_SCHEMA,
-}
-
-# Strings used when inspecting function source code to infer schema type.
-SCHEMA_SOURCE_HINTS = [
-    ('SilverInteraction', 'interaction'),
-    ('SilverEntity', 'entity'),
-]
-
 
 @dataclass(slots=True)
 class ResourceFunction:
@@ -59,150 +35,108 @@ class ResourceFunction:
 
     source: str
     function_name: str
+    qualified_module: str
     call: Callable[[], Iterable]
-    schema_type: Optional[str] = None
-    module_path: Optional[Path] = None
+    resource_id: str
+    resource: Optional[Resource] = None
 
 
 class DiscoveryError(RuntimeError):
     """Raised when resource discovery fails."""
 
 
-def load_module_from_path(module_path: Path) -> ModuleType:
-    """Import a module directly from its file path."""
-    # Use the module's parent directory as the package name to support relative imports
-    parent_dir = module_path.parent
-    package_name = parent_dir.name
-    module_name = f'{package_name}.{module_path.stem}'
-
-    spec = importlib.util.spec_from_file_location(
-        module_name,
-        module_path,
-    )
-    if spec is None or spec.loader is None:
-        raise DiscoveryError(f'Unable to load module from {module_path}')
-
-    # Register parent package in sys.modules if it doesn't exist
-    if package_name not in sys.modules:
-        parent_module = ModuleType(package_name)
-        parent_module.__path__ = [str(parent_dir)]
-        sys.modules[package_name] = parent_module
-
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = module
-    spec.loader.exec_module(module)  # type: ignore[call-arg]
-    return module
-
-
-def _infer_schema_from_function_source(func: Callable) -> Optional[str]:
-    """Infer schema type by inspecting the function source code for yield statements."""
-    # Direct attribute on the function takes precedence if available.
-    direct_schema = getattr(func, 'schema_type', None)
-    if isinstance(direct_schema, str):
-        return direct_schema
-
-    try:
-        source = inspect.getsource(func)
-    except (OSError, TypeError):
-        source = ''
-
-    # Look for what's actually being yielded by checking yield statements
-    for hint, schema_type in SCHEMA_SOURCE_HINTS:
-        # Check if the hint appears in a yield statement (e.g., "yield SilverInteraction(")
-        if f'yield {hint}(' in source:
-            return schema_type
-
-    # Fallback: if no yield statement found, check if hint appears anywhere in source
-    for hint, schema_type in SCHEMA_SOURCE_HINTS:
-        if hint in source:
-            return schema_type
-    return None
-
-
 def discover_resources(
     database_name: str,
     base_path: Optional[Path] = None,
+    inputs_package: str = 'pypath.inputs_v2',
 ) -> tuple[Dict[str, List[ResourceFunction]], PathManager]:
-    """Discover resource modules and the silver functions they expose."""
+    """Discover generator functions from the inputs_v2 package."""
     path_manager = PathManager(database_name, base_path)
-    resources_dir = path_manager.resources_path()
 
-    if not resources_dir.exists():
-        raise DiscoveryError(f'Resource directory not found: {resources_dir}')
+    try:
+        root_module = importlib.import_module(inputs_package)
+    except ImportError as exc:  # noqa: BLE001
+        raise DiscoveryError(f'Unable to import inputs package "{inputs_package}": {exc}') from exc
 
+    package_paths = getattr(root_module, '__path__', None)
+    if package_paths is None:
+        raise DiscoveryError(f'Inputs package "{inputs_package}" is not a namespace package')
+
+    prefix = f'{inputs_package}.'
     discovered: Dict[str, List[ResourceFunction]] = {}
 
-    for module_path in sorted(resources_dir.glob('*.py')):
-        if module_path.name.startswith('_'):
+    for module_info in pkgutil.walk_packages(package_paths, prefix):
+        module_name = module_info.name
+        relative_name = module_name[len(prefix):]
+        if not relative_name:
             continue
 
-        module = load_module_from_path(module_path)
-        export_names = getattr(module, '__all__', None)
+        leaf = relative_name.split('.')[-1]
+        if leaf.startswith('_'):
+            continue
 
-        if not export_names:
-            export_names = [
-                name for name, obj in inspect.getmembers(module, inspect.isfunction)
-                if obj.__module__ == module.__name__
-            ]
+        module = importlib.import_module(module_name)
+
+        export_names = [
+            name for name, obj in inspect.getmembers(module, inspect.isfunction)
+            if obj.__module__ == module.__name__ and inspect.isgeneratorfunction(obj)
+        ]
 
         if not export_names:
             continue
 
-        schema_mapping = getattr(module, 'SCHEMA_TYPES', {})
+        resource_details: Optional[Resource] = None
+        resource_id = relative_name
+        get_resource = getattr(module, 'get_resource', None)
+        if callable(get_resource):
+            try:
+                resource_details = get_resource()
+                if hasattr(resource_details, 'id') and resource_details.id:
+                    resource_id = resource_details.id
+            except Exception as exc:  # noqa: BLE001
+                raise DiscoveryError(
+                    f'Failed to load resource metadata from {module_name}: {exc}',
+                ) from exc
+
         module_functions: List[ResourceFunction] = []
-
         for function_name in export_names:
             func = getattr(module, function_name, None)
-            if not callable(func):
+            if func is None:
                 continue
-
-            schema_type = None
-            if isinstance(schema_mapping, dict):
-                mapped = schema_mapping.get(function_name)
-                if isinstance(mapped, str):
-                    schema_type = mapped
-
-            if schema_type is None:
-                schema_type = _infer_schema_from_function_source(func)
 
             module_functions.append(
                 ResourceFunction(
-                    source=module_path.stem,
+                    source=relative_name,
                     function_name=function_name,
+                    qualified_module=module_name,
                     call=func,
-                    schema_type=schema_type,
-                    module_path=module_path,
-                )
+                    resource_id=resource_id,
+                    resource=resource_details,
+                ),
             )
 
         if module_functions:
-            discovered[module_path.stem] = module_functions
+            discovered[relative_name] = module_functions
 
     if not discovered:
-        raise DiscoveryError(f'No resource functions found in {resources_dir}')
+        raise DiscoveryError(f'No resource functions found under package "{inputs_package}"')
 
     return discovered, path_manager
 
 
-def _schema_from_record(record: object) -> str:
-    """Derive schema type from an emitted record instance."""
-    if isinstance(record, SilverEntity):
-        return 'entity'
-    if isinstance(record, SilverInteraction):
-        return 'interaction'
-    if isinstance(record, SilverCvTerm):
-        return 'cv_term'
-    raise ValueError(
-        f'Unsupported record type {type(record)!r}; expected SilverEntity, '
-        'SilverInteraction, or SilverCvTerm',
-    )
+def _ensure_entity_record(record: object) -> None:
+    """Validate that a record is a SilverEntity instance."""
+    if not isinstance(record, SilverEntity):
+        raise ValueError(
+            f'Unsupported record type {type(record)!r}; expected pypath.internals.silver_schema.Entity',
+        )
 
 
 def _normalize_record(record: object) -> dict:
     """Convert a namedtuple-like record into a plain dictionary."""
     if hasattr(record, '_asdict'):
         normalized = record._asdict()
-        # Recursively normalize nested structures (e.g., SilverEntity inside SilverInteraction)
+        # Recursively normalize nested structures (e.g., membership entities)
         for key, value in list(normalized.items()):
             if hasattr(value, '_asdict'):
                 normalized[key] = _normalize_record(value)
@@ -275,21 +209,49 @@ def _coerce_list_fields(record: dict, schema: pa.Schema) -> None:
         record[field.name] = value
 
 
-def _ensure_schema(schema_type: str | None) -> tuple[str, pa.Schema]:
-    """Validate schema type and return (type, pyarrow schema)."""
-    if schema_type is None:
-        raise ValueError('Unable to determine schema type for records')
-
-    if schema_type not in SCHEMA_LOOKUP:
-        raise ValueError(f'Unsupported schema type: {schema_type}')
-
-    schema = SCHEMA_LOOKUP[schema_type]
-    return schema_type, schema
+def _ensure_record_source(record: dict, source_value: str) -> None:
+    """Guarantee the required source column is present."""
+    if not source_value:
+        raise ValueError('resource id must be a non-empty string')
+    current = record.get('source')
+    if current:
+        return
+    record['source'] = source_value
 
 
 def _is_multi_output_record(record: object) -> bool:
     """Check if record is a multi-output dict (not a namedtuple with _asdict)."""
     return isinstance(record, dict) and not hasattr(record, '_asdict')
+
+
+def _normalize_source_filter(source: str, inputs_package: str) -> str:
+    """Normalize CLI-provided source names to discovered keys."""
+    cleaned = source.strip()
+    if cleaned.startswith(f'{inputs_package}.'):
+        return cleaned[len(inputs_package) + 1 :]
+    return cleaned
+
+
+def _ensure_writer(
+    resource_fn: ResourceFunction,
+    path_manager: PathManager,
+    output_file: Optional[Path],
+    writer: Optional[pq.ParquetWriter],
+    schema: pa.Schema,
+) -> tuple[Path, pq.ParquetWriter]:
+    """Ensure we have an initialized Parquet writer for a resource."""
+    if output_file is None:
+        output_file = path_manager.silver_file(
+            resource_fn.source,
+            resource_fn.function_name,
+            resource_fn.function_name,
+        )
+        output_file.parent.mkdir(parents=True, exist_ok=True)
+
+    if writer is None:
+        writer = pq.ParquetWriter(output_file, schema)
+
+    return output_file, writer
 
 
 def process_resource_function(
@@ -307,20 +269,14 @@ def process_resource_function(
     """
     # Check if output file already exists and skip if not overriding
     if not override:
-        schema_type = resource_fn.schema_type
-        if schema_type:
-            try:
-                _ = _ensure_schema(schema_type)
-                potential_output = path_manager.silver_file(
-                    resource_fn.source,
-                    resource_fn.function_name,
-                    resource_fn.function_name,  # Use function name as table name
-                )
-                if potential_output.exists():
-                    print(f'[{resource_fn.source}.{resource_fn.function_name}] skipping (file exists: {potential_output})')
-                    return potential_output
-            except ValueError:
-                pass  # Schema type not yet determined, continue with processing
+        potential_output = path_manager.silver_file(
+            resource_fn.source,
+            resource_fn.function_name,
+            resource_fn.function_name,
+        )
+        if potential_output.exists():
+            print(f'[{resource_fn.source}.{resource_fn.function_name}] skipping (file exists: {potential_output})')
+            return potential_output
 
     try:
         records = resource_fn.call()
@@ -351,25 +307,18 @@ def process_resource_function(
         all_exist = True
 
         for output_name in output_names:
-            # Infer schema type from first record's output
             output_record = first_record[output_name]
             if output_record is None:
                 continue
 
-            try:
-                schema_type = _schema_from_record(output_record)
-                _ = _ensure_schema(schema_type)
-                potential_file = path_manager.silver_file(
-                    resource_fn.source,
-                    output_name,
-                    output_name,  # Use output name as table name
-                )
-                if potential_file.exists():
-                    existing_files[output_name] = potential_file
-                else:
-                    all_exist = False
-                    break
-            except (ValueError, TypeError):
+            potential_file = path_manager.silver_file(
+                resource_fn.source,
+                output_name,
+                output_name,
+            )
+            if potential_file.exists():
+                existing_files[output_name] = potential_file
+            else:
                 all_exist = False
                 break
 
@@ -398,24 +347,19 @@ def _process_single_output(
     batch_size: int,
     dry_run: bool,
 ) -> Optional[Path]:
-    """Process single-output function (original logic)."""
-    schema_type = resource_fn.schema_type
-    schema = None
+    """Process single-output function producing Entity records."""
+    schema = ENTITY_SCHEMA
     output_file: Optional[Path] = None
     writer: Optional[pq.ParquetWriter] = None
     total_records = 0
     batch: List[dict] = []
 
     # Process first record
+    _ensure_entity_record(first_record)
     normalized = _normalize_record(first_record)
-    if schema_type is None:
-        schema_type = _schema_from_record(first_record)
-        schema_type, schema = _ensure_schema(schema_type)
-    elif schema is None:
-        schema_type, schema = _ensure_schema(schema_type)
+    _ensure_record_source(normalized, resource_fn.resource_id)
 
-    if schema is not None:
-        _coerce_list_fields(normalized, schema)
+    _coerce_list_fields(normalized, schema)
     batch.append(normalized)
 
     # Process remaining records
@@ -423,16 +367,10 @@ def _process_single_output(
         if record is None:
             continue
 
+        _ensure_entity_record(record)
         normalized = _normalize_record(record)
-
-        if schema_type is None:
-            schema_type = _schema_from_record(record)
-            schema_type, schema = _ensure_schema(schema_type)
-        elif schema is None:
-            schema_type, schema = _ensure_schema(schema_type)
-
-        if schema is not None:
-            _coerce_list_fields(normalized, schema)
+        _ensure_record_source(normalized, resource_fn.resource_id)
+        _coerce_list_fields(normalized, schema)
 
         batch.append(normalized)
 
@@ -446,17 +384,13 @@ def _process_single_output(
                 batch.clear()
                 continue
 
-            if output_file is None:
-                output_file = path_manager.silver_file(
-                    resource_fn.source,
-                    resource_fn.function_name,
-                    resource_fn.function_name,  # Use function name as table name
-                )
-                output_file.parent.mkdir(parents=True, exist_ok=True)
-
-            if writer is None:
-                writer = pq.ParquetWriter(output_file, schema)
-
+            output_file, writer = _ensure_writer(
+                resource_fn,
+                path_manager,
+                output_file,
+                writer,
+                schema,
+            )
             table = pa.Table.from_pylist(batch, schema=schema)
             writer.write_table(table)
             total_records += len(batch)
@@ -467,11 +401,11 @@ def _process_single_output(
         if total_records == 0 and dry_run:
             print(f'[{resource_fn.source}.{resource_fn.function_name}] dry-run complete (no write)')
             return None
-        if total_records == 0 and schema is not None and not dry_run:
+        if total_records == 0 and not dry_run:
             output_file = path_manager.silver_file(
                 resource_fn.source,
                 resource_fn.function_name,
-                resource_fn.function_name,  # Use function name as table name
+                resource_fn.function_name,
             )
             output_file.parent.mkdir(parents=True, exist_ok=True)
             pq.write_table(pa.Table.from_pylist([], schema=schema), output_file)
@@ -488,16 +422,13 @@ def _process_single_output(
         print(f'[{resource_fn.source}.{resource_fn.function_name}] dry-run result: {total_records:,} records pending write')
         return None
 
-    if output_file is None:
-        output_file = path_manager.silver_file(
-            resource_fn.source,
-            resource_fn.function_name,
-            resource_fn.function_name,  # Use function name as table name
-        )
-        output_file.parent.mkdir(parents=True, exist_ok=True)
-
-    if writer is None:
-        writer = pq.ParquetWriter(output_file, schema)
+    output_file, writer = _ensure_writer(
+        resource_fn,
+        path_manager,
+        output_file,
+        writer,
+        schema,
+    )
 
     table = pa.Table.from_pylist(batch, schema=schema)
     writer.write_table(table)
@@ -517,60 +448,50 @@ def _process_multi_output(
     dry_run: bool,
 ) -> Dict[str, Path]:
     """Process multi-output function that yields dicts with named outputs."""
-    # Multi-output state tracking
     batches: Dict[str, List[dict]] = {}
-    schemas: Dict[str, pa.Schema] = {}
     writers: Dict[str, pq.ParquetWriter] = {}
     output_files: Dict[str, Path] = {}
     record_counts: Dict[str, int] = {}
-    schema_types: Dict[str, str] = {}
+
+    def ensure_output_paths(output_name: str) -> None:
+        if output_name not in output_files:
+            output_files[output_name] = path_manager.silver_file(
+                resource_fn.source,
+                output_name,
+                output_name,
+            )
+            output_files[output_name].parent.mkdir(parents=True, exist_ok=True)
+
+        if output_name not in writers:
+            writers[output_name] = pq.ParquetWriter(
+                output_files[output_name],
+                ENTITY_SCHEMA,
+            )
 
     def process_output_record(output_name: str, output_record: object) -> None:
         """Process a single output record."""
-        # Initialize structures for this output if first time
+        if output_record is None:
+            return
+
+        _ensure_entity_record(output_record)
+
         if output_name not in batches:
             batches[output_name] = []
             record_counts[output_name] = 0
 
-        # Normalize record
         normalized = _normalize_record(output_record)
-
-        # Determine schema if needed
-        if output_name not in schemas:
-            schema_type = _schema_from_record(output_record)
-            schema_type_key, schema = _ensure_schema(schema_type)
-            schemas[output_name] = schema
-            schema_types[output_name] = schema_type_key
-
-        # Coerce fields
-        _coerce_list_fields(normalized, schemas[output_name])
+        _ensure_record_source(normalized, resource_fn.resource_id)
+        _coerce_list_fields(normalized, ENTITY_SCHEMA)
         batches[output_name].append(normalized)
 
-        # Print progress
         if len(batches[output_name]) % 10000 == 0:
             total = record_counts[output_name] + len(batches[output_name])
             print(f'[{resource_fn.source}.{resource_fn.function_name}:{output_name}] collected {total:,} records...')
 
-        # Flush if batch is full
         if len(batches[output_name]) >= batch_size:
             if not dry_run:
-                # Initialize output file and writer if needed
-                if output_name not in output_files:
-                    output_files[output_name] = path_manager.silver_file(
-                        resource_fn.source,
-                        output_name,
-                        output_name,  # Use output name as table name
-                    )
-                    output_files[output_name].parent.mkdir(parents=True, exist_ok=True)
-
-                if output_name not in writers:
-                    writers[output_name] = pq.ParquetWriter(
-                        output_files[output_name],
-                        schemas[output_name],
-                    )
-
-                # Write batch
-                table = pa.Table.from_pylist(batches[output_name], schema=schemas[output_name])
+                ensure_output_paths(output_name)
+                table = pa.Table.from_pylist(batches[output_name], schema=ENTITY_SCHEMA)
                 writers[output_name].write_table(table)
 
             record_counts[output_name] += len(batches[output_name])
@@ -603,23 +524,8 @@ def _process_multi_output(
             continue
 
         if not dry_run:
-            # Initialize if needed
-            if output_name not in output_files:
-                output_files[output_name] = path_manager.silver_file(
-                    resource_fn.source,
-                    output_name,
-                    output_name,  # Use output name as table name
-                )
-                output_files[output_name].parent.mkdir(parents=True, exist_ok=True)
-
-            if output_name not in writers:
-                writers[output_name] = pq.ParquetWriter(
-                    output_files[output_name],
-                    schemas[output_name],
-                )
-
-            # Write final batch
-            table = pa.Table.from_pylist(batch, schema=schemas[output_name])
+            ensure_output_paths(output_name)
+            table = pa.Table.from_pylist(batch, schema=ENTITY_SCHEMA)
             writers[output_name].write_table(table)
 
         record_counts[output_name] += len(batch)
@@ -648,6 +554,7 @@ def run_silver_loader(
     batch_size: int = 10_000,
     dry_run: bool = False,
     override: bool = False,
+    inputs_package: str = 'pypath.inputs_v2',
 ) -> tuple[
     Dict[str, List[ResourceFunction]],
     PathManager,
@@ -659,6 +566,7 @@ def run_silver_loader(
         discovered, path_manager = discover_resources(
             database_name=database,
             base_path=base_path,
+            inputs_package=inputs_package,
         )
     except DiscoveryError as exc:
         raise DiscoveryError(str(exc)) from exc
@@ -669,11 +577,16 @@ def run_silver_loader(
     # Select the subset to process based on CLI arguments.
     selected_functions: List[ResourceFunction] = []
 
-    if source and source not in discovered:
-        raise ValueError(f'Unknown source "{source}". Use list_only=True to inspect available sources.')
+    normalized_source = None
+    if source:
+        normalized_source = _normalize_source_filter(source, inputs_package)
+        if normalized_source not in discovered:
+            raise ValueError(
+                f'Unknown source "{source}". Use --list to inspect available modules under {inputs_package}.'
+            )
 
     for source_name, functions in discovered.items():
-        if source and source_name != source:
+        if normalized_source and source_name != normalized_source:
             continue
         for fn in functions:
             if function and fn.function_name != function:

@@ -60,10 +60,20 @@ class PathManager:
         """Get path to output directory (legacy - use output_path instead)."""
         return self.output_path()
 
+    # Internal helpers
+    def _normalize_source(self, source_name: str | Path) -> Path:
+        """Convert dotted source identifiers to folder paths."""
+        if isinstance(source_name, Path):
+            return source_name
+        cleaned = source_name.strip().strip('/').replace('.', '/')
+        if not cleaned:
+            raise ValueError('source name cannot be empty')
+        return Path(cleaned)
+
     # Source-specific paths
     def source_path(self, source_name: str) -> Path:
         """Get path to a source directory."""
-        return self.data_path() / source_name
+        return self.data_path() / self._normalize_source(source_name)
 
     def source_function_path(self, source_name: str, function_name: str) -> Path:
         """Get path to a source function directory."""
@@ -88,11 +98,7 @@ class PathManager:
         return bronze_dir / 'latest.parquet'
 
     def silver_file(self, source_name: str, function_name: str, table_name: str) -> Path:
-        """Get path to silver parquet file (directly in source directory).
-
-        Note: function_name parameter is kept for API compatibility but not used.
-        Files are named by table_name and placed directly in the source directory.
-        """
+        """Get path to silver parquet file (directly in source directory)."""
         source_dir = self.source_path(source_name)
         return source_dir / f"{table_name}.parquet"
 

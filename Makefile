@@ -10,10 +10,16 @@ setup:
 	pnpm --dir nextjs install
 
 silver:
-	@uv run -m omnipath_build.database_manager silver $(if $(filter-out $@,$(MAKECMDGOALS)),--source $(filter-out $@,$(MAKECMDGOALS)))
+	@uv run -m omnipath_build.database_manager silver \
+		$(if $(or $(SOURCE),$(filter-out $@,$(MAKECMDGOALS))),--source $(if $(SOURCE),$(SOURCE),$(filter-out $@,$(MAKECMDGOALS)))) \
+		$(if $(FUNCTION),--function $(FUNCTION)) \
+		$(if $(INPUTS_PACKAGE),--inputs-package $(INPUTS_PACKAGE))
 
 silver-reprocess:
-	@uv run -m omnipath_build.database_manager silver --override $(if $(filter-out $@,$(MAKECMDGOALS)),--source $(filter-out $@,$(MAKECMDGOALS)))
+	@uv run -m omnipath_build.database_manager silver --override \
+		$(if $(or $(SOURCE),$(filter-out $@,$(MAKECMDGOALS))),--source $(if $(SOURCE),$(SOURCE),$(filter-out $@,$(MAKECMDGOALS)))) \
+		$(if $(FUNCTION),--function $(FUNCTION)) \
+		$(if $(INPUTS_PACKAGE),--inputs-package $(INPUTS_PACKAGE))
 
 gold:
 	@if [ -n "$(filter-out $@,$(MAKECMDGOALS))" ]; then \

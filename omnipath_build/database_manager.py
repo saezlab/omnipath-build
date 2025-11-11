@@ -9,8 +9,6 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from omnipath_build.gold_loader_new import run_gold_loader_new
-from omnipath_build.postgres_loader import load_tables_to_postgres
 from omnipath_build.silver_loader import DiscoveryError, run_silver_loader
 
 # Configure logging for the entire application
@@ -37,6 +35,7 @@ def _handle_silver(args: argparse.Namespace) -> int:
             batch_size=args.batch_size,
             dry_run=args.dry_run,
             override=args.override,
+            inputs_package=args.inputs_package,
         )
     except DiscoveryError as exc:
         print(f'Error: {exc}', file=sys.stderr)
@@ -46,12 +45,12 @@ def _handle_silver(args: argparse.Namespace) -> int:
         return 1
 
     if args.list:
-        print(f'Discovered resources for database "{args.database}":')
-        for source_name, functions in discovered.items():
-            print(f'- {source_name}:')
-            for fn in functions:
-                hint = fn.schema_type or 'unknown'
-                print(f'    • {fn.function_name} (schema: {hint})')
+        print(f'Discovered resources in "{args.inputs_package}":')
+        for source_name in sorted(discovered.keys()):
+            fq_module = f'{args.inputs_package}.{source_name}'
+            print(f'- {fq_module}:')
+            for fn in discovered[source_name]:
+                print(f'    • {fn.function_name}')
         return 0
 
     if not selected_functions or outputs is None:
@@ -69,6 +68,8 @@ def _handle_silver(args: argparse.Namespace) -> int:
 def _handle_gold(args: argparse.Namespace) -> int:
     """Execute gold loader workflow based on CLI arguments."""
     project_root = Path(__file__).resolve().parent.parent
+
+    from omnipath_build.gold_loader_new import run_gold_loader_new
 
     data_root: Path = args.data_root
     if not data_root.is_absolute():
@@ -98,6 +99,8 @@ def _handle_postgres(args: argparse.Namespace) -> int:
     """Execute PostgreSQL loader workflow based on CLI arguments."""
     project_root = Path(__file__).resolve().parent.parent
 
+    from omnipath_build.postgres_loader import load_tables_to_postgres
+
     output_dir: Path = args.output_dir
     if not output_dir.is_absolute():
         output_dir = project_root / output_dir
@@ -126,9 +129,24 @@ def _build_parser() -> argparse.ArgumentParser:
         help='Discover and process silver resource generators.',
     )
     silver_parser.add_argument('--database', default='omnipath', help='Database to process (default: omnipath)')
-    silver_parser.add_argument('--base-path', type=Path, help='Override base databases directory')
-    silver_parser.add_argument('--source', help='Specific source to process (module name)')
-    silver_parser.add_argument('--function', help='Specific function to process within the source')
+    silver_parser.add_argument(
+        '--base-path',
+        type=Path,
+        help='Override base path for databases/<database> (controls output location)',
+    )
+    silver_parser.add_argument(
+        '--inputs-package',
+        default='pypath.inputs_v2',
+        help='Python package containing generator modules (default: pypath.inputs_v2)',
+    )
+    silver_parser.add_argument(
+        '--source',
+        help='Specific module under --inputs-package to process (e.g. "uniprot" or "ontologies.uniprot_keywords")',
+    )
+    silver_parser.add_argument(
+        '--function',
+        help='Specific generator function to process within the selected module',
+    )
     silver_parser.add_argument('--list', action='store_true', help='List discovered sources and exit')
     silver_parser.add_argument('--batch-size', type=int, default=10_000, help='Number of records per write batch')
     silver_parser.add_argument('--dry-run', action='store_true', help='Run without writing parquet outputs')
