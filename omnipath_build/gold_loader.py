@@ -33,13 +33,13 @@ logger = logging.getLogger(__name__)
 
 # Import our modular functions from the gold_new/ directory
 # These have been adapted to work with the new silver schema
-from omnipath_build.gold_new.build_sources import build_sources
-from omnipath_build.gold_new.build_local_tables import build_local_tables
-from omnipath_build.gold_new.build_entity_identifiers import build_entity_identifiers
-from omnipath_build.gold_new.build_references import build_references
-from omnipath_build.gold_new.build_global_tables import build_global_tables
-from omnipath_build.gold_new.build_compounds import build_compounds
-from omnipath_build.gold_new.build_aggregate_tables import build_aggregate_tables
+from omnipath_build.gold.build_sources import build_sources
+from omnipath_build.gold.build_local_tables import build_local_tables
+from omnipath_build.gold.build_entity_identifiers import build_entity_identifiers
+from omnipath_build.gold.build_references import build_references
+from omnipath_build.gold.build_global_tables import build_global_tables
+from omnipath_build.gold.build_compounds import build_compounds
+from omnipath_build.gold.build_aggregate_tables import build_aggregate_tables
 
 #from omnipath_build.gold_new.build_entity_identifier_duckdb import build_entity_identifiers_duckdb
 __all__ = [

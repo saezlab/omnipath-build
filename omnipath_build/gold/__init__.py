@@ -7,9 +7,9 @@ This module contains:
 - DuckDB-based alternatives for high-performance processing
 """
 
-from omnipath_build.gold_new.build_compounds import build_compounds
-from omnipath_build.gold_new.build_sources import build_sources
-from omnipath_build.gold_new.build_entity_identifiers import build_entity_identifiers
+from omnipath_build.gold.build_compounds import build_compounds
+from omnipath_build.gold.build_sources import build_sources
+from omnipath_build.gold.build_entity_identifiers import build_entity_identifiers
 __all__ = [
     'build_entity_identifiers',
     'build_sources',
