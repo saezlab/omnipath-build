@@ -13,8 +13,6 @@ Output:
     entity_evidence.parquet      (with entity_type_id instead of entity_type)
     interaction_evidence.parquet (with interaction_type_id, detection_method_id, etc.)
     membership_evidence.parquet  (with role_id instead of role)
-    is_member_of.parquet        (new: entity hierarchy relationships)
-    evidence_reference.parquet
 
 Note: All CV term accession strings are resolved to integer IDs at this stage.
 """
@@ -158,12 +156,8 @@ def build_global_tables(
     #
     # ============== ENTITY EVIDENCE ==============
     #
-    files_all = sorted(local_dir.glob("local_entity_evidence_*.parquet"))
-    files = [f for f in files_all if "_reference_" not in f.name]
-    skipped = len(files_all) - len(files)
+    files = sorted(local_dir.glob("local_entity_evidence_*.parquet"))
     logger.info(f"\nProcessing entity evidence ({len(files)} files)")
-    if skipped:
-        logger.info(f"  Skipped {skipped} reference-only files")
     entity_parts: list[pl.DataFrame] = []
 
     for f in files:
@@ -174,18 +168,12 @@ def build_global_tables(
     if entity_parts:
         entity_ev = pl.concat(entity_parts, how="diagonal_relaxed")
         entity_ev = entity_ev.with_row_index("id", offset=1)
-        entity_map = entity_ev.select(["source_id", "local_entity_id", "id"]).rename({"id": "entity_evidence_id"})
 
         # Map entity_type (accession) -> entity_type_id and drop entity_type
         entity_output = _map_cv_term_columns(entity_ev, cv_terms, ["entity_type"])
         entity_output = entity_output.drop("local_entity_id")
     else:
         entity_output = pl.DataFrame()
-        entity_map = _empty_mapping({
-            "source_id": pl.Int64,
-            "local_entity_id": pl.Int64,
-            "entity_evidence_id": pl.Int64,
-        })
 
     entity_output.write_parquet(out_dir / "entity_evidence.parquet")
     logger.info(f"✅ entity_evidence: {len(entity_output):,} rows")
@@ -193,12 +181,8 @@ def build_global_tables(
     #
     # ============== INTERACTIONS ==============
     #
-    files_all = sorted(local_dir.glob("local_interaction_evidence_*.parquet"))
-    files = [f for f in files_all if "_reference_" not in f.name]
-    skipped = len(files_all) - len(files)
+    files = sorted(local_dir.glob("local_interaction_evidence_*.parquet"))
     logger.info(f"\nProcessing interactions ({len(files)} files)")
-    if skipped:
-        logger.info(f"  Skipped {skipped} reference-only files")
     interaction_parts: list[pl.DataFrame] = []
 
     for f in files:
@@ -211,7 +195,6 @@ def build_global_tables(
     if interaction_parts:
         interactions = pl.concat(interaction_parts, how="diagonal_relaxed")
         interactions = interactions.with_row_index("id", offset=1)
-        interaction_map = interactions.select(["source_id", "local_interaction_id", "id"]).rename({"id": "interaction_evidence_id"})
 
         # Map CV term accessions to IDs and drop accession columns
         interaction_output = _map_cv_term_columns(
@@ -222,11 +205,6 @@ def build_global_tables(
         interaction_output = interaction_output.drop("local_interaction_id")
     else:
         interaction_output = pl.DataFrame()
-        interaction_map = _empty_mapping({
-            "source_id": pl.Int64,
-            "local_interaction_id": pl.Int64,
-            "interaction_evidence_id": pl.Int64,
-        })
 
     interaction_output.write_parquet(out_dir / "interaction_evidence.parquet")
     logger.info(f"✅ interaction_evidence: {len(interaction_output):,} rows")
@@ -266,112 +244,18 @@ def build_global_tables(
             "local_entity_id",
         )
         membership = membership.with_row_index("id", offset=1)
-        membership_map = membership.select(["source_id", "local_membership_id", "id"]).rename({"id": "membership_evidence_id"})
 
         # Map role (accession) -> role_id and drop role
         membership_output = _map_cv_term_columns(membership, cv_terms, ["role"])
         membership_output = membership_output.drop("local_membership_id")
     else:
         membership_output = pl.DataFrame()
-        membership_map = _empty_mapping({
-            "source_id": pl.Int64,
-            "local_membership_id": pl.Int64,
-            "membership_evidence_id": pl.Int64,
-        })
 
     membership_output.write_parquet(out_dir / "membership_evidence.parquet")
     logger.info(f"✅ membership_evidence (unified): {len(membership_output):,} rows")
 
     # NOTE: is_member_of relationships are now unified into the membership_evidence table above
     # No separate is_member_of table is created
-
-    #
-    # ============== EVIDENCE REFERENCES ==============
-    #
-    logger.info("\nProcessing evidence references")
-    evidence_parts: list[pl.DataFrame] = []
-
-    entity_ref_files = sorted(local_dir.glob("local_entity_evidence_reference_*.parquet"))
-    logger.info(f"  Entity reference files: {len(entity_ref_files)}")
-    for f in entity_ref_files:
-        df = pl.read_parquet(f)
-        logger.info(f"    {f.name}: {len(df):,}")
-        if not len(df):
-            continue
-        joined = df.join(entity_map, on=["source_id", "local_entity_id"], how="inner")
-        if not len(joined):
-            continue
-        evidence_parts.append(
-            joined.select(
-                pl.col("reference_id"),
-                pl.col("entity_evidence_id"),
-                pl.lit(None, dtype=pl.Int64).alias("interaction_evidence_id"),
-                pl.lit(None, dtype=pl.Int64).alias("membership_evidence_id"),
-            )
-        )
-
-    interaction_ref_files = sorted(local_dir.glob("local_interaction_evidence_reference_*.parquet"))
-    logger.info(f"  Interaction reference files: {len(interaction_ref_files)}")
-    for f in interaction_ref_files:
-        df = pl.read_parquet(f)
-        logger.info(f"    {f.name}: {len(df):,}")
-        if not len(df):
-            continue
-        joined = df.join(interaction_map, on=["source_id", "local_interaction_id"], how="inner")
-        if not len(joined):
-            continue
-        evidence_parts.append(
-            joined.select(
-                pl.col("reference_id"),
-                pl.lit(None, dtype=pl.Int64).alias("entity_evidence_id"),
-                pl.col("interaction_evidence_id"),
-                pl.lit(None, dtype=pl.Int64).alias("membership_evidence_id"),
-            )
-        )
-
-    membership_ref_files = sorted(local_dir.glob("local_membership_reference_*.parquet"))
-    if membership_ref_files:
-        logger.info(f"  Membership reference files: {len(membership_ref_files)}")
-    for f in membership_ref_files:
-        df = pl.read_parquet(f)
-        logger.info(f"    {f.name}: {len(df):,}")
-        if not len(df):
-            continue
-        joined = df.join(membership_map, on=["source_id", "local_membership_id"], how="inner")
-        if not len(joined):
-            continue
-        evidence_parts.append(
-            joined.select(
-                pl.col("reference_id"),
-                pl.lit(None, dtype=pl.Int64).alias("entity_evidence_id"),
-                pl.lit(None, dtype=pl.Int64).alias("interaction_evidence_id"),
-                pl.col("membership_evidence_id"),
-            )
-        )
-
-    if evidence_parts:
-        evidence_reference = pl.concat(evidence_parts, how="diagonal_relaxed").unique()
-        evidence_reference = evidence_reference.with_row_index("id", offset=1)
-        evidence_reference = evidence_reference.select(
-            [
-                "id",
-                "reference_id",
-                "entity_evidence_id",
-                "interaction_evidence_id",
-                "membership_evidence_id",
-            ]
-        )
-    else:
-        evidence_reference = pl.DataFrame({
-            "id": pl.Series("id", [], dtype=pl.Int64),
-            "reference_id": pl.Series("reference_id", [], dtype=pl.Int64),
-            "entity_evidence_id": pl.Series("entity_evidence_id", [], dtype=pl.Int64),
-            "interaction_evidence_id": pl.Series("interaction_evidence_id", [], dtype=pl.Int64),
-            "membership_evidence_id": pl.Series("membership_evidence_id", [], dtype=pl.Int64),
-        })
-
-    evidence_reference.write_parquet(out_dir / "evidence_reference.parquet")
-    logger.info(f"✅ evidence_reference: {len(evidence_reference):,} rows")
 
     logger.info("\n🎉 Global tables complete!\n")
 

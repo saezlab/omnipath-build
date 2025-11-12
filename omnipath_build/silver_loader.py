@@ -17,7 +17,6 @@ import pyarrow.parquet as pq
 from omnipath_build.utils.path_manager import PathManager
 from pypath.internals.silver_schema import (
     Entity as SilverEntity,
-    Resource,
     ENTITY_SCHEMA,
 )
 
@@ -38,7 +37,6 @@ class ResourceFunction:
     qualified_module: str
     call: Callable[[], Iterable]
     resource_id: str
-    resource: Optional[Resource] = None
 
 
 class DiscoveryError(RuntimeError):
@@ -79,24 +77,15 @@ def discover_resources(
 
         export_names = [
             name for name, obj in inspect.getmembers(module, inspect.isfunction)
-            if obj.__module__ == module.__name__ and inspect.isgeneratorfunction(obj)
+            if obj.__module__ == module.__name__
+            and inspect.isgeneratorfunction(obj)
+            and not name.startswith('_')  # Exclude private functions
         ]
 
         if not export_names:
             continue
 
-        resource_details: Optional[Resource] = None
         resource_id = relative_name
-        get_resource = getattr(module, 'get_resource', None)
-        if callable(get_resource):
-            try:
-                resource_details = get_resource()
-                if hasattr(resource_details, 'id') and resource_details.id:
-                    resource_id = resource_details.id
-            except Exception as exc:  # noqa: BLE001
-                raise DiscoveryError(
-                    f'Failed to load resource metadata from {module_name}: {exc}',
-                ) from exc
 
         module_functions: List[ResourceFunction] = []
         for function_name in export_names:
@@ -111,7 +100,6 @@ def discover_resources(
                     qualified_module=module_name,
                     call=func,
                     resource_id=resource_id,
-                    resource=resource_details,
                 ),
             )
 
@@ -207,16 +195,6 @@ def _coerce_list_fields(record: dict, schema: pa.Schema) -> None:
             value = coerced_list
 
         record[field.name] = value
-
-
-def _ensure_record_source(record: dict, source_value: str) -> None:
-    """Guarantee the required source column is present."""
-    if not source_value:
-        raise ValueError('resource id must be a non-empty string')
-    current = record.get('source')
-    if current:
-        return
-    record['source'] = source_value
 
 
 def _is_multi_output_record(record: object) -> bool:
@@ -357,8 +335,6 @@ def _process_single_output(
     # Process first record
     _ensure_entity_record(first_record)
     normalized = _normalize_record(first_record)
-    _ensure_record_source(normalized, resource_fn.resource_id)
-
     _coerce_list_fields(normalized, schema)
     batch.append(normalized)
 
@@ -369,7 +345,6 @@ def _process_single_output(
 
         _ensure_entity_record(record)
         normalized = _normalize_record(record)
-        _ensure_record_source(normalized, resource_fn.resource_id)
         _coerce_list_fields(normalized, schema)
 
         batch.append(normalized)
@@ -480,7 +455,6 @@ def _process_multi_output(
             record_counts[output_name] = 0
 
         normalized = _normalize_record(output_record)
-        _ensure_record_source(normalized, resource_fn.resource_id)
         _coerce_list_fields(normalized, ENTITY_SCHEMA)
         batches[output_name].append(normalized)
 

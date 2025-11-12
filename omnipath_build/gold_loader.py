@@ -33,20 +33,16 @@ logger = logging.getLogger(__name__)
 
 # Import our modular functions from the gold_new/ directory
 # These have been adapted to work with the new silver schema
-from omnipath_build.gold.build_sources import build_sources
 from omnipath_build.gold.build_local_tables import build_local_tables
 from omnipath_build.gold.build_entity_identifiers import build_entity_identifiers
-from omnipath_build.gold.build_references import build_references
 from omnipath_build.gold.build_global_tables import build_global_tables
 from omnipath_build.gold.build_compounds import build_compounds
 from omnipath_build.gold.build_aggregate_tables import build_aggregate_tables
 
 #from omnipath_build.gold_new.build_entity_identifier_duckdb import build_entity_identifiers_duckdb
 __all__ = [
-    'build_sources_table',
     'build_local_tables_step',
     'build_entity_identifier_tables',
-    'build_references_table',
     'build_global_tables_step',
     'build_aggregate_tables_step',
     'build_compounds_table',
@@ -54,43 +50,11 @@ __all__ = [
 ]
 
 
-def build_sources_table(data_root: Path, output_dir: Path) -> pl.DataFrame:
-    """
-    Build sources table.
-
-    This function works with the new silver schema where sources are still
-    stored as simple string values in the 'source' column.
-
-    Args:
-        data_root: Path to data directory containing silver files
-        output_dir: Path to output directory for gold tables
-
-    Returns:
-        DataFrame with columns: id, name, url, description
-    """
-    print("=" * 70)
-    print("STEP: Sources Table")
-    print("=" * 70)
-
-    # Use the existing build_sources module (it should still work)
-    sources = build_sources(data_root, output_dir)
-
-    # Save to output directory
-    output_path = output_dir / "source.parquet"
-    sources.write_parquet(output_path)
-    print(f"\nSaved source table to: {output_path}")
-    print(f"Total sources: {len(sources):,}")
-
-    return sources
-
-
-
 
 def build_local_tables_step(
     data_root: Path,
     output_dir: Path,
     sources_df: pl.DataFrame,
-    references_df: pl.DataFrame | None = None,
 ) -> dict[str, pl.DataFrame]:
     """
     Build local tables per source.
@@ -106,7 +70,6 @@ def build_local_tables_step(
         data_root: Path to data directory containing silver files
         output_dir: Path to output directory for gold tables
         sources_df: Sources DataFrame for source_id mapping
-        references_df: References DataFrame (optional, will load from disk if not provided)
 
     Returns:
         Dictionary containing the local tables
@@ -115,14 +78,6 @@ def build_local_tables_step(
     print("STEP: Local Tables (Per-Source)")
     print("=" * 70)
 
-    if references_df is None:
-        references_path = output_dir / "references.parquet"
-        if not references_path.exists():
-            raise FileNotFoundError(
-                "References table not found. Run the references step before local tables."
-            )
-        references_df = pl.read_parquet(references_path)
-
     # Build local tables for all sources
     # Note: This saves per-source files to output_dir/local_tables/
     # and returns empty DataFrames (we keep tables source-specific)
@@ -130,7 +85,6 @@ def build_local_tables_step(
         data_root=data_root,
         output_dir=output_dir,
         sources_df=sources_df,
-        references_df=references_df,
     )
 
     print("\nLocal tables built successfully (per-source files saved)")
@@ -183,38 +137,6 @@ def build_entity_identifier_tables(
     print(f"Saved: {final_ids_path}")
 
     return record_to_global, final_identifiers
-
-
-def build_references_table(
-    data_root: Path, output_dir: Path
-) -> pl.DataFrame:
-    """
-    Build references table.
-
-    This function aggregates all unique references from silver files
-    (both entities and interactions) and creates the gold references table.
-
-    Args:
-        data_root: Path to data directory containing silver files
-        output_dir: Path to output directory for gold tables
-
-    Returns:
-        DataFrame with columns: id, type, value (type is CV term accession string)
-    """
-    print("\n" + "=" * 70)
-    print("STEP: References Table")
-    print("=" * 70)
-
-    # Use the existing build_references module
-    references = build_references(data_root, output_dir)
-
-    # Save to output directory
-    output_path = output_dir / "references.parquet"
-    references.write_parquet(output_path)
-    print(f"\nSaved references table to: {output_path}")
-    print(f"Total references: {len(references):,}")
-
-    return references
 
 
 def build_aggregate_tables_step(
@@ -369,18 +291,17 @@ def run_gold_loader_new(
 
     Steps:
     1. sources: Build sources table
-    2. references: Build references table
-    3. local_tables: Build per-source local tables (requires references)
-    4. entity_identifiers: Build entity identifier tables with provenance
-    5. global_tables: Build global evidence tables by joining local tables with entity mapping
-    6. aggregates: Summarise global evidence into aggregate dimensions and bridges
-    7. compounds: Build compound properties table from chemical structure identifiers
+    2. local_tables: Build per-source local tables
+    3. entity_identifiers: Build entity identifier tables with provenance
+    4. global_tables: Build global evidence tables by joining local tables with entity mapping
+    5. aggregates: Summarise global evidence into aggregate dimensions and bridges
+    6. compounds: Build compound properties table from chemical structure identifiers
 
     Args:
         data_root: Path to data directory containing silver files
         output_dir: Path to output directory for gold tables
         step: Optional specific step to run. If None, run all steps.
-              Valid values: 'sources', 'local_tables', 'entity_identifiers', 'references', 'global_tables', 'aggregates', 'compounds'
+              Valid values: 'sources', 'local_tables', 'entity_identifiers', 'global_tables', 'aggregates', 'compounds'
     """
     # Ensure output directory exists
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -399,22 +320,16 @@ def run_gold_loader_new(
 
     # If a specific step is requested, only run that step
     if step:
-        if step == 'sources':
-            build_sources_table(data_root, output_dir)
-        elif step == 'local_tables':
+        if step == 'local_tables':
             # Load dependencies
             sources = pl.read_parquet(output_dir / "source.parquet")
-            references = pl.read_parquet(output_dir / "references.parquet")
             build_local_tables_step(
                 data_root,
                 output_dir,
                 sources_df=sources,
-                references_df=references,
             )
         elif step == 'entity_identifiers':
             build_entity_identifier_tables(data_root, output_dir)
-        elif step == 'references':
-            build_references_table(data_root, output_dir)
         elif step == 'global_tables':
             # Build global tables by joining local tables with entity mapping
             build_global_tables_step(output_dir)
@@ -426,32 +341,25 @@ def run_gold_loader_new(
             raise ValueError(f"Unknown step: {step}")
     else:
         # Run all steps in order
-        # Step 1: Sources
-        sources = build_sources_table(data_root, output_dir)
-
-        # Step 2: References (needed for local table joins)
-        references = build_references_table(data_root, output_dir)
-
-        # Step 3: Local tables (per-source processing)
-        local_tables = build_local_tables_step(
+        # Step 2: Local tables (per-source processing)
+        build_local_tables_step(
             data_root,
             output_dir,
             sources_df=sources,
-            references_df=references,
         )
 
-        # Step 4: Entity identifiers (using accession strings from local tables)
-        record_to_global, final_identifiers = build_entity_identifier_tables(
+        # Step 3: Entity identifiers (using accession strings from local tables)
+        build_entity_identifier_tables(
             data_root, output_dir
         )
 
-        # Step 5: Global tables (join local tables with entity mapping)
+        # Step 4: Global tables (join local tables with entity mapping)
         build_global_tables_step(output_dir)
 
-        # Step 6: Aggregates (dimension tables & evidence bridges)
+        # Step 5: Aggregates (dimension tables & evidence bridges)
         build_aggregate_tables_step(output_dir)
 
-        # Step 7: Compounds (compute molecular properties from structures)
+        # Step 6: Compounds (compute molecular properties from structures)
         build_compounds_table(output_dir)
 
     print("\n")

@@ -258,52 +258,15 @@ def _extract_is_member_of(df: pl.DataFrame, next_id: int) -> tuple[pl.DataFrame,
     return cv_term_entities, relationships, next_id
 
 
-def _collect_reference_links(
-    df: pl.DataFrame,
-    id_col: str,
-    ref_lookup: pl.DataFrame,
-) -> pl.DataFrame:
-    """Explode `references` column and map to reference_id for evidence tables."""
-    if not len(df) or "references" not in df.columns or not len(ref_lookup):
-        return pl.DataFrame()
-
-    exploded = (
-        df.select(["source_id", id_col, "references"])
-        .filter(pl.col("references").list.len() > 0)
-        .explode("references")
-        .select(
-            "source_id",
-            id_col,
-            pl.col("references").struct.field("type").alias("type"),
-            pl.col("references").struct.field("value").alias("value"),
-        )
-        .filter(pl.col("type").is_not_null() & pl.col("value").is_not_null())
-    )
-
-    if not len(exploded):
-        return pl.DataFrame()
-
-    # Join with ref_lookup on type (accession string) and value
-    joined = exploded.join(ref_lookup, on=["type", "value"], how="inner")
-    if not len(joined):
-        return pl.DataFrame()
-
-    return joined.select("source_id", id_col, "reference_id").unique()
-
 # --- main --------------------------------------------------------------------
 
 def build_local_tables(
     data_root: Path,
     output_dir: Path,
     sources_df: pl.DataFrame,
-    references_df: pl.DataFrame,
 ):
     data = _load_source_data(data_root)
     name2id = {r["name"]: r["id"] for r in sources_df.iter_rows(named=True)}
-    ref_lookup = (
-        references_df.rename({"id": "reference_id"})
-        .select(["reference_id", "type", "value"])
-    )
     d = output_dir / "local_tables"; d.mkdir(parents=True, exist_ok=True)
 
     for sname, files in data.items():
@@ -350,13 +313,6 @@ def build_local_tables(
         # Add source_id
         ents = ents.with_columns(pl.lit(sid).alias("source_id"))
 
-        # Build local reference bridge for entity evidence
-        entity_refs = _collect_reference_links(
-            ents,
-            id_col="local_entity_id",
-            ref_lookup=ref_lookup,
-        )
-
         # ✅ Evidence & Identifiers now include new member rows
         # Keep entity_type as accession string (no ID mapping)
         ev = ents.select("source_id", "local_entity_id", "entity_type", "annotations")
@@ -365,13 +321,6 @@ def build_local_tables(
         # Save
         ev.write_parquet(d / f"local_entity_evidence_{sname}.parquet")
         ids.write_parquet(d / f"local_entity_identifiers_{sname}.parquet")
-
-        if len(entity_refs):
-            entity_refs.write_parquet(
-                d / f"local_entity_evidence_reference_{sname}.parquet"
-            )
-            logger.info(f"  Saved {sname} entity references: {len(entity_refs):,} rows")
-
         logger.info(f"  Saved evidence ({len(ev):,}) & identifiers ({len(ids):,}) for {sname}")
 
         # Combine membership and is_member_of into single unified table
@@ -406,12 +355,6 @@ def build_local_tables(
             inters = inters.with_columns(pl.lit(sid).alias("source_id"))
             inters = inters.with_row_index("local_interaction_id", offset=1)
 
-            interaction_refs = _collect_reference_links(
-                inters,
-                id_col="local_interaction_id",
-                ref_lookup=ref_lookup,
-            )
-
             # Select columns for interaction evidence (keep CV terms as accessions)
             inters = inters.select(
                 "source_id", "local_entity_id_a", "local_entity_id_b", "local_interaction_id",
@@ -421,11 +364,3 @@ def build_local_tables(
 
             inters.write_parquet(d / f"local_interaction_evidence_{sname}.parquet")
             logger.info(f"  Saved {sname} interactions: {len(inters):,} rows")
-
-            if len(interaction_refs):
-                interaction_refs.write_parquet(
-                    d / f"local_interaction_evidence_reference_{sname}.parquet"
-                )
-                logger.info(
-                    f"  Saved {sname} interaction references: {len(interaction_refs):,} rows"
-                )
