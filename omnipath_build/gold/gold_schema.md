@@ -32,7 +32,7 @@ erDiagram
 		int annotation_unit FK ""  
 		int source_id FK ""  
 	}
-	entity_identifier_source {
+	entity_identifier_resource {
 		int id PK ""  
 		bigint entity_identifier_id FK ""  
 		int source_id FK ""  
@@ -42,5 +42,5 @@ erDiagram
 	entity||--o{membership:"as parent"
 	entity||--o{membership:"as member"
 	membership||--o{membership_annotation:"annotated by"
-	entity_identifier||--o{entity_identifier_source:"has_source"
-    entity_identifier_source||--o{entity:"is_source"
+	entity_identifier||--o{entity_identifier_resource:"has_source"
+    entity_identifier_resource||--o{entity:"is_source"
