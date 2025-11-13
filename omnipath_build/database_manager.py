@@ -69,7 +69,7 @@ def _handle_gold(args: argparse.Namespace) -> int:
     """Execute gold loader workflow based on CLI arguments."""
     project_root = Path(__file__).resolve().parent.parent
 
-    from omnipath_build.gold_loader import run_gold_loader_new
+    from omnipath_build.gold_loader_new import run_gold_loader_new
 
     data_root: Path = args.data_root
     if not data_root.is_absolute():
@@ -173,19 +173,11 @@ def _build_parser() -> argparse.ArgumentParser:
         '--step',
         type=str,
         choices=[
-            'sources',
-            'cv_terms',
             'local_tables',
-            'entity_identifiers',
-            'references',
-            'global_tables',
-            'aggregates',
-            'compounds',
         ],
         help=(
             'Run only a specific step '
-            '(sources, cv_terms, local_tables, entity_identifiers, references, '
-            'global_tables, aggregates, compounds)'
+            '(local_tables)'
         ),
     )
     gold_parser.set_defaults(handler=_handle_gold)
