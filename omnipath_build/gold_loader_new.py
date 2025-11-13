@@ -26,9 +26,11 @@ logger = logging.getLogger(__name__)
 
 # Import our modular functions from the gold_new/ directory
 from omnipath_build.gold_new.build_local_tables import build_local_tables
+from omnipath_build.gold_new.build_entity_identifiers import build_entity_identifiers
 
 __all__ = [
     'build_local_tables_step',
+    'build_entity_identifiers_step',
     'run_gold_loader_new',
 ]
 
@@ -36,7 +38,6 @@ __all__ = [
 def build_local_tables_step(
     data_root: Path,
     output_dir: Path,
-    sources_df: pl.DataFrame,
 ) -> dict[str, pl.DataFrame]:
     """
     Build local tables per source.
@@ -48,10 +49,11 @@ def build_local_tables_step(
     - local_membership: Per-source membership relationships
     - local_membership_annotation: Per-source membership annotations
 
+    Source IDs are auto-generated from discovered source names.
+
     Args:
         data_root: Path to data directory containing silver files
         output_dir: Path to output directory for gold tables
-        sources_df: Sources DataFrame for source_id mapping
 
     Returns:
         Dictionary containing the local tables (empty as tables are saved per-source)
@@ -65,12 +67,64 @@ def build_local_tables_step(
     local_tables = build_local_tables(
         data_root=data_root,
         output_dir=output_dir,
-        sources_df=sources_df,
     )
 
     print("\nLocal tables built successfully (per-source files saved)")
 
     return local_tables
+
+
+def build_entity_identifiers_step(
+    output_dir: Path,
+) -> tuple[pl.DataFrame, pl.DataFrame]:
+    """
+    Build entity identifiers using graph-based equivalence detection.
+
+    This step resolves entities across sources by:
+    1. Loading local entity identifier tables from output_dir/local_tables/
+    2. Building edges from merge-safe identifiers (InChI, InChIKey, Uniprot)
+    3. Using UnionFind to assign canonical entity_id across all sources
+    4. Creating a mapping from (source_id, local_entity_id) -> entity_id
+    5. Building a unified identifier table with provenance
+
+    Args:
+        output_dir: Path to output directory containing local_tables/
+
+    Returns:
+        Tuple of (record_to_global, final_identifiers) DataFrames:
+        - record_to_global: Maps (source_id, local_entity_id) to entity_id
+        - final_identifiers: Maps (entity_id, id_type, id_value) with sources provenance
+    """
+    print("\n" + "=" * 70)
+    print("STEP: Entity Identifiers (Cross-Source Resolution)")
+    print("=" * 70)
+
+    local_tables_dir = output_dir / "local_tables"
+    if not local_tables_dir.exists():
+        raise FileNotFoundError(
+            f"Local tables directory not found: {local_tables_dir}\n"
+            "Please run the 'local_tables' step first."
+        )
+
+    # Build entity identifiers
+    record_to_global, final_identifiers = build_entity_identifiers(
+        local_tables_dir=local_tables_dir,
+    )
+
+    # Save the results
+    record_to_global_path = output_dir / "entity_record_mapping.parquet"
+    final_identifiers_path = output_dir / "entity_identifier.parquet"
+
+    record_to_global.write_parquet(record_to_global_path)
+    final_identifiers.write_parquet(final_identifiers_path)
+
+    print(f"\nSaved entity record mapping: {record_to_global_path}")
+    print(f"  Rows: {len(record_to_global):,}")
+    print(f"\nSaved entity identifiers: {final_identifiers_path}")
+    print(f"  Rows: {len(final_identifiers):,}")
+    print(f"  Unique entities: {final_identifiers['entity_id'].n_unique():,}")
+
+    return record_to_global, final_identifiers
 
 
 def run_gold_loader_new(
@@ -83,12 +137,13 @@ def run_gold_loader_new(
 
     Currently implemented steps:
     1. local_tables: Build per-source local tables
+    2. entity_identifiers: Build entity identifier resolution using graph-based equivalence
 
     Args:
         data_root: Path to data directory containing silver files
         output_dir: Path to output directory for gold tables
         step: Optional specific step to run. If None, run all steps.
-              Valid values: 'local_tables'
+              Valid values: 'local_tables', 'entity_identifiers'
     """
     # Ensure output directory exists
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -105,24 +160,16 @@ def run_gold_loader_new(
 
     logger.info(f"Starting gold loader pipeline - Data root: {data_root}, Output: {output_dir}")
 
-    # Load sources table (required for all steps)
-    sources_path = output_dir / "source.parquet"
-    if not sources_path.exists():
-        raise FileNotFoundError(
-            f"Sources table not found: {sources_path}\n"
-            "Please run the 'sources' step first to build the source table."
-        )
-
-    sources = pl.read_parquet(sources_path)
-    print(f"Loaded {len(sources)} sources from {sources_path}")
-
     # If a specific step is requested, only run that step
     if step:
         if step == 'local_tables':
             build_local_tables_step(
                 data_root,
                 output_dir,
-                sources_df=sources,
+            )
+        elif step == 'entity_identifiers':
+            build_entity_identifiers_step(
+                output_dir,
             )
         else:
             raise ValueError(f"Unknown step: {step}")
@@ -132,7 +179,11 @@ def run_gold_loader_new(
         build_local_tables_step(
             data_root,
             output_dir,
-            sources_df=sources,
+        )
+
+        # Step 2: Entity identifiers (cross-source resolution)
+        build_entity_identifiers_step(
+            output_dir,
         )
 
         # Future steps will be added here as they are implemented

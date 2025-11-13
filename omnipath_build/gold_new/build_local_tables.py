@@ -1,8 +1,7 @@
-# Refactored build_local_tables for new Entity schema
+# Refactored build_local_tables for new Entity schema - VECTORIZED
 from __future__ import annotations
 from pathlib import Path
 from collections.abc import Iterable
-from typing import Dict, List, Tuple, Optional
 import logging
 import polars as pl
 
@@ -12,181 +11,267 @@ logger = logging.getLogger(__name__)
 # --- Helpers -----------------------------------------------------------------
 
 def _iter_parquet_files(root: Path) -> Iterable[Path]:
-    """Iterate through all parquet files in subdirectories."""
+    """Iterate through all parquet files in subdirectories (recursively).
+
+    This handles both flat structures like:
+        data/guidetopharma/*.parquet
+    And nested structures like:
+        data/ontologies/gene_ontology/*.parquet
+    """
     for d in sorted(root.glob("*")):
         if d.is_dir():
-            yield from sorted(d.glob("*.parquet"))
+            # First, check for parquet files directly in this directory
+            direct_parquet = list(d.glob("*.parquet"))
+            if direct_parquet:
+                # This is a source directory with parquet files
+                yield from sorted(direct_parquet)
+            else:
+                # This might be a container directory (like ontologies/)
+                # Look one level deeper for source subdirectories
+                for subdir in sorted(d.glob("*")):
+                    if subdir.is_dir():
+                        yield from sorted(subdir.glob("*.parquet"))
 
 
-def _load_source_data(root: Path) -> Dict[str, List[Tuple[Path, pl.LazyFrame]]]:
+def _load_source_data(root: Path) -> dict[str, list[tuple[Path, pl.LazyFrame]]]:
     """Load all parquet files grouped by source."""
-    out: Dict[str, List[Tuple[Path, pl.LazyFrame]]] = {}
+    out: dict[str, list[tuple[Path, pl.LazyFrame]]] = {}
     for p in _iter_parquet_files(root):
         out.setdefault(p.parent.name, []).append((p, pl.scan_parquet(str(p))))
     logger.info(f"Found {len(out)} sources")
     return out
 
 
-class LocalTableBuilder:
-    """Builds normalized local tables from Entity records."""
-    
-    def __init__(self, source_id: int):
-        self.source_id = source_id
-        self.next_entity_id = 1
-        self.next_identifier_id = 1
-        self.next_annotation_id = 1
-        self.next_membership_id = 1
-        self.next_membership_annotation_id = 1
-        
-        # Track entities we've already created to avoid duplicates
-        self.entity_registry = {}  # (type, identifiers_hash) -> local_entity_id
-        
-    def process_entities(self, df: pl.DataFrame) -> Dict[str, pl.DataFrame]:
-        """Process a dataframe of Entity records into normalized tables."""
-        
-        # Initialize result containers
-        entities = []
-        identifiers = []
-        annotations = []
-        memberships = []
-        membership_annotations = []
-        
-        # Process each entity
-        for row in df.iter_rows(named=True):
-            # Create main entity record
-            entity_id = self._create_entity(row, entities)
-            
-            # Process identifiers
-            if row.get('identifiers'):
-                self._process_identifiers(entity_id, row['identifiers'], identifiers)
-            
-            # Process annotations
-            if row.get('annotations'):
-                self._process_annotations(entity_id, row['annotations'], annotations)
-            
-            # Process membership relationships
-            if row.get('membership'):
-                self._process_memberships(
-                    entity_id, row['membership'], 
-                    entities, identifiers, annotations,
-                    memberships, membership_annotations
-                )
-        
-        # Convert lists to DataFrames
-        return {
-            'entity': pl.DataFrame(entities) if entities else pl.DataFrame(),
-            'entity_identifier': pl.DataFrame(identifiers) if identifiers else pl.DataFrame(),
-            'entity_annotation': pl.DataFrame(annotations) if annotations else pl.DataFrame(),
-            'membership': pl.DataFrame(memberships) if memberships else pl.DataFrame(),
-            'membership_annotation': pl.DataFrame(membership_annotations) if membership_annotations else pl.DataFrame(),
-        }
-    
-    def _create_entity(self, row: dict, entities: list) -> int:
-        """Create entity record and return its ID."""
-        entity_id = self.next_entity_id
-        self.next_entity_id += 1
-        
-        entities.append({
-            'local_entity_id': entity_id,
-            'entity_type': row['type'],
-            'source_id': self.source_id,
-        })
-        
-        return entity_id
-    
-    def _process_identifiers(self, entity_id: int, identifiers_data: list, identifiers: list):
-        """Extract identifier records from entity."""
-        if not identifiers_data:
-            return
-            
-        for identifier in identifiers_data:
-            identifiers.append({
-                'local_entity_identifier_id': self.next_identifier_id,
-                'local_entity_id': entity_id,
-                'type_id': identifier.get('type'),
-                'identifier': identifier.get('value'),
-                'source_id': self.source_id,
-            })
-            self.next_identifier_id += 1
-    
-    def _process_annotations(self, entity_id: int, annotations_data: list, annotations: list):
-        """Extract annotation records from entity."""
-        if not annotations_data:
-            return
-            
-        for annotation in annotations_data:
-            annotations.append({
-                'local_entity_annotation_id': self.next_annotation_id,
-                'local_entity_id': entity_id,
-                'annotation_id': annotation.get('term'),
-                'annotation_value': str(annotation.get('value')) if annotation.get('value') is not None else None,
-                'annotation_unit': annotation.get('units'),
-                'source_id': self.source_id,
-            })
-            self.next_annotation_id += 1
-    
-    def _process_memberships(self, entity_id: int, memberships_data: list,
-                           entities: list, identifiers: list, annotations: list,
-                           memberships: list, membership_annotations: list):
-        """Process membership relationships and extract member entities."""
-        if not memberships_data:
-            return
-            
-        for membership in memberships_data:
-            member_data = membership.get('member')
-            if not member_data:
-                continue
-                
-            # Create entity record for the member
-            member_id = self._create_entity(member_data, entities)
-            
-            # Process member's identifiers
-            if member_data.get('identifiers'):
-                self._process_identifiers(member_id, member_data['identifiers'], identifiers)
-            
-            # Process member's annotations (entity-level)
-            if member_data.get('annotations'):
-                self._process_annotations(member_id, member_data['annotations'], annotations)
-            
-            # Create membership relationship
-            # is_parent flag determines direction:
-            # - True: member is parent of entity (member_id -> entity_id)
-            # - False: entity is parent of member (entity_id -> member_id)
-            is_parent = membership.get('is_parent', False)
-            
-            membership_record = {
-                'local_membership_id': self.next_membership_id,
-                'parent_id': member_id if is_parent else entity_id,
-                'member_id': entity_id if is_parent else member_id,
-                'source_id': self.source_id,
-            }
-            memberships.append(membership_record)
-            
-            # Process membership-specific annotations
-            if membership.get('annotations'):
-                for annotation in membership['annotations']:
-                    membership_annotations.append({
-                        'local_membership_annotation_id': self.next_membership_annotation_id,
-                        'local_membership_id': self.next_membership_id,
-                        'annotation_id': annotation.get('term'),
-                        'annotation_value': str(annotation.get('value')) if annotation.get('value') is not None else None,
-                        'annotation_unit': annotation.get('units'),
-                        'source_id': self.source_id,
-                    })
-                    self.next_membership_annotation_id += 1
-            
-            self.next_membership_id += 1
-            
-            # Recursively process member's memberships if they exist
-            if member_data.get('membership'):
-                self._process_memberships(
-                    member_id, member_data['membership'],
-                    entities, identifiers, annotations,
-                    memberships, membership_annotations
-                )
+def _process_entities_vectorized(df: pl.DataFrame, source_id: int, next_id: int) -> tuple[dict[str, pl.DataFrame], int]:
+    """Process entities using vectorized operations (no row iteration!)."""
+
+    if len(df) == 0:
+        return {}, next_id
+
+    # ============================================================================
+    # 1. CREATE BASE ENTITY RECORDS
+    # ============================================================================
+    entities = df.select([
+        pl.col("type").alias("entity_type"),
+    ]).with_row_index("local_entity_id", offset=next_id)
+
+    entities = entities.with_columns(pl.lit(source_id).alias("source_id"))
+    next_id += len(entities)
+
+    logger.info(f"    Created {len(entities):,} base entity records")
+
+    # ============================================================================
+    # 2. EXTRACT IDENTIFIERS (vectorized explode)
+    # ============================================================================
+    identifiers = pl.DataFrame()
+
+    if "identifiers" in df.columns:
+        # Filter entities that have identifiers
+        has_identifiers = df.filter(
+            pl.col("identifiers").is_not_null() &
+            (pl.col("identifiers").list.len() > 0)
+        )
+
+        if len(has_identifiers):
+            # Add entity IDs and explode identifiers list
+            identifiers = (
+                has_identifiers
+                .with_row_index("local_entity_id", offset=next_id - len(df))
+                .select([
+                    pl.col("local_entity_id"),
+                    pl.col("identifiers"),
+                ])
+                .explode("identifiers")
+                .select([
+                    pl.col("local_entity_id"),
+                    pl.col("identifiers").struct.field("type").alias("type_id"),
+                    pl.col("identifiers").struct.field("value").alias("identifier"),
+                ])
+                .with_row_index("local_entity_identifier_id", offset=1)
+                .with_columns(pl.lit(source_id).alias("source_id"))
+            )
+            logger.info(f"    Extracted {len(identifiers):,} identifier records")
+
+    # ============================================================================
+    # 3. EXTRACT ANNOTATIONS (vectorized explode)
+    # ============================================================================
+    annotations = pl.DataFrame()
+
+    if "annotations" in df.columns:
+        has_annotations = df.filter(
+            pl.col("annotations").is_not_null() &
+            (pl.col("annotations").list.len() > 0)
+        )
+
+        if len(has_annotations):
+            annotations = (
+                has_annotations
+                .with_row_index("local_entity_id", offset=next_id - len(df))
+                .select([
+                    pl.col("local_entity_id"),
+                    pl.col("annotations"),
+                ])
+                .explode("annotations")
+                .select([
+                    pl.col("local_entity_id"),
+                    pl.col("annotations").struct.field("term").alias("annotation_id"),
+                    pl.when(pl.col("annotations").struct.field("value").is_not_null())
+                      .then(pl.col("annotations").struct.field("value").cast(pl.String))
+                      .otherwise(None)
+                      .alias("annotation_value"),
+                    pl.col("annotations").struct.field("units").alias("annotation_unit"),
+                ])
+                .with_row_index("local_entity_annotation_id", offset=1)
+                .with_columns(pl.lit(source_id).alias("source_id"))
+            )
+            logger.info(f"    Extracted {len(annotations):,} annotation records")
+
+    # ============================================================================
+    # 4. PROCESS MEMBERSHIPS (vectorized explode + recursive handling)
+    # ============================================================================
+    memberships = pl.DataFrame()
+    membership_annotations = pl.DataFrame()
+    member_entities = []
+    member_identifiers = []
+    member_annotations = []
+
+    if "membership" in df.columns:
+        has_memberships = df.filter(
+            pl.col("membership").is_not_null() &
+            (pl.col("membership").list.len() > 0)
+        )
+
+        if len(has_memberships):
+            # Add parent entity IDs
+            with_parent_ids = has_memberships.with_row_index("parent_entity_id", offset=next_id - len(df))
+
+            # Explode memberships
+            exploded_memberships = (
+                with_parent_ids
+                .select([
+                    pl.col("parent_entity_id"),
+                    pl.col("membership"),
+                ])
+                .explode("membership")
+            )
+
+            # Extract is_parent flag and member data
+            membership_info = exploded_memberships.select([
+                pl.col("parent_entity_id"),
+                pl.col("membership").struct.field("is_parent").fill_null(False).alias("is_parent"),
+                pl.col("membership").struct.field("member").alias("member"),
+                pl.col("membership").struct.field("annotations").alias("membership_annotations"),
+            ])
+
+            # Filter out null members
+            membership_info = membership_info.filter(pl.col("member").is_not_null())
+
+            if len(membership_info):
+                # Recursively process member entities
+                member_df = membership_info.select("member").unnest("member")
+                member_results, next_id = _process_entities_vectorized(member_df, source_id, next_id)
+
+                if "entity" in member_results and len(member_results["entity"]):
+                    member_entity_df = member_results["entity"]
+                    member_entities.append(member_entity_df)
+
+                    # Extract member entity IDs (they're sequential starting from old next_id)
+                    member_start_id = next_id - len(member_entity_df)
+
+                    # Create membership relationships
+                    memberships = (
+                        membership_info
+                        .with_row_index("_member_idx", offset=0)
+                        .with_columns(
+                            (pl.col("_member_idx") + member_start_id).alias("member_entity_id")
+                        )
+                        .select([
+                            pl.when(pl.col("is_parent"))
+                              .then(pl.col("member_entity_id"))
+                              .otherwise(pl.col("parent_entity_id"))
+                              .alias("parent_id"),
+                            pl.when(pl.col("is_parent"))
+                              .then(pl.col("parent_entity_id"))
+                              .otherwise(pl.col("member_entity_id"))
+                              .alias("member_id"),
+                            pl.col("membership_annotations"),
+                        ])
+                        .with_row_index("local_membership_id", offset=1)
+                        .with_columns(pl.lit(source_id).alias("source_id"))
+                    )
+
+                    # Extract membership annotations
+                    has_membership_annots = memberships.filter(
+                        pl.col("membership_annotations").is_not_null() &
+                        (pl.col("membership_annotations").list.len() > 0)
+                    )
+
+                    if len(has_membership_annots):
+                        membership_annotations = (
+                            has_membership_annots
+                            .select([
+                                pl.col("local_membership_id"),
+                                pl.col("membership_annotations"),
+                            ])
+                            .explode("membership_annotations")
+                            .select([
+                                pl.col("local_membership_id"),
+                                pl.col("membership_annotations").struct.field("term").alias("annotation_id"),
+                                pl.when(pl.col("membership_annotations").struct.field("value").is_not_null())
+                                  .then(pl.col("membership_annotations").struct.field("value").cast(pl.String))
+                                  .otherwise(None)
+                                  .alias("annotation_value"),
+                                pl.col("membership_annotations").struct.field("units").alias("annotation_unit"),
+                            ])
+                            .with_row_index("local_membership_annotation_id", offset=1)
+                            .with_columns(pl.lit(source_id).alias("source_id"))
+                        )
+                        logger.info(f"    Extracted {len(membership_annotations):,} membership annotation records")
+
+                    # Drop the annotations column from memberships table
+                    memberships = memberships.drop("membership_annotations")
+                    logger.info(f"    Created {len(memberships):,} membership relationships")
+
+                    # Collect member identifiers and annotations
+                    if "entity_identifier" in member_results and len(member_results["entity_identifier"]):
+                        member_identifiers.append(member_results["entity_identifier"])
+                    if "entity_annotation" in member_results and len(member_results["entity_annotation"]):
+                        member_annotations.append(member_results["entity_annotation"])
+
+    # ============================================================================
+    # 5. COMBINE ALL RESULTS
+    # ============================================================================
+    results = {
+        "entity": entities,
+        "entity_identifier": identifiers,
+        "entity_annotation": annotations,
+        "membership": memberships,
+        "membership_annotation": membership_annotations,
+    }
+
+    # Append member entities if any
+    if member_entities:
+        results["entity"] = pl.concat([entities] + member_entities, how="diagonal_relaxed")
+        logger.info(f"    Total entities (including members): {len(results['entity']):,}")
+
+    if member_identifiers:
+        if len(identifiers):
+            results["entity_identifier"] = pl.concat([identifiers] + member_identifiers, how="diagonal_relaxed")
+        else:
+            results["entity_identifier"] = pl.concat(member_identifiers, how="diagonal_relaxed")
+        logger.info(f"    Total identifiers (including members): {len(results['entity_identifier']):,}")
+
+    if member_annotations:
+        if len(annotations):
+            results["entity_annotation"] = pl.concat([annotations] + member_annotations, how="diagonal_relaxed")
+        else:
+            results["entity_annotation"] = pl.concat(member_annotations, how="diagonal_relaxed")
+        logger.info(f"    Total annotations (including members): {len(results['entity_annotation']):,}")
+
+    return results, next_id
 
 
-def _save_tables(tables: Dict[str, pl.DataFrame], output_dir: Path, source_name: str):
+def _save_tables(tables: dict[str, pl.DataFrame], output_dir: Path, source_name: str):
     """Save processed tables to parquet files."""
     for table_name, df in tables.items():
         if len(df) > 0:
@@ -200,38 +285,34 @@ def _save_tables(tables: Dict[str, pl.DataFrame], output_dir: Path, source_name:
 def build_local_tables(
     data_root: Path,
     output_dir: Path,
-    sources_df: pl.DataFrame,
 ):
     """
-    Build local tables from Entity parquet files.
-    
+    Build local tables from Entity parquet files using vectorized operations.
+
+    Source IDs are auto-generated from discovered source names (alphabetically sorted).
+
     Args:
         data_root: Root directory containing source subdirectories with parquet files
         output_dir: Output directory for local tables
-        sources_df: DataFrame with source metadata (must have 'name' and 'id' columns)
     """
     data = _load_source_data(data_root)
-    name2id = {r["name"]: r["id"] for r in sources_df.iter_rows(named=True)}
-    
+
+    # Auto-generate source IDs from discovered data (sorted alphabetically for consistency)
+    name2id = {name: idx + 1 for idx, name in enumerate(sorted(data.keys()))}
+    logger.info(f"Auto-generated source IDs for {len(name2id)} discovered sources")
+
     # Create output directory
     local_tables_dir = output_dir / "local_tables"
     local_tables_dir.mkdir(parents=True, exist_ok=True)
-    
+
     # Process each source
     for source_name, files in data.items():
-        if source_name not in name2id:
-            logger.warning(f"Source {source_name} not found in sources_df, skipping")
-            continue
-            
         source_id = name2id[source_name]
-        
+
         logger.info("\n" + "="*70)
         logger.info(f"Processing source: {source_name} (id={source_id})")
         logger.info("="*70)
-        
-        # Initialize builder for this source
-        builder = LocalTableBuilder(source_id)
-        
+
         # Collect all tables for this source
         all_tables = {
             'entity': [],
@@ -240,42 +321,44 @@ def build_local_tables(
             'membership': [],
             'membership_annotation': [],
         }
-        
+
+        next_id = 1
+
         # Process each file
         for file_path, lazy_frame in files:
             logger.info(f"  Processing {file_path.name}")
-            
+
             # Collect the dataframe
             df = lazy_frame.collect()
             if len(df) == 0:
                 logger.info(f"    Empty file, skipping")
                 continue
-                
+
             logger.info(f"    Found {len(df):,} entities")
-            
-            # Process entities and get normalized tables
-            tables = builder.process_entities(df)
-            
+
+            # Process entities using vectorized operations
+            tables, next_id = _process_entities_vectorized(df, source_id, next_id)
+
             # Accumulate results
             for table_name, table_df in tables.items():
-                if len(table_df) > 0:
+                if isinstance(table_df, pl.DataFrame) and len(table_df) > 0:
                     all_tables[table_name].append(table_df)
-        
+
         # Combine all tables for this source
         final_tables = {}
         for table_name, table_list in all_tables.items():
             if table_list:
                 final_tables[table_name] = pl.concat(table_list, how="diagonal_relaxed")
                 logger.info(f"  Total {table_name}: {len(final_tables[table_name]):,} records")
-        
+
         # Save tables
         if final_tables:
             _save_tables(final_tables, local_tables_dir, source_name)
         else:
             logger.warning(f"  No data to save for {source_name}")
-        
+
         logger.info(f"Completed processing {source_name}")
-    
+
     logger.info("\n" + "="*70)
     logger.info("Local table building complete!")
     logger.info("="*70)
@@ -291,7 +374,7 @@ def inspect_entity_schema(parquet_file: Path):
     print("\nSchema:")
     for col, dtype in df.schema.items():
         print(f"  {col}: {dtype}")
-    
+
     # Sample first row to understand structure
     if len(df) > 0:
         print("\nFirst row sample:")
