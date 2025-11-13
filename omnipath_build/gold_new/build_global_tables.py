@@ -186,7 +186,11 @@ def build_global_tables(
     logger.info("Processing entity table")
     logger.info("=" * 80)
 
-    entity_files = sorted(local_tables_dir.glob("local_entity_*.parquet"))
+    # Get only base entity files, excluding annotation and identifier files
+    entity_files = sorted([
+        f for f in local_tables_dir.glob("local_entity_*.parquet")
+        if "annotation" not in f.name and "identifier" not in f.name and "membership" not in f.name
+    ])
     logger.info(f"Found {len(entity_files)} entity files")
 
     entity_parts = []
