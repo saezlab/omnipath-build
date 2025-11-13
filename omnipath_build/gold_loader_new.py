@@ -4,10 +4,10 @@ Gold Loader (New) - Build gold tables from silver tables with updated schema.
 
 This module orchestrates the gold table building process. Currently implements:
 1. local_tables: Build per-source local tables from Entity records
+2. entity_identifiers: Build entity identifier tables with provenance using graph-based resolution
+3. global_tables: Build global evidence tables by joining local tables with entity mapping
 
 Future steps will include:
-2. entity_identifiers: Build entity identifier tables with provenance
-3. global_tables: Build global evidence tables by joining local tables with entity mapping
 4. aggregates: Summarise global evidence into dimension tables and bridges
 """
 
@@ -27,10 +27,12 @@ logger = logging.getLogger(__name__)
 # Import our modular functions from the gold_new/ directory
 from omnipath_build.gold_new.build_local_tables import build_local_tables
 from omnipath_build.gold_new.build_entity_identifiers import build_entity_identifiers
+from omnipath_build.gold_new.build_global_tables import build_global_tables
 
 __all__ = [
     'build_local_tables_step',
     'build_entity_identifiers_step',
+    'build_global_tables_step',
     'run_gold_loader_new',
 ]
 
@@ -127,6 +129,71 @@ def build_entity_identifiers_step(
     return record_to_global, final_identifiers
 
 
+def build_global_tables_step(
+    output_dir: Path,
+) -> None:
+    """
+    Build global tables from local tables and entity resolution.
+
+    This step joins local tables with entity mappings to create global tables:
+    1. Loads record_to_global mapping (source_id, local_entity_id) -> entity_id
+    2. Loads entity_identifiers with CV term information
+    3. Processes each local table type:
+       - entity: Maps entity_type to entity_type_id
+       - entity_identifier: Resolves id_type to id_type_id
+       - entity_annotation: Maps annotation_id to entity IDs
+       - membership: Resolves parent/member IDs to entity IDs
+       - membership_annotation: Maps annotation_id to entity IDs
+    4. Aggregates across sources and assigns global sequential IDs
+
+    Args:
+        output_dir: Path to output directory containing local_tables/,
+                   entity_record_mapping.parquet, and entity_identifier.parquet
+
+    Outputs:
+        Writes global tables to output_dir/:
+        - entity.parquet
+        - entity_identifier.parquet (updated with id_type_id)
+        - entity_annotation.parquet
+        - membership.parquet
+        - membership_annotation.parquet
+    """
+    print("\n" + "=" * 70)
+    print("STEP: Global Tables (Cross-Source Aggregation)")
+    print("=" * 70)
+
+    local_tables_dir = output_dir / "local_tables"
+    record_to_global_file = output_dir / "entity_record_mapping.parquet"
+    entity_identifiers_file = output_dir / "entity_identifier.parquet"
+
+    # Verify prerequisites exist
+    if not local_tables_dir.exists():
+        raise FileNotFoundError(
+            f"Local tables directory not found: {local_tables_dir}\n"
+            "Please run the 'local_tables' step first."
+        )
+    if not record_to_global_file.exists():
+        raise FileNotFoundError(
+            f"Entity record mapping not found: {record_to_global_file}\n"
+            "Please run the 'entity_identifiers' step first."
+        )
+    if not entity_identifiers_file.exists():
+        raise FileNotFoundError(
+            f"Entity identifiers not found: {entity_identifiers_file}\n"
+            "Please run the 'entity_identifiers' step first."
+        )
+
+    # Build global tables
+    build_global_tables(
+        local_tables_dir=local_tables_dir,
+        record_to_global_file=record_to_global_file,
+        entity_identifiers_file=entity_identifiers_file,
+        output_dir=output_dir,
+    )
+
+    print("\nGlobal tables built successfully")
+
+
 def run_gold_loader_new(
     data_root: Path,
     output_dir: Path,
@@ -138,12 +205,13 @@ def run_gold_loader_new(
     Currently implemented steps:
     1. local_tables: Build per-source local tables
     2. entity_identifiers: Build entity identifier resolution using graph-based equivalence
+    3. global_tables: Build global tables from local tables and entity resolution
 
     Args:
         data_root: Path to data directory containing silver files
         output_dir: Path to output directory for gold tables
         step: Optional specific step to run. If None, run all steps.
-              Valid values: 'local_tables', 'entity_identifiers'
+              Valid values: 'local_tables', 'entity_identifiers', 'global_tables'
     """
     # Ensure output directory exists
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -171,6 +239,10 @@ def run_gold_loader_new(
             build_entity_identifiers_step(
                 output_dir,
             )
+        elif step == 'global_tables':
+            build_global_tables_step(
+                output_dir,
+            )
         else:
             raise ValueError(f"Unknown step: {step}")
     else:
@@ -186,7 +258,10 @@ def run_gold_loader_new(
             output_dir,
         )
 
-        # Future steps will be added here as they are implemented
+        # Step 3: Global tables (cross-source aggregation)
+        build_global_tables_step(
+            output_dir,
+        )
 
     print("\n")
     print("╔" + "=" * 68 + "╗")

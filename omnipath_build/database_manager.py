@@ -175,10 +175,11 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=[
             'local_tables',
             'entity_identifiers',
+            'global_tables',
         ],
         help=(
             'Run only a specific step '
-            '(local_tables, entity_identifiers)'
+            '(local_tables, entity_identifiers, global_tables)'
         ),
     )
     gold_parser.set_defaults(handler=_handle_gold)
