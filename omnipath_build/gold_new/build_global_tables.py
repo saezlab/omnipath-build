@@ -41,21 +41,43 @@ def _build_cv_term_mapping(entity_identifiers: pl.DataFrame) -> pl.DataFrame:
     CV terms are entities with id_type = "OM:0204" (CV_TERM_ACCESSION).
 
     Args:
-        entity_identifiers: DataFrame with [entity_id, id_type, id_value, sources]
+        entity_identifiers: DataFrame with [entity_id, id_type/id_type_id, id_value, sources]
 
     Returns:
         DataFrame with [accession, cv_term_entity_id] mapping
     """
-    # Filter for CV term accessions (OM:0204)
-    cv_terms = (
-        entity_identifiers
-        .filter(pl.col("id_type") == "OM:0204")
-        .select([
-            pl.col("id_value").alias("accession"),
-            pl.col("entity_id").alias("cv_term_entity_id"),
-        ])
-        .unique(subset=["accession"])
-    )
+    # Check if we have id_type (accession) or id_type_id (already resolved)
+    if "id_type" in entity_identifiers.columns:
+        # Filter for CV term accessions (OM:0204)
+        cv_terms = (
+            entity_identifiers
+            .filter(pl.col("id_type") == "OM:0204")
+            .select([
+                pl.col("id_value").alias("accession"),
+                pl.col("entity_id").alias("cv_term_entity_id"),
+            ])
+            .unique(subset=["accession"])
+        )
+    else:
+        # Already resolved: find the entity_id for "OM:0204" type
+        # First, find which entity_id corresponds to the CV term "OM:0204" itself
+        om0204_entity_id = (
+            entity_identifiers
+            .filter(pl.col("id_value") == "OM:0204")
+            .select(pl.col("entity_id").first())
+            .item()
+        )
+
+        # Then get all identifiers with that type
+        cv_terms = (
+            entity_identifiers
+            .filter(pl.col("id_type_id") == om0204_entity_id)
+            .select([
+                pl.col("id_value").alias("accession"),
+                pl.col("entity_id").alias("cv_term_entity_id"),
+            ])
+            .unique(subset=["accession"])
+        )
 
     logger.info(f"Built CV term mapping with {len(cv_terms):,} unique accessions")
     return cv_terms
@@ -213,23 +235,10 @@ def build_global_tables(
     logger.info("Processing entity_identifier table")
     logger.info("=" * 80)
 
-    # Note: entity_identifiers already has global entity_id and id_type resolved
-    # We just need to map id_type (if it's an accession) to id_type_id
-
-    # Check if id_type needs to be resolved
-    if "id_type" in entity_identifiers.columns:
-        logger.info("Resolving id_type to id_type_id")
-        entity_identifiers_output = _map_cv_term_columns(
-            entity_identifiers,
-            cv_term_mapping,
-            ["id_type"]
-        )
-    else:
-        logger.info("id_type already resolved (has id_type_id)")
-        entity_identifiers_output = entity_identifiers
-
-    entity_identifiers_output.write_parquet(output_dir / "entity_identifier.parquet")
-    logger.info(f"✅ entity_identifier: {len(entity_identifiers_output):,} rows")
+    # entity_identifiers is already processed by build_entity_identifiers step
+    # Just verify it exists and report stats
+    logger.info("Entity identifiers already processed in entity_identifiers step")
+    logger.info(f"✅ entity_identifier: {len(entity_identifiers):,} rows")
 
     # ========================================================================
     # 4. PROCESS ENTITY ANNOTATION TABLE
@@ -295,7 +304,11 @@ def build_global_tables(
     logger.info("Processing membership table")
     logger.info("=" * 80)
 
-    membership_files = sorted(local_tables_dir.glob("local_membership_*.parquet"))
+    # Get membership files, but exclude annotation files
+    membership_files = sorted([
+        f for f in local_tables_dir.glob("local_membership_*.parquet")
+        if "annotation" not in f.name
+    ])
     logger.info(f"Found {len(membership_files)} membership files")
 
     membership_parts = []
