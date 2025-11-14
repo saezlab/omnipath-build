@@ -7,6 +7,7 @@ and performs global entity resolution by:
 3. Using UnionFind to assign canonical entity_id across all sources
 """
 from __future__ import annotations
+
 from pathlib import Path
 import logging
 import polars as pl
@@ -14,33 +15,54 @@ from pypath.internals.cv_terms import IdentifierNamespaceCv
 
 
 # --------------------------------------------------------------------------- #
-# Union-Find for tracking connected components
+# Union-Find for tracking connected components (integer-indexed, optimized)
 # --------------------------------------------------------------------------- #
+
 
 class UnionFind:
     """Union-Find data structure for tracking connected components.
 
-    Nodes are identified by (id_type, id_value) tuples where:
+    Nodes are identified externally by (id_type, id_value) tuples where:
     - id_type is a CV term accession string (e.g., "MI:0326", "OM:0204")
     - id_value is always a str
+
+    Internally, nodes are mapped to integer indices for performance.
     """
 
-    def __init__(self):
-        self.parent: dict[tuple[str, str], tuple[str, str]] = {}
-        self.rank: dict[tuple[str, str], int] = {}
-        self._num_components = 0
+    def __init__(self) -> None:
+        # parent[i] is the parent index of node i
+        self.parent: list[int] = []
+        # rank[i] is the rank of the tree rooted at i
+        self.rank: list[int] = []
+        # mapping from (id_type, id_value) -> int index
+        self._index: dict[tuple[str, str], int] = {}
+        # number of connected components
+        self._num_components: int = 0
 
-    def find(self, x: tuple[str, str]) -> tuple[str, str]:
-        """Find the root of x with path compression."""
-        if x not in self.parent:
-            self.parent[x] = x
-            self.rank[x] = 0
+    # --------------------------- internal helpers --------------------------- #
+
+    def _get_index(self, node: tuple[str, str]) -> int:
+        """Get or create an integer index for a node."""
+        idx = self._index.get(node)
+        if idx is None:
+            idx = len(self.parent)
+            self._index[node] = idx
+            # new node is its own parent
+            self.parent.append(idx)
+            self.rank.append(0)
             self._num_components += 1
-            return x
+        return idx
 
-        if self.parent[x] != x:
-            self.parent[x] = self.find(self.parent[x])
-        return self.parent[x]
+    # ------------------------------ public API ----------------------------- #
+
+    def find(self, node: tuple[str, str]) -> int:
+        """Find the root index of node with path compression."""
+        i = self._get_index(node)
+        # iterative path compression
+        while self.parent[i] != i:
+            self.parent[i] = self.parent[self.parent[i]]
+            i = self.parent[i]
+        return i
 
     def union(self, x: tuple[str, str], y: tuple[str, str]) -> bool:
         """Union two elements. Returns True if they were in different components."""
@@ -72,6 +94,7 @@ class UnionFind:
         """Get the total number of nodes."""
         return len(self.parent)
 
+
 __all__ = [
     'MERGE_UNSAFE_IDENTIFIER_TYPES',
     'build_entity_identifiers',
@@ -101,6 +124,7 @@ MERGE_UNSAFE_IDENTIFIER_TYPES = frozenset({
 # Helper functions
 # --------------------------------------------------------------------------- #
 
+
 def _load_local_tables(local_tables_dir: Path) -> list[tuple[int, pl.DataFrame]]:
     """Load all local_entity_identifier_*.parquet files (flattened format).
 
@@ -113,7 +137,7 @@ def _load_local_tables(local_tables_dir: Path) -> list[tuple[int, pl.DataFrame]]
         logger.warning(f"No local_entity_identifier_*.parquet files found in {local_tables_dir}")
         return []
 
-    result = []
+    result: list[tuple[int, pl.DataFrame]] = []
     for path in files:
         df = pl.read_parquet(path)
         if len(df) == 0:
@@ -148,7 +172,7 @@ def _prepare_local_entities_for_source(
     if len(local_df) == 0:
         return None
 
-    merge_unsafe_set = set(merge_unsafe_types)
+    unsafe_list = list(merge_unsafe_types)
 
     # Rename columns to match expected format
     # Input: [source_id, local_entity_id, type_id, identifier, local_entity_identifier_id]
@@ -168,154 +192,16 @@ def _prepare_local_entities_for_source(
     # Filter OUT merge-unsafe identifiers (blacklist approach)
     local_ms_edges = (
         local_all_edges
-        .filter(~pl.col('id_type').is_in(list(merge_unsafe_set)))
+        .filter(~pl.col('id_type').is_in(unsafe_list))
     )
 
     return local_ms_edges, local_all_edges
 
 
 # --------------------------------------------------------------------------- #
-# Step 2: Build edges from identifier co-occurrences
-# --------------------------------------------------------------------------- #
-
-def _build_edges_from_identifiers(
-    df: pl.DataFrame,
-    source_name: str,
-    identifiers_col: str = 'identifiers',
-) -> pl.DataFrame:
-    """Build edges from a DataFrame of identifier lists.
-
-    For each record, creates edges between all pairs of identifiers that co-occur.
-
-    Args:
-        df: DataFrame with columns [source_name, <identifiers_col>]
-        source_name: Name of the source (for logging)
-        identifiers_col: Column name containing list[struct{type,value}]
-                        where 'type' is a CV term accession string (e.g., "MI:0326")
-
-    Returns:
-        DataFrame with edges [id_a, id_b, source_name]
-        id_a and id_b are structs with 'type' (str) and 'value' (str)
-    """
-    if identifiers_col != 'identifiers' and identifiers_col in df.columns:
-        work_df = df.rename({identifiers_col: 'identifiers'})
-    else:
-        work_df = df
-
-    # For each record, create normalized rows per identifier
-    edges = (
-        work_df
-        .with_row_index('record_id')
-        .explode('identifiers')
-        .select([
-            'record_id',
-            'source_name',
-            pl.col('identifiers').struct.field('type').alias('id_type'),  # CV term accession string
-            pl.col('identifiers').struct.field('value').cast(pl.Utf8).alias('id_value'),
-        ])
-        .filter(
-            pl.col('id_type').is_not_null()
-            & pl.col('id_value').is_not_null()
-            & (pl.col('id_value').str.len_chars() > 0)
-        )
-    )
-
-    # Self-join to create all distinct pairs within each record
-    edges_paired = (
-        edges
-        .join(edges, on=['record_id', 'source_name'], suffix='_b')
-        .filter(
-            (pl.col('id_type') < pl.col('id_type_b'))
-            | (
-                (pl.col('id_type') == pl.col('id_type_b'))
-                & (pl.col('id_value') < pl.col('id_value_b'))
-            )
-        )
-        .select([
-            'source_name',
-            pl.struct([
-                pl.col('id_type').alias('type'),
-                pl.col('id_value').alias('value'),
-            ]).alias('id_a'),
-            pl.struct([
-                pl.col('id_type_b').alias('type'),
-                pl.col('id_value_b').alias('value'),
-            ]).alias('id_b'),
-        ])
-        .unique()
-    )
-
-    return edges_paired
-
-
-def _merge_edges_into_graph(
-    global_graph: pl.DataFrame | None,
-    new_edges: pl.DataFrame,
-    union_find: UnionFind,
-    nodes_to_register: pl.DataFrame | None = None,
-) -> pl.DataFrame:
-    """Merge new edges into the global graph and update connected components.
-
-    Args:
-        global_graph: Current global graph (or None if first source)
-        new_edges: New edges to merge [source_name, id_a, id_b]
-        union_find: UnionFind structure for tracking connected components
-        nodes_to_register: Optional DataFrame with columns [id_type, id_value] to ensure singletons are registered
-
-    Returns:
-        Updated global graph [id_a, id_b, sources]
-    """
-    # Register singleton nodes (if provided)
-    if nodes_to_register is not None and len(nodes_to_register) > 0:
-        for t, v in nodes_to_register.iter_rows():
-            union_find.find((t, v))
-
-    # Update union-find with new edges
-    for row in new_edges.iter_rows(named=True):
-        id_a = (row['id_a']['type'], row['id_a']['value'])
-        id_b = (row['id_b']['type'], row['id_b']['value'])
-        union_find.union(id_a, id_b)
-
-    if global_graph is None:
-        # First source: just group the edges
-        return (
-            new_edges
-            .group_by(['id_a', 'id_b'])
-            .agg([
-                pl.col('source_name').unique().alias('sources')
-            ])
-        )
-
-    # Combine with existing graph
-    # First, expand existing graph back to edge format
-    existing_edges = (
-        global_graph
-        .explode('sources')
-        .select([
-            pl.col('sources').alias('source_name'),
-            'id_a',
-            'id_b',
-        ])
-    )
-
-    # Combine old and new edges
-    combined = pl.concat([existing_edges, new_edges], how='diagonal_relaxed')
-
-    # Re-aggregate
-    merged = (
-        combined
-        .group_by(['id_a', 'id_b'])
-        .agg([
-            pl.col('source_name').unique().alias('sources')
-        ])
-    )
-
-    return merged
-
-
-# --------------------------------------------------------------------------- #
 # Utilities to convert union-find to mapping
 # --------------------------------------------------------------------------- #
+
 
 def _union_find_to_safe_clusters(uf: UnionFind) -> pl.DataFrame:
     """Convert UnionFind state into a mapping of (id_type, id_value) -> entity_id.
@@ -325,28 +211,31 @@ def _union_find_to_safe_clusters(uf: UnionFind) -> pl.DataFrame:
     - id_value is the identifier value
     - entity_id is a sequential integer starting at 1
     """
-    # Ensure path compression
-    roots: dict[tuple[str, str], tuple[str, str]] = {}
-    for node in list(uf.parent.keys()):
-        roots[node] = uf.find(node)
+    # Compute roots for each index (find() also compresses paths)
+    index_to_root: dict[int, int] = {}
+    for node, idx in uf._index.items():
+        root = uf.find(node)
+        index_to_root[idx] = root
 
     # Map unique roots to sequential ints
-    unique_roots = sorted(set(roots.values()))
-    root_to_entity = {root: i + 1 for i, root in enumerate(unique_roots)}
+    unique_roots = sorted(set(index_to_root.values()))
+    root_to_entity: dict[int, int] = {root: i + 1 for i, root in enumerate(unique_roots)}
 
     rows = [
         {
             'type_id': t,
             'id_value': v,
-            'entity_id': root_to_entity[roots[(t, v)]],
+            'entity_id': root_to_entity[index_to_root[idx]],
         }
-        for (t, v) in roots.keys()
+        for (t, v), idx in uf._index.items()
     ]
     return pl.DataFrame(rows)
+
 
 # --------------------------------------------------------------------------- #
 # Public entry point (full unified table with provenance)
 # --------------------------------------------------------------------------- #
+
 
 def build_entity_identifiers(
     local_tables_dir: Path,
@@ -360,8 +249,8 @@ def build_entity_identifiers(
 
     Returns a tuple of:
       - record_to_global: (source_id, local_entity_id) -> entity_id
-      - entity_identifiers: (entity_identifier_id, entity_id, type_id, identifier)
-      - entity_identifier_resource: (entity_identifier_resource_id, entity_identifier_id, source_entity_id)
+      - entity_identifiers: (id, entity_id, type_id, identifier)
+      - entity_identifier_resource: (id, entity_identifier_id, source_entity_id)
                                     where source_entity_id is the entity_id of the source (from local context)
     """
     local_tables_dir = Path(local_tables_dir)
@@ -396,57 +285,57 @@ def build_entity_identifiers(
         n_without_ms = n_local - n_with_ms
         logger.info(f"  Local entities: {n_local:,} (with MS: {n_with_ms:,}, without MS: {n_without_ms:,})")
 
-        # Build edges from merge-safe identifiers
-        # Optimization: Group by unique identifier sets to avoid processing duplicates
+        # Build identifier lists per local entity
         # Note: id_type is now an accession string (e.g., "MI:0326")
         type_col = 'id_type'
-
-        # First, create identifier lists per local entity
         ms_edges_with_lists = (
             local_ms_edges
             .group_by(['source_id', 'local_entity_id'])
             .agg([
                 pl.struct(
                     type=pl.col(type_col),
-                    value=pl.col('id_value')
+                    value=pl.col('id_value'),
                 ).alias('identifiers')
             ])
         )
 
-        # Group by unique identifier sets and collect all local_entity_ids that share them
-        ms_edges_grouped = (
-            ms_edges_with_lists
-            .group_by('identifiers')
-            .agg([
-                pl.col('local_entity_id').alias('local_entity_ids'),
-                pl.col('source_id').first().alias('source_id')  # All have same source_id
-            ])
-            .with_columns([
-                pl.lit(f"source_{source_id}").alias('source_name')  # Temporary for edge builder
-            ])
-        )
+        # Deduplicate identical identifier sets:
+        # we only need the unique 'identifiers' values to drive unions;
+        # the actual local_entity_ids sharing those sets don't change the UF result.
+        id_sets = ms_edges_with_lists.select('identifiers').unique()
 
-        n_unique_id_sets = len(ms_edges_grouped)
+        n_unique_id_sets = len(id_sets)
         n_total_entities = len(ms_edges_with_lists)
         if n_unique_id_sets < n_total_entities:
-            logger.info(f"  Deduplicated identifier sets: {n_total_entities:,} entities -> {n_unique_id_sets:,} unique sets")
+            logger.info(
+                f"  Deduplicated identifier sets: "
+                f"{n_total_entities:,} entities -> {n_unique_id_sets:,} unique sets"
+            )
 
         # Register all merge-safe nodes
         ms_nodes = local_ms_edges.select([type_col, 'id_value']).unique()
         for t, v in ms_nodes.iter_rows():
+            # Just ensure node is known to UF
             union_find.find((t, v))
 
-        # Build edges within each unique identifier set (connect all merge-safe identifiers that co-occur)
-        edges = _build_edges_from_identifiers(
-            ms_edges_grouped,
-            f"source_{source_id}",
-            identifiers_col='identifiers',
-        )
-
+        # Connect identifiers within each unique identifier set using Union-Find directly
         components_before = union_find.num_components
-        _merge_edges_into_graph(global_graph=None, new_edges=edges, union_find=union_find, nodes_to_register=None)
+
+        for row in id_sets.iter_rows(named=True):
+            id_structs = row['identifiers']
+            if not id_structs or len(id_structs) < 2:
+                continue
+
+            # id_structs is a list of dicts: {'type': ..., 'value': ...}
+            base_struct = id_structs[0]
+            base = (base_struct['type'], str(base_struct['value']))
+
+            for s in id_structs[1:]:
+                other = (s['type'], str(s['value']))
+                union_find.union(base, other)
+
         components_after = union_find.num_components
-        logger.info(f"  Merge-safe nodes: {len(ms_nodes):,}, edges: {len(edges):,}")
+        logger.info(f"  Merge-safe nodes: {len(ms_nodes):,}")
         logger.info(f"  Entities after UF: {components_after:,} (merged {components_before - components_after:,})")
 
         all_local_ms_edges.append(local_ms_edges)
@@ -520,7 +409,7 @@ def build_entity_identifiers(
         .select(['entity_id', type_col, 'id_value'])
         .unique()
         .sort(['entity_id', type_col, 'id_value'])
-        .with_row_index('entity_identifier_id', offset=1)
+        .with_row_index('id', offset=1)
         # Rename columns to match schema
         .rename({type_col: 'type_id', 'id_value': 'identifier'})
     )
@@ -543,13 +432,16 @@ def build_entity_identifiers(
             how='inner'
         )
         .join(source_mapping, on='source_id', how='inner')
-        .select(['entity_identifier_id', 'source_entity_id'])
+        .select([pl.col('id').alias('entity_identifier_id'), 'source_entity_id'])
         .unique()
         .sort(['entity_identifier_id', 'source_entity_id'])
-        .with_row_index('entity_identifier_resource_id', offset=1)
+        .with_row_index('id', offset=1)
     )
 
-    logger.info(f"Final results: {len(record_to_global):,} local->global mappings, "
-                f"{len(entity_identifiers):,} identifier records, "
-                f"{len(entity_identifier_resource):,} identifier-resource links")
+    logger.info(
+        "Final results: %s local->global mappings, %s identifier records, %s identifier-resource links",
+        f"{len(record_to_global):,}",
+        f"{len(entity_identifiers):,}",
+        f"{len(entity_identifier_resource):,}",
+    )
     return record_to_global, entity_identifiers, entity_identifier_resource

@@ -14,7 +14,7 @@ And produces global tables with:
 
 Output tables:
   entity.parquet                      (entity_id, entity_type_id)
-  entity_identifier.parquet           (entity_identifier_id, entity_id, type_id, identifier)
+  entity_identifier.parquet           (id, entity_id, type_id, identifier)
   entity_annotation.parquet           (entity_id, annotation_id, annotation_value, annotation_unit, sources)
   membership.parquet                  (parent_id, member_id, sources)
   membership_annotation.parquet       (membership_id, annotation_id, annotation_value, annotation_unit, sources)
@@ -43,7 +43,7 @@ def _build_cv_term_mapping(entity_identifiers: pl.DataFrame) -> pl.DataFrame:
     CV terms are entities with type_id = "OM:0204" (CV_TERM_ACCESSION).
 
     Args:
-        entity_identifiers: DataFrame with [entity_identifier_id, entity_id, type_id, identifier]
+        entity_identifiers: DataFrame with [id, entity_id, type_id, identifier]
 
     Returns:
         DataFrame with [accession, cv_term_entity_id] mapping

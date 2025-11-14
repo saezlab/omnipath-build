@@ -95,8 +95,8 @@ def build_entity_identifiers_step(
     Returns:
         Tuple of (record_to_global, entity_identifiers, entity_identifier_resource) DataFrames:
         - record_to_global: Maps (source_id, local_entity_id) to entity_id
-        - entity_identifiers: Maps (entity_identifier_id, entity_id, type_id, identifier)
-        - entity_identifier_resource: Maps (entity_identifier_resource_id, entity_identifier_id, source_entity_id)
+        - entity_identifiers: Maps (id, entity_id, type_id, identifier)
+        - entity_identifier_resource: Maps (id, entity_identifier_id, source_entity_id)
     """
     print("\n" + "=" * 70)
     print("STEP: Entity Identifiers (Cross-Source Resolution)")
