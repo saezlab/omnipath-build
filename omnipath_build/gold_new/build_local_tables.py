@@ -203,6 +203,8 @@ def _process_entities_vectorized(df: pl.DataFrame, source_id: int, next_id: int)
     membership_annotations = pl.DataFrame()
     member_entities = []
     member_identifiers = []
+    membership_annot_cv_term_entities = pl.DataFrame()
+    membership_annot_cv_term_identifiers = pl.DataFrame()
 
     if "membership" in df.columns:
         has_memberships = df.filter(
@@ -276,7 +278,54 @@ def _process_entities_vectorized(df: pl.DataFrame, source_id: int, next_id: int)
                     )
 
                     if len(has_membership_annots):
-                        membership_annotations = (
+                        # First, extract all CV terms from membership annotations (term and units)
+                        all_membership_cv_terms = (
+                            has_membership_annots
+                            .select([pl.col("membership_annotations")])
+                            .explode("membership_annotations")
+                            .select([
+                                pl.col("membership_annotations").struct.field("term").alias("cv_term"),
+                                pl.col("membership_annotations").struct.field("units").alias("unit_term"),
+                            ])
+                        )
+
+                        # Collect unique CV terms from both term and units fields
+                        unique_membership_terms = set()
+                        for row in all_membership_cv_terms.iter_rows():
+                            term, unit = row
+                            if term:
+                                unique_membership_terms.add(term)
+                            if unit:
+                                unique_membership_terms.add(unit)
+
+                        membership_annot_cv_term_mapping = {}
+                        if unique_membership_terms:
+                            # Create local entities for each unique CV term
+                            membership_cv_term_list = sorted(unique_membership_terms)
+                            n_membership_cv_terms = len(membership_cv_term_list)
+
+                            membership_annot_cv_term_entities = pl.DataFrame({
+                                "local_entity_id": list(range(next_id, next_id + n_membership_cv_terms)),
+                                "entity_type": ["OM:0003"] * n_membership_cv_terms,  # CV_TERM entity type
+                                "source_id": [source_id] * n_membership_cv_terms,
+                            })
+
+                            # Create identifiers for CV terms (the accession is the identifier)
+                            membership_annot_cv_term_identifiers = pl.DataFrame({
+                                "local_entity_id": list(range(next_id, next_id + n_membership_cv_terms)),
+                                "type_id": ["OM:0204"] * n_membership_cv_terms,  # CV_TERM_ACCESSION identifier type
+                                "identifier": membership_cv_term_list,
+                                "source_id": [source_id] * n_membership_cv_terms,
+                            }).with_row_index("local_entity_identifier_id", offset=1)
+
+                            # Create mapping from CV term accession to local_entity_id
+                            membership_annot_cv_term_mapping = {term: idx for term, idx in zip(membership_cv_term_list, range(next_id, next_id + n_membership_cv_terms))}
+
+                            next_id += n_membership_cv_terms
+                            logger.info(f"    Created {n_membership_cv_terms:,} CV term entities for membership annotations")
+
+                        # Now extract membership annotations with CV term entity IDs
+                        membership_annotation_data = (
                             has_membership_annots
                             .select([
                                 pl.col("local_membership_id"),
@@ -285,17 +334,36 @@ def _process_entities_vectorized(df: pl.DataFrame, source_id: int, next_id: int)
                             .explode("membership_annotations")
                             .select([
                                 pl.col("local_membership_id"),
-                                pl.col("membership_annotations").struct.field("term").alias("annotation_id"),
+                                pl.col("membership_annotations").struct.field("term").alias("term_accession"),
                                 pl.when(pl.col("membership_annotations").struct.field("value").is_not_null())
                                   .then(pl.col("membership_annotations").struct.field("value").cast(pl.String))
                                   .otherwise(None)
                                   .alias("annotation_value"),
-                                pl.col("membership_annotations").struct.field("units").alias("annotation_unit"),
+                                pl.col("membership_annotations").struct.field("units").alias("unit_accession"),
                             ])
-                            .with_row_index("local_membership_annotation_id", offset=1)
-                            .with_columns(pl.lit(source_id).alias("source_id"))
                         )
-                        logger.info(f"    Extracted {len(membership_annotations):,} membership annotation records")
+
+                        # Map CV term accessions to local_entity_ids
+                        membership_annotation_rows = []
+                        for row in membership_annotation_data.iter_rows(named=True):
+                            annotation_id = membership_annot_cv_term_mapping.get(row["term_accession"])
+                            unit_id = membership_annot_cv_term_mapping.get(row["unit_accession"]) if row["unit_accession"] else None
+
+                            if annotation_id:
+                                membership_annotation_rows.append({
+                                    "local_membership_id": row["local_membership_id"],
+                                    "annotation_id": annotation_id,
+                                    "annotation_value": row["annotation_value"],
+                                    "annotation_unit": unit_id,
+                                })
+
+                        if membership_annotation_rows:
+                            membership_annotations = (
+                                pl.DataFrame(membership_annotation_rows)
+                                .with_row_index("local_membership_annotation_id", offset=1)
+                                .with_columns(pl.lit(source_id).alias("source_id"))
+                            )
+                            logger.info(f"    Created {len(membership_annotations):,} membership annotation records")
 
                     # Drop the annotations column from memberships table
                     memberships = memberships.drop("membership_annotations")
@@ -314,6 +382,8 @@ def _process_entities_vectorized(df: pl.DataFrame, source_id: int, next_id: int)
     all_entities = [entities]
     if len(cv_term_entities) > 0:
         all_entities.append(cv_term_entities)
+    if len(membership_annot_cv_term_entities) > 0:
+        all_entities.append(membership_annot_cv_term_entities)
     if member_entities:
         all_entities.extend(member_entities)
 
@@ -326,6 +396,8 @@ def _process_entities_vectorized(df: pl.DataFrame, source_id: int, next_id: int)
         all_identifiers.append(identifiers)
     if len(cv_term_identifiers) > 0:
         all_identifiers.append(cv_term_identifiers)
+    if len(membership_annot_cv_term_identifiers) > 0:
+        all_identifiers.append(membership_annot_cv_term_identifiers)
     if member_identifiers:
         all_identifiers.extend(member_identifiers)
 

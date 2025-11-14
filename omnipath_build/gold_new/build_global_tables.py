@@ -308,11 +308,26 @@ def build_global_tables(
         ).rename({"entity_id": "parent_entity_id"})
 
         # Join member_id with record_to_global
-        df_global = df_with_parent.join(
+        df_with_member = df_with_parent.join(
             record_to_global.rename({"local_entity_id": "member_id"}),
             on=["source_id", "member_id"],
             how="left"
         ).rename({"entity_id": "member_entity_id"})
+
+        # Join annotation_unit_id with record_to_global (if present)
+        if "annotation_unit_id" in df.columns:
+            # Cast annotation_unit_id to Int64 to ensure type compatibility
+            df_with_member = df_with_member.with_columns(
+                pl.col("annotation_unit_id").cast(pl.Int64)
+            )
+            df_global = df_with_member.join(
+                record_to_global.rename({"local_entity_id": "annotation_unit_id"}),
+                on=["source_id", "annotation_unit_id"],
+                how="left"
+            ).rename({"entity_id": "annotation_unit_entity_id"}).drop("annotation_unit_id")
+        else:
+            # Add null column if not present to ensure schema consistency
+            df_global = df_with_member.with_columns(pl.lit(None, dtype=pl.Int64).alias("annotation_unit_entity_id"))
 
         membership_parts.append(df_global)
 
@@ -323,14 +338,18 @@ def build_global_tables(
         memberships_combined = pl.concat(membership_parts, how="diagonal_relaxed")
 
         # Map source_id to source_entity_id
+        rename_dict = {
+            "parent_entity_id": "parent_id",
+            "member_entity_id": "member_id",
+        }
+        if "annotation_unit_entity_id" in memberships_combined.columns:
+            rename_dict["annotation_unit_entity_id"] = "annotation_unit"
+
         memberships_with_source_entity = (
             memberships_combined
             .join(source_mapping, on="source_id", how="left")
             .drop(["parent_id", "member_id"])
-            .rename({
-                "parent_entity_id": "parent_id",
-                "member_entity_id": "member_id",
-            })
+            .rename(rename_dict)
             .sort(["parent_id", "member_id", "source_entity_id"])
         )
 
@@ -380,6 +399,35 @@ def build_global_tables(
                 on=["source_id", "local_membership_id"],
                 how="left"
             )
+
+            # Map annotation_id (local_entity_id) -> annotation_id (global entity_id)
+            # annotation_id is a local_entity_id that needs to be mapped to global entity_id
+            if "annotation_id" in df.columns:
+                # Cast annotation_id to Int64 to ensure type compatibility
+                df_global = df_global.with_columns(
+                    pl.col("annotation_id").cast(pl.Int64)
+                )
+                df_global = df_global.join(
+                    record_to_global.rename({"local_entity_id": "annotation_id"}),
+                    on=["source_id", "annotation_id"],
+                    how="left"
+                ).rename({"entity_id": "annotation_id_entity_id"}).drop("annotation_id")
+
+            # Map annotation_unit (local_entity_id) -> annotation_unit (global entity_id)
+            # annotation_unit is a local_entity_id that needs to be mapped to global entity_id
+            if "annotation_unit" in df.columns:
+                # Cast annotation_unit to Int64 to ensure type compatibility
+                df_global = df_global.with_columns(
+                    pl.col("annotation_unit").cast(pl.Int64)
+                )
+                df_global = df_global.join(
+                    record_to_global.rename({"local_entity_id": "annotation_unit"}),
+                    on=["source_id", "annotation_unit"],
+                    how="left"
+                ).rename({"entity_id": "annotation_unit_entity_id"}).drop("annotation_unit")
+            else:
+                df_global = df_global.with_columns(pl.lit(None, dtype=pl.Int64).alias("annotation_unit_entity_id"))
+
             membership_annot_parts.append(df_global)
         else:
             logger.warning(f"  Skipping {f.name} - no membership mapping available")
@@ -388,24 +436,23 @@ def build_global_tables(
         # Combine all sources
         membership_annots_combined = pl.concat(membership_annot_parts, how="diagonal_relaxed")
 
-        # Map source_id to source_entity_id and rename to source_id
+        # Map source_id to source_entity_id and rename columns
+        rename_dict = {"source_entity_id": "source_id"}
+        if "annotation_id_entity_id" in membership_annots_combined.columns:
+            rename_dict["annotation_id_entity_id"] = "annotation_id"
+        if "annotation_unit_entity_id" in membership_annots_combined.columns:
+            rename_dict["annotation_unit_entity_id"] = "annotation_unit"
+
         membership_annots_with_source_entity = (
             membership_annots_combined
             .join(source_mapping, on="source_id", how="left")
             .drop(["source_id", "local_membership_id", "local_membership_annotation_id"])
-            .rename({"source_entity_id": "source_id"})
+            .rename(rename_dict)
             .sort(["membership_id", "source_id"])
         )
 
-        # Map annotation_id (accession) -> annotation_id (entity_id)
-        membership_annots_mapped = _map_cv_term_column(
-            membership_annots_with_source_entity,
-            cv_term_mapping,
-            "annotation_id"
-        )
-
         # Assign global sequential IDs
-        membership_annots_output = membership_annots_mapped.with_row_index("id", offset=1)
+        membership_annots_output = membership_annots_with_source_entity.with_row_index("id", offset=1)
 
         membership_annots_output.write_parquet(output_dir / "membership_annotation.parquet")
         logger.info(f"✅ membership_annotation: {len(membership_annots_output):,} rows")
