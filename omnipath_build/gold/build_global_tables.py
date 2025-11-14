@@ -465,7 +465,3 @@ def build_global_tables(
     logger.info("🎉 Global tables complete!")
     logger.info("=" * 80)
 
-
-if __name__ == "__main__":
-    import typer
-    typer.run(build_global_tables)

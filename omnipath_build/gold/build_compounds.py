@@ -23,7 +23,7 @@ from typing import Optional
 import logging
 from multiprocessing import Pool, cpu_count
 
-from omnipath_build.utils.cv_term_enums import IdentifierNamespaceCv
+from pypath.internals.cv_terms import IdentifierNamespaceCv
 
 try:
     from rdkit import Chem, RDLogger

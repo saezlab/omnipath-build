@@ -25,9 +25,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Import our modular functions from the gold_new/ directory
-from omnipath_build.gold_new.build_local_tables import build_local_tables
-from omnipath_build.gold_new.build_entity_identifiers import build_entity_identifiers
-from omnipath_build.gold_new.build_global_tables import build_global_tables
+from omnipath_build.gold.build_local_tables import build_local_tables
+from omnipath_build.gold.build_entity_identifiers import build_entity_identifiers
+from omnipath_build.gold.build_global_tables import build_global_tables
 
 __all__ = [
     'build_local_tables_step',
