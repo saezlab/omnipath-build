@@ -40,46 +40,25 @@ logger = logging.getLogger(__name__)
 def _build_cv_term_mapping(entity_identifiers: pl.DataFrame) -> pl.DataFrame:
     """Build CV term mapping from entity_identifiers.
 
-    CV terms are entities with id_type = "OM:0204" (CV_TERM_ACCESSION).
+    CV terms are entities with type_id = "OM:0204" (CV_TERM_ACCESSION).
 
     Args:
-        entity_identifiers: DataFrame with [entity_id, id_type/id_type_id, id_value, sources]
+        entity_identifiers: DataFrame with [entity_identifier_id, entity_id, type_id, identifier]
 
     Returns:
         DataFrame with [accession, cv_term_entity_id] mapping
     """
-    # Check if we have id_type (accession) or id_type_id (already resolved)
-    if "id_type" in entity_identifiers.columns:
-        # Filter for CV term accessions (OM:0204)
-        cv_terms = (
-            entity_identifiers
-            .filter(pl.col("id_type") == "OM:0204")
-            .select([
-                pl.col("id_value").alias("accession"),
-                pl.col("entity_id").alias("cv_term_entity_id"),
-            ])
-            .unique(subset=["accession"])
-        )
-    else:
-        # Already resolved: find the entity_id for "OM:0204" type
-        # First, find which entity_id corresponds to the CV term "OM:0204" itself
-        om0204_entity_id = (
-            entity_identifiers
-            .filter(pl.col("id_value") == "OM:0204")
-            .select(pl.col("entity_id").first())
-            .item()
-        )
-
-        # Then get all identifiers with that type
-        cv_terms = (
-            entity_identifiers
-            .filter(pl.col("id_type_id") == om0204_entity_id)
-            .select([
-                pl.col("id_value").alias("accession"),
-                pl.col("entity_id").alias("cv_term_entity_id"),
-            ])
-            .unique(subset=["accession"])
-        )
+    # Filter by type_id string accession "OM:0204" (CV_TERM_ACCESSION)
+    # At this stage, type_id is still a string accession, not yet converted to integer entity_id
+    cv_terms = (
+        entity_identifiers
+        .filter(pl.col("type_id") == "OM:0204")
+        .select([
+            pl.col("identifier").alias("accession"),
+            pl.col("entity_id").alias("cv_term_entity_id"),
+        ])
+        .unique(subset=["accession"])
+    )
 
     logger.info(f"Built CV term mapping with {len(cv_terms):,} unique accessions")
     return cv_terms
@@ -177,8 +156,29 @@ def build_global_tables(
     entity_identifiers = pl.read_parquet(entity_identifiers_file)
     logger.info(f"Loaded entity_identifiers: {len(entity_identifiers):,} rows")
 
-    # Build CV term mapping
-    cv_term_mapping = _build_cv_term_mapping(entity_identifiers)
+    # Check if type_id has already been converted to type_id_id (rerun scenario)
+    already_processed = "type_id_id" in entity_identifiers.columns and "type_id" not in entity_identifiers.columns
+    if already_processed:
+        # Already processed - the type_id is already an integer entity_id
+        # Build CV term mapping directly from integer type_id
+        logger.info("Detected already-processed entity_identifiers (has type_id_id)")
+        cv_term_mapping = (
+            entity_identifiers
+            .rename({"type_id_id": "type_id"})
+            .filter(pl.col("type_id").is_not_null())  # CV terms have a type_id
+            .select([
+                pl.col("identifier").alias("accession"),
+                pl.col("entity_id").alias("cv_term_entity_id"),
+            ])
+            .unique(subset=["accession"])
+        )
+        # Also rename for the rest of the processing
+        entity_identifiers = entity_identifiers.rename({"type_id_id": "type_id"})
+    else:
+        # Build CV term mapping from string type_id accessions
+        cv_term_mapping = _build_cv_term_mapping(entity_identifiers)
+
+    logger.info(f"Built CV term mapping with {len(cv_term_mapping):,} unique accessions")
 
     # ========================================================================
     # 2. PROCESS ENTITY TABLE
@@ -241,12 +241,17 @@ def build_global_tables(
     logger.info("Processing entity_identifier table")
     logger.info("=" * 80)
 
-    # Map type_id (CV term accession) to entity_id
-    entity_identifiers_output = _map_cv_term_column(
-        entity_identifiers,
-        cv_term_mapping,
-        "type_id"
-    )
+    # Map type_id (CV term accession) to entity_id (skip if already processed)
+    if already_processed:
+        # type_id is already an integer entity_id, just rename to type_id_id
+        entity_identifiers_output = entity_identifiers.rename({"type_id": "type_id_id"})
+        logger.info("Skipping type_id mapping (already processed)")
+    else:
+        entity_identifiers_output = _map_cv_term_column(
+            entity_identifiers,
+            cv_term_mapping,
+            "type_id"
+        )
 
     # Save the updated entity_identifier table
     entity_identifiers_output.write_parquet(output_dir / "entity_identifier.parquet")
@@ -256,63 +261,24 @@ def build_global_tables(
     # and requires no further transformation (all IDs are already correct)
 
     # ========================================================================
-    # 4. PROCESS ENTITY ANNOTATION TABLE
+    # 3.5. BUILD SOURCE_ID -> SOURCE_ENTITY_ID MAPPING
     # ========================================================================
 
     logger.info("\n" + "=" * 80)
-    logger.info("Processing entity_annotation table")
+    logger.info("Building source_id -> source_entity_id mapping")
     logger.info("=" * 80)
 
-    annotation_files = sorted(local_tables_dir.glob("local_entity_annotation_*.parquet"))
-    logger.info(f"Found {len(annotation_files)} entity_annotation files")
-
-    annotation_parts = []
-    for f in annotation_files:
-        df = pl.read_parquet(f)
-        logger.info(f"  {f.name}: {len(df):,} rows")
-
-        # Join with record_to_global to get entity_id
-        df_global = df.join(
-            record_to_global,
-            on=["source_id", "local_entity_id"],
-            how="left"
-        )
-
-        annotation_parts.append(df_global)
-
-    if annotation_parts:
-        # Combine all sources
-        annotations_combined = pl.concat(annotation_parts, how="diagonal_relaxed")
-
-        # Aggregate by (entity_id, annotation_id, annotation_value, annotation_unit) to collect sources
-        annotations_global = (
-            annotations_combined
-            .group_by(["entity_id", "annotation_id", "annotation_value", "annotation_unit"])
-            .agg([
-                pl.col("source_id").unique().sort().alias("sources"),
-            ])
-            .sort("entity_id")
-        )
-
-        # Map annotation_id (accession) -> annotation_id (entity_id)
-        # Note: annotation_id is already the accession, we need to rename the result
-        annotations_output = _map_cv_term_column(
-            annotations_global,
-            cv_term_mapping,
-            "annotation_id"
-        )
-
-        # Assign global sequential IDs
-        annotations_output = annotations_output.with_row_index("id", offset=1)
-
-        annotations_output.write_parquet(output_dir / "entity_annotation.parquet")
-        logger.info(f"✅ entity_annotation: {len(annotations_output):,} rows")
-    else:
-        logger.warning("No entity_annotation files found")
-        pl.DataFrame().write_parquet(output_dir / "entity_annotation.parquet")
+    # Build mapping from source_id to source_entity_id
+    # Sources always have local_entity_id = 1 (guaranteed by build_local_tables.py)
+    source_mapping = (
+        record_to_global
+        .filter(pl.col("local_entity_id") == 1)
+        .select(["source_id", pl.col("entity_id").alias("source_entity_id")])
+    )
+    logger.info(f"Built source mapping: {len(source_mapping):,} sources")
 
     # ========================================================================
-    # 5. PROCESS MEMBERSHIP TABLE
+    # 4. PROCESS MEMBERSHIP TABLE
     # ========================================================================
 
     logger.info("\n" + "=" * 80)
@@ -330,6 +296,9 @@ def build_global_tables(
     for f in membership_files:
         df = pl.read_parquet(f)
         logger.info(f"  {f.name}: {len(df):,} rows")
+
+        # parent_id is always a local_entity_id (integer)
+        # CV terms are now created as local entities, so no special handling needed
 
         # Join parent_id with record_to_global
         df_with_parent = df.join(
@@ -353,45 +322,33 @@ def build_global_tables(
         # Combine all sources
         memberships_combined = pl.concat(membership_parts, how="diagonal_relaxed")
 
-        # Keep track of local membership IDs before aggregation
-        local_membership_mapping = memberships_combined.select([
-            "source_id",
-            "local_membership_id",
-            "parent_entity_id",
-            "member_entity_id",
-        ])
-
-        # Aggregate by (parent_entity_id, member_entity_id) to collect sources
-        memberships_global = (
+        # Map source_id to source_entity_id
+        memberships_with_source_entity = (
             memberships_combined
-            .group_by(["parent_entity_id", "member_entity_id"])
-            .agg([
-                pl.col("source_id").unique().sort().alias("sources"),
-            ])
+            .join(source_mapping, on="source_id", how="left")
+            .drop(["parent_id", "member_id"])
             .rename({
                 "parent_entity_id": "parent_id",
                 "member_entity_id": "member_id",
             })
-            .sort(["parent_id", "member_id"])
+            .sort(["parent_id", "member_id", "source_entity_id"])
         )
 
         # Assign global sequential IDs
-        memberships_output = memberships_global.with_row_index("id", offset=1)
+        memberships_with_id = memberships_with_source_entity.with_row_index("id", offset=1)
 
         # Create mapping from (source_id, local_membership_id) to global membership_id
         membership_to_global = (
-            local_membership_mapping
-            .join(
-                memberships_output.select([
-                    pl.col("id").alias("membership_id"),
-                    pl.col("parent_id").alias("parent_entity_id"),
-                    pl.col("member_id").alias("member_entity_id"),
-                ]),
-                on=["parent_entity_id", "member_entity_id"],
-                how="left"
-            )
-            .select(["source_id", "local_membership_id", "membership_id"])
-            .unique()
+            memberships_with_id
+            .select(["source_id", "local_membership_id", "id"])
+            .rename({"id": "membership_id"})
+        )
+
+        # Drop local_membership_id and source_id, rename source_entity_id to source_id for final output
+        memberships_output = (
+            memberships_with_id
+            .drop(["local_membership_id", "source_id"])
+            .rename({"source_entity_id": "source_id"})
         )
 
         memberships_output.write_parquet(output_dir / "membership.parquet")
@@ -401,7 +358,7 @@ def build_global_tables(
         pl.DataFrame().write_parquet(output_dir / "membership.parquet")
 
     # ========================================================================
-    # 6. PROCESS MEMBERSHIP ANNOTATION TABLE
+    # 5. PROCESS MEMBERSHIP ANNOTATION TABLE
     # ========================================================================
 
     logger.info("\n" + "=" * 80)
@@ -431,25 +388,24 @@ def build_global_tables(
         # Combine all sources
         membership_annots_combined = pl.concat(membership_annot_parts, how="diagonal_relaxed")
 
-        # Aggregate by (membership_id, annotation_id, annotation_value, annotation_unit) to collect sources
-        membership_annots_global = (
+        # Map source_id to source_entity_id and rename to source_id
+        membership_annots_with_source_entity = (
             membership_annots_combined
-            .group_by(["membership_id", "annotation_id", "annotation_value", "annotation_unit"])
-            .agg([
-                pl.col("source_id").unique().sort().alias("sources"),
-            ])
-            .sort("membership_id")
+            .join(source_mapping, on="source_id", how="left")
+            .drop(["source_id", "local_membership_id", "local_membership_annotation_id"])
+            .rename({"source_entity_id": "source_id"})
+            .sort(["membership_id", "source_id"])
         )
 
         # Map annotation_id (accession) -> annotation_id (entity_id)
-        membership_annots_output = _map_cv_term_column(
-            membership_annots_global,
+        membership_annots_mapped = _map_cv_term_column(
+            membership_annots_with_source_entity,
             cv_term_mapping,
             "annotation_id"
         )
 
         # Assign global sequential IDs
-        membership_annots_output = membership_annots_output.with_row_index("id", offset=1)
+        membership_annots_output = membership_annots_mapped.with_row_index("id", offset=1)
 
         membership_annots_output.write_parquet(output_dir / "membership_annotation.parquet")
         logger.info(f"✅ membership_annotation: {len(membership_annots_output):,} rows")
