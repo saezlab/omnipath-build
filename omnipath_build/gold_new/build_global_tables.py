@@ -13,7 +13,7 @@ And produces global tables with:
 - Global sequential IDs assigned
 
 Output tables:
-  entity.parquet                      (entity_id, entity_type_id, sources)
+  entity.parquet                      (entity_id, entity_type_id)
   entity_identifier.parquet           (entity_identifier_id, entity_id, type_id, identifier)
   entity_annotation.parquet           (entity_id, annotation_id, annotation_value, annotation_unit, sources)
   membership.parquet                  (parent_id, member_id, sources)
@@ -213,13 +213,12 @@ def build_global_tables(
         # Combine all sources
         entities_combined = pl.concat(entity_parts, how="diagonal_relaxed")
 
-        # Aggregate by entity_id to collect sources and entity_type
+        # Aggregate by entity_id to get entity_type
         entities_global = (
             entities_combined
             .group_by("entity_id")
             .agg([
                 pl.col("entity_type").first().alias("entity_type"),  # Should be same across sources
-                pl.col("source_id").unique().sort().alias("sources"),
             ])
             .sort("entity_id")
         )
@@ -243,15 +242,17 @@ def build_global_tables(
 
     # Map type_id (CV term accession) to entity_id (skip if already processed)
     if already_processed:
-        # type_id is already an integer entity_id, just rename to type_id_id
-        entity_identifiers_output = entity_identifiers.rename({"type_id": "type_id_id"})
+        # type_id is already an integer entity_id, keep it as type_id
+        entity_identifiers_output = entity_identifiers
         logger.info("Skipping type_id mapping (already processed)")
     else:
-        entity_identifiers_output = _map_cv_term_column(
+        entity_identifiers_mapped = _map_cv_term_column(
             entity_identifiers,
             cv_term_mapping,
             "type_id"
         )
+        # Rename type_id_id back to type_id for consistency
+        entity_identifiers_output = entity_identifiers_mapped.rename({"type_id_id": "type_id"})
 
     # Save the updated entity_identifier table
     entity_identifiers_output.write_parquet(output_dir / "entity_identifier.parquet")
