@@ -4,20 +4,22 @@
 This script consumes:
 1. local_entity_*.parquet files (from build_local_tables.py)
 2. record_to_global.parquet (from build_entity_identifiers.py)
-3. entity_identifiers.parquet (final_identifiers from build_entity_identifiers.py)
+3. entity_identifiers.parquet (from build_entity_identifiers.py)
 
 And produces global tables with:
 - Local entity IDs replaced by canonical entity IDs
 - CV term accessions resolved to entity IDs
-- Source provenance preserved
+- Source provenance in separate resource tables
 - Global sequential IDs assigned
 
 Output tables:
-  entity.parquet              (entity_id, entity_type_id, sources)
-  entity_identifier.parquet   (entity_id, id_type_id, id_value, sources)
-  entity_annotation.parquet   (entity_id, annotation_id, annotation_value, annotation_unit, sources)
-  membership.parquet          (parent_id, member_id, sources)
-  membership_annotation.parquet (membership_id, annotation_id, annotation_value, annotation_unit, sources)
+  entity.parquet                      (entity_id, entity_type_id, sources)
+  entity_identifier.parquet           (entity_identifier_id, entity_id, type_id, identifier)
+  entity_annotation.parquet           (entity_id, annotation_id, annotation_value, annotation_unit, sources)
+  membership.parquet                  (parent_id, member_id, sources)
+  membership_annotation.parquet       (membership_id, annotation_id, annotation_value, annotation_unit, sources)
+
+Note: entity_identifier_resource.parquet is created by build_entity_identifiers.py and requires no transformation
 """
 
 from __future__ import annotations
@@ -239,10 +241,19 @@ def build_global_tables(
     logger.info("Processing entity_identifier table")
     logger.info("=" * 80)
 
-    # entity_identifiers is already processed by build_entity_identifiers step
-    # Just verify it exists and report stats
-    logger.info("Entity identifiers already processed in entity_identifiers step")
-    logger.info(f"✅ entity_identifier: {len(entity_identifiers):,} rows")
+    # Map type_id (CV term accession) to entity_id
+    entity_identifiers_output = _map_cv_term_column(
+        entity_identifiers,
+        cv_term_mapping,
+        "type_id"
+    )
+
+    # Save the updated entity_identifier table
+    entity_identifiers_output.write_parquet(output_dir / "entity_identifier.parquet")
+    logger.info(f"✅ entity_identifier: {len(entity_identifiers_output):,} rows")
+
+    # Note: entity_identifier_resource.parquet is already created by build_entity_identifiers.py
+    # and requires no further transformation (all IDs are already correct)
 
     # ========================================================================
     # 4. PROCESS ENTITY ANNOTATION TABLE

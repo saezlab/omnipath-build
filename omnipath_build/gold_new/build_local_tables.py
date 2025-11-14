@@ -324,8 +324,16 @@ def build_local_tables(
 
         next_id = 1
 
+        # Sort files to ensure resource.parquet is processed first
+        # This guarantees that the source entity always gets local_entity_id = 1
+        def sort_key(item):
+            path, _ = item
+            return (0 if path.name == 'resource.parquet' else 1, path.name)
+
+        sorted_files = sorted(files, key=sort_key)
+
         # Process each file
-        for file_path, lazy_frame in files:
+        for file_path, lazy_frame in sorted_files:
             logger.info(f"  Processing {file_path.name}")
 
             # Collect the dataframe

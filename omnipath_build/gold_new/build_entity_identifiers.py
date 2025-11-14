@@ -351,7 +351,7 @@ def _union_find_to_safe_clusters(uf: UnionFind) -> pl.DataFrame:
 def build_entity_identifiers(
     local_tables_dir: Path,
     merge_unsafe_types: frozenset[str] = MERGE_UNSAFE_IDENTIFIER_TYPES,
-) -> tuple[pl.DataFrame, pl.DataFrame]:
+) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]:
     """Build unified identifier tables with canonical entity IDs from local tables.
 
     Args:
@@ -360,15 +360,16 @@ def build_entity_identifiers(
 
     Returns a tuple of:
       - record_to_global: (source_id, local_entity_id) -> entity_id
-      - final_identifiers: (entity_id, id_type, id_value) with sources provenance
-                          where id_type is an accession string (e.g., "MI:0326")
+      - entity_identifiers: (entity_identifier_id, entity_id, type_id, identifier)
+      - entity_identifier_resource: (entity_identifier_resource_id, entity_identifier_id, source_entity_id)
+                                    where source_entity_id is the entity_id of the source (from local context)
     """
     local_tables_dir = Path(local_tables_dir)
     sources_data = _load_local_tables(local_tables_dir)
 
     if not sources_data:
         logger.warning("No local tables found, returning empty results")
-        return pl.DataFrame(), pl.DataFrame()
+        return pl.DataFrame(), pl.DataFrame(), pl.DataFrame()
 
     union_find = UnionFind()
     all_local_ms_edges: list[pl.DataFrame] = []
@@ -457,7 +458,7 @@ def build_entity_identifiers(
 
     if not all_local_ms_edges or not all_local_all_edges:
         logger.warning("No edges collected, returning empty results")
-        return pl.DataFrame(), pl.DataFrame()
+        return pl.DataFrame(), pl.DataFrame(), pl.DataFrame()
 
     local_ms_edges_all = pl.concat(all_local_ms_edges, how='diagonal_relaxed')
     local_all_edges_all = pl.concat(all_local_all_edges, how='diagonal_relaxed')
@@ -501,20 +502,54 @@ def build_entity_identifiers(
         record_to_global = pl.concat([record_to_global, unresolved], how='diagonal_relaxed')
         logger.info(f"Added unresolved local entities (no merge-safe IDs): {len(unresolved):,}")
 
-    # Propagate entity_id to all identifiers and aggregate provenance
-    final_identifiers = (
+    # Propagate entity_id to all identifiers with source provenance
+    identifiers_with_sources = (
         local_all_edges_all
         .join(
             record_to_global.select(['source_id', 'local_entity_id', 'entity_id']),
             on=['source_id', 'local_entity_id'],
             how='inner'
         )
-        .group_by(['entity_id', type_col, 'id_value'])
-        .agg([
-            pl.col('source_id').unique().sort().alias('sources')
-        ])
-        .sort(['entity_id', type_col, 'id_value'])
+        .select(['entity_id', type_col, 'id_value', 'source_id'])
+        .unique()  # Remove duplicates
     )
 
-    logger.info(f"Final results: {len(record_to_global):,} local->global mappings, {len(final_identifiers):,} identifier records")
-    return record_to_global, final_identifiers
+    # Build entity_identifier table (unique identifiers without source info)
+    entity_identifiers = (
+        identifiers_with_sources
+        .select(['entity_id', type_col, 'id_value'])
+        .unique()
+        .sort(['entity_id', type_col, 'id_value'])
+        .with_row_index('entity_identifier_id', offset=1)
+        # Rename columns to match schema
+        .rename({type_col: 'type_id', 'id_value': 'identifier'})
+    )
+
+    # Build source_id → source_entity_id mapping
+    # Sources always have local_entity_id = 1 (guaranteed by build_local_tables.py)
+    source_mapping = (
+        record_to_global
+        .filter(pl.col('local_entity_id') == 1)
+        .select(['source_id', pl.col('entity_id').alias('source_entity_id')])
+    )
+    logger.info(f"Built source mapping: {len(source_mapping):,} sources")
+
+    # Build entity_identifier_resource table (identifier → source provenance)
+    entity_identifier_resource = (
+        identifiers_with_sources
+        .join(
+            entity_identifiers.rename({'type_id': type_col, 'identifier': 'id_value'}),
+            on=['entity_id', type_col, 'id_value'],
+            how='inner'
+        )
+        .join(source_mapping, on='source_id', how='inner')
+        .select(['entity_identifier_id', 'source_entity_id'])
+        .unique()
+        .sort(['entity_identifier_id', 'source_entity_id'])
+        .with_row_index('entity_identifier_resource_id', offset=1)
+    )
+
+    logger.info(f"Final results: {len(record_to_global):,} local->global mappings, "
+                f"{len(entity_identifiers):,} identifier records, "
+                f"{len(entity_identifier_resource):,} identifier-resource links")
+    return record_to_global, entity_identifiers, entity_identifier_resource

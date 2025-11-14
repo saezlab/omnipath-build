@@ -78,7 +78,7 @@ def build_local_tables_step(
 
 def build_entity_identifiers_step(
     output_dir: Path,
-) -> tuple[pl.DataFrame, pl.DataFrame]:
+) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]:
     """
     Build entity identifiers using graph-based equivalence detection.
 
@@ -87,15 +87,16 @@ def build_entity_identifiers_step(
     2. Building edges from merge-safe identifiers (InChI, InChIKey, Uniprot)
     3. Using UnionFind to assign canonical entity_id across all sources
     4. Creating a mapping from (source_id, local_entity_id) -> entity_id
-    5. Building a unified identifier table with provenance
+    5. Building a unified identifier table with source provenance
 
     Args:
         output_dir: Path to output directory containing local_tables/
 
     Returns:
-        Tuple of (record_to_global, final_identifiers) DataFrames:
+        Tuple of (record_to_global, entity_identifiers, entity_identifier_resource) DataFrames:
         - record_to_global: Maps (source_id, local_entity_id) to entity_id
-        - final_identifiers: Maps (entity_id, id_type, id_value) with sources provenance
+        - entity_identifiers: Maps (entity_identifier_id, entity_id, type_id, identifier)
+        - entity_identifier_resource: Maps (entity_identifier_resource_id, entity_identifier_id, source_entity_id)
     """
     print("\n" + "=" * 70)
     print("STEP: Entity Identifiers (Cross-Source Resolution)")
@@ -109,24 +110,28 @@ def build_entity_identifiers_step(
         )
 
     # Build entity identifiers
-    record_to_global, final_identifiers = build_entity_identifiers(
+    record_to_global, entity_identifiers, entity_identifier_resource = build_entity_identifiers(
         local_tables_dir=local_tables_dir,
     )
 
     # Save the results
     record_to_global_path = output_dir / "entity_record_mapping.parquet"
-    final_identifiers_path = output_dir / "entity_identifier.parquet"
+    entity_identifiers_path = output_dir / "entity_identifier.parquet"
+    entity_identifier_resource_path = output_dir / "entity_identifier_resource.parquet"
 
     record_to_global.write_parquet(record_to_global_path)
-    final_identifiers.write_parquet(final_identifiers_path)
+    entity_identifiers.write_parquet(entity_identifiers_path)
+    entity_identifier_resource.write_parquet(entity_identifier_resource_path)
 
     print(f"\nSaved entity record mapping: {record_to_global_path}")
     print(f"  Rows: {len(record_to_global):,}")
-    print(f"\nSaved entity identifiers: {final_identifiers_path}")
-    print(f"  Rows: {len(final_identifiers):,}")
-    print(f"  Unique entities: {final_identifiers['entity_id'].n_unique():,}")
+    print(f"\nSaved entity identifiers: {entity_identifiers_path}")
+    print(f"  Rows: {len(entity_identifiers):,}")
+    print(f"  Unique entities: {entity_identifiers['entity_id'].n_unique():,}")
+    print(f"\nSaved entity identifier resources: {entity_identifier_resource_path}")
+    print(f"  Rows: {len(entity_identifier_resource):,}")
 
-    return record_to_global, final_identifiers
+    return record_to_global, entity_identifiers, entity_identifier_resource
 
 
 def build_global_tables_step(
