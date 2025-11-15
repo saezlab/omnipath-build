@@ -190,7 +190,10 @@ def _process_entities_vectorized(df: pl.DataFrame, source_id: int, next_id: int)
 
             if annotation_rows:
                 annotation_memberships = (
-                    pl.DataFrame(annotation_rows)
+                    pl.DataFrame(
+                        annotation_rows,
+                        schema_overrides={"annotation_value": pl.String}
+                    )
                     .with_row_index("local_membership_id", offset=1)
                     .with_columns(pl.lit(source_id).alias("source_id"))
                 )
@@ -359,7 +362,10 @@ def _process_entities_vectorized(df: pl.DataFrame, source_id: int, next_id: int)
 
                         if membership_annotation_rows:
                             membership_annotations = (
-                                pl.DataFrame(membership_annotation_rows)
+                                pl.DataFrame(
+                                    membership_annotation_rows,
+                                    schema_overrides={"annotation_value": pl.String}
+                                )
                                 .with_row_index("local_membership_annotation_id", offset=1)
                                 .with_columns(pl.lit(source_id).alias("source_id"))
                             )
