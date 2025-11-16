@@ -105,6 +105,17 @@ fn field_to_json_value(field: &parquet::record::Field) -> Value {
             for (name, field) in row.get_column_iter() {
                 map.insert(name.to_string(), field_to_json_value(field));
             }
+
+            if map.len() == 2 {
+                if let (Some(Value::String(key)), Some(value)) =
+                    (map.get("key").cloned(), map.get("value").cloned())
+                {
+                    let mut single = Map::new();
+                    single.insert(key, value);
+                    return Value::Object(single);
+                }
+            }
+
             Value::Object(map)
         }
         Field::ListInternal(list) => {

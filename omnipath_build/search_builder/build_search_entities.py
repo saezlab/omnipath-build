@@ -18,7 +18,7 @@ Output:
   - gene_symbols: list[str]
   - descriptions: list[str]
   - references: list[str]
-  - identifiers: str (JSON string mapping "type_name:type_id" to value, excludes names/synonyms/gene_symbols)
+  - identifiers: list[dict] (each object contains a single `"type:type_id": "value"` mapping, excludes names/synonyms/gene_symbols)
   - sources: list[str] (formatted as "source_name:source_id")
   - complexes: list[int] (entity_ids of complexes this entity is part of)
   - cv_terms: list[int] (entity_ids of CV terms annotating this entity)
@@ -26,10 +26,10 @@ Output:
 """
 from __future__ import annotations
 
-import json
 import logging
 from pathlib import Path
 import polars as pl
+from polars import Field
 
 from .schema import (
     build_cv_term_mapping,
@@ -41,6 +41,14 @@ __all__ = ["build_search_entities"]
 
 logger = logging.getLogger(__name__)
 
+IDENTIFIER_OBJECT_DTYPE = pl.List(
+    pl.Struct(
+        [
+            Field('key', pl.Utf8),
+            Field('value', pl.Utf8),
+        ]
+    )
+)
 
 def build_search_entities(
     global_tables_dir: Path,
@@ -228,7 +236,7 @@ def _collect_all_identifiers(
     all_identifiers: pl.DataFrame,
     excluded_type_ids: frozenset[int],
 ) -> pl.DataFrame:
-    """Collect all identifiers as JSON string mapping "type_name:type_id" to value.
+    """Collect all identifiers as list of objects with type/type_id/value.
 
     Args:
         identifiers: DataFrame with [id, entity_id, type_id, identifier]
@@ -237,14 +245,14 @@ def _collect_all_identifiers(
         excluded_type_ids: Set of type_ids to exclude (names, synonyms, gene_symbols)
 
     Returns:
-        DataFrame with [entity_id, identifiers] where identifiers is a JSON string like:
-        '{"uniprot:3874827": "P0A6M2", "chebi:3874830": "CHEBI:15377"}'
+        DataFrame with [entity_id, identifiers] where identifiers is a list like:
+        [{"uniprot:3874827": "P0A6M2"}, ...]
     """
     # Filter out excluded identifier types
     filtered_identifiers = identifiers.filter(~pl.col('type_id').is_in(list(excluded_type_ids)))
 
     if len(filtered_identifiers) == 0:
-        return pl.DataFrame(schema={'entity_id': pl.Int64, 'identifiers': pl.Utf8})
+        return pl.DataFrame(schema={'entity_id': pl.Int64, 'identifiers': IDENTIFIER_OBJECT_DTYPE})
 
     # Build a mapping from type_id (entity_id of identifier type) to its name
     # Identifier types have a NAME identifier themselves
@@ -268,7 +276,7 @@ def _collect_all_identifiers(
         # Fallback if NAME type not found
         type_names = pl.DataFrame(schema={'type_entity_id': pl.Int64, 'type_name': pl.Utf8})
 
-    # Join identifiers with type names
+    # Join identifiers with type names and build identifier objects
     identifiers_with_types = (
         filtered_identifiers
         .join(
@@ -276,7 +284,6 @@ def _collect_all_identifiers(
             on='type_id',
             how='left'
         )
-        # Fallback to accession if name not found
         .join(
             cv_term_accessions.rename({'cv_entity_id': 'type_id'}),
             on='type_id',
@@ -288,33 +295,22 @@ def _collect_all_identifiers(
               .otherwise(pl.col('accession'))
               .alias('type_display')
         ])
-        # Create the dict key as "type_name:type_id"
         .with_columns([
-            (pl.col('type_display') + pl.lit(':') + pl.col('type_id').cast(pl.Utf8)).alias('dict_key')
+            (pl.col('type_display') + pl.lit(':') + pl.col('type_id').cast(pl.Utf8)).alias('identifier_key'),
+        ])
+        .with_columns([
+            pl.struct([
+                pl.col('identifier_key').alias('key'),
+                pl.col('identifier').alias('value'),
+            ]).alias('identifier_object')
         ])
     )
-
-    # Group by entity_id and create JSON string using map_elements
-    def create_json_dict(keys: list[str], values: list[str]) -> str:
-        """Create JSON string from parallel lists of keys and values."""
-        return json.dumps(dict(zip(keys, values)))
 
     return (
         identifiers_with_types
         .group_by('entity_id')
-        .agg([
-            pl.col('dict_key'),
-            pl.col('identifier'),
-        ])
-        .with_columns([
-            pl.struct(['dict_key', 'identifier'])
-              .map_elements(
-                  lambda s: create_json_dict(s['dict_key'], s['identifier']),
-                  return_dtype=pl.Utf8
-              )
-              .alias('identifiers')
-        ])
-        .select(['entity_id', 'identifiers'])
+        .agg(pl.col('identifier_object').unique())
+        .rename({'identifier_object': 'identifiers'})
     )
 
 
@@ -551,8 +547,7 @@ def _fill_defaults(df: pl.DataFrame) -> pl.DataFrame:
         pl.col('gene_symbols').fill_null(pl.lit([], dtype=pl.List(pl.Utf8))),
         pl.col('descriptions').fill_null(pl.lit([], dtype=pl.List(pl.Utf8))),
         pl.col('references').fill_null(pl.lit([], dtype=pl.List(pl.Utf8))),
-        # identifiers is now a JSON string, fill with empty JSON object
-        pl.col('identifiers').fill_null(pl.lit('{}', dtype=pl.Utf8)),
+        pl.col('identifiers').fill_null(pl.lit([], dtype=IDENTIFIER_OBJECT_DTYPE)),
         # sources is now a list of strings (formatted as "name:id")
         pl.col('sources').fill_null(pl.lit([], dtype=pl.List(pl.Utf8))),
         pl.col('complexes').fill_null(pl.lit([], dtype=pl.List(pl.Int64))),
