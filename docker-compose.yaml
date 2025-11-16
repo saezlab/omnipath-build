@@ -1,23 +1,42 @@
 services:
 # PostgreSQL Database
-    postgres:
-        build:
-            context: .
-            dockerfile: Dockerfile
+    omnipath-meilisearch:
+        image: getmeili/meilisearch:v1.16
         restart: unless-stopped
         environment:
-            POSTGRES_USER: ${POSTGRES_USER}
-            POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-    # No default database - databases are created by database_manager.py
-        ports:
-        -   5436:5432
+            MEILI_MASTER_KEY: ou2PElyoy2vTITMltS183DR0KOgy8cWERDkr8lX2UKc
+            MEILI_ENV: development
+            MEILI_NO_ANALYTICS: "true"
         volumes:
-        -   postgres_data:/var/lib/postgresql/data
+            - meilisearch_data:/meili_data
+        ports:
+            - 7700:7700
         healthcheck:
-            test: [CMD-SHELL, 'pg_isready -U ${POSTGRES_USER}']
-            interval: 10s
-            timeout: 5s
+            test: ["CMD", "curl", "-f", "http://localhost:7700/health"]
+            interval: 30s
+            timeout: 10s
             retries: 5
+            start_period: 30s
+
+    # postgres:
+    #     build:
+    #         context: .
+    #         dockerfile: Dockerfile
+    #     restart: unless-stopped
+    #     environment:
+    #         POSTGRES_USER: ${POSTGRES_USER}
+    #         POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    # # No default database - databases are created by database_manager.py
+    #     ports:
+    #     -   5436:5432
+    #     volumes:
+    #     -   postgres_data:/var/lib/postgresql/data
+    #     healthcheck:
+    #         test: [CMD-SHELL, 'pg_isready -U ${POSTGRES_USER}']
+    #         interval: 10s
+    #         timeout: 5s
+    #         retries: 5
 
 volumes:
-    postgres_data:
+    #postgres_data:
+    meilisearch_data:

@@ -60,6 +60,21 @@ make run DB=myproject
 make stop
 ```
 
+## Meilisearch Import
+
+To populate a local Meilisearch instance (the `docker-compose.yaml` starts one on `localhost:7700`) with the `search_entities_final.parquet` dataset, use the helper script added in `scripts/import_search_entities.py`.
+
+```bash
+python scripts/import_search_entities.py \
+  --parquet-path databases/omnipath/output/search_entities_final.parquet \
+  --importer-path meilisearch-importer-main \
+  --index search_entities \
+  --primary-key entity_id \
+  --api-key ou2PElyoy2vTITMltS183DR0KOgy8cWERDkr8lX2UKc
+```
+
+The script now streams the Parquet file directly through the upstream `meilisearch-importer` CLI (Rust, via `cargo run --release --format parquet`). Paths are resolved before invoking the importer, so relative paths work regardless of the importer checkout location. Override the importer checkout location, batch sizes, input format, or API key (`--api-key` or the `MEILISEARCH_API_KEY` environment variable) as needed. After the import finishes, the script automatically applies the `MeilisearchSettings.ENTITIES_SETTINGS` configuration (names/synonyms/gene symbols/descriptions searchable; entity type and sources filterable). Pass `--skip-settings` if you want to manage index settings manually.
+
 ## Core Workflow
 
 ### Step 1: Setup Environment

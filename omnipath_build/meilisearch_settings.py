@@ -3,24 +3,14 @@ class MeilisearchSettings:
     
     ENTITIES_SETTINGS = {
         'searchableAttributes': [
-            'gene_symbol',
-            'canonical_identifier',
-            'all_identifiers',
-            'entity_type_name',
-            'ncbi_tax_name',
-            'description',
-            'cv_term_ids'
+            'names',
+            'synonyms',
+            'gene_symbols',
+            'descriptions'
         ],
         'filterableAttributes': [
-            'id',
-            'entity_type_name',
-            'ncbi_tax_name',
-            'interaction_ids',
-            'canonical_identifier'
-        ],
-        'sortableAttributes': [
-            'canonical_identifier',
-            'entity_type_name'
+            'entity_type',
+            'sources'
         ],
         'displayedAttributes': ['*'],
         'rankingRules': [
