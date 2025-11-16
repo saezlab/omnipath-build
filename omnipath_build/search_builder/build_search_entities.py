@@ -12,20 +12,21 @@ Input (global tables):
 Output:
 - search_entities.parquet with columns:
   - entity_id: int
-  - entity_type: str (formatted label like "Protein")
+  - entity_type: str (formatted as "Label:entity_id" like "Protein:385235")
   - names: list[str]
   - synonyms: list[str]
   - gene_symbols: list[str]
   - descriptions: list[str]
-  - identifiers: list[struct{type: str, value: str}]
-  - sources: list[str] (source entity names)
+  - references: list[str]
+  - identifiers: str (JSON string mapping "type_name:type_id" to value, excludes names/synonyms/gene_symbols)
+  - sources: list[int] (source entity_ids)
   - complexes: list[int] (entity_ids of complexes this entity is part of)
   - cv_terms: list[int] (entity_ids of CV terms annotating this entity)
-  - references: list[str] (formatted reference strings)
   - num_interactions: int
 """
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 import polars as pl
@@ -224,7 +225,7 @@ def _collect_all_identifiers(
     all_identifiers: pl.DataFrame,
     excluded_type_ids: frozenset[int],
 ) -> pl.DataFrame:
-    """Collect all identifiers as dict mapping "type_name:type_id" to value.
+    """Collect all identifiers as JSON string mapping "type_name:type_id" to value.
 
     Args:
         identifiers: DataFrame with [id, entity_id, type_id, identifier]
@@ -233,14 +234,14 @@ def _collect_all_identifiers(
         excluded_type_ids: Set of type_ids to exclude (names, synonyms, gene_symbols)
 
     Returns:
-        DataFrame with [entity_id, identifiers] where identifiers is a dict like:
-        {"uniprot:3874827": "P0A6M2", "chebi:3874830": "CHEBI:15377"}
+        DataFrame with [entity_id, identifiers] where identifiers is a JSON string like:
+        '{"uniprot:3874827": "P0A6M2", "chebi:3874830": "CHEBI:15377"}'
     """
     # Filter out excluded identifier types
     filtered_identifiers = identifiers.filter(~pl.col('type_id').is_in(list(excluded_type_ids)))
 
     if len(filtered_identifiers) == 0:
-        return pl.DataFrame(schema={'entity_id': pl.Int64, 'identifiers': pl.Object})
+        return pl.DataFrame(schema={'entity_id': pl.Int64, 'identifiers': pl.Utf8})
 
     # Build a mapping from type_id (entity_id of identifier type) to its name
     # Identifier types have a NAME identifier themselves
@@ -290,10 +291,10 @@ def _collect_all_identifiers(
         ])
     )
 
-    # Group by entity_id and create dict using map_elements
-    def create_dict(keys: list[str], values: list[str]) -> dict[str, str]:
-        """Create dict from parallel lists of keys and values."""
-        return dict(zip(keys, values))
+    # Group by entity_id and create JSON string using map_elements
+    def create_json_dict(keys: list[str], values: list[str]) -> str:
+        """Create JSON string from parallel lists of keys and values."""
+        return json.dumps(dict(zip(keys, values)))
 
     return (
         identifiers_with_types
@@ -305,8 +306,8 @@ def _collect_all_identifiers(
         .with_columns([
             pl.struct(['dict_key', 'identifier'])
               .map_elements(
-                  lambda s: create_dict(s['dict_key'], s['identifier']),
-                  return_dtype=pl.Object
+                  lambda s: create_json_dict(s['dict_key'], s['identifier']),
+                  return_dtype=pl.Utf8
               )
               .alias('identifiers')
         ])
@@ -340,6 +341,40 @@ def _aggregate_sources(
         .group_by('entity_id')
         .agg(pl.col('source_entity_id').unique().sort())
         .rename({'source_entity_id': 'sources'})
+    )
+
+
+def _aggregate_descriptions(
+    memberships: pl.DataFrame,
+    description_type_ids: frozenset[int],
+) -> pl.DataFrame:
+    """Aggregate description annotation values for entities.
+
+    Args:
+        memberships: DataFrame with [id, parent_id, member_id, annotation_value, ...]
+        description_type_ids: Set of entity_ids for description CV terms
+
+    Returns:
+        DataFrame with [entity_id, descriptions] where descriptions is list of description texts
+    """
+    if not description_type_ids:
+        return pl.DataFrame(schema={'entity_id': pl.Int64, 'descriptions': pl.List(pl.Utf8)})
+
+    # Filter memberships where parent is a description CV term
+    description_memberships = memberships.filter(
+        pl.col('parent_id').is_in(list(description_type_ids))
+    )
+
+    if len(description_memberships) == 0:
+        return pl.DataFrame(schema={'entity_id': pl.Int64, 'descriptions': pl.List(pl.Utf8)})
+
+    # Aggregate annotation_value per member_id
+    return (
+        description_memberships
+        .filter(pl.col('annotation_value').is_not_null())
+        .group_by('member_id')
+        .agg(pl.col('annotation_value').unique().sort())
+        .rename({'member_id': 'entity_id', 'annotation_value': 'descriptions'})
     )
 
 
@@ -434,12 +469,10 @@ def _fill_defaults(df: pl.DataFrame) -> pl.DataFrame:
         pl.col('names').fill_null(pl.lit([], dtype=pl.List(pl.Utf8))),
         pl.col('synonyms').fill_null(pl.lit([], dtype=pl.List(pl.Utf8))),
         pl.col('gene_symbols').fill_null(pl.lit([], dtype=pl.List(pl.Utf8))),
+        pl.col('descriptions').fill_null(pl.lit([], dtype=pl.List(pl.Utf8))),
         pl.col('references').fill_null(pl.lit([], dtype=pl.List(pl.Utf8))),
-        # identifiers is now a dict (Object type), fill with empty dict
-        pl.when(pl.col('identifiers').is_null())
-          .then(pl.lit({}, dtype=pl.Object))
-          .otherwise(pl.col('identifiers'))
-          .alias('identifiers'),
+        # identifiers is now a JSON string, fill with empty JSON object
+        pl.col('identifiers').fill_null(pl.lit('{}', dtype=pl.Utf8)),
         pl.col('sources').fill_null(pl.lit([], dtype=pl.List(pl.Int64))),
         pl.col('complexes').fill_null(pl.lit([], dtype=pl.List(pl.Int64))),
         pl.col('cv_terms').fill_null(pl.lit([], dtype=pl.List(pl.Int64))),
