@@ -19,7 +19,7 @@ Output:
   - descriptions: list[str]
   - references: list[str]
   - identifiers: str (JSON string mapping "type_name:type_id" to value, excludes names/synonyms/gene_symbols)
-  - sources: list[int] (source entity_ids)
+  - sources: list[str] (formatted as "source_name:source_id")
   - complexes: list[int] (entity_ids of complexes this entity is part of)
   - cv_terms: list[int] (entity_ids of CV terms annotating this entity)
   - num_interactions: int
@@ -116,11 +116,14 @@ def build_search_entities(
     names = _aggregate_identifiers_by_type(identifiers, id_sets['names'], 'names')
     synonyms = _aggregate_identifiers_by_type(identifiers, id_sets['synonyms'], 'synonyms')
     gene_symbols = _aggregate_identifiers_by_type(identifiers, id_sets['gene_symbols'], 'gene_symbols')
-    references = _aggregate_identifiers_by_type(identifiers, id_sets['references'], 'references')
 
     # Aggregate descriptions from memberships
     logger.info("Aggregating descriptions")
     descriptions = _aggregate_descriptions(memberships, id_sets['descriptions'])
+
+    # Aggregate references from memberships
+    logger.info("Aggregating references")
+    references = _aggregate_references(memberships, id_sets['references'])
 
     # Collect all identifiers as dict (excluding names, synonyms, gene_symbols)
     logger.info("Collecting all identifiers")
@@ -129,7 +132,7 @@ def build_search_entities(
 
     # Aggregate sources
     logger.info("Aggregating sources")
-    sources = _aggregate_sources(identifier_resources, identifiers)
+    sources = _aggregate_sources(identifier_resources, identifiers, cv_term_accessions)
 
     # Aggregate memberships
     logger.info("Aggregating memberships")
@@ -318,15 +321,17 @@ def _collect_all_identifiers(
 def _aggregate_sources(
     identifier_resources: pl.DataFrame,
     identifiers: pl.DataFrame,
+    cv_term_accessions: pl.DataFrame,
 ) -> pl.DataFrame:
-    """Aggregate source entity IDs for each entity.
+    """Aggregate source entities formatted as "name:id" for each entity.
 
     Args:
         identifier_resources: DataFrame with [id, entity_identifier_id, source_entity_id]
         identifiers: DataFrame with [id, entity_id, type_id, identifier]
+        cv_term_accessions: DataFrame with [cv_entity_id, accession]
 
     Returns:
-        DataFrame with [entity_id, sources] where sources is list of source_entity_ids
+        DataFrame with [entity_id, sources] where sources is list of "source_name:source_id" strings
     """
     # Join to get entity_id for each identifier
     with_entity_id = identifier_resources.join(
@@ -335,12 +340,53 @@ def _aggregate_sources(
         how='inner'
     )
 
-    # Aggregate source_entity_ids per entity
+    # Get NAME type id to lookup source names
+    name_type_id = cv_term_accessions.filter(
+        pl.col('accession') == 'OM:0202'  # NAME identifier type
+    )
+
+    if len(name_type_id) > 0:
+        name_type_entity_id = name_type_id['cv_entity_id'][0]
+
+        # Get names for source entities
+        source_names = (
+            identifiers
+            .filter(pl.col('type_id') == name_type_entity_id)
+            .select([
+                pl.col('entity_id').alias('source_entity_id'),
+                pl.col('identifier').alias('source_name'),
+            ])
+            # Take first name if multiple
+            .group_by('source_entity_id')
+            .agg(pl.col('source_name').first())
+        )
+
+        # Join with source names and format as "name:id"
+        with_source_names = (
+            with_entity_id
+            .join(source_names, on='source_entity_id', how='left')
+            .with_columns([
+                pl.when(pl.col('source_name').is_not_null())
+                  .then(pl.col('source_name') + pl.lit(':') + pl.col('source_entity_id').cast(pl.Utf8))
+                  .otherwise(pl.lit('Unknown:') + pl.col('source_entity_id').cast(pl.Utf8))
+                  .alias('source_formatted')
+            ])
+        )
+    else:
+        # Fallback if NAME type not found
+        with_source_names = (
+            with_entity_id
+            .with_columns([
+                (pl.lit('Source:') + pl.col('source_entity_id').cast(pl.Utf8)).alias('source_formatted')
+            ])
+        )
+
+    # Aggregate formatted sources per entity
     return (
-        with_entity_id
+        with_source_names
         .group_by('entity_id')
-        .agg(pl.col('source_entity_id').unique().sort())
-        .rename({'source_entity_id': 'sources'})
+        .agg(pl.col('source_formatted').unique().sort())
+        .rename({'source_formatted': 'sources'})
     )
 
 
@@ -375,6 +421,40 @@ def _aggregate_descriptions(
         .group_by('member_id')
         .agg(pl.col('annotation_value').unique().sort())
         .rename({'member_id': 'entity_id', 'annotation_value': 'descriptions'})
+    )
+
+
+def _aggregate_references(
+    memberships: pl.DataFrame,
+    reference_type_ids: frozenset[int],
+) -> pl.DataFrame:
+    """Aggregate reference annotation values for entities.
+
+    Args:
+        memberships: DataFrame with [id, parent_id, member_id, annotation_value, ...]
+        reference_type_ids: Set of entity_ids for reference CV terms
+
+    Returns:
+        DataFrame with [entity_id, references] where references is list of reference identifiers
+    """
+    if not reference_type_ids:
+        return pl.DataFrame(schema={'entity_id': pl.Int64, 'references': pl.List(pl.Utf8)})
+
+    # Filter memberships where parent is a reference CV term
+    reference_memberships = memberships.filter(
+        pl.col('parent_id').is_in(list(reference_type_ids))
+    )
+
+    if len(reference_memberships) == 0:
+        return pl.DataFrame(schema={'entity_id': pl.Int64, 'references': pl.List(pl.Utf8)})
+
+    # Aggregate annotation_value per member_id
+    return (
+        reference_memberships
+        .filter(pl.col('annotation_value').is_not_null())
+        .group_by('member_id')
+        .agg(pl.col('annotation_value').unique().sort())
+        .rename({'member_id': 'entity_id', 'annotation_value': 'references'})
     )
 
 
@@ -473,7 +553,8 @@ def _fill_defaults(df: pl.DataFrame) -> pl.DataFrame:
         pl.col('references').fill_null(pl.lit([], dtype=pl.List(pl.Utf8))),
         # identifiers is now a JSON string, fill with empty JSON object
         pl.col('identifiers').fill_null(pl.lit('{}', dtype=pl.Utf8)),
-        pl.col('sources').fill_null(pl.lit([], dtype=pl.List(pl.Int64))),
+        # sources is now a list of strings (formatted as "name:id")
+        pl.col('sources').fill_null(pl.lit([], dtype=pl.List(pl.Utf8))),
         pl.col('complexes').fill_null(pl.lit([], dtype=pl.List(pl.Int64))),
         pl.col('cv_terms').fill_null(pl.lit([], dtype=pl.List(pl.Int64))),
         pl.col('num_interactions').fill_null(0),
