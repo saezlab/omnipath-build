@@ -68,6 +68,8 @@ def build_search_entities(
     logger.info("Building Meilisearch entity documents from global tables")
     logger.info("=" * 80)
 
+    INTEGER_DTYPES = {pl.Int8, pl.Int16, pl.Int32, pl.Int64, pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64}
+
     # Load global tables
     logger.info("Loading global tables from %s", global_tables_dir)
     entities = pl.read_parquet(global_tables_dir / "entity.parquet")
@@ -84,6 +86,14 @@ def build_search_entities(
     logger.info("Building CV term mapping")
     cv_term_mapping = build_cv_term_mapping(global_tables_dir / "entity_identifier.parquet")
     logger.info("  Mapped %s CV terms", f"{len(cv_term_mapping):,}")
+
+    # Convert identifier type accessions (strings) to their corresponding entity IDs so
+    # downstream filters can operate on a consistent numeric representation.
+    type_id_dtype = identifiers.schema.get('type_id')
+    if type_id_dtype not in INTEGER_DTYPES:
+        identifiers = _attach_identifier_type_ids(identifiers, cv_term_mapping)
+    else:
+        logger.info("Identifier type_ids already numeric; skipping conversion")
 
     # Convert accession sets to entity_id sets for filtering
     id_sets = build_accession_to_entity_id_sets(cv_term_mapping)
@@ -204,6 +214,49 @@ def build_search_entities(
 # =============================================================================
 # Helper functions
 # =============================================================================
+
+def _attach_identifier_type_ids(
+    identifiers: pl.DataFrame,
+    cv_term_mapping: pl.DataFrame,
+) -> pl.DataFrame:
+    """Replace identifier type accessions with their numeric entity IDs.
+
+    Args:
+        identifiers: DataFrame with [id, entity_id, type_id(str), identifier]
+        cv_term_mapping: DataFrame with [accession, entity_id]
+
+    Returns:
+        Identifiers DataFrame where type_id now stores the CV term entity_id (Int64)
+    """
+    type_lookup = cv_term_mapping.rename({'accession': 'type_accession', 'entity_id': 'type_entity_id'})
+
+    identifiers_with_types = (
+        identifiers
+        .rename({'type_id': 'type_accession'})
+        .join(type_lookup, on='type_accession', how='left')
+    )
+
+    missing_types = identifiers_with_types.filter(pl.col('type_entity_id').is_null())
+    if len(missing_types) > 0:
+        missing_accessions = (
+            missing_types
+            .select('type_accession')
+            .unique()
+            .get_column('type_accession')
+            .to_list()
+        )
+        raise ValueError(
+            "Missing CV term entity IDs for identifier type accessions: "
+            f"{', '.join(sorted(str(acc) for acc in missing_accessions))}"
+        )
+
+    return (
+        identifiers_with_types
+        .with_columns(pl.col('type_entity_id').cast(pl.Int64))
+        .drop('type_accession')
+        .rename({'type_entity_id': 'type_id'})
+    )
+
 
 def _aggregate_identifiers_by_type(
     identifiers: pl.DataFrame,

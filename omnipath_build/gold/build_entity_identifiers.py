@@ -117,6 +117,7 @@ MERGE_UNSAFE_IDENTIFIER_TYPES = frozenset({
     IdentifierNamespaceCv.MOLECULAR_FORMULA.value,
     IdentifierNamespaceCv.SMILES.value,
     IdentifierNamespaceCv.INN.value,
+    IdentifierNamespaceCv.PDB.value,  # PDB structures can contain multiple proteins
 })
 
 

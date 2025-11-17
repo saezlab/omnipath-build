@@ -85,21 +85,37 @@ def build_cv_term_mapping(entity_identifiers_path: Path) -> pl.DataFrame:
         - entity_id: Corresponding entity_id in the global tables
     """
     identifiers = pl.read_parquet(entity_identifiers_path)
+    type_dtype = identifiers.schema.get('type_id')
 
-    # Find the entity_id for CV_TERM_ACCESSION (OM:0204)
-    cv_term_accession_entity = identifiers.filter(
-        pl.col('identifier') == CV_TERM_ACCESSION_TYPE
-    )
+    if type_dtype is None:
+        raise ValueError("entity_identifier table is missing 'type_id' column")
 
-    if len(cv_term_accession_entity) == 0:
-        raise ValueError(f"CV_TERM_ACCESSION ({CV_TERM_ACCESSION_TYPE}) not found in entity_identifier table")
+    # Determine the filter expression depending on whether type_id stores string accessions
+    # or the already-mapped integer entity IDs.
+    if type_dtype == pl.Utf8:
+        filter_expr = pl.col('type_id') == CV_TERM_ACCESSION_TYPE
+    elif type_dtype in {pl.Int8, pl.Int16, pl.Int32, pl.Int64, pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64}:
+        cv_term_accession_entity = identifiers.filter(pl.col('identifier') == CV_TERM_ACCESSION_TYPE)
+        if cv_term_accession_entity.is_empty():
+            raise ValueError(
+                f"CV_TERM_ACCESSION identifier ({CV_TERM_ACCESSION_TYPE}) not found "
+                f"in {entity_identifiers_path}"
+            )
+        cv_term_accession_entity_id = cv_term_accession_entity['entity_id'][0]
+        filter_expr = pl.col('type_id') == cv_term_accession_entity_id
+    else:
+        raise TypeError(f"Unsupported type_id dtype '{type_dtype}' in entity_identifier table")
 
-    cv_term_accession_entity_id = cv_term_accession_entity['entity_id'][0]
+    cv_term_rows = identifiers.filter(filter_expr)
 
-    # Get all CV term accessions (identifiers with type_id == cv_term_accession_entity_id)
+    if cv_term_rows.is_empty():
+        raise ValueError(
+            f"No identifiers found for CV_TERM_ACCESSION ({CV_TERM_ACCESSION_TYPE}) "
+            f"in {entity_identifiers_path}"
+        )
+
     cv_terms = (
-        identifiers
-        .filter(pl.col('type_id') == cv_term_accession_entity_id)
+        cv_term_rows
         .select([
             pl.col('identifier').alias('accession'),
             'entity_id',

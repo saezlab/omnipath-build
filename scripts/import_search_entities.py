@@ -29,8 +29,14 @@ def run_importer(
 ) -> None:
     """Execute the meilisearch importer with the generated JSON file."""
     dataset_arg = str(dataset_path.resolve())
+
+    # Find cargo binary (try default location first, then PATH)
+    cargo_bin = Path.home() / ".cargo" / "bin" / "cargo"
+    if not cargo_bin.exists():
+        cargo_bin = Path("cargo")  # Fall back to PATH lookup
+
     cmd: list[str] = [
-        "cargo",
+        str(cargo_bin),
         "run",
         "--release",
         "--",

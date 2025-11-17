@@ -57,6 +57,7 @@ def _process_entities_vectorized(df: pl.DataFrame, source_id: int, next_id: int)
 
     entities = entities.with_columns(pl.lit(source_id).alias("source_id"))
     next_id += len(entities)
+    entity_start_id = next_id - len(entities)
 
     logger.info(f"    Created {len(entities):,} base entity records")
 
@@ -76,7 +77,7 @@ def _process_entities_vectorized(df: pl.DataFrame, source_id: int, next_id: int)
             # Add entity IDs and explode identifiers list
             identifiers = (
                 has_identifiers
-                .with_row_index("local_entity_id", offset=next_id - len(df))
+                .with_row_index("local_entity_id", offset=entity_start_id)
                 .select([
                     pl.col("local_entity_id"),
                     pl.col("identifiers"),
@@ -157,7 +158,7 @@ def _process_entities_vectorized(df: pl.DataFrame, source_id: int, next_id: int)
             # Now create annotation memberships with integer parent_id
             annotation_data = (
                 has_annotations
-                .with_row_index("member_id", offset=next_id - len(df))
+                .with_row_index("member_id", offset=entity_start_id)
                 .select([
                     pl.col("member_id"),
                     pl.col("annotations"),
@@ -217,7 +218,7 @@ def _process_entities_vectorized(df: pl.DataFrame, source_id: int, next_id: int)
 
         if len(has_memberships):
             # Add parent entity IDs
-            with_parent_ids = has_memberships.with_row_index("parent_entity_id", offset=next_id - len(df))
+            with_parent_ids = has_memberships.with_row_index("parent_entity_id", offset=entity_start_id)
 
             # Explode memberships
             exploded_memberships = (
