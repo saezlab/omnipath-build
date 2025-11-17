@@ -23,6 +23,7 @@ Output:
   - complexes: list[int] (entity_ids of complexes this entity is part of)
   - cv_terms: list[int] (entity_ids of CV terms annotating this entity)
   - num_interactions: int
+  - ncbi_tax_id: str | null (NCBI taxonomy ID where available)
 """
 from __future__ import annotations
 
@@ -125,6 +126,10 @@ def build_search_entities(
     synonyms = _aggregate_identifiers_by_type(identifiers, id_sets['synonyms'], 'synonyms')
     gene_symbols = _aggregate_identifiers_by_type(identifiers, id_sets['gene_symbols'], 'gene_symbols')
 
+    # Aggregate NCBI taxonomy IDs from memberships
+    logger.info("Aggregating NCBI taxonomy IDs")
+    ncbi_tax_ids = _aggregate_ncbi_tax_id(memberships, id_sets['ncbi_tax_id'])
+
     # Aggregate descriptions from memberships
     logger.info("Aggregating descriptions")
     descriptions = _aggregate_descriptions(memberships, id_sets['descriptions'])
@@ -175,6 +180,7 @@ def build_search_entities(
         .join(complex_memberships, on='entity_id', how='left')
         .join(cv_term_memberships, on='entity_id', how='left')
         .join(interaction_counts, on='entity_id', how='left')
+        .join(ncbi_tax_ids, on='entity_id', how='left')
     )
 
     # Fill nulls with empty lists/defaults
@@ -532,6 +538,40 @@ def _count_interaction_memberships(
     )
 
 
+def _aggregate_ncbi_tax_id(
+    memberships: pl.DataFrame,
+    ncbi_tax_id_type_ids: frozenset[int],
+) -> pl.DataFrame:
+    """Extract NCBI taxonomy IDs for entities from membership annotations.
+
+    Args:
+        memberships: DataFrame with [id, parent_id, member_id, annotation_value, ...]
+        ncbi_tax_id_type_ids: Set of entity_ids for NCBI_TAX_ID CV term
+
+    Returns:
+        DataFrame with [entity_id, ncbi_tax_id] where ncbi_tax_id is the first NCBI tax ID found
+    """
+    if not ncbi_tax_id_type_ids:
+        return pl.DataFrame(schema={'entity_id': pl.Int64, 'ncbi_tax_id': pl.Utf8})
+
+    # Filter memberships where parent is NCBI_TAX_ID CV term
+    tax_id_memberships = memberships.filter(
+        pl.col('parent_id').is_in(list(ncbi_tax_id_type_ids))
+    )
+
+    if len(tax_id_memberships) == 0:
+        return pl.DataFrame(schema={'entity_id': pl.Int64, 'ncbi_tax_id': pl.Utf8})
+
+    # Take first tax ID per entity (should typically be only one)
+    return (
+        tax_id_memberships
+        .filter(pl.col('annotation_value').is_not_null())
+        .group_by('member_id')
+        .agg(pl.col('annotation_value').first())
+        .rename({'member_id': 'entity_id', 'annotation_value': 'ncbi_tax_id'})
+    )
+
+
 def _fill_defaults(df: pl.DataFrame) -> pl.DataFrame:
     """Fill null values with appropriate defaults.
 
@@ -553,4 +593,5 @@ def _fill_defaults(df: pl.DataFrame) -> pl.DataFrame:
         pl.col('complexes').fill_null(pl.lit([], dtype=pl.List(pl.Int64))),
         pl.col('cv_terms').fill_null(pl.lit([], dtype=pl.List(pl.Int64))),
         pl.col('num_interactions').fill_null(0),
+        # ncbi_tax_id can remain null (not all entities have a taxonomy ID)
     ])

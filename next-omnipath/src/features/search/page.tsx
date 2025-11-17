@@ -33,8 +33,8 @@ export default function SearchPage({
   const [isMultiSearch, setIsMultiSearch] = useState(false);
   const [entityIds, setEntityIds] = useState<string[]>([]);
   const [multiSearchResults, setMultiSearchResults] = useState<Array<SearchResult>>([]);
-  const [filters, setFilters] = useState<{ entity_types?: string[]; sources?: string[] }>({});
-  const [filterCounts, setFilterCounts] = useState<{ entity_type?: Record<string, number>; sources?: Record<string, number> }>({});
+  const [filters, setFilters] = useState<{ entity_types?: string[]; sources?: string[]; ncbi_tax_id?: string[] }>({});
+  const [filterCounts, setFilterCounts] = useState<{ entity_type?: Record<string, number>; sources?: Record<string, number>; ncbi_tax_id?: Record<string, number> }>({});
 
   // Detect if query contains comma-separated identifiers
   const detectMultiSearch = (q: string): boolean => {
@@ -60,7 +60,8 @@ export default function SearchPage({
       if (offset === 0 && 'facetDistribution' in response && response.facetDistribution && initialSearchType === "search_entities") {
         setFilterCounts({
           entity_type: response.facetDistribution.entity_type || {},
-          sources: response.facetDistribution.sources || {}
+          sources: response.facetDistribution.sources || {},
+          ncbi_tax_id: response.facetDistribution.ncbi_tax_id || {}
         });
       }
 
@@ -90,7 +91,7 @@ export default function SearchPage({
   });
 
   // Handlers for filters
-  const handleFilterChange = useCallback((newFilters: { entity_types?: string[]; sources?: string[] }) => {
+  const handleFilterChange = useCallback((newFilters: { entity_types?: string[]; sources?: string[]; ncbi_tax_id?: string[] }) => {
     setFilters(newFilters);
   }, []);
 
@@ -203,9 +204,9 @@ export default function SearchPage({
                           <Button variant="outline" className="w-full">
                             <Filter className="h-4 w-4 mr-2" />
                             Filters
-                            {(filters.entity_types?.length || 0) + (filters.sources?.length || 0) > 0 && (
+                            {(filters.entity_types?.length || 0) + (filters.sources?.length || 0) + (filters.ncbi_tax_id?.length || 0) > 0 && (
                               <Badge variant="secondary" className="ml-2">
-                                {(filters.entity_types?.length || 0) + (filters.sources?.length || 0)}
+                                {(filters.entity_types?.length || 0) + (filters.sources?.length || 0) + (filters.ncbi_tax_id?.length || 0)}
                               </Badge>
                             )}
                           </Button>
@@ -217,7 +218,7 @@ export default function SearchPage({
                                 <Filter className="h-5 w-5 text-primary" />
                                 Filters
                               </SheetTitle>
-                              {((filters.entity_types?.length || 0) + (filters.sources?.length || 0) > 0) && (
+                              {((filters.entity_types?.length || 0) + (filters.sources?.length || 0) + (filters.ncbi_tax_id?.length || 0) > 0) && (
                                 <Button
                                   variant="ghost"
                                   size="sm"

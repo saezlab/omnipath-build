@@ -10,7 +10,8 @@ class MeilisearchSettings:
         ],
         'filterableAttributes': [
             'entity_type',
-            'sources'
+            'sources',
+            'ncbi_tax_id'
         ],
         'displayedAttributes': ['*'],
         'rankingRules': [

@@ -20,12 +20,14 @@ interface EntityFilterSidebarProps {
   filters: {
     entity_types?: string[];
     sources?: string[];
+    ncbi_tax_id?: string[];
   };
   filterCounts: {
     entity_type?: Record<string, number>;
     sources?: Record<string, number>;
+    ncbi_tax_id?: Record<string, number>;
   };
-  onFilterChange: (filters: { entity_types?: string[]; sources?: string[] }) => void;
+  onFilterChange: (filters: { entity_types?: string[]; sources?: string[]; ncbi_tax_id?: string[] }) => void;
   onClearFilters: () => void;
   isMobile?: boolean;
 }
@@ -33,7 +35,7 @@ interface EntityFilterSidebarProps {
 // Helper component for filter sections
 interface FilterSectionProps {
   title: string;
-  filterKey: 'entity_types' | 'sources';
+  filterKey: 'entity_types' | 'sources' | 'ncbi_tax_id';
   options: FilterOption[];
   selectedValues: string[];
   onToggle: (value: string) => void;
@@ -109,7 +111,7 @@ export function EntityFilterSidebar({
   }, 0);
 
   // Handler for toggling filters
-  const handleToggle = (filterKey: 'entity_types' | 'sources', value: string) => {
+  const handleToggle = (filterKey: 'entity_types' | 'sources' | 'ncbi_tax_id', value: string) => {
     const currentValues = (filters[filterKey] as string[]) || [];
     const newValues = currentValues.includes(value)
       ? currentValues.filter(v => v !== value)
@@ -121,13 +123,35 @@ export function EntityFilterSidebar({
     });
   };
 
+  // Map common NCBI taxonomy IDs to organism names
+  const taxonomyIdToName: Record<string, string> = {
+    '9606': 'Human',
+    '10090': 'Mouse',
+    '10116': 'Rat',
+    '7227': 'Fruit fly',
+    '6239': 'C. elegans',
+    '7955': 'Zebrafish',
+    '559292': 'S. cerevisiae',
+    '284812': 'S. pombe',
+    '83333': 'E. coli',
+    '224308': 'B. subtilis',
+  };
+
   // Transform filter counts into FilterOption[] format
-  const transformFilterCounts = (counts: Record<string, number>): FilterOption[] => {
+  const transformFilterCounts = (counts: Record<string, number>, filterKey: string): FilterOption[] => {
     return Object.entries(counts)
       .map(([value, count]) => {
-        // For entity_type and sources, extract display name from "Name:ID" format
-        const parts = value.split(':');
-        const displayName = parts.length > 1 ? parts.slice(0, -1).join(':') : value;
+        let displayName: string;
+
+        if (filterKey === 'ncbi_tax_id') {
+          // For NCBI taxonomy IDs, show "Organism Name (ID)" if known, otherwise just the ID
+          const organismName = taxonomyIdToName[value];
+          displayName = organismName ? `${organismName} (${value})` : value;
+        } else {
+          // For entity_type and sources, extract display name from "Name:ID" format
+          const parts = value.split(':');
+          displayName = parts.length > 1 ? parts.slice(0, -1).join(':') : value;
+        }
 
         return {
           value: value, // Use the full facet value
@@ -140,12 +164,12 @@ export function EntityFilterSidebar({
 
   const content = (
     <div className="space-y-4">
-      <Accordion type="multiple" defaultValue={["entity_types", "sources"]} className="w-full">
+      <Accordion type="multiple" defaultValue={["entity_types", "sources", "ncbi_tax_id"]} className="w-full">
         {/* Entity Type Filter */}
         <FilterSection
           title="Entity Types"
           filterKey="entity_types"
-          options={transformFilterCounts(filterCounts.entity_type || {})}
+          options={transformFilterCounts(filterCounts.entity_type || {}, 'entity_type')}
           selectedValues={filters.entity_types || []}
           onToggle={(value) => handleToggle("entity_types", value)}
         />
@@ -154,9 +178,18 @@ export function EntityFilterSidebar({
         <FilterSection
           title="Data Sources"
           filterKey="sources"
-          options={transformFilterCounts(filterCounts.sources || {})}
+          options={transformFilterCounts(filterCounts.sources || {}, 'sources')}
           selectedValues={filters.sources || []}
           onToggle={(value) => handleToggle("sources", value)}
+        />
+
+        {/* NCBI Taxonomy ID Filter */}
+        <FilterSection
+          title="Organism"
+          filterKey="ncbi_tax_id"
+          options={transformFilterCounts(filterCounts.ncbi_tax_id || {}, 'ncbi_tax_id')}
+          selectedValues={filters.ncbi_tax_id || []}
+          onToggle={(value) => handleToggle("ncbi_tax_id", value)}
         />
       </Accordion>
     </div>

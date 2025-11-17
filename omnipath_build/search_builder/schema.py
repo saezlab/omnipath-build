@@ -123,6 +123,7 @@ def build_accession_to_entity_id_sets(cv_term_mapping: pl.DataFrame) -> dict[str
         - 'gene_symbols': Entity IDs for gene symbol identifier types
         - 'descriptions': Entity IDs for description annotation types
         - 'references': Entity IDs for reference identifier types
+        - 'ncbi_tax_id': Entity ID for NCBI taxonomy ID
         - 'interaction_type': Entity ID for interaction type
         - 'cv_term_type': Entity ID for CV term type
         - 'complex_type': Entity ID for complex type
@@ -140,6 +141,7 @@ def build_accession_to_entity_id_sets(cv_term_mapping: pl.DataFrame) -> dict[str
         'gene_symbols': _accessions_to_ids(GENE_SYMBOL_IDENTIFIER_ACCESSIONS),
         'descriptions': _accessions_to_ids(DESCRIPTION_ANNOTATION_ACCESSIONS),
         'references': _accessions_to_ids(REFERENCE_IDENTIFIER_ACCESSIONS),
+        'ncbi_tax_id': frozenset([accession_to_id.get(IdentifierNamespaceCv.NCBI_TAX_ID.value)]),
         'interaction_type': accession_to_id.get(INTERACTION_TYPE_ACCESSION),
         'cv_term_type': accession_to_id.get(CV_TERM_TYPE_ACCESSION),
         'complex_type': accession_to_id.get(COMPLEX_TYPE_ACCESSION),

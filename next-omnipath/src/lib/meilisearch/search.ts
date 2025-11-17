@@ -42,6 +42,12 @@ function buildEntityFilterString(filters: MeilisearchFilters): string {
     filterParts.push(`(${sourceFilters})`);
   }
 
+  // NCBI taxonomy ID filter
+  if (filters.ncbi_tax_id?.length) {
+    const taxIdFilters = filters.ncbi_tax_id.map(taxId => `ncbi_tax_id = "${taxId}"`).join(' OR ');
+    filterParts.push(`(${taxIdFilters})`);
+  }
+
   return filterParts.join(' AND ');
 }
 
@@ -71,6 +77,7 @@ export async function searchMeilisearch(params: SearchParams): Promise<SearchRes
       searchOptions.facets = [
         'entity_type',
         'sources',
+        'ncbi_tax_id',
       ];
 
       // Add filters if present

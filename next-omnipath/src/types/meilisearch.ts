@@ -52,6 +52,7 @@ export interface MeilisearchFilters {
   // Entity search filters
   entity_types?: string[];
   sources?: string[];
+  ncbi_tax_id?: string[];
 }
 
 export interface MeilisearchSearchParams {

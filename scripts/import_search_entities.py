@@ -79,9 +79,9 @@ def parse_args(argv: Iterable[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--parquet-path",
-        default="databases/omnipath/output/search_entities_final.parquet",
+        default="databases/omnipath/output/search_entities.parquet",
         type=Path,
-        help="Path to search_entities_final.parquet.",
+        help="Path to search_entities.parquet.",
     )
     parser.add_argument(
         "--importer-path",

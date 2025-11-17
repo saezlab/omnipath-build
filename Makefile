@@ -1,4 +1,4 @@
-.PHONY: setup silver silver-reprocess gold postgres visualize
+.PHONY: setup silver silver-reprocess gold postgres meilisearch meilisearch-import visualize
 
 setup:
 	git submodule add -b download-manager-experiment https://github.com/saezlab/pypath.git pypath || true
@@ -33,6 +33,16 @@ postgres:
 		--postgres-uri "postgresql://$${POSTGRES_USER}:$${POSTGRES_PASSWORD}@localhost:$${POSTGRES_PORT}/omnipath" \
 		--schema public \
 		$(if $(DROP),--drop-existing)
+
+meilisearch:
+	@uv run python -m omnipath_build.search_builder.cli \
+		--global-tables-dir /Users/jschaul/Code/omnipath_build/databases/omnipath/output \
+		--output /Users/jschaul/Code/omnipath_build/databases/omnipath/output/search_entities.parquet
+
+meilisearch-import:
+	@uv run python scripts/import_search_entities.py \
+		--importer-path meilisearch-importer-main \
+		--api-key ou2PElyoy2vTITMltS183DR0KOgy8cWERDkr8lX2UKc
 
 %:
 	@:
