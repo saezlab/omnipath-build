@@ -4,12 +4,12 @@ import { getMeilisearchUrl } from '@/lib/api/config';
 // Create Meilisearch client
 export const meilisearchClient = new MeiliSearch({
   host: getMeilisearchUrl(),
-  apiKey: process.env.MEILI_MASTER_KEY || process.env.MEILISEARCH_MASTER_KEY || process.env.MEILISEARCH_API_KEY,
+  apiKey: process.env.MEILI_MASTER_KEY,
 });
 
 // Index names
 export const INDEXES = {
-  ENTITIES: 'entities',
+  ENTITIES: 'search_entities',
   CV_TERMS: 'cv_terms',
   INTERACTIONS: 'interactions',
 } as const;

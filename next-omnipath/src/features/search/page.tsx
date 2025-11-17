@@ -14,13 +14,13 @@ interface SearchPageProps {
   // Props for embedded mode (like in AI dialogs)
   embedded?: boolean;
   initialQuery?: string;
-  initialSearchType?: "entities" | "cv_terms";
+  initialSearchType?: "search_entities" | "cv_terms";
 }
 
 export default function SearchPage({ 
   embedded = false, 
   initialQuery = "", 
-  initialSearchType = "entities" 
+  initialSearchType = "search_entities" 
 }: SearchPageProps = {}) {
   const [query, setQuery] = useState(initialQuery);
   const [, startTransition] = useTransition();
@@ -42,7 +42,7 @@ export default function SearchPage({
       
       const response = await searchMeilisearch({ 
         query, 
-        index: initialSearchType === "entities" ? "entities" : "cv_terms",
+        index: initialSearchType === "search_entities" ? "search_entities" : "cv_terms",
         limit, 
         offset 
       });
@@ -86,12 +86,12 @@ export default function SearchPage({
           const identifiers = q.split(',').map(id => id.trim()).filter(id => id.length > 0);
           
           // Fetch entities by canonical identifiers using documents endpoint
-          fetchMeilisearchDocuments('entities', identifiers)
+          fetchMeilisearchDocuments('search_entities', identifiers)
           .then(data => {
             const documents = data.documents as unknown[] || [];
             setMultiSearchResults(documents as SearchResult[]);
             
-            // Get entity IDs for interaction search
+            // Get entity IDs for inter action search
             const ids = documents.map((entity: unknown) => (entity as SearchResult).id);
             setEntityIds(ids);
           })

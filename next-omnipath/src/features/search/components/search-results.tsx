@@ -56,20 +56,30 @@ export function SearchResults({
       <div className="grid gap-4" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))' }} id="resultsGrid">
         {results.map((result, i) => {
           let href: string;
-          
+
           if (result.type === 'cv_term') {
             href = `/cv_term/${result.id}`;
-          } else if (result.type === 'entity' && result.entity_type_name) {
-            // Convert entity type name to URL-friendly format (e.g., "protein family" -> "protein-family")
-            const entityTypeSlug = (result.entity_type_name as string).toLowerCase().replace(/\s+/g, '-');
-            href = `/${entityTypeSlug}/${result.id}`;
+          } else if (result.type === 'entity') {
+            // Extract entity type from entity_type field (e.g., "Protein:385235" -> "protein")
+            const entityType = result.entity_type || result._formatted?.entity_type;
+            const entityId = result.entity_id || result.id;
+
+            if (entityType && entityId) {
+              const entityTypeLabel = entityType.split(':')[0].toLowerCase().replace(/\s+/g, '-');
+              href = `/${entityTypeLabel}/${entityId}`;
+            } else {
+              // Fallback to entities route
+              href = `/entities/${entityId}`;
+            }
           } else {
             // Fallback to entities route
             href = `/entities/${result.id}`;
           }
-          
+
+          const key = (result.entity_id || result.id || i)?.toString();
+
           return (
-            <Link key={result.id || i} href={href}>
+            <Link key={key} href={href}>
               <ResultCard result={result} />
             </Link>
           );
