@@ -25,6 +25,27 @@ export interface SearchResponse {
 }
 
 /**
+ * Build filter string for Meilisearch entity search
+ */
+function buildEntityFilterString(filters: MeilisearchFilters): string {
+  const filterParts: string[] = [];
+
+  // Entity type filter
+  if (filters.entity_types?.length) {
+    const entityTypeFilters = filters.entity_types.map(type => `entity_type = "${type}"`).join(' OR ');
+    filterParts.push(`(${entityTypeFilters})`);
+  }
+
+  // Sources filter
+  if (filters.sources?.length) {
+    const sourceFilters = filters.sources.map(source => `sources = "${source}"`).join(' OR ');
+    filterParts.push(`(${sourceFilters})`);
+  }
+
+  return filterParts.join(' AND ');
+}
+
+/**
  * Search entities or CV terms
  */
 export async function searchMeilisearch(params: SearchParams): Promise<SearchResponse> {
@@ -33,15 +54,35 @@ export async function searchMeilisearch(params: SearchParams): Promise<SearchRes
     index,
     limit = 20,
     offset = 0,
+    filters = {},
   } = params;
 
   try {
     const indexClient = meilisearchClient.index(index);
-    const result = await indexClient.search(query, {
+    const searchOptions: Record<string, unknown> = {
       limit,
       offset,
       attributesToHighlight: ["*"],
-    });
+    };
+
+    // Add filters and facets for entity search
+    if (index === INDEXES.ENTITIES) {
+      // Always request facets for entity search
+      searchOptions.facets = [
+        'entity_type',
+        'sources',
+      ];
+
+      // Add filters if present
+      if (Object.keys(filters).length > 0) {
+        const filterString = buildEntityFilterString(filters);
+        if (filterString) {
+          searchOptions.filter = filterString;
+        }
+      }
+    }
+
+    const result = await indexClient.search(query, searchOptions);
 
     return {
       hits: result.hits,

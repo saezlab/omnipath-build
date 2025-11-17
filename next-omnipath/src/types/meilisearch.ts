@@ -34,6 +34,7 @@ export interface CvTermReference {
 }
 
 export interface MeilisearchFilters {
+  // Interaction filters
   interaction_types?: string[];
   data_sources?: string[];
   detection_methods?: string[];
@@ -47,6 +48,10 @@ export interface MeilisearchFilters {
   evidence_count_min?: number;
   evidence_count_max?: number;
   entity_ids?: string[];
+
+  // Entity search filters
+  entity_types?: string[];
+  sources?: string[];
 }
 
 export interface MeilisearchSearchParams {
