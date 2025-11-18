@@ -35,7 +35,7 @@ from polars import Field
 from .schema import (
     build_cv_term_mapping,
     build_accession_to_entity_id_sets,
-    format_entity_type_label,
+    build_entity_type_label_mapping,
 )
 
 __all__ = ["build_search_entities"]
@@ -87,6 +87,14 @@ def build_search_entities(
     cv_term_mapping = build_cv_term_mapping(global_tables_dir / "entity_identifier.parquet")
     logger.info("  Mapped %s CV terms", f"{len(cv_term_mapping):,}")
 
+    # Build entity type label mapping (accession -> display name)
+    logger.info("Building entity type label mapping")
+    entity_type_labels = build_entity_type_label_mapping(
+        global_tables_dir / "entity_identifier.parquet",
+        cv_term_mapping
+    )
+    logger.info("  Mapped %s entity type labels", len(entity_type_labels))
+
     # Convert identifier type accessions (strings) to their corresponding entity IDs so
     # downstream filters can operate on a consistent numeric representation.
     type_id_dtype = identifiers.schema.get('type_id')
@@ -120,11 +128,10 @@ def build_search_entities(
         )
         .with_columns([
             # Format as "Label:entity_id" (e.g., "Protein:385235")
+            # Use the entity_type_labels mapping to convert accession to display name
             (
-                pl.col('accession').map_elements(
-                    format_entity_type_label,
-                    return_dtype=pl.Utf8
-                ) + pl.lit(':') + pl.col('entity_type_id').cast(pl.Utf8)
+                pl.col('accession').replace(entity_type_labels, default=pl.col('accession'))
+                + pl.lit(':') + pl.col('entity_type_id').cast(pl.Utf8)
             ).alias('entity_type')
         ])
         .select(['entity_id', 'entity_type'])

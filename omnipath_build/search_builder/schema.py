@@ -168,26 +168,67 @@ def build_accession_to_entity_id_sets(cv_term_mapping: pl.DataFrame) -> dict[str
 # Entity Type Formatting
 # =============================================================================
 
-ENTITY_TYPE_LABELS = {
-    EntityTypeCv.PROTEIN.value: "Protein",
-    EntityTypeCv.GENE.value: "Gene",
-    EntityTypeCv.RNA.value: "RNA",
-    EntityTypeCv.PROTEIN_COMPLEX.value: "Complex",
-    EntityTypeCv.SMALL_MOLECULE.value: "SmallMolecule",
-    EntityTypeCv.PHENOTYPE.value: "Phenotype",
-    EntityTypeCv.STIMULUS.value: "Stimulus",
-    EntityTypeCv.PROTEIN_FAMILY.value: "ProteinFamily",
-    EntityTypeCv.CV_TERM.value: "CVTerm",
-}
+def build_entity_type_label_mapping(
+    entity_identifiers_path: Path,
+    cv_term_mapping: pl.DataFrame,
+) -> dict[str, str]:
+    """Build mapping from entity type accessions to their display names.
 
-
-def format_entity_type_label(accession: str) -> str:
-    """Convert entity type accession to Meilisearch-friendly label.
+    This dynamically fetches the NAME identifier for each CV term entity
+    instead of using hardcoded labels.
 
     Args:
-        accession: Entity type accession (e.g., "MI:0326")
+        entity_identifiers_path: Path to entity_identifier.parquet
+        cv_term_mapping: DataFrame with [accession, entity_id] from build_cv_term_mapping()
 
     Returns:
-        Formatted label (e.g., "Protein")
+        Dictionary mapping accession -> display name (e.g., "MI:0326" -> "protein")
     """
-    return ENTITY_TYPE_LABELS.get(accession, accession)
+    identifiers = pl.read_parquet(entity_identifiers_path)
+
+    # Get the NAME identifier type entity_id
+    name_type_rows = identifiers.filter(
+        pl.col('identifier') == IdentifierNamespaceCv.NAME.value
+    )
+
+    if name_type_rows.is_empty():
+        # Fallback to accession if NAME type not found
+        return {row['accession']: row['accession'] for row in cv_term_mapping.iter_rows(named=True)}
+
+    name_type_entity_id = name_type_rows['entity_id'][0]
+
+    # Get all entity_type_ids from cv_term_mapping
+    entity_type_ids = cv_term_mapping['entity_id'].to_list()
+
+    # Get NAME identifiers for entity types
+    entity_type_names = (
+        identifiers
+        .filter(
+            (pl.col('entity_id').is_in(entity_type_ids)) &
+            (pl.col('type_id') == name_type_entity_id)
+        )
+        .select(['entity_id', 'identifier'])
+    )
+
+    # Join with cv_term_mapping to get accession -> name mapping
+    accession_to_name = (
+        cv_term_mapping
+        .join(entity_type_names, on='entity_id', how='left')
+        .select(['accession', 'identifier'])
+    )
+
+    # Build dictionary, using accession as fallback if no name found
+    # Also format names: capitalize first letter, remove spaces and hyphens
+    mapping = {}
+    for row in accession_to_name.iter_rows(named=True):
+        accession = row['accession']
+        name = row['identifier']
+        if name:
+            # Format name: capitalize each word and remove spaces/hyphens
+            # (e.g., "protein complex" -> "ProteinComplex", "cross-reference type" -> "CrossReferenceType")
+            formatted_name = ''.join(word.capitalize() for word in name.replace('-', ' ').split())
+            mapping[accession] = formatted_name
+        else:
+            mapping[accession] = accession
+
+    return mapping
