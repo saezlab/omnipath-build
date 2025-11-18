@@ -8,10 +8,11 @@ and performs global entity resolution by:
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 import logging
 import polars as pl
-from pypath.internals.cv_terms import IdentifierNamespaceCv
+from pypath.internals.cv_terms import IdentifierNamespaceCv, EntityTypeCv
 
 
 # --------------------------------------------------------------------------- #
@@ -22,9 +23,8 @@ from pypath.internals.cv_terms import IdentifierNamespaceCv
 class UnionFind:
     """Union-Find data structure for tracking connected components.
 
-    Nodes are identified externally by (id_type, id_value) tuples where:
-    - id_type is a CV term accession string (e.g., "MI:0326", "OM:0204")
-    - id_value is always a str
+    Nodes are identified externally by (id_type, id_value, entity_type_key, tax_id_key)
+    tuples where all elements are strings.
 
     Internally, nodes are mapped to integer indices for performance.
     """
@@ -34,14 +34,14 @@ class UnionFind:
         self.parent: list[int] = []
         # rank[i] is the rank of the tree rooted at i
         self.rank: list[int] = []
-        # mapping from (id_type, id_value) -> int index
-        self._index: dict[tuple[str, str], int] = {}
+        # mapping from node tuple -> int index
+        self._index: dict[tuple[str, ...], int] = {}
         # number of connected components
         self._num_components: int = 0
 
     # --------------------------- internal helpers --------------------------- #
 
-    def _get_index(self, node: tuple[str, str]) -> int:
+    def _get_index(self, node: tuple[str, ...]) -> int:
         """Get or create an integer index for a node."""
         idx = self._index.get(node)
         if idx is None:
@@ -55,7 +55,7 @@ class UnionFind:
 
     # ------------------------------ public API ----------------------------- #
 
-    def find(self, node: tuple[str, str]) -> int:
+    def find(self, node: tuple[str, ...]) -> int:
         """Find the root index of node with path compression."""
         i = self._get_index(node)
         # iterative path compression
@@ -64,7 +64,7 @@ class UnionFind:
             i = self.parent[i]
         return i
 
-    def union(self, x: tuple[str, str], y: tuple[str, str]) -> bool:
+    def union(self, x: tuple[str, ...], y: tuple[str, ...]) -> bool:
         """Union two elements. Returns True if they were in different components."""
         root_x = self.find(x)
         root_y = self.find(y)
@@ -120,17 +120,135 @@ MERGE_UNSAFE_IDENTIFIER_TYPES = frozenset({
     IdentifierNamespaceCv.PDB.value,  # PDB structures can contain multiple proteins
 })
 
+UNKNOWN_ENTITY_TYPE_KEY = "__UNKNOWN_ENTITY_TYPE__"
+CHEMICAL_ENTITY_BUCKET = "__CHEMICAL_BUCKET__"
+TAX_PARTITION_ANY = "__ANY_TAX_PARTITION__"
+UNRESOLVED_TAX_PARTITION_PREFIX = "__UNRESOLVED_TAX__"
+EXEMPT_ENTITY_TYPES = frozenset({
+    EntityTypeCv.LIPID.value,
+    EntityTypeCv.SMALL_MOLECULE.value,
+})
+CV_TERM_IDENTIFIER_TYPE = IdentifierNamespaceCv.CV_TERM_ACCESSION.value
+NCBI_TAXONOMY_TERM = IdentifierNamespaceCv.NCBI_TAX_ID.value
+
+
+@dataclass
+class SourceIdentifierData:
+    source_id: int
+    source_name: str
+    identifiers: pl.DataFrame
+    entity_metadata: pl.DataFrame
+
+
+def _empty_metadata_table() -> pl.DataFrame:
+    """Create an empty metadata DataFrame with the expected schema."""
+    return pl.DataFrame({
+        'source_id': pl.Series([], dtype=pl.Int64),
+        'local_entity_id': pl.Series([], dtype=pl.Int64),
+        'entity_type': pl.Series([], dtype=pl.Utf8),
+        'tax_id': pl.Series([], dtype=pl.Utf8),
+    })
+
+
+def _empty_tax_table() -> pl.DataFrame:
+    """Create an empty tax annotations table with the expected schema."""
+    return pl.DataFrame({
+        'source_id': pl.Series([], dtype=pl.Int64),
+        'local_entity_id': pl.Series([], dtype=pl.Int64),
+        'tax_id': pl.Series([], dtype=pl.Utf8),
+    })
+
 
 # --------------------------------------------------------------------------- #
 # Helper functions
 # --------------------------------------------------------------------------- #
 
 
-def _load_local_tables(local_tables_dir: Path) -> list[tuple[int, pl.DataFrame]]:
+def _extract_entity_tax_annotations(
+    local_tables_dir: Path,
+    source_name: str,
+    source_id: int,
+    identifier_df: pl.DataFrame,
+) -> pl.DataFrame:
+    """Extract entity tax annotations (NCBI tax IDs) for a source."""
+    membership_path = local_tables_dir / f'local_membership_{source_name}.parquet'
+    if not membership_path.exists():
+        return _empty_tax_table()
+
+    membership_df = pl.read_parquet(membership_path)
+    if len(membership_df) == 0 or 'annotation_value' not in membership_df.columns:
+        return _empty_tax_table()
+
+    if len(identifier_df) == 0:
+        return _empty_tax_table()
+
+    tax_term_entities = (
+        identifier_df
+        .filter(pl.col('type_id') == CV_TERM_IDENTIFIER_TYPE)
+        .filter(pl.col('identifier') == NCBI_TAXONOMY_TERM)
+        .select(pl.col('local_entity_id'))
+        .unique()
+    )
+    if len(tax_term_entities) == 0:
+        return _empty_tax_table()
+
+    parent_ids = tax_term_entities['local_entity_id']
+    tax_rows = (
+        membership_df
+        .filter(pl.col('parent_id').is_in(parent_ids))
+        .filter(pl.col('annotation_value').is_not_null())
+        .select([
+            pl.col('member_id').alias('local_entity_id'),
+            pl.col('annotation_value').cast(pl.Utf8).alias('tax_id'),
+        ])
+    )
+    if len(tax_rows) == 0:
+        return _empty_tax_table()
+
+    tax_rows = (
+        tax_rows
+        .group_by('local_entity_id')
+        .agg(pl.col('tax_id').first())
+        .with_columns(pl.lit(source_id).alias('source_id'))
+    )
+    return tax_rows
+
+
+def _load_entity_metadata(
+    local_tables_dir: Path,
+    source_name: str,
+    source_id: int,
+    identifier_df: pl.DataFrame,
+) -> pl.DataFrame:
+    """Load entity_type and tax annotations for a source."""
+    entity_path = local_tables_dir / f'local_entity_{source_name}.parquet'
+    if not entity_path.exists():
+        logger.warning("Entity table missing for source '%s'", source_name)
+        return _empty_metadata_table()
+
+    entity_df = pl.read_parquet(entity_path)
+    if len(entity_df) == 0:
+        return _empty_metadata_table()
+
+    metadata = entity_df.select(['source_id', 'local_entity_id', 'entity_type'])
+    tax_df = _extract_entity_tax_annotations(local_tables_dir, source_name, source_id, identifier_df)
+    if len(tax_df) == 0:
+        metadata = metadata.with_columns(pl.lit(None).cast(pl.Utf8).alias('tax_id'))
+    else:
+        metadata = metadata.join(
+            tax_df,
+            on=['source_id', 'local_entity_id'],
+            how='left',
+        )
+
+    return metadata
+
+
+def _load_local_tables(local_tables_dir: Path) -> list[SourceIdentifierData]:
     """Load all local_entity_identifier_*.parquet files (flattened format).
 
     Returns:
-        List of (source_id, dataframe) tuples where dataframe has columns:
+        List of SourceIdentifierData entries where dataframe has columns:
         [source_id, local_entity_id, type_id, identifier, local_entity_identifier_id]
     """
     files = sorted(local_tables_dir.glob('local_entity_identifier_*.parquet'))
@@ -138,14 +256,21 @@ def _load_local_tables(local_tables_dir: Path) -> list[tuple[int, pl.DataFrame]]
         logger.warning(f"No local_entity_identifier_*.parquet files found in {local_tables_dir}")
         return []
 
-    result: list[tuple[int, pl.DataFrame]] = []
+    result: list[SourceIdentifierData] = []
     for path in files:
         df = pl.read_parquet(path)
         if len(df) == 0:
             continue
         # Extract source_id from the dataframe (all rows have the same source_id)
         source_id = df['source_id'][0]
-        result.append((source_id, df))
+        source_name = path.stem.replace('local_entity_identifier_', '')
+        metadata = _load_entity_metadata(local_tables_dir, source_name, source_id, df)
+        result.append(SourceIdentifierData(
+            source_id=source_id,
+            source_name=source_name,
+            identifiers=df,
+            entity_metadata=metadata,
+        ))
 
     logger.info(f"Loaded {len(result)} local identifier tables from {local_tables_dir}")
     return result
@@ -154,6 +279,7 @@ def _load_local_tables(local_tables_dir: Path) -> list[tuple[int, pl.DataFrame]]
 def _prepare_local_entities_for_source(
     source_id: int,
     local_df: pl.DataFrame,
+    entity_metadata: pl.DataFrame,
     merge_unsafe_types: frozenset[str],
 ) -> tuple[pl.DataFrame, pl.DataFrame] | None:
     """Prepare per-source local entities and edges from pre-built local tables.
@@ -162,11 +288,12 @@ def _prepare_local_entities_for_source(
         source_id: Source ID (integer)
         local_df: DataFrame with columns [source_id, local_entity_id, type_id, identifier, local_entity_identifier_id]
                   (flattened format from build_local_tables.py)
+        entity_metadata: DataFrame with columns [source_id, local_entity_id, entity_type, tax_id]
         merge_unsafe_types: Set of identifier types to EXCLUDE from cross-source merging (blacklist)
 
     Returns a tuple of:
-    - local_ms_edges (source_id, local_entity_id, id_type, id_value) - merge-safe identifiers only
-    - local_all_edges (source_id, local_entity_id, id_type, id_value) - all identifiers
+    - local_ms_edges (source_id, local_entity_id, id_type, id_value, entity_bucket, tax_partition) - merge-safe identifiers only
+    - local_all_edges (source_id, local_entity_id, id_type, id_value, entity_bucket, tax_id) - all identifiers
 
     or None if the source has no identifiers.
     """
@@ -174,6 +301,23 @@ def _prepare_local_entities_for_source(
         return None
 
     unsafe_list = list(merge_unsafe_types)
+    if entity_metadata is None or len(entity_metadata) == 0:
+        entity_metadata = _empty_metadata_table()
+
+    metadata_cols = ['source_id', 'local_entity_id', 'entity_type', 'tax_id']
+    entity_metadata = entity_metadata.select([col for col in metadata_cols if col in entity_metadata.columns])
+    for missing_col, default in (('entity_type', None), ('tax_id', None)):
+        if missing_col not in entity_metadata.columns:
+            entity_metadata = entity_metadata.with_columns(pl.lit(default).alias(missing_col))
+
+    entity_metadata = (
+        entity_metadata
+        .with_columns([
+            pl.col('entity_type').cast(pl.Utf8).alias('entity_type'),
+            pl.col('tax_id').cast(pl.Utf8).alias('tax_id'),
+        ])
+        .unique(subset=['source_id', 'local_entity_id'])
+    )
 
     # Rename columns to match expected format
     # Input: [source_id, local_entity_id, type_id, identifier, local_entity_identifier_id]
@@ -187,6 +331,23 @@ def _prepare_local_entities_for_source(
             pl.col('identifier').cast(pl.Utf8).alias('id_value'),
         ])
         .filter(pl.col('id_type').is_not_null() & pl.col('id_value').is_not_null())
+        .join(
+            entity_metadata,
+            on=['source_id', 'local_entity_id'],
+            how='left',
+        )
+        .with_columns([
+            pl.col('entity_type').fill_null(UNKNOWN_ENTITY_TYPE_KEY).alias('entity_type'),
+            pl.col('tax_id').alias('tax_id'),
+        ])
+        .with_columns([
+            pl.when(pl.col('entity_type').is_in(list(EXEMPT_ENTITY_TYPES)))
+              .then(pl.lit(CHEMICAL_ENTITY_BUCKET))
+              .when(pl.col('entity_type') == UNKNOWN_ENTITY_TYPE_KEY)
+              .then(pl.lit(UNKNOWN_ENTITY_TYPE_KEY))
+              .otherwise(pl.col('entity_type'))
+              .alias('entity_bucket'),
+        ])
         .unique()
     )
 
@@ -194,6 +355,48 @@ def _prepare_local_entities_for_source(
     local_ms_edges = (
         local_all_edges
         .filter(~pl.col('id_type').is_in(unsafe_list))
+    )
+
+    if len(local_ms_edges) == 0:
+        local_ms_edges = local_ms_edges.with_columns([
+            pl.lit(False).alias('has_tax_conflict'),
+            pl.lit(TAX_PARTITION_ANY).alias('tax_partition'),
+        ])
+        return local_ms_edges, local_all_edges
+
+    tax_conflicts = (
+        local_ms_edges
+        .group_by(['id_type', 'id_value', 'entity_bucket'])
+        .agg([
+            pl.col('tax_id').filter(pl.col('tax_id').is_not_null()).n_unique().alias('tax_count'),
+        ])
+        .with_columns((pl.col('tax_count') > 1).alias('has_tax_conflict'))
+        .select(['id_type', 'id_value', 'entity_bucket', 'has_tax_conflict'])
+    )
+
+    local_ms_edges = (
+        local_ms_edges
+        .join(
+            tax_conflicts,
+            on=['id_type', 'id_value', 'entity_bucket'],
+            how='left',
+        )
+        .with_columns(pl.col('has_tax_conflict').fill_null(False))
+        .with_columns([
+            pl.when(pl.col('has_tax_conflict') & pl.col('tax_id').is_not_null())
+              .then(pl.col('tax_id'))
+              .when(pl.col('has_tax_conflict') & pl.col('tax_id').is_null())
+              .then(
+                  pl.format(
+                      f"{UNRESOLVED_TAX_PARTITION_PREFIX}:{{}}:{{}}",
+                      pl.col('source_id'),
+                      pl.col('local_entity_id'),
+                  )
+              )
+              .otherwise(pl.lit(TAX_PARTITION_ANY))
+              .alias('tax_partition')
+        ])
+        .drop('has_tax_conflict')
     )
 
     return local_ms_edges, local_all_edges
@@ -205,11 +408,13 @@ def _prepare_local_entities_for_source(
 
 
 def _union_find_to_safe_clusters(uf: UnionFind) -> pl.DataFrame:
-    """Convert UnionFind state into a mapping of (id_type, id_value) -> entity_id.
+    """Convert UnionFind state into a mapping of node tuples -> entity_id.
 
-    Returns DataFrame columns: [type_id, id_value, entity_id]
+    Returns DataFrame columns: [type_id, id_value, entity_bucket, tax_partition, entity_id]
     - type_id is a CV term accession string (e.g., "MI:0326")
     - id_value is the identifier value
+    - entity_bucket ensures entity_type-compatible merges
+    - tax_partition enforces tax_id-compatible merges
     - entity_id is a sequential integer starting at 1
     """
     # Compute roots for each index (find() also compresses paths)
@@ -222,14 +427,21 @@ def _union_find_to_safe_clusters(uf: UnionFind) -> pl.DataFrame:
     unique_roots = sorted(set(index_to_root.values()))
     root_to_entity: dict[int, int] = {root: i + 1 for i, root in enumerate(unique_roots)}
 
-    rows = [
-        {
+    rows = []
+    for node, idx in uf._index.items():
+        if len(node) == 4:
+            t, v, bucket, tax_partition = node
+        else:
+            t, v = node[:2]
+            bucket = UNKNOWN_ENTITY_TYPE_KEY
+            tax_partition = TAX_PARTITION_ANY
+        rows.append({
             'type_id': t,
             'id_value': v,
+            'entity_bucket': bucket,
+            'tax_partition': tax_partition,
             'entity_id': root_to_entity[index_to_root[idx]],
-        }
-        for (t, v), idx in uf._index.items()
-    ]
+        })
     return pl.DataFrame(rows)
 
 
@@ -268,12 +480,15 @@ def build_entity_identifiers(
     num_sources = len(sources_data)
     sources_processed = 0
 
-    for source_id, local_df in sources_data:
+    for source_data in sources_data:
+        source_id = source_data.source_id
+        local_df = source_data.identifiers
+        metadata_df = source_data.entity_metadata
         logger.info("=" * 80)
         logger.info(f"Processing source [{sources_processed + 1}/{num_sources}]: source_id={source_id}")
         logger.info("=" * 80)
 
-        prepared = _prepare_local_entities_for_source(source_id, local_df, merge_unsafe_types)
+        prepared = _prepare_local_entities_for_source(source_id, local_df, metadata_df, merge_unsafe_types)
         if prepared is None:
             logger.warning(f"  No identifiers found in source {source_id}, skipping")
             sources_processed += 1
@@ -296,6 +511,8 @@ def build_entity_identifiers(
                 pl.struct(
                     type=pl.col(type_col),
                     value=pl.col('id_value'),
+                    entity_bucket=pl.col('entity_bucket'),
+                    tax_partition=pl.col('tax_partition'),
                 ).alias('identifiers')
             ])
         )
@@ -314,10 +531,10 @@ def build_entity_identifiers(
             )
 
         # Register all merge-safe nodes
-        ms_nodes = local_ms_edges.select([type_col, 'id_value']).unique()
-        for t, v in ms_nodes.iter_rows():
+        ms_nodes = local_ms_edges.select([type_col, 'id_value', 'entity_bucket', 'tax_partition']).unique()
+        for t, v, bucket, tax_partition in ms_nodes.iter_rows():
             # Just ensure node is known to UF
-            union_find.find((t, v))
+            union_find.find((t, v, bucket, tax_partition))
 
         # Connect identifiers within each unique identifier set using Union-Find directly
         components_before = union_find.num_components
@@ -329,10 +546,20 @@ def build_entity_identifiers(
 
             # id_structs is a list of dicts: {'type': ..., 'value': ...}
             base_struct = id_structs[0]
-            base = (base_struct['type'], str(base_struct['value']))
+            base = (
+                base_struct['type'],
+                str(base_struct['value']),
+                base_struct['entity_bucket'],
+                base_struct['tax_partition'],
+            )
 
             for s in id_structs[1:]:
-                other = (s['type'], str(s['value']))
+                other = (
+                    s['type'],
+                    str(s['value']),
+                    s['entity_bucket'],
+                    s['tax_partition'],
+                )
                 union_find.union(base, other)
 
         components_after = union_find.num_components
@@ -356,7 +583,7 @@ def build_entity_identifiers(
     # Map local entities to global entity IDs via merge-safe identifiers
     # Note: Both edges and safe_clusters use id_type (accession string)
     type_col = 'id_type'
-    join_cols = [type_col, 'id_value']
+    join_cols = [type_col, 'id_value', 'entity_bucket', 'tax_partition']
     record_to_global = (
         local_ms_edges_all
         .join(safe_clusters.rename({'type_id': type_col}), on=join_cols, how='inner')
