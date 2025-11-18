@@ -517,29 +517,16 @@ def build_entity_identifiers(
             ])
         )
 
-        # Deduplicate identical identifier sets:
-        # we only need the unique 'identifiers' values to drive unions;
-        # the actual local_entity_ids sharing those sets don't change the UF result.
-        id_sets = ms_edges_with_lists.select('identifiers').unique()
-
-        n_unique_id_sets = len(id_sets)
-        n_total_entities = len(ms_edges_with_lists)
-        if n_unique_id_sets < n_total_entities:
-            logger.info(
-                f"  Deduplicated identifier sets: "
-                f"{n_total_entities:,} entities -> {n_unique_id_sets:,} unique sets"
-            )
-
         # Register all merge-safe nodes
         ms_nodes = local_ms_edges.select([type_col, 'id_value', 'entity_bucket', 'tax_partition']).unique()
         for t, v, bucket, tax_partition in ms_nodes.iter_rows():
             # Just ensure node is known to UF
             union_find.find((t, v, bucket, tax_partition))
 
-        # Connect identifiers within each unique identifier set using Union-Find directly
+        # Connect identifiers within each identifier set using Union-Find directly
         components_before = union_find.num_components
 
-        for row in id_sets.iter_rows(named=True):
+        for row in ms_edges_with_lists.iter_rows(named=True):
             id_structs = row['identifiers']
             if not id_structs or len(id_structs) < 2:
                 continue
