@@ -1,4 +1,4 @@
-.PHONY: setup silver silver-reprocess gold postgres meilisearch meilisearch-import visualize
+.PHONY: setup silver silver-test silver-reprocess gold postgres meilisearch meilisearch-import visualize
 
 setup:
 	git submodule add -b download-manager-experiment https://github.com/saezlab/pypath.git pypath || true
@@ -11,6 +11,12 @@ setup:
 
 silver:
 	@uv run -m omnipath_build.database_manager silver \
+		$(if $(or $(SOURCE),$(filter-out $@,$(MAKECMDGOALS))),--source $(if $(SOURCE),$(SOURCE),$(filter-out $@,$(MAKECMDGOALS)))) \
+		$(if $(FUNCTION),--function $(FUNCTION)) \
+		$(if $(INPUTS_PACKAGE),--inputs-package $(INPUTS_PACKAGE))
+
+silver-test:
+	@uv run -m omnipath_build.database_manager silver --test-mode \
 		$(if $(or $(SOURCE),$(filter-out $@,$(MAKECMDGOALS))),--source $(if $(SOURCE),$(SOURCE),$(filter-out $@,$(MAKECMDGOALS)))) \
 		$(if $(FUNCTION),--function $(FUNCTION)) \
 		$(if $(INPUTS_PACKAGE),--inputs-package $(INPUTS_PACKAGE))

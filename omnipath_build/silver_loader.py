@@ -238,8 +238,17 @@ def process_resource_function(
     batch_size: int = 10_000,
     dry_run: bool = False,
     override: bool = False,
+    test_mode: bool = False,
 ) -> Optional[Path] | Dict[str, Path]:
     """Stream records from a resource function into parquet file(s).
+
+    Args:
+        resource_fn: The resource function to process
+        path_manager: Path manager for output files
+        batch_size: Number of records per batch
+        dry_run: If True, don't write to disk
+        override: If True, overwrite existing files
+        test_mode: If True, limit to 100k records per resource
 
     Returns:
         - Optional[Path] for single-output functions
@@ -308,12 +317,12 @@ def process_resource_function(
     if is_multi_output:
         # Process as multi-output function
         return _process_multi_output(
-            resource_fn, path_manager, first_record, records_iter, batch_size, dry_run
+            resource_fn, path_manager, first_record, records_iter, batch_size, dry_run, test_mode
         )
     else:
         # Process as single-output function (existing logic)
         return _process_single_output(
-            resource_fn, path_manager, first_record, records_iter, batch_size, dry_run
+            resource_fn, path_manager, first_record, records_iter, batch_size, dry_run, test_mode
         )
 
 
@@ -324,6 +333,7 @@ def _process_single_output(
     records_iter: Iterator,
     batch_size: int,
     dry_run: bool,
+    test_mode: bool = False,
 ) -> Optional[Path]:
     """Process single-output function producing Entity records."""
     schema = ENTITY_SCHEMA
@@ -331,6 +341,7 @@ def _process_single_output(
     writer: Optional[pq.ParquetWriter] = None
     total_records = 0
     batch: List[dict] = []
+    max_records = 100_000 if test_mode else None
 
     # Process first record
     _ensure_entity_record(first_record)
@@ -340,6 +351,10 @@ def _process_single_output(
 
     # Process remaining records
     for record in records_iter:
+        # Check test mode limit
+        if max_records and (total_records + len(batch)) >= max_records:
+            print(f'[{resource_fn.source}.{resource_fn.function_name}] test mode: stopping at {max_records:,} records')
+            break
         if record is None:
             continue
 
@@ -421,12 +436,14 @@ def _process_multi_output(
     records_iter: Iterator,
     batch_size: int,
     dry_run: bool,
+    test_mode: bool = False,
 ) -> Dict[str, Path]:
     """Process multi-output function that yields dicts with named outputs."""
     batches: Dict[str, List[dict]] = {}
     writers: Dict[str, pq.ParquetWriter] = {}
     output_files: Dict[str, Path] = {}
     record_counts: Dict[str, int] = {}
+    max_records = 100_000 if test_mode else None
 
     def ensure_output_paths(output_name: str) -> None:
         if output_name not in output_files:
@@ -482,6 +499,14 @@ def _process_multi_output(
         if record is None:
             continue
 
+        # Check test mode limit for any output
+        if max_records:
+            max_output_count = max((record_counts.get(name, 0) + len(batches.get(name, []))
+                                   for name in batches.keys()), default=0)
+            if max_output_count >= max_records:
+                print(f'[{resource_fn.source}.{resource_fn.function_name}] test mode: stopping at {max_records:,} records per output')
+                break
+
         if not _is_multi_output_record(record):
             raise ValueError(
                 f'Mixed single/multi output in {resource_fn.source}.{resource_fn.function_name}: '
@@ -528,6 +553,7 @@ def run_silver_loader(
     batch_size: int = 10_000,
     dry_run: bool = False,
     override: bool = False,
+    test_mode: bool = False,
     inputs_package: str = 'pypath.inputs_v2',
 ) -> tuple[
     Dict[str, List[ResourceFunction]],
@@ -579,6 +605,7 @@ def run_silver_loader(
                 batch_size=batch_size,
                 dry_run=dry_run,
                 override=override,
+                test_mode=test_mode,
             )
             outputs.append(result)
         except Exception as exc:  # noqa: BLE001

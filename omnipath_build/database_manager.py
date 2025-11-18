@@ -35,6 +35,7 @@ def _handle_silver(args: argparse.Namespace) -> int:
             batch_size=args.batch_size,
             dry_run=args.dry_run,
             override=args.override,
+            test_mode=args.test_mode,
             inputs_package=args.inputs_package,
         )
     except DiscoveryError as exc:
@@ -151,6 +152,7 @@ def _build_parser() -> argparse.ArgumentParser:
     silver_parser.add_argument('--batch-size', type=int, default=10_000, help='Number of records per write batch')
     silver_parser.add_argument('--dry-run', action='store_true', help='Run without writing parquet outputs')
     silver_parser.add_argument('--override', action='store_true', help='Process even if output file already exists')
+    silver_parser.add_argument('--test-mode', action='store_true', help='Limit to 100k records per resource (for testing)')
     silver_parser.set_defaults(handler=_handle_silver)
 
     gold_parser = subparsers.add_parser(

@@ -4,6 +4,7 @@ from pathlib import Path
 from collections.abc import Iterable
 import logging
 import polars as pl
+from pypath.internals.cv_terms.entity_types import EntityTypeCv
 
 __all__ = ["build_local_tables"]
 logger = logging.getLogger(__name__)
@@ -137,7 +138,7 @@ def _process_entities_vectorized(df: pl.DataFrame, source_id: int, next_id: int)
 
                 cv_term_entities = pl.DataFrame({
                     "local_entity_id": list(range(next_id, next_id + n_cv_terms)),
-                    "entity_type": ["OM:0003"] * n_cv_terms,  # CV_TERM entity type
+                    "entity_type": [EntityTypeCv.CV_TERM.value] * n_cv_terms,  # CV_TERM entity type
                     "source_id": [source_id] * n_cv_terms,
                 })
 
@@ -310,7 +311,7 @@ def _process_entities_vectorized(df: pl.DataFrame, source_id: int, next_id: int)
 
                             membership_annot_cv_term_entities = pl.DataFrame({
                                 "local_entity_id": list(range(next_id, next_id + n_membership_cv_terms)),
-                                "entity_type": ["OM:0003"] * n_membership_cv_terms,  # CV_TERM entity type
+                                "entity_type": [EntityTypeCv.CV_TERM.value] * n_membership_cv_terms,  # CV_TERM entity type
                                 "source_id": [source_id] * n_membership_cv_terms,
                             })
 
