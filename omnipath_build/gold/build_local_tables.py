@@ -43,13 +43,13 @@ def _load_source_data(root: Path) -> dict[str, list[tuple[Path, pl.LazyFrame]]]:
 
 
 def _process_entities_vectorized(df: pl.DataFrame, source_id: int, next_id: int) -> tuple[dict[str, pl.DataFrame], int]:
-    """Process entities using vectorized operations (no row iteration!)."""
+    """Process entities using vectorized operations - simple sequential ID assignment."""
 
     if len(df) == 0:
         return {}, next_id
 
     # ============================================================================
-    # 1. CREATE BASE ENTITY RECORDS
+    # 1. CREATE BASE ENTITY RECORDS (VECTORIZED)
     # ============================================================================
     entities = df.select([
         pl.col("type").alias("entity_type"),
@@ -62,7 +62,7 @@ def _process_entities_vectorized(df: pl.DataFrame, source_id: int, next_id: int)
     logger.info(f"    Created {len(entities):,} base entity records")
 
     # ============================================================================
-    # 2. EXTRACT IDENTIFIERS (vectorized explode)
+    # 2. EXTRACT IDENTIFIERS (VECTORIZED)
     # ============================================================================
     identifiers = pl.DataFrame()
 
@@ -253,7 +253,7 @@ def _process_entities_vectorized(df: pl.DataFrame, source_id: int, next_id: int)
                     # Extract member entity IDs (they're sequential starting from old next_id)
                     member_start_id = next_id - len(member_entity_df)
 
-                    # Create membership relationships
+                    # Create membership relationships (vectorized with row index)
                     memberships = (
                         membership_info
                         .with_row_index("_member_idx", offset=0)
@@ -437,10 +437,153 @@ def _process_entities_vectorized(df: pl.DataFrame, source_id: int, next_id: int)
     return results, next_id
 
 
+def _deduplicate_entities(tables: dict[str, pl.DataFrame]) -> dict[str, pl.DataFrame]:
+    """
+    Deduplicate entities based on identifier sets and remap all references.
+
+    Strategy:
+    1. Group entities by their identifier sets
+    2. Keep the lowest ID for each unique identifier set
+    3. Create ID mapping (old_id -> canonical_id)
+    4. Remap all references in identifiers, memberships, etc.
+    """
+    entity_df = tables.get("entity")
+    identifier_df = tables.get("entity_identifier")
+
+    if entity_df is None or len(entity_df) == 0:
+        return tables
+
+    if identifier_df is None or len(identifier_df) == 0:
+        # No identifiers to deduplicate on
+        return tables
+
+    logger.info("  Starting entity deduplication...")
+    original_count = len(entity_df)
+
+    # ============================================================================
+    # 1. Build identifier sets for each entity
+    # ============================================================================
+    # Group identifiers by entity and create sorted identifier set strings
+    identifier_sets = (
+        identifier_df
+        .sort(["local_entity_id", "type_id", "identifier"])
+        .group_by("local_entity_id")
+        .agg([
+            pl.concat_str([
+                pl.col("type_id"),
+                pl.lit(":"),
+                pl.col("identifier")
+            ]).sort().str.join(delimiter="|").alias("identifier_set")
+        ])
+    )
+
+    # ============================================================================
+    # 2. Find duplicates and create ID mapping
+    # ============================================================================
+    # For each unique identifier set, keep the minimum entity ID
+    canonical_ids = (
+        identifier_sets
+        .group_by("identifier_set")
+        .agg([
+            pl.col("local_entity_id").min().alias("canonical_id"),
+            pl.col("local_entity_id").alias("duplicate_ids"),
+        ])
+        .explode("duplicate_ids")
+        .select([
+            pl.col("duplicate_ids").alias("old_id"),
+            pl.col("canonical_id"),
+        ])
+    )
+
+    # Create lookup for remapping
+    id_mapping = canonical_ids.filter(pl.col("old_id") != pl.col("canonical_id"))
+
+    if len(id_mapping) == 0:
+        logger.info("  No duplicates found")
+        return tables
+
+    logger.info(f"  Found {len(id_mapping):,} duplicate entities to merge")
+
+    # ============================================================================
+    # 3. Deduplicate entities table
+    # ============================================================================
+    # Keep only canonical entities
+    entities_dedup = (
+        entity_df
+        .join(canonical_ids, left_on="local_entity_id", right_on="old_id", how="left")
+        .with_columns(
+            pl.coalesce([pl.col("canonical_id"), pl.col("local_entity_id")]).alias("local_entity_id")
+        )
+        .select([col for col in entity_df.columns])  # Keep only original columns
+        .unique(subset=["local_entity_id"])
+    )
+
+    # ============================================================================
+    # 4. Remap identifiers
+    # ============================================================================
+    identifiers_dedup = (
+        identifier_df
+        .join(canonical_ids, left_on="local_entity_id", right_on="old_id", how="left")
+        .with_columns(
+            pl.coalesce([pl.col("canonical_id"), pl.col("local_entity_id")]).alias("local_entity_id")
+        )
+        .select([col for col in identifier_df.columns])  # Keep only original columns
+        .unique(subset=["local_entity_id", "type_id", "identifier"])
+        .drop("local_entity_identifier_id")
+        .with_row_index("local_entity_identifier_id", offset=1)
+    )
+
+    # ============================================================================
+    # 5. Remap memberships
+    # ============================================================================
+    membership_df = tables.get("membership")
+    if membership_df is not None and len(membership_df) > 0:
+        membership_cols = membership_df.columns
+
+        # Remap parent_id
+        memberships_dedup = (
+            membership_df
+            .join(canonical_ids, left_on="parent_id", right_on="old_id", how="left")
+            .with_columns(
+                pl.coalesce([pl.col("canonical_id"), pl.col("parent_id")]).alias("parent_id")
+            )
+            .select(membership_cols)  # Keep only original columns
+        )
+
+        # Remap member_id
+        memberships_dedup = (
+            memberships_dedup
+            .join(canonical_ids, left_on="member_id", right_on="old_id", how="left")
+            .with_columns(
+                pl.coalesce([pl.col("canonical_id"), pl.col("member_id")]).alias("member_id")
+            )
+            .select(membership_cols)  # Keep only original columns
+        )
+
+        # Remove duplicate memberships and renumber
+        memberships_dedup = (
+            memberships_dedup
+            .unique(subset=["parent_id", "member_id"])
+            .drop("local_membership_id")
+            .with_row_index("local_membership_id", offset=1)
+        )
+    else:
+        memberships_dedup = membership_df
+
+    logger.info(f"  Deduplicated: {original_count:,} -> {len(entities_dedup):,} entities ({original_count - len(entities_dedup):,} removed)")
+
+    return {
+        "entity": entities_dedup,
+        "entity_identifier": identifiers_dedup,
+        "membership": memberships_dedup,
+        "membership_annotation": tables.get("membership_annotation"),
+    }
+
+
 def _save_tables(tables: dict[str, pl.DataFrame], output_dir: Path, source_name: str):
     """Save processed tables to parquet files."""
     for table_name, df in tables.items():
-        if len(df) > 0:
+        if df is not None and len(df) > 0:
             output_path = output_dir / f"local_{table_name}_{source_name}.parquet"
             df.write_parquet(output_path)
             logger.info(f"  Saved {table_name}: {len(df):,} records -> {output_path.name}")
@@ -523,6 +666,10 @@ def build_local_tables(
             if table_list:
                 final_tables[table_name] = pl.concat(table_list, how="diagonal_relaxed")
                 logger.info(f"  Total {table_name}: {len(final_tables[table_name]):,} records")
+
+        # Deduplicate entities based on identifier sets
+        if final_tables:
+            final_tables = _deduplicate_entities(final_tables)
 
         # Save tables
         if final_tables:
