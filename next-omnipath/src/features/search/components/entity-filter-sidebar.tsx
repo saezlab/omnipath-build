@@ -1,6 +1,5 @@
 "use client"
 
-import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -51,48 +50,46 @@ function FilterSection({
   if (options.length === 0) return null;
 
   return (
-    <AccordionItem value={filterKey}>
-      <AccordionTrigger>{title}</AccordionTrigger>
-      <AccordionContent>
-        <div className="space-y-1 max-h-64 overflow-y-auto pr-2">
-          {options.map(({ value, count, displayName }) => {
-            const isSelected = selectedValues?.includes(value) || false;
+    <div>
+      <h4 className="text-sm font-medium mb-3">{title}</h4>
+      <div className="space-y-1 max-h-64 overflow-y-auto pr-2">
+        {options.map(({ value, count, displayName }) => {
+          const isSelected = selectedValues?.includes(value) || false;
 
-            return (
-              <div key={value} className="flex items-center justify-between group py-0.5 gap-2">
-                <Label
-                  htmlFor={`${filterKey}-${value}`}
-                  className={`flex items-center gap-1.5 text-xs font-normal cursor-pointer group-hover:text-primary transition-colors min-w-0 flex-1 ${
-                    isSelected ? "text-primary font-medium" : ""
-                  }`}
-                >
-                  <Checkbox
-                    id={`${filterKey}-${value}`}
-                    checked={isSelected}
-                    onCheckedChange={() => onToggle(value)}
-                    className={cn(
-                      "h-3.5 w-3.5 flex-shrink-0",
-                      isSelected ? "border-primary" : ""
-                    )}
-                  />
-                  <span className="truncate">{displayName || value}</span>
-                </Label>
-                <Badge
-                  variant={isSelected ? "default" : "outline"}
+          return (
+            <div key={value} className="flex items-center justify-between group py-0.5 gap-2">
+              <Label
+                htmlFor={`${filterKey}-${value}`}
+                className={`flex items-center gap-1.5 text-xs font-normal cursor-pointer group-hover:text-primary transition-colors min-w-0 flex-1 ${
+                  isSelected ? "text-primary font-medium" : ""
+                }`}
+              >
+                <Checkbox
+                  id={`${filterKey}-${value}`}
+                  checked={isSelected}
+                  onCheckedChange={() => onToggle(value)}
                   className={cn(
-                    "text-xs h-5 px-1.5 py-0 transition-colors flex-shrink-0",
-                    "group-hover:bg-primary/10",
-                    isSelected ? "bg-primary text-primary-foreground" : ""
+                    "h-3.5 w-3.5 flex-shrink-0",
+                    isSelected ? "border-primary" : ""
                   )}
-                >
-                  {formatNumber(count)}
-                </Badge>
-              </div>
-            );
-          })}
-        </div>
-      </AccordionContent>
-    </AccordionItem>
+                />
+                <span className="truncate">{displayName || value}</span>
+              </Label>
+              <Badge
+                variant={isSelected ? "default" : "outline"}
+                className={cn(
+                  "text-xs h-5 px-1.5 py-0 transition-colors flex-shrink-0",
+                  "group-hover:bg-primary/10",
+                  isSelected ? "bg-primary text-primary-foreground" : ""
+                )}
+              >
+                {formatNumber(count)}
+              </Badge>
+            </div>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 
@@ -163,35 +160,33 @@ export function EntityFilterSidebar({
   };
 
   const content = (
-    <div className="space-y-4">
-      <Accordion type="multiple" defaultValue={["entity_types", "sources", "ncbi_tax_id"]} className="w-full">
-        {/* Entity Type Filter */}
-        <FilterSection
-          title="Entity Types"
-          filterKey="entity_types"
-          options={transformFilterCounts(filterCounts.entity_type || {}, 'entity_type')}
-          selectedValues={filters.entity_types || []}
-          onToggle={(value) => handleToggle("entity_types", value)}
-        />
+    <div className="space-y-6">
+      {/* Entity Type Filter */}
+      <FilterSection
+        title="Entity Types"
+        filterKey="entity_types"
+        options={transformFilterCounts(filterCounts.entity_type || {}, 'entity_type')}
+        selectedValues={filters.entity_types || []}
+        onToggle={(value) => handleToggle("entity_types", value)}
+      />
 
-        {/* Data Sources Filter */}
-        <FilterSection
-          title="Data Sources"
-          filterKey="sources"
-          options={transformFilterCounts(filterCounts.sources || {}, 'sources')}
-          selectedValues={filters.sources || []}
-          onToggle={(value) => handleToggle("sources", value)}
-        />
+      {/* Data Sources Filter */}
+      <FilterSection
+        title="Data Sources"
+        filterKey="sources"
+        options={transformFilterCounts(filterCounts.sources || {}, 'sources')}
+        selectedValues={filters.sources || []}
+        onToggle={(value) => handleToggle("sources", value)}
+      />
 
-        {/* NCBI Taxonomy ID Filter */}
-        <FilterSection
-          title="Organism"
-          filterKey="ncbi_tax_id"
-          options={transformFilterCounts(filterCounts.ncbi_tax_id || {}, 'ncbi_tax_id')}
-          selectedValues={filters.ncbi_tax_id || []}
-          onToggle={(value) => handleToggle("ncbi_tax_id", value)}
-        />
-      </Accordion>
+      {/* NCBI Taxonomy ID Filter */}
+      <FilterSection
+        title="Organism"
+        filterKey="ncbi_tax_id"
+        options={transformFilterCounts(filterCounts.ncbi_tax_id || {}, 'ncbi_tax_id')}
+        selectedValues={filters.ncbi_tax_id || []}
+        onToggle={(value) => handleToggle("ncbi_tax_id", value)}
+      />
     </div>
   );
 

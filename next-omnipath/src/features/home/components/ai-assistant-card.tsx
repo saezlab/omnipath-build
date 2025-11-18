@@ -13,11 +13,6 @@ export function AIAssistantCard() {
   return (
     <Card className="md:w-1/2 transition-all duration-200 hover:shadow-md border-border/40">
       <Link href="/chat">
-        <div className="absolute top-3 right-3">
-          <Badge variant="secondary" className="text-xs px-2 py-0.5">
-            Beta
-          </Badge>
-        </div>
         <CardHeader className="pb-4">
           <CardTitle className="text-lg font-medium">AI Assistant</CardTitle>
           <CardDescription className="text-sm text-muted-foreground leading-relaxed">

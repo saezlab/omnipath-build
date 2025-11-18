@@ -9,6 +9,8 @@ import { Badge } from "@/components/ui/badge"
 import { Card, CardContent } from "@/components/ui/card"
 import { X } from "lucide-react"
 import Link from "next/link"
+import { useSidebarContent } from "@/contexts/sidebar-content-context"
+import { ScrollArea } from "@/components/ui/scroll-area"
 
 interface DatasourceExplorerProps {
   datasources: DataSource[];
@@ -17,6 +19,7 @@ interface DatasourceExplorerProps {
 export function DatasourceExplorer({ datasources }: DatasourceExplorerProps) {
   const [filters, setFilters] = useState<DataSourceFilters>({})
   const [filteredDatasources, setFilteredDatasources] = useState<DataSource[]>(datasources)
+  const { setSidebarContent } = useSidebarContent()
 
   // Calculate counts for filters
   const datasourceCounts = useMemo(() => {
@@ -179,6 +182,28 @@ export function DatasourceExplorer({ datasources }: DatasourceExplorerProps) {
     setFilters({})
   }
 
+  // Set sidebar content
+  useEffect(() => {
+    setSidebarContent(
+      <ScrollArea className="h-full">
+        <div className="px-3">
+          <DatasourceFilterSidebar
+            filters={filters}
+            onFilterChange={setFilters}
+            onClearFilters={clearAllFilters}
+            datasourceCounts={datasourceCounts}
+            isMobile
+          />
+        </div>
+      </ScrollArea>
+    )
+
+    // Cleanup on unmount
+    return () => {
+      setSidebarContent(null)
+    }
+  }, [filters, datasourceCounts, setSidebarContent])
+
   const removeFilter = (filterType: keyof DataSourceFilters, value: string) => {
     setFilters(prev => {
       const newFilters = { ...prev }
@@ -215,19 +240,10 @@ export function DatasourceExplorer({ datasources }: DatasourceExplorerProps) {
   }, [filters])
 
   return (
-    <div className="flex gap-6 min-h-screen">
-      {/* Sidebar */}
-      <aside className="w-80 flex-shrink-0 sticky top-16 h-[calc(100vh-4rem)] py-4 pl-4">
-        <DatasourceFilterSidebar
-          filters={filters}
-          onFilterChange={setFilters}
-          onClearFilters={clearAllFilters}
-          datasourceCounts={datasourceCounts}
-        />
-      </aside>
-
+    <div className="flex-1 flex flex-col">
       {/* Content Area */}
-      <main className="flex-1 overflow-y-auto py-4 pr-4">
+      <main className="flex-1 overflow-y-auto">
+        <div className="w-full max-w-screen-xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
             {/* Active Filters */}
             {activeFilters.length > 0 && (
               <div className="mb-6 flex flex-wrap gap-2">
@@ -285,6 +301,7 @@ export function DatasourceExplorer({ datasources }: DatasourceExplorerProps) {
                 </div>
               )}
             </div>
+        </div>
       </main>
     </div>
   )

@@ -86,6 +86,12 @@ export function ResultCard({ result }: { result: SearchResult }) {
   // Extract entity type label (e.g., "Protein" from "Protein:385235")
   const entityTypeLabel = entityType ? entityType.split(':')[0] : "Entity";
 
+  // Helper function to truncate text to max characters
+  const truncateText = (text: string, maxChars: number = 8): string => {
+    if (text.length <= maxChars) return text;
+    return text.substring(0, maxChars) + '...';
+  };
+
   // Extract gene symbol or determine title
   let title = "";
   let subtitle = "";
@@ -98,12 +104,16 @@ export function ResultCard({ result }: { result: SearchResult }) {
     const firstIdentifier = identifiers.length > 0 ? identifiers[0].value : undefined;
 
     const displayName = geneSymbol || name || firstIdentifier || `Entity ${result.id}`;
-    const formattedDisplayName = result._formatted ? convertEmToHighlight(displayName) : displayName;
+
+    // Truncate the display name to 8 characters
+    const truncatedDisplayName = truncateText(displayName);
+    const formattedDisplayName = result._formatted ? convertEmToHighlight(truncatedDisplayName) : truncatedDisplayName;
 
     // If we have a name and it's different from gene symbol, show both
     if (geneSymbol && name && geneSymbol !== name) {
       primaryIdentifier = name;
-      title = `${formattedDisplayName} <span class="text-sm text-muted-foreground">(${result._formatted ? convertEmToHighlight(primaryIdentifier) : primaryIdentifier})</span>`;
+      const truncatedPrimaryId = truncateText(primaryIdentifier);
+      title = `${formattedDisplayName} <span class="text-sm text-muted-foreground">(${result._formatted ? convertEmToHighlight(truncatedPrimaryId) : truncatedPrimaryId})</span>`;
     } else {
       title = formattedDisplayName;
     }
@@ -112,7 +122,8 @@ export function ResultCard({ result }: { result: SearchResult }) {
     subtitle = entityTypeLabel;
   } else if (type === 'cv_term') {
     const displayName = result._formatted?.name || result.name || `Term ${result.id}`;
-    title = result._formatted ? convertEmToHighlight(displayName) : displayName;
+    const truncatedDisplayName = truncateText(displayName);
+    title = result._formatted ? convertEmToHighlight(truncatedDisplayName) : truncatedDisplayName;
     subtitle = namespaceName || "Ontology Term";
     primaryIdentifier = result.id;
   }
