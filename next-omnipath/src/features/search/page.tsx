@@ -107,17 +107,13 @@ export default function SearchPage({
   useEffect(() => {
     if (!embedded && !isMultiSearch && initialSearchType === "search_entities" && Object.keys(filterCounts).length > 0) {
       setSidebarContent(
-        <ScrollArea className="h-full">
-          <div className="px-3">
-            <EntityFilterSidebar
-              filters={filters}
-              filterCounts={filterCounts}
-              onFilterChange={handleFilterChange}
-              onClearFilters={handleClearFilters}
-              isMobile
-            />
-          </div>
-        </ScrollArea>
+        <EntityFilterSidebar
+          filters={filters}
+          filterCounts={filterCounts}
+          onFilterChange={handleFilterChange}
+          onClearFilters={handleClearFilters}
+          isMobile
+        />
       );
     } else {
       setSidebarContent(null);
