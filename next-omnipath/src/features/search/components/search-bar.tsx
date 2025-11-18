@@ -2,11 +2,9 @@
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { Search, Filter } from "lucide-react"
+import { Search } from "lucide-react"
 import { useEffect, useRef, useState } from "react"
-import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover"
-import { Label } from "@/components/ui/label"
-import { Checkbox } from "@/components/ui/checkbox"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 
 interface SearchBarProps {
   placeholder?: string
@@ -14,6 +12,8 @@ interface SearchBarProps {
   isLoading?: boolean
   initialQuery?: string
   autoFocus?: boolean
+  selectedSpecies?: string
+  onSpeciesChange?: (species: string) => void
 }
 
 export function SearchBar({
@@ -22,16 +22,12 @@ export function SearchBar({
   isLoading = false,
   initialQuery = "",
   autoFocus = false,
+  selectedSpecies = "9606",
+  onSpeciesChange,
 }: SearchBarProps) {
   const [query, setQuery] = useState(initialQuery)
   const debounceTimeout = useRef<NodeJS.Timeout | undefined>(undefined)
   const prevQueryRef = useRef(initialQuery)
-
-  // State for advanced search options
-  const [searchInOntologies, setSearchInOntologies] = useState(true)
-  const [searchInEntities, setSearchInEntities] = useState(true)
-  const [includeObsoleteTerms, setIncludeObsoleteTerms] = useState(false)
-  const [exactMatchOnly, setExactMatchOnly] = useState(false)
 
   useEffect(() => {
     if (initialQuery !== prevQueryRef.current) {
@@ -75,11 +71,11 @@ export function SearchBar({
         <div className="flex items-center justify-center">
           <div className="w-full max-w-2xl">
             <div className="relative group backdrop-blur-sm rounded-full transition-all focus-within:shadow-md focus-within:ring-2 focus-within:ring-primary/20">
-              <Search className="absolute left-4 top-1/2 h-5 w-5 -translate-y-1/2 text-muted-foreground transition-colors group-focus-within:text-primary" />
+              <Search className="absolute left-4 top-1/2 h-5 w-5 -translate-y-1/2 text-muted-foreground transition-colors group-focus-within:text-primary z-10" />
               <Input
                 type="search"
                 placeholder={placeholder}
-                className="w-full pl-12 pr-[200px] h-12 text-lg rounded-full shadow-sm transition-all focus:shadow-md focus:ring-2 focus:ring-primary/20"
+                className="w-full pl-12 pr-[240px] h-12 text-lg rounded-full shadow-sm transition-all focus:shadow-md focus:ring-2 focus:ring-primary/20"
                 value={query}
                 onChange={(e) => {
                   setQuery(e.target.value)
@@ -87,69 +83,22 @@ export function SearchBar({
                 onKeyDown={(e) => e.key === "Enter" && handleSearch()}
                 autoFocus={autoFocus}
               />
-              <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-2">
-                <Popover>
-                  <PopoverTrigger asChild>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-8 w-8 rounded-full"
-                    >
-                      <Filter className="h-4 w-4" />
-                    </Button>
-                  </PopoverTrigger>
-                <PopoverContent className="w-80">
-                  <div className="grid gap-4">
-                    <h4 className="font-medium leading-none">Advanced Search Options</h4>
-                    <div className="space-y-4">
-                      <div>
-                        <h5 className="text-sm font-medium mb-2">Search Scope</h5>
-                        <div className="grid gap-2">
-                          <div className="flex items-center space-x-2">
-                            <Checkbox
-                              id="searchInOntologies"
-                              checked={searchInOntologies}
-                              onCheckedChange={(checked) => setSearchInOntologies(Boolean(checked))}
-                            />
-                            <Label htmlFor="searchInOntologies">Search in ontologies</Label>
-                          </div>
-                          <div className="flex items-center space-x-2">
-                            <Checkbox
-                              id="searchInEntities"
-                              checked={searchInEntities}
-                              onCheckedChange={(checked) => setSearchInEntities(Boolean(checked))}
-                            />
-                            <Label htmlFor="searchInEntities">Search in entities</Label>
-                          </div>
-                        </div>
-                      </div>
-                      <div>
-                         <h5 className="text-sm font-medium mb-2">Options</h5>
-                         <div className="grid gap-2">
-                           <div className="flex items-center space-x-2">
-                             <Checkbox
-                               id="includeObsoleteTerms"
-                               checked={includeObsoleteTerms}
-                               onCheckedChange={(checked) => setIncludeObsoleteTerms(Boolean(checked))}
-                             />
-                             <Label htmlFor="includeObsoleteTerms">
-                               Include obsolete terms
-                             </Label>
-                           </div>
-                           <div className="flex items-center space-x-2">
-                             <Checkbox
-                               id="exactMatchOnly"
-                               checked={exactMatchOnly}
-                               onCheckedChange={(checked) => setExactMatchOnly(Boolean(checked))}
-                             />
-                             <Label htmlFor="exactMatchOnly">Exact match only</Label>
-                           </div>
-                         </div>
-                      </div>
-                    </div>
-                  </div>
-                </PopoverContent>
-                </Popover>
+              <div className="absolute right-28 top-1/2 -translate-y-1/2 z-10">
+                <Select value={selectedSpecies} onValueChange={onSpeciesChange}>
+                  <SelectTrigger className="h-8 w-auto text-xs border-0 bg-transparent shadow-none px-0 gap-1 focus:ring-0 focus:ring-offset-0 [&>span]:text-xs">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="9606">Human</SelectItem>
+                    <SelectItem value="10090">Mouse</SelectItem>
+                    <SelectItem value="10116">Rat</SelectItem>
+                    <SelectItem value="7227">Fruit fly</SelectItem>
+                    <SelectItem value="6239">C. elegans</SelectItem>
+                    <SelectItem value="7955">Zebrafish</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-2 z-10">
                 <Button
                   onClick={handleSearch}
                   disabled={isLoading}

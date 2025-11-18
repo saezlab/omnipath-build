@@ -178,15 +178,6 @@ export function EntityFilterSidebar({
         selectedValues={filters.sources || []}
         onToggle={(value) => handleToggle("sources", value)}
       />
-
-      {/* NCBI Taxonomy ID Filter */}
-      <FilterSection
-        title="Organism"
-        filterKey="ncbi_tax_id"
-        options={transformFilterCounts(filterCounts.ncbi_tax_id || {}, 'ncbi_tax_id')}
-        selectedValues={filters.ncbi_tax_id || []}
-        onToggle={(value) => handleToggle("ncbi_tax_id", value)}
-      />
     </div>
   );
 

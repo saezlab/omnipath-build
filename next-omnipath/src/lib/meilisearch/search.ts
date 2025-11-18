@@ -43,9 +43,10 @@ function buildEntityFilterString(filters: MeilisearchFilters): string {
   }
 
   // NCBI taxonomy ID filter
+  // When filtering by tax ID, include records with the specified tax ID(s) OR no tax ID at all
   if (filters.ncbi_tax_id?.length) {
     const taxIdFilters = filters.ncbi_tax_id.map(taxId => `ncbi_tax_id = "${taxId}"`).join(' OR ');
-    filterParts.push(`(${taxIdFilters})`);
+    filterParts.push(`(${taxIdFilters} OR ncbi_tax_id IS NULL)`);
   }
 
   return filterParts.join(' AND ');

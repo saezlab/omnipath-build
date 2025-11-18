@@ -29,7 +29,8 @@ export default function SearchPage({
   const [isMultiSearch, setIsMultiSearch] = useState(false);
   const [entityIds, setEntityIds] = useState<string[]>([]);
   const [multiSearchResults, setMultiSearchResults] = useState<Array<SearchResult>>([]);
-  const [filters, setFilters] = useState<{ entity_types?: string[]; sources?: string[]; ncbi_tax_id?: string[] }>({});
+  const [selectedSpecies, setSelectedSpecies] = useState<string>("9606"); // Default to Human
+  const [filters, setFilters] = useState<{ entity_types?: string[]; sources?: string[]; ncbi_tax_id?: string[] }>({ ncbi_tax_id: ["9606"] });
   const [filterCounts, setFilterCounts] = useState<{ entity_type?: Record<string, number>; sources?: Record<string, number>; ncbi_tax_id?: Record<string, number> }>({});
   const { setSidebarContent } = useSidebarContent();
 
@@ -93,7 +94,13 @@ export default function SearchPage({
   }, []);
 
   const handleClearFilters = useCallback(() => {
-    setFilters({});
+    setFilters({ ncbi_tax_id: [selectedSpecies] });
+  }, [selectedSpecies]);
+
+  // Handler for species change
+  const handleSpeciesChange = useCallback((species: string) => {
+    setSelectedSpecies(species);
+    setFilters(prev => ({ ...prev, ncbi_tax_id: [species] }));
   }, []);
 
   // Set sidebar content when filter counts are available (not in embedded mode and not multi-search)
@@ -171,6 +178,8 @@ export default function SearchPage({
               onSearch={doSearch}
               initialQuery={query}
               autoFocus={false}
+              selectedSpecies={selectedSpecies}
+              onSpeciesChange={handleSpeciesChange}
             />
           </div>
         </div>
