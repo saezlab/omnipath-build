@@ -36,3 +36,5 @@ pypath-data/
 .env
 *.tsv
 */target/*
+
+omnipath_build.code-workspace
