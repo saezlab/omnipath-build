@@ -173,18 +173,25 @@ def summarize_interaction(interaction_id: int, tables: dict[str, pl.DataFrame]):
     # Build member payload (a/b)
     sorted_members = sorted(memberships_for.iter_rows(named=True), key=lambda r: (r["member_id"], r["id"]))
     member_labels = ["a", "b"]
-    members_payload = {}
     member_id_to_label = {}
+    member_types_list = []
+    member_a_id = None
+    member_b_id = None
+
     for label, row in zip(member_labels, sorted_members[:2]):
         member_id = row["member_id"]
         type_id = member_type_map.get(member_id)
         type_name = type_name_map.get(type_id) or "UNKNOWN"
         type_suffix = f"{type_name}:{type_id}" if type_id is not None else type_name
-        members_payload[label] = {
-            "id": member_id,
-            "type": type_suffix,
-        }
+        if label == "a":
+            member_a_id = member_id
+        else:
+            member_b_id = member_id
+        member_types_list.append(type_suffix)
         member_id_to_label[member_id] = label
+
+    if member_a_id is None or member_b_id is None:
+        raise ValueError(f"Failed to determine both members for interaction {interaction_id}")
 
     evidence_by_source: dict[int, dict[str, list[tuple[str, str | None, str | None]]]] = {}
 
@@ -248,7 +255,9 @@ def summarize_interaction(interaction_id: int, tables: dict[str, pl.DataFrame]):
             evidence.append(entry)
 
     return {
-        "members": members_payload,
+        "member_a_id": member_a_id,
+        "member_b_id": member_b_id,
+        "member_types": member_types_list,
         "evidence": evidence,
     }
 

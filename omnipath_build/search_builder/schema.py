@@ -13,7 +13,17 @@ from pathlib import Path
 # Import CV term enums for accession values
 from pypath.internals.cv_terms.entity_types import EntityTypeCv
 from pypath.internals.cv_terms.identifiers import IdentifierNamespaceCv
-from pypath.internals.cv_terms.annotations import MoleculeAnnotationsCv
+from pypath.internals.cv_terms.annotations import (
+    MoleculeAnnotationsCv,
+    InteractionTypeCv,
+    DetectionMethodCv,
+    BiologicalEffectCv,
+    CausalMechanismCv,
+    CausalStatementCv,
+    PharmacologicalActionCv,
+    BiologicalRoleCv,
+    InteractionParameterCv,
+)
 
 
 # =============================================================================
@@ -67,6 +77,168 @@ SMALL_MOLECULE_TYPE_ACCESSION = EntityTypeCv.SMALL_MOLECULE.value
 
 # CV_TERM_ACCESSION identifier type (used for identifying CV terms)
 CV_TERM_ACCESSION_TYPE = IdentifierNamespaceCv.CV_TERM_ACCESSION.value
+
+# =============================================================================
+# Interaction Annotation CV Term Sets (for categorization)
+# =============================================================================
+
+# Interaction type terms
+INTERACTION_TYPE_ACCESSIONS = frozenset({
+    InteractionTypeCv.COLOCALIZATION.value,
+    InteractionTypeCv.FUNCTIONAL_ASSOCIATION.value,
+    InteractionTypeCv.PHYSICAL_ASSOCIATION.value,
+    InteractionTypeCv.DIRECT_INTERACTION.value,
+    InteractionTypeCv.PHOSPHORYLATION_REACTION.value,
+    InteractionTypeCv.PHENOTYPE_RESULT.value,
+})
+
+# Detection method terms
+DETECTION_METHOD_ACCESSIONS = frozenset({
+    DetectionMethodCv.AFFINITY_CHROMATOGRAPHY.value,
+    DetectionMethodCv.COIMMUNOPRECIPITATION.value,
+    DetectionMethodCv.PULL_DOWN.value,
+    DetectionMethodCv.INFERRED_BY_CURATOR.value,
+})
+
+# Biological effect terms
+BIOLOGICAL_EFFECT_ACCESSIONS = frozenset({
+    BiologicalEffectCv.UP_REGULATES_ACTIVITY.value,
+    BiologicalEffectCv.DOWN_REGULATES_ACTIVITY.value,
+    BiologicalEffectCv.UP_REGULATES_QUANTITY.value,
+    BiologicalEffectCv.DOWN_REGULATES_QUANTITY.value,
+})
+
+# Causal statement terms
+CAUSAL_STATEMENT_ACCESSIONS = frozenset({
+    CausalStatementCv.DOWN_REGULATES.value,
+    CausalStatementCv.DOWN_REGULATES_ACTIVITY.value,
+    CausalStatementCv.DOWN_REGULATES_QUANTITY.value,
+    CausalStatementCv.DOWN_REGULATES_QUANTITY_BY_DESTABLIZATION.value,
+    CausalStatementCv.DOWN_REGULATES_QUANTITY_BY_REPRESSION.value,
+    CausalStatementCv.UP_REGULATES.value,
+    CausalStatementCv.UP_REGULATES_ACTIVITY.value,
+    CausalStatementCv.UP_REGULATES_QUANTITY.value,
+    CausalStatementCv.UP_REGULATES_QUANTITY_BY_EXPRESSION.value,
+    CausalStatementCv.UP_REGULATES_QUANTITY_BY_STABILIZATION.value,
+})
+
+# Causal mechanism terms
+CAUSAL_MECHANISM_ACCESSIONS = frozenset({
+    CausalMechanismCv.TRANSCRIPTIONAL_REGULATION.value,
+    CausalMechanismCv.TRANSLATION_REGULATION.value,
+    CausalMechanismCv.POST_TRANSLATIONAL_REGULATION.value,
+})
+
+# Pharmacological action terms
+PHARMACOLOGICAL_ACTION_ACCESSIONS = frozenset({
+    PharmacologicalActionCv.AGONIST.value,
+    PharmacologicalActionCv.FULL_AGONIST.value,
+    PharmacologicalActionCv.PARTIAL_AGONIST.value,
+    PharmacologicalActionCv.INVERSE_AGONIST.value,
+    PharmacologicalActionCv.BIASED_AGONIST.value,
+    PharmacologicalActionCv.IRREVERSIBLE_AGONIST.value,
+    PharmacologicalActionCv.ANTAGONIST.value,
+    PharmacologicalActionCv.COMPETITIVE.value,
+    PharmacologicalActionCv.NON_COMPETITIVE.value,
+    PharmacologicalActionCv.ACTIVATION.value,
+    PharmacologicalActionCv.INHIBITION.value,
+    PharmacologicalActionCv.IRREVERSIBLE_INHIBITION.value,
+    PharmacologicalActionCv.FEEDBACK_INHIBITION.value,
+    PharmacologicalActionCv.POSITIVE.value,
+    PharmacologicalActionCv.NEGATIVE.value,
+    PharmacologicalActionCv.POTENTIATION.value,
+    PharmacologicalActionCv.NEUTRAL.value,
+    PharmacologicalActionCv.PORE_BLOCKER.value,
+    PharmacologicalActionCv.SLOWS_INACTIVATION.value,
+    PharmacologicalActionCv.VOLTAGE_DEPENDENT_INHIBITION.value,
+    PharmacologicalActionCv.BINDING.value,
+    PharmacologicalActionCv.BIPHASIC.value,
+    PharmacologicalActionCv.MIXED.value,
+    PharmacologicalActionCv.UNKNOWN.value,
+    PharmacologicalActionCv.NONE.value,
+})
+
+# Biological role terms (excluding experimental roles like BAIT/PREY)
+BIOLOGICAL_ROLE_ACCESSIONS = frozenset({
+    BiologicalRoleCv.ENZYME.value,
+    BiologicalRoleCv.SUBSTRATE.value,
+    BiologicalRoleCv.INHIBITOR.value,
+    BiologicalRoleCv.STIMULATOR.value,
+    BiologicalRoleCv.ALLOSTERIC_EFFECTOR.value,
+    BiologicalRoleCv.REGULATOR_TARGET.value,
+})
+
+# Affinity measurement annotation terms
+AFFINITY_ANNOTATION_ACCESSIONS = frozenset({
+    MoleculeAnnotationsCv.AFFINITY_HIGH.value,
+    MoleculeAnnotationsCv.AFFINITY_LOW.value,
+    MoleculeAnnotationsCv.AFFINITY_MEDIAN.value,
+})
+
+# Interaction parameter terms
+INTERACTION_PARAMETER_ACCESSIONS = frozenset({
+    InteractionParameterCv.KI.value,
+    InteractionParameterCv.KD.value,
+    InteractionParameterCv.IC50.value,
+    InteractionParameterCv.EC50.value,
+    InteractionParameterCv.KON.value,
+    InteractionParameterCv.KOFF.value,
+    InteractionParameterCv.PH.value,
+    InteractionParameterCv.TEMPERATURE.value,
+    InteractionParameterCv.TEMPERATURE_CELSIUS.value,
+})
+
+# Positive sign indicators (for sign detection)
+POSITIVE_SIGN_ACCESSIONS = frozenset({
+    CausalStatementCv.UP_REGULATES.value,
+    CausalStatementCv.UP_REGULATES_ACTIVITY.value,
+    CausalStatementCv.UP_REGULATES_QUANTITY.value,
+    CausalStatementCv.UP_REGULATES_QUANTITY_BY_EXPRESSION.value,
+    CausalStatementCv.UP_REGULATES_QUANTITY_BY_STABILIZATION.value,
+    BiologicalEffectCv.UP_REGULATES_ACTIVITY.value,
+    BiologicalEffectCv.UP_REGULATES_QUANTITY.value,
+    BiologicalRoleCv.STIMULATOR.value,
+    PharmacologicalActionCv.AGONIST.value,
+    PharmacologicalActionCv.FULL_AGONIST.value,
+    PharmacologicalActionCv.PARTIAL_AGONIST.value,
+    PharmacologicalActionCv.BIASED_AGONIST.value,
+    PharmacologicalActionCv.ACTIVATION.value,
+    PharmacologicalActionCv.POSITIVE.value,
+    PharmacologicalActionCv.POTENTIATION.value,
+})
+
+# Negative sign indicators (for sign detection)
+NEGATIVE_SIGN_ACCESSIONS = frozenset({
+    CausalStatementCv.DOWN_REGULATES.value,
+    CausalStatementCv.DOWN_REGULATES_ACTIVITY.value,
+    CausalStatementCv.DOWN_REGULATES_QUANTITY.value,
+    CausalStatementCv.DOWN_REGULATES_QUANTITY_BY_DESTABLIZATION.value,
+    CausalStatementCv.DOWN_REGULATES_QUANTITY_BY_REPRESSION.value,
+    BiologicalEffectCv.DOWN_REGULATES_ACTIVITY.value,
+    BiologicalEffectCv.DOWN_REGULATES_QUANTITY.value,
+    BiologicalRoleCv.INHIBITOR.value,
+    PharmacologicalActionCv.ANTAGONIST.value,
+    PharmacologicalActionCv.INVERSE_AGONIST.value,
+    PharmacologicalActionCv.INHIBITION.value,
+    PharmacologicalActionCv.IRREVERSIBLE_INHIBITION.value,
+    PharmacologicalActionCv.FEEDBACK_INHIBITION.value,
+    PharmacologicalActionCv.NEGATIVE.value,
+    PharmacologicalActionCv.PORE_BLOCKER.value,
+})
+
+# Source/actor roles (imply the member is the source/actor in the interaction)
+SOURCE_ROLE_ACCESSIONS = frozenset({
+    BiologicalRoleCv.ENZYME.value,
+    BiologicalRoleCv.INHIBITOR.value,
+    BiologicalRoleCv.STIMULATOR.value,
+    BiologicalRoleCv.ALLOSTERIC_EFFECTOR.value,
+})
+
+# Target roles (imply the member is the target in the interaction)
+TARGET_ROLE_ACCESSIONS = frozenset({
+    BiologicalRoleCv.SUBSTRATE.value,
+    BiologicalRoleCv.REGULATOR_TARGET.value,
+})
 
 
 # =============================================================================
