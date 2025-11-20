@@ -1,4 +1,4 @@
-.PHONY: setup silver silver-test silver-reprocess gold postgres meilisearch meilisearch-import visualize
+.PHONY: setup silver silver-test silver-reprocess gold postgres meilisearch meilisearch-entities meilisearch-interactions meilisearch-import meilisearch-import-entities meilisearch-import-interactions meilisearch-import-all visualize
 
 setup:
 	git submodule add -b download-manager-experiment https://github.com/saezlab/pypath.git pypath || true
@@ -40,15 +40,44 @@ postgres:
 		--schema public \
 		$(if $(DROP),--drop-existing)
 
-meilisearch:
+# Build search entities parquet
+meilisearch-entities:
 	@uv run python -m omnipath_build.search_builder.cli \
-		--global-tables-dir /Users/jschaul/Code/omnipath_build/databases/omnipath/output \
-		--output /Users/jschaul/Code/omnipath_build/databases/omnipath/output/search_entities.parquet
+		--global-tables-dir databases/omnipath/output \
+		--output databases/omnipath/output/search_entities.parquet
 
-meilisearch-import:
-	@uv run python scripts/import_search_entities.py \
+# Build search interactions parquet
+meilisearch-interactions:
+	@uv run python -m omnipath_build.search_builder.build_search_interactions \
+		--global-tables-dir databases/omnipath/output \
+		--output databases/omnipath/output/search_interactions.parquet
+
+# Build both entities and interactions parquet files
+meilisearch: meilisearch-entities meilisearch-interactions
+
+# Import entities into Meilisearch
+meilisearch-import-entities:
+	@uv run python -m omnipath_build.import_search_entities \
+		--dataset entities \
 		--importer-path meilisearch-importer-main \
 		--api-key ou2PElyoy2vTITMltS183DR0KOgy8cWERDkr8lX2UKc
+
+# Import interactions into Meilisearch
+meilisearch-import-interactions:
+	@uv run python -m omnipath_build.import_search_entities \
+		--dataset interactions \
+		--importer-path meilisearch-importer-main \
+		--api-key ou2PElyoy2vTITMltS183DR0KOgy8cWERDkr8lX2UKc
+
+# Import both entities and interactions into Meilisearch
+meilisearch-import-all:
+	@uv run python -m omnipath_build.import_search_entities \
+		--dataset both \
+		--importer-path meilisearch-importer-main \
+		--api-key ou2PElyoy2vTITMltS183DR0KOgy8cWERDkr8lX2UKc
+
+# Backward compatibility: import entities only (original behavior)
+meilisearch-import: meilisearch-import-entities
 
 %:
 	@:

@@ -364,6 +364,39 @@ def build_search_interactions(global_tables_dir: Path, output_path: Path) -> Pat
         .rename({"pair_key": "interaction_key"})
     )
 
+    # 10. Add Flattened Fields for Meilisearch Filtering
+    logger.info("Computing flattened filter fields for Meilisearch")
+
+    # First compute direction/sign flags which can be done in-place
+    result = result.with_columns([
+        (pl.col("directions").list.len() > 0).alias("has_direction"),
+        # Mixed sign (0) counts as both positive and negative
+        (pl.col("directions").list.eval((pl.element().struct.field("sign") == 1) | (pl.element().struct.field("sign") == 0)).list.any()).alias("has_positive_sign"),
+        (pl.col("directions").list.eval((pl.element().struct.field("sign") == -1) | (pl.element().struct.field("sign") == 0)).list.any()).alias("has_negative_sign"),
+    ])
+
+    # Flatten interaction annotation terms (requires explode + group_by pattern)
+    temp_terms = (
+        result.select([
+            "interaction_key",
+            pl.col("evidence")
+            .list.eval(
+                pl.element().struct.field("interaction_annotation_terms")
+                .list.eval(pl.element().struct.field("value"))
+            )
+            .alias("terms_nested")
+        ])
+        .explode("terms_nested")
+        .select([
+            "interaction_key",
+            pl.col("terms_nested").alias("interaction_annotation_terms")
+        ])
+        .group_by("interaction_key")
+        .agg(pl.col("interaction_annotation_terms").flatten().unique())
+    )
+
+    result = result.join(temp_terms, on="interaction_key", how="left")
+
     result.write_parquet(output_path)
     logger.info("Wrote %s interaction documents to %s", len(result), output_path)
     return output_path

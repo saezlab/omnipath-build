@@ -24,50 +24,23 @@ class MeilisearchSettings:
         ]
     }
     
-    CV_TERMS_SETTINGS = {
-        'searchableAttributes': [
-            'name',
-            'synonyms',
-            'namespace',
-            'definition',
-            'associated_entity_ids'
-        ],
-        'filterableAttributes': [
-            'namespace',
-            'id'
-        ],
-        'sortableAttributes': [
-            'name',
-            'namespace'
-        ],
-        'displayedAttributes': ['*'],
-        'rankingRules': [
-            'words',
-            'typo',
-            'proximity',
-            'attribute',
-            'sort',
-            'exactness'
-        ]
-    }
-    
     INTERACTIONS_SETTINGS = {
-        'searchableAttributes': [],  # No search for interactions
+        'searchableAttributes': [],  # No text search for interactions
         'filterableAttributes': [
-            'entity_ids',
-            'interaction_types_facet',
-            'data_sources_facet',
-            'interactor_types_facet',
-            'detection_methods_facet',
-            'causal_statements_facet',
-            'causal_mechanisms_facet',
-            'signs',
-            'consensus_sign',
-            'is_directed',
-            'consensus_direction',
-            'evidence_count'
+            # Entity filtering (works on both members)
+            'member_a_id',
+            'member_b_id',
+            'member_types',  # Array of strings - can filter on entity types
+
+            # Direction/Sign (flattened from directions array)
+            'has_direction',  # Boolean: len(directions) > 0
+            'has_positive_sign',  # Boolean: any sign == 1 or sign == 0 (mixed)
+            'has_negative_sign',  # Boolean: any sign == -1 or sign == 0 (mixed)
+
+            # Evidence annotations (flattened)
+            'interaction_annotation_terms',  # Array of term IDs/labels from all evidence
         ],
-        'sortableAttributes': ['evidence_count', 'id'],
+        'sortableAttributes': [],
         'displayedAttributes': ['*'],
         'pagination': {
             'maxTotalHits': 2000000
