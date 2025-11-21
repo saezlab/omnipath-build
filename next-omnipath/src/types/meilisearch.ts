@@ -1,29 +1,53 @@
 // Types for Meilisearch interaction data
 
+// Map entry for annotation key-value pairs
+export interface AnnotationMapEntry {
+  key: string;
+  value: string;
+}
+
+// Evidence structure with annotations for interaction, member_a, and member_b
+export interface InteractionEvidence {
+  interaction_annotation_terms: AnnotationMapEntry[];
+  interaction_annotation_values: AnnotationMapEntry[];
+  interaction_annotation_units: AnnotationMapEntry[];
+  member_a_annotation_terms: AnnotationMapEntry[];
+  member_a_annotation_values: AnnotationMapEntry[];
+  member_a_annotation_units: AnnotationMapEntry[];
+  member_b_annotation_terms: AnnotationMapEntry[];
+  member_b_annotation_values: AnnotationMapEntry[];
+  member_b_annotation_units: AnnotationMapEntry[];
+}
+
+// Direction with sign information
+export interface InteractionDirection {
+  direction: 'a-b' | 'b-a';
+  sign: -1 | 0 | 1; // -1 = negative/inhibition, 0 = mixed, 1 = positive/activation
+}
+
 export interface MeilisearchInteraction {
-  id: string;
-  type: 'interaction';
-  
-  // Entity data
-  entity_ids: string[];
-  entity_a_canonical_id: string;
-  entity_b_canonical_id: string;
-  entity_a_name: string;
-  entity_b_name: string;
-  
-  // Aggregated evidence data
-  evidence_count: number;
-  interaction_types: CvTermReference[];
-  data_sources: CvTermReference[];
-  detection_methods: CvTermReference[];
-  causal_statements: CvTermReference[];
-  causal_mechanisms: CvTermReference[];
-  interactor_types: CvTermReference[];
-  signs: string[];
-  consensus_sign: string | null;
-  is_directed: boolean;
-  consensus_direction: 'forward' | 'reverse' | null;
-  
+  // Primary key - pair key like "123-456"
+  interaction_key: string;
+
+  // Member entity IDs
+  member_a_id: number;
+  member_b_id: number;
+
+  // Member types as "TypeName:EntityId" format
+  member_types: string[];
+
+  // Evidence array with nested annotation data
+  evidence: InteractionEvidence[];
+
+  // Directions with sign information
+  directions: InteractionDirection[];
+
+  // Flattened filter fields
+  has_direction: boolean;
+  has_positive_sign: boolean;
+  has_negative_sign: boolean;
+  interaction_annotation_terms: string[];
+
   // Index signature to satisfy DataRow constraint
   [key: string]: unknown;
 }
@@ -34,20 +58,14 @@ export interface CvTermReference {
 }
 
 export interface MeilisearchFilters {
-  // Interaction filters
-  interaction_types?: string[];
-  data_sources?: string[];
-  detection_methods?: string[];
-  causal_statements?: string[];
-  causal_mechanisms?: string[];
-  interactor_types?: string[];
-  signs?: string[];
-  consensus_sign?: string | null;
-  is_directed?: boolean | null;
-  consensus_direction?: string | null;
-  evidence_count_min?: number;
-  evidence_count_max?: number;
-  entity_ids?: string[];
+  // Interaction filters (new schema)
+  member_a_id?: number;
+  member_b_id?: number;
+  member_types?: string[];
+  has_direction?: boolean | null;
+  has_positive_sign?: boolean | null;
+  has_negative_sign?: boolean | null;
+  interaction_annotation_terms?: string[];
 
   // Entity search filters
   entity_types?: string[];

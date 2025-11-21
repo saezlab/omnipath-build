@@ -115,71 +115,44 @@ export async function searchMeilisearch(params: SearchParams): Promise<SearchRes
 }
 
 /**
- * Build filter string for Meilisearch interactions
+ * Build filter string for Meilisearch interactions (new schema)
  */
 function buildMeilisearchFilterString(filters: MeilisearchFilters): string {
   const filterParts: string[] = [];
 
-  // Helper to build filter for facet fields
-  const buildFacetFilter = (fieldName: string, values: string[]) => {
-    const filters = values.map(value => `${fieldName}_facet = "${value}"`).join(' OR ');
-    return `(${filters})`;
-  };
-
-  // Add each filter type
-  if (filters.interaction_types?.length) {
-    filterParts.push(buildFacetFilter('interaction_types', filters.interaction_types));
+  // Member ID filters - filter on either member_a_id OR member_b_id
+  if (filters.member_a_id !== undefined) {
+    filterParts.push(`(member_a_id = ${filters.member_a_id} OR member_b_id = ${filters.member_a_id})`);
   }
 
-  if (filters.data_sources?.length) {
-    filterParts.push(buildFacetFilter('data_sources', filters.data_sources));
+  if (filters.member_b_id !== undefined) {
+    filterParts.push(`(member_a_id = ${filters.member_b_id} OR member_b_id = ${filters.member_b_id})`);
   }
 
-  if (filters.detection_methods?.length) {
-    filterParts.push(buildFacetFilter('detection_methods', filters.detection_methods));
+  // Member types filter (array field)
+  if (filters.member_types?.length) {
+    const typeFilters = filters.member_types.map(type => `member_types = "${type}"`).join(' OR ');
+    filterParts.push(`(${typeFilters})`);
   }
 
-  if (filters.causal_statements?.length) {
-    filterParts.push(buildFacetFilter('causal_statements', filters.causal_statements));
+  // Direction filter
+  if (filters.has_direction !== undefined && filters.has_direction !== null) {
+    filterParts.push(`has_direction = ${filters.has_direction}`);
   }
 
-  if (filters.causal_mechanisms?.length) {
-    filterParts.push(buildFacetFilter('causal_mechanisms', filters.causal_mechanisms));
+  // Sign filters
+  if (filters.has_positive_sign !== undefined && filters.has_positive_sign !== null) {
+    filterParts.push(`has_positive_sign = ${filters.has_positive_sign}`);
   }
 
-  if (filters.interactor_types?.length) {
-    filterParts.push(buildFacetFilter('interactor_types', filters.interactor_types));
+  if (filters.has_negative_sign !== undefined && filters.has_negative_sign !== null) {
+    filterParts.push(`has_negative_sign = ${filters.has_negative_sign}`);
   }
 
-  if (filters.signs?.length) {
-    const signFilters = filters.signs.map(sign => `signs = "${sign}"`).join(' OR ');
-    filterParts.push(`(${signFilters})`);
-  }
-
-  if (filters.consensus_sign !== undefined && filters.consensus_sign !== null) {
-    filterParts.push(`consensus_sign = "${filters.consensus_sign}"`);
-  }
-
-  if (filters.is_directed !== undefined && filters.is_directed !== null) {
-    filterParts.push(`is_directed = ${filters.is_directed}`);
-  }
-
-  if (filters.consensus_direction !== undefined && filters.consensus_direction !== null) {
-    filterParts.push(`consensus_direction = "${filters.consensus_direction}"`);
-  }
-
-  if (filters.evidence_count_min !== undefined) {
-    filterParts.push(`evidence_count >= ${filters.evidence_count_min}`);
-  }
-
-  if (filters.evidence_count_max !== undefined) {
-    filterParts.push(`evidence_count <= ${filters.evidence_count_max}`);
-  }
-
-  // Add entity ID filter
-  if (filters.entity_ids?.length) {
-    const entityFilters = filters.entity_ids.map(id => `entity_ids = "${id}"`).join(' OR ');
-    filterParts.push(`(${entityFilters})`);
+  // Interaction annotation terms filter
+  if (filters.interaction_annotation_terms?.length) {
+    const termFilters = filters.interaction_annotation_terms.map(term => `interaction_annotation_terms = "${term}"`).join(' OR ');
+    filterParts.push(`(${termFilters})`);
   }
 
   return filterParts.join(' AND ');
@@ -206,17 +179,11 @@ export async function searchInteractionsMeilisearch(
       limit,
       offset,
       facets: [
-        'interaction_types_facet',
-        'data_sources_facet',
-        'detection_methods_facet',
-        'causal_statements_facet',
-        'causal_mechanisms_facet',
-        'interactor_types_facet',
-        'signs',
-        'consensus_sign',
-        'is_directed',
-        'consensus_direction',
-        'evidence_count',
+        'member_types',
+        'has_direction',
+        'has_positive_sign',
+        'has_negative_sign',
+        'interaction_annotation_terms',
       ],
     };
 

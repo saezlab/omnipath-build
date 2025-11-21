@@ -21,6 +21,7 @@ import {
   Sun,
   Moon,
   Database,
+  Compass,
 } from "lucide-react"
 import Link from "next/link"
 import { usePathname } from "next/navigation"
@@ -33,6 +34,11 @@ const navigationItems = [
     title: "Search",
     url: "/search",
     icon: Search,
+  },
+  {
+    title: "Explore",
+    url: "/explore",
+    icon: Compass,
   },
   {
     title: "Chat",
@@ -98,8 +104,8 @@ export function AppSidebar() {
           </SidebarGroupContent>
         </SidebarGroup>
 
-        {/* Render filter sidebar on search and sources pages */}
-        {(pathname === '/search' || pathname === '/sources') && sidebarContent && (
+        {/* Render filter sidebar on search, explore, and sources pages */}
+        {(pathname === '/search' || pathname === '/explore' || pathname === '/sources') && sidebarContent && (
           <>
             <div className="px-3">
               <SidebarSeparator />

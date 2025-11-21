@@ -1,145 +1,82 @@
 import { Badge } from "@/components/ui/badge"
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion"
-import { FileText, Search, ArrowRight, Minus, FlaskConical, Microscope, Dna, BarChart3, ExternalLink } from "lucide-react"
-import { EntityBadge } from "@/components/entity-badge"
-import { CvTermBadge } from "@/features/cv-terms/components/cv-term-badge"
+import { FileText, Search, ArrowRight, Minus, Plus } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useMemo } from "react"
-
-// Type for interaction data - matches the format used by GraphView
-interface InteractionData {
-  id?: string | number
-  entity_a?: {
-    id?: string
-    canonical_identifier?: string
-    display_name?: string
-  }
-  entity_b?: {
-    id?: string
-    canonical_identifier?: string
-    display_name?: string
-  }
-  has_directed_evidence?: boolean
-  consensus_sign?: string | null
-  evidences?: Array<{
-    id: number
-    sign?: string | null
-    is_directed?: boolean
-    direction?: string
-    causal_statement?: { id: string; name: string }
-    interaction_type?: { id: string; name: string }
-    causal_mechanism?: { id: string; name: string }
-    detection_methods?: Array<{ id: string; name: string }>
-    evidence_sentence?: string
-    reference?: { pubmed_id?: number }
-    data_source?: { name: string }
-    participants?: Array<{
-      entity?: { canonical_identifier?: string }
-      stoichiometry?: number
-      biological_roles?: Array<{ id: string; name: string }>
-      experimental_roles?: Array<{ id: string; name: string }>
-      interactor_types?: Array<{ id: string; name: string }>
-    }>
-  }>
-}
+import { MeilisearchInteraction, InteractionEvidence, InteractionDirection } from "@/types/meilisearch"
 
 interface InteractionDetailsProps {
-  selectedInteraction: InteractionData | null
+  selectedInteraction: MeilisearchInteraction | null
 }
 
-// Detection method icons mapping
-const DETECTION_METHOD_ICONS: Record<string, React.ReactNode> = {
-  'western blot': <FlaskConical className="h-4 w-4" />,
-  'mass spectrometry': <BarChart3 className="h-4 w-4" />,
-  'yeast two-hybrid': <Dna className="h-4 w-4" />,
-  'immunoprecipitation': <FlaskConical className="h-4 w-4" />,
-  'fluorescence microscopy': <Microscope className="h-4 w-4" />,
-  'pull down': <FlaskConical className="h-4 w-4" />,
-  'default': <FlaskConical className="h-4 w-4" />
+// Helper function to extract label from "Label:ID" format
+function extractLabel(value: string): string {
+  const colonIndex = value.indexOf(':');
+  return colonIndex > 0 ? value.substring(0, colonIndex) : value;
 }
 
-const getDetectionMethodIcon = (methodName: string) => {
-  const lowerMethod = methodName.toLowerCase()
-  return DETECTION_METHOD_ICONS[lowerMethod] || DETECTION_METHOD_ICONS['default']
+// Helper to determine overall sign from directions
+function getOverallSign(directions: InteractionDirection[]): 'positive' | 'negative' | 'mixed' | null {
+  if (!directions || directions.length === 0) return null;
+
+  const hasPositive = directions.some(d => d.sign === 1 || d.sign === 0);
+  const hasNegative = directions.some(d => d.sign === -1 || d.sign === 0);
+
+  if (hasPositive && hasNegative) return 'mixed';
+  if (hasPositive) return 'positive';
+  if (hasNegative) return 'negative';
+  return null;
 }
 
-const getSignColor = (sign: string | null | undefined, negative?: boolean) => {
-  if ((sign === '+' || sign === 'positive') && !negative) return 'text-green-600 bg-green-50 border-green-200'
-  if (sign === '-' || sign === 'negative' || negative) return 'text-red-600 bg-red-50 border-red-200'
-  if (sign === '?' || sign === 'unknown') return 'text-yellow-600 bg-yellow-50 border-yellow-200'
-  return 'text-gray-600 bg-gray-50 border-gray-200'
+const getSignColor = (sign: 'positive' | 'negative' | 'mixed' | null) => {
+  if (sign === 'positive') return 'text-green-600 bg-green-50 border-green-200';
+  if (sign === 'negative') return 'text-red-600 bg-red-50 border-red-200';
+  if (sign === 'mixed') return 'text-orange-600 bg-orange-50 border-orange-200';
+  return 'text-gray-600 bg-gray-50 border-gray-200';
 }
 
-const getSignLabel = (sign: string | null | undefined, negative?: boolean) => {
-  if ((sign === '+' || sign === 'positive') && !negative) return 'Stimulation'
-  if (sign === '-' || sign === 'negative' || negative) return 'Inhibition'
-  if (sign === '?' || sign === 'unknown') return 'Unknown'
-  return 'Unspecified'
+const getSignLabel = (sign: 'positive' | 'negative' | 'mixed' | null) => {
+  if (sign === 'positive') return 'Activation';
+  if (sign === 'negative') return 'Inhibition';
+  if (sign === 'mixed') return 'Mixed';
+  return 'Unknown';
+}
+
+// Extract all unique terms from evidence annotations
+function extractAnnotationTerms(evidence: InteractionEvidence[]): string[] {
+  const terms = new Set<string>();
+  evidence.forEach(e => {
+    e.interaction_annotation_terms?.forEach(t => terms.add(t.value));
+    e.member_a_annotation_terms?.forEach(t => terms.add(t.value));
+    e.member_b_annotation_terms?.forEach(t => terms.add(t.value));
+  });
+  return Array.from(terms);
 }
 
 export function InteractionDetails({ selectedInteraction }: InteractionDetailsProps) {
+  const overallSign = useMemo(() => {
+    if (!selectedInteraction) return null;
+    return getOverallSign(selectedInteraction.directions);
+  }, [selectedInteraction]);
+
   const getInteractionColor = () => {
     if (!selectedInteraction) return "text-gray-500";
-    
-    // First check consensus sign
-    if (selectedInteraction.consensus_sign === 'positive') return "text-green-500";
-    if (selectedInteraction.consensus_sign === 'negative') return "text-red-500";
-    
-    // If no consensus sign, check evidence
-    if (!selectedInteraction.evidences || selectedInteraction.evidences.length === 0) {
-      return "text-gray-500"; // Default if no evidences
-    }
-    
-    // Check for any positive or negative evidence
-    const hasPositive = selectedInteraction.evidences.some(e => 
-      e.sign === 'positive' || e.interaction_type?.name?.toLowerCase().includes('stimulation')
-    );
-    const hasNegative = selectedInteraction.evidences.some(e => 
-      e.sign === 'negative' || e.interaction_type?.name?.toLowerCase().includes('inhibition')
-    );
-    
-    if (hasPositive && !hasNegative) return "text-green-500";
-    if (hasNegative && !hasPositive) return "text-red-500";
-    if (hasPositive && hasNegative) return "text-orange-500"; // Mixed
-    
-    return "text-gray-500"; // Unknown/unspecified
+    if (overallSign === 'positive') return "text-green-500";
+    if (overallSign === 'negative') return "text-red-500";
+    if (overallSign === 'mixed') return "text-orange-500";
+    return "text-gray-500";
   }
 
   const evidenceStats = useMemo(() => {
-    if (!selectedInteraction?.evidences) return null;
+    if (!selectedInteraction?.evidence) return null;
 
-    const stats = {
-      total: selectedInteraction.evidences.length,
-      withReferences: selectedInteraction.evidences.filter(e => e.reference?.pubmed_id).length,
-      directed: selectedInteraction.evidences.filter(e => e.causal_statement).length,
-      sources: [...new Set(selectedInteraction.evidences.map(e => e.data_source?.name).filter(Boolean))],
-      detectionMethods: [...new Set(selectedInteraction.evidences.flatMap(e => 
-        e.detection_methods?.map(dm => dm.name) || []
-      ))],
-      withSentences: selectedInteraction.evidences.filter(e => e.evidence_sentence).length
+    const allTerms = extractAnnotationTerms(selectedInteraction.evidence);
+
+    return {
+      total: selectedInteraction.evidence.length,
+      directions: selectedInteraction.directions.length,
+      annotationTerms: allTerms.length,
     };
-
-    return stats;
-  }, [selectedInteraction]);
-
-  const referencesData = useMemo(() => {
-    if (!selectedInteraction?.evidences) return null;
-
-    const acc: Record<string, string[]> = {};
-    selectedInteraction.evidences.forEach(evidence => {
-      const pubmedId = evidence.reference?.pubmed_id?.toString();
-      const sourceName = evidence.data_source?.name;
-
-      if (pubmedId && sourceName) {
-        if (!acc[pubmedId]) {
-          acc[pubmedId] = [];
-        }
-        if (!acc[pubmedId].includes(sourceName)) {
-          acc[pubmedId].push(sourceName);
-        }
-      }
-    });
-    return Object.entries(acc);
   }, [selectedInteraction]);
 
   if (!selectedInteraction) {
@@ -156,10 +93,8 @@ export function InteractionDetails({ selectedInteraction }: InteractionDetailsPr
     )
   }
 
-  // Entities are already in the correct order from the parent component
-  // No need to swap here as it's handled consistently at the data level
-  const sourceEntity = selectedInteraction?.entity_a;
-  const targetEntity = selectedInteraction?.entity_b;
+  const typeA = selectedInteraction.member_types[0] ? extractLabel(selectedInteraction.member_types[0]) : 'Unknown';
+  const typeB = selectedInteraction.member_types[1] ? extractLabel(selectedInteraction.member_types[1]) : 'Unknown';
 
   return (
     <div className="p-4 pb-8 space-y-6">
@@ -167,102 +102,94 @@ export function InteractionDetails({ selectedInteraction }: InteractionDetailsPr
       <div className="rounded-lg border bg-card p-6">
         {/* Entity Visualization */}
         <div className="flex items-center justify-center gap-6 py-6">
-          <EntityBadge 
-            displayName={sourceEntity?.display_name || ''} 
-            canonicalIdentifier={sourceEntity?.canonical_identifier || ''} 
-          />
-          
+          <div className="flex flex-col items-center">
+            <span className="font-bold text-lg">{selectedInteraction.member_a_id}</span>
+            <Badge variant="secondary" className="text-xs mt-1">{typeA}</Badge>
+          </div>
+
           <div className="flex flex-col items-center gap-2">
             <div className={cn("flex items-center", getInteractionColor())}>
-              {selectedInteraction.has_directed_evidence ? (
+              {selectedInteraction.has_direction ? (
                 <ArrowRight className="h-8 w-8" />
               ) : (
                 <Minus className="h-8 w-8" />
               )}
             </div>
-            {selectedInteraction.consensus_sign && (
-              <Badge className={cn("text-xs px-2 py-1 border", getSignColor(selectedInteraction.consensus_sign))}>
-                {getSignLabel(selectedInteraction.consensus_sign)}
+            {overallSign && (
+              <Badge className={cn("text-xs px-2 py-1 border", getSignColor(overallSign))}>
+                {overallSign === 'positive' && <Plus className="h-3 w-3 mr-1" />}
+                {overallSign === 'negative' && <Minus className="h-3 w-3 mr-1" />}
+                {getSignLabel(overallSign)}
               </Badge>
             )}
           </div>
 
-          <EntityBadge 
-            displayName={targetEntity?.display_name || ''} 
-            canonicalIdentifier={targetEntity?.canonical_identifier || ''} 
-          />
+          <div className="flex flex-col items-center">
+            <span className="font-bold text-lg">{selectedInteraction.member_b_id}</span>
+            <Badge variant="secondary" className="text-xs mt-1">{typeB}</Badge>
+          </div>
         </div>
 
         {/* Evidence Summary Stats */}
         {evidenceStats && (
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 pt-4 border-t">
+          <div className="grid grid-cols-3 gap-4 pt-4 border-t">
             <div className="text-center">
               <div className="text-2xl font-bold text-primary">{evidenceStats.total}</div>
               <div className="text-xs text-muted-foreground">Evidence{evidenceStats.total !== 1 ? 's' : ''}</div>
             </div>
             <div className="text-center">
-              <div className="text-2xl font-bold text-green-600">{referencesData?.length || 0}</div>
-              <div className="text-xs text-muted-foreground">Reference{(referencesData?.length || 0) !== 1 ? 's' : ''}</div>
+              <div className="text-2xl font-bold text-blue-600">{evidenceStats.directions}</div>
+              <div className="text-xs text-muted-foreground">Direction{evidenceStats.directions !== 1 ? 's' : ''}</div>
             </div>
             <div className="text-center">
-              <div className="text-2xl font-bold text-blue-600">{evidenceStats.sources.length}</div>
-              <div className="text-xs text-muted-foreground">Source{evidenceStats.sources.length !== 1 ? 's' : ''}</div>
-            </div>
-            <div className="text-center">
-              <div className="text-2xl font-bold text-purple-600">{evidenceStats.detectionMethods.length}</div>
-              <div className="text-xs text-muted-foreground">Method{evidenceStats.detectionMethods.length !== 1 ? 's' : ''}</div>
+              <div className="text-2xl font-bold text-purple-600">{evidenceStats.annotationTerms}</div>
+              <div className="text-xs text-muted-foreground">Annotation Term{evidenceStats.annotationTerms !== 1 ? 's' : ''}</div>
             </div>
           </div>
         )}
       </div>
 
       {/* ===== PROGRESSIVE DISCLOSURE ACCORDIONS ===== */}
-      <Accordion type="multiple" defaultValue={["evidence"]} className="space-y-4">
-        
-        {/* References Summary */}
-        {referencesData && referencesData.length > 0 && (
-          <AccordionItem value="references" className="border rounded-lg">
+      <Accordion type="multiple" defaultValue={["directions", "evidence"]} className="space-y-4">
+
+        {/* Directions Section */}
+        {selectedInteraction.directions.length > 0 && (
+          <AccordionItem value="directions" className="border rounded-lg">
             <AccordionTrigger className="px-4 py-3 hover:no-underline">
               <div className="flex items-center gap-2">
-                <ExternalLink className="h-5 w-5" />
-                <span className="font-medium">References</span>
+                <ArrowRight className="h-5 w-5" />
+                <span className="font-medium">Directions & Signs</span>
                 <Badge variant="secondary" className="ml-2">
-                  {referencesData.length}
+                  {selectedInteraction.directions.length}
                 </Badge>
               </div>
             </AccordionTrigger>
             <AccordionContent className="px-4 pb-4">
-              <div className="space-y-4">
-                {referencesData.map(([pubmedId, sourcesArray], index) => (
-                  <div key={pubmedId} className="flex items-start gap-3 p-3 border rounded-lg bg-muted/30">
-                    <span className="text-muted-foreground min-w-[2rem] text-sm font-mono">
-                      [{index + 1}]
-                    </span>
-                    <div className="flex-1 space-y-2">
-                      <a
-                        href={`https://pubmed.ncbi.nlm.nih.gov/${pubmedId}/`}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="inline-flex items-center gap-1 text-primary hover:underline font-medium"
-                      >
-                        <ExternalLink className="h-4 w-4" />
-                        PMID: {pubmedId}
-                      </a>
-                      <div className="flex flex-wrap gap-2">
-                        {(sourcesArray as string[]).map((sourceName: string) => (
-                          <Badge key={sourceName} variant="secondary" className="text-xs">
-                            {sourceName}
-                          </Badge>
-                        ))}
-                      </div>
-                    </div>
+              <div className="space-y-2">
+                {selectedInteraction.directions.map((dir, index) => (
+                  <div key={index} className="flex items-center gap-3 p-3 border rounded-lg bg-muted/30">
+                    <Badge variant="outline" className="text-xs">
+                      {dir.direction === 'a-b' ? `${selectedInteraction.member_a_id} → ${selectedInteraction.member_b_id}` : `${selectedInteraction.member_b_id} → ${selectedInteraction.member_a_id}`}
+                    </Badge>
+                    <Badge
+                      className={cn(
+                        "text-xs",
+                        dir.sign === 1 && "text-green-600 bg-green-50 border-green-200",
+                        dir.sign === -1 && "text-red-600 bg-red-50 border-red-200",
+                        dir.sign === 0 && "text-orange-600 bg-orange-50 border-orange-200"
+                      )}
+                    >
+                      {dir.sign === 1 && <Plus className="h-3 w-3 mr-1" />}
+                      {dir.sign === -1 && <Minus className="h-3 w-3 mr-1" />}
+                      {dir.sign === 1 ? 'Activation' : dir.sign === -1 ? 'Inhibition' : 'Mixed'}
+                    </Badge>
                   </div>
                 ))}
               </div>
             </AccordionContent>
           </AccordionItem>
         )}
-        
+
         {/* Evidence Details */}
         <AccordionItem value="evidence" className="border rounded-lg">
           <AccordionTrigger className="px-4 py-3 hover:no-underline">
@@ -270,206 +197,70 @@ export function InteractionDetails({ selectedInteraction }: InteractionDetailsPr
               <FileText className="h-5 w-5" />
               <span className="font-medium">Evidence Details</span>
               <Badge variant="secondary" className="ml-2">
-                {selectedInteraction.evidences?.length || 0}
+                {selectedInteraction.evidence?.length || 0}
               </Badge>
             </div>
           </AccordionTrigger>
           <AccordionContent className="px-4 pb-4">
             <div className="space-y-6">
-              {selectedInteraction.evidences?.map((evidence, index) => (
-                <div key={evidence.id} className="border rounded-lg p-4 bg-muted/30">
+              {selectedInteraction.evidence?.map((evidence, index) => (
+                <div key={index} className="border rounded-lg p-4 bg-muted/30">
                   {/* Evidence Header */}
                   <div className="flex items-start justify-between mb-3">
-                    <div className="flex items-center gap-2">
-                      <Badge variant="outline" className="text-xs">
-                        Evidence {index + 1} (ID: {evidence.id})
-                      </Badge>
-                      {evidence.data_source?.name && (
-                        <Badge variant="secondary" className="text-xs">
-                          {evidence.data_source.name}
-                        </Badge>
-                      )}
-                    </div>
-                    <div className="flex items-center gap-2">
-                      {evidence.is_directed && (
-                        <Badge className="text-xs bg-blue-100 text-blue-700 border-blue-200">
-                          Directed
-                        </Badge>
-                      )}
-                      {evidence.sign && (
-                        <Badge className={cn("text-xs", getSignColor(evidence.sign))}>
-                          {getSignLabel(evidence.sign)}
-                        </Badge>
-                      )}
-                    </div>
+                    <Badge variant="outline" className="text-xs">
+                      Evidence {index + 1}
+                    </Badge>
                   </div>
 
-                  {/* Evidence Sentence (Priority 1) */}
-                  {evidence.evidence_sentence && (
-                    <div className="mb-4 p-3 bg-blue-50 border-l-4 border-blue-400 rounded-r">
-                      <div className="text-sm font-medium text-blue-900 mb-1">Evidence Sentence</div>
-                      <p className="text-sm text-blue-800 italic">&quot;{evidence.evidence_sentence}&quot;</p>
+                  {/* Interaction Annotations */}
+                  {evidence.interaction_annotation_terms && evidence.interaction_annotation_terms.length > 0 && (
+                    <div className="mb-4">
+                      <div className="text-xs font-medium text-muted-foreground mb-2">Interaction Annotations</div>
+                      <div className="flex flex-wrap gap-2">
+                        {evidence.interaction_annotation_terms.map((term, termIdx) => (
+                          <Badge key={termIdx} variant="secondary" className="text-xs">
+                            {extractLabel(term.value)}
+                          </Badge>
+                        ))}
+                      </div>
+                      {/* Values if present */}
+                      {evidence.interaction_annotation_values && evidence.interaction_annotation_values.length > 0 && (
+                        <div className="mt-2 text-xs text-muted-foreground">
+                          Values: {evidence.interaction_annotation_values.map(v => v.value).join(', ')}
+                        </div>
+                      )}
                     </div>
                   )}
 
-                  {/* Interaction Properties */}
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
-                    {evidence.interaction_type?.name && (
-                      <div>
-                        <div className="text-xs font-medium text-muted-foreground mb-1">Type</div>
-                        <CvTermBadge 
-                          cvTermId={evidence.interaction_type.id} 
-                          cvTermName={evidence.interaction_type.name} 
-                          variant="outline" 
-                        />
-                      </div>
-                    )}  
-                    {evidence.causal_mechanism?.name && (
-                      <div>
-                        <div className="text-xs font-medium text-muted-foreground mb-1">Mechanism</div>
-                        <CvTermBadge 
-                          cvTermId={evidence.causal_mechanism.id} 
-                          cvTermName={evidence.causal_mechanism.name} 
-                          variant="outline" 
-                        />
-                      </div>
-                    )}
-                    {evidence.causal_statement?.name && (
-                      <div>
-                        <div className="text-xs font-medium text-muted-foreground mb-1">Effect</div>
-                        <CvTermBadge 
-                          cvTermId={evidence.causal_statement.id} 
-                          cvTermName={evidence.causal_statement.name} 
-                          variant="outline" 
-                        />
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Detection Methods */}
-                  {evidence.detection_methods && evidence.detection_methods.length > 0 && (
+                  {/* Member A Annotations */}
+                  {evidence.member_a_annotation_terms && evidence.member_a_annotation_terms.length > 0 && (
                     <div className="mb-4">
-                      <div className="text-xs font-medium text-muted-foreground mb-2">Detection Methods</div>
+                      <div className="text-xs font-medium text-muted-foreground mb-2">
+                        Member A ({selectedInteraction.member_a_id}) Annotations
+                      </div>
                       <div className="flex flex-wrap gap-2">
-                        {evidence.detection_methods.map((method, methodIndex) => (
-                          <div key={methodIndex} className="flex items-center gap-1">
-                            {getDetectionMethodIcon(method.name)}
-                            <CvTermBadge 
-                              cvTermId={method.id}
-                              cvTermName={method.name}
-                              variant="secondary" 
-                              className="text-xs"
-                            />
-                          </div>
+                        {evidence.member_a_annotation_terms.map((term, termIdx) => (
+                          <Badge key={termIdx} variant="outline" className="text-xs bg-blue-50 text-blue-700 border-blue-200">
+                            {extractLabel(term.value)}
+                          </Badge>
                         ))}
                       </div>
                     </div>
                   )}
 
-                  {/* Participants (Minimal) */}
-                  {evidence.participants && evidence.participants.length > 0 && (() => {
-                    // Check if any participant has meaningful roles/types
-                    const participantsWithRoles = evidence.participants.filter(participant => {
-                      const biologicalRoles = participant.biological_roles?.filter(role => 
-                        !role.name.toLowerCase().includes('unspecified') && 
-                        !role.name.toLowerCase().includes('unknown')
-                      ) || [];
-                      const experimentalRoles = participant.experimental_roles?.filter(role => 
-                        !role.name.toLowerCase().includes('unspecified') && 
-                        !role.name.toLowerCase().includes('unknown')
-                      ) || [];
-                      const interactorTypes = participant.interactor_types?.filter(type => 
-                        !type.name.toLowerCase().includes('unspecified') && 
-                        !type.name.toLowerCase().includes('unknown')
-                      ) || [];
-                      
-                      return biologicalRoles.length > 0 || experimentalRoles.length > 0 || interactorTypes.length > 0;
-                    });
-
-                    // Only show the participants section if there are participants with meaningful roles
-                    if (participantsWithRoles.length === 0) return null;
-
-                    return (
-                      <div className="mb-4">
-                        <div className="text-xs font-medium text-muted-foreground mb-2">Participants</div>
-                        <div className="space-y-2">
-                          {evidence.participants.map((participant, participantIndex) => {
-                            // Filter out "unspecified role" and similar generic entries
-                            const biologicalRoles = participant.biological_roles?.filter(role => 
-                              !role.name.toLowerCase().includes('unspecified') && 
-                              !role.name.toLowerCase().includes('unknown')
-                            ) || [];
-                            const experimentalRoles = participant.experimental_roles?.filter(role => 
-                              !role.name.toLowerCase().includes('unspecified') && 
-                              !role.name.toLowerCase().includes('unknown')
-                            ) || [];
-                            const interactorTypes = participant.interactor_types?.filter(type => 
-                              !type.name.toLowerCase().includes('unspecified') && 
-                              !type.name.toLowerCase().includes('unknown')
-                            ) || [];
-
-                            const hasRoles = biologicalRoles.length > 0 || experimentalRoles.length > 0 || interactorTypes.length > 0;
-                            
-                            // Only show participants that have meaningful roles
-                            if (!hasRoles) return null;
-                          
-                            return (
-                              <div key={participantIndex} className="border rounded-md p-2 bg-muted/20">
-                                <div className="flex items-start gap-2 text-xs">
-                                  <Badge variant="outline" className="text-xs font-medium flex-shrink-0">
-                                    {participant.entity?.canonical_identifier}
-                                    {participant.stoichiometry && ` (x${participant.stoichiometry})`}
-                                  </Badge>
-                                  <div className="flex flex-wrap gap-1 min-w-0">
-                                    {biologicalRoles.map((role, roleIndex) => (
-                                      <CvTermBadge 
-                                        key={`bio-${roleIndex}`} 
-                                        cvTermId={role.id}
-                                        cvTermName={role.name}
-                                        variant="secondary" 
-                                        className="text-xs bg-green-50 text-green-700 border-green-200"
-                                      />
-                                    ))}
-                                    {experimentalRoles.map((role, roleIndex) => (
-                                      <CvTermBadge 
-                                        key={`exp-${roleIndex}`} 
-                                        cvTermId={role.id}
-                                        cvTermName={role.name}
-                                        variant="secondary" 
-                                        className="text-xs bg-blue-50 text-blue-700 border-blue-200"
-                                      />
-                                    ))}
-                                    {interactorTypes.map((type, typeIndex) => (
-                                      <CvTermBadge 
-                                        key={`type-${typeIndex}`} 
-                                        cvTermId={type.id}
-                                        cvTermName={type.name}
-                                        variant="secondary" 
-                                        className="text-xs bg-purple-50 text-purple-700 border-purple-200"
-                                      />
-                                    ))}
-                                  </div>
-                                </div>
-                              </div>
-                            );
-                          })}
-                        </div>
+                  {/* Member B Annotations */}
+                  {evidence.member_b_annotation_terms && evidence.member_b_annotation_terms.length > 0 && (
+                    <div className="mb-4">
+                      <div className="text-xs font-medium text-muted-foreground mb-2">
+                        Member B ({selectedInteraction.member_b_id}) Annotations
                       </div>
-                    );
-                  })()}
-
-                  {/* Reference */}
-                  {evidence.reference?.pubmed_id && (
-                    <div className="pt-3 border-t border-border/50">
-                      <a
-                        href={`https://pubmed.ncbi.nlm.nih.gov/${evidence.reference.pubmed_id}/`}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="inline-flex items-center gap-1 text-sm text-primary hover:underline"
-                      >
-                        <ExternalLink className="h-3 w-3" />
-                        PMID: {evidence.reference.pubmed_id}
-                      </a>
+                      <div className="flex flex-wrap gap-2">
+                        {evidence.member_b_annotation_terms.map((term, termIdx) => (
+                          <Badge key={termIdx} variant="outline" className="text-xs bg-purple-50 text-purple-700 border-purple-200">
+                            {extractLabel(term.value)}
+                          </Badge>
+                        ))}
+                      </div>
                     </div>
                   )}
                 </div>
@@ -478,10 +269,30 @@ export function InteractionDetails({ selectedInteraction }: InteractionDetailsPr
           </AccordionContent>
         </AccordionItem>
 
-
-
+        {/* Annotation Terms Summary */}
+        {selectedInteraction.interaction_annotation_terms && selectedInteraction.interaction_annotation_terms.length > 0 && (
+          <AccordionItem value="annotation_terms" className="border rounded-lg">
+            <AccordionTrigger className="px-4 py-3 hover:no-underline">
+              <div className="flex items-center gap-2">
+                <FileText className="h-5 w-5" />
+                <span className="font-medium">All Annotation Terms</span>
+                <Badge variant="secondary" className="ml-2">
+                  {selectedInteraction.interaction_annotation_terms.length}
+                </Badge>
+              </div>
+            </AccordionTrigger>
+            <AccordionContent className="px-4 pb-4">
+              <div className="flex flex-wrap gap-2">
+                {selectedInteraction.interaction_annotation_terms.map((term, idx) => (
+                  <Badge key={idx} variant="secondary" className="text-xs">
+                    {extractLabel(term)}
+                  </Badge>
+                ))}
+              </div>
+            </AccordionContent>
+          </AccordionItem>
+        )}
       </Accordion>
     </div>
   )
 }
-

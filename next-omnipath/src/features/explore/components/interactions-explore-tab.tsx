@@ -1,31 +1,32 @@
-"use client"
+"use client";
 
-import { useState, useEffect, useCallback, useRef } from "react"
-import { useRouter, useSearchParams } from "next/navigation"
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { FilterSidebar } from "./filter-sidebar"
-import { searchInteractions } from "../api/queries"
-import { MeilisearchInteraction, MeilisearchFilters } from "@/types/meilisearch"
-import { Badge } from "@/components/ui/badge"
-import { Button } from "@/components/ui/button"
-import { ArrowRight, Minus, Filter, X, Plus } from "lucide-react"
-import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet"
-import { Skeleton } from "@/components/ui/skeleton"
-import { Alert, AlertDescription } from "@/components/ui/alert"
-import { cn, formatNumber } from "@/lib/utils"
-import { InteractionDetailsSheet } from "./interaction-details-sheet"
-import GraphView from "@/features/interactions-search/components/graph-view"
-import { DataCard } from "./data-card"
-import { exportToCSV } from "@/lib/utils/export"
-import { useInfiniteScroll } from "@/hooks/use-infinite-scroll"
+import { useState, useEffect, useCallback, useRef } from "react";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { searchInteractions } from "@/features/interactions-search/api/queries";
+import { MeilisearchInteraction, MeilisearchFilters } from "@/types/meilisearch";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { ArrowRight, Minus, Filter, X, Plus } from "lucide-react";
+import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { cn, formatNumber } from "@/lib/utils";
+import { InteractionDetailsSheet } from "@/features/interactions-search/components/interaction-details-sheet";
+import GraphView from "@/features/interactions-search/components/graph-view";
+import { DataCard } from "@/features/interactions-search/components/data-card";
+import { FilterSidebar } from "@/features/interactions-search/components/filter-sidebar";
+import { exportToCSV } from "@/lib/utils/export";
+import { useInfiniteScroll } from "@/hooks/use-infinite-scroll";
 
 const RESULTS_PER_PAGE = 20;
 const MAX_GRAPH_INTERACTIONS = 1000;
 
 type ViewMode = "table" | "network";
 
-interface InteractionsSearchProps {
-  hideFilters?: boolean;
+interface InteractionsExploreTabProps {
+  filters: MeilisearchFilters;
+  onFilterChange: (filters: MeilisearchFilters) => void;
+  onFilterCountsUpdate: (counts: Record<string, Record<string, number>>) => void;
 }
 
 // Helper function to extract type label from "TypeLabel:ID" format
@@ -47,48 +48,11 @@ function getConsensusSign(directions: MeilisearchInteraction['directions']): 'po
   return null;
 }
 
-export function InteractionsSearch({
-  hideFilters = false
-}: InteractionsSearchProps = {}) {
-  const router = useRouter();
-  const searchParams = useSearchParams();
-
-  // State
-  const [filters, setFilters] = useState<MeilisearchFilters>(() => {
-    const urlFilters: MeilisearchFilters = {};
-
-    // Array filters
-    ['member_types', 'interaction_annotation_terms'].forEach(key => {
-      const value = searchParams.get(key);
-      if (value) {
-        const filterKey = key as keyof MeilisearchFilters;
-        const values = value.split(',');
-        if (values.length > 0) {
-          (urlFilters[filterKey] as string[] | undefined) = values;
-        }
-      }
-    });
-
-    // Boolean filters
-    const hasDirection = searchParams.get('has_direction');
-    if (hasDirection !== null) urlFilters.has_direction = hasDirection === 'true';
-
-    const hasPositiveSign = searchParams.get('has_positive_sign');
-    if (hasPositiveSign !== null) urlFilters.has_positive_sign = hasPositiveSign === 'true';
-
-    const hasNegativeSign = searchParams.get('has_negative_sign');
-    if (hasNegativeSign !== null) urlFilters.has_negative_sign = hasNegativeSign === 'true';
-
-    // Number filters for member IDs
-    const memberAId = searchParams.get('member_a_id');
-    if (memberAId) urlFilters.member_a_id = parseInt(memberAId);
-
-    const memberBId = searchParams.get('member_b_id');
-    if (memberBId) urlFilters.member_b_id = parseInt(memberBId);
-
-    return urlFilters;
-  });
-
+export function InteractionsExploreTab({
+  filters,
+  onFilterChange,
+  onFilterCountsUpdate
+}: InteractionsExploreTabProps) {
   const mainContentRef = useRef<HTMLDivElement | null>(null);
   const [rootElement, setRootElement] = useState<HTMLDivElement | null>(null);
   const [filterCounts, setFilterCounts] = useState<Record<string, Record<string, number>> | null>(null);
@@ -130,13 +94,14 @@ export function InteractionsSearch({
         }
 
         setFilterCounts(counts);
+        onFilterCountsUpdate(counts);
       }
 
       return {
         results: response.hits,
         totalResults: response.estimatedTotalHits || 0
       };
-    }, [filters]),
+    }, [filters, onFilterCountsUpdate]),
     pageSize: RESULTS_PER_PAGE,
     dependencies: [filters],
     root: rootElement
@@ -148,27 +113,6 @@ export function InteractionsSearch({
   const [allInteractions, setAllInteractions] = useState<MeilisearchInteraction[]>([]);
   const [isLoadingAll, setIsLoadingAll] = useState(false);
   const [hasLoadedGraphData, setHasLoadedGraphData] = useState(false);
-
-  // Update URL when filters change
-  const updateURL = useCallback((newFilters: MeilisearchFilters) => {
-    const params = new URLSearchParams();
-
-    Object.entries(newFilters).forEach(([key, value]) => {
-      if (value !== undefined && value !== null) {
-        if (Array.isArray(value) && value.length > 0) {
-          params.set(key, value.join(','));
-        } else if (typeof value === 'boolean') {
-          params.set(key, value.toString());
-        } else if (typeof value === 'number') {
-          params.set(key, value.toString());
-        } else if (value !== '') {
-          params.set(key, value.toString());
-        }
-      }
-    });
-
-    router.push(`/interactions/search?${params.toString()}`);
-  }, [router]);
 
   // Update error state from infinite scroll hook
   useEffect(() => {
@@ -206,15 +150,9 @@ export function InteractionsSearch({
     setAllInteractions([]);
   }, [filters]);
 
-  // Handlers
-  const handleFilterChange = (newFilters: MeilisearchFilters) => {
-    setFilters(newFilters);
-    updateURL(newFilters);
-  };
-
+  // Handler for clear filters
   const handleClearFilters = () => {
-    setFilters({});
-    updateURL({});
+    onFilterChange({});
   };
 
   const handleRowClick = (row: MeilisearchInteraction) => {
@@ -268,7 +206,7 @@ export function InteractionsSearch({
       };
     });
 
-    exportToCSV(exportData, `interactions_search_${viewMode}_${new Date().toISOString().split('T')[0]}`);
+    exportToCSV(exportData, `interactions_explore_${viewMode}_${new Date().toISOString().split('T')[0]}`);
   }, [viewMode, allInteractions, results]);
 
   // Helper to render sign indicator
@@ -290,21 +228,7 @@ export function InteractionsSearch({
   };
 
   return (
-    <div className="flex gap-6 p-4 h-[calc(100vh-8rem)]">
-      {/* Filter Sidebar */}
-      {!hideFilters && (
-        <aside className="hidden lg:block w-80 flex-shrink-0 h-full">
-          {filterCounts && (
-            <FilterSidebar
-              filters={filters}
-              filterCounts={filterCounts}
-              onFilterChange={handleFilterChange}
-              onClearFilters={handleClearFilters}
-            />
-          )}
-        </aside>
-      )}
-
+    <div className="flex gap-6">
       {/* Main Content */}
       <DataCard
         className="flex-1 min-w-0 flex flex-col"
@@ -314,59 +238,57 @@ export function InteractionsSearch({
         onExport={handleExport}
       >
         {/* Mobile filter drawer */}
-        {!hideFilters && (
-          <div className="lg:hidden p-4 border-b">
-            <Sheet>
-              <SheetTrigger asChild>
-                <Button variant="outline" className="w-full">
-                  <Filter className="h-4 w-4 mr-2" />
-                  Filters
-                  {filterCounts && Object.keys(filters).length > 0 && (
-                    <Badge variant="secondary" className="ml-2">
-                      {Object.entries(filters).reduce((count, [, value]) => {
-                        if (Array.isArray(value)) return count + value.length;
-                        if (value !== null && value !== undefined) return count + 1;
-                        return count;
-                      }, 0)}
-                    </Badge>
-                  )}
-                </Button>
-              </SheetTrigger>
-              <SheetContent side="left" className="w-[85%] sm:w-[400px] p-0">
-                <SheetHeader className="px-6 py-4 border-b">
-                  <div className="flex items-center justify-between">
-                    <SheetTitle className="flex items-center gap-2">
-                      <Filter className="h-5 w-5 text-primary" />
-                      Filters
-                    </SheetTitle>
-                    {Object.keys(filters).length > 0 && (
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={handleClearFilters}
-                        className="flex items-center gap-1 text-muted-foreground hover:text-foreground"
-                      >
-                        <X className="h-4 w-4" />
-                        Clear all
-                      </Button>
-                    )}
-                  </div>
-                </SheetHeader>
-                <div className="h-[calc(100%-4rem)] overflow-y-auto">
-                  {filterCounts && (
-                    <FilterSidebar
-                      filters={filters}
-                      filterCounts={filterCounts}
-                      onFilterChange={handleFilterChange}
-                      onClearFilters={handleClearFilters}
-                      isMobile
-                    />
+        <div className="lg:hidden p-4 border-b">
+          <Sheet>
+            <SheetTrigger asChild>
+              <Button variant="outline" className="w-full">
+                <Filter className="h-4 w-4 mr-2" />
+                Filters
+                {filterCounts && Object.keys(filters).length > 0 && (
+                  <Badge variant="secondary" className="ml-2">
+                    {Object.entries(filters).reduce((count, [, value]) => {
+                      if (Array.isArray(value)) return count + value.length;
+                      if (value !== null && value !== undefined) return count + 1;
+                      return count;
+                    }, 0)}
+                  </Badge>
+                )}
+              </Button>
+            </SheetTrigger>
+            <SheetContent side="left" className="w-[85%] sm:w-[400px] p-0">
+              <SheetHeader className="px-6 py-4 border-b">
+                <div className="flex items-center justify-between">
+                  <SheetTitle className="flex items-center gap-2">
+                    <Filter className="h-5 w-5 text-primary" />
+                    Filters
+                  </SheetTitle>
+                  {Object.keys(filters).length > 0 && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={handleClearFilters}
+                      className="flex items-center gap-1 text-muted-foreground hover:text-foreground"
+                    >
+                      <X className="h-4 w-4" />
+                      Clear all
+                    </Button>
                   )}
                 </div>
-              </SheetContent>
-            </Sheet>
-          </div>
-        )}
+              </SheetHeader>
+              <div className="h-[calc(100%-4rem)] overflow-y-auto">
+                {filterCounts && (
+                  <FilterSidebar
+                    filters={filters}
+                    filterCounts={filterCounts}
+                    onFilterChange={onFilterChange}
+                    onClearFilters={handleClearFilters}
+                    isMobile
+                  />
+                )}
+              </div>
+            </SheetContent>
+          </Sheet>
+        </div>
 
         {/* Results */}
         {viewMode === "table" ? (
@@ -406,6 +328,7 @@ export function InteractionsSearch({
                   setRootElement(el);
                 }}
                 className="flex-1 overflow-y-auto"
+                style={{ maxHeight: 'calc(100vh - 300px)' }}
               >
                 <Table>
                   <TableBody>
@@ -512,7 +435,7 @@ export function InteractionsSearch({
           )
         ) : viewMode === "network" ? (
           // Graph View
-          <div className="flex-1 overflow-hidden">
+          <div className="flex-1 overflow-hidden" style={{ minHeight: '500px' }}>
             {isLoadingAll ? (
               <div className="flex flex-col items-center justify-center h-full p-8">
                 <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent mb-4" />

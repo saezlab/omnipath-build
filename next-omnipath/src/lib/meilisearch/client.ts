@@ -10,8 +10,7 @@ export const meilisearchClient = new MeiliSearch({
 // Index names
 export const INDEXES = {
   ENTITIES: 'search_entities',
-  CV_TERMS: 'cv_terms',
-  INTERACTIONS: 'interactions',
+  INTERACTIONS: 'search_interactions',
 } as const;
 
 export type IndexName = typeof INDEXES[keyof typeof INDEXES];
