@@ -10,19 +10,23 @@ import type { SearchResult } from "@/features/search/components/result-card";
 export default function SelectionPage() {
   const { selectedEntities, clearSelection, selectionCount } = useEntitySelection();
 
-  // Convert selected entities to SearchResult format for reuse
-  const results: SearchResult[] = selectedEntities.map((entity) => ({
-    id: entity.id,
-    entity_id: entity.entityId,
-    type: "entity",
-    entity_type: entity.type ? `${entity.type}:${entity.id}` : undefined,
-    names: [entity.name],
-    gene_symbols: [],
-    descriptions: [],
-    identifiers: [],
-    sources: [],
-    references: [],
-  }));
+  // Use full search results when available, otherwise fall back to basic format
+  const results: SearchResult[] = selectedEntities.map((entity) =>
+    entity.fullResult ?? {
+      id: entity.id,
+      entity_id: entity.entityId,
+      type: "entity",
+      entity_type: entity.type ? `${entity.type}:${entity.id}` : undefined,
+      names: [entity.name],
+      gene_symbols: [],
+      descriptions: [],
+      identifiers: [],
+      sources: [],
+      references: entity.references,
+      complexes: entity.complexes,
+      cv_terms: entity.cv_terms,
+    }
+  );
 
   if (selectionCount === 0) {
     return (

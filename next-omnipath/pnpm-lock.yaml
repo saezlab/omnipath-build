@@ -137,6 +137,9 @@ importers:
       openapi-typescript:
         specifier: ^7.8.0
         version: 7.8.0(typescript@5.8.3)
+      openchemlib:
+        specifier: ^9.18.1
+        version: 9.18.1
       pg:
         specifier: ^8.16.0
         version: 8.16.0
@@ -3397,6 +3400,9 @@ packages:
     hasBin: true
     peerDependencies:
       typescript: ^5.x
+
+  openchemlib@9.18.1:
+    resolution: {integrity: sha512-vq4/lYzW8dxg9W4eF013iJlLSTVOkdPjRYCDQfIuQXmWs11Z+0HvzpoIJqMRudBQRkwEzhpVT9xOWgkT0tp5Cw==}
 
   optionator@0.9.4:
     resolution: {integrity: sha512-6IpQ7mKUxRcZNLIObR0hz7lxsapSSIYNZJwXPGeF0mTVqGKFIXj1DQcMoT22S3ROcLyY/rz0PWaWZ9ayWmad9g==}
@@ -7606,6 +7612,8 @@ snapshots:
       supports-color: 10.0.0
       typescript: 5.8.3
       yargs-parser: 21.1.1
+
+  openchemlib@9.18.1: {}
 
   optionator@0.9.4:
     dependencies:

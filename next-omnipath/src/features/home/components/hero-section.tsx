@@ -71,9 +71,6 @@ export function HeroSection() {
           <Button size="lg" variant="default" asChild>
             <Link href="/search">Get started</Link>
           </Button>
-          <Button size="lg" variant="outline" asChild>
-            <Link href="/interactions/search">Browse data</Link>
-          </Button>
         </div>
       </div>
     </div>

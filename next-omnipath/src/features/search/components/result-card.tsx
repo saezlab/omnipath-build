@@ -9,20 +9,29 @@ import {
   CardHeader,
   CardTitle
 } from "@/components/ui/card";
-import {
-  HoverCard,
-  HoverCardContent,
-  HoverCardTrigger,
-} from "@/components/ui/hover-card";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import React from "react";
-import { Network, Tag, Shapes, FileText, Database, Plus, Check } from "lucide-react";
+import React, { useMemo } from "react";
+import { Network, Tag, Shapes, FileText, Database, Plus, Check, FlaskConical } from "lucide-react";
 import { useEntitySelection } from "@/contexts/entity-selection-context";
+import { MoleculeStructure } from "./molecule_structure";
 
 // Helper function to convert <em> tags to highlighted spans
 const convertEmToHighlight = (text: string | undefined) => {
   if (!text) return '';
   return text.replace(/<em>/g, '<span class="bg-yellow-200 dark:bg-blue-500 px-1 rounded">').replace(/<\/em>/g, '</span>');
+};
+
+// Helper to detect if entity is a small molecule
+const isSmallMolecule = (result: SearchResult): boolean => {
+  const entityType = result._formatted?.entity_type || result.entity_type || '';
+  const typeLabel = entityType.split(':')[0].toLowerCase();
+  return typeLabel === 'smallmolecule' ||
+         typeLabel === 'small_molecule' ||
+         typeLabel === 'compound' ||
+         typeLabel === 'metabolite' ||
+         typeLabel === 'drug' ||
+         // Also check if we have molecule-specific data
+         !!(result.canonical_smiles || result.formula || result.molecular_weight);
 };
 
 // Identifier object structure from search_entities
@@ -67,10 +76,177 @@ export interface SearchResult {
   name?: string;
   is_annotated?: boolean;
   associated_entity_ids?: string[];
+  // Small molecule / compound fields
+  canonical_smiles?: string;
+  formula?: string;
+  molecular_weight?: number;
   [key: string]: unknown; // Add index signature for compatibility with DataRow
 }
 
+// Molecule-specific result card
+function MoleculeResultCard({ result }: { result: SearchResult }) {
+  const { addEntity, removeEntity, isSelected } = useEntitySelection();
+
+  const names = result._formatted?.names || result.names || [];
+  const identifiers = result._formatted?.identifiers || result.identifiers || [];
+  const entityType = result._formatted?.entity_type || result.entity_type;
+  const entityTypeLabel = entityType ? entityType.split(':')[0] : "Small Molecule";
+
+  // Get primary name from names or identifiers
+  // Names may come as "::" separated strings, pick the first meaningful one
+  const primaryName = useMemo(() => {
+    if (names.length > 0) {
+      const firstNameField = names[0];
+      // Split by :: and find first non-ID looking name
+      const nameParts = firstNameField.split('::').map(n => n.trim()).filter(Boolean);
+      // Skip names that look like IDs (e.g., MLS000103932, SMR000018291, cid_*, ZINC*)
+      for (const part of nameParts) {
+        if (!/^(MLS|SMR|cid_|ZINC|SID_|CID_)/i.test(part) && part.length > 3) {
+          return part;
+        }
+      }
+      // Fallback to first part if all look like IDs
+      return nameParts[0] || firstNameField;
+    }
+    // Try to find a name from identifiers
+    for (const id of identifiers) {
+      const entries = Object.entries(id);
+      if (entries.length > 0) {
+        const [key] = entries[0];
+        const idType = key.split(':')[0].toLowerCase();
+        if (['name', 'common_name', 'preferred_name'].includes(idType)) {
+          return entries[0][1];
+        }
+      }
+    }
+    return `Compound ${result.entity_id || result.id}`;
+  }, [names, identifiers, result.entity_id, result.id]);
+
+  // Extract SMILES from identifiers (stored in "biotin tag" identifier type)
+  const smiles = useMemo(() => {
+    for (const id of identifiers) {
+      const entries = Object.entries(id);
+      if (entries.length > 0) {
+        const [key, value] = entries[0];
+        const idType = key.split(':')[0].toLowerCase().trim();
+        if (idType === 'biotin tag' || idType === 'biotin' || idType === 'smiles' || idType === 'canonical_smiles') {
+          return value as string;
+        }
+      }
+    }
+    return result.canonical_smiles || null;
+  }, [identifiers, result.canonical_smiles]);
+
+  const entityId = (result.entity_id ?? result.id)?.toString();
+  const selected = entityId ? isSelected(entityId) : false;
+
+  const handleAddToSelection = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!entityId) return;
+
+    if (selected) {
+      removeEntity(entityId);
+    } else {
+      addEntity({
+        id: entityId,
+        entityId: result.entity_id,
+        name: primaryName,
+        type: entityTypeLabel,
+        complexes: result.complexes,
+        cv_terms: result.cv_terms,
+        references: result.references,
+        fullResult: result,
+      });
+    }
+  };
+
+  return (
+    <Card className="flex flex-col hover:shadow-md transition-shadow h-full result-card group relative">
+      {/* Add to selection button */}
+      {entityId && (
+        <Button
+          variant={selected ? "default" : "secondary"}
+          size="icon"
+          className={`absolute -bottom-3 left-1/2 -translate-x-1/2 z-10 h-6 w-6 rounded-full shadow-md transition-opacity ${
+            selected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
+          }`}
+          onClick={handleAddToSelection}
+          title={selected ? "Remove from selection" : "Add to selection"}
+        >
+          {selected ? <Check className="h-3 w-3" /> : <Plus className="h-3 w-3" />}
+        </Button>
+      )}
+
+      <CardHeader className="relative space-y-0 p-2.5 border-b shrink-0">
+        <CardTitle className="text-base line-clamp-2">
+          <span dangerouslySetInnerHTML={{ __html: convertEmToHighlight(primaryName) }} />
+        </CardTitle>
+      </CardHeader>
+
+      {/* Molecule structure visualization */}
+      {smiles && (
+        <CardContent className="p-3 flex-grow flex flex-col items-center">
+          <MoleculeStructure
+            smiles={smiles}
+            width={180}
+            height={140}
+            compoundName={primaryName}
+            className="rounded-md"
+          />
+        </CardContent>
+      )}
+
+      <CardFooter className="flex items-center justify-between shrink-0 border-t p-2.5">
+        {/* Stats */}
+        <div className="flex items-center gap-3 text-sm flex-wrap">
+          {result.num_interactions && result.num_interactions > 0 && (
+            <div className="flex items-center gap-1.5 text-muted-foreground">
+              <Network className="h-4 w-4" />
+              <span>{result.num_interactions}</span>
+            </div>
+          )}
+          {result.complexes && result.complexes.length > 0 && (
+            <div className="flex items-center gap-1.5 text-muted-foreground">
+              <Shapes className="h-4 w-4" />
+              <span>{result.complexes.length}</span>
+            </div>
+          )}
+          {result.cv_terms && result.cv_terms.length > 0 && (
+            <div className="flex items-center gap-1.5 text-muted-foreground">
+              <Tag className="h-4 w-4" />
+              <span>{result.cv_terms.length}</span>
+            </div>
+          )}
+          {result.references && result.references.length > 0 && (
+            <div className="flex items-center gap-1.5 text-muted-foreground">
+              <FileText className="h-4 w-4" />
+              <span>{result.references.length}</span>
+            </div>
+          )}
+          {result.sources && result.sources.length > 0 && (
+            <div className="flex items-center gap-1.5 text-muted-foreground">
+              <Database className="h-4 w-4" />
+              <span>{result.sources.length}</span>
+            </div>
+          )}
+        </div>
+        {/* Badge */}
+        <Badge variant="secondary" className="flex items-center gap-1 text-xs">
+          <FlaskConical className="h-3 w-3" />
+          {entityTypeLabel}
+        </Badge>
+      </CardFooter>
+    </Card>
+  );
+}
+
 export function ResultCard({ result }: { result: SearchResult }) {
+  // Check if this is a small molecule and render specialized card
+  if (isSmallMolecule(result)) {
+    return <MoleculeResultCard result={result} />;
+  }
+
   const type = result.type || "entity";
   const { addEntity, removeEntity, isSelected } = useEntitySelection();
 
@@ -100,6 +276,7 @@ export function ResultCard({ result }: { result: SearchResult }) {
         complexes: result.complexes,
         cv_terms: result.cv_terms,
         references: result.references,
+        fullResult: result,
       });
     }
   };
@@ -188,21 +365,9 @@ export function ResultCard({ result }: { result: SearchResult }) {
       )}
 
       <CardHeader className="relative space-y-0 p-2.5 border-b shrink-0">
-        <div className="flex flex-col gap-1">
-          <div className="flex items-start justify-between">
-            <div className="min-w-0 flex-1">
-              <CardTitle className="text-lg line-clamp-1">
-                <span dangerouslySetInnerHTML={{ __html: title }} />
-              </CardTitle>
-            </div>
-            <Badge
-              variant="secondary"
-              className="ml-2 flex-shrink-0"
-            >
-              {subtitle}
-            </Badge>
-          </div>
-        </div>
+        <CardTitle className="text-lg line-clamp-2">
+          <span dangerouslySetInnerHTML={{ __html: title }} />
+        </CardTitle>
       </CardHeader>
 
       {((descriptions.length > 0) || definition) && (
@@ -218,153 +383,55 @@ export function ResultCard({ result }: { result: SearchResult }) {
         </div>
       )}
 
-      <CardFooter className={`flex flex-col gap-2 shrink-0 ${((descriptions.length > 0) || definition) ? 'border-t' : ''}`}>
-        {/* Stats section */}
-        <div className="flex items-center justify-between w-full">
-          <div className="flex items-center gap-3 text-sm flex-wrap">
-            {type === 'entity' && interactionCount > 0 && (
-              <div className="flex items-center gap-1.5 text-muted-foreground">
-                <Network className="h-4 w-4" />
-                <span>{interactionCount}</span>
-              </div>
-            )}
-            {type === 'entity' && complexes.length > 0 && (
-              <div className="flex items-center gap-1.5 text-muted-foreground">
-                <Shapes className="h-4 w-4" />
-                <span>{complexes.length}</span>
-              </div>
-            )}
-            {type === 'entity' && cvTerms.length > 0 && (
-              <div className="flex items-center gap-1.5 text-muted-foreground">
-                <Tag className="h-4 w-4" />
-                <span>{cvTerms.length}</span>
-              </div>
-            )}
-            {type === 'entity' && references.length > 0 && (
-              <div className="flex items-center gap-1.5 text-muted-foreground">
-                <FileText className="h-4 w-4" />
-                <span>{references.length}</span>
-              </div>
-            )}
-            {type === 'entity' && sources.length > 0 && (
-              <div className="flex items-center gap-1.5 text-muted-foreground">
-                <Database className="h-4 w-4" />
-                <span>{sources.length}</span>
-              </div>
-            )}
-            {type === 'cv_term' && entityCount > 0 && (
-              <div className="flex items-center gap-1.5 text-muted-foreground">
-                <Tag className="h-4 w-4" />
-                <span>{entityCount}</span>
-              </div>
-            )}
-          </div>
-
-          {/* Show detailed info on hover */}
-          {type === 'entity' && (identifiers.length > 0 || sources.length > 0 || references.length > 0 || complexes.length > 0 || cvTerms.length > 0) && (
-            <HoverCard>
-              <HoverCardTrigger asChild>
-                <div className="text-sm text-muted-foreground hover:text-foreground transition-colors cursor-pointer">
-                  <span>Details</span>
-                </div>
-              </HoverCardTrigger>
-              <HoverCardContent className="w-96 max-h-96 overflow-y-auto">
-                <div className="space-y-3">
-                  {identifiers.length > 0 && (
-                    <div>
-                      <h4 className="text-sm font-semibold mb-2">Identifiers ({identifiers.length})</h4>
-                      <div className="text-sm text-muted-foreground space-y-1">
-                        {identifiers.map((id, idx) => {
-                          // Identifiers come as single-property objects: {"type:type_id": "value"}
-                          let identifierType = 'unknown';
-                          let identifierValue = '';
-
-                          if (typeof id === 'object' && id !== null) {
-                            // Get the first (and only) key-value pair
-                            const entries = Object.entries(id);
-                            if (entries.length > 0) {
-                              const [fullKey, value] = entries[0];
-                              // Extract type from key (e.g., "uniprot:3874827" -> "uniprot")
-                              identifierType = fullKey.split(':')[0];
-                              identifierValue = value as string;
-                            }
-                          } else if (typeof id === 'string') {
-                            // Fallback: treat as plain string
-                            identifierValue = id;
-                          }
-
-                          return (
-                            <div key={idx}>
-                              <span className="font-medium">{identifierType}:</span> <span dangerouslySetInnerHTML={{ __html: convertEmToHighlight(identifierValue) }} />
-                            </div>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  )}
-                  {sources.length > 0 && (
-                    <div>
-                      <h4 className="text-sm font-semibold mb-2">Sources ({sources.length})</h4>
-                      <div className="text-sm text-muted-foreground">
-                        {sources.map((source, idx) => {
-                          // Extract source name from "name:id" format
-                          const sourceName = source?.split(':')[0] || source;
-                          return <div key={idx}>{sourceName}</div>;
-                        })}
-                      </div>
-                    </div>
-                  )}
-                  {references.length > 0 && (
-                    <div>
-                      <h4 className="text-sm font-semibold mb-2">References ({references.length})</h4>
-                      <div className="text-sm text-muted-foreground">
-                        {references.slice(0, 10).map((ref, idx) => (
-                          <div key={idx}>{ref}</div>
-                        ))}
-                        {references.length > 10 && <div className="text-xs italic">...and {references.length - 10} more</div>}
-                      </div>
-                    </div>
-                  )}
-                  {complexes.length > 0 && (
-                    <div>
-                      <h4 className="text-sm font-semibold mb-2">Complexes ({complexes.length})</h4>
-                      <div className="text-sm text-muted-foreground">
-                        Member of {complexes.length} complex{complexes.length === 1 ? '' : 'es'}
-                      </div>
-                    </div>
-                  )}
-                  {cvTerms.length > 0 && (
-                    <div>
-                      <h4 className="text-sm font-semibold mb-2">CV Terms ({cvTerms.length})</h4>
-                      <div className="text-sm text-muted-foreground">
-                        Annotated with {cvTerms.length} term{cvTerms.length === 1 ? '' : 's'}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              </HoverCardContent>
-            </HoverCard>
+      <CardFooter className={`flex items-center justify-between shrink-0 p-2.5 ${((descriptions.length > 0) || definition) ? 'border-t' : ''}`}>
+        {/* Stats */}
+        <div className="flex items-center gap-3 text-sm flex-wrap">
+          {type === 'entity' && interactionCount > 0 && (
+            <div className="flex items-center gap-1.5 text-muted-foreground">
+              <Network className="h-4 w-4" />
+              <span>{interactionCount}</span>
+            </div>
+          )}
+          {type === 'entity' && complexes.length > 0 && (
+            <div className="flex items-center gap-1.5 text-muted-foreground">
+              <Shapes className="h-4 w-4" />
+              <span>{complexes.length}</span>
+            </div>
+          )}
+          {type === 'entity' && cvTerms.length > 0 && (
+            <div className="flex items-center gap-1.5 text-muted-foreground">
+              <Tag className="h-4 w-4" />
+              <span>{cvTerms.length}</span>
+            </div>
+          )}
+          {type === 'entity' && references.length > 0 && (
+            <div className="flex items-center gap-1.5 text-muted-foreground">
+              <FileText className="h-4 w-4" />
+              <span>{references.length}</span>
+            </div>
+          )}
+          {type === 'entity' && sources.length > 0 && (
+            <div className="flex items-center gap-1.5 text-muted-foreground">
+              <Database className="h-4 w-4" />
+              <span>{sources.length}</span>
+            </div>
+          )}
+          {type === 'cv_term' && entityCount > 0 && (
+            <div className="flex items-center gap-1.5 text-muted-foreground">
+              <Tag className="h-4 w-4" />
+              <span>{entityCount}</span>
+            </div>
           )}
           {type === 'cv_term' && synonyms.length > 0 && (
-            <HoverCard>
-              <HoverCardTrigger asChild>
-                <div className="text-sm text-muted-foreground hover:text-foreground transition-colors cursor-pointer">
-                  <span>{synonyms.length} synonym{synonyms.length === 1 ? '' : 's'}</span>
-                </div>
-              </HoverCardTrigger>
-              <HoverCardContent className="w-80 max-h-96 overflow-y-auto">
-                <div className="space-y-3">
-                  <div>
-                    <h4 className="text-sm font-semibold mb-2">All Synonyms ({synonyms.length})</h4>
-                    <p className="text-sm text-muted-foreground">
-                      <span dangerouslySetInnerHTML={{ __html: convertEmToHighlight(synonyms.join(', ')) }} />
-                    </p>
-                  </div>
-                </div>
-              </HoverCardContent>
-            </HoverCard>
+            <div className="flex items-center gap-1.5 text-muted-foreground text-xs">
+              {synonyms.length} synonym{synonyms.length === 1 ? '' : 's'}
+            </div>
           )}
         </div>
+        {/* Badge */}
+        <Badge variant="secondary" className="text-xs">
+          {subtitle}
+        </Badge>
       </CardFooter>
     </Card>
   );

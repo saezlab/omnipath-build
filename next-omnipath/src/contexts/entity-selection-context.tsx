@@ -1,6 +1,7 @@
 "use client"
 
 import { createContext, useContext, ReactNode, useState, useCallback } from "react"
+import type { SearchResult } from "@/features/search/components/result-card"
 
 export interface SelectedEntity {
   id: string
@@ -10,7 +11,9 @@ export interface SelectedEntity {
   // Related entity IDs for explore tabs
   complexes?: number[]
   cv_terms?: number[]
-  references?: number[]
+  references?: string[]
+  // Store full search result for proper display
+  fullResult?: SearchResult
 }
 
 interface EntitySelectionContextType {
