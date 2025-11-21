@@ -221,11 +221,12 @@ export async function searchInteractionsMeilisearch(
 export async function fetchMeilisearchDocuments(
   indexName: IndexName,
   documentIds: string[],
+  filterField: string = 'id',
 ): Promise<{ documents: Record<string, unknown>[] }> {
   try {
     const indexClient = meilisearchClient.index(indexName);
     const documents = await indexClient.getDocuments({
-      filter: documentIds.map(id => `id = "${id}"`).join(' OR '),
+      filter: documentIds.map(id => `${filterField} = "${id}"`).join(' OR '),
       limit: documentIds.length > 0 ? Math.max(documentIds.length, 1000) : 20,
     });
 

@@ -1,8 +1,6 @@
 "use client";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useSidebarContent } from "@/contexts/sidebar-content-context";
-import { InteractionsSearch } from "@/features/interactions-search/components/interactions-search";
 import { useInfiniteScroll } from "@/hooks/use-infinite-scroll";
 import { fetchMeilisearchDocuments } from "@/lib/meilisearch/search";
 import { useCallback, useEffect, useState, useTransition } from "react";
@@ -48,7 +46,7 @@ export default function SearchPage({
 
       const response = await searchMeilisearch({
         query: query || "", // Allow empty query to fetch all results
-        index: initialSearchType === "search_entities" ? "search_entities" : "cv_terms",
+        index: "search_entities",
         limit,
         offset,
         filters
@@ -184,30 +182,6 @@ export default function SearchPage({
       {/* Results */}
       <div className={embedded ? "flex-1 overflow-y-auto p-4" : "flex-1 overflow-y-auto"}>
         <div className={embedded ? "w-full min-h-full" : "w-full max-w-screen-xl mx-auto px-4 sm:px-6 lg:px-8 py-6"}>
-          {isMultiSearch ? (
-            <Tabs defaultValue="entities" className="w-full">
-              <TabsList className="grid w-fit grid-cols-2 relative z-20">
-                <TabsTrigger value="entities">
-                  Entities ({multiSearchResults.length})
-                </TabsTrigger>
-                <TabsTrigger value="interactions">
-                  Interactions
-                </TabsTrigger>
-              </TabsList>
-              <TabsContent value="entities">
-                <SearchResults results={multiSearchResults} />
-              </TabsContent>
-              <TabsContent value="interactions" className="mt-6">
-                {entityIds.length > 0 && (
-                  <InteractionsSearch
-                    key={entityIds.join(',')}
-                    initialEntityIds={entityIds}
-                    hideEntityFilter={false}
-                  />
-                )}
-              </TabsContent>
-            </Tabs>
-          ) : (
             <SearchResults
               results={results}
               loading={loading}
@@ -215,7 +189,6 @@ export default function SearchPage({
               hasMore={hasMore}
               sentinelRef={sentinelRef}
             />
-          )}
         </div>
       </div>
     </div>

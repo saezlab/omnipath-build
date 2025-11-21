@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { searchInteractions } from "@/features/interactions-search/api/queries";
+import { searchInteractions, fetchEntitiesByIds, EntityInfo } from "@/features/interactions-search/api/queries";
 import { MeilisearchInteraction, MeilisearchFilters } from "@/types/meilisearch";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -17,6 +17,7 @@ import { DataCard } from "@/features/interactions-search/components/data-card";
 import { FilterSidebar } from "@/features/interactions-search/components/filter-sidebar";
 import { exportToCSV } from "@/lib/utils/export";
 import { useInfiniteScroll } from "@/hooks/use-infinite-scroll";
+import { EntityBadge } from "@/components/entity-badge";
 
 const RESULTS_PER_PAGE = 20;
 const MAX_GRAPH_INTERACTIONS = 1000;
@@ -119,11 +120,38 @@ export function InteractionsExploreTab({
   const [allInteractions, setAllInteractions] = useState<MeilisearchInteraction[]>([]);
   const [isLoadingAll, setIsLoadingAll] = useState(false);
   const [hasLoadedGraphData, setHasLoadedGraphData] = useState(false);
+  const [entityMap, setEntityMap] = useState<Map<number, EntityInfo>>(new Map());
 
   // Update error state from infinite scroll hook
   useEffect(() => {
     setError(infiniteScrollError?.message || null);
   }, [infiniteScrollError]);
+
+  // Fetch entity details when results change
+  useEffect(() => {
+    async function loadEntityDetails() {
+      if (results.length === 0) return;
+
+      // Collect all unique entity IDs from results
+      const entityIds = new Set<number>();
+      for (const interaction of results) {
+        entityIds.add(interaction.member_a_id);
+        entityIds.add(interaction.member_b_id);
+      }
+
+      // Only fetch entities we don't already have
+      const idsToFetch = [...entityIds].filter(id => !entityMap.has(id));
+      if (idsToFetch.length === 0) return;
+
+      const newEntities = await fetchEntitiesByIds(idsToFetch);
+      console.log('Fetched entities:', Object.fromEntries(newEntities));
+      if (newEntities.size > 0) {
+        setEntityMap(prev => new Map([...prev, ...newEntities]));
+      }
+    }
+
+    loadEntityDetails();
+  }, [results]);
 
   // Function to load all interactions for graph view
   const loadAllInteractions = useCallback(async () => {
@@ -341,12 +369,8 @@ export function InteractionsExploreTab({
                       const swap = shouldSwapMembers(row.directions);
                       const sourceId = swap ? row.member_b_id : row.member_a_id;
                       const targetId = swap ? row.member_a_id : row.member_b_id;
-                      const sourceType = swap
-                        ? (row.member_types[1] ? extractTypeLabel(row.member_types[1]) : 'Unknown')
-                        : (row.member_types[0] ? extractTypeLabel(row.member_types[0]) : 'Unknown');
-                      const targetType = swap
-                        ? (row.member_types[0] ? extractTypeLabel(row.member_types[0]) : 'Unknown')
-                        : (row.member_types[1] ? extractTypeLabel(row.member_types[1]) : 'Unknown');
+                      const sourceEntity = entityMap.get(sourceId);
+                      const targetEntity = entityMap.get(targetId);
 
                       return (
                         <TableRow
@@ -355,10 +379,11 @@ export function InteractionsExploreTab({
                           className="cursor-pointer hover:bg-muted/50"
                         >
                           <TableCell className="w-[25%] max-w-0">
-                            <div className="flex flex-col">
-                              <span className="font-medium truncate">{sourceId}</span>
-                              <span className="text-xs text-muted-foreground">{sourceType}</span>
-                            </div>
+                            <EntityBadge
+                              displayName={sourceEntity?.display_name || String(sourceId)}
+                              canonicalIdentifier={sourceEntity?.canonical_identifier || String(sourceId)}
+                              showHover={false}
+                            />
                           </TableCell>
                           <TableCell className="w-[50px] text-center">
                             <div className="flex justify-center">
@@ -366,10 +391,11 @@ export function InteractionsExploreTab({
                             </div>
                           </TableCell>
                           <TableCell className="w-[25%] max-w-0">
-                            <div className="flex flex-col">
-                              <span className="font-medium truncate">{targetId}</span>
-                              <span className="text-xs text-muted-foreground">{targetType}</span>
-                            </div>
+                            <EntityBadge
+                              displayName={targetEntity?.display_name || String(targetId)}
+                              canonicalIdentifier={targetEntity?.canonical_identifier || String(targetId)}
+                              showHover={false}
+                            />
                           </TableCell>
                           <TableCell className="w-[35%] max-w-0">
                             <div className="flex flex-wrap gap-1 overflow-hidden">

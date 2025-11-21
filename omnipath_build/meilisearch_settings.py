@@ -9,6 +9,7 @@ class MeilisearchSettings:
             'descriptions'
         ],
         'filterableAttributes': [
+            'entity_id',
             'entity_type',
             'sources',
             'ncbi_tax_id'

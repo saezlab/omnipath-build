@@ -1,7 +1,16 @@
 "use server";
 
 import { MeilisearchFilters, MeilisearchSearchResponse } from '@/types/meilisearch';
-import { searchInteractionsMeilisearch } from '@/lib/meilisearch/search';
+import { searchInteractionsMeilisearch, fetchMeilisearchDocuments } from '@/lib/meilisearch/search';
+import { INDEXES } from '@/lib/meilisearch/client';
+
+export interface EntityInfo {
+  id: string;
+  canonical_identifier: string;
+  display_name: string;
+  entity_type_name?: string;
+  gene_symbol?: string;
+}
 
 export async function searchInteractions(
   query: string,
@@ -40,5 +49,45 @@ export async function searchInteractions(
   }
 }
 
+/**
+ * Fetch entities by their IDs
+ */
+export async function fetchEntitiesByIds(entityIds: number[]): Promise<Map<number, EntityInfo>> {
+  if (entityIds.length === 0) {
+    return new Map();
+  }
+
+  try {
+    const uniqueIds = [...new Set(entityIds)];
+    const stringIds = uniqueIds.map(id => id.toString());
+
+    const data = await fetchMeilisearchDocuments(INDEXES.ENTITIES, stringIds, 'entity_id');
+    const entityMap = new Map<number, EntityInfo>();
+
+    for (const doc of data.documents) {
+      const id = Number(doc.entity_id);
+      const names = doc.names as string[] | undefined;
+      const geneSymbols = doc.gene_symbols as string[] | undefined;
+      const entityType = doc.entity_type as string | undefined;
+      // entity_type format is "TypeLabel:id", extract just the label
+      const entityTypeName = entityType?.split(':')[0];
+
+      entityMap.set(id, {
+        id: String(doc.entity_id),
+        canonical_identifier: names?.[0] || String(doc.entity_id),
+        display_name: geneSymbols?.[0] || names?.[0] || String(doc.entity_id),
+        entity_type_name: entityTypeName,
+        gene_symbol: geneSymbols?.[0],
+      });
+    }
+
+    return entityMap;
+  } catch (error) {
+    console.error('Error fetching entities by IDs:', error);
+    return new Map();
+  }
+}
+
 // Export response types
 export type SearchInteractionsResponse = Awaited<ReturnType<typeof searchInteractions>>;
+export type FetchEntitiesByIdsResponse = Awaited<ReturnType<typeof fetchEntitiesByIds>>;
