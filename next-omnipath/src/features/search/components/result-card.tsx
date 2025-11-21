@@ -21,7 +21,7 @@ const convertEmToHighlight = (text: string | undefined) => {
   return text.replace(/<em>/g, '<span class="bg-yellow-200 dark:bg-blue-500 px-1 rounded">').replace(/<\/em>/g, '</span>');
 };
 
-// Helper to detect if entity is a small molecule
+// Helper to detect if entity is a small molecule or lipid (displayed similarly)
 const isSmallMolecule = (result: SearchResult): boolean => {
   const entityType = result._formatted?.entity_type || result.entity_type || '';
   const typeLabel = entityType.split(':')[0].toLowerCase();
@@ -30,6 +30,7 @@ const isSmallMolecule = (result: SearchResult): boolean => {
          typeLabel === 'compound' ||
          typeLabel === 'metabolite' ||
          typeLabel === 'drug' ||
+         typeLabel === 'lipid' ||
          // Also check if we have molecule-specific data
          !!(result.canonical_smiles || result.formula || result.molecular_weight);
 };
@@ -92,33 +93,41 @@ function MoleculeResultCard({ result }: { result: SearchResult }) {
   const entityType = result._formatted?.entity_type || result.entity_type;
   const entityTypeLabel = entityType ? entityType.split(':')[0] : "Small Molecule";
 
-  // Get primary name from names or identifiers
-  // Names may come as "::" separated strings, pick the first meaningful one
+  // Get primary name from names or identifiers, prefer the shortest meaningful name
   const primaryName = useMemo(() => {
-    if (names.length > 0) {
-      const firstNameField = names[0];
-      // Split by :: and find first non-ID looking name
-      const nameParts = firstNameField.split('::').map(n => n.trim()).filter(Boolean);
-      // Skip names that look like IDs (e.g., MLS000103932, SMR000018291, cid_*, ZINC*)
-      for (const part of nameParts) {
-        if (!/^(MLS|SMR|cid_|ZINC|SID_|CID_)/i.test(part) && part.length > 3) {
-          return part;
-        }
+    const validNames: string[] = [];
+
+    // Collect valid names (skip ID-like names)
+    for (const name of names) {
+      if (!/^(MLS|SMR|cid_|ZINC|SID_|CID_)/i.test(name) && name.length > 3) {
+        validNames.push(name);
       }
-      // Fallback to first part if all look like IDs
-      return nameParts[0] || firstNameField;
     }
-    // Try to find a name from identifiers
+
+    // Try to find names from identifiers
     for (const id of identifiers) {
       const entries = Object.entries(id);
       if (entries.length > 0) {
-        const [key] = entries[0];
+        const [key, value] = entries[0];
         const idType = key.split(':')[0].toLowerCase();
-        if (['name', 'common_name', 'preferred_name'].includes(idType)) {
-          return entries[0][1];
+        if (['name', 'common_name', 'preferred_name'].includes(idType) && typeof value === 'string') {
+          validNames.push(value);
         }
       }
     }
+
+    // Return the shortest valid name
+    if (validNames.length > 0) {
+      return validNames.reduce((shortest, current) =>
+        current.length < shortest.length ? current : shortest
+      );
+    }
+
+    // Fallback to first name if all look like IDs
+    if (names.length > 0) {
+      return names[0];
+    }
+
     return `Compound ${result.entity_id || result.id}`;
   }, [names, identifiers, result.entity_id, result.id]);
 

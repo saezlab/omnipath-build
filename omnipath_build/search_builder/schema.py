@@ -18,6 +18,7 @@ from pypath.internals.cv_terms.annotations import (
     InteractionTypeCv,
     DetectionMethodCv,
     BiologicalEffectCv,
+    OntologyAnnotationCv,
     CausalMechanismCv,
     CausalStatementCv,
     PharmacologicalActionCv,
@@ -52,6 +53,7 @@ GENE_SYMBOL_IDENTIFIER_ACCESSIONS = frozenset({
 # Annotation term accessions that represent descriptions
 DESCRIPTION_ANNOTATION_ACCESSIONS = frozenset({
     MoleculeAnnotationsCv.DESCRIPTION.value,
+    OntologyAnnotationCv.DEFINITION.value,
     MoleculeAnnotationsCv.FUNCTION.value,
     MoleculeAnnotationsCv.SUBCELLULAR_LOCATION.value,
     MoleculeAnnotationsCv.DISEASE_INVOLVEMENT.value,

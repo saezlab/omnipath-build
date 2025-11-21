@@ -42,7 +42,7 @@ postgres:
 
 # Build search entities parquet
 meilisearch-entities:
-	@uv run python -m omnipath_build.search_builder.cli \
+	@uv run python -m omnipath_build.search_builder.build_search_entities \
 		--global-tables-dir databases/omnipath/output \
 		--output databases/omnipath/output/search_entities.parquet
 
