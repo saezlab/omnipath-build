@@ -2,7 +2,6 @@
 import React, { useRef, useState } from 'react';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
-import { Skeleton } from "@/components/ui/skeleton";
 import { useEntity } from "@/hooks/use-entity";
 import { ResultCard } from "@/features/search/components/result-card";
 
@@ -37,7 +36,7 @@ export const EntityBadge: React.FC<EntityBadgeProps> = ({
   const [isNameTruncated, setIsNameTruncated] = useState(false);
   const [isIdentifierTruncated, setIsIdentifierTruncated] = useState(false);
   const [isHoverOpen, setIsHoverOpen] = useState(false);
-  const { data: entity, loading, error } = useEntity(
+  const { data: entity } = useEntity(
     isHoverOpen && showHover ? identifier : undefined
   );
 
@@ -117,23 +116,9 @@ export const EntityBadge: React.FC<EntityBadgeProps> = ({
           {content}
         </HoverCardTrigger>
         <HoverCardContent className="w-[450px] p-0 border-0" align="start">
-          {loading ? (
-            <div className="p-6 space-y-3">
-              <Skeleton className="h-4 w-3/4" />
-              <Skeleton className="h-4 w-full" />
-              <Skeleton className="h-4 w-full" />
-            </div>
-          ) : error ? (
-            <div className="p-6 text-sm text-muted-foreground">
-              Failed to load entity details
-            </div>
-          ) : entity ? (
+          {entity ? (
             <ResultCard result={{ ...entity, type: 'entity' }} />
-          ) : (
-            <div className="p-6 text-sm text-muted-foreground">
-              No details available
-            </div>
-          )}
+          ) : null}
         </HoverCardContent>
       </HoverCard>
     );

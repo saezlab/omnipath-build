@@ -2,7 +2,6 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
-import { Skeleton } from '@/components/ui/skeleton';
 import { cn } from '@/lib/utils';
 
 type OpenChemLibModule = {
@@ -27,7 +26,6 @@ export function MoleculeStructure({
   compoundName
 }: MoleculeStructureProps) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [OCL, setOCL] = useState<OpenChemLibModule | null>(null);
 
@@ -36,7 +34,6 @@ export function MoleculeStructure({
 
     const loadOCL = async () => {
       try {
-        setIsLoading(true);
         setError(null);
 
         // Import OpenChemLib
@@ -47,10 +44,6 @@ export function MoleculeStructure({
         if (!mounted) return;
         console.error('Failed to load OpenChemLib:', err);
         setError('Failed to load molecular visualization library');
-      } finally {
-        if (mounted) {
-          setIsLoading(false);
-        }
       }
     };
 
@@ -111,10 +104,6 @@ export function MoleculeStructure({
   const structureDisplay = (() => {
     const baseClassName = cn('shrink-0', className);
     const dimensions = { width, height };
-
-    if (isLoading) {
-      return <Skeleton className={cn('rounded-md', baseClassName)} style={dimensions} />;
-    }
 
     if (error) {
       return (

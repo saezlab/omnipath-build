@@ -2,8 +2,6 @@
 import React from "react";
 import { ResultCard, type SearchResult } from "./result-card";
 import Link from "next/link";
-import { Skeleton } from "@/components/ui/skeleton";
-
 interface SearchResultsProps {
   results: Array<SearchResult>;
   loading?: boolean;
@@ -21,23 +19,7 @@ export function SearchResults({
 }: SearchResultsProps) {
 
   if (loading && !results.length) {
-    return (
-      <div className="w-full">
-        <div className="grid gap-4" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))' }}>
-          {[...Array(8)].map((_, i) => (
-            <div key={i} className="p-4 border rounded-lg space-y-3">
-              <Skeleton className="h-4 w-3/4" />
-              <Skeleton className="h-3 w-1/2" />
-              <Skeleton className="h-20 w-full" />
-              <div className="flex gap-2">
-                <Skeleton className="h-6 w-16" />
-                <Skeleton className="h-6 w-16" />
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-    );
+    return null;
   }
 
   if (!results.length && !loading) {

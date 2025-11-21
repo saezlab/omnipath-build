@@ -8,7 +8,6 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ArrowRight, Minus, Filter, X } from "lucide-react";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
-import { Skeleton } from "@/components/ui/skeleton";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { cn, formatNumber } from "@/lib/utils";
 import { InteractionDetailsSheet } from "@/features/interactions-search/components/interaction-details-sheet";
@@ -326,12 +325,7 @@ export function InteractionsExploreTab({
 
         {/* Results */}
         {viewMode === "table" ? (
-          loading ? (
-            <div className="p-6 space-y-4">
-              <Skeleton className="h-8 w-48" />
-              <Skeleton className="h-96 w-full" />
-            </div>
-          ) : error ? (
+          error ? (
             <div className="p-6">
               <Alert variant="destructive">
                 <AlertDescription>{error}</AlertDescription>
