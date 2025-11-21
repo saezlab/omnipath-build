@@ -12,6 +12,9 @@ import {
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
+  SidebarMenuSub,
+  SidebarMenuSubButton,
+  SidebarMenuSubItem,
   SidebarSeparator,
   SidebarRail,
 } from "@/components/ui/sidebar"
@@ -96,30 +99,32 @@ export function AppSidebar() {
             <SidebarMenu>
               {navigationItems.map((item) => (
                 <SidebarMenuItem key={item.title}>
-                  <SidebarMenuButton asChild isActive={pathname === item.url}>
+                  <SidebarMenuButton asChild isActive={pathname === item.url || (item.url === "/search" && pathname === "/selection")}>
                     <Link href={item.url}>
                       <item.icon className="h-5 w-5" />
                       <span>{item.title}</span>
                     </Link>
                   </SidebarMenuButton>
+                  {/* Selection submenu under Search */}
+                  {item.url === "/search" && selectionCount > 0 && (
+                    <SidebarMenuSub>
+                      <SidebarMenuSubItem>
+                        <SidebarMenuSubButton asChild isActive={pathname === "/selection"}>
+                          <Link href="/selection" className="flex items-center justify-between">
+                            <div className="flex items-center gap-2">
+                              <ListChecks className="h-4 w-4" />
+                              <span>Selection</span>
+                            </div>
+                            <Badge variant="secondary" className="ml-auto text-xs">
+                              {selectionCount}
+                            </Badge>
+                          </Link>
+                        </SidebarMenuSubButton>
+                      </SidebarMenuSubItem>
+                    </SidebarMenuSub>
+                  )}
                 </SidebarMenuItem>
               ))}
-              {/* Current Selection - only show when there are selected entities */}
-              {selectionCount > 0 && (
-                <SidebarMenuItem>
-                  <SidebarMenuButton asChild isActive={pathname === "/selection"}>
-                    <Link href="/selection" className="flex items-center justify-between">
-                      <div className="flex items-center gap-2">
-                        <ListChecks className="h-5 w-5" />
-                        <span>Selection</span>
-                      </div>
-                      <Badge variant="secondary" className="ml-auto">
-                        {selectionCount}
-                      </Badge>
-                    </Link>
-                  </SidebarMenuButton>
-                </SidebarMenuItem>
-              )}
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
