@@ -13,14 +13,27 @@ export default function ExplorePage() {
   const { setSidebarContent } = useSidebarContent();
   const searchParams = useSearchParams();
 
-  // Get entity filter from URL params
-  const entityParam = searchParams.get("entity");
-  const initialEntityId = entityParam ? parseInt(entityParam, 10) : undefined;
+  // Parse entity IDs from URL params (supports both single "entity" and multiple "entities")
+  const parseEntityIds = useCallback(() => {
+    const singleEntity = searchParams.get("entity");
+    const multipleEntities = searchParams.get("entities");
+
+    if (multipleEntities) {
+      const ids = multipleEntities.split(',').map(id => parseInt(id.trim(), 10)).filter(id => !isNaN(id));
+      return ids.length > 0 ? ids : undefined;
+    }
+    if (singleEntity) {
+      const id = parseInt(singleEntity, 10);
+      return !isNaN(id) ? [id] : undefined;
+    }
+    return undefined;
+  }, [searchParams]);
 
   // Interactions filter state - initialize with entity filter if present
   const [interactionsFilters, setInteractionsFilters] = useState<MeilisearchFilters>(() => {
-    if (initialEntityId && !isNaN(initialEntityId)) {
-      return { member_a_id: initialEntityId };
+    const entityIds = parseEntityIds();
+    if (entityIds?.length) {
+      return { entity_ids: entityIds };
     }
     return {};
   });
@@ -42,17 +55,15 @@ export default function ExplorePage() {
 
   // Sync URL params with filter state when URL changes
   useEffect(() => {
-    const entityParam = searchParams.get("entity");
-    if (entityParam) {
-      const entityId = parseInt(entityParam, 10);
-      if (!isNaN(entityId)) {
-        setInteractionsFilters(prev => ({
-          ...prev,
-          member_a_id: entityId
-        }));
-      }
+    const entityIds = parseEntityIds();
+    if (entityIds?.length) {
+      setInteractionsFilters(prev => ({
+        ...prev,
+        entity_ids: entityIds,
+        member_a_id: undefined  // Clear old single ID filter
+      }));
     }
-  }, [searchParams]);
+  }, [searchParams, parseEntityIds]);
 
   // Set sidebar content based on active tab
   useEffect(() => {

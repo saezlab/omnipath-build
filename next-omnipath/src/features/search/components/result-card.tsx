@@ -1,10 +1,13 @@
+"use client";
+
 import { Badge } from "@/components/ui/badge";
-import { 
-  Card, 
-  CardContent, 
+import { Button } from "@/components/ui/button";
+import {
+  Card,
+  CardContent,
   CardFooter,
-  CardHeader, 
-  CardTitle 
+  CardHeader,
+  CardTitle
 } from "@/components/ui/card";
 import {
   HoverCard,
@@ -13,7 +16,8 @@ import {
 } from "@/components/ui/hover-card";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import React from "react";
-import { Network, Tag, Shapes, FileText, Database } from "lucide-react";
+import { Network, Tag, Shapes, FileText, Database, Plus, Check } from "lucide-react";
+import { useEntitySelection } from "@/contexts/entity-selection-context";
 
 // Helper function to convert <em> tags to highlighted spans
 const convertEmToHighlight = (text: string | undefined) => {
@@ -68,6 +72,34 @@ export interface SearchResult {
 
 export function ResultCard({ result }: { result: SearchResult }) {
   const type = result.type || "entity";
+  const { addEntity, removeEntity, isSelected } = useEntitySelection();
+
+  // Get display name for selection
+  const getDisplayName = () => {
+    const geneSymbols = result._formatted?.gene_symbols || result.gene_symbols || [];
+    const names = result._formatted?.names || result.names || [];
+    return geneSymbols[0] || names[0] || `Entity ${result.entity_id || result.id}`;
+  };
+
+  const entityId = (result.entity_id ?? result.id)?.toString();
+  const selected = entityId ? isSelected(entityId) : false;
+
+  const handleAddToSelection = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!entityId) return;
+
+    if (selected) {
+      removeEntity(entityId);
+    } else {
+      addEntity({
+        id: entityId,
+        entityId: result.entity_id,
+        name: getDisplayName(),
+        type: result.entity_type?.split(':')[0] || result.type,
+      });
+    }
+  };
 
   // Extract data based on type
   const descriptions = result._formatted?.descriptions || result.descriptions || [];
@@ -136,7 +168,22 @@ export function ResultCard({ result }: { result: SearchResult }) {
   const allIdentifierValues = identifiers.map(id => id.value);
 
   return (
-    <Card className={`flex flex-col hover:shadow-md transition-shadow h-full result-card ${type === 'cv_term' ? 'cursor-pointer' : ''}`}>
+    <Card className={`flex flex-col hover:shadow-md transition-shadow h-full result-card group relative ${type === 'cv_term' ? 'cursor-pointer' : ''}`}>
+      {/* Add to selection button - positioned at bottom center, visible on hover for entities */}
+      {type === 'entity' && entityId && (
+        <Button
+          variant={selected ? "default" : "secondary"}
+          size="icon"
+          className={`absolute -bottom-3 left-1/2 -translate-x-1/2 z-10 h-6 w-6 rounded-full shadow-md transition-opacity ${
+            selected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
+          }`}
+          onClick={handleAddToSelection}
+          title={selected ? "Remove from selection" : "Add to selection"}
+        >
+          {selected ? <Check className="h-3 w-3" /> : <Plus className="h-3 w-3" />}
+        </Button>
+      )}
+
       <CardHeader className="relative space-y-0 p-2.5 border-b shrink-0">
         <div className="flex flex-col gap-1">
           <div className="flex items-start justify-between">

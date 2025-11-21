@@ -120,7 +120,15 @@ export async function searchMeilisearch(params: SearchParams): Promise<SearchRes
 function buildMeilisearchFilterString(filters: MeilisearchFilters): string {
   const filterParts: string[] = [];
 
-  // Member ID filters - filter on either member_a_id OR member_b_id
+  // Multiple entity IDs filter - matches interactions where ANY of the entity IDs is member_a or member_b
+  if (filters.entity_ids?.length) {
+    const entityFilters = filters.entity_ids.map(id =>
+      `(member_a_id = ${id} OR member_b_id = ${id})`
+    ).join(' OR ');
+    filterParts.push(`(${entityFilters})`);
+  }
+
+  // Single member ID filters - filter on either member_a_id OR member_b_id
   if (filters.member_a_id !== undefined) {
     filterParts.push(`(member_a_id = ${filters.member_a_id} OR member_b_id = ${filters.member_a_id})`);
   }

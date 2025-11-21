@@ -22,12 +22,15 @@ import {
   Moon,
   Database,
   Compass,
+  ListChecks,
 } from "lucide-react"
 import Link from "next/link"
 import { usePathname } from "next/navigation"
 import { useTheme } from "next-themes"
 import Image from "next/image"
 import { useSidebarContent } from "@/contexts/sidebar-content-context"
+import { useEntitySelection } from "@/contexts/entity-selection-context"
+import { Badge } from "@/components/ui/badge"
 
 const navigationItems = [
   {
@@ -56,6 +59,7 @@ export function AppSidebar() {
   const pathname = usePathname()
   const { setTheme, resolvedTheme } = useTheme()
   const { sidebarContent } = useSidebarContent()
+  const { selectionCount } = useEntitySelection()
   const [mounted, setMounted] = useState(false)
 
   useEffect(() => {
@@ -100,6 +104,22 @@ export function AppSidebar() {
                   </SidebarMenuButton>
                 </SidebarMenuItem>
               ))}
+              {/* Current Selection - only show when there are selected entities */}
+              {selectionCount > 0 && (
+                <SidebarMenuItem>
+                  <SidebarMenuButton asChild isActive={pathname === "/selection"}>
+                    <Link href="/selection" className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <ListChecks className="h-5 w-5" />
+                        <span>Selection</span>
+                      </div>
+                      <Badge variant="secondary" className="ml-auto">
+                        {selectionCount}
+                      </Badge>
+                    </Link>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+              )}
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>

@@ -61,6 +61,7 @@ export interface MeilisearchFilters {
   // Interaction filters (new schema)
   member_a_id?: number;
   member_b_id?: number;
+  entity_ids?: number[];  // Filter by multiple entity IDs (matches member_a_id OR member_b_id)
   member_types?: string[];
   has_direction?: boolean | null;
   has_positive_sign?: boolean | null;

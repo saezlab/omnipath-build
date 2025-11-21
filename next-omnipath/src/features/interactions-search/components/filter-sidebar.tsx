@@ -131,19 +131,27 @@ export function FilterSidebar({
 
   // Handler for clearing entity filter
   const handleClearEntityFilter = () => {
-    const { member_a_id, member_b_id, ...rest } = filters;
+    const { member_a_id, member_b_id, entity_ids, ...rest } = filters;
     onFilterChange(rest);
   };
+
+  // Check if we have any entity filters
+  const hasEntityFilter = filters.member_a_id || filters.entity_ids?.length;
+  const entityFilterDisplay = filters.entity_ids?.length
+    ? `${filters.entity_ids.length} ${filters.entity_ids.length === 1 ? 'entity' : 'entities'}`
+    : filters.member_a_id
+      ? `Entity ID: ${filters.member_a_id}`
+      : null;
 
   const content = (
     <div className="space-y-4">
       {/* Entity Filter Badge */}
-      {filters.member_a_id && (
+      {hasEntityFilter && (
         <div className="space-y-2">
           <Label className="text-xs font-medium text-muted-foreground">ENTITY FILTER</Label>
           <div className="flex items-center gap-2">
             <Badge variant="secondary" className="flex items-center gap-1 py-1 px-2">
-              <span>Entity ID: {filters.member_a_id}</span>
+              <span>{entityFilterDisplay}</span>
               <Button
                 variant="ghost"
                 size="sm"
