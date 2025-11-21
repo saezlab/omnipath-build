@@ -15,6 +15,25 @@ function extractLabel(value: string): string {
   return colonIndex > 0 ? value.substring(0, colonIndex) : value;
 }
 
+// Helper function to determine if members should be swapped based on direction
+function shouldSwapMembers(directions: InteractionDirection[]): boolean {
+  if (!directions || directions.length === 0) return false;
+  return directions[0]?.direction === 'b-a';
+}
+
+// Helper to combine term with its value and unit
+function formatAnnotationWithValue(
+  terms: { value: string }[],
+  values: { value: string }[],
+  units: { value: string }[]
+): { term: string; value?: string; unit?: string }[] {
+  return terms.map((term, idx) => ({
+    term: extractLabel(term.value),
+    value: values[idx]?.value,
+    unit: units[idx]?.value ? extractLabel(units[idx].value) : undefined,
+  }));
+}
+
 // Helper to determine overall sign from directions
 function getOverallSign(directions: InteractionDirection[]): 'positive' | 'negative' | 'mixed' | null {
   if (!directions || directions.length === 0) return null;
@@ -93,8 +112,15 @@ export function InteractionDetails({ selectedInteraction }: InteractionDetailsPr
     )
   }
 
-  const typeA = selectedInteraction.member_types[0] ? extractLabel(selectedInteraction.member_types[0]) : 'Unknown';
-  const typeB = selectedInteraction.member_types[1] ? extractLabel(selectedInteraction.member_types[1]) : 'Unknown';
+  const swap = shouldSwapMembers(selectedInteraction.directions);
+  const sourceId = swap ? selectedInteraction.member_b_id : selectedInteraction.member_a_id;
+  const targetId = swap ? selectedInteraction.member_a_id : selectedInteraction.member_b_id;
+  const sourceType = swap
+    ? (selectedInteraction.member_types[1] ? extractLabel(selectedInteraction.member_types[1]) : 'Unknown')
+    : (selectedInteraction.member_types[0] ? extractLabel(selectedInteraction.member_types[0]) : 'Unknown');
+  const targetType = swap
+    ? (selectedInteraction.member_types[0] ? extractLabel(selectedInteraction.member_types[0]) : 'Unknown')
+    : (selectedInteraction.member_types[1] ? extractLabel(selectedInteraction.member_types[1]) : 'Unknown');
 
   return (
     <div className="p-4 pb-8 space-y-6">
@@ -103,8 +129,8 @@ export function InteractionDetails({ selectedInteraction }: InteractionDetailsPr
         {/* Entity Visualization */}
         <div className="flex items-center justify-center gap-6 py-6">
           <div className="flex flex-col items-center">
-            <span className="font-bold text-lg">{selectedInteraction.member_a_id}</span>
-            <Badge variant="secondary" className="text-xs mt-1">{typeA}</Badge>
+            <span className="font-bold text-lg">{sourceId}</span>
+            <Badge variant="secondary" className="text-xs mt-1">{sourceType}</Badge>
           </div>
 
           <div className="flex flex-col items-center gap-2">
@@ -125,8 +151,8 @@ export function InteractionDetails({ selectedInteraction }: InteractionDetailsPr
           </div>
 
           <div className="flex flex-col items-center">
-            <span className="font-bold text-lg">{selectedInteraction.member_b_id}</span>
-            <Badge variant="secondary" className="text-xs mt-1">{typeB}</Badge>
+            <span className="font-bold text-lg">{targetId}</span>
+            <Badge variant="secondary" className="text-xs mt-1">{targetType}</Badge>
           </div>
         </div>
 
@@ -217,52 +243,83 @@ export function InteractionDetails({ selectedInteraction }: InteractionDetailsPr
                     <div className="mb-4">
                       <div className="text-xs font-medium text-muted-foreground mb-2">Interaction Annotations</div>
                       <div className="flex flex-wrap gap-2">
-                        {evidence.interaction_annotation_terms.map((term, termIdx) => (
+                        {formatAnnotationWithValue(
+                          evidence.interaction_annotation_terms,
+                          evidence.interaction_annotation_values || [],
+                          evidence.interaction_annotation_units || []
+                        ).map((annotation, termIdx) => (
                           <Badge key={termIdx} variant="secondary" className="text-xs">
-                            {extractLabel(term.value)}
+                            {annotation.term}
+                            {annotation.value && (
+                              <span className="ml-1 font-normal opacity-80">
+                                = {annotation.value}{annotation.unit && ` ${annotation.unit}`}
+                              </span>
+                            )}
                           </Badge>
                         ))}
                       </div>
-                      {/* Values if present */}
-                      {evidence.interaction_annotation_values && evidence.interaction_annotation_values.length > 0 && (
-                        <div className="mt-2 text-xs text-muted-foreground">
-                          Values: {evidence.interaction_annotation_values.map(v => v.value).join(', ')}
+                    </div>
+                  )}
+
+                  {/* Source Member Annotations */}
+                  {(() => {
+                    const sourceTerms = swap ? evidence.member_b_annotation_terms : evidence.member_a_annotation_terms;
+                    const sourceValues = swap ? evidence.member_b_annotation_values : evidence.member_a_annotation_values;
+                    const sourceUnits = swap ? evidence.member_b_annotation_units : evidence.member_a_annotation_units;
+                    return sourceTerms && sourceTerms.length > 0 ? (
+                      <div className="mb-4">
+                        <div className="text-xs font-medium text-muted-foreground mb-2">
+                          Source ({sourceId}) Annotations
                         </div>
-                      )}
-                    </div>
-                  )}
+                        <div className="flex flex-wrap gap-2">
+                          {formatAnnotationWithValue(
+                            sourceTerms,
+                            sourceValues || [],
+                            sourceUnits || []
+                          ).map((annotation, termIdx) => (
+                            <Badge key={termIdx} variant="outline" className="text-xs bg-blue-50 text-blue-700 border-blue-200">
+                              {annotation.term}
+                              {annotation.value && (
+                                <span className="ml-1 font-normal opacity-80">
+                                  = {annotation.value}{annotation.unit && ` ${annotation.unit}`}
+                                </span>
+                              )}
+                            </Badge>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null;
+                  })()}
 
-                  {/* Member A Annotations */}
-                  {evidence.member_a_annotation_terms && evidence.member_a_annotation_terms.length > 0 && (
-                    <div className="mb-4">
-                      <div className="text-xs font-medium text-muted-foreground mb-2">
-                        Member A ({selectedInteraction.member_a_id}) Annotations
+                  {/* Target Member Annotations */}
+                  {(() => {
+                    const targetTerms = swap ? evidence.member_a_annotation_terms : evidence.member_b_annotation_terms;
+                    const targetValues = swap ? evidence.member_a_annotation_values : evidence.member_b_annotation_values;
+                    const targetUnits = swap ? evidence.member_a_annotation_units : evidence.member_b_annotation_units;
+                    return targetTerms && targetTerms.length > 0 ? (
+                      <div className="mb-4">
+                        <div className="text-xs font-medium text-muted-foreground mb-2">
+                          Target ({targetId}) Annotations
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          {formatAnnotationWithValue(
+                            targetTerms,
+                            targetValues || [],
+                            targetUnits || []
+                          ).map((annotation, termIdx) => (
+                            <Badge key={termIdx} variant="outline" className="text-xs bg-purple-50 text-purple-700 border-purple-200">
+                              {annotation.term}
+                              {annotation.value && (
+                                <span className="ml-1 font-normal opacity-80">
+                                  = {annotation.value}{annotation.unit && ` ${annotation.unit}`}
+                                </span>
+                              )}
+                            </Badge>
+                          ))}
+                        </div>
                       </div>
-                      <div className="flex flex-wrap gap-2">
-                        {evidence.member_a_annotation_terms.map((term, termIdx) => (
-                          <Badge key={termIdx} variant="outline" className="text-xs bg-blue-50 text-blue-700 border-blue-200">
-                            {extractLabel(term.value)}
-                          </Badge>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Member B Annotations */}
-                  {evidence.member_b_annotation_terms && evidence.member_b_annotation_terms.length > 0 && (
-                    <div className="mb-4">
-                      <div className="text-xs font-medium text-muted-foreground mb-2">
-                        Member B ({selectedInteraction.member_b_id}) Annotations
-                      </div>
-                      <div className="flex flex-wrap gap-2">
-                        {evidence.member_b_annotation_terms.map((term, termIdx) => (
-                          <Badge key={termIdx} variant="outline" className="text-xs bg-purple-50 text-purple-700 border-purple-200">
-                            {extractLabel(term.value)}
-                          </Badge>
-                        ))}
-                      </div>
-                    </div>
-                  )}
+                    ) : null;
+                  })()}
                 </div>
               ))}
             </div>

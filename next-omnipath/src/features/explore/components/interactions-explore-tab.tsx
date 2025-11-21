@@ -6,7 +6,7 @@ import { searchInteractions } from "@/features/interactions-search/api/queries";
 import { MeilisearchInteraction, MeilisearchFilters } from "@/types/meilisearch";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { ArrowRight, Minus, Filter, X, Plus } from "lucide-react";
+import { ArrowRight, Minus, Filter, X } from "lucide-react";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Alert, AlertDescription } from "@/components/ui/alert";
@@ -46,6 +46,12 @@ function getConsensusSign(directions: MeilisearchInteraction['directions']): 'po
   if (hasPositive) return 'positive';
   if (hasNegative) return 'negative';
   return null;
+}
+
+// Helper function to determine if members should be swapped based on direction
+function shouldSwapMembers(directions: MeilisearchInteraction['directions']): boolean {
+  if (!directions || directions.length === 0) return false;
+  return directions[0]?.direction === 'b-a';
 }
 
 export function InteractionsExploreTab({
@@ -310,12 +316,11 @@ export function InteractionsExploreTab({
                 <Table>
                   <TableHeader>
                     <TableRow>
-                      <TableHead className="w-[20%] py-2">Member A</TableHead>
+                      <TableHead className="w-[25%] py-2">Source</TableHead>
                       <TableHead className="w-[50px] text-center py-2"></TableHead>
-                      <TableHead className="w-[20%] py-2">Member B</TableHead>
-                      <TableHead className="w-[30%] py-2">Types</TableHead>
-                      <TableHead className="w-[15%] py-2">Sign</TableHead>
-                      <TableHead className="w-[10%] text-center py-2">Evidence</TableHead>
+                      <TableHead className="w-[25%] py-2">Target</TableHead>
+                      <TableHead className="w-[35%] py-2">Types</TableHead>
+                      <TableHead className="w-[15%] text-center py-2">Evidence</TableHead>
                     </TableRow>
                   </TableHeader>
                 </Table>
@@ -333,9 +338,15 @@ export function InteractionsExploreTab({
                 <Table>
                   <TableBody>
                     {results.map((row) => {
-                      const typeA = row.member_types[0] ? extractTypeLabel(row.member_types[0]) : 'Unknown';
-                      const typeB = row.member_types[1] ? extractTypeLabel(row.member_types[1]) : 'Unknown';
-                      const consensusSign = getConsensusSign(row.directions);
+                      const swap = shouldSwapMembers(row.directions);
+                      const sourceId = swap ? row.member_b_id : row.member_a_id;
+                      const targetId = swap ? row.member_a_id : row.member_b_id;
+                      const sourceType = swap
+                        ? (row.member_types[1] ? extractTypeLabel(row.member_types[1]) : 'Unknown')
+                        : (row.member_types[0] ? extractTypeLabel(row.member_types[0]) : 'Unknown');
+                      const targetType = swap
+                        ? (row.member_types[0] ? extractTypeLabel(row.member_types[0]) : 'Unknown')
+                        : (row.member_types[1] ? extractTypeLabel(row.member_types[1]) : 'Unknown');
 
                       return (
                         <TableRow
@@ -343,10 +354,10 @@ export function InteractionsExploreTab({
                           onClick={() => handleRowClick(row)}
                           className="cursor-pointer hover:bg-muted/50"
                         >
-                          <TableCell className="w-[20%] max-w-0">
+                          <TableCell className="w-[25%] max-w-0">
                             <div className="flex flex-col">
-                              <span className="font-medium truncate">{row.member_a_id}</span>
-                              <span className="text-xs text-muted-foreground">{typeA}</span>
+                              <span className="font-medium truncate">{sourceId}</span>
+                              <span className="text-xs text-muted-foreground">{sourceType}</span>
                             </div>
                           </TableCell>
                           <TableCell className="w-[50px] text-center">
@@ -354,13 +365,13 @@ export function InteractionsExploreTab({
                               {renderSignIndicator(row)}
                             </div>
                           </TableCell>
-                          <TableCell className="w-[20%] max-w-0">
+                          <TableCell className="w-[25%] max-w-0">
                             <div className="flex flex-col">
-                              <span className="font-medium truncate">{row.member_b_id}</span>
-                              <span className="text-xs text-muted-foreground">{typeB}</span>
+                              <span className="font-medium truncate">{targetId}</span>
+                              <span className="text-xs text-muted-foreground">{targetType}</span>
                             </div>
                           </TableCell>
-                          <TableCell className="w-[30%] max-w-0">
+                          <TableCell className="w-[35%] max-w-0">
                             <div className="flex flex-wrap gap-1 overflow-hidden">
                               {row.member_types.map((type, idx) => (
                                 <Badge key={idx} variant="secondary" className="text-xs">
@@ -369,24 +380,7 @@ export function InteractionsExploreTab({
                               ))}
                             </div>
                           </TableCell>
-                          <TableCell className="w-[15%]">
-                            {consensusSign && (
-                              <Badge
-                                variant="outline"
-                                className={cn(
-                                  "text-xs",
-                                  consensusSign === "positive" && "text-green-600 border-green-300 bg-green-50",
-                                  consensusSign === "negative" && "text-red-600 border-red-300 bg-red-50",
-                                  consensusSign === "mixed" && "text-orange-600 border-orange-300 bg-orange-50"
-                                )}
-                              >
-                                {consensusSign === "positive" && <Plus className="h-3 w-3 mr-1" />}
-                                {consensusSign === "negative" && <Minus className="h-3 w-3 mr-1" />}
-                                {consensusSign}
-                              </Badge>
-                            )}
-                          </TableCell>
-                          <TableCell className="w-[10%] text-center">
+                          <TableCell className="w-[15%] text-center">
                             <Badge variant="outline">
                               {formatNumber(row.evidence.length)}
                             </Badge>
@@ -396,7 +390,7 @@ export function InteractionsExploreTab({
                     })}
                     {/* Infinite scroll trigger */}
                     <TableRow style={{ display: hasMore ? 'table-row' : 'none' }}>
-                      <TableCell colSpan={6} className="p-0">
+                      <TableCell colSpan={5} className="p-0">
                         <div
                           ref={sentinelRef as React.RefObject<HTMLDivElement>}
                           className="flex justify-center py-4"
