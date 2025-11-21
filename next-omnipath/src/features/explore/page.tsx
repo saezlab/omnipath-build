@@ -5,8 +5,22 @@ import { useSidebarContent } from "@/contexts/sidebar-content-context";
 import { useCallback, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { InteractionsExploreTab } from "./components/interactions-explore-tab";
+import { RelatedEntitiesTab } from "./components/related-entities-tab";
 import { FilterSidebar } from "@/features/interactions-search/components/filter-sidebar";
+import { EntityFilterSidebar } from "@/features/search/components/entity-filter-sidebar";
 import { MeilisearchFilters } from "@/types/meilisearch";
+
+interface EntityFilters {
+  entity_types?: string[];
+  sources?: string[];
+  ncbi_tax_id?: string[];
+}
+
+interface EntityFilterCounts {
+  entity_type?: Record<string, number>;
+  sources?: Record<string, number>;
+  ncbi_tax_id?: Record<string, number>;
+}
 
 export default function ExplorePage() {
   const [activeTab, setActiveTab] = useState("interactions");
@@ -39,6 +53,10 @@ export default function ExplorePage() {
   });
   const [interactionsFilterCounts, setInteractionsFilterCounts] = useState<Record<string, Record<string, number>>>({});
 
+  // Entity filters state for related tabs (complexes, cv_terms, references)
+  const [entityFilters, setEntityFilters] = useState<EntityFilters>({});
+  const [entityFilterCounts, setEntityFilterCounts] = useState<EntityFilterCounts>({});
+
   // Handlers for interactions filters
   const handleInteractionsFilterChange = useCallback((newFilters: MeilisearchFilters) => {
     setInteractionsFilters(newFilters);
@@ -51,6 +69,19 @@ export default function ExplorePage() {
   // Callback to receive filter counts from interactions tab
   const handleInteractionsFilterCountsUpdate = useCallback((counts: Record<string, Record<string, number>>) => {
     setInteractionsFilterCounts(counts);
+  }, []);
+
+  // Handlers for entity filters (related tabs)
+  const handleEntityFilterChange = useCallback((newFilters: EntityFilters) => {
+    setEntityFilters(newFilters);
+  }, []);
+
+  const handleEntityClearFilters = useCallback(() => {
+    setEntityFilters({});
+  }, []);
+
+  const handleEntityFilterCountsUpdate = useCallback((counts: EntityFilterCounts) => {
+    setEntityFilterCounts(counts);
   }, []);
 
   // Sync URL params with filter state when URL changes
@@ -77,6 +108,16 @@ export default function ExplorePage() {
           isMobile
         />
       );
+    } else if ((activeTab === "complexes" || activeTab === "cv_terms" || activeTab === "references") && Object.keys(entityFilterCounts).length > 0) {
+      setSidebarContent(
+        <EntityFilterSidebar
+          filters={entityFilters}
+          filterCounts={entityFilterCounts}
+          onFilterChange={handleEntityFilterChange}
+          onClearFilters={handleEntityClearFilters}
+          isMobile
+        />
+      );
     } else {
       setSidebarContent(null);
     }
@@ -85,7 +126,7 @@ export default function ExplorePage() {
     return () => {
       setSidebarContent(null);
     };
-  }, [activeTab, interactionsFilters, interactionsFilterCounts, handleInteractionsFilterChange, handleInteractionsClearFilters, setSidebarContent]);
+  }, [activeTab, interactionsFilters, interactionsFilterCounts, handleInteractionsFilterChange, handleInteractionsClearFilters, entityFilters, entityFilterCounts, handleEntityFilterChange, handleEntityClearFilters, setSidebarContent]);
 
   return (
     <div className="flex-1 flex flex-col">
@@ -94,6 +135,9 @@ export default function ExplorePage() {
           <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
             <TabsList>
               <TabsTrigger value="interactions">Interactions</TabsTrigger>
+              <TabsTrigger value="complexes">Complexes</TabsTrigger>
+              <TabsTrigger value="cv_terms">CV Terms</TabsTrigger>
+              <TabsTrigger value="references">References</TabsTrigger>
             </TabsList>
           </Tabs>
         </div>
@@ -107,6 +151,30 @@ export default function ExplorePage() {
                 filters={interactionsFilters}
                 onFilterChange={handleInteractionsFilterChange}
                 onFilterCountsUpdate={handleInteractionsFilterCountsUpdate}
+              />
+            </TabsContent>
+            <TabsContent value="complexes" className="mt-0">
+              <RelatedEntitiesTab
+                relatedType="complex"
+                filters={entityFilters}
+                onFilterChange={handleEntityFilterChange}
+                onFilterCountsUpdate={handleEntityFilterCountsUpdate}
+              />
+            </TabsContent>
+            <TabsContent value="cv_terms" className="mt-0">
+              <RelatedEntitiesTab
+                relatedType="cv_term"
+                filters={entityFilters}
+                onFilterChange={handleEntityFilterChange}
+                onFilterCountsUpdate={handleEntityFilterCountsUpdate}
+              />
+            </TabsContent>
+            <TabsContent value="references" className="mt-0">
+              <RelatedEntitiesTab
+                relatedType="reference"
+                filters={entityFilters}
+                onFilterChange={handleEntityFilterChange}
+                onFilterCountsUpdate={handleEntityFilterCountsUpdate}
               />
             </TabsContent>
           </Tabs>

@@ -30,6 +30,12 @@ export interface SearchResponse {
 function buildEntityFilterString(filters: MeilisearchFilters): string {
   const filterParts: string[] = [];
 
+  // Entity IDs filter (for related entities tab)
+  if (filters.entity_ids?.length) {
+    const entityIdFilters = filters.entity_ids.map(id => `entity_id = ${id}`).join(' OR ');
+    filterParts.push(`(${entityIdFilters})`);
+  }
+
   // Entity type filter
   if (filters.entity_types?.length) {
     const entityTypeFilters = filters.entity_types.map(type => `entity_type = "${type}"`).join(' OR ');
@@ -249,14 +255,6 @@ export async function fetchMeilisearchDocuments(
   }
 }
 
-/**
- * Fetch CV terms by IDs
- */
-export async function fetchCvTermsByIds(
-  termIds: string[]
-): Promise<{ documents: Record<string, unknown>[] }> {
-  return fetchMeilisearchDocuments('cv_terms', termIds);
-}
 
 /**
  * Get interaction statistics

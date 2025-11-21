@@ -7,6 +7,10 @@ export interface SelectedEntity {
   entityId?: number
   name: string
   type?: string
+  // Related entity IDs for explore tabs
+  complexes?: number[]
+  cv_terms?: number[]
+  references?: number[]
 }
 
 interface EntitySelectionContextType {

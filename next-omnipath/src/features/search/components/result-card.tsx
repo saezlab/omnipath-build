@@ -97,6 +97,9 @@ export function ResultCard({ result }: { result: SearchResult }) {
         entityId: result.entity_id,
         name: getDisplayName(),
         type: result.entity_type?.split(':')[0] || result.type,
+        complexes: result.complexes,
+        cv_terms: result.cv_terms,
+        references: result.references,
       });
     }
   };
