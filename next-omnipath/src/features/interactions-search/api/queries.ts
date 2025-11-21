@@ -49,6 +49,36 @@ export async function searchInteractions(
   }
 }
 
+// Helper to check if entity type is a small molecule or lipid
+function isSmallMoleculeType(entityTypeName: string | undefined): boolean {
+  if (!entityTypeName) return false;
+  const type = entityTypeName.toLowerCase();
+  return type === 'smallmolecule' ||
+         type === 'small_molecule' ||
+         type === 'compound' ||
+         type === 'metabolite' ||
+         type === 'drug' ||
+         type === 'lipid';
+}
+
+// Helper to get shortest valid name for small molecules
+function getShortestName(names: string[] | undefined): string | undefined {
+  if (!names || names.length === 0) return undefined;
+
+  // Filter out ID-like names
+  const validNames = names.filter(name =>
+    !/^(MLS|SMR|cid_|ZINC|SID_|CID_)/i.test(name) && name.length > 3
+  );
+
+  if (validNames.length > 0) {
+    return validNames.reduce((shortest, current) =>
+      current.length < shortest.length ? current : shortest
+    );
+  }
+
+  return names[0];
+}
+
 /**
  * Fetch entities by their IDs
  */
@@ -72,10 +102,18 @@ export async function fetchEntitiesByIds(entityIds: number[]): Promise<Map<numbe
       // entity_type format is "TypeLabel:id", extract just the label
       const entityTypeName = entityType?.split(':')[0];
 
+      // For small molecules/lipids, prefer shortest name; for others use gene symbol or first name
+      let displayName: string;
+      if (isSmallMoleculeType(entityTypeName)) {
+        displayName = getShortestName(names) || String(doc.entity_id);
+      } else {
+        displayName = geneSymbols?.[0] || names?.[0] || String(doc.entity_id);
+      }
+
       entityMap.set(id, {
         id: String(doc.entity_id),
         canonical_identifier: names?.[0] || String(doc.entity_id),
-        display_name: geneSymbols?.[0] || names?.[0] || String(doc.entity_id),
+        display_name: displayName,
         entity_type_name: entityTypeName,
         gene_symbol: geneSymbols?.[0],
       });
