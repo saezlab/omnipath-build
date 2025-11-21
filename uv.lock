@@ -1575,6 +1575,7 @@ requires-dist = [
     { name = "python-igraph", marker = "extra == 'graph'" },
     { name = "pyyaml" },
     { name = "rdata" },
+    { name = "rdflib", marker = "extra == 'pathophenodb'", specifier = ">=7.4.0,<8.0.0" },
     { name = "rdkit", marker = "extra == 'metabo'" },
     { name = "requests" },
     { name = "scipy", specifier = ">=1.9.0" },
@@ -1609,6 +1610,10 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/44/fa/a4adff12113de0e6ed0a172e29becf4abd9e7eed9ac99b8e8a21c7a013dc/pyreadr-0.5.3-cp313-cp313-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:6a54168a089b694b529ec4c9660094aa34d17e3d90d11aaf70ac296e398344e3", size = 414992 },
     { url = "https://files.pythonhosted.org/packages/1c/bc/ba1b11ebce2e88639720b85376e7dd11d9eb5daeee0f65c9ebdf47c9c661/pyreadr-0.5.3-cp313-cp313-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:651c69396c4f15040d72b07c5751048972451191ec4101f6d3a392d1c2f20863", size = 418340 },
     { url = "https://files.pythonhosted.org/packages/78/aa/8ef7045b2f320d00be0ce63c3e2b6442dd195a7efb3a1892a06686c5c5e1/pyreadr-0.5.3-cp313-cp313-win_amd64.whl", hash = "sha256:e73699867a668e1f3b32f1aacf5c9019a8619a62e1aa0484f726687b61243763", size = 1372799 },
+    { url = "https://files.pythonhosted.org/packages/92/c6/c86e2adabb5b3040427dc89a8d57caac75c391ff7b01c601ca48c205308a/pyreadr-0.5.3-cp314-cp314-macosx_10_15_x86_64.whl", hash = "sha256:2a836848e7b9f7e0ad81094d75bec562fbd8913e06a554e828f9538901a1ef34", size = 317496 },
+    { url = "https://files.pythonhosted.org/packages/ed/91/44e45b7234b10954ebf2c14c491d83b15c3b11db2ad6743cf1352374265f/pyreadr-0.5.3-cp314-cp314-macosx_11_0_arm64.whl", hash = "sha256:79edc296e760771b84fcfaad09f04045b13ab7df32745d94390bffb628ca8cb0", size = 314964 },
+    { url = "https://files.pythonhosted.org/packages/a7/68/643cef14a1d332ebce7d22cf051724d3c83b076c278caca6b484c339794e/pyreadr-0.5.3-cp314-cp314-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:eca0ff7d6ecbac3e08bf126f67336102129df773a25d5d76c1bad1dc6ff42e0f", size = 440836 },
+    { url = "https://files.pythonhosted.org/packages/e3/bf/aa5640d52230376a0f83e40251807b3133744ff6dbcb547c18a20e6f9a0b/pyreadr-0.5.3-cp314-cp314-win_amd64.whl", hash = "sha256:77b273f9ffa32fa4dda8db8fae7a949c1c095d52dda26d50f7c49f43aa6e3ac0", size = 1371942 },
 ]
 
 [[package]]
