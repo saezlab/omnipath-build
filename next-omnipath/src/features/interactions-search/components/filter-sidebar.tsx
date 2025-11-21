@@ -129,8 +129,34 @@ export function FilterSidebar({
       .sort((a, b) => b.count - a.count);
   };
 
+  // Handler for clearing entity filter
+  const handleClearEntityFilter = () => {
+    const { member_a_id, member_b_id, ...rest } = filters;
+    onFilterChange(rest);
+  };
+
   const content = (
     <div className="space-y-4">
+      {/* Entity Filter Badge */}
+      {filters.member_a_id && (
+        <div className="space-y-2">
+          <Label className="text-xs font-medium text-muted-foreground">ENTITY FILTER</Label>
+          <div className="flex items-center gap-2">
+            <Badge variant="secondary" className="flex items-center gap-1 py-1 px-2">
+              <span>Entity ID: {filters.member_a_id}</span>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-4 w-4 p-0 hover:bg-transparent"
+                onClick={handleClearEntityFilter}
+              >
+                <X className="h-3 w-3" />
+              </Button>
+            </Badge>
+          </div>
+        </div>
+      )}
+
       {/* Quick Filters */}
       <div className="mb-4 space-y-3">
         {/* Directionality */}

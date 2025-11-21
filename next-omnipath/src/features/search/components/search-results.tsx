@@ -60,20 +60,17 @@ export function SearchResults({
           if (result.type === 'cv_term') {
             href = `/cv_term/${result.id}`;
           } else if (result.type === 'entity') {
-            // Extract entity type from entity_type field (e.g., "Protein:385235" -> "protein")
-            const entityType = result.entity_type || result._formatted?.entity_type;
-            const entityId = result.entity_id || result.id;
-
-            if (entityType && entityId) {
-              const entityTypeLabel = entityType.split(':')[0].toLowerCase().replace(/\s+/g, '-');
-              href = `/${entityTypeLabel}/${entityId}`;
+            // Navigate to explore page with entity filter applied
+            const entityId = result.entity_id ?? result.id;
+            if (entityId) {
+              href = `/explore?entity=${entityId}`;
             } else {
-              // Fallback to entities route
-              href = `/entities/${entityId}`;
+              href = `/explore`;
             }
           } else {
-            // Fallback to entities route
-            href = `/entities/${result.id}`;
+            // Fallback to explore with entity filter
+            const entityId = result.entity_id ?? result.id;
+            href = entityId ? `/explore?entity=${entityId}` : `/explore`;
           }
 
           const key = (result.entity_id || result.id || i)?.toString();
