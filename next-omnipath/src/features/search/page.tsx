@@ -12,6 +12,7 @@ import { IdentifierMatches, type IdentifierMatch } from "./components/identifier
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import { Search } from "lucide-react";
 
 interface SearchPageProps {
   // Props for embedded mode (like in AI dialogs)
@@ -196,16 +197,17 @@ export default function SearchPage({
   return (
     <div className={embedded ? "h-full flex flex-col overflow-hidden" : "flex-1 flex flex-col"}>
       {!embedded && (
-        <div className="sticky top-0 z-10 p-4 bg-background/95 backdrop-blur">
-          <div className="w-full max-w-screen-xl mx-auto space-y-3">
+        <div className="sticky top-0 z-20 border-b bg-background/60 backdrop-blur-md supports-[backdrop-filter]:bg-background/60">
+          <div className="w-full max-w-screen-xl mx-auto px-4 sm:px-6 lg:px-8 py-4 space-y-4">
             {/* Tabs and Search Bar on same row */}
-            <div className="flex items-center gap-4">
+            <div className={`flex gap-4 ${searchMode === 'batch' ? 'items-start' : 'items-center'}`}>
               <Tabs
                 value={searchMode}
                 onValueChange={(value) => {
                   setSearchMode(value as SearchMode);
                   setLookupError(null);
                 }}
+                className={searchMode === 'batch' ? 'mt-2' : ''}
               >
                 <TabsList>
                   <TabsTrigger value="full-text">Full text</TabsTrigger>
@@ -226,45 +228,54 @@ export default function SearchPage({
                   />
                 </div>
               )}
-            </div>
 
-            {searchMode === "identifier" && (
-              <div className="flex flex-col gap-3 rounded-xl border bg-muted/40 p-4">
-                <div className="flex items-center gap-3">
+              {searchMode === "identifier" && (
+                <div className="flex-1 relative group backdrop-blur-sm rounded-full transition-all focus-within:shadow-md focus-within:ring-2 focus-within:ring-primary/20 bg-background border">
+                  <Search className="absolute left-4 top-1/2 h-5 w-5 -translate-y-1/2 text-muted-foreground transition-colors group-focus-within:text-primary z-10" />
                   <Input
                     placeholder="Enter one identifier (e.g. UniProt, gene symbol, etc.)"
+                    className="w-full pl-12 pr-[100px] h-12 text-lg rounded-full shadow-sm border-0 focus-visible:ring-0"
                     value={identifierInput}
                     onChange={(e) => setIdentifierInput(e.target.value)}
                     onKeyDown={(e) => e.key === "Enter" && handleIdentifierLookup()}
                   />
-                  <Button onClick={handleIdentifierLookup} disabled={lookupLoading}>
-                    Look up
-                  </Button>
+                  <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-2 z-10">
+                    <Button
+                      onClick={handleIdentifierLookup}
+                      disabled={lookupLoading}
+                      className="h-8 px-4 rounded-full shadow-sm transition-all hover:shadow-md"
+                    >
+                      Look up
+                    </Button>
+                  </div>
                 </div>
-                <p className="text-xs text-muted-foreground">
-                  Uses the entity service at localhost:8080 to resolve identifiers and fetches entity details from Meilisearch.
-                </p>
-              </div>
-            )}
+              )}
 
-            {searchMode === "batch" && (
-              <div className="flex flex-col gap-3 rounded-xl border bg-muted/40 p-4">
-                <Textarea
-                  placeholder="Paste comma or newline separated identifiers"
-                  value={batchInput}
-                  onChange={(e) => setBatchInput(e.target.value)}
-                  rows={4}
-                />
-                <div className="flex items-center justify-between">
-                  <p className="text-xs text-muted-foreground">
-                    We will look up all identifiers and group candidate entities for each. No enforced species filter.
-                  </p>
-                  <Button onClick={handleBatchLookup} disabled={lookupLoading}>
-                    Run lookup
-                  </Button>
+              {searchMode === "batch" && (
+                <div className="flex-1 flex flex-col gap-3 rounded-xl border bg-background/50 p-1 shadow-sm focus-within:ring-2 focus-within:ring-primary/20 transition-all backdrop-blur-sm">
+                  <Textarea
+                    placeholder="Paste comma or newline separated identifiers"
+                    value={batchInput}
+                    onChange={(e) => setBatchInput(e.target.value)}
+                    rows={4}
+                    className="resize-none border-0 focus-visible:ring-0 bg-transparent min-h-[100px]"
+                  />
+                  <div className="flex items-center justify-between px-3 pb-2">
+                    <p className="text-xs text-muted-foreground">
+                      We will look up all identifiers and group candidate entities for each.
+                    </p>
+                    <Button
+                      onClick={handleBatchLookup}
+                      disabled={lookupLoading}
+                      size="sm"
+                      className="rounded-full"
+                    >
+                      Run lookup
+                    </Button>
+                  </div>
                 </div>
-              </div>
-            )}
+              )}
+            </div>
           </div>
         </div>
       )}
@@ -272,22 +283,22 @@ export default function SearchPage({
       {/* Results */}
       <div className={embedded ? "flex-1 overflow-y-auto p-4" : "flex-1 overflow-y-auto"}>
         <div className={embedded ? "w-full min-h-full" : "w-full max-w-screen-xl mx-auto px-4 sm:px-6 lg:px-8 py-6"}>
-            {searchMode === "full-text" ? (
-              <SearchResults
-                results={results}
-                loading={loading}
-                loadingMore={loadingMore}
-                hasMore={hasMore}
-                sentinelRef={sentinelRef}
-              />
-            ) : (
-              <IdentifierMatches
-                matches={lookupMatches}
-                entities={lookupEntities}
-                loading={lookupLoading}
-                error={lookupError}
-              />
-            )}
+          {searchMode === "full-text" ? (
+            <SearchResults
+              results={results}
+              loading={loading}
+              loadingMore={loadingMore}
+              hasMore={hasMore}
+              sentinelRef={sentinelRef}
+            />
+          ) : (
+            <IdentifierMatches
+              matches={lookupMatches}
+              entities={lookupEntities}
+              loading={lookupLoading}
+              error={lookupError}
+            />
+          )}
         </div>
       </div>
     </div>
