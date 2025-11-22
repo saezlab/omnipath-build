@@ -1,5 +1,5 @@
 "use client";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useSidebarContent } from "@/contexts/sidebar-content-context";
 import { useInfiniteScroll } from "@/hooks/use-infinite-scroll";
 import { useCallback, useEffect, useState, useTransition } from "react";
@@ -198,30 +198,35 @@ export default function SearchPage({
       {!embedded && (
         <div className="sticky top-0 z-10 p-4 bg-background/95 backdrop-blur">
           <div className="w-full max-w-screen-xl mx-auto space-y-3">
-            <Tabs
-              value={searchMode}
-              onValueChange={(value) => {
-                setSearchMode(value as SearchMode);
-                setLookupError(null);
-              }}
-            >
-              <TabsList>
-                <TabsTrigger value="full-text">Full text</TabsTrigger>
-                <TabsTrigger value="identifier">Identifier lookup</TabsTrigger>
-                <TabsTrigger value="batch">Batch identifiers</TabsTrigger>
-              </TabsList>
-            </Tabs>
+            {/* Tabs and Search Bar on same row */}
+            <div className="flex items-center gap-4">
+              <Tabs
+                value={searchMode}
+                onValueChange={(value) => {
+                  setSearchMode(value as SearchMode);
+                  setLookupError(null);
+                }}
+              >
+                <TabsList>
+                  <TabsTrigger value="full-text">Full text</TabsTrigger>
+                  <TabsTrigger value="identifier">Identifier lookup</TabsTrigger>
+                  <TabsTrigger value="batch">Batch identifiers</TabsTrigger>
+                </TabsList>
+              </Tabs>
 
-            {searchMode === "full-text" && (
-              <SearchBar
-                placeholder="Search proteins, molecules, ontology terms…"
-                onSearch={doSearch}
-                initialQuery={query}
-                autoFocus={false}
-                selectedSpecies={selectedSpecies}
-                onSpeciesChange={handleSpeciesChange}
-              />
-            )}
+              {searchMode === "full-text" && (
+                <div className="flex-1">
+                  <SearchBar
+                    placeholder="Search proteins, molecules, ontology terms…"
+                    onSearch={doSearch}
+                    initialQuery={query}
+                    autoFocus={false}
+                    selectedSpecies={selectedSpecies}
+                    onSpeciesChange={handleSpeciesChange}
+                  />
+                </div>
+              )}
+            </div>
 
             {searchMode === "identifier" && (
               <div className="flex flex-col gap-3 rounded-xl border bg-muted/40 p-4">
