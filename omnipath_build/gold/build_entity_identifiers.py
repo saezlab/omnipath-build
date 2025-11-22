@@ -118,6 +118,10 @@ MERGE_UNSAFE_IDENTIFIER_TYPES = frozenset({
     IdentifierNamespaceCv.SMILES.value,
     IdentifierNamespaceCv.INN.value,
     IdentifierNamespaceCv.PDB.value,  # PDB structures can contain multiple proteins
+    IdentifierNamespaceCv.ALPHAFOLDDB.value,
+    IdentifierNamespaceCv.ENSEMBL.value,  # Ensembl accessions span isoforms and can be cross-gene in practice
+    IdentifierNamespaceCv.KEGG.value,
+    IdentifierNamespaceCv.INTACT
 })
 
 UNKNOWN_ENTITY_TYPE_KEY = "__UNKNOWN_ENTITY_TYPE__"
@@ -127,6 +131,96 @@ UNRESOLVED_TAX_PARTITION_PREFIX = "__UNRESOLVED_TAX__"
 EXEMPT_ENTITY_TYPES = frozenset({
     EntityTypeCv.LIPID.value,
     EntityTypeCv.SMALL_MOLECULE.value,
+})
+
+# Explicit merge-safe identifier sets per entity bucket.
+# If a bucket is listed here, ONLY these identifiers are allowed to drive merging.
+# Buckets not listed fall back to the blacklist above.
+MERGE_SAFE_IDENTIFIER_TYPES_BY_BUCKET: dict[str, frozenset[str]] = {
+    EntityTypeCv.PROTEIN.value: frozenset({
+        IdentifierNamespaceCv.UNIPROT.value,
+        IdentifierNamespaceCv.UNIPROT_TREMBL.value,
+        IdentifierNamespaceCv.UNIPARC.value,
+        IdentifierNamespaceCv.REFSEQ_PROTEIN.value,
+        IdentifierNamespaceCv.REACTOME_ID.value,
+        IdentifierNamespaceCv.REACTOME_STABLE_ID.value,
+    }),
+    EntityTypeCv.GENE.value: frozenset({
+        IdentifierNamespaceCv.ENTREZ.value,
+        IdentifierNamespaceCv.ENSEMBL.value,
+        IdentifierNamespaceCv.HGNC.value,
+        IdentifierNamespaceCv.REFSEQ.value,
+        IdentifierNamespaceCv.GENBANK_NUCL_GI.value,
+        IdentifierNamespaceCv.GENBANK_PROTEIN_GI.value,
+        IdentifierNamespaceCv.GENBANK_IDENTIFIER.value,
+    }),
+    EntityTypeCv.RNA.value: frozenset({
+        IdentifierNamespaceCv.ENSEMBL.value,
+        IdentifierNamespaceCv.REFSEQ.value,
+        IdentifierNamespaceCv.GENBANK_NUCL_GI.value,
+        IdentifierNamespaceCv.GENBANK_PROTEIN_GI.value,
+        IdentifierNamespaceCv.GENBANK_IDENTIFIER.value,
+    }),
+    EntityTypeCv.DNA.value: frozenset({
+        IdentifierNamespaceCv.ENSEMBL.value,
+        IdentifierNamespaceCv.REFSEQ.value,
+        IdentifierNamespaceCv.GENBANK_NUCL_GI.value,
+        IdentifierNamespaceCv.GENBANK_PROTEIN_GI.value,
+        IdentifierNamespaceCv.GENBANK_IDENTIFIER.value,
+    }),
+    CHEMICAL_ENTITY_BUCKET: frozenset({
+        IdentifierNamespaceCv.STANDARD_INCHI.value,
+        IdentifierNamespaceCv.STANDARD_INCHI_KEY.value,
+        IdentifierNamespaceCv.PUBCHEM_COMPOUND.value,
+        IdentifierNamespaceCv.CHEMBL_COMPOUND.value,
+        IdentifierNamespaceCv.BINDINGDB.value,
+        IdentifierNamespaceCv.GUIDETOPHARMA.value,
+        IdentifierNamespaceCv.REACTOME_ID
+    }),
+    EntityTypeCv.COMPLEX.value: frozenset({
+        IdentifierNamespaceCv.COMPLEXPORTAL.value,
+        IdentifierNamespaceCv.REACTOME_STABLE_ID.value,
+        IdentifierNamespaceCv.SIGNOR.value,
+    }),
+    EntityTypeCv.PROTEIN_FAMILY.value: frozenset({
+        IdentifierNamespaceCv.SIGNOR.value,
+    }),
+    EntityTypeCv.PHENOTYPE.value: frozenset({
+        IdentifierNamespaceCv.SIGNOR.value,
+    }),
+    EntityTypeCv.STIMULUS.value: frozenset({
+        IdentifierNamespaceCv.SIGNOR.value,
+    }),
+    EntityTypeCv.PATHWAY.value: frozenset({
+        IdentifierNamespaceCv.REACTOME_STABLE_ID.value,
+        IdentifierNamespaceCv.REACTOME_ID.value,
+    }),
+    EntityTypeCv.REACTION.value: frozenset({
+        IdentifierNamespaceCv.REACTOME_STABLE_ID.value,
+        IdentifierNamespaceCv.REACTOME_ID.value,
+    }),
+    EntityTypeCv.CATALYSIS.value: frozenset({
+        IdentifierNamespaceCv.REACTOME_STABLE_ID.value,
+    }),
+    EntityTypeCv.CONTROL.value: frozenset({
+        IdentifierNamespaceCv.REACTOME_STABLE_ID.value,
+    }),
+    EntityTypeCv.INTERACTION.value: frozenset({
+        IdentifierNamespaceCv.INTACT.value,
+        IdentifierNamespaceCv.BINDINGDB.value,
+        IdentifierNamespaceCv.SIGNOR.value,
+        IdentifierNamespaceCv.GUIDETOPHARMA.value,
+    }),
+    EntityTypeCv.CV_TERM.value: frozenset({
+        IdentifierNamespaceCv.CV_TERM_ACCESSION.value,
+    }),
+}
+
+# Buckets that are allowed to merge into any other bucket sharing the exact
+# merge-safe identifier. Used to collapse generic PhysicalEntity nodes onto
+# their specific counterparts without relaxing other type guards.
+MERGE_NEUTRAL_ENTITY_TYPES = frozenset({
+    EntityTypeCv.PHYSICAL_ENTITY.value,
 })
 CV_TERM_IDENTIFIER_TYPE = IdentifierNamespaceCv.CV_TERM_ACCESSION.value
 NCBI_TAXONOMY_TERM = IdentifierNamespaceCv.NCBI_TAX_ID.value
@@ -351,10 +445,58 @@ def _prepare_local_entities_for_source(
         .unique()
     )
 
-    # Filter OUT merge-unsafe identifiers (blacklist approach)
+    # Filter OUT merge-unsafe identifiers (blacklist approach), but allow:
+    # - CV_TERM_ACCESSION only for CV_TERM entities
+    # - Complex accessions only for COMPLEX entities
+    cv_term_acc = IdentifierNamespaceCv.CV_TERM_ACCESSION.value
+    complex_accs = {
+        IdentifierNamespaceCv.COMPLEXPORTAL.value,
+    }
+
+    safe_lookup_rows: list[dict[str, str | bool]] = []
+    for bucket, id_set in MERGE_SAFE_IDENTIFIER_TYPES_BY_BUCKET.items():
+        for id_type in id_set:
+            safe_lookup_rows.append({
+                'entity_bucket': bucket,
+                'id_type': id_type,
+                'is_allowed': True,
+            })
+    safe_lookup = pl.DataFrame(safe_lookup_rows) if safe_lookup_rows else None
+    defined_buckets = set(MERGE_SAFE_IDENTIFIER_TYPES_BY_BUCKET.keys())
+
     local_ms_edges = (
         local_all_edges
-        .filter(~pl.col('id_type').is_in(unsafe_list))
+        .join(
+            safe_lookup,
+            on=['entity_bucket', 'id_type'],
+            how='left',
+        ) if safe_lookup is not None else local_all_edges
+    )
+
+    local_ms_edges = (
+        local_ms_edges
+        .with_columns([
+            pl.when(pl.col('entity_bucket').is_in(list(defined_buckets)))
+              .then(pl.col('is_allowed').fill_null(False))
+              .otherwise(
+                  # Fallback to blacklist for buckets without explicit allowlist
+                  (~pl.col('id_type').is_in(unsafe_list))
+                  # Only allow CV_TERM_ACCESSION when the bucket is CV_TERM
+                  & (~(pl.col('id_type') == cv_term_acc) | (pl.col('entity_bucket') == EntityTypeCv.CV_TERM.value))
+                  # Only allow complex accessions when the bucket is COMPLEX
+                  & (~pl.col('id_type').is_in(list(complex_accs)) | (pl.col('entity_bucket') == EntityTypeCv.COMPLEX.value))
+              )
+              .alias('is_merge_safe')
+        ])
+        .filter(pl.col('is_merge_safe'))
+    )
+
+    drop_cols = [col for col in ['is_allowed', 'is_merge_safe'] if col in local_ms_edges.columns]
+    if drop_cols:
+        local_ms_edges = local_ms_edges.drop(drop_cols)
+
+    local_ms_edges = (
+        local_ms_edges
     )
 
     if len(local_ms_edges) == 0:
@@ -559,6 +701,31 @@ def build_entity_identifiers(
 
     # Build safe cluster mapping (type_id/id_type, id_value) -> entity_id
     safe_clusters = _union_find_to_safe_clusters(union_find)
+    # Allow neutral buckets (e.g., PhysicalEntity) to adopt the non-neutral entity_id
+    if MERGE_NEUTRAL_ENTITY_TYPES:
+        neutral = safe_clusters.filter(pl.col('entity_bucket').is_in(list(MERGE_NEUTRAL_ENTITY_TYPES)))
+        non_neutral = safe_clusters.filter(~pl.col('entity_bucket').is_in(list(MERGE_NEUTRAL_ENTITY_TYPES)))
+        preferred_ids = (
+            non_neutral
+            .group_by(['type_id', 'id_value', 'tax_partition'])
+            .agg(pl.col('entity_id').first().alias('entity_id'))
+        )
+        remap = (
+            neutral
+            .join(
+                preferred_ids,
+                on=['type_id', 'id_value', 'tax_partition'],
+                how='left',
+            )
+            .with_columns(
+                pl.coalesce([pl.col('entity_id_right'), pl.col('entity_id')]).alias('entity_id')
+            )
+            .drop('entity_id_right')
+        )
+        safe_clusters = pl.concat([
+            non_neutral,
+            remap,
+        ], how='diagonal_relaxed')
 
     if not all_local_ms_edges or not all_local_all_edges:
         logger.warning("No edges collected, returning empty results")

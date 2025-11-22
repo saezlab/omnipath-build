@@ -2,13 +2,16 @@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useSidebarContent } from "@/contexts/sidebar-content-context";
 import { useInfiniteScroll } from "@/hooks/use-infinite-scroll";
-import { fetchMeilisearchDocuments } from "@/lib/meilisearch/search";
 import { useCallback, useEffect, useState, useTransition } from "react";
 import { searchMeilisearch } from "./api/queries";
 import { EntityFilterSidebar } from "./components/entity-filter-sidebar";
 import type { SearchResult } from "./components/result-card";
 import { SearchBar } from "./components/search-bar";
 import { SearchResults } from "./components/search-results";
+import { IdentifierMatches, type IdentifierMatch } from "./components/identifier-matches";
+import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/textarea";
 
 interface SearchPageProps {
   // Props for embedded mode (like in AI dialogs)
@@ -17,6 +20,8 @@ interface SearchPageProps {
   initialSearchType?: "search_entities" | "cv_terms";
 }
 
+type SearchMode = "full-text" | "identifier" | "batch";
+
 export default function SearchPage({
   embedded = false,
   initialQuery = "",
@@ -24,23 +29,22 @@ export default function SearchPage({
 }: SearchPageProps = {}) {
   const [query, setQuery] = useState(initialQuery);
   const [, startTransition] = useTransition();
-  const [isMultiSearch, setIsMultiSearch] = useState(false);
-  const [entityIds, setEntityIds] = useState<string[]>([]);
-  const [multiSearchResults, setMultiSearchResults] = useState<Array<SearchResult>>([]);
+  const [searchMode, setSearchMode] = useState<SearchMode>("full-text");
   const [selectedSpecies, setSelectedSpecies] = useState<string>("9606"); // Default to Human
   const [filters, setFilters] = useState<{ entity_types?: string[]; sources?: string[]; ncbi_tax_id?: string[] }>({ ncbi_tax_id: ["9606"] });
   const [filterCounts, setFilterCounts] = useState<{ entity_type?: Record<string, number>; sources?: Record<string, number>; ncbi_tax_id?: Record<string, number> }>({});
+  const [lookupMatches, setLookupMatches] = useState<IdentifierMatch[]>([]);
+  const [lookupEntities, setLookupEntities] = useState<SearchResult[]>([]);
+  const [lookupError, setLookupError] = useState<string | null>(null);
+  const [lookupLoading, setLookupLoading] = useState(false);
+  const [identifierInput, setIdentifierInput] = useState("");
+  const [batchInput, setBatchInput] = useState("");
   const { setSidebarContent } = useSidebarContent();
-
-  // Detect if query contains comma-separated identifiers
-  const detectMultiSearch = (q: string): boolean => {
-    return q.includes(',') && q.split(',').length > 1;
-  };
 
   // Fetch function for infinite scroll
   const fetchSearchData = useCallback(
     async (offset: number, limit: number) => {
-      if (isMultiSearch) {
+      if (searchMode !== "full-text") {
         return { results: [], totalResults: 0 };
       }
 
@@ -70,7 +74,7 @@ export default function SearchPage({
         totalResults: estimatedTotalHits
       };
     },
-    [query, isMultiSearch, initialSearchType, filters]
+    [query, searchMode, initialSearchType, filters]
   );
 
   // Use infinite scroll hook for regular search
@@ -83,7 +87,7 @@ export default function SearchPage({
   } = useInfiniteScroll<SearchResult>({
     fetchData: fetchSearchData,
     pageSize: 20,
-    dependencies: [query, isMultiSearch, initialSearchType, filters]
+    dependencies: [query, searchMode, initialSearchType, filters]
   });
 
   // Handlers for filters
@@ -103,7 +107,7 @@ export default function SearchPage({
 
   // Set sidebar content when filter counts are available (not in embedded mode and not multi-search)
   useEffect(() => {
-    if (!embedded && !isMultiSearch && initialSearchType === "search_entities" && Object.keys(filterCounts).length > 0) {
+    if (!embedded && searchMode === "full-text" && initialSearchType === "search_entities" && Object.keys(filterCounts).length > 0) {
       setSidebarContent(
         <EntityFilterSidebar
           filters={filters}
@@ -121,60 +125,141 @@ export default function SearchPage({
     return () => {
       setSidebarContent(null);
     };
-  }, [embedded, isMultiSearch, initialSearchType, filterCounts, filters, handleFilterChange, handleClearFilters, setSidebarContent]);
+  }, [embedded, searchMode, initialSearchType, filterCounts, filters, handleFilterChange, handleClearFilters, setSidebarContent]);
+
+  // Clear identifier results when returning to full-text mode
+  useEffect(() => {
+    if (searchMode === "full-text") {
+      setLookupMatches([]);
+      setLookupEntities([]);
+      setLookupError(null);
+    }
+  }, [searchMode]);
 
   // Debounced search - This will be passed directly to SearchBar's onSearch
-  const doSearch = useCallback(
-    (q: string) => {
-      // Update query state when search is triggered by
-      setQuery(q);
-      const isMulti = detectMultiSearch(q);
-      setIsMultiSearch(isMulti);
+  const doSearch = useCallback((q: string) => {
+    setQuery(q);
+  }, []);
 
-      if (isMulti) {
-        startTransition(() => {
-          // Multi-search: use documents endpoint with canonical identifiers
-          const identifiers = q.split(',').map(id => id.trim()).filter(id => id.length > 0);
+  // Identifier lookup helpers
+  const runLookup = useCallback(async (identifiers: string[]) => {
+    setLookupLoading(true);
+    setLookupError(null);
+    try {
+      const response = await fetch("/api/entity-lookup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ identifiers }),
+      });
 
-          // Fetch entities by canonical identifiers using documents endpoint
-          fetchMeilisearchDocuments('search_entities', identifiers)
-          .then(data => {
-            const documents = data.documents as unknown[] || [];
-            setMultiSearchResults(documents as SearchResult[]);
-
-            // Get entity IDs for inter action search
-            const ids = documents.map((entity: unknown) => (entity as SearchResult).id);
-            setEntityIds(ids);
-          })
-          .catch(err => {
-            console.error('Error fetching entities:', err);
-            setMultiSearchResults([]);
-            setEntityIds([]);
-          });
-        });
-      } else {
-        // For regular search, just update the query - infinite scroll hook will handle the rest
-        setMultiSearchResults([]);
-        setEntityIds([]);
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(payload.error || `Lookup failed with status ${response.status}`);
       }
-    },
-    []
-  );
+
+      const data = await response.json();
+      setLookupMatches((data.matches || []) as IdentifierMatch[]);
+      setLookupEntities((data.entities || []) as SearchResult[]);
+    } catch (err) {
+      console.error("Identifier lookup error", err);
+      setLookupMatches([]);
+      setLookupEntities([]);
+      setLookupError(err instanceof Error ? err.message : "Lookup failed");
+    } finally {
+      setLookupLoading(false);
+    }
+  }, []);
+
+  const handleIdentifierLookup = useCallback(() => {
+    const trimmed = identifierInput.trim();
+    if (!trimmed) {
+      setLookupError("Please enter an identifier to look up.");
+      return;
+    }
+    startTransition(() => runLookup([trimmed]));
+  }, [identifierInput, runLookup]);
+
+  const handleBatchLookup = useCallback(() => {
+    const ids = batchInput
+      .split(/[\n,]/)
+      .map((id) => id.trim())
+      .filter((id) => id.length > 0);
+
+    if (ids.length === 0) {
+      setLookupError("Please enter at least one identifier.");
+      return;
+    }
+    startTransition(() => runLookup(ids));
+  }, [batchInput, runLookup]);
 
   // Render content based on embedded mode
   return (
     <div className={embedded ? "h-full flex flex-col overflow-hidden" : "flex-1 flex flex-col"}>
       {!embedded && (
-        <div className="sticky top-0 z-10 p-4">
-          <div className="w-full max-w-screen-xl mx-auto">
-            <SearchBar
-              placeholder="Search proteins, molecules, ontology terms…"
-              onSearch={doSearch}
-              initialQuery={query}
-              autoFocus={false}
-              selectedSpecies={selectedSpecies}
-              onSpeciesChange={handleSpeciesChange}
-            />
+        <div className="sticky top-0 z-10 p-4 bg-background/95 backdrop-blur">
+          <div className="w-full max-w-screen-xl mx-auto space-y-3">
+            <Tabs
+              value={searchMode}
+              onValueChange={(value) => {
+                setSearchMode(value as SearchMode);
+                setLookupError(null);
+              }}
+            >
+              <TabsList>
+                <TabsTrigger value="full-text">Full text</TabsTrigger>
+                <TabsTrigger value="identifier">Identifier lookup</TabsTrigger>
+                <TabsTrigger value="batch">Batch identifiers</TabsTrigger>
+              </TabsList>
+            </Tabs>
+
+            {searchMode === "full-text" && (
+              <SearchBar
+                placeholder="Search proteins, molecules, ontology terms…"
+                onSearch={doSearch}
+                initialQuery={query}
+                autoFocus={false}
+                selectedSpecies={selectedSpecies}
+                onSpeciesChange={handleSpeciesChange}
+              />
+            )}
+
+            {searchMode === "identifier" && (
+              <div className="flex flex-col gap-3 rounded-xl border bg-muted/40 p-4">
+                <div className="flex items-center gap-3">
+                  <Input
+                    placeholder="Enter one identifier (e.g. UniProt, gene symbol, etc.)"
+                    value={identifierInput}
+                    onChange={(e) => setIdentifierInput(e.target.value)}
+                    onKeyDown={(e) => e.key === "Enter" && handleIdentifierLookup()}
+                  />
+                  <Button onClick={handleIdentifierLookup} disabled={lookupLoading}>
+                    Look up
+                  </Button>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Uses the entity service at localhost:8080 to resolve identifiers and fetches entity details from Meilisearch.
+                </p>
+              </div>
+            )}
+
+            {searchMode === "batch" && (
+              <div className="flex flex-col gap-3 rounded-xl border bg-muted/40 p-4">
+                <Textarea
+                  placeholder="Paste comma or newline separated identifiers"
+                  value={batchInput}
+                  onChange={(e) => setBatchInput(e.target.value)}
+                  rows={4}
+                />
+                <div className="flex items-center justify-between">
+                  <p className="text-xs text-muted-foreground">
+                    We will look up all identifiers and group candidate entities for each. No enforced species filter.
+                  </p>
+                  <Button onClick={handleBatchLookup} disabled={lookupLoading}>
+                    Run lookup
+                  </Button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -182,15 +267,24 @@ export default function SearchPage({
       {/* Results */}
       <div className={embedded ? "flex-1 overflow-y-auto p-4" : "flex-1 overflow-y-auto"}>
         <div className={embedded ? "w-full min-h-full" : "w-full max-w-screen-xl mx-auto px-4 sm:px-6 lg:px-8 py-6"}>
-            <SearchResults
-              results={results}
-              loading={loading}
-              loadingMore={loadingMore}
-              hasMore={hasMore}
-              sentinelRef={sentinelRef}
-            />
+            {searchMode === "full-text" ? (
+              <SearchResults
+                results={results}
+                loading={loading}
+                loadingMore={loadingMore}
+                hasMore={hasMore}
+                sentinelRef={sentinelRef}
+              />
+            ) : (
+              <IdentifierMatches
+                matches={lookupMatches}
+                entities={lookupEntities}
+                loading={lookupLoading}
+                error={lookupError}
+              />
+            )}
         </div>
       </div>
     </div>
   );
-} 
+}

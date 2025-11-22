@@ -24,6 +24,9 @@ const API_CONFIG = {
     ? 'http://omnipath-meilisearch:7700'
     : 'http://localhost:7700',
 
+  // Entity service URL (identifier lookup)
+  entityServiceUrl: process.env.NEXT_PUBLIC_ENTITY_SERVICE_URL || 'http://localhost:8080',
+
   // PostgreSQL connection (handled by DATABASE_URL environment variable)
   databaseUrl: process.env.DATABASE_URL || 'postgresql://localhost:5432/omnipath',
 };
@@ -41,6 +44,13 @@ export const getSiteUrl = (): string => {
  */
 export const getMeilisearchUrl = (): string => {
   return API_CONFIG.meilisearchUrl;
+};
+
+/**
+ * Get the entity service URL (identifier lookup backend)
+ */
+export const getEntityServiceUrl = (): string => {
+  return API_CONFIG.entityServiceUrl;
 };
 
 /**

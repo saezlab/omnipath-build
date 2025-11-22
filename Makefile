@@ -1,4 +1,4 @@
-.PHONY: setup silver silver-test silver-reprocess gold postgres meilisearch meilisearch-entities meilisearch-interactions meilisearch-import meilisearch-import-entities meilisearch-import-interactions meilisearch-import-all visualize
+.PHONY: setup silver silver-test silver-reprocess gold postgres meilisearch meilisearch-entities meilisearch-interactions meilisearch-import meilisearch-import-entities meilisearch-import-interactions meilisearch-import-all gold-meilisearch-import visualize
 
 setup:
 	git submodule add -b download-manager-experiment https://github.com/saezlab/pypath.git pypath || true
@@ -27,9 +27,10 @@ silver-reprocess:
 		$(if $(FUNCTION),--function $(FUNCTION)) \
 		$(if $(INPUTS_PACKAGE),--inputs-package $(INPUTS_PACKAGE))
 
+GOLD_STEPS := local_tables entity_identifiers global_tables
 gold:
-	@if [ -n "$(filter-out $@,$(MAKECMDGOALS))" ]; then \
-		uv run -m omnipath_build.database_manager gold --step $(filter-out $@,$(MAKECMDGOALS)); \
+	@if [ -n "$(filter $(GOLD_STEPS),$(MAKECMDGOALS))" ]; then \
+		uv run -m omnipath_build.database_manager gold --step $(filter $(GOLD_STEPS),$(MAKECMDGOALS)); \
 	else \
 		uv run -m omnipath_build.database_manager gold; \
 	fi
@@ -78,6 +79,11 @@ meilisearch-import-all:
 
 # Backward compatibility: import entities only (original behavior)
 meilisearch-import: meilisearch-import-entities
+
+gold-meilisearch-import:
+	@$(MAKE) gold
+	@$(MAKE) meilisearch
+	@$(MAKE) meilisearch-import
 
 %:
 	@:

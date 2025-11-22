@@ -187,8 +187,8 @@ function MoleculeResultCard({ result }: { result: SearchResult }) {
         </Button>
       )}
 
-      <CardHeader className="relative space-y-0 p-2.5 border-b shrink-0">
-        <CardTitle className="text-base line-clamp-2">
+      <CardHeader className="relative space-y-0 p-3 border-b shrink-0">
+        <CardTitle className="text-base line-clamp-3">
           <span dangerouslySetInnerHTML={{ __html: convertEmToHighlight(primaryName) }} />
         </CardTitle>
       </CardHeader>
@@ -308,7 +308,7 @@ export function ResultCard({ result }: { result: SearchResult }) {
   const entityTypeLabel = entityType ? entityType.split(':')[0] : "Entity";
 
   // Helper function to truncate text to max characters
-  const truncateText = (text: string, maxChars: number = 8): string => {
+  const truncateText = (text: string, maxChars: number = 100): string => {
     if (text.length <= maxChars) return text;
     return text.substring(0, maxChars) + '...';
   };
@@ -373,8 +373,8 @@ export function ResultCard({ result }: { result: SearchResult }) {
         </Button>
       )}
 
-      <CardHeader className="relative space-y-0 p-2.5 border-b shrink-0">
-        <CardTitle className="text-lg line-clamp-2">
+      <CardHeader className="relative space-y-0 p-3 border-b shrink-0">
+        <CardTitle className="text-lg line-clamp-3">
           <span dangerouslySetInnerHTML={{ __html: title }} />
         </CardTitle>
       </CardHeader>

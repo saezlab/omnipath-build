@@ -121,6 +121,12 @@ fn load_index<P: AsRef<Path>>(parquet_path: P) -> Result<FxHashMap<Arc<str>, Vec
         }
     }
 
+    // Deduplicate entity IDs per identifier (identifiers can appear across namespaces)
+    for ids in index.values_mut() {
+        ids.sort_unstable();
+        ids.dedup();
+    }
+
     Ok(index)
 }
 
