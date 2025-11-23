@@ -17,6 +17,7 @@ import { MoleculeStructure } from "./molecule_structure";
 import { getEntityNames } from "../api/queries";
 import { useEffect, useState } from "react";
 import { ArrowRight, ListOrdered } from "lucide-react";
+import { useRouter } from "next/navigation";
 
 // Helper function to convert <em> tags to highlighted spans
 const convertEmToHighlight = (text: string | undefined) => {
@@ -418,6 +419,31 @@ export function ResultCard({ result }: { result: SearchResult }) {
     }
   };
 
+  // New handler for clicking the whole card to navigate to explore page
+  const router = useRouter();
+  const handleCardClick = (e: React.MouseEvent) => {
+    // Prevent default link behavior if any
+    e.preventDefault();
+    if (!entityId) return;
+    // Add to selection if not already selected
+    if (!selected) {
+      addEntity({
+        id: entityId,
+        entityId: result.entity_id,
+        name: getDisplayName(),
+        type: result.entity_type?.split(':')[0] || result.type,
+        complexes: result.complexes,
+        cv_terms: result.cv_terms,
+        pathways: result.pathways,
+        reactions: result.reactions,
+        references: result.references,
+        fullResult: result,
+      });
+    }
+    // Navigate to explore page with entity filter
+    router.push(`/explore?entity=${entityId}`);
+  };
+
   // Extract data based on type
   const descriptions = result._formatted?.descriptions || result.descriptions || [];
   const names = result._formatted?.names || result.names || [];
@@ -487,7 +513,7 @@ export function ResultCard({ result }: { result: SearchResult }) {
   const allIdentifierValues = identifiers.map(id => id.value);
 
   return (
-    <Card className={`flex flex-col hover:shadow-md transition-shadow h-full result-card group relative ${type === 'cv_term' ? 'cursor-pointer' : ''}`}>
+    <Card className={`flex flex-col hover:shadow-md transition-shadow h-full result-card group relative ${type === 'cv_term' ? 'cursor-pointer' : ''}`} onClick={handleCardClick}>
       {/* Add to selection button - positioned at bottom center, visible on hover for entities */}
       {type === 'entity' && entityId && (
         <Button
