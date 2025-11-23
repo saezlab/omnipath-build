@@ -134,7 +134,7 @@ def build_search_entities(global_tables_dir: Path, output_path: Path) -> Path:
     # Join memberships to entity to check parent types
     mem_types = mem.join(ent.rename({"entity_id": "pid", "entity_type_id": "ptid"}), left_on="parent_id", right_on="pid")
 
-    for k, col in [('complex_type', 'complexes'), ('cv_term_type', 'cv_terms')]:
+    for k, col in [('complex_type', 'complexes'), ('cv_term_type', 'cv_terms'), ('pathway_type', 'pathways'), ('reaction_type', 'reactions')]:
         if id_sets[k]:
             lazy_joins.append(
                 mem_types.filter(pl.col("ptid") == id_sets[k])
@@ -245,7 +245,7 @@ def build_search_entities(global_tables_dir: Path, output_path: Path) -> Path:
     defaults = [
         pl.col(c).fill_null(pl.lit([], dtype=STR_LIST)) for c in ["names", "synonyms", "gene_symbols", "descriptions", "references", "sources", "stoichiometry", "pathway_steps"]
     ] + [
-        pl.col(c).fill_null(pl.lit([], dtype=INT_LIST)) for c in ["complexes", "cv_terms", "reactants", "products"]
+        pl.col(c).fill_null(pl.lit([], dtype=INT_LIST)) for c in ["complexes", "cv_terms", "pathways", "reactions", "reactants", "products"]
     ] + [
         pl.col("identifiers").fill_null(pl.lit([], dtype=ID_LIST_DTYPE)),
         pl.col("num_interactions").fill_null(0)

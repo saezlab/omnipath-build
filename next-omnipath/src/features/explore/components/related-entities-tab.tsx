@@ -23,9 +23,9 @@ interface EntityFilterCounts {
 
 interface RelatedEntitiesTabProps {
   /**
-   * Type of related entities to show: "complex", "cv_term", or "reference"
+   * Type of related entities to show: "complex", "cv_term", "pathway", or "reaction"
    */
-  relatedType: "complex" | "cv_term" | "reference";
+  relatedType: "complex" | "cv_term" | "pathway" | "reaction";
   /**
    * Current filters
    */
@@ -79,8 +79,10 @@ export function RelatedEntitiesTab({
         return aggregateRelatedIds(selectedEntities, e => e.complexes);
       case "cv_term":
         return aggregateRelatedIds(selectedEntities, e => e.cv_terms);
-      case "reference":
-        return aggregateRelatedIds(selectedEntities, e => e.references);
+      case "pathway":
+        return aggregateRelatedIds(selectedEntities, e => e.pathways);
+      case "reaction":
+        return aggregateRelatedIds(selectedEntities, e => e.reactions);
       default:
         return new Map<string | number, number>();
     }
@@ -192,10 +194,11 @@ export function RelatedEntitiesTab({
 
   // Show empty state if no entities selected
   if (selectedEntities.length === 0) {
+    const typeLabel = relatedType === "cv_term" ? "CV terms" : relatedType === "pathway" ? "pathways" : relatedType === "reaction" ? "reactions" : relatedType + "es";
     return (
       <div className="flex items-center justify-center py-12">
         <p className="text-muted-foreground">
-          Select entities to see related {relatedType === "cv_term" ? "CV terms" : relatedType + "es"}
+          Select entities to see related {typeLabel}
         </p>
       </div>
     );
@@ -203,17 +206,18 @@ export function RelatedEntitiesTab({
 
   // Show empty state if no related items found
   if (sortedIds.length === 0) {
+    const typeLabel = relatedType === "cv_term" ? "CV terms" : relatedType === "pathway" ? "pathways" : relatedType === "reaction" ? "reactions" : relatedType + "es";
     return (
       <div className="flex items-center justify-center py-12">
         <p className="text-muted-foreground">
-          No {relatedType === "cv_term" ? "CV terms" : relatedType + "es"} found for the selected entities
+          No {typeLabel} found for the selected entities
         </p>
       </div>
     );
   }
 
-  const typeLabel = relatedType === "cv_term" ? "CV term" : relatedType;
-  const typeLabelPlural = relatedType === "cv_term" ? "CV terms" : relatedType + "es";
+  const typeLabel = relatedType === "cv_term" ? "CV term" : relatedType === "pathway" ? "pathway" : relatedType === "reaction" ? "reaction" : relatedType;
+  const typeLabelPlural = relatedType === "cv_term" ? "CV terms" : relatedType === "pathway" ? "pathways" : relatedType === "reaction" ? "reactions" : relatedType + "es";
 
   return (
     <div className="space-y-4">

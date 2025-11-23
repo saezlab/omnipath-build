@@ -78,6 +78,8 @@ COMPLEX_TYPE_ACCESSION = EntityTypeCv.COMPLEX.value
 PROTEIN_TYPE_ACCESSION = EntityTypeCv.PROTEIN.value
 GENE_TYPE_ACCESSION = EntityTypeCv.GENE.value
 SMALL_MOLECULE_TYPE_ACCESSION = EntityTypeCv.SMALL_MOLECULE.value
+PATHWAY_TYPE_ACCESSION = EntityTypeCv.PATHWAY.value
+REACTION_TYPE_ACCESSION = EntityTypeCv.REACTION.value
 
 # CV_TERM_ACCESSION identifier type (used for identifying CV terms)
 CV_TERM_ACCESSION_TYPE = IdentifierNamespaceCv.CV_TERM_ACCESSION.value
@@ -273,6 +275,8 @@ def build_accession_to_entity_id_sets(cv_term_mapping: pl.DataFrame) -> dict[str
         'interaction_type': accession_to_id.get(INTERACTION_TYPE_ACCESSION),
         'cv_term_type': accession_to_id.get(CV_TERM_TYPE_ACCESSION),
         'complex_type': accession_to_id.get(COMPLEX_TYPE_ACCESSION),
+        'pathway_type': accession_to_id.get(PATHWAY_TYPE_ACCESSION),
+        'reaction_type': accession_to_id.get(REACTION_TYPE_ACCESSION),
         'reactants': _accessions_to_ids(REACTANT_ROLE_ACCESSIONS),
         'products': _accessions_to_ids(PRODUCT_ROLE_ACCESSIONS),
         'stoichiometry': _accessions_to_ids(STOICHIOMETRY_ANNOTATION_ACCESSIONS),

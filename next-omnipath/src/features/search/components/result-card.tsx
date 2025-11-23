@@ -73,6 +73,8 @@ export interface SearchResult {
   sources?: string[];
   complexes?: number[];
   cv_terms?: number[];
+  pathways?: number[];
+  reactions?: number[];
   num_interactions?: number;
   // CV term fields
   namespace_name?: string;
@@ -287,6 +289,8 @@ function MoleculeResultCard({ result }: { result: SearchResult }) {
         type: entityTypeLabel,
         complexes: result.complexes,
         cv_terms: result.cv_terms,
+        pathways: result.pathways,
+        reactions: result.reactions,
         references: result.references,
         fullResult: result,
       });
@@ -406,6 +410,8 @@ export function ResultCard({ result }: { result: SearchResult }) {
         type: result.entity_type?.split(':')[0] || result.type,
         complexes: result.complexes,
         cv_terms: result.cv_terms,
+        pathways: result.pathways,
+        reactions: result.reactions,
         references: result.references,
         fullResult: result,
       });

@@ -2,13 +2,14 @@
 
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useSidebarContent } from "@/contexts/sidebar-content-context";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, useMemo } from "react";
 import { useSearchParams } from "next/navigation";
 import { InteractionsExploreTab } from "./components/interactions-explore-tab";
 import { RelatedEntitiesTab } from "./components/related-entities-tab";
 import { FilterSidebar } from "@/features/interactions-search/components/filter-sidebar";
 import { EntityFilterSidebar } from "@/features/search/components/entity-filter-sidebar";
 import { MeilisearchFilters } from "@/types/meilisearch";
+import { useEntitySelection } from "@/contexts/entity-selection-context";
 
 interface EntityFilters {
   entity_types?: string[];
@@ -26,6 +27,7 @@ export default function ExplorePage() {
   const [activeTab, setActiveTab] = useState("interactions");
   const { setSidebarContent } = useSidebarContent();
   const searchParams = useSearchParams();
+  const { selectedEntities } = useEntitySelection();
 
   // Parse entity IDs from URL params (supports both single "entity" and multiple "entities")
   const parseEntityIds = useCallback(() => {
@@ -53,9 +55,38 @@ export default function ExplorePage() {
   });
   const [interactionsFilterCounts, setInteractionsFilterCounts] = useState<Record<string, Record<string, number>>>({});
 
-  // Entity filters state for related tabs (complexes, cv_terms, references)
+  // Entity filters state for related tabs (complexes, cv_terms, pathways, reactions)
   const [entityFilters, setEntityFilters] = useState<EntityFilters>({});
   const [entityFilterCounts, setEntityFilterCounts] = useState<EntityFilterCounts>({});
+
+  // Calculate which tabs have results based on selected entities
+  const tabsWithResults = useMemo(() => {
+    const tabs = {
+      interactions: true, // Always show interactions
+      complexes: false,
+      cv_terms: false,
+      pathways: false,
+      reactions: false,
+    };
+
+    // Check if any selected entity has results for each tab type
+    for (const entity of selectedEntities) {
+      if (entity.complexes && entity.complexes.length > 0) {
+        tabs.complexes = true;
+      }
+      if (entity.cv_terms && entity.cv_terms.length > 0) {
+        tabs.cv_terms = true;
+      }
+      if (entity.pathways && entity.pathways.length > 0) {
+        tabs.pathways = true;
+      }
+      if (entity.reactions && entity.reactions.length > 0) {
+        tabs.reactions = true;
+      }
+    }
+
+    return tabs;
+  }, [selectedEntities]);
 
   // Handlers for interactions filters
   const handleInteractionsFilterChange = useCallback((newFilters: MeilisearchFilters) => {
@@ -108,7 +139,7 @@ export default function ExplorePage() {
           isMobile
         />
       );
-    } else if ((activeTab === "complexes" || activeTab === "cv_terms" || activeTab === "references") && Object.keys(entityFilterCounts).length > 0) {
+    } else if ((activeTab === "complexes" || activeTab === "cv_terms" || activeTab === "pathways" || activeTab === "reactions") && Object.keys(entityFilterCounts).length > 0) {
       setSidebarContent(
         <EntityFilterSidebar
           filters={entityFilters}
@@ -135,9 +166,10 @@ export default function ExplorePage() {
           <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
             <TabsList>
               <TabsTrigger value="interactions">Interactions</TabsTrigger>
-              <TabsTrigger value="complexes">Complexes</TabsTrigger>
-              <TabsTrigger value="cv_terms">CV Terms</TabsTrigger>
-              <TabsTrigger value="references">References</TabsTrigger>
+              {tabsWithResults.complexes && <TabsTrigger value="complexes">Complexes</TabsTrigger>}
+              {tabsWithResults.cv_terms && <TabsTrigger value="cv_terms">CV Terms</TabsTrigger>}
+              {tabsWithResults.pathways && <TabsTrigger value="pathways">Pathways</TabsTrigger>}
+              {tabsWithResults.reactions && <TabsTrigger value="reactions">Reactions</TabsTrigger>}
             </TabsList>
           </Tabs>
         </div>
@@ -153,30 +185,46 @@ export default function ExplorePage() {
                 onFilterCountsUpdate={handleInteractionsFilterCountsUpdate}
               />
             </TabsContent>
-            <TabsContent value="complexes" className="mt-0">
-              <RelatedEntitiesTab
-                relatedType="complex"
-                filters={entityFilters}
-                onFilterChange={handleEntityFilterChange}
-                onFilterCountsUpdate={handleEntityFilterCountsUpdate}
-              />
-            </TabsContent>
-            <TabsContent value="cv_terms" className="mt-0">
-              <RelatedEntitiesTab
-                relatedType="cv_term"
-                filters={entityFilters}
-                onFilterChange={handleEntityFilterChange}
-                onFilterCountsUpdate={handleEntityFilterCountsUpdate}
-              />
-            </TabsContent>
-            <TabsContent value="references" className="mt-0">
-              <RelatedEntitiesTab
-                relatedType="reference"
-                filters={entityFilters}
-                onFilterChange={handleEntityFilterChange}
-                onFilterCountsUpdate={handleEntityFilterCountsUpdate}
-              />
-            </TabsContent>
+            {tabsWithResults.complexes && (
+              <TabsContent value="complexes" className="mt-0">
+                <RelatedEntitiesTab
+                  relatedType="complex"
+                  filters={entityFilters}
+                  onFilterChange={handleEntityFilterChange}
+                  onFilterCountsUpdate={handleEntityFilterCountsUpdate}
+                />
+              </TabsContent>
+            )}
+            {tabsWithResults.cv_terms && (
+              <TabsContent value="cv_terms" className="mt-0">
+                <RelatedEntitiesTab
+                  relatedType="cv_term"
+                  filters={entityFilters}
+                  onFilterChange={handleEntityFilterChange}
+                  onFilterCountsUpdate={handleEntityFilterCountsUpdate}
+                />
+              </TabsContent>
+            )}
+            {tabsWithResults.pathways && (
+              <TabsContent value="pathways" className="mt-0">
+                <RelatedEntitiesTab
+                  relatedType="pathway"
+                  filters={entityFilters}
+                  onFilterChange={handleEntityFilterChange}
+                  onFilterCountsUpdate={handleEntityFilterCountsUpdate}
+                />
+              </TabsContent>
+            )}
+            {tabsWithResults.reactions && (
+              <TabsContent value="reactions" className="mt-0">
+                <RelatedEntitiesTab
+                  relatedType="reaction"
+                  filters={entityFilters}
+                  onFilterChange={handleEntityFilterChange}
+                  onFilterCountsUpdate={handleEntityFilterCountsUpdate}
+                />
+              </TabsContent>
+            )}
           </Tabs>
         </div>
       </div>

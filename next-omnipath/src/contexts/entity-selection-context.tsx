@@ -11,6 +11,8 @@ export interface SelectedEntity {
   // Related entity IDs for explore tabs
   complexes?: number[]
   cv_terms?: number[]
+  pathways?: number[]
+  reactions?: number[]
   references?: string[]
   // Store full search result for proper display
   fullResult?: SearchResult
@@ -27,9 +29,9 @@ interface EntitySelectionContextType {
 
 const EntitySelectionContext = createContext<EntitySelectionContextType>({
   selectedEntities: [],
-  addEntity: () => {},
-  removeEntity: () => {},
-  clearSelection: () => {},
+  addEntity: () => { },
+  removeEntity: () => { },
+  clearSelection: () => { },
   isSelected: () => false,
   selectionCount: 0,
 })
