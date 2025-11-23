@@ -1,6 +1,6 @@
 "use server";
 
-import { searchMeilisearch as meilisearchDirectSearch } from '@/lib/meilisearch/search';
+import { searchMeilisearch as meilisearchDirectSearch, fetchMeilisearchDocuments } from '@/lib/meilisearch/search';
 import type { IndexName } from '@/lib/meilisearch/client';
 import type { MeilisearchFilters } from '@/types/meilisearch';
 
@@ -25,4 +25,26 @@ export async function searchMeilisearch({
   }
 }
 
-export type SearchMeilisearchResponse = Awaited<ReturnType<typeof searchMeilisearch>>; 
+export type SearchMeilisearchResponse = Awaited<ReturnType<typeof searchMeilisearch>>;
+
+export async function getEntityNames(ids: string[]): Promise<Record<string, string>> {
+  if (!ids.length) return {};
+
+  try {
+    const { documents } = await fetchMeilisearchDocuments("search_entities", ids, "entity_id");
+
+    const nameMap: Record<string, string> = {};
+    documents.forEach((doc: any) => {
+      // Try to find the best name
+      const name = (doc.names && doc.names[0]) ||
+        (doc.gene_symbols && doc.gene_symbols[0]) ||
+        `Entity ${doc.entity_id}`;
+      nameMap[doc.entity_id] = name;
+    });
+
+    return nameMap;
+  } catch (e) {
+    console.error("Error fetching entity names:", e);
+    return {};
+  }
+}

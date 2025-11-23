@@ -14,6 +14,9 @@ import React, { useMemo } from "react";
 import { Network, Tag, Shapes, FileText, Database, Plus, Check, FlaskConical } from "lucide-react";
 import { useEntitySelection } from "@/contexts/entity-selection-context";
 import { MoleculeStructure } from "./molecule_structure";
+import { getEntityNames } from "../api/queries";
+import { useEffect, useState } from "react";
+import { ArrowRight, ListOrdered } from "lucide-react";
 
 // Helper function to convert <em> tags to highlighted spans
 const convertEmToHighlight = (text: string | undefined) => {
@@ -26,13 +29,13 @@ const isSmallMolecule = (result: SearchResult): boolean => {
   const entityType = result._formatted?.entity_type || result.entity_type || '';
   const typeLabel = entityType.split(':')[0].toLowerCase();
   return typeLabel === 'smallmolecule' ||
-         typeLabel === 'small_molecule' ||
-         typeLabel === 'compound' ||
-         typeLabel === 'metabolite' ||
-         typeLabel === 'drug' ||
-         typeLabel === 'lipid' ||
-         // Also check if we have molecule-specific data
-         !!(result.canonical_smiles || result.formula || result.molecular_weight);
+    typeLabel === 'small_molecule' ||
+    typeLabel === 'compound' ||
+    typeLabel === 'metabolite' ||
+    typeLabel === 'drug' ||
+    typeLabel === 'lipid' ||
+    // Also check if we have molecule-specific data
+    !!(result.canonical_smiles || result.formula || result.molecular_weight);
 };
 
 // Identifier object structure from search_entities
@@ -81,7 +84,127 @@ export interface SearchResult {
   canonical_smiles?: string;
   formula?: string;
   molecular_weight?: number;
+  // Reaction fields
+  reactants?: number[];
+  products?: number[];
+  stoichiometry?: string[]; // "ID:Stoich"
+  // Pathway fields
+  pathway_steps?: string[]; // "Order:ID"
   [key: string]: unknown; // Add index signature for compatibility with DataRow
+}
+
+// Component to display a reaction equation
+function ReactionDisplay({ result }: { result: SearchResult }) {
+  const [names, setNames] = useState<Record<string, string>>({});
+
+  const reactants = result.reactants || [];
+  const products = result.products || [];
+  const stoichiometry = result.stoichiometry || [];
+
+  console.log("ReactionDisplay", { id: result.id, reactants, products, stoichiometry });
+
+  useEffect(() => {
+    const idsToFetch = [...reactants, ...products].map(String);
+    if (idsToFetch.length > 0) {
+      getEntityNames(idsToFetch).then(names => {
+        console.log("ReactionDisplay fetched names", names);
+        setNames(names);
+      });
+    }
+  }, [result]);
+
+  if (reactants.length === 0 && products.length === 0) {
+    console.log("ReactionDisplay: No reactants or products, returning null");
+    return null;
+  }
+
+  // Parse stoichiometry map: ID -> Coefficient
+  const stoichMap: Record<string, string> = {};
+  stoichiometry.forEach(s => {
+    if (!s) return;
+    const [id, val] = s.split(':');
+    if (id && val) stoichMap[id] = val;
+  });
+
+  const formatPart = (id: number) => {
+    const sid = String(id);
+    const name = names[sid] || `Entity ${id}`;
+    const coeff = stoichMap[sid];
+    return (
+      <span key={id} className="inline-flex items-center">
+        {coeff && coeff !== "1" && <span className="font-bold mr-1 text-muted-foreground">{coeff}</span>}
+        <span className="hover:underline cursor-help" title={`ID: ${id}`}>{name}</span>
+      </span>
+    );
+  };
+
+  return (
+    <div className="flex flex-wrap items-center gap-2 text-sm p-3 bg-muted/30 rounded-md my-2">
+      <div className="flex flex-wrap gap-1 items-center">
+        {reactants.map((id, i) => (
+          <React.Fragment key={id}>
+            {i > 0 && <span className="text-muted-foreground">+</span>}
+            {formatPart(id)}
+          </React.Fragment>
+        ))}
+      </div>
+      <ArrowRight className="h-4 w-4 text-muted-foreground mx-1" />
+      <div className="flex flex-wrap gap-1 items-center">
+        {products.map((id, i) => (
+          <React.Fragment key={id}>
+            {i > 0 && <span className="text-muted-foreground">+</span>}
+            {formatPart(id)}
+          </React.Fragment>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// Component to display pathway steps
+function PathwayDisplay({ result }: { result: SearchResult }) {
+  const [names, setNames] = useState<Record<string, string>>({});
+  const steps = result.pathway_steps || [];
+
+  useEffect(() => {
+    const idsToFetch = steps
+      .filter(Boolean)
+      .map(s => s.split(':')[1])
+      .filter(Boolean);
+
+    if (idsToFetch.length > 0) {
+      getEntityNames(idsToFetch).then(setNames);
+    }
+  }, [result]);
+
+  if (steps.length === 0) return null;
+
+  // Parse and sort steps
+  const parsedSteps = steps
+    .filter(Boolean) // Filter out null/undefined strings
+    .map(s => {
+      const [order, id] = s.split(':');
+      return { order: parseInt(order), id };
+    })
+    .sort((a, b) => a.order - b.order);
+
+  return (
+    <div className="mt-2">
+      <h4 className="text-xs font-semibold uppercase text-muted-foreground mb-1 flex items-center gap-1">
+        <ListOrdered className="h-3 w-3" /> Pathway Steps
+      </h4>
+      <ScrollArea className="h-32 w-full rounded-md border bg-muted/30 p-2">
+        <ul className="space-y-1 text-sm">
+          {parsedSteps.map((step, i) => (
+            <li key={`${step.id}-${i}`} className="flex gap-2">
+              <span className="text-muted-foreground w-6 text-right shrink-0">{step.order}.</span>
+              <span>{names[step.id] || `Entity ${step.id}`}</span>
+            </li>
+          ))}
+        </ul>
+      </ScrollArea>
+    </div>
+  );
 }
 
 // Molecule-specific result card
@@ -177,9 +300,8 @@ function MoleculeResultCard({ result }: { result: SearchResult }) {
         <Button
           variant={selected ? "default" : "secondary"}
           size="icon"
-          className={`absolute -bottom-3 left-1/2 -translate-x-1/2 z-10 h-6 w-6 rounded-full shadow-md transition-opacity ${
-            selected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
-          }`}
+          className={`absolute -bottom-3 left-1/2 -translate-x-1/2 z-10 h-6 w-6 rounded-full shadow-md transition-opacity ${selected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
+            }`}
           onClick={handleAddToSelection}
           title={selected ? "Remove from selection" : "Add to selection"}
         >
@@ -307,6 +429,8 @@ export function ResultCard({ result }: { result: SearchResult }) {
   // Extract entity type label (e.g., "Protein" from "Protein:385235")
   const entityTypeLabel = entityType ? entityType.split(':')[0] : "Entity";
 
+  console.log("ResultCard", { id: result.id, entityTypeLabel, reactants: result.reactants });
+
   // Helper function to truncate text to max characters
   const truncateText = (text: string, maxChars: number = 100): string => {
     if (text.length <= maxChars) return text;
@@ -363,9 +487,8 @@ export function ResultCard({ result }: { result: SearchResult }) {
         <Button
           variant={selected ? "default" : "secondary"}
           size="icon"
-          className={`absolute -bottom-3 left-1/2 -translate-x-1/2 z-10 h-6 w-6 rounded-full shadow-md transition-opacity ${
-            selected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
-          }`}
+          className={`absolute -bottom-3 left-1/2 -translate-x-1/2 z-10 h-6 w-6 rounded-full shadow-md transition-opacity ${selected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
+            }`}
           onClick={handleAddToSelection}
           title={selected ? "Remove from selection" : "Add to selection"}
         >
@@ -379,18 +502,33 @@ export function ResultCard({ result }: { result: SearchResult }) {
         </CardTitle>
       </CardHeader>
 
-      {((descriptions.length > 0) || definition) && (
-        <div className="flex flex-col min-h-0 flex-grow">
-          <CardContent className="px-4 overflow-hidden flex-grow min-h-0">
-            {/* Description */}
-            <ScrollArea className="h-32 w-full">
-              <p className="text-sm text-muted-foreground">
-                <span dangerouslySetInnerHTML={{ __html: convertEmToHighlight(definition || descriptions[0] || '') }} />
-              </p>
-            </ScrollArea>
-          </CardContent>
-        </div>
-      )}
+      {/* Show content section if there's a description, definition, reaction, or pathway */}
+      {((descriptions.length > 0) || definition ||
+        entityTypeLabel.toLowerCase() === 'reaction' ||
+        entityTypeLabel.toLowerCase() === 'pathway') && (
+          <div className="flex flex-col min-h-0 flex-grow">
+            <CardContent className="px-4 overflow-hidden flex-grow min-h-0">
+              {/* Description */}
+              {((descriptions.length > 0) || definition) && (
+                <ScrollArea className="h-24 w-full mb-2">
+                  <p className="text-sm text-muted-foreground">
+                    <span dangerouslySetInnerHTML={{ __html: convertEmToHighlight(definition || descriptions[0] || '') }} />
+                  </p>
+                </ScrollArea>
+              )}
+
+              {/* Reaction Equation */}
+              {entityTypeLabel.toLowerCase() === 'reaction' && (
+                <ReactionDisplay result={result} />
+              )}
+
+              {/* Pathway Steps */}
+              {entityTypeLabel.toLowerCase() === 'pathway' && (
+                <PathwayDisplay result={result} />
+              )}
+            </CardContent>
+          </div>
+        )}
 
       <CardFooter className={`flex items-center justify-between shrink-0 p-2.5 ${((descriptions.length > 0) || definition) ? 'border-t' : ''}`}>
         {/* Stats */}

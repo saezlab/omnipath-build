@@ -66,6 +66,23 @@ def build_search_entities(global_tables_dir: Path, output_path: Path) -> Path:
     ident = pl.scan_parquet(global_tables_dir / "entity_identifier.parquet")
     res = pl.scan_parquet(global_tables_dir / "entity_identifier_resource.parquet")
     mem = pl.scan_parquet(global_tables_dir / "membership.parquet")
+    mem_annot = pl.scan_parquet(global_tables_dir / "membership_annotation.parquet")
+
+    # Join membership with annotations to get values and types
+    # IMPORTANT: Both membership and membership_annotation have annotation_value columns:
+    # - membership.annotation_value = annotations on the pathway itself (e.g., URLs)
+    # - membership_annotation.annotation_value = annotations on the membership relationship (e.g., step order "1")
+    # We need to use the annotation_value from membership_annotation
+    # To avoid ambiguity, we select and rename columns from membership_annotation before the join
+    mem_annot_renamed = mem_annot.select([
+        pl.col("membership_id"),
+        pl.col("annotation_id").alias("annot_id"),
+        pl.col("annotation_value").alias("annot_val"),
+        pl.col("annotation_unit"),
+        pl.col("source_id").alias("annot_source_id"),
+    ])
+    
+    mem_joined = mem.join(mem_annot_renamed, left_on="id", right_on="membership_id", how="left")
     
     # Convert metadata for Lazy Joins
     cv_map_lz = cv_map_df.lazy()
@@ -99,6 +116,8 @@ def build_search_entities(global_tables_dir: Path, output_path: Path) -> Path:
         lazy_joins.append(_agg_lazy(ident, "type_id", id_sets[k], "identifier", col))
 
     # 4b. Membership Text (Descriptions, References)
+    # These are stored directly in membership.annotation_value, not in membership_annotation
+    # So we use the original mem table, not mem_joined
     mem_valid = mem.filter(pl.col("annotation_value").is_not_null())
     for k, col in [('descriptions', 'descriptions'), ('references', 'references')]:
         lazy_joins.append(_agg_lazy(mem_valid, "parent_id", id_sets[k], "annotation_value", col, group_col="member_id"))
@@ -129,6 +148,53 @@ def build_search_entities(global_tables_dir: Path, output_path: Path) -> Path:
         .group_by("member_id").agg(pl.col("parent_id").n_unique().alias("num_interactions"))
         .rename({"member_id": "entity_id"})
     )
+
+    # 4e.2 Reactants & Products (By Role Annotation)
+    # These are members of the Reaction entity (parent_id) with a specific Role annotation (annot_id)
+    for k, col in [('reactants', 'reactants'), ('products', 'products')]:
+        if id_sets[k]:
+            lazy_joins.append(
+                mem_joined.filter(pl.col("annot_id").is_in(list(id_sets[k])))
+                .group_by("parent_id")
+                .agg(pl.col("member_id").unique().sort().alias(col))
+                .rename({"parent_id": "entity_id"})
+            )
+
+    # 4e.3 Stoichiometry & Pathway Steps (By Annotation Type)
+    # Stoichiometry: Value is in annot_val, Member is the participant
+    # We want a list of "MemberID:Stoichiometry" strings
+    if id_sets['stoichiometry']:
+        lazy_joins.append(
+            mem_joined.filter(
+                pl.col("annot_id").is_in(list(id_sets['stoichiometry'])) & 
+                pl.col("annot_val").is_not_null()
+            )
+            .select(
+                "parent_id",
+                (pl.col("member_id").cast(pl.Utf8) + ":" + pl.col("annot_val")).alias("fmt_stoich")
+            )
+            .group_by("parent_id")
+            .agg(pl.col("fmt_stoich").unique().sort().alias("stoichiometry"))
+            .rename({"parent_id": "entity_id"})
+        )
+
+    # Pathway Steps: Value is step order, Member is the step/component
+    # We want a list of "StepOrder:MemberID" strings (or similar)
+    # Let's do "StepOrder:MemberID" to be sortable by order
+    if id_sets['pathway_steps']:
+        lazy_joins.append(
+            mem_joined.filter(
+                pl.col("annot_id").is_in(list(id_sets['pathway_steps'])) & 
+                pl.col("annot_val").is_not_null()
+            )
+            .select(
+                "parent_id",
+                (pl.col("annot_val") + ":" + pl.col("member_id").cast(pl.Utf8)).alias("fmt_step")
+            )
+            .group_by("parent_id")
+            .agg(pl.col("fmt_step").unique().sort().alias("pathway_steps"))
+            .rename({"parent_id": "entity_id"})
+        )
 
     # 4f. Sources
     # Find NAME type ID efficiently
@@ -177,9 +243,9 @@ def build_search_entities(global_tables_dir: Path, output_path: Path) -> Path:
     # 6. Fill Nulls & Streaming Write
     # Note: We must cast lists explicitly to avoid schema issues if a column is entirely null
     defaults = [
-        pl.col(c).fill_null(pl.lit([], dtype=STR_LIST)) for c in ["names", "synonyms", "gene_symbols", "descriptions", "references", "sources"]
+        pl.col(c).fill_null(pl.lit([], dtype=STR_LIST)) for c in ["names", "synonyms", "gene_symbols", "descriptions", "references", "sources", "stoichiometry", "pathway_steps"]
     ] + [
-        pl.col(c).fill_null(pl.lit([], dtype=INT_LIST)) for c in ["complexes", "cv_terms"]
+        pl.col(c).fill_null(pl.lit([], dtype=INT_LIST)) for c in ["complexes", "cv_terms", "reactants", "products"]
     ] + [
         pl.col("identifiers").fill_null(pl.lit([], dtype=ID_LIST_DTYPE)),
         pl.col("num_interactions").fill_null(0)

@@ -24,6 +24,7 @@ from pypath.internals.cv_terms.annotations import (
     PharmacologicalActionCv,
     BiologicalRoleCv,
     InteractionParameterCv,
+    ParticipantMetadataCv,
     LigandTypeCv,
 )
 
@@ -80,6 +81,26 @@ SMALL_MOLECULE_TYPE_ACCESSION = EntityTypeCv.SMALL_MOLECULE.value
 
 # CV_TERM_ACCESSION identifier type (used for identifying CV terms)
 CV_TERM_ACCESSION_TYPE = IdentifierNamespaceCv.CV_TERM_ACCESSION.value
+
+# =============================================================================
+# Reactome / Pathway / Reaction specific sets
+# =============================================================================
+
+REACTANT_ROLE_ACCESSIONS = frozenset({
+    BiologicalRoleCv.REACTANT.value,
+})
+
+PRODUCT_ROLE_ACCESSIONS = frozenset({
+    BiologicalRoleCv.PRODUCT.value,
+})
+
+STOICHIOMETRY_ANNOTATION_ACCESSIONS = frozenset({
+    ParticipantMetadataCv.STOICHIOMETRY.value,
+})
+
+STEP_ORDER_ANNOTATION_ACCESSIONS = frozenset({
+    ParticipantMetadataCv.STEP_ORDER.value,
+})
 
 # =============================================================================
 # Interaction Annotation CV Term Sets (for categorization)
@@ -252,6 +273,10 @@ def build_accession_to_entity_id_sets(cv_term_mapping: pl.DataFrame) -> dict[str
         'interaction_type': accession_to_id.get(INTERACTION_TYPE_ACCESSION),
         'cv_term_type': accession_to_id.get(CV_TERM_TYPE_ACCESSION),
         'complex_type': accession_to_id.get(COMPLEX_TYPE_ACCESSION),
+        'reactants': _accessions_to_ids(REACTANT_ROLE_ACCESSIONS),
+        'products': _accessions_to_ids(PRODUCT_ROLE_ACCESSIONS),
+        'stoichiometry': _accessions_to_ids(STOICHIOMETRY_ANNOTATION_ACCESSIONS),
+        'pathway_steps': _accessions_to_ids(STEP_ORDER_ANNOTATION_ACCESSIONS),
     }
 
 
