@@ -2,6 +2,8 @@
 import React from "react";
 import { ResultCard, type SearchResult } from "./result-card";
 import Link from "next/link";
+import { useQuery } from "@tanstack/react-query";
+
 interface SearchResultsProps {
   results: Array<SearchResult>;
   loading?: boolean;
@@ -10,13 +12,60 @@ interface SearchResultsProps {
   sentinelRef?: React.RefObject<HTMLElement | null>;
 }
 
-export function SearchResults({ 
-  results, 
+export function SearchResults({
+  results,
   loading = false,
   loadingMore = false,
   hasMore = false,
   sentinelRef
 }: SearchResultsProps) {
+
+  // Collect all IDs that need name resolution
+  const idsToFetch = React.useMemo(() => {
+    const ids = new Set<string>();
+    results.forEach(result => {
+      // Add reactants
+      if (result.reactants) {
+        result.reactants.forEach(id => ids.add(String(id)));
+      }
+      // Add products
+      if (result.products) {
+        result.products.forEach(id => ids.add(String(id)));
+      }
+      // Add pathway steps
+      if (result.pathway_steps) {
+        result.pathway_steps.forEach(step => {
+          if (!step) return;
+          const parts = step.split(':');
+          if (parts.length > 1) ids.add(parts[1]);
+        });
+      }
+    });
+    return Array.from(ids);
+  }, [results]);
+
+  const { data: entityNames = {} } = useQuery({
+    queryKey: ['entity-names', idsToFetch],
+    queryFn: async () => {
+      if (idsToFetch.length === 0) return {};
+
+      const res = await fetch('/api/entity-names', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ ids: idsToFetch }),
+      });
+
+      if (!res.ok) {
+        throw new Error('Failed to fetch entity names');
+      }
+
+      return res.json() as Promise<Record<string, string>>;
+    },
+    enabled: idsToFetch.length > 0,
+    staleTime: 5 * 60 * 1000, // Cache for 5 minutes
+  });
 
   if (loading && !results.length) {
     return null;
@@ -33,6 +82,7 @@ export function SearchResults({
       </div>
     );
   }
+
   return (
     <div className="w-full">
       <div className="grid gap-4" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))' }} id="resultsGrid">
@@ -59,15 +109,15 @@ export function SearchResults({
 
           return (
             <Link key={key} href={href}>
-              <ResultCard result={result} />
+              <ResultCard result={result} entityNamesMap={entityNames} />
             </Link>
           );
         })}
       </div>
-      
+
       {/* Infinite scroll sentinel */}
       {sentinelRef && (
-        <div 
+        <div
           ref={sentinelRef as React.RefObject<HTMLDivElement>}
           className="flex justify-center py-8"
           style={{ visibility: hasMore ? 'visible' : 'hidden', height: hasMore ? 'auto' : '0' }}
@@ -82,7 +132,7 @@ export function SearchResults({
           )}
         </div>
       )}
-      
+
       {/* End of results message */}
       {sentinelRef && !hasMore && results.length > 0 && (
         <div className="py-4 text-center text-sm text-muted-foreground">

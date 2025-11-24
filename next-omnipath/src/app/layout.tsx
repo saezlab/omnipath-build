@@ -6,6 +6,7 @@ import { SidebarProvider } from "@/components/ui/sidebar"
 import { AppSidebar } from "@/components/layout/app-sidebar"
 import { SidebarContentProvider } from "@/contexts/sidebar-content-context"
 import { EntitySelectionProvider } from "@/contexts/entity-selection-context"
+import { Providers } from "@/components/providers"
 import "./globals.css"
 
 const inter = Inter({ subsets: ["latin"] })
@@ -24,16 +25,18 @@ export default function RootLayout({
     <html lang="en" suppressHydrationWarning>
       <body className={inter.className}>
         <ThemeProvider attribute="class" defaultTheme="system" enableSystem>
-          <EntitySelectionProvider>
-            <SidebarContentProvider>
-              <SidebarProvider>
-                <AppSidebar />
-                <main className="flex-1 w-full">
-                  {children}
-                </main>
-              </SidebarProvider>
-            </SidebarContentProvider>
-          </EntitySelectionProvider>
+          <Providers>
+            <EntitySelectionProvider>
+              <SidebarContentProvider>
+                <SidebarProvider>
+                  <AppSidebar />
+                  <main className="flex-1 w-full">
+                    {children}
+                  </main>
+                </SidebarProvider>
+              </SidebarContentProvider>
+            </EntitySelectionProvider>
+          </Providers>
         </ThemeProvider>
       </body>
     </html>

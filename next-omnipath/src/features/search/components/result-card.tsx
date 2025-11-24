@@ -97,24 +97,17 @@ export interface SearchResult {
 }
 
 // Component to display a reaction equation
-function ReactionDisplay({ result }: { result: SearchResult }) {
-  const [names, setNames] = useState<Record<string, string>>({});
-
+function ReactionDisplay({ result, names = {} }: { result: SearchResult, names?: Record<string, string> }) {
   const reactants = result.reactants || [];
   const products = result.products || [];
   const stoichiometry = result.stoichiometry || [];
 
   console.log("ReactionDisplay", { id: result.id, reactants, products, stoichiometry });
 
-  useEffect(() => {
-    const idsToFetch = [...reactants, ...products].map(String);
-    if (idsToFetch.length > 0) {
-      getEntityNames(idsToFetch).then(names => {
-        console.log("ReactionDisplay fetched names", names);
-        setNames(names);
-      });
-    }
-  }, [result]);
+  if (reactants.length === 0 && products.length === 0) {
+    console.log("ReactionDisplay: No reactants or products, returning null");
+    return null;
+  }
 
   if (reactants.length === 0 && products.length === 0) {
     console.log("ReactionDisplay: No reactants or products, returning null");
@@ -165,20 +158,10 @@ function ReactionDisplay({ result }: { result: SearchResult }) {
 }
 
 // Component to display pathway steps
-function PathwayDisplay({ result }: { result: SearchResult }) {
-  const [names, setNames] = useState<Record<string, string>>({});
+function PathwayDisplay({ result, names = {} }: { result: SearchResult, names?: Record<string, string> }) {
   const steps = result.pathway_steps || [];
 
-  useEffect(() => {
-    const idsToFetch = steps
-      .filter(Boolean)
-      .map(s => s.split(':')[1])
-      .filter(Boolean);
-
-    if (idsToFetch.length > 0) {
-      getEntityNames(idsToFetch).then(setNames);
-    }
-  }, [result]);
+  if (steps.length === 0) return null;
 
   if (steps.length === 0) return null;
 
@@ -377,7 +360,9 @@ function MoleculeResultCard({ result }: { result: SearchResult }) {
   );
 }
 
-export function ResultCard({ result }: { result: SearchResult }) {
+export function ResultCard({ result, entityNamesMap }: { result: SearchResult, entityNamesMap?: Record<string, string> }) {
+  const router = useRouter();
+
   // Check if this is a small molecule and render specialized card
   if (isSmallMolecule(result)) {
     return <MoleculeResultCard result={result} />;
@@ -420,7 +405,6 @@ export function ResultCard({ result }: { result: SearchResult }) {
   };
 
   // New handler for clicking the whole card to navigate to explore page
-  const router = useRouter();
   const handleCardClick = (e: React.MouseEvent) => {
     // Prevent default link behavior if any
     e.preventDefault();
@@ -509,8 +493,7 @@ export function ResultCard({ result }: { result: SearchResult }) {
   const interactionCount = result.num_interactions || 0;
   const entityCount = result.associated_entity_ids?.length || 0;
 
-  // Convert identifiers to display format (join all identifier values)
-  const allIdentifierValues = identifiers.map(id => id.value);
+
 
   return (
     <Card className={`flex flex-col hover:shadow-md transition-shadow h-full result-card group relative ${type === 'cv_term' ? 'cursor-pointer' : ''}`} onClick={handleCardClick}>
@@ -551,12 +534,12 @@ export function ResultCard({ result }: { result: SearchResult }) {
 
               {/* Reaction Equation */}
               {entityTypeLabel.toLowerCase() === 'reaction' && (
-                <ReactionDisplay result={result} />
+                <ReactionDisplay result={result} names={entityNamesMap} />
               )}
 
               {/* Pathway Steps */}
               {entityTypeLabel.toLowerCase() === 'pathway' && (
-                <PathwayDisplay result={result} />
+                <PathwayDisplay result={result} names={entityNamesMap} />
               )}
             </CardContent>
           </div>
