@@ -4,8 +4,9 @@ import { Button } from "@/components/ui/button"
 import { X, Search } from "lucide-react"
 import { ToolResult } from "./dual-mode-interface"
 import SearchPage from "@/features/search/page"
-import { EntityInteractionsSearch } from "@/features/interactions-search/components/entity-interactions-search"
-import { InteractionDetails } from "@/features/interactions-search/components/interaction-details"
+import { InteractionsExploreTab } from "@/features/explore/components/interactions-explore-tab"
+import { useState, useCallback, useEffect } from "react"
+import { MeilisearchFilters } from "@/types/meilisearch"
 
 interface ResultsPanelProps {
   toolResult: ToolResult | null
@@ -13,6 +14,39 @@ interface ResultsPanelProps {
 }
 
 export function ResultsPanel({ toolResult, onClose }: ResultsPanelProps) {
+  // State for interactions tab
+  const [interactionsFilters, setInteractionsFilters] = useState<MeilisearchFilters>({})
+  const [interactionsFilterCounts, setInteractionsFilterCounts] = useState<Record<string, Record<string, number>>>({})
+
+  // Reset filters when toolResult changes
+  useEffect(() => {
+    if (toolResult?.toolName === "searchInteractions") {
+      const query = toolResult.query
+      let ids: number[] = []
+
+      if (Array.isArray(query.entityIds)) {
+        ids = query.entityIds.map(id => Number(id)).filter(id => !isNaN(id))
+      } else if (query.entity_id) {
+        const id = Number(query.entity_id)
+        if (!isNaN(id)) ids.push(id)
+      }
+
+      if (ids.length > 0) {
+        setInteractionsFilters({ entity_ids: ids })
+      } else {
+        setInteractionsFilters({})
+      }
+    }
+  }, [toolResult])
+
+  const handleInteractionsFilterChange = useCallback((newFilters: MeilisearchFilters) => {
+    setInteractionsFilters(newFilters)
+  }, [])
+
+  const handleInteractionsFilterCountsUpdate = useCallback((counts: Record<string, Record<string, number>>) => {
+    setInteractionsFilterCounts(counts)
+  }, [])
+
   if (!toolResult) {
     return (
       <div className="h-full flex items-center justify-center text-muted-foreground">
@@ -28,32 +62,32 @@ export function ResultsPanel({ toolResult, onClose }: ResultsPanelProps) {
     switch (toolResult.toolName) {
       case "searchEntities": {
         const query = String(toolResult.query.query || "")
-        const searchType = toolResult.query.searchType as "entities" | "cv_terms" | undefined
+        // Map "entities" to "search_entities" to match SearchPage props
+        const rawSearchType = toolResult.query.searchType as string
+        const searchType = rawSearchType === "cv_terms" ? "cv_terms" : "search_entities"
+
         return (
           <SearchPage
             embedded={true}
             initialQuery={query}
-            initialSearchType={searchType || "entities"}
+            initialSearchType={searchType}
           />
         )
       }
 
       case "searchInteractions": {
-        const entityId = String(toolResult.query.entity_id || "")
         return (
-          <EntityInteractionsSearch
-            entityId={entityId}
-          />
+          <div className="h-full p-4">
+            <InteractionsExploreTab
+              filters={interactionsFilters}
+              onFilterChange={handleInteractionsFilterChange}
+              onFilterCountsUpdate={handleInteractionsFilterCountsUpdate}
+            />
+          </div>
         )
       }
 
-      case "getInteractionEvidences":
-        // Find the specific interaction
-        const interaction = toolResult.results[0]
-        if (interaction) {
-          return <InteractionDetails selectedInteraction={interaction} />
-        }
-        return <div className="p-4">No interaction details found</div>
+
 
       default:
         return (
@@ -67,8 +101,8 @@ export function ResultsPanel({ toolResult, onClose }: ResultsPanelProps) {
   return (
     <div className="h-full flex flex-col bg-muted/20 relative">
       {/* Floating close button on the left */}
-      <Button 
-        variant="secondary" 
+      <Button
+        variant="secondary"
         size="icon"
         className="absolute top-0 left-2 z-10 shadow-md"
         onClick={onClose}

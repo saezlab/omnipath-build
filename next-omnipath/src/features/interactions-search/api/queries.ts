@@ -54,11 +54,11 @@ function isSmallMoleculeType(entityTypeName: string | undefined): boolean {
   if (!entityTypeName) return false;
   const type = entityTypeName.toLowerCase();
   return type === 'smallmolecule' ||
-         type === 'small_molecule' ||
-         type === 'compound' ||
-         type === 'metabolite' ||
-         type === 'drug' ||
-         type === 'lipid';
+    type === 'small_molecule' ||
+    type === 'compound' ||
+    type === 'metabolite' ||
+    type === 'drug' ||
+    type === 'lipid';
 }
 
 // Helper to get shortest valid name for small molecules
@@ -126,6 +126,5 @@ export async function fetchEntitiesByIds(entityIds: number[]): Promise<Map<numbe
   }
 }
 
-// Export response types
 export type SearchInteractionsResponse = Awaited<ReturnType<typeof searchInteractions>>;
 export type FetchEntitiesByIdsResponse = Awaited<ReturnType<typeof fetchEntitiesByIds>>;

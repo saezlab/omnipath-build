@@ -30,8 +30,7 @@ const getToolDisplayName = (toolName: string) => {
       return "Entity Search"
     case "searchInteractions":
       return "Interaction Search"
-    case "getInteractionEvidences":
-      return "Interaction Details"
+
     default:
       return toolName
   }

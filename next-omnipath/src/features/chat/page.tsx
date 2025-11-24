@@ -32,7 +32,7 @@ export default function ChatPage() {
 
   return (
     <SiteLayout>
-      <div className="flex-1 flex flex-col" style={{ height: 'calc(100vh - 4rem)' }}>
+      <div className="flex-1 flex flex-col h-[100vh] mt-2">
         <DualModeInterface
           messages={messages}
           input={input}

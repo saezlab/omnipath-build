@@ -8,7 +8,7 @@ import { Message } from "ai"
 
 export interface ToolResult {
   id: string
-  toolName: "searchEntities" | "searchInteractions" | "getInteractionEvidences"
+  toolName: "searchEntities" | "searchInteractions"
   query: Record<string, unknown>
   results: Array<Record<string, unknown>>
   timestamp: Date
@@ -97,7 +97,7 @@ export function DualModeInterface({
           </ResizablePanel>
 
           <ResizableHandle withHandle />
-          
+
           <ResizablePanel
             defaultSize={67}
             minSize={50}

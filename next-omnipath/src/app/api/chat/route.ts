@@ -1,12 +1,13 @@
 import { google } from "@/ai";
 import { convertToCoreMessages, smoothStream, streamText } from "ai";
 import { z } from "zod";
-import { 
-  searchMeilisearch, 
+import {
+  searchMeilisearch,
   searchInteractionsMeilisearch
 } from "@/lib/meilisearch/search";
 import type { MeilisearchFilters } from "@/types/meilisearch";
-import { getInteractionEvidences } from "@/features/interactions-search/api/queries";
+import { INDEXES } from "@/lib/meilisearch/client";
+
 
 // Define types for Meilisearch hits
 interface EntityHit {
@@ -77,37 +78,40 @@ Examples:
     execute: async ({ query, searchType, limit }: { query: string; searchType: "entities" | "cv_terms"; limit: number }) => {
       console.log(`Searching ${searchType} for: ${query}`);
       try {
+        // Use the common ENTITIES index for both types
+        // We could add filters here if needed to distinguish between entities and cv_terms
+        // but for now we'll rely on the query matching relevant documents
         const data = await searchMeilisearch({
           query,
-          index: searchType,
+          index: INDEXES.ENTITIES,
           limit,
           offset: 0,
         });
-        
+
         const hits = (data.hits || []) as (EntityHit | CVTermHit)[];
         console.log(`Search returned ${hits.length} results.`);
         console.log('Sample hit for preview:', JSON.stringify(hits[0], null, 2));
-        
+
         // AI intelligently selects the best match
         // Since Meilisearch returns results ordered by relevance, we can use scoring heuristics
         let bestMatchId: string | number | undefined = undefined;
-        
+
         if (hits.length > 0) {
           const queryLower = query.toLowerCase();
           let bestScore = -1;
           let bestHit: EntityHit | CVTermHit | null = null;
-          
+
           // Score each hit to find the best match
           for (let i = 0; i < Math.min(hits.length, 5); i++) { // Check top 5 results
             const hit = hits[i];
             let score = 5 - i; // Base score from position (5 for first, 4 for second, etc.)
-            
+
             if (searchType === "entities") {
               const entityHit = hit as EntityHit;
               const displayName = (entityHit.display_name || "").toLowerCase();
               const geneSymbol = (entityHit.gene_symbol || "").toLowerCase();
               const description = (entityHit.description || "").toLowerCase();
-              
+
               // Exact matches get highest score
               if (displayName === queryLower || geneSymbol === queryLower) {
                 score += 100;
@@ -120,7 +124,7 @@ Examples:
               else if (displayName.includes(queryLower) || geneSymbol.includes(queryLower)) {
                 score += 25;
               }
-              
+
               // Bonus for popular/well-annotated entities
               if (entityHit.interaction_ids && entityHit.interaction_ids.length > 100) {
                 score += 10;
@@ -133,7 +137,7 @@ Examples:
               const cvHit = hit as CVTermHit;
               const name = (cvHit.name || "").toLowerCase();
               const definition = (cvHit.definition || "").toLowerCase();
-              
+
               // Exact match
               if (name === queryLower) {
                 score += 100;
@@ -146,7 +150,7 @@ Examples:
               else if (name.includes(queryLower)) {
                 score += 25;
               }
-              
+
               // Bonus for well-annotated terms
               if (cvHit.associated_entity_ids && cvHit.associated_entity_ids.length > 10) {
                 score += 10;
@@ -155,21 +159,21 @@ Examples:
                 score += 5;
               }
             }
-            
+
             if (score > bestScore) {
               bestScore = score;
               bestHit = hit;
             }
           }
-          
+
           // Always select the best scored hit as the AI's choice
           if (bestHit) {
-            bestMatchId = searchType === "entities" 
+            bestMatchId = searchType === "entities"
               ? ((bestHit as EntityHit).canonical_identifier || bestHit.id)
               : bestHit.id;
           }
         }
-        
+
         // Return minimal data with component parameters
         // Include top 3 results as preview for AI context
         const preview = hits.slice(0, 3).map((hit: EntityHit | CVTermHit) => ({
@@ -184,7 +188,7 @@ Examples:
             associated_entities: (hit as CVTermHit).associated_entity_ids?.length || 0
           })
         }));
-        
+
         return {
           // Component parameters for dialog
           componentParams: {
@@ -212,9 +216,9 @@ Examples:
       }
     },
   },
-  
+
   searchInteractions: {
-    description: `Search for molecular interactions. 
+    description: `Search for molecular interactions.
 IMPORTANT: The interactions index CANNOT search by entity names directly - it only supports filtering by entity IDs.
 To find interactions for a specific protein/gene:
 1. First use searchEntities to find the entity and get its ID
@@ -223,7 +227,7 @@ To find interactions for a specific protein/gene:
       entityIds: z.array(z.string()).optional().describe("Entity IDs to filter interactions by. Use searchEntities first to get these IDs."),
       limit: z.number().min(1).max(100).default(20).describe("Maximum number of results to return (1-100)"),
     }),
-    execute: async ({ entityIds, limit }: { 
+    execute: async ({ entityIds, limit }: {
       entityIds?: string[];
       limit: number;
     }) => {
@@ -231,28 +235,29 @@ To find interactions for a specific protein/gene:
       try {
         // Build the request with filters
         const apiFilters: MeilisearchFilters = {};
-        
+
         // Add entity IDs filter if provided
         if (entityIds && entityIds.length > 0) {
-          apiFilters.entity_ids = entityIds;
+          // Convert string IDs to numbers as required by MeilisearchFilters
+          apiFilters.entity_ids = entityIds.map(id => parseInt(id, 10)).filter(id => !isNaN(id));
         }
 
         const requestParams = {
           query: "", // Interactions index doesn't support text search
           limit,
           offset: 0,
-          index: "interactions" as const,
+          index: INDEXES.INTERACTIONS,
           filters: apiFilters,
         };
 
         const data = await searchInteractionsMeilisearch(requestParams);
-        
+
         const hits = (data.hits || []) as InteractionHit[];
         console.log(`Interaction search returned ${hits.length} results.`);
-        
+
         // Extract and format facet statistics for AI analysis
         const facetStats = (data.facetDistribution || {}) as Record<string, Record<string, number>>;
-        
+
         // Format facet data for better AI understanding
         const formattedFacets = {
           interactionTypes: facetStats['interaction_types_facet'] || {},
@@ -267,7 +272,7 @@ To find interactions for a specific protein/gene:
           consensusDirection: facetStats['consensus_direction'] || {},
           evidenceCountDistribution: facetStats['evidence_count'] || {}
         };
-        
+
         // Calculate summary statistics from facets
         const summaryStats = {
           totalInteractions: data.estimatedTotalHits || hits.length,
@@ -278,19 +283,19 @@ To find interactions for a specific protein/gene:
           undirectedInteractions: formattedFacets.isDirected['false'] || 0,
           // Top categories
           topInteractionTypes: Object.entries(formattedFacets.interactionTypes)
-            .sort(([,a], [,b]) => (b as number) - (a as number))
+            .sort(([, a], [, b]) => (b as number) - (a as number))
             .slice(0, 5)
             .map(([name, count]) => ({ name, count })),
           topDataSources: Object.entries(formattedFacets.dataSources)
-            .sort(([,a], [,b]) => (b as number) - (a as number))
+            .sort(([, a], [, b]) => (b as number) - (a as number))
             .slice(0, 5)
             .map(([name, count]) => ({ name, count })),
           topDetectionMethods: Object.entries(formattedFacets.detectionMethods)
-            .sort(([,a], [,b]) => (b as number) - (a as number))
+            .sort(([, a], [, b]) => (b as number) - (a as number))
             .slice(0, 5)
             .map(([name, count]) => ({ name, count }))
         };
-        
+
         return {
           // Component parameters for dialog
           componentParams: {
@@ -316,43 +321,15 @@ To find interactions for a specific protein/gene:
       }
     },
   },
-
-  getInteractionEvidences: {
-    description: `Get detailed evidence records for a specific interaction.
-This provides comprehensive information about the experimental evidence supporting an interaction.
-Includes details like:
-- Detection methods used
-- Publications/references
-- Experimental conditions
-- Participant molecules and their roles
-- Regulatory information (activation/inhibition)`,
-    parameters: z.object({
-      interactionId: z.number().describe("The unique ID of the interaction to get evidence for"),
-    }),
-    execute: async ({ interactionId }: { interactionId: number }) => {
-      console.log(`Getting evidence for interaction ID: ${interactionId}`);
-      try {
-        const data = await getInteractionEvidences(interactionId);
-        
-        console.log(`Retrieved interaction with ${data.data?.length || 0} evidence records.`);
-        
-        return {
-          interaction: data,
-          evidenceCount: data.data?.length || 0,
-        };
-      } catch (error: unknown) {
-        console.error("Error getting interaction evidences:", error);
-        return { error: error instanceof Error ? error.message : 'Unknown error retrieving evidence' };
-      }
-    },
-  }
 };
+
+
 
 export async function POST(req: Request) {
   try {
     const body = await req.json();
     const { messages } = requestSchema.parse(body);
-    
+
     // Convert messages to core format
     const coreMessages = convertToCoreMessages(messages).filter(
       (message) => message.content.length > 0,
@@ -437,7 +414,7 @@ After receiving tool responses:
     }
 
     const stream = streamText({
-      model: google("gemini-2.5-flash-preview-04-17"),
+      model: google("gemini-2.5-flash"),
       messages: coreMessages,
       tools,
       toolChoice: "auto",
@@ -460,11 +437,12 @@ After receiving tool responses:
         Connection: 'keep-alive',
       },
       sendReasoning: true,
-      getErrorMessage: () => {
+      getErrorMessage: (error) => {
+        console.error("Chat stream error:", error);
         return `An error occurred, please try again!`;
       },
     });
-    
+
   } catch (error: unknown) {
     console.error("Error in chat endpoint:", error);
     return new Response("Failed to process chat request", { status: 500 });

@@ -48,16 +48,11 @@ interface SearchInteractionsResult {
   }
 }
 
-interface InteractionEvidencesResult {
-  interaction: Record<string, unknown>
-  evidenceCount: number
-}
-
 interface ToolError {
   error: string
 }
 
-type ToolResultType = SearchEntitiesResult | SearchInteractionsResult | InteractionEvidencesResult | ToolError
+type ToolResultType = SearchEntitiesResult | SearchInteractionsResult | ToolError
 
 // Update CustomToolInvocation args
 interface CustomToolInvocation {
@@ -67,20 +62,20 @@ interface CustomToolInvocation {
   result?: ToolResultType
 }
 
-export const ToolResponse = ({ 
-    toolInvocation,
-    onToolResultClick,
-    messageId,
-}: { 
-    toolInvocation: CustomToolInvocation
-    onToolResultClick?: (result: ToolResult) => void
-    messageId: string
+export const ToolResponse = ({
+  toolInvocation,
+  onToolResultClick,
+  messageId,
+}: {
+  toolInvocation: CustomToolInvocation
+  onToolResultClick?: (result: ToolResult) => void
+  messageId: string
 }) => {
   const { toolName, result, state, args } = toolInvocation
 
   // Early exit for pending or unknown states without results yet
   if (state === 'pending' || !result) {
-     return null 
+    return null
   }
 
   const isError = 'error' in result
@@ -118,8 +113,8 @@ export const ToolResponse = ({
     case "searchInteractions": {
       const searchResult = result as SearchInteractionsResult
       // Use preview data or example interactions (results array may not exist)
-      transformedResults = searchResult.results?.length > 0 
-        ? searchResult.results 
+      transformedResults = searchResult.results?.length > 0
+        ? searchResult.results
         : (searchResult.preview || [])
       totalCount = searchResult.totalCount || searchResult.stats?.totalCount
       query = {
@@ -129,13 +124,7 @@ export const ToolResponse = ({
       break
     }
 
-    case "getInteractionEvidences": {
-      const evidenceResult = result as InteractionEvidencesResult
-      transformedResults = [evidenceResult.interaction]
-      totalCount = evidenceResult.evidenceCount
-      query = args
-      break
-    }
+
 
     default:
       console.warn(`Received response for unknown tool: ${toolName}`)
@@ -148,7 +137,7 @@ export const ToolResponse = ({
       results={transformedResults}
       query={query}
       messageId={messageId}
-      onClick={onToolResultClick || (() => {})}
+      onClick={onToolResultClick || (() => { })}
       totalCount={totalCount}
     />
   )
