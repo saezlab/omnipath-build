@@ -176,6 +176,9 @@ export function EntityFilterSidebar({
         let icon: string | undefined;
         if (filterKey === 'entity_type') {
           icon = entityTypeEmojis[displayName] || entityTypeEmojis[value];
+        } else if (filterKey === 'sources') {
+          // Use the same database emoji for all sources
+          icon = '📚';
         }
 
         return {
