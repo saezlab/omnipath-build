@@ -50,12 +50,7 @@ const navigationItems = [
     title: "Chat",
     url: "/chat",
     icon: MessageSquare,
-  },
-  {
-    title: "Datasources",
-    url: "/sources",
-    icon: Database,
-  },
+  }
 ]
 
 export function AppSidebar() {

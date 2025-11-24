@@ -13,7 +13,28 @@ interface FilterOption {
   value: string;
   count: number;
   displayName?: string;
+  icon?: string;
 }
+
+// Map entity types to emojis
+const entityTypeEmojis: Record<string, string> = {
+  'SmallMolecule': '🧪',
+  'Lipid': '💧',
+  'Cv_term': '🏷️',
+  'Protein': '🧬',
+  'Reaction': '⚗️',
+  'Complex': '🧩',
+  'Pathway': '🛣️',
+  'Protein_family': '👥',
+  'Physical_entity': '🧱',
+  'DoubleStrandedDeoxyribonucleicAcid': '🧬',
+  'ProteinComplex': '🧩',
+  'RibonucleicAcid': '🧬',
+  'Phenotype': '🩺',
+  'MoleculeSet': '📦',
+  'Stimulus': '🔦',
+  'Degradation': '♻️',
+};
 
 interface EntityFilterSidebarProps {
   filters: {
@@ -53,16 +74,15 @@ function FilterSection({
     <div>
       <h4 className="text-sm font-medium mb-3">{title}</h4>
       <div className="space-y-1 max-h-64 overflow-y-auto pr-2">
-        {options.map(({ value, count, displayName }) => {
+        {options.map(({ value, count, displayName, icon }) => {
           const isSelected = selectedValues?.includes(value) || false;
 
           return (
             <div key={value} className="flex items-center justify-between group py-0.5 gap-2">
               <Label
                 htmlFor={`${filterKey}-${value}`}
-                className={`flex items-center gap-1.5 text-xs font-normal cursor-pointer group-hover:text-primary transition-colors min-w-0 flex-1 ${
-                  isSelected ? "text-primary font-medium" : ""
-                }`}
+                className={`flex items-center gap-1.5 text-xs font-normal cursor-pointer group-hover:text-primary transition-colors min-w-0 flex-1 ${isSelected ? "text-primary font-medium" : ""
+                  }`}
               >
                 <Checkbox
                   id={`${filterKey}-${value}`}
@@ -73,7 +93,10 @@ function FilterSection({
                     isSelected ? "border-primary" : ""
                   )}
                 />
-                <span className="truncate">{displayName || value}</span>
+                <span className="truncate">
+                  {icon && <span className="mr-1.5">{icon}</span>}
+                  {displayName || value}
+                </span>
               </Label>
               <Badge
                 variant={isSelected ? "default" : "outline"}
@@ -150,10 +173,16 @@ export function EntityFilterSidebar({
           displayName = parts.length > 1 ? parts.slice(0, -1).join(':') : value;
         }
 
+        let icon: string | undefined;
+        if (filterKey === 'entity_type') {
+          icon = entityTypeEmojis[displayName] || entityTypeEmojis[value];
+        }
+
         return {
           value: value, // Use the full facet value
           count,
-          displayName
+          displayName,
+          icon
         };
       })
       .sort((a, b) => b.count - a.count); // Sort by count in descending order
