@@ -50,6 +50,7 @@ def discover_resources(
 ) -> tuple[Dict[str, List[ResourceFunction]], PathManager]:
     """Discover generator functions from the inputs_v2 package."""
     path_manager = PathManager(database_name, base_path)
+    from pypath.inputs_v2.base import Dataset  # Local import to avoid import-time side effects.
 
     try:
         root_module = importlib.import_module(inputs_package)
@@ -75,30 +76,24 @@ def discover_resources(
 
         module = importlib.import_module(module_name)
 
-        export_names = [
-            name for name, obj in inspect.getmembers(module, inspect.isfunction)
-            if obj.__module__ == module.__name__
-            and inspect.isgeneratorfunction(obj)
-            and not name.startswith('_')  # Exclude private functions
+        dataset_members = [
+            (name, obj) for name, obj in inspect.getmembers(module)
+            if isinstance(obj, Dataset)
         ]
 
-        if not export_names:
+        if not dataset_members:
             continue
 
         resource_id = relative_name
 
         module_functions: List[ResourceFunction] = []
-        for function_name in export_names:
-            func = getattr(module, function_name, None)
-            if func is None:
-                continue
-
+        for dataset_name, dataset_obj in dataset_members:
             module_functions.append(
                 ResourceFunction(
                     source=relative_name,
-                    function_name=function_name,
+                    function_name=dataset_name,
                     qualified_module=module_name,
-                    call=func,
+                    call=dataset_obj,
                     resource_id=resource_id,
                 ),
             )
@@ -110,6 +105,8 @@ def discover_resources(
         raise DiscoveryError(f'No resource functions found under package "{inputs_package}"')
 
     return discovered, path_manager
+
+
 
 
 def _ensure_entity_record(record: object) -> None:
