@@ -15,9 +15,9 @@ And produces global tables with:
 Output tables:
   entity.parquet                      (entity_id, entity_type_id)
   entity_identifier.parquet           (id, entity_id, type_id, identifier)
-  entity_annotation.parquet           (entity_id, annotation_id, annotation_value, annotation_unit, sources)
-  membership.parquet                  (parent_id, member_id, sources)
-  membership_annotation.parquet       (membership_id, annotation_id, annotation_value, annotation_unit, sources)
+  entity_annotation.parquet           (id, entity_id, cv_term_entity_id, value, unit_entity_id, source_id)
+  membership.parquet                  (id, parent_id, member_id, source_id)
+  membership_annotation.parquet       (id, membership_id, annotation_id, annotation_value, annotation_unit, source_id)
 
 Note: entity_identifier_resource.parquet is created by build_entity_identifiers.py and requires no transformation
 """
@@ -279,6 +279,85 @@ def build_global_tables(
     logger.info(f"Built source mapping: {len(source_mapping):,} sources")
 
     # ========================================================================
+    # 3.6. PROCESS ENTITY ANNOTATION TABLE
+    # ========================================================================
+
+    logger.info("\n" + "=" * 80)
+    logger.info("Processing entity_annotation table")
+    logger.info("=" * 80)
+
+    entity_annot_files = sorted(local_tables_dir.glob("local_entity_annotation_*.parquet"))
+    logger.info(f"Found {len(entity_annot_files)} entity_annotation files")
+
+    entity_annot_parts = []
+    for f in entity_annot_files:
+        df = pl.read_parquet(f)
+        logger.info(f"  {f.name}: {len(df):,} rows")
+
+        # Map local_entity_id -> global entity_id
+        df_global = df.join(
+            record_to_global,
+            on=["source_id", "local_entity_id"],
+            how="left"
+        )
+
+        # Map cv_term_entity_id (local) -> cv_term_entity_id (global)
+        if "cv_term_entity_id" in df.columns:
+            df_global = df_global.with_columns(
+                pl.col("cv_term_entity_id").cast(pl.Int64)
+            )
+            df_global = df_global.join(
+                record_to_global.rename({
+                    "local_entity_id": "cv_term_entity_id",
+                    "entity_id": "cv_term_entity_id_global"
+                }),
+                on=["source_id", "cv_term_entity_id"],
+                how="left"
+            ).drop("cv_term_entity_id").rename({"cv_term_entity_id_global": "cv_term_entity_id"})
+
+        # Map unit_entity_id (local) -> unit_entity_id (global)
+        if "unit_entity_id" in df.columns:
+            df_global = df_global.with_columns(
+                pl.col("unit_entity_id").cast(pl.Int64)
+            )
+            df_global = df_global.join(
+                record_to_global.rename({
+                    "local_entity_id": "unit_entity_id",
+                    "entity_id": "unit_entity_id_global"
+                }),
+                on=["source_id", "unit_entity_id"],
+                how="left"
+            ).drop("unit_entity_id").rename({"unit_entity_id_global": "unit_entity_id"})
+        else:
+            df_global = df_global.with_columns(
+                pl.lit(None, dtype=pl.Int64).alias("unit_entity_id")
+            )
+
+        entity_annot_parts.append(df_global)
+
+    if entity_annot_parts:
+        # Combine all sources
+        entity_annots_combined = pl.concat(entity_annot_parts, how="diagonal_relaxed")
+
+        # Map source_id to source_entity_id
+        entity_annots_with_source = (
+            entity_annots_combined
+            .join(source_mapping, on="source_id", how="left")
+            .drop(["source_id", "local_entity_id", "local_entity_annotation_id"])
+            .rename({"entity_id": "entity_id", "source_entity_id": "source_id"})
+            .sort(["entity_id", "cv_term_entity_id", "source_id"])
+        )
+
+        # Assign global sequential IDs
+        entity_annots_output = entity_annots_with_source.with_row_index("id", offset=1)
+
+        entity_annots_output.write_parquet(output_dir / "entity_annotation.parquet")
+        logger.info(f"✅ entity_annotation: {len(entity_annots_output):,} rows")
+    else:
+        logger.warning("No entity_annotation files found")
+        pl.DataFrame().write_parquet(output_dir / "entity_annotation.parquet")
+
+    # ========================================================================
     # 4. PROCESS MEMBERSHIP TABLE
     # ========================================================================
 
@@ -464,4 +543,3 @@ def build_global_tables(
     logger.info("\n" + "=" * 80)
     logger.info("🎉 Global tables complete!")
     logger.info("=" * 80)
-
