@@ -5,6 +5,7 @@ and performs global entity resolution by:
 1. Loading local_entity_identifiers_*.parquet files
 2. Building edges from merge-safe identifiers (InChI, InChIKey, Uniprot)
 3. Using UnionFind to assign canonical entity_id across all sources
+4. Loading local_entity_instance_*.parquet and mapping instances to global IDs
 """
 from __future__ import annotations
 
@@ -595,7 +596,7 @@ def _union_find_to_safe_clusters(uf: UnionFind) -> pl.DataFrame:
 def build_entity_identifiers(
     local_tables_dir: Path,
     merge_unsafe_types: frozenset[str] = MERGE_UNSAFE_IDENTIFIER_TYPES,
-) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]:
+) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame, pl.DataFrame]:
     """Build unified identifier tables with canonical entity IDs from local tables.
 
     Args:
@@ -607,13 +608,16 @@ def build_entity_identifiers(
       - entity_identifiers: (id, entity_id, type_id, identifier)
       - entity_identifier_resource: (id, entity_identifier_id, source_entity_id)
                                     where source_entity_id is the entity_id of the source (from local context)
+      - instance_to_global: (source_id, local_entity_instance_id) -> instance_id, entity_id
+                            maps local instances to global instance IDs and their resolved entity_id
     """
     local_tables_dir = Path(local_tables_dir)
     sources_data = _load_local_tables(local_tables_dir)
 
     if not sources_data:
         logger.warning("No local tables found, returning empty results")
-        return pl.DataFrame(), pl.DataFrame(), pl.DataFrame()
+        empty_df = pl.DataFrame()
+        return empty_df, empty_df, empty_df, empty_df
 
     union_find = UnionFind()
     all_local_ms_edges: list[pl.DataFrame] = []
@@ -729,7 +733,8 @@ def build_entity_identifiers(
 
     if not all_local_ms_edges or not all_local_all_edges:
         logger.warning("No edges collected, returning empty results")
-        return pl.DataFrame(), pl.DataFrame(), pl.DataFrame()
+        empty_df = pl.DataFrame()
+        return empty_df, empty_df, empty_df, empty_df
 
     local_ms_edges_all = pl.concat(all_local_ms_edges, how='diagonal_relaxed')
     local_all_edges_all = pl.concat(all_local_all_edges, how='diagonal_relaxed')
@@ -826,4 +831,63 @@ def build_entity_identifiers(
         f"{len(entity_identifiers):,}",
         f"{len(entity_identifier_resource):,}",
     )
-    return record_to_global, entity_identifiers, entity_identifier_resource
+
+    # ========================================================================
+    # BUILD INSTANCE_TO_GLOBAL MAPPING
+    # ========================================================================
+    # Load local_entity_instance_*.parquet files and map to global IDs
+    # Instances don't merge across sources - each gets a unique global ID
+    # But we need to resolve the entity_id for each instance
+
+    logger.info("\n" + "=" * 80)
+    logger.info("Building instance_to_global mapping")
+    logger.info("=" * 80)
+
+    instance_files = sorted(local_tables_dir.glob('local_entity_instance_*.parquet'))
+    logger.info(f"Found {len(instance_files)} entity_instance files")
+
+    instance_parts = []
+    for path in instance_files:
+        df = pl.read_parquet(path)
+        if len(df) == 0:
+            continue
+        logger.info(f"  {path.name}: {len(df):,} instances")
+        instance_parts.append(df)
+
+    if instance_parts:
+        all_instances = pl.concat(instance_parts, how='diagonal_relaxed')
+        
+        # Map local_entity_id -> global entity_id using record_to_global
+        instances_with_entity = (
+            all_instances
+            .join(
+                record_to_global.select(['source_id', 'local_entity_id', 'entity_id']),
+                on=['source_id', 'local_entity_id'],
+                how='left'
+            )
+        )
+        
+        # Assign global sequential instance IDs
+        instance_to_global = (
+            instances_with_entity
+            .sort(['source_id', 'local_entity_instance_id'])
+            .with_row_index('instance_id', offset=1)
+            .select([
+                'source_id',
+                'local_entity_instance_id',
+                'instance_id',
+                'entity_id',
+            ])
+        )
+        
+        logger.info(f"Built instance_to_global: {len(instance_to_global):,} instances")
+    else:
+        logger.info("No entity instances found")
+        instance_to_global = pl.DataFrame({
+            'source_id': pl.Series([], dtype=pl.Int64),
+            'local_entity_instance_id': pl.Series([], dtype=pl.Int64),
+            'instance_id': pl.Series([], dtype=pl.Int64),
+            'entity_id': pl.Series([], dtype=pl.Int64),
+        })
+
+    return record_to_global, entity_identifiers, entity_identifier_resource, instance_to_global

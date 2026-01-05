@@ -47,9 +47,9 @@ def build_local_tables_step(
     This step processes each source independently to create normalized tables:
     - local_entity: Per-source entity records
     - local_entity_identifier: Per-source entity identifiers
-    - local_entity_annotation: Per-source entity annotations
-    - local_membership: Per-source membership relationships
-    - local_membership_annotation: Per-source membership annotations
+    - local_entity_instance: Per-source entity instances (for entities with annotations)
+    - local_entity_annotation: Per-source entity annotations (linked to instances)
+    - local_membership: Per-source membership relationships (polymorphic entity/instance columns)
 
     Source IDs are auto-generated from discovered source names.
 
@@ -78,7 +78,7 @@ def build_local_tables_step(
 
 def build_entity_identifiers_step(
     output_dir: Path,
-) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]:
+) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame, pl.DataFrame]:
     """
     Build entity identifiers using graph-based equivalence detection.
 
@@ -88,15 +88,17 @@ def build_entity_identifiers_step(
     3. Using UnionFind to assign canonical entity_id across all sources
     4. Creating a mapping from (source_id, local_entity_id) -> entity_id
     5. Building a unified identifier table with source provenance
+    6. Loading entity instances and mapping to global instance IDs
 
     Args:
         output_dir: Path to output directory containing local_tables/
 
     Returns:
-        Tuple of (record_to_global, entity_identifiers, entity_identifier_resource) DataFrames:
+        Tuple of (record_to_global, entity_identifiers, entity_identifier_resource, instance_to_global) DataFrames:
         - record_to_global: Maps (source_id, local_entity_id) to entity_id
         - entity_identifiers: Maps (id, entity_id, type_id, identifier)
         - entity_identifier_resource: Maps (id, entity_identifier_id, source_entity_id)
+        - instance_to_global: Maps (source_id, local_entity_instance_id) to (instance_id, entity_id)
     """
     print("\n" + "=" * 70)
     print("STEP: Entity Identifiers (Cross-Source Resolution)")
@@ -110,7 +112,7 @@ def build_entity_identifiers_step(
         )
 
     # Build entity identifiers
-    record_to_global, entity_identifiers, entity_identifier_resource = build_entity_identifiers(
+    record_to_global, entity_identifiers, entity_identifier_resource, instance_to_global = build_entity_identifiers(
         local_tables_dir=local_tables_dir,
     )
 
@@ -118,20 +120,25 @@ def build_entity_identifiers_step(
     record_to_global_path = output_dir / "entity_record_mapping.parquet"
     entity_identifiers_path = output_dir / "entity_identifier.parquet"
     entity_identifier_resource_path = output_dir / "entity_identifier_resource.parquet"
+    instance_to_global_path = output_dir / "instance_to_global.parquet"
 
     record_to_global.write_parquet(record_to_global_path)
     entity_identifiers.write_parquet(entity_identifiers_path)
     entity_identifier_resource.write_parquet(entity_identifier_resource_path)
+    instance_to_global.write_parquet(instance_to_global_path)
 
     print(f"\nSaved entity record mapping: {record_to_global_path}")
     print(f"  Rows: {len(record_to_global):,}")
     print(f"\nSaved entity identifiers: {entity_identifiers_path}")
     print(f"  Rows: {len(entity_identifiers):,}")
-    print(f"  Unique entities: {entity_identifiers['entity_id'].n_unique():,}")
+    if len(entity_identifiers) > 0:
+        print(f"  Unique entities: {entity_identifiers['entity_id'].n_unique():,}")
     print(f"\nSaved entity identifier resources: {entity_identifier_resource_path}")
     print(f"  Rows: {len(entity_identifier_resource):,}")
+    print(f"\nSaved instance to global mapping: {instance_to_global_path}")
+    print(f"  Rows: {len(instance_to_global):,}")
 
-    return record_to_global, entity_identifiers, entity_identifier_resource
+    return record_to_global, entity_identifiers, entity_identifier_resource, instance_to_global
 
 
 def build_global_tables_step(
@@ -143,25 +150,27 @@ def build_global_tables_step(
     This step joins local tables with entity mappings to create global tables:
     1. Loads record_to_global mapping (source_id, local_entity_id) -> entity_id
     2. Loads entity_identifiers with CV term information
-    3. Processes each local table type:
+    3. Loads instance_to_global mapping for entity instances
+    4. Processes each local table type:
        - entity: Maps entity_type to entity_type_id
        - entity_identifier: Resolves id_type to id_type_id
-       - entity_annotation: Maps annotation_id to entity IDs
-       - membership: Resolves parent/member IDs to entity IDs
-       - membership_annotation: Maps annotation_id to entity IDs
-    4. Aggregates across sources and assigns global sequential IDs
+       - entity_instance: Maps to global instance IDs and entity IDs
+       - entity_annotation: Maps instance_id and cv_term_entity_id
+       - membership: Resolves parent/member entity/instance IDs
+    5. Aggregates across sources and assigns global sequential IDs
 
     Args:
         output_dir: Path to output directory containing local_tables/,
-                   entity_record_mapping.parquet, and entity_identifier.parquet
+                   entity_record_mapping.parquet, entity_identifier.parquet,
+                   and instance_to_global.parquet
 
     Outputs:
         Writes global tables to output_dir/:
         - entity.parquet
         - entity_identifier.parquet (updated with id_type_id)
-        - entity_annotation.parquet
-        - membership.parquet
-        - membership_annotation.parquet
+        - entity_instance.parquet
+        - entity_annotation.parquet (linked to instances)
+        - membership.parquet (polymorphic entity/instance columns)
     """
     print("\n" + "=" * 70)
     print("STEP: Global Tables (Cross-Source Aggregation)")
@@ -170,6 +179,7 @@ def build_global_tables_step(
     local_tables_dir = output_dir / "local_tables"
     record_to_global_file = output_dir / "entity_record_mapping.parquet"
     entity_identifiers_file = output_dir / "entity_identifier.parquet"
+    instance_to_global_file = output_dir / "instance_to_global.parquet"
 
     # Verify prerequisites exist
     if not local_tables_dir.exists():
@@ -187,12 +197,18 @@ def build_global_tables_step(
             f"Entity identifiers not found: {entity_identifiers_file}\n"
             "Please run the 'entity_identifiers' step first."
         )
+    if not instance_to_global_file.exists():
+        raise FileNotFoundError(
+            f"Instance to global mapping not found: {instance_to_global_file}\n"
+            "Please run the 'entity_identifiers' step first."
+        )
 
     # Build global tables
     build_global_tables(
         local_tables_dir=local_tables_dir,
         record_to_global_file=record_to_global_file,
         entity_identifiers_file=entity_identifiers_file,
+        instance_to_global_file=instance_to_global_file,
         output_dir=output_dir,
     )
 

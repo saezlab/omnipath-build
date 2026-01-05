@@ -1,4 +1,5 @@
 # Refactored build_local_tables for new Entity schema - VECTORIZED
+# With entity_instance support for contextual entity variants
 from __future__ import annotations
 from pathlib import Path
 from collections.abc import Iterable
@@ -89,6 +90,36 @@ class CvTermRegistry:
         )
 
 
+class InstanceRegistry:
+    """Track entity instances and their sequential IDs."""
+
+    def __init__(self, source_id: int):
+        self.source_id = source_id
+        self._next_instance_id = 1
+        self._instances: list[dict] = []
+
+    def create_instance(self, entity_id: int) -> int:
+        """Create a new instance for an entity, return instance ID."""
+        instance_id = self._next_instance_id
+        self._next_instance_id += 1
+        self._instances.append({
+            "local_entity_instance_id": instance_id,
+            "local_entity_id": entity_id,
+            "source_id": self.source_id,
+        })
+        return instance_id
+
+    def to_dataframe(self) -> pl.DataFrame:
+        """Return all instances as a DataFrame."""
+        if not self._instances:
+            return pl.DataFrame({
+                "local_entity_instance_id": pl.Series([], dtype=pl.Int64),
+                "local_entity_id": pl.Series([], dtype=pl.Int64),
+                "source_id": pl.Series([], dtype=pl.Int64),
+            })
+        return pl.DataFrame(self._instances)
+
+
 def _iter_parquet_files(root: Path) -> Iterable[Path]:
     """Iterate through all parquet files in subdirectories (recursively).
 
@@ -126,8 +157,15 @@ def _process_entities_vectorized(
     source_id: int,
     next_id: int,
     cv_registry: CvTermRegistry,
+    instance_registry: InstanceRegistry,
 ) -> tuple[dict[str, pl.DataFrame], int]:
-    """Process entities using vectorized operations - simple sequential ID assignment."""
+    """Process entities using vectorized operations - simple sequential ID assignment.
+    
+    New schema:
+    - entity_instance: created for entities with annotations
+    - entity_annotation: links to entity_instance (not entity directly)
+    - membership: uses polymorphic entity/instance columns
+    """
 
     if len(df) == 0:
         return {}, next_id
@@ -178,12 +216,13 @@ def _process_entities_vectorized(
             logger.info(f"    Extracted {len(identifiers):,} identifier records")
 
     # ============================================================================
-    # 3. CREATE ENTITIES FOR CV TERMS AND BUILD ENTITY ANNOTATIONS
+    # 3. CREATE ENTITY INSTANCES AND ENTITY ANNOTATIONS
     # ============================================================================
-    # Extract all unique CV terms from annotations (term, value, unit)
-    # and create local entities for them
+    # Entities with annotations get an entity_instance
+    # entity_annotation links to the instance, not the entity directly
     cv_entity_chunks: list[pl.DataFrame] = []
     cv_identifier_chunks: list[pl.DataFrame] = []
+    entity_instances = pl.DataFrame()
     entity_annotations = pl.DataFrame()
 
     if "annotations" in df.columns:
@@ -231,7 +270,30 @@ def _process_entities_vectorized(
                 if len(new_cv_identifiers):
                     cv_identifier_chunks.append(new_cv_identifiers)
 
-            # Now create entity annotations with CV term entity IDs
+            # Create entity instances for entities with annotations
+            entities_with_annots = (
+                has_annotations
+                .with_row_index("local_entity_id", offset=entity_start_id)
+                .select(["local_entity_id"])
+                .unique()
+            )
+            
+            # Create instances using the registry
+            instance_map_rows = []
+            for row in entities_with_annots.iter_rows(named=True):
+                entity_id = row["local_entity_id"]
+                instance_id = instance_registry.create_instance(entity_id)
+                instance_map_rows.append({
+                    "local_entity_id": entity_id,
+                    "local_entity_instance_id": instance_id,
+                })
+            
+            instance_map = pl.DataFrame(instance_map_rows) if instance_map_rows else pl.DataFrame({
+                "local_entity_id": pl.Series([], dtype=pl.Int64),
+                "local_entity_instance_id": pl.Series([], dtype=pl.Int64),
+            })
+
+            # Now create entity annotations with CV term entity IDs, linked to instances
             annotation_data = (
                 has_annotations
                 .with_row_index("local_entity_id", offset=entity_start_id)
@@ -251,6 +313,7 @@ def _process_entities_vectorized(
             if len(annotation_data):
                 entity_annotations = (
                     annotation_data
+                    .join(instance_map, on="local_entity_id", how="left")
                     .join(
                         cv_registry.lookup_mapping("term_accession", "cv_term_entity_id"),
                         on="term_accession",
@@ -263,7 +326,7 @@ def _process_entities_vectorized(
                     )
                     .filter(pl.col("cv_term_entity_id").is_not_null())
                     .select([
-                        pl.col("local_entity_id"),
+                        pl.col("local_entity_instance_id"),
                         pl.col("cv_term_entity_id"),
                         pl.col("value"),
                         pl.col("unit_entity_id"),
@@ -271,17 +334,18 @@ def _process_entities_vectorized(
                     .with_row_index("local_entity_annotation_id", offset=1)
                     .with_columns(pl.lit(source_id).alias("source_id"))
                 )
-                logger.info(f"    Created {len(entity_annotations):,} entity annotation records")
+                logger.info(f"    Created {len(entity_annotations):,} entity annotation records (linked to instances)")
 
     # ============================================================================
     # 4. PROCESS MEMBERSHIPS (vectorized explode + recursive handling)
     # ============================================================================
+    # New membership schema:
+    # - parent_entity_id / parent_instance_id (nullable, XOR)
+    # - member_entity_id / member_instance_id (nullable, XOR)
     memberships = pl.DataFrame()
-    membership_annotations = pl.DataFrame()
     member_entities: list[pl.DataFrame] = []
     member_identifiers: list[pl.DataFrame] = []
     member_memberships: list[pl.DataFrame] = []
-    member_membership_annotations: list[pl.DataFrame] = []
     member_entity_annotations: list[pl.DataFrame] = []
 
     if "membership" in df.columns:
@@ -304,7 +368,7 @@ def _process_entities_vectorized(
                 .explode("membership")
             )
 
-            # Extract member data
+            # Extract member data and membership annotations
             membership_info = exploded_memberships.select([
                 pl.col("parent_entity_id"),
                 pl.col("membership").struct.field("member").alias("member"),
@@ -320,21 +384,32 @@ def _process_entities_vectorized(
                 # Recursively process member entities
                 member_df = (
                     membership_info
-                    .select(["membership_row_idx", "member"])
+                    .select(["membership_row_idx", "member", "membership_annotations"])
                     .unnest("member")
                 )
+                
+                # Determine which members have annotations (from membership or entity itself)
+                # Members with membership_annotations need instances
+                has_membership_annots = (
+                    membership_info
+                    .filter(
+                        pl.col("membership_annotations").is_not_null() &
+                        (pl.col("membership_annotations").list.len() > 0)
+                    )
+                    .select("membership_row_idx")
+                )
+                
                 member_base_start_id = next_id
                 member_results, next_id = _process_entities_vectorized(
-                    member_df,
+                    member_df.drop("membership_annotations"),
                     source_id,
                     next_id,
                     cv_registry,
+                    instance_registry,
                 )
 
                 if "membership" in member_results and len(member_results["membership"]):
                     member_memberships.append(member_results["membership"])
-                if "membership_annotation" in member_results and len(member_results["membership_annotation"]):
-                    member_membership_annotations.append(member_results["membership_annotation"])
                 if "entity_annotation" in member_results and len(member_results["entity_annotation"]):
                     member_entity_annotations.append(member_results["entity_annotation"])
 
@@ -355,29 +430,21 @@ def _process_entities_vectorized(
                         )
                     )
 
-                    # Create membership relationships with aligned IDs
-                    memberships = (
+                    # Process membership annotations -> create member instances + annotations
+                    membership_with_annots = (
                         membership_info
-                        .join(member_map, on="membership_row_idx", how="left")
-                        .select([
-                            pl.col("parent_entity_id").alias("parent_id"),
-                            pl.col("member_entity_id").alias("member_id"),
-                            pl.col("membership_annotations"),
-                        ])
-                        .with_row_index("local_membership_id", offset=1)
-                        .with_columns(pl.lit(source_id).alias("source_id"))
+                        .filter(
+                            pl.col("membership_annotations").is_not_null() &
+                            (pl.col("membership_annotations").list.len() > 0)
+                        )
                     )
-
-                    # Extract membership annotations
-                    has_membership_annots = memberships.filter(
-                        pl.col("membership_annotations").is_not_null() &
-                        (pl.col("membership_annotations").list.len() > 0)
-                    )
-
-                    if len(has_membership_annots):
-                        # First, extract all CV terms from membership annotations (term and units)
+                    
+                    member_instance_map_rows = []
+                    
+                    if len(membership_with_annots):
+                        # First, extract all CV terms from membership annotations
                         all_membership_cv_terms = (
-                            has_membership_annots
+                            membership_with_annots
                             .select([pl.col("membership_annotations")])
                             .explode("membership_annotations")
                             .select([
@@ -386,7 +453,6 @@ def _process_entities_vectorized(
                             ])
                         )
 
-                        # Collect unique CV terms from both term and units fields
                         unique_membership_terms = set()
                         unique_membership_terms.update(
                             all_membership_cv_terms
@@ -415,60 +481,133 @@ def _process_entities_vectorized(
                             if len(new_cv_identifiers):
                                 cv_identifier_chunks.append(new_cv_identifiers)
 
-                        # Now extract membership annotations with CV term entity IDs
+                        # Create instances for members with annotations
+                        # Join with member_map to get member_entity_id
+                        members_needing_instances = (
+                            membership_with_annots
+                            .join(member_map, on="membership_row_idx", how="left")
+                        )
+                        
+                        for row in members_needing_instances.iter_rows(named=True):
+                            member_entity_id = row["member_entity_id"]
+                            membership_row_idx = row["membership_row_idx"]
+                            instance_id = instance_registry.create_instance(member_entity_id)
+                            member_instance_map_rows.append({
+                                "membership_row_idx": membership_row_idx,
+                                "member_entity_id": member_entity_id,
+                                "member_instance_id": instance_id,
+                            })
+
+                        member_instance_map = pl.DataFrame(member_instance_map_rows) if member_instance_map_rows else pl.DataFrame({
+                            "membership_row_idx": pl.Series([], dtype=pl.Int64),
+                            "member_entity_id": pl.Series([], dtype=pl.Int64),
+                            "member_instance_id": pl.Series([], dtype=pl.Int64),
+                        })
+
+                        # Create entity annotations from membership annotations
                         membership_annotation_data = (
-                            has_membership_annots
+                            membership_with_annots
+                            .join(member_instance_map.select(["membership_row_idx", "member_instance_id"]), 
+                                  on="membership_row_idx", how="left")
                             .select([
-                                pl.col("local_membership_id"),
+                                pl.col("member_instance_id").alias("local_entity_instance_id"),
                                 pl.col("membership_annotations"),
                             ])
                             .explode("membership_annotations")
                             .select([
-                                pl.col("local_membership_id"),
+                                pl.col("local_entity_instance_id"),
                                 pl.col("membership_annotations").struct.field("term").alias("term_accession"),
                                 pl.when(pl.col("membership_annotations").struct.field("value").is_not_null())
                                   .then(pl.col("membership_annotations").struct.field("value").cast(pl.String))
                                   .otherwise(None)
-                                  .alias("annotation_value"),
+                                  .alias("value"),
                                 pl.col("membership_annotations").struct.field("units").alias("unit_accession"),
                             ])
                         )
 
-                        membership_annotations = pl.DataFrame()
                         if len(membership_annotation_data):
-                            membership_annotations = (
+                            converted_annotations = (
                                 membership_annotation_data
                                 .join(
-                                    cv_registry.lookup_mapping("term_accession", "annotation_id"),
+                                    cv_registry.lookup_mapping("term_accession", "cv_term_entity_id"),
                                     on="term_accession",
                                     how="left",
                                 )
                                 .join(
-                                    cv_registry.lookup_mapping("unit_accession", "annotation_unit"),
+                                    cv_registry.lookup_mapping("unit_accession", "unit_entity_id"),
                                     on="unit_accession",
                                     how="left",
                                 )
-                                .filter(pl.col("annotation_id").is_not_null())
+                                .filter(pl.col("cv_term_entity_id").is_not_null())
                                 .select([
-                                    pl.col("local_membership_id"),
-                                    pl.col("annotation_id"),
-                                    pl.col("annotation_value"),
-                                    pl.col("annotation_unit"),
+                                    pl.col("local_entity_instance_id"),
+                                    pl.col("cv_term_entity_id"),
+                                    pl.col("value"),
+                                    pl.col("unit_entity_id"),
                                 ])
-                                .with_row_index("local_membership_annotation_id", offset=1)
+                                .with_row_index("local_entity_annotation_id", offset=1)
                                 .with_columns(pl.lit(source_id).alias("source_id"))
                             )
-                            logger.info(f"    Created {len(membership_annotations):,} membership annotation records")
+                            if len(converted_annotations):
+                                member_entity_annotations.append(converted_annotations)
+                                logger.info(f"    Converted {len(converted_annotations):,} membership annotations to entity annotations")
 
-                    # Drop the annotations column from memberships table
-                    memberships = memberships.drop("membership_annotations")
+                    # Build member_instance_map DataFrame for joining
+                    member_instance_map_df = pl.DataFrame(member_instance_map_rows) if member_instance_map_rows else pl.DataFrame({
+                        "membership_row_idx": pl.Series([], dtype=pl.Int64),
+                        "member_entity_id": pl.Series([], dtype=pl.Int64),
+                        "member_instance_id": pl.Series([], dtype=pl.Int64),
+                    })
+
+                    # Create membership relationships with polymorphic columns
+                    # parent_entity_id / parent_instance_id (parent is always entity for now)
+                    # member_entity_id / member_instance_id (member is instance if has annotations)
+                    memberships_base = (
+                        membership_info
+                        .join(member_map, on="membership_row_idx", how="left")
+                        .select([
+                            pl.col("membership_row_idx"),
+                            pl.col("parent_entity_id"),
+                            pl.col("member_entity_id"),
+                        ])
+                    )
+                    
+                    # Join with instance map to get member_instance_id where applicable
+                    memberships_with_instances = (
+                        memberships_base
+                        .join(
+                            member_instance_map_df.select(["membership_row_idx", "member_instance_id"]),
+                            on="membership_row_idx",
+                            how="left"
+                        )
+                    )
+                    
+                    # Build final membership table with polymorphic columns
+                    # If member has instance, use member_instance_id and null member_entity_id
+                    # Otherwise, use member_entity_id and null member_instance_id
+                    memberships = (
+                        memberships_with_instances
+                        .select([
+                            # Parent is always entity (for now)
+                            pl.col("parent_entity_id"),
+                            pl.lit(None).cast(pl.Int64).alias("parent_instance_id"),
+                            # Member is either entity or instance
+                            pl.when(pl.col("member_instance_id").is_not_null())
+                              .then(None)
+                              .otherwise(pl.col("member_entity_id"))
+                              .cast(pl.Int64)
+                              .alias("member_entity_id"),
+                            pl.col("member_instance_id").cast(pl.Int64),
+                        ])
+                        .with_row_index("local_membership_id", offset=1)
+                        .with_columns(pl.lit(source_id).alias("source_id"))
+                    )
+                    
                     logger.info(f"    Created {len(memberships):,} membership relationships")
 
-                    # Collect member identifiers and member memberships (which include their entity annotations)
+                    # Collect member identifiers
                     if "entity_identifier" in member_results and len(member_results["entity_identifier"]):
                         member_identifiers.append(member_results["entity_identifier"])
-                    # Note: member entity annotations are now converted to memberships in recursive call
-                    # We don't collect them separately anymore
 
     # ============================================================================
     # 5. COMBINE ALL RESULTS
@@ -505,16 +644,9 @@ def _process_entities_vectorized(
 
     # Combine and renumber membership IDs to ensure uniqueness
     combined_memberships = pl.DataFrame()
-    membership_id_map = pl.DataFrame()
     if all_memberships:
         combined_memberships = pl.concat(all_memberships, how="diagonal_relaxed")
         # Renumber local_membership_id to be sequential per source
-        membership_id_map = (
-            combined_memberships
-            .select(["source_id", "local_membership_id"])
-            .with_row_index("new_local_membership_id", offset=1)
-            .rename({"local_membership_id": "old_local_membership_id"})
-        )
         combined_memberships = (
             combined_memberships
             .with_row_index("new_local_membership_id", offset=1)
@@ -522,29 +654,6 @@ def _process_entities_vectorized(
             .rename({"new_local_membership_id": "local_membership_id"})
         )
         logger.info(f"    Total memberships: {len(combined_memberships):,}")
-
-    # Combine membership annotations (local + recursive)
-    membership_annotation_tables = []
-    if len(membership_annotations) > 0:
-        membership_annotation_tables.append(membership_annotations)
-    if member_membership_annotations:
-        membership_annotation_tables.extend([df for df in member_membership_annotations if len(df)])
-
-    combined_membership_annotations = pl.DataFrame()
-    if membership_annotation_tables:
-        combined_membership_annotations = pl.concat(membership_annotation_tables, how="diagonal_relaxed")
-        if len(membership_id_map):
-            combined_membership_annotations = (
-                combined_membership_annotations
-                .join(
-                    membership_id_map,
-                    left_on=["source_id", "local_membership_id"],
-                    right_on=["source_id", "old_local_membership_id"],
-                    how="inner",
-                )
-                .drop("local_membership_id")
-                .rename({"new_local_membership_id": "local_membership_id"})
-            )
 
     # Combine entity annotations (local + recursive)
     entity_annotation_tables = []
@@ -556,19 +665,25 @@ def _process_entities_vectorized(
     combined_entity_annotations = pl.DataFrame()
     if entity_annotation_tables:
         combined_entity_annotations = pl.concat(entity_annotation_tables, how="diagonal_relaxed")
+        # Renumber annotation IDs
+        combined_entity_annotations = (
+            combined_entity_annotations
+            .drop("local_entity_annotation_id")
+            .with_row_index("local_entity_annotation_id", offset=1)
+        )
 
     results = {
         "entity": combined_entities,
         "entity_identifier": combined_identifiers,
         "entity_annotation": combined_entity_annotations,
         "membership": combined_memberships,
-        "membership_annotation": combined_membership_annotations,
+        # Note: membership_annotation is removed - converted to entity_annotation
     }
 
     return results, next_id
 
 
-def _deduplicate_entities(tables: dict[str, pl.DataFrame]) -> dict[str, pl.DataFrame]:
+def _deduplicate_entities(tables: dict[str, pl.DataFrame], instance_df: pl.DataFrame) -> tuple[dict[str, pl.DataFrame], pl.DataFrame]:
     """
     Deduplicate entities based on identifier sets and remap all references.
 
@@ -576,17 +691,17 @@ def _deduplicate_entities(tables: dict[str, pl.DataFrame]) -> dict[str, pl.DataF
     1. Group entities by their identifier sets
     2. Keep the lowest ID for each unique identifier set
     3. Create ID mapping (old_id -> canonical_id)
-    4. Remap all references in identifiers, memberships, etc.
+    4. Remap all references in identifiers, memberships, instances, etc.
     """
     entity_df = tables.get("entity")
     identifier_df = tables.get("entity_identifier")
 
     if entity_df is None or len(entity_df) == 0:
-        return tables
+        return tables, instance_df
 
     if identifier_df is None or len(identifier_df) == 0:
         # No identifiers to deduplicate on
-        return tables
+        return tables, instance_df
 
     logger.info("  Starting entity deduplication...")
     original_count = len(entity_df)
@@ -631,7 +746,7 @@ def _deduplicate_entities(tables: dict[str, pl.DataFrame]) -> dict[str, pl.DataF
 
     if len(id_mapping) == 0:
         logger.info("  No duplicates found")
-        return tables
+        return tables, instance_df
 
     logger.info(f"  Found {len(id_mapping):,} duplicate entities to merge")
 
@@ -665,73 +780,103 @@ def _deduplicate_entities(tables: dict[str, pl.DataFrame]) -> dict[str, pl.DataF
     )
 
     # ============================================================================
-    # 5. Remap memberships
+    # 5. Remap entity instances
+    # ============================================================================
+    instances_dedup = instance_df
+    if instance_df is not None and len(instance_df) > 0:
+        instances_dedup = (
+            instance_df
+            .join(canonical_ids, left_on="local_entity_id", right_on="old_id", how="left")
+            .with_columns(
+                pl.coalesce([pl.col("canonical_id"), pl.col("local_entity_id")]).alias("local_entity_id")
+            )
+            .select([col for col in instance_df.columns])
+        )
+
+    # ============================================================================
+    # 6. Remap memberships
     # ============================================================================
     membership_df = tables.get("membership")
     if membership_df is not None and len(membership_df) > 0:
         membership_cols = membership_df.columns
 
-        # Remap parent_id
-        memberships_dedup = (
-            membership_df
-            .join(canonical_ids, left_on="parent_id", right_on="old_id", how="left")
-            .with_columns(
-                pl.coalesce([pl.col("canonical_id"), pl.col("parent_id")]).alias("parent_id")
+        # Remap parent_entity_id
+        if "parent_entity_id" in membership_cols:
+            memberships_dedup = (
+                membership_df
+                .join(canonical_ids, left_on="parent_entity_id", right_on="old_id", how="left")
+                .with_columns(
+                    pl.coalesce([pl.col("canonical_id"), pl.col("parent_entity_id")]).alias("parent_entity_id")
+                )
+                .drop("canonical_id")
             )
-            .select(membership_cols)  # Keep only original columns
-        )
+        else:
+            memberships_dedup = membership_df
 
-        # Remap member_id
-        memberships_dedup = (
-            memberships_dedup
-            .join(canonical_ids, left_on="member_id", right_on="old_id", how="left")
-            .with_columns(
-                pl.coalesce([pl.col("canonical_id"), pl.col("member_id")]).alias("member_id")
+        # Remap member_entity_id
+        if "member_entity_id" in memberships_dedup.columns:
+            memberships_dedup = (
+                memberships_dedup
+                .join(canonical_ids, left_on="member_entity_id", right_on="old_id", how="left")
+                .with_columns(
+                    pl.when(pl.col("member_entity_id").is_not_null())
+                      .then(pl.coalesce([pl.col("canonical_id"), pl.col("member_entity_id")]))
+                      .otherwise(None)
+                      .alias("member_entity_id")
+                )
+                .drop("canonical_id")
             )
-            .select(membership_cols)  # Keep only original columns
-        )
 
-        # Remove duplicate memberships while preserving original IDs.
-        # Include annotation_value to keep multiple distinct annotation rows.
-        subset_cols = ["parent_id", "member_id"]
-        if "annotation_value" in memberships_dedup.columns:
-            subset_cols.append("annotation_value")
+        # Keep only original columns
+        memberships_dedup = memberships_dedup.select([col for col in membership_cols if col in memberships_dedup.columns])
 
-        memberships_dedup = memberships_dedup.unique(subset=subset_cols)
+        # Remove duplicate memberships
+        subset_cols = []
+        for col in ["parent_entity_id", "parent_instance_id", "member_entity_id", "member_instance_id"]:
+            if col in memberships_dedup.columns:
+                subset_cols.append(col)
+
+        if subset_cols:
+            memberships_dedup = memberships_dedup.unique(subset=subset_cols)
     else:
         memberships_dedup = membership_df
 
     # ============================================================================
-    # 6. Remap entity annotations
+    # 7. Remap entity annotations (via instances)
     # ============================================================================
+    # Entity annotations link to instances, not entities directly
+    # So we don't need to remap them, but we need to remap cv_term_entity_id and unit_entity_id
     entity_annotation_df = tables.get("entity_annotation")
     if entity_annotation_df is not None and len(entity_annotation_df) > 0:
         annotation_cols = entity_annotation_df.columns
-        entity_annotations_dedup = (
-            entity_annotation_df
-            .join(canonical_ids, left_on="local_entity_id", right_on="old_id", how="left")
-            .with_columns(
-                pl.coalesce([pl.col("canonical_id"), pl.col("local_entity_id")]).alias("local_entity_id")
+        entity_annotations_dedup = entity_annotation_df
+        
+        # Remap cv_term_entity_id
+        if "cv_term_entity_id" in annotation_cols:
+            entity_annotations_dedup = (
+                entity_annotations_dedup
+                .join(canonical_ids, left_on="cv_term_entity_id", right_on="old_id", how="left")
+                .with_columns(
+                    pl.coalesce([pl.col("canonical_id"), pl.col("cv_term_entity_id")]).alias("cv_term_entity_id")
+                )
+                .drop("canonical_id")
             )
-            .select(annotation_cols)
-        )
-        entity_annotations_dedup = (
-            entity_annotations_dedup
-            .join(canonical_ids, left_on="cv_term_entity_id", right_on="old_id", how="left")
-            .with_columns(
-                pl.coalesce([pl.col("canonical_id"), pl.col("cv_term_entity_id")]).alias("cv_term_entity_id")
-            )
-            .select(annotation_cols)
-        )
+        
+        # Remap unit_entity_id
         if "unit_entity_id" in entity_annotations_dedup.columns:
             entity_annotations_dedup = (
                 entity_annotations_dedup
                 .join(canonical_ids, left_on="unit_entity_id", right_on="old_id", how="left")
                 .with_columns(
-                    pl.coalesce([pl.col("canonical_id"), pl.col("unit_entity_id")]).alias("unit_entity_id")
+                    pl.when(pl.col("unit_entity_id").is_not_null())
+                      .then(pl.coalesce([pl.col("canonical_id"), pl.col("unit_entity_id")]))
+                      .otherwise(None)
+                      .alias("unit_entity_id")
                 )
-                .select(annotation_cols)
+                .drop("canonical_id")
             )
+        
+        entity_annotations_dedup = entity_annotations_dedup.select([col for col in annotation_cols if col in entity_annotations_dedup.columns])
     else:
         entity_annotations_dedup = entity_annotation_df
 
@@ -742,17 +887,22 @@ def _deduplicate_entities(tables: dict[str, pl.DataFrame]) -> dict[str, pl.DataF
         "entity_identifier": identifiers_dedup,
         "entity_annotation": entity_annotations_dedup,
         "membership": memberships_dedup,
-        "membership_annotation": tables.get("membership_annotation"),
-    }
+    }, instances_dedup
 
 
-def _save_tables(tables: dict[str, pl.DataFrame], output_dir: Path, source_name: str):
+def _save_tables(tables: dict[str, pl.DataFrame], instance_df: pl.DataFrame, output_dir: Path, source_name: str):
     """Save processed tables to parquet files."""
     for table_name, df in tables.items():
         if df is not None and len(df) > 0:
             output_path = output_dir / f"local_{table_name}_{source_name}.parquet"
             df.write_parquet(output_path)
             logger.info(f"  Saved {table_name}: {len(df):,} records -> {output_path.name}")
+    
+    # Save entity instances
+    if instance_df is not None and len(instance_df) > 0:
+        output_path = output_dir / f"local_entity_instance_{source_name}.parquet"
+        instance_df.write_parquet(output_path)
+        logger.info(f"  Saved entity_instance: {len(instance_df):,} records -> {output_path.name}")
 
 
 # --- Main --------------------------------------------------------------------
@@ -794,11 +944,11 @@ def build_local_tables(
             'entity_identifier': [],
             'entity_annotation': [],
             'membership': [],
-            'membership_annotation': [],
         }
 
         next_id = 1
         cv_registry = CvTermRegistry()
+        instance_registry = InstanceRegistry(source_id)
 
         # Sort files to ensure resource.parquet is processed first
         # This guarantees that the source entity always gets local_entity_id = 1
@@ -821,7 +971,7 @@ def build_local_tables(
             logger.info(f"    Found {len(df):,} entities")
 
             # Process entities using vectorized operations
-            tables, next_id = _process_entities_vectorized(df, source_id, next_id, cv_registry)
+            tables, next_id = _process_entities_vectorized(df, source_id, next_id, cv_registry, instance_registry)
 
             # Accumulate results
             for table_name, table_df in tables.items():
@@ -835,13 +985,18 @@ def build_local_tables(
                 final_tables[table_name] = pl.concat(table_list, how="diagonal_relaxed")
                 logger.info(f"  Total {table_name}: {len(final_tables[table_name]):,} records")
 
+        # Get instance DataFrame
+        instance_df = instance_registry.to_dataframe()
+        if len(instance_df) > 0:
+            logger.info(f"  Total entity_instance: {len(instance_df):,} records")
+
         # Deduplicate entities based on identifier sets
         if final_tables:
-            final_tables = _deduplicate_entities(final_tables)
+            final_tables, instance_df = _deduplicate_entities(final_tables, instance_df)
 
         # Save tables
         if final_tables:
-            _save_tables(final_tables, local_tables_dir, source_name)
+            _save_tables(final_tables, instance_df, local_tables_dir, source_name)
         else:
             logger.warning(f"  No data to save for {source_name}")
 
