@@ -1,4 +1,10 @@
-"""Build Meilisearch entity documents from global tables (Lazy/Streaming)."""
+"""Build Meilisearch entity documents from global tables (Lazy/Streaming).
+
+Updated for new entity_instance schema:
+- entity_annotation links to entity_instance, not entity directly
+- membership has polymorphic columns (parent_entity_id/parent_instance_id, member_entity_id/member_instance_id)
+- membership_annotation table is removed
+"""
 from __future__ import annotations
 
 import argparse
@@ -46,6 +52,58 @@ def _agg_lazy(
         return plan.rename({group_col: "entity_id"})
     return plan
 
+
+def _resolve_member_entity_id(mem_lf: pl.LazyFrame, inst_lf: pl.LazyFrame) -> pl.LazyFrame:
+    """Resolve member to entity_id, handling both direct entity and instance references.
+    
+    In the new schema, membership can point to either:
+    - member_entity_id: direct entity reference
+    - member_instance_id: instance that references an entity
+    
+    Returns membership with resolved member_entity_id column.
+    """
+    # Join with instances to resolve instance -> entity_id
+    return (
+        mem_lf
+        .join(
+            inst_lf.select([
+                pl.col("id").alias("member_instance_id"),
+                pl.col("entity_id").alias("instance_entity_id")
+            ]),
+            on="member_instance_id",
+            how="left"
+        )
+        .with_columns(
+            # Use instance's entity_id if member_instance_id is set, else use direct member_entity_id
+            pl.coalesce([
+                pl.col("instance_entity_id"),
+                pl.col("member_entity_id")
+            ]).alias("resolved_member_entity_id")
+        )
+    )
+
+
+def _resolve_parent_entity_id(mem_lf: pl.LazyFrame, inst_lf: pl.LazyFrame) -> pl.LazyFrame:
+    """Resolve parent to entity_id, handling both direct entity and instance references."""
+    return (
+        mem_lf
+        .join(
+            inst_lf.select([
+                pl.col("id").alias("parent_instance_id"),
+                pl.col("entity_id").alias("parent_instance_entity_id")
+            ]),
+            on="parent_instance_id",
+            how="left"
+        )
+        .with_columns(
+            pl.coalesce([
+                pl.col("parent_instance_entity_id"),
+                pl.col("parent_entity_id")
+            ]).alias("resolved_parent_entity_id")
+        )
+    )
+
+
 def build_search_entities(global_tables_dir: Path, output_path: Path) -> Path:
     logger.info("=" * 80 + "\nBuilding Meilisearch entity documents (Lazy Execution)\n" + "=" * 80)
 
@@ -66,23 +124,38 @@ def build_search_entities(global_tables_dir: Path, output_path: Path) -> Path:
     ident = pl.scan_parquet(global_tables_dir / "entity_identifier.parquet")
     res = pl.scan_parquet(global_tables_dir / "entity_identifier_resource.parquet")
     mem = pl.scan_parquet(global_tables_dir / "membership.parquet")
-    mem_annot = pl.scan_parquet(global_tables_dir / "membership_annotation.parquet")
-
-    # Join membership with annotations to get values and types
-    # IMPORTANT: Both membership and membership_annotation have annotation_value columns:
-    # - membership.annotation_value = annotations on the pathway itself (e.g., URLs)
-    # - membership_annotation.annotation_value = annotations on the membership relationship (e.g., step order "1")
-    # We need to use the annotation_value from membership_annotation
-    # To avoid ambiguity, we select and rename columns from membership_annotation before the join
-    mem_annot_renamed = mem_annot.select([
-        pl.col("membership_id"),
-        pl.col("annotation_id").alias("annot_id"),
-        pl.col("annotation_value").alias("annot_val"),
-        pl.col("annotation_unit"),
-        pl.col("source_id").alias("annot_source_id"),
-    ])
     
-    mem_joined = mem.join(mem_annot_renamed, left_on="id", right_on="membership_id", how="left")
+    # New tables in entity_instance schema
+    inst = pl.scan_parquet(global_tables_dir / "entity_instance.parquet")
+    ent_annot = pl.scan_parquet(global_tables_dir / "entity_annotation.parquet")
+
+    # Resolve membership entity IDs (handle polymorphic columns)
+    mem_resolved = _resolve_member_entity_id(mem, inst)
+    mem_resolved = _resolve_parent_entity_id(mem_resolved, inst)
+    
+    # Create simplified membership view with resolved entity IDs
+    # For backwards compatibility with existing logic
+    mem_simple = mem_resolved.select([
+        pl.col("id"),
+        pl.col("resolved_parent_entity_id").alias("parent_id"),
+        pl.col("resolved_member_entity_id").alias("member_id"),
+        pl.col("member_instance_id"),  # Keep for annotation lookups
+        pl.col("source_id"),
+    ])
+
+    # Join entity annotations with instances to get entity_id
+    # entity_annotation -> entity_instance -> entity
+    ent_annot_with_entity = (
+        ent_annot
+        .join(
+            inst.select([
+                pl.col("id").alias("instance_id"),
+                pl.col("entity_id").alias("annot_entity_id")
+            ]),
+            on="instance_id",
+            how="left"
+        )
+    )
     
     # Convert metadata for Lazy Joins
     cv_map_lz = cv_map_df.lazy()
@@ -115,24 +188,37 @@ def build_search_entities(global_tables_dir: Path, output_path: Path) -> Path:
     for k, col in [('names', 'names'), ('synonyms', 'synonyms'), ('gene_symbols', 'gene_symbols')]:
         lazy_joins.append(_agg_lazy(ident, "type_id", id_sets[k], "identifier", col))
 
-    # 4b. Membership Text (Descriptions, References)
-    # These are stored directly in membership.annotation_value, not in membership_annotation
-    # So we use the original mem table, not mem_joined
-    mem_valid = mem.filter(pl.col("annotation_value").is_not_null())
+    # 4b. Annotations (Descriptions, References)
+    # These are now in entity_annotation table, linked via entity_instance
+    # entity_annotation has: instance_id, cv_term_entity_id, value, unit_entity_id
     for k, col in [('descriptions', 'descriptions'), ('references', 'references')]:
-        lazy_joins.append(_agg_lazy(mem_valid, "parent_id", id_sets[k], "annotation_value", col, group_col="member_id"))
+        if id_sets[k]:
+            lazy_joins.append(
+                ent_annot_with_entity
+                .filter(pl.col("cv_term_entity_id").is_in(list(id_sets[k])))
+                .filter(pl.col("value").is_not_null())
+                .group_by("annot_entity_id")
+                .agg(pl.col("value").unique().sort().alias(col))
+                .rename({"annot_entity_id": "entity_id"})
+            )
 
-    # 4c. NCBI Tax ID
+    # 4c. NCBI Tax ID - now from entity_annotation
+    # Tax ID is stored as an annotation on entities via instances
     if id_sets['ncbi_tax_id']:
         lazy_joins.append(
-            mem.filter(pl.col("parent_id").is_in(list(id_sets['ncbi_tax_id'])))
-            .group_by("member_id").agg(pl.col("annotation_value").first().alias("ncbi_tax_id"))
-            .rename({"member_id": "entity_id"})
+            ent_annot_with_entity
+            .filter(pl.col("cv_term_entity_id").is_in(list(id_sets['ncbi_tax_id'])))
+            .group_by("annot_entity_id")
+            .agg(pl.col("value").first().alias("ncbi_tax_id"))
+            .rename({"annot_entity_id": "entity_id"})
         )
 
     # 4d. Structural Memberships & Interactions
     # Join memberships to entity to check parent types
-    mem_types = mem.join(ent.rename({"entity_id": "pid", "entity_type_id": "ptid"}), left_on="parent_id", right_on="pid")
+    mem_types = mem_simple.join(
+        ent.rename({"entity_id": "pid", "entity_type_id": "ptid"}), 
+        left_on="parent_id", right_on="pid"
+    )
 
     for k, col in [('complex_type', 'complexes'), ('cv_term_type', 'cv_terms'), ('pathway_type', 'pathways'), ('reaction_type', 'reactions')]:
         if id_sets[k]:
@@ -149,23 +235,37 @@ def build_search_entities(global_tables_dir: Path, output_path: Path) -> Path:
         .rename({"member_id": "entity_id"})
     )
 
-    # 4e.2 Reactants & Products (By Role Annotation)
-    # These are members of the Reaction entity (parent_id) with a specific Role annotation (annot_id)
+    # 4e.2 Reactants & Products (By Role Annotation on member instances)
+    # In new schema, role annotations are on the member's entity_instance
+    # We need to join membership with member_instance_id to entity_annotation
+    mem_with_annot = (
+        mem_simple
+        .filter(pl.col("member_instance_id").is_not_null())
+        .join(
+            ent_annot.select([
+                pl.col("instance_id"),
+                pl.col("cv_term_entity_id").alias("annot_id"),
+                pl.col("value").alias("annot_val"),
+            ]),
+            left_on="member_instance_id",
+            right_on="instance_id",
+            how="left"
+        )
+    )
+    
     for k, col in [('reactants', 'reactants'), ('products', 'products')]:
         if id_sets[k]:
             lazy_joins.append(
-                mem_joined.filter(pl.col("annot_id").is_in(list(id_sets[k])))
+                mem_with_annot.filter(pl.col("annot_id").is_in(list(id_sets[k])))
                 .group_by("parent_id")
                 .agg(pl.col("member_id").unique().sort().alias(col))
                 .rename({"parent_id": "entity_id"})
             )
 
-    # 4e.3 Stoichiometry & Pathway Steps (By Annotation Type)
-    # Stoichiometry: Value is in annot_val, Member is the participant
-    # We want a list of "MemberID:Stoichiometry" strings
+    # 4e.3 Stoichiometry & Pathway Steps (By Annotation Type on member instances)
     if id_sets['stoichiometry']:
         lazy_joins.append(
-            mem_joined.filter(
+            mem_with_annot.filter(
                 pl.col("annot_id").is_in(list(id_sets['stoichiometry'])) & 
                 pl.col("annot_val").is_not_null()
             )
@@ -178,12 +278,10 @@ def build_search_entities(global_tables_dir: Path, output_path: Path) -> Path:
             .rename({"parent_id": "entity_id"})
         )
 
-    # Pathway Steps: Value is step order, Member is the step/component
-    # We want a list of "StepOrder:MemberID" strings (or similar)
-    # Let's do "StepOrder:MemberID" to be sortable by order
+    # Pathway Steps
     if id_sets['pathway_steps']:
         lazy_joins.append(
-            mem_joined.filter(
+            mem_with_annot.filter(
                 pl.col("annot_id").is_in(list(id_sets['pathway_steps'])) & 
                 pl.col("annot_val").is_not_null()
             )

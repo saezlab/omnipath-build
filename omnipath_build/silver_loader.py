@@ -48,9 +48,14 @@ def discover_resources(
     base_path: Optional[Path] = None,
     inputs_package: str = 'pypath.inputs_v2',
 ) -> tuple[Dict[str, List[ResourceFunction]], PathManager]:
-    """Discover generator functions from the inputs_v2 package."""
+    """Discover generator functions from the inputs_v2 package.
+    
+    For each module, discovers:
+    1. Resource objects - emits metadata() to resource.parquet (processed first)
+    2. Dataset objects - emits data entities to <dataset_name>.parquet
+    """
     path_manager = PathManager(database_name, base_path)
-    from pypath.inputs_v2.base import Dataset  # Local import to avoid import-time side effects.
+    from pypath.inputs_v2.base import Dataset, Resource  # Local import to avoid import-time side effects.
 
     try:
         root_module = importlib.import_module(inputs_package)
@@ -76,17 +81,51 @@ def discover_resources(
 
         module = importlib.import_module(module_name)
 
+        # First, discover Resource objects to emit their metadata
+        resource_members = [
+            (name, obj) for name, obj in inspect.getmembers(module)
+            if isinstance(obj, Resource)
+        ]
+
+        # Discover Dataset objects for data entities (both at module level and inside Resources)
         dataset_members = [
             (name, obj) for name, obj in inspect.getmembers(module)
             if isinstance(obj, Dataset)
         ]
+        
+        # Also discover datasets nested inside Resource objects
+        datasets_from_resources: List[tuple[str, Dataset]] = []
+        for _, resource_obj in resource_members:
+            for ds_name, ds_obj in resource_obj.datasets().items():
+                # Only add if not already in dataset_members (avoid duplicates)
+                if ds_name not in [n for n, _ in dataset_members]:
+                    datasets_from_resources.append((ds_name, ds_obj))
+        dataset_members.extend(datasets_from_resources)
 
-        if not dataset_members:
+        if not dataset_members and not resource_members:
             continue
 
         resource_id = relative_name
 
         module_functions: List[ResourceFunction] = []
+        
+        # Add Resource metadata as first function (writes to resource.parquet)
+        # This ensures the source entity gets local_entity_id = 1
+        for resource_name, resource_obj in resource_members:
+            # Use the Resource's __call__ method which yields metadata entities
+            module_functions.append(
+                ResourceFunction(
+                    source=relative_name,
+                    function_name='resource',  # Always 'resource' so it sorts first
+                    qualified_module=module_name,
+                    call=resource_obj,  # Resource.__call__() yields metadata()
+                    resource_id=resource_id,
+                ),
+            )
+            # Only use the first Resource found per module
+            break
+        
+        # Add Dataset functions for data entities
         for dataset_name, dataset_obj in dataset_members:
             module_functions.append(
                 ResourceFunction(
@@ -105,6 +144,7 @@ def discover_resources(
         raise DiscoveryError(f'No resource functions found under package "{inputs_package}"')
 
     return discovered, path_manager
+
 
 
 

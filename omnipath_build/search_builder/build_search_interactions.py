@@ -1,4 +1,10 @@
-"""Build Meilisearch interaction documents aggregated by member pairs."""
+"""Build Meilisearch interaction documents aggregated by member pairs.
+
+Updated for new entity_instance schema:
+- entity_annotation links to entity_instance, not entity directly
+- membership has polymorphic columns (parent_entity_id/parent_instance_id, member_entity_id/member_instance_id)
+- membership_annotation table is removed - annotations are now on member instances via entity_annotation
+"""
 from __future__ import annotations
 
 import argparse
@@ -121,15 +127,66 @@ def _get_param_directions(doc_base: pl.DataFrame, df_ann_int: pl.DataFrame, para
         .select("pair_key", "direction", "sign")
     )
 
+
+def _resolve_member_entity_id(mem: pl.DataFrame, inst: pl.DataFrame) -> pl.DataFrame:
+    """Resolve member to entity_id, handling both direct entity and instance references."""
+    return (
+        mem
+        .join(
+            inst.select([
+                pl.col("id").alias("member_instance_id"),
+                pl.col("entity_id").alias("instance_entity_id")
+            ]),
+            on="member_instance_id",
+            how="left"
+        )
+        .with_columns(
+            pl.coalesce([
+                pl.col("instance_entity_id"),
+                pl.col("member_entity_id")
+            ]).alias("member_id")
+        )
+    )
+
+
+def _resolve_parent_entity_id(mem: pl.DataFrame, inst: pl.DataFrame) -> pl.DataFrame:
+    """Resolve parent to entity_id, handling both direct entity and instance references."""
+    return (
+        mem
+        .join(
+            inst.select([
+                pl.col("id").alias("parent_instance_id"),
+                pl.col("entity_id").alias("parent_instance_entity_id")
+            ]),
+            on="parent_instance_id",
+            how="left"
+        )
+        .with_columns(
+            pl.coalesce([
+                pl.col("parent_instance_entity_id"),
+                pl.col("parent_entity_id")
+            ]).alias("parent_id")
+        )
+    )
+
+
 def build_search_interactions(global_tables_dir: Path, output_path: Path) -> Path:
     logger.info("=" * 80 + "\nBuilding Meilisearch interaction documents\n" + "=" * 80)
 
     # 1. Load Data
     tables = {n: pl.read_parquet(global_tables_dir / f"{n}.parquet") 
-              for n in ["entity", "membership", "membership_annotation", "entity_identifier"]}
+              for n in ["entity", "membership", "entity_identifier", "entity_instance", "entity_annotation"]}
     logger.info("Loaded tables: %s", " ".join(f"{k}={len(v)}" for k, v in tables.items()))
 
-    ent, mem, mem_ann, ent_id = tables["entity"], tables["membership"], tables["membership_annotation"], tables["entity_identifier"]
+    ent = tables["entity"]
+    mem_raw = tables["membership"]
+    ent_id = tables["entity_identifier"]
+    inst = tables["entity_instance"]
+    ent_annot = tables["entity_annotation"]
+    
+    # Resolve polymorphic membership columns
+    mem = _resolve_member_entity_id(mem_raw, inst)
+    mem = _resolve_parent_entity_id(mem, inst)
     
     # 2. Identifiers & Constants
     name_tid = _get_id(ent_id, "OM:0202")
@@ -178,21 +235,89 @@ def build_search_interactions(global_tables_dir: Path, output_path: Path) -> Pat
     )
 
     # 5. Prepare Annotations
-    df_ann_int = mem.join(pair_base, left_on="member_id", right_on="interaction_id").select(
-        pl.col("member_id").alias("interaction_id"), "pair_key", pl.lit("interaction").alias("cat"),
-        pl.col("parent_id").alias("ann_id"), "annotation_value", "annotation_unit"
+    # In new schema, annotations come from two sources:
+    # A. Interaction annotations: annotations on the interaction entity's instance
+    # B. Member annotations: annotations on member entity instances (via member_instance_id in membership)
+    
+    # Get interaction entity -> instance mapping for interaction annotations
+    interaction_instances = (
+        inst
+        .select([
+            pl.col("entity_id").alias("interaction_id"),
+            pl.col("id").alias("interaction_instance_id"),
+        ])
     )
+    
+    # A. Interaction annotations (from interaction entity's instances)
+    df_ann_int_raw = (
+        pair_base.select(["interaction_id", "pair_key"])
+        .join(interaction_instances, on="interaction_id", how="left")
+        .join(
+            ent_annot.select([
+                pl.col("instance_id"),
+                pl.col("cv_term_entity_id").alias("ann_id"),
+                pl.col("value").alias("annotation_value"),
+                pl.col("unit_entity_id").alias("annotation_unit"),
+            ]),
+            left_on="interaction_instance_id",
+            right_on="instance_id",
+            how="inner"
+        )
+    )
+    
+    df_ann_int = df_ann_int_raw.select([
+        pl.col("interaction_id"),
+        pl.col("pair_key"),
+        pl.lit("interaction").alias("cat"),
+        pl.col("ann_id"),
+        pl.col("annotation_value"),
+        pl.col("annotation_unit"),
+    ])
 
-    df_ann_mem = mem_ann.join(
-        mem_intr.join(pair_base, on="interaction_id")
-        .rename({"id": "membership_id"})
+    # B. Member annotations (from member entity instances via membership)
+    # Get member instance IDs from membership table
+    mem_with_instances = (
+        mem_intr
+        .join(pair_base, on="interaction_id")
+        .select([
+            "interaction_id",
+            "pair_key", 
+            "member_id",
+            "member_a_id",
+            "member_b_id",
+            "member_instance_id",
+        ])
         .with_columns(
             pl.when(pl.col("member_id") == pl.col("member_a_id")).then(pl.lit("member_a"))
             .when(pl.col("member_id") == pl.col("member_b_id")).then(pl.lit("member_b"))
             .alias("cat")
-        ).filter(pl.col("cat").is_not_null()),
-        on="membership_id"
-    ).select("interaction_id", "pair_key", "cat", pl.col("annotation_id").alias("ann_id"), "annotation_value", "annotation_unit")
+        )
+        .filter(pl.col("cat").is_not_null())
+        .filter(pl.col("member_instance_id").is_not_null())
+    )
+    
+    df_ann_mem = (
+        mem_with_instances
+        .join(
+            ent_annot.select([
+                pl.col("instance_id"),
+                pl.col("cv_term_entity_id").alias("ann_id"),
+                pl.col("value").alias("annotation_value"),
+                pl.col("unit_entity_id").alias("annotation_unit"),
+            ]),
+            left_on="member_instance_id",
+            right_on="instance_id",
+            how="inner"
+        )
+        .select([
+            "interaction_id",
+            "pair_key",
+            "cat",
+            "ann_id",
+            "annotation_value",
+            "annotation_unit",
+        ])
+    )
 
     all_annots = pl.concat([df_ann_int, df_ann_mem])
 
