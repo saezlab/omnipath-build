@@ -18,18 +18,19 @@ const API_CONFIG = {
   siteUrl: IS_PRODUCTION
     ? `${PROTOCOL}://${DOMAIN}`
     : `${PROTOCOL}://${DOMAIN}:3000`,
-  
-  // Meilisearch URL
-  meilisearchUrl: IS_DOCKERIZED
-    ? 'http://omnipath-meilisearch:7700'
-    : 'http://localhost:7700',
+
+  // Meilisearch URL - use env var or fall back to Docker/local default
+  meilisearchUrl: process.env.MEILISEARCH_HOST
+    || (IS_DOCKERIZED ? 'http://omnipath-meilisearch:7700' : 'http://localhost:7700'),
 
   // Entity service URL (identifier lookup)
-  entityServiceUrl: process.env.NEXT_PUBLIC_ENTITY_SERVICE_URL || 'http://localhost:8080',
+  entityServiceUrl: process.env.ENTITY_SERVICE_URL
+    || (IS_DOCKERIZED ? 'http://entity-service:8080' : 'http://localhost:8080'),
 
   // PostgreSQL connection (handled by DATABASE_URL environment variable)
   databaseUrl: process.env.DATABASE_URL || 'postgresql://localhost:5432/omnipath',
 };
+
 
 
 /**
