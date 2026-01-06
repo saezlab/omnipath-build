@@ -12,22 +12,23 @@ Future steps will include:
 """
 
 import logging
-import polars as pl
 from pathlib import Path
 from typing import Optional
+
+import polars as pl
 
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
+    datefmt='%Y-%m-%d %H:%M:%S',
 )
 logger = logging.getLogger(__name__)
 
-# Import our modular functions from the gold_new/ directory
-from omnipath_build.gold.build_local_tables import build_local_tables
+# Import our modular functions from the gold/ directory
 from omnipath_build.gold.build_entity_identifiers import build_entity_identifiers
 from omnipath_build.gold.build_global_tables import build_global_tables
+from omnipath_build.gold.build_local_tables import build_local_tables
 
 __all__ = [
     'build_local_tables_step',
@@ -60,9 +61,9 @@ def build_local_tables_step(
     Returns:
         Dictionary containing the local tables (empty as tables are saved per-source)
     """
-    print("\n" + "=" * 70)
-    print("STEP: Local Tables (Per-Source)")
-    print("=" * 70)
+    print('\n' + '=' * 70)
+    print('STEP: Local Tables (Per-Source)')
+    print('=' * 70)
 
     # Build local tables for all sources
     # Note: This saves per-source files to output_dir/local_tables/
@@ -71,7 +72,7 @@ def build_local_tables_step(
         output_dir=output_dir,
     )
 
-    print("\nLocal tables built successfully (per-source files saved)")
+    print('\nLocal tables built successfully (per-source files saved)')
 
     return local_tables
 
@@ -100,45 +101,55 @@ def build_entity_identifiers_step(
         - entity_identifier_resource: Maps (id, entity_identifier_id, source_entity_id)
         - instance_to_global: Maps (source_id, local_entity_instance_id) to (instance_id, entity_id)
     """
-    print("\n" + "=" * 70)
-    print("STEP: Entity Identifiers (Cross-Source Resolution)")
-    print("=" * 70)
+    print('\n' + '=' * 70)
+    print('STEP: Entity Identifiers (Cross-Source Resolution)')
+    print('=' * 70)
 
-    local_tables_dir = output_dir / "local_tables"
+    local_tables_dir = output_dir / 'local_tables'
     if not local_tables_dir.exists():
         raise FileNotFoundError(
-            f"Local tables directory not found: {local_tables_dir}\n"
+            f'Local tables directory not found: {local_tables_dir}\n'
             "Please run the 'local_tables' step first."
         )
 
     # Build entity identifiers
-    record_to_global, entity_identifiers, entity_identifier_resource, instance_to_global = build_entity_identifiers(
+    (
+        record_to_global,
+        entity_identifiers,
+        entity_identifier_resource,
+        instance_to_global,
+    ) = build_entity_identifiers(
         local_tables_dir=local_tables_dir,
     )
 
     # Save the results
-    record_to_global_path = output_dir / "entity_record_mapping.parquet"
-    entity_identifiers_path = output_dir / "entity_identifier.parquet"
-    entity_identifier_resource_path = output_dir / "entity_identifier_resource.parquet"
-    instance_to_global_path = output_dir / "instance_to_global.parquet"
+    record_to_global_path = output_dir / 'entity_record_mapping.parquet'
+    entity_identifiers_path = output_dir / 'entity_identifier.parquet'
+    entity_identifier_resource_path = output_dir / 'entity_identifier_resource.parquet'
+    instance_to_global_path = output_dir / 'instance_to_global.parquet'
 
     record_to_global.write_parquet(record_to_global_path)
     entity_identifiers.write_parquet(entity_identifiers_path)
     entity_identifier_resource.write_parquet(entity_identifier_resource_path)
     instance_to_global.write_parquet(instance_to_global_path)
 
-    print(f"\nSaved entity record mapping: {record_to_global_path}")
-    print(f"  Rows: {len(record_to_global):,}")
-    print(f"\nSaved entity identifiers: {entity_identifiers_path}")
-    print(f"  Rows: {len(entity_identifiers):,}")
+    print(f'\nSaved entity record mapping: {record_to_global_path}')
+    print(f'  Rows: {len(record_to_global):,}')
+    print(f'\nSaved entity identifiers: {entity_identifiers_path}')
+    print(f'  Rows: {len(entity_identifiers):,}')
     if len(entity_identifiers) > 0:
         print(f"  Unique entities: {entity_identifiers['entity_id'].n_unique():,}")
-    print(f"\nSaved entity identifier resources: {entity_identifier_resource_path}")
-    print(f"  Rows: {len(entity_identifier_resource):,}")
-    print(f"\nSaved instance to global mapping: {instance_to_global_path}")
-    print(f"  Rows: {len(instance_to_global):,}")
+    print(f'\nSaved entity identifier resources: {entity_identifier_resource_path}')
+    print(f'  Rows: {len(entity_identifier_resource):,}')
+    print(f'\nSaved instance to global mapping: {instance_to_global_path}')
+    print(f'  Rows: {len(instance_to_global):,}')
 
-    return record_to_global, entity_identifiers, entity_identifier_resource, instance_to_global
+    return (
+        record_to_global,
+        entity_identifiers,
+        entity_identifier_resource,
+        instance_to_global,
+    )
 
 
 def build_global_tables_step(
@@ -172,34 +183,34 @@ def build_global_tables_step(
         - entity_annotation.parquet (linked to instances)
         - membership.parquet (polymorphic entity/instance columns)
     """
-    print("\n" + "=" * 70)
-    print("STEP: Global Tables (Cross-Source Aggregation)")
-    print("=" * 70)
+    print('\n' + '=' * 70)
+    print('STEP: Global Tables (Cross-Source Aggregation)')
+    print('=' * 70)
 
-    local_tables_dir = output_dir / "local_tables"
-    record_to_global_file = output_dir / "entity_record_mapping.parquet"
-    entity_identifiers_file = output_dir / "entity_identifier.parquet"
-    instance_to_global_file = output_dir / "instance_to_global.parquet"
+    local_tables_dir = output_dir / 'local_tables'
+    record_to_global_file = output_dir / 'entity_record_mapping.parquet'
+    entity_identifiers_file = output_dir / 'entity_identifier.parquet'
+    instance_to_global_file = output_dir / 'instance_to_global.parquet'
 
     # Verify prerequisites exist
     if not local_tables_dir.exists():
         raise FileNotFoundError(
-            f"Local tables directory not found: {local_tables_dir}\n"
+            f'Local tables directory not found: {local_tables_dir}\n'
             "Please run the 'local_tables' step first."
         )
     if not record_to_global_file.exists():
         raise FileNotFoundError(
-            f"Entity record mapping not found: {record_to_global_file}\n"
+            f'Entity record mapping not found: {record_to_global_file}\n'
             "Please run the 'entity_identifiers' step first."
         )
     if not entity_identifiers_file.exists():
         raise FileNotFoundError(
-            f"Entity identifiers not found: {entity_identifiers_file}\n"
+            f'Entity identifiers not found: {entity_identifiers_file}\n'
             "Please run the 'entity_identifiers' step first."
         )
     if not instance_to_global_file.exists():
         raise FileNotFoundError(
-            f"Instance to global mapping not found: {instance_to_global_file}\n"
+            f'Instance to global mapping not found: {instance_to_global_file}\n'
             "Please run the 'entity_identifiers' step first."
         )
 
@@ -212,7 +223,7 @@ def build_global_tables_step(
         output_dir=output_dir,
     )
 
-    print("\nGlobal tables built successfully")
+    print('\nGlobal tables built successfully')
 
 
 def run_gold_loader_new(
@@ -237,17 +248,19 @@ def run_gold_loader_new(
     # Ensure output directory exists
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    print("\n")
-    print("╔" + "=" * 68 + "╗")
-    print("║" + " " * 15 + "GOLD LOADER PIPELINE (NEW)" + " " * 27 + "║")
-    print("╚" + "=" * 68 + "╝")
-    print(f"\nData root: {data_root}")
-    print(f"Output directory: {output_dir}")
+    print('\n')
+    print('╔' + '=' * 68 + '╗')
+    print('║' + ' ' * 15 + 'GOLD LOADER PIPELINE (NEW)' + ' ' * 27 + '║')
+    print('╚' + '=' * 68 + '╝')
+    print(f'\nData root: {data_root}')
+    print(f'Output directory: {output_dir}')
     if step:
-        print(f"Running single step: {step}")
+        print(f'Running single step: {step}')
     print()
 
-    logger.info(f"Starting gold loader pipeline - Data root: {data_root}, Output: {output_dir}")
+    logger.info(
+        f'Starting gold loader pipeline - Data root: {data_root}, Output: {output_dir}'
+    )
 
     # If a specific step is requested, only run that step
     if step:
@@ -265,7 +278,7 @@ def run_gold_loader_new(
                 output_dir,
             )
         else:
-            raise ValueError(f"Unknown step: {step}")
+            raise ValueError(f'Unknown step: {step}')
     else:
         # Run all implemented steps in order
         # Step 1: Local tables (per-source processing)
@@ -284,8 +297,8 @@ def run_gold_loader_new(
             output_dir,
         )
 
-    print("\n")
-    print("╔" + "=" * 68 + "╗")
-    print("║" + " " * 25 + "PIPELINE COMPLETE" + " " * 26 + "║")
-    print("╚" + "=" * 68 + "╝")
+    print('\n')
+    print('╔' + '=' * 68 + '╗')
+    print('║' + ' ' * 25 + 'PIPELINE COMPLETE' + ' ' * 26 + '║')
+    print('╚' + '=' * 68 + '╝')
     print()

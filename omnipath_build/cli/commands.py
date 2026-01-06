@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Minimal CLI entry point for coordinating OmniPath database build steps."""
+"""CLI commands for coordinating OmniPath database build steps."""
 
 from __future__ import annotations
 
@@ -9,13 +9,13 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from omnipath_build.silver_loader import DiscoveryError, run_silver_loader
+from omnipath_build.loaders.silver import DiscoveryError, run_silver_loader
 
 # Configure logging for the entire application
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
+    datefmt='%Y-%m-%d %H:%M:%S',
 )
 
 __all__ = [
@@ -68,9 +68,9 @@ def _handle_silver(args: argparse.Namespace) -> int:
 
 def _handle_gold(args: argparse.Namespace) -> int:
     """Execute gold loader workflow based on CLI arguments."""
-    project_root = Path(__file__).resolve().parent.parent
+    project_root = Path(__file__).resolve().parent.parent.parent
 
-    from omnipath_build.gold_loader import run_gold_loader_new
+    from omnipath_build.loaders.gold import run_gold_loader_new
 
     data_root: Path = args.data_root
     if not data_root.is_absolute():
@@ -98,9 +98,9 @@ def _handle_gold(args: argparse.Namespace) -> int:
 
 def _handle_postgres(args: argparse.Namespace) -> int:
     """Execute PostgreSQL loader workflow based on CLI arguments."""
-    project_root = Path(__file__).resolve().parent.parent
+    project_root = Path(__file__).resolve().parent.parent.parent
 
-    from omnipath_build.postgres_loader import load_tables_to_postgres
+    from omnipath_build._archive.postgres_loader import load_tables_to_postgres
 
     output_dir: Path = args.output_dir
     if not output_dir.is_absolute():
@@ -129,7 +129,9 @@ def _build_parser() -> argparse.ArgumentParser:
         'silver',
         help='Discover and process silver resource generators.',
     )
-    silver_parser.add_argument('--database', default='omnipath', help='Database to process (default: omnipath)')
+    silver_parser.add_argument(
+        '--database', default='omnipath', help='Database to process (default: omnipath)'
+    )
     silver_parser.add_argument(
         '--base-path',
         type=Path,
@@ -148,11 +150,28 @@ def _build_parser() -> argparse.ArgumentParser:
         '--function',
         help='Specific generator function to process within the selected module',
     )
-    silver_parser.add_argument('--list', action='store_true', help='List discovered sources and exit')
-    silver_parser.add_argument('--batch-size', type=int, default=10_000, help='Number of records per write batch')
-    silver_parser.add_argument('--dry-run', action='store_true', help='Run without writing parquet outputs')
-    silver_parser.add_argument('--override', action='store_true', help='Process even if output file already exists')
-    silver_parser.add_argument('--test-mode', action='store_true', help='Limit to 100k records per resource (for testing)')
+    silver_parser.add_argument(
+        '--list', action='store_true', help='List discovered sources and exit'
+    )
+    silver_parser.add_argument(
+        '--batch-size',
+        type=int,
+        default=10_000,
+        help='Number of records per write batch',
+    )
+    silver_parser.add_argument(
+        '--dry-run', action='store_true', help='Run without writing parquet outputs'
+    )
+    silver_parser.add_argument(
+        '--override',
+        action='store_true',
+        help='Process even if output file already exists',
+    )
+    silver_parser.add_argument(
+        '--test-mode',
+        action='store_true',
+        help='Limit to 100k records per resource (for testing)',
+    )
     silver_parser.set_defaults(handler=_handle_silver)
 
     gold_parser = subparsers.add_parser(

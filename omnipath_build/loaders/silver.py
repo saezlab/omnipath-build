@@ -7,17 +7,17 @@ import importlib
 import inspect
 import pkgutil
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 from typing import Callable, Dict, Iterable, Iterator, List, Optional
-from enum import Enum
 
 import pyarrow as pa
 import pyarrow.parquet as pq
 
 from omnipath_build.utils.path_manager import PathManager
 from pypath.internals.silver_schema import (
-    Entity as SilverEntity,
     ENTITY_SCHEMA,
+    Entity as SilverEntity,
 )
 
 __all__ = [
@@ -27,6 +27,7 @@ __all__ = [
     'process_resource_function',
     'run_silver_loader',
 ]
+
 
 @dataclass(slots=True)
 class ResourceFunction:
@@ -49,29 +50,36 @@ def discover_resources(
     inputs_package: str = 'pypath.inputs_v2',
 ) -> tuple[Dict[str, List[ResourceFunction]], PathManager]:
     """Discover generator functions from the inputs_v2 package.
-    
+
     For each module, discovers:
     1. Resource objects - emits metadata() to resource.parquet (processed first)
     2. Dataset objects - emits data entities to <dataset_name>.parquet
     """
     path_manager = PathManager(database_name, base_path)
-    from pypath.inputs_v2.base import Dataset, Resource  # Local import to avoid import-time side effects.
+    from pypath.inputs_v2.base import (
+        Dataset,
+        Resource,
+    )  # Local import to avoid import-time side effects.
 
     try:
         root_module = importlib.import_module(inputs_package)
     except ImportError as exc:  # noqa: BLE001
-        raise DiscoveryError(f'Unable to import inputs package "{inputs_package}": {exc}') from exc
+        raise DiscoveryError(
+            f'Unable to import inputs package "{inputs_package}": {exc}'
+        ) from exc
 
     package_paths = getattr(root_module, '__path__', None)
     if package_paths is None:
-        raise DiscoveryError(f'Inputs package "{inputs_package}" is not a namespace package')
+        raise DiscoveryError(
+            f'Inputs package "{inputs_package}" is not a namespace package'
+        )
 
     prefix = f'{inputs_package}.'
     discovered: Dict[str, List[ResourceFunction]] = {}
 
     for module_info in pkgutil.walk_packages(package_paths, prefix):
         module_name = module_info.name
-        relative_name = module_name[len(prefix):]
+        relative_name = module_name[len(prefix) :]
         if not relative_name:
             continue
 
@@ -83,16 +91,18 @@ def discover_resources(
 
         # First, discover Resource objects to emit their metadata
         resource_members = [
-            (name, obj) for name, obj in inspect.getmembers(module)
+            (name, obj)
+            for name, obj in inspect.getmembers(module)
             if isinstance(obj, Resource)
         ]
 
         # Discover Dataset objects for data entities (both at module level and inside Resources)
         dataset_members = [
-            (name, obj) for name, obj in inspect.getmembers(module)
+            (name, obj)
+            for name, obj in inspect.getmembers(module)
             if isinstance(obj, Dataset)
         ]
-        
+
         # Also discover datasets nested inside Resource objects
         datasets_from_resources: List[tuple[str, Dataset]] = []
         for _, resource_obj in resource_members:
@@ -108,7 +118,7 @@ def discover_resources(
         resource_id = relative_name
 
         module_functions: List[ResourceFunction] = []
-        
+
         # Add Resource metadata as first function (writes to resource.parquet)
         # This ensures the source entity gets local_entity_id = 1
         for resource_name, resource_obj in resource_members:
@@ -124,7 +134,7 @@ def discover_resources(
             )
             # Only use the first Resource found per module
             break
-        
+
         # Add Dataset functions for data entities
         for dataset_name, dataset_obj in dataset_members:
             module_functions.append(
@@ -141,12 +151,11 @@ def discover_resources(
             discovered[relative_name] = module_functions
 
     if not discovered:
-        raise DiscoveryError(f'No resource functions found under package "{inputs_package}"')
+        raise DiscoveryError(
+            f'No resource functions found under package "{inputs_package}"'
+        )
 
     return discovered, path_manager
-
-
-
 
 
 def _ensure_entity_record(record: object) -> None:
@@ -299,7 +308,9 @@ def process_resource_function(
             resource_fn.function_name,
         )
         if potential_output.exists():
-            print(f'[{resource_fn.source}.{resource_fn.function_name}] skipping (file exists: {potential_output})')
+            print(
+                f'[{resource_fn.source}.{resource_fn.function_name}] skipping (file exists: {potential_output})'
+            )
             return potential_output
 
     try:
@@ -319,7 +330,9 @@ def process_resource_function(
 
     if first_record is None:
         # No records at all
-        print(f'[{resource_fn.source}.{resource_fn.function_name}] no records generated')
+        print(
+            f'[{resource_fn.source}.{resource_fn.function_name}] no records generated'
+        )
         return None
 
     is_multi_output = _is_multi_output_record(first_record)
@@ -348,18 +361,32 @@ def process_resource_function(
 
         if all_exist and existing_files:
             output_list = ', '.join(existing_files.keys())
-            print(f'[{resource_fn.source}.{resource_fn.function_name}] skipping (multi-output files exist: {output_list})')
+            print(
+                f'[{resource_fn.source}.{resource_fn.function_name}] skipping (multi-output files exist: {output_list})'
+            )
             return existing_files
 
     if is_multi_output:
         # Process as multi-output function
         return _process_multi_output(
-            resource_fn, path_manager, first_record, records_iter, batch_size, dry_run, test_mode
+            resource_fn,
+            path_manager,
+            first_record,
+            records_iter,
+            batch_size,
+            dry_run,
+            test_mode,
         )
     else:
         # Process as single-output function (existing logic)
         return _process_single_output(
-            resource_fn, path_manager, first_record, records_iter, batch_size, dry_run, test_mode
+            resource_fn,
+            path_manager,
+            first_record,
+            records_iter,
+            batch_size,
+            dry_run,
+            test_mode,
         )
 
 
@@ -390,7 +417,9 @@ def _process_single_output(
     for record in records_iter:
         # Check test mode limit
         if max_records and (total_records + len(batch)) >= max_records:
-            print(f'[{resource_fn.source}.{resource_fn.function_name}] test mode: stopping at {max_records:,} records')
+            print(
+                f'[{resource_fn.source}.{resource_fn.function_name}] test mode: stopping at {max_records:,} records'
+            )
             break
         if record is None:
             continue
@@ -403,7 +432,9 @@ def _process_single_output(
 
         # Print progress every 10 records
         if len(batch) % 10000 == 0:
-            print(f'[{resource_fn.source}.{resource_fn.function_name}] collected {total_records + len(batch):,} records...')
+            print(
+                f'[{resource_fn.source}.{resource_fn.function_name}] collected {total_records + len(batch):,} records...'
+            )
 
         if len(batch) >= batch_size:
             if dry_run:
@@ -421,12 +452,16 @@ def _process_single_output(
             table = pa.Table.from_pylist(batch, schema=schema)
             writer.write_table(table)
             total_records += len(batch)
-            print(f'[{resource_fn.source}.{resource_fn.function_name}] processed {total_records:,} records...')
+            print(
+                f'[{resource_fn.source}.{resource_fn.function_name}] processed {total_records:,} records...'
+            )
             batch.clear()
 
     if not batch:
         if total_records == 0 and dry_run:
-            print(f'[{resource_fn.source}.{resource_fn.function_name}] dry-run complete (no write)')
+            print(
+                f'[{resource_fn.source}.{resource_fn.function_name}] dry-run complete (no write)'
+            )
             return None
         if total_records == 0 and not dry_run:
             output_file = path_manager.silver_file(
@@ -436,17 +471,23 @@ def _process_single_output(
             )
             output_file.parent.mkdir(parents=True, exist_ok=True)
             pq.write_table(pa.Table.from_pylist([], schema=schema), output_file)
-            print(f'[{resource_fn.source}.{resource_fn.function_name}] wrote empty table to {output_file}')
+            print(
+                f'[{resource_fn.source}.{resource_fn.function_name}] wrote empty table to {output_file}'
+            )
             return output_file
         if writer:
             writer.close()
-            print(f'[{resource_fn.source}.{resource_fn.function_name}] wrote {total_records:,} records to {output_file}')
+            print(
+                f'[{resource_fn.source}.{resource_fn.function_name}] wrote {total_records:,} records to {output_file}'
+            )
             return output_file
         return output_file
 
     if dry_run:
         total_records += len(batch)
-        print(f'[{resource_fn.source}.{resource_fn.function_name}] dry-run result: {total_records:,} records pending write')
+        print(
+            f'[{resource_fn.source}.{resource_fn.function_name}] dry-run result: {total_records:,} records pending write'
+        )
         return None
 
     output_file, writer = _ensure_writer(
@@ -462,7 +503,9 @@ def _process_single_output(
     total_records += len(batch)
     writer.close()
 
-    print(f'[{resource_fn.source}.{resource_fn.function_name}] wrote {total_records:,} records to {output_file}')
+    print(
+        f'[{resource_fn.source}.{resource_fn.function_name}] wrote {total_records:,} records to {output_file}'
+    )
     return output_file
 
 
@@ -514,16 +557,22 @@ def _process_multi_output(
 
         if len(batches[output_name]) % 10000 == 0:
             total = record_counts[output_name] + len(batches[output_name])
-            print(f'[{resource_fn.source}.{resource_fn.function_name}:{output_name}] collected {total:,} records...')
+            print(
+                f'[{resource_fn.source}.{resource_fn.function_name}:{output_name}] collected {total:,} records...'
+            )
 
         if len(batches[output_name]) >= batch_size:
             if not dry_run:
                 ensure_output_paths(output_name)
-                table = pa.Table.from_pylist(batches[output_name], schema=ENTITY_SCHEMA)
+                table = pa.Table.from_pylist(
+                    batches[output_name], schema=ENTITY_SCHEMA
+                )
                 writers[output_name].write_table(table)
 
             record_counts[output_name] += len(batches[output_name])
-            print(f'[{resource_fn.source}.{resource_fn.function_name}:{output_name}] processed {record_counts[output_name]:,} records...')
+            print(
+                f'[{resource_fn.source}.{resource_fn.function_name}:{output_name}] processed {record_counts[output_name]:,} records...'
+            )
             batches[output_name].clear()
 
     # Process first record
@@ -538,10 +587,17 @@ def _process_multi_output(
 
         # Check test mode limit for any output
         if max_records:
-            max_output_count = max((record_counts.get(name, 0) + len(batches.get(name, []))
-                                   for name in batches.keys()), default=0)
+            max_output_count = max(
+                (
+                    record_counts.get(name, 0) + len(batches.get(name, []))
+                    for name in batches.keys()
+                ),
+                default=0,
+            )
             if max_output_count >= max_records:
-                print(f'[{resource_fn.source}.{resource_fn.function_name}] test mode: stopping at {max_records:,} records per output')
+                print(
+                    f'[{resource_fn.source}.{resource_fn.function_name}] test mode: stopping at {max_records:,} records per output'
+                )
                 break
 
         if not _is_multi_output_record(record):
@@ -569,7 +625,9 @@ def _process_multi_output(
     # Close all writers
     for output_name, writer in writers.items():
         writer.close()
-        print(f'[{resource_fn.source}.{resource_fn.function_name}:{output_name}] wrote {record_counts[output_name]:,} records to {output_files[output_name]}')
+        print(
+            f'[{resource_fn.source}.{resource_fn.function_name}:{output_name}] wrote {record_counts[output_name]:,} records to {output_files[output_name]}'
+        )
 
     if dry_run:
         print(f'[{resource_fn.source}.{resource_fn.function_name}] dry-run complete:')
@@ -631,7 +689,9 @@ def run_silver_loader(
             selected_functions.append(fn)
 
     if not selected_functions:
-        raise ValueError('No resource functions selected. Adjust filters or set list_only=True to inspect options.')
+        raise ValueError(
+            'No resource functions selected. Adjust filters or set list_only=True to inspect options.'
+        )
 
     outputs: List[Optional[Path]] = []
     for fn in selected_functions:
@@ -646,6 +706,8 @@ def run_silver_loader(
             )
             outputs.append(result)
         except Exception as exc:  # noqa: BLE001
-            raise RuntimeError(f'Failed to process {fn.source}.{fn.function_name}: {exc}') from exc
+            raise RuntimeError(
+                f'Failed to process {fn.source}.{fn.function_name}: {exc}'
+            ) from exc
 
     return discovered, path_manager, selected_functions, outputs

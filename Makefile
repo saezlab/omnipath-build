@@ -10,19 +10,19 @@ setup:
 	pnpm --dir nextjs install
 
 silver:
-	@uv run -m omnipath_build.database_manager silver \
+	@uv run -m omnipath_build.cli.commands silver \
 		$(if $(or $(SOURCE),$(filter-out $@,$(MAKECMDGOALS))),--source $(if $(SOURCE),$(SOURCE),$(filter-out $@,$(MAKECMDGOALS)))) \
 		$(if $(FUNCTION),--function $(FUNCTION)) \
 		$(if $(INPUTS_PACKAGE),--inputs-package $(INPUTS_PACKAGE))
 
 silver-test:
-	@uv run -m omnipath_build.database_manager silver --test-mode \
+	@uv run -m omnipath_build.cli.commands silver --test-mode \
 		$(if $(or $(SOURCE),$(filter-out $@,$(MAKECMDGOALS))),--source $(if $(SOURCE),$(SOURCE),$(filter-out $@,$(MAKECMDGOALS)))) \
 		$(if $(FUNCTION),--function $(FUNCTION)) \
 		$(if $(INPUTS_PACKAGE),--inputs-package $(INPUTS_PACKAGE))
 
 silver-reprocess:
-	@uv run -m omnipath_build.database_manager silver --override \
+	@uv run -m omnipath_build.cli.commands silver --override \
 		$(if $(or $(SOURCE),$(filter-out $@,$(MAKECMDGOALS))),--source $(if $(SOURCE),$(SOURCE),$(filter-out $@,$(MAKECMDGOALS)))) \
 		$(if $(FUNCTION),--function $(FUNCTION)) \
 		$(if $(INPUTS_PACKAGE),--inputs-package $(INPUTS_PACKAGE))
@@ -30,13 +30,13 @@ silver-reprocess:
 GOLD_STEPS := local_tables entity_identifiers global_tables
 gold:
 	@if [ -n "$(filter $(GOLD_STEPS),$(MAKECMDGOALS))" ]; then \
-		uv run -m omnipath_build.database_manager gold --step $(filter $(GOLD_STEPS),$(MAKECMDGOALS)); \
+		uv run -m omnipath_build.cli.commands gold --step $(filter $(GOLD_STEPS),$(MAKECMDGOALS)); \
 	else \
-		uv run -m omnipath_build.database_manager gold; \
+		uv run -m omnipath_build.cli.commands gold; \
 	fi
 
 postgres:
-	@. .env && uv run -m omnipath_build.database_manager postgres \
+	@. .env && uv run -m omnipath_build.cli.commands postgres \
 		--postgres-uri "postgresql://$${POSTGRES_USER}:$${POSTGRES_PASSWORD}@localhost:$${POSTGRES_PORT}/omnipath" \
 		--schema public \
 		$(if $(DROP),--drop-existing)
@@ -58,21 +58,21 @@ meilisearch: meilisearch-entities meilisearch-interactions
 
 # Import entities into Meilisearch
 meilisearch-import-entities:
-	@uv run python -m omnipath_build.import_search_entities \
+	@uv run python -m omnipath_build.search.importer \
 		--dataset entities \
 		--importer-path meilisearch-importer-main \
 		--api-key ou2PElyoy2vTITMltS183DR0KOgy8cWERDkr8lX2UKc
 
 # Import interactions into Meilisearch
 meilisearch-import-interactions:
-	@uv run python -m omnipath_build.import_search_entities \
+	@uv run python -m omnipath_build.search.importer \
 		--dataset interactions \
 		--importer-path meilisearch-importer-main \
 		--api-key ou2PElyoy2vTITMltS183DR0KOgy8cWERDkr8lX2UKc
 
 # Import both entities and interactions into Meilisearch
 meilisearch-import-all:
-	@uv run python -m omnipath_build.import_search_entities \
+	@uv run python -m omnipath_build.search.importer \
 		--dataset both \
 		--importer-path meilisearch-importer-main \
 		--api-key ou2PElyoy2vTITMltS183DR0KOgy8cWERDkr8lX2UKc
