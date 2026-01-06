@@ -251,9 +251,9 @@ export function InteractionsExploreTab({
         <ArrowRight className={cn(
           "h-4 w-4",
           consensusSign === "positive" ? "text-green-500" :
-          consensusSign === "negative" ? "text-red-500" :
-          consensusSign === "mixed" ? "text-orange-500" :
-          "text-muted-foreground"
+            consensusSign === "negative" ? "text-red-500" :
+              consensusSign === "mixed" ? "text-orange-500" :
+                "text-muted-foreground"
         )} />
       );
     }
@@ -338,11 +338,10 @@ export function InteractionsExploreTab({
                 <Table>
                   <TableHeader>
                     <TableRow>
-                      <TableHead className="w-[25%] py-2">Source</TableHead>
+                      <TableHead className="w-[35%] py-2">Source</TableHead>
                       <TableHead className="w-[50px] text-center py-2"></TableHead>
-                      <TableHead className="w-[25%] py-2">Target</TableHead>
-                      <TableHead className="w-[35%] py-2">Types</TableHead>
-                      <TableHead className="w-[15%] text-center py-2">Evidence</TableHead>
+                      <TableHead className="w-[35%] py-2">Target</TableHead>
+                      <TableHead className="w-[20%] text-center py-2">Evidence</TableHead>
                     </TableRow>
                   </TableHeader>
                 </Table>
@@ -365,6 +364,11 @@ export function InteractionsExploreTab({
                       const targetId = swap ? row.member_a_id : row.member_b_id;
                       const sourceEntity = entityMap.get(sourceId);
                       const targetEntity = entityMap.get(targetId);
+                      // Get entity type from member_types array
+                      const sourceTypeRaw = swap ? row.member_types[1] : row.member_types[0];
+                      const targetTypeRaw = swap ? row.member_types[0] : row.member_types[1];
+                      const sourceType = sourceTypeRaw ? extractTypeLabel(sourceTypeRaw) : undefined;
+                      const targetType = targetTypeRaw ? extractTypeLabel(targetTypeRaw) : undefined;
 
                       return (
                         <TableRow
@@ -372,11 +376,11 @@ export function InteractionsExploreTab({
                           onClick={() => handleRowClick(row)}
                           className="cursor-pointer hover:bg-muted/50"
                         >
-                          <TableCell className="w-[25%] max-w-0">
+                          <TableCell className="w-[35%] max-w-0">
                             <EntityBadge
                               displayName={sourceEntity?.display_name || String(sourceId)}
                               canonicalIdentifier={sourceEntity?.canonical_identifier || String(sourceId)}
-                              showHover={false}
+                              entityType={sourceEntity?.entity_type_name || sourceType}
                             />
                           </TableCell>
                           <TableCell className="w-[50px] text-center">
@@ -384,23 +388,14 @@ export function InteractionsExploreTab({
                               {renderSignIndicator(row)}
                             </div>
                           </TableCell>
-                          <TableCell className="w-[25%] max-w-0">
+                          <TableCell className="w-[35%] max-w-0">
                             <EntityBadge
                               displayName={targetEntity?.display_name || String(targetId)}
                               canonicalIdentifier={targetEntity?.canonical_identifier || String(targetId)}
-                              showHover={false}
+                              entityType={targetEntity?.entity_type_name || targetType}
                             />
                           </TableCell>
-                          <TableCell className="w-[35%] max-w-0">
-                            <div className="flex flex-wrap gap-1 overflow-hidden">
-                              {row.member_types.map((type, idx) => (
-                                <Badge key={idx} variant="secondary" className="text-xs">
-                                  {extractTypeLabel(type)}
-                                </Badge>
-                              ))}
-                            </div>
-                          </TableCell>
-                          <TableCell className="w-[15%] text-center">
+                          <TableCell className="w-[20%] text-center">
                             <Badge variant="outline">
                               {formatNumber(row.evidence.length)}
                             </Badge>
@@ -410,7 +405,7 @@ export function InteractionsExploreTab({
                     })}
                     {/* Infinite scroll trigger */}
                     <TableRow style={{ display: hasMore ? 'table-row' : 'none' }}>
-                      <TableCell colSpan={5} className="p-0">
+                      <TableCell colSpan={4} className="p-0">
                         <div
                           ref={sentinelRef as React.RefObject<HTMLDivElement>}
                           className="flex justify-center py-4"

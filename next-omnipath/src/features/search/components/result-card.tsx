@@ -16,7 +16,7 @@ import { useEntitySelection } from "@/contexts/entity-selection-context";
 import { MoleculeStructure } from "./molecule_structure";
 import { getEntityNames } from "../api/queries";
 import { useEffect, useState } from "react";
-import { ArrowRight, ListOrdered } from "lucide-react";
+import { ArrowRight, ListOrdered, ChevronDown, ChevronUp, Copy } from "lucide-react";
 import { useRouter } from "next/navigation";
 
 // Helper function to convert <em> tags to highlighted spans
@@ -95,6 +95,95 @@ export interface SearchResult {
   pathway_steps?: string[]; // "Order:ID"
   [key: string]: unknown; // Add index signature for compatibility with DataRow
 }
+
+// Single identifier badge with copy functionality
+function IdentifierBadge({ id, idx }: { id: { type: string; value: string }; idx: number }) {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    navigator.clipboard.writeText(id.value);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  };
+
+  return (
+    <span
+      key={`${id.type}-${idx}`}
+      className="group/id inline-flex items-center gap-1 bg-background/80 border rounded px-1.5 py-0.5 hover:bg-background"
+      title={`${id.type}: ${id.value}`}
+    >
+      <span className="text-muted-foreground font-medium">{id.type}:</span>
+      <span className="font-mono truncate max-w-[120px]">{id.value}</span>
+      <button
+        onClick={handleCopy}
+        className="opacity-0 group-hover/id:opacity-100 transition-opacity p-0.5 hover:bg-muted rounded"
+        title="Copy to clipboard"
+      >
+        {copied ? (
+          <Check className="h-3 w-3 text-green-500" />
+        ) : (
+          <Copy className="h-3 w-3 text-muted-foreground" />
+        )}
+      </button>
+    </span>
+  );
+}
+
+// Component to display identifiers in a collapsible section
+function IdentifiersDisplay({ identifiers }: { identifiers: Identifier[] }) {
+  const [isExpanded, setIsExpanded] = useState(false);
+
+  if (!identifiers || identifiers.length === 0) return null;
+
+  // Parse identifiers - they come as {"type:type_id": "value"}
+  const parsedIdentifiers = identifiers.map(id => {
+    const entries = Object.entries(id);
+    if (entries.length === 0) return null;
+    const [key, value] = entries[0];
+    const colonIndex = key.indexOf(':');
+    const idType = colonIndex > 0 ? key.substring(0, colonIndex) : key;
+    return { type: idType, value: value as string };
+  }).filter(Boolean) as { type: string; value: string }[];
+
+  if (parsedIdentifiers.length === 0) return null;
+
+  // Show first 3 when collapsed
+  const displayedIdentifiers = isExpanded ? parsedIdentifiers : parsedIdentifiers.slice(0, 3);
+  const hasMore = parsedIdentifiers.length > 3;
+
+  return (
+    <div className="border-t px-3 py-2 bg-muted/30">
+      <div className="flex flex-wrap gap-1.5 text-xs">
+        {displayedIdentifiers.map((id, idx) => (
+          <IdentifierBadge key={`${id.type}-${idx}`} id={id} idx={idx} />
+        ))}
+        {hasMore && (
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              setIsExpanded(!isExpanded);
+            }}
+            className="inline-flex items-center gap-0.5 text-muted-foreground hover:text-foreground transition-colors px-1"
+          >
+            {isExpanded ? (
+              <>
+                <ChevronUp className="h-3 w-3" />
+                <span>Show less</span>
+              </>
+            ) : (
+              <>
+                <ChevronDown className="h-3 w-3" />
+                <span>+{parsedIdentifiers.length - 3} more</span>
+              </>
+            )}
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 
 // Component to display a reaction equation
 function ReactionDisplay({ result, names = {} }: { result: SearchResult, names?: Record<string, string> }) {
@@ -315,6 +404,9 @@ function MoleculeResultCard({ result }: { result: SearchResult }) {
           />
         </CardContent>
       )}
+
+      {/* Identifiers section */}
+      <IdentifiersDisplay identifiers={identifiers} />
 
       <CardFooter className="flex items-center justify-between shrink-0 border-t p-2.5">
         {/* Stats */}
@@ -545,7 +637,10 @@ export function ResultCard({ result, entityNamesMap }: { result: SearchResult, e
           </div>
         )}
 
-      <CardFooter className={`flex items-center justify-between shrink-0 p-2.5 ${((descriptions.length > 0) || definition) ? 'border-t' : ''}`}>
+      {/* Identifiers section */}
+      {type === 'entity' && <IdentifiersDisplay identifiers={identifiers} />}
+
+      <CardFooter className={`flex items-center justify-between shrink-0 p-2.5 ${((descriptions.length > 0) || definition || identifiers.length > 0) ? 'border-t' : ''}`}>
         {/* Stats */}
         <div className="flex items-center gap-3 text-sm flex-wrap">
           {type === 'entity' && interactionCount > 0 && (

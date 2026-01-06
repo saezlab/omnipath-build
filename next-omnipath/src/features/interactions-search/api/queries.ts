@@ -99,20 +99,54 @@ export async function fetchEntitiesByIds(entityIds: number[]): Promise<Map<numbe
       const names = doc.names as string[] | undefined;
       const geneSymbols = doc.gene_symbols as string[] | undefined;
       const entityType = doc.entity_type as string | undefined;
+      const identifiers = doc.identifiers as Array<Record<string, string>> | undefined;
       // entity_type format is "TypeLabel:id", extract just the label
       const entityTypeName = entityType?.split(':')[0];
 
-      // For small molecules/lipids, prefer shortest name; for others use gene symbol or first name
+      // Helper to extract identifier by type prefix
+      const getIdentifierByType = (types: string[]): string | undefined => {
+        if (!identifiers) return undefined;
+        for (const id of identifiers) {
+          const entries = Object.entries(id);
+          if (entries.length > 0) {
+            const [key, value] = entries[0];
+            const idType = key.split(':')[0].toLowerCase();
+            if (types.some(t => idType.includes(t))) {
+              return value;
+            }
+          }
+        }
+        return undefined;
+      };
+
+      // For small molecules/lipids, prefer ChEMBL, then meaningful name, then PubChem
       let displayName: string;
+      let canonicalId: string;
+
       if (isSmallMoleculeType(entityTypeName)) {
-        displayName = getShortestName(names) || String(doc.entity_id);
+        const shortName = getShortestName(names);
+        const chemblId = getIdentifierByType(['chembl']);
+        const pubchemId = getIdentifierByType(['pubchem', 'cid']);
+
+        // Prefer ChEMBL ID if available, then meaningful short name, then PubChem
+        if (chemblId) {
+          displayName = chemblId;
+        } else if (shortName && !/^\d+$/.test(shortName)) {
+          displayName = shortName;
+        } else {
+          displayName = pubchemId || shortName || String(doc.entity_id);
+        }
+
+        // Use ChEMBL or PubChem as canonical identifier if available
+        canonicalId = chemblId || pubchemId || names?.[0] || String(doc.entity_id);
       } else {
         displayName = geneSymbols?.[0] || names?.[0] || String(doc.entity_id);
+        canonicalId = names?.[0] || String(doc.entity_id);
       }
 
       entityMap.set(id, {
         id: String(doc.entity_id),
-        canonical_identifier: names?.[0] || String(doc.entity_id),
+        canonical_identifier: canonicalId,
         display_name: displayName,
         entity_type_name: entityTypeName,
         gene_symbol: geneSymbols?.[0],
