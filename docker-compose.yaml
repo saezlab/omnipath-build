@@ -67,6 +67,10 @@ services:
             entity-service:
                 condition: service_healthy
 
+networks:
+  dokploy-network:
+    external: true
+
 volumes:
     meilisearch_data:
 
