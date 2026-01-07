@@ -10,13 +10,10 @@ import {
   CardTitle
 } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import React, { useMemo } from "react";
-import { Network, Tag, Shapes, FileText, Database, Plus, Check, FlaskConical } from "lucide-react";
+import React, { useMemo, useState } from "react";
+import { Network, Tag, Shapes, FileText, Database, Plus, Check, FlaskConical, ArrowRight, ListOrdered, ChevronDown, ChevronUp, Copy } from "lucide-react";
 import { useEntitySelection } from "@/contexts/entity-selection-context";
 import { MoleculeStructure } from "./molecule_structure";
-import { getEntityNames } from "../api/queries";
-import { useEffect, useState } from "react";
-import { ArrowRight, ListOrdered, ChevronDown, ChevronUp, Copy } from "lucide-react";
 import { useRouter } from "next/navigation";
 
 // Helper function to convert <em> tags to highlighted spans
@@ -284,15 +281,19 @@ function PathwayDisplay({ result, names = {} }: { result: SearchResult, names?: 
 
 // Molecule-specific result card
 function MoleculeResultCard({ result }: { result: SearchResult }) {
-  const { addEntity, removeEntity, isSelected } = useEntitySelection();
-
-  const names = result._formatted?.names || result.names || [];
-  const identifiers = result._formatted?.identifiers || result.identifiers || [];
   const entityType = result._formatted?.entity_type || result.entity_type;
   const entityTypeLabel = entityType ? entityType.split(':')[0] : "Small Molecule";
 
+  // Memoize identifiers for stable reference in JSX
+  const identifiers = useMemo(() =>
+    result._formatted?.identifiers || result.identifiers || [],
+    [result._formatted?.identifiers, result.identifiers]
+  );
+
   // Get primary name from names or identifiers, prefer the shortest meaningful name
   const primaryName = useMemo(() => {
+    const names = result._formatted?.names || result.names || [];
+    const identifiers = result._formatted?.identifiers || result.identifiers || [];
     const validNames: string[] = [];
 
     // Collect valid names (skip ID-like names)
@@ -327,10 +328,11 @@ function MoleculeResultCard({ result }: { result: SearchResult }) {
     }
 
     return `Compound ${result.entity_id || result.id}`;
-  }, [names, identifiers, result.entity_id, result.id]);
+  }, [result._formatted?.names, result.names, result._formatted?.identifiers, result.identifiers, result.entity_id, result.id]);
 
   // Extract SMILES from identifiers (stored in "biotin tag" identifier type)
   const smiles = useMemo(() => {
+    const identifiers = result._formatted?.identifiers || result.identifiers || [];
     for (const id of identifiers) {
       const entries = Object.entries(id);
       if (entries.length > 0) {
@@ -342,8 +344,9 @@ function MoleculeResultCard({ result }: { result: SearchResult }) {
       }
     }
     return result.canonical_smiles || null;
-  }, [identifiers, result.canonical_smiles]);
+  }, [result._formatted?.identifiers, result.identifiers, result.canonical_smiles]);
 
+  const { addEntity, removeEntity, isSelected } = useEntitySelection();
   const entityId = (result.entity_id ?? result.id)?.toString();
   const selected = entityId ? isSelected(entityId) : false;
 
@@ -454,14 +457,13 @@ function MoleculeResultCard({ result }: { result: SearchResult }) {
 
 export function ResultCard({ result, entityNamesMap }: { result: SearchResult, entityNamesMap?: Record<string, string> }) {
   const router = useRouter();
+  const { addEntity, removeEntity, isSelected } = useEntitySelection();
+  const type = result.type || "entity";
 
   // Check if this is a small molecule and render specialized card
   if (isSmallMolecule(result)) {
     return <MoleculeResultCard result={result} />;
   }
-
-  const type = result.type || "entity";
-  const { addEntity, removeEntity, isSelected } = useEntitySelection();
 
   // Get display name for selection
   const getDisplayName = () => {

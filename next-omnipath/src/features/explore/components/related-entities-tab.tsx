@@ -127,7 +127,7 @@ export function RelatedEntitiesTab({
           filters: combinedFilters,
         });
 
-        let hits = response.hits as SearchResult[];
+        const hits = response.hits as SearchResult[];
 
         // Sort results by frequency
         // Try both number and string keys since references come as strings

@@ -22,8 +22,6 @@ export function MoleculeStructure({
   width = 250,
   height = 250,
   className = "",
-  canonicalId,
-  compoundName
 }: MoleculeStructureProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [error, setError] = useState<string | null>(null);

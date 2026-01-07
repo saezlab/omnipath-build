@@ -12,7 +12,7 @@ export async function POST(request: Request) {
         const { documents } = await fetchMeilisearchDocuments("search_entities", ids, "entity_id");
 
         const nameMap: Record<string, string> = {};
-        documents.forEach((doc: any) => {
+        (documents as Array<{ entity_id: string; names?: string[]; gene_symbols?: string[] }>).forEach((doc) => {
             // Try to find the best name
             const name = (doc.names && doc.names[0]) ||
                 (doc.gene_symbols && doc.gene_symbols[0]) ||

@@ -5,7 +5,7 @@ interface SiteLayoutProps {
   showFooter?: boolean
 }
 
-export function SiteLayout({ children, showFooter = false }: SiteLayoutProps) {
+export function SiteLayout({ children }: SiteLayoutProps) {
   return (
     <div className="flex flex-col min-h-screen">
       <main className="flex-1">{children}</main>

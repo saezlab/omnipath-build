@@ -16,7 +16,7 @@ interface ResultsPanelProps {
 export function ResultsPanel({ toolResult, onClose }: ResultsPanelProps) {
   // State for interactions tab
   const [interactionsFilters, setInteractionsFilters] = useState<MeilisearchFilters>({})
-  const [interactionsFilterCounts, setInteractionsFilterCounts] = useState<Record<string, Record<string, number>>>({})
+  const [, setInteractionsFilterCounts] = useState<Record<string, Record<string, number>>>({})
 
   // Reset filters when toolResult changes
   useEffect(() => {

@@ -5,7 +5,7 @@ import { MessageSquare } from "lucide-react"
 import { Card, CardHeader, CardContent, CardTitle, CardDescription } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
-import { Badge } from "@/components/ui/badge"
+
 import Link from "next/link"
 export function AIAssistantCard() {
   const [chatMessage, setChatMessage] = useState("")

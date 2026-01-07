@@ -56,9 +56,8 @@ function ArrayFilterSection({
               <div key={value} className="flex items-center justify-between group py-0.5 gap-2">
                 <Label
                   htmlFor={`${filterKey}-${value}`}
-                  className={`flex items-center gap-1.5 text-xs font-normal cursor-pointer group-hover:text-primary transition-colors min-w-0 flex-1 ${
-                    isSelected ? "text-primary font-medium" : ""
-                  }`}
+                  className={`flex items-center gap-1.5 text-xs font-normal cursor-pointer group-hover:text-primary transition-colors min-w-0 flex-1 ${isSelected ? "text-primary font-medium" : ""
+                    }`}
                 >
                   <Checkbox
                     id={`${filterKey}-${value}`}
@@ -131,7 +130,9 @@ export function FilterSidebar({
 
   // Handler for clearing entity filter
   const handleClearEntityFilter = () => {
+    // Remove entity-related filters, keep the rest
     const { member_a_id, member_b_id, entity_ids, ...rest } = filters;
+    void member_a_id; void member_b_id; void entity_ids; // Explicitly ignore
     onFilterChange(rest);
   };
 

@@ -1,4 +1,5 @@
-# Multi-stage Dockerfile for Next.js production deployment
+# syntax=docker.io/docker/dockerfile:1
+
 FROM node:20-alpine AS base
 
 # Install dependencies only when needed
@@ -6,12 +7,17 @@ FROM base AS deps
 RUN apk add --no-cache libc6-compat
 WORKDIR /app
 
-# Install dependencies based on the preferred package manager
+# Install pnpm via corepack (comes with Node 20)
+RUN corepack enable
+
+# Install dependencies
 COPY package.json pnpm-lock.yaml* ./
-RUN corepack enable pnpm && pnpm i --frozen-lockfile
+RUN pnpm i --frozen-lockfile
+
 
 # Rebuild the source code only when needed
 FROM base AS builder
+RUN corepack enable
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
@@ -23,7 +29,7 @@ ENV NEXT_PUBLIC_ENVIRONMENT=$NEXT_PUBLIC_ENVIRONMENT
 ENV NEXT_PUBLIC_DOMAIN=$NEXT_PUBLIC_DOMAIN
 
 # Build the application
-RUN corepack enable pnpm && pnpm build
+RUN pnpm build
 
 # Production image, copy all the files and run next
 FROM base AS runner

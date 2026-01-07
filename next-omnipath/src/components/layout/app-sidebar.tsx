@@ -23,7 +23,6 @@ import {
   MessageSquare,
   Sun,
   Moon,
-  Database,
   Compass,
   ListChecks,
 } from "lucide-react"

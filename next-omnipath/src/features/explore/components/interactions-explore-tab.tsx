@@ -150,6 +150,7 @@ export function InteractionsExploreTab({
     }
 
     loadEntityDetails();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [results]);
 
   // Function to load all interactions for graph view

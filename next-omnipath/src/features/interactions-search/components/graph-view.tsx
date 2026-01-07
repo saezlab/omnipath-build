@@ -32,7 +32,7 @@ interface InteractionData {
   }
   has_directed_evidence?: boolean
   consensus_sign?: string | null
-  evidences?: Array<{ id: number; [key: string]: unknown }>
+  evidences?: Array<{ id: number;[key: string]: unknown }>
 }
 
 // Types for graph data
@@ -50,7 +50,7 @@ interface GraphEdge {
   target: string;
   directed: boolean;
   consensusSign: string;
-  evidences: Array<{ id: number; [key: string]: unknown }>;
+  evidences: Array<{ id: number;[key: string]: unknown }>;
 }
 
 interface GraphViewProps {
@@ -63,10 +63,10 @@ interface GraphViewProps {
 // Fetch entity document from Meilisearch
 async function fetchEntityDocument(entityId: string): Promise<EntityDocument | null> {
   try {
-    const response = await fetchMeilisearchDocuments('entities', [entityId]);
+    const response = await fetchMeilisearchDocuments('search_entities', [entityId]);
     const documents = response.documents as unknown[];
     const doc = documents?.[0] as EntityDocument;
-    
+
     if (doc && !doc.id) {
       // Add the entityId as id if missing
       doc.id = entityId;
@@ -80,7 +80,7 @@ async function fetchEntityDocument(entityId: string): Promise<EntityDocument | n
 
 // Transform interactions data to graph format
 const transformToGraphData = (
-  interactions: InteractionData[], 
+  interactions: InteractionData[],
   entityId?: string
 ) => {
   const nodes = new Map<string, GraphNode>();
@@ -89,7 +89,7 @@ const transformToGraphData = (
 
   // If we have a center entity, ensure it's always included
   const centerEntityId = entityId;
-  
+
   // Process interactions, but stop adding new nodes after reaching the limit
   interactions.forEach((interaction) => {
     const sourceId = interaction.entity_a?.id?.toString() || '';
@@ -104,9 +104,9 @@ const transformToGraphData = (
     if (sourceId && !nodes.has(sourceId) && canAddNode(sourceId)) {
       nodes.set(sourceId, {
         id: sourceId,
-        label: interaction.entity_a?.display_name || 
-               interaction.entity_a?.canonical_identifier || 
-               sourceId,
+        label: interaction.entity_a?.display_name ||
+          interaction.entity_a?.canonical_identifier ||
+          sourceId,
         type: interaction.entity_a?.entity_type?.name || 'unknown',
         entity: interaction.entity_a || {},
         canonicalIdentifier: interaction.entity_a?.canonical_identifier
@@ -117,9 +117,9 @@ const transformToGraphData = (
     if (targetId && !nodes.has(targetId) && canAddNode(targetId)) {
       nodes.set(targetId, {
         id: targetId,
-        label: interaction.entity_b?.display_name || 
-               interaction.entity_b?.canonical_identifier || 
-               targetId,
+        label: interaction.entity_b?.display_name ||
+          interaction.entity_b?.canonical_identifier ||
+          targetId,
         type: interaction.entity_b?.entity_type?.name || 'unknown',
         entity: interaction.entity_b || {},
         canonicalIdentifier: interaction.entity_b?.canonical_identifier
@@ -349,17 +349,17 @@ const initializeCytoscape = (
   // Tap handlers
   cy.on('tap', 'node', (evt) => {
     const node = evt.target;
-    
+
     // Clear previous selection
     cy.elements().removeClass('selected-node faded highlighted highlighted-edge');
-    
+
     // Apply selection styling
     node.addClass('selected-node');
     const neighborhood = node.neighborhood().add(node);
     cy.elements().not(neighborhood).addClass('faded');
     node.connectedEdges().addClass('highlighted-edge');
     neighborhood.nodes().style('text-opacity', 1);
-    
+
     onSelectNode(node.data());
   });
 
@@ -374,7 +374,7 @@ const initializeCytoscape = (
       cy.elements().removeClass('selected-node faded highlighted highlighted-edge');
       const zoom = cy.zoom();
       cy.nodes().style('text-opacity', zoom > 1.5 ? 1 : 0);
-      
+
       onSelectNode(null);
       onSelectEdge(null);
     }
@@ -385,7 +385,7 @@ const initializeCytoscape = (
     // Don't apply hover effects if a node is selected
     const selectedNodeId = cy.elements('.selected-node').data('id');
     if (selectedNodeId) return;
-    
+
     const node = e.target;
     const neighborhood = node.neighborhood().add(node);
     cy.elements().not(neighborhood).addClass('faded');
@@ -398,7 +398,7 @@ const initializeCytoscape = (
     // Don't remove hover effects if a node is selected
     const selectedNodeId = cy.elements('.selected-node').data('id');
     if (selectedNodeId) return;
-    
+
     cy.elements().removeClass('faded');
     cy.elements().removeClass('highlighted');
     cy.elements().removeClass('highlighted-edge');
@@ -421,8 +421,8 @@ export const GraphView: React.FC<GraphViewProps> = React.memo(
     const [isLoadingDocument, setIsLoadingDocument] = useState(false);
 
     // Transform data
-    const graphData = React.useMemo(() => 
-      transformToGraphData(interactions, entityId), 
+    const graphData = React.useMemo(() =>
+      transformToGraphData(interactions, entityId),
       [interactions, entityId]
     );
 
@@ -481,21 +481,21 @@ export const GraphView: React.FC<GraphViewProps> = React.memo(
 
     const handleFitView = useCallback(() => {
       if (!cyRef.current) return;
-      
+
       // Store current node dimensions before fit
       const cy = cyRef.current;
       const nodeStyles = new Map();
-      
+
       cy.nodes().forEach((node) => {
         nodeStyles.set(node.id(), {
           width: node.style('width'),
           height: node.style('height')
         });
       });
-      
+
       // Perform fit
       cy.fit();
-      
+
       // Restore node dimensions after fit
       cy.nodes().forEach((node) => {
         const styles = nodeStyles.get(node.id());
@@ -503,7 +503,7 @@ export const GraphView: React.FC<GraphViewProps> = React.memo(
           node.style(styles);
         }
       });
-      
+
       // Update text opacity based on new zoom level
       const zoom = cy.zoom();
       cy.nodes().style('text-opacity', zoom > 1.5 ? 1 : 0);
@@ -519,7 +519,7 @@ export const GraphView: React.FC<GraphViewProps> = React.memo(
           <p>Edges: {graphData.edges.length}</p>
           {graphData.truncated && (
             <p className="text-xs text-amber-600 dark:text-amber-400 mt-2">
-              Limited to 200 nodes<br/>
+              Limited to 200 nodes<br />
               ({graphData.totalNodes} total)
             </p>
           )}
@@ -529,7 +529,7 @@ export const GraphView: React.FC<GraphViewProps> = React.memo(
           <Button onClick={handleFitView} variant="outline">
             Fit View
           </Button>
-          
+
           <Dialog>
             <DialogTrigger asChild>
               <Button
