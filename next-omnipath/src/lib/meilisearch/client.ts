@@ -4,7 +4,7 @@ import { getMeilisearchUrl } from '@/lib/api/config';
 // Create Meilisearch client
 export const meilisearchClient = new MeiliSearch({
   host: getMeilisearchUrl(),
-  apiKey: process.env.MEILI_MASTER_KEY,
+  apiKey: process.env.MEILISEARCH_API_KEY,
 });
 
 // Index names
