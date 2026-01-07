@@ -39,8 +39,6 @@ services:
             RUST_LOG: ${RUST_LOG:-info}
         volumes:
             - ./data:/data:ro
-        ports:
-            - "8080:8080"
         healthcheck:
             test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/health"]
             interval: 30s
