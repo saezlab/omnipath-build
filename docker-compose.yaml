@@ -61,8 +61,6 @@ services:
             MEILISEARCH_API_KEY: ${MEILI_MASTER_KEY}
             ENTITY_SERVICE_URL: http://entity-service:8080
             GOOGLE_GENERATIVE_AI_API_KEY: ${GOOGLE_GENERATIVE_AI_API_KEY}
-        ports:
-            - "3000:3000"
         depends_on:
             omnipath-meilisearch:
                 condition: service_healthy
