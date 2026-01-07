@@ -3,6 +3,8 @@ services:
     omnipath-meilisearch:
         image: getmeili/meilisearch:v1.16
         restart: unless-stopped
+        networks:
+            - dokploy-network
         environment:
             MEILI_MASTER_KEY: ${MEILI_MASTER_KEY}
             MEILI_ENV: ${MEILI_ENV:-development}
@@ -33,6 +35,8 @@ services:
             context: ./entity-service
             dockerfile: Dockerfile
         restart: unless-stopped
+        networks:
+            - dokploy-network
         environment:
             ENTITY_PARQUET_PATH: /data/entity_identifier.parquet
             BIND_ADDR: 0.0.0.0:8080
@@ -55,6 +59,8 @@ services:
                 NEXT_PUBLIC_ENVIRONMENT: ${NEXT_PUBLIC_ENVIRONMENT:-production}
                 NEXT_PUBLIC_DOMAIN: ${NEXT_PUBLIC_DOMAIN:-localhost}
         restart: unless-stopped
+        networks:
+            - dokploy-network
         environment:
             # These are used at runtime for server-side requests
             MEILISEARCH_HOST: http://omnipath-meilisearch:7700
