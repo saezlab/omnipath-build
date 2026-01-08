@@ -1,0 +1,57 @@
+# Development docker-compose: Runs backend services only (Meilisearch + Entity Service)
+# Use this with `npm run dev` in next-omnipath for local frontend development
+
+services:
+    # Meilisearch - Full-text search engine
+    omnipath-meilisearch:
+        image: getmeili/meilisearch:v1.16
+        restart: unless-stopped
+        environment:
+            MEILISEARCH_API_KEY: ${MEILISEARCH_API_KEY:-devkey123}
+            MEILI_ENV: ${MEILI_ENV:-development}
+            MEILI_NO_ANALYTICS: "true"
+        volumes:
+            - meilisearch_data:/meili_data
+            - ${DUMPS_PATH:-./data/dumps}:/dumps:ro
+        ports:
+            - "7700:7700"
+        # Import dump on startup if MEILI_IMPORT_DUMP is set
+        # Usage: MEILI_IMPORT_DUMP=/dumps/latest.dump docker compose up
+        command: >-
+            sh -c "if [ -n \"$$MEILI_IMPORT_DUMP\" ] && [ -f \"$$MEILI_IMPORT_DUMP\" ]; then
+                     meilisearch --import-dump \"$$MEILI_IMPORT_DUMP\";
+                   else
+                     meilisearch;
+                   fi"
+        healthcheck:
+            test: ["CMD", "curl", "-f", "http://localhost:7700/health"]
+            interval: 30s
+            timeout: 10s
+            retries: 5
+            start_period: 30s
+
+    # Entity Service - Parquet-based entity lookup
+    entity-service:
+        build:
+            context: ./entity-service
+            dockerfile: Dockerfile
+        restart: unless-stopped
+        environment:
+            ENTITY_PARQUET_PATH: /data/entity_identifier.parquet
+            BIND_ADDR: 0.0.0.0:8080
+            RUST_LOG: ${RUST_LOG:-info}
+        ports:
+            - "8080:8080"
+        volumes:
+            - ${DATA_PATH:-./data}:/data:ro
+        healthcheck:
+            test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/health"]
+            interval: 30s
+            timeout: 10s
+            retries: 3
+            start_period: 10s
+
+volumes:
+    meilisearch_data:
+        external: true
+        name: omnipath_build_meilisearch_data
