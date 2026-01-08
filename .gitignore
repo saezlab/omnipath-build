@@ -23,7 +23,6 @@ __pycache__/
 /data/
 .venv/
 
-*/.next/*
 bronze/*
 __pycache__/
 .DS_Store
@@ -35,6 +34,7 @@ node_modules/
 pypath-data/
 .env
 *.tsv
-*/target/*
-
+target/
+data/
 omnipath_build.code-workspace
+.next/

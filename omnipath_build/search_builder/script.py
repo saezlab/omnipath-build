@@ -8,9 +8,9 @@ from pypath.internals.cv_terms.annotations import (
 )
 
 # Read files
-ent_id = pl.read_parquet('databases/omnipath/output/entity_identifier.parquet')
-mem_ann = pl.read_parquet('databases/omnipath/output/membership_annotation.parquet')
-membership = pl.read_parquet('databases/omnipath/output/membership.parquet')
+ent_id = pl.read_parquet('omnipath_build/data/gold/entity_identifier.parquet')
+mem_ann = pl.read_parquet('omnipath_build/data/gold/membership_annotation.parquet')
+membership = pl.read_parquet('omnipath_build/data/gold/membership.parquet')
 
 # Get NAME identifier namespace entity_id (OM:0202)
 name_namespace_eid = ent_id.filter(pl.col('identifier') == 'OM:0202')['entity_id'][0]

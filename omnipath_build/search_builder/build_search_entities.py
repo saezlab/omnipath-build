@@ -362,8 +362,8 @@ def build_search_entities(global_tables_dir: Path, output_path: Path) -> Path:
 
 def main():
     parser = argparse.ArgumentParser(description="Build Meilisearch entity documents")
-    parser.add_argument("--global-tables-dir", type=Path, default=Path("databases/omnipath/output"))
-    parser.add_argument("--output", type=Path, default=Path("databases/omnipath/output/search_entities.parquet"))
+    parser.add_argument("--global-tables-dir", type=Path, default=Path("omnipath_build/data/gold"))
+    parser.add_argument("--output", type=Path, default=Path("omnipath_build/data/gold/search_entities.parquet"))
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     args = parser.parse_args()
 

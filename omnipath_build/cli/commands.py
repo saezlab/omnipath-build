@@ -181,14 +181,14 @@ def _build_parser() -> argparse.ArgumentParser:
     gold_parser.add_argument(
         '--data-root',
         type=Path,
-        default=Path('databases/omnipath/data'),
-        help='Path to data directory containing silver files (default: databases/omnipath/data)',
+        default=Path('omnipath_build/data/silver'),
+        help='Path to data directory containing silver files (default: omnipath_build/data/silver)',
     )
     gold_parser.add_argument(
         '--output-dir',
         type=Path,
-        default=Path('databases/omnipath/output'),
-        help='Path to output directory for gold tables (default: databases/omnipath/output)',
+        default=Path('omnipath_build/data/gold'),
+        help='Path to output directory for gold tables (default: omnipath_build/data/gold)',
     )
     gold_parser.add_argument(
         '--step',
@@ -212,8 +212,8 @@ def _build_parser() -> argparse.ArgumentParser:
     postgres_parser.add_argument(
         '--output-dir',
         type=Path,
-        default=Path('databases/omnipath/output'),
-        help='Path to output directory containing parquet files (default: databases/omnipath/output)',
+        default=Path('omnipath_build/data/gold'),
+        help='Path to output directory containing parquet files (default: omnipath_build/data/gold)',
     )
     postgres_parser.add_argument(
         '--postgres-uri',

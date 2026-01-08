@@ -528,8 +528,8 @@ def build_search_interactions(global_tables_dir: Path, output_path: Path) -> Pat
 
 def main():
     p = argparse.ArgumentParser(description="Build Meilisearch interaction documents")
-    p.add_argument("--global-tables-dir", type=Path, default=Path("databases/omnipath/output"))
-    p.add_argument("--output", type=Path, default=Path("databases/omnipath/output/search_interactions.parquet"))
+    p.add_argument("--global-tables-dir", type=Path, default=Path("omnipath_build/data/gold"))
+    p.add_argument("--output", type=Path, default=Path("omnipath_build/data/gold/search_interactions.parquet"))
     p.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     args = p.parse_args()
     

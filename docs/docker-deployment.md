@@ -134,18 +134,22 @@ When your source data changes:
 
 ```
 .
-├── data/                          # Mounted into containers (gitignored)
-│   ├── entity_identifier.parquet  # Entity lookup data
-│   ├── search_entities.parquet    # Entity search data  
-│   ├── search_interactions.parquet
-│   └── dumps/
-│       ├── *.dump                 # Meilisearch dumps
-│       └── latest.dump -> ...     # Symlink to latest dump
-├── docker-compose.yaml
-├── entity-service/
-│   └── Dockerfile
-└── next-omnipath/
-    └── Dockerfile
+├── omnipath-present/               # Presentation layer (services & frontend)
+│   ├── data/                       # Mounted into containers (gitignored)
+│   │   ├── entity_identifier.parquet  # Entity lookup data
+│   │   ├── search_entities.parquet    # Entity search data  
+│   │   ├── search_interactions.parquet
+│   │   └── dumps/
+│   │       ├── *.dump              # Meilisearch dumps
+│   │       └── latest.dump -> ...  # Symlink to latest dump
+│   ├── docker-compose.yaml
+│   ├── entity-service/
+│   │   └── Dockerfile
+│   └── next-omnipath/
+│       └── Dockerfile
+├── omnipath_build/                 # Data processing Python package
+├── databases/                      # Output location for built data
+└── Makefile                        # Build & deployment orchestration
 ```
 
 ## Troubleshooting

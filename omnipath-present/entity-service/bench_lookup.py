@@ -84,7 +84,7 @@ def main():
     )
     parser.add_argument(
         "--parquet-path",
-        default="../databases/omnipath/output/entity_identifier.parquet",
+        default="../omnipath_build/data/gold/entity_identifier.parquet",
         help="path to entity_identifier.parquet",
     )
     parser.add_argument("--sample-size", type=int, default=1000, help="identifiers to sample")

@@ -96,19 +96,19 @@ def parse_args(argv: Iterable[str]) -> argparse.Namespace:
     )
     parser.add_argument(
         '--entities-parquet-path',
-        default='databases/omnipath/output/search_entities.parquet',
+        default='omnipath_build/data/gold/search_entities.parquet',
         type=Path,
         help='Path to search_entities.parquet.',
     )
     parser.add_argument(
         '--interactions-parquet-path',
-        default='databases/omnipath/output/search_interactions.parquet',
+        default='omnipath_build/data/gold/search_interactions.parquet',
         type=Path,
         help='Path to search_interactions.parquet.',
     )
     parser.add_argument(
         '--importer-path',
-        default=Path('/Users/jschaul/Downloads/meilisearch-importer-main'),
+        default=Path(__file__).parent.parent / 'meilisearch-importer',
         type=Path,
         help='Location of the meilisearch-importer checkout.',
     )

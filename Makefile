@@ -44,14 +44,14 @@ postgres:
 # Build search entities parquet
 meilisearch-entities:
 	@uv run python -m omnipath_build.search_builder.build_search_entities \
-		--global-tables-dir databases/omnipath/output \
-		--output databases/omnipath/output/search_entities.parquet
+		--global-tables-dir omnipath_build/data/gold \
+		--output omnipath_build/data/gold/search_entities.parquet
 
 # Build search interactions parquet
 meilisearch-interactions:
 	@uv run python -m omnipath_build.search_builder.build_search_interactions \
-		--global-tables-dir databases/omnipath/output \
-		--output databases/omnipath/output/search_interactions.parquet
+		--global-tables-dir omnipath_build/data/gold \
+		--output omnipath_build/data/gold/search_interactions.parquet
 
 # Build both entities and interactions parquet files
 meilisearch: meilisearch-entities meilisearch-interactions
@@ -60,21 +60,21 @@ meilisearch: meilisearch-entities meilisearch-interactions
 meilisearch-import-entities:
 	@. .env && uv run python -m omnipath_build.search.importer \
 		--dataset entities \
-		--importer-path meilisearch-importer-main \
+		--importer-path omnipath_build/meilisearch-importer \
 		--api-key $${MEILI_MASTER_KEY}
 
 # Import interactions into Meilisearch
 meilisearch-import-interactions:
 	@. .env && uv run python -m omnipath_build.search.importer \
 		--dataset interactions \
-		--importer-path meilisearch-importer-main \
+		--importer-path omnipath_build/meilisearch-importer \
 		--api-key $${MEILI_MASTER_KEY}
 
 # Import both entities and interactions into Meilisearch
 meilisearch-import-all:
 	@. .env && uv run python -m omnipath_build.search.importer \
 		--dataset both \
-		--importer-path meilisearch-importer-main \
+		--importer-path omnipath_build/meilisearch-importer \
 		--api-key $${MEILI_MASTER_KEY}
 
 # Backward compatibility: import entities only (original behavior)
@@ -92,28 +92,28 @@ gold-meilisearch-import:
 # Create a Meilisearch dump for deployment
 # Prerequisites: Meilisearch must be running with data imported
 meilisearch-dump:
-	@. .env && uv run python scripts/create_meilisearch_dump.py \
+	@. .env && uv run python -m omnipath_build.scripts.create_meilisearch_dump \
 		--meili-url http://localhost:7700 \
 		--api-key $${MEILI_MASTER_KEY} \
-		--output-dir data/dumps
+		--output-dir omnipath-present/data/dumps
 
 # Set up the data directory with required files for Docker deployment
 # This copies the necessary parquet files to data/
 docker-data-setup:
 	@echo "Setting up data directory..."
-	@mkdir -p data/dumps
-	@if [ -f databases/omnipath/output/entity_identifier.parquet ]; then \
-		cp -v databases/omnipath/output/entity_identifier.parquet data/; \
+	@mkdir -p omnipath-present/data/dumps
+	@if [ -f omnipath_build/data/gold/entity_identifier.parquet ]; then \
+		cp -v omnipath_build/data/gold/entity_identifier.parquet omnipath-present/data/; \
 	else \
 		echo "Warning: entity_identifier.parquet not found"; \
 	fi
-	@if [ -f databases/omnipath/output/search_entities.parquet ]; then \
-		cp -v databases/omnipath/output/search_entities.parquet data/; \
+	@if [ -f omnipath_build/data/gold/search_entities.parquet ]; then \
+		cp -v omnipath_build/data/gold/search_entities.parquet omnipath-present/data/; \
 	else \
 		echo "Warning: search_entities.parquet not found"; \
 	fi
-	@if [ -f databases/omnipath/output/search_interactions.parquet ]; then \
-		cp -v databases/omnipath/output/search_interactions.parquet data/; \
+	@if [ -f omnipath_build/data/gold/search_interactions.parquet ]; then \
+		cp -v omnipath_build/data/gold/search_interactions.parquet omnipath-present/data/; \
 	else \
 		echo "Warning: search_interactions.parquet not found"; \
 	fi
@@ -121,19 +121,19 @@ docker-data-setup:
 
 # Build all Docker images
 docker-build:
-	docker compose build
+	docker compose -f omnipath-present/docker-compose.yaml build
 
 # Start all services
 docker-up:
-	docker compose up -d
+	docker compose -f omnipath-present/docker-compose.yaml up -d
 
 # Start with fresh Meilisearch data from dump
 # Usage: make docker-up-fresh
 docker-up-fresh:
-	@if [ -f data/dumps/latest.dump ]; then \
-		MEILI_IMPORT_DUMP=/dumps/latest.dump docker compose up -d; \
+	@if [ -f omnipath-present/data/dumps/latest.dump ]; then \
+		MEILI_IMPORT_DUMP=/dumps/latest.dump docker compose -f omnipath-present/docker-compose.yaml up -d; \
 	else \
-		echo "No dump file found at data/dumps/latest.dump"; \
+		echo "No dump file found at omnipath-present/data/dumps/latest.dump"; \
 		echo "Run 'make meilisearch-dump' first to create one."; \
 		exit 1; \
 	fi

@@ -725,8 +725,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         '--output-dir',
         type=Path,
-        default=Path('databases/omnipath/output'),
-        help='Path to output directory containing parquet files (default: databases/omnipath/output)',
+        default=Path('omnipath_build/data/gold'),
+        help='Path to output directory containing parquet files (default: omnipath_build/data/gold)',
     )
     parser.add_argument(
         '--postgres-uri',
