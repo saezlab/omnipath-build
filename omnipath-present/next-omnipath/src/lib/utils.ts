@@ -6,4 +6,5 @@ export function cn(...inputs: ClassValue[]) {
 }
 
 export * from './utils/format'
+export * from './utils/entity-types'
 

@@ -6,7 +6,7 @@ import { Checkbox } from "@/components/ui/checkbox"
 import { Label } from "@/components/ui/label"
 import { Card, CardContent, CardHeader } from "@/components/ui/card"
 import { Filter, X } from "lucide-react"
-import { cn, formatNumber } from "@/lib/utils"
+import { cn, formatNumber, entityTypeEmojis } from "@/lib/utils"
 import * as React from "react"
 
 interface FilterOption {
@@ -15,26 +15,6 @@ interface FilterOption {
   displayName?: string;
   icon?: string;
 }
-
-// Map entity types to emojis
-const entityTypeEmojis: Record<string, string> = {
-  'SmallMolecule': '🧪',
-  'Lipid': '💧',
-  'Cv_term': '🏷️',
-  'Protein': '🧬',
-  'Reaction': '⚗️',
-  'Complex': '🧩',
-  'Pathway': '🛣️',
-  'Protein_family': '👥',
-  'Physical_entity': '🧱',
-  'DoubleStrandedDeoxyribonucleicAcid': '🧬',
-  'ProteinComplex': '🧩',
-  'RibonucleicAcid': '🧬',
-  'Phenotype': '🩺',
-  'MoleculeSet': '📦',
-  'Stimulus': '🔦',
-  'Degradation': '♻️',
-};
 
 interface EntityFilterSidebarProps {
   filters: {

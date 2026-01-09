@@ -7,7 +7,7 @@ import { Checkbox } from "@/components/ui/checkbox"
 import { Label } from "@/components/ui/label"
 import { MeilisearchFilters } from "@/types/meilisearch"
 import { ArrowRight, Plus, Minus, X, Filter } from "lucide-react"
-import { cn, formatNumber } from "@/lib/utils"
+import { cn, formatNumber, getEntityTypeEmoji } from "@/lib/utils"
 import { Card, CardContent, CardHeader } from "@/components/ui/card"
 import { EntityHoverCard } from "@/features/search/components/result-card"
 
@@ -15,6 +15,7 @@ interface FilterOption {
   value: string;
   count: number;
   label?: string;
+  icon?: string;
 }
 
 interface FilterSidebarProps {
@@ -33,6 +34,7 @@ interface ArrayFilterSectionProps {
   selectedValues: string[];
   onToggle: (value: string) => void;
   showHoverCard?: boolean;
+  showIcon?: boolean;
 }
 
 function ArrayFilterSection({
@@ -41,7 +43,8 @@ function ArrayFilterSection({
   options,
   selectedValues,
   onToggle,
-  showHoverCard = false
+  showHoverCard = false,
+  showIcon = false
 }: ArrayFilterSectionProps) {
   if (options.length === 0) return null;
 
@@ -50,7 +53,7 @@ function ArrayFilterSection({
       <AccordionTrigger>{title}</AccordionTrigger>
       <AccordionContent>
         <div className="space-y-1 max-h-64 overflow-y-auto pr-2">
-          {options.map(({ value, count, label }) => {
+          {options.map(({ value, count, label, icon }) => {
             const isSelected = selectedValues?.includes(value) || false;
             // Parse label and ID from "Label:ID" format if present
             const parts = value.includes(':') ? value.split(':') : [value];
@@ -58,7 +61,10 @@ function ArrayFilterSection({
             const entityId = parts.length > 1 ? parts[1] : null;
 
             const labelContent = (
-              <span className="truncate">{displayLabel}</span>
+              <span className="truncate">
+                {showIcon && icon && <span className="mr-1.5">{icon}</span>}
+                {displayLabel}
+              </span>
             );
 
             return (
@@ -132,14 +138,23 @@ export function FilterSidebar({
   };
 
   // Transform filter counts into FilterOption[] format
-  const transformFilterCounts = (counts: Record<string, number> | undefined): FilterOption[] => {
+  const transformFilterCounts = (
+    counts: Record<string, number> | undefined,
+    filterKey?: string
+  ): FilterOption[] => {
     if (!counts) return [];
     return Object.entries(counts)
-      .map(([value, count]) => ({
-        value,
-        count,
-        label: value.includes(':') ? value.split(':')[0] : value
-      }))
+      .map(([value, count]) => {
+        const label = value.includes(':') ? value.split(':')[0] : value;
+        // Get emoji icon for member_types filter
+        const icon = filterKey === 'member_types' ? getEntityTypeEmoji(value) : undefined;
+        return {
+          value,
+          count,
+          label,
+          icon
+        };
+      })
       .sort((a, b) => b.count - a.count);
   };
 
@@ -249,10 +264,11 @@ export function FilterSidebar({
         <ArrayFilterSection
           title="Member Types"
           filterKey="member_types"
-          options={transformFilterCounts(filterCounts.member_types)}
+          options={transformFilterCounts(filterCounts.member_types, 'member_types')}
           selectedValues={filters.member_types || []}
           onToggle={(value) => handleArrayToggle("member_types", value)}
           showHoverCard={true}
+          showIcon={true}
         />
 
         {/* Interaction Annotation Terms Filter */}
