@@ -9,6 +9,7 @@ import { MeilisearchFilters } from "@/types/meilisearch"
 import { ArrowRight, Plus, Minus, X, Filter } from "lucide-react"
 import { cn, formatNumber } from "@/lib/utils"
 import { Card, CardContent, CardHeader } from "@/components/ui/card"
+import { EntityHoverCard } from "@/features/search/components/result-card"
 
 interface FilterOption {
   value: string;
@@ -31,6 +32,7 @@ interface ArrayFilterSectionProps {
   options: FilterOption[];
   selectedValues: string[];
   onToggle: (value: string) => void;
+  showHoverCard?: boolean;
 }
 
 function ArrayFilterSection({
@@ -38,7 +40,8 @@ function ArrayFilterSection({
   filterKey,
   options,
   selectedValues,
-  onToggle
+  onToggle,
+  showHoverCard = false
 }: ArrayFilterSectionProps) {
   if (options.length === 0) return null;
 
@@ -49,8 +52,14 @@ function ArrayFilterSection({
         <div className="space-y-1 max-h-64 overflow-y-auto pr-2">
           {options.map(({ value, count, label }) => {
             const isSelected = selectedValues?.includes(value) || false;
-            // Parse label from "Label:ID" format if present
-            const displayLabel = label || (value.includes(':') ? value.split(':')[0] : value);
+            // Parse label and ID from "Label:ID" format if present
+            const parts = value.includes(':') ? value.split(':') : [value];
+            const displayLabel = label || parts[0];
+            const entityId = parts.length > 1 ? parts[1] : null;
+
+            const labelContent = (
+              <span className="truncate">{displayLabel}</span>
+            );
 
             return (
               <div key={value} className="flex items-center justify-between group py-0.5 gap-2">
@@ -68,7 +77,13 @@ function ArrayFilterSection({
                       isSelected ? "border-primary" : ""
                     )}
                   />
-                  <span className="truncate">{displayLabel}</span>
+                  {showHoverCard && entityId ? (
+                    <EntityHoverCard entityId={entityId}>
+                      {labelContent}
+                    </EntityHoverCard>
+                  ) : (
+                    labelContent
+                  )}
                 </Label>
                 <Badge
                   variant={isSelected ? "default" : "outline"}
@@ -237,6 +252,7 @@ export function FilterSidebar({
           options={transformFilterCounts(filterCounts.member_types)}
           selectedValues={filters.member_types || []}
           onToggle={(value) => handleArrayToggle("member_types", value)}
+          showHoverCard={true}
         />
 
         {/* Interaction Annotation Terms Filter */}
@@ -246,6 +262,7 @@ export function FilterSidebar({
           options={transformFilterCounts(filterCounts.interaction_annotation_terms)}
           selectedValues={filters.interaction_annotation_terms || []}
           onToggle={(value) => handleArrayToggle("interaction_annotation_terms", value)}
+          showHoverCard={true}
         />
       </Accordion>
     </div>

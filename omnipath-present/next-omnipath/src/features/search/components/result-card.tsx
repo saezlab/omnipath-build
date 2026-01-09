@@ -9,12 +9,71 @@ import {
   CardHeader,
   CardTitle
 } from "@/components/ui/card";
+import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import React, { useMemo, useState } from "react";
-import { Network, Tag, Shapes, FileText, Database, Plus, Check, FlaskConical, ArrowRight, ListOrdered, ChevronDown, ChevronUp, Copy } from "lucide-react";
+import { Network, Tag, Shapes, FileText, Database, Plus, Check, FlaskConical, ArrowRight, ListOrdered, ChevronDown, ChevronUp, Copy, Loader2 } from "lucide-react";
 import { useEntitySelection } from "@/contexts/entity-selection-context";
 import { MoleculeStructure } from "./molecule_structure";
 import { useRouter } from "next/navigation";
+import { searchMeilisearch } from "@/lib/meilisearch/search";
+import { INDEXES } from "@/lib/meilisearch/client";
+
+// Component that shows a ResultCardContent in a HoverCard for entities
+export function EntityHoverCard({
+  entityId,
+  children
+}: {
+  entityId: string;
+  children: React.ReactNode;
+}) {
+  const [entity, setEntity] = useState<SearchResult | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [hasLoaded, setHasLoaded] = useState(false);
+
+  const handleOpenChange = async (open: boolean) => {
+    if (open && !hasLoaded) {
+      setLoading(true);
+      try {
+        const result = await searchMeilisearch({
+          query: '',
+          index: INDEXES.ENTITIES,
+          limit: 1,
+          filters: { entity_ids: [parseInt(entityId)] }
+        });
+        if (result.hits.length > 0) {
+          setEntity(result.hits[0] as SearchResult);
+        }
+      } catch (error) {
+        console.error('Failed to fetch entity:', error);
+      } finally {
+        setLoading(false);
+        setHasLoaded(true);
+      }
+    }
+  };
+
+  return (
+    <HoverCard openDelay={300} closeDelay={100} onOpenChange={handleOpenChange}>
+      <HoverCardTrigger asChild>
+        {children}
+      </HoverCardTrigger>
+      <HoverCardContent side="right" align="start" className="w-80 p-0">
+        {loading ? (
+          <div className="flex items-center justify-center p-4">
+            <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+          </div>
+        ) : entity ? (
+          <ResultCardContent result={entity} />
+        ) : (
+          <div className="p-4 text-sm text-muted-foreground">
+            No details available
+          </div>
+        )}
+      </HoverCardContent>
+    </HoverCard>
+  );
+}
 
 // Helper function to convert <em> tags to highlighted spans
 const convertEmToHighlight = (text: string | undefined) => {
@@ -693,5 +752,60 @@ export function ResultCard({ result, entityNamesMap }: { result: SearchResult, e
         </Badge>
       </CardFooter>
     </Card>
+  );
+}
+
+/**
+ * Compact content version of ResultCard for use in hover cards.
+ * Displays title, definition/description, and entity type without Card wrapper.
+ */
+export function ResultCardContent({ result }: { result: SearchResult }) {
+  const type = result.type || "entity";
+
+  // Extract data
+  const descriptions = result._formatted?.descriptions || result.descriptions || [];
+  const names = result._formatted?.names || result.names || [];
+  const geneSymbols = result._formatted?.gene_symbols || result.gene_symbols || [];
+  const entityType = result._formatted?.entity_type || result.entity_type;
+  const namespaceName = result._formatted?.namespace_name || result.namespace_name;
+  const definition = result._formatted?.definition || result.definition;
+
+  const entityTypeLabel = entityType ? entityType.split(':')[0] : "Entity";
+
+  // Determine title
+  let title = "";
+  let subtitle = "";
+
+  if (type === 'entity' || type === 'cv_term') {
+    const geneSymbol = geneSymbols.length > 0 ? geneSymbols[0] : undefined;
+    const name = names.length > 0 ? names[0] : undefined;
+    const displayName = result._formatted?.name || result.name || geneSymbol || name || `Entity ${result.entity_id || result.id}`;
+    title = displayName;
+    subtitle = namespaceName || entityTypeLabel;
+  }
+
+  const descriptionText = definition || descriptions[0] || '';
+
+  return (
+    <div className="space-y-2 p-3">
+      {/* Header */}
+      <div className="flex items-start justify-between gap-2">
+        <h4 className="font-semibold text-sm leading-tight line-clamp-2">
+          {title}
+        </h4>
+        <Badge variant="secondary" className="text-xs flex-shrink-0">
+          {subtitle}
+        </Badge>
+      </div>
+
+      {/* Definition/Description */}
+      {descriptionText && (
+        <div className="h-24 overflow-y-auto">
+          <p className="text-xs text-muted-foreground pr-2">
+            {descriptionText}
+          </p>
+        </div>
+      )}
+    </div>
   );
 }
