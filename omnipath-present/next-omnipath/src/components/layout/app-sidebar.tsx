@@ -129,7 +129,7 @@ export function AppSidebar() {
             <div className="px-3">
               <SidebarSeparator />
             </div>
-            <div className="flex-1 overflow-hidden pb-4 px-4">
+            <div className="flex-1 min-h-0 overflow-y-auto pb-4 px-4">
               {sidebarContent}
             </div>
           </>
