@@ -6,3 +6,7 @@
 	path = download-manager
 	url = https://github.com/saezlab/download-manager
 	branch = download-manager-experiment
+[submodule "ontograph"]
+	path = ontograph
+	url = https://github.com/saezlab/ontograph.git
+	branch = main

@@ -3,11 +3,13 @@
 setup:
 	git submodule add -b download-manager-experiment https://github.com/saezlab/pypath.git pypath || true
 	git submodule add -b download-manager-experiment https://github.com/saezlab/download-manager.git download-manager || true
+	git submodule add -b main https://github.com/saezlab/ontograph.git ontograph || true
 	git config -f .gitmodules submodule.pypath.branch download-manager-experiment
 	git config -f .gitmodules submodule.download-manager.branch download-manager-experiment
+	git config -f .gitmodules submodule.ontograph.branch main
 	git submodule update --init --recursive --remote
 	uv sync
-	pnpm --dir nextjs install
+	pnpm --dir omnipath-present/next-omnipath install
 
 silver:
 	@uv run -m omnipath_build.cli.commands silver \
