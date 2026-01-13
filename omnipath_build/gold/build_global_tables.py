@@ -30,6 +30,15 @@ from pathlib import Path
 import logging
 import polars as pl
 
+# Import resolver for CV term labels
+try:
+    from omnipath_build.utils.ontology_labels import get_default_resolver
+except ImportError:
+    # Fallback for when running as script/different context
+    import sys
+    sys.path.append(str(Path(__file__).parent.parent.parent))
+    from omnipath_build.utils.ontology_labels import get_default_resolver
+
 __all__ = ["build_global_tables"]
 
 logging.basicConfig(level=logging.INFO)
@@ -372,6 +381,46 @@ def build_global_tables(
 
     # Note: membership_annotation table is removed in the new schema
     # Annotations are now on entity_instances via entity_annotation table
+
+    # ========================================================================
+    # 7. BUILD CV TERM LABEL MAPPING
+    # ========================================================================
+
+    logger.info("\n" + "=" * 80)
+    logger.info("Building CV term label mappings")
+    logger.info("=" * 80)
+
+    # Collect all accessions
+    accessions = set()
+
+    # 1. Entity Types
+    if not entities_output.is_empty():
+        accessions.update(entities_output["entity_type"].unique().to_list())
+
+    # 2. Identifier Types
+    if not entity_identifiers_output.is_empty():
+        accessions.update(entity_identifiers_output["type_id"].unique().to_list())
+    
+    # 3. Annotation Terms & Units
+    if not entity_annots_output.is_empty():
+        if "cv_term_accession" in entity_annots_output.columns:
+            accessions.update(entity_annots_output["cv_term_accession"].drop_nulls().unique().to_list())
+        if "unit_accession" in entity_annots_output.columns:
+            accessions.update(entity_annots_output["unit_accession"].drop_nulls().unique().to_list())
+
+    logger.info(f"Resolving labels for {len(accessions)} unique CV terms...")
+    
+    # Resolve
+    resolver = get_default_resolver()
+    label_map = resolver.resolve_bulk(list(accessions))
+
+    # Create DataFrame
+    # We store the formatted label (e.g. "Protein:MI:0326")
+    cv_data = [{"accession": acc, "label": fmt} for acc, fmt in label_map.items()]
+    
+    cv_terms = pl.DataFrame(cv_data, schema={"accession": pl.Utf8, "label": pl.Utf8})
+    cv_terms.write_parquet(output_dir / "cv_terms.parquet")
+    logger.info(f"✅ cv_terms: {len(cv_terms):,} rows")
 
     logger.info("\n" + "=" * 80)
     logger.info("🎉 Global tables complete!")

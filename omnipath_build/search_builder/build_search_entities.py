@@ -110,7 +110,27 @@ def build_search_entities(global_tables_dir: Path, output_path: Path) -> Path:
     logger.info("Loading metadata for mapping generation...")
     # cv_map_df removed - we use static sets now
     id_sets = get_cv_term_accession_sets()
-    
+
+    # Load CV term label mappings
+    logger.info("Loading CV term label mappings...")
+    if (global_tables_dir / "cv_terms.parquet").exists():
+        cv_terms = pl.read_parquet(global_tables_dir / "cv_terms.parquet")
+        logger.info(f"Loaded {len(cv_terms)} CV term labels")
+    else:
+        logger.warning(f"cv_terms.parquet not found in {global_tables_dir}")
+        cv_terms = pl.DataFrame(schema={"accession": pl.Utf8, "label": pl.Utf8})
+
+    # Create polars DataFrames for joining
+    entity_type_labels = cv_terms.select([
+        pl.col("accession").alias("entity_type"),
+        pl.col("label").alias("entity_type_label")
+    ])
+
+    identifier_type_labels = cv_terms.select([
+        pl.col("accession").alias("type_id"),
+        pl.col("label").alias("type_id_label")
+    ])
+
     logger.info("Metadata ready.")
 
     # 2. Setup Lazy Scans
@@ -157,14 +177,24 @@ def build_search_entities(global_tables_dir: Path, output_path: Path) -> Path:
     # Entities: filter non-interactions
     # entity_type in entity table is already string accession.
     # We assume entity_type column holds the accession (e.g. "MI:0326").
-    
+
     base = (
         ent.filter(pl.col("entity_type") != id_sets['interaction_type'])
+        .join(
+            pl.DataFrame(entity_type_labels).lazy(),
+            on="entity_type",
+            how="left"
+        )
+        .with_columns(
+            # Use label if available, else use accession:accession format
+            pl.coalesce([
+                pl.col("entity_type_label"),
+                (pl.col("entity_type") + ":" + pl.col("entity_type"))
+            ]).alias("entity_type_formatted")
+        )
         .select(
             "entity_id",
-            # Simple fallback format since we removed labels mapping: "Accession"
-            # To improve this, we might want to join with a static label map or ontograph
-            pl.col("entity_type")
+            pl.col("entity_type_formatted").alias("entity_type")
         )
     )
 
@@ -302,14 +332,24 @@ def build_search_entities(global_tables_dir: Path, output_path: Path) -> Path:
 
     # 4g. JSON Identifiers
     excl = list(id_sets['names'] | id_sets['synonyms'] | id_sets['gene_symbols'])
-    # type_names: we want mapping of type_id -> label. 
-    # Since we removed the logic to fetch labels, we might just use type_id itself as key for now.
-    
+
     ids_json_plan = (
         ident.filter(~pl.col("type_id").is_in(excl))
+        .join(
+            pl.DataFrame(identifier_type_labels).lazy(),
+            on="type_id",
+            how="left"
+        )
+        .with_columns(
+            # Use label if available, else use accession:accession format
+            pl.coalesce([
+                pl.col("type_id_label"),
+                (pl.col("type_id") + ":" + pl.col("type_id"))
+            ]).alias("k")
+        )
         .select(
             "entity_id",
-            (pl.col("type_id") + ":" + pl.col("type_id")).alias("k"),
+            pl.col("k"),
             pl.col("identifier").alias("v")
         )
         .group_by("entity_id")

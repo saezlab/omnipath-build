@@ -166,9 +166,29 @@ def build_search_interactions(global_tables_dir: Path, output_path: Path) -> Pat
     logger.info("=" * 80 + "\nBuilding Meilisearch interaction documents\n" + "=" * 80)
 
     # 1. Load Data
-    tables = {n: pl.read_parquet(global_tables_dir / f"{n}.parquet") 
+    tables = {n: pl.read_parquet(global_tables_dir / f"{n}.parquet")
               for n in ["entity", "membership", "entity_identifier", "entity_instance", "entity_annotation"]}
     logger.info("Loaded tables: %s", " ".join(f"{k}={len(v)}" for k, v in tables.items()))
+
+    # Load CV term label mappings
+    logger.info("Loading CV term label mappings...")
+    if (global_tables_dir / "cv_terms.parquet").exists():
+        cv_terms = pl.read_parquet(global_tables_dir / "cv_terms.parquet")
+        logger.info(f"Loaded {len(cv_terms)} CV term labels")
+    else:
+        logger.warning(f"cv_terms.parquet not found in {global_tables_dir}. Labels might be missing.")
+        cv_terms = pl.DataFrame(schema={"accession": pl.Utf8, "label": pl.Utf8})
+
+    # Create polars DataFrames for joining
+    entity_type_labels = cv_terms.select([
+        pl.col("accession").alias("entity_type"),
+        pl.col("label").alias("entity_type_label")
+    ])
+
+    annotation_labels = cv_terms.select([
+        pl.col("accession").alias("cv_term_accession"),
+        pl.col("label").alias("cv_term_label")
+    ])
 
     ent = tables["entity"]
     mem_raw = tables["membership"]
@@ -217,16 +237,21 @@ def build_search_interactions(global_tables_dir: Path, output_path: Path) -> Pat
     logger.info("Identified %s interaction entities with two members", len(pair_base))
 
     # 4. Build Base Documents (Member Types)
-    # type_map: entity_id -> fmt (Label:Accession or just Accession)
-    # ent table has entity_type (string accession).
-    # We want to format it.
-    
-    # We use entity_type directly as formatting base
-    type_map = ent.select(
-        pl.col("entity_id"),
-        (pl.col("entity_type") + ":" + pl.col("entity_type")).alias("fmt")
+    # type_map: entity_id -> fmt (Label:Accession)
+
+    type_map = (
+        ent
+        .join(entity_type_labels, on="entity_type", how="left")
+        .with_columns(
+            # Use label if available, else use accession:accession format
+            pl.coalesce([
+                pl.col("entity_type_label"),
+                (pl.col("entity_type") + ":" + pl.col("entity_type"))
+            ]).alias("fmt")
+        )
+        .select(pl.col("entity_id"), pl.col("fmt"))
     )
-    
+
     doc_base = (
         pair_base.group_by("pair_key").agg([pl.col("member_a_id").first(), pl.col("member_b_id").first()])
         .join(type_map, left_on="member_a_id", right_on="entity_id").rename({"fmt": "ta"})
@@ -323,15 +348,32 @@ def build_search_interactions(global_tables_dir: Path, output_path: Path) -> Pat
     all_annots = pl.concat([df_ann_int, df_ann_mem])
 
     # 6. Resolve Labels & Format Maps
-    # We simplified format to just Accession:Accession or similar since we lost entity lookups
-    # Note: we use the accession as both label and id for now.
-    
     evidence_rows = (
         all_annots
+        .join(annotation_labels, left_on="ann_id", right_on="cv_term_accession", how="left")
+        # Join again to get unit labels
+        .join(
+            annotation_labels.rename({"cv_term_accession": "unit_acc", "cv_term_label": "unit_label"}),
+            left_on="annotation_unit",
+            right_on="unit_acc",
+            how="left"
+        )
         .with_columns([
-            (pl.col("ann_id") + ":" + pl.col("ann_id")).alias("term"),
+            # Use label if available, else use accession:accession format
+            pl.coalesce([
+                pl.col("cv_term_label"),
+                (pl.col("ann_id") + ":" + pl.col("ann_id"))
+            ]).alias("term"),
             pl.col("annotation_value").cast(pl.Utf8).alias("val"),
-            (pl.col("annotation_unit") + ":" + pl.col("annotation_unit")).alias("unit"),
+            # Format unit with label if available
+            pl.when(pl.col("annotation_unit").is_not_null())
+            .then(
+                pl.coalesce([
+                    pl.col("unit_label"),
+                    pl.col("annotation_unit")
+                ]) + ":" + pl.col("annotation_unit")
+            )
+            .alias("unit"),
             pl.int_range(1, pl.len() + 1).cast(pl.Utf8).over("interaction_id", "pair_key", "cat").alias("k")
         ])
         .group_by("interaction_id", "pair_key", "cat")
@@ -489,23 +531,38 @@ def build_search_interactions(global_tables_dir: Path, output_path: Path) -> Pat
     ])
 
     # Flatten interaction annotation terms (requires explode + group_by pattern)
+    # Exclude terms that have associated values - those are key-value pairs, not standalone terms
     temp_terms = (
         result.select([
             "interaction_key",
-            pl.col("evidence")
-            .list.eval(
-                pl.element().struct.field("interaction_annotation_terms")
-                .list.eval(pl.element().struct.field("value"))
-            )
-            .alias("terms_nested")
+            "evidence"
         ])
-        .explode("terms_nested")
+        .explode("evidence")
         .select([
             "interaction_key",
-            pl.col("terms_nested").alias("interaction_annotation_terms")
+            # Extract keys that have values (the "k" field from value entries)
+            pl.col("evidence").struct.field("interaction_annotation_values")
+            .list.eval(pl.element().struct.field("k"))
+            .alias("value_keys"),
+            # Extract all term entries
+            pl.col("evidence").struct.field("interaction_annotation_terms")
+            .alias("terms")
         ])
+        .explode("terms")
+        .select([
+            "interaction_key",
+            pl.col("value_keys"),
+            pl.col("terms").struct.field("k").alias("term_key"),
+            pl.col("terms").struct.field("value").alias("term_value")
+        ])
+        # Filter: keep terms whose key is NOT in the value_keys list
+        .filter(
+            pl.when(pl.col("value_keys").is_null())
+            .then(pl.lit(True))
+            .otherwise(~pl.col("term_key").is_in(pl.col("value_keys")))
+        )
         .group_by("interaction_key")
-        .agg(pl.col("interaction_annotation_terms").flatten().unique())
+        .agg(pl.col("term_value").unique().alias("interaction_annotation_terms"))
     )
 
     result = result.join(temp_terms, on="interaction_key", how="left")

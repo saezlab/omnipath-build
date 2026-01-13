@@ -221,11 +221,18 @@ def get_cv_term_accession_sets() -> dict[str, frozenset[str] | str | None]:
 # Entity Type Formatting
 # =============================================================================
 
-def build_entity_type_label_mapping() -> dict[str, str]:
-    """Build mapping from entity type accessions to their display names.
-    
-    Since CV terms are no longer in the DB, this logic is simplified or placeholder.
-    TODO: Use ontograph to fetch real labels.
+def build_cv_term_label_mapping(accessions: list[str]) -> dict[str, str]:
+    """Build mapping from CV term accessions to their formatted labels.
+
+    Uses ontograph to fetch real labels and format as 'Label:Accession'.
+
+    Args:
+        accessions: List of CV term accessions to resolve
+
+    Returns:
+        Dictionary mapping accession to 'Label:Accession' format
     """
-    # Placeholder mapping
-    return {}
+    from omnipath_build.utils.ontology_labels import get_default_resolver
+
+    resolver = get_default_resolver()
+    return resolver.resolve_bulk(accessions)
