@@ -6,14 +6,22 @@ import { searchInteractions, fetchEntitiesByIds, EntityInfo } from "@/features/i
 import { MeilisearchInteraction, MeilisearchFilters } from "@/types/meilisearch";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { ArrowRight, Minus, Filter, X } from "lucide-react";
+import { ArrowRight, Minus, Filter, X, GitBranch } from "lucide-react";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { cn, formatNumber } from "@/lib/utils";
 import { InteractionDetailsSheet } from "@/features/interactions-search/components/interaction-details-sheet";
 import GraphView from "@/features/interactions-search/components/graph-view";
 import { DataCard } from "@/features/interactions-search/components/data-card";
-import { FilterSidebar } from "@/features/interactions-search/components/filter-sidebar";
+import { AnnotationFilterSidebar, FilterSidebar } from "@/features/interactions-search/components/filter-sidebar";
+import {
+  Sidebar,
+  SidebarContent,
+  SidebarGroup,
+  SidebarGroupContent,
+  SidebarHeader,
+  SidebarSeparator,
+} from "@/components/ui/sidebar";
 import { exportToCSV } from "@/lib/utils/export";
 import { useInfiniteScroll } from "@/hooks/use-infinite-scroll";
 import { EntityBadge } from "@/components/entity-badge";
@@ -120,6 +128,7 @@ export function InteractionsExploreTab({
   const [isLoadingAll, setIsLoadingAll] = useState(false);
   const [hasLoadedGraphData, setHasLoadedGraphData] = useState(false);
   const [entityMap, setEntityMap] = useState<Map<number, EntityInfo>>(new Map());
+  const [showAnnotationSidebar, setShowAnnotationSidebar] = useState(true);
 
   // Update error state from infinite scroll hook
   useEffect(() => {
@@ -261,15 +270,31 @@ export function InteractionsExploreTab({
     return <Minus className="h-4 w-4 text-muted-foreground" />;
   };
 
+  const annotationToggle = (
+    <Button
+      variant={showAnnotationSidebar ? "default" : "outline"}
+      size="sm"
+      onClick={() => setShowAnnotationSidebar((current) => !current)}
+      className="hidden lg:inline-flex h-7 text-sm"
+    >
+      <GitBranch className="h-4 w-4 mr-1.5" />
+      Annotations
+    </Button>
+  );
+
   return (
-    <div className="flex gap-6">
+    <div className="relative">
       {/* Main Content */}
       <DataCard
-        className="flex-1 min-w-0 flex flex-col"
+        className={cn(
+          "flex-1 min-w-0 flex flex-col",
+          showAnnotationSidebar ? "lg:pr-[var(--sidebar-width)]" : ""
+        )}
         title={`${formatNumber(totalResults)} interactions found`}
         viewMode={viewMode}
         onViewModeChange={setViewMode}
         onExport={handleExport}
+        headerActions={annotationToggle}
       >
         {/* Mobile filter drawer */}
         <div className="lg:hidden p-4 border-b">
@@ -485,6 +510,29 @@ export function InteractionsExploreTab({
           </div>
         ) : null}
       </DataCard>
+
+      {/* Annotation Sidebar */}
+      {showAnnotationSidebar && (
+        <div className="hidden lg:block fixed inset-y-0 right-0 z-20">
+          <Sidebar side="right" collapsible="none" className="h-svh border-l">
+
+            <SidebarContent>
+              <SidebarGroup className="px-2">
+                <SidebarGroupContent>
+                  {filterCounts && (
+                    <AnnotationFilterSidebar
+                      filters={filters}
+                      filterCounts={filterCounts}
+                      onFilterChange={onFilterChange}
+                      isMobile
+                    />
+                  )}
+                </SidebarGroupContent>
+              </SidebarGroup>
+            </SidebarContent>
+          </Sidebar>
+        </div>
+      )}
 
       {/* Interaction Details Sheet */}
       <InteractionDetailsSheet

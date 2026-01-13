@@ -26,12 +26,6 @@ interface TreeNode {
   children?: TreeNode[];
 }
 
-interface AnnotationGroup {
-  id: string;
-  name: string;
-  terms: FilterOption[];
-}
-
 interface FilterSidebarProps {
   filters: MeilisearchFilters;
   filterCounts: Record<string, Record<string, number>>;
@@ -43,74 +37,6 @@ interface FilterSidebarProps {
 function extractMiId(value: string): string | null {
   const match = value.match(/MI:\d{4,}/);
   return match ? match[0] : null;
-}
-
-function buildAnnotationGroups(options: FilterOption[], tree: TreeNode | null): AnnotationGroup[] | null {
-  if (!tree) return null;
-
-  const termIdToOption = new Map<string, FilterOption>();
-  const ungrouped: FilterOption[] = [];
-
-  for (const option of options) {
-    const termId = extractMiId(option.value);
-    if (termId) {
-      termIdToOption.set(termId, option);
-    } else {
-      ungrouped.push(option);
-    }
-  }
-
-  if (termIdToOption.size === 0) return null;
-
-  const parentById = new Map<string, TreeNode>();
-  const nameById = new Map<string, string>();
-
-  const visit = (node: TreeNode, parent: TreeNode | null) => {
-    nameById.set(node.id, node.name || node.id);
-    if (parent) {
-      parentById.set(node.id, parent);
-    }
-    node.children?.forEach((child) => visit(child, node));
-  };
-
-  visit(tree, null);
-
-  const groupsMap = new Map<string, AnnotationGroup>();
-  const ensureGroup = (id: string, name: string) => {
-    if (!groupsMap.has(id)) {
-      groupsMap.set(id, { id, name, terms: [] });
-    }
-    return groupsMap.get(id)!;
-  };
-
-  for (const [termId, option] of termIdToOption.entries()) {
-    const parent = parentById.get(termId);
-    if (parent) {
-      ensureGroup(parent.id, nameById.get(parent.id) || parent.id).terms.push(option);
-    } else {
-      ensureGroup("other", "Other").terms.push(option);
-    }
-  }
-
-  if (ungrouped.length > 0) {
-    ensureGroup("other", "Other").terms.push(...ungrouped);
-  }
-
-  const groups = Array.from(groupsMap.values());
-  groups.forEach((group) => {
-    group.terms.sort((a, b) => b.count - a.count);
-  });
-
-  const groupCount = (group: AnnotationGroup) =>
-    group.terms.reduce((sum, term) => sum + term.count, 0);
-
-  groups.sort((a, b) => {
-    if (a.id === "other") return 1;
-    if (b.id === "other") return -1;
-    return groupCount(b) - groupCount(a);
-  });
-
-  return groups;
 }
 
 // Helper component for array filter sections
@@ -164,6 +90,7 @@ interface FilterOptionRowProps {
   onToggle: (value: string) => void;
   showHoverCard?: boolean;
   showIcon?: boolean;
+  labelOverride?: string;
 }
 
 function FilterOptionRow({
@@ -172,13 +99,14 @@ function FilterOptionRow({
   selectedValues,
   onToggle,
   showHoverCard = false,
-  showIcon = false
+  showIcon = false,
+  labelOverride
 }: FilterOptionRowProps) {
   const { value, count, label, icon } = option;
   const isSelected = selectedValues?.includes(value) || false;
   // Parse label and ID from "Label:ID" format if present
   const parts = value.includes(':') ? value.split(':') : [value];
-  const displayLabel = label || parts[0];
+  const displayLabel = labelOverride || label || parts[0];
   const entityId = parts.length > 1 ? parts[1] : null;
 
   const labelContent = (
@@ -226,51 +154,6 @@ function FilterOptionRow({
   );
 }
 
-interface GroupedAnnotationSectionProps {
-  title: string;
-  filterKey: keyof MeilisearchFilters;
-  groups: AnnotationGroup[];
-  selectedValues: string[];
-  onToggle: (value: string) => void;
-  showHoverCard?: boolean;
-}
-
-function GroupedAnnotationSection({
-  title,
-  filterKey,
-  groups,
-  selectedValues,
-  onToggle,
-  showHoverCard = false
-}: GroupedAnnotationSectionProps) {
-  if (groups.length === 0) return null;
-
-  return (
-    <AccordionItem value={filterKey}>
-      <AccordionTrigger>{title}</AccordionTrigger>
-      <AccordionContent>
-        <div className="space-y-3 max-h-64 overflow-y-auto pr-2">
-          {groups.map((group) => (
-            <div key={group.id} className="space-y-1">
-              <div className="text-xs font-semibold text-muted-foreground">{group.name}</div>
-              {group.terms.map((option) => (
-                <FilterOptionRow
-                  key={option.value}
-                  filterKey={filterKey}
-                  option={option}
-                  selectedValues={selectedValues}
-                  onToggle={onToggle}
-                  showHoverCard={showHoverCard}
-                />
-              ))}
-            </div>
-          ))}
-        </div>
-      </AccordionContent>
-    </AccordionItem>
-  );
-}
-
 export function FilterSidebar({
   filters,
   filterCounts,
@@ -278,9 +161,6 @@ export function FilterSidebar({
   onClearFilters,
   isMobile = false,
 }: FilterSidebarProps) {
-  const [annotationTree, setAnnotationTree] = useState<TreeNode | null>(null);
-  const treeRequestedRef = useRef(false);
-
   // Calculate active filter count
   const activeFilterCount = Object.entries(filters).reduce((count, [, value]) => {
     if (Array.isArray(value)) return count + value.length;
@@ -321,64 +201,6 @@ export function FilterSidebar({
       })
       .sort((a, b) => b.count - a.count);
   };
-
-  const annotationTermValues = useMemo(
-    () => Object.keys(filterCounts.interaction_annotation_terms || {}),
-    [filterCounts.interaction_annotation_terms]
-  );
-
-  const annotationTermIds = useMemo(() => {
-    const ids = new Set<string>();
-    for (const value of annotationTermValues) {
-      const termId = extractMiId(value);
-      if (termId) {
-        ids.add(termId);
-      }
-    }
-    return Array.from(ids);
-  }, [annotationTermValues]);
-
-  useEffect(() => {
-    if (treeRequestedRef.current) return;
-    if (annotationTermIds.length === 0) return;
-
-    treeRequestedRef.current = true;
-
-    const loadTree = async () => {
-      try {
-        const response = await fetch("/api/ontology/tree", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            ontologyId: "psi_mi",
-            termIds: annotationTermIds
-          }),
-        });
-
-        if (!response.ok) {
-          const text = await response.text();
-          throw new Error(text || `Failed to load hierarchy (${response.status})`);
-        }
-
-        const data = (await response.json()) as { root?: TreeNode | null };
-        setAnnotationTree(data.root || null);
-      } catch (error) {
-        void error;
-      }
-    };
-
-    loadTree();
-  }, [annotationTermIds]);
-
-  const annotationOptions = useMemo(
-    () => transformFilterCounts(filterCounts.interaction_annotation_terms),
-    [filterCounts.interaction_annotation_terms]
-  );
-
-  const annotationGroups = useMemo(
-    () => buildAnnotationGroups(annotationOptions, annotationTree),
-    [annotationOptions, annotationTree]
-  );
 
   // Handler for clearing entity filter
   const handleClearEntityFilter = () => {
@@ -492,27 +314,6 @@ export function FilterSidebar({
           showHoverCard={true}
           showIcon={true}
         />
-
-        {/* Interaction Annotation Terms Filter */}
-        {annotationGroups ? (
-          <GroupedAnnotationSection
-            title="Annotation Terms"
-            filterKey="interaction_annotation_terms"
-            groups={annotationGroups}
-            selectedValues={filters.interaction_annotation_terms || []}
-            onToggle={(value) => handleArrayToggle("interaction_annotation_terms", value)}
-            showHoverCard={true}
-          />
-        ) : (
-          <ArrayFilterSection
-            title="Annotation Terms"
-            filterKey="interaction_annotation_terms"
-            options={annotationOptions}
-            selectedValues={filters.interaction_annotation_terms || []}
-            onToggle={(value) => handleArrayToggle("interaction_annotation_terms", value)}
-            showHoverCard={true}
-          />
-        )}
       </Accordion>
     </div>
   );
@@ -540,6 +341,277 @@ export function FilterSidebar({
               Clear all ({formatNumber(activeFilterCount)})
             </Button>
           )}
+        </div>
+      </CardHeader>
+      <CardContent className="flex-1 min-h-0 overflow-y-auto py-4">
+        {content}
+      </CardContent>
+    </Card>
+  );
+}
+
+interface AnnotationFilterSidebarProps {
+  filters: MeilisearchFilters;
+  filterCounts: Record<string, Record<string, number>>;
+  onFilterChange: (filters: MeilisearchFilters) => void;
+  isMobile?: boolean;
+}
+
+interface AnnotationParentGroup {
+  id: string;
+  name: string;
+  terms: FilterOption[];
+}
+
+interface AnnotationBranchGroup {
+  id: string;
+  name: string;
+  parents: AnnotationParentGroup[];
+}
+
+export function AnnotationFilterSidebar({
+  filters,
+  filterCounts,
+  onFilterChange,
+  isMobile = false,
+}: AnnotationFilterSidebarProps) {
+  const [annotationTree, setAnnotationTree] = useState<TreeNode | null>(null);
+  const treeRequestedRef = useRef(false);
+
+  const annotationTermValues = useMemo(
+    () => Object.keys(filterCounts.interaction_annotation_terms || {}),
+    [filterCounts.interaction_annotation_terms]
+  );
+
+  const annotationTermIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const value of annotationTermValues) {
+      const termId = extractMiId(value);
+      if (termId) {
+        ids.add(termId);
+      }
+    }
+    return Array.from(ids);
+  }, [annotationTermValues]);
+
+  useEffect(() => {
+    if (treeRequestedRef.current) return;
+    if (annotationTermIds.length === 0) return;
+
+    treeRequestedRef.current = true;
+
+    const loadTree = async () => {
+      try {
+        const response = await fetch("/api/ontology/tree", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            ontologyId: "psi_mi",
+            termIds: annotationTermIds
+          }),
+        });
+
+        if (!response.ok) {
+          const text = await response.text();
+          throw new Error(text || `Failed to load hierarchy (${response.status})`);
+        }
+
+        const data = (await response.json()) as { root?: TreeNode | null };
+        setAnnotationTree(data.root || null);
+      } catch (error) {
+        void error;
+      }
+    };
+
+    loadTree();
+  }, [annotationTermIds]);
+
+  const annotationOptions = useMemo(() => {
+    const counts = filterCounts.interaction_annotation_terms;
+    if (!counts) return [];
+    return Object.entries(counts)
+      .map(([value, count]) => {
+        const label = value.includes(':') ? value.split(':')[0] : value;
+        return {
+          value,
+          count,
+          label
+        };
+      })
+      .sort((a, b) => b.count - a.count);
+  }, [filterCounts.interaction_annotation_terms]);
+
+  const annotationTermOptions = useMemo(() => {
+    const mapped = new Map<string, FilterOption>();
+    const unmatched: FilterOption[] = [];
+
+    for (const option of annotationOptions) {
+      const termId = extractMiId(option.value);
+      if (termId) {
+        mapped.set(termId, option);
+      } else {
+        unmatched.push(option);
+      }
+    }
+
+    return { mapped, unmatched };
+  }, [annotationOptions]);
+
+  const annotationGroups = useMemo(() => {
+    if (!annotationTree) return null;
+
+    const parentById = new Map<string, TreeNode>();
+    const rootChildById = new Map<string, TreeNode>();
+    const nameById = new Map<string, string>();
+
+    const visit = (node: TreeNode, parent: TreeNode | null, rootChild: TreeNode | null) => {
+      nameById.set(node.id, node.name || node.id);
+      if (parent) {
+        parentById.set(node.id, parent);
+      }
+      if (rootChild) {
+        rootChildById.set(node.id, rootChild);
+      }
+      node.children?.forEach((child) => {
+        const nextRootChild = rootChild ?? child;
+        visit(child, node, nextRootChild);
+      });
+    };
+
+    visit(annotationTree, null, null);
+
+    const branchMap = new Map<string, AnnotationBranchGroup>();
+    const ensureBranch = (id: string, name: string) => {
+      if (!branchMap.has(id)) {
+        branchMap.set(id, { id, name, parents: [] });
+      }
+      return branchMap.get(id)!;
+    };
+
+    const ensureParent = (branch: AnnotationBranchGroup, id: string, name: string) => {
+      const existing = branch.parents.find((parent) => parent.id === id);
+      if (existing) return existing;
+      const parentGroup = { id, name, terms: [] as FilterOption[] };
+      branch.parents.push(parentGroup);
+      return parentGroup;
+    };
+
+    for (const [termId, option] of annotationTermOptions.mapped.entries()) {
+      const parent = parentById.get(termId);
+      const rootChild = rootChildById.get(termId);
+      const branch = rootChild
+        ? ensureBranch(rootChild.id, nameById.get(rootChild.id) || rootChild.id)
+        : ensureBranch("other", "Other");
+
+      if (parent) {
+        ensureParent(branch, parent.id, nameById.get(parent.id) || parent.id).terms.push(option);
+      } else {
+        ensureParent(branch, "other", "Other").terms.push(option);
+      }
+    }
+
+    const branches = Array.from(branchMap.values());
+    const parentCount = (group: AnnotationParentGroup) =>
+      group.terms.reduce((sum, term) => sum + term.count, 0);
+    const branchCount = (branch: AnnotationBranchGroup) =>
+      branch.parents.reduce((sum, parent) => sum + parentCount(parent), 0);
+
+    branches.forEach((branch) => {
+      branch.parents.forEach((parent) => {
+        parent.terms.sort((a, b) => b.count - a.count);
+      });
+      branch.parents.sort((a, b) => parentCount(b) - parentCount(a));
+    });
+
+    branches.sort((a, b) => {
+      if (a.id === "other") return 1;
+      if (b.id === "other") return -1;
+      return branchCount(b) - branchCount(a);
+    });
+
+    return {
+      rootName: annotationTree.name || annotationTree.id,
+      branches
+    };
+  }, [annotationTree, annotationTermOptions.mapped]);
+
+  const handleAnnotationToggle = (value: string) => {
+    const currentValues = filters.interaction_annotation_terms || [];
+    const newValues = currentValues.includes(value)
+      ? currentValues.filter((v) => v !== value)
+      : [...currentValues, value];
+
+    onFilterChange({
+      ...filters,
+      interaction_annotation_terms: newValues.length > 0 ? newValues : undefined,
+    });
+  };
+
+  const content = (
+    <div className="space-y-3">
+      {annotationGroups ? (
+        <div className="space-y-3">
+          <div className="text-xs font-medium text-muted-foreground">
+            {annotationGroups.rootName}
+          </div>
+          {annotationGroups.branches.map((branch) => (
+            <div key={branch.id} className="space-y-1">
+              <div className="text-xs font-medium text-foreground">{branch.name}</div>
+              <div className="space-y-2 pl-2">
+                {branch.parents.map((parent) => (
+                  <div key={parent.id} className="space-y-1">
+                    {parent.id !== branch.id && (
+                      <div className="text-xs font-medium text-muted-foreground">
+                        {parent.name}
+                      </div>
+                    )}
+                    <div className="space-y-1">
+                      {parent.terms.map((option) => (
+                        <FilterOptionRow
+                          key={option.value}
+                          filterKey="interaction_annotation_terms"
+                          option={option}
+                          selectedValues={filters.interaction_annotation_terms || []}
+                          onToggle={handleAnnotationToggle}
+                          showHoverCard={true}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : null}
+
+      {annotationTermOptions.unmatched.length > 0 ? (
+        <div className="space-y-1 pt-2 border-t border-muted/60">
+          {annotationTermOptions.unmatched.map((option) => (
+            <FilterOptionRow
+              key={option.value}
+              filterKey="interaction_annotation_terms"
+              option={option}
+              selectedValues={filters.interaction_annotation_terms || []}
+              onToggle={handleAnnotationToggle}
+              showHoverCard={true}
+            />
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+
+  if (isMobile) {
+    return content;
+  }
+
+  return (
+    <Card className="h-full overflow-hidden flex flex-col">
+      <CardHeader className="border-b flex-shrink-0 h-[57px] flex items-center py-3">
+        <div className="flex items-center gap-2">
+          <Filter className="h-5 w-5 text-primary" />
+          <h3 className="font-semibold text-lg">Annotations</h3>
         </div>
       </CardHeader>
       <CardContent className="flex-1 min-h-0 overflow-y-auto py-4">
