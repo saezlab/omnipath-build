@@ -34,8 +34,9 @@ interface FilterSidebarProps {
   isMobile?: boolean;
 }
 
-function extractMiId(value: string): string | null {
-  const match = value.match(/MI:\d{4,}/);
+function extractTermId(value: string): string | null {
+  // Match both MI: (PSI-MI) and OM: (OmniPath) term IDs
+  const match = value.match(/(MI|OM):\d{4,}/);
   return match ? match[0] : null;
 }
 
@@ -386,7 +387,7 @@ export function AnnotationFilterSidebar({
   const annotationTermIds = useMemo(() => {
     const ids = new Set<string>();
     for (const value of annotationTermValues) {
-      const termId = extractMiId(value);
+      const termId = extractTermId(value);
       if (termId) {
         ids.add(termId);
       }
@@ -406,7 +407,7 @@ export function AnnotationFilterSidebar({
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            ontologyId: "psi_mi",
+            ontologyId: "omnipath",
             termIds: annotationTermIds
           }),
         });
@@ -446,7 +447,7 @@ export function AnnotationFilterSidebar({
     const unmatched: FilterOption[] = [];
 
     for (const option of annotationOptions) {
-      const termId = extractMiId(option.value);
+      const termId = extractTermId(option.value);
       if (termId) {
         mapped.set(termId, option);
       } else {

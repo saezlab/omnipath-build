@@ -65,6 +65,7 @@ services:
         volumes:
             - ./ontology-service/data:/app/data:ro
             - ./ontology-service/cache:/app/cache
+            - ./ontology-service/ontology_service:/app/ontology_service
 
 volumes:
     meilisearch_data:

@@ -9,7 +9,7 @@ interface TreeRequestPayload {
 export async function POST(req: NextRequest) {
   try {
     const body = (await req.json()) as TreeRequestPayload;
-    const ontologyId = body.ontologyId || "psi_mi";
+    const ontologyId = body.ontologyId || "omnipath";
     const termIds = (body.termIds || []).filter((id) => id.length > 0);
 
     if (termIds.length === 0) {

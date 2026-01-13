@@ -18,13 +18,8 @@ DATA_DIR = os.getenv("ONTOLOGY_DATA_DIR", "./data")
 # Core ontologies - preloaded at startup
 CORE_ONTOLOGIES: dict[str, OntologyConfig] = {
     "omnipath": OntologyConfig(
-        source=f"{DATA_DIR}/omnipath.obo",
-        description="OmniPath controlled vocabulary",
-        preload=True,
-    ),
-    "psi_mi": OntologyConfig(
-        source="https://raw.githubusercontent.com/HUPO-PSI/psi-mi-CV/master/psi-mi.obo",
-        description="PSI-MI Molecular Interactions CV",
+        source=f"{DATA_DIR}/omnipath_mi.obo",
+        description="OmniPath extended PSI-MI CV (combined ontology)",
         preload=True,
     ),
     "gene_ontology": OntologyConfig(
