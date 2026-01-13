@@ -589,41 +589,45 @@ export function AnnotationFilterSidebar({
   };
 
   const content = (
-    <div className="space-y-3">
+    <div className="space-y-6">
       {annotationGroups ? (
-        <div className="space-y-3">
-          <div className="text-xs font-medium text-muted-foreground">
+        <Accordion type="multiple" defaultValue={annotationGroups.branches.map(b => b.id)} className="w-full space-y-1">
+          <div className="text-sm font-medium mb-3 uppercase">
             {annotationGroups.rootName}
           </div>
           {annotationGroups.branches.map((branch) => (
-            <div key={branch.id} className="space-y-1">
-              <div className="text-xs font-medium text-foreground">{branch.name}</div>
-              <div className="space-y-2 pl-2">
-                {branch.parents.map((parent) => (
-                  <div key={parent.id} className="space-y-1">
-                    {parent.id !== branch.id && (
-                      <div className="text-xs font-medium text-muted-foreground">
-                        {parent.name}
+            <AccordionItem key={branch.id} value={branch.id} className="border-none">
+              <AccordionTrigger className="py-1.5 px-0 hover:bg-muted/50 hover:no-underline rounded-md text-sm font-medium">
+                {branch.name}
+              </AccordionTrigger>
+              <AccordionContent className="pb-2 pt-1">
+                <div className="space-y-3 pl-2">
+                  {branch.parents.map((parent) => (
+                    <div key={parent.id} className="space-y-1">
+                      {parent.id !== branch.id && (
+                        <div className="text-xs font-medium text-muted-foreground pl-2 py-0.5">
+                          {parent.name}
+                        </div>
+                      )}
+                      <div className="space-y-0.5 border-l-2 ml-2 pl-2 border-muted">
+                        {parent.terms.map((option) => (
+                          <FilterOptionRow
+                            key={option.value}
+                            filterKey="interaction_annotation_terms"
+                            option={option}
+                            selectedValues={filters.interaction_annotation_terms || []}
+                            onToggle={handleAnnotationToggle}
+                            showHoverCard={true}
+                          />
+                        ))}
                       </div>
-                    )}
-                    <div className="space-y-1">
-                      {parent.terms.map((option) => (
-                        <FilterOptionRow
-                          key={option.value}
-                          filterKey="interaction_annotation_terms"
-                          option={option}
-                          selectedValues={filters.interaction_annotation_terms || []}
-                          onToggle={handleAnnotationToggle}
-                          showHoverCard={true}
-                        />
-                      ))}
                     </div>
-                  </div>
-                ))}
-              </div>
-            </div>
+                  ))}
+                </div>
+              </AccordionContent>
+            </AccordionItem>
           ))}
-        </div>
+        </Accordion>
       ) : null}
 
       {annotationTermOptions.unmatched.length > 0 ? (

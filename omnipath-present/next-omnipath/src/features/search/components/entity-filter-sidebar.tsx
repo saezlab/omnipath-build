@@ -8,12 +8,14 @@ import { Card, CardContent, CardHeader } from "@/components/ui/card"
 import { Filter, X } from "lucide-react"
 import { cn, formatNumber, getEntityTypeEmoji } from "@/lib/utils"
 import * as React from "react"
+import { EntityHoverCard, CvTermHoverCard } from "@/features/search/components/result-card"
 
 interface FilterOption {
   value: string;
   count: number;
   displayName?: string;
   icon?: string;
+  id?: string | null;
 }
 
 interface EntityFilterSidebarProps {
@@ -54,8 +56,15 @@ function FilterSection({
     <div>
       <h4 className="text-sm font-medium mb-3">{title}</h4>
       <div className="space-y-1 max-h-64 overflow-y-auto pr-2">
-        {options.map(({ value, count, displayName, icon }) => {
+        {options.map(({ value, count, displayName, icon, id }) => {
           const isSelected = selectedValues?.includes(value) || false;
+
+          const labelContent = (
+            <span className="truncate">
+              {icon && <span className="mr-1.5">{icon}</span>}
+              {displayName || value}
+            </span>
+          );
 
           return (
             <div key={value} className="flex items-center justify-between group py-0.5 gap-2">
@@ -73,10 +82,20 @@ function FilterSection({
                     isSelected ? "border-primary" : ""
                   )}
                 />
-                <span className="truncate">
-                  {icon && <span className="mr-1.5">{icon}</span>}
-                  {displayName || value}
-                </span>
+                {id ? (
+                  // Check if it's a CV term (MI: or OM:)
+                  id.startsWith('MI:') || id.startsWith('OM:') ? (
+                    <CvTermHoverCard termId={id}>
+                      {labelContent}
+                    </CvTermHoverCard>
+                  ) : (
+                    <EntityHoverCard entityId={id}>
+                      {labelContent}
+                    </EntityHoverCard>
+                  )
+                ) : (
+                  labelContent
+                )}
               </Label>
               <Badge
                 variant={isSelected ? "default" : "outline"}
@@ -142,11 +161,14 @@ export function EntityFilterSidebar({
     return Object.entries(counts)
       .map(([value, count]) => {
         let displayName: string;
+        let id: string | null = null;
 
         if (filterKey === 'ncbi_tax_id') {
           // For NCBI taxonomy IDs, show "Organism Name (ID)" if known, otherwise just the ID
           const organismName = taxonomyIdToName[value];
           displayName = organismName ? `${organismName} (${value})` : value;
+          // We don't have hover cards for taxonomy IDs yet, and they aren't strictly CV terms or entities in the search index
+          // id = value; 
         } else {
           // For entity_type and sources, extract display name from "Label:Accession" format
           // Format is "label:PREFIX:NUMBER" (e.g., "small molecule:MI:0328")
@@ -154,10 +176,47 @@ export function EntityFilterSidebar({
           const match = value.match(/^(.+):([A-Z]+:\d+)$/);
           if (match) {
             displayName = match[1]; // The label part (e.g., "small molecule")
+            id = match[2]; // The ID part (e.g., "MI:0328")
           } else {
             // Fallback: take everything before the last colon
             const parts = value.split(':');
-            displayName = parts.length > 1 ? parts.slice(0, -1).join(':') : value;
+            if (parts.length > 1) {
+              // Try to identify if the last part looks like an ID
+              // Often just splitting by last colon works for ad-hoc formats too
+              displayName = parts.slice(0, -1).join(':');
+
+              // Only treat as ID if it looks like one (simple heuristic)
+              // This handles cases where we might have just "Label:ID"
+              const potentialId = parts[parts.length - 1];
+              // Check if potentialId matches typical ID patterns (alphanumeric, maybe some special chars, but not too long/prose)
+              if (potentialId.length < 20) {
+                // For now, let's only be confident if we matched the specific pattern above or if it looks clearly like an ID
+                // Actually, let's keep it simple: if we didn't match the strict regex, we might not have a reliable ID.
+                // But wait, the previous code had `value.split(':')[0]` fallback.
+
+                // Let's refine the regex approach.
+                // For `sources`, commonly it might be `Source:ID`? 
+                // Actually looking at `filter-sidebar.tsx`, they handle:
+                // Agonist:MI:0001 -> label="Agonist", id="MI:0001"
+                // Label:ID -> label="Label", id="ID"
+
+                // Let's replicate that logic more closely if needed.
+                // But the regex `^(.+):([A-Z]+:\d+)$` helps a lot for strict CV terms.
+
+                // If no strict regex match:
+                if (parts.length >= 2) {
+                  const possiblePrefix = parts[parts.length - 2];
+                  if (['MI', 'OM'].includes(possiblePrefix)) {
+                    id = `${possiblePrefix}:${parts[parts.length - 1]}`;
+                  } else {
+                    // Maybe simple ID?
+                    id = parts[parts.length - 1];
+                  }
+                }
+              }
+            } else {
+              displayName = value;
+            }
           }
         }
 
@@ -174,7 +233,8 @@ export function EntityFilterSidebar({
           value: value, // Use the full facet value
           count,
           displayName,
-          icon
+          icon,
+          id
         };
       })
       .sort((a, b) => b.count - a.count); // Sort by count in descending order
