@@ -10,7 +10,7 @@ import { MeilisearchFilters } from "@/types/meilisearch"
 import { ArrowRight, Plus, Minus, X, Filter } from "lucide-react"
 import { cn, formatNumber, getEntityTypeEmoji } from "@/lib/utils"
 import { Card, CardContent, CardHeader } from "@/components/ui/card"
-import { EntityHoverCard } from "@/features/search/components/result-card"
+import { EntityHoverCard, CvTermHoverCard } from "@/features/search/components/result-card"
 
 interface FilterOption {
   value: string;
@@ -106,9 +106,42 @@ function FilterOptionRow({
   const { value, count, label, icon } = option;
   const isSelected = selectedValues?.includes(value) || false;
   // Parse label and ID from "Label:ID" format if present
-  const parts = value.includes(':') ? value.split(':') : [value];
-  const displayLabel = labelOverride || label || parts[0];
-  const entityId = parts.length > 1 ? parts[1] : null;
+  // If the value matches the pattern "Label:Prefix:ID", we want to split correctly
+  // Example: "Agonist:MI:0001" -> label="Agonist", id="MI:0001"
+  let displayLabel = labelOverride || label;
+  let entityId: string | null = null;
+
+  if (!displayLabel) {
+    // Try to parse from value string
+    const parts = value.split(':');
+    if (parts.length >= 2) {
+      // Check if it looks like a CV term ID (MI:xxxx or OM:xxxx)
+      const possiblePrefix = parts[parts.length - 2];
+      if (['MI', 'OM'].includes(possiblePrefix)) {
+        // Format: "Label:MI:0001"
+        entityId = `${parts[parts.length - 2]}:${parts[parts.length - 1]}`;
+        displayLabel = parts.slice(0, parts.length - 2).join(':');
+      } else {
+        // Format: "Label:ID" (standard entity)
+        entityId = parts[parts.length - 1];
+        displayLabel = parts.slice(0, parts.length - 1).join(':');
+      }
+    } else {
+      displayLabel = value;
+    }
+  } else {
+    // Label is provided, try to extract ID from value if it looks like an ID
+    // If value already contains the ID (which is typical), we need to extract the ID part
+    const parts = value.split(':');
+    if (parts.length >= 2) {
+      const possiblePrefix = parts[parts.length - 2];
+      if (['MI', 'OM'].includes(possiblePrefix)) {
+        entityId = `${parts[parts.length - 2]}:${parts[parts.length - 1]}`;
+      } else {
+        entityId = parts[parts.length - 1];
+      }
+    }
+  }
 
   const labelContent = (
     <span className="truncate">
@@ -134,9 +167,16 @@ function FilterOptionRow({
           )}
         />
         {showHoverCard && entityId ? (
-          <EntityHoverCard entityId={entityId}>
-            {labelContent}
-          </EntityHoverCard>
+          // Check if it's a CV term (MI: or OM:)
+          entityId.startsWith('MI:') || entityId.startsWith('OM:') ? (
+            <CvTermHoverCard termId={entityId}>
+              {labelContent}
+            </CvTermHoverCard>
+          ) : (
+            <EntityHoverCard entityId={entityId}>
+              {labelContent}
+            </EntityHoverCard>
+          )
         ) : (
           labelContent
         )}

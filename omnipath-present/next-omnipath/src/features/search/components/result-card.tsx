@@ -75,6 +75,78 @@ export function EntityHoverCard({
   );
 }
 
+// Component that shows a ResultCardContent in a HoverCard for CV terms
+export function CvTermHoverCard({
+  termId,
+  children
+}: {
+  termId: string;
+  children: React.ReactNode;
+}) {
+  const [term, setTerm] = useState<SearchResult | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [hasLoaded, setHasLoaded] = useState(false);
+
+  const handleOpenChange = async (open: boolean) => {
+    if (open && !hasLoaded) {
+      setLoading(true);
+      try {
+        const response = await fetch("/api/ontology/terms", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            ontologyId: "omnipath",
+            termIds: [termId]
+          }),
+        });
+
+        if (!response.ok) throw new Error("Failed to fetch term");
+
+        const data = await response.json();
+        const terms = data.terms || {};
+        const termData = terms[termId];
+
+        if (termData) {
+          // Map to SearchResult format for compatibility with ResultCardContent
+          setTerm({
+            id: termData.id,
+            type: "cv_term",
+            name: termData.name,
+            definition: termData.definition,
+            namespace_name: termData.namespace,
+          } as SearchResult);
+        }
+      } catch (error) {
+        console.error('Failed to fetch CV term:', error);
+      } finally {
+        setLoading(false);
+        setHasLoaded(true);
+      }
+    }
+  };
+
+  return (
+    <HoverCard openDelay={300} closeDelay={100} onOpenChange={handleOpenChange}>
+      <HoverCardTrigger asChild>
+        {children}
+      </HoverCardTrigger>
+      <HoverCardContent side="right" align="start" className="w-80 p-0">
+        {loading ? (
+          <div className="flex items-center justify-center p-4">
+            <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+          </div>
+        ) : term ? (
+          <ResultCardContent result={term} />
+        ) : (
+          <div className="p-4 text-sm text-muted-foreground">
+            No details available
+          </div>
+        )}
+      </HoverCardContent>
+    </HoverCard>
+  );
+}
+
 // Helper function to convert <em> tags to highlighted spans
 const convertEmToHighlight = (text: string | undefined) => {
   if (!text) return '';
