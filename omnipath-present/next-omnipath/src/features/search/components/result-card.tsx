@@ -84,9 +84,9 @@ const convertEmToHighlight = (text: string | undefined) => {
 // Helper to detect if entity is a small molecule or lipid (displayed similarly)
 const isSmallMolecule = (result: SearchResult): boolean => {
   const entityType = result._formatted?.entity_type || result.entity_type || '';
-  const typeLabel = entityType.split(':')[0].toLowerCase();
+  // Extract type label from "Label:Accession" format and normalize (remove spaces/underscores)
+  const typeLabel = entityType.split(':')[0].toLowerCase().replace(/[\s_]/g, '');
   return typeLabel === 'smallmolecule' ||
-    typeLabel === 'small_molecule' ||
     typeLabel === 'compound' ||
     typeLabel === 'metabolite' ||
     typeLabel === 'drug' ||
@@ -96,9 +96,9 @@ const isSmallMolecule = (result: SearchResult): boolean => {
 };
 
 // Identifier object structure from search_entities
-// Comes as single-property objects: {"type:type_id": "value"}
-// e.g., {"uniprot:3874827": "P0A6M2"}
-export type Identifier = Record<string, string>;
+// New format: {key: "type:accession", value: "identifier_value"}
+// e.g., {key: "uniprot:OM:0001", value: "P0A6M2"}
+export type Identifier = { key: string; value: string } | Record<string, string>;
 
 export interface SearchResult {
   id: string;
@@ -192,8 +192,8 @@ function IdentifiersDisplay({ identifiers }: { identifiers: Identifier[] }) {
 
   if (!identifiers || identifiers.length === 0) return null;
 
-  // Parse identifiers - they come as {"type:type_id": "value"}
   const parsedIdentifiers = identifiers.map(id => {
+    // Fallback for old format: {"type": "value"}
     const entries = Object.entries(id);
     if (entries.length === 0) return null;
     const [key, value] = entries[0];

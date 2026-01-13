@@ -27,6 +27,10 @@ const API_CONFIG = {
   entityServiceUrl: process.env.ENTITY_SERVICE_URL
     || (IS_DOCKERIZED ? 'http://entity-service:8080' : 'http://localhost:8080'),
 
+  // Ontology service URL
+  ontologyServiceUrl: process.env.ONTOLOGY_SERVICE_URL
+    || (IS_DOCKERIZED ? 'http://ontology-service:8081' : 'http://localhost:8081'),
+
   // PostgreSQL connection (handled by DATABASE_URL environment variable)
   databaseUrl: process.env.DATABASE_URL || 'postgresql://localhost:5432/omnipath',
 };
@@ -52,6 +56,13 @@ export const getMeilisearchUrl = (): string => {
  */
 export const getEntityServiceUrl = (): string => {
   return API_CONFIG.entityServiceUrl;
+};
+
+/**
+ * Get the ontology service URL
+ */
+export const getOntologyServiceUrl = (): string => {
+  return API_CONFIG.ontologyServiceUrl;
 };
 
 /**

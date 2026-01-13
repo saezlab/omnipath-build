@@ -1,5 +1,6 @@
 "use client"
 
+import { useEffect, useMemo, useRef, useState } from "react"
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -18,12 +19,98 @@ interface FilterOption {
   icon?: string;
 }
 
+interface TreeNode {
+  id: string;
+  name?: string;
+  distance?: number;
+  children?: TreeNode[];
+}
+
+interface AnnotationGroup {
+  id: string;
+  name: string;
+  terms: FilterOption[];
+}
+
 interface FilterSidebarProps {
   filters: MeilisearchFilters;
   filterCounts: Record<string, Record<string, number>>;
   onFilterChange: (filters: MeilisearchFilters) => void;
   onClearFilters: () => void;
   isMobile?: boolean;
+}
+
+function extractMiId(value: string): string | null {
+  const match = value.match(/MI:\d{4,}/);
+  return match ? match[0] : null;
+}
+
+function buildAnnotationGroups(options: FilterOption[], tree: TreeNode | null): AnnotationGroup[] | null {
+  if (!tree) return null;
+
+  const termIdToOption = new Map<string, FilterOption>();
+  const ungrouped: FilterOption[] = [];
+
+  for (const option of options) {
+    const termId = extractMiId(option.value);
+    if (termId) {
+      termIdToOption.set(termId, option);
+    } else {
+      ungrouped.push(option);
+    }
+  }
+
+  if (termIdToOption.size === 0) return null;
+
+  const parentById = new Map<string, TreeNode>();
+  const nameById = new Map<string, string>();
+
+  const visit = (node: TreeNode, parent: TreeNode | null) => {
+    nameById.set(node.id, node.name || node.id);
+    if (parent) {
+      parentById.set(node.id, parent);
+    }
+    node.children?.forEach((child) => visit(child, node));
+  };
+
+  visit(tree, null);
+
+  const groupsMap = new Map<string, AnnotationGroup>();
+  const ensureGroup = (id: string, name: string) => {
+    if (!groupsMap.has(id)) {
+      groupsMap.set(id, { id, name, terms: [] });
+    }
+    return groupsMap.get(id)!;
+  };
+
+  for (const [termId, option] of termIdToOption.entries()) {
+    const parent = parentById.get(termId);
+    if (parent) {
+      ensureGroup(parent.id, nameById.get(parent.id) || parent.id).terms.push(option);
+    } else {
+      ensureGroup("other", "Other").terms.push(option);
+    }
+  }
+
+  if (ungrouped.length > 0) {
+    ensureGroup("other", "Other").terms.push(...ungrouped);
+  }
+
+  const groups = Array.from(groupsMap.values());
+  groups.forEach((group) => {
+    group.terms.sort((a, b) => b.count - a.count);
+  });
+
+  const groupCount = (group: AnnotationGroup) =>
+    group.terms.reduce((sum, term) => sum + term.count, 0);
+
+  groups.sort((a, b) => {
+    if (a.id === "other") return 1;
+    if (b.id === "other") return -1;
+    return groupCount(b) - groupCount(a);
+  });
+
+  return groups;
 }
 
 // Helper component for array filter sections
@@ -53,57 +140,131 @@ function ArrayFilterSection({
       <AccordionTrigger>{title}</AccordionTrigger>
       <AccordionContent>
         <div className="space-y-1 max-h-64 overflow-y-auto pr-2">
-          {options.map(({ value, count, label, icon }) => {
-            const isSelected = selectedValues?.includes(value) || false;
-            // Parse label and ID from "Label:ID" format if present
-            const parts = value.includes(':') ? value.split(':') : [value];
-            const displayLabel = label || parts[0];
-            const entityId = parts.length > 1 ? parts[1] : null;
+          {options.map((option) => (
+            <FilterOptionRow
+              key={option.value}
+              filterKey={filterKey}
+              option={option}
+              selectedValues={selectedValues}
+              onToggle={onToggle}
+              showHoverCard={showHoverCard}
+              showIcon={showIcon}
+            />
+          ))}
+        </div>
+      </AccordionContent>
+    </AccordionItem>
+  );
+}
 
-            const labelContent = (
-              <span className="truncate">
-                {showIcon && icon && <span className="mr-1.5">{icon}</span>}
-                {displayLabel}
-              </span>
-            );
+interface FilterOptionRowProps {
+  filterKey: keyof MeilisearchFilters;
+  option: FilterOption;
+  selectedValues: string[];
+  onToggle: (value: string) => void;
+  showHoverCard?: boolean;
+  showIcon?: boolean;
+}
 
-            return (
-              <div key={value} className="flex items-center justify-between group py-0.5 gap-2">
-                <Label
-                  htmlFor={`${filterKey}-${value}`}
-                  className={`flex items-center gap-1.5 text-xs font-normal cursor-pointer group-hover:text-primary transition-colors min-w-0 flex-1 ${isSelected ? "text-primary font-medium" : ""
-                    }`}
-                >
-                  <Checkbox
-                    id={`${filterKey}-${value}`}
-                    checked={isSelected}
-                    onCheckedChange={() => onToggle(value)}
-                    className={cn(
-                      "h-3.5 w-3.5 flex-shrink-0",
-                      isSelected ? "border-primary" : ""
-                    )}
-                  />
-                  {showHoverCard && entityId ? (
-                    <EntityHoverCard entityId={entityId}>
-                      {labelContent}
-                    </EntityHoverCard>
-                  ) : (
-                    labelContent
-                  )}
-                </Label>
-                <Badge
-                  variant={isSelected ? "default" : "outline"}
-                  className={cn(
-                    "text-xs h-5 px-1.5 py-0 transition-colors flex-shrink-0",
-                    "group-hover:bg-primary/10",
-                    isSelected ? "bg-primary text-primary-foreground" : ""
-                  )}
-                >
-                  {formatNumber(count)}
-                </Badge>
-              </div>
-            );
-          })}
+function FilterOptionRow({
+  filterKey,
+  option,
+  selectedValues,
+  onToggle,
+  showHoverCard = false,
+  showIcon = false
+}: FilterOptionRowProps) {
+  const { value, count, label, icon } = option;
+  const isSelected = selectedValues?.includes(value) || false;
+  // Parse label and ID from "Label:ID" format if present
+  const parts = value.includes(':') ? value.split(':') : [value];
+  const displayLabel = label || parts[0];
+  const entityId = parts.length > 1 ? parts[1] : null;
+
+  const labelContent = (
+    <span className="truncate">
+      {showIcon && icon && <span className="mr-1.5">{icon}</span>}
+      {displayLabel}
+    </span>
+  );
+
+  return (
+    <div className="flex items-center justify-between group py-0.5 gap-2">
+      <Label
+        htmlFor={`${filterKey}-${value}`}
+        className={`flex items-center gap-1.5 text-xs font-normal cursor-pointer group-hover:text-primary transition-colors min-w-0 flex-1 ${isSelected ? "text-primary font-medium" : ""
+          }`}
+      >
+        <Checkbox
+          id={`${filterKey}-${value}`}
+          checked={isSelected}
+          onCheckedChange={() => onToggle(value)}
+          className={cn(
+            "h-3.5 w-3.5 flex-shrink-0",
+            isSelected ? "border-primary" : ""
+          )}
+        />
+        {showHoverCard && entityId ? (
+          <EntityHoverCard entityId={entityId}>
+            {labelContent}
+          </EntityHoverCard>
+        ) : (
+          labelContent
+        )}
+      </Label>
+      <Badge
+        variant={isSelected ? "default" : "outline"}
+        className={cn(
+          "text-xs h-5 px-1.5 py-0 transition-colors flex-shrink-0",
+          "group-hover:bg-primary/10",
+          isSelected ? "bg-primary text-primary-foreground" : ""
+        )}
+      >
+        {formatNumber(count)}
+      </Badge>
+    </div>
+  );
+}
+
+interface GroupedAnnotationSectionProps {
+  title: string;
+  filterKey: keyof MeilisearchFilters;
+  groups: AnnotationGroup[];
+  selectedValues: string[];
+  onToggle: (value: string) => void;
+  showHoverCard?: boolean;
+}
+
+function GroupedAnnotationSection({
+  title,
+  filterKey,
+  groups,
+  selectedValues,
+  onToggle,
+  showHoverCard = false
+}: GroupedAnnotationSectionProps) {
+  if (groups.length === 0) return null;
+
+  return (
+    <AccordionItem value={filterKey}>
+      <AccordionTrigger>{title}</AccordionTrigger>
+      <AccordionContent>
+        <div className="space-y-3 max-h-64 overflow-y-auto pr-2">
+          {groups.map((group) => (
+            <div key={group.id} className="space-y-1">
+              <div className="text-xs font-semibold text-muted-foreground">{group.name}</div>
+              {group.terms.map((option) => (
+                <FilterOptionRow
+                  key={option.value}
+                  filterKey={filterKey}
+                  option={option}
+                  selectedValues={selectedValues}
+                  onToggle={onToggle}
+                  showHoverCard={showHoverCard}
+                />
+              ))}
+            </div>
+          ))}
         </div>
       </AccordionContent>
     </AccordionItem>
@@ -117,6 +278,9 @@ export function FilterSidebar({
   onClearFilters,
   isMobile = false,
 }: FilterSidebarProps) {
+  const [annotationTree, setAnnotationTree] = useState<TreeNode | null>(null);
+  const treeRequestedRef = useRef(false);
+
   // Calculate active filter count
   const activeFilterCount = Object.entries(filters).reduce((count, [, value]) => {
     if (Array.isArray(value)) return count + value.length;
@@ -157,6 +321,64 @@ export function FilterSidebar({
       })
       .sort((a, b) => b.count - a.count);
   };
+
+  const annotationTermValues = useMemo(
+    () => Object.keys(filterCounts.interaction_annotation_terms || {}),
+    [filterCounts.interaction_annotation_terms]
+  );
+
+  const annotationTermIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const value of annotationTermValues) {
+      const termId = extractMiId(value);
+      if (termId) {
+        ids.add(termId);
+      }
+    }
+    return Array.from(ids);
+  }, [annotationTermValues]);
+
+  useEffect(() => {
+    if (treeRequestedRef.current) return;
+    if (annotationTermIds.length === 0) return;
+
+    treeRequestedRef.current = true;
+
+    const loadTree = async () => {
+      try {
+        const response = await fetch("/api/ontology/tree", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            ontologyId: "psi_mi",
+            termIds: annotationTermIds
+          }),
+        });
+
+        if (!response.ok) {
+          const text = await response.text();
+          throw new Error(text || `Failed to load hierarchy (${response.status})`);
+        }
+
+        const data = (await response.json()) as { root?: TreeNode | null };
+        setAnnotationTree(data.root || null);
+      } catch (error) {
+        void error;
+      }
+    };
+
+    loadTree();
+  }, [annotationTermIds]);
+
+  const annotationOptions = useMemo(
+    () => transformFilterCounts(filterCounts.interaction_annotation_terms),
+    [filterCounts.interaction_annotation_terms]
+  );
+
+  const annotationGroups = useMemo(
+    () => buildAnnotationGroups(annotationOptions, annotationTree),
+    [annotationOptions, annotationTree]
+  );
 
   // Handler for clearing entity filter
   const handleClearEntityFilter = () => {
@@ -272,14 +494,25 @@ export function FilterSidebar({
         />
 
         {/* Interaction Annotation Terms Filter */}
-        <ArrayFilterSection
-          title="Annotation Terms"
-          filterKey="interaction_annotation_terms"
-          options={transformFilterCounts(filterCounts.interaction_annotation_terms)}
-          selectedValues={filters.interaction_annotation_terms || []}
-          onToggle={(value) => handleArrayToggle("interaction_annotation_terms", value)}
-          showHoverCard={true}
-        />
+        {annotationGroups ? (
+          <GroupedAnnotationSection
+            title="Annotation Terms"
+            filterKey="interaction_annotation_terms"
+            groups={annotationGroups}
+            selectedValues={filters.interaction_annotation_terms || []}
+            onToggle={(value) => handleArrayToggle("interaction_annotation_terms", value)}
+            showHoverCard={true}
+          />
+        ) : (
+          <ArrayFilterSection
+            title="Annotation Terms"
+            filterKey="interaction_annotation_terms"
+            options={annotationOptions}
+            selectedValues={filters.interaction_annotation_terms || []}
+            onToggle={(value) => handleArrayToggle("interaction_annotation_terms", value)}
+            showHoverCard={true}
+          />
+        )}
       </Accordion>
     </div>
   );

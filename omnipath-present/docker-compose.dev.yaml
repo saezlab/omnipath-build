@@ -51,6 +51,21 @@ services:
             retries: 3
             start_period: 10s
 
+    # Ontology Service - FastAPI wrapper for ontograph
+    ontology-service:
+        build:
+            context: ..
+            dockerfile: omnipath-present/ontology-service/Dockerfile
+        restart: unless-stopped
+        environment:
+            ONTOLOGY_DATA_DIR: /app/data
+            ONTOLOGY_CACHE_DIR: /app/cache
+        ports:
+            - "8081:8081"
+        volumes:
+            - ./ontology-service/data:/app/data:ro
+            - ./ontology-service/cache:/app/cache
+
 volumes:
     meilisearch_data:
         external: true

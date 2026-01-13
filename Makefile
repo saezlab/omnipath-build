@@ -63,21 +63,21 @@ meilisearch-import-entities:
 	@. .env && uv run python -m omnipath_build.search.importer \
 		--dataset entities \
 		--importer-path omnipath_build/meilisearch-importer \
-		--api-key $${MEILI_MASTER_KEY}
+		--api-key $${MEILISEARCH_API_KEY}
 
 # Import interactions into Meilisearch
 meilisearch-import-interactions:
 	@. .env && uv run python -m omnipath_build.search.importer \
 		--dataset interactions \
 		--importer-path omnipath_build/meilisearch-importer \
-		--api-key $${MEILI_MASTER_KEY}
+		--api-key $${MEILISEARCH_API_KEY}
 
 # Import both entities and interactions into Meilisearch
 meilisearch-import-all:
 	@. .env && uv run python -m omnipath_build.search.importer \
 		--dataset both \
 		--importer-path omnipath_build/meilisearch-importer \
-		--api-key $${MEILI_MASTER_KEY}
+		--api-key $${MEILISEARCH_API_KEY}
 
 # Backward compatibility: import entities only (original behavior)
 meilisearch-import: meilisearch-import-entities

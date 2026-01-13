@@ -25,8 +25,11 @@ const defaultConfig = { icon: HelpCircle, color: 'text-slate-500', bgColor: 'fro
 
 function getEntityTypeConfig(entityType: string | undefined) {
   if (!entityType) return defaultConfig;
-  const key = entityType.toLowerCase();
-  return entityTypeConfig[key] || defaultConfig;
+  // Extract type name from "Label:Accession" format if present
+  const typeName = entityType.includes(':') ? entityType.split(':')[0] : entityType;
+  // Normalize: lowercase, no spaces/underscores
+  const normalized = typeName.toLowerCase().replace(/[\s_]/g, '');
+  return entityTypeConfig[normalized] || defaultConfig;
 }
 
 interface EntityBadgeProps {

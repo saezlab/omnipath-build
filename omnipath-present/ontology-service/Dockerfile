@@ -6,16 +6,20 @@ WORKDIR /app
 RUN pip install uv
 
 # Copy dependency files
-COPY pyproject.toml .
+COPY omnipath-present/ontology-service/pyproject.toml .
+COPY omnipath-present/ontology-service/README.md .
+
+# Adjust ontograph path for container build context
+RUN sed -i 's#../../ontograph#/ontograph#' pyproject.toml
 
 # Copy ontograph package (needed as path dependency)
-COPY ../../../ontograph /ontograph
+COPY ontograph /ontograph
+
+# Copy application code
+COPY omnipath-present/ontology-service/ontology_service/ ontology_service/
 
 # Install dependencies
 RUN uv pip install --system -e . -e /ontograph
-
-# Copy application code
-COPY ontology_service/ ontology_service/
 
 # Create data and cache directories
 RUN mkdir -p /app/data /app/cache

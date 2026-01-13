@@ -6,7 +6,7 @@ import { Checkbox } from "@/components/ui/checkbox"
 import { Label } from "@/components/ui/label"
 import { Card, CardContent, CardHeader } from "@/components/ui/card"
 import { Filter, X } from "lucide-react"
-import { cn, formatNumber, entityTypeEmojis } from "@/lib/utils"
+import { cn, formatNumber, getEntityTypeEmoji } from "@/lib/utils"
 import * as React from "react"
 
 interface FilterOption {
@@ -148,14 +148,23 @@ export function EntityFilterSidebar({
           const organismName = taxonomyIdToName[value];
           displayName = organismName ? `${organismName} (${value})` : value;
         } else {
-          // For entity_type and sources, extract display name from "Name:ID" format
-          const parts = value.split(':');
-          displayName = parts.length > 1 ? parts.slice(0, -1).join(':') : value;
+          // For entity_type and sources, extract display name from "Label:Accession" format
+          // Format is "label:PREFIX:NUMBER" (e.g., "small molecule:MI:0328")
+          // We want to extract just the label part
+          const match = value.match(/^(.+):([A-Z]+:\d+)$/);
+          if (match) {
+            displayName = match[1]; // The label part (e.g., "small molecule")
+          } else {
+            // Fallback: take everything before the last colon
+            const parts = value.split(':');
+            displayName = parts.length > 1 ? parts.slice(0, -1).join(':') : value;
+          }
         }
 
         let icon: string | undefined;
         if (filterKey === 'entity_type') {
-          icon = entityTypeEmojis[displayName] || entityTypeEmojis[value];
+          // Use helper function that handles normalization (spaces, underscores, case)
+          icon = getEntityTypeEmoji(value);
         } else if (filterKey === 'sources') {
           // Use the same database emoji for all sources
           icon = '📚';
