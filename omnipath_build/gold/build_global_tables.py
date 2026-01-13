@@ -18,7 +18,7 @@ Output tables:
   entity.parquet                      (entity_id, entity_type_id)
   entity_identifier.parquet           (id, entity_id, type_id, identifier)
   entity_instance.parquet             (id, entity_id, source_id)
-  entity_annotation.parquet           (id, instance_id, cv_term_entity_id, value, unit_entity_id, source_id)
+  entity_annotation.parquet           (id, instance_id, cv_term_accession, value, unit_accession, source_id)
   membership.parquet                  (id, parent_entity_id, parent_instance_id, member_entity_id, member_instance_id, source_id)
 
 Note: entity_identifier_resource.parquet is created by build_entity_identifiers.py and requires no transformation
@@ -40,85 +40,12 @@ logger = logging.getLogger(__name__)
 # Helper functions
 # --------------------------------------------------------------------------- #
 
-def _build_cv_term_mapping(entity_identifiers: pl.DataFrame) -> pl.DataFrame:
-    """Build CV term mapping from entity_identifiers.
 
-    CV terms are entities with type_id = "OM:0204" (CV_TERM_ACCESSION).
+# --------------------------------------------------------------------------- #
+# Helper functions
+# --------------------------------------------------------------------------- #
+# (CV term mapping helpers removed as we now use accession strings directly)
 
-    Args:
-        entity_identifiers: DataFrame with [id, entity_id, type_id, identifier]
-
-    Returns:
-        DataFrame with [accession, cv_term_entity_id] mapping
-    """
-    # Filter by type_id string accession "OM:0204" (CV_TERM_ACCESSION)
-    # At this stage, type_id is still a string accession, not yet converted to integer entity_id
-    cv_terms = (
-        entity_identifiers
-        .filter(pl.col("type_id") == "OM:0204")
-        .select([
-            pl.col("identifier").alias("accession"),
-            pl.col("entity_id").alias("cv_term_entity_id"),
-        ])
-        .unique(subset=["accession"])
-    )
-
-    logger.info(f"Built CV term mapping with {len(cv_terms):,} unique accessions")
-    return cv_terms
-
-
-def _map_cv_term_column(
-    df: pl.DataFrame,
-    cv_term_mapping: pl.DataFrame,
-    accession_col: str,
-) -> pl.DataFrame:
-    """Map a single CV term accession column to its corresponding entity ID.
-
-    Args:
-        df: DataFrame with CV term accession column
-        cv_term_mapping: CV term mapping DataFrame [accession, cv_term_entity_id]
-        accession_col: Name of the column containing CV term accessions
-
-    Returns:
-        DataFrame with new {col}_id column added and original accession column dropped
-    """
-    if accession_col not in df.columns:
-        return df
-
-    # Create mapping with correct column name
-    mapping = cv_term_mapping.select([
-        pl.col("accession").alias(accession_col),
-        pl.col("cv_term_entity_id").alias(f"{accession_col}_id"),
-    ])
-
-    # Left join to add the _id column
-    result = df.join(mapping, on=accession_col, how="left")
-
-    # Drop the original accession column
-    result = result.drop(accession_col)
-
-    return result
-
-
-def _map_cv_term_columns(
-    df: pl.DataFrame,
-    cv_term_mapping: pl.DataFrame,
-    accession_cols: list[str],
-) -> pl.DataFrame:
-    """Map multiple CV term accession columns to corresponding entity IDs.
-
-    Args:
-        df: DataFrame with CV term accession columns
-        cv_term_mapping: CV term mapping DataFrame [accession, cv_term_entity_id]
-        accession_cols: List of column names containing CV term accessions
-
-    Returns:
-        DataFrame with new {col}_id columns added and original accession columns dropped
-    """
-    result = df
-    for col in accession_cols:
-        result = _map_cv_term_column(result, cv_term_mapping, col)
-    return result
 
 
 # --------------------------------------------------------------------------- #
@@ -165,29 +92,8 @@ def build_global_tables(
     instance_to_global = pl.read_parquet(instance_to_global_file)
     logger.info(f"Loaded instance_to_global: {len(instance_to_global):,} rows")
 
-    # Check if type_id has already been converted to type_id_id (rerun scenario)
-    already_processed = "type_id_id" in entity_identifiers.columns and "type_id" not in entity_identifiers.columns
-    if already_processed:
-        # Already processed - the type_id is already an integer entity_id
-        # Build CV term mapping directly from integer type_id
-        logger.info("Detected already-processed entity_identifiers (has type_id_id)")
-        cv_term_mapping = (
-            entity_identifiers
-            .rename({"type_id_id": "type_id"})
-            .filter(pl.col("type_id").is_not_null())  # CV terms have a type_id
-            .select([
-                pl.col("identifier").alias("accession"),
-                pl.col("entity_id").alias("cv_term_entity_id"),
-            ])
-            .unique(subset=["accession"])
-        )
-        # Also rename for the rest of the processing
-        entity_identifiers = entity_identifiers.rename({"type_id_id": "type_id"})
-    else:
-        # Build CV term mapping from string type_id accessions
-        cv_term_mapping = _build_cv_term_mapping(entity_identifiers)
+    logger.info(f"Loaded instance_to_global: {len(instance_to_global):,} rows")
 
-    logger.info(f"Built CV term mapping with {len(cv_term_mapping):,} unique accessions")
 
     # ========================================================================
     # 2. PROCESS ENTITY TABLE
@@ -232,8 +138,9 @@ def build_global_tables(
             .sort("entity_id")
         )
 
-        # Map entity_type (accession) -> entity_type_id
-        entities_output = _map_cv_term_columns(entities_global, cv_term_mapping, ["entity_type"])
+        # Map entity_type (accession) -> entity_type (string)
+        # No mapping needed, entity_type is already a string accession
+        entities_output = entities_global
 
         entities_output.write_parquet(output_dir / "entity.parquet")
         logger.info(f"✅ entity: {len(entities_output):,} rows")
@@ -249,19 +156,9 @@ def build_global_tables(
     logger.info("Processing entity_identifier table")
     logger.info("=" * 80)
 
-    # Map type_id (CV term accession) to entity_id (skip if already processed)
-    if already_processed:
-        # type_id is already an integer entity_id, keep it as type_id
-        entity_identifiers_output = entity_identifiers
-        logger.info("Skipping type_id mapping (already processed)")
-    else:
-        entity_identifiers_mapped = _map_cv_term_column(
-            entity_identifiers,
-            cv_term_mapping,
-            "type_id"
-        )
-        # Rename type_id_id back to type_id for consistency
-        entity_identifiers_output = entity_identifiers_mapped.rename({"type_id_id": "type_id"})
+    # Map type_id (already string) -> type_id (string)
+    # No mapping needed
+    entity_identifiers_output = entity_identifiers
 
     # Save the updated entity_identifier table
     entity_identifiers_output.write_parquet(output_dir / "entity_identifier.parquet")
@@ -342,37 +239,14 @@ def build_global_tables(
             how="left"
         )
 
-        # Map cv_term_entity_id (local) -> cv_term_entity_id (global)
-        if "cv_term_entity_id" in df.columns:
-            df_global = df_global.with_columns(
-                pl.col("cv_term_entity_id").cast(pl.Int64)
-            )
-            df_global = df_global.join(
-                record_to_global.rename({
-                    "local_entity_id": "cv_term_entity_id",
-                    "entity_id": "cv_term_entity_id_global"
-                }),
-                on=["source_id", "cv_term_entity_id"],
-                how="left"
-            ).drop("cv_term_entity_id").rename({"cv_term_entity_id_global": "cv_term_entity_id"})
+        # Map cv_term_accession (local) -> cv_term_accession (global/string)
+        # Already strings, no mapping needed. Just ensure type is correct.
+        if "cv_term_accession" not in df.columns:
+             df_global = df_global.with_columns(pl.lit(None, dtype=pl.Utf8).alias("cv_term_accession"))
 
-        # Map unit_entity_id (local) -> unit_entity_id (global)
-        if "unit_entity_id" in df.columns:
-            df_global = df_global.with_columns(
-                pl.col("unit_entity_id").cast(pl.Int64)
-            )
-            df_global = df_global.join(
-                record_to_global.rename({
-                    "local_entity_id": "unit_entity_id",
-                    "entity_id": "unit_entity_id_global"
-                }),
-                on=["source_id", "unit_entity_id"],
-                how="left"
-            ).drop("unit_entity_id").rename({"unit_entity_id_global": "unit_entity_id"})
-        else:
-            df_global = df_global.with_columns(
-                pl.lit(None, dtype=pl.Int64).alias("unit_entity_id")
-            )
+        # Map unit_accession (local) -> unit_accession (global/string)
+        if "unit_accession" not in df.columns:
+             df_global = df_global.with_columns(pl.lit(None, dtype=pl.Utf8).alias("unit_accession"))
 
         entity_annot_parts.append(df_global)
 
@@ -386,7 +260,7 @@ def build_global_tables(
             .join(source_mapping, on="source_id", how="left")
             .drop(["source_id", "local_entity_instance_id", "local_entity_annotation_id"])
             .rename({"source_entity_id": "source_id"})
-            .sort(["instance_id", "cv_term_entity_id", "source_id"])
+            .sort(["instance_id", "cv_term_accession", "source_id"])
         )
 
         # Assign global sequential IDs

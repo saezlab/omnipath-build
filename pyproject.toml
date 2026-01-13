@@ -41,6 +41,8 @@ dependencies = [
     "toml",
     "pypath-omnipath",
     "download-manager",
+    "rdflib>=6.0.0",
+    "ontograph",
 ]
 description = "A general database builder on top of pypath."
 license = "GPL-3.0-or-later"
@@ -207,3 +209,4 @@ jupyter-contrib-nbextensions = {git = "https://github.com/deeenes/jupyter_contri
 nbsphinx = {git = "https://github.com/deeenes/nbsphinx", branch = "timings"}
 pypath-omnipath = {path = "pypath", editable = true}
 download-manager = {path = "download-manager", editable = true}
+ontograph = {path = "ontograph", editable = true}

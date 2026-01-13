@@ -187,100 +187,33 @@ ACTIVATORY_PARAMETER_ACCESSIONS = frozenset({
 # CV Term Mapping Builder
 # =============================================================================
 
-def build_cv_term_mapping(entity_identifiers_path: Path) -> pl.DataFrame:
-    """Build mapping from CV term accessions to entity_ids.
 
-    Args:
-        entity_identifiers_path: Path to entity_identifier.parquet
+# (CV term mapping logic removed)
 
+
+
+def get_cv_term_accession_sets() -> dict[str, frozenset[str] | str | None]:
+    """Return dictionary of CV term accession sets for filtering.
+    
     Returns:
-        DataFrame with columns [accession, entity_id] where:
-        - accession: CV term accession string (e.g., "MI:0326", "OM:0202")
-        - entity_id: Corresponding entity_id in the global tables
+        Dictionary mapping category name to frozenset of accessions strings:
     """
-    identifiers = pl.read_parquet(entity_identifiers_path)
-    type_dtype = identifiers.schema.get('type_id')
-
-    if type_dtype is None:
-        raise ValueError("entity_identifier table is missing 'type_id' column")
-
-    # Determine the filter expression depending on whether type_id stores string accessions
-    # or the already-mapped integer entity IDs.
-    if type_dtype == pl.Utf8:
-        filter_expr = pl.col('type_id') == CV_TERM_ACCESSION_TYPE
-    elif type_dtype in {pl.Int8, pl.Int16, pl.Int32, pl.Int64, pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64}:
-        cv_term_accession_entity = identifiers.filter(pl.col('identifier') == CV_TERM_ACCESSION_TYPE)
-        if cv_term_accession_entity.is_empty():
-            raise ValueError(
-                f"CV_TERM_ACCESSION identifier ({CV_TERM_ACCESSION_TYPE}) not found "
-                f"in {entity_identifiers_path}"
-            )
-        cv_term_accession_entity_id = cv_term_accession_entity['entity_id'][0]
-        filter_expr = pl.col('type_id') == cv_term_accession_entity_id
-    else:
-        raise TypeError(f"Unsupported type_id dtype '{type_dtype}' in entity_identifier table")
-
-    cv_term_rows = identifiers.filter(filter_expr)
-
-    if cv_term_rows.is_empty():
-        raise ValueError(
-            f"No identifiers found for CV_TERM_ACCESSION ({CV_TERM_ACCESSION_TYPE}) "
-            f"in {entity_identifiers_path}"
-        )
-
-    cv_terms = (
-        cv_term_rows
-        .select([
-            pl.col('identifier').alias('accession'),
-            'entity_id',
-        ])
-        .unique(subset=['accession'])
-    )
-
-    return cv_terms
-
-
-def build_accession_to_entity_id_sets(cv_term_mapping: pl.DataFrame) -> dict[str, frozenset[int]]:
-    """Convert accession sets to entity_id sets for filtering.
-
-    Args:
-        cv_term_mapping: DataFrame with [accession, entity_id] from build_cv_term_mapping()
-
-    Returns:
-        Dictionary mapping category name to frozenset of entity_ids:
-        - 'names': Entity IDs for name identifier types
-        - 'synonyms': Entity IDs for synonym identifier types
-        - 'gene_symbols': Entity IDs for gene symbol identifier types
-        - 'descriptions': Entity IDs for description annotation types
-        - 'references': Entity IDs for reference identifier types
-        - 'ncbi_tax_id': Entity ID for NCBI taxonomy ID
-        - 'interaction_type': Entity ID for interaction type
-        - 'cv_term_type': Entity ID for CV term type
-        - 'complex_type': Entity ID for complex type
-    """
-    mapping_dict = cv_term_mapping.select(['accession', 'entity_id']).to_dict(as_series=False)
-    accession_to_id = {acc: eid for acc, eid in zip(mapping_dict['accession'], mapping_dict['entity_id'])}
-
-    def _accessions_to_ids(accessions: frozenset[str]) -> frozenset[int]:
-        """Convert set of accessions to set of entity_ids."""
-        return frozenset(accession_to_id[acc] for acc in accessions if acc in accession_to_id)
-
     return {
-        'names': _accessions_to_ids(NAME_IDENTIFIER_ACCESSIONS),
-        'synonyms': _accessions_to_ids(SYNONYM_IDENTIFIER_ACCESSIONS),
-        'gene_symbols': _accessions_to_ids(GENE_SYMBOL_IDENTIFIER_ACCESSIONS),
-        'descriptions': _accessions_to_ids(DESCRIPTION_ANNOTATION_ACCESSIONS),
-        'references': _accessions_to_ids(REFERENCE_IDENTIFIER_ACCESSIONS),
-        'ncbi_tax_id': frozenset([accession_to_id.get(IdentifierNamespaceCv.NCBI_TAX_ID.value)]),
-        'interaction_type': accession_to_id.get(INTERACTION_TYPE_ACCESSION),
-        'cv_term_type': accession_to_id.get(CV_TERM_TYPE_ACCESSION),
-        'complex_type': accession_to_id.get(COMPLEX_TYPE_ACCESSION),
-        'pathway_type': accession_to_id.get(PATHWAY_TYPE_ACCESSION),
-        'reaction_type': accession_to_id.get(REACTION_TYPE_ACCESSION),
-        'reactants': _accessions_to_ids(REACTANT_ROLE_ACCESSIONS),
-        'products': _accessions_to_ids(PRODUCT_ROLE_ACCESSIONS),
-        'stoichiometry': _accessions_to_ids(STOICHIOMETRY_ANNOTATION_ACCESSIONS),
-        'pathway_steps': _accessions_to_ids(STEP_ORDER_ANNOTATION_ACCESSIONS),
+        'names': NAME_IDENTIFIER_ACCESSIONS,
+        'synonyms': SYNONYM_IDENTIFIER_ACCESSIONS,
+        'gene_symbols': GENE_SYMBOL_IDENTIFIER_ACCESSIONS,
+        'descriptions': DESCRIPTION_ANNOTATION_ACCESSIONS,
+        'references': REFERENCE_IDENTIFIER_ACCESSIONS,
+        'ncbi_tax_id': frozenset([IdentifierNamespaceCv.NCBI_TAX_ID.value]),
+        'interaction_type': INTERACTION_TYPE_ACCESSION,
+        'cv_term_type': CV_TERM_TYPE_ACCESSION,
+        'complex_type': COMPLEX_TYPE_ACCESSION,
+        'pathway_type': PATHWAY_TYPE_ACCESSION,
+        'reaction_type': REACTION_TYPE_ACCESSION,
+        'reactants': REACTANT_ROLE_ACCESSIONS,
+        'products': PRODUCT_ROLE_ACCESSIONS,
+        'stoichiometry': STOICHIOMETRY_ANNOTATION_ACCESSIONS,
+        'pathway_steps': STEP_ORDER_ANNOTATION_ACCESSIONS,
     }
 
 
@@ -288,67 +221,11 @@ def build_accession_to_entity_id_sets(cv_term_mapping: pl.DataFrame) -> dict[str
 # Entity Type Formatting
 # =============================================================================
 
-def build_entity_type_label_mapping(
-    entity_identifiers_path: Path,
-    cv_term_mapping: pl.DataFrame,
-) -> dict[str, str]:
+def build_entity_type_label_mapping() -> dict[str, str]:
     """Build mapping from entity type accessions to their display names.
-
-    This dynamically fetches the NAME identifier for each CV term entity
-    instead of using hardcoded labels.
-
-    Args:
-        entity_identifiers_path: Path to entity_identifier.parquet
-        cv_term_mapping: DataFrame with [accession, entity_id] from build_cv_term_mapping()
-
-    Returns:
-        Dictionary mapping accession -> display name (e.g., "MI:0326" -> "protein")
+    
+    Since CV terms are no longer in the DB, this logic is simplified or placeholder.
+    TODO: Use ontograph to fetch real labels.
     """
-    identifiers = pl.read_parquet(entity_identifiers_path)
-
-    # Get the NAME identifier type entity_id
-    name_type_rows = identifiers.filter(
-        pl.col('identifier') == IdentifierNamespaceCv.NAME.value
-    )
-
-    if name_type_rows.is_empty():
-        # Fallback to accession if NAME type not found
-        return {row['accession']: row['accession'] for row in cv_term_mapping.iter_rows(named=True)}
-
-    name_type_entity_id = name_type_rows['entity_id'][0]
-
-    # Get all entity_type_ids from cv_term_mapping
-    entity_type_ids = cv_term_mapping['entity_id'].to_list()
-
-    # Get NAME identifiers for entity types
-    entity_type_names = (
-        identifiers
-        .filter(
-            (pl.col('entity_id').is_in(entity_type_ids)) &
-            (pl.col('type_id') == name_type_entity_id)
-        )
-        .select(['entity_id', 'identifier'])
-    )
-
-    # Join with cv_term_mapping to get accession -> name mapping
-    accession_to_name = (
-        cv_term_mapping
-        .join(entity_type_names, on='entity_id', how='left')
-        .select(['accession', 'identifier'])
-    )
-
-    # Build dictionary, using accession as fallback if no name found
-    # Also format names: capitalize first letter, remove spaces and hyphens
-    mapping = {}
-    for row in accession_to_name.iter_rows(named=True):
-        accession = row['accession']
-        name = row['identifier']
-        if name:
-            # Format name: capitalize each word and remove spaces/hyphens
-            # (e.g., "protein complex" -> "ProteinComplex", "cross-reference type" -> "CrossReferenceType")
-            formatted_name = ''.join(word.capitalize() for word in name.replace('-', ' ').split())
-            mapping[accession] = formatted_name
-        else:
-            mapping[accession] = accession
-
-    return mapping
+    # Placeholder mapping
+    return {}

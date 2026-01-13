@@ -48,49 +48,41 @@ def _get_id(df: pl.DataFrame, acc: str) -> int:
 def _fmt_term(id_col: str, lbl_col: str) -> pl.Expr:
     return pl.coalesce([pl.col(lbl_col), pl.lit("UNKNOWN")]) + ":" + pl.col(id_col).cast(pl.Utf8)
 
-def _build_sign_df(ent_id: pl.DataFrame, pos_accs: frozenset[str], neg_accs: frozenset[str], name: str = "sign") -> pl.DataFrame:
-    """Build DataFrame mapping entity_id to sign (-1, 1). Vectorized replacement for _build_sign_map."""
+def _build_sign_df(pos_accs: frozenset[str], neg_accs: frozenset[str], name: str = "sign") -> pl.DataFrame:
+    """Build DataFrame mapping accession to sign (-1, 1)."""
     accessions = list(pos_accs | neg_accs)
     if not accessions:
-        return pl.DataFrame(schema={"entity_id": pl.Int64, name: pl.Int8})
+        return pl.DataFrame(schema={"accession": pl.Utf8, name: pl.Int8})
 
-    return (
-        ent_id.filter(pl.col("identifier").is_in(accessions))
-        .select("identifier", "entity_id")
-        .unique(subset=["identifier"])
-        .with_columns(
-            pl.when(pl.col("identifier").is_in(list(neg_accs)))
-            .then(pl.lit(-1, dtype=pl.Int8))
-            .otherwise(pl.lit(1, dtype=pl.Int8))
-            .alias(name)
-        )
-        .select("entity_id", name)
-    )
+    # Create mapping directly from sets
+    data = []
+    for acc in pos_accs:
+        data.append({"accession": acc, name: 1})
+    for acc in neg_accs:
+        data.append({"accession": acc, name: -1})
+        
+    return pl.DataFrame(data).with_columns(pl.col(name).cast(pl.Int8))
 
-def _build_causal_traits(ent_id: pl.DataFrame) -> pl.DataFrame:
-    """Build DataFrame mapping annotation_id to causal traits (sign, is_source, is_target)."""
-    accessions = list(POSITIVE_SIGN_ACCESSIONS | NEGATIVE_SIGN_ACCESSIONS |
-                      SOURCE_ROLE_ACCESSIONS | TARGET_ROLE_ACCESSIONS)
-    if not accessions:
-        return pl.DataFrame(schema={"annotation_id": pl.Int64, "sign": pl.Int8, "is_source": pl.Boolean, "is_target": pl.Boolean})
+def _build_causal_traits() -> pl.DataFrame:
+    """Build DataFrame mapping accession to causal traits (sign, is_source, is_target)."""
+    # Simply map the constant sets
+    data = []
+    
+    # Process all relevant accessions
+    all_accs = POSITIVE_SIGN_ACCESSIONS | NEGATIVE_SIGN_ACCESSIONS | SOURCE_ROLE_ACCESSIONS | TARGET_ROLE_ACCESSIONS
+    
+    for acc in all_accs:
+        data.append({
+            "accession": acc,
+            "sign": 1 if acc in POSITIVE_SIGN_ACCESSIONS else (-1 if acc in NEGATIVE_SIGN_ACCESSIONS else None),
+            "is_source": acc in SOURCE_ROLE_ACCESSIONS,
+            "is_target": acc in TARGET_ROLE_ACCESSIONS
+        })
 
-    acc_map = {row["identifier"]: row["entity_id"]
-               for row in ent_id.filter(pl.col("identifier").is_in(accessions))
-               .select("identifier", "entity_id").unique(subset=["identifier"]).iter_rows(named=True)}
+    if not data:
+        return pl.DataFrame(schema={"accession": pl.Utf8, "sign": pl.Int8, "is_source": pl.Boolean, "is_target": pl.Boolean})
 
-    ids_for = lambda accs: {acc_map[a] for a in accs if a in acc_map}
-    pos_ids, neg_ids = ids_for(POSITIVE_SIGN_ACCESSIONS), ids_for(NEGATIVE_SIGN_ACCESSIONS)
-    source_ids, target_ids = ids_for(SOURCE_ROLE_ACCESSIONS), ids_for(TARGET_ROLE_ACCESSIONS)
-    causal_ids = pos_ids | neg_ids | source_ids | target_ids
-
-    if not causal_ids:
-        return pl.DataFrame(schema={"annotation_id": pl.Int64, "sign": pl.Int8, "is_source": pl.Boolean, "is_target": pl.Boolean})
-
-    return pl.DataFrame([
-        {"annotation_id": aid, "sign": 1 if aid in pos_ids else (-1 if aid in neg_ids else None),
-         "is_source": aid in source_ids, "is_target": aid in target_ids}
-        for aid in sorted(causal_ids)
-    ]).with_columns([pl.col("sign").cast(pl.Int8), pl.col("is_source").cast(pl.Boolean), pl.col("is_target").cast(pl.Boolean)])
+    return pl.DataFrame(data).with_columns([pl.col("sign").cast(pl.Int8), pl.col("is_source").cast(pl.Boolean), pl.col("is_target").cast(pl.Boolean)])
 
 def _get_param_directions(doc_base: pl.DataFrame, df_ann_int: pl.DataFrame, param_signs: pl.DataFrame) -> pl.DataFrame:
     """Vectorized computation of parameter-based directions (Small Mol -> Protein)."""
@@ -122,7 +114,7 @@ def _get_param_directions(doc_base: pl.DataFrame, df_ann_int: pl.DataFrame, para
     # 3. Join with interaction annotations and signs
     return (
         df_ann_int
-        .join(param_signs, left_on="ann_id", right_on="entity_id", how="inner")
+        .join(param_signs, left_on="ann_id", right_on="accession", how="inner")
         .join(dir_map, on="pair_key", how="inner")
         .select("pair_key", "direction", "sign")
     )
@@ -189,13 +181,15 @@ def build_search_interactions(global_tables_dir: Path, output_path: Path) -> Pat
     mem = _resolve_parent_entity_id(mem, inst)
     
     # 2. Identifiers & Constants
-    name_tid = _get_id(ent_id, "OM:0202")
-    cv_tid = _get_id(ent_id, "OM:0201")
-    intr_tid = _get_id(ent_id, EntityTypeCv.INTERACTION.value)
+    # name_tid is now string "OM:0202"
+    name_tid = "OM:0202"
+    # cv_tid removal
+    # intr_tid is now string accession
+    intr_tid = EntityTypeCv.INTERACTION.value
 
     # 3. Identify Interaction Pairs
     mem_intr = mem.join(
-        ent.filter(pl.col("entity_type_id") == intr_tid).select(pl.col("entity_id").alias("p_id")),
+        ent.filter(pl.col("entity_type") == intr_tid).select(pl.col("entity_id").alias("p_id")),
         left_on="parent_id", right_on="p_id"
     ).rename({"parent_id": "interaction_id"})
 
@@ -223,10 +217,16 @@ def build_search_interactions(global_tables_dir: Path, output_path: Path) -> Pat
     logger.info("Identified %s interaction entities with two members", len(pair_base))
 
     # 4. Build Base Documents (Member Types)
-    type_map = ent.join(
-        ent_id.filter(pl.col("type_id") == name_tid), left_on="entity_type_id", right_on="entity_id"
-    ).select(pl.col("entity_id"), _fmt_term("entity_type_id", "identifier").alias("fmt"))
-
+    # type_map: entity_id -> fmt (Label:Accession or just Accession)
+    # ent table has entity_type (string accession).
+    # We want to format it.
+    
+    # We use entity_type directly as formatting base
+    type_map = ent.select(
+        pl.col("entity_id"),
+        (pl.col("entity_type") + ":" + pl.col("entity_type")).alias("fmt")
+    )
+    
     doc_base = (
         pair_base.group_by("pair_key").agg([pl.col("member_a_id").first(), pl.col("member_b_id").first()])
         .join(type_map, left_on="member_a_id", right_on="entity_id").rename({"fmt": "ta"})
@@ -255,9 +255,10 @@ def build_search_interactions(global_tables_dir: Path, output_path: Path) -> Pat
         .join(
             ent_annot.select([
                 pl.col("instance_id"),
-                pl.col("cv_term_entity_id").alias("ann_id"),
+                pl.col("cv_term_accession").alias("ann_id"),
                 pl.col("value").alias("annotation_value"),
-                pl.col("unit_entity_id").alias("annotation_unit"),
+                # unit_accession if present, else null
+                pl.col("unit_accession").alias("annotation_unit") if "unit_accession" in ent_annot.columns else pl.lit(None, pl.Utf8).alias("annotation_unit"),
             ]),
             left_on="interaction_instance_id",
             right_on="instance_id",
@@ -301,9 +302,9 @@ def build_search_interactions(global_tables_dir: Path, output_path: Path) -> Pat
         .join(
             ent_annot.select([
                 pl.col("instance_id"),
-                pl.col("cv_term_entity_id").alias("ann_id"),
+                pl.col("cv_term_accession").alias("ann_id"),
                 pl.col("value").alias("annotation_value"),
-                pl.col("unit_entity_id").alias("annotation_unit"),
+                pl.col("unit_accession").alias("annotation_unit") if "unit_accession" in ent_annot.columns else pl.lit(None, pl.Utf8).alias("annotation_unit"),
             ]),
             left_on="member_instance_id",
             right_on="instance_id",
@@ -322,35 +323,22 @@ def build_search_interactions(global_tables_dir: Path, output_path: Path) -> Pat
     all_annots = pl.concat([df_ann_int, df_ann_mem])
 
     # 6. Resolve Labels & Format Maps
-    # Convert to list to avoid is_in DeprecationWarning
-    unique_ids = pl.concat([all_annots["ann_id"], all_annots["annotation_unit"]]).drop_nulls().unique().to_list()
-    logger.info("Resolving annotation metadata for %s unique annotation IDs", len(unique_ids))
-
-    labels = (
-        ent_id.filter(pl.col("entity_id").is_in(unique_ids))
-        .group_by("entity_id")
-        .agg([
-            pl.col("identifier").filter(pl.col("type_id") == name_tid).first().alias("n"),
-            pl.col("identifier").filter(pl.col("type_id") == cv_tid).first().alias("c")
-        ])
-        .select(pl.col("entity_id"), pl.coalesce("n", "c", pl.lit("UNKNOWN")).alias("lbl"))
-    )
-
+    # We simplified format to just Accession:Accession or similar since we lost entity lookups
+    # Note: we use the accession as both label and id for now.
+    
     evidence_rows = (
         all_annots
-        .join(labels, left_on="ann_id", right_on="entity_id", how="left")
-        .join(labels, left_on="annotation_unit", right_on="entity_id", how="left", suffix="_u")
         .with_columns([
-            _fmt_term("ann_id", "lbl").alias("term"),
+            (pl.col("ann_id") + ":" + pl.col("ann_id")).alias("term"),
             pl.col("annotation_value").cast(pl.Utf8).alias("val"),
-            _fmt_term("annotation_unit", "lbl_u").alias("unit"),
+            (pl.col("annotation_unit") + ":" + pl.col("annotation_unit")).alias("unit"),
             pl.int_range(1, pl.len() + 1).cast(pl.Utf8).over("interaction_id", "pair_key", "cat").alias("k")
         ])
         .group_by("interaction_id", "pair_key", "cat")
         .agg([
             pl.struct("k", pl.col("term").alias("value")).alias("terms"),
             pl.struct("k", pl.col("val").alias("value")).filter(pl.col("val").is_not_null()).alias("values"),
-            pl.struct("k", pl.col("unit").alias("value")).filter(pl.col("unit") != "UNKNOWN:unknown").alias("units")
+            pl.struct("k", pl.col("unit").alias("value")).filter(pl.col("unit").is_not_null()).alias("units")
         ])
         .pivot(on="cat", index=["interaction_id", "pair_key"], values=["terms", "values", "units"], aggregate_function="first")
     )
@@ -381,11 +369,11 @@ def build_search_interactions(global_tables_dir: Path, output_path: Path) -> Pat
     logger.info("Computing direction and sign information")
 
     # A. Build Reference DataFrames
-    causal_traits = _build_causal_traits(ent_id)
+    causal_traits = _build_causal_traits()
 
     # Create lookup DataFrames instead of dicts for joins
-    term_sign_df = _build_sign_df(ent_id, POSITIVE_SIGN_ACCESSIONS, NEGATIVE_SIGN_ACCESSIONS, name="term_sign")
-    param_sign_df = _build_sign_df(ent_id, ACTIVATORY_PARAMETER_ACCESSIONS, INHIBITORY_PARAMETER_ACCESSIONS, name="sign")
+    term_sign_df = _build_sign_df(POSITIVE_SIGN_ACCESSIONS, NEGATIVE_SIGN_ACCESSIONS, name="term_sign")
+    param_sign_df = _build_sign_df(ACTIVATORY_PARAMETER_ACCESSIONS, INHIBITORY_PARAMETER_ACCESSIONS, name="sign")
 
     # B. Member Annotation Directions (Causal Traits)
     # Vectorized approach: Join -> Calculate Direction -> Select
@@ -394,7 +382,7 @@ def build_search_interactions(global_tables_dir: Path, output_path: Path) -> Pat
     if not causal_traits.is_empty():
         df_dirs_mem = (
             df_ann_mem
-            .join(causal_traits, left_on="ann_id", right_on="annotation_id", how="inner")
+            .join(causal_traits, left_on="ann_id", right_on="accession", how="inner")
             .with_columns([
                 pl.when((pl.col("cat") == "member_a") & pl.col("is_source")).then(pl.lit("a-b"))
                 .when((pl.col("cat") == "member_b") & pl.col("is_target")).then(pl.lit("a-b"))
@@ -440,7 +428,7 @@ def build_search_interactions(global_tables_dir: Path, output_path: Path) -> Pat
             # Calculate term sign per pair
             pair_term_signs = (
                 df_ann_int
-                .join(term_sign_df, left_on="ann_id", right_on="entity_id", how="inner")
+                .join(term_sign_df, left_on="ann_id", right_on="accession", how="inner")
                 .group_by("pair_key")
                 .agg([
                     pl.col("term_sign").eq(1).any().alias("has_pos"),

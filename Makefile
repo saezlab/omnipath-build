@@ -12,13 +12,13 @@ setup:
 	pnpm --dir omnipath-present/next-omnipath install
 
 silver:
-	@uv run -m omnipath_build.cli.commands silver \
+	@uv run -m omnipath_build.cli.commands silver --base-path omnipath_build/data --database . \
 		$(if $(or $(SOURCE),$(filter-out $@,$(MAKECMDGOALS))),--source $(if $(SOURCE),$(SOURCE),$(filter-out $@,$(MAKECMDGOALS)))) \
 		$(if $(FUNCTION),--function $(FUNCTION)) \
 		$(if $(INPUTS_PACKAGE),--inputs-package $(INPUTS_PACKAGE))
 
 silver-test:
-	@uv run -m omnipath_build.cli.commands silver --test-mode \
+	@uv run -m omnipath_build.cli.commands silver --base-path omnipath_build/data --database . --test-mode \
 		$(if $(or $(SOURCE),$(filter-out $@,$(MAKECMDGOALS))),--source $(if $(SOURCE),$(SOURCE),$(filter-out $@,$(MAKECMDGOALS)))) \
 		$(if $(FUNCTION),--function $(FUNCTION)) \
 		$(if $(INPUTS_PACKAGE),--inputs-package $(INPUTS_PACKAGE))

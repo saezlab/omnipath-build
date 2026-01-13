@@ -212,9 +212,6 @@ MERGE_SAFE_IDENTIFIER_TYPES_BY_BUCKET: dict[str, frozenset[str]] = {
         IdentifierNamespaceCv.SIGNOR.value,
         IdentifierNamespaceCv.GUIDETOPHARMA.value,
     }),
-    EntityTypeCv.CV_TERM.value: frozenset({
-        IdentifierNamespaceCv.CV_TERM_ACCESSION.value,
-    }),
 }
 
 # Buckets that are allowed to merge into any other bucket sharing the exact
@@ -447,9 +444,8 @@ def _prepare_local_entities_for_source(
     )
 
     # Filter OUT merge-unsafe identifiers (blacklist approach), but allow:
-    # - CV_TERM_ACCESSION only for CV_TERM entities
     # - Complex accessions only for COMPLEX entities
-    cv_term_acc = IdentifierNamespaceCv.CV_TERM_ACCESSION.value
+    # cv_term_acc handling removed as CV terms are no longer entities
     complex_accs = {
         IdentifierNamespaceCv.COMPLEXPORTAL.value,
     }
@@ -482,8 +478,6 @@ def _prepare_local_entities_for_source(
               .otherwise(
                   # Fallback to blacklist for buckets without explicit allowlist
                   (~pl.col('id_type').is_in(unsafe_list))
-                  # Only allow CV_TERM_ACCESSION when the bucket is CV_TERM
-                  & (~(pl.col('id_type') == cv_term_acc) | (pl.col('entity_bucket') == EntityTypeCv.CV_TERM.value))
                   # Only allow complex accessions when the bucket is COMPLEX
                   & (~pl.col('id_type').is_in(list(complex_accs)) | (pl.col('entity_bucket') == EntityTypeCv.COMPLEX.value))
               )

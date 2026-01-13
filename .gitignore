@@ -22,7 +22,7 @@ __pycache__/
 /.cache/
 /data/
 .venv/
-
+cache/
 bronze/*
 __pycache__/
 .DS_Store

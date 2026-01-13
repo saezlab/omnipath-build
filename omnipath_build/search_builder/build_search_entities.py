@@ -15,9 +15,7 @@ import polars as pl
 from polars import Field
 
 from .schema import (
-    build_cv_term_mapping,
-    build_accession_to_entity_id_sets,
-    build_entity_type_label_mapping,
+    get_cv_term_accession_sets,
 )
 
 __all__ = ["build_search_entities"]
@@ -33,7 +31,7 @@ INT_LIST = pl.List(pl.Int64)
 def _agg_lazy(
     ldf: pl.LazyFrame, 
     filter_col: str, 
-    filter_ids: frozenset[int], 
+    filter_ids: frozenset[str], 
     val_col: str, 
     out_col: str,
     group_col: str = "entity_id"
@@ -108,15 +106,12 @@ def build_search_entities(global_tables_dir: Path, output_path: Path) -> Path:
     logger.info("=" * 80 + "\nBuilding Meilisearch entity documents (Lazy Execution)\n" + "=" * 80)
 
     # 1. Load Metadata Eagerly (for logic/sets)
-    # We need specific sets of IDs to build the filter logic
+    # We need specific sets of Accessions to build the filter logic
     logger.info("Loading metadata for mapping generation...")
-    ident_file = global_tables_dir / "entity_identifier.parquet"
+    # cv_map_df removed - we use static sets now
+    id_sets = get_cv_term_accession_sets()
     
-    cv_map_df = build_cv_term_mapping(ident_file)
-    type_labels = build_entity_type_label_mapping(ident_file, cv_map_df)
-    id_sets = build_accession_to_entity_id_sets(cv_map_df)
-    
-    logger.info("Metadata ready. CV Terms: %s", len(cv_map_df))
+    logger.info("Metadata ready.")
 
     # 2. Setup Lazy Scans
     # scan_parquet creates a LazyFrame; no data is read until 'sink_parquet' is called
@@ -157,27 +152,19 @@ def build_search_entities(global_tables_dir: Path, output_path: Path) -> Path:
         )
     )
     
-    # Convert metadata for Lazy Joins
-    cv_map_lz = cv_map_df.lazy()
     
     # 3. Base Entity Processing
-    # Fix Identifier Types: Map string type_ids to int
-    ident_schema = ident.collect_schema() # Lightweight schema fetch
-    if ident_schema.get("type_id") == pl.Utf8:
-        ident = ident.rename({"type_id": "acc"}).join(
-            cv_map_lz.rename({"accession": "acc", "entity_id": "tid"}), 
-            on="acc", how="left"
-        ).drop("acc").rename({"tid": "type_id"}).with_columns(pl.col("type_id").cast(pl.Int64))
-
-    # Base Table: Filter non-interactions & Format Entity Types
-    cv_accs = cv_map_lz.select(pl.col("entity_id").alias("tid"), pl.col("accession").alias("acc"))
+    # Entities: filter non-interactions
+    # entity_type in entity table is already string accession.
+    # We assume entity_type column holds the accession (e.g. "MI:0326").
     
     base = (
-        ent.filter(pl.col("entity_type_id") != id_sets['interaction_type'])
-        .join(cv_accs, left_on="entity_type_id", right_on="tid", how="left")
+        ent.filter(pl.col("entity_type") != id_sets['interaction_type'])
         .select(
             "entity_id",
-            (pl.col("acc").replace(type_labels, default=pl.col("acc")) + ":" + pl.col("entity_type_id").cast(pl.Utf8)).alias("entity_type")
+            # Simple fallback format since we removed labels mapping: "Accession"
+            # To improve this, we might want to join with a static label map or ontograph
+            pl.col("entity_type")
         )
     )
 
@@ -190,12 +177,12 @@ def build_search_entities(global_tables_dir: Path, output_path: Path) -> Path:
 
     # 4b. Annotations (Descriptions, References)
     # These are now in entity_annotation table, linked via entity_instance
-    # entity_annotation has: instance_id, cv_term_entity_id, value, unit_entity_id
+    # entity_annotation has: instance_id, cv_term_accession, value, unit_accession
     for k, col in [('descriptions', 'descriptions'), ('references', 'references')]:
         if id_sets[k]:
             lazy_joins.append(
                 ent_annot_with_entity
-                .filter(pl.col("cv_term_entity_id").is_in(list(id_sets[k])))
+                .filter(pl.col("cv_term_accession").is_in(list(id_sets[k])))
                 .filter(pl.col("value").is_not_null())
                 .group_by("annot_entity_id")
                 .agg(pl.col("value").unique().sort().alias(col))
@@ -203,11 +190,11 @@ def build_search_entities(global_tables_dir: Path, output_path: Path) -> Path:
             )
 
     # 4c. NCBI Tax ID - now from entity_annotation
-    # Tax ID is stored as an annotation on entities via instances
+    # id_sets['ncbi_tax_id'] is a set of Accessions.
     if id_sets['ncbi_tax_id']:
         lazy_joins.append(
             ent_annot_with_entity
-            .filter(pl.col("cv_term_entity_id").is_in(list(id_sets['ncbi_tax_id'])))
+            .filter(pl.col("cv_term_accession").is_in(list(id_sets['ncbi_tax_id'])))
             .group_by("annot_entity_id")
             .agg(pl.col("value").first().alias("ncbi_tax_id"))
             .rename({"annot_entity_id": "entity_id"})
@@ -215,22 +202,23 @@ def build_search_entities(global_tables_dir: Path, output_path: Path) -> Path:
 
     # 4d. Structural Memberships & Interactions
     # Join memberships to entity to check parent types
+    # ent now has entity_type as accession string
     mem_types = mem_simple.join(
-        ent.rename({"entity_id": "pid", "entity_type_id": "ptid"}), 
+        ent.rename({"entity_id": "pid", "entity_type": "ptype"}), 
         left_on="parent_id", right_on="pid"
     )
 
     for k, col in [('complex_type', 'complexes'), ('cv_term_type', 'cv_terms'), ('pathway_type', 'pathways'), ('reaction_type', 'reactions')]:
         if id_sets[k]:
             lazy_joins.append(
-                mem_types.filter(pl.col("ptid") == id_sets[k])
+                mem_types.filter(pl.col("ptype") == id_sets[k])
                 .group_by("member_id").agg(pl.col("parent_id").unique().sort().alias(col))
                 .rename({"member_id": "entity_id"})
             )
 
     # 4e. Interaction Counts
     lazy_joins.append(
-        mem_types.filter(pl.col("ptid") == id_sets['interaction_type'])
+        mem_types.filter(pl.col("ptype") == id_sets['interaction_type'])
         .group_by("member_id").agg(pl.col("parent_id").n_unique().alias("num_interactions"))
         .rename({"member_id": "entity_id"})
     )
@@ -244,7 +232,7 @@ def build_search_entities(global_tables_dir: Path, output_path: Path) -> Path:
         .join(
             ent_annot.select([
                 pl.col("instance_id"),
-                pl.col("cv_term_entity_id").alias("annot_id"),
+                pl.col("cv_term_accession").alias("annot_acc"),
                 pl.col("value").alias("annot_val"),
             ]),
             left_on="member_instance_id",
@@ -256,7 +244,7 @@ def build_search_entities(global_tables_dir: Path, output_path: Path) -> Path:
     for k, col in [('reactants', 'reactants'), ('products', 'products')]:
         if id_sets[k]:
             lazy_joins.append(
-                mem_with_annot.filter(pl.col("annot_id").is_in(list(id_sets[k])))
+                mem_with_annot.filter(pl.col("annot_acc").is_in(list(id_sets[k])))
                 .group_by("parent_id")
                 .agg(pl.col("member_id").unique().sort().alias(col))
                 .rename({"parent_id": "entity_id"})
@@ -266,7 +254,7 @@ def build_search_entities(global_tables_dir: Path, output_path: Path) -> Path:
     if id_sets['stoichiometry']:
         lazy_joins.append(
             mem_with_annot.filter(
-                pl.col("annot_id").is_in(list(id_sets['stoichiometry'])) & 
+                pl.col("annot_acc").is_in(list(id_sets['stoichiometry'])) & 
                 pl.col("annot_val").is_not_null()
             )
             .select(
@@ -282,7 +270,7 @@ def build_search_entities(global_tables_dir: Path, output_path: Path) -> Path:
     if id_sets['pathway_steps']:
         lazy_joins.append(
             mem_with_annot.filter(
-                pl.col("annot_id").is_in(list(id_sets['pathway_steps'])) & 
+                pl.col("annot_acc").is_in(list(id_sets['pathway_steps'])) & 
                 pl.col("annot_val").is_not_null()
             )
             .select(
@@ -295,9 +283,10 @@ def build_search_entities(global_tables_dir: Path, output_path: Path) -> Path:
         )
 
     # 4f. Sources
-    # Find NAME type ID efficiently
-    name_tid_list = cv_map_df.filter(pl.col("accession") == "OM:0202")["entity_id"].to_list()
-    name_tid = name_tid_list[0] if name_tid_list else -1
+    # We no longer look up entity_ids for types, we assume name_tid is valid? 
+    # But wait, type_id is now string. We need to look up type_id string.
+    # OM:0202 is NAME.
+    name_tid = "OM:0202"
     
     source_names = ident.filter(pl.col("type_id") == name_tid).group_by("entity_id").agg(pl.col("identifier").first().alias("s_name"))
     
@@ -313,15 +302,14 @@ def build_search_entities(global_tables_dir: Path, output_path: Path) -> Path:
 
     # 4g. JSON Identifiers
     excl = list(id_sets['names'] | id_sets['synonyms'] | id_sets['gene_symbols'])
-    type_names = ident.filter(pl.col("type_id") == name_tid).select(pl.col("entity_id").alias("tid"), pl.col("identifier").alias("tname"))
+    # type_names: we want mapping of type_id -> label. 
+    # Since we removed the logic to fetch labels, we might just use type_id itself as key for now.
     
     ids_json_plan = (
         ident.filter(~pl.col("type_id").is_in(excl))
-        .join(type_names, left_on="type_id", right_on="tid", how="left")
-        .join(cv_accs, left_on="type_id", right_on="tid", how="left")
         .select(
             "entity_id",
-            (pl.coalesce(pl.col("tname"), pl.col("acc")) + ":" + pl.col("type_id").cast(pl.Utf8)).alias("k"),
+            (pl.col("type_id") + ":" + pl.col("type_id")).alias("k"),
             pl.col("identifier").alias("v")
         )
         .group_by("entity_id")

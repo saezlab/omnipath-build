@@ -12,7 +12,7 @@ class PathManager:
     DATABASES = 'databases'
     CONFIGURATION = 'configuration'
     RESOURCES = 'resources'
-    DATA = 'data'
+    DATA = 'silver'
     BRONZE = 'bronze'
     SILVER = 'silver'
     GOLD = 'gold'

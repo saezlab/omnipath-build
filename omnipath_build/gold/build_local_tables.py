@@ -13,83 +13,6 @@ logger = logging.getLogger(__name__)
 # --- Helpers -----------------------------------------------------------------
 
 
-class CvTermRegistry:
-    """Track CV term entities per source to avoid duplication."""
-
-    def __init__(self):
-        self._term_to_id: dict[str, int] = {}
-        self._lookup_df = pl.DataFrame(
-            {
-                "accession": pl.Series([], dtype=pl.String),
-                "cv_entity_id": pl.Series([], dtype=pl.Int64),
-            }
-        )
-
-    @property
-    def lookup(self) -> pl.DataFrame:
-        return self._lookup_df
-
-    def ensure_terms(
-        self,
-        terms: Iterable[str],
-        *,
-        source_id: int,
-        next_id: int,
-    ) -> tuple[pl.DataFrame, pl.DataFrame, int]:
-        """Create missing CV term entities and identifiers."""
-        new_terms = sorted(
-            term for term in terms if term and term not in self._term_to_id
-        )
-        if not new_terms:
-            return pl.DataFrame(), pl.DataFrame(), next_id
-
-        new_ids = list(range(next_id, next_id + len(new_terms)))
-        self._lookup_df = pl.concat(
-            [
-                self._lookup_df,
-                pl.DataFrame({"accession": new_terms, "cv_entity_id": new_ids}),
-            ],
-            how="vertical_relaxed",
-        )
-
-        self._term_to_id.update(zip(new_terms, new_ids))
-
-        cv_entities = pl.DataFrame(
-            {
-                "local_entity_id": new_ids,
-                "entity_type": [EntityTypeCv.CV_TERM.value] * len(new_terms),
-                "source_id": [source_id] * len(new_terms),
-            }
-        )
-
-        cv_identifiers = (
-            pl.DataFrame(
-                {
-                    "local_entity_id": new_ids,
-                    "type_id": ["OM:0204"] * len(new_terms),
-                    "identifier": new_terms,
-                    "source_id": [source_id] * len(new_terms),
-                }
-            ).with_row_index("local_entity_identifier_id", offset=1)
-        )
-
-        return cv_entities, cv_identifiers, next_id + len(new_terms)
-
-    def lookup_mapping(self, column_name: str, value_name: str) -> pl.DataFrame:
-        """Return a reusable lookup table for joins."""
-        if len(self._lookup_df) == 0:
-            return pl.DataFrame(
-                {
-                    column_name: pl.Series([], dtype=pl.String),
-                    value_name: pl.Series([], dtype=pl.Int64),
-                }
-            )
-
-        return self._lookup_df.rename(
-            {"accession": column_name, "cv_entity_id": value_name}
-        )
-
-
 class InstanceRegistry:
     """Track entity instances and their sequential IDs."""
 
@@ -156,7 +79,6 @@ def _process_entities_vectorized(
     df: pl.DataFrame,
     source_id: int,
     next_id: int,
-    cv_registry: CvTermRegistry,
     instance_registry: InstanceRegistry,
 ) -> tuple[dict[str, pl.DataFrame], int]:
     """Process entities using vectorized operations - simple sequential ID assignment.
@@ -165,6 +87,7 @@ def _process_entities_vectorized(
     - entity_instance: created for entities with annotations
     - entity_annotation: links to entity_instance (not entity directly)
     - membership: uses polymorphic entity/instance columns
+    - annotations now use cv_term_accession (string) instead of cv_term_entity_id (int)
     """
 
     if len(df) == 0:
@@ -220,8 +143,7 @@ def _process_entities_vectorized(
     # ============================================================================
     # Entities with annotations get an entity_instance
     # entity_annotation links to the instance, not the entity directly
-    cv_entity_chunks: list[pl.DataFrame] = []
-    cv_identifier_chunks: list[pl.DataFrame] = []
+    # Annotations now store cv_term_accession (string) directly instead of entity IDs
     entity_instances = pl.DataFrame()
     entity_annotations = pl.DataFrame()
 
@@ -232,44 +154,6 @@ def _process_entities_vectorized(
         )
 
         if len(has_annotations):
-            # Extract all CV term accessions from annotations
-            all_cv_terms = (
-                has_annotations
-                .select([pl.col("annotations")])
-                .explode("annotations")
-                .select([
-                    pl.col("annotations").struct.field("term").alias("cv_term"),
-                    pl.col("annotations").struct.field("units").alias("unit_term"),
-                ])
-            )
-
-            # Collect unique CV terms from both term and units fields
-            unique_terms = set()
-            unique_terms.update(
-                all_cv_terms
-                .get_column("cv_term")
-                .drop_nulls()
-                .to_list()
-            )
-            unique_terms.update(
-                all_cv_terms
-                .get_column("unit_term")
-                .drop_nulls()
-                .to_list()
-            )
-
-            if unique_terms:
-                new_cv_entities, new_cv_identifiers, next_id = cv_registry.ensure_terms(
-                    unique_terms,
-                    source_id=source_id,
-                    next_id=next_id,
-                )
-                if len(new_cv_entities):
-                    cv_entity_chunks.append(new_cv_entities)
-                    logger.info(f"    Created {len(new_cv_entities):,} CV term entities")
-                if len(new_cv_identifiers):
-                    cv_identifier_chunks.append(new_cv_identifiers)
-
             # Create entity instances for entities with annotations
             entities_with_annots = (
                 has_annotations
@@ -293,7 +177,7 @@ def _process_entities_vectorized(
                 "local_entity_instance_id": pl.Series([], dtype=pl.Int64),
             })
 
-            # Now create entity annotations with CV term entity IDs, linked to instances
+            # Create entity annotations with CV term accessions (strings), linked to instances
             annotation_data = (
                 has_annotations
                 .with_row_index("local_entity_id", offset=entity_start_id)
@@ -304,7 +188,7 @@ def _process_entities_vectorized(
                 .explode("annotations")
                 .select([
                     pl.col("local_entity_id"),
-                    pl.col("annotations").struct.field("term").alias("term_accession"),
+                    pl.col("annotations").struct.field("term").alias("cv_term_accession"),
                     pl.col("annotations").struct.field("value").cast(pl.String).alias("value"),
                     pl.col("annotations").struct.field("units").alias("unit_accession"),
                 ])
@@ -314,27 +198,18 @@ def _process_entities_vectorized(
                 entity_annotations = (
                     annotation_data
                     .join(instance_map, on="local_entity_id", how="left")
-                    .join(
-                        cv_registry.lookup_mapping("term_accession", "cv_term_entity_id"),
-                        on="term_accession",
-                        how="left",
-                    )
-                    .join(
-                        cv_registry.lookup_mapping("unit_accession", "unit_entity_id"),
-                        on="unit_accession",
-                        how="left",
-                    )
-                    .filter(pl.col("cv_term_entity_id").is_not_null())
+                    .filter(pl.col("cv_term_accession").is_not_null())
                     .select([
                         pl.col("local_entity_instance_id"),
-                        pl.col("cv_term_entity_id"),
+                        pl.col("cv_term_accession"),
                         pl.col("value"),
-                        pl.col("unit_entity_id"),
+                        pl.col("unit_accession"),
                     ])
                     .with_row_index("local_entity_annotation_id", offset=1)
                     .with_columns(pl.lit(source_id).alias("source_id"))
                 )
                 logger.info(f"    Created {len(entity_annotations):,} entity annotation records (linked to instances)")
+
 
     # ============================================================================
     # 4. PROCESS MEMBERSHIPS (vectorized explode + recursive handling)
@@ -404,7 +279,6 @@ def _process_entities_vectorized(
                     member_df.drop("membership_annotations"),
                     source_id,
                     next_id,
-                    cv_registry,
                     instance_registry,
                 )
 
@@ -442,45 +316,6 @@ def _process_entities_vectorized(
                     member_instance_map_rows = []
                     
                     if len(membership_with_annots):
-                        # First, extract all CV terms from membership annotations
-                        all_membership_cv_terms = (
-                            membership_with_annots
-                            .select([pl.col("membership_annotations")])
-                            .explode("membership_annotations")
-                            .select([
-                                pl.col("membership_annotations").struct.field("term").alias("cv_term"),
-                                pl.col("membership_annotations").struct.field("units").alias("unit_term"),
-                            ])
-                        )
-
-                        unique_membership_terms = set()
-                        unique_membership_terms.update(
-                            all_membership_cv_terms
-                            .get_column("cv_term")
-                            .drop_nulls()
-                            .to_list()
-                        )
-                        unique_membership_terms.update(
-                            all_membership_cv_terms
-                            .get_column("unit_term")
-                            .drop_nulls()
-                            .to_list()
-                        )
-
-                        if unique_membership_terms:
-                            new_cv_entities, new_cv_identifiers, next_id = cv_registry.ensure_terms(
-                                unique_membership_terms,
-                                source_id=source_id,
-                                next_id=next_id,
-                            )
-                            if len(new_cv_entities):
-                                cv_entity_chunks.append(new_cv_entities)
-                                logger.info(
-                                    f"    Created {len(new_cv_entities):,} CV term entities for membership annotations"
-                                )
-                            if len(new_cv_identifiers):
-                                cv_identifier_chunks.append(new_cv_identifiers)
-
                         # Create instances for members with annotations
                         # Join with member_map to get member_entity_id
                         members_needing_instances = (
@@ -504,7 +339,7 @@ def _process_entities_vectorized(
                             "member_instance_id": pl.Series([], dtype=pl.Int64),
                         })
 
-                        # Create entity annotations from membership annotations
+                        # Create entity annotations from membership annotations (using accession strings)
                         membership_annotation_data = (
                             membership_with_annots
                             .join(member_instance_map.select(["membership_row_idx", "member_instance_id"]), 
@@ -516,7 +351,7 @@ def _process_entities_vectorized(
                             .explode("membership_annotations")
                             .select([
                                 pl.col("local_entity_instance_id"),
-                                pl.col("membership_annotations").struct.field("term").alias("term_accession"),
+                                pl.col("membership_annotations").struct.field("term").alias("cv_term_accession"),
                                 pl.when(pl.col("membership_annotations").struct.field("value").is_not_null())
                                   .then(pl.col("membership_annotations").struct.field("value").cast(pl.String))
                                   .otherwise(None)
@@ -528,22 +363,12 @@ def _process_entities_vectorized(
                         if len(membership_annotation_data):
                             converted_annotations = (
                                 membership_annotation_data
-                                .join(
-                                    cv_registry.lookup_mapping("term_accession", "cv_term_entity_id"),
-                                    on="term_accession",
-                                    how="left",
-                                )
-                                .join(
-                                    cv_registry.lookup_mapping("unit_accession", "unit_entity_id"),
-                                    on="unit_accession",
-                                    how="left",
-                                )
-                                .filter(pl.col("cv_term_entity_id").is_not_null())
+                                .filter(pl.col("cv_term_accession").is_not_null())
                                 .select([
                                     pl.col("local_entity_instance_id"),
-                                    pl.col("cv_term_entity_id"),
+                                    pl.col("cv_term_accession"),
                                     pl.col("value"),
-                                    pl.col("unit_entity_id"),
+                                    pl.col("unit_accession"),
                                 ])
                                 .with_row_index("local_entity_annotation_id", offset=1)
                                 .with_columns(pl.lit(source_id).alias("source_id"))
@@ -612,28 +437,24 @@ def _process_entities_vectorized(
     # ============================================================================
     # 5. COMBINE ALL RESULTS
     # ============================================================================
-    # Combine CV term entities with regular entities
+    # Combine entities (no more CV term entities)
     all_entities = [entities]
-    if cv_entity_chunks:
-        all_entities.extend([chunk for chunk in cv_entity_chunks if len(chunk)])
     if member_entities:
         all_entities.extend(member_entities)
 
     combined_entities = pl.concat(all_entities, how="diagonal_relaxed") if len(all_entities) > 1 else entities
-    logger.info(f"    Total entities (including CV terms and members): {len(combined_entities):,}")
+    logger.info(f"    Total entities (including members): {len(combined_entities):,}")
 
-    # Combine CV term identifiers with regular identifiers
+    # Combine identifiers (no more CV term identifiers)
     all_identifiers = []
     if len(identifiers) > 0:
         all_identifiers.append(identifiers)
-    if cv_identifier_chunks:
-        all_identifiers.extend([chunk for chunk in cv_identifier_chunks if len(chunk)])
     if member_identifiers:
         all_identifiers.extend(member_identifiers)
 
     combined_identifiers = pl.concat(all_identifiers, how="diagonal_relaxed") if all_identifiers else pl.DataFrame()
     if len(combined_identifiers) > 0:
-        logger.info(f"    Total identifiers (including CV terms and members): {len(combined_identifiers):,}")
+        logger.info(f"    Total identifiers (including members): {len(combined_identifiers):,}")
 
     # Merge memberships (structural + recursive)
     all_memberships = []
@@ -845,40 +666,10 @@ def _deduplicate_entities(tables: dict[str, pl.DataFrame], instance_df: pl.DataF
     # 7. Remap entity annotations (via instances)
     # ============================================================================
     # Entity annotations link to instances, not entities directly
-    # So we don't need to remap them, but we need to remap cv_term_entity_id and unit_entity_id
-    entity_annotation_df = tables.get("entity_annotation")
-    if entity_annotation_df is not None and len(entity_annotation_df) > 0:
-        annotation_cols = entity_annotation_df.columns
-        entity_annotations_dedup = entity_annotation_df
-        
-        # Remap cv_term_entity_id
-        if "cv_term_entity_id" in annotation_cols:
-            entity_annotations_dedup = (
-                entity_annotations_dedup
-                .join(canonical_ids, left_on="cv_term_entity_id", right_on="old_id", how="left")
-                .with_columns(
-                    pl.coalesce([pl.col("canonical_id"), pl.col("cv_term_entity_id")]).alias("cv_term_entity_id")
-                )
-                .drop("canonical_id")
-            )
-        
-        # Remap unit_entity_id
-        if "unit_entity_id" in entity_annotations_dedup.columns:
-            entity_annotations_dedup = (
-                entity_annotations_dedup
-                .join(canonical_ids, left_on="unit_entity_id", right_on="old_id", how="left")
-                .with_columns(
-                    pl.when(pl.col("unit_entity_id").is_not_null())
-                      .then(pl.coalesce([pl.col("canonical_id"), pl.col("unit_entity_id")]))
-                      .otherwise(None)
-                      .alias("unit_entity_id")
-                )
-                .drop("canonical_id")
-            )
-        
-        entity_annotations_dedup = entity_annotations_dedup.select([col for col in annotation_cols if col in entity_annotations_dedup.columns])
-    else:
-        entity_annotations_dedup = entity_annotation_df
+    # So we don't need to remap them
+    # Note: cv_term_accession and unit_accession are strings, so they don't need ID remapping
+    entity_annotations_dedup = tables.get("entity_annotation")
+
 
     logger.info(f"  Deduplicated: {original_count:,} -> {len(entities_dedup):,} entities ({original_count - len(entities_dedup):,} removed)")
 
@@ -947,7 +738,6 @@ def build_local_tables(
         }
 
         next_id = 1
-        cv_registry = CvTermRegistry()
         instance_registry = InstanceRegistry(source_id)
 
         # Sort files to ensure resource.parquet is processed first
@@ -971,7 +761,7 @@ def build_local_tables(
             logger.info(f"    Found {len(df):,} entities")
 
             # Process entities using vectorized operations
-            tables, next_id = _process_entities_vectorized(df, source_id, next_id, cv_registry, instance_registry)
+            tables, next_id = _process_entities_vectorized(df, source_id, next_id, instance_registry)
 
             # Accumulate results
             for table_name, table_df in tables.items():
