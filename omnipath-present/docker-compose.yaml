@@ -49,8 +49,8 @@ services:
     # Ontology Service - FastAPI wrapper for ontograph
     ontology-service:
         build:
-            context: ..
-            dockerfile: omnipath-present/ontology-service/Dockerfile
+            context: .
+            dockerfile: ontology-service/Dockerfile.prod
         restart: unless-stopped
         networks:
             - dokploy-network
