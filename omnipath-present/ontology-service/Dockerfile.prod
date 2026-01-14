@@ -17,7 +17,7 @@ RUN sed -i '/\[tool.uv.sources\]/,/^$/d' pyproject.toml
 # Copy application code
 COPY ontology-service/ontology_service/ ontology_service/
 
-# Install dependencies (ontograph will be installed from PyPI or we add it explicitly)
+# Install dependencies
 RUN uv pip install --system ontograph@git+https://github.com/saezlab/ontograph.git@main
 RUN uv pip install --system -e .
 

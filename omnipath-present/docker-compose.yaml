@@ -17,7 +17,7 @@ services:
         ports:
             - "7700:7700"
         # Auto-import dump when data version changes (script reads from /data/)
-        command: ["/scripts/meilisearch-start.sh"]
+        command: ["sh", "/scripts/meilisearch-start.sh"]
         healthcheck:
             test: ["CMD", "curl", "-f", "http://localhost:7700/health"]
             interval: 30s
