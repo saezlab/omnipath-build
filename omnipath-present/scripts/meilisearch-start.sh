@@ -52,20 +52,22 @@ if [ "$NEED_IMPORT" = "true" ]; then
         rm -rf /meili_data/data.ms
     fi
     
-    meilisearch --import-dump "$DUMP_FILE" &
-    MEILI_PID=$!
+    # Also remove stale version marker to ensure clean state
+    rm -f "$IMPORTED_VERSION_FILE"
     
-    # Wait a bit for meilisearch to start processing
-    sleep 10
-    
-    # Save the imported version
-    if [ -f "$VERSION_FILE" ]; then
-        cp "$VERSION_FILE" "$IMPORTED_VERSION_FILE"
+    # Run import synchronously and check exit status
+    if meilisearch --import-dump "$DUMP_FILE"; then
+        echo "Import completed successfully"
+        # Only save version marker AFTER successful import
+        if [ -f "$VERSION_FILE" ]; then
+            cp "$VERSION_FILE" "$IMPORTED_VERSION_FILE"
+        else
+            echo "imported" > "$IMPORTED_VERSION_FILE"
+        fi
     else
-        echo "imported" > "$IMPORTED_VERSION_FILE"
+        echo "ERROR: Import failed!"
+        exit 1
     fi
-    
-    wait $MEILI_PID
 else
     echo "Starting meilisearch with existing data..."
     meilisearch
