@@ -1,33 +1,29 @@
 services:
     # Meilisearch - Full-text search engine
+    # Automatically imports dump when data version changes
     omnipath-meilisearch:
         image: getmeili/meilisearch:v1.16
         restart: unless-stopped
         networks:
             - dokploy-network
         environment:
-            MEILI_MASTER_KEY: ${MEILI_MASTER_KEY}
-            MEILI_ENV: ${MEILI_ENV:-development}
+            MEILI_MASTER_KEY: ${MEILISEARCH_API_KEY}
+            MEILI_ENV: ${MEILI_ENV:-production}
             MEILI_NO_ANALYTICS: "true"
         volumes:
             - meilisearch_data:/meili_data
-            - /root/omnipath2-data/dumps:/dumps:ro
+            - /root/omnipath2-data:/data:ro
+            - /root/omnipath2-data/scripts/meilisearch-start.sh:/scripts/meilisearch-start.sh:ro
         ports:
             - "7700:7700"
-        # Import dump on startup if MEILI_IMPORT_DUMP is set
-        # Usage: MEILI_IMPORT_DUMP=/dumps/latest.dump docker compose up
-        command: >-
-            sh -c "if [ -n \"$$MEILI_IMPORT_DUMP\" ] && [ -f \"$$MEILI_IMPORT_DUMP\" ]; then
-                     meilisearch --import-dump \"$$MEILI_IMPORT_DUMP\";
-                   else
-                     meilisearch;
-                   fi"
+        # Auto-import dump when data version changes (script reads from /data/)
+        command: ["/scripts/meilisearch-start.sh"]
         healthcheck:
             test: ["CMD", "curl", "-f", "http://localhost:7700/health"]
             interval: 30s
             timeout: 10s
             retries: 5
-            start_period: 30s
+            start_period: 60s
 
     # Entity Service - Parquet-based entity lookup
     entity-service:
@@ -50,6 +46,27 @@ services:
             retries: 3
             start_period: 10s
 
+    # Ontology Service - FastAPI wrapper for ontograph
+    ontology-service:
+        build:
+            context: ..
+            dockerfile: omnipath-present/ontology-service/Dockerfile
+        restart: unless-stopped
+        networks:
+            - dokploy-network
+        environment:
+            ONTOLOGY_DATA_DIR: /data
+            ONTOLOGY_CACHE_DIR: /app/cache
+        volumes:
+            - /root/omnipath2-data:/data:ro
+            - ontology_cache:/app/cache
+        healthcheck:
+            test: ["CMD", "curl", "-f", "http://localhost:8081/health"]
+            interval: 30s
+            timeout: 10s
+            retries: 3
+            start_period: 30s
+
     # Next.js Frontend
     next-omnipath:
         build:
@@ -64,13 +81,16 @@ services:
         environment:
             # These are used at runtime for server-side requests
             MEILISEARCH_HOST: http://omnipath-meilisearch:7700
-            MEILISEARCH_API_KEY: ${MEILI_MASTER_KEY}
+            MEILISEARCH_API_KEY: ${MEILISEARCH_API_KEY}
             ENTITY_SERVICE_URL: http://entity-service:8080
+            ONTOLOGY_SERVICE_URL: http://ontology-service:8081
             GOOGLE_GENERATIVE_AI_API_KEY: ${GOOGLE_GENERATIVE_AI_API_KEY}
         depends_on:
             omnipath-meilisearch:
                 condition: service_healthy
             entity-service:
+                condition: service_healthy
+            ontology-service:
                 condition: service_healthy
 
 networks:
@@ -79,4 +99,4 @@ networks:
 
 volumes:
     meilisearch_data:
-
+    ontology_cache:

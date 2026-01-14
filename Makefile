@@ -88,38 +88,69 @@ gold-meilisearch-import:
 	@$(MAKE) meilisearch-import
 
 # =============================================================================
-# Docker Deployment Targets
+# Data Export for Deployment
+# =============================================================================
+
+# Export all data files to omnipath-present/data/ for deployment
+# This creates the complete data package needed for Docker deployment
+# A version marker is created to enable automatic meilisearch rebuild on data changes
+.PHONY: export export-entity export-ontology export-meilisearch
+
+export: export-entity export-ontology export-meilisearch
+	@# Copy startup scripts
+	@mkdir -p omnipath-present/data/scripts
+	@cp omnipath-present/scripts/meilisearch-start.sh omnipath-present/data/scripts/
+	@# Create data version marker (hash of all data files)
+	@echo "Creating data version marker..."
+	@DUMP_NAME=$$(cat omnipath-present/data/dumps/.dump_file); \
+	cat omnipath-present/data/entity_identifier.parquet \
+		omnipath-present/data/omnipath_mi.obo \
+		omnipath-present/data/dumps/$$DUMP_NAME 2>/dev/null | shasum -a 256 | cut -d' ' -f1 \
+		> omnipath-present/data/.data_version
+	@echo ""
+	@echo "✓ All data exported to omnipath-present/data/"
+	@echo "  Data version: $$(cat omnipath-present/data/.data_version)"
+	@echo "  Dump file: $$(cat omnipath-present/data/dumps/.dump_file)"
+	@echo ""
+	@echo "Data files ready for deployment:"
+	@ls -lh omnipath-present/data/*.parquet omnipath-present/data/*.obo 2>/dev/null || true
+	@ls -lh omnipath-present/data/dumps/*.dump 2>/dev/null || true
+	@echo ""
+	@echo "To deploy, upload omnipath-present/data/ to /root/omnipath2-data/ on the server"
+
+# Export entity service data
+export-entity:
+	@echo "Exporting entity service data..."
+	@mkdir -p omnipath-present/data
+	@if [ -f omnipath_build/data/gold/entity_identifier.parquet ]; then \
+		cp -v omnipath_build/data/gold/entity_identifier.parquet omnipath-present/data/; \
+	else \
+		echo "Error: entity_identifier.parquet not found. Run 'make gold' first."; \
+		exit 1; \
+	fi
+
+# Export ontology service data (generates omnipath_mi.obo)
+export-ontology:
+	@echo "Exporting ontology service data..."
+	@mkdir -p omnipath-present/data
+	@uv run python pypath/scripts/export_omnipath_obo.py omnipath-present/data/omnipath_mi.obo
+
+# Export meilisearch dump (must have meilisearch running with data)
+export-meilisearch:
+	@echo "Exporting meilisearch dump..."
+	@mkdir -p omnipath-present/data/dumps
+	@. .env && uv run python -m omnipath_build.scripts.create_meilisearch_dump \
+		--meili-url http://localhost:7700 \
+		--api-key $${MEILISEARCH_API_KEY} \
+		--output-dir omnipath-present/data/dumps
+
+# =============================================================================
+# Docker Deployment Targets (Legacy - use 'make export' instead)
 # =============================================================================
 
 # Create a Meilisearch dump for deployment
 # Prerequisites: Meilisearch must be running with data imported
-meilisearch-dump:
-	@. .env && uv run python -m omnipath_build.scripts.create_meilisearch_dump \
-		--meili-url http://localhost:7700 \
-		--api-key $${MEILI_MASTER_KEY} \
-		--output-dir omnipath-present/data/dumps
-
-# Set up the data directory with required files for Docker deployment
-# This copies the necessary parquet files to data/
-docker-data-setup:
-	@echo "Setting up data directory..."
-	@mkdir -p omnipath-present/data/dumps
-	@if [ -f omnipath_build/data/gold/entity_identifier.parquet ]; then \
-		cp -v omnipath_build/data/gold/entity_identifier.parquet omnipath-present/data/; \
-	else \
-		echo "Warning: entity_identifier.parquet not found"; \
-	fi
-	@if [ -f omnipath_build/data/gold/search_entities.parquet ]; then \
-		cp -v omnipath_build/data/gold/search_entities.parquet omnipath-present/data/; \
-	else \
-		echo "Warning: search_entities.parquet not found"; \
-	fi
-	@if [ -f omnipath_build/data/gold/search_interactions.parquet ]; then \
-		cp -v omnipath_build/data/gold/search_interactions.parquet omnipath-present/data/; \
-	else \
-		echo "Warning: search_interactions.parquet not found"; \
-	fi
-	@echo "Data directory setup complete."
+meilisearch-dump: export-meilisearch
 
 # Build all Docker images
 docker-build:

@@ -179,12 +179,10 @@ def main() -> None:
     print(f"  Size: {dump_size_mb:.1f} MB")
     print("=" * 60)
     
-    # Create a symlink to latest dump for convenience
-    latest_link = args.output_dir / 'latest.dump'
-    if latest_link.exists() or latest_link.is_symlink():
-        latest_link.unlink()
-    latest_link.symlink_to(dump_path.name)
-    print(f"  Created symlink: {latest_link} -> {dump_path.name}")
+    # Write dump filename to .dump_file for Docker to find
+    dump_file_marker = args.output_dir / '.dump_file'
+    dump_file_marker.write_text(dump_path.name)
+    print(f"  Wrote dump filename to: {dump_file_marker}")
 
 
 if __name__ == '__main__':
