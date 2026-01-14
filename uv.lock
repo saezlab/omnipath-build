@@ -1262,7 +1262,6 @@ dependencies = [
     { name = "pronto" },
     { name = "python-graphblas", extra = ["default"] },
     { name = "pyyaml" },
-    { name = "toml" },
 ]
 
 [package.metadata]
@@ -1287,7 +1286,6 @@ requires-dist = [
     { name = "pyyaml" },
     { name = "rdflib", marker = "extra == 'semantic'", specifier = ">=6.0.0" },
     { name = "ruff", marker = "extra == 'tests'" },
-    { name = "toml" },
     { name = "tox", marker = "extra == 'tests'", specifier = ">=3.20.1" },
     { name = "tox-gh", marker = "extra == 'tests'", specifier = ">=1.5.0" },
     { name = "twine", marker = "extra == 'dev'" },
