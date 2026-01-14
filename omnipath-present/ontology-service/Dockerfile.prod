@@ -18,6 +18,8 @@ RUN sed -i '/\[tool.uv.sources\]/,/^$/d' pyproject.toml
 COPY ontology-service/ontology_service/ ontology_service/
 
 # Install dependencies
+# ARG busts cache when ontograph version changes - update this arg value to force reinstall
+ARG ONTOGRAPH_VERSION=2026-01-14
 RUN uv pip install --system ontograph@git+https://github.com/saezlab/ontograph.git@main
 RUN uv pip install --system -e .
 
