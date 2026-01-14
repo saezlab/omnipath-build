@@ -1,30 +1,28 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { searchInteractions, fetchEntitiesByIds, EntityInfo } from "@/features/interactions-search/api/queries";
-import { MeilisearchInteraction, MeilisearchFilters } from "@/types/meilisearch";
+import { EntityBadge } from "@/components/entity-badge";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { ArrowRight, Minus, Filter, X, GitBranch } from "lucide-react";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
-import { Alert, AlertDescription } from "@/components/ui/alert";
-import { cn, formatNumber } from "@/lib/utils";
-import { InteractionDetailsSheet } from "@/features/interactions-search/components/interaction-details-sheet";
-import GraphView from "@/features/interactions-search/components/graph-view";
-import { DataCard } from "@/features/interactions-search/components/data-card";
-import { AnnotationFilterSidebar, FilterSidebar } from "@/features/interactions-search/components/filter-sidebar";
 import {
   Sidebar,
   SidebarContent,
   SidebarGroup,
-  SidebarGroupContent,
-  SidebarHeader,
-  SidebarSeparator,
+  SidebarGroupContent
 } from "@/components/ui/sidebar";
-import { exportToCSV } from "@/lib/utils/export";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { EntityInfo, fetchEntitiesByIds, searchInteractions } from "@/features/interactions-search/api/queries";
+import { DataCard } from "@/features/interactions-search/components/data-card";
+import { AnnotationFilterSidebar, FilterSidebar } from "@/features/interactions-search/components/filter-sidebar";
+import GraphView from "@/features/interactions-search/components/graph-view";
+import { InteractionDetailsSheet } from "@/features/interactions-search/components/interaction-details-sheet";
 import { useInfiniteScroll } from "@/hooks/use-infinite-scroll";
-import { EntityBadge } from "@/components/entity-badge";
+import { cn, formatNumber } from "@/lib/utils";
+import { exportToCSV } from "@/lib/utils/export";
+import { MeilisearchFilters, MeilisearchInteraction } from "@/types/meilisearch";
+import { ArrowRight, Filter, GitBranch, Minus, X } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 const RESULTS_PER_PAGE = 20;
 const MAX_GRAPH_INTERACTIONS = 1000;
