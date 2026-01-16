@@ -1,4 +1,32 @@
-.PHONY: setup silver silver-test silver-reprocess gold postgres meilisearch meilisearch-entities meilisearch-interactions meilisearch-import meilisearch-import-entities meilisearch-import-interactions meilisearch-import-all gold-meilisearch-import visualize meilisearch-dump docker-data-setup docker-build docker-up docker-up-fresh
+.PHONY: setup silver silver-test silver-reprocess gold postgres meilisearch meilisearch-entities meilisearch-interactions meilisearch-import meilisearch-import-entities meilisearch-import-interactions meilisearch-import-all meilisearch-delete-indexes gold-meilisearch-import visualize meilisearch-dump docker-data-setup docker-build docker-up docker-up-fresh pipeline generate-obo
+
+# =============================================================================
+# Full Pipeline - Run everything from silver to export
+# =============================================================================
+# Usage: make pipeline
+# This runs: silver-test -> generate-obo -> gold -> meilisearch -> delete indexes -> import -> export
+pipeline:
+	@echo "======================================================================"
+	@echo "Starting full pipeline..."
+	@echo "======================================================================"
+	@$(MAKE) silver-test
+	@$(MAKE) generate-obo
+	@$(MAKE) gold
+	@$(MAKE) meilisearch
+	@$(MAKE) meilisearch-delete-indexes
+	@$(MAKE) meilisearch-import-all
+	@$(MAKE) export
+	@echo ""
+	@echo "======================================================================"
+	@echo "✓ Full pipeline completed successfully!"
+	@echo "======================================================================"
+
+# Generate OmniPath OBO file (needed for CV term label resolution in gold step)
+generate-obo:
+	@echo "Generating OmniPath OBO file..."
+	@mkdir -p omnipath-present/data
+	@uv run python pypath/scripts/export_omnipath_obo.py omnipath-present/data/omnipath_mi.obo
+	@echo "✓ OBO file generated"
 
 setup:
 	git submodule add -b download-manager-experiment https://github.com/saezlab/pypath.git pypath || true
@@ -81,6 +109,15 @@ meilisearch-import-all:
 
 # Backward compatibility: import entities only (original behavior)
 meilisearch-import: meilisearch-import-entities
+
+# Delete Meilisearch indexes (useful before re-importing)
+meilisearch-delete-indexes:
+	@echo "Deleting Meilisearch indexes..."
+	@. .env && curl -s -X DELETE "http://localhost:7700/indexes/search_entities" \
+		-H "Authorization: Bearer $${MEILISEARCH_API_KEY}" || true
+	@. .env && curl -s -X DELETE "http://localhost:7700/indexes/search_interactions" \
+		-H "Authorization: Bearer $${MEILISEARCH_API_KEY}" || true
+	@echo "Indexes deleted (or did not exist)"
 
 gold-meilisearch-import:
 	@$(MAKE) gold
