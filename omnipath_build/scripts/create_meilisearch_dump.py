@@ -49,11 +49,9 @@ def create_dump(meili_url: str, api_key: str | None) -> int:
         return result['taskUid']
 
 
-def wait_for_task(meili_url: str, task_uid: int, api_key: str | None, timeout: int = 600) -> dict:
-    """Wait for a task to complete, polling every 2 seconds."""
-    start_time = time.time()
-    
-    while time.time() - start_time < timeout:
+def wait_for_task(meili_url: str, task_uid: int, api_key: str | None) -> dict:
+    """Wait for a task to complete, polling every 5 seconds."""
+    while True:
         status = get_task_status(meili_url, task_uid, api_key)
         
         if status['status'] == 'succeeded':
@@ -62,11 +60,9 @@ def wait_for_task(meili_url: str, task_uid: int, api_key: str | None, timeout: i
             raise RuntimeError(f"Dump creation failed: {status.get('error', 'Unknown error')}")
         elif status['status'] in ('enqueued', 'processing'):
             print(f"  Task status: {status['status']}...")
-            time.sleep(2)
+            time.sleep(5)
         else:
             raise RuntimeError(f"Unexpected task status: {status['status']}")
-    
-    raise RuntimeError(f"Timeout waiting for dump task after {timeout} seconds")
 
 
 def copy_dump_from_docker(
@@ -136,13 +132,6 @@ def main() -> None:
         default=None,
         help='Docker container name (auto-detected if not specified)',
     )
-    parser.add_argument(
-        '--timeout',
-        type=int,
-        default=600,
-        help='Timeout in seconds for dump creation',
-    )
-    
     args = parser.parse_args()
     
     import os
@@ -162,7 +151,7 @@ def main() -> None:
     
     # Step 2: Wait for completion
     print("\n2. Waiting for dump to complete...")
-    task_status = wait_for_task(args.meili_url, task_uid, api_key, args.timeout)
+    task_status = wait_for_task(args.meili_url, task_uid, api_key)
     dump_uid = task_status['details']['dumpUid']
     print(f"   Dump completed: {dump_uid}")
     

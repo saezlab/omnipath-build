@@ -91,8 +91,8 @@ def parse_args(argv: Iterable[str]) -> argparse.Namespace:
     parser.add_argument(
         '--dataset',
         default='entities',
-        choices=('entities', 'interactions', 'both'),
-        help='Which dataset(s) to import: entities, interactions, or both.',
+        choices=('entities', 'interactions', 'associations', 'both', 'all'),
+        help='Which dataset(s) to import: entities, interactions, associations, both (entities+interactions), or all.',
     )
     parser.add_argument(
         '--entities-parquet-path',
@@ -105,6 +105,12 @@ def parse_args(argv: Iterable[str]) -> argparse.Namespace:
         default='omnipath_build/data/gold/search_interactions.parquet',
         type=Path,
         help='Path to search_interactions.parquet.',
+    )
+    parser.add_argument(
+        '--associations-parquet-path',
+        default='omnipath_build/data/gold/search_associations.parquet',
+        type=Path,
+        help='Path to search_associations.parquet.',
     )
     parser.add_argument(
         '--importer-path',
@@ -126,6 +132,11 @@ def parse_args(argv: Iterable[str]) -> argparse.Namespace:
         '--interactions-index',
         default='search_interactions',
         help='Name of the interactions Meilisearch index.',
+    )
+    parser.add_argument(
+        '--associations-index',
+        default='search_associations',
+        help='Name of the associations Meilisearch index.',
     )
     parser.add_argument(
         '--api-key',
@@ -209,7 +220,7 @@ def main(argv: Iterable[str]) -> None:
 
     datasets_to_import = []
 
-    if args.dataset in ('entities', 'both'):
+    if args.dataset in ('entities', 'both', 'all'):
         datasets_to_import.append(
             {
                 'name': 'entities',
@@ -220,7 +231,7 @@ def main(argv: Iterable[str]) -> None:
             }
         )
 
-    if args.dataset in ('interactions', 'both'):
+    if args.dataset in ('interactions', 'both', 'all'):
         datasets_to_import.append(
             {
                 'name': 'interactions',
@@ -228,6 +239,17 @@ def main(argv: Iterable[str]) -> None:
                 'index_name': args.interactions_index,
                 'primary_key': 'interaction_key',
                 'settings': MeilisearchSettings.INTERACTIONS_SETTINGS,
+            }
+        )
+
+    if args.dataset in ('associations', 'all'):
+        datasets_to_import.append(
+            {
+                'name': 'associations',
+                'parquet_path': args.associations_parquet_path,
+                'index_name': args.associations_index,
+                'primary_key': 'association_key',
+                'settings': MeilisearchSettings.ASSOCIATIONS_SETTINGS,
             }
         )
 

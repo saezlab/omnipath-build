@@ -52,6 +52,47 @@ export interface MeilisearchInteraction {
   [key: string]: unknown;
 }
 
+// Association annotation entry
+export interface AssociationAnnotation {
+  key: string;
+  value: string;
+  unit?: string;
+}
+
+// Identifier entry
+export interface IdentifierEntry {
+  key: string;
+  value: string;
+}
+
+// Association document type
+export interface MeilisearchAssociation {
+  // Primary key
+  association_key: string;
+
+  // Parent entity info
+  parent_entity_id: number;
+  parent_entity_type: string;
+  parent_name: string;
+  parent_identifiers: IdentifierEntry[];
+
+  // Member entity info
+  member_entity_id: number;
+  member_entity_type: string;
+  member_name: string;
+  member_identifiers: IdentifierEntry[];
+
+  // Sources
+  sources: string[];
+
+  // Annotations
+  annotations: AssociationAnnotation[];
+  association_annotation_terms: string[];
+
+  // Index signature
+  [key: string]: unknown;
+}
+
 export interface CvTermReference {
   id: string;
   name: string;
@@ -72,6 +113,13 @@ export interface MeilisearchFilters {
   entity_types?: string[];
   sources?: string[];
   ncbi_tax_id?: string[];
+
+  // Association filters
+  parent_entity_ids?: number[];
+  member_entity_ids?: number[];
+  parent_entity_types?: string[];
+  member_entity_types?: string[];
+  association_annotation_terms?: string[];
 }
 
 export interface MeilisearchSearchParams {

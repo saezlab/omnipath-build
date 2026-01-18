@@ -18,6 +18,7 @@ export const entityTypeEmojis: Record<string, string> = {
     'MoleculeSet': '📦',
     'Stimulus': '🔦',
     'Degradation': '♻️',
+    'Food': '🍎',
 };
 
 // Normalized keys for case-insensitive matching

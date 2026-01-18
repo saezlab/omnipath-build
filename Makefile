@@ -1,4 +1,4 @@
-.PHONY: setup silver silver-test silver-reprocess gold postgres meilisearch meilisearch-entities meilisearch-interactions meilisearch-import meilisearch-import-entities meilisearch-import-interactions meilisearch-import-all meilisearch-delete-indexes gold-meilisearch-import visualize meilisearch-dump docker-data-setup docker-build docker-up docker-up-fresh pipeline generate-obo
+.PHONY: setup silver silver-test silver-reprocess gold postgres meilisearch meilisearch-entities meilisearch-interactions meilisearch-associations meilisearch-import meilisearch-import-entities meilisearch-import-interactions meilisearch-import-associations meilisearch-import-all meilisearch-delete-indexes gold-meilisearch-import visualize meilisearch-dump docker-data-setup docker-build docker-up docker-up-fresh pipeline generate-obo
 
 # =============================================================================
 # Full Pipeline - Run everything from silver to export
@@ -83,8 +83,14 @@ meilisearch-interactions:
 		--global-tables-dir omnipath_build/data/gold \
 		--output omnipath_build/data/gold/search_interactions.parquet
 
-# Build both entities and interactions parquet files
-meilisearch: meilisearch-entities meilisearch-interactions
+# Build search associations parquet
+meilisearch-associations:
+	@uv run python -m omnipath_build.search_builder.build_search_associations \
+		--global-tables-dir omnipath_build/data/gold \
+		--output omnipath_build/data/gold/search_associations.parquet
+
+# Build all search parquet files (entities, interactions, associations)
+meilisearch: meilisearch-entities meilisearch-interactions meilisearch-associations
 
 # Import entities into Meilisearch
 meilisearch-import-entities:
@@ -100,10 +106,17 @@ meilisearch-import-interactions:
 		--importer-path omnipath_build/meilisearch-importer \
 		--api-key $${MEILISEARCH_API_KEY}
 
-# Import both entities and interactions into Meilisearch
+# Import associations into Meilisearch
+meilisearch-import-associations:
+	@. .env && uv run python -m omnipath_build.search.importer \
+		--dataset associations \
+		--importer-path omnipath_build/meilisearch-importer \
+		--api-key $${MEILISEARCH_API_KEY}
+
+# Import all datasets (entities, interactions, associations) into Meilisearch
 meilisearch-import-all:
 	@. .env && uv run python -m omnipath_build.search.importer \
-		--dataset both \
+		--dataset all \
 		--importer-path omnipath_build/meilisearch-importer \
 		--api-key $${MEILISEARCH_API_KEY}
 
@@ -116,6 +129,8 @@ meilisearch-delete-indexes:
 	@. .env && curl -s -X DELETE "http://localhost:7700/indexes/search_entities" \
 		-H "Authorization: Bearer $${MEILISEARCH_API_KEY}" || true
 	@. .env && curl -s -X DELETE "http://localhost:7700/indexes/search_interactions" \
+		-H "Authorization: Bearer $${MEILISEARCH_API_KEY}" || true
+	@. .env && curl -s -X DELETE "http://localhost:7700/indexes/search_associations" \
 		-H "Authorization: Bearer $${MEILISEARCH_API_KEY}" || true
 	@echo "Indexes deleted (or did not exist)"
 

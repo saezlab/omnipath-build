@@ -6,10 +6,12 @@ import { useCallback, useEffect, useState, useMemo } from "react";
 import { useSearchParams } from "next/navigation";
 import { InteractionsExploreTab } from "./components/interactions-explore-tab";
 import { RelatedEntitiesTab } from "./components/related-entities-tab";
+import { AssociationsExploreTab } from "./components/associations-explore-tab";
 import { FilterSidebar } from "@/features/interactions-search/components/filter-sidebar";
 import { EntityFilterSidebar } from "@/features/search/components/entity-filter-sidebar";
 import { MeilisearchFilters } from "@/types/meilisearch";
 import { useEntitySelection } from "@/contexts/entity-selection-context";
+import { searchAssociationsMeilisearch } from "@/lib/meilisearch/search";
 
 interface EntityFilters {
   entity_types?: string[];
@@ -23,13 +25,34 @@ interface EntityFilterCounts {
   ncbi_tax_id?: Record<string, number>;
 }
 
+// Entity type accessions for filtering associations
+const ENTITY_TYPES = {
+  COMPLEX: "Complex:OM:0002",
+  PATHWAY: "Pathway:OM:0004",
+  REACTION: "Reaction:OM:0005",
+  FOOD: "Food:OM:0007",
+  SMALL_MOLECULE: "Small Molecule:OM:0003",
+  PROTEIN: "Protein:OM:0001",
+} as const;
+
 export default function ExplorePage() {
   const [activeTab, setActiveTab] = useState("interactions");
   const { setSidebarContent } = useSidebarContent();
   const searchParams = useSearchParams();
   const { selectedEntities } = useEntitySelection();
 
-  // Parse entity IDs from URL params (supports both single "entity" and multiple "entities")
+  // Tab availability state (loaded dynamically via associations count)
+  const [tabCounts, setTabCounts] = useState<Record<string, number>>({
+    complexes: 0,
+    pathways: 0,
+    reactions: 0,
+    foods: 0,
+    compounds: 0,
+    members: 0,
+  });
+  const [tabCountsLoading, setTabCountsLoading] = useState(false);
+
+  // Parse entity IDs from URL params
   const parseEntityIds = useCallback(() => {
     const singleEntity = searchParams.get("entity");
     const multipleEntities = searchParams.get("entities");
@@ -45,7 +68,7 @@ export default function ExplorePage() {
     return undefined;
   }, [searchParams]);
 
-  // Interactions filter state - initialize with entity filter if present
+  // Interactions filter state
   const [interactionsFilters, setInteractionsFilters] = useState<MeilisearchFilters>(() => {
     const entityIds = parseEntityIds();
     if (entityIds?.length) {
@@ -55,38 +78,99 @@ export default function ExplorePage() {
   });
   const [interactionsFilterCounts, setInteractionsFilterCounts] = useState<Record<string, Record<string, number>>>({});
 
-  // Entity filters state for related tabs (complexes, cv_terms, pathways, reactions)
+  // Entity filters state for CV terms (still using old approach)
   const [entityFilters, setEntityFilters] = useState<EntityFilters>({});
   const [entityFilterCounts, setEntityFilterCounts] = useState<EntityFilterCounts>({});
 
-  // Calculate which tabs have results based on selected entities
-  const tabsWithResults = useMemo(() => {
-    const tabs = {
-      interactions: true, // Always show interactions
-      complexes: false,
-      cv_terms: false,
-      pathways: false,
-      reactions: false,
-    };
+  // Get selected entity IDs
+  const selectedEntityIds = useMemo(() =>
+    selectedEntities
+      .map(e => e.entityId || parseInt(e.id, 10))
+      .filter(id => !isNaN(id)),
+    [selectedEntities]
+  );
 
-    // Check if any selected entity has results for each tab type
-    for (const entity of selectedEntities) {
-      if (entity.complexes && entity.complexes.length > 0) {
-        tabs.complexes = true;
+  // Load association counts for tab visibility
+  useEffect(() => {
+    async function loadTabCounts() {
+      if (selectedEntityIds.length === 0) {
+        setTabCounts({ complexes: 0, pathways: 0, reactions: 0, foods: 0, compounds: 0, members: 0 });
+        return;
       }
-      if (entity.cv_terms && entity.cv_terms.length > 0) {
-        tabs.cv_terms = true;
-      }
-      if (entity.pathways && entity.pathways.length > 0) {
-        tabs.pathways = true;
-      }
-      if (entity.reactions && entity.reactions.length > 0) {
-        tabs.reactions = true;
+
+      setTabCountsLoading(true);
+      try {
+        // Query 1: Find PARENTS (where selected entities are members)
+        const parentsPromise = searchAssociationsMeilisearch({
+          query: "",
+          index: 'search_associations' as any,
+          limit: 0,
+          offset: 0,
+          filters: {
+            member_entity_ids: selectedEntityIds,
+          },
+        });
+
+        // Query 2: Find MEMBERS (where selected entities are parents)
+        const membersPromise = searchAssociationsMeilisearch({
+          query: "",
+          index: 'search_associations' as any,
+          limit: 0,
+          offset: 0,
+          filters: {
+            parent_entity_ids: selectedEntityIds,
+          },
+        });
+
+        const [parentsResponse, membersResponse] = await Promise.all([parentsPromise, membersPromise]);
+
+        const parentTypeCounts = parentsResponse.facetDistribution?.parent_entity_type || {};
+        const memberTypeCounts = membersResponse.facetDistribution?.member_entity_type || {};
+
+        setTabCounts({
+          // Parents
+          complexes: Object.entries(parentTypeCounts)
+            .filter(([key]) => key.includes("Complex"))
+            .reduce((sum, [, count]) => sum + count, 0),
+          pathways: Object.entries(parentTypeCounts)
+            .filter(([key]) => key.includes("Pathway"))
+            .reduce((sum, [, count]) => sum + count, 0),
+          reactions: Object.entries(parentTypeCounts)
+            .filter(([key]) => key.includes("Reaction"))
+            .reduce((sum, [, count]) => sum + count, 0),
+          foods: Object.entries(parentTypeCounts)
+            .filter(([key]) => key.includes("Food"))
+            .reduce((sum, [, count]) => sum + count, 0),
+
+          // Members
+          compounds: Object.entries(memberTypeCounts)
+            .filter(([key]) => key.toLowerCase().includes("small molecule") || key.toLowerCase().includes("compound"))
+            .reduce((sum, [, count]) => sum + count, 0),
+          members: Object.entries(memberTypeCounts)
+            .filter(([key]) => !key.toLowerCase().includes("small molecule") && !key.toLowerCase().includes("compound"))
+            .reduce((sum, [, count]) => sum + count, 0),
+        });
+      } catch (error) {
+        console.error("Error loading tab counts:", error);
+      } finally {
+        setTabCountsLoading(false);
       }
     }
 
-    return tabs;
-  }, [selectedEntities]);
+    loadTabCounts();
+  }, [selectedEntityIds]);
+
+  // Calculate which tabs have results
+  const tabsWithResults = useMemo(() => ({
+    interactions: true, // Always show interactions
+    complexes: tabCounts.complexes > 0,
+    cv_terms: selectedEntities.some(e => e.cv_terms && e.cv_terms.length > 0), // Keep legacy CV terms
+    pathways: tabCounts.pathways > 0,
+    reactions: tabCounts.reactions > 0,
+    foods: tabCounts.foods > 0,
+    compounds: tabCounts.compounds > 0,
+    members: tabCounts.members > 0,
+  }), [tabCounts, selectedEntities]);
 
   // Handlers for interactions filters
   const handleInteractionsFilterChange = useCallback((newFilters: MeilisearchFilters) => {
@@ -97,12 +181,11 @@ export default function ExplorePage() {
     setInteractionsFilters({});
   }, []);
 
-  // Callback to receive filter counts from interactions tab
   const handleInteractionsFilterCountsUpdate = useCallback((counts: Record<string, Record<string, number>>) => {
     setInteractionsFilterCounts(counts);
   }, []);
 
-  // Handlers for entity filters (related tabs)
+  // Handlers for entity filters (CV terms)
   const handleEntityFilterChange = useCallback((newFilters: EntityFilters) => {
     setEntityFilters(newFilters);
   }, []);
@@ -115,14 +198,14 @@ export default function ExplorePage() {
     setEntityFilterCounts(counts);
   }, []);
 
-  // Sync URL params with filter state when URL changes
+  // Sync URL params with filter state
   useEffect(() => {
     const entityIds = parseEntityIds();
     if (entityIds?.length) {
       setInteractionsFilters(prev => ({
         ...prev,
         entity_ids: entityIds,
-        member_a_id: undefined  // Clear old single ID filter
+        member_a_id: undefined
       }));
     }
   }, [searchParams, parseEntityIds]);
@@ -139,7 +222,7 @@ export default function ExplorePage() {
           isMobile
         />
       );
-    } else if ((activeTab === "complexes" || activeTab === "cv_terms" || activeTab === "pathways" || activeTab === "reactions") && Object.keys(entityFilterCounts).length > 0) {
+    } else if (activeTab === "cv_terms" && Object.keys(entityFilterCounts).length > 0) {
       setSidebarContent(
         <EntityFilterSidebar
           filters={entityFilters}
@@ -153,7 +236,6 @@ export default function ExplorePage() {
       setSidebarContent(null);
     }
 
-    // Cleanup on unmount
     return () => {
       setSidebarContent(null);
     };
@@ -170,6 +252,9 @@ export default function ExplorePage() {
               {tabsWithResults.cv_terms && <TabsTrigger value="cv_terms">CV Terms</TabsTrigger>}
               {tabsWithResults.pathways && <TabsTrigger value="pathways">Pathways</TabsTrigger>}
               {tabsWithResults.reactions && <TabsTrigger value="reactions">Reactions</TabsTrigger>}
+              {tabsWithResults.foods && <TabsTrigger value="foods">Foods</TabsTrigger>}
+              {tabsWithResults.compounds && <TabsTrigger value="compounds">Compounds</TabsTrigger>}
+              {tabsWithResults.members && <TabsTrigger value="members">Members</TabsTrigger>}
             </TabsList>
           </Tabs>
         </div>
@@ -185,16 +270,16 @@ export default function ExplorePage() {
                 onFilterCountsUpdate={handleInteractionsFilterCountsUpdate}
               />
             </TabsContent>
+
             {tabsWithResults.complexes && (
               <TabsContent value="complexes" className="mt-0">
-                <RelatedEntitiesTab
-                  relatedType="complex"
-                  filters={entityFilters}
-                  onFilterChange={handleEntityFilterChange}
-                  onFilterCountsUpdate={handleEntityFilterCountsUpdate}
+                <AssociationsExploreTab
+                  mode="parents"
+                  parentEntityType={ENTITY_TYPES.COMPLEX}
                 />
               </TabsContent>
             )}
+
             {tabsWithResults.cv_terms && (
               <TabsContent value="cv_terms" className="mt-0">
                 <RelatedEntitiesTab
@@ -205,23 +290,47 @@ export default function ExplorePage() {
                 />
               </TabsContent>
             )}
+
             {tabsWithResults.pathways && (
               <TabsContent value="pathways" className="mt-0">
-                <RelatedEntitiesTab
-                  relatedType="pathway"
-                  filters={entityFilters}
-                  onFilterChange={handleEntityFilterChange}
-                  onFilterCountsUpdate={handleEntityFilterCountsUpdate}
+                <AssociationsExploreTab
+                  mode="parents"
+                  parentEntityType={ENTITY_TYPES.PATHWAY}
                 />
               </TabsContent>
             )}
+
             {tabsWithResults.reactions && (
               <TabsContent value="reactions" className="mt-0">
-                <RelatedEntitiesTab
-                  relatedType="reaction"
-                  filters={entityFilters}
-                  onFilterChange={handleEntityFilterChange}
-                  onFilterCountsUpdate={handleEntityFilterCountsUpdate}
+                <AssociationsExploreTab
+                  mode="parents"
+                  parentEntityType={ENTITY_TYPES.REACTION}
+                />
+              </TabsContent>
+            )}
+
+            {tabsWithResults.foods && (
+              <TabsContent value="foods" className="mt-0">
+                <AssociationsExploreTab
+                  mode="parents"
+                  parentEntityType={ENTITY_TYPES.FOOD}
+                />
+              </TabsContent>
+            )}
+
+            {tabsWithResults.compounds && (
+              <TabsContent value="compounds" className="mt-0">
+                <AssociationsExploreTab
+                  mode="members"
+                  memberEntityType="Small Molecule" // Filters loosely
+                />
+              </TabsContent>
+            )}
+
+            {tabsWithResults.members && (
+              <TabsContent value="members" className="mt-0">
+                <AssociationsExploreTab
+                  mode="members"
                 />
               </TabsContent>
             )}

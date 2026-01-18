@@ -269,3 +269,104 @@ export async function getInteractionStats(): Promise<Record<string, unknown>> {
     return {};
   }
 }
+
+/**
+ * Build filter string for Meilisearch associations search
+ */
+function buildAssociationsFilterString(filters: MeilisearchFilters): string {
+  const filterParts: string[] = [];
+
+  // Parent entity IDs filter
+  if (filters.parent_entity_ids?.length) {
+    const parentFilters = filters.parent_entity_ids.map(id => `parent_entity_id = ${id}`).join(' OR ');
+    filterParts.push(`(${parentFilters})`);
+  }
+
+  // Member entity IDs filter
+  if (filters.member_entity_ids?.length) {
+    const memberFilters = filters.member_entity_ids.map(id => `member_entity_id = ${id}`).join(' OR ');
+    filterParts.push(`(${memberFilters})`);
+  }
+
+  // Parent entity types filter
+  if (filters.parent_entity_types?.length) {
+    const typeFilters = filters.parent_entity_types.map(type => `parent_entity_type = "${type}"`).join(' OR ');
+    filterParts.push(`(${typeFilters})`);
+  }
+
+  // Member entity types filter
+  if (filters.member_entity_types?.length) {
+    const typeFilters = filters.member_entity_types.map(type => `member_entity_type = "${type}"`).join(' OR ');
+    filterParts.push(`(${typeFilters})`);
+  }
+
+  // Sources filter
+  if (filters.sources?.length) {
+    const sourceFilters = filters.sources.map(source => `sources = "${source}"`).join(' OR ');
+    filterParts.push(`(${sourceFilters})`);
+  }
+
+  // Association annotation terms filter
+  if (filters.association_annotation_terms?.length) {
+    const termFilters = filters.association_annotation_terms.map(term => `association_annotation_terms = "${term}"`).join(' OR ');
+    filterParts.push(`(${termFilters})`);
+  }
+
+  return filterParts.join(' AND ');
+}
+
+/**
+ * Search associations with filters
+ */
+export async function searchAssociationsMeilisearch(
+  params: SearchParams & { filters?: MeilisearchFilters }
+): Promise<SearchResponse> {
+  const {
+    query,
+    limit = 20,
+    offset = 0,
+    filters = {},
+  } = params;
+
+  try {
+    const indexClient = meilisearchClient.index(INDEXES.ASSOCIATIONS);
+    const filterString = buildAssociationsFilterString(filters);
+
+    const searchOptions: Record<string, unknown> = {
+      limit,
+      offset,
+      facets: [
+        'parent_entity_type',
+        'member_entity_type',
+        'sources',
+        'association_annotation_terms',
+      ],
+    };
+
+    if (filterString) {
+      searchOptions.filter = filterString;
+    }
+
+    const result = await indexClient.search(query, searchOptions);
+
+    return {
+      hits: result.hits,
+      estimatedTotalHits: result.estimatedTotalHits || 0,
+      limit,
+      offset,
+      processingTimeMs: result.processingTimeMs,
+      query,
+      facetDistribution: result.facetDistribution,
+    };
+  } catch (error) {
+    console.error('Meilisearch associations search error:', error);
+    return {
+      hits: [],
+      estimatedTotalHits: 0,
+      limit,
+      offset,
+      processingTimeMs: 0,
+      query,
+    };
+  }
+}

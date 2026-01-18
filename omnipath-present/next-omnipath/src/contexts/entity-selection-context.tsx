@@ -8,15 +8,13 @@ export interface SelectedEntity {
   entityId?: number
   name: string
   type?: string
-  // Related entity IDs for explore tabs
-  complexes?: number[]
+  // CV terms - still using legacy faceted query approach
   cv_terms?: number[]
-  pathways?: number[]
-  reactions?: number[]
   references?: string[]
   // Store full search result for proper display
   fullResult?: SearchResult
 }
+
 
 interface EntitySelectionContextType {
   selectedEntities: SelectedEntity[]

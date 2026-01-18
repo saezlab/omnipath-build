@@ -41,3 +41,27 @@ class MeilisearchSettings:
         'displayedAttributes': ['*'],
         'pagination': {'maxTotalHits': 2000000},
     }
+
+    ASSOCIATIONS_SETTINGS = {
+        'searchableAttributes': [
+            'parent_name',
+            'member_name',
+        ],
+        'filterableAttributes': [
+            # Entity filtering
+            'parent_entity_id',
+            'parent_entity_type',
+            'member_entity_id',
+            'member_entity_type',
+            # Source filtering
+            'sources',
+            # Annotation terms (flattened for filtering)
+            'association_annotation_terms',
+        ],
+        'sortableAttributes': [
+            'parent_name',
+            'member_name',
+        ],
+        'displayedAttributes': ['*'],
+        'pagination': {'maxTotalHits': 2000000},
+    }
