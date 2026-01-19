@@ -95,7 +95,6 @@ export function CvTermHoverCard({
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            ontologyId: "omnipath",
             termIds: [termId]
           }),
         });
@@ -201,7 +200,7 @@ export interface SearchResult {
   identifiers?: Identifier[];
   sources?: string[];
   complexes?: number[];
-  cv_terms?: number[];
+  cv_terms?: string[];
   pathways?: number[];
   reactions?: number[];
   num_interactions?: number;
@@ -494,10 +493,7 @@ function MoleculeResultCard({ result }: { result: SearchResult }) {
         entityId: result.entity_id,
         name: primaryName,
         type: entityTypeLabel,
-        complexes: result.complexes,
         cv_terms: result.cv_terms,
-        pathways: result.pathways,
-        reactions: result.reactions,
         references: result.references,
         fullResult: result,
       });
@@ -619,10 +615,7 @@ export function ResultCard({ result, entityNamesMap }: { result: SearchResult, e
         entityId: result.entity_id,
         name: getDisplayName(),
         type: result.entity_type?.split(':')[0] || result.type,
-        complexes: result.complexes,
         cv_terms: result.cv_terms,
-        pathways: result.pathways,
-        reactions: result.reactions,
         references: result.references,
         fullResult: result,
       });
@@ -641,10 +634,7 @@ export function ResultCard({ result, entityNamesMap }: { result: SearchResult, e
         entityId: result.entity_id,
         name: getDisplayName(),
         type: result.entity_type?.split(':')[0] || result.type,
-        complexes: result.complexes,
         cv_terms: result.cv_terms,
-        pathways: result.pathways,
-        reactions: result.reactions,
         references: result.references,
         fullResult: result,
       });

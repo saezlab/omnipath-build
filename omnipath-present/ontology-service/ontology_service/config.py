@@ -36,3 +36,20 @@ CORE_ONTOLOGIES: dict[str, OntologyConfig] = {
 
 # Cache directory for downloaded ontologies
 CACHE_DIR = os.getenv("ONTOLOGY_CACHE_DIR", "./cache")
+
+
+# Map term prefixes to ontology IDs for auto-detection
+PREFIX_TO_ONTOLOGY: dict[str, str] = {
+    "GO": "gene_ontology",
+    "MI": "omnipath",
+    "OM": "omnipath",
+    "KW": "uniprot_keywords",
+}
+
+
+def get_ontology_for_term(term_id: str) -> str | None:
+    """Get ontology ID from term prefix (e.g., 'GO:0001234' -> 'gene_ontology')."""
+    if ":" in term_id:
+        prefix = term_id.split(":")[0]
+        return PREFIX_TO_ONTOLOGY.get(prefix)
+    return None

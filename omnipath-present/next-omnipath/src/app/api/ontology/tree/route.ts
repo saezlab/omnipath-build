@@ -2,14 +2,12 @@ import { NextRequest, NextResponse } from "next/server";
 import { getOntologyServiceUrl } from "@/lib/api/config";
 
 interface TreeRequestPayload {
-  ontologyId?: string;
   termIds?: string[];
 }
 
 export async function POST(req: NextRequest) {
   try {
     const body = (await req.json()) as TreeRequestPayload;
-    const ontologyId = body.ontologyId || "omnipath";
     const termIds = (body.termIds || []).filter((id) => id.length > 0);
 
     if (termIds.length === 0) {
@@ -17,7 +15,7 @@ export async function POST(req: NextRequest) {
     }
 
     const ontologyServiceUrl = getOntologyServiceUrl();
-    const response = await fetch(`${ontologyServiceUrl}/${ontologyId}/tree`, {
+    const response = await fetch(`${ontologyServiceUrl}/tree`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ term_ids: termIds }),
@@ -38,3 +36,4 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }
+

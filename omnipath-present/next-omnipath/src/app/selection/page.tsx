@@ -23,7 +23,6 @@ export default function SelectionPage() {
       identifiers: [],
       sources: [],
       references: entity.references,
-      complexes: entity.complexes,
       cv_terms: entity.cv_terms,
     }
   );
@@ -60,7 +59,7 @@ export default function SelectionPage() {
                 <Trash2 className="h-4 w-4 mr-2" />
                 Clear All
               </Button>
-              <Link href={`/explore?entities=${selectedEntities.map(e => e.id).join(',')}`}>
+              <Link href={`/explore/interactions?entities=${selectedEntities.map(e => e.id).join(',')}`}>
                 <Button>
                   <ArrowRight className="h-4 w-4 mr-2" />
                   Explore

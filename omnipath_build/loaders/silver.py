@@ -405,7 +405,7 @@ def _process_single_output(
     writer: Optional[pq.ParquetWriter] = None
     total_records = 0
     batch: List[dict] = []
-    max_records = 100_000 if test_mode else None
+    max_records = 100 if test_mode else None
 
     # Process first record
     _ensure_entity_record(first_record)
@@ -523,7 +523,7 @@ def _process_multi_output(
     writers: Dict[str, pq.ParquetWriter] = {}
     output_files: Dict[str, Path] = {}
     record_counts: Dict[str, int] = {}
-    max_records = 100_000 if test_mode else None
+    max_records = 100 if test_mode else None
 
     def ensure_output_paths(output_name: str) -> None:
         if output_name not in output_files:

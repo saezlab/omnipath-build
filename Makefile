@@ -1,10 +1,11 @@
-.PHONY: setup silver silver-test silver-reprocess gold postgres meilisearch meilisearch-entities meilisearch-interactions meilisearch-associations meilisearch-import meilisearch-import-entities meilisearch-import-interactions meilisearch-import-associations meilisearch-import-all meilisearch-delete-indexes gold-meilisearch-import visualize meilisearch-dump docker-data-setup docker-build docker-up docker-up-fresh pipeline generate-obo
+.PHONY: setup silver silver-test silver-reprocess gold postgres meilisearch meilisearch-entities meilisearch-interactions meilisearch-associations meilisearch-import meilisearch-import-entities meilisearch-import-interactions meilisearch-import-associations meilisearch-import-all meilisearch-delete-indexes gold-meilisearch-import visualize meilisearch-dump meilisearch-build-dump meilisearch-build-dump-start meilisearch-build-dump-stop docker-data-setup docker-build docker-up docker-up-fresh pipeline generate-obo
 
 # =============================================================================
 # Full Pipeline - Run everything from silver to export
 # =============================================================================
 # Usage: make pipeline
-# This runs: silver-test -> generate-obo -> gold -> meilisearch -> delete indexes -> import -> export
+# This runs: silver-test -> generate-obo -> gold -> meilisearch -> build-dump -> export-entity -> export-ontology -> export-finalize
+# The meilisearch-build-dump step spins up a temporary container, imports data, creates dump, and cleans up.
 pipeline:
 	@echo "======================================================================"
 	@echo "Starting full pipeline..."
@@ -13,9 +14,10 @@ pipeline:
 	@$(MAKE) generate-obo
 	@$(MAKE) gold
 	@$(MAKE) meilisearch
-	@$(MAKE) meilisearch-delete-indexes
-	@$(MAKE) meilisearch-import-all
-	@$(MAKE) export
+	@$(MAKE) meilisearch-build-dump
+	@$(MAKE) export-entity
+	@$(MAKE) export-ontology
+	@$(MAKE) export-finalize
 	@echo ""
 	@echo "======================================================================"
 	@echo "✓ Full pipeline completed successfully!"
@@ -146,9 +148,14 @@ gold-meilisearch-import:
 # Export all data files to omnipath-present/data/ for deployment
 # This creates the complete data package needed for Docker deployment
 # A version marker is created to enable automatic meilisearch rebuild on data changes
-.PHONY: export export-entity export-ontology export-meilisearch
+.PHONY: export export-entity export-ontology export-meilisearch export-finalize
 
-export: export-entity export-ontology export-meilisearch
+# Full export (use when you have a running Meilisearch with data)
+export: export-entity export-ontology export-meilisearch export-finalize
+
+# Finalize export: copy scripts and create version marker
+# Use this after export-entity, export-ontology, and meilisearch-build-dump
+export-finalize:
 	@# Copy startup scripts
 	@mkdir -p omnipath-present/data/scripts
 	@cp omnipath-present/scripts/meilisearch-start.sh omnipath-present/data/scripts/
@@ -195,6 +202,79 @@ export-meilisearch:
 		--meili-url http://localhost:7700 \
 		--api-key $${MEILISEARCH_API_KEY} \
 		--output-dir omnipath-present/data/dumps
+
+# =============================================================================
+# Self-contained Meilisearch Dump Builder
+# =============================================================================
+# Build a Meilisearch dump without requiring a running Meilisearch instance.
+# This spins up a temporary container, imports data, creates dump, and cleans up.
+# Prerequisites: search parquet files must exist (run 'make meilisearch' first)
+TEMP_MEILI_CONTAINER := omnipath-temp-meilisearch
+TEMP_MEILI_PORT := 7710
+TEMP_MEILI_KEY := temp-build-key
+
+.PHONY: meilisearch-build-dump meilisearch-build-dump-start meilisearch-build-dump-stop
+
+meilisearch-build-dump: meilisearch-build-dump-start
+	@echo ""
+	@echo "======================================================================" 
+	@echo "Building Meilisearch dump (self-contained)"
+	@echo "======================================================================"
+	@echo ""
+	@# Wait for Meilisearch to be ready
+	@echo "2. Waiting for Meilisearch to be ready..."
+	@for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do \
+		if curl -sf http://localhost:$(TEMP_MEILI_PORT)/health > /dev/null 2>&1; then \
+			echo "   Meilisearch is ready!"; \
+			break; \
+		fi; \
+		if [ $$i -eq 20 ]; then \
+			echo "   Error: Meilisearch failed to start"; \
+			$(MAKE) meilisearch-build-dump-stop; \
+			exit 1; \
+		fi; \
+		echo "   Waiting... ($$i/20)"; \
+		sleep 1; \
+	done
+	@echo ""
+	@# Import all datasets
+	@echo "3. Importing search data..."
+	@uv run python -m omnipath_build.search.importer \
+		--dataset all \
+		--importer-path omnipath_build/meilisearch-importer \
+		--api-key $(TEMP_MEILI_KEY) \
+		--meili-url http://localhost:$(TEMP_MEILI_PORT)
+	@echo ""
+	@# Create dump
+	@echo "4. Creating dump..."
+	@mkdir -p omnipath-present/data/dumps
+	@uv run python -m omnipath_build.scripts.create_meilisearch_dump \
+		--meili-url http://localhost:$(TEMP_MEILI_PORT) \
+		--api-key $(TEMP_MEILI_KEY) \
+		--output-dir omnipath-present/data/dumps \
+		--container-name $(TEMP_MEILI_CONTAINER)
+	@echo ""
+	@# Cleanup
+	@$(MAKE) meilisearch-build-dump-stop
+	@echo ""
+	@echo "======================================================================"
+	@echo "✓ Meilisearch dump created successfully!"
+	@echo "  Output: omnipath-present/data/dumps/"
+	@echo "======================================================================"
+
+meilisearch-build-dump-start:
+	@echo "1. Starting temporary Meilisearch container..."
+	@docker rm -f $(TEMP_MEILI_CONTAINER) 2>/dev/null || true
+	@docker run -d \
+		--name $(TEMP_MEILI_CONTAINER) \
+		-p $(TEMP_MEILI_PORT):7700 \
+		-e MEILI_MASTER_KEY=$(TEMP_MEILI_KEY) \
+		getmeili/meilisearch:v1.6
+
+meilisearch-build-dump-stop:
+	@echo "5. Cleaning up temporary container..."
+	@docker rm -f $(TEMP_MEILI_CONTAINER) 2>/dev/null || true
+	@echo "   Temporary container removed."
 
 # =============================================================================
 # Docker Deployment Targets (Legacy - use 'make export' instead)

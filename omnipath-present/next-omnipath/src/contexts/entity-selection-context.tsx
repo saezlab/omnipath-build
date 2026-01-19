@@ -8,8 +8,8 @@ export interface SelectedEntity {
   entityId?: number
   name: string
   type?: string
-  // CV terms - still using legacy faceted query approach
-  cv_terms?: number[]
+  // CV terms - now stored as string accessions (e.g., GO:0006915)
+  cv_terms?: string[]
   references?: string[]
   // Store full search result for proper display
   fullResult?: SearchResult

@@ -2,7 +2,7 @@
 #
 # Prerequisites: Run `make export` from the parent directory to populate data/
 
-.PHONY: dev stop validate-data
+.PHONY: dev dev-reset stop validate-data reimport-meilisearch
 
 # Validate that all required data files exist
 validate-data:
@@ -64,3 +64,6 @@ reimport-meilisearch:
 	@echo "Removing meilisearch volume to force reimport..."
 	docker volume rm omnipath_build_meilisearch_data 2>/dev/null || true
 	@echo "Next 'make dev' will import fresh data."
+
+# Start dev with fresh meilisearch data (resets indexes)
+dev-reset: reimport-meilisearch dev

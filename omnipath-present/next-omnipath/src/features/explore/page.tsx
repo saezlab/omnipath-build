@@ -5,13 +5,13 @@ import { useSidebarContent } from "@/contexts/sidebar-content-context";
 import { useCallback, useEffect, useState, useMemo } from "react";
 import { useSearchParams } from "next/navigation";
 import { InteractionsExploreTab } from "./components/interactions-explore-tab";
-import { RelatedEntitiesTab } from "./components/related-entities-tab";
 import { AssociationsExploreTab } from "./components/associations-explore-tab";
+import { AnnotationsExploreTab } from "./components/annotations-explore-tab";
 import { FilterSidebar } from "@/features/interactions-search/components/filter-sidebar";
-import { EntityFilterSidebar } from "@/features/search/components/entity-filter-sidebar";
 import { MeilisearchFilters } from "@/types/meilisearch";
 import { useEntitySelection } from "@/contexts/entity-selection-context";
 import { searchAssociationsMeilisearch } from "@/lib/meilisearch/search";
+import { searchInteractions } from "@/features/interactions-search/api/queries";
 
 interface EntityFilters {
   entity_types?: string[];
@@ -78,10 +78,6 @@ export default function ExplorePage() {
   });
   const [interactionsFilterCounts, setInteractionsFilterCounts] = useState<Record<string, Record<string, number>>>({});
 
-  // Entity filters state for CV terms (still using old approach)
-  const [entityFilters, setEntityFilters] = useState<EntityFilters>({});
-  const [entityFilterCounts, setEntityFilterCounts] = useState<EntityFilterCounts>({});
-
   // Get selected entity IDs
   const selectedEntityIds = useMemo(() =>
     selectedEntities
@@ -94,7 +90,7 @@ export default function ExplorePage() {
   useEffect(() => {
     async function loadTabCounts() {
       if (selectedEntityIds.length === 0) {
-        setTabCounts({ complexes: 0, pathways: 0, reactions: 0, foods: 0, compounds: 0, members: 0 });
+        setTabCounts({ complexes: 0, pathways: 0, reactions: 0, foods: 0, compounds: 0, members: 0, annotations: 0 });
         return;
       }
 
@@ -161,16 +157,24 @@ export default function ExplorePage() {
   }, [selectedEntityIds]);
 
   // Calculate which tabs have results
-  const tabsWithResults = useMemo(() => ({
-    interactions: true, // Always show interactions
-    complexes: tabCounts.complexes > 0,
-    cv_terms: selectedEntities.some(e => e.cv_terms && e.cv_terms.length > 0), // Keep legacy CV terms
-    pathways: tabCounts.pathways > 0,
-    reactions: tabCounts.reactions > 0,
-    foods: tabCounts.foods > 0,
-    compounds: tabCounts.compounds > 0,
-    members: tabCounts.members > 0,
-  }), [tabCounts, selectedEntities]);
+  const tabsWithResults = useMemo(() => {
+    // Check if any selected entities have CV terms
+    const hasCvTerms = selectedEntities.some(e => {
+      const cvTerms = e.cv_terms || e.fullResult?.cv_terms || [];
+      return cvTerms.length > 0;
+    });
+
+    return {
+      interactions: true, // Always show interactions
+      complexes: tabCounts.complexes > 0,
+      cv_terms: hasCvTerms,
+      pathways: tabCounts.pathways > 0,
+      reactions: tabCounts.reactions > 0,
+      foods: tabCounts.foods > 0,
+      compounds: tabCounts.compounds > 0,
+      members: tabCounts.members > 0,
+    };
+  }, [tabCounts, selectedEntities]);
 
   // Handlers for interactions filters
   const handleInteractionsFilterChange = useCallback((newFilters: MeilisearchFilters) => {
@@ -183,19 +187,6 @@ export default function ExplorePage() {
 
   const handleInteractionsFilterCountsUpdate = useCallback((counts: Record<string, Record<string, number>>) => {
     setInteractionsFilterCounts(counts);
-  }, []);
-
-  // Handlers for entity filters (CV terms)
-  const handleEntityFilterChange = useCallback((newFilters: EntityFilters) => {
-    setEntityFilters(newFilters);
-  }, []);
-
-  const handleEntityClearFilters = useCallback(() => {
-    setEntityFilters({});
-  }, []);
-
-  const handleEntityFilterCountsUpdate = useCallback((counts: EntityFilterCounts) => {
-    setEntityFilterCounts(counts);
   }, []);
 
   // Sync URL params with filter state
@@ -222,16 +213,6 @@ export default function ExplorePage() {
           isMobile
         />
       );
-    } else if (activeTab === "cv_terms" && Object.keys(entityFilterCounts).length > 0) {
-      setSidebarContent(
-        <EntityFilterSidebar
-          filters={entityFilters}
-          filterCounts={entityFilterCounts}
-          onFilterChange={handleEntityFilterChange}
-          onClearFilters={handleEntityClearFilters}
-          isMobile
-        />
-      );
     } else {
       setSidebarContent(null);
     }
@@ -239,7 +220,7 @@ export default function ExplorePage() {
     return () => {
       setSidebarContent(null);
     };
-  }, [activeTab, interactionsFilters, interactionsFilterCounts, handleInteractionsFilterChange, handleInteractionsClearFilters, entityFilters, entityFilterCounts, handleEntityFilterChange, handleEntityClearFilters, setSidebarContent]);
+  }, [activeTab, interactionsFilters, interactionsFilterCounts, handleInteractionsFilterChange, handleInteractionsClearFilters, setSidebarContent]);
 
   return (
     <div className="flex-1 flex flex-col">
@@ -282,12 +263,7 @@ export default function ExplorePage() {
 
             {tabsWithResults.cv_terms && (
               <TabsContent value="cv_terms" className="mt-0">
-                <RelatedEntitiesTab
-                  relatedType="cv_term"
-                  filters={entityFilters}
-                  onFilterChange={handleEntityFilterChange}
-                  onFilterCountsUpdate={handleEntityFilterCountsUpdate}
-                />
+                <AnnotationsExploreTab />
               </TabsContent>
             )}
 

@@ -114,14 +114,36 @@ async def get_term(ontology_id: str, term_id: str):
     return term_info
 
 
-@app.post("/{ontology_id}/terms", response_model=TermsResponse)
-async def get_terms_batch(ontology_id: str, request: TermsRequest):
-    """Batch lookup of multiple terms."""
-    client = get_ontology_or_404(ontology_id)
-    terms = {
-        term_id: extract_term_info(client, term_id)
-        for term_id in request.term_ids
-    }
+@app.post("/terms", response_model=TermsResponse)
+async def get_terms_batch(request: TermsRequest):
+    """Batch lookup of terms across multiple ontologies.
+    
+    Auto-detects ontology from term prefix (GO:, MI:, KW:, etc.)
+    """
+    from .config import get_ontology_for_term
+    
+    terms: dict[str, TermInfo | None] = {}
+    
+    # Group terms by ontology
+    terms_by_ontology: dict[str, list[str]] = {}
+    for term_id in request.term_ids:
+        ontology_id = get_ontology_for_term(term_id)
+        if ontology_id:
+            terms_by_ontology.setdefault(ontology_id, []).append(term_id)
+        else:
+            # No matching ontology, term will be None
+            terms[term_id] = None
+    
+    # Look up terms in each ontology
+    for ontology_id, term_ids in terms_by_ontology.items():
+        client = registry.get(ontology_id)
+        if client is None:
+            for term_id in term_ids:
+                terms[term_id] = None
+            continue
+        for term_id in term_ids:
+            terms[term_id] = extract_term_info(client, term_id)
+    
     return TermsResponse(terms=terms)
 
 
@@ -208,24 +230,35 @@ async def get_trajectories(ontology_id: str, term_id: str):
         raise HTTPException(status_code=404, detail=str(e))
 
 
-@app.post("/{ontology_id}/tree", response_model=TreeResponse)
-async def get_tree(ontology_id: str, request: TermsRequest):
-    """Get merged tree structure for multiple terms.
+@app.post("/tree", response_model=TreeResponse)
+async def get_tree(request: TermsRequest):
+    """Get merged tree for terms across multiple ontologies.
     
+    Auto-detects ontology from term prefix (GO:, MI:, KW:, etc.)
     Collects all trajectories for the given terms and merges them
     into a single tree structure with shared ancestor nodes combined.
-    Uses ontograph's _build_tree_from_trajectories.
     """
-    client = get_ontology_or_404(ontology_id)
+    from .config import get_ontology_for_term
     
-    # Collect all trajectories for all terms
-    all_trajectories = []
+    # Group terms by ontology
+    terms_by_ontology: dict[str, list[str]] = {}
     for term_id in request.term_ids:
-        try:
-            trajectories = client.get_trajectories_from_root(term_id)
-            all_trajectories.extend(trajectories)
-        except Exception:
+        ontology_id = get_ontology_for_term(term_id)
+        if ontology_id:
+            terms_by_ontology.setdefault(ontology_id, []).append(term_id)
+    
+    # Collect trajectories from all ontologies
+    all_trajectories = []
+    for ontology_id, term_ids in terms_by_ontology.items():
+        client = registry.get(ontology_id)
+        if client is None:
             continue
+        for term_id in term_ids:
+            try:
+                trajectories = client.get_trajectories_from_root(term_id)
+                all_trajectories.extend(trajectories)
+            except Exception:
+                continue
     
     if not all_trajectories:
         return TreeResponse(root=None)

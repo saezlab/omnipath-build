@@ -7,10 +7,13 @@ This module builds a searchable index of membership/association relationships:
 - etc.
 
 Each association document represents a parent-member relationship with:
-- Parent entity info (type, name, identifiers)
-- Member entity info (type, name, identifiers)
+- Parent entity ID and type
+- Member entity ID and type
 - Sources that report this association
 - Optional annotations (e.g., concentration for food-compound)
+- Flattened annotation terms for filtering
+
+Entity names and identifiers are fetched from the entity search index when needed.
 """
 from __future__ import annotations
 
@@ -31,8 +34,6 @@ __all__ = ["build_search_associations"]
 logger = logging.getLogger(__name__)
 
 # --- Schema Definitions ---
-ID_STRUCT = pl.Struct([Field("key", pl.Utf8), Field("value", pl.Utf8)])
-ID_LIST_DTYPE = pl.List(ID_STRUCT)
 ANNOT_STRUCT = pl.Struct([Field("key", pl.Utf8), Field("value", pl.Utf8), Field("unit", pl.Utf8)])
 ANNOT_LIST_DTYPE = pl.List(ANNOT_STRUCT)
 
@@ -131,12 +132,8 @@ def build_search_associations(global_tables_dir: Path, output_path: Path) -> Pat
             "association_key": pl.Utf8,
             "parent_entity_id": pl.Int64,
             "parent_entity_type": pl.Utf8,
-            "parent_name": pl.Utf8,
-            "parent_identifiers": ID_LIST_DTYPE,
             "member_entity_id": pl.Int64,
             "member_entity_type": pl.Utf8,
-            "member_name": pl.Utf8,
-            "member_identifiers": ID_LIST_DTYPE,
             "sources": pl.List(pl.Utf8),
             "annotations": ANNOT_LIST_DTYPE,
             "association_annotation_terms": pl.List(pl.Utf8),
@@ -147,20 +144,13 @@ def build_search_associations(global_tables_dir: Path, output_path: Path) -> Pat
     # 4. Build entity info lookups
     # Name identifier type
     name_tid = "OM:0202"  # IdentifierNamespaceCv.NAME
-    
+
     # Entity type labels
     entity_type_labels = cv_terms.select([
         pl.col("accession").alias("entity_type"),
         pl.col("label").alias("entity_type_label")
     ])
-    
-    # Entity names
-    entity_names = (
-        ent_id.filter(pl.col("type_id") == name_tid)
-        .group_by("entity_id")
-        .agg(pl.col("identifier").first().alias("name"))
-    )
-    
+
     # Entity types with labels
     entity_types = (
         ent
@@ -173,32 +163,7 @@ def build_search_associations(global_tables_dir: Path, output_path: Path) -> Pat
         )
         .select("entity_id", pl.col("entity_type_formatted").alias("entity_type"))
     )
-    
-    # Identifier type labels for JSON identifiers
-    identifier_type_labels = cv_terms.select([
-        pl.col("accession").alias("type_id"),
-        pl.col("label").alias("type_id_label")
-    ])
-    
-    # All identifiers as JSON (excluding names which are separate)
-    entity_identifiers = (
-        ent_id.filter(pl.col("type_id") != name_tid)
-        .join(identifier_type_labels, on="type_id", how="left")
-        .with_columns(
-            pl.coalesce([
-                pl.col("type_id_label"),
-                (pl.col("type_id") + ":" + pl.col("type_id"))
-            ]).alias("key")
-        )
-        .group_by("entity_id")
-        .agg(
-            pl.struct(
-                pl.col("key"),
-                pl.col("identifier").alias("value")
-            ).alias("identifiers")
-        )
-    )
-    
+
     # Source names for display
     source_names = (
         ent_id.filter(pl.col("type_id") == name_tid)
@@ -226,16 +191,12 @@ def build_search_associations(global_tables_dir: Path, output_path: Path) -> Pat
     assoc_with_parent = (
         assoc_base
         .join(entity_types.rename({"entity_id": "parent_id", "entity_type": "parent_entity_type"}), on="parent_id", how="left")
-        .join(entity_names.rename({"entity_id": "parent_id", "name": "parent_name"}), on="parent_id", how="left")
-        .join(entity_identifiers.rename({"entity_id": "parent_id", "identifiers": "parent_identifiers"}), on="parent_id", how="left")
     )
-    
+
     # 7. Join member entity info
     assoc_with_member = (
         assoc_with_parent
         .join(entity_types.rename({"entity_id": "member_id", "entity_type": "member_entity_type"}), on="member_id", how="left")
-        .join(entity_names.rename({"entity_id": "member_id", "name": "member_name"}), on="member_id", how="left")
-        .join(entity_identifiers.rename({"entity_id": "member_id", "identifiers": "member_identifiers"}), on="member_id", how="left")
     )
     
     # 8. Format sources
@@ -253,12 +214,8 @@ def build_search_associations(global_tables_dir: Path, output_path: Path) -> Pat
         .agg([
             pl.col("parent_id").first().alias("parent_entity_id"),
             pl.col("parent_entity_type").first(),
-            pl.col("parent_name").first(),
-            pl.col("parent_identifiers").first(),
             pl.col("member_id").first().alias("member_entity_id"),
             pl.col("member_entity_type").first(),
-            pl.col("member_name").first(),
-            pl.col("member_identifiers").first(),
             pl.col("source_display").unique().sort().alias("sources"),
             pl.col("member_instance_ids").first(),
         ])
@@ -357,12 +314,8 @@ def build_search_associations(global_tables_dir: Path, output_path: Path) -> Pat
     result = (
         result
         .with_columns([
-            pl.col("parent_identifiers").fill_null(pl.lit([], dtype=ID_LIST_DTYPE)),
-            pl.col("member_identifiers").fill_null(pl.lit([], dtype=ID_LIST_DTYPE)),
             pl.col("sources").fill_null(pl.lit([], dtype=pl.List(pl.Utf8))),
             pl.col("annotations").fill_null(pl.lit([], dtype=ANNOT_LIST_DTYPE)),
-            pl.col("parent_name").fill_null(pl.lit("")),
-            pl.col("member_name").fill_null(pl.lit("")),
             pl.col("parent_entity_type").fill_null(pl.lit("")),
             pl.col("member_entity_type").fill_null(pl.lit("")),
             pl.col("association_annotation_terms").fill_null(pl.lit([], dtype=pl.List(pl.Utf8))) if "association_annotation_terms" in result.columns else pl.lit([], dtype=pl.List(pl.Utf8)).alias("association_annotation_terms"),
@@ -371,12 +324,8 @@ def build_search_associations(global_tables_dir: Path, output_path: Path) -> Pat
             "association_key",
             "parent_entity_id",
             "parent_entity_type",
-            "parent_name",
-            "parent_identifiers",
             "member_entity_id",
             "member_entity_type",
-            "member_name",
-            "member_identifiers",
             "sources",
             "annotations",
             "association_annotation_terms",

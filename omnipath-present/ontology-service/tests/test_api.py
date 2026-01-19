@@ -101,9 +101,9 @@ def test_get_ancestors_with_depth(client):
 
 
 def test_batch_terms(client):
-    """Test batch term lookup."""
+    """Test batch term lookup with auto-detection."""
     response = client.post(
-        "/psi_mi/terms",
+        "/terms",
         json={"term_ids": ["MI:0018", "MI:0045"]}
     )
     assert response.status_code == 200
@@ -127,9 +127,9 @@ def test_trajectories(client):
 
 
 def test_tree(client):
-    """Test tree endpoint."""
+    """Test tree endpoint with auto-detection."""
     response = client.post(
-        "/psi_mi/tree",
+        "/tree",
         json={"term_ids": ["MI:0018"]}
     )
     assert response.status_code == 200

@@ -16,6 +16,7 @@ from polars import Field
 
 from .schema import (
     get_cv_term_accession_sets,
+    CV_TERM_ACCESSION_TYPE,
 )
 
 __all__ = ["build_search_entities"]
@@ -230,6 +231,17 @@ def build_search_entities(global_tables_dir: Path, output_path: Path) -> Path:
             .rename({"annot_entity_id": "entity_id"})
         )
 
+    # 4c.2 CV terms from entity annotations (GO terms, UniProt keywords, etc.)
+    # CV_TERM_ACCESSION annotations have the actual CV term in the value field
+    lazy_joins.append(
+        ent_annot_with_entity
+        .filter(pl.col("cv_term_accession") == CV_TERM_ACCESSION_TYPE)
+        .filter(pl.col("value").is_not_null())
+        .group_by("annot_entity_id")
+        .agg(pl.col("value").unique().sort().alias("cv_terms"))
+        .rename({"annot_entity_id": "entity_id"})
+    )
+
     # 4d. Structural Memberships & Interactions
     # Join memberships to entity to check parent types
     # ent now has entity_type as accession string
@@ -238,7 +250,7 @@ def build_search_entities(global_tables_dir: Path, output_path: Path) -> Path:
         left_on="parent_id", right_on="pid"
     )
 
-    for k, col in [('complex_type', 'complexes'), ('cv_term_type', 'cv_terms'), ('pathway_type', 'pathways'), ('reaction_type', 'reactions')]:
+    for k, col in [('complex_type', 'complexes'), ('pathway_type', 'pathways'), ('reaction_type', 'reactions')]:
         if id_sets[k]:
             lazy_joins.append(
                 mem_types.filter(pl.col("ptype") == id_sets[k])
@@ -369,9 +381,9 @@ def build_search_entities(global_tables_dir: Path, output_path: Path) -> Path:
     # 6. Fill Nulls & Streaming Write
     # Note: We must cast lists explicitly to avoid schema issues if a column is entirely null
     defaults = [
-        pl.col(c).fill_null(pl.lit([], dtype=STR_LIST)) for c in ["names", "synonyms", "gene_symbols", "descriptions", "references", "sources", "stoichiometry", "pathway_steps"]
+        pl.col(c).fill_null(pl.lit([], dtype=STR_LIST)) for c in ["names", "synonyms", "gene_symbols", "descriptions", "references", "sources", "stoichiometry", "pathway_steps", "cv_terms"]
     ] + [
-        pl.col(c).fill_null(pl.lit([], dtype=INT_LIST)) for c in ["complexes", "cv_terms", "pathways", "reactions", "reactants", "products"]
+        pl.col(c).fill_null(pl.lit([], dtype=INT_LIST)) for c in ["complexes", "pathways", "reactions", "reactants", "products"]
     ] + [
         pl.col("identifiers").fill_null(pl.lit([], dtype=ID_LIST_DTYPE)),
         pl.col("num_interactions").fill_null(0)
