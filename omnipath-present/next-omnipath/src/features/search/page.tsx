@@ -19,6 +19,9 @@ interface SearchPageProps {
   embedded?: boolean;
   initialQuery?: string;
   initialSearchType?: "search_entities" | "cv_terms";
+  initialFilters?: { entity_ids?: number[]; entity_types?: string[]; sources?: string[]; ncbi_tax_id?: string[] };
+  // Whether to show filter sidebar even when embedded
+  showFilters?: boolean;
 }
 
 type SearchMode = "full-text" | "identifier" | "batch";
@@ -26,13 +29,17 @@ type SearchMode = "full-text" | "identifier" | "batch";
 export default function SearchPage({
   embedded = false,
   initialQuery = "",
-  initialSearchType = "search_entities"
+  initialSearchType = "search_entities",
+  initialFilters,
+  showFilters = false
 }: SearchPageProps = {}) {
   const [query, setQuery] = useState(initialQuery);
   const [, startTransition] = useTransition();
   const [searchMode, setSearchMode] = useState<SearchMode>("full-text");
   const [selectedSpecies, setSelectedSpecies] = useState<string>("9606"); // Default to Human
-  const [filters, setFilters] = useState<{ entity_types?: string[]; sources?: string[]; ncbi_tax_id?: string[] }>({ ncbi_tax_id: ["9606"] });
+  const [filters, setFilters] = useState<{ entity_ids?: number[]; entity_types?: string[]; sources?: string[]; ncbi_tax_id?: string[] }>(
+    initialFilters || { ncbi_tax_id: ["9606"] }
+  );
   const [filterCounts, setFilterCounts] = useState<{ entity_type?: Record<string, number>; sources?: Record<string, number>; ncbi_tax_id?: Record<string, number> }>({});
   const [lookupMatches, setLookupMatches] = useState<IdentifierMatch[]>([]);
   const [lookupEntities, setLookupEntities] = useState<SearchResult[]>([]);
@@ -106,9 +113,9 @@ export default function SearchPage({
     setFilters(prev => ({ ...prev, ncbi_tax_id: [species] }));
   }, []);
 
-  // Set sidebar content when filter counts are available (not in embedded mode and not multi-search)
+  // Set sidebar content when filter counts are available (not in embedded mode unless showFilters is true)
   useEffect(() => {
-    if (!embedded && searchMode === "full-text" && initialSearchType === "search_entities" && Object.keys(filterCounts).length > 0) {
+    if ((!embedded || showFilters) && searchMode === "full-text" && initialSearchType === "search_entities" && Object.keys(filterCounts).length > 0) {
       setSidebarContent(
         <EntityFilterSidebar
           filters={filters}
@@ -126,7 +133,7 @@ export default function SearchPage({
     return () => {
       setSidebarContent(null);
     };
-  }, [embedded, searchMode, initialSearchType, filterCounts, filters, handleFilterChange, handleClearFilters, setSidebarContent]);
+  }, [embedded, showFilters, searchMode, initialSearchType, filterCounts, filters, handleFilterChange, handleClearFilters, setSidebarContent]);
 
   // Clear identifier results when returning to full-text mode
   useEffect(() => {

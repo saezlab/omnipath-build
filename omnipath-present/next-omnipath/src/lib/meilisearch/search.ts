@@ -32,8 +32,9 @@ function buildEntityFilterString(filters: MeilisearchFilters): string {
 
   // Entity IDs filter (for related entities tab)
   if (filters.entity_ids?.length) {
-    const entityIdFilters = filters.entity_ids.map(id => `entity_id = ${id}`).join(' OR ');
-    filterParts.push(`(${entityIdFilters})`);
+    // Use IN array syntax for better performance
+    const ids = filters.entity_ids.join(', ');
+    filterParts.push(`entity_id IN [${ids}]`);
   }
 
   // Entity type filter

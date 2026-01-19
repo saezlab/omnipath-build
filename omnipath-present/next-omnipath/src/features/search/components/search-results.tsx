@@ -133,12 +133,6 @@ export function SearchResults({
         </div>
       )}
 
-      {/* End of results message */}
-      {sentinelRef && !hasMore && results.length > 0 && (
-        <div className="py-4 text-center text-sm text-muted-foreground">
-          No more results to load
-        </div>
-      )}
     </div>
   );
 } 

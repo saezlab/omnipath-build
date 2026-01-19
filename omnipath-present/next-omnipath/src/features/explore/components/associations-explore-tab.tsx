@@ -6,9 +6,7 @@ import { useInfiniteScroll } from "@/hooks/use-infinite-scroll";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { useEntitySelection } from "@/contexts/entity-selection-context";
 import type { MeilisearchFilters, MeilisearchAssociation } from "@/types/meilisearch";
-import { Card } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
-import { EntityBadge } from "@/components/entity-badge";
+import { ResultCard, type SearchResult } from "@/features/search/components/result-card";
 
 interface AssociationFilters {
     parent_entity_types?: string[];
@@ -52,74 +50,33 @@ interface AssociationsExploreTabProps {
 }
 
 /**
- * Association result card component
+ * Convert a MeilisearchAssociation to a SearchResult for display in ResultCard
  */
-function AssociationCard({ association, mode }: { association: MeilisearchAssociation; mode: 'parents' | 'members' }) {
-    // Show the "other" side based on mode
-    const displayEntity = mode === 'parents'
+function associationToSearchResult(association: MeilisearchAssociation, mode: 'parents' | 'members'): SearchResult {
+    const entity = mode === 'parents'
         ? {
-            name: association.parent_name,
-            type: association.parent_entity_type,
             id: association.parent_entity_id,
-            identifiers: association.parent_identifiers
+            type: association.parent_entity_type,
+            name: association.parent_name,
+            identifiers: association.parent_identifiers,
         }
         : {
-            name: association.member_name,
-            type: association.member_entity_type,
             id: association.member_entity_id,
-            identifiers: association.member_identifiers
+            type: association.member_entity_type,
+            name: association.member_name,
+            identifiers: association.member_identifiers,
         };
 
-    return (
-        <Card className="p-4 hover:bg-muted/50 transition-colors">
-            <div className="flex items-start justify-between gap-4">
-                <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 mb-1">
-                        <EntityBadge
-                            displayName={displayEntity.name || `Entity ${displayEntity.id}`}
-                            canonicalIdentifier={String(displayEntity.id)}
-                            entityType={displayEntity.type}
-                            showHover={false}
-                        />          </div>
-
-                    {/* Show a few key identifiers */}
-                    <div className="flex flex-wrap gap-1 mt-2">
-                        {displayEntity.identifiers?.slice(0, 3).map((id, idx) => (
-                            <Badge key={idx} variant="outline" className="text-xs">
-                                {id.key}: {id.value}
-                            </Badge>
-                        ))}
-                        {(displayEntity.identifiers?.length || 0) > 3 && (
-                            <Badge variant="outline" className="text-xs text-muted-foreground">
-                                +{displayEntity.identifiers!.length - 3} more
-                            </Badge>
-                        )}
-                    </div>
-
-                    {/* Show annotations if any */}
-                    {association.annotations?.length > 0 && (
-                        <div className="flex flex-wrap gap-1 mt-2">
-                            {association.annotations.slice(0, 2).map((ann, idx) => (
-                                <Badge key={idx} variant="secondary" className="text-xs">
-                                    {ann.key}: {ann.value}{ann.unit ? ` ${ann.unit}` : ''}
-                                </Badge>
-                            ))}
-                        </div>
-                    )}
-                </div>
-
-                {/* Sources */}
-                <div className="flex flex-wrap gap-1 justify-end">
-                    {association.sources?.slice(0, 2).map((source, idx) => (
-                        <Badge key={idx} variant="outline" className="text-xs">
-                            {source.split(':')[0]}
-                        </Badge>
-                    ))}
-                </div>
-            </div>
-        </Card>
-    );
+    return {
+        id: String(entity.id),
+        entity_id: entity.id,
+        entity_type: entity.type,
+        names: entity.name ? [entity.name] : [],
+        identifiers: entity.identifiers || [],
+        sources: association.sources || [],
+    };
 }
+
 
 export function AssociationsExploreTab({
     mode = 'parents',
@@ -285,10 +242,9 @@ export function AssociationsExploreTab({
 
             <div className="space-y-2">
                 {results.map((association) => (
-                    <AssociationCard
+                    <ResultCard
                         key={association.association_key}
-                        association={association}
-                        mode={mode}
+                        result={associationToSearchResult(association, mode)}
                     />
                 ))}
             </div>

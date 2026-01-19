@@ -274,10 +274,6 @@ export default function AnnotationsPage() {
         <div className="flex-1 flex flex-col">
             <div className="flex-1 overflow-y-auto">
                 <div className="w-full max-w-screen-xl mx-auto px-4 py-6">
-                    <div className="text-sm text-muted-foreground mb-4">
-                        Found {formatNumber(cvTermCounts.size)} CV terms with {formatNumber(totalAnnotations)} total occurrences across {selectedEntities.length} entit{selectedEntities.length === 1 ? 'y' : 'ies'}
-                    </div>
-
                     {ontologyTabs.length > 0 && (
                         <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
                             {/* Ontology roots as tabs */}

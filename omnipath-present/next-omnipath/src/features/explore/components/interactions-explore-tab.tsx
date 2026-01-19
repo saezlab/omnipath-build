@@ -449,12 +449,6 @@ export function InteractionsExploreTab({
                   </TableBody>
                 </Table>
 
-                {/* End of results message */}
-                {!hasMore && results.length > 0 && (
-                  <div className="py-4 text-center text-sm text-muted-foreground">
-                    No more results to load
-                  </div>
-                )}
               </div>
             </div>
           ) : !loading && (

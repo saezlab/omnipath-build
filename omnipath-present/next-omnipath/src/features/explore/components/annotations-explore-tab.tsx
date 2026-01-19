@@ -200,10 +200,6 @@ export function AnnotationsExploreTab() {
 
     return (
         <div className="space-y-4">
-            <div className="text-sm text-muted-foreground">
-                Found {formatNumber(cvTermCounts.size)} CV terms with {formatNumber(totalAnnotations)} total occurrences across {selectedEntities.length} entit{selectedEntities.length === 1 ? 'y' : 'ies'}
-            </div>
-
             {annotationGroups ? (
                 <Accordion type="multiple" defaultValue={annotationGroups.branches.map(b => b.id)} className="w-full space-y-2">
                     <div className="text-lg font-semibold mb-4">
