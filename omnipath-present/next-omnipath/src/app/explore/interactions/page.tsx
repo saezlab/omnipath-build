@@ -12,7 +12,7 @@ function InteractionsPageFallback() {
 export default function Page() {
     return (
         <Suspense fallback={<InteractionsPageFallback />}>
-            <InteractionsPage />
+            <InteractionsPage useEntityFilters={false} />
         </Suspense>
     );
 }

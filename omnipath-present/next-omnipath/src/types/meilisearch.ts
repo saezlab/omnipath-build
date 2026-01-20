@@ -47,6 +47,7 @@ export interface MeilisearchInteraction {
   has_positive_sign: boolean;
   has_negative_sign: boolean;
   interaction_annotation_terms: string[];
+  sources?: string[];
 
   // Index signature to satisfy DataRow constraint
   [key: string]: unknown;

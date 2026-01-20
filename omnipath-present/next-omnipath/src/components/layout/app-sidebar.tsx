@@ -23,11 +23,8 @@ import {
   MessageSquare,
   Sun,
   Moon,
-  Compass,
   ListChecks,
   GitBranch,
-  Network,
-  Tags,
 } from "lucide-react"
 import Link from "next/link"
 import { usePathname } from "next/navigation"
@@ -44,14 +41,9 @@ const navigationItems = [
     icon: Search,
   },
   {
-    title: "Explore",
+    title: "Interactions",
     url: "/explore/interactions",
-    icon: Compass,
-    subItems: [
-      { title: "Interactions", url: "/explore/interactions", icon: GitBranch },
-      { title: "Associations", url: "/explore/associations", icon: Network },
-      { title: "Annotations", url: "/explore/annotations", icon: Tags },
-    ]
+    icon: GitBranch,
   },
   {
     title: "Chat",
@@ -78,9 +70,6 @@ export function AppSidebar() {
     }
     return pathname === url;
   }
-
-  // Check if explore section should be expanded
-  const isExploreActive = pathname.startsWith("/explore");
 
   return (
     <Sidebar>
@@ -112,7 +101,7 @@ export function AppSidebar() {
             <SidebarMenu>
               {navigationItems.map((item) => (
                 <SidebarMenuItem key={item.title}>
-                  <SidebarMenuButton asChild isActive={isPathActive(item.url) || (item.url === "/search" && pathname === "/selection") || (item.title === "Explore" && isExploreActive)}>
+                  <SidebarMenuButton asChild isActive={isPathActive(item.url) || (item.url === "/search" && pathname === "/selection")}>
                     <Link href={item.url}>
                       <item.icon className="h-5 w-5" />
                       <span>{item.title}</span>
@@ -136,29 +125,14 @@ export function AppSidebar() {
                       </SidebarMenuSubItem>
                     </SidebarMenuSub>
                   )}
-                  {/* Explore submenu */}
-                  {item.title === "Explore" && item.subItems && (
-                    <SidebarMenuSub>
-                      {item.subItems.map((subItem) => (
-                        <SidebarMenuSubItem key={subItem.title}>
-                          <SidebarMenuSubButton asChild isActive={pathname === subItem.url}>
-                            <Link href={subItem.url} className="flex items-center gap-2">
-                              <subItem.icon className="h-4 w-4" />
-                              <span>{subItem.title}</span>
-                            </Link>
-                          </SidebarMenuSubButton>
-                        </SidebarMenuSubItem>
-                      ))}
-                    </SidebarMenuSub>
-                  )}
                 </SidebarMenuItem>
               ))}
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
 
-        {/* Render filter sidebar on search, explore, and sources pages */}
-        {(pathname === '/search' || pathname.startsWith('/explore/') || pathname === '/sources') && sidebarContent && (
+        {/* Render filter sidebar on search, selection, explore, and sources pages */}
+        {(pathname === '/search' || pathname === '/selection' || pathname.startsWith('/explore/') || pathname === '/sources') && sidebarContent && (
           <>
             <div className="px-3">
               <SidebarSeparator />

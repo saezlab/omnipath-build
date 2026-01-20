@@ -167,7 +167,14 @@ def build_search_interactions(global_tables_dir: Path, output_path: Path) -> Pat
 
     # 1. Load Data
     tables = {n: pl.read_parquet(global_tables_dir / f"{n}.parquet")
-              for n in ["entity", "membership", "entity_identifier", "entity_instance", "entity_annotation"]}
+              for n in [
+                  "entity",
+                  "membership",
+                  "entity_identifier",
+                  "entity_identifier_resource",
+                  "entity_instance",
+                  "entity_annotation",
+              ]}
     logger.info("Loaded tables: %s", " ".join(f"{k}={len(v)}" for k, v in tables.items()))
 
     # Load CV term label mappings
@@ -193,6 +200,7 @@ def build_search_interactions(global_tables_dir: Path, output_path: Path) -> Pat
     ent = tables["entity"]
     mem_raw = tables["membership"]
     ent_id = tables["entity_identifier"]
+    ent_id_res = tables["entity_identifier_resource"]
     inst = tables["entity_instance"]
     ent_annot = tables["entity_annotation"]
     
@@ -230,7 +238,7 @@ def build_search_interactions(global_tables_dir: Path, output_path: Path) -> Pat
         pl.DataFrame(schema={
             "interaction_key": pl.Utf8, "member_a_id": pl.Int64, "member_b_id": pl.Int64,
             "member_types": pl.List(pl.Utf8), "evidence": EVIDENCE_LIST_DTYPE,
-            "directions": DIRECTION_LIST_DTYPE
+            "directions": DIRECTION_LIST_DTYPE, "sources": pl.List(pl.Utf8)
         }).write_parquet(output_path)
         return output_path
 
@@ -257,6 +265,41 @@ def build_search_interactions(global_tables_dir: Path, output_path: Path) -> Pat
         .join(type_map, left_on="member_a_id", right_on="entity_id").rename({"fmt": "ta"})
         .join(type_map, left_on="member_b_id", right_on="entity_id").rename({"fmt": "tb"})
         .select("pair_key", "member_a_id", "member_b_id", pl.concat_list("ta", "tb").alias("member_types"))
+    )
+
+    # 4b. Sources
+    source_names = (
+        ent_id.filter(pl.col("type_id") == name_tid)
+        .group_by("entity_id")
+        .agg(pl.col("identifier").first().alias("s_name"))
+    )
+
+    interaction_sources = (
+        ent_id_res.join(
+            ent_id.select(["id", "entity_id"]),
+            left_on="entity_identifier_id",
+            right_on="id",
+        )
+        .rename({"entity_id": "interaction_id", "source_entity_id": "source_id"})
+        .join(source_names, left_on="source_id", right_on="entity_id", how="left")
+        .select(
+            "interaction_id",
+            (
+                pl.coalesce([pl.col("s_name"), pl.lit("Source")])
+                + ":"
+                + pl.col("source_id").cast(pl.Utf8)
+            ).alias("source_fmt"),
+        )
+        .group_by("interaction_id")
+        .agg(pl.col("source_fmt").unique().sort().alias("sources"))
+    )
+
+    pair_sources = (
+        pair_base.select(["interaction_id", "pair_key"])
+        .join(interaction_sources, on="interaction_id", how="left")
+        .explode("sources")
+        .group_by("pair_key")
+        .agg(pl.col("sources").drop_nulls().unique().sort().alias("sources"))
     )
 
     # 5. Prepare Annotations
@@ -512,9 +555,11 @@ def build_search_interactions(global_tables_dir: Path, output_path: Path) -> Pat
         doc_base
         .join(final_evidence, on="pair_key", how="left")
         .join(directions_df, on="pair_key", how="left")
+        .join(pair_sources, on="pair_key", how="left")
         .with_columns([
             pl.coalesce(pl.col("evidence"), pl.lit([], dtype=EVIDENCE_LIST_DTYPE)).alias("evidence"),
-            pl.coalesce(pl.col("directions"), pl.lit([], dtype=DIRECTION_LIST_DTYPE)).alias("directions")
+            pl.coalesce(pl.col("directions"), pl.lit([], dtype=DIRECTION_LIST_DTYPE)).alias("directions"),
+            pl.coalesce(pl.col("sources"), pl.lit([], dtype=pl.List(pl.Utf8))).alias("sources"),
         ])
         .rename({"pair_key": "interaction_key"})
     )

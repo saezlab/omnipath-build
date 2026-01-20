@@ -3,7 +3,6 @@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useSidebarContent } from "@/contexts/sidebar-content-context";
 import { useCallback, useEffect, useState, useMemo } from "react";
-import { useSearchParams } from "next/navigation";
 import { InteractionsExploreTab } from "./components/interactions-explore-tab";
 import { AssociationsExploreTab } from "./components/associations-explore-tab";
 import { AnnotationsExploreTab } from "./components/annotations-explore-tab";
@@ -11,7 +10,6 @@ import { FilterSidebar } from "@/features/interactions-search/components/filter-
 import { MeilisearchFilters } from "@/types/meilisearch";
 import { useEntitySelection } from "@/contexts/entity-selection-context";
 import { searchAssociationsMeilisearch } from "@/lib/meilisearch/search";
-import { searchInteractions } from "@/features/interactions-search/api/queries";
 
 interface EntityFilters {
   entity_types?: string[];
@@ -38,7 +36,6 @@ const ENTITY_TYPES = {
 export default function ExplorePage() {
   const [activeTab, setActiveTab] = useState("interactions");
   const { setSidebarContent } = useSidebarContent();
-  const searchParams = useSearchParams();
   const { selectedEntities } = useEntitySelection();
 
   // Tab availability state (loaded dynamically via associations count)
@@ -52,30 +49,8 @@ export default function ExplorePage() {
   });
   const [tabCountsLoading, setTabCountsLoading] = useState(false);
 
-  // Parse entity IDs from URL params
-  const parseEntityIds = useCallback(() => {
-    const singleEntity = searchParams.get("entity");
-    const multipleEntities = searchParams.get("entities");
-
-    if (multipleEntities) {
-      const ids = multipleEntities.split(',').map(id => parseInt(id.trim(), 10)).filter(id => !isNaN(id));
-      return ids.length > 0 ? ids : undefined;
-    }
-    if (singleEntity) {
-      const id = parseInt(singleEntity, 10);
-      return !isNaN(id) ? [id] : undefined;
-    }
-    return undefined;
-  }, [searchParams]);
-
   // Interactions filter state
-  const [interactionsFilters, setInteractionsFilters] = useState<MeilisearchFilters>(() => {
-    const entityIds = parseEntityIds();
-    if (entityIds?.length) {
-      return { entity_ids: entityIds };
-    }
-    return {};
-  });
+  const [interactionsFilters, setInteractionsFilters] = useState<MeilisearchFilters>({});
   const [interactionsFilterCounts, setInteractionsFilterCounts] = useState<Record<string, Record<string, number>>>({});
 
   // Get selected entity IDs
@@ -188,18 +163,6 @@ export default function ExplorePage() {
   const handleInteractionsFilterCountsUpdate = useCallback((counts: Record<string, Record<string, number>>) => {
     setInteractionsFilterCounts(counts);
   }, []);
-
-  // Sync URL params with filter state
-  useEffect(() => {
-    const entityIds = parseEntityIds();
-    if (entityIds?.length) {
-      setInteractionsFilters(prev => ({
-        ...prev,
-        entity_ids: entityIds,
-        member_a_id: undefined
-      }));
-    }
-  }, [searchParams, parseEntityIds]);
 
   // Set sidebar content based on active tab
   useEffect(() => {

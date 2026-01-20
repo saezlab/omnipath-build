@@ -1,14 +1,18 @@
 "use client";
 
 import { useSidebarContent } from "@/contexts/sidebar-content-context";
-import { useEntitySelection } from "@/contexts/entity-selection-context";
 import { useCallback, useEffect, useState, useMemo } from "react";
 import { useSearchParams } from "next/navigation";
 import { InteractionsExploreTab } from "./components/interactions-explore-tab";
 import { FilterSidebar } from "@/features/interactions-search/components/filter-sidebar";
 import { MeilisearchFilters } from "@/types/meilisearch";
+import { useEntitySelection } from "@/contexts/entity-selection-context";
 
-export default function InteractionsPage() {
+interface InteractionsPageProps {
+    useEntityFilters?: boolean;
+}
+
+export default function InteractionsPage({ useEntityFilters = true }: InteractionsPageProps) {
     const { setSidebarContent } = useSidebarContent();
     const searchParams = useSearchParams();
     const { selectedEntities } = useEntitySelection();
@@ -39,6 +43,9 @@ export default function InteractionsPage() {
 
     // Interactions filter state - use URL params first, then fall back to entity selection context
     const [filters, setFilters] = useState<MeilisearchFilters>(() => {
+        if (!useEntityFilters) {
+            return {};
+        }
         const urlEntityIds = parseEntityIds();
         if (urlEntityIds?.length) {
             return { entity_ids: urlEntityIds };
@@ -65,6 +72,9 @@ export default function InteractionsPage() {
 
     // Sync URL params and entity selection context with filter state
     useEffect(() => {
+        if (!useEntityFilters) {
+            return;
+        }
         const urlEntityIds = parseEntityIds();
         if (urlEntityIds?.length) {
             // URL params take priority
@@ -81,7 +91,7 @@ export default function InteractionsPage() {
                 member_a_id: undefined
             }));
         }
-    }, [searchParams, parseEntityIds, selectedEntityIds]);
+    }, [searchParams, parseEntityIds, selectedEntityIds, useEntityFilters]);
 
     // Set sidebar content
     useEffect(() => {

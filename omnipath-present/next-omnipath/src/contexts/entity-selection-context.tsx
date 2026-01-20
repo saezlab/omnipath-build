@@ -2,6 +2,7 @@
 
 import { createContext, useContext, ReactNode, useState, useCallback } from "react"
 import type { SearchResult } from "@/features/search/components/result-card"
+import { searchAssociationsMeilisearch } from "@/lib/meilisearch/search"
 
 export interface SelectedEntity {
   id: string
@@ -13,6 +14,8 @@ export interface SelectedEntity {
   references?: string[]
   // Store full search result for proper display
   fullResult?: SearchResult
+  // Associated entity IDs (from complexes, pathways, etc.)
+  associated_entity_ids?: number[]
 }
 
 
@@ -37,14 +40,59 @@ const EntitySelectionContext = createContext<EntitySelectionContextType>({
 export function EntitySelectionProvider({ children }: { children: ReactNode }) {
   const [selectedEntities, setSelectedEntities] = useState<SelectedEntity[]>([])
 
-  const addEntity = useCallback((entity: SelectedEntity) => {
-    setSelectedEntities(prev => {
-      if (prev.some(e => e.id === entity.id)) {
-        return prev
+  const addEntity = useCallback(async (entity: SelectedEntity) => {
+    // Check if already selected
+    if (selectedEntities.some(e => e.id === entity.id)) {
+      return
+    }
+
+    // Fetch associated entity IDs if we have a numeric entity ID
+    let associated_entity_ids: number[] = []
+    if (entity.entityId) {
+      try {
+        // Query associations in both directions
+        const [parentsResponse, membersResponse] = await Promise.all([
+          searchAssociationsMeilisearch({
+            query: "",
+            index: 'search_associations' as any,
+            limit: 10000,
+            offset: 0,
+            filters: { member_entity_ids: [entity.entityId] }
+          }),
+          searchAssociationsMeilisearch({
+            query: "",
+            index: 'search_associations' as any,
+            limit: 10000,
+            offset: 0,
+            filters: { parent_entity_ids: [entity.entityId] }
+          })
+        ])
+
+        // Extract unique entity IDs from both queries
+        const entityIdSet = new Set<number>()
+        const parentHits = parentsResponse.hits as any[]
+        const memberHits = membersResponse.hits as any[]
+
+        // Add parent entity IDs
+        parentHits.forEach(hit => {
+          if (hit.parent_entity_id) entityIdSet.add(hit.parent_entity_id)
+        })
+
+        // Add member entity IDs
+        memberHits.forEach(hit => {
+          if (hit.member_entity_id) entityIdSet.add(hit.member_entity_id)
+        })
+
+        associated_entity_ids = Array.from(entityIdSet)
+      } catch (error) {
+        console.error("Error fetching associations for entity:", entity.id, error)
+        // Continue adding entity even if associations fetch fails
       }
-      return [...prev, entity]
-    })
-  }, [])
+    }
+
+    // Add entity with associations
+    setSelectedEntities(prev => [...prev, { ...entity, associated_entity_ids }])
+  }, [selectedEntities])
 
   const removeEntity = useCallback((id: string) => {
     setSelectedEntities(prev => prev.filter(e => e.id !== id))

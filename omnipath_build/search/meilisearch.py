@@ -36,6 +36,8 @@ class MeilisearchSettings:
             'has_negative_sign',  # Boolean: any sign == -1 or sign == 0 (mixed)
             # Evidence annotations (flattened)
             'interaction_annotation_terms',  # Array of term IDs/labels from all evidence
+            # Source filtering
+            'sources',
         ],
         'sortableAttributes': [],
         'displayedAttributes': ['*'],

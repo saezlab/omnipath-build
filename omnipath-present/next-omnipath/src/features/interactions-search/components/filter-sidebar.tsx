@@ -231,8 +231,12 @@ export function FilterSidebar({
     return Object.entries(counts)
       .map(([value, count]) => {
         const label = value.includes(':') ? value.split(':')[0] : value;
-        // Get emoji icon for member_types filter
-        const icon = filterKey === 'member_types' ? getEntityTypeEmoji(value) : undefined;
+        // Get emoji icon for member_types and sources filters
+        const icon = filterKey === 'member_types'
+          ? getEntityTypeEmoji(value)
+          : filterKey === 'sources'
+            ? '📚'
+            : undefined;
         return {
           value,
           count,
@@ -243,44 +247,8 @@ export function FilterSidebar({
       .sort((a, b) => b.count - a.count);
   };
 
-  // Handler for clearing entity filter
-  const handleClearEntityFilter = () => {
-    // Remove entity-related filters, keep the rest
-    const { member_a_id, member_b_id, entity_ids, ...rest } = filters;
-    void member_a_id; void member_b_id; void entity_ids; // Explicitly ignore
-    onFilterChange(rest);
-  };
-
-  // Check if we have any entity filters
-  const hasEntityFilter = filters.member_a_id || filters.entity_ids?.length;
-  const entityFilterDisplay = filters.entity_ids?.length
-    ? `${filters.entity_ids.length} ${filters.entity_ids.length === 1 ? 'entity' : 'entities'}`
-    : filters.member_a_id
-      ? `Entity ID: ${filters.member_a_id}`
-      : null;
-
   const content = (
     <div className="space-y-4">
-      {/* Entity Filter Badge */}
-      {hasEntityFilter && (
-        <div className="space-y-2">
-          <Label className="text-xs font-medium text-muted-foreground">ENTITY FILTER</Label>
-          <div className="flex items-center gap-2">
-            <Badge variant="secondary" className="flex items-center gap-1 py-1 px-2">
-              <span>{entityFilterDisplay}</span>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-4 w-4 p-0 hover:bg-transparent"
-                onClick={handleClearEntityFilter}
-              >
-                <X className="h-3 w-3" />
-              </Button>
-            </Badge>
-          </div>
-        </div>
-      )}
-
       {/* Quick Filters */}
       <div className="mb-4 space-y-3">
         {/* Directionality */}
@@ -352,6 +320,16 @@ export function FilterSidebar({
           options={transformFilterCounts(filterCounts.member_types, 'member_types')}
           selectedValues={filters.member_types || []}
           onToggle={(value) => handleArrayToggle("member_types", value)}
+          showHoverCard={true}
+          showIcon={true}
+        />
+        {/* Sources Filter */}
+        <ArrayFilterSection
+          title="Sources"
+          filterKey="sources"
+          options={transformFilterCounts(filterCounts.sources, 'sources')}
+          selectedValues={filters.sources || []}
+          onToggle={(value) => handleArrayToggle("sources", value)}
           showHoverCard={true}
           showIcon={true}
         />

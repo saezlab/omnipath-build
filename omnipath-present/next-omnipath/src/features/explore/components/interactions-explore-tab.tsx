@@ -104,6 +104,9 @@ export function InteractionsExploreTab({
         if (facetDist.interaction_annotation_terms) {
           counts.interaction_annotation_terms = facetDist.interaction_annotation_terms;
         }
+        if (facetDist.sources) {
+          counts.sources = facetDist.sources;
+        }
 
         setFilterCounts(counts);
         onFilterCountsUpdate(counts);

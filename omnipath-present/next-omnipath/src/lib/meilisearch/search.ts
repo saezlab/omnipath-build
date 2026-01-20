@@ -170,6 +170,12 @@ function buildMeilisearchFilterString(filters: MeilisearchFilters): string {
     filterParts.push(`(${termFilters})`);
   }
 
+  // Sources filter
+  if (filters.sources?.length) {
+    const sourceFilters = filters.sources.map(source => `sources = "${source}"`).join(' OR ');
+    filterParts.push(`(${sourceFilters})`);
+  }
+
   return filterParts.join(' AND ');
 }
 
@@ -199,6 +205,7 @@ export async function searchInteractionsMeilisearch(
         'has_positive_sign',
         'has_negative_sign',
         'interaction_annotation_terms',
+        'sources',
       ],
     };
 
