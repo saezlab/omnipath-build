@@ -56,6 +56,12 @@ function buildEntityFilterString(filters: MeilisearchFilters): string {
     filterParts.push(`(${taxIdFilters} OR ncbi_tax_id IS NULL)`);
   }
 
+  // CV terms filter
+  if (filters.cv_terms?.length) {
+    const cvTermFilters = filters.cv_terms.map(term => `cv_terms = "${term}"`).join(' OR ');
+    filterParts.push(`(${cvTermFilters})`);
+  }
+
   return filterParts.join(' AND ');
 }
 
@@ -86,6 +92,7 @@ export async function searchMeilisearch(params: SearchParams): Promise<SearchRes
         'entity_type',
         'sources',
         'ncbi_tax_id',
+        'cv_terms',
       ];
 
       // Add filters if present

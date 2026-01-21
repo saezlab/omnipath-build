@@ -11,6 +11,7 @@ class MeilisearchSettings:
             'entity_type',
             'sources',
             'ncbi_tax_id',
+            'cv_terms',
         ],
         'displayedAttributes': ['*'],
         'rankingRules': [

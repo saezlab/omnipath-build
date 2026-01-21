@@ -1,13 +1,14 @@
 "use client"
 
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
+import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { MeilisearchFilters } from "@/types/meilisearch"
-import { ArrowRight, Plus, Minus, X, Filter } from "lucide-react"
+import { ArrowRight, Plus, Minus, X, Filter, Search } from "lucide-react"
 import { cn, formatNumber, getEntityTypeEmoji } from "@/lib/utils"
 import { Card, CardContent, CardHeader } from "@/components/ui/card"
 import { EntityHoverCard, CvTermHoverCard } from "@/features/search/components/result-card"
@@ -35,8 +36,8 @@ interface FilterSidebarProps {
 }
 
 function extractTermId(value: string): string | null {
-  // Match both MI: (PSI-MI) and OM: (OmniPath) term IDs
-  const match = value.match(/(MI|OM):\d{4,}/);
+  // Match ontology term IDs (PSI-MI, OmniPath, GO, etc.)
+  const match = value.match(/(MI|OM|GO|HP|DO|MP|CHEBI|CL|UBERON|MONDO):\d{4,}/);
   return match ? match[0] : null;
 }
 
@@ -92,6 +93,7 @@ interface FilterOptionRowProps {
   showHoverCard?: boolean;
   showIcon?: boolean;
   labelOverride?: string;
+  highlighted?: boolean;
 }
 
 function FilterOptionRow({
@@ -101,7 +103,8 @@ function FilterOptionRow({
   onToggle,
   showHoverCard = false,
   showIcon = false,
-  labelOverride
+  labelOverride,
+  highlighted = false,
 }: FilterOptionRowProps) {
   const { value, count, label, icon } = option;
   const isSelected = selectedValues?.includes(value) || false;
@@ -109,7 +112,7 @@ function FilterOptionRow({
   // If the value matches the pattern "Label:Prefix:ID", we want to split correctly
   // Example: "Agonist:MI:0001" -> label="Agonist", id="MI:0001"
   let displayLabel = labelOverride || label;
-  let entityId: string | null = null;
+  let entityId: string | null = extractTermId(value);
 
   if (!displayLabel) {
     // Try to parse from value string
@@ -133,7 +136,7 @@ function FilterOptionRow({
     // Label is provided, try to extract ID from value if it looks like an ID
     // If value already contains the ID (which is typical), we need to extract the ID part
     const parts = value.split(':');
-    if (parts.length >= 2) {
+    if (parts.length >= 2 && !entityId) {
       const possiblePrefix = parts[parts.length - 2];
       if (['MI', 'OM'].includes(possiblePrefix)) {
         entityId = `${parts[parts.length - 2]}:${parts[parts.length - 1]}`;
@@ -144,7 +147,10 @@ function FilterOptionRow({
   }
 
   const labelContent = (
-    <span className="truncate">
+    <span className={cn(
+      "truncate",
+      highlighted ? "text-primary font-medium" : ""
+    )}>
       {showIcon && icon && <span className="mr-1.5">{icon}</span>}
       {displayLabel}
     </span>
@@ -230,7 +236,12 @@ export function FilterSidebar({
     if (!counts) return [];
     return Object.entries(counts)
       .map(([value, count]) => {
-        const label = value.includes(':') ? value.split(':')[0] : value;
+        const termId = extractTermId(value);
+        const label = termId && termId === value
+          ? value
+          : value.includes(':')
+            ? value.split(':')[0]
+            : value;
         // Get emoji icon for member_types and sources filters
         const icon = filterKey === 'member_types'
           ? getEntityTypeEmoji(value)
@@ -395,6 +406,7 @@ export function AnnotationFilterSidebar({
   isMobile = false,
 }: AnnotationFilterSidebarProps) {
   const [annotationTree, setAnnotationTree] = useState<TreeNode | null>(null);
+  const [annotationQuery, setAnnotationQuery] = useState("");
   const treeRequestedRef = useRef(false);
 
   const annotationTermValues = useMemo(
@@ -449,7 +461,12 @@ export function AnnotationFilterSidebar({
     if (!counts) return [];
     return Object.entries(counts)
       .map(([value, count]) => {
-        const label = value.includes(':') ? value.split(':')[0] : value;
+        const termId = extractTermId(value);
+        const label = termId && termId === value
+          ? value
+          : value.includes(':')
+            ? value.split(':')[0]
+            : value;
         return {
           value,
           count,
@@ -517,14 +534,16 @@ export function AnnotationFilterSidebar({
     for (const [termId, option] of annotationTermOptions.mapped.entries()) {
       const parent = parentById.get(termId);
       const rootChild = rootChildById.get(termId);
+      const label = nameById.get(termId) || option.label || termId;
+      const enrichedOption = { ...option, label };
       const branch = rootChild
         ? ensureBranch(rootChild.id, nameById.get(rootChild.id) || rootChild.id)
         : ensureBranch("other", "Other");
 
       if (parent) {
-        ensureParent(branch, parent.id, nameById.get(parent.id) || parent.id).terms.push(option);
+        ensureParent(branch, parent.id, nameById.get(parent.id) || parent.id).terms.push(enrichedOption);
       } else {
-        ensureParent(branch, "other", "Other").terms.push(option);
+        ensureParent(branch, "other", "Other").terms.push(enrichedOption);
       }
     }
 
@@ -553,6 +572,73 @@ export function AnnotationFilterSidebar({
     };
   }, [annotationTree, annotationTermOptions.mapped]);
 
+  const normalizedQuery = annotationQuery.trim().toLowerCase();
+  const matchesQuery = useCallback(
+    (value?: string) => {
+      if (!normalizedQuery) return false;
+      return (value || "").toLowerCase().includes(normalizedQuery);
+    },
+    [normalizedQuery]
+  );
+
+  const filteredAnnotationGroups = useMemo(() => {
+    if (!annotationGroups) return null;
+    if (!normalizedQuery) return annotationGroups;
+
+    const filteredBranches: AnnotationBranchGroup[] = [];
+
+    for (const branch of annotationGroups.branches) {
+      const branchMatches = matchesQuery(branch.name);
+      if (branchMatches) {
+        filteredBranches.push(branch);
+        continue;
+      }
+
+      const filteredParents: AnnotationParentGroup[] = [];
+      for (const parent of branch.parents) {
+        const parentMatches = matchesQuery(parent.name);
+        if (parentMatches) {
+          filteredParents.push(parent);
+          continue;
+        }
+
+        const filteredTerms = parent.terms.filter((term) =>
+          matchesQuery(term.label || term.value)
+        );
+        if (filteredTerms.length > 0) {
+          filteredParents.push({
+            ...parent,
+            terms: filteredTerms
+          });
+        }
+      }
+
+      if (filteredParents.length > 0) {
+        filteredBranches.push({
+          ...branch,
+          parents: filteredParents
+        });
+      }
+    }
+
+    return {
+      ...annotationGroups,
+      branches: filteredBranches
+    };
+  }, [annotationGroups, matchesQuery, normalizedQuery]);
+
+  const filteredUnmatched = useMemo(() => {
+    if (!normalizedQuery) return annotationTermOptions.unmatched;
+    return annotationTermOptions.unmatched.filter((option) =>
+      matchesQuery(option.label || option.value)
+    );
+  }, [annotationTermOptions.unmatched, matchesQuery, normalizedQuery]);
+
+  const hasFilteredResults = useMemo(() => {
+    const branchCount = filteredAnnotationGroups?.branches.length || 0;
+    return branchCount > 0 || filteredUnmatched.length > 0;
+  }, [filteredAnnotationGroups, filteredUnmatched.length]);
+
   const handleAnnotationToggle = (value: string) => {
     const currentValues = filters.interaction_annotation_terms || [];
     const newValues = currentValues.includes(value)
@@ -567,22 +653,58 @@ export function AnnotationFilterSidebar({
 
   const content = (
     <div className="space-y-6">
-      {annotationGroups ? (
-        <Accordion type="multiple" defaultValue={annotationGroups.branches.map(b => b.id)} className="w-full space-y-1">
+      <div className="space-y-2">
+        <Label className="text-xs font-medium text-muted-foreground">Ontology search</Label>
+        <div className="relative">
+          <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            placeholder="Filter ontology terms"
+            value={annotationQuery}
+            onChange={(event) => setAnnotationQuery(event.target.value)}
+            className="pl-9 pr-9 h-9"
+          />
+          {annotationQuery ? (
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => setAnnotationQuery("")}
+              className="absolute right-1 top-1/2 -translate-y-1/2 h-7 w-7"
+            >
+              <X className="h-4 w-4" />
+            </Button>
+          ) : null}
+        </div>
+      </div>
+      {!hasFilteredResults && normalizedQuery ? (
+        <div className="text-sm text-muted-foreground">
+          No ontology terms match your search.
+        </div>
+      ) : null}
+      {filteredAnnotationGroups && hasFilteredResults ? (
+        <Accordion
+          type="multiple"
+          defaultValue={filteredAnnotationGroups.branches.map(b => b.id)}
+          className="w-full space-y-1"
+        >
           <div className="text-sm font-medium mb-3 uppercase">
-            {annotationGroups.rootName}
+            {filteredAnnotationGroups.rootName}
           </div>
-          {annotationGroups.branches.map((branch) => (
+          {filteredAnnotationGroups.branches.map((branch) => (
             <AccordionItem key={branch.id} value={branch.id} className="border-none">
               <AccordionTrigger className="py-1.5 px-0 hover:bg-muted/50 hover:no-underline rounded-md text-sm font-medium">
-                {branch.name}
+                <span className={cn(matchesQuery(branch.name) ? "text-primary font-semibold" : "")}>
+                  {branch.name}
+                </span>
               </AccordionTrigger>
               <AccordionContent className="pb-2 pt-1">
                 <div className="space-y-3 pl-2">
                   {branch.parents.map((parent) => (
                     <div key={parent.id} className="space-y-1">
                       {parent.id !== branch.id && (
-                        <div className="text-xs font-medium text-muted-foreground pl-2 py-0.5">
+                        <div className={cn(
+                          "text-xs font-medium text-muted-foreground pl-2 py-0.5",
+                          matchesQuery(parent.name) ? "text-primary" : ""
+                        )}>
                           {parent.name}
                         </div>
                       )}
@@ -595,6 +717,7 @@ export function AnnotationFilterSidebar({
                             selectedValues={filters.interaction_annotation_terms || []}
                             onToggle={handleAnnotationToggle}
                             showHoverCard={true}
+                            highlighted={matchesQuery(option.label || option.value)}
                           />
                         ))}
                       </div>
@@ -607,9 +730,9 @@ export function AnnotationFilterSidebar({
         </Accordion>
       ) : null}
 
-      {annotationTermOptions.unmatched.length > 0 ? (
+      {filteredUnmatched.length > 0 ? (
         <div className="space-y-1 pt-2 border-t border-muted/60">
-          {annotationTermOptions.unmatched.map((option) => (
+          {filteredUnmatched.map((option) => (
             <FilterOptionRow
               key={option.value}
               filterKey="interaction_annotation_terms"
@@ -617,6 +740,7 @@ export function AnnotationFilterSidebar({
               selectedValues={filters.interaction_annotation_terms || []}
               onToggle={handleAnnotationToggle}
               showHoverCard={true}
+              highlighted={matchesQuery(option.label || option.value)}
             />
           ))}
         </div>
@@ -633,7 +757,7 @@ export function AnnotationFilterSidebar({
       <CardHeader className="border-b flex-shrink-0 h-[57px] flex items-center py-3">
         <div className="flex items-center gap-2">
           <Filter className="h-5 w-5 text-primary" />
-          <h3 className="font-semibold text-lg">Annotations</h3>
+          <h3 className="font-semibold text-lg">Ontology Browser</h3>
         </div>
       </CardHeader>
       <CardContent className="flex-1 min-h-0 overflow-y-auto py-4">

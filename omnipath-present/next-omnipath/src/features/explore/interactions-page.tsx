@@ -117,7 +117,7 @@ export default function InteractionsPage({ useEntityFilters = true }: Interactio
     return (
         <div className="flex-1 flex flex-col">
             <div className="flex-1 overflow-y-auto">
-                <div className="w-full max-w-screen-xl mx-auto px-4 py-6">
+                <div className="w-full max-w-screen-xl mx-auto px-4">
                     <InteractionsExploreTab
                         filters={filters}
                         onFilterChange={handleFilterChange}
