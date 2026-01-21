@@ -6,7 +6,6 @@ import { Badge } from "@/components/ui/badge";
 import Link from "next/link";
 import SearchPage from "@/features/search/page";
 import InteractionsPage from "@/features/explore/interactions-page";
-import AnnotationsPage from "@/features/explore/annotations-page";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useMemo, useState, useEffect } from "react";
 import { searchInteractionsMeilisearch } from "@/lib/meilisearch/search";
@@ -32,16 +31,6 @@ export default function SelectionPage() {
       entity.associated_entity_ids?.forEach(id => entityIdSet.add(id));
     });
     return Array.from(entityIdSet);
-  }, [selectedEntities]);
-
-  // Count unique CV terms
-  const annotationsCount = useMemo(() => {
-    const cvTermSet = new Set<string>();
-    selectedEntities.forEach(entity => {
-      const cvTerms = entity.cv_terms || entity.fullResult?.cv_terms || [];
-      cvTerms.forEach(term => cvTermSet.add(term));
-    });
-    return cvTermSet.size;
   }, [selectedEntities]);
 
   // Fetch interaction count
@@ -102,7 +91,11 @@ export default function SelectionPage() {
                   {selectionCount}
                 </Badge>
               </TabsTrigger>
-              <TabsTrigger value="interactions" className="flex items-center gap-2">
+              <TabsTrigger
+                value="interactions"
+                className="flex items-center gap-2"
+                disabled={!loadingCounts && (interactionsCount ?? 0) === 0}
+              >
                 Interactions
                 {loadingCounts ? (
                   <Badge variant="secondary" className="ml-1">...</Badge>
@@ -112,16 +105,14 @@ export default function SelectionPage() {
                   </Badge>
                 )}
               </TabsTrigger>
-              <TabsTrigger value="associations" className="flex items-center gap-2">
+              <TabsTrigger
+                value="associations"
+                className="flex items-center gap-2"
+                disabled={associatedEntityIds.length === 0}
+              >
                 Associations
                 <Badge variant="secondary" className="ml-1">
                   {associatedEntityIds.length}
-                </Badge>
-              </TabsTrigger>
-              <TabsTrigger value="annotations" className="flex items-center gap-2">
-                Annotations
-                <Badge variant="secondary" className="ml-1">
-                  {annotationsCount}
                 </Badge>
               </TabsTrigger>
             </TabsList>
@@ -131,6 +122,8 @@ export default function SelectionPage() {
         <TabsContent value="selection" className="flex-1 overflow-hidden mt-0">
           <SearchPage
             embedded={true}
+            allowOntologyInEmbedded={true}
+            showLayoutSwitcherInEmbedded={true}
             showFilters={true}
             initialFilters={{ entity_ids: selectedEntityIds }}
           />
@@ -144,6 +137,8 @@ export default function SelectionPage() {
           {associatedEntityIds.length > 0 ? (
             <SearchPage
               embedded={true}
+              allowOntologyInEmbedded={true}
+              showLayoutSwitcherInEmbedded={true}
               showFilters={true}
               initialFilters={{ entity_ids: associatedEntityIds }}
             />
@@ -156,9 +151,6 @@ export default function SelectionPage() {
           )}
         </TabsContent>
 
-        <TabsContent value="annotations" className="flex-1 overflow-hidden mt-0">
-          <AnnotationsPage />
-        </TabsContent>
       </Tabs>
     </div>
   );

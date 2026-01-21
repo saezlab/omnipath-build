@@ -21,6 +21,10 @@ import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/componen
 interface SearchPageProps {
   // Props for embedded mode (like in AI dialogs)
   embedded?: boolean;
+  // Allow ontology browser when embedded (e.g. selection tab)
+  allowOntologyInEmbedded?: boolean;
+  // Show the layout switcher in embedded mode when ontology is available
+  showLayoutSwitcherInEmbedded?: boolean;
   initialQuery?: string;
   initialSearchType?: "search_entities" | "cv_terms";
   initialFilters?: { entity_ids?: number[]; entity_types?: string[]; sources?: string[]; ncbi_tax_id?: string[]; cv_terms?: string[] };
@@ -33,6 +37,8 @@ type LayoutMode = "search" | "split" | "ontology";
 
 export default function SearchPage({
   embedded = false,
+  allowOntologyInEmbedded = false,
+  showLayoutSwitcherInEmbedded = false,
   initialQuery = "",
   initialSearchType = "search_entities",
   initialFilters,
@@ -54,6 +60,7 @@ export default function SearchPage({
   const [batchInput, setBatchInput] = useState("");
   const { setSidebarContent } = useSidebarContent();
   const [layoutMode, setLayoutMode] = useState<LayoutMode>("split");
+  const [layoutTouched, setLayoutTouched] = useState(false);
 
   // Fetch function for infinite scroll
   const fetchSearchData = useCallback(
@@ -142,18 +149,30 @@ export default function SearchPage({
     }));
   }, []);
 
+  const hasOntologyTerms = Object.keys(filterCounts.cv_terms || {}).length > 0;
   const ontologyEnabled =
-    !embedded &&
+    (allowOntologyInEmbedded || !embedded) &&
     searchMode === "full-text" &&
-    initialSearchType === "search_entities";
+    initialSearchType === "search_entities" &&
+    hasOntologyTerms;
 
-  const effectiveLayoutMode = embedded ? "search" : layoutMode;
+  const effectiveLayoutMode = embedded && !allowOntologyInEmbedded ? "search" : layoutMode;
 
   useEffect(() => {
     if (!ontologyEnabled && layoutMode !== "search") {
       setLayoutMode("search");
+      return;
     }
-  }, [layoutMode, ontologyEnabled]);
+
+    if (ontologyEnabled && layoutMode === "search" && !layoutTouched) {
+      setLayoutMode("split");
+    }
+  }, [layoutMode, layoutTouched, ontologyEnabled]);
+
+  const handleLayoutChange = useCallback((mode: LayoutMode) => {
+    setLayoutTouched(true);
+    setLayoutMode(mode);
+  }, []);
 
   // Set sidebar content when filter counts are available (not in embedded mode unless showFilters is true)
   useEffect(() => {
@@ -413,13 +432,13 @@ export default function SearchPage({
         )}
       </div>
 
-      {!embedded && (
+      {(!embedded || (showLayoutSwitcherInEmbedded && ontologyEnabled)) && (
         <div className="fixed bottom-4 right-4 z-40">
           <div className="inline-flex items-center rounded-full border bg-background/90 p-1 shadow-sm">
             <Button
               size="sm"
               variant={effectiveLayoutMode === "search" ? "default" : "ghost"}
-              onClick={() => setLayoutMode("search")}
+              onClick={() => handleLayoutChange("search")}
               className="rounded-full h-8"
             >
               Search
@@ -427,7 +446,7 @@ export default function SearchPage({
             <Button
               size="sm"
               variant={effectiveLayoutMode === "split" ? "default" : "ghost"}
-              onClick={() => setLayoutMode("split")}
+              onClick={() => handleLayoutChange("split")}
               className="rounded-full h-8"
               disabled={!ontologyEnabled}
             >
@@ -436,7 +455,7 @@ export default function SearchPage({
             <Button
               size="sm"
               variant={effectiveLayoutMode === "ontology" ? "default" : "ghost"}
-              onClick={() => setLayoutMode("ontology")}
+              onClick={() => handleLayoutChange("ontology")}
               className="rounded-full h-8"
               disabled={!ontologyEnabled}
             >

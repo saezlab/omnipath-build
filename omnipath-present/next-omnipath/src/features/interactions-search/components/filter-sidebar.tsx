@@ -1,12 +1,13 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { MeilisearchFilters } from "@/types/meilisearch"
 import { ArrowRight, Plus, Minus, X, Filter, Search } from "lucide-react"
 import { cn, formatNumber, getEntityTypeEmoji } from "@/lib/utils"
@@ -39,6 +40,24 @@ function extractTermId(value: string): string | null {
   // Match ontology term IDs (PSI-MI, OmniPath, GO, etc.)
   const match = value.match(/(MI|OM|GO|HP|DO|MP|CHEBI|CL|UBERON|MONDO):\d{4,}/);
   return match ? match[0] : null;
+}
+
+const PREFIX_NAMES: Record<string, string> = {
+  GO: "Gene Ontology",
+  MI: "Molecular Interactions",
+  OM: "OmniPath Terms",
+  KW: "UniProt Keywords",
+  DO: "Disease Ontology",
+  HP: "Human Phenotype",
+  CHEBI: "ChEBI",
+  CL: "Cell Ontology",
+  UBERON: "Uberon",
+  MONDO: "Mondo",
+};
+
+function extractPrefix(termId: string): string {
+  const match = termId.match(/^([A-Z]{2,}):/);
+  return match ? match[1] : "OTHER";
 }
 
 // Helper component for array filter sections
@@ -156,6 +175,8 @@ function FilterOptionRow({
     </span>
   );
 
+  const isCvTerm = !!(entityId && extractTermId(entityId));
+
   return (
     <div className="flex items-center justify-between group py-0.5 gap-2">
       <Label
@@ -173,8 +194,7 @@ function FilterOptionRow({
           )}
         />
         {showHoverCard && entityId ? (
-          // Check if it's a CV term (MI: or OM:)
-          entityId.startsWith('MI:') || entityId.startsWith('OM:') ? (
+          isCvTerm ? (
             <CvTermHoverCard termId={entityId}>
               {labelContent}
             </CvTermHoverCard>
@@ -399,62 +419,38 @@ interface AnnotationBranchGroup {
   parents: AnnotationParentGroup[];
 }
 
+interface OntologyTabGroup {
+  prefix: string;
+  name: string;
+  termIds: string[];
+  terms: FilterOption[];
+  totalCount: number;
+  tree: TreeNode | null;
+  branches: AnnotationBranchGroup[];
+  unmatched: FilterOption[];
+}
+
+interface FilteredOntologyTab extends OntologyTabGroup {
+  filteredBranches?: AnnotationBranchGroup[];
+  filteredUnmatched?: FilterOption[];
+  filteredTerms?: FilterOption[];
+  hasMatches: boolean;
+}
+
 export function AnnotationFilterSidebar({
   filters,
   filterCounts,
   onFilterChange,
   isMobile = false,
 }: AnnotationFilterSidebarProps) {
-  const [annotationTree, setAnnotationTree] = useState<TreeNode | null>(null);
   const [annotationQuery, setAnnotationQuery] = useState("");
-  const treeRequestedRef = useRef(false);
+  const [ontologyTrees, setOntologyTrees] = useState<Record<string, TreeNode | null>>({});
+  const [activeTab, setActiveTab] = useState<string>("");
 
   const annotationTermValues = useMemo(
     () => Object.keys(filterCounts.interaction_annotation_terms || {}),
     [filterCounts.interaction_annotation_terms]
   );
-
-  const annotationTermIds = useMemo(() => {
-    const ids = new Set<string>();
-    for (const value of annotationTermValues) {
-      const termId = extractTermId(value);
-      if (termId) {
-        ids.add(termId);
-      }
-    }
-    return Array.from(ids);
-  }, [annotationTermValues]);
-
-  useEffect(() => {
-    if (treeRequestedRef.current) return;
-    if (annotationTermIds.length === 0) return;
-
-    treeRequestedRef.current = true;
-
-    const loadTree = async () => {
-      try {
-        const response = await fetch("/api/ontology/tree", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            termIds: annotationTermIds
-          }),
-        });
-
-        if (!response.ok) {
-          const text = await response.text();
-          throw new Error(text || `Failed to load hierarchy (${response.status})`);
-        }
-
-        const data = (await response.json()) as { root?: TreeNode | null };
-        setAnnotationTree(data.root || null);
-      } catch (error) {
-        void error;
-      }
-    };
-
-    loadTree();
-  }, [annotationTermIds]);
 
   const annotationOptions = useMemo(() => {
     const counts = filterCounts.interaction_annotation_terms;
@@ -492,8 +488,73 @@ export function AnnotationFilterSidebar({
     return { mapped, unmatched };
   }, [annotationOptions]);
 
-  const annotationGroups = useMemo(() => {
-    if (!annotationTree) return null;
+  const termsByPrefix = useMemo(() => {
+    const groups = new Map<string, { termIds: string[]; totalCount: number }>();
+    for (const [termId, option] of annotationTermOptions.mapped.entries()) {
+      const prefix = extractPrefix(termId);
+      const group = groups.get(prefix) ?? { termIds: [], totalCount: 0 };
+      group.termIds.push(termId);
+      group.totalCount += option.count;
+      groups.set(prefix, group);
+    }
+    return groups;
+  }, [annotationTermOptions.mapped]);
+
+  const unmatchedTotalCount = useMemo(
+    () => annotationTermOptions.unmatched.reduce((sum, option) => sum + option.count, 0),
+    [annotationTermOptions.unmatched]
+  );
+
+  useEffect(() => {
+    if (termsByPrefix.size === 0) {
+      setOntologyTrees({});
+      return;
+    }
+
+    let cancelled = false;
+
+    const loadTrees = async () => {
+      const trees: Record<string, TreeNode | null> = {};
+
+      await Promise.all(Array.from(termsByPrefix.entries()).map(async ([prefix, group]) => {
+        if (group.termIds.length === 0) {
+          trees[prefix] = null;
+          return;
+        }
+
+        try {
+          const response = await fetch("/api/ontology/tree", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ termIds: group.termIds }),
+          });
+
+          if (!response.ok) {
+            trees[prefix] = null;
+            return;
+          }
+
+          const data = (await response.json()) as { root?: TreeNode | null };
+          trees[prefix] = data.root || null;
+        } catch {
+          trees[prefix] = null;
+        }
+      }));
+
+      if (!cancelled) {
+        setOntologyTrees(trees);
+      }
+    };
+
+    loadTrees();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [termsByPrefix]);
+
+  const buildBranchGroups = useCallback((tree: TreeNode | null, termOptions: Map<string, FilterOption>) => {
+    if (!tree) return [];
 
     const parentById = new Map<string, TreeNode>();
     const rootChildById = new Map<string, TreeNode>();
@@ -513,7 +574,7 @@ export function AnnotationFilterSidebar({
       });
     };
 
-    visit(annotationTree, null, null);
+    visit(tree, null, null);
 
     const branchMap = new Map<string, AnnotationBranchGroup>();
     const ensureBranch = (id: string, name: string) => {
@@ -531,7 +592,7 @@ export function AnnotationFilterSidebar({
       return parentGroup;
     };
 
-    for (const [termId, option] of annotationTermOptions.mapped.entries()) {
+    for (const [termId, option] of termOptions.entries()) {
       const parent = parentById.get(termId);
       const rootChild = rootChildById.get(termId);
       const label = nameById.get(termId) || option.label || termId;
@@ -566,11 +627,58 @@ export function AnnotationFilterSidebar({
       return branchCount(b) - branchCount(a);
     });
 
-    return {
-      rootName: annotationTree.name || annotationTree.id,
-      branches
-    };
-  }, [annotationTree, annotationTermOptions.mapped]);
+    return branches;
+  }, []);
+
+  const ontologyTabs = useMemo(() => {
+    const tabs: OntologyTabGroup[] = [];
+
+    for (const [prefix, group] of termsByPrefix.entries()) {
+      const tree = ontologyTrees[prefix] || null;
+      const termOptions = new Map<string, FilterOption>();
+      const terms: FilterOption[] = [];
+
+      group.termIds.forEach((termId) => {
+        const option = annotationTermOptions.mapped.get(termId);
+        if (option) {
+          termOptions.set(termId, option);
+          terms.push(option);
+        }
+      });
+
+      tabs.push({
+        prefix,
+        name: PREFIX_NAMES[prefix] || prefix,
+        termIds: group.termIds,
+        terms,
+        totalCount: group.totalCount,
+        tree,
+        branches: buildBranchGroups(tree, termOptions),
+        unmatched: [],
+      });
+    }
+
+    if (annotationTermOptions.unmatched.length > 0) {
+      tabs.push({
+        prefix: "OTHER",
+        name: "Other",
+        termIds: [],
+        terms: [],
+        totalCount: unmatchedTotalCount,
+        tree: null,
+        branches: [],
+        unmatched: annotationTermOptions.unmatched,
+      });
+    }
+
+    tabs.sort((a, b) => {
+      if (a.prefix === "OTHER") return 1;
+      if (b.prefix === "OTHER") return -1;
+      return b.totalCount - a.totalCount;
+    });
+
+    return tabs;
+  }, [annotationTermOptions.mapped, annotationTermOptions.unmatched, buildBranchGroups, ontologyTrees, termsByPrefix, unmatchedTotalCount]);
 
   const normalizedQuery = annotationQuery.trim().toLowerCase();
   const matchesQuery = useCallback(
@@ -581,63 +689,94 @@ export function AnnotationFilterSidebar({
     [normalizedQuery]
   );
 
-  const filteredAnnotationGroups = useMemo(() => {
-    if (!annotationGroups) return null;
-    if (!normalizedQuery) return annotationGroups;
-
-    const filteredBranches: AnnotationBranchGroup[] = [];
-
-    for (const branch of annotationGroups.branches) {
-      const branchMatches = matchesQuery(branch.name);
-      if (branchMatches) {
-        filteredBranches.push(branch);
-        continue;
+  const filteredTabs = useMemo<FilteredOntologyTab[]>(() => {
+    return ontologyTabs.map((tab) => {
+      if (!normalizedQuery) {
+        return {
+          ...tab,
+          filteredBranches: tab.branches,
+          filteredUnmatched: tab.unmatched,
+          hasMatches: tab.branches.length > 0 || tab.unmatched.length > 0 || tab.terms.length > 0,
+        };
       }
 
-      const filteredParents: AnnotationParentGroup[] = [];
-      for (const parent of branch.parents) {
-        const parentMatches = matchesQuery(parent.name);
-        if (parentMatches) {
-          filteredParents.push(parent);
+      const filteredBranches: AnnotationBranchGroup[] = [];
+
+      for (const branch of tab.branches) {
+        const branchMatches = matchesQuery(branch.name);
+        if (branchMatches) {
+          filteredBranches.push(branch);
           continue;
         }
 
-        const filteredTerms = parent.terms.filter((term) =>
-          matchesQuery(term.label || term.value)
-        );
-        if (filteredTerms.length > 0) {
-          filteredParents.push({
-            ...parent,
-            terms: filteredTerms
+        const filteredParents: AnnotationParentGroup[] = [];
+        for (const parent of branch.parents) {
+          const parentMatches = matchesQuery(parent.name);
+          if (parentMatches) {
+            filteredParents.push(parent);
+            continue;
+          }
+
+          const filteredTerms = parent.terms.filter((term) =>
+            matchesQuery(term.label || term.value)
+          );
+          if (filteredTerms.length > 0) {
+            filteredParents.push({
+              ...parent,
+              terms: filteredTerms
+            });
+          }
+        }
+
+        if (filteredParents.length > 0) {
+          filteredBranches.push({
+            ...branch,
+            parents: filteredParents
           });
         }
       }
 
-      if (filteredParents.length > 0) {
-        filteredBranches.push({
-          ...branch,
-          parents: filteredParents
-        });
-      }
+      const filteredTerms = tab.terms.filter((term) =>
+        matchesQuery(term.label || term.value)
+      );
+
+      const filteredUnmatched = tab.unmatched.filter((option) =>
+        matchesQuery(option.label || option.value)
+      );
+
+      const hasMatches =
+        filteredBranches.length > 0 ||
+        filteredUnmatched.length > 0 ||
+        filteredTerms.length > 0;
+
+      return {
+        ...tab,
+        filteredBranches,
+        filteredUnmatched,
+        filteredTerms,
+        hasMatches,
+      };
+    });
+  }, [ontologyTabs, matchesQuery, normalizedQuery]);
+
+  useEffect(() => {
+    if (filteredTabs.length === 0) {
+      setActiveTab("");
+      return;
     }
 
-    return {
-      ...annotationGroups,
-      branches: filteredBranches
-    };
-  }, [annotationGroups, matchesQuery, normalizedQuery]);
+    if (!activeTab || !filteredTabs.some((tab) => tab.prefix === activeTab)) {
+      setActiveTab(filteredTabs[0].prefix);
+      return;
+    }
 
-  const filteredUnmatched = useMemo(() => {
-    if (!normalizedQuery) return annotationTermOptions.unmatched;
-    return annotationTermOptions.unmatched.filter((option) =>
-      matchesQuery(option.label || option.value)
-    );
-  }, [annotationTermOptions.unmatched, matchesQuery, normalizedQuery]);
-
-  const hasFilteredResults = useMemo(() => {
-    const branchCount = filteredAnnotationGroups?.branches.length || 0;
-    return branchCount > 0 || filteredUnmatched.length > 0;
-  }, [filteredAnnotationGroups, filteredUnmatched.length]);
+    if (normalizedQuery) {
+      const firstMatchingTab = filteredTabs.find((tab) => tab.hasMatches);
+      if (firstMatchingTab && firstMatchingTab.prefix !== activeTab) {
+        setActiveTab(firstMatchingTab.prefix);
+      }
+    }
+  }, [activeTab, filteredTabs, normalizedQuery]);
 
   const handleAnnotationToggle = (value: string) => {
     const currentValues = filters.interaction_annotation_terms || [];
@@ -649,6 +788,109 @@ export function AnnotationFilterSidebar({
       ...filters,
       interaction_annotation_terms: newValues.length > 0 ? newValues : undefined,
     });
+  };
+
+  const renderTabContent = (tab: FilteredOntologyTab) => {
+    const branches: AnnotationBranchGroup[] = tab.filteredBranches ?? tab.branches;
+    const unmatched: FilterOption[] = tab.filteredUnmatched ?? tab.unmatched;
+    const flatTerms: FilterOption[] = normalizedQuery ? tab.filteredTerms ?? [] : tab.terms;
+    const hasBranchContent = branches.length > 0;
+    const hasFlatTerms = !hasBranchContent && flatTerms.length > 0;
+    const hasAnyContent = hasBranchContent || hasFlatTerms || unmatched.length > 0;
+
+    if (!hasAnyContent) {
+      return normalizedQuery ? (
+        <div className="text-sm text-muted-foreground">
+          No ontology terms match your search.
+        </div>
+      ) : null;
+    }
+
+    return (
+      <>
+        {hasBranchContent ? (
+          <Accordion
+            type="multiple"
+            defaultValue={branches.map((b) => b.id)}
+            className="w-full space-y-1"
+          >
+            <div className="text-xs font-medium mb-3 uppercase text-muted-foreground">
+              {tab.tree?.name || tab.tree?.id || tab.name}
+            </div>
+            {branches.map((branch) => (
+              <AccordionItem key={branch.id} value={branch.id} className="border-none">
+                <AccordionTrigger className="py-1.5 px-0 hover:bg-muted/50 hover:no-underline rounded-md text-sm font-medium">
+                  <span className={cn(matchesQuery(branch.name) ? "text-primary font-semibold" : "")}>
+                    {branch.name}
+                  </span>
+                </AccordionTrigger>
+                <AccordionContent className="pb-2 pt-1">
+                  <div className="space-y-3 pl-2">
+                    {branch.parents.map((parent) => (
+                      <div key={parent.id} className="space-y-1">
+                        {parent.id !== branch.id && (
+                          <div className={cn(
+                            "text-xs font-medium text-muted-foreground pl-2 py-0.5",
+                            matchesQuery(parent.name) ? "text-primary" : ""
+                          )}>
+                            {parent.name}
+                          </div>
+                        )}
+                        <div className="space-y-0.5 border-l-2 ml-2 pl-2 border-muted">
+                          {parent.terms.map((option) => (
+                            <FilterOptionRow
+                              key={option.value}
+                              filterKey="interaction_annotation_terms"
+                              option={option}
+                              selectedValues={filters.interaction_annotation_terms || []}
+                              onToggle={handleAnnotationToggle}
+                              showHoverCard={true}
+                              highlighted={matchesQuery(option.label || option.value)}
+                            />
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </AccordionContent>
+              </AccordionItem>
+            ))}
+          </Accordion>
+        ) : null}
+
+        {hasFlatTerms ? (
+          <div className="space-y-1">
+            {flatTerms.map((option) => (
+              <FilterOptionRow
+                key={option.value}
+                filterKey="interaction_annotation_terms"
+                option={option}
+                selectedValues={filters.interaction_annotation_terms || []}
+                onToggle={handleAnnotationToggle}
+                showHoverCard={true}
+                highlighted={matchesQuery(option.label || option.value)}
+              />
+            ))}
+          </div>
+        ) : null}
+
+        {unmatched.length > 0 ? (
+          <div className={cn("space-y-1", hasBranchContent || hasFlatTerms ? "pt-2 border-t border-muted/60" : "")}>
+            {unmatched.map((option) => (
+              <FilterOptionRow
+                key={option.value}
+                filterKey="interaction_annotation_terms"
+                option={option}
+                selectedValues={filters.interaction_annotation_terms || []}
+                onToggle={handleAnnotationToggle}
+                showHoverCard={true}
+                highlighted={matchesQuery(option.label || option.value)}
+              />
+            ))}
+          </div>
+        ) : null}
+      </>
+    );
   };
 
   const content = (
@@ -675,76 +917,36 @@ export function AnnotationFilterSidebar({
           ) : null}
         </div>
       </div>
-      {!hasFilteredResults && normalizedQuery ? (
+      {filteredTabs.length > 0 ? (
+        <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
+          <TabsList className="flex flex-wrap h-auto gap-1 bg-muted/50 p-1">
+            {filteredTabs.map((tab) => (
+              <TabsTrigger
+                key={tab.prefix}
+                value={tab.prefix}
+                className={cn(
+                  "flex items-center gap-2 px-3 py-1.5 text-xs",
+                  "data-[state=active]:bg-background data-[state=active]:shadow-sm"
+                )}
+              >
+                <span>{tab.name}</span>
+                <Badge variant="secondary" className="ml-1 text-[11px]">
+                  {formatNumber(tab.termIds.length || tab.unmatched.length)}
+                </Badge>
+              </TabsTrigger>
+            ))}
+          </TabsList>
+          {filteredTabs.map((tab) => (
+            <TabsContent key={tab.prefix} value={tab.prefix} className="mt-4">
+              {renderTabContent(tab)}
+            </TabsContent>
+          ))}
+        </Tabs>
+      ) : (
         <div className="text-sm text-muted-foreground">
-          No ontology terms match your search.
+          No ontology terms available.
         </div>
-      ) : null}
-      {filteredAnnotationGroups && hasFilteredResults ? (
-        <Accordion
-          type="multiple"
-          defaultValue={filteredAnnotationGroups.branches.map(b => b.id)}
-          className="w-full space-y-1"
-        >
-          <div className="text-sm font-medium mb-3 uppercase">
-            {filteredAnnotationGroups.rootName}
-          </div>
-          {filteredAnnotationGroups.branches.map((branch) => (
-            <AccordionItem key={branch.id} value={branch.id} className="border-none">
-              <AccordionTrigger className="py-1.5 px-0 hover:bg-muted/50 hover:no-underline rounded-md text-sm font-medium">
-                <span className={cn(matchesQuery(branch.name) ? "text-primary font-semibold" : "")}>
-                  {branch.name}
-                </span>
-              </AccordionTrigger>
-              <AccordionContent className="pb-2 pt-1">
-                <div className="space-y-3 pl-2">
-                  {branch.parents.map((parent) => (
-                    <div key={parent.id} className="space-y-1">
-                      {parent.id !== branch.id && (
-                        <div className={cn(
-                          "text-xs font-medium text-muted-foreground pl-2 py-0.5",
-                          matchesQuery(parent.name) ? "text-primary" : ""
-                        )}>
-                          {parent.name}
-                        </div>
-                      )}
-                      <div className="space-y-0.5 border-l-2 ml-2 pl-2 border-muted">
-                        {parent.terms.map((option) => (
-                          <FilterOptionRow
-                            key={option.value}
-                            filterKey="interaction_annotation_terms"
-                            option={option}
-                            selectedValues={filters.interaction_annotation_terms || []}
-                            onToggle={handleAnnotationToggle}
-                            showHoverCard={true}
-                            highlighted={matchesQuery(option.label || option.value)}
-                          />
-                        ))}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </AccordionContent>
-            </AccordionItem>
-          ))}
-        </Accordion>
-      ) : null}
-
-      {filteredUnmatched.length > 0 ? (
-        <div className="space-y-1 pt-2 border-t border-muted/60">
-          {filteredUnmatched.map((option) => (
-            <FilterOptionRow
-              key={option.value}
-              filterKey="interaction_annotation_terms"
-              option={option}
-              selectedValues={filters.interaction_annotation_terms || []}
-              onToggle={handleAnnotationToggle}
-              showHoverCard={true}
-              highlighted={matchesQuery(option.label || option.value)}
-            />
-          ))}
-        </div>
-      ) : null}
+      )}
     </div>
   );
 
