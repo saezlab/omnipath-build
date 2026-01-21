@@ -87,18 +87,13 @@ export function SearchResults({
     <div className="w-full">
       <div className="grid gap-4" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))' }} id="resultsGrid">
         {results.map((result, i) => {
-          let href: string;
+          const resultType = result.type ?? 'entity';
+          let href: string | undefined;
 
-          if (result.type === 'cv_term') {
+          if (resultType === 'cv_term') {
             href = `/cv_term/${result.id}`;
-          } else if (result.type === 'entity') {
-            // Navigate to explore page with entity filter applied
-            const entityId = result.entity_id ?? result.id;
-            if (entityId) {
-              href = `/explore?entity=${entityId}`;
-            } else {
-              href = `/explore`;
-            }
+          } else if (resultType === 'entity') {
+            href = undefined;
           } else {
             // Fallback to explore with entity filter
             const entityId = result.entity_id ?? result.id;
@@ -106,6 +101,14 @@ export function SearchResults({
           }
 
           const key = (result.entity_id || result.id || i)?.toString();
+
+          if (!href) {
+            return (
+              <div key={key}>
+                <ResultCard result={result} entityNamesMap={entityNames} />
+              </div>
+            );
+          }
 
           return (
             <Link key={key} href={href}>

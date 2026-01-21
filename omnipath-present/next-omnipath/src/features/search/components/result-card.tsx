@@ -15,7 +15,6 @@ import React, { useMemo, useState } from "react";
 import { Network, Tag, Shapes, FileText, Database, Plus, Check, FlaskConical, ArrowRight, ListOrdered, ChevronDown, ChevronUp, Copy, Loader2 } from "lucide-react";
 import { useEntitySelection } from "@/contexts/entity-selection-context";
 import { MoleculeStructure } from "./molecule_structure";
-import { useRouter } from "next/navigation";
 import { searchMeilisearch } from "@/lib/meilisearch/search";
 import { INDEXES } from "@/lib/meilisearch/client";
 
@@ -500,8 +499,29 @@ function MoleculeResultCard({ result }: { result: SearchResult }) {
     }
   };
 
+  const handleCardClick = (e: React.MouseEvent) => {
+    e.preventDefault();
+    if (!entityId) return;
+    if (selected) {
+      removeEntity(entityId);
+      return;
+    }
+    addEntity({
+      id: entityId,
+      entityId: result.entity_id,
+      name: primaryName,
+      type: entityTypeLabel,
+      cv_terms: result.cv_terms,
+      references: result.references,
+      fullResult: result,
+    });
+  };
+
   return (
-    <Card className="flex flex-col hover:shadow-md transition-shadow h-full result-card group relative">
+    <Card
+      className="flex flex-col hover:shadow-md transition-shadow h-full result-card group relative cursor-pointer"
+      onClick={handleCardClick}
+    >
       {/* Add to selection button */}
       {entityId && (
         <Button
@@ -583,7 +603,6 @@ function MoleculeResultCard({ result }: { result: SearchResult }) {
 }
 
 export function ResultCard({ result, entityNamesMap }: { result: SearchResult, entityNamesMap?: Record<string, string> }) {
-  const router = useRouter();
   const { addEntity, removeEntity, isSelected } = useEntitySelection();
   const type = result.type || "entity";
 
@@ -622,25 +641,23 @@ export function ResultCard({ result, entityNamesMap }: { result: SearchResult, e
     }
   };
 
-  // New handler for clicking the whole card to navigate to explore page
+  // New handler for clicking the whole card to toggle selection
   const handleCardClick = (e: React.MouseEvent) => {
-    // Prevent default link behavior if any
     e.preventDefault();
-    if (!entityId) return;
-    // Add to selection if not already selected
-    if (!selected) {
-      addEntity({
-        id: entityId,
-        entityId: result.entity_id,
-        name: getDisplayName(),
-        type: result.entity_type?.split(':')[0] || result.type,
-        cv_terms: result.cv_terms,
-        references: result.references,
-        fullResult: result,
-      });
+    if (type !== "entity" || !entityId) return;
+    if (selected) {
+      removeEntity(entityId);
+      return;
     }
-    // Navigate to explore page with entity filter
-    router.push(`/explore?entity=${entityId}`);
+    addEntity({
+      id: entityId,
+      entityId: result.entity_id,
+      name: getDisplayName(),
+      type: result.entity_type?.split(':')[0] || result.type,
+      cv_terms: result.cv_terms,
+      references: result.references,
+      fullResult: result,
+    });
   };
 
   // Extract data based on type
@@ -711,7 +728,7 @@ export function ResultCard({ result, entityNamesMap }: { result: SearchResult, e
 
 
   return (
-    <Card className={`flex flex-col hover:shadow-md transition-shadow h-full result-card group relative ${type === 'cv_term' ? 'cursor-pointer' : ''}`} onClick={handleCardClick}>
+    <Card className={`flex flex-col hover:shadow-md transition-shadow h-full result-card group relative ${type === 'entity' ? 'cursor-pointer' : ''}`} onClick={handleCardClick}>
       {/* Add to selection button - positioned at bottom center, visible on hover for entities */}
       {type === 'entity' && entityId && (
         <Button
