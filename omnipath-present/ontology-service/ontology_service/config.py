@@ -32,6 +32,11 @@ CORE_ONTOLOGIES: dict[str, OntologyConfig] = {
         description="UniProt Keywords",
         preload=True,
     ),
+    "hpo": OntologyConfig(
+        source="hp",  # OBO Foundry ID for Human Phenotype Ontology
+        description="Human Phenotype Ontology",
+        preload=True,
+    ),
 }
 
 # Cache directory for downloaded ontologies
@@ -44,6 +49,7 @@ PREFIX_TO_ONTOLOGY: dict[str, str] = {
     "MI": "omnipath",
     "OM": "omnipath",
     "KW": "uniprot_keywords",
+    "HP": "hpo",
 }
 
 
