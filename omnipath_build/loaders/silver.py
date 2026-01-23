@@ -405,7 +405,7 @@ def _process_single_output(
     writer: Optional[pq.ParquetWriter] = None
     total_records = 0
     batch: List[dict] = []
-    max_records = 100 if test_mode else None
+    max_records = 1000 if test_mode else None
 
     # Process first record
     _ensure_entity_record(first_record)

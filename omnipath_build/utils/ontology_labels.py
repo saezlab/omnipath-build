@@ -2,9 +2,6 @@
 
 This module provides utilities to resolve ontology term accessions to their human-readable labels.
 
-Note: The PSI-MI ontology currently has a date parsing issue in the OBO file that prevents
-it from loading with pronto. MI:* terms will fall back to "Accession:Accession" format until
-this is resolved. OM:* and GO:* terms resolve correctly.
 """
 from __future__ import annotations
 
