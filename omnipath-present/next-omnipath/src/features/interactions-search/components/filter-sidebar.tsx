@@ -21,12 +21,6 @@ interface FilterOption {
   icon?: string;
 }
 
-interface TreeNode {
-  id: string;
-  name?: string;
-  distance?: number;
-  children?: TreeNode[];
-}
 
 interface FilterSidebarProps {
   filters: MeilisearchFilters;
@@ -38,7 +32,7 @@ interface FilterSidebarProps {
 
 function extractTermId(value: string): string | null {
   // Match ontology term IDs (PSI-MI, OmniPath, GO, etc.)
-  const match = value.match(/(MI|OM|GO|HP|DO|MP|CHEBI|CL|UBERON|MONDO):\d{4,}/);
+  const match = value.match(/(MI|OM|GO|HP|KW|DO|MP|CHEBI|CL|UBERON|MONDO):\d{4,}/);
   return match ? match[0] : null;
 }
 
@@ -55,9 +49,29 @@ const PREFIX_NAMES: Record<string, string> = {
   MONDO: "Mondo",
 };
 
+const ENTITY_ONTOLOGY_FACET_MAP: Record<string, string> = {
+  GO: "cv_terms_go",
+  MI: "cv_terms_mi",
+  OM: "cv_terms_om",
+  HP: "cv_terms_hp",
+  KW: "cv_terms_kw",
+};
+
 function extractPrefix(termId: string): string {
   const match = termId.match(/^([A-Z]{2,}):/);
   return match ? match[1] : "OTHER";
+}
+
+function getEntityFilterKeyForValue(value: string): keyof MeilisearchFilters | null {
+  const prefix = extractPrefix(value);
+  const keyByPrefix: Record<string, keyof MeilisearchFilters> = {
+    GO: "cv_terms_go",
+    MI: "cv_terms_mi",
+    OM: "cv_terms_om",
+    HP: "cv_terms_hp",
+    KW: "cv_terms_kw",
+  };
+  return keyByPrefix[prefix] ?? null;
 }
 
 // Helper component for array filter sections
@@ -400,24 +414,21 @@ export function FilterSidebar({
   );
 }
 
-interface AnnotationFilterSidebarProps {
-  filters: MeilisearchFilters;
-  filterCounts: Record<string, Record<string, number>>;
-  onFilterChange: (filters: MeilisearchFilters) => void;
-  isMobile?: boolean;
-}
-
-interface AnnotationParentGroup {
-  id: string;
-  name: string;
-  terms: FilterOption[];
-}
-
-interface AnnotationBranchGroup {
-  id: string;
-  name: string;
-  parents: AnnotationParentGroup[];
-}
+type AnnotationFilterSidebarProps =
+  | {
+      mode: "entities";
+      filters: MeilisearchFilters;
+      onFilterChange: (filters: MeilisearchFilters) => void;
+      ontologyFacetCountsByPrefix: Record<string, Record<string, number>>;
+      isMobile?: boolean;
+    }
+  | {
+      mode: "interactions";
+      filters: MeilisearchFilters;
+      filterCounts: Record<string, Record<string, number>>;
+      onFilterChange: (filters: MeilisearchFilters) => void;
+      isMobile?: boolean;
+    };
 
 interface OntologyTabGroup {
   prefix: string;
@@ -425,35 +436,47 @@ interface OntologyTabGroup {
   termIds: string[];
   terms: FilterOption[];
   totalCount: number;
-  tree: TreeNode | null;
-  branches: AnnotationBranchGroup[];
   unmatched: FilterOption[];
 }
 
 interface FilteredOntologyTab extends OntologyTabGroup {
-  filteredBranches?: AnnotationBranchGroup[];
-  filteredUnmatched?: FilterOption[];
   filteredTerms?: FilterOption[];
+  filteredUnmatched?: FilterOption[];
   hasMatches: boolean;
 }
 
 export function AnnotationFilterSidebar({
+  mode,
   filters,
-  filterCounts,
   onFilterChange,
   isMobile = false,
+  ...rest
 }: AnnotationFilterSidebarProps) {
   const [annotationQuery, setAnnotationQuery] = useState("");
-  const [ontologyTrees, setOntologyTrees] = useState<Record<string, TreeNode | null>>({});
   const [activeTab, setActiveTab] = useState<string>("");
-
-  const annotationTermValues = useMemo(
-    () => Object.keys(filterCounts.interaction_annotation_terms || {}),
-    [filterCounts.interaction_annotation_terms]
-  );
+  const [facetSearchCountsByPrefix, setFacetSearchCountsByPrefix] = useState<Record<string, Record<string, number>>>({});
+  const [facetSearchCounts, setFacetSearchCounts] = useState<Record<string, number>>({});
 
   const annotationOptions = useMemo(() => {
-    const counts = filterCounts.interaction_annotation_terms;
+    if (mode === "entities") {
+      const countsByPrefix = annotationQuery.trim()
+        ? facetSearchCountsByPrefix
+        : rest.ontologyFacetCountsByPrefix;
+      return Object.entries(countsByPrefix)
+        .flatMap(([prefix, counts]) =>
+          Object.entries(counts).map(([value, count]) => ({
+            value,
+            count,
+            label: value,
+            icon: prefix,
+          }))
+        )
+        .sort((a, b) => b.count - a.count);
+    }
+
+    const counts = annotationQuery.trim()
+      ? facetSearchCounts
+      : rest.filterCounts.interaction_annotation_terms;
     if (!counts) return [];
     return Object.entries(counts)
       .map(([value, count]) => {
@@ -470,7 +493,7 @@ export function AnnotationFilterSidebar({
         };
       })
       .sort((a, b) => b.count - a.count);
-  }, [filterCounts.interaction_annotation_terms]);
+  }, [annotationQuery, facetSearchCounts, facetSearchCountsByPrefix, mode, rest]);
 
   const annotationTermOptions = useMemo(() => {
     const mapped = new Map<string, FilterOption>();
@@ -481,14 +504,30 @@ export function AnnotationFilterSidebar({
       if (termId) {
         mapped.set(termId, option);
       } else {
-        unmatched.push(option);
+        if (mode === "interactions") {
+          unmatched.push(option);
+        }
       }
     }
 
     return { mapped, unmatched };
-  }, [annotationOptions]);
+  }, [annotationOptions, mode]);
 
   const termsByPrefix = useMemo(() => {
+    if (mode === "entities") {
+      const groups = new Map<string, { termIds: string[]; totalCount: number }>();
+      const countsByPrefix = annotationQuery.trim()
+        ? facetSearchCountsByPrefix
+        : rest.ontologyFacetCountsByPrefix;
+      Object.entries(countsByPrefix).forEach(([prefix, counts]) => {
+        const termIds = Object.keys(counts);
+        if (termIds.length === 0) return;
+        const totalCount = termIds.reduce((sum, termId) => sum + (counts[termId] || 0), 0);
+        groups.set(prefix, { termIds, totalCount });
+      });
+      return groups;
+    }
+
     const groups = new Map<string, { termIds: string[]; totalCount: number }>();
     for (const [termId, option] of annotationTermOptions.mapped.entries()) {
       const prefix = extractPrefix(termId);
@@ -498,7 +537,13 @@ export function AnnotationFilterSidebar({
       groups.set(prefix, group);
     }
     return groups;
-  }, [annotationTermOptions.mapped]);
+  }, [
+    annotationQuery,
+    annotationTermOptions.mapped,
+    facetSearchCountsByPrefix,
+    mode,
+    "ontologyFacetCountsByPrefix" in rest ? rest.ontologyFacetCountsByPrefix : undefined,
+  ]);
 
   const unmatchedTotalCount = useMemo(
     () => annotationTermOptions.unmatched.reduce((sum, option) => sum + option.count, 0),
@@ -506,135 +551,119 @@ export function AnnotationFilterSidebar({
   );
 
   useEffect(() => {
-    if (termsByPrefix.size === 0) {
-      setOntologyTrees({});
+    const trimmedQuery = annotationQuery.trim();
+    if (!trimmedQuery) {
+      setFacetSearchCountsByPrefix({});
+      setFacetSearchCounts({});
       return;
     }
 
     let cancelled = false;
+    const controller = new AbortController();
+    const timer = setTimeout(async () => {
+      try {
+        if (mode === "entities") {
+          const availablePrefixes = Object.keys(rest.ontologyFacetCountsByPrefix || {});
+          const fallbackPrefix = availablePrefixes[0] || Object.keys(ENTITY_ONTOLOGY_FACET_MAP)[0];
+          const selectedPrefix =
+            (activeTab && ENTITY_ONTOLOGY_FACET_MAP[activeTab] ? activeTab : fallbackPrefix) || "";
+          const facetName = ENTITY_ONTOLOGY_FACET_MAP[selectedPrefix];
 
-    const loadTrees = async () => {
-      const trees: Record<string, TreeNode | null> = {};
-
-      await Promise.all(Array.from(termsByPrefix.entries()).map(async ([prefix, group]) => {
-        if (group.termIds.length === 0) {
-          trees[prefix] = null;
-          return;
-        }
-
-        try {
-          const response = await fetch("/api/ontology/tree", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ termIds: group.termIds }),
-          });
-
-          if (!response.ok) {
-            trees[prefix] = null;
+          if (!facetName) {
+            if (!cancelled) {
+              setFacetSearchCountsByPrefix({});
+            }
             return;
           }
 
-          const data = (await response.json()) as { root?: TreeNode | null };
-          trees[prefix] = data.root || null;
-        } catch {
-          trees[prefix] = null;
+          const response = await fetch("/api/meilisearch/facet-search", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              facetName,
+              facetQuery: trimmedQuery,
+              filters,
+              limit: 100,
+            }),
+            signal: controller.signal,
+          });
+
+          if (!response.ok) {
+            if (!cancelled) {
+              setFacetSearchCountsByPrefix({ [selectedPrefix]: {} });
+            }
+            return;
+          }
+
+          const data = (await response.json()) as { facetHits?: { value: string; count: number }[] };
+          const counts: Record<string, number> = {};
+          (data.facetHits || []).forEach((hit) => {
+            counts[hit.value] = hit.count;
+          });
+
+          if (!cancelled) {
+            setFacetSearchCountsByPrefix({ [selectedPrefix]: counts });
+          }
+          return;
         }
-      }));
 
-      if (!cancelled) {
-        setOntologyTrees(trees);
+        const response = await fetch("/api/meilisearch/facet-search", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            facetName: "interaction_annotation_terms",
+            facetQuery: trimmedQuery,
+            filters,
+            index: "interactions",
+            limit: 100,
+          }),
+          signal: controller.signal,
+        });
+
+        if (!response.ok) {
+          if (!cancelled) {
+            setFacetSearchCounts({});
+          }
+          return;
+        }
+
+        const data = (await response.json()) as { facetHits?: { value: string; count: number }[] };
+        const counts: Record<string, number> = {};
+        (data.facetHits || []).forEach((hit) => {
+          counts[hit.value] = hit.count;
+        });
+
+        if (!cancelled) {
+          setFacetSearchCounts(counts);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setFacetSearchCountsByPrefix({});
+          setFacetSearchCounts({});
+        }
       }
-    };
-
-    loadTrees();
+    }, 250);
 
     return () => {
       cancelled = true;
+      controller.abort();
+      clearTimeout(timer);
     };
-  }, [termsByPrefix]);
-
-  const buildBranchGroups = useCallback((tree: TreeNode | null, termOptions: Map<string, FilterOption>) => {
-    if (!tree) return [];
-
-    const parentById = new Map<string, TreeNode>();
-    const rootChildById = new Map<string, TreeNode>();
-    const nameById = new Map<string, string>();
-
-    const visit = (node: TreeNode, parent: TreeNode | null, rootChild: TreeNode | null) => {
-      nameById.set(node.id, node.name || node.id);
-      if (parent) {
-        parentById.set(node.id, parent);
-      }
-      if (rootChild) {
-        rootChildById.set(node.id, rootChild);
-      }
-      node.children?.forEach((child) => {
-        const nextRootChild = rootChild ?? child;
-        visit(child, node, nextRootChild);
-      });
-    };
-
-    visit(tree, null, null);
-
-    const branchMap = new Map<string, AnnotationBranchGroup>();
-    const ensureBranch = (id: string, name: string) => {
-      if (!branchMap.has(id)) {
-        branchMap.set(id, { id, name, parents: [] });
-      }
-      return branchMap.get(id)!;
-    };
-
-    const ensureParent = (branch: AnnotationBranchGroup, id: string, name: string) => {
-      const existing = branch.parents.find((parent) => parent.id === id);
-      if (existing) return existing;
-      const parentGroup = { id, name, terms: [] as FilterOption[] };
-      branch.parents.push(parentGroup);
-      return parentGroup;
-    };
-
-    for (const [termId, option] of termOptions.entries()) {
-      const parent = parentById.get(termId);
-      const rootChild = rootChildById.get(termId);
-      const label = nameById.get(termId) || option.label || termId;
-      const enrichedOption = { ...option, label };
-      const branch = rootChild
-        ? ensureBranch(rootChild.id, nameById.get(rootChild.id) || rootChild.id)
-        : ensureBranch("other", "Other");
-
-      if (parent) {
-        ensureParent(branch, parent.id, nameById.get(parent.id) || parent.id).terms.push(enrichedOption);
-      } else {
-        ensureParent(branch, "other", "Other").terms.push(enrichedOption);
-      }
-    }
-
-    const branches = Array.from(branchMap.values());
-    const parentCount = (group: AnnotationParentGroup) =>
-      group.terms.reduce((sum, term) => sum + term.count, 0);
-    const branchCount = (branch: AnnotationBranchGroup) =>
-      branch.parents.reduce((sum, parent) => sum + parentCount(parent), 0);
-
-    branches.forEach((branch) => {
-      branch.parents.forEach((parent) => {
-        parent.terms.sort((a, b) => b.count - a.count);
-      });
-      branch.parents.sort((a, b) => parentCount(b) - parentCount(a));
-    });
-
-    branches.sort((a, b) => {
-      if (a.id === "other") return 1;
-      if (b.id === "other") return -1;
-      return branchCount(b) - branchCount(a);
-    });
-
-    return branches;
-  }, []);
+  }, [
+    activeTab,
+    annotationQuery,
+    filters,
+    mode,
+    "ontologyFacetCountsByPrefix" in rest ? rest.ontologyFacetCountsByPrefix : undefined,
+  ]);
 
   const ontologyTabs = useMemo(() => {
     const tabs: OntologyTabGroup[] = [];
 
     for (const [prefix, group] of termsByPrefix.entries()) {
-      const tree = ontologyTrees[prefix] || null;
+      if (group.totalCount <= 0 || group.termIds.length === 0) {
+        continue;
+      }
       const termOptions = new Map<string, FilterOption>();
       const terms: FilterOption[] = [];
 
@@ -652,21 +681,17 @@ export function AnnotationFilterSidebar({
         termIds: group.termIds,
         terms,
         totalCount: group.totalCount,
-        tree,
-        branches: buildBranchGroups(tree, termOptions),
         unmatched: [],
       });
     }
 
-    if (annotationTermOptions.unmatched.length > 0) {
+    if (mode === "interactions" && annotationTermOptions.unmatched.length > 0) {
       tabs.push({
         prefix: "OTHER",
         name: "Other",
         termIds: [],
         terms: [],
         totalCount: unmatchedTotalCount,
-        tree: null,
-        branches: [],
         unmatched: annotationTermOptions.unmatched,
       });
     }
@@ -678,7 +703,7 @@ export function AnnotationFilterSidebar({
     });
 
     return tabs;
-  }, [annotationTermOptions.mapped, annotationTermOptions.unmatched, buildBranchGroups, ontologyTrees, termsByPrefix, unmatchedTotalCount]);
+  }, [annotationTermOptions.mapped, annotationTermOptions.unmatched, termsByPrefix, unmatchedTotalCount]);
 
   const normalizedQuery = annotationQuery.trim().toLowerCase();
   const matchesQuery = useCallback(
@@ -691,49 +716,21 @@ export function AnnotationFilterSidebar({
 
   const filteredTabs = useMemo<FilteredOntologyTab[]>(() => {
     return ontologyTabs.map((tab) => {
-      if (!normalizedQuery) {
+      if (mode === "entities" && annotationQuery.trim()) {
         return {
           ...tab,
-          filteredBranches: tab.branches,
-          filteredUnmatched: tab.unmatched,
-          hasMatches: tab.branches.length > 0 || tab.unmatched.length > 0 || tab.terms.length > 0,
+          filteredUnmatched: [],
+          filteredTerms: tab.terms,
+          hasMatches: tab.terms.length > 0,
         };
       }
 
-      const filteredBranches: AnnotationBranchGroup[] = [];
-
-      for (const branch of tab.branches) {
-        const branchMatches = matchesQuery(branch.name);
-        if (branchMatches) {
-          filteredBranches.push(branch);
-          continue;
-        }
-
-        const filteredParents: AnnotationParentGroup[] = [];
-        for (const parent of branch.parents) {
-          const parentMatches = matchesQuery(parent.name);
-          if (parentMatches) {
-            filteredParents.push(parent);
-            continue;
-          }
-
-          const filteredTerms = parent.terms.filter((term) =>
-            matchesQuery(term.label || term.value)
-          );
-          if (filteredTerms.length > 0) {
-            filteredParents.push({
-              ...parent,
-              terms: filteredTerms
-            });
-          }
-        }
-
-        if (filteredParents.length > 0) {
-          filteredBranches.push({
-            ...branch,
-            parents: filteredParents
-          });
-        }
+      if (!normalizedQuery) {
+        return {
+          ...tab,
+          filteredUnmatched: tab.unmatched,
+          hasMatches: tab.unmatched.length > 0 || tab.terms.length > 0,
+        };
       }
 
       const filteredTerms = tab.terms.filter((term) =>
@@ -745,33 +742,35 @@ export function AnnotationFilterSidebar({
       );
 
       const hasMatches =
-        filteredBranches.length > 0 ||
         filteredUnmatched.length > 0 ||
         filteredTerms.length > 0;
 
       return {
         ...tab,
-        filteredBranches,
         filteredUnmatched,
         filteredTerms,
         hasMatches,
       };
     });
-  }, [ontologyTabs, matchesQuery, normalizedQuery]);
+  }, [annotationQuery, matchesQuery, mode, normalizedQuery, ontologyTabs]);
 
   useEffect(() => {
-    if (filteredTabs.length === 0) {
+    const visibleTabs = normalizedQuery
+      ? filteredTabs.filter((tab) => tab.hasMatches)
+      : filteredTabs;
+
+    if (visibleTabs.length === 0) {
       setActiveTab("");
       return;
     }
 
-    if (!activeTab || !filteredTabs.some((tab) => tab.prefix === activeTab)) {
-      setActiveTab(filteredTabs[0].prefix);
+    if (!activeTab || !visibleTabs.some((tab) => tab.prefix === activeTab)) {
+      setActiveTab(visibleTabs[0].prefix);
       return;
     }
 
     if (normalizedQuery) {
-      const firstMatchingTab = filteredTabs.find((tab) => tab.hasMatches);
+      const firstMatchingTab = visibleTabs.find((tab) => tab.hasMatches);
       if (firstMatchingTab && firstMatchingTab.prefix !== activeTab) {
         setActiveTab(firstMatchingTab.prefix);
       }
@@ -779,6 +778,30 @@ export function AnnotationFilterSidebar({
   }, [activeTab, filteredTabs, normalizedQuery]);
 
   const handleAnnotationToggle = (value: string) => {
+    if (mode === "entities") {
+      const prefix = extractPrefix(value);
+      const filterKeyByPrefix: Record<string, keyof MeilisearchFilters> = {
+        GO: "cv_terms_go",
+        MI: "cv_terms_mi",
+        OM: "cv_terms_om",
+        HP: "cv_terms_hp",
+        KW: "cv_terms_kw",
+      };
+      const filterKey = filterKeyByPrefix[prefix];
+      if (!filterKey) return;
+
+      const currentValues = (filters[filterKey] as string[] | undefined) || [];
+      const newValues = currentValues.includes(value)
+        ? currentValues.filter((v) => v !== value)
+        : [...currentValues, value];
+
+      onFilterChange({
+        ...filters,
+        [filterKey]: newValues.length > 0 ? newValues : undefined,
+      });
+      return;
+    }
+
     const currentValues = filters.interaction_annotation_terms || [];
     const newValues = currentValues.includes(value)
       ? currentValues.filter((v) => v !== value)
@@ -791,12 +814,10 @@ export function AnnotationFilterSidebar({
   };
 
   const renderTabContent = (tab: FilteredOntologyTab) => {
-    const branches: AnnotationBranchGroup[] = tab.filteredBranches ?? tab.branches;
     const unmatched: FilterOption[] = tab.filteredUnmatched ?? tab.unmatched;
     const flatTerms: FilterOption[] = normalizedQuery ? tab.filteredTerms ?? [] : tab.terms;
-    const hasBranchContent = branches.length > 0;
-    const hasFlatTerms = !hasBranchContent && flatTerms.length > 0;
-    const hasAnyContent = hasBranchContent || hasFlatTerms || unmatched.length > 0;
+    const hasFlatTerms = flatTerms.length > 0;
+    const hasAnyContent = hasFlatTerms || unmatched.length > 0;
 
     if (!hasAnyContent) {
       return normalizedQuery ? (
@@ -808,74 +829,44 @@ export function AnnotationFilterSidebar({
 
     return (
       <>
-        {hasBranchContent ? (
-          <Accordion
-            type="multiple"
-            defaultValue={branches.map((b) => b.id)}
-            className="w-full space-y-1"
-          >
-            <div className="text-xs font-medium mb-3 uppercase text-muted-foreground">
-              {tab.tree?.name || tab.tree?.id || tab.name}
-            </div>
-            {branches.map((branch) => (
-              <AccordionItem key={branch.id} value={branch.id} className="border-none">
-                <AccordionTrigger className="py-1.5 px-0 hover:bg-muted/50 hover:no-underline rounded-md text-sm font-medium">
-                  <span className={cn(matchesQuery(branch.name) ? "text-primary font-semibold" : "")}>
-                    {branch.name}
-                  </span>
-                </AccordionTrigger>
-                <AccordionContent className="pb-2 pt-1">
-                  <div className="space-y-3 pl-2">
-                    {branch.parents.map((parent) => (
-                      <div key={parent.id} className="space-y-1">
-                        {parent.id !== branch.id && (
-                          <div className={cn(
-                            "text-xs font-medium text-muted-foreground pl-2 py-0.5",
-                            matchesQuery(parent.name) ? "text-primary" : ""
-                          )}>
-                            {parent.name}
-                          </div>
-                        )}
-                        <div className="space-y-0.5 border-l-2 ml-2 pl-2 border-muted">
-                          {parent.terms.map((option) => (
-                            <FilterOptionRow
-                              key={option.value}
-                              filterKey="interaction_annotation_terms"
-                              option={option}
-                              selectedValues={filters.interaction_annotation_terms || []}
-                              onToggle={handleAnnotationToggle}
-                              showHoverCard={true}
-                              highlighted={matchesQuery(option.label || option.value)}
-                            />
-                          ))}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </AccordionContent>
-              </AccordionItem>
-            ))}
-          </Accordion>
-        ) : null}
-
         {hasFlatTerms ? (
           <div className="space-y-1">
             {flatTerms.map((option) => (
-              <FilterOptionRow
-                key={option.value}
-                filterKey="interaction_annotation_terms"
-                option={option}
-                selectedValues={filters.interaction_annotation_terms || []}
-                onToggle={handleAnnotationToggle}
-                showHoverCard={true}
-                highlighted={matchesQuery(option.label || option.value)}
-              />
+              (() => {
+                if (mode === "entities") {
+                  const filterKey = getEntityFilterKeyForValue(option.value);
+                  if (!filterKey) return null;
+                  return (
+                    <FilterOptionRow
+                      key={option.value}
+                      filterKey={filterKey}
+                      option={option}
+                      selectedValues={(filters[filterKey] as string[] | undefined) || []}
+                      onToggle={handleAnnotationToggle}
+                      showHoverCard={true}
+                      highlighted={matchesQuery(option.label || option.value)}
+                    />
+                  );
+                }
+
+                return (
+                  <FilterOptionRow
+                    key={option.value}
+                    filterKey="interaction_annotation_terms"
+                    option={option}
+                    selectedValues={filters.interaction_annotation_terms || []}
+                    onToggle={handleAnnotationToggle}
+                    showHoverCard={true}
+                    highlighted={matchesQuery(option.label || option.value)}
+                  />
+                );
+              })()
             ))}
           </div>
         ) : null}
 
         {unmatched.length > 0 ? (
-          <div className={cn("space-y-1", hasBranchContent || hasFlatTerms ? "pt-2 border-t border-muted/60" : "")}>
+          <div className={cn("space-y-1", hasFlatTerms ? "pt-2 border-t border-muted/60" : "")}>
             {unmatched.map((option) => (
               <FilterOptionRow
                 key={option.value}
@@ -920,7 +911,7 @@ export function AnnotationFilterSidebar({
       {filteredTabs.length > 0 ? (
         <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
           <TabsList className="flex flex-wrap h-auto gap-1 bg-muted/50 p-1">
-            {filteredTabs.map((tab) => (
+            {(normalizedQuery ? filteredTabs.filter((tab) => tab.hasMatches) : filteredTabs).map((tab) => (
               <TabsTrigger
                 key={tab.prefix}
                 value={tab.prefix}
@@ -936,7 +927,7 @@ export function AnnotationFilterSidebar({
               </TabsTrigger>
             ))}
           </TabsList>
-          {filteredTabs.map((tab) => (
+          {(normalizedQuery ? filteredTabs.filter((tab) => tab.hasMatches) : filteredTabs).map((tab) => (
             <TabsContent key={tab.prefix} value={tab.prefix} className="mt-4">
               {renderTabContent(tab)}
             </TabsContent>

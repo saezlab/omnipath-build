@@ -11,7 +11,11 @@ class MeilisearchSettings:
             'entity_type',
             'sources',
             'ncbi_tax_id',
-            'cv_terms',
+            'cv_terms_go',
+            'cv_terms_mi',
+            'cv_terms_om',
+            'cv_terms_hp',
+            'cv_terms_kw',
         ],
         'displayedAttributes': ['*'],
         'rankingRules': [
@@ -22,6 +26,17 @@ class MeilisearchSettings:
             'sort',
             'exactness',
         ],
+        'faceting': {
+            'maxValuesPerFacet': 100,
+            'sortFacetValuesBy': {
+                '*': 'alpha',
+                'cv_terms_go': 'count',
+                'cv_terms_mi': 'count',
+                'cv_terms_om': 'count',
+                'cv_terms_hp': 'count',
+                'cv_terms_kw': 'count',
+            },
+        },
     }
 
     INTERACTIONS_SETTINGS = {

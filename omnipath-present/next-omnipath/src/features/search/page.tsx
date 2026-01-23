@@ -27,7 +27,17 @@ interface SearchPageProps {
   showLayoutSwitcherInEmbedded?: boolean;
   initialQuery?: string;
   initialSearchType?: "search_entities" | "cv_terms";
-  initialFilters?: { entity_ids?: number[]; entity_types?: string[]; sources?: string[]; ncbi_tax_id?: string[]; cv_terms?: string[] };
+  initialFilters?: {
+    entity_ids?: number[];
+    entity_types?: string[];
+    sources?: string[];
+    ncbi_tax_id?: string[];
+    cv_terms_go?: string[];
+    cv_terms_mi?: string[];
+    cv_terms_om?: string[];
+    cv_terms_hp?: string[];
+    cv_terms_kw?: string[];
+  };
   // Whether to show filter sidebar even when embedded
   showFilters?: boolean;
 }
@@ -48,10 +58,11 @@ export default function SearchPage({
   const [, startTransition] = useTransition();
   const [searchMode, setSearchMode] = useState<SearchMode>("full-text");
   const [selectedSpecies, setSelectedSpecies] = useState<string>("9606"); // Default to Human
-  const [filters, setFilters] = useState<{ entity_ids?: number[]; entity_types?: string[]; sources?: string[]; ncbi_tax_id?: string[]; cv_terms?: string[] }>(
+  const [filters, setFilters] = useState<MeilisearchFilters>(
     initialFilters || { ncbi_tax_id: ["9606"] }
   );
   const [filterCounts, setFilterCounts] = useState<{ entity_type?: Record<string, number>; sources?: Record<string, number>; ncbi_tax_id?: Record<string, number>; cv_terms?: Record<string, number> }>({});
+  const [ontologyFacetCountsByPrefix, setOntologyFacetCountsByPrefix] = useState<Record<string, Record<string, number>>>({});
   const [lookupMatches, setLookupMatches] = useState<IdentifierMatch[]>([]);
   const [lookupEntities, setLookupEntities] = useState<SearchResult[]>([]);
   const [lookupError, setLookupError] = useState<string | null>(null);
@@ -79,11 +90,19 @@ export default function SearchPage({
 
       // Update filter counts from facet distribution (only on first page)
       if (offset === 0 && 'facetDistribution' in response && response.facetDistribution && initialSearchType === "search_entities") {
+        const facetDistribution = response.facetDistribution || {};
+        const perOntologyCounts: Record<string, Record<string, number>> = {
+          GO: facetDistribution.cv_terms_go || {},
+          MI: facetDistribution.cv_terms_mi || {},
+          OM: facetDistribution.cv_terms_om || {},
+          HP: facetDistribution.cv_terms_hp || {},
+          KW: facetDistribution.cv_terms_kw || {},
+        };
+        setOntologyFacetCountsByPrefix(perOntologyCounts);
         setFilterCounts({
           entity_type: response.facetDistribution.entity_type || {},
           sources: response.facetDistribution.sources || {},
           ncbi_tax_id: response.facetDistribution.ncbi_tax_id || {},
-          cv_terms: response.facetDistribution.cv_terms || {},
         });
       }
 
@@ -113,7 +132,7 @@ export default function SearchPage({
   });
 
   // Handlers for filters
-  const handleFilterChange = useCallback((newFilters: { entity_types?: string[]; sources?: string[]; ncbi_tax_id?: string[]; cv_terms?: string[] }) => {
+  const handleFilterChange = useCallback((newFilters: { entity_types?: string[]; sources?: string[]; ncbi_tax_id?: string[] }) => {
     setFilters(newFilters);
   }, []);
 
@@ -127,29 +146,13 @@ export default function SearchPage({
     setFilters(prev => ({ ...prev, ncbi_tax_id: [species] }));
   }, []);
 
-  const annotationFilters = useMemo<MeilisearchFilters>(
-    () => ({
-      ...filters,
-      interaction_annotation_terms: filters.cv_terms,
-    }),
-    [filters]
-  );
-
-  const annotationFilterCounts = useMemo<Record<string, Record<string, number>>>(
-    () => ({
-      interaction_annotation_terms: filterCounts.cv_terms || {},
-    }),
-    [filterCounts.cv_terms]
-  );
-
   const handleAnnotationFilterChange = useCallback((newFilters: MeilisearchFilters) => {
-    setFilters(prev => ({
-      ...prev,
-      cv_terms: newFilters.interaction_annotation_terms || undefined,
-    }));
+    setFilters(newFilters);
   }, []);
 
-  const hasOntologyTerms = Object.keys(filterCounts.cv_terms || {}).length > 0;
+  const hasOntologyTerms = Object.values(ontologyFacetCountsByPrefix).some(
+    (counts) => Object.keys(counts).length > 0
+  );
   const ontologyEnabled =
     (allowOntologyInEmbedded || !embedded) &&
     searchMode === "full-text" &&
@@ -395,9 +398,10 @@ export default function SearchPage({
     <div className="h-full overflow-y-auto p-4">
       <div className={ontologyContainerClass}>
         <AnnotationFilterSidebar
-          filters={annotationFilters}
-          filterCounts={annotationFilterCounts}
+          mode="entities"
+          filters={filters}
           onFilterChange={handleAnnotationFilterChange}
+          ontologyFacetCountsByPrefix={ontologyFacetCountsByPrefix}
         />
       </div>
     </div>

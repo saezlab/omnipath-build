@@ -2,6 +2,7 @@
 
 import { meilisearchClient, INDEXES, type IndexName } from './client';
 import type { MeilisearchFilters } from '@/types/meilisearch';
+import { buildEntityFilterString, buildInteractionFilterString } from './filters';
 
 // Re-export INDEXES for other modules
 //export { INDEXES } from './client';
@@ -22,47 +23,6 @@ export interface SearchResponse {
   processingTimeMs: number;
   query: string;
   facetDistribution?: Record<string, Record<string, number>>;
-}
-
-/**
- * Build filter string for Meilisearch entity search
- */
-function buildEntityFilterString(filters: MeilisearchFilters): string {
-  const filterParts: string[] = [];
-
-  // Entity IDs filter (for related entities tab)
-  if (filters.entity_ids?.length) {
-    // Use IN array syntax for better performance
-    const ids = filters.entity_ids.join(', ');
-    filterParts.push(`entity_id IN [${ids}]`);
-  }
-
-  // Entity type filter
-  if (filters.entity_types?.length) {
-    const entityTypeFilters = filters.entity_types.map(type => `entity_type = "${type}"`).join(' OR ');
-    filterParts.push(`(${entityTypeFilters})`);
-  }
-
-  // Sources filter
-  if (filters.sources?.length) {
-    const sourceFilters = filters.sources.map(source => `sources = "${source}"`).join(' OR ');
-    filterParts.push(`(${sourceFilters})`);
-  }
-
-  // NCBI taxonomy ID filter
-  // When filtering by tax ID, include records with the specified tax ID(s) OR no tax ID at all
-  if (filters.ncbi_tax_id?.length) {
-    const taxIdFilters = filters.ncbi_tax_id.map(taxId => `ncbi_tax_id = "${taxId}"`).join(' OR ');
-    filterParts.push(`(${taxIdFilters} OR ncbi_tax_id IS NULL)`);
-  }
-
-  // CV terms filter
-  if (filters.cv_terms?.length) {
-    const cvTermFilters = filters.cv_terms.map(term => `cv_terms = "${term}"`).join(' OR ');
-    filterParts.push(`(${cvTermFilters})`);
-  }
-
-  return filterParts.join(' AND ');
 }
 
 /**
@@ -92,7 +52,11 @@ export async function searchMeilisearch(params: SearchParams): Promise<SearchRes
         'entity_type',
         'sources',
         'ncbi_tax_id',
-        'cv_terms',
+        'cv_terms_go',
+        'cv_terms_mi',
+        'cv_terms_om',
+        'cv_terms_hp',
+        'cv_terms_kw',
       ];
 
       // Add filters if present
@@ -129,64 +93,6 @@ export async function searchMeilisearch(params: SearchParams): Promise<SearchRes
 }
 
 /**
- * Build filter string for Meilisearch interactions (new schema)
- */
-function buildMeilisearchFilterString(filters: MeilisearchFilters): string {
-  const filterParts: string[] = [];
-
-  // Multiple entity IDs filter - matches interactions where ANY of the entity IDs is member_a or member_b
-  if (filters.entity_ids?.length) {
-    const entityFilters = filters.entity_ids.map(id =>
-      `(member_a_id = ${id} OR member_b_id = ${id})`
-    ).join(' OR ');
-    filterParts.push(`(${entityFilters})`);
-  }
-
-  // Single member ID filters - filter on either member_a_id OR member_b_id
-  if (filters.member_a_id !== undefined) {
-    filterParts.push(`(member_a_id = ${filters.member_a_id} OR member_b_id = ${filters.member_a_id})`);
-  }
-
-  if (filters.member_b_id !== undefined) {
-    filterParts.push(`(member_a_id = ${filters.member_b_id} OR member_b_id = ${filters.member_b_id})`);
-  }
-
-  // Member types filter (array field)
-  if (filters.member_types?.length) {
-    const typeFilters = filters.member_types.map(type => `member_types = "${type}"`).join(' OR ');
-    filterParts.push(`(${typeFilters})`);
-  }
-
-  // Direction filter
-  if (filters.has_direction !== undefined && filters.has_direction !== null) {
-    filterParts.push(`has_direction = ${filters.has_direction}`);
-  }
-
-  // Sign filters
-  if (filters.has_positive_sign !== undefined && filters.has_positive_sign !== null) {
-    filterParts.push(`has_positive_sign = ${filters.has_positive_sign}`);
-  }
-
-  if (filters.has_negative_sign !== undefined && filters.has_negative_sign !== null) {
-    filterParts.push(`has_negative_sign = ${filters.has_negative_sign}`);
-  }
-
-  // Interaction annotation terms filter
-  if (filters.interaction_annotation_terms?.length) {
-    const termFilters = filters.interaction_annotation_terms.map(term => `interaction_annotation_terms = "${term}"`).join(' OR ');
-    filterParts.push(`(${termFilters})`);
-  }
-
-  // Sources filter
-  if (filters.sources?.length) {
-    const sourceFilters = filters.sources.map(source => `sources = "${source}"`).join(' OR ');
-    filterParts.push(`(${sourceFilters})`);
-  }
-
-  return filterParts.join(' AND ');
-}
-
-/**
  * Search interactions with filters
  */
 export async function searchInteractionsMeilisearch(
@@ -201,7 +107,7 @@ export async function searchInteractionsMeilisearch(
 
   try {
     const indexClient = meilisearchClient.index(INDEXES.INTERACTIONS);
-    const filterString = buildMeilisearchFilterString(filters);
+    const filterString = buildInteractionFilterString(filters);
 
     const searchOptions: Record<string, unknown> = {
       limit,

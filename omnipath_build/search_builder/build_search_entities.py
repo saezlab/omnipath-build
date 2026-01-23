@@ -381,13 +381,47 @@ def build_search_entities(global_tables_dir: Path, output_path: Path) -> Path:
     # 6. Fill Nulls & Streaming Write
     # Note: We must cast lists explicitly to avoid schema issues if a column is entirely null
     defaults = [
-        pl.col(c).fill_null(pl.lit([], dtype=STR_LIST)) for c in ["names", "synonyms", "gene_symbols", "descriptions", "references", "sources", "stoichiometry", "pathway_steps", "cv_terms"]
+        pl.col(c).fill_null(pl.lit([], dtype=STR_LIST)) for c in [
+            "names",
+            "synonyms",
+            "gene_symbols",
+            "descriptions",
+            "references",
+            "sources",
+            "stoichiometry",
+            "pathway_steps",
+            "cv_terms",
+            "cv_terms_go",
+            "cv_terms_mi",
+            "cv_terms_om",
+            "cv_terms_hp",
+            "cv_terms_kw",
+        ]
     ] + [
         pl.col(c).fill_null(pl.lit([], dtype=INT_LIST)) for c in ["complexes", "pathways", "reactions", "reactants", "products"]
     ] + [
         pl.col("identifiers").fill_null(pl.lit([], dtype=ID_LIST_DTYPE)),
         pl.col("num_interactions").fill_null(0)
     ]
+
+    # Build per-ontology CV term lists for faceting (top counts per ontology).
+    final_plan = final_plan.with_columns([
+        pl.col("cv_terms").list.eval(
+            pl.element().filter(pl.element().str.starts_with("GO:"))
+        ).alias("cv_terms_go"),
+        pl.col("cv_terms").list.eval(
+            pl.element().filter(pl.element().str.starts_with("MI:"))
+        ).alias("cv_terms_mi"),
+        pl.col("cv_terms").list.eval(
+            pl.element().filter(pl.element().str.starts_with("OM:"))
+        ).alias("cv_terms_om"),
+        pl.col("cv_terms").list.eval(
+            pl.element().filter(pl.element().str.starts_with("HP:"))
+        ).alias("cv_terms_hp"),
+        pl.col("cv_terms").list.eval(
+            pl.element().filter(pl.element().str.starts_with("KW:"))
+        ).alias("cv_terms_kw"),
+    ])
 
     final_plan = final_plan.with_columns(defaults).sort("entity_id")
 

@@ -114,7 +114,11 @@ export interface MeilisearchFilters {
   entity_types?: string[];
   sources?: string[];
   ncbi_tax_id?: string[];
-  cv_terms?: string[];
+  cv_terms_go?: string[];
+  cv_terms_mi?: string[];
+  cv_terms_om?: string[];
+  cv_terms_hp?: string[];
+  cv_terms_kw?: string[];
 
   // Association filters
   parent_entity_ids?: number[];

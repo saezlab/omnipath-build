@@ -490,6 +490,7 @@ export function InteractionsExploreTab({
     <div className="h-full min-h-0 overflow-hidden p-4">
       <div className="h-full overflow-y-auto">
         <AnnotationFilterSidebar
+          mode="interactions"
           filters={filters}
           filterCounts={filterCounts ?? {}}
           onFilterChange={onFilterChange}
