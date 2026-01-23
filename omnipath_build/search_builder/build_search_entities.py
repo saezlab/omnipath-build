@@ -237,8 +237,22 @@ def build_search_entities(global_tables_dir: Path, output_path: Path) -> Path:
         ent_annot_with_entity
         .filter(pl.col("cv_term_accession") == CV_TERM_ACCESSION_TYPE)
         .filter(pl.col("value").is_not_null())
+        .join(
+            pl.DataFrame(cv_terms.select(["accession", "label"])).lazy().rename({"label": "cv_term_label"}),
+            left_on="value",
+            right_on="accession",
+            how="left",
+        )
+        .with_columns(
+            (
+                pl.coalesce([
+                    pl.col("cv_term_label"),
+                    (pl.col("value") + ":" + pl.col("value"))
+                ])
+            ).alias("cv_term_formatted")
+        )
         .group_by("annot_entity_id")
-        .agg(pl.col("value").unique().sort().alias("cv_terms"))
+        .agg(pl.col("cv_term_formatted").unique().sort().alias("cv_terms"))
         .rename({"annot_entity_id": "entity_id"})
     )
 
@@ -407,19 +421,19 @@ def build_search_entities(global_tables_dir: Path, output_path: Path) -> Path:
     # Build per-ontology CV term lists for faceting (top counts per ontology).
     final_plan = final_plan.with_columns([
         pl.col("cv_terms").list.eval(
-            pl.element().filter(pl.element().str.starts_with("GO:"))
+            pl.element().filter(pl.element().str.contains(r"\bGO:\d{4,}\b"))
         ).alias("cv_terms_go"),
         pl.col("cv_terms").list.eval(
-            pl.element().filter(pl.element().str.starts_with("MI:"))
+            pl.element().filter(pl.element().str.contains(r"\bMI:\d{4,}\b"))
         ).alias("cv_terms_mi"),
         pl.col("cv_terms").list.eval(
-            pl.element().filter(pl.element().str.starts_with("OM:"))
+            pl.element().filter(pl.element().str.contains(r"\bOM:\d{4,}\b"))
         ).alias("cv_terms_om"),
         pl.col("cv_terms").list.eval(
-            pl.element().filter(pl.element().str.starts_with("HP:"))
+            pl.element().filter(pl.element().str.contains(r"\bHP:\d{4,}\b"))
         ).alias("cv_terms_hp"),
         pl.col("cv_terms").list.eval(
-            pl.element().filter(pl.element().str.starts_with("KW:"))
+            pl.element().filter(pl.element().str.contains(r"\bKW:\d{4,}\b"))
         ).alias("cv_terms_kw"),
     ])
 

@@ -68,6 +68,16 @@ class OntologyLabelResolver:
                 "source": "go",  # OBO Foundry ID
                 "prefixes": ["GO"],
             },
+            {
+                "id": "human_phenotype",
+                "source": "hp",  # OBO Foundry ID for HPO
+                "prefixes": ["HP"],
+            },
+            {
+                "id": "uniprot_keywords",
+                "source": "keywords",  # OBO Foundry ID for UniProt Keywords
+                "prefixes": ["KW"],
+            },
         ]
 
         # Load ontologies

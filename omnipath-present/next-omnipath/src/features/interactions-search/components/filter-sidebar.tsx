@@ -58,7 +58,8 @@ const ENTITY_ONTOLOGY_FACET_MAP: Record<string, string> = {
 };
 
 function extractPrefix(termId: string): string {
-  const match = termId.match(/^([A-Z]{2,}):/);
+  const resolved = extractTermId(termId) || termId;
+  const match = resolved.match(/^([A-Z]{2,}):/);
   return match ? match[1] : "OTHER";
 }
 
@@ -459,24 +460,32 @@ export function AnnotationFilterSidebar({
 
   const annotationOptions = useMemo(() => {
     if (mode === "entities") {
+      const { ontologyFacetCountsByPrefix } = rest as Extract<
+        AnnotationFilterSidebarProps,
+        { mode: "entities" }
+      >;
       const countsByPrefix = annotationQuery.trim()
         ? facetSearchCountsByPrefix
-        : rest.ontologyFacetCountsByPrefix;
+        : ontologyFacetCountsByPrefix;
       return Object.entries(countsByPrefix)
         .flatMap(([prefix, counts]) =>
           Object.entries(counts).map(([value, count]) => ({
             value,
             count,
-            label: value,
+            label: value.includes(":") ? value.split(":").slice(0, -2).join(":") : value,
             icon: prefix,
           }))
         )
         .sort((a, b) => b.count - a.count);
     }
 
+    const { filterCounts } = rest as Extract<
+      AnnotationFilterSidebarProps,
+      { mode: "interactions" }
+    >;
     const counts = annotationQuery.trim()
       ? facetSearchCounts
-      : rest.filterCounts.interaction_annotation_terms;
+      : filterCounts.interaction_annotation_terms;
     if (!counts) return [];
     return Object.entries(counts)
       .map(([value, count]) => {
@@ -515,14 +524,22 @@ export function AnnotationFilterSidebar({
 
   const termsByPrefix = useMemo(() => {
     if (mode === "entities") {
+      const { ontologyFacetCountsByPrefix } = rest as Extract<
+        AnnotationFilterSidebarProps,
+        { mode: "entities" }
+      >;
       const groups = new Map<string, { termIds: string[]; totalCount: number }>();
       const countsByPrefix = annotationQuery.trim()
         ? facetSearchCountsByPrefix
-        : rest.ontologyFacetCountsByPrefix;
+        : ontologyFacetCountsByPrefix;
       Object.entries(countsByPrefix).forEach(([prefix, counts]) => {
-        const termIds = Object.keys(counts);
+        const termIds = Object.keys(counts)
+          .map((value) => extractTermId(value))
+          .filter((value): value is string => !!value);
         if (termIds.length === 0) return;
-        const totalCount = termIds.reduce((sum, termId) => sum + (counts[termId] || 0), 0);
+        const totalCount = Object.entries(counts).reduce((sum, [value, count]) => {
+          return extractTermId(value) ? sum + count : sum;
+        }, 0);
         groups.set(prefix, { termIds, totalCount });
       });
       return groups;
@@ -563,7 +580,11 @@ export function AnnotationFilterSidebar({
     const timer = setTimeout(async () => {
       try {
         if (mode === "entities") {
-          const availablePrefixes = Object.keys(rest.ontologyFacetCountsByPrefix || {});
+          const { ontologyFacetCountsByPrefix } = rest as Extract<
+            AnnotationFilterSidebarProps,
+            { mode: "entities" }
+          >;
+          const availablePrefixes = Object.keys(ontologyFacetCountsByPrefix || {});
           const fallbackPrefix = availablePrefixes[0] || Object.keys(ENTITY_ONTOLOGY_FACET_MAP)[0];
           const selectedPrefix =
             (activeTab && ENTITY_ONTOLOGY_FACET_MAP[activeTab] ? activeTab : fallbackPrefix) || "";

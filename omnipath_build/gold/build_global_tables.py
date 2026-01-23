@@ -33,11 +33,13 @@ import polars as pl
 # Import resolver for CV term labels
 try:
     from omnipath_build.utils.ontology_labels import get_default_resolver
+    from omnipath_build.search_builder.schema import CV_TERM_ACCESSION_TYPE
 except ImportError:
     # Fallback for when running as script/different context
     import sys
     sys.path.append(str(Path(__file__).parent.parent.parent))
     from omnipath_build.utils.ontology_labels import get_default_resolver
+    from omnipath_build.search_builder.schema import CV_TERM_ACCESSION_TYPE
 
 __all__ = ["build_global_tables"]
 
@@ -407,6 +409,15 @@ def build_global_tables(
             accessions.update(entity_annots_output["cv_term_accession"].drop_nulls().unique().to_list())
         if "unit_accession" in entity_annots_output.columns:
             accessions.update(entity_annots_output["unit_accession"].drop_nulls().unique().to_list())
+        if {"cv_term_accession", "value"}.issubset(entity_annots_output.columns):
+            cv_value_accessions = (
+                entity_annots_output
+                .filter(pl.col("cv_term_accession") == CV_TERM_ACCESSION_TYPE)
+                .select(pl.col("value").drop_nulls().unique())
+                .to_series()
+                .to_list()
+            )
+            accessions.update(cv_value_accessions)
 
     logger.info(f"Resolving labels for {len(accessions)} unique CV terms...")
     
