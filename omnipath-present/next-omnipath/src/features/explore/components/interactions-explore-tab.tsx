@@ -125,7 +125,11 @@ export function InteractionsExploreTab({
   const [isLoadingAll, setIsLoadingAll] = useState(false);
   const [hasLoadedGraphData, setHasLoadedGraphData] = useState(false);
   const [entityMap, setEntityMap] = useState<Map<number, EntityInfo>>(new Map());
-  const [layoutMode, setLayoutMode] = useState<LayoutMode>("split");
+  const [layoutMode, setLayoutMode] = useState<LayoutMode>("search");
+
+  // Check if there are ontology terms available
+  const hasOntologyTerms = filterCounts?.interaction_annotation_terms &&
+    Object.keys(filterCounts.interaction_annotation_terms).length > 0;
 
   // Update error state from infinite scroll hook
   useEffect(() => {
@@ -276,212 +280,212 @@ export function InteractionsExploreTab({
         onViewModeChange={setViewMode}
         onExport={handleExport}
       >
-      {/* Mobile filter drawer */}
-      <div className="lg:hidden p-4 border-b">
-        <Sheet>
-          <SheetTrigger asChild>
-            <Button variant="outline" className="w-full">
-              <Filter className="h-4 w-4 mr-2" />
-              Filters
-              {filterCounts && Object.keys(filters).length > 0 && (
-                <Badge variant="secondary" className="ml-2">
-                  {Object.entries(filters).reduce((count, [, value]) => {
-                    if (Array.isArray(value)) return count + value.length;
-                    if (value !== null && value !== undefined) return count + 1;
-                    return count;
-                  }, 0)}
-                </Badge>
-              )}
-            </Button>
-          </SheetTrigger>
-          <SheetContent side="left" className="w-[85%] sm:w-[400px] p-0">
-            <SheetHeader className="px-6 py-4 border-b">
-              <div className="flex items-center justify-between">
-                <SheetTitle className="flex items-center gap-2">
-                  <Filter className="h-5 w-5 text-primary" />
-                  Filters
-                </SheetTitle>
-                {Object.keys(filters).length > 0 && (
+        {/* Mobile filter drawer */}
+        <div className="lg:hidden p-4 border-b">
+          <Sheet>
+            <SheetTrigger asChild>
+              <Button variant="outline" className="w-full">
+                <Filter className="h-4 w-4 mr-2" />
+                Filters
+                {filterCounts && Object.keys(filters).length > 0 && (
+                  <Badge variant="secondary" className="ml-2">
+                    {Object.entries(filters).reduce((count, [, value]) => {
+                      if (Array.isArray(value)) return count + value.length;
+                      if (value !== null && value !== undefined) return count + 1;
+                      return count;
+                    }, 0)}
+                  </Badge>
+                )}
+              </Button>
+            </SheetTrigger>
+            <SheetContent side="left" className="w-[85%] sm:w-[400px] p-0">
+              <SheetHeader className="px-6 py-4 border-b">
+                <div className="flex items-center justify-between">
+                  <SheetTitle className="flex items-center gap-2">
+                    <Filter className="h-5 w-5 text-primary" />
+                    Filters
+                  </SheetTitle>
+                  {Object.keys(filters).length > 0 && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={handleClearFilters}
+                      className="flex items-center gap-1 text-muted-foreground hover:text-foreground"
+                    >
+                      <X className="h-4 w-4" />
+                      Clear all
+                    </Button>
+                  )}
+                </div>
+              </SheetHeader>
+              <div className="h-[calc(100%-4rem)] overflow-y-auto">
+                {filterCounts && (
+                  <FilterSidebar
+                    filters={filters}
+                    filterCounts={filterCounts}
+                    onFilterChange={onFilterChange}
+                    onClearFilters={handleClearFilters}
+                    isMobile
+                  />
+                )}
+              </div>
+            </SheetContent>
+          </Sheet>
+        </div>
+
+        {/* Results */}
+        {viewMode === "table" ? (
+          error ? (
+            <div className="p-6">
+              <Alert variant="destructive">
+                <AlertDescription>{error}</AlertDescription>
+              </Alert>
+            </div>
+          ) : results.length > 0 ? (
+            <div className="flex flex-col h-full">
+              {/* Fixed Table Header */}
+              <div className="border-b bg-background px-3 h-[57px] flex items-center flex-shrink-0">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="w-[35%] py-2">Source</TableHead>
+                      <TableHead className="w-[50px] text-center py-2"></TableHead>
+                      <TableHead className="w-[35%] py-2">Target</TableHead>
+                      <TableHead className="w-[20%] text-center py-2">Evidence</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                </Table>
+              </div>
+
+              {/* Scrollable Table Body */}
+              <div
+                ref={(el) => {
+                  mainContentRef.current = el;
+                  setRootElement(el);
+                }}
+                className="flex-1 min-h-0 overflow-y-auto"
+              >
+                <Table>
+                  <TableBody>
+                    {results.map((row) => {
+                      const swap = shouldSwapMembers(row.directions);
+                      const sourceId = swap ? row.member_b_id : row.member_a_id;
+                      const targetId = swap ? row.member_a_id : row.member_b_id;
+                      const sourceEntity = entityMap.get(sourceId);
+                      const targetEntity = entityMap.get(targetId);
+                      // Get entity type from member_types array
+                      const sourceTypeRaw = swap ? row.member_types[1] : row.member_types[0];
+                      const targetTypeRaw = swap ? row.member_types[0] : row.member_types[1];
+                      const sourceType = sourceTypeRaw ? extractTypeLabel(sourceTypeRaw) : undefined;
+                      const targetType = targetTypeRaw ? extractTypeLabel(targetTypeRaw) : undefined;
+
+                      return (
+                        <TableRow
+                          key={row.interaction_key}
+                          onClick={() => handleRowClick(row)}
+                          className="cursor-pointer hover:bg-muted/50"
+                        >
+                          <TableCell className="w-[35%] max-w-0">
+                            <EntityBadge
+                              displayName={sourceEntity?.display_name || String(sourceId)}
+                              canonicalIdentifier={sourceEntity?.canonical_identifier || String(sourceId)}
+                              entityType={sourceEntity?.entity_type_name || sourceType}
+                            />
+                          </TableCell>
+                          <TableCell className="w-[50px] text-center">
+                            <div className="flex justify-center">
+                              {renderSignIndicator(row)}
+                            </div>
+                          </TableCell>
+                          <TableCell className="w-[35%] max-w-0">
+                            <EntityBadge
+                              displayName={targetEntity?.display_name || String(targetId)}
+                              canonicalIdentifier={targetEntity?.canonical_identifier || String(targetId)}
+                              entityType={targetEntity?.entity_type_name || targetType}
+                            />
+                          </TableCell>
+                          <TableCell className="w-[20%] text-center">
+                            <Badge variant="outline">
+                              {formatNumber(row.evidence.length)}
+                            </Badge>
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })}
+                    {/* Infinite scroll trigger */}
+                    <TableRow style={{ display: hasMore ? 'table-row' : 'none' }}>
+                      <TableCell colSpan={4} className="p-0">
+                        <div
+                          ref={sentinelRef as React.RefObject<HTMLDivElement>}
+                          className="flex justify-center py-4"
+                          style={{ minHeight: '40px' }}
+                        >
+                          {loadingMore ? (
+                            <div className="flex items-center gap-2">
+                              <div className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+                              <span className="text-sm text-muted-foreground">Loading more...</span>
+                            </div>
+                          ) : (
+                            <div className="h-4 w-4" />
+                          )}
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  </TableBody>
+                </Table>
+
+              </div>
+            </div>
+          ) : !loading && (
+            <div className="p-6 flex-1 flex items-center justify-center">
+              <p className="text-muted-foreground text-center">
+                {Object.keys(filters).length > 0
+                  ? "No interactions found matching your criteria."
+                  : "Loading interactions..."}
+              </p>
+            </div>
+          )
+        ) : viewMode === "network" ? (
+          // Graph View
+          <div className="flex-1 overflow-hidden" style={{ minHeight: '500px' }}>
+            {isLoadingAll ? (
+              <div className="flex flex-col items-center justify-center h-full p-8">
+                <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent mb-4" />
+                <p className="text-muted-foreground">
+                  Loading {formatNumber(Math.min(totalResults, MAX_GRAPH_INTERACTIONS))} interactions...
+                </p>
+              </div>
+            ) : allInteractions.length > 0 ? (
+              <GraphView
+                interactions={convertToGraphViewFormat(allInteractions)}
+                onSelectInteraction={(interaction) => {
+                  const meilisearchInteraction = allInteractions.find(i => i.interaction_key === interaction.id?.toString());
+                  if (meilisearchInteraction) {
+                    setSelectedInteraction(meilisearchInteraction);
+                    setDetailsOpen(true);
+                  }
+                }}
+              />
+            ) : (
+              <div className="flex flex-col items-center justify-center h-full p-8">
+                <p className="text-muted-foreground mb-4">
+                  {totalResults > 0
+                    ? `No interactions loaded yet`
+                    : "No interactions to visualize"}
+                </p>
+                {totalResults > 0 && !hasLoadedGraphData && (
                   <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={handleClearFilters}
-                    className="flex items-center gap-1 text-muted-foreground hover:text-foreground"
+                    onClick={loadAllInteractions}
+                    disabled={isLoadingAll}
+                    size="lg"
                   >
-                    <X className="h-4 w-4" />
-                    Clear all
+                    Load All (max {formatNumber(MAX_GRAPH_INTERACTIONS)})
                   </Button>
                 )}
               </div>
-            </SheetHeader>
-            <div className="h-[calc(100%-4rem)] overflow-y-auto">
-              {filterCounts && (
-                <FilterSidebar
-                  filters={filters}
-                  filterCounts={filterCounts}
-                  onFilterChange={onFilterChange}
-                  onClearFilters={handleClearFilters}
-                  isMobile
-                />
-              )}
-            </div>
-          </SheetContent>
-        </Sheet>
-      </div>
-
-      {/* Results */}
-      {viewMode === "table" ? (
-        error ? (
-          <div className="p-6">
-            <Alert variant="destructive">
-              <AlertDescription>{error}</AlertDescription>
-            </Alert>
+            )}
           </div>
-        ) : results.length > 0 ? (
-          <div className="flex flex-col h-full">
-            {/* Fixed Table Header */}
-            <div className="border-b bg-background px-3 h-[57px] flex items-center flex-shrink-0">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead className="w-[35%] py-2">Source</TableHead>
-                    <TableHead className="w-[50px] text-center py-2"></TableHead>
-                    <TableHead className="w-[35%] py-2">Target</TableHead>
-                    <TableHead className="w-[20%] text-center py-2">Evidence</TableHead>
-                  </TableRow>
-                </TableHeader>
-              </Table>
-            </div>
-
-            {/* Scrollable Table Body */}
-            <div
-              ref={(el) => {
-                mainContentRef.current = el;
-                setRootElement(el);
-              }}
-              className="flex-1 min-h-0 overflow-y-auto"
-            >
-              <Table>
-                <TableBody>
-                  {results.map((row) => {
-                    const swap = shouldSwapMembers(row.directions);
-                    const sourceId = swap ? row.member_b_id : row.member_a_id;
-                    const targetId = swap ? row.member_a_id : row.member_b_id;
-                    const sourceEntity = entityMap.get(sourceId);
-                    const targetEntity = entityMap.get(targetId);
-                    // Get entity type from member_types array
-                    const sourceTypeRaw = swap ? row.member_types[1] : row.member_types[0];
-                    const targetTypeRaw = swap ? row.member_types[0] : row.member_types[1];
-                    const sourceType = sourceTypeRaw ? extractTypeLabel(sourceTypeRaw) : undefined;
-                    const targetType = targetTypeRaw ? extractTypeLabel(targetTypeRaw) : undefined;
-
-                    return (
-                      <TableRow
-                        key={row.interaction_key}
-                        onClick={() => handleRowClick(row)}
-                        className="cursor-pointer hover:bg-muted/50"
-                      >
-                        <TableCell className="w-[35%] max-w-0">
-                          <EntityBadge
-                            displayName={sourceEntity?.display_name || String(sourceId)}
-                            canonicalIdentifier={sourceEntity?.canonical_identifier || String(sourceId)}
-                            entityType={sourceEntity?.entity_type_name || sourceType}
-                          />
-                        </TableCell>
-                        <TableCell className="w-[50px] text-center">
-                          <div className="flex justify-center">
-                            {renderSignIndicator(row)}
-                          </div>
-                        </TableCell>
-                        <TableCell className="w-[35%] max-w-0">
-                          <EntityBadge
-                            displayName={targetEntity?.display_name || String(targetId)}
-                            canonicalIdentifier={targetEntity?.canonical_identifier || String(targetId)}
-                            entityType={targetEntity?.entity_type_name || targetType}
-                          />
-                        </TableCell>
-                        <TableCell className="w-[20%] text-center">
-                          <Badge variant="outline">
-                            {formatNumber(row.evidence.length)}
-                          </Badge>
-                        </TableCell>
-                      </TableRow>
-                    );
-                  })}
-                  {/* Infinite scroll trigger */}
-                  <TableRow style={{ display: hasMore ? 'table-row' : 'none' }}>
-                    <TableCell colSpan={4} className="p-0">
-                      <div
-                        ref={sentinelRef as React.RefObject<HTMLDivElement>}
-                        className="flex justify-center py-4"
-                        style={{ minHeight: '40px' }}
-                      >
-                        {loadingMore ? (
-                          <div className="flex items-center gap-2">
-                            <div className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
-                            <span className="text-sm text-muted-foreground">Loading more...</span>
-                          </div>
-                        ) : (
-                          <div className="h-4 w-4" />
-                        )}
-                      </div>
-                    </TableCell>
-                  </TableRow>
-                </TableBody>
-              </Table>
-
-            </div>
-          </div>
-        ) : !loading && (
-          <div className="p-6 flex-1 flex items-center justify-center">
-            <p className="text-muted-foreground text-center">
-              {Object.keys(filters).length > 0
-                ? "No interactions found matching your criteria."
-                : "Loading interactions..."}
-            </p>
-          </div>
-        )
-      ) : viewMode === "network" ? (
-        // Graph View
-        <div className="flex-1 overflow-hidden" style={{ minHeight: '500px' }}>
-          {isLoadingAll ? (
-            <div className="flex flex-col items-center justify-center h-full p-8">
-              <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent mb-4" />
-              <p className="text-muted-foreground">
-                Loading {formatNumber(Math.min(totalResults, MAX_GRAPH_INTERACTIONS))} interactions...
-              </p>
-            </div>
-          ) : allInteractions.length > 0 ? (
-            <GraphView
-              interactions={convertToGraphViewFormat(allInteractions)}
-              onSelectInteraction={(interaction) => {
-                const meilisearchInteraction = allInteractions.find(i => i.interaction_key === interaction.id?.toString());
-                if (meilisearchInteraction) {
-                  setSelectedInteraction(meilisearchInteraction);
-                  setDetailsOpen(true);
-                }
-              }}
-            />
-          ) : (
-            <div className="flex flex-col items-center justify-center h-full p-8">
-              <p className="text-muted-foreground mb-4">
-                {totalResults > 0
-                  ? `No interactions loaded yet`
-                  : "No interactions to visualize"}
-              </p>
-              {totalResults > 0 && !hasLoadedGraphData && (
-                <Button
-                  onClick={loadAllInteractions}
-                  disabled={isLoadingAll}
-                  size="lg"
-                >
-                  Load All (max {formatNumber(MAX_GRAPH_INTERACTIONS)})
-                </Button>
-              )}
-            </div>
-          )}
-        </div>
-      ) : null}
+        ) : null}
       </DataCard>
     </div>
   );
@@ -502,7 +506,7 @@ export function InteractionsExploreTab({
   return (
     <div className="relative flex flex-col h-svh overflow-hidden">
       <div className="flex-1 min-h-0">
-        {layoutMode === "split" ? (
+        {layoutMode === "split" && hasOntologyTerms ? (
           <ResizablePanelGroup direction="horizontal" className="h-full">
             <ResizablePanel defaultSize={68} minSize={50} className="min-h-0">
               {searchPanel}
@@ -512,7 +516,7 @@ export function InteractionsExploreTab({
               {ontologyPanel}
             </ResizablePanel>
           </ResizablePanelGroup>
-        ) : layoutMode === "ontology" ? (
+        ) : layoutMode === "ontology" && hasOntologyTerms ? (
           ontologyPanel
         ) : (
           searchPanel
@@ -526,34 +530,37 @@ export function InteractionsExploreTab({
         interaction={selectedInteraction}
       />
 
-      <div className="fixed bottom-4 right-4 z-40">
-        <div className="inline-flex items-center rounded-full border bg-background/90 p-1 shadow-sm">
-          <Button
-            size="sm"
-            variant={layoutMode === "search" ? "default" : "ghost"}
-            onClick={() => setLayoutMode("search")}
-            className="rounded-full h-8"
-          >
-            Search
-          </Button>
-          <Button
-            size="sm"
-            variant={layoutMode === "split" ? "default" : "ghost"}
-            onClick={() => setLayoutMode("split")}
-            className="rounded-full h-8"
-          >
-            Both
-          </Button>
-          <Button
-            size="sm"
-            variant={layoutMode === "ontology" ? "default" : "ghost"}
-            onClick={() => setLayoutMode("ontology")}
-            className="rounded-full h-8"
-          >
-            Ontology
-          </Button>
+      {/* Layout mode switcher - only show if ontology terms are available */}
+      {hasOntologyTerms && (
+        <div className="fixed bottom-4 right-4 z-40">
+          <div className="inline-flex items-center rounded-full border bg-background/90 p-1 shadow-sm">
+            <Button
+              size="sm"
+              variant={layoutMode === "search" ? "default" : "ghost"}
+              onClick={() => setLayoutMode("search")}
+              className="rounded-full h-8"
+            >
+              Search
+            </Button>
+            <Button
+              size="sm"
+              variant={layoutMode === "split" ? "default" : "ghost"}
+              onClick={() => setLayoutMode("split")}
+              className="rounded-full h-8"
+            >
+              Both
+            </Button>
+            <Button
+              size="sm"
+              variant={layoutMode === "ontology" ? "default" : "ghost"}
+              onClick={() => setLayoutMode("ontology")}
+              className="rounded-full h-8"
+            >
+              Ontology
+            </Button>
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }

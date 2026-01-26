@@ -12,11 +12,12 @@ import {
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import React, { useMemo, useState } from "react";
-import { Network, Tag, Shapes, FileText, Database, Plus, Check, FlaskConical, ArrowRight, ListOrdered, ChevronDown, ChevronUp, Copy, Loader2 } from "lucide-react";
+import { Network, Tag, Shapes, FileText, Database, Plus, Check, FlaskConical, ArrowRight, ListOrdered, ChevronDown, ChevronUp, Copy, Loader2, Info } from "lucide-react";
 import { useEntitySelection } from "@/contexts/entity-selection-context";
 import { MoleculeStructure } from "./molecule_structure";
 import { searchMeilisearch } from "@/lib/meilisearch/search";
 import { INDEXES } from "@/lib/meilisearch/client";
+import { EntityDetailsDialog } from "./entity-details-dialog";
 
 // Component that shows a ResultCardContent in a HoverCard for entities
 export function EntityHoverCard({
@@ -478,6 +479,7 @@ function MoleculeResultCard({ result }: { result: SearchResult }) {
   const { addEntity, removeEntity, isSelected } = useEntitySelection();
   const entityId = (result.entity_id ?? result.id)?.toString();
   const selected = entityId ? isSelected(entityId) : false;
+  const [detailsOpen, setDetailsOpen] = useState(false);
 
   const handleAddToSelection = (e: React.MouseEvent) => {
     e.preventDefault();
@@ -522,19 +524,40 @@ function MoleculeResultCard({ result }: { result: SearchResult }) {
       className="flex flex-col hover:shadow-md transition-shadow h-full result-card group relative cursor-pointer"
       onClick={handleCardClick}
     >
-      {/* Add to selection button */}
+      {/* Action buttons */}
       {entityId && (
-        <Button
-          variant={selected ? "default" : "secondary"}
-          size="icon"
-          className={`absolute -bottom-3 left-1/2 -translate-x-1/2 z-10 h-6 w-6 rounded-full shadow-md transition-opacity ${selected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
-            }`}
-          onClick={handleAddToSelection}
-          title={selected ? "Remove from selection" : "Add to selection"}
-        >
-          {selected ? <Check className="h-3 w-3" /> : <Plus className="h-3 w-3" />}
-        </Button>
+        <div className={`absolute -bottom-3 left-1/2 -translate-x-1/2 z-10 flex gap-1 transition-opacity ${selected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}>
+          <Button
+            variant="secondary"
+            size="icon"
+            className="h-6 w-6 rounded-full shadow-md"
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              setDetailsOpen(true);
+            }}
+            title="View details"
+          >
+            <Info className="h-3 w-3" />
+          </Button>
+          <Button
+            variant={selected ? "default" : "secondary"}
+            size="icon"
+            className="h-6 w-6 rounded-full shadow-md"
+            onClick={handleAddToSelection}
+            title={selected ? "Remove from selection" : "Add to selection"}
+          >
+            {selected ? <Check className="h-3 w-3" /> : <Plus className="h-3 w-3" />}
+          </Button>
+        </div>
       )}
+
+      {/* Entity Details Dialog */}
+      <EntityDetailsDialog
+        open={detailsOpen}
+        onOpenChange={setDetailsOpen}
+        entity={result}
+      />
 
       {/* Molecule structure visualization */}
       {smiles && (
@@ -614,6 +637,7 @@ export function ResultCard({ result, entityNamesMap }: { result: SearchResult, e
 
   const entityId = (result.entity_id ?? result.id)?.toString();
   const selected = entityId ? isSelected(entityId) : false;
+  const [detailsOpen, setDetailsOpen] = useState(false);
 
   const handleAddToSelection = (e: React.MouseEvent) => {
     e.preventDefault();
@@ -754,19 +778,40 @@ export function ResultCard({ result, entityNamesMap }: { result: SearchResult, e
 
   return (
     <Card className={`flex flex-col hover:shadow-md transition-shadow h-full result-card group relative ${type === 'entity' ? 'cursor-pointer' : ''}`} onClick={handleCardClick}>
-      {/* Add to selection button - positioned at bottom center, visible on hover for entities */}
+      {/* Action buttons - positioned at bottom center, visible on hover for entities */}
       {type === 'entity' && entityId && (
-        <Button
-          variant={selected ? "default" : "secondary"}
-          size="icon"
-          className={`absolute -bottom-3 left-1/2 -translate-x-1/2 z-10 h-6 w-6 rounded-full shadow-md transition-opacity ${selected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
-            }`}
-          onClick={handleAddToSelection}
-          title={selected ? "Remove from selection" : "Add to selection"}
-        >
-          {selected ? <Check className="h-3 w-3" /> : <Plus className="h-3 w-3" />}
-        </Button>
+        <div className={`absolute -bottom-3 left-1/2 -translate-x-1/2 z-10 flex gap-1 transition-opacity ${selected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}>
+          <Button
+            variant="secondary"
+            size="icon"
+            className="h-6 w-6 rounded-full shadow-md"
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              setDetailsOpen(true);
+            }}
+            title="View details"
+          >
+            <Info className="h-3 w-3" />
+          </Button>
+          <Button
+            variant={selected ? "default" : "secondary"}
+            size="icon"
+            className="h-6 w-6 rounded-full shadow-md"
+            onClick={handleAddToSelection}
+            title={selected ? "Remove from selection" : "Add to selection"}
+          >
+            {selected ? <Check className="h-3 w-3" /> : <Plus className="h-3 w-3" />}
+          </Button>
+        </div>
       )}
+
+      {/* Entity Details Dialog */}
+      <EntityDetailsDialog
+        open={detailsOpen}
+        onOpenChange={setDetailsOpen}
+        entity={result}
+      />
 
       <CardHeader className="relative space-y-0 p-3 border-b shrink-0">
         <CardTitle className="text-lg line-clamp-3">
