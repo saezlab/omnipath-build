@@ -139,7 +139,13 @@ export async function fetchEntitiesByIds(entityIds: number[]): Promise<Map<numbe
 
         // Use ChEMBL or PubChem as canonical identifier if available
         canonicalId = chemblId || pubchemId || names?.[0] || String(doc.entity_id);
+      } else if (entityTypeName?.toLowerCase() === 'protein') {
+        // For proteins: prefer gene symbol, then UniProt identifier
+        const uniprotId = getIdentifierByType(['uniprot', 'uniprotkb']);
+        displayName = geneSymbols?.[0] || uniprotId || names?.[0] || String(doc.entity_id);
+        canonicalId = uniprotId || names?.[0] || String(doc.entity_id);
       } else {
+        // For other entity types: gene symbol > names
         displayName = geneSymbols?.[0] || names?.[0] || String(doc.entity_id);
         canonicalId = names?.[0] || String(doc.entity_id);
       }

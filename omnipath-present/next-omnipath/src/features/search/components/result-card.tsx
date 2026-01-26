@@ -536,12 +536,6 @@ function MoleculeResultCard({ result }: { result: SearchResult }) {
         </Button>
       )}
 
-      <CardHeader className="relative space-y-0 p-3 border-b shrink-0">
-        <CardTitle className="text-base line-clamp-3">
-          <span dangerouslySetInnerHTML={{ __html: convertEmToHighlight(primaryName) }} />
-        </CardTitle>
-      </CardHeader>
-
       {/* Molecule structure visualization */}
       {smiles && (
         <CardContent className="p-3 flex-grow flex flex-col items-center">
@@ -691,20 +685,51 @@ export function ResultCard({ result, entityNamesMap }: { result: SearchResult, e
   let primaryIdentifier = "";
 
   if (type === 'entity') {
-    // Priority: gene_symbols > names > first identifier value
     const geneSymbol = geneSymbols.length > 0 ? geneSymbols[0] : undefined;
     const name = names.length > 0 ? names[0] : undefined;
     const firstIdentifier = identifiers.length > 0 ? identifiers[0].value : undefined;
 
-    const displayName = geneSymbol || name || firstIdentifier || `Entity ${result.id}`;
+    // For proteins: prefer gene symbol, then UniProt identifier
+    // For other entities: gene_symbols > names > first identifier
+    const isProtein = entityTypeLabel.toLowerCase() === 'protein';
+
+    let displayName: string;
+    let secondaryName: string | undefined;
+
+    if (isProtein) {
+      // Try to find UniProt identifier
+      const uniprotId = identifiers.find(id => {
+        const entries = Object.entries(id);
+        if (entries.length > 0) {
+          const [key] = entries[0];
+          const idType = key.split(':')[0].toLowerCase();
+          return idType === 'uniprot' || idType === 'uniprot_id' || idType === 'uniprotkb';
+        }
+        return false;
+      });
+      const uniprotValue = uniprotId ? Object.values(uniprotId)[0] as string : undefined;
+
+      // For proteins: gene symbol first, fallback to UniProt
+      displayName = geneSymbol || uniprotValue || name || firstIdentifier || `Entity ${result.id}`;
+      // Show UniProt as secondary if gene symbol is primary
+      if (geneSymbol && uniprotValue && geneSymbol !== uniprotValue) {
+        secondaryName = uniprotValue;
+      }
+    } else {
+      // Original logic for non-proteins
+      displayName = geneSymbol || name || firstIdentifier || `Entity ${result.id}`;
+      if (geneSymbol && name && geneSymbol !== name) {
+        secondaryName = name;
+      }
+    }
 
     // Truncate the display name to 8 characters
     const truncatedDisplayName = truncateText(displayName);
     const formattedDisplayName = result._formatted ? convertEmToHighlight(truncatedDisplayName) : truncatedDisplayName;
 
-    // If we have a name and it's different from gene symbol, show both
-    if (geneSymbol && name && geneSymbol !== name) {
-      primaryIdentifier = name;
+    // Show secondary name in parentheses if available
+    if (secondaryName) {
+      primaryIdentifier = secondaryName;
       const truncatedPrimaryId = truncateText(primaryIdentifier);
       title = `${formattedDisplayName} <span class="text-sm text-muted-foreground">(${result._formatted ? convertEmToHighlight(truncatedPrimaryId) : truncatedPrimaryId})</span>`;
     } else {
