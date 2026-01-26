@@ -159,12 +159,6 @@ export function AnnotationsExploreTab() {
         };
     }, [annotationTree, cvTermCounts]);
 
-    // Total annotation count
-    const totalAnnotations = useMemo(() =>
-        Array.from(cvTermCounts.values()).reduce((sum, count) => sum + count, 0),
-        [cvTermCounts]
-    );
-
     // Show empty state when no entities selected
     if (selectedEntities.length === 0) {
         return (

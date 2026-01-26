@@ -622,6 +622,7 @@ function MoleculeResultCard({ result }: { result: SearchResult }) {
 export function ResultCard({ result, entityNamesMap }: { result: SearchResult, entityNamesMap?: Record<string, string> }) {
   const { addEntity, removeEntity, isSelected } = useEntitySelection();
   const type = result.type || "entity";
+  const [detailsOpen, setDetailsOpen] = useState(false);
 
   // Check if this is a small molecule and render specialized card
   if (isSmallMolecule(result)) {
@@ -637,7 +638,6 @@ export function ResultCard({ result, entityNamesMap }: { result: SearchResult, e
 
   const entityId = (result.entity_id ?? result.id)?.toString();
   const selected = entityId ? isSelected(entityId) : false;
-  const [detailsOpen, setDetailsOpen] = useState(false);
 
   const handleAddToSelection = (e: React.MouseEvent) => {
     e.preventDefault();

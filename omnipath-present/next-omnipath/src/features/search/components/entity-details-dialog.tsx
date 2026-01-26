@@ -1,18 +1,18 @@
 "use client";
 
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { useMemo, useState, useEffect } from "react";
-import { Network, Tag, Shapes, FileText, Database, FlaskConical, Loader2 } from "lucide-react";
+import { Network, Tag, Shapes, FileText, Database, Loader2 } from "lucide-react";
 import type { SearchResult } from "./result-card";
 import { MoleculeStructure } from "./molecule_structure";
 import { InteractionsExploreTab } from "@/features/explore/components/interactions-explore-tab";
-import { MeilisearchFilters } from "@/types/meilisearch";
+import { MeilisearchFilters, MeilisearchAssociation } from "@/types/meilisearch";
 import { searchInteractionsMeilisearch } from "@/lib/meilisearch/search";
 import { getEntityTypeEmoji } from "@/lib/utils/entity-types";
 import SearchPage from "@/features/search/page";
+import { INDEXES } from "@/lib/meilisearch/client";
 
 interface EntityDetailsDialogProps {
     open: boolean;
@@ -40,14 +40,13 @@ function EntityCardHeader({ entity }: { entity: SearchResult }) {
     const geneSymbols = entity._formatted?.gene_symbols || entity.gene_symbols || [];
     const descriptions = entity._formatted?.descriptions || entity.descriptions || [];
     const definition = entity._formatted?.definition || entity.definition;
-    const identifiers = entity._formatted?.identifiers || entity.identifiers || [];
-
     // Get display name
     const displayName = geneSymbols[0] || names[0] || `Entity ${entity.entity_id || entity.id}`;
 
     // Extract SMILES for molecules
     const smiles = useMemo(() => {
         if (!isSmallMolecule(entity)) return null;
+        const identifiers = entity._formatted?.identifiers || entity.identifiers || [];
         for (const id of identifiers) {
             const entries = Object.entries(id);
             if (entries.length > 0) {
@@ -59,7 +58,7 @@ function EntityCardHeader({ entity }: { entity: SearchResult }) {
             }
         }
         return entity.canonical_smiles || null;
-    }, [entity, identifiers]);
+    }, [entity]);
 
     const entityTypeEmoji = getEntityTypeEmoji(entityTypeLabel);
 
@@ -142,7 +141,7 @@ export function EntityDetailsDialog({ open, onOpenChange, entity }: EntityDetail
 
     // Get entity ID
     const entityId = entity?.entity_id ?? (entity?.id ? parseInt(entity.id, 10) : null);
-    const entityIds = entityId ? [entityId] : [];
+    const entityIds = useMemo(() => (entityId ? [entityId] : []), [entityId]);
 
     // Filters for interactions tab
     const [interactionFilters, setInteractionFilters] = useState<MeilisearchFilters>({});
@@ -152,7 +151,7 @@ export function EntityDetailsDialog({ open, onOpenChange, entity }: EntityDetail
         if (entityIds.length > 0) {
             setInteractionFilters({ entity_ids: entityIds });
         }
-    }, [entityId]);
+    }, [entityIds]);
 
     // Fetch counts when dialog opens
     useEffect(() => {
@@ -170,7 +169,7 @@ export function EntityDetailsDialog({ open, onOpenChange, entity }: EntityDetail
                 // Fetch interactions count
                 const interactionsResponse = await searchInteractionsMeilisearch({
                     query: "",
-                    index: 'search_interactions' as any,
+                    index: INDEXES.INTERACTIONS,
                     limit: 1,
                     offset: 0,
                     filters: { entity_ids: [entityId!] }
@@ -182,14 +181,14 @@ export function EntityDetailsDialog({ open, onOpenChange, entity }: EntityDetail
                 const [parentsResponse, membersResponse] = await Promise.all([
                     searchAssociationsMeilisearch({
                         query: "",
-                        index: 'search_associations' as any,
+                        index: INDEXES.ASSOCIATIONS,
                         limit: 10000,
                         offset: 0,
                         filters: { member_entity_ids: [entityId!] }
                     }),
                     searchAssociationsMeilisearch({
                         query: "",
-                        index: 'search_associations' as any,
+                        index: INDEXES.ASSOCIATIONS,
                         limit: 10000,
                         offset: 0,
                         filters: { parent_entity_ids: [entityId!] }
@@ -198,8 +197,8 @@ export function EntityDetailsDialog({ open, onOpenChange, entity }: EntityDetail
 
                 // Extract unique entity IDs
                 const entityIdSet = new Set<number>();
-                const parentHits = parentsResponse.hits as any[];
-                const memberHits = membersResponse.hits as any[];
+                const parentHits = parentsResponse.hits as MeilisearchAssociation[];
+                const memberHits = membersResponse.hits as MeilisearchAssociation[];
 
                 parentHits.forEach(hit => {
                     if (hit.parent_entity_id) entityIdSet.add(hit.parent_entity_id);
@@ -321,4 +320,3 @@ export function EntityDetailsDialog({ open, onOpenChange, entity }: EntityDetail
         </Dialog>
     );
 }
-

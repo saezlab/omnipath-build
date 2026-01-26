@@ -3,6 +3,8 @@
 import { createContext, useContext, ReactNode, useState, useCallback } from "react"
 import type { SearchResult } from "@/features/search/components/result-card"
 import { searchAssociationsMeilisearch } from "@/lib/meilisearch/search"
+import { INDEXES } from "@/lib/meilisearch/client"
+import type { MeilisearchAssociation } from "@/types/meilisearch"
 
 export interface SelectedEntity {
   id: string
@@ -54,14 +56,14 @@ export function EntitySelectionProvider({ children }: { children: ReactNode }) {
         const [parentsResponse, membersResponse] = await Promise.all([
           searchAssociationsMeilisearch({
             query: "",
-            index: 'search_associations' as any,
+            index: INDEXES.ASSOCIATIONS,
             limit: 10000,
             offset: 0,
             filters: { member_entity_ids: [entity.entityId] }
           }),
           searchAssociationsMeilisearch({
             query: "",
-            index: 'search_associations' as any,
+            index: INDEXES.ASSOCIATIONS,
             limit: 10000,
             offset: 0,
             filters: { parent_entity_ids: [entity.entityId] }
@@ -70,8 +72,8 @@ export function EntitySelectionProvider({ children }: { children: ReactNode }) {
 
         // Extract unique entity IDs from both queries
         const entityIdSet = new Set<number>()
-        const parentHits = parentsResponse.hits as any[]
-        const memberHits = membersResponse.hits as any[]
+        const parentHits = parentsResponse.hits as MeilisearchAssociation[]
+        const memberHits = membersResponse.hits as MeilisearchAssociation[]
 
         // Add parent entity IDs
         parentHits.forEach(hit => {

@@ -446,13 +446,10 @@ interface FilteredOntologyTab extends OntologyTabGroup {
   hasMatches: boolean;
 }
 
-export function AnnotationFilterSidebar({
-  mode,
-  filters,
-  onFilterChange,
-  isMobile = false,
-  ...rest
-}: AnnotationFilterSidebarProps) {
+export function AnnotationFilterSidebar(props: AnnotationFilterSidebarProps) {
+  const { mode, filters, onFilterChange, isMobile = false } = props;
+  const ontologyFacetCountsByPrefix = mode === "entities" ? props.ontologyFacetCountsByPrefix : undefined;
+  const interactionFilterCounts = mode === "interactions" ? props.filterCounts : undefined;
   const [annotationQuery, setAnnotationQuery] = useState("");
   const [activeTab, setActiveTab] = useState<string>("");
   const [facetSearchCountsByPrefix, setFacetSearchCountsByPrefix] = useState<Record<string, Record<string, number>>>({});
@@ -460,13 +457,9 @@ export function AnnotationFilterSidebar({
 
   const annotationOptions = useMemo(() => {
     if (mode === "entities") {
-      const { ontologyFacetCountsByPrefix } = rest as Extract<
-        AnnotationFilterSidebarProps,
-        { mode: "entities" }
-      >;
       const countsByPrefix = annotationQuery.trim()
         ? facetSearchCountsByPrefix
-        : ontologyFacetCountsByPrefix;
+        : (ontologyFacetCountsByPrefix || {});
       return Object.entries(countsByPrefix)
         .flatMap(([prefix, counts]) =>
           Object.entries(counts).map(([value, count]) => ({
@@ -479,13 +472,9 @@ export function AnnotationFilterSidebar({
         .sort((a, b) => b.count - a.count);
     }
 
-    const { filterCounts } = rest as Extract<
-      AnnotationFilterSidebarProps,
-      { mode: "interactions" }
-    >;
     const counts = annotationQuery.trim()
       ? facetSearchCounts
-      : filterCounts.interaction_annotation_terms;
+      : interactionFilterCounts?.interaction_annotation_terms;
     if (!counts) return [];
     return Object.entries(counts)
       .map(([value, count]) => {
@@ -502,7 +491,14 @@ export function AnnotationFilterSidebar({
         };
       })
       .sort((a, b) => b.count - a.count);
-  }, [annotationQuery, facetSearchCounts, facetSearchCountsByPrefix, mode, rest]);
+  }, [
+    annotationQuery,
+    facetSearchCounts,
+    facetSearchCountsByPrefix,
+    interactionFilterCounts,
+    mode,
+    ontologyFacetCountsByPrefix
+  ]);
 
   const annotationTermOptions = useMemo(() => {
     const mapped = new Map<string, FilterOption>();
@@ -524,14 +520,10 @@ export function AnnotationFilterSidebar({
 
   const termsByPrefix = useMemo(() => {
     if (mode === "entities") {
-      const { ontologyFacetCountsByPrefix } = rest as Extract<
-        AnnotationFilterSidebarProps,
-        { mode: "entities" }
-      >;
       const groups = new Map<string, { termIds: string[]; totalCount: number }>();
       const countsByPrefix = annotationQuery.trim()
         ? facetSearchCountsByPrefix
-        : ontologyFacetCountsByPrefix;
+        : (ontologyFacetCountsByPrefix || {});
       Object.entries(countsByPrefix).forEach(([prefix, counts]) => {
         const termIds = Object.keys(counts)
           .map((value) => extractTermId(value))
@@ -559,7 +551,7 @@ export function AnnotationFilterSidebar({
     annotationTermOptions.mapped,
     facetSearchCountsByPrefix,
     mode,
-    "ontologyFacetCountsByPrefix" in rest ? rest.ontologyFacetCountsByPrefix : undefined,
+    ontologyFacetCountsByPrefix,
   ]);
 
   const unmatchedTotalCount = useMemo(
@@ -580,10 +572,6 @@ export function AnnotationFilterSidebar({
     const timer = setTimeout(async () => {
       try {
         if (mode === "entities") {
-          const { ontologyFacetCountsByPrefix } = rest as Extract<
-            AnnotationFilterSidebarProps,
-            { mode: "entities" }
-          >;
           const availablePrefixes = Object.keys(ontologyFacetCountsByPrefix || {});
           const fallbackPrefix = availablePrefixes[0] || Object.keys(ENTITY_ONTOLOGY_FACET_MAP)[0];
           const selectedPrefix =
@@ -657,7 +645,7 @@ export function AnnotationFilterSidebar({
         if (!cancelled) {
           setFacetSearchCounts(counts);
         }
-      } catch (error) {
+      } catch {
         if (!cancelled) {
           setFacetSearchCountsByPrefix({});
           setFacetSearchCounts({});
@@ -675,7 +663,7 @@ export function AnnotationFilterSidebar({
     annotationQuery,
     filters,
     mode,
-    "ontologyFacetCountsByPrefix" in rest ? rest.ontologyFacetCountsByPrefix : undefined,
+    ontologyFacetCountsByPrefix,
   ]);
 
   const ontologyTabs = useMemo(() => {

@@ -9,6 +9,7 @@ import InteractionsPage from "@/features/explore/interactions-page";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useMemo, useState, useEffect } from "react";
 import { searchInteractionsMeilisearch } from "@/lib/meilisearch/search";
+import { INDEXES } from "@/lib/meilisearch/client";
 
 export default function SelectionPage() {
   const { selectionCount, selectedEntities } = useEntitySelection();
@@ -46,7 +47,7 @@ export default function SelectionPage() {
       try {
         const response = await searchInteractionsMeilisearch({
           query: "",
-          index: 'search_interactions' as any,
+          index: INDEXES.INTERACTIONS,
           limit: 1,
           offset: 0,
           filters: { entity_ids: selectedEntityIds }

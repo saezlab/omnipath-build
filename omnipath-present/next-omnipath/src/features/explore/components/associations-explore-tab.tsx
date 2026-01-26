@@ -7,6 +7,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { useEntitySelection } from "@/contexts/entity-selection-context";
 import type { MeilisearchFilters, MeilisearchAssociation } from "@/types/meilisearch";
 import { ResultCard, type SearchResult } from "@/features/search/components/result-card";
+import { INDEXES } from "@/lib/meilisearch/client";
 
 interface AssociationFilters {
     parent_entity_types?: string[];
@@ -131,13 +132,13 @@ export function AssociationsExploreTab({
 
                 const response = await searchAssociationsMeilisearch({
                     query: "",
-                    index: 'search_associations' as any,
+                    index: INDEXES.ASSOCIATIONS,
                     limit,
                     offset,
                     filters: queryFilters,
                 });
 
-                const hits = response.hits as unknown as MeilisearchAssociation[];
+                const hits = response.hits as MeilisearchAssociation[];
 
                 // Update filter counts on first page
                 if (offset === 0 && response.facetDistribution && onFilterCountsUpdate) {

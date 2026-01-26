@@ -10,18 +10,7 @@ import { FilterSidebar } from "@/features/interactions-search/components/filter-
 import { MeilisearchFilters } from "@/types/meilisearch";
 import { useEntitySelection } from "@/contexts/entity-selection-context";
 import { searchAssociationsMeilisearch } from "@/lib/meilisearch/search";
-
-interface EntityFilters {
-  entity_types?: string[];
-  sources?: string[];
-  ncbi_tax_id?: string[];
-}
-
-interface EntityFilterCounts {
-  entity_type?: Record<string, number>;
-  sources?: Record<string, number>;
-  ncbi_tax_id?: Record<string, number>;
-}
+import { INDEXES } from "@/lib/meilisearch/client";
 
 // Entity type accessions for filtering associations
 const ENTITY_TYPES = {
@@ -47,8 +36,6 @@ export default function ExplorePage() {
     compounds: 0,
     members: 0,
   });
-  const [tabCountsLoading, setTabCountsLoading] = useState(false);
-
   // Interactions filter state
   const [interactionsFilters, setInteractionsFilters] = useState<MeilisearchFilters>({});
   const [interactionsFilterCounts, setInteractionsFilterCounts] = useState<Record<string, Record<string, number>>>({});
@@ -69,12 +56,11 @@ export default function ExplorePage() {
         return;
       }
 
-      setTabCountsLoading(true);
       try {
         // Query 1: Find PARENTS (where selected entities are members)
         const parentsPromise = searchAssociationsMeilisearch({
           query: "",
-          index: 'search_associations' as any,
+          index: INDEXES.ASSOCIATIONS,
           limit: 0,
           offset: 0,
           filters: {
@@ -85,7 +71,7 @@ export default function ExplorePage() {
         // Query 2: Find MEMBERS (where selected entities are parents)
         const membersPromise = searchAssociationsMeilisearch({
           query: "",
-          index: 'search_associations' as any,
+          index: INDEXES.ASSOCIATIONS,
           limit: 0,
           offset: 0,
           filters: {
@@ -123,8 +109,6 @@ export default function ExplorePage() {
         });
       } catch (error) {
         console.error("Error loading tab counts:", error);
-      } finally {
-        setTabCountsLoading(false);
       }
     }
 

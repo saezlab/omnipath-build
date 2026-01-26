@@ -76,13 +76,13 @@ export function RelatedEntitiesTab({
   const relatedIdFrequencies = useMemo(() => {
     switch (relatedType) {
       case "complex":
-        return aggregateRelatedIds(selectedEntities, e => e.complexes);
+        return aggregateRelatedIds(selectedEntities, e => e.fullResult?.complexes);
       case "cv_term":
-        return aggregateRelatedIds(selectedEntities, e => e.cv_terms);
+        return aggregateRelatedIds(selectedEntities, e => e.cv_terms || e.fullResult?.cv_terms);
       case "pathway":
-        return aggregateRelatedIds(selectedEntities, e => e.pathways);
+        return aggregateRelatedIds(selectedEntities, e => e.fullResult?.pathways);
       case "reaction":
-        return aggregateRelatedIds(selectedEntities, e => e.reactions);
+        return aggregateRelatedIds(selectedEntities, e => e.fullResult?.reactions);
       default:
         return new Map<string | number, number>();
     }
