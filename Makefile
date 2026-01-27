@@ -23,6 +23,23 @@ pipeline:
 	@echo "✓ Full pipeline completed successfully!"
 	@echo "======================================================================"
 
+pipeline-full:
+	@echo "======================================================================"
+	@echo "Starting full pipeline..."
+	@echo "======================================================================"
+	@$(MAKE) silver
+	@$(MAKE) generate-obo
+	@$(MAKE) gold
+	@$(MAKE) meilisearch
+	@$(MAKE) meilisearch-build-dump
+	@$(MAKE) export-entity
+	@$(MAKE) export-ontology
+	@$(MAKE) export-finalize
+	@echo ""
+	@echo "======================================================================"
+	@echo "✓ Full pipeline completed successfully!"
+	@echo "======================================================================"
+
 # Generate OmniPath OBO file (needed for CV term label resolution in gold step)
 generate-obo:
 	@echo "Generating OmniPath OBO file..."
