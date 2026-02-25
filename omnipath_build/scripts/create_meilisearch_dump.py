@@ -65,23 +65,51 @@ def wait_for_task(meili_url: str, task_uid: int, api_key: str | None) -> dict:
         raise RuntimeError(f"Unexpected task status: {status['status']}")
 
 
-def copy_dump_from_db_path(db_path: Path, dump_uid: str, output_dir: Path) -> Path:
-    """Copy the dump file from a local Meilisearch DB path to output_dir."""
+def copy_dump_from_local_paths(
+    dump_uid: str,
+    output_dir: Path,
+    db_path: Path | None,
+    dump_dir: Path | None,
+) -> Path:
+    """Copy the dump file from local filesystem to output_dir.
+
+    Search order:
+    1. --dump-dir/<uid>.dump
+    2. $MEILI_DUMP_DIR/<uid>.dump
+    3. --db-path/dumps/<uid>.dump
+    4. $MEILI_DB_PATH/dumps/<uid>.dump
+    5. ./dumps/<uid>.dump
+    """
     dump_filename = f'{dump_uid}.dump'
-    source_path = db_path / 'dumps' / dump_filename
     target_path = output_dir / dump_filename
 
-    # Meilisearch usually writes the file quickly, but give it a short grace period.
-    for _ in range(10):
-        if source_path.exists():
-            break
+    env_dump_dir = Path(os.environ['MEILI_DUMP_DIR']) if os.environ.get('MEILI_DUMP_DIR') else None
+    env_db_path = Path(os.environ['MEILI_DB_PATH']) if os.environ.get('MEILI_DB_PATH') else None
+
+    candidates: list[Path] = []
+    if dump_dir is not None:
+        candidates.append(dump_dir / dump_filename)
+    if env_dump_dir is not None:
+        candidates.append(env_dump_dir / dump_filename)
+    if db_path is not None:
+        candidates.append(db_path / 'dumps' / dump_filename)
+    if env_db_path is not None:
+        candidates.append(env_db_path / 'dumps' / dump_filename)
+    candidates.append(Path('dumps') / dump_filename)
+
+    # Give Meilisearch a short grace period to flush dump file.
+    for _ in range(20):
+        for source_path in candidates:
+            if source_path.exists():
+                target_path.write_bytes(source_path.read_bytes())
+                return target_path
         time.sleep(1)
 
-    if not source_path.exists():
-        raise RuntimeError(f'Dump file not found at expected path: {source_path}')
-
-    target_path.write_bytes(source_path.read_bytes())
-    return target_path
+    candidates_msg = '\n'.join(f'  - {p}' for p in candidates)
+    raise RuntimeError(
+        'Dump file not found in expected local paths:\n'
+        f'{candidates_msg}'
+    )
 
 
 def copy_dump_from_docker(container_name: str, dump_uid: str, output_dir: Path) -> Path:
@@ -146,7 +174,13 @@ def main() -> None:
         '--db-path',
         type=Path,
         default=None,
-        help='Local Meilisearch DB path (reads dump from <db-path>/dumps)',
+        help='Local Meilisearch DB path (fallback search: <db-path>/dumps/<uid>.dump)',
+    )
+    parser.add_argument(
+        '--dump-dir',
+        type=Path,
+        default=None,
+        help='Local Meilisearch dump directory (preferred search: <dump-dir>/<uid>.dump)',
     )
     parser.add_argument(
         '--container-name',
@@ -156,7 +190,8 @@ def main() -> None:
     args = parser.parse_args()
 
     api_key = args.api_key or os.environ.get('MEILISEARCH_API_KEY')
-    db_path = args.db_path or (Path(os.environ['MEILI_DB_PATH']) if os.environ.get('MEILI_DB_PATH') else None)
+    db_path = args.db_path
+    dump_dir = args.dump_dir
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -173,10 +208,18 @@ def main() -> None:
     dump_uid = task_status['details']['dumpUid']
     print(f'   Dump completed: {dump_uid}')
 
-    if db_path is not None:
-        print('\n3. Copying dump from local Meilisearch DB path...')
-        print(f'   DB path: {db_path}')
-        dump_path = copy_dump_from_db_path(db_path, dump_uid, args.output_dir)
+    if dump_dir is not None or db_path is not None or os.environ.get('MEILI_DUMP_DIR') or os.environ.get('MEILI_DB_PATH'):
+        print('\n3. Copying dump from local filesystem...')
+        if dump_dir is not None:
+            print(f'   Dump dir: {dump_dir}')
+        if db_path is not None:
+            print(f'   DB path: {db_path}')
+        dump_path = copy_dump_from_local_paths(
+            dump_uid=dump_uid,
+            output_dir=args.output_dir,
+            db_path=db_path,
+            dump_dir=dump_dir,
+        )
     else:
         print('\n3. Copying dump from Docker container...')
         container_name = args.container_name or find_meilisearch_container()

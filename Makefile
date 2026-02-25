@@ -247,6 +247,7 @@ ENV_MEILI_KEY := $(shell [ -f .env ] && awk -F= '/^MEILISEARCH_API_KEY=/{v=$$2; 
 TEMP_MEILI_KEY := $(if $(ENV_MEILI_KEY),$(ENV_MEILI_KEY),temp-build-key)
 TEMP_MEILI_DIR := .meili-temp
 TEMP_MEILI_DB_DIR := $(TEMP_MEILI_DIR)/db
+TEMP_MEILI_DUMP_DIR := $(TEMP_MEILI_DIR)/dumps
 TEMP_MEILI_PID_FILE := $(TEMP_MEILI_DIR)/meilisearch.pid
 TEMP_MEILI_LOG_FILE := $(TEMP_MEILI_DIR)/meilisearch.log
 
@@ -290,7 +291,8 @@ meilisearch-build-dump: meilisearch-build-dump-start
 		--meili-url http://127.0.0.1:$(TEMP_MEILI_PORT) \
 		--api-key $(TEMP_MEILI_KEY) \
 		--output-dir $(EXPORT_DIR)/dumps \
-		--db-path $(TEMP_MEILI_DB_DIR)
+		--db-path $(TEMP_MEILI_DB_DIR) \
+		--dump-dir $(TEMP_MEILI_DUMP_DIR)
 	@echo ""
 	@# Cleanup
 	@$(MAKE) meilisearch-build-dump-stop
@@ -306,9 +308,11 @@ meilisearch-build-dump-start:
 	@rm -rf $(TEMP_MEILI_DIR)
 	@mkdir -p $(TEMP_MEILI_DIR)
 	@mkdir -p $(TEMP_MEILI_DB_DIR)
+	@mkdir -p $(TEMP_MEILI_DUMP_DIR)
 	@meilisearch \
 		--http-addr 127.0.0.1:$(TEMP_MEILI_PORT) \
 		--db-path $$(pwd)/$(TEMP_MEILI_DB_DIR) \
+		--dump-dir $$(pwd)/$(TEMP_MEILI_DUMP_DIR) \
 		--master-key "$(TEMP_MEILI_KEY)" > $(TEMP_MEILI_LOG_FILE) 2>&1 & \
 	echo $$! > $(TEMP_MEILI_PID_FILE)
 	@echo "   PID: $$(cat $(TEMP_MEILI_PID_FILE))"
