@@ -304,11 +304,10 @@ meilisearch-build-dump-start:
 	@$(MAKE) meilisearch-build-dump-stop >/dev/null 2>&1 || true
 	@rm -rf $(TEMP_MEILI_DIR)
 	@mkdir -p $(TEMP_MEILI_DIR)
-	@nix shell nixpkgs#meilisearch -c env \
-		MEILI_HTTP_ADDR=127.0.0.1:$(TEMP_MEILI_PORT) \
-		MEILI_DB_PATH=$$(pwd)/$(TEMP_MEILI_DIR) \
-		MEILI_MASTER_KEY=$(TEMP_MEILI_KEY) \
-		meilisearch > $(TEMP_MEILI_LOG_FILE) 2>&1 & \
+	@nix shell nixpkgs#meilisearch -c meilisearch \
+		--http-addr 127.0.0.1:$(TEMP_MEILI_PORT) \
+		--db-path $$(pwd)/$(TEMP_MEILI_DIR) \
+		--master-key "$(TEMP_MEILI_KEY)" > $(TEMP_MEILI_LOG_FILE) 2>&1 & \
 	echo $$! > $(TEMP_MEILI_PID_FILE)
 	@echo "   PID: $$(cat $(TEMP_MEILI_PID_FILE))"
 	@echo "   DB path: $$(pwd)/$(TEMP_MEILI_DIR)"
