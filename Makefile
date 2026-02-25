@@ -306,7 +306,7 @@ meilisearch-build-dump-start:
 	@rm -rf $(TEMP_MEILI_DIR)
 	@mkdir -p $(TEMP_MEILI_DIR)
 	@mkdir -p $(TEMP_MEILI_DB_DIR)
-	@nix shell nixpkgs#meilisearch -c meilisearch \
+	@meilisearch \
 		--http-addr 127.0.0.1:$(TEMP_MEILI_PORT) \
 		--db-path $$(pwd)/$(TEMP_MEILI_DB_DIR) \
 		--master-key "$(TEMP_MEILI_KEY)" > $(TEMP_MEILI_LOG_FILE) 2>&1 & \

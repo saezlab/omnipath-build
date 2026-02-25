@@ -17,6 +17,9 @@
             uv
             gnumake
             git
+            meilisearch
+            cargo
+            rustc
             stdenv.cc.cc.lib
           ];
 
