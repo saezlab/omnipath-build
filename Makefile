@@ -114,31 +114,31 @@ meilisearch: meilisearch-entities meilisearch-interactions meilisearch-associati
 
 # Import entities into Meilisearch
 meilisearch-import-entities:
-	@. .env && uv run python -m omnipath_build.search.importer \
+	@uv run python -m omnipath_build.search.importer \
 		--dataset entities \
 		--importer-path omnipath_build/meilisearch-importer \
-		--api-key $${MEILISEARCH_API_KEY}
+		--api-key "$(TEMP_MEILI_KEY)"
 
 # Import interactions into Meilisearch
 meilisearch-import-interactions:
-	@. .env && uv run python -m omnipath_build.search.importer \
+	@uv run python -m omnipath_build.search.importer \
 		--dataset interactions \
 		--importer-path omnipath_build/meilisearch-importer \
-		--api-key $${MEILISEARCH_API_KEY}
+		--api-key "$(TEMP_MEILI_KEY)"
 
 # Import associations into Meilisearch
 meilisearch-import-associations:
-	@. .env && uv run python -m omnipath_build.search.importer \
+	@uv run python -m omnipath_build.search.importer \
 		--dataset associations \
 		--importer-path omnipath_build/meilisearch-importer \
-		--api-key $${MEILISEARCH_API_KEY}
+		--api-key "$(TEMP_MEILI_KEY)"
 
 # Import all datasets (entities, interactions, associations) into Meilisearch
 meilisearch-import-all:
-	@. .env && uv run python -m omnipath_build.search.importer \
+	@uv run python -m omnipath_build.search.importer \
 		--dataset all \
 		--importer-path omnipath_build/meilisearch-importer \
-		--api-key $${MEILISEARCH_API_KEY}
+		--api-key "$(TEMP_MEILI_KEY)"
 
 # Backward compatibility: import entities only (original behavior)
 meilisearch-import: meilisearch-import-entities
@@ -146,12 +146,12 @@ meilisearch-import: meilisearch-import-entities
 # Delete Meilisearch indexes (useful before re-importing)
 meilisearch-delete-indexes:
 	@echo "Deleting Meilisearch indexes..."
-	@. .env && curl -s -X DELETE "http://localhost:7700/indexes/search_entities" \
-		-H "Authorization: Bearer $${MEILISEARCH_API_KEY}" || true
-	@. .env && curl -s -X DELETE "http://localhost:7700/indexes/search_interactions" \
-		-H "Authorization: Bearer $${MEILISEARCH_API_KEY}" || true
-	@. .env && curl -s -X DELETE "http://localhost:7700/indexes/search_associations" \
-		-H "Authorization: Bearer $${MEILISEARCH_API_KEY}" || true
+	@curl -s -X DELETE "http://localhost:7700/indexes/search_entities" \
+		-H "Authorization: Bearer $(TEMP_MEILI_KEY)" || true
+	@curl -s -X DELETE "http://localhost:7700/indexes/search_interactions" \
+		-H "Authorization: Bearer $(TEMP_MEILI_KEY)" || true
+	@curl -s -X DELETE "http://localhost:7700/indexes/search_associations" \
+		-H "Authorization: Bearer $(TEMP_MEILI_KEY)" || true
 	@echo "Indexes deleted (or did not exist)"
 
 gold-meilisearch-import:
@@ -229,9 +229,9 @@ export-ontology:
 export-meilisearch:
 	@echo "Exporting meilisearch dump to $(EXPORT_DIR)..."
 	@mkdir -p $(EXPORT_DIR)/dumps
-	@. .env && uv run python -m omnipath_build.scripts.create_meilisearch_dump \
+	@uv run python -m omnipath_build.scripts.create_meilisearch_dump \
 		--meili-url http://127.0.0.1:7700 \
-		--api-key $${MEILISEARCH_API_KEY} \
+		--api-key "$(TEMP_MEILI_KEY)" \
 		--output-dir $(EXPORT_DIR)/dumps \
 		--db-path "$${MEILI_DB_PATH:-$$PWD/.meili}"
 
@@ -243,7 +243,8 @@ export-meilisearch:
 # creates a dump, and cleans up.
 # Prerequisites: search parquet files must exist (run 'make meilisearch' first)
 TEMP_MEILI_PORT := 7710
-TEMP_MEILI_KEY := temp-build-key
+ENV_MEILI_KEY := $(shell [ -f .env ] && awk -F= '/^MEILISEARCH_API_KEY=/{v=$$2; gsub(/^[[:space:]]*"/, "", v); gsub(/"[[:space:]]*$$/, "", v); print v; exit}' .env)
+TEMP_MEILI_KEY := $(if $(ENV_MEILI_KEY),$(ENV_MEILI_KEY),temp-build-key)
 TEMP_MEILI_DIR := .meili-temp
 TEMP_MEILI_PID_FILE := $(TEMP_MEILI_DIR)/meilisearch.pid
 TEMP_MEILI_LOG_FILE := $(TEMP_MEILI_DIR)/meilisearch.log
@@ -303,10 +304,11 @@ meilisearch-build-dump-start:
 	@$(MAKE) meilisearch-build-dump-stop >/dev/null 2>&1 || true
 	@rm -rf $(TEMP_MEILI_DIR)
 	@mkdir -p $(TEMP_MEILI_DIR)
-	@MEILI_HTTP_ADDR=127.0.0.1:$(TEMP_MEILI_PORT) \
-	MEILI_DB_PATH=$$(pwd)/$(TEMP_MEILI_DIR) \
-	MEILI_MASTER_KEY=$(TEMP_MEILI_KEY) \
-	nix shell nixpkgs#meilisearch -c meilisearch > $(TEMP_MEILI_LOG_FILE) 2>&1 & \
+	@nix shell nixpkgs#meilisearch -c env \
+		MEILI_HTTP_ADDR=127.0.0.1:$(TEMP_MEILI_PORT) \
+		MEILI_DB_PATH=$$(pwd)/$(TEMP_MEILI_DIR) \
+		MEILI_MASTER_KEY=$(TEMP_MEILI_KEY) \
+		meilisearch > $(TEMP_MEILI_LOG_FILE) 2>&1 & \
 	echo $$! > $(TEMP_MEILI_PID_FILE)
 	@echo "   PID: $$(cat $(TEMP_MEILI_PID_FILE))"
 	@echo "   DB path: $$(pwd)/$(TEMP_MEILI_DIR)"
