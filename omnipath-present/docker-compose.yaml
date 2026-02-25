@@ -1,23 +1,33 @@
+# Production/Staging docker-compose
+#
+# Configure via environment-specific .env files:
+#   Staging: docker compose --env-file .env.staging -p omnipath-staging up -d
+#   Prod:    docker compose --env-file .env.prod -p omnipath-prod up -d
+#
+# DATA_DIR must be set to the path of a versioned data directory, e.g.:
+#   DATA_DIR=../data/releases/latest  (staging, symlink)
+#   DATA_DIR=../data/releases/v-20260225-071916  (prod, pinned)
+
 services:
     # Meilisearch - Full-text search engine
     # Automatically imports dump when data version changes
     omnipath-meilisearch:
         image: getmeili/meilisearch:v1.16
         restart: unless-stopped
-        networks:
-            - dokploy-network
         environment:
             MEILI_MASTER_KEY: ${MEILISEARCH_API_KEY}
             MEILI_ENV: ${MEILI_ENV:-production}
             MEILI_NO_ANALYTICS: "true"
         volumes:
             - meilisearch_data:/meili_data
-            - /root/omnipath2-data:/data:ro
-            - /root/omnipath2-data/scripts/meilisearch-start.sh:/scripts/meilisearch-start.sh:ro
-        ports:
-            - "7700:7700"
+            - ${DATA_DIR:?DATA_DIR must be set}:/data:ro
+            - ./scripts/meilisearch-start.sh:/scripts/meilisearch-start.sh:ro
         # Auto-import dump when data version changes (script reads from /data/)
         command: ["sh", "/scripts/meilisearch-start.sh"]
+        ports:
+            - "${MEILISEARCH_PORT:-7700}:7700"
+        networks:
+            - dokploy-network
         healthcheck:
             test: ["CMD", "curl", "-f", "http://localhost:7700/health"]
             interval: 30s
@@ -31,14 +41,14 @@ services:
             context: ./entity-service
             dockerfile: Dockerfile
         restart: unless-stopped
-        networks:
-            - dokploy-network
         environment:
             ENTITY_PARQUET_PATH: /data/entity_identifier.parquet
             BIND_ADDR: 0.0.0.0:8080
             RUST_LOG: ${RUST_LOG:-info}
         volumes:
-            - /root/omnipath2-data:/data:ro
+            - ${DATA_DIR:?DATA_DIR must be set}:/data:ro
+        networks:
+            - dokploy-network
         healthcheck:
             test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/health"]
             interval: 30s
@@ -52,14 +62,14 @@ services:
             context: .
             dockerfile: ontology-service/Dockerfile.prod
         restart: unless-stopped
-        networks:
-            - dokploy-network
         environment:
             ONTOLOGY_DATA_DIR: /data
             ONTOLOGY_CACHE_DIR: /app/cache
         volumes:
-            - /root/omnipath2-data:/data:ro
+            - ${DATA_DIR:?DATA_DIR must be set}:/data:ro
             - ontology_cache:/app/cache
+        networks:
+            - dokploy-network
         healthcheck:
             test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8081/health')"]
             interval: 30s
@@ -76,8 +86,6 @@ services:
                 NEXT_PUBLIC_ENVIRONMENT: ${NEXT_PUBLIC_ENVIRONMENT:-production}
                 NEXT_PUBLIC_DOMAIN: ${NEXT_PUBLIC_DOMAIN:-localhost}
         restart: unless-stopped
-        networks:
-            - dokploy-network
         environment:
             # These are used at runtime for server-side requests
             MEILISEARCH_HOST: http://omnipath-meilisearch:7700
@@ -85,6 +93,8 @@ services:
             ENTITY_SERVICE_URL: http://entity-service:8080
             ONTOLOGY_SERVICE_URL: http://ontology-service:8081
             GOOGLE_GENERATIVE_AI_API_KEY: ${GOOGLE_GENERATIVE_AI_API_KEY}
+        networks:
+            - dokploy-network
         depends_on:
             omnipath-meilisearch:
                 condition: service_healthy
@@ -94,9 +104,11 @@ services:
                 condition: service_healthy
 
 networks:
-  dokploy-network:
-    external: true
+    dokploy-network:
+        external: true
 
 volumes:
     meilisearch_data:
+        name: ${MEILISEARCH_VOLUME_NAME:-omnipath-meilisearch}
     ontology_cache:
+        name: ${ONTOLOGY_CACHE_VOLUME_NAME:-omnipath-ontology-cache}

@@ -9,15 +9,16 @@
 pipeline:
 	@echo "======================================================================"
 	@echo "Starting full pipeline..."
+	@echo "  Data version: $(DATA_VERSION)"
 	@echo "======================================================================"
 	@$(MAKE) silver-test
 	@$(MAKE) generate-obo
 	@$(MAKE) gold
 	@$(MAKE) meilisearch
-	@$(MAKE) meilisearch-build-dump
-	@$(MAKE) export-entity
-	@$(MAKE) export-ontology
-	@$(MAKE) export-finalize
+	@$(MAKE) meilisearch-build-dump DATA_VERSION=$(DATA_VERSION)
+	@$(MAKE) export-entity DATA_VERSION=$(DATA_VERSION)
+	@$(MAKE) export-ontology DATA_VERSION=$(DATA_VERSION)
+	@$(MAKE) export-finalize DATA_VERSION=$(DATA_VERSION)
 	@echo ""
 	@echo "======================================================================"
 	@echo "✓ Full pipeline completed successfully!"
@@ -26,15 +27,16 @@ pipeline:
 pipeline-full:
 	@echo "======================================================================"
 	@echo "Starting full pipeline..."
+	@echo "  Data version: $(DATA_VERSION)"
 	@echo "======================================================================"
 	@$(MAKE) silver
 	@$(MAKE) generate-obo
 	@$(MAKE) gold
 	@$(MAKE) meilisearch
-	@$(MAKE) meilisearch-build-dump
-	@$(MAKE) export-entity
-	@$(MAKE) export-ontology
-	@$(MAKE) export-finalize
+	@$(MAKE) meilisearch-build-dump DATA_VERSION=$(DATA_VERSION)
+	@$(MAKE) export-entity DATA_VERSION=$(DATA_VERSION)
+	@$(MAKE) export-ontology DATA_VERSION=$(DATA_VERSION)
+	@$(MAKE) export-finalize DATA_VERSION=$(DATA_VERSION)
 	@echo ""
 	@echo "======================================================================"
 	@echo "✓ Full pipeline completed successfully!"
@@ -162,63 +164,76 @@ gold-meilisearch-import:
 # Data Export for Deployment
 # =============================================================================
 
-# Export all data files to omnipath-present/data/ for deployment
-# This creates the complete data package needed for Docker deployment
-# A version marker is created to enable automatic meilisearch rebuild on data changes
+# Export all data files to a versioned data directory for deployment
+# Output: data/releases/v-YYYYMMDD-HHMMSS/ with a 'latest' symlink
+# The DATA_VERSION variable is set automatically from timestamp, or override with:
+#   make export DATA_VERSION=v-custom-name
+
+DATA_VERSION ?= v-$(shell date +%Y%m%d-%H%M%S)
+EXPORT_DIR := data/releases/$(DATA_VERSION)
+
 .PHONY: export export-entity export-ontology export-meilisearch export-finalize
 
 # Full export (use when you have a running Meilisearch with data)
 export: export-entity export-ontology export-meilisearch export-finalize
 
-# Finalize export: copy scripts and create version marker
+# Finalize export: create version marker and update 'latest' symlink
 # Use this after export-entity, export-ontology, and meilisearch-build-dump
 export-finalize:
-	@# Copy startup scripts
-	@mkdir -p omnipath-present/data/scripts
-	@cp omnipath-present/scripts/meilisearch-start.sh omnipath-present/data/scripts/
 	@# Create data version marker (hash of all data files)
 	@echo "Creating data version marker..."
-	@DUMP_NAME=$$(cat omnipath-present/data/dumps/.dump_file); \
-	cat omnipath-present/data/entity_identifier.parquet \
-		omnipath-present/data/omnipath_mi.obo \
-		omnipath-present/data/dumps/$$DUMP_NAME 2>/dev/null | shasum -a 256 | cut -d' ' -f1 \
-		> omnipath-present/data/.data_version
+	@DUMP_NAME=$$(cat $(EXPORT_DIR)/dumps/.dump_file); \
+	cat $(EXPORT_DIR)/entity_identifier.parquet \
+		$(EXPORT_DIR)/omnipath_mi.obo \
+		$(EXPORT_DIR)/dumps/$$DUMP_NAME 2>/dev/null | shasum -a 256 | cut -d' ' -f1 \
+		> $(EXPORT_DIR)/.data_version
+	@# Update 'latest' symlink
+	@ln -sfn $(DATA_VERSION) data/releases/latest
 	@echo ""
-	@echo "✓ All data exported to omnipath-present/data/"
-	@echo "  Data version: $$(cat omnipath-present/data/.data_version)"
-	@echo "  Dump file: $$(cat omnipath-present/data/dumps/.dump_file)"
+	@echo "✓ All data exported to $(EXPORT_DIR)/"
+	@echo "  Data version: $$(cat $(EXPORT_DIR)/.data_version)"
+	@echo "  Dump file: $$(cat $(EXPORT_DIR)/dumps/.dump_file)"
+	@echo "  Symlink: data/releases/latest -> $(DATA_VERSION)"
 	@echo ""
 	@echo "Data files ready for deployment:"
-	@ls -lh omnipath-present/data/*.parquet omnipath-present/data/*.obo 2>/dev/null || true
-	@ls -lh omnipath-present/data/dumps/*.dump 2>/dev/null || true
+	@ls -lh $(EXPORT_DIR)/*.parquet $(EXPORT_DIR)/*.obo 2>/dev/null || true
+	@ls -lh $(EXPORT_DIR)/dumps/*.dump 2>/dev/null || true
 	@echo ""
-	@echo "To deploy, upload omnipath-present/data/ to /root/omnipath2-data/ on the server"
+	@echo "Available versions:"
+	@ls -d data/releases/v-* 2>/dev/null | sed 's|data/releases/||'
+	@echo ""
+	@echo "To promote to prod: make deploy-prod VERSION=$(DATA_VERSION)"
 
 # Export entity service data
 export-entity:
-	@echo "Exporting entity service data..."
-	@mkdir -p omnipath-present/data
+	@echo "Exporting entity service data to $(EXPORT_DIR)..."
+	@mkdir -p $(EXPORT_DIR)
 	@if [ -f omnipath_build/data/gold/entity_identifier.parquet ]; then \
-		cp -v omnipath_build/data/gold/entity_identifier.parquet omnipath-present/data/; \
+		cp -v omnipath_build/data/gold/entity_identifier.parquet $(EXPORT_DIR)/; \
 	else \
 		echo "Error: entity_identifier.parquet not found. Run 'make gold' first."; \
 		exit 1; \
 	fi
 
-# Export ontology service data (generates omnipath_mi.obo)
+# Export ontology service data (copies the generated omnipath_mi.obo)
 export-ontology:
-	@echo "Exporting ontology service data..."
-	@mkdir -p omnipath-present/data
-	@uv run python pypath/scripts/export_omnipath_obo.py omnipath-present/data/omnipath_mi.obo
+	@echo "Exporting ontology service data to $(EXPORT_DIR)..."
+	@mkdir -p $(EXPORT_DIR)
+	@if [ -f omnipath-present/data/omnipath_mi.obo ]; then \
+		cp -v omnipath-present/data/omnipath_mi.obo $(EXPORT_DIR)/; \
+	else \
+		echo "Error: omnipath_mi.obo not found. Run 'make generate-obo' first."; \
+		exit 1; \
+	fi
 
 # Export meilisearch dump (must have meilisearch running with data)
 export-meilisearch:
-	@echo "Exporting meilisearch dump..."
-	@mkdir -p omnipath-present/data/dumps
+	@echo "Exporting meilisearch dump to $(EXPORT_DIR)..."
+	@mkdir -p $(EXPORT_DIR)/dumps
 	@. .env && uv run python -m omnipath_build.scripts.create_meilisearch_dump \
 		--meili-url http://localhost:7700 \
 		--api-key $${MEILISEARCH_API_KEY} \
-		--output-dir omnipath-present/data/dumps
+		--output-dir $(EXPORT_DIR)/dumps
 
 # =============================================================================
 # Self-contained Meilisearch Dump Builder
@@ -264,11 +279,11 @@ meilisearch-build-dump: meilisearch-build-dump-start
 	@echo ""
 	@# Create dump
 	@echo "4. Creating dump..."
-	@mkdir -p omnipath-present/data/dumps
+	@mkdir -p $(EXPORT_DIR)/dumps
 	@uv run python -m omnipath_build.scripts.create_meilisearch_dump \
 		--meili-url http://localhost:$(TEMP_MEILI_PORT) \
 		--api-key $(TEMP_MEILI_KEY) \
-		--output-dir omnipath-present/data/dumps \
+		--output-dir $(EXPORT_DIR)/dumps \
 		--container-name $(TEMP_MEILI_CONTAINER)
 	@echo ""
 	@# Cleanup
@@ -276,7 +291,7 @@ meilisearch-build-dump: meilisearch-build-dump-start
 	@echo ""
 	@echo "======================================================================"
 	@echo "✓ Meilisearch dump created successfully!"
-	@echo "  Output: omnipath-present/data/dumps/"
+	@echo "  Output: $(EXPORT_DIR)/dumps/"
 	@echo "======================================================================"
 
 meilisearch-build-dump-start:
@@ -294,18 +309,66 @@ meilisearch-build-dump-stop:
 	@echo "   Temporary container removed."
 
 # =============================================================================
-# Docker Deployment Targets (Legacy - use 'make export' instead)
+# Docker Deployment Targets
 # =============================================================================
 
-# Create a Meilisearch dump for deployment
-# Prerequisites: Meilisearch must be running with data imported
-meilisearch-dump: export-meilisearch
+.PHONY: deploy-staging deploy-prod deploy-list docker-build docker-up docker-up-fresh
+
+# List available data versions
+deploy-list:
+	@echo "Available data versions:"
+	@ls -d data/releases/v-* 2>/dev/null | sed 's|data/releases/||' || echo "  (none)"
+	@echo ""
+	@if [ -L data/releases/latest ]; then \
+		echo "latest -> $$(readlink data/releases/latest)"; \
+	fi
+
+# Deploy staging (always uses latest data)
+deploy-staging:
+	@echo "Deploying staging (using latest data)..."
+	docker compose -f omnipath-present/docker-compose.yaml \
+		--env-file omnipath-present/.env.staging \
+		-p omnipath-staging up -d --build
+	@echo ""
+	@echo "✓ Staging deployed with latest data"
+
+# Deploy prod with a specific version
+# Usage: make deploy-prod VERSION=v-20260225-071916
+deploy-prod:
+	@if [ -z "$(VERSION)" ]; then \
+		echo "Error: VERSION is required."; \
+		echo "Usage: make deploy-prod VERSION=v-20260225-071916"; \
+		echo ""; \
+		echo "Available versions:"; \
+		ls -d data/releases/v-* 2>/dev/null | sed 's|data/releases/||' || echo "  (none)"; \
+		exit 1; \
+	fi
+	@if [ ! -d "data/releases/$(VERSION)" ]; then \
+		echo "Error: Version '$(VERSION)' not found in data/releases/"; \
+		exit 1; \
+	fi
+	@echo "Deploying prod with data version: $(VERSION)..."
+	DATA_DIR=../data/releases/$(VERSION) docker compose -f omnipath-present/docker-compose.yaml \
+		--env-file omnipath-present/.env.prod \
+		-p omnipath-prod up -d --build
+	@echo ""
+	@echo "✓ Prod deployed with data version: $(VERSION)"
+
+# Restart staging to pick up new data (e.g., after a new export)
+# The meilisearch-start.sh script auto-detects version changes and reimports
+deploy-staging-restart:
+	@echo "Restarting staging services to pick up new data..."
+	docker compose -f omnipath-present/docker-compose.yaml \
+		--env-file omnipath-present/.env.staging \
+		-p omnipath-staging restart
+	@echo ""
+	@echo "✓ Staging restarted. Meilisearch will auto-reimport if data version changed."
 
 # Build all Docker images
 docker-build:
 	docker compose -f omnipath-present/docker-compose.yaml build
 
-# Start all services
+# Start all services (legacy)
 docker-up:
 	docker compose -f omnipath-present/docker-compose.yaml up -d
 

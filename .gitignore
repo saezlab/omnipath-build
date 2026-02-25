@@ -33,6 +33,8 @@ node_modules/
 *.parquet
 pypath-data/
 .env
+.env.staging
+.env.prod
 *.tsv
 target/
 data/

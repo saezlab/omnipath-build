@@ -66,4 +66,4 @@ reimport-meilisearch:
 	@echo "Next 'make dev' will import fresh data."
 
 # Start dev with fresh meilisearch data (resets indexes)
-dev-reset: reimport-meilisearch dev
+reset: reimport-meilisearch
