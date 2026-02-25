@@ -47,7 +47,7 @@ class OntologyLabelResolver:
         # Define ontology sources and their prefixes
         # Get the project root (3 levels up from this file)
         project_root = Path(__file__).parent.parent.parent
-        omnipath_obo = project_root / "omnipath-present" / "data" / "omnipath_mi.obo"
+        omnipath_obo = project_root / "omnipath_build" / "data" / "omnipath_mi.obo"
 
         ontology_configs = [
             {

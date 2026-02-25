@@ -1,4 +1,4 @@
-.PHONY: setup silver silver-test silver-reprocess gold postgres meilisearch meilisearch-entities meilisearch-interactions meilisearch-associations meilisearch-import meilisearch-import-entities meilisearch-import-interactions meilisearch-import-associations meilisearch-import-all meilisearch-delete-indexes gold-meilisearch-import visualize meilisearch-dump meilisearch-build-dump meilisearch-build-dump-start meilisearch-build-dump-stop docker-data-setup docker-build docker-up docker-up-fresh pipeline generate-obo
+.PHONY: setup silver silver-test silver-reprocess gold postgres meilisearch meilisearch-entities meilisearch-interactions meilisearch-associations meilisearch-import meilisearch-import-entities meilisearch-import-interactions meilisearch-import-associations meilisearch-import-all meilisearch-delete-indexes gold-meilisearch-import meilisearch-build-dump meilisearch-build-dump-start meilisearch-build-dump-stop pipeline pipeline-full generate-obo export export-entity export-ontology export-meilisearch export-finalize
 
 # =============================================================================
 # Full Pipeline - Run everything from silver to export
@@ -45,8 +45,8 @@ pipeline-full:
 # Generate OmniPath OBO file (needed for CV term label resolution in gold step) 
 generate-obo:
 	@echo "Generating OmniPath OBO file..."
-	@mkdir -p omnipath-present/data
-	@uv run python pypath/scripts/export_omnipath_obo.py omnipath-present/data/omnipath_mi.obo
+	@mkdir -p omnipath_build/data
+	@uv run python pypath/scripts/export_omnipath_obo.py omnipath_build/data/omnipath_mi.obo
 	@echo "✓ OBO file generated"
 
 setup:
@@ -58,7 +58,6 @@ setup:
 	git config -f .gitmodules submodule.ontograph.branch main
 	git submodule update --init --recursive --remote
 	uv sync
-	pnpm --dir omnipath-present/next-omnipath install
 
 silver:
 	@uv run -m omnipath_build.cli.commands silver --base-path omnipath_build/data --database . \
@@ -202,7 +201,7 @@ export-finalize:
 	@echo "Available versions:"
 	@ls -d data/releases/v-* 2>/dev/null | sed 's|data/releases/||'
 	@echo ""
-	@echo "To promote to prod: make deploy-prod VERSION=$(DATA_VERSION)"
+	@echo "Promote/deploy using the separate presentation repository."
 
 # Export entity service data
 export-entity:
@@ -219,8 +218,8 @@ export-entity:
 export-ontology:
 	@echo "Exporting ontology service data to $(EXPORT_DIR)..."
 	@mkdir -p $(EXPORT_DIR)
-	@if [ -f omnipath-present/data/omnipath_mi.obo ]; then \
-		cp -v omnipath-present/data/omnipath_mi.obo $(EXPORT_DIR)/; \
+	@if [ -f omnipath_build/data/omnipath_mi.obo ]; then \
+		cp -v omnipath_build/data/omnipath_mi.obo $(EXPORT_DIR)/; \
 	else \
 		echo "Error: omnipath_mi.obo not found. Run 'make generate-obo' first."; \
 		exit 1; \
@@ -308,83 +307,5 @@ meilisearch-build-dump-stop:
 	@docker rm -f $(TEMP_MEILI_CONTAINER) 2>/dev/null || true
 	@echo "   Temporary container removed."
 
-# =============================================================================
-# Docker Deployment Targets
-# =============================================================================
-
-.PHONY: deploy-staging deploy-prod deploy-list docker-build docker-up docker-up-fresh
-
-# List available data versions
-deploy-list:
-	@echo "Available data versions:"
-	@ls -d data/releases/v-* 2>/dev/null | sed 's|data/releases/||' || echo "  (none)"
-	@echo ""
-	@if [ -L data/releases/latest ]; then \
-		echo "latest -> $$(readlink data/releases/latest)"; \
-	fi
-
-# Deploy staging (always uses latest data)
-deploy-staging:
-	@echo "Deploying staging (using latest data)..."
-	docker compose -f omnipath-present/docker-compose.yaml \
-		--env-file omnipath-present/.env.staging \
-		-p omnipath-staging up -d --build
-	@echo ""
-	@echo "✓ Staging deployed with latest data"
-
-# Deploy prod with a specific version
-# Usage: make deploy-prod VERSION=v-20260225-071916
-deploy-prod:
-	@if [ -z "$(VERSION)" ]; then \
-		echo "Error: VERSION is required."; \
-		echo "Usage: make deploy-prod VERSION=v-20260225-071916"; \
-		echo ""; \
-		echo "Available versions:"; \
-		ls -d data/releases/v-* 2>/dev/null | sed 's|data/releases/||' || echo "  (none)"; \
-		exit 1; \
-	fi
-	@if [ ! -d "data/releases/$(VERSION)" ]; then \
-		echo "Error: Version '$(VERSION)' not found in data/releases/"; \
-		exit 1; \
-	fi
-	@echo "Deploying prod with data version: $(VERSION)..."
-	DATA_DIR=../data/releases/$(VERSION) docker compose -f omnipath-present/docker-compose.yaml \
-		--env-file omnipath-present/.env.prod \
-		-p omnipath-prod up -d --build
-	@echo ""
-	@echo "✓ Prod deployed with data version: $(VERSION)"
-
-# Restart staging to pick up new data (e.g., after a new export)
-# The meilisearch-start.sh script auto-detects version changes and reimports
-deploy-staging-restart:
-	@echo "Restarting staging services to pick up new data..."
-	docker compose -f omnipath-present/docker-compose.yaml \
-		--env-file omnipath-present/.env.staging \
-		-p omnipath-staging restart
-	@echo ""
-	@echo "✓ Staging restarted. Meilisearch will auto-reimport if data version changed."
-
-# Build all Docker images
-docker-build:
-	docker compose -f omnipath-present/docker-compose.yaml build
-
-# Start all services (legacy)
-docker-up:
-	docker compose -f omnipath-present/docker-compose.yaml up -d
-
-# Start with fresh Meilisearch data from dump
-# Usage: make docker-up-fresh
-docker-up-fresh:
-	@if [ -f omnipath-present/data/dumps/latest.dump ]; then \
-		MEILI_IMPORT_DUMP=/dumps/latest.dump docker compose -f omnipath-present/docker-compose.yaml up -d; \
-	else \
-		echo "No dump file found at omnipath-present/data/dumps/latest.dump"; \
-		echo "Run 'make meilisearch-dump' first to create one."; \
-		exit 1; \
-	fi
-
 %:
 	@:
-
-visualize:
-	pnpm --dir nextjs dev
