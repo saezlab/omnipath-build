@@ -42,7 +42,7 @@ pipeline-full:
 	@echo "✓ Full pipeline completed successfully!"
 	@echo "======================================================================"
 
-# Generate OmniPath OBO file (needed for CV term label resolution in gold step)
+# Generate OmniPath OBO file (needed for CV term label resolution in gold step) 
 generate-obo:
 	@echo "Generating OmniPath OBO file..."
 	@mkdir -p omnipath-present/data
