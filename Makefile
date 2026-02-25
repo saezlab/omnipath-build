@@ -5,7 +5,7 @@
 # =============================================================================
 # Usage: make pipeline
 # This runs: silver-test -> generate-obo -> gold -> meilisearch -> build-dump -> export-entity -> export-ontology -> export-finalize
-# The meilisearch-build-dump step spins up a temporary container, imports data, creates dump, and cleans up.
+# The meilisearch-build-dump step starts a temporary local Meilisearch process, imports data, creates dump, and cleans up.
 pipeline:
 	@echo "======================================================================"
 	@echo "Starting full pipeline..."
@@ -230,37 +230,42 @@ export-meilisearch:
 	@echo "Exporting meilisearch dump to $(EXPORT_DIR)..."
 	@mkdir -p $(EXPORT_DIR)/dumps
 	@. .env && uv run python -m omnipath_build.scripts.create_meilisearch_dump \
-		--meili-url http://localhost:7700 \
+		--meili-url http://127.0.0.1:7700 \
 		--api-key $${MEILISEARCH_API_KEY} \
-		--output-dir $(EXPORT_DIR)/dumps
+		--output-dir $(EXPORT_DIR)/dumps \
+		--db-path "$${MEILI_DB_PATH:-$$PWD/.meili}"
 
 # =============================================================================
 # Self-contained Meilisearch Dump Builder
 # =============================================================================
-# Build a Meilisearch dump without requiring a running Meilisearch instance.
-# This spins up a temporary container, imports data, creates dump, and cleans up.
+# Build a Meilisearch dump without requiring Docker.
+# This starts a temporary local Meilisearch process via Nix, imports data,
+# creates a dump, and cleans up.
 # Prerequisites: search parquet files must exist (run 'make meilisearch' first)
-TEMP_MEILI_CONTAINER := omnipath-temp-meilisearch
 TEMP_MEILI_PORT := 7710
 TEMP_MEILI_KEY := temp-build-key
+TEMP_MEILI_DIR := .meili-temp
+TEMP_MEILI_PID_FILE := $(TEMP_MEILI_DIR)/meilisearch.pid
+TEMP_MEILI_LOG_FILE := $(TEMP_MEILI_DIR)/meilisearch.log
 
 .PHONY: meilisearch-build-dump meilisearch-build-dump-start meilisearch-build-dump-stop
 
 meilisearch-build-dump: meilisearch-build-dump-start
 	@echo ""
 	@echo "======================================================================" 
-	@echo "Building Meilisearch dump (self-contained)"
+	@echo "Building Meilisearch dump (self-contained, local process)"
 	@echo "======================================================================"
 	@echo ""
 	@# Wait for Meilisearch to be ready
 	@echo "2. Waiting for Meilisearch to be ready..."
 	@for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do \
-		if curl -sf http://localhost:$(TEMP_MEILI_PORT)/health > /dev/null 2>&1; then \
+		if curl -sf http://127.0.0.1:$(TEMP_MEILI_PORT)/health > /dev/null 2>&1; then \
 			echo "   Meilisearch is ready!"; \
 			break; \
 		fi; \
 		if [ $$i -eq 20 ]; then \
 			echo "   Error: Meilisearch failed to start"; \
+			echo "   See logs: $(TEMP_MEILI_LOG_FILE)"; \
 			$(MAKE) meilisearch-build-dump-stop; \
 			exit 1; \
 		fi; \
@@ -274,16 +279,16 @@ meilisearch-build-dump: meilisearch-build-dump-start
 		--dataset all \
 		--importer-path omnipath_build/meilisearch-importer \
 		--api-key $(TEMP_MEILI_KEY) \
-		--meili-url http://localhost:$(TEMP_MEILI_PORT)
+		--meili-url http://127.0.0.1:$(TEMP_MEILI_PORT)
 	@echo ""
 	@# Create dump
 	@echo "4. Creating dump..."
 	@mkdir -p $(EXPORT_DIR)/dumps
 	@uv run python -m omnipath_build.scripts.create_meilisearch_dump \
-		--meili-url http://localhost:$(TEMP_MEILI_PORT) \
+		--meili-url http://127.0.0.1:$(TEMP_MEILI_PORT) \
 		--api-key $(TEMP_MEILI_KEY) \
 		--output-dir $(EXPORT_DIR)/dumps \
-		--container-name $(TEMP_MEILI_CONTAINER)
+		--db-path $(TEMP_MEILI_DIR)
 	@echo ""
 	@# Cleanup
 	@$(MAKE) meilisearch-build-dump-stop
@@ -294,18 +299,34 @@ meilisearch-build-dump: meilisearch-build-dump-start
 	@echo "======================================================================"
 
 meilisearch-build-dump-start:
-	@echo "1. Starting temporary Meilisearch container..."
-	@docker rm -f $(TEMP_MEILI_CONTAINER) 2>/dev/null || true
-	@docker run -d \
-		--name $(TEMP_MEILI_CONTAINER) \
-		-p $(TEMP_MEILI_PORT):7700 \
-		-e MEILI_MASTER_KEY=$(TEMP_MEILI_KEY) \
-		getmeili/meilisearch:v1.6
+	@echo "1. Starting temporary Meilisearch local process..."
+	@$(MAKE) meilisearch-build-dump-stop >/dev/null 2>&1 || true
+	@rm -rf $(TEMP_MEILI_DIR)
+	@mkdir -p $(TEMP_MEILI_DIR)
+	@MEILI_HTTP_ADDR=127.0.0.1:$(TEMP_MEILI_PORT) \
+	MEILI_DB_PATH=$$(pwd)/$(TEMP_MEILI_DIR) \
+	MEILI_MASTER_KEY=$(TEMP_MEILI_KEY) \
+	nix shell nixpkgs#meilisearch -c meilisearch > $(TEMP_MEILI_LOG_FILE) 2>&1 & \
+	echo $$! > $(TEMP_MEILI_PID_FILE)
+	@echo "   PID: $$(cat $(TEMP_MEILI_PID_FILE))"
+	@echo "   DB path: $$(pwd)/$(TEMP_MEILI_DIR)"
+	@echo "   Log file: $(TEMP_MEILI_LOG_FILE)"
 
 meilisearch-build-dump-stop:
-	@echo "5. Cleaning up temporary container..."
-	@docker rm -f $(TEMP_MEILI_CONTAINER) 2>/dev/null || true
-	@echo "   Temporary container removed."
+	@echo "5. Stopping temporary Meilisearch process..."
+	@if [ -f $(TEMP_MEILI_PID_FILE) ]; then \
+		PID=$$(cat $(TEMP_MEILI_PID_FILE)); \
+		if kill -0 $$PID 2>/dev/null; then \
+			kill $$PID 2>/dev/null || true; \
+			wait $$PID 2>/dev/null || true; \
+			echo "   Stopped process $$PID."; \
+		else \
+			echo "   Process $$PID already stopped."; \
+		fi; \
+		rm -f $(TEMP_MEILI_PID_FILE); \
+	else \
+		echo "   No PID file found."; \
+	fi
 
 %:
 	@:
