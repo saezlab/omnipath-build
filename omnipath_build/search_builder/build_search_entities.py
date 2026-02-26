@@ -437,7 +437,12 @@ def build_search_entities(global_tables_dir: Path, output_path: Path) -> Path:
         ).alias("cv_terms_kw"),
     ])
 
-    final_plan = final_plan.with_columns(defaults).sort("entity_id")
+    final_plan = (
+        final_plan
+        .with_columns(defaults)
+        .drop("cv_terms")
+        .sort("entity_id")
+    )
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     logger.info("Streaming results to %s (this may take a moment)...", output_path)

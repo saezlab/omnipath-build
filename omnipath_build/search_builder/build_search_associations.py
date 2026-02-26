@@ -1,19 +1,9 @@
 """Build Meilisearch associations documents from global tables.
 
-This module builds a searchable index of membership/association relationships:
-- Food → Compound (food contains compound)
-- Complex → Protein (complex has member)
-- Pathway → Reaction (pathway includes reaction)
-- etc.
-
-Each association document represents a parent-member relationship with:
-- Parent entity ID and type
-- Member entity ID and type
-- Sources that report this association
-- Optional annotations (e.g., concentration for food-compound)
-- Flattened annotation terms for filtering
-
-Entity names and identifiers are fetched from the entity search index when needed.
+Association docs are parent-member pairs with evidence split:
+- evidence: [{ evidence_serial, source, annotations }]
+- sources: top-level union of evidence sources
+- association_annotation_terms: root-level flattened filterable terms
 """
 from __future__ import annotations
 
@@ -24,85 +14,77 @@ from pathlib import Path
 import polars as pl
 from polars import Field
 
-from .schema import (
-    EntityTypeCv,
-    INTERACTION_TYPE_ACCESSION,
-)
+from .schema import INTERACTION_TYPE_ACCESSION
 
 __all__ = ["build_search_associations"]
 
 logger = logging.getLogger(__name__)
 
-# --- Schema Definitions ---
-ANNOT_STRUCT = pl.Struct([Field("key", pl.Utf8), Field("value", pl.Utf8), Field("unit", pl.Utf8)])
+ANNOT_STRUCT = pl.Struct([
+    Field("term", pl.Utf8),
+    Field("value", pl.Utf8),
+    Field("unit", pl.Utf8),
+])
 ANNOT_LIST_DTYPE = pl.List(ANNOT_STRUCT)
+
+EVIDENCE_STRUCT = pl.Struct([
+    Field("evidence_serial", pl.Int64),
+    Field("source", pl.Utf8),
+    Field("annotations", ANNOT_LIST_DTYPE),
+])
+EVIDENCE_LIST_DTYPE = pl.List(EVIDENCE_STRUCT)
 
 
 def _resolve_member_entity_id(mem: pl.DataFrame, inst: pl.DataFrame) -> pl.DataFrame:
-    """Resolve member to entity_id, handling both direct entity and instance references."""
     return (
         mem
         .join(
             inst.select([
                 pl.col("id").alias("member_instance_id"),
-                pl.col("entity_id").alias("instance_entity_id")
+                pl.col("entity_id").alias("instance_entity_id"),
             ]),
             on="member_instance_id",
-            how="left"
+            how="left",
         )
         .with_columns(
-            pl.coalesce([
-                pl.col("instance_entity_id"),
-                pl.col("member_entity_id")
-            ]).alias("member_id")
+            pl.coalesce([pl.col("instance_entity_id"), pl.col("member_entity_id")]).alias("member_id")
         )
     )
 
 
 def _resolve_parent_entity_id(mem: pl.DataFrame, inst: pl.DataFrame) -> pl.DataFrame:
-    """Resolve parent to entity_id, handling both direct entity and instance references."""
     return (
         mem
         .join(
             inst.select([
                 pl.col("id").alias("parent_instance_id"),
-                pl.col("entity_id").alias("parent_instance_entity_id")
+                pl.col("entity_id").alias("parent_instance_entity_id"),
             ]),
             on="parent_instance_id",
-            how="left"
+            how="left",
         )
         .with_columns(
-            pl.coalesce([
-                pl.col("parent_instance_entity_id"),
-                pl.col("parent_entity_id")
-            ]).alias("parent_id")
+            pl.coalesce([pl.col("parent_instance_entity_id"), pl.col("parent_entity_id")]).alias("parent_id")
         )
     )
 
 
 def build_search_associations(global_tables_dir: Path, output_path: Path) -> Path:
-    """Build Meilisearch association documents from membership table.
-    
-    Args:
-        global_tables_dir: Path to directory containing global parquet tables
-        output_path: Path to write output parquet file
-        
-    Returns:
-        Path to output file
-    """
     logger.info("=" * 80 + "\nBuilding Meilisearch association documents\n" + "=" * 80)
 
-    # 1. Load Data
-    tables = {n: pl.read_parquet(global_tables_dir / f"{n}.parquet")
-              for n in ["entity", "membership", "entity_identifier", "entity_instance", "entity_annotation"]}
+    tables = {n: pl.read_parquet(global_tables_dir / f"{n}.parquet") for n in [
+        "entity",
+        "membership",
+        "entity_identifier",
+        "entity_instance",
+        "entity_annotation",
+    ]}
     logger.info("Loaded tables: %s", " ".join(f"{k}={len(v)}" for k, v in tables.items()))
 
-    # Load CV term label mappings
     if (global_tables_dir / "cv_terms.parquet").exists():
         cv_terms = pl.read_parquet(global_tables_dir / "cv_terms.parquet")
-        logger.info(f"Loaded {len(cv_terms)} CV term labels")
     else:
-        logger.warning(f"cv_terms.parquet not found in {global_tables_dir}")
+        logger.warning("cv_terms.parquet not found in %s", global_tables_dir)
         cv_terms = pl.DataFrame(schema={"accession": pl.Utf8, "label": pl.Utf8})
 
     ent = tables["entity"]
@@ -111,24 +93,14 @@ def build_search_associations(global_tables_dir: Path, output_path: Path) -> Pat
     inst = tables["entity_instance"]
     ent_annot = tables["entity_annotation"]
 
-    # 2. Resolve polymorphic membership columns
     mem = _resolve_member_entity_id(mem_raw, inst)
     mem = _resolve_parent_entity_id(mem, inst)
-    
-    # 3. Filter: Exclude interactions (those are in interactions index)
-    # Get interaction entity IDs
-    interaction_ids = set(
-        ent.filter(pl.col("entity_type") == INTERACTION_TYPE_ACCESSION)["entity_id"].to_list()
-    )
-    logger.info(f"Excluding {len(interaction_ids)} interaction entities from associations")
-    
-    # Filter membership to non-interaction parents
+
+    interaction_ids = set(ent.filter(pl.col("entity_type") == INTERACTION_TYPE_ACCESSION)["entity_id"].to_list())
     mem_assoc = mem.filter(~pl.col("parent_id").is_in(list(interaction_ids)))
-    logger.info(f"Building associations from {len(mem_assoc)} membership rows")
-    
+
     if mem_assoc.is_empty():
-        logger.warning("No association memberships found; writing empty file.")
-        empty_schema = {
+        pl.DataFrame(schema={
             "association_id": pl.Int64,
             "association_key": pl.Utf8,
             "parent_entity_id": pl.Int64,
@@ -136,199 +108,156 @@ def build_search_associations(global_tables_dir: Path, output_path: Path) -> Pat
             "member_entity_id": pl.Int64,
             "member_entity_type": pl.Utf8,
             "sources": pl.List(pl.Utf8),
-            "annotations": ANNOT_LIST_DTYPE,
+            "evidence": EVIDENCE_LIST_DTYPE,
             "association_annotation_terms": pl.List(pl.Utf8),
-        }
-        pl.DataFrame(schema=empty_schema).write_parquet(output_path)
+        }).write_parquet(output_path)
         return output_path
-    
-    # 4. Build entity info lookups
-    # Name identifier type
-    name_tid = "OM:0202"  # IdentifierNamespaceCv.NAME
 
-    # Entity type labels
     entity_type_labels = cv_terms.select([
         pl.col("accession").alias("entity_type"),
-        pl.col("label").alias("entity_type_label")
+        pl.col("label").alias("entity_type_label"),
+    ])
+    annotation_labels = cv_terms.select([
+        pl.col("accession").alias("cv_term_accession"),
+        pl.col("label").alias("cv_term_label"),
     ])
 
-    # Entity types with labels
     entity_types = (
         ent
         .join(entity_type_labels, on="entity_type", how="left")
         .with_columns(
             pl.coalesce([
                 pl.col("entity_type_label"),
-                (pl.col("entity_type") + ":" + pl.col("entity_type"))
+                (pl.col("entity_type") + ":" + pl.col("entity_type")),
             ]).alias("entity_type_formatted")
         )
         .select("entity_id", pl.col("entity_type_formatted").alias("entity_type"))
     )
 
-    # Source names for display
+    name_tid = "OM:0202"
     source_names = (
         ent_id.filter(pl.col("type_id") == name_tid)
         .group_by("entity_id")
         .agg(pl.col("identifier").first().alias("source_name"))
     )
-    
-    # 5. Build base association documents
-    # Aggregate by (parent_id, member_id) pair
-    assoc_base = (
-        mem_assoc
-        .group_by(["parent_id", "member_id"])
-        .agg([
-            pl.col("source_id").unique().alias("source_ids"),
-            pl.col("member_instance_id").filter(pl.col("member_instance_id").is_not_null()).unique().alias("member_instance_ids"),
+
+    source_fmt = (
+        source_names
+        .select([
+            pl.col("entity_id").alias("source_id"),
+            (pl.coalesce([pl.col("source_name"), pl.lit("Source")]) + ":" + pl.col("entity_id").cast(pl.Utf8)).alias("source"),
         ])
-        .with_columns(
-            (pl.col("parent_id").cast(pl.Utf8) + "_" + pl.col("member_id").cast(pl.Utf8)).alias("association_key")
-        )
-    )
-    
-    logger.info(f"Aggregated to {len(assoc_base)} unique parent-member associations")
-    
-    # 6. Join parent entity info
-    assoc_with_parent = (
-        assoc_base
-        .join(entity_types.rename({"entity_id": "parent_id", "entity_type": "parent_entity_type"}), on="parent_id", how="left")
     )
 
-    # 7. Join member entity info
-    assoc_with_member = (
-        assoc_with_parent
-        .join(entity_types.rename({"entity_id": "member_id", "entity_type": "member_entity_type"}), on="member_id", how="left")
+    assoc_rows = (
+        mem_assoc
+        .select(["parent_id", "member_id", "source_id", "member_instance_id"])
+        .with_columns((pl.col("parent_id").cast(pl.Utf8) + "_" + pl.col("member_id").cast(pl.Utf8)).alias("association_key"))
     )
-    
-    # 8. Format sources
-    assoc_with_sources = (
-        assoc_with_member
-        .explode("source_ids")
-        .join(source_names, left_on="source_ids", right_on="entity_id", how="left")
-        .with_columns(
-            pl.coalesce([
-                pl.col("source_name"),
-                pl.lit("Source")
-            ]).alias("source_display")
+
+    # Annotation bundles per member instance
+    ann_rows = (
+        ent_annot
+        .select([
+            pl.col("instance_id").alias("member_instance_id"),
+            pl.col("cv_term_accession").alias("ann_id"),
+            pl.col("value").cast(pl.Utf8).alias("value"),
+            pl.col("unit_accession").alias("unit_accession") if "unit_accession" in ent_annot.columns else pl.lit(None, pl.Utf8).alias("unit_accession"),
+        ])
+        .join(annotation_labels, left_on="ann_id", right_on="cv_term_accession", how="left")
+        .join(
+            annotation_labels.rename({"cv_term_accession": "unit_acc", "cv_term_label": "unit_label"}),
+            left_on="unit_accession",
+            right_on="unit_acc",
+            how="left",
         )
-        .group_by("association_key")
+        .with_columns([
+            (pl.coalesce([pl.col("cv_term_label"), pl.col("ann_id")]) + ":" + pl.col("ann_id")).alias("term"),
+            pl.when(pl.col("unit_accession").is_not_null()).then(
+                pl.coalesce([pl.col("unit_label"), pl.col("unit_accession")]) + ":" + pl.col("unit_accession")
+            ).otherwise(None).alias("unit"),
+            (((pl.col("value").is_null()) | (pl.col("value") == "")) & pl.col("unit_accession").is_null()).alias("is_filterable"),
+        ])
+        .select(["member_instance_id", "term", "value", "unit", "is_filterable"])
+    )
+
+    ann_bundle = (
+        ann_rows
+        .group_by("member_instance_id")
         .agg([
-            pl.col("parent_id").first().alias("parent_entity_id"),
-            pl.col("parent_entity_type").first(),
-            pl.col("member_id").first().alias("member_entity_id"),
-            pl.col("member_entity_type").first(),
-            pl.col("source_display").unique().sort().alias("sources"),
-            pl.col("member_instance_ids").first(),
+            pl.struct(["term", "value", "unit"]).unique().alias("annotations"),
+            pl.col("term").filter(pl.col("is_filterable")).unique().sort().alias("filterable_terms"),
         ])
     )
-    
-    # 9. Build annotations (from member instances)
-    # Get annotation labels
-    annotation_labels = cv_terms.select([
-        pl.col("accession").alias("cv_term_accession"),
-        pl.col("label").alias("cv_term_label")
-    ])
-    
-    unit_labels = cv_terms.select([
-        pl.col("accession").alias("unit_accession"),
-        pl.col("label").alias("unit_label")
-    ])
-    
-    # For each association, collect annotations from member instances
-    annot_expanded = (
-        assoc_with_sources
-        .select(["association_key", "member_instance_ids"])
-        .explode("member_instance_ids")
-        .filter(pl.col("member_instance_ids").is_not_null())
-        .join(
-            ent_annot.select([
-                pl.col("instance_id"),
-                pl.col("cv_term_accession"),
-                pl.col("value"),
-                pl.col("unit_accession") if "unit_accession" in ent_annot.columns else pl.lit(None, pl.Utf8).alias("unit_accession"),
-            ]),
-            left_on="member_instance_ids",
-            right_on="instance_id",
-            how="inner"
+
+    evidence_rows = (
+        assoc_rows
+        .join(source_fmt, on="source_id", how="left")
+        .join(ann_bundle, on="member_instance_id", how="left")
+        .with_columns([
+            pl.coalesce(pl.col("source"), pl.lit("")).alias("source"),
+            pl.coalesce(pl.col("annotations"), pl.lit([], dtype=ANNOT_LIST_DTYPE)).alias("annotations"),
+            pl.coalesce(pl.col("filterable_terms"), pl.lit([], dtype=pl.List(pl.Utf8))).alias("filterable_terms"),
+        ])
+        .with_columns(
+            pl.col("annotations")
+            .list.eval(
+                pl.element().struct.field("term")
+                + pl.lit("=")
+                + pl.coalesce([pl.element().struct.field("value"), pl.lit("")])
+                + pl.lit("|")
+                + pl.coalesce([pl.element().struct.field("unit"), pl.lit("")])
+            )
+            .list.sort()
+            .list.join("||")
+            .alias("ann_sig")
         )
+        .group_by(["association_key", "parent_id", "member_id", "source", "ann_sig"])
+        .agg([
+            pl.col("annotations").first().alias("annotations"),
+            pl.col("filterable_terms").explode().drop_nulls().unique().sort().alias("filterable_terms"),
+        ])
+        .sort(["association_key", "source", "ann_sig"])
+        .with_columns(pl.int_range(1, pl.len() + 1).over("association_key").cast(pl.Int64).alias("evidence_serial"))
+        .select([
+            "association_key",
+            "parent_id",
+            "member_id",
+            "source",
+            "filterable_terms",
+            pl.struct(["evidence_serial", "source", "annotations"]).alias("evidence_entry"),
+        ])
     )
-    
-    if not annot_expanded.is_empty():
-        annotations_agg = (
-            annot_expanded
-            .join(annotation_labels, on="cv_term_accession", how="left")
-            .join(unit_labels, on="unit_accession", how="left")
-            .with_columns([
-                pl.coalesce([
-                    pl.col("cv_term_label"),
-                    pl.col("cv_term_accession")
-                ]).alias("key"),
-                pl.col("value").cast(pl.Utf8),
-                pl.coalesce([
-                    pl.col("unit_label"),
-                    pl.col("unit_accession")
-                ]).alias("unit"),
-            ])
-            .group_by("association_key")
-            .agg(
-                pl.struct(["key", "value", "unit"]).alias("annotations")
-            )
-        )
-        
-        result = (
-            assoc_with_sources
-            .join(annotations_agg, on="association_key", how="left")
-        )
-    else:
-        result = assoc_with_sources.with_columns(
-            pl.lit(None, dtype=ANNOT_LIST_DTYPE).alias("annotations")
-        )
-    
-    # 10. Add flattened annotation terms for Meilisearch filtering
-    # Similar to interaction_annotation_terms in interactions index
-    logger.info("Computing flattened annotation terms for Meilisearch filtering")
-    
-    # Flatten annotation terms from the annotations list
-    # We want just the keys (term labels) for filtering, excluding those with values
-    if "annotations" in result.columns:
-        temp_terms = (
-            result.select(["association_key", "annotations"])
-            .filter(pl.col("annotations").is_not_null())
-            .filter(pl.col("annotations").list.len() > 0)
-            .explode("annotations")
-            .select([
-                "association_key",
-                pl.col("annotations").struct.field("key").alias("term"),
-                pl.col("annotations").struct.field("value").alias("value"),
-            ])
-            # Only include terms that don't have associated values (standalone terms)
-            .filter(
-                pl.col("value").is_null() | (pl.col("value") == "")
-            )
-            .group_by("association_key")
-            .agg(pl.col("term").unique().alias("association_annotation_terms"))
-        )
-        
-        result = result.join(temp_terms, on="association_key", how="left")
-    
-    # 11. Final cleanup and output
+
+    assoc_docs = (
+        evidence_rows
+        .group_by(["association_key", "parent_id", "member_id"])
+        .agg([
+            pl.col("source").drop_nulls().unique().sort().alias("sources"),
+            pl.col("evidence_entry").alias("evidence"),
+            pl.col("filterable_terms").explode().drop_nulls().unique().sort().alias("association_annotation_terms"),
+        ])
+    )
+
     result = (
-        result
+        assoc_docs
+        .join(entity_types.rename({"entity_id": "parent_id", "entity_type": "parent_entity_type"}), on="parent_id", how="left")
+        .join(entity_types.rename({"entity_id": "member_id", "entity_type": "member_entity_type"}), on="member_id", how="left")
         .with_columns([
             pl.col("sources").fill_null(pl.lit([], dtype=pl.List(pl.Utf8))),
-            pl.col("annotations").fill_null(pl.lit([], dtype=ANNOT_LIST_DTYPE)),
+            pl.col("evidence").fill_null(pl.lit([], dtype=EVIDENCE_LIST_DTYPE)),
+            pl.col("association_annotation_terms").fill_null(pl.lit([], dtype=pl.List(pl.Utf8))),
             pl.col("parent_entity_type").fill_null(pl.lit("")),
             pl.col("member_entity_type").fill_null(pl.lit("")),
-            pl.col("association_annotation_terms").fill_null(pl.lit([], dtype=pl.List(pl.Utf8))) if "association_annotation_terms" in result.columns else pl.lit([], dtype=pl.List(pl.Utf8)).alias("association_annotation_terms"),
         ])
         .select([
             "association_key",
-            "parent_entity_id",
+            pl.col("parent_id").alias("parent_entity_id"),
             "parent_entity_type",
-            "member_entity_id",
+            pl.col("member_id").alias("member_entity_id"),
             "member_entity_type",
             "sources",
-            "annotations",
+            "evidence",
             "association_annotation_terms",
         ])
         .sort("association_key")
@@ -342,14 +271,14 @@ def build_search_associations(global_tables_dir: Path, output_path: Path) -> Pat
             "member_entity_id",
             "member_entity_type",
             "sources",
-            "annotations",
+            "evidence",
             "association_annotation_terms",
         ])
     )
-    
+
     output_path.parent.mkdir(parents=True, exist_ok=True)
     result.write_parquet(output_path)
-    logger.info(f"Wrote {len(result)} association documents to {output_path}")
+    logger.info("Wrote %s association documents to %s", len(result), output_path)
     return output_path
 
 

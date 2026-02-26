@@ -47,7 +47,7 @@ class MeilisearchSettings:
             # Entity filtering (works on both members)
             'member_a_id',
             'member_b_id',
-            'member_types',  # Array of strings - can filter on entity types
+            'interaction_type',  # Canonical pair type (e.g., Protein|Protein)
             # Direction/Sign (flattened from directions array)
             'has_direction',  # Boolean: len(directions) > 0
             'has_positive_sign',  # Boolean: any sign == 1 or sign == 0 (mixed)
