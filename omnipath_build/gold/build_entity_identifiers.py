@@ -143,6 +143,7 @@ MERGE_SAFE_IDENTIFIER_TYPES_BY_BUCKET: dict[str, frozenset[str]] = {
         IdentifierNamespaceCv.UNIPROT_TREMBL.value,
         IdentifierNamespaceCv.UNIPARC.value,
         IdentifierNamespaceCv.REFSEQ_PROTEIN.value,
+        IdentifierNamespaceCv.ENTREZ.value,
         IdentifierNamespaceCv.REACTOME_ID.value,
         IdentifierNamespaceCv.REACTOME_STABLE_ID.value,
     }),
