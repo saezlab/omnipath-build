@@ -42,6 +42,8 @@ class MeilisearchSettings:
     INTERACTIONS_SETTINGS = {
         'searchableAttributes': [],  # No text search for interactions
         'filterableAttributes': [
+            # Numeric interaction identifier (for export/subsetting pipelines)
+            'interaction_id',
             # Entity filtering (works on both members)
             'member_a_id',
             'member_b_id',
@@ -66,6 +68,8 @@ class MeilisearchSettings:
             'member_name',
         ],
         'filterableAttributes': [
+            # Numeric association identifier (for export/subsetting pipelines)
+            'association_id',
             # Entity filtering
             'parent_entity_id',
             'parent_entity_type',

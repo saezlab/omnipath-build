@@ -129,6 +129,7 @@ def build_search_associations(global_tables_dir: Path, output_path: Path) -> Pat
     if mem_assoc.is_empty():
         logger.warning("No association memberships found; writing empty file.")
         empty_schema = {
+            "association_id": pl.Int64,
             "association_key": pl.Utf8,
             "parent_entity_id": pl.Int64,
             "parent_entity_type": pl.Utf8,
@@ -331,6 +332,19 @@ def build_search_associations(global_tables_dir: Path, output_path: Path) -> Pat
             "association_annotation_terms",
         ])
         .sort("association_key")
+        .with_row_index("association_id", offset=1)
+        .with_columns(pl.col("association_id").cast(pl.Int64))
+        .select([
+            "association_id",
+            "association_key",
+            "parent_entity_id",
+            "parent_entity_type",
+            "member_entity_id",
+            "member_entity_type",
+            "sources",
+            "annotations",
+            "association_annotation_terms",
+        ])
     )
     
     output_path.parent.mkdir(parents=True, exist_ok=True)

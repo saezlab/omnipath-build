@@ -236,9 +236,14 @@ def build_search_interactions(global_tables_dir: Path, output_path: Path) -> Pat
     if pair_base.is_empty():
         logger.warning("No interactions with two members found; writing empty file.")
         pl.DataFrame(schema={
-            "interaction_key": pl.Utf8, "member_a_id": pl.Int64, "member_b_id": pl.Int64,
-            "member_types": pl.List(pl.Utf8), "evidence": EVIDENCE_LIST_DTYPE,
-            "directions": DIRECTION_LIST_DTYPE, "sources": pl.List(pl.Utf8)
+            "interaction_id": pl.Int64,
+            "interaction_key": pl.Utf8,
+            "member_a_id": pl.Int64,
+            "member_b_id": pl.Int64,
+            "member_types": pl.List(pl.Utf8),
+            "evidence": EVIDENCE_LIST_DTYPE,
+            "directions": DIRECTION_LIST_DTYPE,
+            "sources": pl.List(pl.Utf8),
         }).write_parquet(output_path)
         return output_path
 
@@ -610,7 +615,14 @@ def build_search_interactions(global_tables_dir: Path, output_path: Path) -> Pat
         .agg(pl.col("term_value").unique().alias("interaction_annotation_terms"))
     )
 
-    result = result.join(temp_terms, on="interaction_key", how="left")
+    result = (
+        result.join(temp_terms, on="interaction_key", how="left")
+        # Deterministic numeric identifier for export pipelines.
+        # Stable as long as interaction_key set/order is stable.
+        .sort("interaction_key")
+        .with_row_index("interaction_id", offset=1)
+        .with_columns(pl.col("interaction_id").cast(pl.Int64))
+    )
 
     result.write_parquet(output_path)
     logger.info("Wrote %s interaction documents to %s", len(result), output_path)
