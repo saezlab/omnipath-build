@@ -170,7 +170,7 @@ def _build_parser() -> argparse.ArgumentParser:
     silver_parser.add_argument(
         '--test-mode',
         action='store_true',
-        help='Limit to 100k records per resource (for testing)',
+        help='Enable selective test limits for configured high-volume sources',
     )
     silver_parser.set_defaults(handler=_handle_silver)
 

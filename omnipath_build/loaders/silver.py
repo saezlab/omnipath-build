@@ -29,6 +29,27 @@ __all__ = [
 ]
 
 
+# In test mode, only these high-volume sources are capped.
+# All other sources run uncapped.
+TEST_MODE_RECORD_LIMITS_BY_SOURCE: dict[str, int] = {
+    'foodb': 100,
+    'ptfi': 100,
+    'guidetopharma': 100,
+    'bindingdb': 100,
+    'swisslipids': 100,
+    'lipidmaps': 100,
+    'hmdb': 100,
+    'intact': 1000,
+}
+
+
+def _test_mode_record_limit(source: str, test_mode: bool) -> int | None:
+    """Resolve per-source record limit for test mode."""
+    if not test_mode:
+        return None
+    return TEST_MODE_RECORD_LIMITS_BY_SOURCE.get(source)
+
+
 @dataclass(slots=True)
 class ResourceFunction:
     """Container describing a discovered resource transformation function."""
@@ -294,7 +315,7 @@ def process_resource_function(
         batch_size: Number of records per batch
         dry_run: If True, don't write to disk
         override: If True, overwrite existing files
-        test_mode: If True, limit to 100k records per resource
+        test_mode: If True, apply selective per-source limits (see TEST_MODE_RECORD_LIMITS_BY_SOURCE)
 
     Returns:
         - Optional[Path] for single-output functions
@@ -366,6 +387,8 @@ def process_resource_function(
             )
             return existing_files
 
+    max_records = _test_mode_record_limit(resource_fn.source, test_mode)
+
     if is_multi_output:
         # Process as multi-output function
         return _process_multi_output(
@@ -375,7 +398,7 @@ def process_resource_function(
             records_iter,
             batch_size,
             dry_run,
-            test_mode,
+            max_records,
         )
     else:
         # Process as single-output function (existing logic)
@@ -386,7 +409,7 @@ def process_resource_function(
             records_iter,
             batch_size,
             dry_run,
-            test_mode,
+            max_records,
         )
 
 
@@ -397,7 +420,7 @@ def _process_single_output(
     records_iter: Iterator,
     batch_size: int,
     dry_run: bool,
-    test_mode: bool = False,
+    max_records: int | None = None,
 ) -> Optional[Path]:
     """Process single-output function producing Entity records."""
     schema = ENTITY_SCHEMA
@@ -405,7 +428,6 @@ def _process_single_output(
     writer: Optional[pq.ParquetWriter] = None
     total_records = 0
     batch: List[dict] = []
-    max_records = 1000 if test_mode else None
 
     # Process first record
     _ensure_entity_record(first_record)
@@ -516,14 +538,13 @@ def _process_multi_output(
     records_iter: Iterator,
     batch_size: int,
     dry_run: bool,
-    test_mode: bool = False,
+    max_records: int | None = None,
 ) -> Dict[str, Path]:
     """Process multi-output function that yields dicts with named outputs."""
     batches: Dict[str, List[dict]] = {}
     writers: Dict[str, pq.ParquetWriter] = {}
     output_files: Dict[str, Path] = {}
     record_counts: Dict[str, int] = {}
-    max_records = 100 if test_mode else None
 
     def ensure_output_paths(output_name: str) -> None:
         if output_name not in output_files:
