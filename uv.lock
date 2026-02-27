@@ -133,7 +133,7 @@ wheels = [
 [[package]]
 name = "cachemanager"
 version = "0.1.1"
-source = { git = "https://github.com/saezlab/cache-manager.git?rev=main#a7059c8ab6b5aa31a413e9bffcaf97e372382cd8" }
+source = { git = "https://github.com/saezlab/cache-manager.git?rev=main#7f48a1f59ec6a0ac2bbeea138968062cdfac3446" }
 dependencies = [
     { name = "numpy" },
     { name = "platformdirs" },
@@ -1678,7 +1678,7 @@ dependencies = [
 
 [[package]]
 name = "pypath-omnipath"
-version = "0.16.28"
+version = "0.16.31"
 source = { editable = "pypath" }
 dependencies = [
     { name = "beautifulsoup4" },
