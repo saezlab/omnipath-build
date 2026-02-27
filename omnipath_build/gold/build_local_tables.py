@@ -701,28 +701,52 @@ def _save_tables(tables: dict[str, pl.DataFrame], instance_df: pl.DataFrame, out
 def build_local_tables(
     data_root: Path,
     output_dir: Path,
+    source_id_map: dict[str, int] | None = None,
+    source_filter: set[str] | None = None,
 ):
     """
     Build local tables from Entity parquet files using vectorized operations.
 
-    Source IDs are auto-generated from discovered source names (alphabetically sorted).
+    Source IDs are auto-generated from discovered source names (alphabetically sorted)
+    unless an explicit ``source_id_map`` is provided.
 
     Args:
         data_root: Root directory containing source subdirectories with parquet files
         output_dir: Output directory for local tables
+        source_id_map: Optional mapping of source_name -> source_id to enforce deterministic IDs
+        source_filter: Optional set of source names to process
     """
     data = _load_source_data(data_root)
 
-    # Auto-generate source IDs from discovered data (sorted alphabetically for consistency)
-    name2id = {name: idx + 1 for idx, name in enumerate(sorted(data.keys()))}
-    logger.info(f"Auto-generated source IDs for {len(name2id)} discovered sources")
+    if source_filter:
+        data = {k: v for k, v in data.items() if k in source_filter}
+        logger.info(f"Applied source filter: {len(data)} source(s) selected")
+
+    if source_id_map is not None:
+        missing_sources = sorted([name for name in data.keys() if name not in source_id_map])
+        if missing_sources:
+            missing_str = ', '.join(missing_sources)
+            raise ValueError(
+                f"Missing source_id entries for discovered source(s): {missing_str}"
+            )
+        name2id = {name: int(source_id_map[name]) for name in sorted(data.keys())}
+        logger.info(f"Using provided source ID map for {len(name2id)} discovered sources")
+    else:
+        # Auto-generate source IDs from discovered data (sorted alphabetically for consistency)
+        name2id = {name: idx + 1 for idx, name in enumerate(sorted(data.keys()))}
+        logger.info(f"Auto-generated source IDs for {len(name2id)} discovered sources")
+
+    if not data:
+        logger.warning("No sources selected for local table building")
+        return
 
     # Create output directory
     local_tables_dir = output_dir / "local_tables"
     local_tables_dir.mkdir(parents=True, exist_ok=True)
 
     # Process each source
-    for source_name, files in data.items():
+    for source_name in sorted(data.keys()):
+        files = data[source_name]
         source_id = name2id[source_name]
 
         logger.info("\n" + "="*70)

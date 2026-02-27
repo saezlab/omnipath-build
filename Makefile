@@ -1,4 +1,4 @@
-.PHONY: setup silver silver-test silver-reprocess gold postgres meilisearch meilisearch-entities meilisearch-interactions meilisearch-associations meilisearch-import meilisearch-import-entities meilisearch-import-interactions meilisearch-import-associations meilisearch-import-all meilisearch-delete-indexes gold-meilisearch-import meilisearch-build-dump meilisearch-build-dump-start meilisearch-build-dump-stop pipeline pipeline-full generate-obo export export-entity export-ontology export-meilisearch export-finalize
+.PHONY: setup silver silver-test silver-reprocess silver-local-parallel gold postgres meilisearch meilisearch-entities meilisearch-interactions meilisearch-associations meilisearch-import meilisearch-import-entities meilisearch-import-interactions meilisearch-import-associations meilisearch-import-all meilisearch-delete-indexes gold-meilisearch-import meilisearch-build-dump meilisearch-build-dump-start meilisearch-build-dump-stop pipeline pipeline-full generate-obo export export-entity export-ontology export-meilisearch export-finalize
 
 # =============================================================================
 # Full Pipeline - Run everything from silver to export
@@ -73,6 +73,14 @@ silver-reprocess:
 	@uv run -m omnipath_build.cli.commands silver --override \
 		$(if $(or $(SOURCE),$(filter-out $@,$(MAKECMDGOALS))),--source $(if $(SOURCE),$(SOURCE),$(filter-out $@,$(MAKECMDGOALS)))) \
 		$(if $(FUNCTION),--function $(FUNCTION)) \
+		$(if $(INPUTS_PACKAGE),--inputs-package $(INPUTS_PACKAGE))
+
+JOBS ?= 4
+silver-local-parallel:
+	@uv run python -m omnipath_build.scripts.parallel_build_until_local_tables \
+		--jobs $(JOBS) \
+		$(if $(SOURCE),--sources $(SOURCE)) \
+		$(if $(TEST_MODE),--test-mode) \
 		$(if $(INPUTS_PACKAGE),--inputs-package $(INPUTS_PACKAGE))
 
 GOLD_STEPS := local_tables entity_identifiers global_tables

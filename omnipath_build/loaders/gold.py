@@ -38,9 +38,51 @@ __all__ = [
 ]
 
 
+def _load_source_id_map(path: Path | None) -> dict[str, int] | None:
+    """Load a source name -> source ID map from TSV.
+
+    Expected format (header optional):
+        source_id<TAB>source
+    """
+    if path is None:
+        return None
+
+    if not path.exists():
+        raise FileNotFoundError(f'Source ID map not found: {path}')
+
+    mapping: dict[str, int] = {}
+    with path.open('r', encoding='utf-8') as handle:
+        for raw_line in handle:
+            line = raw_line.strip()
+            if not line:
+                continue
+            parts = line.split('\t')
+            if len(parts) != 2:
+                continue
+            if parts[0] == 'source_id' and parts[1] == 'source':
+                continue
+            source_id, source_name = parts
+            source_id_int = int(source_id)
+            mapping[source_name] = source_id_int
+            source_leaf = source_name.split('.')[-1]
+            if source_leaf in mapping and mapping[source_leaf] != source_id_int:
+                raise ValueError(
+                    f'Ambiguous source leaf in map for {source_leaf}: '
+                    f'{mapping[source_leaf]} vs {source_id_int}'
+                )
+            mapping[source_leaf] = source_id_int
+
+    if not mapping:
+        raise ValueError(f'No valid source mappings found in: {path}')
+
+    return mapping
+
+
 def build_local_tables_step(
     data_root: Path,
     output_dir: Path,
+    source: Optional[str] = None,
+    source_id_map_file: Optional[Path] = None,
 ) -> dict[str, pl.DataFrame]:
     """
     Build local tables per source.
@@ -57,6 +99,8 @@ def build_local_tables_step(
     Args:
         data_root: Path to data directory containing silver files
         output_dir: Path to output directory for gold tables
+        source: Optional single source name to process
+        source_id_map_file: Optional TSV path with deterministic source ID mapping
 
     Returns:
         Dictionary containing the local tables (empty as tables are saved per-source)
@@ -65,11 +109,16 @@ def build_local_tables_step(
     print('STEP: Local Tables (Per-Source)')
     print('=' * 70)
 
-    # Build local tables for all sources
+    source_id_map = _load_source_id_map(source_id_map_file)
+    source_filter = {source.split('.')[-1]} if source else None
+
+    # Build local tables for all (or selected) sources
     # Note: This saves per-source files to output_dir/local_tables/
     local_tables = build_local_tables(
         data_root=data_root,
         output_dir=output_dir,
+        source_id_map=source_id_map,
+        source_filter=source_filter,
     )
 
     print('\nLocal tables built successfully (per-source files saved)')
@@ -230,6 +279,8 @@ def run_gold_loader_new(
     data_root: Path,
     output_dir: Path,
     step: Optional[str] = None,
+    source: Optional[str] = None,
+    source_id_map_file: Optional[Path] = None,
 ) -> None:
     """
     Main orchestration function for building gold tables with new schema.
@@ -244,6 +295,8 @@ def run_gold_loader_new(
         output_dir: Path to output directory for gold tables
         step: Optional specific step to run. If None, run all steps.
               Valid values: 'local_tables', 'entity_identifiers', 'global_tables'
+        source: Optional source filter (applies to local_tables step)
+        source_id_map_file: Optional TSV mapping for deterministic source IDs
     """
     # Ensure output directory exists
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -256,6 +309,10 @@ def run_gold_loader_new(
     print(f'Output directory: {output_dir}')
     if step:
         print(f'Running single step: {step}')
+    if source:
+        print(f'Source filter: {source}')
+    if source_id_map_file:
+        print(f'Source ID map: {source_id_map_file}')
     print()
 
     logger.info(
@@ -268,6 +325,8 @@ def run_gold_loader_new(
             build_local_tables_step(
                 data_root,
                 output_dir,
+                source=source,
+                source_id_map_file=source_id_map_file,
             )
         elif step == 'entity_identifiers':
             build_entity_identifiers_step(
@@ -285,6 +344,8 @@ def run_gold_loader_new(
         build_local_tables_step(
             data_root,
             output_dir,
+            source=source,
+            source_id_map_file=source_id_map_file,
         )
 
         # Step 2: Entity identifiers (cross-source resolution)
