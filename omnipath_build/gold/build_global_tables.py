@@ -116,7 +116,7 @@ def build_global_tables(
 
     # Get only base entity files, excluding annotation and identifier files
     entity_files = sorted([
-        f for f in local_tables_dir.glob("local_entity_*.parquet")
+        f for f in local_tables_dir.rglob("local_entity_*.parquet")
         if "annotation" not in f.name and "identifier" not in f.name and "membership" not in f.name and "instance" not in f.name
     ])
     logger.info(f"Found {len(entity_files)} entity files")
@@ -235,7 +235,7 @@ def build_global_tables(
     logger.info("Processing entity_annotation table")
     logger.info("=" * 80)
 
-    entity_annot_files = sorted(local_tables_dir.glob("local_entity_annotation_*.parquet"))
+    entity_annot_files = sorted(local_tables_dir.rglob("local_entity_annotation_*.parquet"))
     logger.info(f"Found {len(entity_annot_files)} entity_annotation files")
 
     entity_annot_parts = []
@@ -292,7 +292,7 @@ def build_global_tables(
     logger.info("=" * 80)
 
     # Get membership files (no more annotation files to exclude)
-    membership_files = sorted(local_tables_dir.glob("local_membership_*.parquet"))
+    membership_files = sorted(local_tables_dir.rglob("local_membership_*.parquet"))
     logger.info(f"Found {len(membership_files)} membership files")
 
     membership_parts = []

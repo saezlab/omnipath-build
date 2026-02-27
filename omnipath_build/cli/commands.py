@@ -79,9 +79,14 @@ def _handle_gold(args: argparse.Namespace) -> int:
     if not output_dir.is_absolute():
         output_dir = project_root / output_dir
 
-    if not data_root.exists():
+    needs_data_root = args.step in (None, 'local_tables')
+    if needs_data_root and not data_root.exists():
         print(f'Error: data root not found: {data_root}', file=sys.stderr)
         return 1
+
+    local_tables_dir: Path | None = args.local_tables_dir
+    if local_tables_dir is not None and not local_tables_dir.is_absolute():
+        local_tables_dir = project_root / local_tables_dir
 
     try:
         run_gold_loader_new(
@@ -90,6 +95,7 @@ def _handle_gold(args: argparse.Namespace) -> int:
             step=args.step,
             source=args.source,
             source_id_map_file=args.source_id_map,
+            local_tables_dir=local_tables_dir,
         )
     except Exception as exc:  # noqa: BLE001
         print(f'Unexpected error: {exc}', file=sys.stderr)
@@ -214,6 +220,11 @@ def _build_parser() -> argparse.ArgumentParser:
         '--source-id-map',
         type=Path,
         help='Optional TSV file with source_id<TAB>source mapping (local_tables step only)',
+    )
+    gold_parser.add_argument(
+        '--local-tables-dir',
+        type=Path,
+        help='Optional directory to read local_* tables from for entity_identifiers/global_tables (supports nested per-source directories).',
     )
     gold_parser.set_defaults(handler=_handle_gold)
 

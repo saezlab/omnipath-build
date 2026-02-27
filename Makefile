@@ -1,11 +1,23 @@
-.PHONY: setup silver silver-test silver-reprocess silver-local-parallel gold postgres meilisearch meilisearch-parallel meilisearch-entities meilisearch-interactions meilisearch-associations meilisearch-import meilisearch-import-entities meilisearch-import-interactions meilisearch-import-associations meilisearch-import-all meilisearch-delete-indexes gold-meilisearch-import meilisearch-build-dump meilisearch-build-dump-start meilisearch-build-dump-stop pipeline pipeline-full generate-obo export export-entity export-ontology export-meilisearch export-finalize
+.PHONY: setup silver silver-test silver-reprocess silver-local-parallel gold postgres meilisearch meilisearch-parallel meilisearch-entities meilisearch-interactions meilisearch-associations meilisearch-import meilisearch-import-entities meilisearch-import-interactions meilisearch-import-associations meilisearch-import-all meilisearch-delete-indexes gold-meilisearch-import meilisearch-build-dump meilisearch-build-dump-start meilisearch-build-dump-stop pipeline pipeline-full generate-obo export export-entity export-ontology export-search export-meilisearch export-finalize
+
+DATA_VERSION ?= v-$(shell date +%Y%m%d-%H%M%S)
+VERSION_DIR = data/$(DATA_VERSION)
+BUILD_DIR = $(VERSION_DIR)/build
+OUTPUT_DIR = $(VERSION_DIR)/output
+BUILD_PER_SOURCE_DIR = $(BUILD_DIR)/per_source
+BUILD_COMBINED_DIR = $(BUILD_DIR)/combined
+COMBINED_SILVER_DIR = $(BUILD_COMBINED_DIR)/silver
+COMBINED_GOLD_DIR = $(BUILD_COMBINED_DIR)/gold
+COMBINED_SEARCH_DIR = $(BUILD_COMBINED_DIR)/search
+
+export DATA_VERSION
 
 # =============================================================================
 # Full Pipeline - Run everything from silver to export
 # =============================================================================
 # Usage: make pipeline
 # This runs: silver-local-parallel(TEST_MODE=1) -> generate-obo -> gold(entity_identifiers,global_tables)
-#            -> meilisearch-parallel -> build-dump -> export-entity -> export-ontology -> export-finalize
+#            -> meilisearch-parallel -> build-dump -> export-entity -> export-ontology -> export-search -> export-meilisearch -> export-finalize
 # The meilisearch-build-dump step starts a temporary local Meilisearch process, imports data, creates dump, and cleans up.
 pipeline:
 	@echo "======================================================================"
@@ -13,14 +25,16 @@ pipeline:
 	@echo "  Data version: $(DATA_VERSION)"
 	@echo "  Jobs: $(JOBS)"
 	@echo "======================================================================"
-	@$(MAKE) silver-local-parallel JOBS=$(JOBS) TEST_MODE=1 $(if $(SOURCE),SOURCE=$(SOURCE)) $(if $(INPUTS_PACKAGE),INPUTS_PACKAGE=$(INPUTS_PACKAGE))
-	@$(MAKE) generate-obo
-	@$(MAKE) gold entity_identifiers
-	@$(MAKE) gold global_tables
-	@$(MAKE) meilisearch-parallel
+	@$(MAKE) silver-local-parallel DATA_VERSION=$(DATA_VERSION) JOBS=$(JOBS) TEST_MODE=1 $(if $(SOURCE),SOURCE=$(SOURCE)) $(if $(INPUTS_PACKAGE),INPUTS_PACKAGE=$(INPUTS_PACKAGE))
+	@$(MAKE) generate-obo DATA_VERSION=$(DATA_VERSION)
+	@$(MAKE) gold DATA_VERSION=$(DATA_VERSION) entity_identifiers
+	@$(MAKE) gold DATA_VERSION=$(DATA_VERSION) global_tables
+	@$(MAKE) meilisearch-parallel DATA_VERSION=$(DATA_VERSION)
 	@$(MAKE) meilisearch-build-dump DATA_VERSION=$(DATA_VERSION)
 	@$(MAKE) export-entity DATA_VERSION=$(DATA_VERSION)
 	@$(MAKE) export-ontology DATA_VERSION=$(DATA_VERSION)
+	@$(MAKE) export-search DATA_VERSION=$(DATA_VERSION)
+	@$(MAKE) export-meilisearch DATA_VERSION=$(DATA_VERSION)
 	@$(MAKE) export-finalize DATA_VERSION=$(DATA_VERSION)
 	@echo ""
 	@echo "======================================================================"
@@ -33,14 +47,16 @@ pipeline-full:
 	@echo "  Data version: $(DATA_VERSION)"
 	@echo "  Jobs: $(JOBS)"
 	@echo "======================================================================"
-	@$(MAKE) silver-local-parallel JOBS=$(JOBS) $(if $(SOURCE),SOURCE=$(SOURCE)) $(if $(INPUTS_PACKAGE),INPUTS_PACKAGE=$(INPUTS_PACKAGE))
-	@$(MAKE) generate-obo
-	@$(MAKE) gold entity_identifiers
-	@$(MAKE) gold global_tables
-	@$(MAKE) meilisearch-parallel
+	@$(MAKE) silver-local-parallel DATA_VERSION=$(DATA_VERSION) JOBS=$(JOBS) $(if $(SOURCE),SOURCE=$(SOURCE)) $(if $(INPUTS_PACKAGE),INPUTS_PACKAGE=$(INPUTS_PACKAGE))
+	@$(MAKE) generate-obo DATA_VERSION=$(DATA_VERSION)
+	@$(MAKE) gold DATA_VERSION=$(DATA_VERSION) entity_identifiers
+	@$(MAKE) gold DATA_VERSION=$(DATA_VERSION) global_tables
+	@$(MAKE) meilisearch-parallel DATA_VERSION=$(DATA_VERSION)
 	@$(MAKE) meilisearch-build-dump DATA_VERSION=$(DATA_VERSION)
 	@$(MAKE) export-entity DATA_VERSION=$(DATA_VERSION)
 	@$(MAKE) export-ontology DATA_VERSION=$(DATA_VERSION)
+	@$(MAKE) export-search DATA_VERSION=$(DATA_VERSION)
+	@$(MAKE) export-meilisearch DATA_VERSION=$(DATA_VERSION)
 	@$(MAKE) export-finalize DATA_VERSION=$(DATA_VERSION)
 	@echo ""
 	@echo "======================================================================"
@@ -51,7 +67,9 @@ pipeline-full:
 generate-obo:
 	@echo "Generating OmniPath OBO file..."
 	@mkdir -p omnipath_build/data
+	@mkdir -p $(BUILD_COMBINED_DIR)
 	@uv run python pypath/scripts/export_omnipath_obo.py omnipath_build/data/omnipath_mi.obo
+	@cp -f omnipath_build/data/omnipath_mi.obo $(BUILD_COMBINED_DIR)/omnipath_mi.obo
 	@echo "✓ OBO file generated"
 
 setup:
@@ -82,18 +100,22 @@ silver-reprocess:
 
 JOBS ?= 4
 silver-local-parallel:
+	@mkdir -p $(BUILD_PER_SOURCE_DIR)
+	@mkdir -p $(BUILD_COMBINED_DIR)
 	@uv run python -m omnipath_build.scripts.parallel_build_until_local_tables \
 		--jobs $(JOBS) \
+		--build-dir $(BUILD_PER_SOURCE_DIR) \
 		$(if $(SOURCE),--sources $(SOURCE)) \
 		$(if $(TEST_MODE),--test-mode) \
 		$(if $(INPUTS_PACKAGE),--inputs-package $(INPUTS_PACKAGE))
 
 GOLD_STEPS := local_tables entity_identifiers global_tables
 gold:
+	@mkdir -p $(COMBINED_GOLD_DIR)
 	@if [ -n "$(filter $(GOLD_STEPS),$(MAKECMDGOALS))" ]; then \
-		uv run -m omnipath_build.cli.commands gold --step $(filter $(GOLD_STEPS),$(MAKECMDGOALS)); \
+		uv run -m omnipath_build.cli.commands gold --data-root $(COMBINED_SILVER_DIR) --output-dir $(COMBINED_GOLD_DIR) --local-tables-dir $(BUILD_PER_SOURCE_DIR) --step $(filter $(GOLD_STEPS),$(MAKECMDGOALS)); \
 	else \
-		uv run -m omnipath_build.cli.commands gold; \
+		uv run -m omnipath_build.cli.commands gold --data-root $(COMBINED_SILVER_DIR) --output-dir $(COMBINED_GOLD_DIR) --local-tables-dir $(BUILD_PER_SOURCE_DIR); \
 	fi
 
 postgres:
@@ -104,21 +126,24 @@ postgres:
 
 # Build search entities parquet
 meilisearch-entities:
+	@mkdir -p $(COMBINED_SEARCH_DIR)
 	@uv run python -m omnipath_build.search_builder.build_search_entities \
-		--global-tables-dir omnipath_build/data/gold \
-		--output omnipath_build/data/gold/search_entities.parquet
+		--global-tables-dir $(COMBINED_GOLD_DIR) \
+		--output $(COMBINED_SEARCH_DIR)/search_entities.parquet
 
 # Build search interactions parquet
 meilisearch-interactions:
+	@mkdir -p $(COMBINED_SEARCH_DIR)
 	@uv run python -m omnipath_build.search_builder.build_search_interactions \
-		--global-tables-dir omnipath_build/data/gold \
-		--output omnipath_build/data/gold/search_interactions.parquet
+		--global-tables-dir $(COMBINED_GOLD_DIR) \
+		--output $(COMBINED_SEARCH_DIR)/search_interactions.parquet
 
 # Build search associations parquet
 meilisearch-associations:
+	@mkdir -p $(COMBINED_SEARCH_DIR)
 	@uv run python -m omnipath_build.search_builder.build_search_associations \
-		--global-tables-dir omnipath_build/data/gold \
-		--output omnipath_build/data/gold/search_associations.parquet
+		--global-tables-dir $(COMBINED_GOLD_DIR) \
+		--output $(COMBINED_SEARCH_DIR)/search_associations.parquet
 
 # Build all search parquet files (entities, interactions, associations)
 meilisearch: meilisearch-entities meilisearch-interactions meilisearch-associations
@@ -131,6 +156,7 @@ meilisearch-parallel:
 meilisearch-import-entities:
 	@uv run python -m omnipath_build.search.importer \
 		--dataset entities \
+		--entities-parquet-path $(COMBINED_SEARCH_DIR)/search_entities.parquet \
 		--importer-path omnipath_build/meilisearch-importer \
 		--api-key "$(TEMP_MEILI_KEY)"
 
@@ -138,6 +164,7 @@ meilisearch-import-entities:
 meilisearch-import-interactions:
 	@uv run python -m omnipath_build.search.importer \
 		--dataset interactions \
+		--interactions-parquet-path $(COMBINED_SEARCH_DIR)/search_interactions.parquet \
 		--importer-path omnipath_build/meilisearch-importer \
 		--api-key "$(TEMP_MEILI_KEY)"
 
@@ -145,6 +172,7 @@ meilisearch-import-interactions:
 meilisearch-import-associations:
 	@uv run python -m omnipath_build.search.importer \
 		--dataset associations \
+		--associations-parquet-path $(COMBINED_SEARCH_DIR)/search_associations.parquet \
 		--importer-path omnipath_build/meilisearch-importer \
 		--api-key "$(TEMP_MEILI_KEY)"
 
@@ -152,6 +180,9 @@ meilisearch-import-associations:
 meilisearch-import-all:
 	@uv run python -m omnipath_build.search.importer \
 		--dataset all \
+		--entities-parquet-path $(COMBINED_SEARCH_DIR)/search_entities.parquet \
+		--interactions-parquet-path $(COMBINED_SEARCH_DIR)/search_interactions.parquet \
+		--associations-parquet-path $(COMBINED_SEARCH_DIR)/search_associations.parquet \
 		--importer-path omnipath_build/meilisearch-importer \
 		--api-key "$(TEMP_MEILI_KEY)"
 
@@ -179,76 +210,88 @@ gold-meilisearch-import:
 # =============================================================================
 
 # Export all data files to a versioned data directory for deployment
-# Output: data/releases/v-YYYYMMDD-HHMMSS/ with a 'latest' symlink
+# Output: data/<DATA_VERSION>/output and data/<DATA_VERSION>/build
 # The DATA_VERSION variable is set automatically from timestamp, or override with:
 #   make export DATA_VERSION=v-custom-name
 
-DATA_VERSION ?= v-$(shell date +%Y%m%d-%H%M%S)
-EXPORT_DIR := data/releases/$(DATA_VERSION)
-
-.PHONY: export export-entity export-ontology export-meilisearch export-finalize
-
 # Full export (use when you have a running Meilisearch with data)
-export: export-entity export-ontology export-meilisearch export-finalize
+export: export-entity export-ontology export-search export-meilisearch export-finalize
 
 # Finalize export: create version marker and update 'latest' symlink
-# Use this after export-entity, export-ontology, and meilisearch-build-dump
+# Use this after export-entity, export-ontology, export-search, and meilisearch-build-dump
 export-finalize:
-	@# Create data version marker (hash of all data files)
+	@# Create data version marker (hash of all output files)
 	@echo "Creating data version marker..."
-	@DUMP_NAME=$$(cat $(EXPORT_DIR)/dumps/.dump_file); \
-	cat $(EXPORT_DIR)/entity_identifier.parquet \
-		$(EXPORT_DIR)/omnipath_mi.obo \
-		$(EXPORT_DIR)/dumps/$$DUMP_NAME 2>/dev/null | shasum -a 256 | cut -d' ' -f1 \
-		> $(EXPORT_DIR)/.data_version
+	@DUMP_NAME=$$(cat $(OUTPUT_DIR)/dumps/.dump_file); \
+	cat $(OUTPUT_DIR)/entity_identifier.parquet \
+		$(OUTPUT_DIR)/omnipath_mi.obo \
+		$(OUTPUT_DIR)/search_entities.parquet \
+		$(OUTPUT_DIR)/search_interactions.parquet \
+		$(OUTPUT_DIR)/search_associations.parquet \
+		$(OUTPUT_DIR)/dumps/$$DUMP_NAME 2>/dev/null | shasum -a 256 | cut -d' ' -f1 \
+		> $(OUTPUT_DIR)/.data_version
 	@# Update 'latest' symlink
-	@ln -sfn $(DATA_VERSION) data/releases/latest
+	@ln -sfn $(DATA_VERSION) data/latest
 	@echo ""
-	@echo "✓ All data exported to $(EXPORT_DIR)/"
-	@echo "  Data version: $$(cat $(EXPORT_DIR)/.data_version)"
-	@echo "  Dump file: $$(cat $(EXPORT_DIR)/dumps/.dump_file)"
-	@echo "  Symlink: data/releases/latest -> $(DATA_VERSION)"
+	@echo "✓ All data exported to $(OUTPUT_DIR)/"
+	@echo "  Data version: $$(cat $(OUTPUT_DIR)/.data_version)"
+	@echo "  Dump file: $$(cat $(OUTPUT_DIR)/dumps/.dump_file)"
+	@echo "  Symlink: data/latest -> $(DATA_VERSION)"
 	@echo ""
 	@echo "Data files ready for deployment:"
-	@ls -lh $(EXPORT_DIR)/*.parquet $(EXPORT_DIR)/*.obo 2>/dev/null || true
-	@ls -lh $(EXPORT_DIR)/dumps/*.dump 2>/dev/null || true
+	@ls -lh $(OUTPUT_DIR)/*.parquet $(OUTPUT_DIR)/*.obo 2>/dev/null || true
+	@ls -lh $(OUTPUT_DIR)/dumps/*.dump 2>/dev/null || true
 	@echo ""
 	@echo "Available versions:"
-	@ls -d data/releases/v-* 2>/dev/null | sed 's|data/releases/||'
+	@ls -d data/v-* 2>/dev/null | sed 's|data/||'
 	@echo ""
 	@echo "Promote/deploy using the separate presentation repository."
 
 # Export entity service data
 export-entity:
-	@echo "Exporting entity service data to $(EXPORT_DIR)..."
-	@mkdir -p $(EXPORT_DIR)
-	@if [ -f omnipath_build/data/gold/entity_identifier.parquet ]; then \
-		cp -v omnipath_build/data/gold/entity_identifier.parquet $(EXPORT_DIR)/; \
+	@echo "Exporting entity service data to $(OUTPUT_DIR)..."
+	@mkdir -p $(OUTPUT_DIR)
+	@if [ -f $(COMBINED_GOLD_DIR)/entity_identifier.parquet ]; then \
+		cp -f $(COMBINED_GOLD_DIR)/entity_identifier.parquet $(OUTPUT_DIR)/entity_identifier.parquet; \
 	else \
-		echo "Error: entity_identifier.parquet not found. Run 'make gold' first."; \
+		echo "Error: $(COMBINED_GOLD_DIR)/entity_identifier.parquet not found. Run 'make gold' first."; \
 		exit 1; \
 	fi
 
 # Export ontology service data (copies the generated omnipath_mi.obo)
 export-ontology:
-	@echo "Exporting ontology service data to $(EXPORT_DIR)..."
-	@mkdir -p $(EXPORT_DIR)
-	@if [ -f omnipath_build/data/omnipath_mi.obo ]; then \
-		cp -v omnipath_build/data/omnipath_mi.obo $(EXPORT_DIR)/; \
+	@echo "Exporting ontology service data to $(OUTPUT_DIR)..."
+	@mkdir -p $(OUTPUT_DIR)
+	@if [ -f $(BUILD_COMBINED_DIR)/omnipath_mi.obo ]; then \
+		cp -f $(BUILD_COMBINED_DIR)/omnipath_mi.obo $(OUTPUT_DIR)/omnipath_mi.obo; \
 	else \
-		echo "Error: omnipath_mi.obo not found. Run 'make generate-obo' first."; \
+		echo "Error: $(BUILD_COMBINED_DIR)/omnipath_mi.obo not found. Run 'make generate-obo' first."; \
 		exit 1; \
 	fi
 
-# Export meilisearch dump (must have meilisearch running with data)
+# Export search parquet files from build/combined/search into the versioned output directory
+export-search:
+	@echo "Exporting search parquet files to $(OUTPUT_DIR)..."
+	@mkdir -p $(OUTPUT_DIR)
+	@if [ ! -f $(COMBINED_SEARCH_DIR)/search_entities.parquet ] || [ ! -f $(COMBINED_SEARCH_DIR)/search_interactions.parquet ] || [ ! -f $(COMBINED_SEARCH_DIR)/search_associations.parquet ]; then \
+		echo "Error: search parquet files missing in $(COMBINED_SEARCH_DIR). Run 'make meilisearch' first."; \
+		exit 1; \
+	fi
+	@cp -f $(COMBINED_SEARCH_DIR)/search_entities.parquet $(OUTPUT_DIR)/search_entities.parquet
+	@cp -f $(COMBINED_SEARCH_DIR)/search_interactions.parquet $(OUTPUT_DIR)/search_interactions.parquet
+	@cp -f $(COMBINED_SEARCH_DIR)/search_associations.parquet $(OUTPUT_DIR)/search_associations.parquet
+
+# Export meilisearch dump from build/combined/search into output
 export-meilisearch:
-	@echo "Exporting meilisearch dump to $(EXPORT_DIR)..."
-	@mkdir -p $(EXPORT_DIR)/dumps
-	@uv run python -m omnipath_build.scripts.create_meilisearch_dump \
-		--meili-url http://127.0.0.1:7700 \
-		--api-key "$(TEMP_MEILI_KEY)" \
-		--output-dir $(EXPORT_DIR)/dumps \
-		--db-path "$${MEILI_DB_PATH:-$$PWD/.meili}"
+	@echo "Exporting meilisearch dump to $(OUTPUT_DIR)..."
+	@mkdir -p $(OUTPUT_DIR)/dumps
+	@if [ ! -f $(COMBINED_SEARCH_DIR)/dumps/.dump_file ]; then \
+		echo "Error: dump metadata missing in $(COMBINED_SEARCH_DIR)/dumps. Run 'make meilisearch-build-dump' first."; \
+		exit 1; \
+	fi
+	@DUMP_NAME=$$(cat $(COMBINED_SEARCH_DIR)/dumps/.dump_file); \
+	cp -f $(COMBINED_SEARCH_DIR)/dumps/.dump_file $(OUTPUT_DIR)/dumps/.dump_file; \
+	cp -f $(COMBINED_SEARCH_DIR)/dumps/$$DUMP_NAME $(OUTPUT_DIR)/dumps/$$DUMP_NAME
 
 # =============================================================================
 # Self-contained Meilisearch Dump Builder
@@ -260,11 +303,12 @@ export-meilisearch:
 TEMP_MEILI_PORT := 7710
 ENV_MEILI_KEY := $(shell [ -f .env ] && awk -F= '/^MEILISEARCH_API_KEY=/{v=$$2; gsub(/^[[:space:]]*"/, "", v); gsub(/"[[:space:]]*$$/, "", v); print v; exit}' .env)
 TEMP_MEILI_KEY := $(if $(ENV_MEILI_KEY),$(ENV_MEILI_KEY),temp-build-key)
-TEMP_MEILI_DIR := .meili-temp
-TEMP_MEILI_DB_DIR := $(TEMP_MEILI_DIR)/db
-TEMP_MEILI_DUMP_DIR := $(TEMP_MEILI_DIR)/dumps
-TEMP_MEILI_PID_FILE := $(TEMP_MEILI_DIR)/meilisearch.pid
-TEMP_MEILI_LOG_FILE := $(TEMP_MEILI_DIR)/meilisearch.log
+TEMP_MEILI_DIR = $(COMBINED_SEARCH_DIR)/meilisearch-temp
+TEMP_MEILI_DB_DIR = $(TEMP_MEILI_DIR)/db
+# Write dumps directly to the canonical combined search dumps directory
+TEMP_MEILI_DUMP_DIR = $(COMBINED_SEARCH_DIR)/dumps
+TEMP_MEILI_PID_FILE = $(TEMP_MEILI_DIR)/meilisearch.pid
+TEMP_MEILI_LOG_FILE = $(TEMP_MEILI_DIR)/meilisearch.log
 
 .PHONY: meilisearch-build-dump meilisearch-build-dump-start meilisearch-build-dump-stop
 
@@ -295,17 +339,20 @@ meilisearch-build-dump: meilisearch-build-dump-start
 	@echo "3. Importing search data..."
 	@uv run python -m omnipath_build.search.importer \
 		--dataset all \
+		--entities-parquet-path $(COMBINED_SEARCH_DIR)/search_entities.parquet \
+		--interactions-parquet-path $(COMBINED_SEARCH_DIR)/search_interactions.parquet \
+		--associations-parquet-path $(COMBINED_SEARCH_DIR)/search_associations.parquet \
 		--importer-path omnipath_build/meilisearch-importer \
 		--api-key $(TEMP_MEILI_KEY) \
 		--meili-url http://127.0.0.1:$(TEMP_MEILI_PORT)
 	@echo ""
 	@# Create dump
 	@echo "4. Creating dump..."
-	@mkdir -p $(EXPORT_DIR)/dumps
+	@mkdir -p $(COMBINED_SEARCH_DIR)/dumps
 	@uv run python -m omnipath_build.scripts.create_meilisearch_dump \
 		--meili-url http://127.0.0.1:$(TEMP_MEILI_PORT) \
 		--api-key $(TEMP_MEILI_KEY) \
-		--output-dir $(EXPORT_DIR)/dumps \
+		--output-dir $(COMBINED_SEARCH_DIR)/dumps \
 		--db-path $(TEMP_MEILI_DB_DIR) \
 		--dump-dir $(TEMP_MEILI_DUMP_DIR)
 	@echo ""
@@ -314,7 +361,7 @@ meilisearch-build-dump: meilisearch-build-dump-start
 	@echo ""
 	@echo "======================================================================"
 	@echo "✓ Meilisearch dump created successfully!"
-	@echo "  Output: $(EXPORT_DIR)/dumps/"
+	@echo "  Output: $(COMBINED_SEARCH_DIR)/dumps/"
 	@echo "======================================================================"
 
 meilisearch-build-dump-start:

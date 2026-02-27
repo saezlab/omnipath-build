@@ -344,7 +344,7 @@ def _load_local_tables(local_tables_dir: Path) -> list[SourceIdentifierData]:
         List of SourceIdentifierData entries where dataframe has columns:
         [source_id, local_entity_id, type_id, identifier, local_entity_identifier_id]
     """
-    files = sorted(local_tables_dir.glob('local_entity_identifier_*.parquet'))
+    files = sorted(local_tables_dir.rglob('local_entity_identifier_*.parquet'))
     if not files:
         logger.warning(f"No local_entity_identifier_*.parquet files found in {local_tables_dir}")
         return []
@@ -357,7 +357,7 @@ def _load_local_tables(local_tables_dir: Path) -> list[SourceIdentifierData]:
         # Extract source_id from the dataframe (all rows have the same source_id)
         source_id = df['source_id'][0]
         source_name = path.stem.replace('local_entity_identifier_', '')
-        metadata = _load_entity_metadata(local_tables_dir, source_name, source_id, df)
+        metadata = _load_entity_metadata(path.parent, source_name, source_id, df)
         result.append(SourceIdentifierData(
             source_id=source_id,
             source_name=source_name,
@@ -838,7 +838,7 @@ def build_entity_identifiers(
     logger.info("Building instance_to_global mapping")
     logger.info("=" * 80)
 
-    instance_files = sorted(local_tables_dir.glob('local_entity_instance_*.parquet'))
+    instance_files = sorted(local_tables_dir.rglob('local_entity_instance_*.parquet'))
     logger.info(f"Found {len(instance_files)} entity_instance files")
 
     instance_parts = []

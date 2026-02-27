@@ -109,8 +109,11 @@ def build_local_tables_step(
     print('STEP: Local Tables (Per-Source)')
     print('=' * 70)
 
+    if not source:
+        raise ValueError('local_tables step requires --source in per-source stage layout')
+
     source_id_map = _load_source_id_map(source_id_map_file)
-    source_filter = {source.split('.')[-1]} if source else None
+    source_filter = {source.split('.')[-1]}
 
     # Build local tables for all (or selected) sources
     # Note: This saves per-source files to output_dir/local_tables/
@@ -119,6 +122,7 @@ def build_local_tables_step(
         output_dir=output_dir,
         source_id_map=source_id_map,
         source_filter=source_filter,
+        single_source_name=source.split('.')[-1] if source else None,
     )
 
     print('\nLocal tables built successfully (per-source files saved)')
@@ -128,6 +132,7 @@ def build_local_tables_step(
 
 def build_entity_identifiers_step(
     output_dir: Path,
+    local_tables_dir: Optional[Path] = None,
 ) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame, pl.DataFrame]:
     """
     Build entity identifiers using graph-based equivalence detection.
@@ -154,7 +159,7 @@ def build_entity_identifiers_step(
     print('STEP: Entity Identifiers (Cross-Source Resolution)')
     print('=' * 70)
 
-    local_tables_dir = output_dir / 'local_tables'
+    local_tables_dir = local_tables_dir or (output_dir / 'local_tables')
     if not local_tables_dir.exists():
         raise FileNotFoundError(
             f'Local tables directory not found: {local_tables_dir}\n'
@@ -203,6 +208,7 @@ def build_entity_identifiers_step(
 
 def build_global_tables_step(
     output_dir: Path,
+    local_tables_dir: Optional[Path] = None,
 ) -> None:
     """
     Build global tables from local tables and entity resolution.
@@ -236,7 +242,7 @@ def build_global_tables_step(
     print('STEP: Global Tables (Cross-Source Aggregation)')
     print('=' * 70)
 
-    local_tables_dir = output_dir / 'local_tables'
+    local_tables_dir = local_tables_dir or (output_dir / 'local_tables')
     record_to_global_file = output_dir / 'entity_record_mapping.parquet'
     entity_identifiers_file = output_dir / 'entity_identifier.parquet'
     instance_to_global_file = output_dir / 'instance_to_global.parquet'
@@ -281,6 +287,7 @@ def run_gold_loader_new(
     step: Optional[str] = None,
     source: Optional[str] = None,
     source_id_map_file: Optional[Path] = None,
+    local_tables_dir: Optional[Path] = None,
 ) -> None:
     """
     Main orchestration function for building gold tables with new schema.
@@ -313,6 +320,8 @@ def run_gold_loader_new(
         print(f'Source filter: {source}')
     if source_id_map_file:
         print(f'Source ID map: {source_id_map_file}')
+    if local_tables_dir:
+        print(f'Local tables dir override: {local_tables_dir}')
     print()
 
     logger.info(
@@ -331,10 +340,12 @@ def run_gold_loader_new(
         elif step == 'entity_identifiers':
             build_entity_identifiers_step(
                 output_dir,
+                local_tables_dir=local_tables_dir,
             )
         elif step == 'global_tables':
             build_global_tables_step(
                 output_dir,
+                local_tables_dir=local_tables_dir,
             )
         else:
             raise ValueError(f'Unknown step: {step}')
@@ -351,11 +362,13 @@ def run_gold_loader_new(
         # Step 2: Entity identifiers (cross-source resolution)
         build_entity_identifiers_step(
             output_dir,
+            local_tables_dir=local_tables_dir,
         )
 
         # Step 3: Global tables (cross-source aggregation)
         build_global_tables_step(
             output_dir,
+            local_tables_dir=local_tables_dir,
         )
 
     print('\n')

@@ -71,36 +71,29 @@ def copy_dump_from_local_paths(
     db_path: Path | None,
     dump_dir: Path | None,
 ) -> Path:
-    """Copy the dump file from local filesystem to output_dir.
+    """Resolve/copy the dump file from local filesystem to output_dir.
 
-    Search order:
-    1. --dump-dir/<uid>.dump
-    2. $MEILI_DUMP_DIR/<uid>.dump
-    3. --db-path/dumps/<uid>.dump
-    4. $MEILI_DB_PATH/dumps/<uid>.dump
-    5. ./dumps/<uid>.dump
+    Canonical mode uses --dump-dir and --output-dir pointing to the same folder,
+    in which case no copy is performed.
     """
     dump_filename = f'{dump_uid}.dump'
     target_path = output_dir / dump_filename
 
-    env_dump_dir = Path(os.environ['MEILI_DUMP_DIR']) if os.environ.get('MEILI_DUMP_DIR') else None
-    env_db_path = Path(os.environ['MEILI_DB_PATH']) if os.environ.get('MEILI_DB_PATH') else None
-
     candidates: list[Path] = []
     if dump_dir is not None:
         candidates.append(dump_dir / dump_filename)
-    if env_dump_dir is not None:
-        candidates.append(env_dump_dir / dump_filename)
-    if db_path is not None:
+    elif db_path is not None:
         candidates.append(db_path / 'dumps' / dump_filename)
-    if env_db_path is not None:
-        candidates.append(env_db_path / 'dumps' / dump_filename)
-    candidates.append(Path('dumps') / dump_filename)
 
-    # Give Meilisearch a short grace period to flush dump file.
-    for _ in range(20):
+    if not candidates:
+        raise RuntimeError('Local dump mode requires --dump-dir or --db-path')
+
+    # Give Meilisearch a grace period to flush dump file.
+    for _ in range(60):
         for source_path in candidates:
             if source_path.exists():
+                if source_path.resolve() == target_path.resolve():
+                    return source_path
                 target_path.write_bytes(source_path.read_bytes())
                 return target_path
         time.sleep(1)
@@ -208,8 +201,8 @@ def main() -> None:
     dump_uid = task_status['details']['dumpUid']
     print(f'   Dump completed: {dump_uid}')
 
-    if dump_dir is not None or db_path is not None or os.environ.get('MEILI_DUMP_DIR') or os.environ.get('MEILI_DB_PATH'):
-        print('\n3. Copying dump from local filesystem...')
+    if dump_dir is not None or db_path is not None:
+        print('\n3. Resolving dump from local filesystem...')
         if dump_dir is not None:
             print(f'   Dump dir: {dump_dir}')
         if db_path is not None:

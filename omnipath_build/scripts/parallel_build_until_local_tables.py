@@ -95,13 +95,6 @@ def _render_progress_loop(
             time.sleep(refresh_seconds)
 
 
-def _source_leaf(source: str) -> str:
-    return source.split('.')[-1]
-
-
-def _source_relpath(source: str) -> Path:
-    return Path(*source.split('.'))
-
 
 def _run_command(
     command: list[str],
@@ -161,26 +154,6 @@ def _run_command(
     return StepResult(status='error', message=message, seconds=elapsed)
 
 
-def _copy_tree(src: Path, dst: Path) -> None:
-    if dst.exists():
-        shutil.rmtree(dst)
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(src, dst)
-
-
-def _copy_local_tables(source: str, stage_local_tables: Path, final_local_tables: Path) -> int:
-    source_leaf = _source_leaf(source)
-    final_local_tables.mkdir(parents=True, exist_ok=True)
-
-    for existing in final_local_tables.glob(f'local_*_{source_leaf}.parquet'):
-        existing.unlink()
-
-    copied = 0
-    for file in stage_local_tables.glob(f'local_*_{source_leaf}.parquet'):
-        shutil.copy2(file, final_local_tables / file.name)
-        copied += 1
-    return copied
-
 
 def _write_source_report(report_path: Path, payload: dict) -> None:
     report_path.parent.mkdir(parents=True, exist_ok=True)
@@ -195,8 +168,6 @@ def _build_source_worker(
     test_mode: bool,
     map_path: Path,
     stage_root: Path,
-    final_silver_root: Path,
-    final_gold_output_dir: Path,
     reports_dir: Path,
     progress_state: dict[int, dict[str, Any]],
     progress_lock: threading.Lock,
@@ -218,8 +189,8 @@ def _build_source_worker(
         shutil.rmtree(source_stage_dir)
     source_stage_dir.mkdir(parents=True, exist_ok=True)
 
-    silver_stage_root = source_stage_dir / 'silver_stage'
-    gold_stage_root = source_stage_dir / 'gold_stage'
+    silver_root = source_stage_dir
+    gold_root = source_stage_dir / 'gold'
 
     silver_cmd = [
         sys.executable,
@@ -227,7 +198,7 @@ def _build_source_worker(
         'omnipath_build.cli.commands',
         'silver',
         '--base-path',
-        str(silver_stage_root),
+        str(silver_root),
         '--database',
         '.',
         '--source',
@@ -283,14 +254,18 @@ def _build_source_worker(
     )
 
     local_result = StepResult(status='skipped', message='silver failed', seconds=0.0)
-    copied_local_files = 0
 
     if silver_result.status == 'ok':
-        source_rel = _source_relpath(source)
-        silver_stage_source_dir = silver_stage_root / 'silver' / source_rel
-        final_silver_source_dir = final_silver_root / source_rel
-        if silver_stage_source_dir.exists():
-            _copy_tree(silver_stage_source_dir, final_silver_source_dir)
+        # Flatten single-source silver layout: silver/<source>/*.parquet -> silver/*.parquet
+        source_leaf = source.split('.')[-1]
+        source_silver_dir = silver_root / 'silver' / source_leaf
+        if source_silver_dir.exists():
+            for parquet in sorted(source_silver_dir.glob('*.parquet')):
+                target = silver_root / 'silver' / parquet.name
+                if target.exists():
+                    target.unlink()
+                shutil.move(str(parquet), str(target))
+            source_silver_dir.rmdir()
 
         local_cmd = [
             sys.executable,
@@ -298,9 +273,9 @@ def _build_source_worker(
             'omnipath_build.cli.commands',
             'gold',
             '--data-root',
-            str(silver_stage_root / 'silver'),
+            str(silver_root / 'silver'),
             '--output-dir',
-            str(gold_stage_root),
+            str(gold_root),
             '--step',
             'local_tables',
             '--source',
@@ -318,12 +293,6 @@ def _build_source_worker(
         )
         local_result = _run_command(local_cmd)
 
-        if local_result.status == 'ok':
-            copied_local_files = _copy_local_tables(
-                source=source,
-                stage_local_tables=gold_stage_root / 'local_tables',
-                final_local_tables=final_gold_output_dir / 'local_tables',
-            )
 
     _update_progress_state(
         progress_state,
@@ -354,7 +323,6 @@ def _build_source_worker(
             'status': local_result.status,
             'message': local_result.message,
             'seconds': round(local_result.seconds, 3),
-            'copied_files': copied_local_files,
         },
         'overall_status': overall_status,
         'started_at': started_at,
@@ -436,8 +404,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument('--sources', type=str, help='Comma-separated source filter')
     parser.add_argument('--test-mode', action='store_true')
     parser.add_argument('--build-dir', type=Path, default=Path('.build/parallel_until_local_tables'))
-    parser.add_argument('--final-silver-root', type=Path, default=Path('omnipath_build/data/silver'))
-    parser.add_argument('--final-gold-output-dir', type=Path, default=Path('omnipath_build/data/gold'))
     args = parser.parse_args(argv)
 
     discovered, _ = discover_resources(
@@ -465,14 +431,11 @@ def main(argv: list[str] | None = None) -> int:
     }
 
     reports_dir = args.build_dir / 'reports'
-    stage_root = args.build_dir / 'stages'
-    if reports_dir.exists():
-        for old_report in reports_dir.glob('*.json'):
-            old_report.unlink()
-    reports_dir.mkdir(parents=True, exist_ok=True)
+    stage_root = args.build_dir
     if stage_root.exists():
         shutil.rmtree(stage_root)
     stage_root.mkdir(parents=True, exist_ok=True)
+    reports_dir.mkdir(parents=True, exist_ok=True)
 
     map_path = args.build_dir / 'source_map.tsv'
     lines = ['source_id\tsource', *[f'{sid}\t{src}' for src, sid in global_source_map.items()]]
@@ -507,8 +470,6 @@ def main(argv: list[str] | None = None) -> int:
                     test_mode=args.test_mode,
                     map_path=map_path,
                     stage_root=stage_root,
-                    final_silver_root=args.final_silver_root,
-                    final_gold_output_dir=args.final_gold_output_dir,
                     reports_dir=reports_dir,
                     progress_state=progress_state,
                     progress_lock=progress_lock,

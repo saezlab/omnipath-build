@@ -44,33 +44,18 @@ class InstanceRegistry:
 
 
 def _iter_parquet_files(root: Path) -> Iterable[Path]:
-    """Iterate through all parquet files in subdirectories (recursively).
+    """Iterate parquet files for a single-source silver stage.
 
-    This handles both flat structures like:
-        data/guidetopharma/*.parquet
-    And nested structures like:
-        data/ontologies/gene_ontology/*.parquet
+    Expected layout: <source_stage_dir>/silver/*.parquet
     """
-    for d in sorted(root.glob("*")):
-        if d.is_dir():
-            # First, check for parquet files directly in this directory
-            direct_parquet = list(d.glob("*.parquet"))
-            if direct_parquet:
-                # This is a source directory with parquet files
-                yield from sorted(direct_parquet)
-            else:
-                # This might be a container directory (like ontologies/)
-                # Look one level deeper for source subdirectories
-                for subdir in sorted(d.glob("*")):
-                    if subdir.is_dir():
-                        yield from sorted(subdir.glob("*.parquet"))
+    yield from sorted(root.glob("*.parquet"))
 
 
-def _load_source_data(root: Path) -> dict[str, list[tuple[Path, pl.LazyFrame]]]:
-    """Load all parquet files grouped by source."""
+def _load_source_data(root: Path, source_name: str) -> dict[str, list[tuple[Path, pl.LazyFrame]]]:
+    """Load parquet files for one source from a flat silver directory."""
     out: dict[str, list[tuple[Path, pl.LazyFrame]]] = {}
     for p in _iter_parquet_files(root):
-        out.setdefault(p.parent.name, []).append((p, pl.scan_parquet(str(p))))
+        out.setdefault(source_name, []).append((p, pl.scan_parquet(str(p))))
     logger.info(f"Found {len(out)} sources")
     return out
 
@@ -703,20 +688,25 @@ def build_local_tables(
     output_dir: Path,
     source_id_map: dict[str, int] | None = None,
     source_filter: set[str] | None = None,
+    single_source_name: str | None = None,
 ):
     """
     Build local tables from Entity parquet files using vectorized operations.
 
-    Source IDs are auto-generated from discovered source names (alphabetically sorted)
-    unless an explicit ``source_id_map`` is provided.
+    Expected silver input layout is a single-source flat directory:
+    ``<source_stage_dir>/silver/*.parquet``.
 
     Args:
-        data_root: Root directory containing source subdirectories with parquet files
+        data_root: Root directory containing silver parquet files for one source
         output_dir: Output directory for local tables
         source_id_map: Optional mapping of source_name -> source_id to enforce deterministic IDs
         source_filter: Optional set of source names to process
+        single_source_name: Required source name for the flat silver input directory
     """
-    data = _load_source_data(data_root)
+    if not single_source_name:
+        raise ValueError('single_source_name is required for local table build in the per-source stage layout')
+
+    data = _load_source_data(data_root, source_name=single_source_name)
 
     if source_filter:
         data = {k: v for k, v in data.items() if k in source_filter}
