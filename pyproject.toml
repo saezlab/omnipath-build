@@ -209,4 +209,4 @@ jupyter-contrib-nbextensions = {git = "https://github.com/deeenes/jupyter_contri
 nbsphinx = {git = "https://github.com/deeenes/nbsphinx", branch = "timings"}
 pypath-omnipath = {path = "pypath", editable = true}
 download-manager = {path = "download-manager", editable = true}
-ontograph = {path = "ontograph", editable = true}
+ontograph = {git = "https://github.com/saezlab/ontograph.git", rev = "18b922a216e8f4654425c2e01a2c7232fa6595b5"}
