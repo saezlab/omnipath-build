@@ -93,6 +93,22 @@ class DiscoveryError(RuntimeError):
     """Raised when resource discovery fails."""
 
 
+def _configure_pypath_download_dir() -> Path:
+    """Configure pypath download directory for this project runtime."""
+
+    configured = os.environ.get('PYPATH_DOWNLOAD_DATADIR')
+    if configured:
+        data_dir = Path(configured)
+    else:
+        project_root = Path(__file__).resolve().parents[2]
+        data_dir = project_root / 'pypath-data'
+        os.environ['PYPATH_DOWNLOAD_DATADIR'] = str(data_dir)
+
+    data_dir.mkdir(parents=True, exist_ok=True)
+
+    return data_dir
+
+
 def discover_resources(
     database_name: str,
     base_path: Optional[Path] = None,
@@ -105,6 +121,7 @@ def discover_resources(
     2. Dataset objects - emits data entities to <dataset_name>.parquet
     """
     path_manager = PathManager(database_name, base_path)
+    _configure_pypath_download_dir()
     from pypath.inputs_v2.base import (
         Dataset,
         Resource,

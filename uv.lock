@@ -410,18 +410,22 @@ name = "download-manager"
 version = "0.0.1"
 source = { editable = "download-manager" }
 dependencies = [
+    { name = "cachemanager" },
     { name = "certifi" },
     { name = "pycurl" },
     { name = "requests" },
     { name = "toml" },
+    { name = "tqdm" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "cachemanager", git = "https://github.com/saezlab/cache-manager.git?rev=main" },
     { name = "certifi", specifier = ">=2024.7.4,<2025.0.0" },
     { name = "pycurl", specifier = ">=7.45.3,<8.0.0" },
     { name = "requests", specifier = ">=2.32.3,<3.0.0" },
     { name = "toml" },
+    { name = "tqdm" },
 ]
 
 [[package]]
