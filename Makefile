@@ -1,20 +1,23 @@
-.PHONY: setup silver silver-test silver-reprocess silver-local-parallel gold postgres meilisearch meilisearch-entities meilisearch-interactions meilisearch-associations meilisearch-import meilisearch-import-entities meilisearch-import-interactions meilisearch-import-associations meilisearch-import-all meilisearch-delete-indexes gold-meilisearch-import meilisearch-build-dump meilisearch-build-dump-start meilisearch-build-dump-stop pipeline pipeline-full generate-obo export export-entity export-ontology export-meilisearch export-finalize
+.PHONY: setup silver silver-test silver-reprocess silver-local-parallel gold postgres meilisearch meilisearch-parallel meilisearch-entities meilisearch-interactions meilisearch-associations meilisearch-import meilisearch-import-entities meilisearch-import-interactions meilisearch-import-associations meilisearch-import-all meilisearch-delete-indexes gold-meilisearch-import meilisearch-build-dump meilisearch-build-dump-start meilisearch-build-dump-stop pipeline pipeline-full generate-obo export export-entity export-ontology export-meilisearch export-finalize
 
 # =============================================================================
 # Full Pipeline - Run everything from silver to export
 # =============================================================================
 # Usage: make pipeline
-# This runs: silver-test -> generate-obo -> gold -> meilisearch -> build-dump -> export-entity -> export-ontology -> export-finalize
+# This runs: silver-local-parallel(TEST_MODE=1) -> generate-obo -> gold(entity_identifiers,global_tables)
+#            -> meilisearch-parallel -> build-dump -> export-entity -> export-ontology -> export-finalize
 # The meilisearch-build-dump step starts a temporary local Meilisearch process, imports data, creates dump, and cleans up.
 pipeline:
 	@echo "======================================================================"
 	@echo "Starting full pipeline..."
 	@echo "  Data version: $(DATA_VERSION)"
+	@echo "  Jobs: $(JOBS)"
 	@echo "======================================================================"
-	@$(MAKE) silver-test
+	@$(MAKE) silver-local-parallel JOBS=$(JOBS) TEST_MODE=1 $(if $(SOURCE),SOURCE=$(SOURCE)) $(if $(INPUTS_PACKAGE),INPUTS_PACKAGE=$(INPUTS_PACKAGE))
 	@$(MAKE) generate-obo
-	@$(MAKE) gold
-	@$(MAKE) meilisearch
+	@$(MAKE) gold entity_identifiers
+	@$(MAKE) gold global_tables
+	@$(MAKE) meilisearch-parallel
 	@$(MAKE) meilisearch-build-dump DATA_VERSION=$(DATA_VERSION)
 	@$(MAKE) export-entity DATA_VERSION=$(DATA_VERSION)
 	@$(MAKE) export-ontology DATA_VERSION=$(DATA_VERSION)
@@ -28,11 +31,13 @@ pipeline-full:
 	@echo "======================================================================"
 	@echo "Starting full pipeline..."
 	@echo "  Data version: $(DATA_VERSION)"
+	@echo "  Jobs: $(JOBS)"
 	@echo "======================================================================"
-	@$(MAKE) silver
+	@$(MAKE) silver-local-parallel JOBS=$(JOBS) $(if $(SOURCE),SOURCE=$(SOURCE)) $(if $(INPUTS_PACKAGE),INPUTS_PACKAGE=$(INPUTS_PACKAGE))
 	@$(MAKE) generate-obo
-	@$(MAKE) gold
-	@$(MAKE) meilisearch
+	@$(MAKE) gold entity_identifiers
+	@$(MAKE) gold global_tables
+	@$(MAKE) meilisearch-parallel
 	@$(MAKE) meilisearch-build-dump DATA_VERSION=$(DATA_VERSION)
 	@$(MAKE) export-entity DATA_VERSION=$(DATA_VERSION)
 	@$(MAKE) export-ontology DATA_VERSION=$(DATA_VERSION)
@@ -117,6 +122,10 @@ meilisearch-associations:
 
 # Build all search parquet files (entities, interactions, associations)
 meilisearch: meilisearch-entities meilisearch-interactions meilisearch-associations
+
+# Build all search parquet files in parallel processes
+meilisearch-parallel:
+	@$(MAKE) -j3 meilisearch-entities meilisearch-interactions meilisearch-associations
 
 # Import entities into Meilisearch
 meilisearch-import-entities:
