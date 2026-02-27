@@ -6,3 +6,7 @@
 	path = download-manager
 	url = https://github.com/saezlab/download-manager
 	branch = main
+[submodule "cache-manager"]
+	path = cache-manager
+	url = https://github.com/saezlab/cache-manager.git
+	branch = main
