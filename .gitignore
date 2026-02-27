@@ -41,3 +41,4 @@ data/
 omnipath_build.code-workspace
 .next/
 .meili-temp/
+.build/

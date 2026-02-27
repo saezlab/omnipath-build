@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import importlib
 import inspect
+import json
+import os
 import pkgutil
 from dataclasses import dataclass
 from enum import Enum
@@ -41,6 +43,32 @@ TEST_MODE_RECORD_LIMITS_BY_SOURCE: dict[str, int] = {
     'hmdb': 100,
     'intact': 1000,
 }
+
+_PROGRESS_PREFIX = '__OMNIPATH_PROGRESS__'
+
+
+def _emit_progress(
+    *,
+    source: str,
+    function: str,
+    event: str,
+    records: int,
+    output: str | None = None,
+) -> None:
+    """Emit machine-readable progress events to stdout when enabled."""
+    if os.environ.get('OMNIPATH_PROGRESS_STDOUT') != '1':
+        return
+
+    payload: dict[str, object] = {
+        'source': source,
+        'function': function,
+        'event': event,
+        'records': int(records),
+    }
+    if output is not None:
+        payload['output'] = output
+
+    print(f"{_PROGRESS_PREFIX}{json.dumps(payload, separators=(',', ':'))}", flush=True)
 
 
 def _test_mode_record_limit(source: str, test_mode: bool) -> int | None:
@@ -429,6 +457,13 @@ def _process_single_output(
     total_records = 0
     batch: List[dict] = []
 
+    _emit_progress(
+        source=resource_fn.source,
+        function=resource_fn.function_name,
+        event='start',
+        records=0,
+    )
+
     # Process first record
     _ensure_entity_record(first_record)
     normalized = _normalize_record(first_record)
@@ -474,6 +509,12 @@ def _process_single_output(
             table = pa.Table.from_pylist(batch, schema=schema)
             writer.write_table(table)
             total_records += len(batch)
+            _emit_progress(
+                source=resource_fn.source,
+                function=resource_fn.function_name,
+                event='update',
+                records=total_records,
+            )
             print(
                 f'[{resource_fn.source}.{resource_fn.function_name}] processed {total_records:,} records...'
             )
@@ -483,6 +524,12 @@ def _process_single_output(
         if total_records == 0 and dry_run:
             print(
                 f'[{resource_fn.source}.{resource_fn.function_name}] dry-run complete (no write)'
+            )
+            _emit_progress(
+                source=resource_fn.source,
+                function=resource_fn.function_name,
+                event='done',
+                records=0,
             )
             return None
         if total_records == 0 and not dry_run:
@@ -496,11 +543,23 @@ def _process_single_output(
             print(
                 f'[{resource_fn.source}.{resource_fn.function_name}] wrote empty table to {output_file}'
             )
+            _emit_progress(
+                source=resource_fn.source,
+                function=resource_fn.function_name,
+                event='done',
+                records=0,
+            )
             return output_file
         if writer:
             writer.close()
             print(
                 f'[{resource_fn.source}.{resource_fn.function_name}] wrote {total_records:,} records to {output_file}'
+            )
+            _emit_progress(
+                source=resource_fn.source,
+                function=resource_fn.function_name,
+                event='done',
+                records=total_records,
             )
             return output_file
         return output_file
@@ -509,6 +568,12 @@ def _process_single_output(
         total_records += len(batch)
         print(
             f'[{resource_fn.source}.{resource_fn.function_name}] dry-run result: {total_records:,} records pending write'
+        )
+        _emit_progress(
+            source=resource_fn.source,
+            function=resource_fn.function_name,
+            event='done',
+            records=total_records,
         )
         return None
 
@@ -525,8 +590,20 @@ def _process_single_output(
     total_records += len(batch)
     writer.close()
 
+    _emit_progress(
+        source=resource_fn.source,
+        function=resource_fn.function_name,
+        event='update',
+        records=total_records,
+    )
     print(
         f'[{resource_fn.source}.{resource_fn.function_name}] wrote {total_records:,} records to {output_file}'
+    )
+    _emit_progress(
+        source=resource_fn.source,
+        function=resource_fn.function_name,
+        event='done',
+        records=total_records,
     )
     return output_file
 
@@ -571,6 +648,13 @@ def _process_multi_output(
         if output_name not in batches:
             batches[output_name] = []
             record_counts[output_name] = 0
+            _emit_progress(
+                source=resource_fn.source,
+                function=resource_fn.function_name,
+                output=output_name,
+                event='start',
+                records=0,
+            )
 
         normalized = _normalize_record(output_record)
         _coerce_list_fields(normalized, ENTITY_SCHEMA)
@@ -591,6 +675,13 @@ def _process_multi_output(
                 writers[output_name].write_table(table)
 
             record_counts[output_name] += len(batches[output_name])
+            _emit_progress(
+                source=resource_fn.source,
+                function=resource_fn.function_name,
+                output=output_name,
+                event='update',
+                records=record_counts[output_name],
+            )
             print(
                 f'[{resource_fn.source}.{resource_fn.function_name}:{output_name}] processed {record_counts[output_name]:,} records...'
             )
@@ -642,6 +733,13 @@ def _process_multi_output(
             writers[output_name].write_table(table)
 
         record_counts[output_name] += len(batch)
+        _emit_progress(
+            source=resource_fn.source,
+            function=resource_fn.function_name,
+            output=output_name,
+            event='update',
+            records=record_counts[output_name],
+        )
 
     # Close all writers
     for output_name, writer in writers.items():
@@ -649,11 +747,25 @@ def _process_multi_output(
         print(
             f'[{resource_fn.source}.{resource_fn.function_name}:{output_name}] wrote {record_counts[output_name]:,} records to {output_files[output_name]}'
         )
+        _emit_progress(
+            source=resource_fn.source,
+            function=resource_fn.function_name,
+            output=output_name,
+            event='done',
+            records=record_counts[output_name],
+        )
 
     if dry_run:
         print(f'[{resource_fn.source}.{resource_fn.function_name}] dry-run complete:')
         for output_name in batches.keys():
             print(f'  {output_name}: {record_counts[output_name]:,} records')
+            _emit_progress(
+                source=resource_fn.source,
+                function=resource_fn.function_name,
+                output=output_name,
+                event='done',
+                records=record_counts[output_name],
+            )
         return {}
 
     return output_files

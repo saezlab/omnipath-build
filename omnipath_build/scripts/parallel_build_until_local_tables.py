@@ -5,16 +5,22 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
+import threading
 import time
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Callable, Iterable
 
 from omnipath_build.loaders.silver import discover_resources
+
+
+_PROGRESS_PREFIX = '__OMNIPATH_PROGRESS__'
 
 
 @dataclass(slots=True)
@@ -22,6 +28,71 @@ class StepResult:
     status: str
     message: str
     seconds: float
+
+
+def _update_progress_state(
+    progress_state: dict[int, dict[str, Any]],
+    progress_lock: threading.Lock,
+    source_id: int,
+    **fields: Any,
+) -> None:
+    with progress_lock:
+        progress_state[source_id].update(fields)
+
+
+def _render_progress_loop(
+    progress_state: dict[int, dict[str, Any]],
+    progress_lock: threading.Lock,
+    stop_event: threading.Event,
+    refresh_seconds: float = 0.2,
+) -> None:
+    from rich.console import Console
+    from rich.live import Live
+    from rich.table import Table
+
+    console = Console()
+
+    def _status_style(value: str) -> str:
+        return {
+            'ok': 'green',
+            'running': 'yellow',
+            'pending': 'dim',
+            'skipped': 'cyan',
+            'error': 'red',
+            'failed': 'red',
+        }.get(value, 'white')
+
+    def _build_table() -> Table:
+        table = Table(title='Parallel progress (silver -> local_tables)', expand=True)
+        table.add_column('id', justify='right', width=4)
+        table.add_column('source', overflow='fold')
+        table.add_column('silver', justify='center', width=10)
+        table.add_column('local', justify='center', width=10)
+        table.add_column('stage', width=14)
+        table.add_column('function', overflow='fold')
+        table.add_column('records', justify='right', width=12)
+
+        with progress_lock:
+            rows = [progress_state[k].copy() for k in sorted(progress_state)]
+
+        for row in rows:
+            silver = f"[{_status_style(str(row['silver_status']))}]{row['silver_status']}[/]"
+            local = f"[{_status_style(str(row['local_status']))}]{row['local_status']}[/]"
+            table.add_row(
+                f"{row['source_id']:03d}",
+                str(row['source']),
+                silver,
+                local,
+                str(row['stage']),
+                str(row['function']),
+                f"{int(row['records']):,}",
+            )
+        return table
+
+    with Live(_build_table(), console=console, refresh_per_second=max(2, int(1 / refresh_seconds)), transient=True) as live:
+        while not stop_event.is_set():
+            live.update(_build_table(), refresh=True)
+            time.sleep(refresh_seconds)
 
 
 def _source_leaf(source: str) -> str:
@@ -32,18 +103,61 @@ def _source_relpath(source: str) -> Path:
     return Path(*source.split('.'))
 
 
-def _run_command(command: list[str]) -> StepResult:
+def _run_command(
+    command: list[str],
+    *,
+    env: dict[str, str] | None = None,
+    on_stdout_line: Callable[[str], None] | None = None,
+) -> StepResult:
     start = time.time()
-    proc = subprocess.run(command, capture_output=True, text=True)
+    proc = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+        env=env,
+    )
+
+    stdout_tail: deque[str] = deque(maxlen=8)
+    stderr_tail: deque[str] = deque(maxlen=8)
+
+    def _reader(stream, sink: deque[str], callback: Callable[[str], None] | None) -> None:
+        if stream is None:
+            return
+        try:
+            for line in iter(stream.readline, ''):
+                stripped = line.rstrip('\n')
+                sink.append(stripped)
+                if callback is not None:
+                    callback(stripped)
+        finally:
+            stream.close()
+
+    stdout_thread = threading.Thread(
+        target=_reader,
+        args=(proc.stdout, stdout_tail, on_stdout_line),
+        daemon=True,
+    )
+    stderr_thread = threading.Thread(
+        target=_reader,
+        args=(proc.stderr, stderr_tail, None),
+        daemon=True,
+    )
+
+    stdout_thread.start()
+    stderr_thread.start()
+
+    return_code = proc.wait()
+    stdout_thread.join()
+    stderr_thread.join()
     elapsed = time.time() - start
 
-    if proc.returncode == 0:
+    if return_code == 0:
         return StepResult(status='ok', message='completed', seconds=elapsed)
 
-    stderr_tail = (proc.stderr or '').strip().splitlines()[-8:]
-    stdout_tail = (proc.stdout or '').strip().splitlines()[-8:]
     tail = '\n'.join([*stderr_tail, *stdout_tail]).strip()
-    message = tail if tail else f'command failed with exit code {proc.returncode}'
+    message = tail if tail else f'command failed with exit code {return_code}'
     return StepResult(status='error', message=message, seconds=elapsed)
 
 
@@ -84,8 +198,19 @@ def _build_source_worker(
     final_silver_root: Path,
     final_gold_output_dir: Path,
     reports_dir: Path,
+    progress_state: dict[int, dict[str, Any]],
+    progress_lock: threading.Lock,
 ) -> dict:
     started_at = time.strftime('%Y-%m-%dT%H:%M:%S%z')
+    _update_progress_state(
+        progress_state,
+        progress_lock,
+        source_id,
+        stage='silver',
+        function='(starting)',
+        records=0,
+        silver_status='running',
+    )
 
     source_slug = source.replace('.', '__')
     source_stage_dir = stage_root / f'{source_id:03d}__{source_slug}'
@@ -113,7 +238,49 @@ def _build_source_worker(
     if test_mode:
         silver_cmd.append('--test-mode')
 
-    silver_result = _run_command(silver_cmd)
+    silver_function_records: dict[str, int] = {}
+
+    def _silver_progress_handler(line: str) -> None:
+        if not line.startswith(_PROGRESS_PREFIX):
+            return
+        try:
+            payload = json.loads(line[len(_PROGRESS_PREFIX):])
+        except json.JSONDecodeError:
+            return
+
+        function = str(payload.get('function', 'unknown'))
+        output = payload.get('output')
+        records = int(payload.get('records', 0))
+        key = f'{function}:{output}' if output else function
+
+        silver_function_records[key] = records
+        _update_progress_state(
+            progress_state,
+            progress_lock,
+            source_id,
+            stage='silver',
+            function=key,
+            records=records,
+            silver_status='running',
+        )
+
+    env = dict(os.environ)
+    env['OMNIPATH_PROGRESS_STDOUT'] = '1'
+
+    silver_result = _run_command(
+        silver_cmd,
+        env=env,
+        on_stdout_line=_silver_progress_handler,
+    )
+
+    _update_progress_state(
+        progress_state,
+        progress_lock,
+        source_id,
+        silver_status=silver_result.status,
+        stage='local_tables' if silver_result.status == 'ok' else 'done',
+        function='(waiting)' if silver_result.status == 'ok' else '(failed)',
+    )
 
     local_result = StepResult(status='skipped', message='silver failed', seconds=0.0)
     copied_local_files = 0
@@ -141,6 +308,14 @@ def _build_source_worker(
             '--source-id-map',
             str(map_path),
         ]
+        _update_progress_state(
+            progress_state,
+            progress_lock,
+            source_id,
+            stage='local_tables',
+            function='(running)',
+            local_status='running',
+        )
         local_result = _run_command(local_cmd)
 
         if local_result.status == 'ok':
@@ -149,6 +324,15 @@ def _build_source_worker(
                 stage_local_tables=gold_stage_root / 'local_tables',
                 final_local_tables=final_gold_output_dir / 'local_tables',
             )
+
+    _update_progress_state(
+        progress_state,
+        progress_lock,
+        source_id,
+        local_status=local_result.status,
+        stage='done',
+        function='(complete)' if local_result.status == 'ok' else '(failed)',
+    )
 
     overall_status = (
         'ok'
@@ -164,6 +348,7 @@ def _build_source_worker(
             'status': silver_result.status,
             'message': silver_result.message,
             'seconds': round(silver_result.seconds, 3),
+            'function_records': dict(sorted(silver_function_records.items())),
         },
         'local_tables': {
             'status': local_result.status,
@@ -265,6 +450,20 @@ def main(argv: list[str] | None = None) -> int:
     selected_sources = _select_sources(all_sources, args.sources)
     selected_source_map = {source: global_source_map[source] for source in selected_sources}
 
+    progress_lock = threading.Lock()
+    progress_state: dict[int, dict[str, Any]] = {
+        selected_source_map[source]: {
+            'source_id': selected_source_map[source],
+            'source': source,
+            'silver_status': 'pending',
+            'local_status': 'pending',
+            'stage': 'queued',
+            'function': '-',
+            'records': 0,
+        }
+        for source in sorted(selected_sources)
+    }
+
     reports_dir = args.build_dir / 'reports'
     stage_root = args.build_dir / 'stages'
     if reports_dir.exists():
@@ -283,7 +482,19 @@ def main(argv: list[str] | None = None) -> int:
     print(f'Source map: {map_path}')
     print(f'Reports dir: {reports_dir}')
 
+    render_enabled = sys.stdout.isatty()
+    stop_event = threading.Event()
+    render_thread: threading.Thread | None = None
+    if render_enabled:
+        render_thread = threading.Thread(
+            target=_render_progress_loop,
+            args=(progress_state, progress_lock, stop_event),
+            daemon=True,
+        )
+        render_thread.start()
+
     futures = []
+    completed_reports: list[dict[str, Any]] = []
     with ThreadPoolExecutor(max_workers=max(1, args.jobs)) as executor:
         for source in sorted(selected_sources):
             source_id = selected_source_map[source]
@@ -299,11 +510,26 @@ def main(argv: list[str] | None = None) -> int:
                     final_silver_root=args.final_silver_root,
                     final_gold_output_dir=args.final_gold_output_dir,
                     reports_dir=reports_dir,
+                    progress_state=progress_state,
+                    progress_lock=progress_lock,
                 )
             )
 
         for future in as_completed(futures):
             report = future.result()
+            completed_reports.append(report)
+
+    if render_enabled:
+        stop_event.set()
+        if render_thread is not None:
+            render_thread.join(timeout=1.0)
+        for report in sorted(completed_reports, key=lambda r: r['source_id']):
+            print(
+                f"[{report['source_id']:03d} {report['source']}] "
+                f"silver={report['silver']['status']} local_tables={report['local_tables']['status']}"
+            )
+    else:
+        for report in sorted(completed_reports, key=lambda r: r['source_id']):
             print(
                 f"[{report['source_id']:03d} {report['source']}] "
                 f"silver={report['silver']['status']} local_tables={report['local_tables']['status']}"
