@@ -37,6 +37,7 @@ class MeilisearchSettings:
                 'cv_terms_kw': 'count',
             },
         },
+        'pagination': {'maxTotalHits': 2000000},
     }
 
     INTERACTIONS_SETTINGS = {
