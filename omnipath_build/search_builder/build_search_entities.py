@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 ID_STRUCT = pl.Struct([Field('key', pl.Utf8), Field('value', pl.Utf8)])
 ID_LIST_DTYPE = pl.List(ID_STRUCT)
 STR_LIST = pl.List(pl.Utf8)
-INT_LIST = pl.List(pl.Int64)
+INT_LIST = pl.List(pl.Utf8)
 
 def _agg_lazy(
     ldf: pl.LazyFrame, 
@@ -103,6 +103,14 @@ def _resolve_parent_entity_id(mem_lf: pl.LazyFrame, inst_lf: pl.LazyFrame) -> pl
     )
 
 
+def _rename_if_present_lf(lf: pl.LazyFrame, old: str, new: str) -> pl.LazyFrame:
+    """Rename a column on a LazyFrame if present in schema."""
+    schema = lf.collect_schema()
+    if old in schema:
+        return lf.rename({old: new})
+    return lf
+
+
 def build_search_entities(global_tables_dir: Path, output_path: Path) -> Path:
     logger.info("=" * 80 + "\nBuilding Meilisearch entity documents (Lazy Execution)\n" + "=" * 80)
 
@@ -136,13 +144,13 @@ def build_search_entities(global_tables_dir: Path, output_path: Path) -> Path:
 
     # 2. Setup Lazy Scans
     # scan_parquet creates a LazyFrame; no data is read until 'sink_parquet' is called
-    ent = pl.scan_parquet(global_tables_dir / "entity.parquet")
-    ident = pl.scan_parquet(global_tables_dir / "entity_identifier.parquet")
+    ent = _rename_if_present_lf(pl.scan_parquet(global_tables_dir / "entity.parquet"), "entity_key", "entity_id")
+    ident = _rename_if_present_lf(pl.scan_parquet(global_tables_dir / "entity_identifier.parquet"), "entity_key", "entity_id")
     res = pl.scan_parquet(global_tables_dir / "entity_identifier_resource.parquet")
     mem = pl.scan_parquet(global_tables_dir / "membership.parquet")
-    
+
     # New tables in entity_instance schema
-    inst = pl.scan_parquet(global_tables_dir / "entity_instance.parquet")
+    inst = _rename_if_present_lf(pl.scan_parquet(global_tables_dir / "entity_instance.parquet"), "entity_key", "entity_id")
     ent_annot = pl.scan_parquet(global_tables_dir / "entity_annotation.parquet")
 
     # Resolve membership entity IDs (handle polymorphic columns)
@@ -156,7 +164,7 @@ def build_search_entities(global_tables_dir: Path, output_path: Path) -> Path:
         pl.col("resolved_parent_entity_id").alias("parent_id"),
         pl.col("resolved_member_entity_id").alias("member_id"),
         pl.col("member_instance_id"),  # Keep for annotation lookups
-        pl.col("source_id"),
+        pl.col("source_ref"),
     ])
 
     # Join entity annotations with instances to get entity_id
@@ -338,21 +346,15 @@ def build_search_entities(global_tables_dir: Path, output_path: Path) -> Path:
             .rename({"parent_id": "entity_id"})
         )
 
-    # 4f. Sources
-    # We no longer look up entity_ids for types, we assume name_tid is valid? 
-    # But wait, type_id is now string. We need to look up type_id string.
-    # OM:0202 is NAME.
-    name_tid = "OM:0202"
-    
-    source_names = ident.filter(pl.col("type_id") == name_tid).group_by("entity_id").agg(pl.col("identifier").first().alias("s_name"))
-    
+    # 4f. Sources (direct source_ref provenance)
     sources_plan = (
-        res.join(ident.select("id", "entity_id"), left_on="entity_identifier_id", right_on="id")
-        .rename({"entity_id": "eid", "source_entity_id": "sid"})
-        .join(source_names, left_on="sid", right_on="entity_id", how="left")
-        .select("eid", (pl.coalesce(pl.col("s_name"), pl.lit("Source")) + ":" + pl.col("sid").cast(pl.Utf8)).alias("fmt"))
-        .group_by("eid").agg(pl.col("fmt").unique().sort().alias("sources"))
-        .rename({"eid": "entity_id"})
+        res.join(ident.select('id', 'entity_id'), left_on='entity_identifier_id', right_on='id')
+        .select(
+            pl.col('entity_id').alias('eid'),
+            'source_ref',
+        )
+        .group_by('eid').agg(pl.col('source_ref').drop_nulls().unique().sort().alias('sources'))
+        .rename({'eid': 'entity_id'})
     )
     lazy_joins.append(sources_plan)
 

@@ -10,14 +10,17 @@ from pypath.internals.cv_terms.entity_types import EntityTypeCv
 __all__ = ["build_local_tables"]
 logger = logging.getLogger(__name__)
 
+SOURCE_NAME_TYPE_ID = "OM:0202"
+SOURCE_ACCESSION_TYPE_ID = "OM:0204"
+
 # --- Helpers -----------------------------------------------------------------
 
 
 class InstanceRegistry:
     """Track entity instances and their sequential IDs."""
 
-    def __init__(self, source_id: int):
-        self.source_id = source_id
+    def __init__(self, source_ref: str):
+        self.source_ref = source_ref
         self._next_instance_id = 1
         self._instances: list[dict] = []
 
@@ -28,7 +31,7 @@ class InstanceRegistry:
         self._instances.append({
             "local_entity_instance_id": instance_id,
             "local_entity_id": entity_id,
-            "source_id": self.source_id,
+            "source_ref": self.source_ref,
         })
         return instance_id
 
@@ -38,7 +41,7 @@ class InstanceRegistry:
             return pl.DataFrame({
                 "local_entity_instance_id": pl.Series([], dtype=pl.Int64),
                 "local_entity_id": pl.Series([], dtype=pl.Int64),
-                "source_id": pl.Series([], dtype=pl.Int64),
+                "source_ref": pl.Series([], dtype=pl.Utf8),
             })
         return pl.DataFrame(self._instances)
 
@@ -60,9 +63,48 @@ def _load_source_data(root: Path, source_name: str) -> dict[str, list[tuple[Path
     return out
 
 
+def _derive_source_ref(files: list[tuple[Path, pl.LazyFrame]], source_name: str) -> str:
+    """Derive `<source_name>:<source_accession>` from resource metadata."""
+    resource_entry = next((entry for entry in files if entry[0].name == "resource.parquet"), None)
+    if resource_entry is None:
+        raise ValueError(f"Missing resource.parquet for source {source_name}")
+
+    resource_df = resource_entry[1].collect()
+    if len(resource_df) == 0:
+        raise ValueError(f"resource.parquet is empty for source {source_name}")
+
+    row = resource_df.row(0, named=True)
+    identifiers = row.get("identifiers") or []
+
+    source_display_name = None
+    source_accession = None
+
+    for ident in identifiers:
+        if ident is None:
+            continue
+        ident_type = ident.get("type")
+        ident_value = ident.get("value")
+        if not ident_type or not ident_value:
+            continue
+        if ident_type == SOURCE_NAME_TYPE_ID and source_display_name is None:
+            source_display_name = str(ident_value).strip()
+        elif ident_type == SOURCE_ACCESSION_TYPE_ID and source_accession is None:
+            source_accession = str(ident_value).strip()
+
+    if not source_display_name or not source_accession:
+        raise ValueError(
+            f"Invalid resource metadata for {source_name}: missing source name/accession "
+            f"(name={source_display_name!r}, accession={source_accession!r})"
+        )
+
+    source_ref = f"{source_display_name}:{source_accession}"
+    logger.info(f"  Derived source_ref: {source_ref}")
+    return source_ref
+
+
 def _process_entities_vectorized(
     df: pl.DataFrame,
-    source_id: int,
+    source_ref: str,
     next_id: int,
     instance_registry: InstanceRegistry,
 ) -> tuple[dict[str, pl.DataFrame], int]:
@@ -85,7 +127,7 @@ def _process_entities_vectorized(
         pl.col("type").alias("entity_type"),
     ]).with_row_index("local_entity_id", offset=next_id)
 
-    entities = entities.with_columns(pl.lit(source_id).alias("source_id"))
+    entities = entities.with_columns(pl.lit(source_ref).alias("source_ref"))
     next_id += len(entities)
     entity_start_id = next_id - len(entities)
 
@@ -119,7 +161,7 @@ def _process_entities_vectorized(
                     pl.col("identifiers").struct.field("value").alias("identifier"),
                 ])
                 .with_row_index("local_entity_identifier_id", offset=1)
-                .with_columns(pl.lit(source_id).alias("source_id"))
+                .with_columns(pl.lit(source_ref).alias("source_ref"))
             )
             logger.info(f"    Extracted {len(identifiers):,} identifier records")
 
@@ -191,7 +233,7 @@ def _process_entities_vectorized(
                         pl.col("unit_accession"),
                     ])
                     .with_row_index("local_entity_annotation_id", offset=1)
-                    .with_columns(pl.lit(source_id).alias("source_id"))
+                    .with_columns(pl.lit(source_ref).alias("source_ref"))
                 )
                 logger.info(f"    Created {len(entity_annotations):,} entity annotation records (linked to instances)")
 
@@ -262,7 +304,7 @@ def _process_entities_vectorized(
                 member_base_start_id = next_id
                 member_results, next_id = _process_entities_vectorized(
                     member_df.drop("membership_annotations"),
-                    source_id,
+                    source_ref,
                     next_id,
                     instance_registry,
                 )
@@ -356,7 +398,7 @@ def _process_entities_vectorized(
                                     pl.col("unit_accession"),
                                 ])
                                 .with_row_index("local_entity_annotation_id", offset=1)
-                                .with_columns(pl.lit(source_id).alias("source_id"))
+                                .with_columns(pl.lit(source_ref).alias("source_ref"))
                             )
                             if len(converted_annotations):
                                 member_entity_annotations.append(converted_annotations)
@@ -410,7 +452,7 @@ def _process_entities_vectorized(
                             pl.col("member_instance_id").cast(pl.Int64),
                         ])
                         .with_row_index("local_membership_id", offset=1)
-                        .with_columns(pl.lit(source_id).alias("source_id"))
+                        .with_columns(pl.lit(source_ref).alias("source_ref"))
                     )
                     
                     logger.info(f"    Created {len(memberships):,} membership relationships")
@@ -686,7 +728,6 @@ def _save_tables(tables: dict[str, pl.DataFrame], instance_df: pl.DataFrame, out
 def build_local_tables(
     data_root: Path,
     output_dir: Path,
-    source_id_map: dict[str, int] | None = None,
     source_filter: set[str] | None = None,
     single_source_name: str | None = None,
 ):
@@ -699,7 +740,6 @@ def build_local_tables(
     Args:
         data_root: Root directory containing silver parquet files for one source
         output_dir: Output directory for local tables
-        source_id_map: Optional mapping of source_name -> source_id to enforce deterministic IDs
         source_filter: Optional set of source names to process
         single_source_name: Required source name for the flat silver input directory
     """
@@ -712,20 +752,6 @@ def build_local_tables(
         data = {k: v for k, v in data.items() if k in source_filter}
         logger.info(f"Applied source filter: {len(data)} source(s) selected")
 
-    if source_id_map is not None:
-        missing_sources = sorted([name for name in data.keys() if name not in source_id_map])
-        if missing_sources:
-            missing_str = ', '.join(missing_sources)
-            raise ValueError(
-                f"Missing source_id entries for discovered source(s): {missing_str}"
-            )
-        name2id = {name: int(source_id_map[name]) for name in sorted(data.keys())}
-        logger.info(f"Using provided source ID map for {len(name2id)} discovered sources")
-    else:
-        # Auto-generate source IDs from discovered data (sorted alphabetically for consistency)
-        name2id = {name: idx + 1 for idx, name in enumerate(sorted(data.keys()))}
-        logger.info(f"Auto-generated source IDs for {len(name2id)} discovered sources")
-
     if not data:
         logger.warning("No sources selected for local table building")
         return
@@ -737,10 +763,9 @@ def build_local_tables(
     # Process each source
     for source_name in sorted(data.keys()):
         files = data[source_name]
-        source_id = name2id[source_name]
 
         logger.info("\n" + "="*70)
-        logger.info(f"Processing source: {source_name} (id={source_id})")
+        logger.info(f"Processing source: {source_name}")
         logger.info("="*70)
 
         # Collect all tables for this source
@@ -751,19 +776,18 @@ def build_local_tables(
             'membership': [],
         }
 
+        source_ref = _derive_source_ref(files, source_name=source_name)
         next_id = 1
-        instance_registry = InstanceRegistry(source_id)
+        instance_registry = InstanceRegistry(source_ref)
 
-        # Sort files to ensure resource.parquet is processed first
-        # This guarantees that the source entity always gets local_entity_id = 1
-        def sort_key(item):
-            path, _ = item
-            return (0 if path.name == 'resource.parquet' else 1, path.name)
+        sorted_files = sorted(files, key=lambda item: item[0].name)
 
-        sorted_files = sorted(files, key=sort_key)
-
-        # Process each file
+        # Process each non-resource file
         for file_path, lazy_frame in sorted_files:
+            if file_path.name == 'resource.parquet':
+                logger.info('  Skipping resource.parquet (metadata-only for source_ref derivation)')
+                continue
+
             logger.info(f"  Processing {file_path.name}")
 
             # Collect the dataframe
@@ -775,7 +799,7 @@ def build_local_tables(
             logger.info(f"    Found {len(df):,} entities")
 
             # Process entities using vectorized operations
-            tables, next_id = _process_entities_vectorized(df, source_id, next_id, instance_registry)
+            tables, next_id = _process_entities_vectorized(df, source_ref, next_id, instance_registry)
 
             # Accumulate results
             for table_name, table_df in tables.items():

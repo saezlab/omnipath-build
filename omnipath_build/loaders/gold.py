@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""
-Gold Loader (New) - Build gold tables from silver tables with updated schema.
+"""Gold Loader (New) - Build gold tables from silver tables with updated schema.
 
 This module orchestrates the gold table building process. Currently implements:
 1. local_tables: Build per-source local tables from Entity records
@@ -11,9 +10,9 @@ Future steps will include:
 4. aggregates: Summarise global evidence into dimension tables and bridges
 """
 
+from typing import Optional
 import logging
 from pathlib import Path
-from typing import Optional
 
 import polars as pl
 
@@ -26,9 +25,11 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Import our modular functions from the gold/ directory
-from omnipath_build.gold.build_entity_identifiers import build_entity_identifiers
-from omnipath_build.gold.build_global_tables import build_global_tables
 from omnipath_build.gold.build_local_tables import build_local_tables
+from omnipath_build.gold.build_global_tables import build_global_tables
+from omnipath_build.gold.build_entity_identifiers_v2 import (
+    build_entity_identifiers_v2,
+)
 
 __all__ = [
     'build_local_tables_step',
@@ -38,54 +39,12 @@ __all__ = [
 ]
 
 
-def _load_source_id_map(path: Path | None) -> dict[str, int] | None:
-    """Load a source name -> source ID map from TSV.
-
-    Expected format (header optional):
-        source_id<TAB>source
-    """
-    if path is None:
-        return None
-
-    if not path.exists():
-        raise FileNotFoundError(f'Source ID map not found: {path}')
-
-    mapping: dict[str, int] = {}
-    with path.open('r', encoding='utf-8') as handle:
-        for raw_line in handle:
-            line = raw_line.strip()
-            if not line:
-                continue
-            parts = line.split('\t')
-            if len(parts) != 2:
-                continue
-            if parts[0] == 'source_id' and parts[1] == 'source':
-                continue
-            source_id, source_name = parts
-            source_id_int = int(source_id)
-            mapping[source_name] = source_id_int
-            source_leaf = source_name.split('.')[-1]
-            if source_leaf in mapping and mapping[source_leaf] != source_id_int:
-                raise ValueError(
-                    f'Ambiguous source leaf in map for {source_leaf}: '
-                    f'{mapping[source_leaf]} vs {source_id_int}'
-                )
-            mapping[source_leaf] = source_id_int
-
-    if not mapping:
-        raise ValueError(f'No valid source mappings found in: {path}')
-
-    return mapping
-
-
 def build_local_tables_step(
     data_root: Path,
     output_dir: Path,
     source: Optional[str] = None,
-    source_id_map_file: Optional[Path] = None,
 ) -> dict[str, pl.DataFrame]:
-    """
-    Build local tables per source.
+    """Build local tables per source.
 
     This step processes each source independently to create normalized tables:
     - local_entity: Per-source entity records
@@ -94,13 +53,10 @@ def build_local_tables_step(
     - local_entity_annotation: Per-source entity annotations (linked to instances)
     - local_membership: Per-source membership relationships (polymorphic entity/instance columns)
 
-    Source IDs are auto-generated from discovered source names.
-
     Args:
         data_root: Path to data directory containing silver files
         output_dir: Path to output directory for gold tables
         source: Optional single source name to process
-        source_id_map_file: Optional TSV path with deterministic source ID mapping
 
     Returns:
         Dictionary containing the local tables (empty as tables are saved per-source)
@@ -112,7 +68,6 @@ def build_local_tables_step(
     if not source:
         raise ValueError('local_tables step requires --source in per-source stage layout')
 
-    source_id_map = _load_source_id_map(source_id_map_file)
     source_filter = {source.split('.')[-1]}
 
     # Build local tables for all (or selected) sources
@@ -120,7 +75,6 @@ def build_local_tables_step(
     local_tables = build_local_tables(
         data_root=data_root,
         output_dir=output_dir,
-        source_id_map=source_id_map,
         source_filter=source_filter,
         single_source_name=source.split('.')[-1] if source else None,
     )
@@ -134,26 +88,22 @@ def build_entity_identifiers_step(
     output_dir: Path,
     local_tables_dir: Optional[Path] = None,
 ) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame, pl.DataFrame]:
-    """
-    Build entity identifiers using graph-based equivalence detection.
+    """Build entity identifiers using graph-based equivalence detection.
 
     This step resolves entities across sources by:
     1. Loading local entity identifier tables from output_dir/local_tables/
-    2. Building edges from merge-safe identifiers (InChI, InChIKey, Uniprot)
-    3. Using UnionFind to assign canonical entity_id across all sources
-    4. Creating a mapping from (source_id, local_entity_id) -> entity_id
-    5. Building a unified identifier table with source provenance
-    6. Loading entity instances and mapping to global instance IDs
+    2. Building deterministic entity/instance keys via IEM v2
+    3. Building unified identifier tables with source provenance
 
     Args:
         output_dir: Path to output directory containing local_tables/
 
     Returns:
-        Tuple of (record_to_global, entity_identifiers, entity_identifier_resource, instance_to_global) DataFrames:
-        - record_to_global: Maps (source_id, local_entity_id) to entity_id
-        - entity_identifiers: Maps (id, entity_id, type_id, identifier)
-        - entity_identifier_resource: Maps (id, entity_identifier_id, source_entity_id)
-        - instance_to_global: Maps (source_id, local_entity_instance_id) to (instance_id, entity_id)
+        Tuple of (record_identity_snapshot, entity_identifier_snapshot, entity_identifier_resource, instance_identity_snapshot) DataFrames:
+        - record_identity_snapshot: Maps (source_ref, local_entity_id) to entity_key
+        - entity_identifier_snapshot: Maps (id, entity_key, type_id, identifier)
+        - entity_identifier_resource: Maps (id, entity_identifier_id, source_ref)
+        - instance_identity_snapshot: Maps (source_ref, local_entity_instance_id) to (instance_key, entity_key)
     """
     print('\n' + '=' * 70)
     print('STEP: Entity Identifiers (Cross-Source Resolution)')
@@ -166,43 +116,43 @@ def build_entity_identifiers_step(
             "Please run the 'local_tables' step first."
         )
 
-    # Build entity identifiers
+    # Build entity identity snapshots (IEM v2)
     (
-        record_to_global,
+        record_identity_snapshot,
         entity_identifiers,
         entity_identifier_resource,
-        instance_to_global,
-    ) = build_entity_identifiers(
+        instance_identity_snapshot,
+    ) = build_entity_identifiers_v2(
         local_tables_dir=local_tables_dir,
     )
 
     # Save the results
-    record_to_global_path = output_dir / 'entity_record_mapping.parquet'
-    entity_identifiers_path = output_dir / 'entity_identifier.parquet'
+    record_identity_snapshot_path = output_dir / 'record_identity_snapshot.parquet'
+    entity_identifiers_path = output_dir / 'entity_identifier_snapshot.parquet'
     entity_identifier_resource_path = output_dir / 'entity_identifier_resource.parquet'
-    instance_to_global_path = output_dir / 'instance_to_global.parquet'
+    instance_identity_snapshot_path = output_dir / 'instance_identity_snapshot.parquet'
 
-    record_to_global.write_parquet(record_to_global_path)
+    record_identity_snapshot.write_parquet(record_identity_snapshot_path)
     entity_identifiers.write_parquet(entity_identifiers_path)
     entity_identifier_resource.write_parquet(entity_identifier_resource_path)
-    instance_to_global.write_parquet(instance_to_global_path)
+    instance_identity_snapshot.write_parquet(instance_identity_snapshot_path)
 
-    print(f'\nSaved entity record mapping: {record_to_global_path}')
-    print(f'  Rows: {len(record_to_global):,}')
-    print(f'\nSaved entity identifiers: {entity_identifiers_path}')
+    print(f'\nSaved record identity snapshot: {record_identity_snapshot_path}')
+    print(f'  Rows: {len(record_identity_snapshot):,}')
+    print(f'\nSaved entity identifier snapshot: {entity_identifiers_path}')
     print(f'  Rows: {len(entity_identifiers):,}')
     if len(entity_identifiers) > 0:
-        print(f"  Unique entities: {entity_identifiers['entity_id'].n_unique():,}")
+        print(f"  Unique entities: {entity_identifiers['entity_key'].n_unique():,}")
     print(f'\nSaved entity identifier resources: {entity_identifier_resource_path}')
     print(f'  Rows: {len(entity_identifier_resource):,}')
-    print(f'\nSaved instance to global mapping: {instance_to_global_path}')
-    print(f'  Rows: {len(instance_to_global):,}')
+    print(f'\nSaved instance identity snapshot: {instance_identity_snapshot_path}')
+    print(f'  Rows: {len(instance_identity_snapshot):,}')
 
     return (
-        record_to_global,
+        record_identity_snapshot,
         entity_identifiers,
         entity_identifier_resource,
-        instance_to_global,
+        instance_identity_snapshot,
     )
 
 
@@ -210,13 +160,12 @@ def build_global_tables_step(
     output_dir: Path,
     local_tables_dir: Optional[Path] = None,
 ) -> None:
-    """
-    Build global tables from local tables and entity resolution.
+    """Build global tables from local tables and entity resolution.
 
-    This step joins local tables with entity mappings to create global tables:
-    1. Loads record_to_global mapping (source_id, local_entity_id) -> entity_id
-    2. Loads entity_identifiers with CV term information
-    3. Loads instance_to_global mapping for entity instances
+    This step joins local tables with identity snapshots to create global tables:
+    1. Loads record identity snapshot (source_ref, local_entity_id) -> entity_key
+    2. Loads entity identifier snapshot with CV term information
+    3. Loads instance identity snapshot for entity instances
     4. Processes each local table type:
        - entity: Maps entity_type to entity_type_id
        - entity_identifier: Resolves id_type to id_type_id
@@ -243,9 +192,9 @@ def build_global_tables_step(
     print('=' * 70)
 
     local_tables_dir = local_tables_dir or (output_dir / 'local_tables')
-    record_to_global_file = output_dir / 'entity_record_mapping.parquet'
-    entity_identifiers_file = output_dir / 'entity_identifier.parquet'
-    instance_to_global_file = output_dir / 'instance_to_global.parquet'
+    record_identity_snapshot_file = output_dir / 'record_identity_snapshot.parquet'
+    entity_identifier_snapshot_file = output_dir / 'entity_identifier_snapshot.parquet'
+    instance_identity_snapshot_file = output_dir / 'instance_identity_snapshot.parquet'
 
     # Verify prerequisites exist
     if not local_tables_dir.exists():
@@ -253,28 +202,28 @@ def build_global_tables_step(
             f'Local tables directory not found: {local_tables_dir}\n'
             "Please run the 'local_tables' step first."
         )
-    if not record_to_global_file.exists():
+    if not record_identity_snapshot_file.exists():
         raise FileNotFoundError(
-            f'Entity record mapping not found: {record_to_global_file}\n'
+            f'Record identity snapshot not found: {record_identity_snapshot_file}\n'
             "Please run the 'entity_identifiers' step first."
         )
-    if not entity_identifiers_file.exists():
+    if not entity_identifier_snapshot_file.exists():
         raise FileNotFoundError(
-            f'Entity identifiers not found: {entity_identifiers_file}\n'
+            f'Entity identifier snapshot not found: {entity_identifier_snapshot_file}\n'
             "Please run the 'entity_identifiers' step first."
         )
-    if not instance_to_global_file.exists():
+    if not instance_identity_snapshot_file.exists():
         raise FileNotFoundError(
-            f'Instance to global mapping not found: {instance_to_global_file}\n'
+            f'Instance identity snapshot not found: {instance_identity_snapshot_file}\n'
             "Please run the 'entity_identifiers' step first."
         )
 
     # Build global tables
     build_global_tables(
         local_tables_dir=local_tables_dir,
-        record_to_global_file=record_to_global_file,
-        entity_identifiers_file=entity_identifiers_file,
-        instance_to_global_file=instance_to_global_file,
+        record_identity_snapshot_file=record_identity_snapshot_file,
+        entity_identifier_snapshot_file=entity_identifier_snapshot_file,
+        instance_identity_snapshot_file=instance_identity_snapshot_file,
         output_dir=output_dir,
     )
 
@@ -286,11 +235,9 @@ def run_gold_loader_new(
     output_dir: Path,
     step: Optional[str] = None,
     source: Optional[str] = None,
-    source_id_map_file: Optional[Path] = None,
     local_tables_dir: Optional[Path] = None,
 ) -> None:
-    """
-    Main orchestration function for building gold tables with new schema.
+    """Main orchestration function for building gold tables with new schema.
 
     Currently implemented steps:
     1. local_tables: Build per-source local tables
@@ -303,7 +250,6 @@ def run_gold_loader_new(
         step: Optional specific step to run. If None, run all steps.
               Valid values: 'local_tables', 'entity_identifiers', 'global_tables'
         source: Optional source filter (applies to local_tables step)
-        source_id_map_file: Optional TSV mapping for deterministic source IDs
     """
     # Ensure output directory exists
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -318,8 +264,6 @@ def run_gold_loader_new(
         print(f'Running single step: {step}')
     if source:
         print(f'Source filter: {source}')
-    if source_id_map_file:
-        print(f'Source ID map: {source_id_map_file}')
     if local_tables_dir:
         print(f'Local tables dir override: {local_tables_dir}')
     print()
@@ -335,7 +279,6 @@ def run_gold_loader_new(
                 data_root,
                 output_dir,
                 source=source,
-                source_id_map_file=source_id_map_file,
             )
         elif step == 'entity_identifiers':
             build_entity_identifiers_step(
@@ -356,7 +299,6 @@ def run_gold_loader_new(
             data_root,
             output_dir,
             source=source,
-            source_id_map_file=source_id_map_file,
         )
 
         # Step 2: Entity identifiers (cross-source resolution)

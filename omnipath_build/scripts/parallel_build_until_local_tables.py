@@ -166,7 +166,6 @@ def _build_source_worker(
     source_id: int,
     inputs_package: str,
     test_mode: bool,
-    map_path: Path,
     stage_root: Path,
     reports_dir: Path,
     progress_state: dict[int, dict[str, Any]],
@@ -280,8 +279,6 @@ def _build_source_worker(
             'local_tables',
             '--source',
             source,
-            '--source-id-map',
-            str(map_path),
         ]
         _update_progress_state(
             progress_state,
@@ -437,12 +434,7 @@ def main(argv: list[str] | None = None) -> int:
     stage_root.mkdir(parents=True, exist_ok=True)
     reports_dir.mkdir(parents=True, exist_ok=True)
 
-    map_path = args.build_dir / 'source_map.tsv'
-    lines = ['source_id\tsource', *[f'{sid}\t{src}' for src, sid in global_source_map.items()]]
-    map_path.write_text('\n'.join(lines) + '\n', encoding='utf-8')
-
     print(f'Running {len(selected_sources)} source(s) with jobs={args.jobs}')
-    print(f'Source map: {map_path}')
     print(f'Reports dir: {reports_dir}')
 
     render_enabled = sys.stdout.isatty()
@@ -468,7 +460,6 @@ def main(argv: list[str] | None = None) -> int:
                     source_id=source_id,
                     inputs_package=args.inputs_package,
                     test_mode=args.test_mode,
-                    map_path=map_path,
                     stage_root=stage_root,
                     reports_dir=reports_dir,
                     progress_state=progress_state,

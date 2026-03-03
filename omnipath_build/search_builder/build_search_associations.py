@@ -69,6 +69,13 @@ def _resolve_parent_entity_id(mem: pl.DataFrame, inst: pl.DataFrame) -> pl.DataF
     )
 
 
+def _normalize_key_columns(df: pl.DataFrame) -> pl.DataFrame:
+    """Normalize key-based global tables to legacy column names expected by builders."""
+    if 'entity_key' in df.columns and 'entity_id' not in df.columns:
+        return df.rename({'entity_key': 'entity_id'})
+    return df
+
+
 def build_search_associations(global_tables_dir: Path, output_path: Path) -> Path:
     logger.info("=" * 80 + "\nBuilding Meilisearch association documents\n" + "=" * 80)
 
@@ -87,10 +94,10 @@ def build_search_associations(global_tables_dir: Path, output_path: Path) -> Pat
         logger.warning("cv_terms.parquet not found in %s", global_tables_dir)
         cv_terms = pl.DataFrame(schema={"accession": pl.Utf8, "label": pl.Utf8})
 
-    ent = tables["entity"]
+    ent = _normalize_key_columns(tables["entity"])
     mem_raw = tables["membership"]
-    ent_id = tables["entity_identifier"]
-    inst = tables["entity_instance"]
+    ent_id = _normalize_key_columns(tables["entity_identifier"])
+    inst = _normalize_key_columns(tables["entity_instance"])
     ent_annot = tables["entity_annotation"]
 
     mem = _resolve_member_entity_id(mem_raw, inst)
@@ -103,9 +110,9 @@ def build_search_associations(global_tables_dir: Path, output_path: Path) -> Pat
         pl.DataFrame(schema={
             "association_id": pl.Int64,
             "association_key": pl.Utf8,
-            "parent_entity_id": pl.Int64,
+            "parent_entity_id": pl.Utf8,
             "parent_entity_type": pl.Utf8,
-            "member_entity_id": pl.Int64,
+            "member_entity_id": pl.Utf8,
             "member_entity_type": pl.Utf8,
             "sources": pl.List(pl.Utf8),
             "evidence": EVIDENCE_LIST_DTYPE,
@@ -134,25 +141,13 @@ def build_search_associations(global_tables_dir: Path, output_path: Path) -> Pat
         .select("entity_id", pl.col("entity_type_formatted").alias("entity_type"))
     )
 
-    name_tid = "OM:0202"
-    source_names = (
-        ent_id.filter(pl.col("type_id") == name_tid)
-        .group_by("entity_id")
-        .agg(pl.col("identifier").first().alias("source_name"))
-    )
-
-    source_fmt = (
-        source_names
-        .select([
-            pl.col("entity_id").alias("source_id"),
-            (pl.coalesce([pl.col("source_name"), pl.lit("Source")]) + ":" + pl.col("entity_id").cast(pl.Utf8)).alias("source"),
-        ])
-    )
-
     assoc_rows = (
         mem_assoc
-        .select(["parent_id", "member_id", "source_id", "member_instance_id"])
-        .with_columns((pl.col("parent_id").cast(pl.Utf8) + "_" + pl.col("member_id").cast(pl.Utf8)).alias("association_key"))
+        .select(["parent_id", "member_id", "source_ref", "member_instance_id"])
+        .with_columns([
+            (pl.col("parent_id").cast(pl.Utf8) + "_" + pl.col("member_id").cast(pl.Utf8)).alias("association_key"),
+            pl.coalesce([pl.col('source_ref'), pl.lit('')]).alias('source'),
+        ])
     )
 
     # Annotation bundles per member instance
@@ -192,7 +187,6 @@ def build_search_associations(global_tables_dir: Path, output_path: Path) -> Pat
 
     evidence_rows = (
         assoc_rows
-        .join(source_fmt, on="source_id", how="left")
         .join(ann_bundle, on="member_instance_id", how="left")
         .with_columns([
             pl.coalesce(pl.col("source"), pl.lit("")).alias("source"),

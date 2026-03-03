@@ -150,6 +150,13 @@ def _resolve_parent_entity_id(mem: pl.DataFrame, inst: pl.DataFrame) -> pl.DataF
     )
 
 
+def _normalize_key_columns(df: pl.DataFrame) -> pl.DataFrame:
+    """Normalize key-based global tables to legacy column names expected by builders."""
+    if 'entity_key' in df.columns and 'entity_id' not in df.columns:
+        return df.rename({'entity_key': 'entity_id'})
+    return df
+
+
 def build_search_interactions(global_tables_dir: Path, output_path: Path) -> Path:
     logger.info("=" * 80 + "\nBuilding Meilisearch interaction documents\n" + "=" * 80)
 
@@ -178,11 +185,11 @@ def build_search_interactions(global_tables_dir: Path, output_path: Path) -> Pat
         pl.col("label").alias("cv_term_label"),
     ])
 
-    ent = tables["entity"]
+    ent = _normalize_key_columns(tables["entity"])
     mem_raw = tables["membership"]
-    ent_id = tables["entity_identifier"]
+    ent_id = _normalize_key_columns(tables["entity_identifier"])
     ent_id_res = tables["entity_identifier_resource"]
-    inst = tables["entity_instance"]
+    inst = _normalize_key_columns(tables["entity_instance"])
     ent_annot = tables["entity_annotation"]
 
     mem = _resolve_member_entity_id(mem_raw, inst)
@@ -212,8 +219,8 @@ def build_search_interactions(global_tables_dir: Path, output_path: Path) -> Pat
         pl.DataFrame(schema={
             "interaction_id": pl.Int64,
             "interaction_key": pl.Utf8,
-            "member_a_id": pl.Int64,
-            "member_b_id": pl.Int64,
+            "member_a_id": pl.Utf8,
+            "member_b_id": pl.Utf8,
             "member_types": pl.List(pl.Utf8),
             "interaction_type": pl.Utf8,
             "evidence": EVIDENCE_LIST_DTYPE,
@@ -251,23 +258,15 @@ def build_search_interactions(global_tables_dir: Path, output_path: Path) -> Pat
         )
     )
 
-    # sources: label:id
-    name_tid = "OM:0202"
-    source_names = (
-        ent_id.filter(pl.col("type_id") == name_tid)
-        .group_by("entity_id")
-        .agg(pl.col("identifier").first().alias("s_name"))
-    )
+    # sources: direct source_ref provenance
     interaction_sources = (
-        ent_id_res.join(ent_id.select(["id", "entity_id"]), left_on="entity_identifier_id", right_on="id")
-        .rename({"entity_id": "interaction_id", "source_entity_id": "source_id"})
-        .join(source_names, left_on="source_id", right_on="entity_id", how="left")
+        ent_id_res.join(ent_id.select(['id', 'entity_id']), left_on='entity_identifier_id', right_on='id')
         .select(
-            "interaction_id",
-            (pl.coalesce([pl.col("s_name"), pl.lit("Source")]) + ":" + pl.col("source_id").cast(pl.Utf8)).alias("source_fmt"),
+            pl.col('entity_id').alias('interaction_id'),
+            'source_ref',
         )
-        .group_by("interaction_id")
-        .agg(pl.col("source_fmt").drop_nulls().unique().sort().alias("sources"))
+        .group_by('interaction_id')
+        .agg(pl.col('source_ref').drop_nulls().unique().sort().alias('sources'))
     )
 
     pair_sources = (
@@ -339,7 +338,7 @@ def build_search_interactions(global_tables_dir: Path, output_path: Path) -> Pat
 
     all_ann = pl.concat([int_ann, mem_ann]) if not int_ann.is_empty() or not mem_ann.is_empty() else pl.DataFrame(
         schema={
-            "interaction_id": pl.Int64,
+            "interaction_id": pl.Utf8,
             "pair_key": pl.Utf8,
             "cat": pl.Utf8,
             "ann_id": pl.Utf8,

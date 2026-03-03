@@ -1,0 +1,500 @@
+"""Build deterministic entity/instance identity snapshots (IEM v2).
+
+Implements docs/iem_spec_updated.md:
+- Deterministic readable entity_key
+- Deterministic instance_key
+- Snapshot outputs (no registry / no deltas)
+"""
+from __future__ import annotations
+
+import logging
+from pathlib import Path
+from datetime import UTC, datetime
+from dataclasses import dataclass
+import re
+
+import polars as pl
+
+from pypath.internals.cv_terms import EntityTypeCv, IdentifierNamespaceCv
+from omnipath_build.gold.build_entity_identifiers import (
+    EXEMPT_ENTITY_TYPES,
+    CHEMICAL_ENTITY_BUCKET,
+    UNKNOWN_ENTITY_TYPE_KEY,
+    MERGE_UNSAFE_IDENTIFIER_TYPES,
+    MERGE_SAFE_IDENTIFIER_TYPES_BY_BUCKET,
+)
+
+logger = logging.getLogger(__name__)
+
+# --------------------------------------------------------------------------- #
+# Config
+# --------------------------------------------------------------------------- #
+
+BUCKET_CODE_BY_ENTITY_TYPE: dict[str, str] = {
+    EntityTypeCv.PROTEIN.value: 'P',
+    EntityTypeCv.GENE.value: 'G',
+    EntityTypeCv.RNA.value: 'R',
+    EntityTypeCv.DNA.value: 'D',
+    EntityTypeCv.COMPLEX.value: 'C',
+    EntityTypeCv.PATHWAY.value: 'PW',
+    EntityTypeCv.REACTION.value: 'RXN',
+    EntityTypeCv.INTERACTION.value: 'INT',
+    EntityTypeCv.PROTEIN_FAMILY.value: 'PF',
+    EntityTypeCv.PHYSICAL_ENTITY.value: 'PE',
+    CHEMICAL_ENTITY_BUCKET: 'CH',
+}
+
+# Buckets where tax partition is required by policy
+REQUIRES_TAX_PARTITION: frozenset[str] = frozenset({'P', 'G', 'R', 'D'})
+
+# Per-bucket anchor type priority (lower index = higher priority)
+ANCHOR_PRIORITY_BY_BUCKET: dict[str, list[str]] = {
+    'P': [
+        IdentifierNamespaceCv.UNIPROT.value,
+        IdentifierNamespaceCv.UNIPROT_TREMBL.value,
+        IdentifierNamespaceCv.UNIPARC.value,
+        IdentifierNamespaceCv.REFSEQ_PROTEIN.value,
+        IdentifierNamespaceCv.ENTREZ.value,
+    ],
+    'G': [
+        IdentifierNamespaceCv.ENTREZ.value,
+        IdentifierNamespaceCv.HGNC.value,
+        IdentifierNamespaceCv.ENSEMBL.value,
+        IdentifierNamespaceCv.REFSEQ.value,
+    ],
+    'R': [IdentifierNamespaceCv.ENSEMBL.value, IdentifierNamespaceCv.REFSEQ.value],
+    'D': [IdentifierNamespaceCv.ENSEMBL.value, IdentifierNamespaceCv.REFSEQ.value],
+    'CH': [
+        IdentifierNamespaceCv.STANDARD_INCHI_KEY.value,
+        IdentifierNamespaceCv.STANDARD_INCHI.value,
+        IdentifierNamespaceCv.PUBCHEM_COMPOUND.value,
+        IdentifierNamespaceCv.CHEMBL_COMPOUND.value,
+        IdentifierNamespaceCv.BINDINGDB.value,
+        IdentifierNamespaceCv.GUIDETOPHARMA.value,
+    ],
+    'C': [IdentifierNamespaceCv.COMPLEXPORTAL.value, IdentifierNamespaceCv.REACTOME_STABLE_ID.value],
+    'PW': [IdentifierNamespaceCv.REACTOME_STABLE_ID.value, IdentifierNamespaceCv.REACTOME_ID.value],
+    'RXN': [IdentifierNamespaceCv.REACTOME_STABLE_ID.value, IdentifierNamespaceCv.REACTOME_ID.value],
+    'INT': [IdentifierNamespaceCv.INTACT.value, IdentifierNamespaceCv.BINDINGDB.value, IdentifierNamespaceCv.SIGNOR.value],
+}
+
+CASE_NORMALIZE_UPPER: frozenset[str] = frozenset({
+    IdentifierNamespaceCv.UNIPROT.value,
+    IdentifierNamespaceCv.UNIPROT_TREMBL.value,
+    IdentifierNamespaceCv.UNIPARC.value,
+    IdentifierNamespaceCv.REFSEQ.value,
+    IdentifierNamespaceCv.REFSEQ_PROTEIN.value,
+    IdentifierNamespaceCv.ENSEMBL.value,
+    IdentifierNamespaceCv.ENTREZ.value,
+    IdentifierNamespaceCv.HGNC.value,
+    IdentifierNamespaceCv.STANDARD_INCHI_KEY.value,
+    IdentifierNamespaceCv.GENE_NAME_PRIMARY.value,
+    IdentifierNamespaceCv.GENE_NAME_SYNONYM.value,
+})
+
+# Preferred short codes for common identifier types used in keys.
+# Remaining identifier types are auto-assigned deterministic short codes.
+ID_TYPE_SHORT_OVERRIDES_BY_NAME: dict[str, str] = {
+    'UNIPROT': 'UP',
+    'UNIPROT_TREMBL': 'UPT',
+    'UNIPARC': 'UPA',
+    'REFSEQ': 'RS',
+    'REFSEQ_PROTEIN': 'RSP',
+    'ENSEMBL': 'ENS',
+    'ENTREZ': 'EG',
+    'ENSEMBL_GENOMES': 'ENSG',
+    'HGNC': 'HGNC',
+    'STANDARD_INCHI_KEY': 'IK',
+    'STANDARD_INCHI': 'INCHI',
+    'PUBCHEM_COMPOUND': 'CID',
+    'CHEMBL_COMPOUND': 'CHEMBL',
+    'BINDINGDB': 'BDB',
+    'GUIDETOPHARMA': 'GTP',
+    'REACTOME_STABLE_ID': 'RST',
+    'REACTOME_ID': 'RID',
+    'COMPLEXPORTAL': 'CPX',
+    'INTACT': 'INTACT',
+    'SIGNOR': 'SIGNOR',
+    'GENE_NAME_PRIMARY': 'SYMBOL',
+    'GENE_NAME_SYNONYM': 'GSYN',
+    'NAME': 'NAME',
+    'SYNONYM': 'SYN',
+    'CV_TERM_ACCESSION': 'CV',
+    'NCBI_TAX_ID': 'TAX',
+}
+
+
+def _default_short_code_from_name(enum_name: str) -> str:
+    parts = [p for p in enum_name.split('_') if p]
+    if not parts:
+        return 'ID'
+    if len(parts) == 1:
+        return parts[0][:4]
+    return ''.join(p[0] for p in parts)[:6]
+
+
+def _build_id_type_short_codes() -> dict[str, str]:
+    """Build a unique deterministic accession -> short code mapping."""
+    mapping: dict[str, str] = {}
+    used: set[str] = set()
+
+    for member in sorted(IdentifierNamespaceCv, key=lambda m: m.name):
+        base = ID_TYPE_SHORT_OVERRIDES_BY_NAME.get(member.name, _default_short_code_from_name(member.name))
+        code = base
+        suffix = 2
+        while code in used:
+            code = f'{base}{suffix}'
+            suffix += 1
+
+        mapping[str(member.value)] = code
+        used.add(code)
+
+    return mapping
+
+
+ID_TYPE_SHORT_BY_ACCESSION = _build_id_type_short_codes()
+
+def _slug(text: str) -> str:
+    s = re.sub(r'[^A-Za-z0-9]+', '_', text.strip().upper())
+    s = re.sub(r'_+', '_', s).strip('_')
+    return s or 'SOURCE'
+
+
+@dataclass(frozen=True)
+class Anchor:
+    type_id: str
+    canonical_identifier: str
+    merge_safe: bool
+
+
+def _canonicalize(type_id: str, value: str) -> str:
+    out = str(value).strip()
+    out = ' '.join(out.split())
+    if type_id in CASE_NORMALIZE_UPPER:
+        out = out.upper()
+    return out
+
+
+def _entity_bucket(entity_type: str | None) -> str:
+    if entity_type in EXEMPT_ENTITY_TYPES:
+        return 'CH'
+    return BUCKET_CODE_BY_ENTITY_TYPE.get(entity_type or UNKNOWN_ENTITY_TYPE_KEY, 'X')
+
+
+def _build_merge_safe_by_bucket_code() -> dict[str, frozenset[str]]:
+    by_code: dict[str, set[str]] = {}
+    for bucket, id_types in MERGE_SAFE_IDENTIFIER_TYPES_BY_BUCKET.items():
+        if bucket == CHEMICAL_ENTITY_BUCKET:
+            code = 'CH'
+        else:
+            code = BUCKET_CODE_BY_ENTITY_TYPE.get(bucket, 'X')
+        by_code.setdefault(code, set()).update(str(x) for x in id_types)
+    return {k: frozenset(v) for k, v in by_code.items()}
+
+
+MERGE_SAFE_BY_BUCKET_CODE = _build_merge_safe_by_bucket_code()
+
+
+def _id_type_short(type_id: str) -> str:
+    """Return short code for an identifier type accession."""
+    if type_id == 'NONE':
+        return 'NONE'
+    return ID_TYPE_SHORT_BY_ACCESSION.get(type_id, type_id.replace(':', '_'))
+
+
+def _choose_anchor(bucket: str, id_rows: list[tuple[str, str, bool]]) -> Anchor:
+    if not id_rows:
+        return Anchor(type_id='NONE', canonical_identifier='NONE', merge_safe=False)
+
+    priority = {tid: i for i, tid in enumerate(ANCHOR_PRIORITY_BY_BUCKET.get(bucket, []))}
+
+    def rank(row: tuple[str, str, bool]) -> tuple[int, str, str]:
+        t, v, _ = row
+        return (priority.get(t, 1_000_000), t, v)
+
+    merge_safe_rows = [r for r in id_rows if r[2]]
+    if merge_safe_rows:
+        t, v, _ = sorted(merge_safe_rows, key=rank)[0]
+        return Anchor(type_id=t, canonical_identifier=v, merge_safe=True)
+
+    t, v, _ = sorted(id_rows, key=rank)[0]
+    return Anchor(type_id=t, canonical_identifier=v, merge_safe=False)
+
+
+def build_entity_identifiers_v2(
+    local_tables_dir: Path,
+    run_id: str | None = None,
+) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame, pl.DataFrame]:
+    """Build deterministic IEM snapshots.
+
+    Returns:
+      - record_identity_snapshot
+      - entity_identifier_snapshot_with_id (id, entity_key, type_id, identifier)
+      - entity_identifier_resource (id, entity_identifier_id, source_ref)
+      - instance_identity_snapshot
+    """
+    local_tables_dir = Path(local_tables_dir)
+    run_id = run_id or datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')
+
+    entity_files = sorted(
+        p
+        for p in local_tables_dir.rglob('local_entity_*.parquet')
+        if 'annotation' not in p.name and 'identifier' not in p.name and 'instance' not in p.name
+    )
+    identifier_files = sorted(local_tables_dir.rglob('local_entity_identifier_*.parquet'))
+
+    if not entity_files:
+        empty = pl.DataFrame()
+        return empty, empty, empty, empty
+
+    all_entities: list[pl.DataFrame] = []
+    for path in entity_files:
+        df = pl.read_parquet(path)
+        if len(df) == 0:
+            continue
+        all_entities.append(
+            df.select(['source_ref', 'local_entity_id', 'entity_type'])
+            .with_columns([
+                pl.col('source_ref').cast(pl.Utf8),
+                pl.col('entity_type').cast(pl.Utf8),
+                pl.lit(None, dtype=pl.Utf8).alias('tax_id'),
+            ])
+        )
+
+    if not all_entities:
+        empty = pl.DataFrame()
+        return empty, empty, empty, empty
+
+    all_identifiers: list[pl.DataFrame] = []
+    for path in identifier_files:
+        df = pl.read_parquet(path)
+        if len(df) == 0:
+            continue
+        all_identifiers.append(
+            df.select([
+                'source_ref',
+                'local_entity_id',
+                pl.col('type_id').cast(pl.Utf8).alias('type_id'),
+                pl.col('identifier').cast(pl.Utf8).alias('identifier'),
+            ])
+            .filter(pl.col('type_id').is_not_null() & pl.col('identifier').is_not_null())
+        )
+
+    entities_all = pl.concat(all_entities, how='diagonal_relaxed').unique(subset=['source_ref', 'local_entity_id'])
+    ids_all = pl.concat(all_identifiers, how='diagonal_relaxed') if all_identifiers else pl.DataFrame({
+        'source_ref': pl.Series([], dtype=pl.Utf8),
+        'local_entity_id': pl.Series([], dtype=pl.Int64),
+        'type_id': pl.Series([], dtype=pl.Utf8),
+        'identifier': pl.Series([], dtype=pl.Utf8),
+    })
+
+    records = (
+        entities_all
+        .with_columns(pl.col('entity_type').fill_null(UNKNOWN_ENTITY_TYPE_KEY))
+        .with_columns(pl.col('entity_type').map_elements(_entity_bucket, return_dtype=pl.Utf8).alias('entity_bucket'))
+        .with_columns(
+            pl.when(pl.col('entity_bucket').is_in(list(REQUIRES_TAX_PARTITION)))
+            .then(pl.coalesce([pl.col('tax_id'), pl.lit('UNK')]))
+            .otherwise(pl.lit(None, dtype=pl.Utf8))
+            .alias('tax_partition')
+        )
+    )
+
+    ids_with_context = (
+        ids_all
+        .join(records.select(['source_ref', 'local_entity_id', 'entity_bucket']), on=['source_ref', 'local_entity_id'], how='left')
+        .with_columns(pl.col('entity_bucket').fill_null('X'))
+    )
+
+    # Canonicalize and mark merge safety
+    rows: list[dict] = []
+    for row in ids_with_context.iter_rows(named=True):
+        bucket = row['entity_bucket']
+        t = str(row['type_id'])
+        v = _canonicalize(t, str(row['identifier']))
+        allowed = MERGE_SAFE_BY_BUCKET_CODE.get(bucket)
+        if allowed is not None:
+            is_merge_safe = t in allowed
+        else:
+            is_merge_safe = t not in MERGE_UNSAFE_IDENTIFIER_TYPES
+        rows.append({
+            'source_ref': str(row['source_ref']),
+            'local_entity_id': int(row['local_entity_id']),
+            'entity_bucket': bucket,
+            'type_id': t,
+            'canonical_identifier': v,
+            'is_merge_safe': bool(is_merge_safe),
+        })
+
+    ids_canonical = pl.DataFrame(rows) if rows else pl.DataFrame({
+        'source_ref': pl.Series([], dtype=pl.Utf8),
+        'local_entity_id': pl.Series([], dtype=pl.Int64),
+        'entity_bucket': pl.Series([], dtype=pl.Utf8),
+        'type_id': pl.Series([], dtype=pl.Utf8),
+        'canonical_identifier': pl.Series([], dtype=pl.Utf8),
+        'is_merge_safe': pl.Series([], dtype=pl.Boolean),
+    })
+
+    grouped = (
+        records
+        .join(
+            ids_canonical,
+            on=['source_ref', 'local_entity_id', 'entity_bucket'],
+            how='left',
+        )
+        .group_by(['source_ref', 'local_entity_id', 'entity_bucket', 'tax_partition'])
+        .agg([
+            pl.col('type_id').drop_nulls().alias('type_ids'),
+            pl.col('canonical_identifier').drop_nulls().alias('canonical_ids'),
+            pl.col('is_merge_safe').drop_nulls().alias('merge_safe_flags'),
+        ])
+    )
+
+    snapshot_rows: list[dict] = []
+    for row in grouped.iter_rows(named=True):
+        type_ids = list(row.get('type_ids') or [])
+        canonical_ids = list(row.get('canonical_ids') or [])
+        flags = list(row.get('merge_safe_flags') or [])
+        id_rows = list(zip(type_ids, canonical_ids, flags, strict=False))
+        anchor = _choose_anchor(row['entity_bucket'], id_rows)
+
+        source_ref = str(row['source_ref'])
+        local_entity_id = int(row['local_entity_id'])
+        bucket = row['entity_bucket']
+        tax_partition = row['tax_partition']
+
+        anchor_type_short = _id_type_short(anchor.type_id)
+        anchor_type_accession = anchor.type_id
+        anchor_identifier = anchor.canonical_identifier
+
+        if anchor.merge_safe:
+            entity_key = f'{bucket}:{anchor_type_short}:{anchor.canonical_identifier}'
+            if tax_partition is not None:
+                entity_key = f'{entity_key}:{tax_partition}'
+        else:
+            source_slug = _slug(source_ref)
+            entity_key = (
+                f'{bucket}:SN:{anchor_type_short}:{anchor.canonical_identifier}:'
+                f'{source_slug}.{local_entity_id}'
+            )
+            if tax_partition is not None:
+                entity_key = f'{entity_key}:{tax_partition}'
+
+        snapshot_rows.append({
+            'run_id': run_id,
+            'source_ref': source_ref,
+            'local_entity_id': local_entity_id,
+            'entity_key': entity_key,
+            'entity_bucket': bucket,
+            'tax_partition': tax_partition,
+            'anchor_type_id': anchor_type_short,
+            'anchor_type_accession': anchor_type_accession,
+            'anchor_identifier': anchor_identifier,
+        })
+
+    record_identity_snapshot = (
+        pl.DataFrame(snapshot_rows)
+        .sort(['source_ref', 'local_entity_id'])
+        if snapshot_rows else
+        pl.DataFrame({
+            'run_id': pl.Series([], dtype=pl.Utf8),
+            'source_ref': pl.Series([], dtype=pl.Utf8),
+            'local_entity_id': pl.Series([], dtype=pl.Int64),
+            'entity_key': pl.Series([], dtype=pl.Utf8),
+            'entity_bucket': pl.Series([], dtype=pl.Utf8),
+            'tax_partition': pl.Series([], dtype=pl.Utf8),
+            'anchor_type_id': pl.Series([], dtype=pl.Utf8),
+            'anchor_type_accession': pl.Series([], dtype=pl.Utf8),
+            'anchor_identifier': pl.Series([], dtype=pl.Utf8),
+        })
+    )
+
+    # Instance snapshot
+    instance_files = sorted(local_tables_dir.rglob('local_entity_instance_*.parquet'))
+    if instance_files:
+        parts = [pl.read_parquet(p) for p in instance_files if p.exists()]
+        parts = [p for p in parts if len(p) > 0]
+    else:
+        parts = []
+
+    if parts:
+        instances_all = pl.concat(parts, how='diagonal_relaxed')
+        instance_identity_snapshot = (
+            instances_all
+            .join(
+                record_identity_snapshot.select(['source_ref', 'local_entity_id', 'entity_key']),
+                on=['source_ref', 'local_entity_id'],
+                how='left',
+            )
+            .with_columns([
+                pl.lit(run_id).alias('run_id'),
+                pl.format('INS:{}:{}', pl.col('source_ref'), pl.col('local_entity_instance_id')).alias('instance_key'),
+            ])
+            .select(['run_id', 'source_ref', 'local_entity_instance_id', 'instance_key', 'entity_key'])
+            .sort(['source_ref', 'local_entity_instance_id'])
+        )
+    else:
+        instance_identity_snapshot = pl.DataFrame({
+            'run_id': pl.Series([], dtype=pl.Utf8),
+            'source_ref': pl.Series([], dtype=pl.Utf8),
+            'local_entity_instance_id': pl.Series([], dtype=pl.Int64),
+            'instance_key': pl.Series([], dtype=pl.Utf8),
+            'entity_key': pl.Series([], dtype=pl.Utf8),
+        })
+
+    # Entity identifier snapshot (recommended in spec)
+    ids_for_entity = (
+        ids_canonical
+        .join(
+            record_identity_snapshot.select(['source_ref', 'local_entity_id', 'entity_key']),
+            on=['source_ref', 'local_entity_id'],
+            how='inner',
+        )
+        .select(['entity_key', 'type_id', 'canonical_identifier', 'source_ref'])
+        .unique()
+    ) if len(ids_canonical) > 0 else pl.DataFrame({
+        'entity_key': pl.Series([], dtype=pl.Utf8),
+        'type_id': pl.Series([], dtype=pl.Utf8),
+        'canonical_identifier': pl.Series([], dtype=pl.Utf8),
+        'source_ref': pl.Series([], dtype=pl.Utf8),
+    })
+
+    entity_identifier_snapshot = (
+        ids_for_entity
+        .select(['entity_key', 'type_id', pl.col('canonical_identifier').alias('identifier')])
+        .unique()
+        .sort(['entity_key', 'type_id', 'identifier'])
+        .with_row_index('id', offset=1)
+    )
+
+    entity_identifier_resource = (
+        ids_for_entity
+        .join(
+            entity_identifier_snapshot.select(['id', 'entity_key', 'type_id', 'identifier']),
+            left_on=['entity_key', 'type_id', 'canonical_identifier'],
+            right_on=['entity_key', 'type_id', 'identifier'],
+            how='inner',
+        )
+        .select([
+            pl.col('id').alias('entity_identifier_id'),
+            'source_ref',
+        ])
+        .unique()
+        .sort(['entity_identifier_id', 'source_ref'])
+        .with_row_index('id', offset=1)
+    )
+
+    logger.info(
+        'IEM v2 built: records=%s instances=%s entity_identifiers=%s resources=%s',
+        f'{len(record_identity_snapshot):,}',
+        f'{len(instance_identity_snapshot):,}',
+        f'{len(entity_identifier_snapshot):,}',
+        f'{len(entity_identifier_resource):,}',
+    )
+
+    return (
+        record_identity_snapshot,
+        entity_identifier_snapshot,
+        entity_identifier_resource,
+        instance_identity_snapshot,
+    )

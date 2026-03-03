@@ -94,7 +94,6 @@ def _handle_gold(args: argparse.Namespace) -> int:
             output_dir=output_dir,
             step=args.step,
             source=args.source,
-            source_id_map_file=args.source_id_map,
             local_tables_dir=local_tables_dir,
         )
     except Exception as exc:  # noqa: BLE001
@@ -215,11 +214,6 @@ def _build_parser() -> argparse.ArgumentParser:
         '--source',
         type=str,
         help='Optional single source to process (local_tables step only)',
-    )
-    gold_parser.add_argument(
-        '--source-id-map',
-        type=Path,
-        help='Optional TSV file with source_id<TAB>source mapping (local_tables step only)',
     )
     gold_parser.add_argument(
         '--local-tables-dir',
