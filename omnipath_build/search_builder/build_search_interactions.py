@@ -22,6 +22,7 @@ from .schema import (
     TARGET_ROLE_ACCESSIONS,
     ACTIVATORY_PARAMETER_ACCESSIONS,
     INHIBITORY_PARAMETER_ACCESSIONS,
+    CV_TERM_ACCESSION_TYPE,
 )
 
 __all__ = ["build_search_interactions"]
@@ -440,12 +441,62 @@ def build_search_interactions(global_tables_dir: Path, output_path: Path) -> Pat
             .agg(pl.col("term").unique().sort().alias("interaction_annotation_terms"))
         )
 
-        participant_terms_flat = (
-            ann_rows
-            .filter(pl.col("cat").is_in(["member_a", "member_b"]) & pl.col("is_filterable"))
-            .group_by("pair_key")
-            .agg(pl.col("term").unique().sort().alias("participant_annotation_terms"))
+        # Participant-level ontology terms are derived from entity annotations
+        # of participating entities (not from member instance annotations).
+        participant_terms_flat = pair_base.select("pair_key").unique().with_columns(
+            pl.lit([], dtype=pl.List(pl.Utf8)).alias("participant_annotation_terms")
         )
+
+    # Participant-level ontology terms from participating entities
+    participant_entity_terms = (
+        ent_annot
+        .filter(pl.col("cv_term_accession") == CV_TERM_ACCESSION_TYPE)
+        .filter(pl.col("value").is_not_null() & (pl.col("value").cast(pl.Utf8) != ""))
+        .join(
+            inst.select([
+                pl.col("id").alias("instance_id"),
+                pl.col("entity_id").alias("annot_entity_id"),
+            ]),
+            on="instance_id",
+            how="inner",
+        )
+        .join(
+            cv_terms.select([
+                pl.col("accession").alias("term_accession"),
+                pl.col("label").alias("term_label"),
+            ]),
+            left_on="value",
+            right_on="term_accession",
+            how="left",
+        )
+        .with_columns(
+            pl.coalesce([
+                pl.col("term_label"),
+                (pl.col("value") + ":" + pl.col("value")),
+            ]).alias("term")
+        )
+        .group_by("annot_entity_id")
+        .agg(pl.col("term").unique().sort().alias("entity_terms"))
+    )
+
+    participant_terms_flat = (
+        pair_base
+        .select([
+            "pair_key",
+            pl.concat_list("member_a_id", "member_b_id").alias("member_ids"),
+        ])
+        .explode("member_ids")
+        .rename({"member_ids": "member_id"})
+        .join(
+            participant_entity_terms,
+            left_on="member_id",
+            right_on="annot_entity_id",
+            how="left",
+        )
+        .explode("entity_terms")
+        .group_by("pair_key")
+        .agg(pl.col("entity_terms").drop_nulls().unique().sort().alias("participant_annotation_terms"))
+    )
 
     # direction/sign computation remains precomputed
     causal_traits = _build_causal_traits()

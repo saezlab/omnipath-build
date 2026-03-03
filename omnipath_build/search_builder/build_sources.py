@@ -22,6 +22,25 @@ ANN_URL = 'OM:0853'
 ANN_DESCRIPTION = 'OM:0854'
 ANN_PUBMED = 'MI:0446'
 
+# Content categories are derived from available source functions and mapped to CV terms.
+FUNCTION_TO_CONTENT_CATEGORY_ACCESSIONS: dict[str, list[str]] = {
+    'interactions': ['OM:0013'],
+    'complexes': ['MI:0314'],
+    'foods': ['OM:0020'],
+    'ligands': ['MI:0328'],
+    'targets': ['OM:0314'],
+    'controls': ['OM:1212'],
+    'stimuli': ['MI:2260'],
+    'annotations': ['OM:1207'],
+    'pathways': ['OM:0014'],
+    'reactions': ['OM:0015'],
+    'metabolites': ['OM:0022'],
+    'lipids': ['OM:0011'],
+    'proteins': ['MI:0326'],
+    'protein_families': ['OM:0610'],
+    'phenotypes': ['MI:2261'],
+}
+
 
 def _first_identifier(identifiers: list[dict[str, Any]] | None, type_id: str) -> str | None:
     if not identifiers:
@@ -52,7 +71,96 @@ def _annotation_first(annotations: list[dict[str, Any]] | None, term_id: str) ->
     return vals[0] if vals else None
 
 
-def _read_resource_metadata(resource_parquet: Path) -> dict[str, Any]:
+def _load_cv_label_map(per_source_root: Path) -> dict[str, str]:
+    """Load accession -> label map from combined gold cv_terms parquet.
+
+    Expected location: <build_root>/combined/gold/cv_terms.parquet
+    where per_source_root is <build_root>/per_source.
+    """
+    cv_terms_path = per_source_root.parent / 'combined' / 'gold' / 'cv_terms.parquet'
+    if not cv_terms_path.exists():
+        logger.warning('cv_terms parquet not found at %s (will keep raw accessions)', cv_terms_path)
+        return {}
+
+    try:
+        cv_terms = pl.read_parquet(cv_terms_path).select(['accession', 'label'])
+        return {
+            str(row['accession']): str(row['label'])
+            for row in cv_terms.iter_rows(named=True)
+            if row.get('accession') is not None and row.get('label') is not None
+        }
+    except Exception:
+        logger.exception('Failed to load cv_terms label map from %s', cv_terms_path)
+        return {}
+
+
+def _load_obo_label_map(per_source_root: Path) -> dict[str, str]:
+    """Load accession -> `name:accession` map from combined OBO."""
+    obo_path = per_source_root.parent / 'combined' / 'omnipath_mi.obo'
+    if not obo_path.exists():
+        logger.warning('OBO file not found at %s (will keep raw accessions)', obo_path)
+        return {}
+
+    out: dict[str, str] = {}
+    current_id: str | None = None
+    current_name: str | None = None
+
+    def _flush() -> None:
+        nonlocal current_id, current_name
+        if current_id and current_name:
+            out[current_id] = f'{current_name}:{current_id}'
+        current_id = None
+        current_name = None
+
+    try:
+        with obo_path.open('r', encoding='utf-8', errors='ignore') as handle:
+            for raw_line in handle:
+                line = raw_line.strip()
+                if line == '[Term]':
+                    _flush()
+                    continue
+                if line.startswith('id: '):
+                    current_id = line[4:].strip()
+                    continue
+                if line.startswith('name: '):
+                    current_name = line[6:].strip()
+                    continue
+                if line == '':
+                    _flush()
+        _flush()
+    except Exception:
+        logger.exception('Failed to parse OBO labels from %s', obo_path)
+        return {}
+
+    return out
+
+
+def _to_label_or_accession(accession: str | None, cv_label_map: dict[str, str]) -> str | None:
+    if not accession:
+        return None
+    return cv_label_map.get(accession, accession)
+
+
+def _content_categories_from_functions(
+    function_names: list[str],
+    cv_label_map: dict[str, str],
+) -> list[str]:
+    values: list[str] = []
+    seen: set[str] = set()
+
+    for function_name in function_names:
+        if function_name == 'resource':
+            continue
+        for accession in FUNCTION_TO_CONTENT_CATEGORY_ACCESSIONS.get(function_name, []):
+            value = _to_label_or_accession(accession, cv_label_map)
+            if value and value not in seen:
+                seen.add(value)
+                values.append(value)
+
+    return sorted(values)
+
+
+def _read_resource_metadata(resource_parquet: Path, cv_label_map: dict[str, str]) -> dict[str, Any]:
     if not resource_parquet.exists():
         return {}
 
@@ -72,12 +180,15 @@ def _read_resource_metadata(resource_parquet: Path) -> dict[str, Any]:
         else None
     )
 
+    license_accession = _annotation_first(annotations, ANN_LICENSE)
+    update_category_accession = _annotation_first(annotations, ANN_UPDATE_CATEGORY)
+
     return {
         'source_name': source_name,
         'source_accession': source_accession,
         'source_ref': source_ref,
-        'license_cv': _annotation_first(annotations, ANN_LICENSE),
-        'update_category_cv': _annotation_first(annotations, ANN_UPDATE_CATEGORY),
+        'license_cv': _to_label_or_accession(license_accession, cv_label_map),
+        'update_category_cv': _to_label_or_accession(update_category_accession, cv_label_map),
         'resource_url': _annotation_first(annotations, ANN_URL),
         'resource_description': _annotation_first(annotations, ANN_DESCRIPTION),
         'pubmed': _annotation_values(annotations, ANN_PUBMED),
@@ -113,6 +224,9 @@ def build_sources(per_source_root: Path, output: Path) -> Path:
     logger.info('Building sources table from %s', per_source_root)
 
     reports_dir = per_source_root / 'reports'
+    cv_label_map = _load_cv_label_map(per_source_root)
+    # OBO map fills gaps (e.g., license/update category values not present in cv_terms parquet)
+    cv_label_map = {**_load_obo_label_map(per_source_root), **cv_label_map}
     source_dirs = [
         p for p in sorted(per_source_root.iterdir())
         if p.is_dir() and p.name != 'reports'
@@ -123,7 +237,10 @@ def build_sources(per_source_root: Path, output: Path) -> Path:
     for source_dir in source_dirs:
         source = source_dir.name.split('__', 1)[1].replace('__', '.') if '__' in source_dir.name else source_dir.name
 
-        resource_meta = _read_resource_metadata(source_dir / 'silver' / 'resource.parquet')
+        resource_meta = _read_resource_metadata(
+            source_dir / 'silver' / 'resource.parquet',
+            cv_label_map=cv_label_map,
+        )
         report_meta = _read_report(reports_dir / f'{source_dir.name}.json')
 
         source_ref = resource_meta.get('source_ref')
@@ -137,6 +254,10 @@ def build_sources(per_source_root: Path, output: Path) -> Path:
             'source': source,
             **resource_meta,
             **report_meta,
+            'content_category_cv_terms': _content_categories_from_functions(
+                report_meta.get('function_names') or [],
+                cv_label_map=cv_label_map,
+            ),
             'function_records_json': json.dumps(report_meta['function_records'], separators=(',', ':')),
         })
 
@@ -157,6 +278,7 @@ def build_sources(per_source_root: Path, output: Path) -> Path:
                 pl.Field('records', pl.Int64),
             ]))),
             'function_names': pl.Series([], dtype=pl.List(pl.Utf8)),
+            'content_category_cv_terms': pl.Series([], dtype=pl.List(pl.Utf8)),
             'total_records': pl.Series([], dtype=pl.Int64),
             'function_records_json': pl.Series([], dtype=pl.Utf8),
         })

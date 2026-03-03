@@ -1,4 +1,4 @@
-.PHONY: setup silver silver-test silver-reprocess silver-local-parallel gold postgres meilisearch meilisearch-parallel meilisearch-entities meilisearch-interactions meilisearch-associations meilisearch-sources meilisearch-import meilisearch-import-entities meilisearch-import-interactions meilisearch-import-associations meilisearch-import-sources meilisearch-import-all meilisearch-deploy meilisearch-delete-indexes gold-meilisearch-import meilisearch-build-dump meilisearch-build-dump-start meilisearch-build-dump-stop pipeline pipeline-full generate-obo export export-entity export-ontology export-search export-meilisearch export-finalize
+.PHONY: setup silver silver-test silver-reprocess silver-local-parallel gold local_tables entity_identifiers global_tables postgres meilisearch meilisearch-parallel meilisearch-entities meilisearch-interactions meilisearch-associations meilisearch-sources meilisearch-import meilisearch-import-entities meilisearch-import-interactions meilisearch-import-associations meilisearch-import-sources meilisearch-import-all meilisearch-deploy meilisearch-delete-indexes gold-meilisearch-import meilisearch-build-dump meilisearch-build-dump-start meilisearch-build-dump-stop pipeline pipeline-full generate-obo export export-entity export-ontology export-search export-meilisearch export-finalize
 
 # Load local environment defaults (e.g. MEILISEARCH_API_KEY) when available.
 ifneq (,$(wildcard .env))
@@ -129,6 +129,10 @@ gold:
 	else \
 		uv run -m omnipath_build.cli.commands gold --data-root $(COMBINED_SILVER_DIR) --output-dir $(COMBINED_GOLD_DIR) --local-tables-dir $(BUILD_PER_SOURCE_DIR); \
 	fi
+
+# Step aliases for `make gold <step>` and recursive calls from `pipeline`.
+local_tables entity_identifiers global_tables:
+	@:
 
 postgres:
 	@. .env && uv run -m omnipath_build.cli.commands postgres \

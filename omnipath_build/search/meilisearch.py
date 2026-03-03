@@ -104,11 +104,10 @@ class MeilisearchSettings:
         'filterableAttributes': [
             'source_ref',
             'source',
-            'source_accession',
             'license_cv',
             'update_category_cv',
+            'content_category_cv_terms',
             'finished_at',
-            'function_names',
         ],
         'sortableAttributes': [
             'source_ref',
