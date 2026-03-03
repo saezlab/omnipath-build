@@ -229,6 +229,11 @@ def build_search_interactions(global_tables_dir: Path, output_path: Path) -> Pat
             "has_positive_sign": pl.Boolean,
             "has_negative_sign": pl.Boolean,
             "interaction_annotation_terms": pl.List(pl.Utf8),
+            "participant_annotation_terms_go": pl.List(pl.Utf8),
+            "participant_annotation_terms_mi": pl.List(pl.Utf8),
+            "participant_annotation_terms_om": pl.List(pl.Utf8),
+            "participant_annotation_terms_hp": pl.List(pl.Utf8),
+            "participant_annotation_terms_kw": pl.List(pl.Utf8),
             "sources": pl.List(pl.Utf8),
         }).write_parquet(output_path)
         return output_path
@@ -354,6 +359,7 @@ def build_search_interactions(global_tables_dir: Path, output_path: Path) -> Pat
     if all_ann.is_empty():
         evidence_by_pair = pair_base.select("pair_key").unique().with_columns(pl.lit([], dtype=EVIDENCE_LIST_DTYPE).alias("evidence"))
         interaction_terms_flat = pair_base.select("pair_key").unique().with_columns(pl.lit([], dtype=pl.List(pl.Utf8)).alias("interaction_annotation_terms"))
+        participant_terms_flat = pair_base.select("pair_key").unique().with_columns(pl.lit([], dtype=pl.List(pl.Utf8)).alias("participant_annotation_terms"))
     else:
         ann_rows = (
             all_ann
@@ -432,6 +438,13 @@ def build_search_interactions(global_tables_dir: Path, output_path: Path) -> Pat
             .filter((pl.col("cat") == "interaction") & pl.col("is_filterable"))
             .group_by("pair_key")
             .agg(pl.col("term").unique().sort().alias("interaction_annotation_terms"))
+        )
+
+        participant_terms_flat = (
+            ann_rows
+            .filter(pl.col("cat").is_in(["member_a", "member_b"]) & pl.col("is_filterable"))
+            .group_by("pair_key")
+            .agg(pl.col("term").unique().sort().alias("participant_annotation_terms"))
         )
 
     # direction/sign computation remains precomputed
@@ -515,18 +528,36 @@ def build_search_interactions(global_tables_dir: Path, output_path: Path) -> Pat
         .join(directions_df, on="pair_key", how="left")
         .join(pair_sources, on="pair_key", how="left")
         .join(interaction_terms_flat, on="pair_key", how="left")
+        .join(participant_terms_flat, on="pair_key", how="left")
         .with_columns([
             pl.coalesce(pl.col("evidence"), pl.lit([], dtype=EVIDENCE_LIST_DTYPE)).alias("evidence"),
             pl.coalesce(pl.col("directions"), pl.lit([], dtype=DIRECTION_LIST_DTYPE)).alias("directions"),
             pl.coalesce(pl.col("sources"), pl.lit([], dtype=pl.List(pl.Utf8))).alias("sources"),
             pl.coalesce(pl.col("interaction_annotation_terms"), pl.lit([], dtype=pl.List(pl.Utf8))).alias("interaction_annotation_terms"),
+            pl.coalesce(pl.col("participant_annotation_terms"), pl.lit([], dtype=pl.List(pl.Utf8))).alias("participant_annotation_terms"),
         ])
         .rename({"pair_key": "interaction_key"})
         .with_columns([
+            pl.col("participant_annotation_terms").list.eval(
+                pl.element().filter(pl.element().str.contains(r"\bGO:\d{4,}\b"))
+            ).alias("participant_annotation_terms_go"),
+            pl.col("participant_annotation_terms").list.eval(
+                pl.element().filter(pl.element().str.contains(r"\bMI:\d{4,}\b"))
+            ).alias("participant_annotation_terms_mi"),
+            pl.col("participant_annotation_terms").list.eval(
+                pl.element().filter(pl.element().str.contains(r"\bOM:\d{4,}\b"))
+            ).alias("participant_annotation_terms_om"),
+            pl.col("participant_annotation_terms").list.eval(
+                pl.element().filter(pl.element().str.contains(r"\bHP:\d{4,}\b"))
+            ).alias("participant_annotation_terms_hp"),
+            pl.col("participant_annotation_terms").list.eval(
+                pl.element().filter(pl.element().str.contains(r"\bKW:\d{4,}\b"))
+            ).alias("participant_annotation_terms_kw"),
             (pl.col("directions").list.len() > 0).alias("has_direction"),
             (pl.col("directions").list.eval((pl.element().struct.field("sign") == 1) | (pl.element().struct.field("sign") == 0)).list.any()).alias("has_positive_sign"),
             (pl.col("directions").list.eval((pl.element().struct.field("sign") == -1) | (pl.element().struct.field("sign") == 0)).list.any()).alias("has_negative_sign"),
         ])
+        .drop("participant_annotation_terms")
         .sort("interaction_key")
         .with_row_index("interaction_id", offset=1)
         .with_columns(pl.col("interaction_id").cast(pl.Int64))

@@ -54,7 +54,12 @@ class MeilisearchSettings:
             'has_positive_sign',  # Boolean: any sign == 1 or sign == 0 (mixed)
             'has_negative_sign',  # Boolean: any sign == -1 or sign == 0 (mixed)
             # Evidence annotations (flattened)
-            'interaction_annotation_terms',  # Array of term IDs/labels from all evidence
+            'interaction_annotation_terms',  # Array of interaction-level term IDs/labels
+            'participant_annotation_terms_go',
+            'participant_annotation_terms_mi',
+            'participant_annotation_terms_om',
+            'participant_annotation_terms_hp',
+            'participant_annotation_terms_kw',
             # Source filtering
             'sources',
         ],

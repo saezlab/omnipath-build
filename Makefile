@@ -1,4 +1,4 @@
-.PHONY: setup silver silver-test silver-reprocess silver-local-parallel gold postgres meilisearch meilisearch-parallel meilisearch-entities meilisearch-interactions meilisearch-associations meilisearch-sources meilisearch-import meilisearch-import-entities meilisearch-import-interactions meilisearch-import-associations meilisearch-import-sources meilisearch-import-all meilisearch-delete-indexes gold-meilisearch-import meilisearch-build-dump meilisearch-build-dump-start meilisearch-build-dump-stop pipeline pipeline-full generate-obo export export-entity export-ontology export-search export-meilisearch export-finalize
+.PHONY: setup silver silver-test silver-reprocess silver-local-parallel gold postgres meilisearch meilisearch-parallel meilisearch-entities meilisearch-interactions meilisearch-associations meilisearch-sources meilisearch-import meilisearch-import-entities meilisearch-import-interactions meilisearch-import-associations meilisearch-import-sources meilisearch-import-all meilisearch-deploy meilisearch-delete-indexes gold-meilisearch-import meilisearch-build-dump meilisearch-build-dump-start meilisearch-build-dump-stop pipeline pipeline-full generate-obo export export-entity export-ontology export-search export-meilisearch export-finalize
 
 DATA_VERSION ?= v-$(shell date +%Y%m%d-%H%M%S)
 VERSION_DIR = data/$(DATA_VERSION)
@@ -10,6 +10,13 @@ COMBINED_SILVER_DIR = $(BUILD_COMBINED_DIR)/silver
 COMBINED_GOLD_DIR = $(BUILD_COMBINED_DIR)/gold
 COMBINED_SEARCH_DIR = $(BUILD_COMBINED_DIR)/search
 
+# Direct Meilisearch deployment target (used by importer targets).
+MEILI_URL ?= http://localhost:7700
+MEILI_API_KEY ?= $(if $(MEILISEARCH_API_KEY),$(MEILISEARCH_API_KEY),$(TEMP_MEILI_KEY))
+# Optional previous data version for local parquet-based incremental diff.
+# If omitted, importer auto-infers previous from data/v-* layout.
+PREVIOUS_DATA_VERSION ?=
+
 export DATA_VERSION
 
 # =============================================================================
@@ -17,8 +24,8 @@ export DATA_VERSION
 # =============================================================================
 # Usage: make pipeline
 # This runs: silver-local-parallel(TEST_MODE=1) -> generate-obo -> gold(entity_identifiers,global_tables)
-#            -> meilisearch-parallel -> build-dump -> export-entity -> export-ontology -> export-search -> export-meilisearch -> export-finalize
-# The meilisearch-build-dump step starts a temporary local Meilisearch process, imports data, creates dump, and cleans up.
+#            -> meilisearch-parallel -> export-entity -> export-ontology -> export-search -> export-finalize
+# Meilisearch is now populated directly from omnipath_build via meilisearch-import-* targets.
 pipeline:
 	@echo "======================================================================"
 	@echo "Starting full pipeline..."
@@ -30,11 +37,9 @@ pipeline:
 	@$(MAKE) gold DATA_VERSION=$(DATA_VERSION) entity_identifiers
 	@$(MAKE) gold DATA_VERSION=$(DATA_VERSION) global_tables
 	@$(MAKE) meilisearch-parallel DATA_VERSION=$(DATA_VERSION)
-	@$(MAKE) meilisearch-build-dump DATA_VERSION=$(DATA_VERSION)
 	@$(MAKE) export-entity DATA_VERSION=$(DATA_VERSION)
 	@$(MAKE) export-ontology DATA_VERSION=$(DATA_VERSION)
 	@$(MAKE) export-search DATA_VERSION=$(DATA_VERSION)
-	@$(MAKE) export-meilisearch DATA_VERSION=$(DATA_VERSION)
 	@$(MAKE) export-finalize DATA_VERSION=$(DATA_VERSION)
 	@echo ""
 	@echo "======================================================================"
@@ -52,11 +57,9 @@ pipeline-full:
 	@$(MAKE) gold DATA_VERSION=$(DATA_VERSION) entity_identifiers
 	@$(MAKE) gold DATA_VERSION=$(DATA_VERSION) global_tables
 	@$(MAKE) meilisearch-parallel DATA_VERSION=$(DATA_VERSION)
-	@$(MAKE) meilisearch-build-dump DATA_VERSION=$(DATA_VERSION)
 	@$(MAKE) export-entity DATA_VERSION=$(DATA_VERSION)
 	@$(MAKE) export-ontology DATA_VERSION=$(DATA_VERSION)
 	@$(MAKE) export-search DATA_VERSION=$(DATA_VERSION)
-	@$(MAKE) export-meilisearch DATA_VERSION=$(DATA_VERSION)
 	@$(MAKE) export-finalize DATA_VERSION=$(DATA_VERSION)
 	@echo ""
 	@echo "======================================================================"
@@ -165,7 +168,9 @@ meilisearch-import-entities:
 		--dataset entities \
 		--entities-parquet-path $(COMBINED_SEARCH_DIR)/search_entities.parquet \
 		--importer-path omnipath_build/meilisearch-importer \
-		--api-key "$(TEMP_MEILI_KEY)"
+		--meili-url "$(MEILI_URL)" \
+		--api-key "$(MEILI_API_KEY)" \
+		$(if $(FULL_REINDEX),--full-reindex)
 
 # Import interactions into Meilisearch
 meilisearch-import-interactions:
@@ -173,7 +178,10 @@ meilisearch-import-interactions:
 		--dataset interactions \
 		--interactions-parquet-path $(COMBINED_SEARCH_DIR)/search_interactions.parquet \
 		--importer-path omnipath_build/meilisearch-importer \
-		--api-key "$(TEMP_MEILI_KEY)"
+		--meili-url "$(MEILI_URL)" \
+		--api-key "$(MEILI_API_KEY)" \
+		$(if $(PREVIOUS_DATA_VERSION),--previous-interactions-parquet-path data/$(PREVIOUS_DATA_VERSION)/build/combined/search/search_interactions.parquet) \
+		$(if $(FULL_REINDEX),--full-reindex)
 
 # Import associations into Meilisearch
 meilisearch-import-associations:
@@ -181,7 +189,9 @@ meilisearch-import-associations:
 		--dataset associations \
 		--associations-parquet-path $(COMBINED_SEARCH_DIR)/search_associations.parquet \
 		--importer-path omnipath_build/meilisearch-importer \
-		--api-key "$(TEMP_MEILI_KEY)"
+		--meili-url "$(MEILI_URL)" \
+		--api-key "$(MEILI_API_KEY)" \
+		$(if $(FULL_REINDEX),--full-reindex)
 
 # Import sources into Meilisearch
 meilisearch-import-sources:
@@ -189,7 +199,9 @@ meilisearch-import-sources:
 		--dataset sources \
 		--sources-parquet-path $(COMBINED_SEARCH_DIR)/search_sources.parquet \
 		--importer-path omnipath_build/meilisearch-importer \
-		--api-key "$(TEMP_MEILI_KEY)"
+		--meili-url "$(MEILI_URL)" \
+		--api-key "$(MEILI_API_KEY)" \
+		$(if $(FULL_REINDEX),--full-reindex)
 
 # Import all datasets into Meilisearch
 meilisearch-import-all:
@@ -200,22 +212,31 @@ meilisearch-import-all:
 		--associations-parquet-path $(COMBINED_SEARCH_DIR)/search_associations.parquet \
 		--sources-parquet-path $(COMBINED_SEARCH_DIR)/search_sources.parquet \
 		--importer-path omnipath_build/meilisearch-importer \
-		--api-key "$(TEMP_MEILI_KEY)"
+		--meili-url "$(MEILI_URL)" \
+		--api-key "$(MEILI_API_KEY)" \
+		$(if $(PREVIOUS_DATA_VERSION),--previous-entities-parquet-path data/$(PREVIOUS_DATA_VERSION)/build/combined/search/search_entities.parquet) \
+		$(if $(PREVIOUS_DATA_VERSION),--previous-interactions-parquet-path data/$(PREVIOUS_DATA_VERSION)/build/combined/search/search_interactions.parquet) \
+		$(if $(PREVIOUS_DATA_VERSION),--previous-associations-parquet-path data/$(PREVIOUS_DATA_VERSION)/build/combined/search/search_associations.parquet) \
+		$(if $(PREVIOUS_DATA_VERSION),--previous-sources-parquet-path data/$(PREVIOUS_DATA_VERSION)/build/combined/search/search_sources.parquet) \
+		$(if $(FULL_REINDEX),--full-reindex)
+
+# Build search docs and directly deploy to Meilisearch
+meilisearch-deploy: meilisearch-parallel meilisearch-import-all
 
 # Backward compatibility: import entities only (original behavior)
 meilisearch-import: meilisearch-import-entities
 
 # Delete Meilisearch indexes (useful before re-importing)
 meilisearch-delete-indexes:
-	@echo "Deleting Meilisearch indexes..."
-	@curl -s -X DELETE "http://localhost:7700/indexes/search_entities" \
-		-H "Authorization: Bearer $(TEMP_MEILI_KEY)" || true
-	@curl -s -X DELETE "http://localhost:7700/indexes/search_interactions" \
-		-H "Authorization: Bearer $(TEMP_MEILI_KEY)" || true
-	@curl -s -X DELETE "http://localhost:7700/indexes/search_associations" \
-		-H "Authorization: Bearer $(TEMP_MEILI_KEY)" || true
-	@curl -s -X DELETE "http://localhost:7700/indexes/search_sources" \
-		-H "Authorization: Bearer $(TEMP_MEILI_KEY)" || true
+	@echo "Deleting Meilisearch indexes on $(MEILI_URL)..."
+	@curl -s -X DELETE "$(MEILI_URL)/indexes/search_entities" \
+		-H "Authorization: Bearer $(MEILI_API_KEY)" || true
+	@curl -s -X DELETE "$(MEILI_URL)/indexes/search_interactions" \
+		-H "Authorization: Bearer $(MEILI_API_KEY)" || true
+	@curl -s -X DELETE "$(MEILI_URL)/indexes/search_associations" \
+		-H "Authorization: Bearer $(MEILI_API_KEY)" || true
+	@curl -s -X DELETE "$(MEILI_URL)/indexes/search_sources" \
+		-H "Authorization: Bearer $(MEILI_API_KEY)" || true
 	@echo "Indexes deleted (or did not exist)"
 
 gold-meilisearch-import:
@@ -232,34 +253,30 @@ gold-meilisearch-import:
 # The DATA_VERSION variable is set automatically from timestamp, or override with:
 #   make export DATA_VERSION=v-custom-name
 
-# Full export (use when you have a running Meilisearch with data)
-export: export-entity export-ontology export-search export-meilisearch export-finalize
+# Full export (search parquet + ontology/entity artifacts; no Meilisearch dump)
+export: export-entity export-ontology export-search export-finalize
 
 # Finalize export: create version marker and update 'latest' symlink
-# Use this after export-entity, export-ontology, export-search, and meilisearch-build-dump
+# Use this after export-entity, export-ontology, and export-search
 export-finalize:
-	@# Create data version marker (hash of all output files)
+	@# Create data version marker (hash of exported files)
 	@echo "Creating data version marker..."
-	@DUMP_NAME=$$(cat $(OUTPUT_DIR)/dumps/.dump_file); \
-	cat $(OUTPUT_DIR)/entity_identifier.parquet \
+	@cat $(OUTPUT_DIR)/entity_identifier.parquet \
 		$(OUTPUT_DIR)/omnipath_mi.obo \
 		$(OUTPUT_DIR)/search_entities.parquet \
 		$(OUTPUT_DIR)/search_interactions.parquet \
 		$(OUTPUT_DIR)/search_associations.parquet \
-		$(OUTPUT_DIR)/search_sources.parquet \
-		$(OUTPUT_DIR)/dumps/$$DUMP_NAME 2>/dev/null | shasum -a 256 | cut -d' ' -f1 \
+		$(OUTPUT_DIR)/search_sources.parquet 2>/dev/null | shasum -a 256 | cut -d' ' -f1 \
 		> $(OUTPUT_DIR)/.data_version
 	@# Update 'latest' symlink
 	@ln -sfn $(DATA_VERSION) data/latest
 	@echo ""
 	@echo "✓ All data exported to $(OUTPUT_DIR)/"
 	@echo "  Data version: $$(cat $(OUTPUT_DIR)/.data_version)"
-	@echo "  Dump file: $$(cat $(OUTPUT_DIR)/dumps/.dump_file)"
 	@echo "  Symlink: data/latest -> $(DATA_VERSION)"
 	@echo ""
 	@echo "Data files ready for deployment:"
 	@ls -lh $(OUTPUT_DIR)/*.parquet $(OUTPUT_DIR)/*.obo 2>/dev/null || true
-	@ls -lh $(OUTPUT_DIR)/dumps/*.dump 2>/dev/null || true
 	@echo ""
 	@echo "Available versions:"
 	@ls -d data/v-* 2>/dev/null | sed 's|data/||'

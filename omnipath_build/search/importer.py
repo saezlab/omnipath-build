@@ -25,6 +25,8 @@ import polars as pl
 
 from omnipath_build.search.meilisearch import MeilisearchSettings
 
+MEILI_DOC_ID = '__doc_id'
+
 def run_importer(
     importer_dir: Path,
     dataset_path: Path,
@@ -93,21 +95,6 @@ def _request_json(
         raise RuntimeError(f'Meilisearch request failed: {method} {url} -> {exc.code}: {body}') from exc
 
 
-def _index_exists(meili_url: str, index_name: str, api_key: str | None) -> bool:
-    url = f'{meili_url}/indexes/{index_name}'
-    req = urllib.request.Request(url=url, method='GET')
-    if api_key:
-        req.add_header('Authorization', f'Bearer {api_key}')
-    try:
-        with urllib.request.urlopen(req):
-            return True
-    except urllib.error.HTTPError as exc:
-        if exc.code == 404:
-            return False
-        body = exc.read().decode('utf-8', errors='replace')
-        raise RuntimeError(f'Meilisearch request failed: GET {url} -> {exc.code}: {body}') from exc
-
-
 def _wait_for_task(
     meili_url: str,
     task_uid: int,
@@ -131,49 +118,72 @@ def _wait_for_task(
     raise TimeoutError(f'Timed out waiting for Meilisearch task {task_uid}')
 
 
-def _fetch_existing_hashes(
-    meili_url: str,
-    index_name: str,
-    primary_key: str,
-    api_key: str | None,
-    page_size: int,
+def _infer_previous_parquet_path(current_path: Path) -> Path | None:
+    """Infer previous run parquet path from data/v-*/... layout."""
+    cur = current_path.resolve()
+    parts = cur.parts
+
+    try:
+        data_idx = parts.index('data')
+    except ValueError:
+        return None
+
+    if data_idx + 1 >= len(parts):
+        return None
+
+    current_version = parts[data_idx + 1]
+    if not current_version.startswith('v-'):
+        return None
+
+    data_dir = Path(*parts[:data_idx + 1])
+    versions = sorted([p.name for p in data_dir.glob('v-*') if p.is_dir()])
+    if current_version not in versions:
+        return None
+
+    current_pos = versions.index(current_version)
+    if current_pos == 0:
+        return None
+
+    previous_version = versions[current_pos - 1]
+    relative_after_version = Path(*parts[data_idx + 2:])
+    candidate = data_dir / previous_version / relative_after_version
+    return candidate if candidate.exists() else None
+
+
+def _hash_expr_for_schema(semantic_columns: list[str], available_columns: set[str]) -> pl.Expr:
+    members: list[pl.Expr] = []
+    for c in semantic_columns:
+        if c in available_columns:
+            members.append(pl.col(c).alias(c))
+        else:
+            members.append(pl.lit(None).alias(c))
+    return pl.struct(members).hash(seed=0).cast(pl.UInt64).cast(pl.Utf8).alias('content_hash')
+
+
+def _old_hashes_from_parquet(
+    old_parquet_path: Path | None,
+    logical_key: str,
+    semantic_columns: list[str],
 ) -> pl.DataFrame:
-    """Fetch existing {primary_key, content_hash} pairs from Meilisearch."""
-    if not _index_exists(meili_url, index_name, api_key):
-        return pl.DataFrame(schema={primary_key: pl.Utf8, 'content_hash': pl.Utf8})
+    """Build old {logical_key, __doc_id, content_hash} state from previous parquet."""
+    if old_parquet_path is None or not old_parquet_path.exists():
+        return pl.DataFrame(schema={logical_key: pl.Utf8, MEILI_DOC_ID: pl.Utf8, 'content_hash': pl.Utf8})
 
-    rows: list[dict[str, str | None]] = []
-    offset = 0
+    old_scan = pl.scan_parquet(old_parquet_path)
+    old_schema_names = set(old_scan.collect_schema().names())
 
-    while True:
-        payload = {
-            'fields': [primary_key, 'content_hash'],
-            'limit': page_size,
-            'offset': offset,
-        }
-        data = _request_json('POST', f'{meili_url}/indexes/{index_name}/documents/fetch', api_key, payload)
-        batch = data.get('results', [])
-
-        if not batch:
-            break
-
-        for doc in batch:
-            key = doc.get(primary_key)
-            if key is None:
-                continue
-            rows.append({primary_key: str(key), 'content_hash': doc.get('content_hash')})
-
-        if len(batch) < page_size:
-            break
-        offset += page_size
-
-    if not rows:
-        return pl.DataFrame(schema={primary_key: pl.Utf8, 'content_hash': pl.Utf8})
+    if logical_key not in old_schema_names:
+        return pl.DataFrame(schema={logical_key: pl.Utf8, MEILI_DOC_ID: pl.Utf8, 'content_hash': pl.Utf8})
 
     return (
-        pl.DataFrame(rows)
-        .with_columns(pl.col(primary_key).cast(pl.Utf8), pl.col('content_hash').cast(pl.Utf8))
-        .unique(subset=[primary_key], keep='last')
+        old_scan
+        .select([
+            pl.col(logical_key).cast(pl.Utf8).alias(logical_key),
+            _doc_id_expr(logical_key),
+            _hash_expr_for_schema(semantic_columns=semantic_columns, available_columns=old_schema_names),
+        ])
+        .collect()
+        .unique(subset=[logical_key], keep='last')
     )
 
 
@@ -209,6 +219,11 @@ def _content_hash_expr(semantic_columns: list[str]) -> pl.Expr:
     return pl.struct([pl.col(c) for c in semantic_columns]).hash(seed=0).cast(pl.UInt64).cast(pl.Utf8).alias('content_hash')
 
 
+def _doc_id_expr(logical_key: str) -> pl.Expr:
+    """Build a Meilisearch-safe document id from the logical key."""
+    return pl.col(logical_key).cast(pl.Utf8).hash(seed=0).cast(pl.UInt64).cast(pl.Utf8).alias(MEILI_DOC_ID)
+
+
 def _pick_primary_key(parquet_path: Path, candidates: list[str]) -> str:
     schema = pl.scan_parquet(parquet_path).collect_schema()
     names = set(schema.names())
@@ -223,14 +238,14 @@ def _pick_primary_key(parquet_path: Path, candidates: list[str]) -> str:
 
 def _build_incremental_payload(
     parquet_path: Path,
-    primary_key: str,
+    logical_key: str,
     old_hashes: pl.DataFrame,
     ignored_hash_columns: set[str],
     output_upserts_path: Path,
 ) -> tuple[list[str], int]:
-    """Compute delete keys and write changed/new docs as NDJSON.
+    """Compute delete doc ids and write changed/new docs as NDJSON.
 
-    Returns (delete_ids, upsert_count).
+    Returns (delete_doc_ids, upsert_count).
     """
     dataset_scan = pl.scan_parquet(parquet_path)
     schema = dataset_scan.collect_schema()
@@ -238,37 +253,39 @@ def _build_incremental_payload(
 
     semantic_columns = [
         c for c in columns
-        if c not in ignored_hash_columns and c not in {primary_key, 'content_hash'}
+        if c not in ignored_hash_columns and c not in {logical_key, 'content_hash', MEILI_DOC_ID}
     ]
     if not semantic_columns:
         raise SystemExit(f'No semantic columns left for hashing in {parquet_path}')
 
     new_hashes_lf = dataset_scan.select([
-        pl.col(primary_key).cast(pl.Utf8).alias(primary_key),
+        pl.col(logical_key).cast(pl.Utf8).alias(logical_key),
         _content_hash_expr(semantic_columns),
     ])
 
     old_hashes_lf = old_hashes.lazy().select([
-        pl.col(primary_key).cast(pl.Utf8).alias(primary_key),
+        pl.col(logical_key).cast(pl.Utf8).alias(logical_key),
+        pl.col(MEILI_DOC_ID).cast(pl.Utf8).alias(MEILI_DOC_ID),
         pl.col('content_hash').cast(pl.Utf8).alias('old_content_hash'),
     ])
 
-    delete_ids = (
+    delete_doc_ids = (
         old_hashes_lf
-        .join(new_hashes_lf.select(primary_key), on=primary_key, how='anti')
+        .join(new_hashes_lf.select(logical_key), on=logical_key, how='anti')
+        .select(MEILI_DOC_ID)
         .collect()
-        .get_column(primary_key)
+        .get_column(MEILI_DOC_ID)
         .to_list()
     )
 
     upsert_keys_df = (
         new_hashes_lf
-        .join(old_hashes_lf, on=primary_key, how='left')
+        .join(old_hashes_lf.select([logical_key, 'old_content_hash']), on=logical_key, how='left')
         .filter(
             pl.col('old_content_hash').is_null()
             | (pl.col('content_hash') != pl.col('old_content_hash'))
         )
-        .select(primary_key)
+        .select(logical_key)
         .collect()
     )
 
@@ -276,12 +293,15 @@ def _build_incremental_payload(
     if upsert_count > 0:
         (
             dataset_scan
-            .with_columns(_content_hash_expr(semantic_columns))
-            .join(upsert_keys_df.lazy(), on=primary_key, how='semi')
+            .with_columns([
+                _doc_id_expr(logical_key),
+                _content_hash_expr(semantic_columns),
+            ])
+            .join(upsert_keys_df.lazy(), on=logical_key, how='semi')
             .sink_ndjson(output_upserts_path)
         )
 
-    return delete_ids, upsert_count
+    return delete_doc_ids, upsert_count
 
 
 def apply_settings(
@@ -393,10 +413,28 @@ def parse_args(argv: Iterable[str]) -> argparse.Namespace:
         help='Disable incremental mode and import the full input file.',
     )
     parser.add_argument(
-        '--fetch-page-size',
-        default=10000,
-        type=int,
-        help='Page size for fetching existing {primary_key,content_hash} from Meilisearch.',
+        '--previous-entities-parquet-path',
+        default=None,
+        type=Path,
+        help='Optional previous search_entities parquet for local incremental diff. Auto-inferred from data/v-* if omitted.',
+    )
+    parser.add_argument(
+        '--previous-interactions-parquet-path',
+        default=None,
+        type=Path,
+        help='Optional previous search_interactions parquet for local incremental diff. Auto-inferred from data/v-* if omitted.',
+    )
+    parser.add_argument(
+        '--previous-associations-parquet-path',
+        default=None,
+        type=Path,
+        help='Optional previous search_associations parquet for local incremental diff. Auto-inferred from data/v-* if omitted.',
+    )
+    parser.add_argument(
+        '--previous-sources-parquet-path',
+        default=None,
+        type=Path,
+        help='Optional previous search_sources parquet for local incremental diff. Auto-inferred from data/v-* if omitted.',
     )
     parser.add_argument(
         '--delete-batch-size',
@@ -417,7 +455,7 @@ def import_dataset(
     dataset_name: str,
     parquet_path: Path,
     index_name: str,
-    primary_key_candidates: list[str],
+    logical_key_candidates: list[str],
     hash_ignore_columns: set[str],
     settings: dict,
     importer_path: Path,
@@ -426,7 +464,7 @@ def import_dataset(
     batch_size: str,
     file_format: str,
     full_reindex: bool,
-    fetch_page_size: int,
+    previous_parquet_path: Path | None,
     delete_batch_size: int,
     skip_settings: bool,
 ) -> None:
@@ -435,39 +473,62 @@ def import_dataset(
         raise SystemExit(f'Missing {dataset_name} Parquet input file: {parquet_path}')
 
     parquet_path = parquet_path.resolve()
-    primary_key = _pick_primary_key(parquet_path, primary_key_candidates)
+    logical_key = _pick_primary_key(parquet_path, logical_key_candidates)
 
     print(f"\n{'=' * 80}")
-    print(f'Importing {dataset_name}: {parquet_path} -> {index_name} (pk={primary_key})')
+    print(f'Importing {dataset_name}: {parquet_path} -> {index_name} (logical_key={logical_key}, meili_pk={MEILI_DOC_ID})')
     print('=' * 80)
+
+    # We always import transformed NDJSON with a safe Meilisearch document id.
+    dataset_scan = pl.scan_parquet(parquet_path)
+    schema = dataset_scan.collect_schema()
+    semantic_columns = [
+        c for c in schema.names()
+        if c not in hash_ignore_columns and c not in {logical_key, 'content_hash', MEILI_DOC_ID}
+    ]
 
     if full_reindex:
         print('Mode: full reindex')
-        run_importer(
-            importer_dir=importer_path,
-            dataset_path=parquet_path,
-            meili_url=meili_url,
-            index_name=index_name,
-            primary_key=primary_key,
-            api_key=api_key,
-            batch_size=batch_size,
-            file_format=file_format,
-        )
+        with tempfile.TemporaryDirectory(prefix=f'meili-{dataset_name}-') as tmpdir:
+            full_path = Path(tmpdir) / f'{dataset_name}_full.ndjson'
+            (
+                dataset_scan
+                .with_columns([
+                    _doc_id_expr(logical_key),
+                    _content_hash_expr(semantic_columns),
+                ])
+                .sink_ndjson(full_path)
+            )
+            run_importer(
+                importer_dir=importer_path,
+                dataset_path=full_path,
+                meili_url=meili_url,
+                index_name=index_name,
+                primary_key=MEILI_DOC_ID,
+                api_key=api_key,
+                batch_size=batch_size,
+                file_format='ndjson',
+            )
     else:
-        print('Mode: incremental (hash diff)')
-        old_hashes = _fetch_existing_hashes(
-            meili_url=meili_url,
-            index_name=index_name,
-            primary_key=primary_key,
-            api_key=api_key,
-            page_size=fetch_page_size,
+        print('Mode: incremental (local parquet diff)')
+
+        previous_path = previous_parquet_path.resolve() if previous_parquet_path else _infer_previous_parquet_path(parquet_path)
+        if previous_path is None:
+            print('No previous parquet found; treating as first incremental run for this dataset.')
+        else:
+            print(f'Using previous parquet: {previous_path}')
+
+        old_hashes = _old_hashes_from_parquet(
+            old_parquet_path=previous_path,
+            logical_key=logical_key,
+            semantic_columns=semantic_columns,
         )
 
         with tempfile.TemporaryDirectory(prefix=f'meili-{dataset_name}-') as tmpdir:
             upserts_path = Path(tmpdir) / f'{dataset_name}_upserts.ndjson'
-            delete_ids, upsert_count = _build_incremental_payload(
+            delete_doc_ids, upsert_count = _build_incremental_payload(
                 parquet_path=parquet_path,
-                primary_key=primary_key,
+                logical_key=logical_key,
                 old_hashes=old_hashes,
                 ignored_hash_columns=hash_ignore_columns,
                 output_upserts_path=upserts_path,
@@ -475,16 +536,16 @@ def import_dataset(
 
             print(
                 f'Incremental summary for {dataset_name}: '
-                f'deletes={len(delete_ids)} upserts={upsert_count} '
-                f'(existing={old_hashes.height})'
+                f'deletes={len(delete_doc_ids)} upserts={upsert_count} '
+                f'(previous_rows={old_hashes.height})'
             )
 
-            if delete_ids:
-                print(f'Deleting {len(delete_ids)} stale documents...')
+            if delete_doc_ids:
+                print(f'Deleting {len(delete_doc_ids)} stale documents...')
                 _delete_documents(
                     meili_url=meili_url,
                     index_name=index_name,
-                    ids=delete_ids,
+                    ids=delete_doc_ids,
                     api_key=api_key,
                     delete_batch_size=delete_batch_size,
                 )
@@ -496,7 +557,7 @@ def import_dataset(
                     dataset_path=upserts_path,
                     meili_url=meili_url,
                     index_name=index_name,
-                    primary_key=primary_key,
+                    primary_key=MEILI_DOC_ID,
                     api_key=api_key,
                     batch_size=batch_size,
                     file_format='ndjson',
@@ -533,9 +594,10 @@ def main(argv: Iterable[str]) -> None:
                 'name': 'entities',
                 'parquet_path': args.entities_parquet_path,
                 'index_name': args.entities_index,
-                'primary_key_candidates': ['entity_key', 'entity_id'],
+                'logical_key_candidates': ['entity_key', 'entity_id'],
                 'hash_ignore_columns': set(),
                 'settings': MeilisearchSettings.ENTITIES_SETTINGS,
+                'previous_parquet_path': args.previous_entities_parquet_path,
             }
         )
 
@@ -545,10 +607,11 @@ def main(argv: Iterable[str]) -> None:
                 'name': 'interactions',
                 'parquet_path': args.interactions_parquet_path,
                 'index_name': args.interactions_index,
-                'primary_key_candidates': ['interaction_key'],
+                'logical_key_candidates': ['interaction_key'],
                 # interaction_id is row-index based and not semantic
                 'hash_ignore_columns': {'interaction_id'},
                 'settings': MeilisearchSettings.INTERACTIONS_SETTINGS,
+                'previous_parquet_path': args.previous_interactions_parquet_path,
             }
         )
 
@@ -558,10 +621,11 @@ def main(argv: Iterable[str]) -> None:
                 'name': 'associations',
                 'parquet_path': args.associations_parquet_path,
                 'index_name': args.associations_index,
-                'primary_key_candidates': ['association_key'],
+                'logical_key_candidates': ['association_key'],
                 # association_id is row-index based and not semantic
                 'hash_ignore_columns': {'association_id'},
                 'settings': MeilisearchSettings.ASSOCIATIONS_SETTINGS,
+                'previous_parquet_path': args.previous_associations_parquet_path,
             }
         )
 
@@ -571,9 +635,10 @@ def main(argv: Iterable[str]) -> None:
                 'name': 'sources',
                 'parquet_path': args.sources_parquet_path,
                 'index_name': args.sources_index,
-                'primary_key_candidates': ['source_ref'],
+                'logical_key_candidates': ['source_ref'],
                 'hash_ignore_columns': set(),
                 'settings': MeilisearchSettings.SOURCES_SETTINGS,
+                'previous_parquet_path': args.previous_sources_parquet_path,
             }
         )
 
@@ -582,7 +647,7 @@ def main(argv: Iterable[str]) -> None:
             dataset_name=dataset['name'],
             parquet_path=dataset['parquet_path'],
             index_name=dataset['index_name'],
-            primary_key_candidates=dataset['primary_key_candidates'],
+            logical_key_candidates=dataset['logical_key_candidates'],
             hash_ignore_columns=dataset['hash_ignore_columns'],
             settings=dataset['settings'],
             importer_path=importer_path,
@@ -591,7 +656,7 @@ def main(argv: Iterable[str]) -> None:
             batch_size=args.batch_size,
             file_format=args.format,
             full_reindex=args.full_reindex,
-            fetch_page_size=args.fetch_page_size,
+            previous_parquet_path=dataset['previous_parquet_path'],
             delete_batch_size=args.delete_batch_size,
             skip_settings=args.skip_settings,
         )
