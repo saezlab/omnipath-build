@@ -350,47 +350,151 @@ def build_entity_identifiers_v2(
         ])
     )
 
-    snapshot_rows: list[dict] = []
+    record_meta_by_key: dict[tuple[str, int], tuple[str, str | None]] = {}
+    record_id_rows: dict[tuple[str, int], list[tuple[str, str, bool]]] = {}
+    record_keys: list[tuple[str, int]] = []
+
     for row in grouped.iter_rows(named=True):
+        key = (str(row['source_ref']), int(row['local_entity_id']))
+        record_keys.append(key)
+        record_meta_by_key[key] = (str(row['entity_bucket']), row['tax_partition'])
+
         type_ids = list(row.get('type_ids') or [])
         canonical_ids = list(row.get('canonical_ids') or [])
         flags = list(row.get('merge_safe_flags') or [])
-        id_rows = list(zip(type_ids, canonical_ids, flags, strict=False))
-        anchor = _choose_anchor(row['entity_bucket'], id_rows)
+        record_id_rows[key] = list(zip(type_ids, canonical_ids, flags, strict=False))
 
-        source_ref = str(row['source_ref'])
-        local_entity_id = int(row['local_entity_id'])
-        bucket = row['entity_bucket']
-        tax_partition = row['tax_partition']
+    # Merge records by ANY shared merge-safe key (id_type, id_value, entity_bucket, tax_partition)
+    ms_edges = (
+        ids_canonical
+        .filter(pl.col('is_merge_safe'))
+        .join(
+            records.select(['source_ref', 'local_entity_id', 'entity_bucket', 'tax_partition']),
+            on=['source_ref', 'local_entity_id', 'entity_bucket'],
+            how='inner',
+        )
+        .select([
+            'source_ref',
+            'local_entity_id',
+            'entity_bucket',
+            'tax_partition',
+            'type_id',
+            'canonical_identifier',
+        ])
+        .unique()
+    ) if len(ids_canonical) > 0 else pl.DataFrame({
+        'source_ref': pl.Series([], dtype=pl.Utf8),
+        'local_entity_id': pl.Series([], dtype=pl.Int64),
+        'entity_bucket': pl.Series([], dtype=pl.Utf8),
+        'tax_partition': pl.Series([], dtype=pl.Utf8),
+        'type_id': pl.Series([], dtype=pl.Utf8),
+        'canonical_identifier': pl.Series([], dtype=pl.Utf8),
+    })
 
-        anchor_type_short = _id_type_short(anchor.type_id)
-        anchor_type_accession = anchor.type_id
-        anchor_identifier = anchor.canonical_identifier
+    rec_index = {rk: i for i, rk in enumerate(record_keys)}
+    parent = list(range(len(record_keys)))
+    rank = [0] * len(record_keys)
 
-        if anchor.merge_safe:
+    def _find(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    def _union(i: int, j: int) -> None:
+        ri = _find(i)
+        rj = _find(j)
+        if ri == rj:
+            return
+        if rank[ri] < rank[rj]:
+            parent[ri] = rj
+        elif rank[ri] > rank[rj]:
+            parent[rj] = ri
+        else:
+            parent[rj] = ri
+            rank[ri] += 1
+
+    if len(ms_edges) > 0:
+        ms_grouped = (
+            ms_edges
+            .group_by(['type_id', 'canonical_identifier', 'entity_bucket', 'tax_partition'])
+            .agg([
+                pl.struct(['source_ref', 'local_entity_id']).alias('members'),
+            ])
+        )
+        for row in ms_grouped.iter_rows(named=True):
+            members = row.get('members') or []
+            if len(members) < 2:
+                continue
+            base = members[0]
+            base_key = (str(base['source_ref']), int(base['local_entity_id']))
+            base_idx = rec_index.get(base_key)
+            if base_idx is None:
+                continue
+            for m in members[1:]:
+                other_key = (str(m['source_ref']), int(m['local_entity_id']))
+                other_idx = rec_index.get(other_key)
+                if other_idx is None:
+                    continue
+                _union(base_idx, other_idx)
+
+    component_members: dict[int, list[tuple[str, int]]] = {}
+    for rk, idx in rec_index.items():
+        root = _find(idx)
+        component_members.setdefault(root, []).append(rk)
+
+    ms_id_rows_by_record: dict[tuple[str, int], list[tuple[str, str, bool]]] = {}
+    for row in ms_edges.iter_rows(named=True):
+        rk = (str(row['source_ref']), int(row['local_entity_id']))
+        ms_id_rows_by_record.setdefault(rk, []).append(
+            (str(row['type_id']), str(row['canonical_identifier']), True)
+        )
+
+    snapshot_rows: list[dict] = []
+    for members in component_members.values():
+        first = members[0]
+        bucket, tax_partition = record_meta_by_key[first]
+
+        component_id_rows: list[tuple[str, str, bool]] = []
+        for rk in members:
+            component_id_rows.extend(ms_id_rows_by_record.get(rk, []))
+
+        if component_id_rows:
+            anchor = _choose_anchor(bucket, component_id_rows)
+            anchor_type_short = _id_type_short(anchor.type_id)
             entity_key = f'{bucket}:{anchor_type_short}:{anchor.canonical_identifier}'
             if tax_partition is not None:
                 entity_key = f'{entity_key}:{tax_partition}'
+            anchor_type_accession = anchor.type_id
+            anchor_identifier = anchor.canonical_identifier
         else:
-            source_slug = _slug(source_ref)
+            # No merge-safe ID in this component (singleton by construction)
+            rk = first
+            id_rows = record_id_rows.get(rk, [])
+            anchor = _choose_anchor(bucket, id_rows)
+            anchor_type_short = _id_type_short(anchor.type_id)
+            anchor_type_accession = anchor.type_id
+            anchor_identifier = anchor.canonical_identifier
+            source_slug = _slug(rk[0])
             entity_key = (
                 f'{bucket}:SN:{anchor_type_short}:{anchor.canonical_identifier}:'
-                f'{source_slug}.{local_entity_id}'
+                f'{source_slug}.{rk[1]}'
             )
             if tax_partition is not None:
                 entity_key = f'{entity_key}:{tax_partition}'
 
-        snapshot_rows.append({
-            'run_id': run_id,
-            'source_ref': source_ref,
-            'local_entity_id': local_entity_id,
-            'entity_key': entity_key,
-            'entity_bucket': bucket,
-            'tax_partition': tax_partition,
-            'anchor_type_id': anchor_type_short,
-            'anchor_type_accession': anchor_type_accession,
-            'anchor_identifier': anchor_identifier,
-        })
+        for source_ref, local_entity_id in members:
+            snapshot_rows.append({
+                'run_id': run_id,
+                'source_ref': source_ref,
+                'local_entity_id': local_entity_id,
+                'entity_key': entity_key,
+                'entity_bucket': bucket,
+                'tax_partition': tax_partition,
+                'anchor_type_id': anchor_type_short,
+                'anchor_type_accession': anchor_type_accession,
+                'anchor_identifier': anchor_identifier,
+            })
 
     record_identity_snapshot = (
         pl.DataFrame(snapshot_rows)

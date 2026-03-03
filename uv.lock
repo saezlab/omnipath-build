@@ -408,22 +408,12 @@ wheels = [
 [[package]]
 name = "download-manager"
 version = "0.0.1"
-source = { editable = "download-manager" }
+source = { git = "https://github.com/saezlab/download-manager.git?rev=main#e5fde952ea84e404cd140e384b9ba2fcd382d008" }
 dependencies = [
     { name = "cachemanager" },
     { name = "certifi" },
     { name = "pycurl" },
     { name = "requests" },
-    { name = "toml" },
-    { name = "tqdm" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "cachemanager", git = "https://github.com/saezlab/cache-manager.git?rev=main" },
-    { name = "certifi", specifier = ">=2024.7.4,<2025.0.0" },
-    { name = "pycurl", specifier = ">=7.45.3,<8.0.0" },
-    { name = "requests", specifier = ">=2.32.3,<3.0.0" },
     { name = "toml" },
     { name = "tqdm" },
 ]
@@ -1198,7 +1188,6 @@ name = "omnipath-build"
 version = "0.0.1"
 source = { editable = "." }
 dependencies = [
-    { name = "download-manager" },
     { name = "duckdb" },
     { name = "ontograph" },
     { name = "pandas" },
@@ -1234,7 +1223,6 @@ tests = [
 requires-dist = [
     { name = "bandit", marker = "extra == 'security'" },
     { name = "distlib", marker = "extra == 'dev'" },
-    { name = "download-manager", editable = "download-manager" },
     { name = "duckdb", specifier = ">=1.0.0" },
     { name = "mkdocs-material", marker = "extra == 'docs'", specifier = ">=9.6.14" },
     { name = "mkdocstrings", extras = ["python"], marker = "extra == 'docs'", specifier = ">=0.29.1,<0.30" },
@@ -1723,7 +1711,7 @@ requires-dist = [
     { name = "cffi", specifier = ">=1.17.0,<2.0.0" },
     { name = "cryptography", specifier = ">=41.0.4" },
     { name = "dill" },
-    { name = "download-manager", directory = "download-manager" },
+    { name = "download-manager", git = "https://github.com/saezlab/download-manager.git?rev=main" },
     { name = "epam-indigo", marker = "extra == 'metabo'" },
     { name = "future" },
     { name = "glom" },
