@@ -1,6 +1,14 @@
 .PHONY: setup silver silver-test silver-reprocess silver-local-parallel gold postgres meilisearch meilisearch-parallel meilisearch-entities meilisearch-interactions meilisearch-associations meilisearch-sources meilisearch-import meilisearch-import-entities meilisearch-import-interactions meilisearch-import-associations meilisearch-import-sources meilisearch-import-all meilisearch-deploy meilisearch-delete-indexes gold-meilisearch-import meilisearch-build-dump meilisearch-build-dump-start meilisearch-build-dump-stop pipeline pipeline-full generate-obo export export-entity export-ontology export-search export-meilisearch export-finalize
 
-DATA_VERSION ?= v-$(shell date +%Y%m%d-%H%M%S)
+# Load local environment defaults (e.g. MEILISEARCH_API_KEY) when available.
+ifneq (,$(wildcard .env))
+include .env
+export $(shell sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p' .env)
+endif
+
+# Default to the latest data version when available; otherwise create a new timestamped one.
+LATEST_DATA_VERSION := $(shell if [ -L data/latest ]; then readlink data/latest; fi)
+DATA_VERSION ?= $(if $(LATEST_DATA_VERSION),$(LATEST_DATA_VERSION),v-$(shell date +%Y%m%d-%H%M%S))
 VERSION_DIR = data/$(DATA_VERSION)
 BUILD_DIR = $(VERSION_DIR)/build
 OUTPUT_DIR = $(VERSION_DIR)/output
@@ -12,7 +20,8 @@ COMBINED_SEARCH_DIR = $(BUILD_COMBINED_DIR)/search
 
 # Direct Meilisearch deployment target (used by importer targets).
 MEILI_URL ?= http://localhost:7700
-MEILI_API_KEY ?= $(if $(MEILISEARCH_API_KEY),$(MEILISEARCH_API_KEY),$(TEMP_MEILI_KEY))
+strip_quotes = $(patsubst "%",%,$(1))
+MEILI_API_KEY ?= $(call strip_quotes,$(if $(MEILISEARCH_API_KEY),$(MEILISEARCH_API_KEY),$(TEMP_MEILI_KEY)))
 # Optional previous data version for local parquet-based incremental diff.
 # If omitted, importer auto-infers previous from data/v-* layout.
 PREVIOUS_DATA_VERSION ?=
@@ -317,123 +326,3 @@ export-search:
 	@cp -f $(COMBINED_SEARCH_DIR)/search_interactions.parquet $(OUTPUT_DIR)/search_interactions.parquet
 	@cp -f $(COMBINED_SEARCH_DIR)/search_associations.parquet $(OUTPUT_DIR)/search_associations.parquet
 	@cp -f $(COMBINED_SEARCH_DIR)/search_sources.parquet $(OUTPUT_DIR)/search_sources.parquet
-
-# Export meilisearch dump from build/combined/search into output
-export-meilisearch:
-	@echo "Exporting meilisearch dump to $(OUTPUT_DIR)..."
-	@mkdir -p $(OUTPUT_DIR)/dumps
-	@if [ ! -f $(COMBINED_SEARCH_DIR)/dumps/.dump_file ]; then \
-		echo "Error: dump metadata missing in $(COMBINED_SEARCH_DIR)/dumps. Run 'make meilisearch-build-dump' first."; \
-		exit 1; \
-	fi
-	@DUMP_NAME=$$(cat $(COMBINED_SEARCH_DIR)/dumps/.dump_file); \
-	cp -f $(COMBINED_SEARCH_DIR)/dumps/.dump_file $(OUTPUT_DIR)/dumps/.dump_file; \
-	cp -f $(COMBINED_SEARCH_DIR)/dumps/$$DUMP_NAME $(OUTPUT_DIR)/dumps/$$DUMP_NAME
-
-# =============================================================================
-# Self-contained Meilisearch Dump Builder
-# =============================================================================
-# Build a Meilisearch dump without requiring Docker.
-# This starts a temporary local Meilisearch process via Nix, imports data,
-# creates a dump, and cleans up.
-# Prerequisites: search parquet files must exist (run 'make meilisearch' first)
-TEMP_MEILI_PORT := 7710
-ENV_MEILI_KEY := $(shell [ -f .env ] && awk -F= '/^MEILISEARCH_API_KEY=/{v=$$2; gsub(/^[[:space:]]*"/, "", v); gsub(/"[[:space:]]*$$/, "", v); print v; exit}' .env)
-TEMP_MEILI_KEY := $(if $(ENV_MEILI_KEY),$(ENV_MEILI_KEY),temp-build-key)
-TEMP_MEILI_DIR = $(COMBINED_SEARCH_DIR)/meilisearch-temp
-TEMP_MEILI_DB_DIR = $(TEMP_MEILI_DIR)/db
-# Write dumps directly to the canonical combined search dumps directory
-TEMP_MEILI_DUMP_DIR = $(COMBINED_SEARCH_DIR)/dumps
-TEMP_MEILI_PID_FILE = $(TEMP_MEILI_DIR)/meilisearch.pid
-TEMP_MEILI_LOG_FILE = $(TEMP_MEILI_DIR)/meilisearch.log
-
-.PHONY: meilisearch-build-dump meilisearch-build-dump-start meilisearch-build-dump-stop
-
-meilisearch-build-dump: meilisearch-build-dump-start
-	@echo ""
-	@echo "======================================================================" 
-	@echo "Building Meilisearch dump (self-contained, local process)"
-	@echo "======================================================================"
-	@echo ""
-	@# Wait for Meilisearch to be ready
-	@echo "2. Waiting for Meilisearch to be ready..."
-	@for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do \
-		if curl -sf http://127.0.0.1:$(TEMP_MEILI_PORT)/health > /dev/null 2>&1; then \
-			echo "   Meilisearch is ready!"; \
-			break; \
-		fi; \
-		if [ $$i -eq 20 ]; then \
-			echo "   Error: Meilisearch failed to start"; \
-			echo "   See logs: $(TEMP_MEILI_LOG_FILE)"; \
-			$(MAKE) meilisearch-build-dump-stop; \
-			exit 1; \
-		fi; \
-		echo "   Waiting... ($$i/20)"; \
-		sleep 1; \
-	done
-	@echo ""
-	@# Import all datasets
-	@echo "3. Importing search data..."
-	@uv run python -m omnipath_build.search.importer \
-		--dataset all \
-		--entities-parquet-path $(COMBINED_SEARCH_DIR)/search_entities.parquet \
-		--interactions-parquet-path $(COMBINED_SEARCH_DIR)/search_interactions.parquet \
-		--associations-parquet-path $(COMBINED_SEARCH_DIR)/search_associations.parquet \
-		--sources-parquet-path $(COMBINED_SEARCH_DIR)/search_sources.parquet \
-		--importer-path omnipath_build/meilisearch-importer \
-		--api-key $(TEMP_MEILI_KEY) \
-		--meili-url http://127.0.0.1:$(TEMP_MEILI_PORT)
-	@echo ""
-	@# Create dump
-	@echo "4. Creating dump..."
-	@mkdir -p $(COMBINED_SEARCH_DIR)/dumps
-	@uv run python -m omnipath_build.scripts.create_meilisearch_dump \
-		--meili-url http://127.0.0.1:$(TEMP_MEILI_PORT) \
-		--api-key $(TEMP_MEILI_KEY) \
-		--output-dir $(COMBINED_SEARCH_DIR)/dumps \
-		--db-path $(TEMP_MEILI_DB_DIR) \
-		--dump-dir $(TEMP_MEILI_DUMP_DIR)
-	@echo ""
-	@# Cleanup
-	@$(MAKE) meilisearch-build-dump-stop
-	@echo ""
-	@echo "======================================================================"
-	@echo "✓ Meilisearch dump created successfully!"
-	@echo "  Output: $(COMBINED_SEARCH_DIR)/dumps/"
-	@echo "======================================================================"
-
-meilisearch-build-dump-start:
-	@echo "1. Starting temporary Meilisearch local process..."
-	@$(MAKE) meilisearch-build-dump-stop >/dev/null 2>&1 || true
-	@rm -rf $(TEMP_MEILI_DIR)
-	@mkdir -p $(TEMP_MEILI_DIR)
-	@mkdir -p $(TEMP_MEILI_DB_DIR)
-	@mkdir -p $(TEMP_MEILI_DUMP_DIR)
-	@meilisearch \
-		--http-addr 127.0.0.1:$(TEMP_MEILI_PORT) \
-		--db-path $$(pwd)/$(TEMP_MEILI_DB_DIR) \
-		--dump-dir $$(pwd)/$(TEMP_MEILI_DUMP_DIR) \
-		--master-key "$(TEMP_MEILI_KEY)" > $(TEMP_MEILI_LOG_FILE) 2>&1 & \
-	echo $$! > $(TEMP_MEILI_PID_FILE)
-	@echo "   PID: $$(cat $(TEMP_MEILI_PID_FILE))"
-	@echo "   DB path: $$(pwd)/$(TEMP_MEILI_DB_DIR)"
-	@echo "   Log file: $(TEMP_MEILI_LOG_FILE)"
-
-meilisearch-build-dump-stop:
-	@echo "5. Stopping temporary Meilisearch process..."
-	@if [ -f $(TEMP_MEILI_PID_FILE) ]; then \
-		PID=$$(cat $(TEMP_MEILI_PID_FILE)); \
-		if kill -0 $$PID 2>/dev/null; then \
-			kill $$PID 2>/dev/null || true; \
-			wait $$PID 2>/dev/null || true; \
-			echo "   Stopped process $$PID."; \
-		else \
-			echo "   Process $$PID already stopped."; \
-		fi; \
-		rm -f $(TEMP_MEILI_PID_FILE); \
-	else \
-		echo "   No PID file found."; \
-	fi
-
-%:
-	@:
