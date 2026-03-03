@@ -1,4 +1,4 @@
-.PHONY: setup silver silver-test silver-reprocess silver-local-parallel gold postgres meilisearch meilisearch-parallel meilisearch-entities meilisearch-interactions meilisearch-associations meilisearch-import meilisearch-import-entities meilisearch-import-interactions meilisearch-import-associations meilisearch-import-all meilisearch-delete-indexes gold-meilisearch-import meilisearch-build-dump meilisearch-build-dump-start meilisearch-build-dump-stop pipeline pipeline-full generate-obo export export-entity export-ontology export-search export-meilisearch export-finalize
+.PHONY: setup silver silver-test silver-reprocess silver-local-parallel gold postgres meilisearch meilisearch-parallel meilisearch-entities meilisearch-interactions meilisearch-associations meilisearch-sources meilisearch-import meilisearch-import-entities meilisearch-import-interactions meilisearch-import-associations meilisearch-import-sources meilisearch-import-all meilisearch-delete-indexes gold-meilisearch-import meilisearch-build-dump meilisearch-build-dump-start meilisearch-build-dump-stop pipeline pipeline-full generate-obo export export-entity export-ontology export-search export-meilisearch export-finalize
 
 DATA_VERSION ?= v-$(shell date +%Y%m%d-%H%M%S)
 VERSION_DIR = data/$(DATA_VERSION)
@@ -145,12 +145,19 @@ meilisearch-associations:
 		--global-tables-dir $(COMBINED_GOLD_DIR) \
 		--output $(COMBINED_SEARCH_DIR)/search_associations.parquet
 
-# Build all search parquet files (entities, interactions, associations)
-meilisearch: meilisearch-entities meilisearch-interactions meilisearch-associations
+# Build search sources parquet (source provenance for search/indexing)
+meilisearch-sources:
+	@mkdir -p $(COMBINED_SEARCH_DIR)
+	@uv run python -m omnipath_build.search_builder.build_sources \
+		--per-source-root $(BUILD_PER_SOURCE_DIR) \
+		--output $(COMBINED_SEARCH_DIR)/search_sources.parquet
+
+# Build all search parquet files
+meilisearch: meilisearch-entities meilisearch-interactions meilisearch-associations meilisearch-sources
 
 # Build all search parquet files in parallel processes
 meilisearch-parallel:
-	@$(MAKE) -j3 meilisearch-entities meilisearch-interactions meilisearch-associations
+	@$(MAKE) -j4 meilisearch-entities meilisearch-interactions meilisearch-associations meilisearch-sources
 
 # Import entities into Meilisearch
 meilisearch-import-entities:
@@ -176,13 +183,22 @@ meilisearch-import-associations:
 		--importer-path omnipath_build/meilisearch-importer \
 		--api-key "$(TEMP_MEILI_KEY)"
 
-# Import all datasets (entities, interactions, associations) into Meilisearch
+# Import sources into Meilisearch
+meilisearch-import-sources:
+	@uv run python -m omnipath_build.search.importer \
+		--dataset sources \
+		--sources-parquet-path $(COMBINED_SEARCH_DIR)/search_sources.parquet \
+		--importer-path omnipath_build/meilisearch-importer \
+		--api-key "$(TEMP_MEILI_KEY)"
+
+# Import all datasets into Meilisearch
 meilisearch-import-all:
 	@uv run python -m omnipath_build.search.importer \
 		--dataset all \
 		--entities-parquet-path $(COMBINED_SEARCH_DIR)/search_entities.parquet \
 		--interactions-parquet-path $(COMBINED_SEARCH_DIR)/search_interactions.parquet \
 		--associations-parquet-path $(COMBINED_SEARCH_DIR)/search_associations.parquet \
+		--sources-parquet-path $(COMBINED_SEARCH_DIR)/search_sources.parquet \
 		--importer-path omnipath_build/meilisearch-importer \
 		--api-key "$(TEMP_MEILI_KEY)"
 
@@ -197,6 +213,8 @@ meilisearch-delete-indexes:
 	@curl -s -X DELETE "http://localhost:7700/indexes/search_interactions" \
 		-H "Authorization: Bearer $(TEMP_MEILI_KEY)" || true
 	@curl -s -X DELETE "http://localhost:7700/indexes/search_associations" \
+		-H "Authorization: Bearer $(TEMP_MEILI_KEY)" || true
+	@curl -s -X DELETE "http://localhost:7700/indexes/search_sources" \
 		-H "Authorization: Bearer $(TEMP_MEILI_KEY)" || true
 	@echo "Indexes deleted (or did not exist)"
 
@@ -228,6 +246,7 @@ export-finalize:
 		$(OUTPUT_DIR)/search_entities.parquet \
 		$(OUTPUT_DIR)/search_interactions.parquet \
 		$(OUTPUT_DIR)/search_associations.parquet \
+		$(OUTPUT_DIR)/search_sources.parquet \
 		$(OUTPUT_DIR)/dumps/$$DUMP_NAME 2>/dev/null | shasum -a 256 | cut -d' ' -f1 \
 		> $(OUTPUT_DIR)/.data_version
 	@# Update 'latest' symlink
@@ -273,13 +292,14 @@ export-ontology:
 export-search:
 	@echo "Exporting search parquet files to $(OUTPUT_DIR)..."
 	@mkdir -p $(OUTPUT_DIR)
-	@if [ ! -f $(COMBINED_SEARCH_DIR)/search_entities.parquet ] || [ ! -f $(COMBINED_SEARCH_DIR)/search_interactions.parquet ] || [ ! -f $(COMBINED_SEARCH_DIR)/search_associations.parquet ]; then \
+	@if [ ! -f $(COMBINED_SEARCH_DIR)/search_entities.parquet ] || [ ! -f $(COMBINED_SEARCH_DIR)/search_interactions.parquet ] || [ ! -f $(COMBINED_SEARCH_DIR)/search_associations.parquet ] || [ ! -f $(COMBINED_SEARCH_DIR)/search_sources.parquet ]; then \
 		echo "Error: search parquet files missing in $(COMBINED_SEARCH_DIR). Run 'make meilisearch' first."; \
 		exit 1; \
 	fi
 	@cp -f $(COMBINED_SEARCH_DIR)/search_entities.parquet $(OUTPUT_DIR)/search_entities.parquet
 	@cp -f $(COMBINED_SEARCH_DIR)/search_interactions.parquet $(OUTPUT_DIR)/search_interactions.parquet
 	@cp -f $(COMBINED_SEARCH_DIR)/search_associations.parquet $(OUTPUT_DIR)/search_associations.parquet
+	@cp -f $(COMBINED_SEARCH_DIR)/search_sources.parquet $(OUTPUT_DIR)/search_sources.parquet
 
 # Export meilisearch dump from build/combined/search into output
 export-meilisearch:
@@ -342,6 +362,7 @@ meilisearch-build-dump: meilisearch-build-dump-start
 		--entities-parquet-path $(COMBINED_SEARCH_DIR)/search_entities.parquet \
 		--interactions-parquet-path $(COMBINED_SEARCH_DIR)/search_interactions.parquet \
 		--associations-parquet-path $(COMBINED_SEARCH_DIR)/search_associations.parquet \
+		--sources-parquet-path $(COMBINED_SEARCH_DIR)/search_sources.parquet \
 		--importer-path omnipath_build/meilisearch-importer \
 		--api-key $(TEMP_MEILI_KEY) \
 		--meili-url http://127.0.0.1:$(TEMP_MEILI_PORT)

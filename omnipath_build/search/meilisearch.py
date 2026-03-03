@@ -88,3 +88,29 @@ class MeilisearchSettings:
         'displayedAttributes': ['*'],
         'pagination': {'maxTotalHits': 2000000},
     }
+
+    SOURCES_SETTINGS = {
+        'searchableAttributes': [
+            'source_ref',
+            'source',
+            'source_name',
+            'resource_description',
+        ],
+        'filterableAttributes': [
+            'source_ref',
+            'source',
+            'source_accession',
+            'license_cv',
+            'update_category_cv',
+            'finished_at',
+            'function_names',
+        ],
+        'sortableAttributes': [
+            'source_ref',
+            'source',
+            'total_records',
+            'finished_at',
+        ],
+        'displayedAttributes': ['*'],
+        'pagination': {'maxTotalHits': 2000000},
+    }

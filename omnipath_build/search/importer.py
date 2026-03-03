@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Utility to load search datasets (entities and interactions) into Meilisearch
+Utility to load search datasets into Meilisearch
 using the upstream meilisearch-importer CLI directly in Parquet mode.
 """
 
@@ -91,8 +91,8 @@ def parse_args(argv: Iterable[str]) -> argparse.Namespace:
     parser.add_argument(
         '--dataset',
         default='entities',
-        choices=('entities', 'interactions', 'associations', 'both', 'all'),
-        help='Which dataset(s) to import: entities, interactions, associations, both (entities+interactions), or all.',
+        choices=('entities', 'interactions', 'associations', 'sources', 'both', 'all'),
+        help='Which dataset(s) to import: entities, interactions, associations, sources, both (entities+interactions), or all.',
     )
     parser.add_argument(
         '--entities-parquet-path',
@@ -111,6 +111,12 @@ def parse_args(argv: Iterable[str]) -> argparse.Namespace:
         default='omnipath_build/data/gold/search_associations.parquet',
         type=Path,
         help='Path to search_associations.parquet.',
+    )
+    parser.add_argument(
+        '--sources-parquet-path',
+        default='omnipath_build/data/gold/search_sources.parquet',
+        type=Path,
+        help='Path to search_sources.parquet.',
     )
     parser.add_argument(
         '--importer-path',
@@ -137,6 +143,11 @@ def parse_args(argv: Iterable[str]) -> argparse.Namespace:
         '--associations-index',
         default='search_associations',
         help='Name of the associations Meilisearch index.',
+    )
+    parser.add_argument(
+        '--sources-index',
+        default='search_sources',
+        help='Name of the sources Meilisearch index.',
     )
     parser.add_argument(
         '--api-key',
@@ -250,6 +261,17 @@ def main(argv: Iterable[str]) -> None:
                 'index_name': args.associations_index,
                 'primary_key': 'association_key',
                 'settings': MeilisearchSettings.ASSOCIATIONS_SETTINGS,
+            }
+        )
+
+    if args.dataset in ('sources', 'all'):
+        datasets_to_import.append(
+            {
+                'name': 'sources',
+                'parquet_path': args.sources_parquet_path,
+                'index_name': args.sources_index,
+                'primary_key': 'source_ref',
+                'settings': MeilisearchSettings.SOURCES_SETTINGS,
             }
         )
 
