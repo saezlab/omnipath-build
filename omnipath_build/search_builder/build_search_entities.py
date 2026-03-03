@@ -27,7 +27,6 @@ logger = logging.getLogger(__name__)
 ID_STRUCT = pl.Struct([Field('key', pl.Utf8), Field('value', pl.Utf8)])
 ID_LIST_DTYPE = pl.List(ID_STRUCT)
 STR_LIST = pl.List(pl.Utf8)
-INT_LIST = pl.List(pl.Utf8)
 
 def _agg_lazy(
     ldf: pl.LazyFrame, 
@@ -214,19 +213,18 @@ def build_search_entities(global_tables_dir: Path, output_path: Path) -> Path:
     for k, col in [('names', 'names'), ('synonyms', 'synonyms'), ('gene_symbols', 'gene_symbols')]:
         lazy_joins.append(_agg_lazy(ident, "type_id", id_sets[k], "identifier", col))
 
-    # 4b. Annotations (Descriptions, References)
+    # 4b. Annotations (Descriptions)
     # These are now in entity_annotation table, linked via entity_instance
     # entity_annotation has: instance_id, cv_term_accession, value, unit_accession
-    for k, col in [('descriptions', 'descriptions'), ('references', 'references')]:
-        if id_sets[k]:
-            lazy_joins.append(
-                ent_annot_with_entity
-                .filter(pl.col("cv_term_accession").is_in(list(id_sets[k])))
-                .filter(pl.col("value").is_not_null())
-                .group_by("annot_entity_id")
-                .agg(pl.col("value").unique().sort().alias(col))
-                .rename({"annot_entity_id": "entity_id"})
-            )
+    if id_sets['descriptions']:
+        lazy_joins.append(
+            ent_annot_with_entity
+            .filter(pl.col("cv_term_accession").is_in(list(id_sets['descriptions'])))
+            .filter(pl.col("value").is_not_null())
+            .group_by("annot_entity_id")
+            .agg(pl.col("value").unique().sort().alias("descriptions"))
+            .rename({"annot_entity_id": "entity_id"})
+        )
 
     # 4c. NCBI Tax ID - now from entity_annotation
     # id_sets['ncbi_tax_id'] is a set of Accessions.
@@ -239,9 +237,9 @@ def build_search_entities(global_tables_dir: Path, output_path: Path) -> Path:
             .rename({"annot_entity_id": "entity_id"})
         )
 
-    # 4c.2 CV terms from entity annotations (GO terms, UniProt keywords, etc.)
-    # CV_TERM_ACCESSION annotations have the actual CV term in the value field
-    lazy_joins.append(
+    # 4c.2 CV terms from entity annotations (ontology-specific arrays only)
+    # CV_TERM_ACCESSION annotations have the actual CV term accession in the value field.
+    cv_terms_base = (
         ent_annot_with_entity
         .filter(pl.col("cv_term_accession") == CV_TERM_ACCESSION_TYPE)
         .filter(pl.col("value").is_not_null())
@@ -252,101 +250,42 @@ def build_search_entities(global_tables_dir: Path, output_path: Path) -> Path:
             how="left",
         )
         .with_columns(
-            (
-                pl.coalesce([
-                    pl.col("cv_term_label"),
-                    (pl.col("value") + ":" + pl.col("value"))
-                ])
-            ).alias("cv_term_formatted")
+            pl.coalesce([
+                pl.col("cv_term_label"),
+                (pl.col("value") + ":" + pl.col("value"))
+            ]).alias("cv_term_formatted")
         )
-        .group_by("annot_entity_id")
-        .agg(pl.col("cv_term_formatted").unique().sort().alias("cv_terms"))
-        .rename({"annot_entity_id": "entity_id"})
     )
 
-    # 4d. Structural Memberships & Interactions
-    # Join memberships to entity to check parent types
-    # ent now has entity_type as accession string
+    for prefix, out_col in [
+        ("GO:", "cv_terms_go"),
+        ("MI:", "cv_terms_mi"),
+        ("OM:", "cv_terms_om"),
+        ("HP:", "cv_terms_hp"),
+        ("KW:", "cv_terms_kw"),
+    ]:
+        lazy_joins.append(
+            cv_terms_base
+            .filter(pl.col("value").str.starts_with(prefix))
+            .group_by("annot_entity_id")
+            .agg(pl.col("cv_term_formatted").unique().sort().alias(out_col))
+            .rename({"annot_entity_id": "entity_id"})
+        )
+
+    # 4d. Interaction Counts
+    # Join memberships to entity to check parent interaction type.
     mem_types = mem_simple.join(
-        ent.rename({"entity_id": "pid", "entity_type": "ptype"}), 
+        ent.rename({"entity_id": "pid", "entity_type": "ptype"}),
         left_on="parent_id", right_on="pid"
     )
 
-    for k, col in [('complex_type', 'complexes'), ('pathway_type', 'pathways'), ('reaction_type', 'reactions')]:
-        if id_sets[k]:
-            lazy_joins.append(
-                mem_types.filter(pl.col("ptype") == id_sets[k])
-                .group_by("member_id").agg(pl.col("parent_id").unique().sort().alias(col))
-                .rename({"member_id": "entity_id"})
-            )
-
-    # 4e. Interaction Counts
     lazy_joins.append(
         mem_types.filter(pl.col("ptype") == id_sets['interaction_type'])
         .group_by("member_id").agg(pl.col("parent_id").n_unique().alias("num_interactions"))
         .rename({"member_id": "entity_id"})
     )
 
-    # 4e.2 Reactants & Products (By Role Annotation on member instances)
-    # In new schema, role annotations are on the member's entity_instance
-    # We need to join membership with member_instance_id to entity_annotation
-    mem_with_annot = (
-        mem_simple
-        .filter(pl.col("member_instance_id").is_not_null())
-        .join(
-            ent_annot.select([
-                pl.col("instance_id"),
-                pl.col("cv_term_accession").alias("annot_acc"),
-                pl.col("value").alias("annot_val"),
-            ]),
-            left_on="member_instance_id",
-            right_on="instance_id",
-            how="left"
-        )
-    )
-    
-    for k, col in [('reactants', 'reactants'), ('products', 'products')]:
-        if id_sets[k]:
-            lazy_joins.append(
-                mem_with_annot.filter(pl.col("annot_acc").is_in(list(id_sets[k])))
-                .group_by("parent_id")
-                .agg(pl.col("member_id").unique().sort().alias(col))
-                .rename({"parent_id": "entity_id"})
-            )
-
-    # 4e.3 Stoichiometry & Pathway Steps (By Annotation Type on member instances)
-    if id_sets['stoichiometry']:
-        lazy_joins.append(
-            mem_with_annot.filter(
-                pl.col("annot_acc").is_in(list(id_sets['stoichiometry'])) & 
-                pl.col("annot_val").is_not_null()
-            )
-            .select(
-                "parent_id",
-                (pl.col("member_id").cast(pl.Utf8) + ":" + pl.col("annot_val")).alias("fmt_stoich")
-            )
-            .group_by("parent_id")
-            .agg(pl.col("fmt_stoich").unique().sort().alias("stoichiometry"))
-            .rename({"parent_id": "entity_id"})
-        )
-
-    # Pathway Steps
-    if id_sets['pathway_steps']:
-        lazy_joins.append(
-            mem_with_annot.filter(
-                pl.col("annot_acc").is_in(list(id_sets['pathway_steps'])) & 
-                pl.col("annot_val").is_not_null()
-            )
-            .select(
-                "parent_id",
-                (pl.col("annot_val") + ":" + pl.col("member_id").cast(pl.Utf8)).alias("fmt_step")
-            )
-            .group_by("parent_id")
-            .agg(pl.col("fmt_step").unique().sort().alias("pathway_steps"))
-            .rename({"parent_id": "entity_id"})
-        )
-
-    # 4f. Sources (direct source_ref provenance)
+    # 4e. Sources (direct source_ref provenance)
     sources_plan = (
         res.join(ident.select('id', 'entity_id'), left_on='entity_identifier_id', right_on='id')
         .select(
@@ -402,11 +341,7 @@ def build_search_entities(global_tables_dir: Path, output_path: Path) -> Path:
             "synonyms",
             "gene_symbols",
             "descriptions",
-            "references",
             "sources",
-            "stoichiometry",
-            "pathway_steps",
-            "cv_terms",
             "cv_terms_go",
             "cv_terms_mi",
             "cv_terms_om",
@@ -414,35 +349,13 @@ def build_search_entities(global_tables_dir: Path, output_path: Path) -> Path:
             "cv_terms_kw",
         ]
     ] + [
-        pl.col(c).fill_null(pl.lit([], dtype=INT_LIST)) for c in ["complexes", "pathways", "reactions", "reactants", "products"]
-    ] + [
         pl.col("identifiers").fill_null(pl.lit([], dtype=ID_LIST_DTYPE)),
         pl.col("num_interactions").fill_null(0)
     ]
 
-    # Build per-ontology CV term lists for faceting (top counts per ontology).
-    final_plan = final_plan.with_columns([
-        pl.col("cv_terms").list.eval(
-            pl.element().filter(pl.element().str.contains(r"\bGO:\d{4,}\b"))
-        ).alias("cv_terms_go"),
-        pl.col("cv_terms").list.eval(
-            pl.element().filter(pl.element().str.contains(r"\bMI:\d{4,}\b"))
-        ).alias("cv_terms_mi"),
-        pl.col("cv_terms").list.eval(
-            pl.element().filter(pl.element().str.contains(r"\bOM:\d{4,}\b"))
-        ).alias("cv_terms_om"),
-        pl.col("cv_terms").list.eval(
-            pl.element().filter(pl.element().str.contains(r"\bHP:\d{4,}\b"))
-        ).alias("cv_terms_hp"),
-        pl.col("cv_terms").list.eval(
-            pl.element().filter(pl.element().str.contains(r"\bKW:\d{4,}\b"))
-        ).alias("cv_terms_kw"),
-    ])
-
     final_plan = (
         final_plan
         .with_columns(defaults)
-        .drop("cv_terms")
         .sort("entity_id")
     )
 
