@@ -256,10 +256,23 @@ meilisearch-delete-indexes:
 # and clearing the task queue (best effort, endpoint availability depends on version).
 meilisearch-reset:
 	@echo "Fully resetting Meilisearch on $(MEILI_URL)..."
-	@MEILI_URL="$(MEILI_URL)" MEILI_API_KEY="$(MEILI_API_KEY)" uv run python -c "import json, os, urllib.error, urllib.parse, urllib.request; base=os.environ['MEILI_URL'].rstrip('/'); key=os.environ.get('MEILI_API_KEY',''); headers={'Content-Type':'application/json'}; headers.update({'Authorization': f'Bearer {key}'} if key else {}); req=lambda m,u,b=None: urllib.request.urlopen(urllib.request.Request(u, data=(json.dumps(b).encode() if b is not None else None), headers=headers, method=m)); print(f'Fetching indexes from {base}...'); data=json.loads(req('GET', f'{base}/indexes?limit=1000').read().decode() or '[]'); indexes=data if isinstance(data,list) else data.get('results',[]); print('No indexes found.' if not indexes else f'Found {len(indexes)} index(es).'); [print(f\"Deleting index: {i.get('uid')}\") or req('DELETE', f\"{base}/indexes/{urllib.parse.quote(str(i.get('uid')), safe='')}\").read() for i in indexes if i.get('uid')]; print('Attempting to cancel enqueued/processing tasks...'); \
-		(req('POST', f'{base}/tasks/cancel', {'statuses':['enqueued','processing']}).read(), print('Requested task cancel.')) if True else None; print('Attempting to delete task history...'); \
-		(req('DELETE', f'{base}/tasks').read(), print('Requested task deletion.')) if True else None"
-	@echo "✓ Meilisearch reset requested"
+	@set -e; \
+	INDEX_JSON=$$(curl -s "$(MEILI_URL)/indexes?limit=1000" -H "Authorization: Bearer $(MEILI_API_KEY)"); \
+	INDEX_UIDS=$$(printf '%s' "$$INDEX_JSON" | grep -oE '"uid":"[^"]+"' | cut -d '"' -f4); \
+	if [ -z "$$INDEX_UIDS" ]; then \
+		echo "No indexes found."; \
+	else \
+		echo "Deleting all indexes..."; \
+		for uid in $$INDEX_UIDS; do \
+			echo "  - $$uid"; \
+			curl -s -X DELETE "$(MEILI_URL)/indexes/$$uid" -H "Authorization: Bearer $(MEILI_API_KEY)" >/dev/null || true; \
+		done; \
+	fi; \
+	echo "Attempting to cancel enqueued/processing tasks..."; \
+	curl -s -X POST "$(MEILI_URL)/tasks/cancel" -H "Authorization: Bearer $(MEILI_API_KEY)" -H "Content-Type: application/json" -d '{"statuses":["enqueued","processing"]}' >/dev/null || true; \
+	echo "Attempting to delete task history..."; \
+	curl -s -X DELETE "$(MEILI_URL)/tasks" -H "Authorization: Bearer $(MEILI_API_KEY)" >/dev/null || true; \
+	echo "✓ Meilisearch reset requested"
 
 gold-meilisearch-import:
 	@$(MAKE) gold
