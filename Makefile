@@ -85,10 +85,8 @@ generate-obo:
 	@echo "✓ OBO file generated"
 
 setup:
-	git submodule add -b download-manager-experiment https://github.com/saezlab/pypath.git pypath || true
-	git submodule add -b download-manager-experiment https://github.com/saezlab/download-manager.git download-manager || true
-	git config -f .gitmodules submodule.pypath.branch download-manager-experiment
-	git config -f .gitmodules submodule.download-manager.branch download-manager-experiment
+	git submodule add -b main https://github.com/saezlab/pypath.git pypath || true
+	git submodule add -b main https://github.com/saezlab/download-manager.git download-manager || true
 	git submodule update --init --recursive --remote
 	uv sync
 
