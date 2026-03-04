@@ -214,6 +214,20 @@ def _delete_documents(
         _wait_for_task(meili_url, task_uid, api_key)
 
 
+def _delete_index_if_exists(meili_url: str, index_name: str, api_key: str | None) -> None:
+    """Delete a Meilisearch index and wait for completion (ignore missing index)."""
+    try:
+        task = _request_json('DELETE', f'{meili_url}/indexes/{index_name}', api_key)
+    except RuntimeError as exc:
+        if ' -> 404:' in str(exc):
+            return
+        raise
+
+    task_uid = task.get('taskUid')
+    if task_uid is not None:
+        _wait_for_task(meili_url, int(task_uid), api_key)
+
+
 def _content_hash_expr(semantic_columns: list[str]) -> pl.Expr:
     """Fast, deterministic row hash over semantic columns."""
     return pl.struct([pl.col(c) for c in semantic_columns]).hash(seed=0).cast(pl.UInt64).cast(pl.Utf8).alias('content_hash')
@@ -410,7 +424,7 @@ def parse_args(argv: Iterable[str]) -> argparse.Namespace:
     parser.add_argument(
         '--full-reindex',
         action='store_true',
-        help='Disable incremental mode and import the full input file.',
+        help='Disable incremental mode and fully rebuild each target index (delete index first, then import full input).',
     )
     parser.add_argument(
         '--previous-entities-parquet-path',
@@ -488,7 +502,8 @@ def import_dataset(
     ]
 
     if full_reindex:
-        print('Mode: full reindex')
+        print('Mode: full reindex (drop + rebuild index)')
+        _delete_index_if_exists(meili_url=meili_url, index_name=index_name, api_key=api_key)
         with tempfile.TemporaryDirectory(prefix=f'meili-{dataset_name}-') as tmpdir:
             full_path = Path(tmpdir) / f'{dataset_name}_full.ndjson'
             (
