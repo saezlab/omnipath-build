@@ -1,4 +1,4 @@
-.PHONY: setup silver silver-test silver-reprocess silver-local-parallel gold local_tables entity_identifiers global_tables postgres meilisearch meilisearch-parallel meilisearch-entities meilisearch-interactions meilisearch-associations meilisearch-sources meilisearch-import meilisearch-import-entities meilisearch-import-interactions meilisearch-import-associations meilisearch-import-sources meilisearch-import-all meilisearch-deploy meilisearch-delete-indexes gold-meilisearch-import meilisearch-build-dump meilisearch-build-dump-start meilisearch-build-dump-stop pipeline pipeline-full generate-obo export export-entity export-ontology export-search export-meilisearch export-finalize
+.PHONY: setup silver silver-test silver-reprocess silver-local-parallel gold local_tables entity_identifiers global_tables postgres meilisearch meilisearch-parallel meilisearch-entities meilisearch-interactions meilisearch-associations meilisearch-sources meilisearch-import meilisearch-import-entities meilisearch-import-interactions meilisearch-import-associations meilisearch-import-sources meilisearch-import-all meilisearch-deploy meilisearch-delete-indexes meilisearch-reset gold-meilisearch-import meilisearch-build-dump meilisearch-build-dump-start meilisearch-build-dump-stop pipeline pipeline-full generate-obo export export-entity export-ontology export-search export-meilisearch export-finalize
 
 # Load local environment defaults (e.g. MEILISEARCH_API_KEY) when available.
 ifneq (,$(wildcard .env))
@@ -251,6 +251,15 @@ meilisearch-delete-indexes:
 	@curl -s -X DELETE "$(MEILI_URL)/indexes/search_sources" \
 		-H "Authorization: Bearer $(MEILI_API_KEY)" || true
 	@echo "Indexes deleted (or did not exist)"
+
+# Fully reset Meilisearch by removing every index (not just OmniPath indexes)
+# and clearing the task queue (best effort, endpoint availability depends on version).
+meilisearch-reset:
+	@echo "Fully resetting Meilisearch on $(MEILI_URL)..."
+	@MEILI_URL="$(MEILI_URL)" MEILI_API_KEY="$(MEILI_API_KEY)" uv run python -c "import json, os, urllib.error, urllib.parse, urllib.request; base=os.environ['MEILI_URL'].rstrip('/'); key=os.environ.get('MEILI_API_KEY',''); headers={'Content-Type':'application/json'}; headers.update({'Authorization': f'Bearer {key}'} if key else {}); req=lambda m,u,b=None: urllib.request.urlopen(urllib.request.Request(u, data=(json.dumps(b).encode() if b is not None else None), headers=headers, method=m)); print(f'Fetching indexes from {base}...'); data=json.loads(req('GET', f'{base}/indexes?limit=1000').read().decode() or '[]'); indexes=data if isinstance(data,list) else data.get('results',[]); print('No indexes found.' if not indexes else f'Found {len(indexes)} index(es).'); [print(f\"Deleting index: {i.get('uid')}\") or req('DELETE', f\"{base}/indexes/{urllib.parse.quote(str(i.get('uid')), safe='')}\").read() for i in indexes if i.get('uid')]; print('Attempting to cancel enqueued/processing tasks...'); \
+		(req('POST', f'{base}/tasks/cancel', {'statuses':['enqueued','processing']}).read(), print('Requested task cancel.')) if True else None; print('Attempting to delete task history...'); \
+		(req('DELETE', f'{base}/tasks').read(), print('Requested task deletion.')) if True else None"
+	@echo "✓ Meilisearch reset requested"
 
 gold-meilisearch-import:
 	@$(MAKE) gold
