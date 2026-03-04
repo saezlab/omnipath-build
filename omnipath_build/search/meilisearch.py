@@ -21,6 +21,7 @@ class MeilisearchSettings:
         'rankingRules': [
             'proximity',
             'words',
+            'num_interactions:desc',
             'attribute',
             'typo',
             'sort',
