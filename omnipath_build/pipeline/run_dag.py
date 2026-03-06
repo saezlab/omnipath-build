@@ -32,10 +32,8 @@ def main(argv: list[str] | None = None) -> int:
         inputs_package=args.inputs_package,
         test_mode=args.test_mode,
         run_freshness_checks=args.freshness_checks,
-        full_reindex=False,
         jobs=max(1, args.jobs),
         progress_mode=args.progress,
-        include_index_import=False,
     )
     print(f"Pipeline completed: {state['run_id']}")
     return 0

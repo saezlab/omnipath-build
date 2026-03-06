@@ -19,8 +19,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-INDEX_IMPORT_STATE_PATH = Path('data/reports/state/index_import_latest.json')
-
 from omnipath_build.loaders.silver import discover_resources
 from omnipath_build.pipeline.io_state import (
     compute_output_hash,
@@ -34,6 +32,8 @@ from omnipath_build.pipeline.io_state import (
     write_reports_and_changelog,
 )
 from omnipath_build.pipeline.task_impl import execute_task
+
+INDEX_IMPORT_STATE_PATH = Path('data/reports/state/index_import_latest.json')
 
 
 @dataclass(slots=True)
@@ -347,7 +347,7 @@ def discover_sources(inputs_package: str) -> list[str]:
     return sorted(discovered.keys())
 
 
-def build_dag(sources: list[str]) -> list[TaskDef]:
+def build_data_dag(sources: list[str]) -> list[TaskDef]:
     tasks: list[TaskDef] = []
 
     for source in sources:
@@ -361,12 +361,16 @@ def build_dag(sources: list[str]) -> list[TaskDef]:
     tasks.append(TaskDef('search_associations', 'search_associations', None, ['combined_gold']))
     tasks.append(TaskDef('search_sources', 'search_sources', None, ['combined_gold']))
 
-    tasks.append(TaskDef('index_import:entities', 'index_import', 'entities', ['search_entities']))
-    tasks.append(TaskDef('index_import:interactions', 'index_import', 'interactions', ['search_interactions']))
-    tasks.append(TaskDef('index_import:associations', 'index_import', 'associations', ['search_associations']))
-    tasks.append(TaskDef('index_import:sources', 'index_import', 'sources', ['search_sources']))
-
     return tasks
+
+
+def build_index_tasks() -> list[TaskDef]:
+    return [
+        TaskDef('index_import:entities', 'index_import', 'entities', ['search_entities']),
+        TaskDef('index_import:interactions', 'index_import', 'interactions', ['search_interactions']),
+        TaskDef('index_import:associations', 'index_import', 'associations', ['search_associations']),
+        TaskDef('index_import:sources', 'index_import', 'sources', ['search_sources']),
+    ]
 
 
 def fingerprint_for_task(
@@ -522,7 +526,6 @@ def _execute_one_task(
                 previous_state=previous_state,
                 inputs_package=inputs_package,
                 test_mode=test_mode,
-                skip_index_import=False,
                 run_freshness_checks=run_freshness_checks,
                 full_reindex=full_reindex,
                 log_path=log_path,
@@ -703,19 +706,15 @@ def run_pipeline(
     inputs_package: str,
     test_mode: bool,
     run_freshness_checks: bool,
-    full_reindex: bool,
     jobs: int = 4,
     progress_mode: str = 'rich',
-    include_index_import: bool = False,
 ) -> dict[str, Any]:
     run_id = utc_now().strftime('run-%Y%m%d-%H%M%S')
     task_log_dir = Path('data/reports/task_logs') / run_id
     runtime_hash_values = runtime_hashes(project_root)
 
     sources = discover_sources(inputs_package)
-    tasks = build_dag(sources)
-    if not include_index_import:
-        tasks = [t for t in tasks if t.task_type != 'index_import']
+    tasks = build_data_dag(sources)
 
     previous_state = load_latest_state()
     previous_tasks = (previous_state or {}).get('tasks', {})
@@ -741,7 +740,7 @@ def run_pipeline(
             inputs_package=inputs_package,
             test_mode=test_mode,
             run_freshness_checks=run_freshness_checks,
-            full_reindex=full_reindex,
+            full_reindex=False,
             jobs=max(1, jobs),
             progress=progress,
             task_log_dir=task_log_dir,
@@ -818,12 +817,7 @@ def run_index_imports(
             'output_ref': prev_search_outputs.get(key, current_search['output_ref'])
         }
 
-    index_tasks = [
-        TaskDef('index_import:entities', 'index_import', 'entities', ['search_entities']),
-        TaskDef('index_import:interactions', 'index_import', 'interactions', ['search_interactions']),
-        TaskDef('index_import:associations', 'index_import', 'associations', ['search_associations']),
-        TaskDef('index_import:sources', 'index_import', 'sources', ['search_sources']),
-    ]
+    index_tasks = build_index_tasks()
 
     task_results: dict[str, TaskResult] = {}
     for key in required_search:

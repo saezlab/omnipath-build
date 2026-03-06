@@ -51,15 +51,6 @@ class PathManager:
         """Get path to output directory (cross-source deduplicated final tables)."""
         return self.db_path / self.OUTPUT
 
-    # Legacy compatibility
-    def resource_path(self) -> Path:
-        """Get path to resource configs directory (legacy - use resources_path instead)."""
-        return self.resources_path()
-
-    def gold_final_path(self) -> Path:
-        """Get path to output directory (legacy - use output_path instead)."""
-        return self.output_path()
-
     # Internal helpers
     def _normalize_source(self, source_name: str | Path) -> Path:
         """Convert dotted source identifiers to folder paths."""
@@ -116,10 +107,6 @@ class PathManager:
     def output_file(self, table_name: str) -> Path:
         """Get path to final cross-source deduplicated output file."""
         return self.output_path() / f"{table_name}.parquet"
-
-    def gold_final_file(self, table_name: str) -> Path:
-        """Get path to final cross-source deduplicated file (legacy - use output_file instead)."""
-        return self.output_file(table_name)
 
     def resource_config_file(self, module_name: str) -> Path:
         """Get path to resource config YAML file."""

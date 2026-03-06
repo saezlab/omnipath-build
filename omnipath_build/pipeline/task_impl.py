@@ -316,7 +316,6 @@ def execute_task(
     previous_state: dict[str, Any] | None,
     inputs_package: str,
     test_mode: bool,
-    skip_index_import: bool,
     run_freshness_checks: bool,
     full_reindex: bool,
     log_path: Path | None = None,
@@ -589,13 +588,6 @@ def execute_task(
     if task.task_type == 'index_import':
         assert task.source is not None
         dataset = task.source
-        if skip_index_import:
-            tmp_output.parent.mkdir(parents=True, exist_ok=True)
-            tmp_output.write_text(
-                json.dumps({'dataset': dataset, 'status': 'skipped', 'reason': 'skip_index_import'}) + '\n',
-                encoding='utf-8',
-            )
-            return
 
         search_dep = resolve_output_ref(task_results[task.deps[0]].output_ref)
         parquet = search_dep
