@@ -96,7 +96,7 @@ def _load_cv_label_map(per_source_root: Path) -> dict[str, str]:
 
 def _load_obo_label_map(per_source_root: Path) -> dict[str, str]:
     """Load accession -> `name:accession` map from combined OBO."""
-    obo_path = per_source_root.parent / 'combined' / 'omnipath_mi.obo'
+    obo_path = per_source_root.parent / 'combined' / 'gold' / 'omnipath_mi.obo'
     if not obo_path.exists():
         logger.warning('OBO file not found at %s (will keep raw accessions)', obo_path)
         return {}

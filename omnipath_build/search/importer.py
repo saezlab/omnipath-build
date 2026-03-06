@@ -225,7 +225,14 @@ def _delete_index_if_exists(meili_url: str, index_name: str, api_key: str | None
 
     task_uid = task.get('taskUid')
     if task_uid is not None:
-        _wait_for_task(meili_url, int(task_uid), api_key)
+        try:
+            _wait_for_task(meili_url, int(task_uid), api_key)
+        except RuntimeError as exc:
+            # Some Meilisearch versions return a task that later fails with
+            # index_not_found for missing indexes. Treat this as non-fatal.
+            if 'index_not_found' in str(exc):
+                return
+            raise
 
 
 def _content_hash_expr(semantic_columns: list[str]) -> pl.Expr:
