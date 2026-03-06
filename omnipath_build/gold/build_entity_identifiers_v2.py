@@ -154,6 +154,27 @@ def _build_id_type_short_codes() -> dict[str, str]:
 
 ID_TYPE_SHORT_BY_ACCESSION = _build_id_type_short_codes()
 
+IDS_CANONICAL_SCHEMA: dict[str, pl.DataType] = {
+    'source_ref': pl.Utf8,
+    'local_entity_id': pl.Int64,
+    'entity_bucket': pl.Utf8,
+    'type_id': pl.Utf8,
+    'canonical_identifier': pl.Utf8,
+    'is_merge_safe': pl.Boolean,
+}
+
+RECORD_IDENTITY_SNAPSHOT_SCHEMA: dict[str, pl.DataType] = {
+    'run_id': pl.Utf8,
+    'source_ref': pl.Utf8,
+    'local_entity_id': pl.Int64,
+    'entity_key': pl.Utf8,
+    'entity_bucket': pl.Utf8,
+    'tax_partition': pl.Utf8,
+    'anchor_type_id': pl.Utf8,
+    'anchor_type_accession': pl.Utf8,
+    'anchor_identifier': pl.Utf8,
+}
+
 def _slug(text: str) -> str:
     s = re.sub(r'[^A-Za-z0-9]+', '_', text.strip().upper())
     s = re.sub(r'_+', '_', s).strip('_')
@@ -326,7 +347,7 @@ def build_entity_identifiers_v2(
             'is_merge_safe': bool(is_merge_safe),
         })
 
-    ids_canonical = pl.DataFrame(rows) if rows else pl.DataFrame({
+    ids_canonical = pl.DataFrame(rows, schema=IDS_CANONICAL_SCHEMA) if rows else pl.DataFrame({
         'source_ref': pl.Series([], dtype=pl.Utf8),
         'local_entity_id': pl.Series([], dtype=pl.Int64),
         'entity_bucket': pl.Series([], dtype=pl.Utf8),
@@ -485,19 +506,19 @@ def build_entity_identifiers_v2(
 
         for source_ref, local_entity_id in members:
             snapshot_rows.append({
-                'run_id': run_id,
-                'source_ref': source_ref,
-                'local_entity_id': local_entity_id,
-                'entity_key': entity_key,
-                'entity_bucket': bucket,
-                'tax_partition': tax_partition,
-                'anchor_type_id': anchor_type_short,
-                'anchor_type_accession': anchor_type_accession,
-                'anchor_identifier': anchor_identifier,
+                'run_id': str(run_id),
+                'source_ref': str(source_ref),
+                'local_entity_id': int(local_entity_id),
+                'entity_key': str(entity_key),
+                'entity_bucket': str(bucket),
+                'tax_partition': None if tax_partition is None else str(tax_partition),
+                'anchor_type_id': str(anchor_type_short),
+                'anchor_type_accession': None if anchor_type_accession is None else str(anchor_type_accession),
+                'anchor_identifier': None if anchor_identifier is None else str(anchor_identifier),
             })
 
     record_identity_snapshot = (
-        pl.DataFrame(snapshot_rows)
+        pl.DataFrame(snapshot_rows, schema=RECORD_IDENTITY_SNAPSHOT_SCHEMA)
         .sort(['source_ref', 'local_entity_id'])
         if snapshot_rows else
         pl.DataFrame({
