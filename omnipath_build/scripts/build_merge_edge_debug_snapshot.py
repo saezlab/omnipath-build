@@ -7,7 +7,6 @@ from pathlib import Path
 import polars as pl
 
 from omnipath_build.gold.build_entity_identifiers_v2 import (
-    MERGE_EDGE_DEBUG_SCHEMA,
     REQUIRES_TAX_PARTITION,
     MERGE_SAFE_BY_BUCKET_CODE,
     _canonicalize,
@@ -21,21 +20,50 @@ from omnipath_build.gold.build_entity_identifiers import (
 
 logger = logging.getLogger(__name__)
 
+MERGE_EDGE_DEBUG_SCHEMA: dict[str, pl.DataType] = {
+    'run_id': pl.Utf8,
+    'entity_key': pl.Utf8,
+    'left_source_ref': pl.Utf8,
+    'left_local_entity_id': pl.Int64,
+    'right_source_ref': pl.Utf8,
+    'right_local_entity_id': pl.Int64,
+    'entity_bucket': pl.Utf8,
+    'tax_partition': pl.Utf8,
+    'merge_type_id': pl.Utf8,
+    'merge_identifier': pl.Utf8,
+    'performed_union': pl.Boolean,
+}
+
 
 def _resolve_paths(path: Path) -> tuple[Path, Path]:
     path = path.expanduser().resolve()
+
     if path.name == 'local_tables':
-        local_tables_dir = path
+        search_root = path
         output_dir = path.parent
     elif (path / 'local_tables').exists():
-        local_tables_dir = path / 'local_tables'
+        search_root = path / 'local_tables'
         output_dir = path
     else:
+        search_root = path
+        output_dir = path
+
+    entity_files = [
+        p for p in search_root.rglob('local_entity_*.parquet')
+        if 'annotation' not in p.name and 'identifier' not in p.name and 'instance' not in p.name
+    ]
+    identifier_files = list(search_root.rglob('local_entity_identifier_*.parquet'))
+
+    if not entity_files and not identifier_files:
         raise FileNotFoundError(
-            f'Could not find local_tables under: {path}\n'
-            'Pass either a gold build directory or the local_tables directory itself.'
+            f'Could not find local entity parquet files under: {path}\n'
+            'Pass one of:\n'
+            '- a gold build directory\n'
+            '- a local_tables directory\n'
+            '- or a per_source directory containing many */gold/local_tables trees.'
         )
-    return local_tables_dir, output_dir
+
+    return search_root, output_dir
 
 
 def _load_records_and_ids(local_tables_dir: Path) -> tuple[pl.DataFrame, pl.DataFrame]:
@@ -235,20 +263,20 @@ def build_merge_edge_debug_snapshot(local_tables_dir: Path) -> tuple[pl.DataFram
         return record_identity_snapshot, pl.DataFrame(schema=MERGE_EDGE_DEBUG_SCHEMA)
 
     merge_edge_debug_snapshot = (
-        pl.DataFrame(merge_edge_rows, schema=MERGE_EDGE_DEBUG_SCHEMA)
+        pl.DataFrame(merge_edge_rows)
         .join(
             record_identity_snapshot.select([
-                pl.col('run_id'),
+                pl.col('run_id').alias('snapshot_run_id'),
                 pl.col('source_ref').alias('left_source_ref'),
                 pl.col('local_entity_id').alias('left_local_entity_id'),
-                'entity_key',
+                pl.col('entity_key').alias('snapshot_entity_key'),
             ]),
             on=['left_source_ref', 'left_local_entity_id'],
             how='left',
         )
         .select([
-            'run_id',
-            'entity_key',
+            pl.col('snapshot_run_id').alias('run_id'),
+            pl.col('snapshot_entity_key').alias('entity_key'),
             'left_source_ref',
             'left_local_entity_id',
             'right_source_ref',
@@ -275,18 +303,18 @@ def build_merge_edge_debug_snapshot(local_tables_dir: Path) -> tuple[pl.DataFram
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description='Build a standalone merge-edge debug snapshot from the local_tables of a previous gold build.'
+        description='Build a standalone merge-edge debug snapshot from previous local tables, including recursive scans across per_source directories.'
     )
     parser.add_argument(
         'path',
         type=Path,
-        help='Path to a gold build directory or directly to its local_tables directory.',
+        help='Path to a gold build directory, a local_tables directory, or a per_source directory containing many source gold outputs.',
     )
     parser.add_argument(
         '--output',
         type=Path,
         default=None,
-        help='Optional output parquet path. Defaults to <gold_dir>/merge_edge_debug_snapshot.parquet',
+        help='Optional output parquet path. Defaults to <input_path>/merge_edge_debug_snapshot.parquet',
     )
     args = parser.parse_args()
 
@@ -295,7 +323,16 @@ def main() -> None:
     local_tables_dir, output_dir = _resolve_paths(args.path)
     output_path = (args.output.expanduser().resolve() if args.output else output_dir / 'merge_edge_debug_snapshot.parquet')
 
-    logger.info('Using local tables: %s', local_tables_dir)
+    entity_count = len([
+        p for p in local_tables_dir.rglob('local_entity_*.parquet')
+        if 'annotation' not in p.name and 'identifier' not in p.name and 'instance' not in p.name
+    ])
+    identifier_count = len(list(local_tables_dir.rglob('local_entity_identifier_*.parquet')))
+
+    logger.info('Using input root: %s', local_tables_dir)
+    logger.info('Found entity files: %s', entity_count)
+    logger.info('Found identifier files: %s', identifier_count)
+
     record_identity_snapshot, merge_edge_debug_snapshot = build_merge_edge_debug_snapshot(local_tables_dir)
     merge_edge_debug_snapshot.write_parquet(output_path)
 
