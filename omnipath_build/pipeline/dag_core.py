@@ -300,13 +300,7 @@ def git_commit_hash() -> str:
 
 
 def runtime_hashes(project_root: Path) -> dict[str, str]:
-    uv_lock = project_root / 'uv.lock'
-    if not uv_lock.exists():
-        raise FileNotFoundError(f'Missing runtime lockfile: {uv_lock}')
-    return {
-        'uv_lock_sha256': sha256_file(uv_lock),
-        'git_commit': git_commit_hash(),
-    }
+    return {}
 
 
 def hash_paths(paths: list[Path]) -> str:
