@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
+import tempfile
 from pathlib import Path
 
 import polars as pl
@@ -35,24 +37,48 @@ MERGE_EDGE_DEBUG_SCHEMA: dict[str, pl.DataType] = {
 }
 
 
+def _iter_search_roots(path: Path) -> list[Path]:
+    roots: list[Path] = []
+    seen: set[Path] = set()
+
+    def add(candidate: Path) -> None:
+        candidate = candidate.expanduser()
+        try:
+            resolved = candidate.resolve()
+        except FileNotFoundError:
+            return
+        if not resolved.exists() or resolved in seen:
+            return
+        seen.add(resolved)
+        roots.append(resolved)
+
+    add(path)
+    add(path / 'local_tables')
+
+    if path.exists() and path.is_dir():
+        for child in path.iterdir():
+            if not child.is_dir() and not child.is_symlink():
+                continue
+            add(child)
+            add(child / 'local_tables')
+            add(child / 'gold')
+            add(child / 'gold' / 'local_tables')
+
+    return roots
+
+
 def _resolve_paths(path: Path) -> tuple[Path, Path]:
     path = path.expanduser().resolve()
+    search_roots = _iter_search_roots(path)
 
-    if path.name == 'local_tables':
-        search_root = path
-        output_dir = path.parent
-    elif (path / 'local_tables').exists():
-        search_root = path / 'local_tables'
-        output_dir = path
-    else:
-        search_root = path
-        output_dir = path
-
-    entity_files = [
-        p for p in search_root.rglob('local_entity_*.parquet')
-        if 'annotation' not in p.name and 'identifier' not in p.name and 'instance' not in p.name
-    ]
-    identifier_files = list(search_root.rglob('local_entity_identifier_*.parquet'))
+    entity_files: list[Path] = []
+    identifier_files: list[Path] = []
+    for root in search_roots:
+        entity_files.extend([
+            p for p in root.glob('local_entity_*.parquet')
+            if 'annotation' not in p.name and 'identifier' not in p.name and 'instance' not in p.name
+        ])
+        identifier_files.extend(root.glob('local_entity_identifier_*.parquet'))
 
     if not entity_files and not identifier_files:
         raise FileNotFoundError(
@@ -60,19 +86,42 @@ def _resolve_paths(path: Path) -> tuple[Path, Path]:
             'Pass one of:\n'
             '- a gold build directory\n'
             '- a local_tables directory\n'
-            '- or a per_source directory containing many */gold/local_tables trees.'
+            '- or a per_source directory containing many */gold local table symlinks.'
         )
 
-    return search_root, output_dir
+    return path, path
+
+
+def _collect_local_table_files(path: Path) -> tuple[list[Path], list[Path], list[Path]]:
+    entity_files: list[Path] = []
+    identifier_files: list[Path] = []
+    instance_files: list[Path] = []
+    seen: set[Path] = set()
+
+    for root in _iter_search_roots(path):
+        for candidate in root.glob('local_entity_*.parquet'):
+            if 'annotation' in candidate.name or 'identifier' in candidate.name or 'instance' in candidate.name:
+                continue
+            resolved = candidate.resolve()
+            if resolved not in seen:
+                seen.add(resolved)
+                entity_files.append(resolved)
+        for candidate in root.glob('local_entity_identifier_*.parquet'):
+            resolved = candidate.resolve()
+            if resolved not in seen:
+                seen.add(resolved)
+                identifier_files.append(resolved)
+        for candidate in root.glob('local_entity_instance_*.parquet'):
+            resolved = candidate.resolve()
+            if resolved not in seen:
+                seen.add(resolved)
+                instance_files.append(resolved)
+
+    return sorted(entity_files), sorted(identifier_files), sorted(instance_files)
 
 
 def _load_records_and_ids(local_tables_dir: Path) -> tuple[pl.DataFrame, pl.DataFrame]:
-    entity_files = sorted(
-        p
-        for p in local_tables_dir.rglob('local_entity_*.parquet')
-        if 'annotation' not in p.name and 'identifier' not in p.name and 'instance' not in p.name
-    )
-    identifier_files = sorted(local_tables_dir.rglob('local_entity_identifier_*.parquet'))
+    entity_files, identifier_files, _ = _collect_local_table_files(local_tables_dir)
 
     all_entities: list[pl.DataFrame] = []
     for path in entity_files:
@@ -164,8 +213,23 @@ def _load_records_and_ids(local_tables_dir: Path) -> tuple[pl.DataFrame, pl.Data
     return records, ids_canonical
 
 
+def _materialize_local_tables_view(input_root: Path) -> Path:
+    entity_files, identifier_files, instance_files = _collect_local_table_files(input_root)
+    temp_dir = Path(tempfile.mkdtemp(prefix='merge_edge_debug_'))
+
+    for source_file in [*entity_files, *identifier_files, *instance_files]:
+        link_path = temp_dir / source_file.name
+        try:
+            os.symlink(source_file, link_path)
+        except FileExistsError:
+            pass
+
+    return temp_dir
+
+
 def build_merge_edge_debug_snapshot(local_tables_dir: Path) -> tuple[pl.DataFrame, pl.DataFrame]:
-    record_identity_snapshot, _, _, _ = build_entity_identifiers_v2(local_tables_dir=local_tables_dir)
+    materialized_local_tables_dir = _materialize_local_tables_view(local_tables_dir)
+    record_identity_snapshot, _, _, _ = build_entity_identifiers_v2(local_tables_dir=materialized_local_tables_dir)
     records, ids_canonical = _load_records_and_ids(local_tables_dir)
 
     if len(records) == 0 or len(ids_canonical) == 0:
@@ -323,15 +387,11 @@ def main() -> None:
     local_tables_dir, output_dir = _resolve_paths(args.path)
     output_path = (args.output.expanduser().resolve() if args.output else output_dir / 'merge_edge_debug_snapshot.parquet')
 
-    entity_count = len([
-        p for p in local_tables_dir.rglob('local_entity_*.parquet')
-        if 'annotation' not in p.name and 'identifier' not in p.name and 'instance' not in p.name
-    ])
-    identifier_count = len(list(local_tables_dir.rglob('local_entity_identifier_*.parquet')))
+    entity_files, identifier_files, _ = _collect_local_table_files(local_tables_dir)
 
     logger.info('Using input root: %s', local_tables_dir)
-    logger.info('Found entity files: %s', entity_count)
-    logger.info('Found identifier files: %s', identifier_count)
+    logger.info('Found entity files: %s', len(entity_files))
+    logger.info('Found identifier files: %s', len(identifier_files))
 
     record_identity_snapshot, merge_edge_debug_snapshot = build_merge_edge_debug_snapshot(local_tables_dir)
     merge_edge_debug_snapshot.write_parquet(output_path)
