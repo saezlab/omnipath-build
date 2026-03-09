@@ -21,11 +21,11 @@ class MeilisearchSettings:
         'rankingRules': [
             'proximity',
             'words',
-            'num_interactions:desc',
             'attribute',
             'typo',
             'sort',
             'exactness',
+            'num_interactions:desc',
         ],
         'faceting': {
             'maxValuesPerFacet': 100,
