@@ -106,7 +106,6 @@ logger = logging.getLogger(__name__)
 # Merge-unsafe identifier types (excluded from cross-source merging)
 # These are ambiguous identifiers that should NOT be used for entity resolution
 MERGE_UNSAFE_IDENTIFIER_TYPES = frozenset({
-    IdentifierNamespaceCv.CHEBI.value,
     IdentifierNamespaceCv.GENE_NAME_PRIMARY.value,
     IdentifierNamespaceCv.GENE_NAME_SYNONYM.value,
     IdentifierNamespaceCv.NAME.value,
@@ -173,11 +172,21 @@ MERGE_SAFE_IDENTIFIER_TYPES_BY_BUCKET: dict[str, frozenset[str]] = {
     CHEMICAL_ENTITY_BUCKET: frozenset({
         IdentifierNamespaceCv.STANDARD_INCHI.value,
         IdentifierNamespaceCv.STANDARD_INCHI_KEY.value,
+        IdentifierNamespaceCv.CHEBI.value,
+        IdentifierNamespaceCv.PUBCHEM.value,
         IdentifierNamespaceCv.PUBCHEM_COMPOUND.value,
+        IdentifierNamespaceCv.CHEMBL.value,
         IdentifierNamespaceCv.CHEMBL_COMPOUND.value,
+        IdentifierNamespaceCv.DRUGBANK.value,
+        IdentifierNamespaceCv.KEGG_COMPOUND.value,
+        IdentifierNamespaceCv.HMDB.value,
+        IdentifierNamespaceCv.METANETX.value,
+        IdentifierNamespaceCv.LIPIDMAPS.value,
+        IdentifierNamespaceCv.SWISSLIPIDS.value,
+        IdentifierNamespaceCv.ZINC.value,
         IdentifierNamespaceCv.BINDINGDB.value,
         IdentifierNamespaceCv.GUIDETOPHARMA.value,
-        IdentifierNamespaceCv.REACTOME_ID
+        IdentifierNamespaceCv.REACTOME_ID.value,
     }),
     EntityTypeCv.COMPLEX.value: frozenset({
         IdentifierNamespaceCv.COMPLEXPORTAL.value,
@@ -264,6 +273,34 @@ def _extract_entity_tax_annotations(
     identifier_df: pl.DataFrame,
 ) -> pl.DataFrame:
     """Extract entity tax annotations (NCBI tax IDs) for a source."""
+    annotation_path = local_tables_dir / f'local_entity_annotation_{source_name}.parquet'
+    instance_path = local_tables_dir / f'local_entity_instance_{source_name}.parquet'
+
+    if annotation_path.exists() and instance_path.exists():
+        annotation_df = pl.read_parquet(annotation_path)
+        instance_df = pl.read_parquet(instance_path)
+        if len(annotation_df) > 0 and len(instance_df) > 0 and {'cv_term_accession', 'value'}.issubset(annotation_df.columns):
+            tax_rows = (
+                annotation_df
+                .filter(pl.col('cv_term_accession') == NCBI_TAXONOMY_TERM)
+                .filter(pl.col('value').is_not_null())
+                .join(
+                    instance_df.select(['local_entity_instance_id', 'local_entity_id']),
+                    on='local_entity_instance_id',
+                    how='inner',
+                )
+                .select([
+                    pl.col('local_entity_id').cast(pl.Int64),
+                    pl.col('value').cast(pl.Utf8).alias('tax_id'),
+                ])
+                .filter(pl.col('tax_id').str.len_chars() > 0)
+                .group_by('local_entity_id')
+                .agg(pl.col('tax_id').first())
+                .with_columns(pl.lit(source_id).alias('source_id'))
+            )
+            if len(tax_rows) > 0:
+                return tax_rows
+
     membership_path = local_tables_dir / f'local_membership_{source_name}.parquet'
     if not membership_path.exists():
         return _empty_tax_table()
@@ -305,6 +342,15 @@ def _extract_entity_tax_annotations(
         .with_columns(pl.lit(source_id).alias('source_id'))
     )
     return tax_rows
+
+
+def _is_tax_scoped_gene_name_merge_safe(entity_bucket: str, id_type: str, tax_partition: str | None) -> bool:
+    return (
+        id_type == IdentifierNamespaceCv.GENE_NAME_PRIMARY.value
+        and entity_bucket in {EntityTypeCv.PROTEIN.value, EntityTypeCv.GENE.value, EntityTypeCv.RNA.value, EntityTypeCv.DNA.value}
+        and tax_partition not in (None, '', TAX_PARTITION_ANY)
+        and not str(tax_partition).startswith(UNRESOLVED_TAX_PARTITION_PREFIX)
+    )
 
 
 def _load_entity_metadata(
@@ -474,7 +520,18 @@ def _prepare_local_entities_for_source(
     local_ms_edges = (
         local_ms_edges
         .with_columns([
-            pl.when(pl.col('entity_bucket').is_in(list(defined_buckets)))
+            pl.when(
+                (pl.col('id_type') == IdentifierNamespaceCv.GENE_NAME_PRIMARY.value)
+                & pl.col('entity_bucket').is_in([
+                    EntityTypeCv.PROTEIN.value,
+                    EntityTypeCv.GENE.value,
+                    EntityTypeCv.RNA.value,
+                    EntityTypeCv.DNA.value,
+                ])
+                & pl.col('tax_id').is_not_null()
+            )
+              .then(pl.lit(True))
+              .when(pl.col('entity_bucket').is_in(list(defined_buckets)))
               .then(pl.col('is_allowed').fill_null(False))
               .otherwise(
                   # Fallback to blacklist for buckets without explicit allowlist

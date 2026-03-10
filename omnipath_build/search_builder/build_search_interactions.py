@@ -604,6 +604,7 @@ def build_search_interactions(global_tables_dir: Path, output_path: Path) -> Pat
             pl.col("participant_annotation_terms").list.eval(
                 pl.element().filter(pl.element().str.contains(r"\bKW:\d{4,}\b"))
             ).alias("participant_annotation_terms_kw"),
+            pl.col("evidence").list.len().cast(pl.Int64).alias("evidence_count"),
             (pl.col("directions").list.len() > 0).alias("has_direction"),
             (pl.col("directions").list.eval((pl.element().struct.field("sign") == 1) | (pl.element().struct.field("sign") == 0)).list.any()).alias("has_positive_sign"),
             (pl.col("directions").list.eval((pl.element().struct.field("sign") == -1) | (pl.element().struct.field("sign") == 0)).list.any()).alias("has_negative_sign"),

@@ -17,7 +17,18 @@ class MeilisearchSettings:
             'cv_terms_hp',
             'cv_terms_kw',
         ],
-        'displayedAttributes': ['*'],
+        'displayedAttributes': [
+            'entity_id',
+            'entity_type',
+            'names',
+            'synonyms',
+            'gene_symbols',
+            'descriptions',
+            'sources',
+            'identifiers',
+            'ncbi_tax_id',
+            'num_interactions',
+        ],
         'rankingRules': [
             'proximity',
             'words',
@@ -65,6 +76,9 @@ class MeilisearchSettings:
             'sources',
         ],
         'sortableAttributes': [],
+        'rankingRules': [
+            'evidence_count:desc',
+        ],
         'displayedAttributes': ['*'],
         'pagination': {'maxTotalHits': 2000000},
     }

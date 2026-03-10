@@ -67,8 +67,18 @@ ANCHOR_PRIORITY_BY_BUCKET: dict[str, list[str]] = {
     'CH': [
         IdentifierNamespaceCv.STANDARD_INCHI_KEY.value,
         IdentifierNamespaceCv.STANDARD_INCHI.value,
+        IdentifierNamespaceCv.CHEBI.value,
         IdentifierNamespaceCv.PUBCHEM_COMPOUND.value,
+        IdentifierNamespaceCv.PUBCHEM.value,
         IdentifierNamespaceCv.CHEMBL_COMPOUND.value,
+        IdentifierNamespaceCv.CHEMBL.value,
+        IdentifierNamespaceCv.HMDB.value,
+        IdentifierNamespaceCv.METANETX.value,
+        IdentifierNamespaceCv.LIPIDMAPS.value,
+        IdentifierNamespaceCv.SWISSLIPIDS.value,
+        IdentifierNamespaceCv.DRUGBANK.value,
+        IdentifierNamespaceCv.KEGG_COMPOUND.value,
+        IdentifierNamespaceCv.ZINC.value,
         IdentifierNamespaceCv.BINDINGDB.value,
         IdentifierNamespaceCv.GUIDETOPHARMA.value,
     ],
@@ -193,6 +203,10 @@ def _canonicalize(type_id: str, value: str) -> str:
     out = ' '.join(out.split())
     if type_id in CASE_NORMALIZE_UPPER:
         out = out.upper()
+    if type_id == IdentifierNamespaceCv.CHEBI.value:
+        out = re.sub(r'^(CHEBI:)+', 'CHEBI:', out, flags=re.IGNORECASE)
+        if out.isdigit():
+            out = f'CHEBI:{out}'
     return out
 
 
@@ -214,6 +228,81 @@ def _build_merge_safe_by_bucket_code() -> dict[str, frozenset[str]]:
 
 
 MERGE_SAFE_BY_BUCKET_CODE = _build_merge_safe_by_bucket_code()
+
+
+def _extract_tax_annotations(local_tables_dir: Path) -> pl.DataFrame:
+    """Extract per-entity NCBI tax IDs from local instance + annotation tables."""
+    instance_files = sorted(local_tables_dir.rglob('local_entity_instance_*.parquet'))
+    annotation_files = sorted(local_tables_dir.rglob('local_entity_annotation_*.parquet'))
+
+    if not instance_files or not annotation_files:
+        return pl.DataFrame({
+            'source_ref': pl.Series([], dtype=pl.Utf8),
+            'local_entity_id': pl.Series([], dtype=pl.Int64),
+            'tax_id': pl.Series([], dtype=pl.Utf8),
+        })
+
+    instance_parts: list[pl.DataFrame] = []
+    for path in instance_files:
+        df = pl.read_parquet(path)
+        if len(df) == 0:
+            continue
+        instance_parts.append(
+            df.select(['source_ref', 'local_entity_instance_id', 'local_entity_id'])
+            .with_columns([
+                pl.col('source_ref').cast(pl.Utf8),
+                pl.col('local_entity_instance_id').cast(pl.Int64),
+                pl.col('local_entity_id').cast(pl.Int64),
+            ])
+        )
+
+    annotation_parts: list[pl.DataFrame] = []
+    for path in annotation_files:
+        df = pl.read_parquet(path)
+        if len(df) == 0:
+            continue
+        annotation_parts.append(
+            df.select(['source_ref', 'local_entity_instance_id', 'cv_term_accession', 'value'])
+            .with_columns([
+                pl.col('source_ref').cast(pl.Utf8),
+                pl.col('local_entity_instance_id').cast(pl.Int64),
+                pl.col('cv_term_accession').cast(pl.Utf8),
+                pl.col('value').cast(pl.Utf8),
+            ])
+            .filter(pl.col('cv_term_accession') == IdentifierNamespaceCv.NCBI_TAX_ID.value)
+            .filter(pl.col('value').is_not_null())
+        )
+
+    if not instance_parts or not annotation_parts:
+        return pl.DataFrame({
+            'source_ref': pl.Series([], dtype=pl.Utf8),
+            'local_entity_id': pl.Series([], dtype=pl.Int64),
+            'tax_id': pl.Series([], dtype=pl.Utf8),
+        })
+
+    instances = pl.concat(instance_parts, how='diagonal_relaxed')
+    annotations = pl.concat(annotation_parts, how='diagonal_relaxed')
+
+    return (
+        annotations
+        .join(instances, on=['source_ref', 'local_entity_instance_id'], how='inner')
+        .select([
+            'source_ref',
+            'local_entity_id',
+            pl.col('value').alias('tax_id'),
+        ])
+        .filter(pl.col('tax_id').str.len_chars() > 0)
+        .group_by(['source_ref', 'local_entity_id'])
+        .agg(pl.col('tax_id').first())
+    )
+
+
+def _is_tax_scoped_gene_name_merge_safe(bucket: str, type_id: str, tax_partition: str | None) -> bool:
+    return (
+        type_id == IdentifierNamespaceCv.GENE_NAME_PRIMARY.value
+        and bucket in REQUIRES_TAX_PARTITION
+        and tax_partition not in (None, '', 'UNK')
+    )
 
 
 def _id_type_short(type_id: str) -> str:
@@ -268,19 +357,30 @@ def build_entity_identifiers_v2(
         empty = pl.DataFrame()
         return empty, empty, empty, empty
 
+    tax_annotations = _extract_tax_annotations(local_tables_dir)
+
     all_entities: list[pl.DataFrame] = []
     for path in entity_files:
         df = pl.read_parquet(path)
         if len(df) == 0:
             continue
-        all_entities.append(
+        entity_part = (
             df.select(['source_ref', 'local_entity_id', 'entity_type'])
             .with_columns([
                 pl.col('source_ref').cast(pl.Utf8),
+                pl.col('local_entity_id').cast(pl.Int64),
                 pl.col('entity_type').cast(pl.Utf8),
-                pl.lit(None, dtype=pl.Utf8).alias('tax_id'),
             ])
         )
+        if len(tax_annotations) > 0:
+            entity_part = entity_part.join(
+                tax_annotations,
+                on=['source_ref', 'local_entity_id'],
+                how='left',
+            )
+        else:
+            entity_part = entity_part.with_columns(pl.lit(None, dtype=pl.Utf8).alias('tax_id'))
+        all_entities.append(entity_part)
 
     if not all_entities:
         empty = pl.DataFrame()
@@ -323,7 +423,11 @@ def build_entity_identifiers_v2(
 
     ids_with_context = (
         ids_all
-        .join(records.select(['source_ref', 'local_entity_id', 'entity_bucket']), on=['source_ref', 'local_entity_id'], how='left')
+        .join(
+            records.select(['source_ref', 'local_entity_id', 'entity_bucket', 'tax_partition']),
+            on=['source_ref', 'local_entity_id'],
+            how='left',
+        )
         .with_columns(pl.col('entity_bucket').fill_null('X'))
     )
 
@@ -333,8 +437,11 @@ def build_entity_identifiers_v2(
         bucket = row['entity_bucket']
         t = str(row['type_id'])
         v = _canonicalize(t, str(row['identifier']))
+        tax_partition = row.get('tax_partition')
         allowed = MERGE_SAFE_BY_BUCKET_CODE.get(bucket)
-        if allowed is not None:
+        if _is_tax_scoped_gene_name_merge_safe(bucket, t, tax_partition):
+            is_merge_safe = True
+        elif allowed is not None:
             is_merge_safe = t in allowed
         else:
             is_merge_safe = t not in MERGE_UNSAFE_IDENTIFIER_TYPES

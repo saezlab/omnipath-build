@@ -255,7 +255,13 @@ class _ProgressTracker:
         from rich.live import Live
 
         console = Console()
-        with Live(self._render_table(), console=console, refresh_per_second=5, transient=True) as live:
+        with Live(
+            self._render_table(),
+            console=console,
+            refresh_per_second=5,
+            transient=True,
+            vertical_overflow='visible',
+        ) as live:
             while not self._stop_event.is_set():
                 live.update(self._render_table(), refresh=True)
                 time.sleep(0.2)

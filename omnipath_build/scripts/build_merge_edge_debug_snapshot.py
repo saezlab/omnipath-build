@@ -13,6 +13,8 @@ from omnipath_build.gold.build_entity_identifiers_v2 import (
     MERGE_SAFE_BY_BUCKET_CODE,
     _canonicalize,
     _entity_bucket,
+    _extract_tax_annotations,
+    _is_tax_scoped_gene_name_merge_safe,
     build_entity_identifiers_v2,
 )
 from omnipath_build.gold.build_entity_identifiers import (
@@ -123,19 +125,30 @@ def _collect_local_table_files(path: Path) -> tuple[list[Path], list[Path], list
 def _load_records_and_ids(local_tables_dir: Path) -> tuple[pl.DataFrame, pl.DataFrame]:
     entity_files, identifier_files, _ = _collect_local_table_files(local_tables_dir)
 
+    tax_annotations = _extract_tax_annotations(local_tables_dir)
+
     all_entities: list[pl.DataFrame] = []
     for path in entity_files:
         df = pl.read_parquet(path)
         if len(df) == 0:
             continue
-        all_entities.append(
+        entity_part = (
             df.select(['source_ref', 'local_entity_id', 'entity_type'])
             .with_columns([
                 pl.col('source_ref').cast(pl.Utf8),
+                pl.col('local_entity_id').cast(pl.Int64),
                 pl.col('entity_type').cast(pl.Utf8),
-                pl.lit(None, dtype=pl.Utf8).alias('tax_id'),
             ])
         )
+        if len(tax_annotations) > 0:
+            entity_part = entity_part.join(
+                tax_annotations,
+                on=['source_ref', 'local_entity_id'],
+                how='left',
+            )
+        else:
+            entity_part = entity_part.with_columns(pl.lit(None, dtype=pl.Utf8).alias('tax_id'))
+        all_entities.append(entity_part)
 
     if not all_entities:
         return pl.DataFrame(), pl.DataFrame()
@@ -178,7 +191,11 @@ def _load_records_and_ids(local_tables_dir: Path) -> tuple[pl.DataFrame, pl.Data
 
     ids_with_context = (
         ids_all
-        .join(records.select(['source_ref', 'local_entity_id', 'entity_bucket']), on=['source_ref', 'local_entity_id'], how='left')
+        .join(
+            records.select(['source_ref', 'local_entity_id', 'entity_bucket', 'tax_partition']),
+            on=['source_ref', 'local_entity_id'],
+            how='left',
+        )
         .with_columns(pl.col('entity_bucket').fill_null('X'))
     )
 
@@ -187,8 +204,11 @@ def _load_records_and_ids(local_tables_dir: Path) -> tuple[pl.DataFrame, pl.Data
         bucket = str(row['entity_bucket'])
         type_id = str(row['type_id'])
         canonical_identifier = _canonicalize(type_id, str(row['identifier']))
+        tax_partition = row.get('tax_partition')
         allowed = MERGE_SAFE_BY_BUCKET_CODE.get(bucket)
-        if allowed is not None:
+        if _is_tax_scoped_gene_name_merge_safe(bucket, type_id, tax_partition):
+            is_merge_safe = True
+        elif allowed is not None:
             is_merge_safe = type_id in allowed
         else:
             is_merge_safe = type_id not in MERGE_UNSAFE_IDENTIFIER_TYPES
