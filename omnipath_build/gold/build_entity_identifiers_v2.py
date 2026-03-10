@@ -44,8 +44,8 @@ BUCKET_CODE_BY_ENTITY_TYPE: dict[str, str] = {
     CHEMICAL_ENTITY_BUCKET: 'CH',
 }
 
-# Buckets where tax partition is required by policy
-REQUIRES_TAX_PARTITION: frozenset[str] = frozenset({'P', 'G', 'R', 'D'})
+# Buckets where gene-symbol merges require tax scoping.
+GENE_SYMBOL_TAX_SCOPED_BUCKETS: frozenset[str] = frozenset({'P', 'G', 'R', 'D'})
 
 # Per-bucket anchor type priority (lower index = higher priority)
 ANCHOR_PRIORITY_BY_BUCKET: dict[str, list[str]] = {
@@ -297,11 +297,11 @@ def _extract_tax_annotations(local_tables_dir: Path) -> pl.DataFrame:
     )
 
 
-def _is_tax_scoped_gene_name_merge_safe(bucket: str, type_id: str, tax_partition: str | None) -> bool:
+def _is_tax_scoped_gene_name_merge_safe(bucket: str, type_id: str, tax_id: str | None) -> bool:
     return (
         type_id == IdentifierNamespaceCv.GENE_NAME_PRIMARY.value
-        and bucket in REQUIRES_TAX_PARTITION
-        and tax_partition not in (None, '', 'UNK')
+        and bucket in GENE_SYMBOL_TAX_SCOPED_BUCKETS
+        and tax_id not in (None, '', 'UNK')
     )
 
 
@@ -413,18 +413,14 @@ def build_entity_identifiers_v2(
         entities_all
         .with_columns(pl.col('entity_type').fill_null(UNKNOWN_ENTITY_TYPE_KEY))
         .with_columns(pl.col('entity_type').map_elements(_entity_bucket, return_dtype=pl.Utf8).alias('entity_bucket'))
-        .with_columns(
-            pl.when(pl.col('entity_bucket').is_in(list(REQUIRES_TAX_PARTITION)))
-            .then(pl.coalesce([pl.col('tax_id'), pl.lit('UNK')]))
-            .otherwise(pl.lit(None, dtype=pl.Utf8))
-            .alias('tax_partition')
-        )
+        .with_columns(pl.col('tax_id').cast(pl.Utf8))
+        .with_columns(pl.lit(None, dtype=pl.Utf8).alias('tax_partition'))
     )
 
     ids_with_context = (
         ids_all
         .join(
-            records.select(['source_ref', 'local_entity_id', 'entity_bucket', 'tax_partition']),
+            records.select(['source_ref', 'local_entity_id', 'entity_bucket', 'tax_id']),
             on=['source_ref', 'local_entity_id'],
             how='left',
         )
@@ -437,14 +433,17 @@ def build_entity_identifiers_v2(
         bucket = row['entity_bucket']
         t = str(row['type_id'])
         v = _canonicalize(t, str(row['identifier']))
-        tax_partition = row.get('tax_partition')
+        tax_id = row.get('tax_id')
         allowed = MERGE_SAFE_BY_BUCKET_CODE.get(bucket)
-        if _is_tax_scoped_gene_name_merge_safe(bucket, t, tax_partition):
+        if _is_tax_scoped_gene_name_merge_safe(bucket, t, tax_id):
             is_merge_safe = True
+            merge_partition = str(tax_id)
         elif allowed is not None:
             is_merge_safe = t in allowed
+            merge_partition = None
         else:
             is_merge_safe = t not in MERGE_UNSAFE_IDENTIFIER_TYPES
+            merge_partition = None
         rows.append({
             'source_ref': str(row['source_ref']),
             'local_entity_id': int(row['local_entity_id']),
@@ -452,15 +451,21 @@ def build_entity_identifiers_v2(
             'type_id': t,
             'canonical_identifier': v,
             'is_merge_safe': bool(is_merge_safe),
+            'merge_partition': merge_partition,
         })
 
-    ids_canonical = pl.DataFrame(rows, schema=IDS_CANONICAL_SCHEMA) if rows else pl.DataFrame({
+    ids_canonical_schema = {
+        **IDS_CANONICAL_SCHEMA,
+        'merge_partition': pl.Utf8,
+    }
+    ids_canonical = pl.DataFrame(rows, schema=ids_canonical_schema) if rows else pl.DataFrame({
         'source_ref': pl.Series([], dtype=pl.Utf8),
         'local_entity_id': pl.Series([], dtype=pl.Int64),
         'entity_bucket': pl.Series([], dtype=pl.Utf8),
         'type_id': pl.Series([], dtype=pl.Utf8),
         'canonical_identifier': pl.Series([], dtype=pl.Utf8),
         'is_merge_safe': pl.Series([], dtype=pl.Boolean),
+        'merge_partition': pl.Series([], dtype=pl.Utf8),
     })
 
     grouped = (
@@ -470,7 +475,7 @@ def build_entity_identifiers_v2(
             on=['source_ref', 'local_entity_id', 'entity_bucket'],
             how='left',
         )
-        .group_by(['source_ref', 'local_entity_id', 'entity_bucket', 'tax_partition'])
+        .group_by(['source_ref', 'local_entity_id', 'entity_bucket', 'tax_id'])
         .agg([
             pl.col('type_id').drop_nulls().alias('type_ids'),
             pl.col('canonical_identifier').drop_nulls().alias('canonical_ids'),
@@ -485,27 +490,22 @@ def build_entity_identifiers_v2(
     for row in grouped.iter_rows(named=True):
         key = (str(row['source_ref']), int(row['local_entity_id']))
         record_keys.append(key)
-        record_meta_by_key[key] = (str(row['entity_bucket']), row['tax_partition'])
+        record_meta_by_key[key] = (str(row['entity_bucket']), row.get('tax_id'))
 
         type_ids = list(row.get('type_ids') or [])
         canonical_ids = list(row.get('canonical_ids') or [])
         flags = list(row.get('merge_safe_flags') or [])
         record_id_rows[key] = list(zip(type_ids, canonical_ids, flags, strict=False))
 
-    # Merge records by ANY shared merge-safe key (id_type, id_value, entity_bucket, tax_partition)
+    # Merge records by ANY shared merge-safe key; only gene-symbol merges are tax-scoped.
     ms_edges = (
         ids_canonical
         .filter(pl.col('is_merge_safe'))
-        .join(
-            records.select(['source_ref', 'local_entity_id', 'entity_bucket', 'tax_partition']),
-            on=['source_ref', 'local_entity_id', 'entity_bucket'],
-            how='inner',
-        )
         .select([
             'source_ref',
             'local_entity_id',
             'entity_bucket',
-            'tax_partition',
+            'merge_partition',
             'type_id',
             'canonical_identifier',
         ])
@@ -514,7 +514,7 @@ def build_entity_identifiers_v2(
         'source_ref': pl.Series([], dtype=pl.Utf8),
         'local_entity_id': pl.Series([], dtype=pl.Int64),
         'entity_bucket': pl.Series([], dtype=pl.Utf8),
-        'tax_partition': pl.Series([], dtype=pl.Utf8),
+        'merge_partition': pl.Series([], dtype=pl.Utf8),
         'type_id': pl.Series([], dtype=pl.Utf8),
         'canonical_identifier': pl.Series([], dtype=pl.Utf8),
     })
@@ -545,7 +545,7 @@ def build_entity_identifiers_v2(
     if len(ms_edges) > 0:
         ms_grouped = (
             ms_edges
-            .group_by(['type_id', 'canonical_identifier', 'entity_bucket', 'tax_partition'])
+            .group_by(['type_id', 'canonical_identifier', 'entity_bucket', 'merge_partition'])
             .agg([
                 pl.struct(['source_ref', 'local_entity_id']).alias('members'),
             ])
@@ -581,7 +581,8 @@ def build_entity_identifiers_v2(
     snapshot_rows: list[dict] = []
     for members in component_members.values():
         first = members[0]
-        bucket, tax_partition = record_meta_by_key[first]
+        bucket, tax_id = record_meta_by_key[first]
+        tax_partition = None
 
         component_id_rows: list[tuple[str, str, bool]] = []
         for rk in members:
@@ -591,8 +592,9 @@ def build_entity_identifiers_v2(
             anchor = _choose_anchor(bucket, component_id_rows)
             anchor_type_short = _id_type_short(anchor.type_id)
             entity_key = f'{bucket}:{anchor_type_short}:{anchor.canonical_identifier}'
-            if tax_partition is not None:
-                entity_key = f'{entity_key}:{tax_partition}'
+            if _is_tax_scoped_gene_name_merge_safe(bucket, anchor.type_id, tax_id):
+                entity_key = f'{entity_key}:{tax_id}'
+                tax_partition = str(tax_id)
             anchor_type_accession = anchor.type_id
             anchor_identifier = anchor.canonical_identifier
         else:
@@ -608,8 +610,6 @@ def build_entity_identifiers_v2(
                 f'{bucket}:SN:{anchor_type_short}:{anchor.canonical_identifier}:'
                 f'{source_slug}.{rk[1]}'
             )
-            if tax_partition is not None:
-                entity_key = f'{entity_key}:{tax_partition}'
 
         for source_ref, local_entity_id in members:
             snapshot_rows.append({
