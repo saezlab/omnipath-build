@@ -1,4 +1,4 @@
-.PHONY: setup pipeline pipeline-data pipeline-index generate-obo meilisearch-delete-indexes meilisearch-reset
+.PHONY: setup pipeline pipeline-data pipeline-index generate-obo meilisearch-delete-indexes meilisearch-reset restart-entity-service
 
 # Load local environment defaults (e.g. MEILISEARCH_API_KEY) when available.
 ifneq (,$(wildcard .env))
@@ -12,6 +12,12 @@ strip_quotes = $(patsubst "%",%,$(1))
 MEILI_API_KEY ?= $(call strip_quotes,$(if $(MEILISEARCH_API_KEY),$(MEILISEARCH_API_KEY),$(TEMP_MEILI_KEY)))
 
 JOBS ?= 4
+
+# Entity service restart defaults.
+# If ENTITY_SERVICE_CONTAINER is set, that exact container is restarted.
+# Otherwise we auto-detect a Docker Compose container by service label.
+ENTITY_SERVICE_NAME ?= entity-service
+ENTITY_SERVICE_CONTAINER ?=
 
 # =============================================================================
 # Setup
@@ -106,3 +112,32 @@ meilisearch-reset:
 	echo "Attempting to delete task history..."; \
 	curl -s -X DELETE "$(MEILI_URL)/tasks" -H "Authorization: Bearer $(MEILI_API_KEY)" >/dev/null || true; \
 	echo "✓ Meilisearch reset requested"
+
+# Restart the entity service so it reloads rebuilt parquet data.
+# Usage:
+#   make restart-entity-service
+#   make restart-entity-service ENTITY_SERVICE_CONTAINER=omnipath-staging-entity-service-1
+#   make restart-entity-service ENTITY_SERVICE_NAME=entity-service
+restart-entity-service:
+	@set -e; \
+	if [ -n "$(ENTITY_SERVICE_CONTAINER)" ]; then \
+		TARGET="$(ENTITY_SERVICE_CONTAINER)"; \
+	else \
+		MATCHES=$$(docker ps -a --filter "label=com.docker.compose.service=$(ENTITY_SERVICE_NAME)" --format '{{.ID}} {{.Names}}'); \
+		COUNT=$$(printf '%s\n' "$$MATCHES" | sed '/^$$/d' | wc -l | tr -d ' '); \
+		if [ "$$COUNT" = "0" ]; then \
+			echo "No container found for compose service '$(ENTITY_SERVICE_NAME)'."; \
+			echo "Set ENTITY_SERVICE_CONTAINER=<container-name> to restart it explicitly."; \
+			exit 1; \
+		fi; \
+		if [ "$$COUNT" != "1" ]; then \
+			echo "Multiple containers matched compose service '$(ENTITY_SERVICE_NAME)':"; \
+			printf '%s\n' "$$MATCHES"; \
+			echo "Set ENTITY_SERVICE_CONTAINER=<container-name> to choose one explicitly."; \
+			exit 1; \
+		fi; \
+		TARGET=$$(printf '%s\n' "$$MATCHES" | awk 'NR==1 {print $$1}'); \
+	fi; \
+	echo "Restarting entity service: $$TARGET"; \
+	docker restart "$$TARGET" >/dev/null; \
+	echo "✓ Entity service restarted"
