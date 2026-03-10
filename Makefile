@@ -1,4 +1,4 @@
-.PHONY: setup pipeline pipeline-data pipeline-index generate-obo meilisearch-delete-indexes meilisearch-reset restart-entity-service
+.PHONY: setup pipeline pipeline-data pipeline-index generate-obo meilisearch-delete-indexes meilisearch-reset restart-entity-service restart-api-service
 
 # Load local environment defaults (e.g. MEILISEARCH_API_KEY) when available.
 ifneq (,$(wildcard .env))
@@ -13,11 +13,13 @@ MEILI_API_KEY ?= $(call strip_quotes,$(if $(MEILISEARCH_API_KEY),$(MEILISEARCH_A
 
 JOBS ?= 4
 
-# Entity service restart defaults.
-# If ENTITY_SERVICE_CONTAINER is set, that exact container is restarted.
+# Service restart defaults.
+# If *_CONTAINER is set, that exact container is restarted.
 # Otherwise we auto-detect a Docker Compose container by service label.
 ENTITY_SERVICE_NAME ?= entity-service
 ENTITY_SERVICE_CONTAINER ?=
+API_SERVICE_NAME ?= api-service
+API_SERVICE_CONTAINER ?=
 
 # =============================================================================
 # Setup
@@ -141,3 +143,32 @@ restart-entity-service:
 	echo "Restarting entity service: $$TARGET"; \
 	docker restart "$$TARGET" >/dev/null; \
 	echo "✓ Entity service restarted"
+
+# Restart the API service so it reloads rebuilt data.
+# Usage:
+#   make restart-api-service
+#   make restart-api-service API_SERVICE_CONTAINER=omnipath-staging-api-service-1
+#   make restart-api-service API_SERVICE_NAME=api-service
+restart-api-service:
+	@set -e; \
+	if [ -n "$(API_SERVICE_CONTAINER)" ]; then \
+		TARGET="$(API_SERVICE_CONTAINER)"; \
+	else \
+		MATCHES=$$(docker ps -a --filter "label=com.docker.compose.service=$(API_SERVICE_NAME)" --format '{{.ID}} {{.Names}}'); \
+		COUNT=$$(printf '%s\n' "$$MATCHES" | sed '/^$$/d' | wc -l | tr -d ' '); \
+		if [ "$$COUNT" = "0" ]; then \
+			echo "No container found for compose service '$(API_SERVICE_NAME)'."; \
+			echo "Set API_SERVICE_CONTAINER=<container-name> to restart it explicitly."; \
+			exit 1; \
+		fi; \
+		if [ "$$COUNT" != "1" ]; then \
+			echo "Multiple containers matched compose service '$(API_SERVICE_NAME)':"; \
+			printf '%s\n' "$$MATCHES"; \
+			echo "Set API_SERVICE_CONTAINER=<container-name> to choose one explicitly."; \
+			exit 1; \
+		fi; \
+		TARGET=$$(printf '%s\n' "$$MATCHES" | awk 'NR==1 {print $$1}'); \
+	fi; \
+	echo "Restarting API service: $$TARGET"; \
+	docker restart "$$TARGET" >/dev/null; \
+	echo "✓ API service restarted"
