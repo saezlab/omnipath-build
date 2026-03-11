@@ -116,10 +116,40 @@ class _ProgressTracker:
         if self._thread is not None:
             self._thread.join(timeout=1.0)
 
+    def _plain_print(self, line: str) -> None:
+        if not self.is_plain:
+            return
+        with self._lock:
+            print(line)
+
     def set_running(self, task: TaskDef, message: str = '') -> None:
         with self._lock:
             self._state[task.key]['status'] = 'running'
             self._state[task.key]['message'] = message
+        if message:
+            self._plain_print(f'[START] {task.key} :: {message}')
+        else:
+            self._plain_print(f'[START] {task.key}')
+
+    def update(self, task: TaskDef, *, message: str | None = None, function: str | None = None, records: int | None = None) -> None:
+        with self._lock:
+            self._state[task.key]['status'] = 'running'
+            if message is not None:
+                self._state[task.key]['message'] = message
+            if function is not None:
+                self._state[task.key]['function'] = function
+            if records is not None:
+                self._state[task.key]['records'] = int(records)
+
+        parts: list[str] = []
+        if message:
+            parts.append(message)
+        if function:
+            parts.append(f'function={function}')
+        if records is not None:
+            parts.append(f'records={int(records):,}')
+        if parts:
+            self._plain_print(f"[PROGRESS] {task.key} :: {' | '.join(parts)}")
 
     def set_done(self, task: TaskDef, status: str, seconds: float, message: str) -> None:
         with self._lock:
@@ -128,10 +158,7 @@ class _ProgressTracker:
             self._state[task.key]['message'] = message
 
     def set_silver_progress(self, task: TaskDef, function: str, records: int) -> None:
-        with self._lock:
-            self._state[task.key]['status'] = 'running'
-            self._state[task.key]['function'] = function
-            self._state[task.key]['records'] = int(records)
+        self.update(task, function=function, records=records)
 
     def _status_style(self, value: str) -> str:
         return {
@@ -163,6 +190,7 @@ class _ProgressTracker:
         per_source_table.add_column('status', width=16)
         per_source_table.add_column('function', overflow='fold')
         per_source_table.add_column('records', justify='right', width=12)
+        per_source_table.add_column('info', overflow='fold')
         per_source_table.add_column('sec', justify='right', width=8)
 
         terminal = {'executed', 'reused', 'reused_on_error', 'failed'}
@@ -189,33 +217,40 @@ class _ProgressTracker:
             status = 'pending'
             function = '-'
             records = 0
+            info = ''
             seconds = 0.0
 
             if freshness_status == 'running':
                 step = 'freshness'
                 status = freshness_status
+                info = str(freshness.get('message', ''))
                 seconds = float(freshness.get('seconds', 0.0) or 0.0)
             elif silver_status == 'running':
                 step = 'silver'
                 status = silver_status
                 function = str(silver.get('function', '-'))
                 records = int(silver.get('records', 0) or 0)
+                info = str(silver.get('message', ''))
                 seconds = float(silver.get('seconds', 0.0) or 0.0)
             elif local_status == 'running':
                 step = 'local_gold'
                 status = local_status
+                info = str(local.get('message', ''))
                 seconds = float(local.get('seconds', 0.0) or 0.0)
             elif local_status in terminal:
                 step = 'done'
                 status = local_status
+                info = str(local.get('message', ''))
                 seconds = float(local.get('seconds', 0.0) or 0.0)
             elif silver_status in terminal:
                 step = 'local_gold'
                 status = 'pending'
+                info = str(silver.get('message', ''))
                 seconds = float(silver.get('seconds', 0.0) or 0.0)
             elif freshness_status in terminal:
                 step = 'silver'
                 status = 'pending'
+                info = str(freshness.get('message', ''))
                 seconds = float(freshness.get('seconds', 0.0) or 0.0)
 
             per_source_table.add_row(
@@ -224,6 +259,7 @@ class _ProgressTracker:
                 f"[{self._status_style(status)}]{status}[/]",
                 function,
                 f'{records:,}',
+                info,
                 f'{seconds:.1f}',
             )
 
@@ -512,10 +548,15 @@ def _execute_one_task(
             progress.set_running(task, message='executing')
 
             def _task_progress(event: dict[str, Any]) -> None:
+                message = event.get('message')
                 if task.task_type == 'silver' and event.get('stage') == 'silver':
                     function = str(event.get('function', 'unknown'))
                     records = int(event.get('records', 0))
-                    progress.set_silver_progress(task, function=function, records=records)
+                    progress.update(task, message=str(message or ''), function=function, records=records)
+                    return
+
+                if message is not None:
+                    progress.update(task, message=str(message))
 
             execute_task(
                 task=task,

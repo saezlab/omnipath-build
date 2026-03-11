@@ -75,7 +75,18 @@ pipeline-index:
 	@echo "✓ Index import completed."
 	@echo "======================================================================"
 
-pipeline: pipeline-data pipeline-index
+pipeline:
+	@echo "======================================================================"
+	@echo "Running full pipeline..."
+	@echo "  Stage 1/2: data pipeline"
+	@echo "  Stage 2/2: index import"
+	@echo "======================================================================"
+	@$(MAKE) pipeline-data
+	@echo ""
+	@echo "----------------------------------------------------------------------"
+	@echo "Proceeding to stage 2/2: index import"
+	@echo "----------------------------------------------------------------------"
+	@$(MAKE) pipeline-index
 
 # =============================================================================
 # Meilisearch admin utilities

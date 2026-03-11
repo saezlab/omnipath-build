@@ -47,6 +47,28 @@ BUCKET_CODE_BY_ENTITY_TYPE: dict[str, str] = {
 # Buckets where gene-symbol merges require tax scoping.
 GENE_SYMBOL_TAX_SCOPED_BUCKETS: frozenset[str] = frozenset({'P', 'G', 'R', 'D'})
 
+CH_STRONG_IDENTIFIER_TYPES: frozenset[str] = frozenset({
+    IdentifierNamespaceCv.STANDARD_INCHI.value,
+    IdentifierNamespaceCv.STANDARD_INCHI_KEY.value,
+})
+
+CH_WEAK_ATTACHMENT_IDENTIFIER_TYPES: frozenset[str] = frozenset({
+    IdentifierNamespaceCv.CHEBI.value,
+    IdentifierNamespaceCv.PUBCHEM.value,
+    IdentifierNamespaceCv.PUBCHEM_COMPOUND.value,
+    IdentifierNamespaceCv.CHEMBL.value,
+    IdentifierNamespaceCv.CHEMBL_COMPOUND.value,
+    IdentifierNamespaceCv.DRUGBANK.value,
+    IdentifierNamespaceCv.KEGG_COMPOUND.value,
+    IdentifierNamespaceCv.HMDB.value,
+    IdentifierNamespaceCv.METANETX.value,
+    IdentifierNamespaceCv.LIPIDMAPS.value,
+    IdentifierNamespaceCv.SWISSLIPIDS.value,
+    IdentifierNamespaceCv.ZINC.value,
+    IdentifierNamespaceCv.BINDINGDB.value,
+    IdentifierNamespaceCv.GUIDETOPHARMA.value,
+})
+
 # Per-bucket anchor type priority (lower index = higher priority)
 ANCHOR_PRIORITY_BY_BUCKET: dict[str, list[str]] = {
     'P': [
@@ -134,6 +156,11 @@ ID_TYPE_SHORT_OVERRIDES_BY_NAME: dict[str, str] = {
 }
 
 
+MERGE_ROLE_STRONG = 'strong'
+MERGE_ROLE_WEAK_ATTACH = 'weak_attach'
+MERGE_ROLE_NONE = 'none'
+
+
 def _default_short_code_from_name(enum_name: str) -> str:
     parts = [p for p in enum_name.split('_') if p]
     if not parts:
@@ -184,6 +211,7 @@ RECORD_IDENTITY_SNAPSHOT_SCHEMA: dict[str, pl.DataType] = {
     'anchor_type_accession': pl.Utf8,
     'anchor_identifier': pl.Utf8,
 }
+
 
 def _slug(text: str) -> str:
     s = re.sub(r'[^A-Za-z0-9]+', '_', text.strip().upper())
@@ -331,6 +359,376 @@ def _choose_anchor(bucket: str, id_rows: list[tuple[str, str, bool]]) -> Anchor:
     return Anchor(type_id=t, canonical_identifier=v, merge_safe=False)
 
 
+def _classify_merge_role(bucket: str, type_id: str, tax_id: str | None) -> tuple[str, str | None]:
+    if bucket == 'CH':
+        if type_id in CH_STRONG_IDENTIFIER_TYPES:
+            return MERGE_ROLE_STRONG, None
+        if type_id in CH_WEAK_ATTACHMENT_IDENTIFIER_TYPES:
+            return MERGE_ROLE_WEAK_ATTACH, None
+        return MERGE_ROLE_NONE, None
+
+    allowed = MERGE_SAFE_BY_BUCKET_CODE.get(bucket)
+    if _is_tax_scoped_gene_name_merge_safe(bucket, type_id, tax_id):
+        return MERGE_ROLE_STRONG, str(tax_id)
+    if allowed is not None:
+        return (MERGE_ROLE_STRONG, None) if type_id in allowed else (MERGE_ROLE_NONE, None)
+    return (MERGE_ROLE_STRONG, None) if type_id not in MERGE_UNSAFE_IDENTIFIER_TYPES else (MERGE_ROLE_NONE, None)
+
+
+def _empty_record_identity_snapshot() -> pl.DataFrame:
+    return pl.DataFrame({
+        'run_id': pl.Series([], dtype=pl.Utf8),
+        'source_ref': pl.Series([], dtype=pl.Utf8),
+        'local_entity_id': pl.Series([], dtype=pl.Int64),
+        'entity_key': pl.Series([], dtype=pl.Utf8),
+        'entity_bucket': pl.Series([], dtype=pl.Utf8),
+        'tax_partition': pl.Series([], dtype=pl.Utf8),
+        'anchor_type_id': pl.Series([], dtype=pl.Utf8),
+        'anchor_type_accession': pl.Series([], dtype=pl.Utf8),
+        'anchor_identifier': pl.Series([], dtype=pl.Utf8),
+    })
+
+
+def _singleton_snapshot_row(
+    run_id: str,
+    rk: tuple[str, int],
+    bucket: str,
+    tax_id: str | None,
+    id_rows: list[tuple[str, str, bool]],
+) -> dict[str, object]:
+    anchor = _choose_anchor(bucket, id_rows)
+    anchor_type_short = _id_type_short(anchor.type_id)
+    source_slug = _slug(rk[0])
+    entity_key = (
+        f'{bucket}:SN:{anchor_type_short}:{anchor.canonical_identifier}:'
+        f'{source_slug}.{rk[1]}'
+    )
+    return {
+        'run_id': str(run_id),
+        'source_ref': str(rk[0]),
+        'local_entity_id': int(rk[1]),
+        'entity_key': str(entity_key),
+        'entity_bucket': str(bucket),
+        'tax_partition': None,
+        'anchor_type_id': str(anchor_type_short),
+        'anchor_type_accession': str(anchor.type_id),
+        'anchor_identifier': str(anchor.canonical_identifier),
+    }
+
+
+def _resolve_non_chemical_snapshot_rows(
+    run_id: str,
+    record_meta_by_key: dict[tuple[str, int], tuple[str, str | None]],
+    record_id_rows: dict[tuple[str, int], list[tuple[str, str, bool]]],
+    ids_canonical: pl.DataFrame,
+) -> list[dict[str, object]]:
+    non_ch_keys = [rk for rk, (bucket, _) in record_meta_by_key.items() if bucket != 'CH']
+    if not non_ch_keys:
+        return []
+
+    rec_index = {rk: i for i, rk in enumerate(non_ch_keys)}
+    parent = list(range(len(non_ch_keys)))
+    rank = [0] * len(non_ch_keys)
+
+    def _find(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    def _union(i: int, j: int) -> None:
+        ri = _find(i)
+        rj = _find(j)
+        if ri == rj:
+            return
+        if rank[ri] < rank[rj]:
+            parent[ri] = rj
+        elif rank[ri] > rank[rj]:
+            parent[rj] = ri
+        else:
+            parent[rj] = ri
+            rank[ri] += 1
+
+    ms_edges = ids_canonical.filter(
+        (pl.col('entity_bucket') != 'CH') &
+        (pl.col('merge_role') == MERGE_ROLE_STRONG)
+    ).select([
+        'source_ref',
+        'local_entity_id',
+        'entity_bucket',
+        'merge_partition',
+        'type_id',
+        'canonical_identifier',
+    ]).unique()
+
+    if len(ms_edges) > 0:
+        ms_grouped = (
+            ms_edges
+            .group_by(['type_id', 'canonical_identifier', 'entity_bucket', 'merge_partition'])
+            .agg(pl.struct(['source_ref', 'local_entity_id']).alias('members'))
+        )
+        for row in ms_grouped.iter_rows(named=True):
+            members = row.get('members') or []
+            if len(members) < 2:
+                continue
+            base = members[0]
+            base_key = (str(base['source_ref']), int(base['local_entity_id']))
+            base_idx = rec_index.get(base_key)
+            if base_idx is None:
+                continue
+            for m in members[1:]:
+                other_key = (str(m['source_ref']), int(m['local_entity_id']))
+                other_idx = rec_index.get(other_key)
+                if other_idx is None:
+                    continue
+                _union(base_idx, other_idx)
+
+    component_members: dict[int, list[tuple[str, int]]] = {}
+    for rk, idx in rec_index.items():
+        root = _find(idx)
+        component_members.setdefault(root, []).append(rk)
+
+    ms_id_rows_by_record: dict[tuple[str, int], list[tuple[str, str, bool]]] = {}
+    for row in ms_edges.iter_rows(named=True):
+        rk = (str(row['source_ref']), int(row['local_entity_id']))
+        ms_id_rows_by_record.setdefault(rk, []).append(
+            (str(row['type_id']), str(row['canonical_identifier']), True)
+        )
+
+    snapshot_rows: list[dict[str, object]] = []
+    for members in component_members.values():
+        first = members[0]
+        bucket, tax_id = record_meta_by_key[first]
+        tax_partition = None
+
+        component_id_rows: list[tuple[str, str, bool]] = []
+        for rk in members:
+            component_id_rows.extend(ms_id_rows_by_record.get(rk, []))
+
+        if component_id_rows:
+            anchor = _choose_anchor(bucket, component_id_rows)
+            anchor_type_short = _id_type_short(anchor.type_id)
+            entity_key = f'{bucket}:{anchor_type_short}:{anchor.canonical_identifier}'
+            if _is_tax_scoped_gene_name_merge_safe(bucket, anchor.type_id, tax_id):
+                entity_key = f'{entity_key}:{tax_id}'
+                tax_partition = str(tax_id)
+            anchor_type_accession = anchor.type_id
+            anchor_identifier = anchor.canonical_identifier
+        else:
+            singleton_row = _singleton_snapshot_row(
+                run_id=run_id,
+                rk=first,
+                bucket=bucket,
+                tax_id=tax_id,
+                id_rows=record_id_rows.get(first, []),
+            )
+            entity_key = str(singleton_row['entity_key'])
+            anchor_type_short = str(singleton_row['anchor_type_id'])
+            anchor_type_accession = str(singleton_row['anchor_type_accession'])
+            anchor_identifier = str(singleton_row['anchor_identifier'])
+
+        for source_ref, local_entity_id in members:
+            snapshot_rows.append({
+                'run_id': str(run_id),
+                'source_ref': str(source_ref),
+                'local_entity_id': int(local_entity_id),
+                'entity_key': str(entity_key),
+                'entity_bucket': str(bucket),
+                'tax_partition': None if tax_partition is None else str(tax_partition),
+                'anchor_type_id': str(anchor_type_short),
+                'anchor_type_accession': None if anchor_type_accession is None else str(anchor_type_accession),
+                'anchor_identifier': None if anchor_identifier is None else str(anchor_identifier),
+            })
+
+    return snapshot_rows
+
+
+def _resolve_chemical_snapshot_rows(
+    run_id: str,
+    record_meta_by_key: dict[tuple[str, int], tuple[str, str | None]],
+    record_id_rows: dict[tuple[str, int], list[tuple[str, str, bool]]],
+    ids_canonical: pl.DataFrame,
+) -> list[dict[str, object]]:
+    ch_keys = [rk for rk, (bucket, _) in record_meta_by_key.items() if bucket == 'CH']
+    if not ch_keys:
+        return []
+
+    rec_index = {rk: i for i, rk in enumerate(ch_keys)}
+    parent = list(range(len(ch_keys)))
+    rank = [0] * len(ch_keys)
+
+    strong_rows_by_record: dict[tuple[str, int], list[tuple[str, str, bool]]] = {}
+    weak_rows_by_record: dict[tuple[str, int], list[tuple[str, str, bool]]] = {}
+    record_inchi_values: dict[tuple[str, int], set[str]] = {}
+    record_inchikey_values: dict[tuple[str, int], set[str]] = {}
+
+    ch_ids = ids_canonical.filter(pl.col('entity_bucket') == 'CH')
+    for row in ch_ids.iter_rows(named=True):
+        rk = (str(row['source_ref']), int(row['local_entity_id']))
+        type_id = str(row['type_id'])
+        canonical_identifier = str(row['canonical_identifier'])
+        merge_role = str(row['merge_role'])
+        if merge_role == MERGE_ROLE_STRONG:
+            strong_rows_by_record.setdefault(rk, []).append((type_id, canonical_identifier, True))
+            if type_id == IdentifierNamespaceCv.STANDARD_INCHI.value:
+                record_inchi_values.setdefault(rk, set()).add(canonical_identifier)
+            elif type_id == IdentifierNamespaceCv.STANDARD_INCHI_KEY.value:
+                record_inchikey_values.setdefault(rk, set()).add(canonical_identifier)
+        elif merge_role == MERGE_ROLE_WEAK_ATTACH:
+            weak_rows_by_record.setdefault(rk, []).append((type_id, canonical_identifier, False))
+
+    malformed_records: set[tuple[str, int]] = set()
+    eligible_strong_records: set[tuple[str, int]] = set()
+    root_inchi: list[str | None] = [None] * len(ch_keys)
+    root_inchikey: list[str | None] = [None] * len(ch_keys)
+
+    for rk in ch_keys:
+        inchis = record_inchi_values.get(rk, set())
+        inchikeys = record_inchikey_values.get(rk, set())
+        if len(inchis) > 1 or len(inchikeys) > 1:
+            malformed_records.add(rk)
+            continue
+        if inchis or inchikeys:
+            eligible_strong_records.add(rk)
+            idx = rec_index[rk]
+            root_inchi[idx] = next(iter(inchis), None)
+            root_inchikey[idx] = next(iter(inchikeys), None)
+
+    def _find(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    def _union_if_compatible(i: int, j: int) -> bool:
+        ri = _find(i)
+        rj = _find(j)
+        if ri == rj:
+            return True
+
+        inchi_i = root_inchi[ri]
+        inchi_j = root_inchi[rj]
+        ikey_i = root_inchikey[ri]
+        ikey_j = root_inchikey[rj]
+        if inchi_i is not None and inchi_j is not None and inchi_i != inchi_j:
+            return False
+        if ikey_i is not None and ikey_j is not None and ikey_i != ikey_j:
+            return False
+
+        if rank[ri] < rank[rj]:
+            parent[ri] = rj
+            root_inchi[rj] = inchi_j or inchi_i
+            root_inchikey[rj] = ikey_j or ikey_i
+        elif rank[ri] > rank[rj]:
+            parent[rj] = ri
+            root_inchi[ri] = inchi_i or inchi_j
+            root_inchikey[ri] = ikey_i or ikey_j
+        else:
+            parent[rj] = ri
+            rank[ri] += 1
+            root_inchi[ri] = inchi_i or inchi_j
+            root_inchikey[ri] = ikey_i or ikey_j
+        return True
+
+    strong_ids = ch_ids.filter(pl.col('merge_role') == MERGE_ROLE_STRONG).select([
+        'source_ref',
+        'local_entity_id',
+        'type_id',
+        'canonical_identifier',
+    ]).unique()
+
+    if len(strong_ids) > 0:
+        strong_grouped = (
+            strong_ids
+            .group_by(['type_id', 'canonical_identifier'])
+            .agg(pl.struct(['source_ref', 'local_entity_id']).alias('members'))
+        )
+        for row in strong_grouped.iter_rows(named=True):
+            members = row.get('members') or []
+            if len(members) < 2:
+                continue
+            base_key = (str(members[0]['source_ref']), int(members[0]['local_entity_id']))
+            if base_key not in eligible_strong_records:
+                continue
+            base_idx = rec_index[base_key]
+            for member in members[1:]:
+                other_key = (str(member['source_ref']), int(member['local_entity_id']))
+                if other_key not in eligible_strong_records:
+                    continue
+                _union_if_compatible(base_idx, rec_index[other_key])
+
+    seed_component_members: dict[int, list[tuple[str, int]]] = {}
+    for rk in eligible_strong_records:
+        root = _find(rec_index[rk])
+        seed_component_members.setdefault(root, []).append(rk)
+
+    weak_id_to_components: dict[tuple[str, str], set[int]] = {}
+    for root, members in seed_component_members.items():
+        for rk in members:
+            for type_id, canonical_identifier, _ in weak_rows_by_record.get(rk, []):
+                weak_id_to_components.setdefault((type_id, canonical_identifier), set()).add(root)
+
+    component_members: dict[int, list[tuple[str, int]]] = {
+        root: sorted(members)
+        for root, members in seed_component_members.items()
+    }
+    assigned_component_by_record: dict[tuple[str, int], int] = {}
+    for root, members in component_members.items():
+        for rk in members:
+            assigned_component_by_record[rk] = root
+
+    for rk in ch_keys:
+        if rk in assigned_component_by_record or rk in malformed_records or rk in eligible_strong_records:
+            continue
+        candidate_components: set[int] = set()
+        for type_id, canonical_identifier, _ in weak_rows_by_record.get(rk, []):
+            candidate_components.update(weak_id_to_components.get((type_id, canonical_identifier), set()))
+        if len(candidate_components) == 1:
+            root = next(iter(candidate_components))
+            component_members.setdefault(root, []).append(rk)
+            assigned_component_by_record[rk] = root
+
+    snapshot_rows: list[dict[str, object]] = []
+    handled_records: set[tuple[str, int]] = set()
+
+    for root, members in component_members.items():
+        members = sorted(set(members))
+        handled_records.update(members)
+        component_strong_rows: list[tuple[str, str, bool]] = []
+        for rk in members:
+            component_strong_rows.extend(strong_rows_by_record.get(rk, []))
+        anchor = _choose_anchor('CH', component_strong_rows)
+        anchor_type_short = _id_type_short(anchor.type_id)
+        entity_key = f'CH:{anchor_type_short}:{anchor.canonical_identifier}'
+        for rk in members:
+            snapshot_rows.append({
+                'run_id': str(run_id),
+                'source_ref': str(rk[0]),
+                'local_entity_id': int(rk[1]),
+                'entity_key': str(entity_key),
+                'entity_bucket': 'CH',
+                'tax_partition': None,
+                'anchor_type_id': str(anchor_type_short),
+                'anchor_type_accession': str(anchor.type_id),
+                'anchor_identifier': str(anchor.canonical_identifier),
+            })
+
+    for rk in ch_keys:
+        if rk in handled_records:
+            continue
+        snapshot_rows.append(
+            _singleton_snapshot_row(
+                run_id=run_id,
+                rk=rk,
+                bucket='CH',
+                tax_id=None,
+                id_rows=record_id_rows.get(rk, []),
+            )
+        )
+
+    return snapshot_rows
+
+
 def build_entity_identifiers_v2(
     local_tables_dir: Path,
     run_id: str | None = None,
@@ -427,36 +825,28 @@ def build_entity_identifiers_v2(
         .with_columns(pl.col('entity_bucket').fill_null('X'))
     )
 
-    # Canonicalize and mark merge safety
-    rows: list[dict] = []
+    rows: list[dict[str, object]] = []
     for row in ids_with_context.iter_rows(named=True):
-        bucket = row['entity_bucket']
-        t = str(row['type_id'])
-        v = _canonicalize(t, str(row['identifier']))
+        bucket = str(row['entity_bucket'])
+        type_id = str(row['type_id'])
+        canonical_identifier = _canonicalize(type_id, str(row['identifier']))
         tax_id = row.get('tax_id')
-        allowed = MERGE_SAFE_BY_BUCKET_CODE.get(bucket)
-        if _is_tax_scoped_gene_name_merge_safe(bucket, t, tax_id):
-            is_merge_safe = True
-            merge_partition = str(tax_id)
-        elif allowed is not None:
-            is_merge_safe = t in allowed
-            merge_partition = None
-        else:
-            is_merge_safe = t not in MERGE_UNSAFE_IDENTIFIER_TYPES
-            merge_partition = None
+        merge_role, merge_partition = _classify_merge_role(bucket, type_id, tax_id)
         rows.append({
             'source_ref': str(row['source_ref']),
             'local_entity_id': int(row['local_entity_id']),
             'entity_bucket': bucket,
-            'type_id': t,
-            'canonical_identifier': v,
-            'is_merge_safe': bool(is_merge_safe),
+            'type_id': type_id,
+            'canonical_identifier': canonical_identifier,
+            'is_merge_safe': bool(merge_role == MERGE_ROLE_STRONG),
             'merge_partition': merge_partition,
+            'merge_role': merge_role,
         })
 
     ids_canonical_schema = {
         **IDS_CANONICAL_SCHEMA,
         'merge_partition': pl.Utf8,
+        'merge_role': pl.Utf8,
     }
     ids_canonical = pl.DataFrame(rows, schema=ids_canonical_schema) if rows else pl.DataFrame({
         'source_ref': pl.Series([], dtype=pl.Utf8),
@@ -466,182 +856,45 @@ def build_entity_identifiers_v2(
         'canonical_identifier': pl.Series([], dtype=pl.Utf8),
         'is_merge_safe': pl.Series([], dtype=pl.Boolean),
         'merge_partition': pl.Series([], dtype=pl.Utf8),
+        'merge_role': pl.Series([], dtype=pl.Utf8),
     })
-
-    grouped = (
-        records
-        .join(
-            ids_canonical,
-            on=['source_ref', 'local_entity_id', 'entity_bucket'],
-            how='left',
-        )
-        .group_by(['source_ref', 'local_entity_id', 'entity_bucket', 'tax_id'])
-        .agg([
-            pl.col('type_id').drop_nulls().alias('type_ids'),
-            pl.col('canonical_identifier').drop_nulls().alias('canonical_ids'),
-            pl.col('is_merge_safe').drop_nulls().alias('merge_safe_flags'),
-        ])
-    )
 
     record_meta_by_key: dict[tuple[str, int], tuple[str, str | None]] = {}
+    for row in records.select(['source_ref', 'local_entity_id', 'entity_bucket', 'tax_id']).iter_rows(named=True):
+        record_meta_by_key[(str(row['source_ref']), int(row['local_entity_id']))] = (
+            str(row['entity_bucket']),
+            row.get('tax_id'),
+        )
+
     record_id_rows: dict[tuple[str, int], list[tuple[str, str, bool]]] = {}
-    record_keys: list[tuple[str, int]] = []
-
-    for row in grouped.iter_rows(named=True):
-        key = (str(row['source_ref']), int(row['local_entity_id']))
-        record_keys.append(key)
-        record_meta_by_key[key] = (str(row['entity_bucket']), row.get('tax_id'))
-
-        type_ids = list(row.get('type_ids') or [])
-        canonical_ids = list(row.get('canonical_ids') or [])
-        flags = list(row.get('merge_safe_flags') or [])
-        record_id_rows[key] = list(zip(type_ids, canonical_ids, flags, strict=False))
-
-    # Merge records by ANY shared merge-safe key; only gene-symbol merges are tax-scoped.
-    ms_edges = (
-        ids_canonical
-        .filter(pl.col('is_merge_safe'))
-        .select([
-            'source_ref',
-            'local_entity_id',
-            'entity_bucket',
-            'merge_partition',
-            'type_id',
-            'canonical_identifier',
-        ])
-        .unique()
-    ) if len(ids_canonical) > 0 else pl.DataFrame({
-        'source_ref': pl.Series([], dtype=pl.Utf8),
-        'local_entity_id': pl.Series([], dtype=pl.Int64),
-        'entity_bucket': pl.Series([], dtype=pl.Utf8),
-        'merge_partition': pl.Series([], dtype=pl.Utf8),
-        'type_id': pl.Series([], dtype=pl.Utf8),
-        'canonical_identifier': pl.Series([], dtype=pl.Utf8),
-    })
-
-    rec_index = {rk: i for i, rk in enumerate(record_keys)}
-    parent = list(range(len(record_keys)))
-    rank = [0] * len(record_keys)
-
-    def _find(i: int) -> int:
-        while parent[i] != i:
-            parent[i] = parent[parent[i]]
-            i = parent[i]
-        return i
-
-    def _union(i: int, j: int) -> None:
-        ri = _find(i)
-        rj = _find(j)
-        if ri == rj:
-            return
-        if rank[ri] < rank[rj]:
-            parent[ri] = rj
-        elif rank[ri] > rank[rj]:
-            parent[rj] = ri
-        else:
-            parent[rj] = ri
-            rank[ri] += 1
-
-    if len(ms_edges) > 0:
-        ms_grouped = (
-            ms_edges
-            .group_by(['type_id', 'canonical_identifier', 'entity_bucket', 'merge_partition'])
-            .agg([
-                pl.struct(['source_ref', 'local_entity_id']).alias('members'),
-            ])
-        )
-        for row in ms_grouped.iter_rows(named=True):
-            members = row.get('members') or []
-            if len(members) < 2:
-                continue
-            base = members[0]
-            base_key = (str(base['source_ref']), int(base['local_entity_id']))
-            base_idx = rec_index.get(base_key)
-            if base_idx is None:
-                continue
-            for m in members[1:]:
-                other_key = (str(m['source_ref']), int(m['local_entity_id']))
-                other_idx = rec_index.get(other_key)
-                if other_idx is None:
-                    continue
-                _union(base_idx, other_idx)
-
-    component_members: dict[int, list[tuple[str, int]]] = {}
-    for rk, idx in rec_index.items():
-        root = _find(idx)
-        component_members.setdefault(root, []).append(rk)
-
-    ms_id_rows_by_record: dict[tuple[str, int], list[tuple[str, str, bool]]] = {}
-    for row in ms_edges.iter_rows(named=True):
+    for row in ids_canonical.iter_rows(named=True):
         rk = (str(row['source_ref']), int(row['local_entity_id']))
-        ms_id_rows_by_record.setdefault(rk, []).append(
-            (str(row['type_id']), str(row['canonical_identifier']), True)
+        record_id_rows.setdefault(rk, []).append(
+            (str(row['type_id']), str(row['canonical_identifier']), bool(row['is_merge_safe']))
         )
 
-    snapshot_rows: list[dict] = []
-    for members in component_members.values():
-        first = members[0]
-        bucket, tax_id = record_meta_by_key[first]
-        tax_partition = None
-
-        component_id_rows: list[tuple[str, str, bool]] = []
-        for rk in members:
-            component_id_rows.extend(ms_id_rows_by_record.get(rk, []))
-
-        if component_id_rows:
-            anchor = _choose_anchor(bucket, component_id_rows)
-            anchor_type_short = _id_type_short(anchor.type_id)
-            entity_key = f'{bucket}:{anchor_type_short}:{anchor.canonical_identifier}'
-            if _is_tax_scoped_gene_name_merge_safe(bucket, anchor.type_id, tax_id):
-                entity_key = f'{entity_key}:{tax_id}'
-                tax_partition = str(tax_id)
-            anchor_type_accession = anchor.type_id
-            anchor_identifier = anchor.canonical_identifier
-        else:
-            # No merge-safe ID in this component (singleton by construction)
-            rk = first
-            id_rows = record_id_rows.get(rk, [])
-            anchor = _choose_anchor(bucket, id_rows)
-            anchor_type_short = _id_type_short(anchor.type_id)
-            anchor_type_accession = anchor.type_id
-            anchor_identifier = anchor.canonical_identifier
-            source_slug = _slug(rk[0])
-            entity_key = (
-                f'{bucket}:SN:{anchor_type_short}:{anchor.canonical_identifier}:'
-                f'{source_slug}.{rk[1]}'
-            )
-
-        for source_ref, local_entity_id in members:
-            snapshot_rows.append({
-                'run_id': str(run_id),
-                'source_ref': str(source_ref),
-                'local_entity_id': int(local_entity_id),
-                'entity_key': str(entity_key),
-                'entity_bucket': str(bucket),
-                'tax_partition': None if tax_partition is None else str(tax_partition),
-                'anchor_type_id': str(anchor_type_short),
-                'anchor_type_accession': None if anchor_type_accession is None else str(anchor_type_accession),
-                'anchor_identifier': None if anchor_identifier is None else str(anchor_identifier),
-            })
+    snapshot_rows = [
+        *_resolve_non_chemical_snapshot_rows(
+            run_id=run_id,
+            record_meta_by_key=record_meta_by_key,
+            record_id_rows=record_id_rows,
+            ids_canonical=ids_canonical,
+        ),
+        *_resolve_chemical_snapshot_rows(
+            run_id=run_id,
+            record_meta_by_key=record_meta_by_key,
+            record_id_rows=record_id_rows,
+            ids_canonical=ids_canonical,
+        ),
+    ]
 
     record_identity_snapshot = (
         pl.DataFrame(snapshot_rows, schema=RECORD_IDENTITY_SNAPSHOT_SCHEMA)
         .sort(['source_ref', 'local_entity_id'])
         if snapshot_rows else
-        pl.DataFrame({
-            'run_id': pl.Series([], dtype=pl.Utf8),
-            'source_ref': pl.Series([], dtype=pl.Utf8),
-            'local_entity_id': pl.Series([], dtype=pl.Int64),
-            'entity_key': pl.Series([], dtype=pl.Utf8),
-            'entity_bucket': pl.Series([], dtype=pl.Utf8),
-            'tax_partition': pl.Series([], dtype=pl.Utf8),
-            'anchor_type_id': pl.Series([], dtype=pl.Utf8),
-            'anchor_type_accession': pl.Series([], dtype=pl.Utf8),
-            'anchor_identifier': pl.Series([], dtype=pl.Utf8),
-        })
+        _empty_record_identity_snapshot()
     )
 
-    # Instance snapshot
     instance_files = sorted(local_tables_dir.rglob('local_entity_instance_*.parquet'))
     if instance_files:
         parts = [pl.read_parquet(p) for p in instance_files if p.exists()]
@@ -674,7 +927,6 @@ def build_entity_identifiers_v2(
             'entity_key': pl.Series([], dtype=pl.Utf8),
         })
 
-    # Entity identifier snapshot (recommended in spec)
     ids_for_entity = (
         ids_canonical
         .join(

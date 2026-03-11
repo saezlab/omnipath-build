@@ -29,6 +29,14 @@ if TYPE_CHECKING:
 _PROGRESS_PREFIX = '__OMNIPATH_PROGRESS__'
 
 
+def _emit_progress(
+    callback: Callable[[dict[str, Any]], None] | None,
+    **payload: Any,
+) -> None:
+    if callback is not None:
+        callback(payload)
+
+
 def _utc_now() -> datetime:
     return datetime.now(UTC)
 
@@ -324,8 +332,10 @@ def execute_task(
     if task.task_type == 'freshness_scan':
         assert task.source is not None
         if run_freshness_checks:
+            _emit_progress(progress_callback, stage='freshness_scan', message='checking remote freshness')
             payload = _freshness_scan_source(task.source, inputs_package)
         else:
+            _emit_progress(progress_callback, stage='freshness_scan', message='freshness checks skipped')
             resources = _collect_source_downloads(task.source, inputs_package)
             payload = {
                 'status': 'unchanged',
@@ -348,6 +358,7 @@ def execute_task(
 
     if task.task_type == 'silver':
         assert task.source is not None
+        _emit_progress(progress_callback, stage='silver', message='starting silver extraction')
         with tempfile.TemporaryDirectory(prefix='op-silver-') as tmp:
             stage = Path(tmp)
             cmd = [
@@ -402,6 +413,7 @@ def execute_task(
                 on_stdout_line=_on_silver_stdout,
             )
 
+            _emit_progress(progress_callback, stage='silver', message='copying silver parquet outputs')
             out_root = stage / 'silver'
             tmp_output.mkdir(parents=True, exist_ok=True)
             for parquet in sorted(out_root.rglob('*.parquet')):
@@ -412,6 +424,7 @@ def execute_task(
         assert task.source is not None
         dep_dir = resolve_output_ref(task_results[task.deps[0]].output_ref)
 
+        _emit_progress(progress_callback, stage='local_gold', message='preparing local gold inputs')
         with tempfile.TemporaryDirectory(prefix='op-local-gold-') as tmp:
             stage = Path(tmp)
             silver_dir = stage / 'silver'
@@ -436,8 +449,10 @@ def execute_task(
                 '--source',
                 task.source,
             ]
+            _emit_progress(progress_callback, stage='local_gold', message='building local gold tables')
             _run_subprocess(cmd, cwd=project_root, log_path=log_path)
 
+            _emit_progress(progress_callback, stage='local_gold', message='writing local gold report')
             tmp_output.mkdir(parents=True, exist_ok=True)
             _copy_tree(gold_dir / 'local_tables', tmp_output)
 
@@ -461,6 +476,7 @@ def execute_task(
         return
 
     if task.task_type == 'combined_gold':
+        _emit_progress(progress_callback, stage='combined_gold', message='collecting per-source local tables')
         with tempfile.TemporaryDirectory(prefix='op-combined-gold-') as tmp:
             stage = Path(tmp)
             local_tables_dir = stage / 'local_tables'
@@ -471,6 +487,7 @@ def execute_task(
                 for parquet in sorted(dep_dir.glob('local_*.parquet')):
                     shutil.copy2(parquet, local_tables_dir / parquet.name)
 
+            _emit_progress(progress_callback, stage='combined_gold', message='ensuring OmniPath ontology (OBO)')
             project_obo = _ensure_project_obo(project_root, log_path=log_path)
 
             out_dir = stage / 'gold'
@@ -489,6 +506,7 @@ def execute_task(
                 '--local-tables-dir',
                 str(local_tables_dir),
             ]
+            _emit_progress(progress_callback, stage='combined_gold', message='building entity identifiers')
             _run_subprocess(cmd_entity, cwd=project_root, log_path=log_path)
 
             cmd_global = [
@@ -505,8 +523,10 @@ def execute_task(
                 '--local-tables-dir',
                 str(local_tables_dir),
             ]
+            _emit_progress(progress_callback, stage='combined_gold', message='building global tables')
             _run_subprocess(cmd_global, cwd=project_root, log_path=log_path)
 
+            _emit_progress(progress_callback, stage='combined_gold', message='copying combined gold outputs')
             tmp_output.mkdir(parents=True, exist_ok=True)
             _copy_tree(out_dir, tmp_output)
             shutil.copy2(project_obo, tmp_output / 'omnipath_mi.obo')
@@ -514,6 +534,8 @@ def execute_task(
 
     if task.task_type in {'search_entities', 'search_interactions', 'search_associations'}:
         dep_dir = resolve_output_ref(task_results[task.deps[0]].output_ref)
+        dataset = task.task_type.split('_', 1)[1]
+        _emit_progress(progress_callback, stage=task.task_type, message=f'building search parquet: {dataset}')
 
         with tempfile.TemporaryDirectory(prefix='op-search-') as tmp:
             stage = Path(tmp)
@@ -521,7 +543,6 @@ def execute_task(
             _copy_tree(dep_dir, gold_dir)
             (gold_dir / 'omnipath_mi.obo').unlink(missing_ok=True)
 
-            dataset = task.task_type.split('_', 1)[1]
             out_file = stage / f'search_{dataset}.parquet'
             module = f'omnipath_build.search_builder.build_search_{dataset}'
             _run_subprocess(
@@ -544,6 +565,7 @@ def execute_task(
         return
 
     if task.task_type == 'search_sources':
+        _emit_progress(progress_callback, stage='search_sources', message='building search parquet: sources')
         with tempfile.TemporaryDirectory(prefix='op-search-sources-') as tmp:
             stage = Path(tmp)
             per_source = stage / 'per_source'
@@ -588,6 +610,7 @@ def execute_task(
     if task.task_type == 'index_import':
         assert task.source is not None
         dataset = task.source
+        _emit_progress(progress_callback, stage='index_import', message=f'importing Meilisearch dataset: {dataset}')
 
         search_dep = resolve_output_ref(task_results[task.deps[0]].output_ref)
         parquet = search_dep
