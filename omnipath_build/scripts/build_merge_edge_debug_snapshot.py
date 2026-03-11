@@ -9,7 +9,6 @@ from pathlib import Path
 import polars as pl
 
 from omnipath_build.gold.build_entity_identifiers_v2 import (
-    REQUIRES_TAX_PARTITION,
     MERGE_SAFE_BY_BUCKET_CODE,
     _canonicalize,
     _entity_bucket,
@@ -180,19 +179,14 @@ def _load_records_and_ids(local_tables_dir: Path) -> tuple[pl.DataFrame, pl.Data
         entities_all
         .with_columns(pl.col('entity_type').fill_null(UNKNOWN_ENTITY_TYPE_KEY))
         .with_columns(pl.col('entity_type').map_elements(_entity_bucket, return_dtype=pl.Utf8).alias('entity_bucket'))
-        .with_columns(
-            pl.when(pl.col('entity_bucket').is_in(list(REQUIRES_TAX_PARTITION)))
-            .then(pl.coalesce([pl.col('tax_id'), pl.lit('UNK')]))
-            .otherwise(pl.lit(None, dtype=pl.Utf8))
-            .alias('tax_partition')
-        )
-        .select(['source_ref', 'local_entity_id', 'entity_bucket', 'tax_partition'])
+        .with_columns(pl.col('tax_id').cast(pl.Utf8))
+        .select(['source_ref', 'local_entity_id', 'entity_bucket', 'tax_id'])
     )
 
     ids_with_context = (
         ids_all
         .join(
-            records.select(['source_ref', 'local_entity_id', 'entity_bucket', 'tax_partition']),
+            records.select(['source_ref', 'local_entity_id', 'entity_bucket', 'tax_id']),
             on=['source_ref', 'local_entity_id'],
             how='left',
         )
@@ -204,14 +198,17 @@ def _load_records_and_ids(local_tables_dir: Path) -> tuple[pl.DataFrame, pl.Data
         bucket = str(row['entity_bucket'])
         type_id = str(row['type_id'])
         canonical_identifier = _canonicalize(type_id, str(row['identifier']))
-        tax_partition = row.get('tax_partition')
+        tax_id = row.get('tax_id')
         allowed = MERGE_SAFE_BY_BUCKET_CODE.get(bucket)
-        if _is_tax_scoped_gene_name_merge_safe(bucket, type_id, tax_partition):
+        if _is_tax_scoped_gene_name_merge_safe(bucket, type_id, tax_id):
             is_merge_safe = True
+            merge_partition = str(tax_id)
         elif allowed is not None:
             is_merge_safe = type_id in allowed
+            merge_partition = None
         else:
             is_merge_safe = type_id not in MERGE_UNSAFE_IDENTIFIER_TYPES
+            merge_partition = None
         rows.append({
             'source_ref': str(row['source_ref']),
             'local_entity_id': int(row['local_entity_id']),
@@ -219,6 +216,7 @@ def _load_records_and_ids(local_tables_dir: Path) -> tuple[pl.DataFrame, pl.Data
             'type_id': type_id,
             'canonical_identifier': canonical_identifier,
             'is_merge_safe': bool(is_merge_safe),
+            'merge_partition': merge_partition,
         })
 
     ids_canonical = pl.DataFrame(rows) if rows else pl.DataFrame({
@@ -228,6 +226,7 @@ def _load_records_and_ids(local_tables_dir: Path) -> tuple[pl.DataFrame, pl.Data
         'type_id': pl.Series([], dtype=pl.Utf8),
         'canonical_identifier': pl.Series([], dtype=pl.Utf8),
         'is_merge_safe': pl.Series([], dtype=pl.Boolean),
+        'merge_partition': pl.Series([], dtype=pl.Utf8),
     })
 
     return records, ids_canonical
@@ -267,7 +266,7 @@ def build_merge_edge_debug_snapshot(local_tables_dir: Path) -> tuple[pl.DataFram
             'source_ref',
             'local_entity_id',
             'entity_bucket',
-            'tax_partition',
+            'merge_partition',
             'type_id',
             'canonical_identifier',
         ])
@@ -305,7 +304,7 @@ def build_merge_edge_debug_snapshot(local_tables_dir: Path) -> tuple[pl.DataFram
     merge_edge_rows: list[dict[str, object]] = []
     ms_grouped = (
         ms_edges
-        .group_by(['type_id', 'canonical_identifier', 'entity_bucket', 'tax_partition'])
+        .group_by(['type_id', 'canonical_identifier', 'entity_bucket', 'merge_partition'])
         .agg(pl.struct(['source_ref', 'local_entity_id']).alias('members'))
     )
 
@@ -317,7 +316,7 @@ def build_merge_edge_debug_snapshot(local_tables_dir: Path) -> tuple[pl.DataFram
         merge_type_id = str(row['type_id'])
         merge_identifier = str(row['canonical_identifier'])
         entity_bucket = str(row['entity_bucket'])
-        tax_partition = row['tax_partition']
+        merge_partition = row['merge_partition']
 
         base = members[0]
         base_key = (str(base['source_ref']), int(base['local_entity_id']))
@@ -337,7 +336,7 @@ def build_merge_edge_debug_snapshot(local_tables_dir: Path) -> tuple[pl.DataFram
                 'right_source_ref': other_key[0],
                 'right_local_entity_id': other_key[1],
                 'entity_bucket': entity_bucket,
-                'tax_partition': None if tax_partition is None else str(tax_partition),
+                'tax_partition': None if merge_partition is None else str(merge_partition),
                 'merge_type_id': merge_type_id,
                 'merge_identifier': merge_identifier,
                 'performed_union': performed_union,
