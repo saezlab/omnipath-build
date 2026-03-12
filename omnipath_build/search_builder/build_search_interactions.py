@@ -372,16 +372,10 @@ def build_search_interactions(global_tables_dir: Path, output_path: Path) -> Pat
                 how="left",
             )
             .with_columns([
-                (
-                    pl.coalesce([pl.col("cv_term_label"), pl.col("ann_id")])
-                    + ":"
-                    + pl.col("ann_id")
-                ).alias("term"),
+                pl.col("cv_term_label").alias("term"),
                 pl.col("annotation_value").cast(pl.Utf8).alias("value"),
                 pl.when(pl.col("annotation_unit").is_not_null()).then(
-                    pl.coalesce([pl.col("unit_label"), pl.col("annotation_unit")])
-                    + ":"
-                    + pl.col("annotation_unit")
+                    pl.col("unit_label")
                 ).otherwise(None).alias("unit"),
             ])
             .with_columns([

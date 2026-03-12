@@ -167,9 +167,9 @@ def build_search_associations(global_tables_dir: Path, output_path: Path) -> Pat
             how="left",
         )
         .with_columns([
-            (pl.coalesce([pl.col("cv_term_label"), pl.col("ann_id")]) + ":" + pl.col("ann_id")).alias("term"),
+            pl.col("cv_term_label").alias("term"),
             pl.when(pl.col("unit_accession").is_not_null()).then(
-                pl.coalesce([pl.col("unit_label"), pl.col("unit_accession")]) + ":" + pl.col("unit_accession")
+                pl.col("unit_label")
             ).otherwise(None).alias("unit"),
             (((pl.col("value").is_null()) | (pl.col("value") == "")) & pl.col("unit_accession").is_null()).alias("is_filterable"),
         ])
