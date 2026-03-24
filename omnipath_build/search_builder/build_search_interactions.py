@@ -689,7 +689,7 @@ def build_search_interactions(global_tables_dir: Path, output_path: Path) -> Pat
         .with_columns([
             pl.col("evidence").list.len().cast(pl.Int64).alias("evidence_count"),
         ])
-        .drop(["pair_key", "participant_annotation_terms", "interaction_entity_ids"])
+        .drop(["pair_key", "interaction_entity_ids"])
         .sort("interaction_key")
         .with_row_index("interaction_id", offset=1)
         .with_columns(pl.col("interaction_id").cast(pl.Int64))

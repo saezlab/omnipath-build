@@ -11,11 +11,7 @@ class MeilisearchSettings:
             'entity_type',
             'sources',
             'ncbi_tax_id',
-            'cv_terms_go',
-            'cv_terms_mi',
-            'cv_terms_om',
-            'cv_terms_hp',
-            'cv_terms_kw',
+            'ontology_terms',
         ],
         'displayedAttributes': [
             'entity_id',
@@ -42,11 +38,7 @@ class MeilisearchSettings:
             'maxValuesPerFacet': 100,
             'sortFacetValuesBy': {
                 '*': 'alpha',
-                'cv_terms_go': 'count',
-                'cv_terms_mi': 'count',
-                'cv_terms_om': 'count',
-                'cv_terms_hp': 'count',
-                'cv_terms_kw': 'count',
+                'ontology_terms': 'count',
             },
         },
         'pagination': {'maxTotalHits': 2000000},
@@ -65,11 +57,7 @@ class MeilisearchSettings:
             'sign',
             # Evidence annotations (flattened)
             'interaction_annotation_terms',  # Array of interaction-level term IDs/labels
-            'participant_annotation_terms_go',
-            'participant_annotation_terms_mi',
-            'participant_annotation_terms_om',
-            'participant_annotation_terms_hp',
-            'participant_annotation_terms_kw',
+            'participant_annotation_terms',
             # Source filtering
             'sources',
         ],
