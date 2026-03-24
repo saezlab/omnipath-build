@@ -242,23 +242,12 @@ def build_search_entities(
         )
 
     # 4c.2 CV terms from entity annotations (ontology-specific arrays only)
-    # CV_TERM_ACCESSION annotations have the actual CV term accession in the value field.
+    # Store canonical accessions only (e.g. GO:0003677) rather than label:accession.
     cv_terms_base = (
         ent_annot_with_entity
         .filter(pl.col("cv_term_accession") == CV_TERM_ACCESSION_TYPE)
         .filter(pl.col("value").is_not_null())
-        .join(
-            pl.DataFrame(cv_terms.select(["accession", "label"])).lazy().rename({"label": "cv_term_label"}),
-            left_on="value",
-            right_on="accession",
-            how="left",
-        )
-        .with_columns(
-            pl.coalesce([
-                pl.col("cv_term_label"),
-                (pl.col("value") + ":" + pl.col("value"))
-            ]).alias("cv_term_formatted")
-        )
+        .with_columns(pl.col("value").cast(pl.Utf8).alias("cv_term_accession_value"))
     )
 
     for prefix, out_col in [
@@ -270,9 +259,9 @@ def build_search_entities(
     ]:
         lazy_joins.append(
             cv_terms_base
-            .filter(pl.col("value").str.starts_with(prefix))
+            .filter(pl.col("cv_term_accession_value").str.starts_with(prefix))
             .group_by("annot_entity_id")
-            .agg(pl.col("cv_term_formatted").unique().sort().alias(out_col))
+            .agg(pl.col("cv_term_accession_value").unique().sort().alias(out_col))
             .rename({"annot_entity_id": "entity_id"})
         )
 

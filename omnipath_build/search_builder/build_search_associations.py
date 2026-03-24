@@ -168,12 +168,13 @@ def build_search_associations(global_tables_dir: Path, output_path: Path) -> Pat
         )
         .with_columns([
             pl.col("cv_term_label").alias("term"),
+            pl.col("ann_id").cast(pl.Utf8).alias("filter_term"),
             pl.when(pl.col("unit_accession").is_not_null()).then(
                 pl.col("unit_label")
             ).otherwise(None).alias("unit"),
             (((pl.col("value").is_null()) | (pl.col("value") == "")) & pl.col("unit_accession").is_null()).alias("is_filterable"),
         ])
-        .select(["member_instance_id", "term", "value", "unit", "is_filterable"])
+        .select(["member_instance_id", "term", "filter_term", "value", "unit", "is_filterable"])
     )
 
     ann_bundle = (
@@ -181,7 +182,7 @@ def build_search_associations(global_tables_dir: Path, output_path: Path) -> Pat
         .group_by("member_instance_id")
         .agg([
             pl.struct(["term", "value", "unit"]).unique().alias("annotations"),
-            pl.col("term").filter(pl.col("is_filterable")).unique().sort().alias("filterable_terms"),
+            pl.col("filter_term").filter(pl.col("is_filterable")).drop_nulls().unique().sort().alias("filterable_terms"),
         ])
     )
 

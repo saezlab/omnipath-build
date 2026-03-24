@@ -371,6 +371,7 @@ def build_search_interactions(global_tables_dir: Path, output_path: Path) -> Pat
             )
             .with_columns([
                 pl.col("cv_term_label").alias("term"),
+                pl.col("ann_id").cast(pl.Utf8).alias("filter_term"),
                 pl.col("annotation_value").cast(pl.Utf8).alias("value"),
                 pl.when(pl.col("annotation_unit").is_not_null()).then(
                     pl.col("unit_label")
@@ -382,7 +383,7 @@ def build_search_interactions(global_tables_dir: Path, output_path: Path) -> Pat
                     & pl.col("unit").is_null()
                 ).alias("is_filterable")
             ])
-            .select(["pair_key", "interaction_id", "cat", "term", "value", "unit", "is_filterable"])
+            .select(["pair_key", "interaction_id", "cat", "term", "filter_term", "value", "unit", "is_filterable"])
         )
 
         ann_by_cat = (
@@ -431,7 +432,7 @@ def build_search_interactions(global_tables_dir: Path, output_path: Path) -> Pat
             ann_rows
             .filter((pl.col("cat") == "interaction") & pl.col("is_filterable"))
             .group_by("pair_key")
-            .agg(pl.col("term").unique().sort().alias("interaction_annotation_terms"))
+            .agg(pl.col("filter_term").drop_nulls().unique().sort().alias("interaction_annotation_terms"))
         )
 
         # Participant-level ontology terms are derived from entity annotations
@@ -453,21 +454,7 @@ def build_search_interactions(global_tables_dir: Path, output_path: Path) -> Pat
             on="instance_id",
             how="inner",
         )
-        .join(
-            cv_terms.select([
-                pl.col("accession").alias("term_accession"),
-                pl.col("label").alias("term_label"),
-            ]),
-            left_on="value",
-            right_on="term_accession",
-            how="left",
-        )
-        .with_columns(
-            pl.coalesce([
-                pl.col("term_label"),
-                (pl.col("value") + ":" + pl.col("value")),
-            ]).alias("term")
-        )
+        .with_columns(pl.col("value").cast(pl.Utf8).alias("term"))
         .group_by("annot_entity_id")
         .agg(pl.col("term").unique().sort().alias("entity_terms"))
     )
@@ -681,7 +668,7 @@ def build_search_interactions(global_tables_dir: Path, output_path: Path) -> Pat
         .filter((pl.col("cat") == "interaction") & pl.col("is_filterable"))
         .join(interaction_state_rows.select(["interaction_id", "pair_key", "interaction_key"]), on=["interaction_id", "pair_key"], how="inner")
         .group_by("interaction_key")
-        .agg(pl.col("term").unique().sort().alias("interaction_annotation_terms"))
+        .agg(pl.col("filter_term").drop_nulls().unique().sort().alias("interaction_annotation_terms"))
     ) if 'ann_rows' in locals() else pl.DataFrame(schema={"interaction_key": pl.Utf8, "interaction_annotation_terms": pl.List(pl.Utf8)})
 
     participant_terms_by_doc = (

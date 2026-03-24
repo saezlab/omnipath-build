@@ -262,6 +262,7 @@ def _build_incremental_payload(
     logical_key: str,
     old_hashes: pl.DataFrame,
     ignored_hash_columns: set[str],
+    excluded_columns: set[str],
     output_upserts_path: Path,
 ) -> tuple[list[str], int]:
     """Compute delete doc ids and write changed/new docs as NDJSON.
@@ -271,9 +272,11 @@ def _build_incremental_payload(
     dataset_scan = pl.scan_parquet(parquet_path)
     schema = dataset_scan.collect_schema()
     columns = schema.names()
+    meili_columns = [c for c in columns if c not in excluded_columns]
+    dataset_scan = dataset_scan.select(meili_columns)
 
     semantic_columns = [
-        c for c in columns
+        c for c in meili_columns
         if c not in ignored_hash_columns and c not in {logical_key, 'content_hash', MEILI_DOC_ID}
     ]
     if not semantic_columns:
@@ -478,6 +481,7 @@ def import_dataset(
     index_name: str,
     logical_key_candidates: list[str],
     hash_ignore_columns: set[str],
+    excluded_columns: set[str],
     settings: dict,
     importer_path: Path,
     meili_url: str,
@@ -503,8 +507,10 @@ def import_dataset(
     # We always import transformed NDJSON with a safe Meilisearch document id.
     dataset_scan = pl.scan_parquet(parquet_path)
     schema = dataset_scan.collect_schema()
+    meili_columns = [c for c in schema.names() if c not in excluded_columns]
+    dataset_scan = dataset_scan.select(meili_columns)
     semantic_columns = [
-        c for c in schema.names()
+        c for c in meili_columns
         if c not in hash_ignore_columns and c not in {logical_key, 'content_hash', MEILI_DOC_ID}
     ]
 
@@ -553,6 +559,7 @@ def import_dataset(
                 logical_key=logical_key,
                 old_hashes=old_hashes,
                 ignored_hash_columns=hash_ignore_columns,
+                excluded_columns=excluded_columns,
                 output_upserts_path=upserts_path,
             )
 
@@ -618,6 +625,7 @@ def main(argv: Iterable[str]) -> None:
                 'index_name': args.entities_index,
                 'logical_key_candidates': ['entity_key', 'entity_id'],
                 'hash_ignore_columns': set(),
+                'excluded_columns': set(),
                 'settings': MeilisearchSettings.ENTITIES_SETTINGS,
                 'previous_parquet_path': args.previous_entities_parquet_path,
             }
@@ -631,7 +639,8 @@ def main(argv: Iterable[str]) -> None:
                 'index_name': args.interactions_index,
                 'logical_key_candidates': ['interaction_key'],
                 # interaction_id is row-index based and not semantic
-                'hash_ignore_columns': {'interaction_id'},
+                'hash_ignore_columns': {'interaction_id', 'evidence'},
+                'excluded_columns': {'evidence'},
                 'settings': MeilisearchSettings.INTERACTIONS_SETTINGS,
                 'previous_parquet_path': args.previous_interactions_parquet_path,
             }
@@ -645,7 +654,8 @@ def main(argv: Iterable[str]) -> None:
                 'index_name': args.associations_index,
                 'logical_key_candidates': ['association_key'],
                 # association_id is row-index based and not semantic
-                'hash_ignore_columns': {'association_id'},
+                'hash_ignore_columns': {'association_id', 'evidence'},
+                'excluded_columns': {'evidence'},
                 'settings': MeilisearchSettings.ASSOCIATIONS_SETTINGS,
                 'previous_parquet_path': args.previous_associations_parquet_path,
             }
@@ -659,6 +669,7 @@ def main(argv: Iterable[str]) -> None:
                 'index_name': args.sources_index,
                 'logical_key_candidates': ['source_ref'],
                 'hash_ignore_columns': set(),
+                'excluded_columns': set(),
                 'settings': MeilisearchSettings.SOURCES_SETTINGS,
                 'previous_parquet_path': args.previous_sources_parquet_path,
             }
@@ -671,6 +682,7 @@ def main(argv: Iterable[str]) -> None:
             index_name=dataset['index_name'],
             logical_key_candidates=dataset['logical_key_candidates'],
             hash_ignore_columns=dataset['hash_ignore_columns'],
+            excluded_columns=dataset['excluded_columns'],
             settings=dataset['settings'],
             importer_path=importer_path,
             meili_url=args.meili_url,
