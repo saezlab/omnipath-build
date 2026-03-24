@@ -110,7 +110,11 @@ def _rename_if_present_lf(lf: pl.LazyFrame, old: str, new: str) -> pl.LazyFrame:
     return lf
 
 
-def build_search_entities(global_tables_dir: Path, output_path: Path) -> Path:
+def build_search_entities(
+    global_tables_dir: Path,
+    output_path: Path,
+    interactions_path: Path | None = None,
+) -> Path:
     logger.info("=" * 80 + "\nBuilding Meilisearch entity documents (Lazy Execution)\n" + "=" * 80)
 
     # 1. Load Metadata Eagerly (for logic/sets)
@@ -273,16 +277,23 @@ def build_search_entities(global_tables_dir: Path, output_path: Path) -> Path:
         )
 
     # 4d. Interaction Counts
-    # Join memberships to entity to check parent interaction type.
-    mem_types = mem_simple.join(
-        ent.rename({"entity_id": "pid", "entity_type": "ptype"}),
-        left_on="parent_id", right_on="pid"
-    )
+    # Derive counts from the final search_interactions parquet so entity counts
+    # match the actual interaction documents exposed to search.
+    if interactions_path is None:
+        raise ValueError("interactions_path is required to build search_entities")
+    if not interactions_path.exists():
+        raise FileNotFoundError(f"search_interactions parquet not found: {interactions_path}")
 
+    logger.info("Using interaction counts from %s", interactions_path)
+    interactions = pl.scan_parquet(interactions_path)
     lazy_joins.append(
-        mem_types.filter(pl.col("ptype") == id_sets['interaction_type'])
-        .group_by("member_id").agg(pl.col("parent_id").n_unique().alias("num_interactions"))
-        .rename({"member_id": "entity_id"})
+        pl.concat([
+            interactions.select(pl.col("member_a_id").alias("entity_id")),
+            interactions.select(pl.col("member_b_id").alias("entity_id")),
+        ], how="vertical")
+        .group_by("entity_id")
+        .len()
+        .rename({"len": "num_interactions"})
     )
 
     # 4e. Sources (direct source_ref provenance)
@@ -372,6 +383,7 @@ def main():
     parser = argparse.ArgumentParser(description="Build Meilisearch entity documents")
     parser.add_argument("--global-tables-dir", type=Path, default=Path("omnipath_build/data/gold"))
     parser.add_argument("--output", type=Path, default=Path("omnipath_build/data/gold/search_entities.parquet"))
+    parser.add_argument("--interactions-path", type=Path, required=True)
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     args = parser.parse_args()
 
@@ -381,7 +393,7 @@ def main():
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
-    build_search_entities(args.global_tables_dir, args.output)
+    build_search_entities(args.global_tables_dir, args.output, args.interactions_path)
 
 if __name__ == "__main__":
     main()

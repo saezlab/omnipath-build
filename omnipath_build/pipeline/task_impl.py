@@ -533,30 +533,35 @@ def execute_task(
         return
 
     if task.task_type in {'search_entities', 'search_interactions', 'search_associations'}:
-        dep_dir = resolve_output_ref(task_results[task.deps[0]].output_ref)
+        combined_gold_dir = resolve_output_ref(task_results['combined_gold'].output_ref)
         dataset = task.task_type.split('_', 1)[1]
         _emit_progress(progress_callback, stage=task.task_type, message=f'building search parquet: {dataset}')
 
         with tempfile.TemporaryDirectory(prefix='op-search-') as tmp:
             stage = Path(tmp)
             gold_dir = stage / 'gold'
-            _copy_tree(dep_dir, gold_dir)
+            _copy_tree(combined_gold_dir, gold_dir)
             (gold_dir / 'omnipath_mi.obo').unlink(missing_ok=True)
 
             out_file = stage / f'search_{dataset}.parquet'
             module = f'omnipath_build.search_builder.build_search_{dataset}'
+            cmd = [
+                'uv',
+                'run',
+                'python',
+                '-m',
+                module,
+                '--global-tables-dir',
+                str(gold_dir),
+                '--output',
+                str(out_file),
+            ]
+            if task.task_type == 'search_entities':
+                interactions_file = resolve_output_ref(task_results['search_interactions'].output_ref)
+                cmd.extend(['--interactions-path', str(interactions_file)])
+
             _run_subprocess(
-                [
-                    'uv',
-                    'run',
-                    'python',
-                    '-m',
-                    module,
-                    '--global-tables-dir',
-                    str(gold_dir),
-                    '--output',
-                    str(out_file),
-                ],
+                cmd,
                 cwd=project_root,
                 log_path=log_path,
             )

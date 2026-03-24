@@ -61,10 +61,8 @@ class MeilisearchSettings:
             'member_a_id',
             'member_b_id',
             'interaction_type',  # Canonical pair type (e.g., Protein|Protein)
-            # Direction/Sign (flattened from directions array)
-            'has_direction',  # Boolean: len(directions) > 0
-            'has_positive_sign',  # Boolean: any sign == 1 or sign == 0 (mixed)
-            'has_negative_sign',  # Boolean: any sign == -1 or sign == 0 (mixed)
+            'is_directed',
+            'sign',
             # Evidence annotations (flattened)
             'interaction_annotation_terms',  # Array of interaction-level term IDs/labels
             'participant_annotation_terms_go',

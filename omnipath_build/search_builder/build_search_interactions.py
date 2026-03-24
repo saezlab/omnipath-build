@@ -87,7 +87,7 @@ def _build_causal_traits() -> pl.DataFrame:
 
 def _get_param_directions(doc_base: pl.DataFrame, df_ann_int: pl.DataFrame, param_signs: pl.DataFrame) -> pl.DataFrame:
     if param_signs.is_empty():
-        return pl.DataFrame(schema={"pair_key": pl.Utf8, "direction": pl.Utf8, "sign": pl.Int8})
+        return pl.DataFrame(schema={"interaction_id": pl.Utf8, "pair_key": pl.Utf8, "direction": pl.Utf8, "sign": pl.Int8})
 
     types_df = doc_base.select(
         "pair_key",
@@ -107,13 +107,13 @@ def _get_param_directions(doc_base: pl.DataFrame, df_ann_int: pl.DataFrame, para
     ]).filter(pl.col("direction").is_not_null()).select("pair_key", "direction")
 
     if dir_map.is_empty():
-        return pl.DataFrame(schema={"pair_key": pl.Utf8, "direction": pl.Utf8, "sign": pl.Int8})
+        return pl.DataFrame(schema={"interaction_id": pl.Utf8, "pair_key": pl.Utf8, "direction": pl.Utf8, "sign": pl.Int8})
 
     return (
         df_ann_int
         .join(param_signs, left_on="ann_id", right_on="accession", how="inner")
         .join(dir_map, on="pair_key", how="inner")
-        .select("pair_key", "direction", "sign")
+        .select("interaction_id", "pair_key", "direction", "sign")
     )
 
 
@@ -224,11 +224,9 @@ def build_search_interactions(global_tables_dir: Path, output_path: Path) -> Pat
             "member_b_id": pl.Utf8,
             "member_types": pl.List(pl.Utf8),
             "interaction_type": pl.Utf8,
+            "is_directed": pl.Boolean,
+            "sign": pl.Int8,
             "evidence": EVIDENCE_LIST_DTYPE,
-            "directions": DIRECTION_LIST_DTYPE,
-            "has_direction": pl.Boolean,
-            "has_positive_sign": pl.Boolean,
-            "has_negative_sign": pl.Boolean,
             "interaction_annotation_terms": pl.List(pl.Utf8),
             "participant_annotation_terms_go": pl.List(pl.Utf8),
             "participant_annotation_terms_mi": pl.List(pl.Utf8),
@@ -416,6 +414,7 @@ def build_search_interactions(global_tables_dir: Path, output_path: Path) -> Pat
             ])
             .select([
                 "pair_key",
+                "interaction_id",
                 pl.struct([
                     "evidence_serial",
                     "source",
@@ -492,12 +491,13 @@ def build_search_interactions(global_tables_dir: Path, output_path: Path) -> Pat
         .agg(pl.col("entity_terms").drop_nulls().unique().sort().alias("participant_annotation_terms"))
     )
 
-    # direction/sign computation remains precomputed
+    # Split interaction documents by directedness/sign, then order members
+    # according to direction (source -> target). Undirected docs keep canonical order.
     causal_traits = _build_causal_traits()
-    term_sign_df = _build_sign_df(POSITIVE_SIGN_ACCESSIONS, NEGATIVE_SIGN_ACCESSIONS, name="term_sign")
+    term_sign_df = _build_sign_df(POSITIVE_SIGN_ACCESSIONS, NEGATIVE_SIGN_ACCESSIONS, name="sign")
     param_sign_df = _build_sign_df(ACTIVATORY_PARAMETER_ACCESSIONS, INHIBITORY_PARAMETER_ACCESSIONS, name="sign")
 
-    df_dirs_mem = pl.DataFrame(schema={"pair_key": pl.Utf8, "direction": pl.Utf8, "sign": pl.Int8})
+    df_dirs_mem = pl.DataFrame(schema={"interaction_id": pl.Utf8, "pair_key": pl.Utf8, "direction": pl.Utf8, "sign": pl.Int8})
     if not causal_traits.is_empty() and not df_ann_mem.is_empty():
         df_dirs_mem = (
             df_ann_mem
@@ -509,79 +509,200 @@ def build_search_interactions(global_tables_dir: Path, output_path: Path) -> Pat
                 .when((pl.col("cat") == "member_a") & pl.col("is_target")).then(pl.lit("b-a"))
                 .alias("direction")
             ])
-            .filter(pl.col("direction").is_not_null())
-            .select("pair_key", "direction", "sign")
+            .filter(pl.col("direction") .is_not_null())
+            .select("interaction_id", "pair_key", "direction", pl.col("sign").cast(pl.Int8))
+            .unique()
         )
 
-    df_dirs_param = _get_param_directions(doc_base, df_ann_int, param_sign_df)
-    all_dirs = pl.concat([df_dirs_mem, df_dirs_param])
+    df_dirs_param = _get_param_directions(doc_base, df_ann_int, param_sign_df).unique()
 
-    directions_df = pl.DataFrame(schema={"pair_key": pl.Utf8, "directions": DIRECTION_LIST_DTYPE})
-    if not all_dirs.is_empty():
-        base_signs = (
-            all_dirs
-            .group_by("pair_key", "direction")
-            .agg([
-                pl.col("sign").eq(1).any().alias("has_pos"),
-                pl.col("sign").eq(-1).any().alias("has_neg"),
-            ])
-            .with_columns(
-                pl.when(pl.col("has_pos") & pl.col("has_neg")).then(pl.lit(0, dtype=pl.Int8))
-                .when(pl.col("has_pos")).then(pl.lit(1, dtype=pl.Int8))
-                .when(pl.col("has_neg")).then(pl.lit(-1, dtype=pl.Int8))
-                .otherwise(pl.lit(None, dtype=pl.Int8))
-                .alias("sign")
-            )
+    interaction_term_signs = pl.DataFrame(schema={"interaction_id": pl.Utf8, "pair_key": pl.Utf8, "sign": pl.Int8})
+    if not term_sign_df.is_empty() and not df_ann_int.is_empty():
+        interaction_term_signs = (
+            df_ann_int
+            .join(term_sign_df, left_on="ann_id", right_on="accession", how="inner")
+            .select("interaction_id", "pair_key", pl.col("sign").cast(pl.Int8))
+            .unique()
         )
 
-        if not term_sign_df.is_empty() and not df_ann_int.is_empty():
-            pair_term_signs = (
-                df_ann_int
-                .join(term_sign_df, left_on="ann_id", right_on="accession", how="inner")
-                .group_by("pair_key")
-                .agg([
-                    pl.col("term_sign").eq(1).any().alias("has_pos"),
-                    pl.col("term_sign").eq(-1).any().alias("has_neg"),
-                ])
-                .with_columns(
-                    pl.when(pl.col("has_pos") & pl.col("has_neg")).then(pl.lit(0, dtype=pl.Int8))
-                    .when(pl.col("has_pos")).then(pl.lit(1, dtype=pl.Int8))
-                    .when(pl.col("has_neg")).then(pl.lit(-1, dtype=pl.Int8))
-                    .alias("combined_term_sign")
-                )
-                .select("pair_key", "combined_term_sign")
-            )
+    all_direction_rows = pl.concat([df_dirs_mem, df_dirs_param], how="vertical") if (not df_dirs_mem.is_empty() or not df_dirs_param.is_empty()) else pl.DataFrame(
+        schema={"interaction_id": pl.Utf8, "pair_key": pl.Utf8, "direction": pl.Utf8, "sign": pl.Int8}
+    )
 
-            base_signs = (
-                base_signs
-                .join(pair_term_signs, on="pair_key", how="left")
-                .with_columns(pl.coalesce(pl.col("sign"), pl.col("combined_term_sign")).alias("sign"))
-                .select("pair_key", "direction", "sign")
-            )
+    all_sign_rows = pl.concat([
+        all_direction_rows.select("interaction_id", "pair_key", "sign").filter(pl.col("sign").is_not_null()),
+        interaction_term_signs,
+    ], how="vertical") if (not all_direction_rows.is_empty() or not interaction_term_signs.is_empty()) else pl.DataFrame(
+        schema={"interaction_id": pl.Utf8, "pair_key": pl.Utf8, "sign": pl.Int8}
+    )
 
-        directions_df = (
-            base_signs
-            .filter(pl.col("sign").is_not_null())
-            .select([pl.col("pair_key"), pl.struct(["direction", "sign"]).alias("dir_entry")])
-            .group_by("pair_key")
-            .agg(pl.col("dir_entry").alias("directions"))
+    dirs_by_interaction = (
+        all_direction_rows
+        .select("interaction_id", "pair_key", "direction")
+        .filter(pl.col("direction").is_not_null())
+        .unique()
+        .group_by(["interaction_id", "pair_key"])
+        .agg(pl.col("direction").sort())
+    ) if not all_direction_rows.is_empty() else pl.DataFrame(schema={"interaction_id": pl.Utf8, "pair_key": pl.Utf8, "direction": pl.List(pl.Utf8)})
+
+    signs_by_interaction = (
+        all_sign_rows
+        .unique()
+        .group_by(["interaction_id", "pair_key"])
+        .agg(pl.col("sign").sort())
+    ) if not all_sign_rows.is_empty() else pl.DataFrame(schema={"interaction_id": pl.Utf8, "pair_key": pl.Utf8, "sign": pl.List(pl.Int8)})
+
+    interaction_states = (
+        pair_base
+        .join(dirs_by_interaction, on=["interaction_id", "pair_key"], how="left")
+        .join(signs_by_interaction, on=["interaction_id", "pair_key"], how="left")
+    )
+
+    directed_signed = (
+        interaction_states
+        .filter(pl.col("direction").is_not_null() & pl.col("sign").is_not_null())
+        .explode("direction")
+        .explode("sign")
+        .rename({"direction": "state_direction", "sign": "state_sign"})
+    )
+    directed_unsigned = (
+        interaction_states
+        .filter(pl.col("direction").is_not_null() & pl.col("sign").is_null())
+        .explode("direction")
+        .with_columns(pl.lit(0, dtype=pl.Int8).alias("state_sign"))
+        .rename({"direction": "state_direction"})
+    )
+    undirected_signed = (
+        interaction_states
+        .filter(pl.col("direction").is_null() & pl.col("sign").is_not_null())
+        .explode("sign")
+        .with_columns(pl.lit(None, dtype=pl.Utf8).alias("state_direction"))
+        .rename({"sign": "state_sign"})
+    )
+    undirected_unsigned = (
+        interaction_states
+        .filter(pl.col("direction").is_null() & pl.col("sign").is_null())
+        .with_columns([
+            pl.lit(None, dtype=pl.Utf8).alias("state_direction"),
+            pl.lit(0, dtype=pl.Int8).alias("state_sign"),
+        ])
+    )
+
+    interaction_state_rows = pl.concat(
+        [directed_signed, directed_unsigned, undirected_signed, undirected_unsigned],
+        how="diagonal_relaxed",
+    ).select([
+        "interaction_id",
+        "pair_key",
+        "member_a_id",
+        "member_b_id",
+        pl.col("state_direction"),
+        pl.col("state_sign").cast(pl.Int8).alias("sign"),
+    ]).unique()
+
+    interaction_state_rows = (
+        interaction_state_rows
+        .with_columns([
+            pl.col("state_direction").is_not_null().alias("is_directed"),
+            pl.when(pl.col("state_direction") == "b-a").then(pl.col("member_b_id")).otherwise(pl.col("member_a_id")).alias("ordered_member_a_id"),
+            pl.when(pl.col("state_direction") == "b-a").then(pl.col("member_a_id")).otherwise(pl.col("member_b_id")).alias("ordered_member_b_id"),
+        ])
+        .with_columns(
+            pl.concat_str([
+                pl.col("ordered_member_a_id").cast(pl.Utf8),
+                pl.lit("-"),
+                pl.col("ordered_member_b_id").cast(pl.Utf8),
+                pl.lit("|"),
+                pl.when(pl.col("is_directed")).then(pl.lit("d")).otherwise(pl.lit("u")),
+                pl.lit("|"),
+                pl.col("sign").cast(pl.Utf8),
+            ]).alias("interaction_key")
         )
+    )
+
+    type_map_raw = (
+        ent
+        .join(entity_type_labels, on="entity_type", how="left")
+        .with_columns(
+            pl.coalesce([
+                pl.col("entity_type_label"),
+                (pl.col("entity_type") + ":" + pl.col("entity_type")),
+            ]).alias("fmt")
+        )
+        .select(pl.col("entity_id"), pl.col("fmt"))
+    )
+
+    doc_base = (
+        interaction_state_rows
+        .join(type_map_raw, left_on="ordered_member_a_id", right_on="entity_id", how="left").rename({"fmt": "ta"})
+        .join(type_map_raw, left_on="ordered_member_b_id", right_on="entity_id", how="left").rename({"fmt": "tb"})
+        .select([
+            pl.col("interaction_id").alias("interaction_entity_id"),
+            "pair_key",
+            "interaction_key",
+            pl.col("ordered_member_a_id").alias("member_a_id"),
+            pl.col("ordered_member_b_id").alias("member_b_id"),
+            pl.concat_list("ta", "tb").alias("member_types"),
+            pl.concat_list("ta", "tb").list.sort().list.join("|").alias("interaction_type"),
+            "is_directed",
+            "sign",
+        ])
+        .group_by("interaction_key")
+        .agg([
+            pl.col("interaction_entity_id").unique().sort().alias("interaction_entity_ids"),
+            pl.col("pair_key").first().alias("pair_key"),
+            pl.col("member_a_id").first().alias("member_a_id"),
+            pl.col("member_b_id").first().alias("member_b_id"),
+            pl.col("member_types").first().alias("member_types"),
+            pl.col("interaction_type").first().alias("interaction_type"),
+            pl.col("is_directed").first().alias("is_directed"),
+            pl.col("sign").first().alias("sign"),
+        ])
+    )
+
+    evidence_by_doc = (
+        evidence_rows
+        .join(interaction_state_rows.select(["interaction_id", "pair_key", "interaction_key"]), on=["interaction_id", "pair_key"], how="inner")
+        .select(["interaction_key", "entry"])
+        .group_by("interaction_key")
+        .agg(pl.col("entry").alias("evidence"))
+    ) if 'evidence_rows' in locals() else pl.DataFrame(schema={"interaction_key": pl.Utf8, "evidence": EVIDENCE_LIST_DTYPE})
+
+    sources_by_doc = (
+        evidence_rows
+        .join(interaction_state_rows.select(["interaction_id", "pair_key", "interaction_key"]), on=["interaction_id", "pair_key"], how="inner")
+        .select(["interaction_key", pl.col("entry").struct.field("source").alias("source")])
+        .group_by("interaction_key")
+        .agg(pl.col("source").drop_nulls().unique().sort().alias("sources"))
+    ) if 'evidence_rows' in locals() else pl.DataFrame(schema={"interaction_key": pl.Utf8, "sources": pl.List(pl.Utf8)})
+
+    interaction_terms_by_doc = (
+        ann_rows
+        .filter((pl.col("cat") == "interaction") & pl.col("is_filterable"))
+        .join(interaction_state_rows.select(["interaction_id", "pair_key", "interaction_key"]), on=["interaction_id", "pair_key"], how="inner")
+        .group_by("interaction_key")
+        .agg(pl.col("term").unique().sort().alias("interaction_annotation_terms"))
+    ) if 'ann_rows' in locals() else pl.DataFrame(schema={"interaction_key": pl.Utf8, "interaction_annotation_terms": pl.List(pl.Utf8)})
+
+    participant_terms_by_doc = (
+        interaction_state_rows
+        .select(["interaction_key", "pair_key"])
+        .unique()
+        .join(participant_terms_flat, on="pair_key", how="left")
+    )
 
     result = (
         doc_base
-        .join(evidence_by_pair, on="pair_key", how="left")
-        .join(directions_df, on="pair_key", how="left")
-        .join(pair_sources, on="pair_key", how="left")
-        .join(interaction_terms_flat, on="pair_key", how="left")
-        .join(participant_terms_flat, on="pair_key", how="left")
+        .join(evidence_by_doc, on="interaction_key", how="left")
+        .join(sources_by_doc, on="interaction_key", how="left")
+        .join(interaction_terms_by_doc, on="interaction_key", how="left")
+        .join(participant_terms_by_doc, on=["interaction_key", "pair_key"], how="left")
         .with_columns([
             pl.coalesce(pl.col("evidence"), pl.lit([], dtype=EVIDENCE_LIST_DTYPE)).alias("evidence"),
-            pl.coalesce(pl.col("directions"), pl.lit([], dtype=DIRECTION_LIST_DTYPE)).alias("directions"),
             pl.coalesce(pl.col("sources"), pl.lit([], dtype=pl.List(pl.Utf8))).alias("sources"),
             pl.coalesce(pl.col("interaction_annotation_terms"), pl.lit([], dtype=pl.List(pl.Utf8))).alias("interaction_annotation_terms"),
             pl.coalesce(pl.col("participant_annotation_terms"), pl.lit([], dtype=pl.List(pl.Utf8))).alias("participant_annotation_terms"),
         ])
-        .rename({"pair_key": "interaction_key"})
         .with_columns([
             pl.col("participant_annotation_terms").list.eval(
                 pl.element().filter(pl.element().str.contains(r"\bGO:\d{4,}\b"))
@@ -599,11 +720,8 @@ def build_search_interactions(global_tables_dir: Path, output_path: Path) -> Pat
                 pl.element().filter(pl.element().str.contains(r"\bKW:\d{4,}\b"))
             ).alias("participant_annotation_terms_kw"),
             pl.col("evidence").list.len().cast(pl.Int64).alias("evidence_count"),
-            (pl.col("directions").list.len() > 0).alias("has_direction"),
-            (pl.col("directions").list.eval((pl.element().struct.field("sign") == 1) | (pl.element().struct.field("sign") == 0)).list.any()).alias("has_positive_sign"),
-            (pl.col("directions").list.eval((pl.element().struct.field("sign") == -1) | (pl.element().struct.field("sign") == 0)).list.any()).alias("has_negative_sign"),
         ])
-        .drop("participant_annotation_terms")
+        .drop(["pair_key", "participant_annotation_terms", "interaction_entity_ids"])
         .sort("interaction_key")
         .with_row_index("interaction_id", offset=1)
         .with_columns(pl.col("interaction_id").cast(pl.Int64))

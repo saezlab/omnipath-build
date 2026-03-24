@@ -392,8 +392,8 @@ def build_data_dag(sources: list[str]) -> list[TaskDef]:
         tasks.append(TaskDef(f'local_gold:{source}', 'local_gold', source, [f'silver:{source}']))
 
     tasks.append(TaskDef('combined_gold', 'combined_gold', None, [f'local_gold:{s}' for s in sources]))
-    tasks.append(TaskDef('search_entities', 'search_entities', None, ['combined_gold']))
     tasks.append(TaskDef('search_interactions', 'search_interactions', None, ['combined_gold']))
+    tasks.append(TaskDef('search_entities', 'search_entities', None, ['combined_gold', 'search_interactions']))
     tasks.append(TaskDef('search_associations', 'search_associations', None, ['combined_gold']))
     tasks.append(TaskDef('search_sources', 'search_sources', None, ['combined_gold']))
 
