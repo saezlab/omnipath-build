@@ -755,6 +755,8 @@ def run_pipeline(
     runtime_hash_values = runtime_hashes(project_root)
 
     sources = discover_sources(inputs_package)
+    if test_mode:
+        sources = [source for source in sources if source != 'chembl']
     tasks = build_data_dag(sources)
 
     previous_state = load_latest_state()

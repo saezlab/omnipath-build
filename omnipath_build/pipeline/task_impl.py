@@ -413,11 +413,12 @@ def execute_task(
                 on_stdout_line=_on_silver_stdout,
             )
 
-            _emit_progress(progress_callback, stage='silver', message='copying silver parquet outputs')
+            _emit_progress(progress_callback, stage='silver', message='copying silver outputs')
             out_root = stage / 'silver'
             tmp_output.mkdir(parents=True, exist_ok=True)
-            for parquet in sorted(out_root.rglob('*.parquet')):
-                shutil.copy2(parquet, tmp_output / parquet.name)
+            for output_file in sorted(out_root.rglob('*')):
+                if output_file.is_file():
+                    shutil.copy2(output_file, tmp_output / output_file.name)
         return
 
     if task.task_type == 'local_gold':
@@ -487,9 +488,6 @@ def execute_task(
                 for parquet in sorted(dep_dir.glob('local_*.parquet')):
                     shutil.copy2(parquet, local_tables_dir / parquet.name)
 
-            _emit_progress(progress_callback, stage='combined_gold', message='ensuring OmniPath ontology (OBO)')
-            project_obo = _ensure_project_obo(project_root, log_path=log_path)
-
             out_dir = stage / 'gold'
             out_dir.mkdir(parents=True, exist_ok=True)
             cmd_entity = [
@@ -529,7 +527,16 @@ def execute_task(
             _emit_progress(progress_callback, stage='combined_gold', message='copying combined gold outputs')
             tmp_output.mkdir(parents=True, exist_ok=True)
             _copy_tree(out_dir, tmp_output)
-            shutil.copy2(project_obo, tmp_output / 'omnipath_mi.obo')
+
+            _emit_progress(progress_callback, stage='combined_gold', message='copying ontology artifacts from silver')
+            for source in sources:
+                silver_key = f'silver:{source}'
+                silver_result = task_results.get(silver_key)
+                if silver_result is None:
+                    continue
+                silver_dir = resolve_output_ref(silver_result.output_ref)
+                for artifact in sorted(silver_dir.glob('*.obo')):
+                    shutil.copy2(artifact, tmp_output / artifact.name)
         return
 
     if task.task_type in {'search_entities', 'search_interactions', 'search_associations'}:

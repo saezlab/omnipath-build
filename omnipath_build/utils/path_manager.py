@@ -99,6 +99,19 @@ class PathManager:
         filename_stem = 'main' if table_name == source_leaf else table_name
         return source_dir / f"{filename_stem}.parquet"
 
+    def artifact_file(
+        self,
+        source_name: str,
+        function_name: str,
+        extension: str,
+        file_stem: str | None = None,
+    ) -> Path:
+        """Get path to a non-parquet source artifact such as an ontology OBO file."""
+        source_dir = self.source_path(source_name)
+        stem = file_stem or function_name
+        ext = extension.lstrip('.')
+        return source_dir / f"{stem}.{ext}"
+
     def gold_file(self, source_name: str, function_name: str, table_name: str) -> Path:
         """Get path to source-specific gold parquet file."""
         gold_dir = self.source_gold_path(source_name, function_name)

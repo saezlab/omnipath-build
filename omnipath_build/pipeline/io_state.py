@@ -308,12 +308,13 @@ def write_output_snapshot(run_id: str, task_results: dict[str, TaskResult]) -> N
 
     snapshot_sources = {
         'entity_identifier.parquet': combined / 'entity_identifier.parquet',
-        'omnipath_mi.obo': combined / 'omnipath_mi.obo',
         'search_entities.parquet': entities,
         'search_interactions.parquet': interactions,
         'search_associations.parquet': associations,
         'search_sources.parquet': sources,
     }
+    for obo_path in sorted(combined.glob('*.obo')):
+        snapshot_sources[obo_path.name] = obo_path
     snapshot_hashes = {name: _sha256_file(path) for name, path in snapshot_sources.items()}
 
     latest = OUTPUT_ROOT / 'latest'

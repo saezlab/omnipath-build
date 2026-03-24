@@ -21,6 +21,7 @@ from pypath.internals.silver_schema import (
     ENTITY_SCHEMA,
     Entity as SilverEntity,
 )
+from pypath.internals.ontology_schema import OntologyTerm
 
 __all__ = [
     'DiscoveryError',
@@ -85,8 +86,12 @@ class ResourceFunction:
     source: str
     function_name: str
     qualified_module: str
-    call: Callable[[], Iterable]
+    call: Callable[[], Iterable] | Callable[[], object]
     resource_id: str
+    output_kind: str = 'entity'
+    file_extension: str | None = None
+    file_stem: str | None = None
+    document: object | None = None
 
 
 class DiscoveryError(RuntimeError):
@@ -123,7 +128,9 @@ def discover_resources(
     path_manager = PathManager(database_name, base_path)
     _configure_pypath_download_dir()
     from pypath.inputs_v2.base import (
+        ArtifactDataset,
         Dataset,
+        OntologyDataset,
         Resource,
     )  # Local import to avoid import-time side effects.
 
@@ -162,15 +169,17 @@ def discover_resources(
             if isinstance(obj, Resource)
         ]
 
-        # Discover Dataset objects for data entities (both at module level and inside Resources)
+        dataset_types = (Dataset, OntologyDataset, ArtifactDataset)
+
+        # Discover datasets for entities and ontology/artifact outputs
         dataset_members = [
             (name, obj)
             for name, obj in inspect.getmembers(module)
-            if isinstance(obj, Dataset)
+            if isinstance(obj, dataset_types)
         ]
 
         # Also discover datasets nested inside Resource objects
-        datasets_from_resources: List[tuple[str, Dataset]] = []
+        datasets_from_resources: List[tuple[str, object]] = []
         for _, resource_obj in resource_members:
             for ds_name, ds_obj in resource_obj.datasets().items():
                 # Only add if not already in dataset_members (avoid duplicates)
@@ -203,6 +212,20 @@ def discover_resources(
 
         # Add Dataset functions for data entities
         for dataset_name, dataset_obj in dataset_members:
+            output_kind = 'entity'
+            file_extension = None
+            file_stem = None
+            document = None
+            if isinstance(dataset_obj, OntologyDataset):
+                output_kind = 'ontology'
+                file_extension = dataset_obj.extension
+                file_stem = dataset_obj.file_stem
+                document = dataset_obj.document
+            elif isinstance(dataset_obj, ArtifactDataset):
+                output_kind = 'artifact'
+                file_extension = dataset_obj.extension
+                file_stem = dataset_obj.file_stem
+
             module_functions.append(
                 ResourceFunction(
                     source=relative_name,
@@ -210,6 +233,10 @@ def discover_resources(
                     qualified_module=module_name,
                     call=dataset_obj,
                     resource_id=resource_id,
+                    output_kind=output_kind,
+                    file_extension=file_extension,
+                    file_stem=file_stem,
+                    document=document,
                 ),
             )
 
@@ -368,11 +395,19 @@ def process_resource_function(
     """
     # Check if output file already exists and skip if not overriding
     if not override:
-        potential_output = path_manager.silver_file(
-            resource_fn.source,
-            resource_fn.function_name,
-            resource_fn.function_name,
-        )
+        if resource_fn.output_kind in {'ontology', 'artifact'}:
+            potential_output = path_manager.artifact_file(
+                resource_fn.source,
+                resource_fn.function_name,
+                resource_fn.file_extension or ('obo' if resource_fn.output_kind == 'ontology' else 'txt'),
+                file_stem=resource_fn.file_stem,
+            )
+        else:
+            potential_output = path_manager.silver_file(
+                resource_fn.source,
+                resource_fn.function_name,
+                resource_fn.function_name,
+            )
         if potential_output.exists():
             print(
                 f'[{resource_fn.source}.{resource_fn.function_name}] skipping (file exists: {potential_output})'
@@ -380,11 +415,21 @@ def process_resource_function(
             return potential_output
 
     try:
+        if resource_fn.output_kind == 'artifact':
+            return _process_artifact_output(resource_fn, path_manager, dry_run=dry_run)
         records = resource_fn.call()
     except Exception as exc:  # noqa: BLE001
         raise RuntimeError(
             f'Failed to execute {resource_fn.source}.{resource_fn.function_name}: {exc}'
         ) from exc
+
+    if resource_fn.output_kind == 'ontology':
+        return _process_ontology_output(
+            resource_fn,
+            path_manager,
+            records,
+            dry_run=dry_run,
+        )
 
     # Peek at first record to detect multi-output
     first_record = None
@@ -786,6 +831,65 @@ def _process_multi_output(
         return {}
 
     return output_files
+
+
+def _process_ontology_output(
+    resource_fn: ResourceFunction,
+    path_manager: PathManager,
+    records: Iterable[OntologyTerm],
+    *,
+    dry_run: bool,
+) -> Optional[Path]:
+    from pypath.inputs_v2.ontology_serializers import format_obo
+
+    terms = [term for term in records if term is not None]
+    output_file = path_manager.artifact_file(
+        resource_fn.source,
+        resource_fn.function_name,
+        resource_fn.file_extension or 'obo',
+        file_stem=resource_fn.file_stem,
+    )
+
+    _emit_progress(source=resource_fn.source, function=resource_fn.function_name, event='start', records=0)
+    if dry_run:
+        print(f'[{resource_fn.source}.{resource_fn.function_name}] dry-run ontology result: {len(terms):,} terms')
+        _emit_progress(source=resource_fn.source, function=resource_fn.function_name, event='done', records=len(terms))
+        return None
+
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    content = format_obo(resource_fn.document, terms)
+    output_file.write_text(content, encoding='utf-8')
+    print(f'[{resource_fn.source}.{resource_fn.function_name}] wrote {len(terms):,} ontology terms to {output_file}')
+    _emit_progress(source=resource_fn.source, function=resource_fn.function_name, event='done', records=len(terms))
+    return output_file
+
+
+
+def _process_artifact_output(
+    resource_fn: ResourceFunction,
+    path_manager: PathManager,
+    *,
+    dry_run: bool,
+) -> Optional[Path]:
+    output_file = path_manager.artifact_file(
+        resource_fn.source,
+        resource_fn.function_name,
+        resource_fn.file_extension or 'txt',
+        file_stem=resource_fn.file_stem,
+    )
+    _emit_progress(source=resource_fn.source, function=resource_fn.function_name, event='start', records=0)
+    if dry_run:
+        print(f'[{resource_fn.source}.{resource_fn.function_name}] dry-run artifact render')
+        _emit_progress(source=resource_fn.source, function=resource_fn.function_name, event='done', records=1)
+        return None
+
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    content = resource_fn.call.render()
+    output_file.write_text(content, encoding='utf-8')
+    print(f'[{resource_fn.source}.{resource_fn.function_name}] wrote artifact to {output_file}')
+    _emit_progress(source=resource_fn.source, function=resource_fn.function_name, event='done', records=1)
+    return output_file
+
 
 
 def run_silver_loader(
