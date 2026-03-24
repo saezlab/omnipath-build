@@ -228,11 +228,7 @@ def build_search_interactions(global_tables_dir: Path, output_path: Path) -> Pat
             "sign": pl.Int8,
             "evidence": EVIDENCE_LIST_DTYPE,
             "interaction_annotation_terms": pl.List(pl.Utf8),
-            "participant_annotation_terms_go": pl.List(pl.Utf8),
-            "participant_annotation_terms_mi": pl.List(pl.Utf8),
-            "participant_annotation_terms_om": pl.List(pl.Utf8),
-            "participant_annotation_terms_hp": pl.List(pl.Utf8),
-            "participant_annotation_terms_kw": pl.List(pl.Utf8),
+            "participant_annotation_terms": pl.List(pl.Utf8),
             "sources": pl.List(pl.Utf8),
         }).write_parquet(output_path)
         return output_path
@@ -691,21 +687,6 @@ def build_search_interactions(global_tables_dir: Path, output_path: Path) -> Pat
             pl.coalesce(pl.col("participant_annotation_terms"), pl.lit([], dtype=pl.List(pl.Utf8))).alias("participant_annotation_terms"),
         ])
         .with_columns([
-            pl.col("participant_annotation_terms").list.eval(
-                pl.element().filter(pl.element().str.contains(r"\bGO:\d{4,}\b"))
-            ).alias("participant_annotation_terms_go"),
-            pl.col("participant_annotation_terms").list.eval(
-                pl.element().filter(pl.element().str.contains(r"\bMI:\d{4,}\b"))
-            ).alias("participant_annotation_terms_mi"),
-            pl.col("participant_annotation_terms").list.eval(
-                pl.element().filter(pl.element().str.contains(r"\bOM:\d{4,}\b"))
-            ).alias("participant_annotation_terms_om"),
-            pl.col("participant_annotation_terms").list.eval(
-                pl.element().filter(pl.element().str.contains(r"\bHP:\d{4,}\b"))
-            ).alias("participant_annotation_terms_hp"),
-            pl.col("participant_annotation_terms").list.eval(
-                pl.element().filter(pl.element().str.contains(r"\bKW:\d{4,}\b"))
-            ).alias("participant_annotation_terms_kw"),
             pl.col("evidence").list.len().cast(pl.Int64).alias("evidence_count"),
         ])
         .drop(["pair_key", "participant_annotation_terms", "interaction_entity_ids"])

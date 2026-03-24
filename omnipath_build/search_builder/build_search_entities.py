@@ -250,20 +250,12 @@ def build_search_entities(
         .with_columns(pl.col("value").cast(pl.Utf8).alias("cv_term_accession_value"))
     )
 
-    for prefix, out_col in [
-        ("GO:", "cv_terms_go"),
-        ("MI:", "cv_terms_mi"),
-        ("OM:", "cv_terms_om"),
-        ("HP:", "cv_terms_hp"),
-        ("KW:", "cv_terms_kw"),
-    ]:
-        lazy_joins.append(
-            cv_terms_base
-            .filter(pl.col("cv_term_accession_value").str.starts_with(prefix))
-            .group_by("annot_entity_id")
-            .agg(pl.col("cv_term_accession_value").unique().sort().alias(out_col))
-            .rename({"annot_entity_id": "entity_id"})
-        )
+    lazy_joins.append(
+        cv_terms_base
+        .group_by("annot_entity_id")
+        .agg(pl.col("cv_term_accession_value").unique().sort().alias("ontology_terms"))
+        .rename({"annot_entity_id": "entity_id"})
+    )
 
     # 4d. Interaction Counts
     # Derive counts from the final search_interactions parquet so entity counts
@@ -342,11 +334,7 @@ def build_search_entities(
             "gene_symbols",
             "descriptions",
             "sources",
-            "cv_terms_go",
-            "cv_terms_mi",
-            "cv_terms_om",
-            "cv_terms_hp",
-            "cv_terms_kw",
+            "ontology_terms",
         ]
     ] + [
         pl.col("identifiers").fill_null(pl.lit([], dtype=ID_LIST_DTYPE)),
