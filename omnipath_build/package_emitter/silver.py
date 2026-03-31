@@ -7,14 +7,12 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from omnipath_build.loaders.silver import _PROGRESS_PREFIX
 
-from .resolution import ProgressCallback
 
-
-def _emit_progress(progress: ProgressCallback | None, **event: Any) -> None:
+def _emit_progress(progress: Callable[[dict[str, Any]], None] | None, **event: Any) -> None:
     if progress is not None:
         progress(event)
 
@@ -28,7 +26,8 @@ def ensure_silver_dir(
     silver_dir: Path,
     source_name: str,
     inputs_package: str = 'pypath.inputs_v2',
-    progress: ProgressCallback | None = None,
+    progress: Callable[[dict[str, Any]], None] | None = None,
+    test_mode: bool = False,
 ) -> Path:
     silver_dir = Path(silver_dir)
     if silver_dir_ready(silver_dir):
@@ -63,6 +62,8 @@ def ensure_silver_dir(
             inputs_package,
             '--override',
         ]
+        if test_mode:
+            cmd.append('--test-mode')
         env = dict(os.environ)
         env['OMNIPATH_PROGRESS_STDOUT'] = '1'
 

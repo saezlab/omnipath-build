@@ -5,20 +5,21 @@ import argparse
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 import pyarrow as pa
 import pyarrow.parquet as pq
 
 from omnipath_build.package_emitter.config import default_silver_dir
 from omnipath_build.package_emitter.silver import ensure_silver_dir
+from omnipath_build.target_schema.canonical_priority import choose_canonical_identifier
+from omnipath_build.target_schema.cv_labels import format_cv_term
 from scripts.target_schema_entity_dedup import deduplicate_target_schema_dir
 from pypath.internals.cv_terms import (
     BiologicalEffectCv,
     BiologicalRoleCv,
     CausalMechanismCv,
     CausalStatementCv,
-    CvEnum,
     ExperimentalRoleCv,
     IdentifierNamespaceCv,
     InteractionMetadataCv,
@@ -39,17 +40,17 @@ ATTRIBUTES_STRUCT = pa.list_(
 ENTITY_IDENTIFIERS_SCHEMA = pa.schema([
     pa.field("entity_id", pa.int64()),
     pa.field("identifier", pa.string()),
-    pa.field("identifier_type_id", pa.string()),
+    pa.field("identifier_type", pa.string()),
     pa.field("is_canonical", pa.bool_()),
     pa.field("source", pa.string()),
 ])
 
 ENTITIES_SCHEMA = pa.schema([
     pa.field("entity_id", pa.int64()),
-    pa.field("entity_type_id", pa.string()),
+    pa.field("entity_type", pa.string()),
     pa.field("display_name", pa.string()),
     pa.field("canonical_identifier", pa.string()),
-    pa.field("canonical_identifier_type_id", pa.string()),
+    pa.field("canonical_identifier_type", pa.string()),
     pa.field("taxonomy_id", pa.string()),
     pa.field("source", pa.string()),
 ])
@@ -98,6 +99,9 @@ INTERACTION_LIKE_TYPES = {
     str(EntityTypeCv.CONTROL),
     str(EntityTypeCv.DEGRADATION),
 }
+PURE_INTERACTION_TYPES = {
+    str(EntityTypeCv.INTERACTION),
+}
 SIGN_POSITIVE_TERMS = {
     str(BiologicalEffectCv.UP_REGULATES_ACTIVITY),
     str(BiologicalEffectCv.UP_REGULATES_QUANTITY),
@@ -131,32 +135,11 @@ EVIDENCE_TERMS = {
 }
 
 
-def _iter_cv_subclasses(base: type) -> Iterable[type]:
-    for subcls in base.__subclasses__():
-        yield subcls
-        yield from _iter_cv_subclasses(subcls)
-
-
-def _humanize_enum_name(name: str) -> str:
-    return name.replace("_", " ").title()
-
-
-def _build_cv_label_map() -> dict[str, str]:
-    labels: dict[str, str] = {}
-    for enum_cls in _iter_cv_subclasses(CvEnum):
-        for member in enum_cls:
-            labels.setdefault(str(member), _humanize_enum_name(member.name))
-    return labels
-
-
-CV_LABELS = _build_cv_label_map()
-
-
 @dataclass
 class EntityRef:
     entity_id: int
     canonical_identifier: str | None
-    canonical_identifier_type_id: str | None
+    canonical_identifier_type: str | None
     entity_type_id: str | None
     entity_attributes: list[dict[str, str | None]] | None
 
@@ -229,20 +212,71 @@ class SourceConverter:
                 for row in batch.to_pylist():
                     self._process_entity_row(row)
 
-    def _process_entity_row(self, row: dict[str, Any]) -> EntityRef:
-        parent = self._materialize_entity(row)
+    def _process_entity_row(self, row: dict[str, Any]) -> EntityRef | None:
         parent_type = self._string_or_none(row.get("type"))
-
         memberships = row.get("membership") or []
+
+        if parent_type in PURE_INTERACTION_TYPES:
+            if not memberships:
+                return None
+
+            members: list[dict[str, Any]] = []
+            for membership in memberships:
+                member_row = membership.get("member") or {}
+                member_ref = self._materialize_member_entity(member_row)
+                if member_ref is None:
+                    continue
+                membership_annotations = membership.get("annotations") or []
+                merged_member_attrs = self._merge_attributes(
+                    member_ref.entity_attributes,
+                    self._annotations_to_attributes(membership_annotations),
+                )
+                members.append({
+                    "ref": member_ref,
+                    "is_parent": bool(membership.get("is_parent", False)),
+                    "membership_annotations": membership_annotations,
+                    "member_attributes": merged_member_attrs,
+                    "role_term_id": self._derive_role_term_id(membership_annotations),
+                    "stoichiometry": self._derive_stoichiometry(membership_annotations),
+                })
+
+            parent_annotations = row.get("annotations") or []
+            evidence = self._annotations_to_attributes(parent_annotations, evidence_only=True)
+            non_evidence = self._annotations_to_attributes(parent_annotations, evidence_only=False)
+
+            if len(members) == 2:
+                interaction_id = self.next_interaction_id
+                self.next_interaction_id += 1
+
+                entity_a, entity_b = self._order_interaction_members(members)
+                self.interactions.write({
+                    "interaction_id": interaction_id,
+                    "entity_a_id": entity_a["ref"].entity_id,
+                    "entity_b_id": entity_b["ref"].entity_id,
+                    "direction": self._derive_direction(parent_annotations, entity_a["membership_annotations"], entity_b["membership_annotations"]),
+                    "sign": self._derive_sign(parent_annotations),
+                    "mechanism_term": self._derive_mechanism_term(parent_annotations),
+                    "statement_term": self._derive_statement_term(parent_annotations),
+                    "record_attributes": non_evidence,
+                    "entity_a_attributes": entity_a["member_attributes"],
+                    "entity_b_attributes": entity_b["member_attributes"],
+                    "evidence": evidence,
+                    "source": self.source,
+                })
+                self._emit_cv_annotations("interaction", interaction_id, parent_annotations)
+            return None
+
+        parent = self._materialize_entity(row)
         if not memberships:
-            if parent_type not in INTERACTION_LIKE_TYPES:
-                self._emit_cv_annotations("entity", parent.entity_id, row.get("annotations") or [])
+            self._emit_cv_annotations("entity", parent.entity_id, row.get("annotations") or [])
             return parent
 
         members: list[dict[str, Any]] = []
         for membership in memberships:
             member_row = membership.get("member") or {}
-            member_ref = self._materialize_entity(member_row)
+            member_ref = self._materialize_member_entity(member_row)
+            if member_ref is None:
+                continue
             membership_annotations = membership.get("annotations") or []
             merged_member_attrs = self._merge_attributes(
                 member_ref.entity_attributes,
@@ -259,53 +293,36 @@ class SourceConverter:
 
         parent_annotations = row.get("annotations") or []
         evidence = self._annotations_to_attributes(parent_annotations, evidence_only=True)
-        non_evidence = self._annotations_to_attributes(parent_annotations, evidence_only=False)
 
-        if (parent_type in INTERACTION_LIKE_TYPES) and len(members) == 2:
-            interaction_id = self.next_interaction_id
-            self.next_interaction_id += 1
+        for member in members:
+            parent_entity_id = parent.entity_id
+            member_entity_id = member["ref"].entity_id
+            if member["is_parent"]:
+                parent_entity_id, member_entity_id = member_entity_id, parent_entity_id
 
-            entity_a, entity_b = self._order_interaction_members(members)
-            self.interactions.write({
-                "interaction_id": interaction_id,
-                "entity_a_id": entity_a["ref"].entity_id,
-                "entity_b_id": entity_b["ref"].entity_id,
-                "direction": self._derive_direction(parent_annotations, entity_a["membership_annotations"], entity_b["membership_annotations"]),
-                "sign": self._derive_sign(parent_annotations),
-                "mechanism_term": self._derive_mechanism_term(parent_annotations),
-                "statement_term": self._derive_statement_term(parent_annotations),
-                "record_attributes": non_evidence,
-                "entity_a_attributes": entity_a["member_attributes"],
-                "entity_b_attributes": entity_b["member_attributes"],
+            association_id = self.next_association_id
+            self.next_association_id += 1
+            self.associations.write({
+                "association_id": association_id,
+                "parent_entity_id": parent_entity_id,
+                "member_entity_id": member_entity_id,
+                "role_term_id": member["role_term_id"],
+                "stoichiometry": member["stoichiometry"],
+                "record_attributes": None,
+                "parent_attributes": parent.entity_attributes,
+                "member_attributes": member["member_attributes"],
                 "evidence": evidence,
                 "source": self.source,
             })
-            self._emit_cv_annotations("interaction", interaction_id, parent_annotations)
-        else:
-            for member in members:
-                parent_entity_id = parent.entity_id
-                member_entity_id = member["ref"].entity_id
-                if member["is_parent"]:
-                    parent_entity_id, member_entity_id = member_entity_id, parent_entity_id
-
-                association_id = self.next_association_id
-                self.next_association_id += 1
-                self.associations.write({
-                    "association_id": association_id,
-                    "parent_entity_id": parent_entity_id,
-                    "member_entity_id": member_entity_id,
-                    "role_term_id": member["role_term_id"],
-                    "stoichiometry": member["stoichiometry"],
-                    "record_attributes": None,
-                    "parent_attributes": parent.entity_attributes,
-                    "member_attributes": member["member_attributes"],
-                    "evidence": evidence,
-                    "source": self.source,
-                })
-            if parent_type not in INTERACTION_LIKE_TYPES:
-                self._emit_cv_annotations("entity", parent.entity_id, parent_annotations)
+        self._emit_cv_annotations("entity", parent.entity_id, parent_annotations)
 
         return parent
+
+    def _materialize_member_entity(self, row: dict[str, Any]) -> EntityRef | None:
+        if self._string_or_none(row.get("type")) in PURE_INTERACTION_TYPES:
+            self._process_entity_row(row)
+            return None
+        return self._materialize_entity(row)
 
     def _materialize_entity(self, row: dict[str, Any]) -> EntityRef:
         entity_id = self.next_entity_id
@@ -313,7 +330,7 @@ class SourceConverter:
 
         identifiers = [ident for ident in (row.get("identifiers") or []) if ident and ident.get("value")]
         canonical = self._choose_canonical_identifier(identifiers)
-        display_name = self._choose_display_name(identifiers, canonical)
+        display_name = self._choose_display_name(identifiers)
         taxonomy_id = self._extract_taxonomy_id(
             row.get("annotations") or [],
             identifiers,
@@ -323,10 +340,10 @@ class SourceConverter:
 
         self.entities.write({
             "entity_id": entity_id,
-            "entity_type_id": self._string_or_none(row.get("type")),
+            "entity_type": format_cv_term(self._string_or_none(row.get("type"))),
             "display_name": display_name,
             "canonical_identifier": canonical[1] if canonical else None,
-            "canonical_identifier_type_id": canonical[0] if canonical else None,
+            "canonical_identifier_type": format_cv_term(canonical[0]) if canonical else None,
             "taxonomy_id": taxonomy_id,
             "source": self.source,
         })
@@ -337,7 +354,7 @@ class SourceConverter:
             self.entity_identifiers.write({
                 "entity_id": entity_id,
                 "identifier": ident_value,
-                "identifier_type_id": ident_type,
+                "identifier_type": format_cv_term(ident_type),
                 "is_canonical": canonical is not None and ident_type == canonical[0] and ident_value == canonical[1],
                 "source": self.source,
             })
@@ -345,7 +362,7 @@ class SourceConverter:
         return EntityRef(
             entity_id=entity_id,
             canonical_identifier=canonical[1] if canonical else None,
-            canonical_identifier_type_id=canonical[0] if canonical else None,
+            canonical_identifier_type=format_cv_term(canonical[0]) if canonical else None,
             entity_type_id=self._string_or_none(row.get("type")),
             entity_attributes=entity_attributes,
         )
@@ -365,37 +382,17 @@ class SourceConverter:
             })
 
     def _choose_canonical_identifier(self, identifiers: list[dict[str, Any]]) -> tuple[str, str] | None:
-        if not identifiers:
-            return None
+        return choose_canonical_identifier([
+            (self._string_or_none(item.get("type")), self._string_or_none(item.get("value")))
+            for item in identifiers
+        ])
 
-        preferred = [
-            str(IdentifierNamespaceCv.NAME),
-            str(IdentifierNamespaceCv.GENE_NAME_PRIMARY),
-            str(IdentifierNamespaceCv.UNIPROT),
-            str(IdentifierNamespaceCv.CHEBI),
-            str(IdentifierNamespaceCv.REACTOME_STABLE_ID),
-            str(IdentifierNamespaceCv.BINDINGDB),
-            str(IdentifierNamespaceCv.SIGNOR),
-        ]
-        by_type = {self._string_or_none(item.get("type")): self._string_or_none(item.get("value")) for item in identifiers}
-        for ident_type in preferred:
-            ident_value = by_type.get(ident_type)
-            if ident_value:
-                return ident_type, ident_value
-
-        first = identifiers[0]
-        ident_type = self._string_or_none(first.get("type"))
-        ident_value = self._string_or_none(first.get("value"))
-        if ident_type and ident_value:
-            return ident_type, ident_value
-        return None
-
-    def _choose_display_name(self, identifiers: list[dict[str, Any]], canonical: tuple[str, str] | None) -> str | None:
+    def _choose_display_name(self, identifiers: list[dict[str, Any]]) -> str | None:
         for preferred_type in (str(IdentifierNamespaceCv.NAME), str(IdentifierNamespaceCv.GENE_NAME_PRIMARY), str(IdentifierNamespaceCv.SYSTEMATIC_NAME)):
             for ident in identifiers:
                 if self._string_or_none(ident.get("type")) == preferred_type and ident.get("value"):
                     return self._string_or_none(ident.get("value"))
-        return canonical[1] if canonical else None
+        return None
 
     def _extract_taxonomy_id(
         self,
@@ -571,10 +568,7 @@ class SourceConverter:
         return None
 
     def _format_cv_term(self, accession: str) -> str:
-        label = CV_LABELS.get(accession)
-        if label is None:
-            label = accession
-        return f"{accession}:{label}"
+        return format_cv_term(accession) or accession
 
     def _normalize_attribute_term(self, term: str) -> str:
         if ACCESSION_RE.match(term):
@@ -589,10 +583,15 @@ class SourceConverter:
         return text or None
 
 
-def resolve_silver_dir(source: str, silver_dir: Path | None, inputs_package: str) -> Path:
+def resolve_silver_dir(source: str, silver_dir: Path | None, inputs_package: str, test_mode: bool = False) -> Path:
     if silver_dir is None:
         silver_dir = default_silver_dir(source)
-    return ensure_silver_dir(silver_dir=silver_dir, source_name=source, inputs_package=inputs_package)
+    return ensure_silver_dir(
+        silver_dir=silver_dir,
+        source_name=source,
+        inputs_package=inputs_package,
+        test_mode=test_mode,
+    )
 
 
 def parse_args() -> argparse.Namespace:
@@ -602,6 +601,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--silver-dir", type=Path, help="Optional explicit silver dir (single-source runs only)")
     parser.add_argument("--inputs-package", default="pypath.inputs_v2")
     parser.add_argument("--batch-size", type=int, default=10_000)
+    parser.add_argument("--test-mode", action="store_true", help="Build silver in test mode if silver output is missing")
     return parser.parse_args()
 
 
@@ -615,6 +615,7 @@ def main() -> int:
             source,
             args.silver_dir if len(args.sources) == 1 else None,
             args.inputs_package,
+            test_mode=args.test_mode,
         )
         source_output_dir = args.output_root / source
         source_output_dir.mkdir(parents=True, exist_ok=True)

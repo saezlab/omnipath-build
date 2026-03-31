@@ -5,61 +5,27 @@ from typing import Any
 
 import polars as pl
 
-from pypath.internals.cv_terms import IdentifierNamespaceCv
-
-
-SAFE_MERGE_IDENTIFIER_TYPES: tuple[str, ...] = (
-    str(IdentifierNamespaceCv.UNIPROT.value),
-    str(IdentifierNamespaceCv.UNIPROT_TREMBL.value),
-    str(IdentifierNamespaceCv.UNIPARC.value),
-    str(IdentifierNamespaceCv.REFSEQ_PROTEIN.value),
-    str(IdentifierNamespaceCv.ENTREZ.value),
-    str(IdentifierNamespaceCv.HGNC.value),
-    str(IdentifierNamespaceCv.ENSEMBL.value),
-    str(IdentifierNamespaceCv.REFSEQ.value),
-    str(IdentifierNamespaceCv.STANDARD_INCHI.value),
-    str(IdentifierNamespaceCv.STANDARD_INCHI_KEY.value),
-    str(IdentifierNamespaceCv.COMPLEXPORTAL.value),
-    str(IdentifierNamespaceCv.REACTOME_STABLE_ID.value),
-    str(IdentifierNamespaceCv.REACTOME_ID.value),
-    str(IdentifierNamespaceCv.SIGNOR.value),
-    str(IdentifierNamespaceCv.INTACT.value),
+from omnipath_build.target_schema.canonical_priority import (
+    SAFE_MERGE_IDENTIFIER_TYPES,
+    SAFE_MERGE_PRIORITY,
+    canonical_priority_rank,
 )
-
-SAFE_MERGE_PRIORITY: dict[str, int] = {type_id: rank for rank, type_id in enumerate(SAFE_MERGE_IDENTIFIER_TYPES)}
-
-CASE_NORMALIZE_UPPER: frozenset[str] = frozenset({
-    str(IdentifierNamespaceCv.UNIPROT.value),
-    str(IdentifierNamespaceCv.UNIPROT_TREMBL.value),
-    str(IdentifierNamespaceCv.UNIPARC.value),
-    str(IdentifierNamespaceCv.REFSEQ.value),
-    str(IdentifierNamespaceCv.REFSEQ_PROTEIN.value),
-    str(IdentifierNamespaceCv.ENSEMBL.value),
-    str(IdentifierNamespaceCv.ENTREZ.value),
-    str(IdentifierNamespaceCv.HGNC.value),
-    str(IdentifierNamespaceCv.STANDARD_INCHI_KEY.value),
-    str(IdentifierNamespaceCv.CHEBI.value),
-})
+from omnipath_build.target_schema.cv_labels import format_cv_term
 
 
-def _normalize_identifier_expr(type_col: str = 'identifier_type_id', value_col: str = 'identifier') -> pl.Expr:
-    ident = pl.col(value_col).cast(pl.Utf8).str.strip_chars().str.replace_all(r'\s+', ' ')
-    return (
-        pl.when(pl.col(type_col).is_in(sorted(CASE_NORMALIZE_UPPER))).then(ident.str.to_uppercase())
-        .when(pl.col(type_col) == str(IdentifierNamespaceCv.CHEBI.value))
-        .then(
-            pl.when(ident.str.to_uppercase().str.contains(r'^\d+$'))
-            .then(pl.lit('CHEBI:') + ident.str.to_uppercase())
-            .otherwise(ident.str.to_uppercase().str.replace(r'^(CHEBI:)+', 'CHEBI:'))
-        )
-        .otherwise(ident)
-        .alias('normalized_identifier')
-    )
+def _raw_accession(type_value: str | None) -> str | None:
+    if type_value is None:
+        return None
+    text = str(type_value)
+    parts = text.split(':')
+    if len(parts) >= 3:
+        return ':'.join(parts[:2])
+    return text
 
 
 def _priority_df() -> pl.DataFrame:
     return pl.DataFrame({
-        'identifier_type_id': list(SAFE_MERGE_PRIORITY.keys()),
+        'identifier_type_id_raw': list(SAFE_MERGE_PRIORITY.keys()),
         'priority_rank': list(SAFE_MERGE_PRIORITY.values()),
     })
 
@@ -67,10 +33,13 @@ def _priority_df() -> pl.DataFrame:
 def _build_entity_id_mapping(entities: pl.DataFrame, entity_identifiers: pl.DataFrame) -> pl.DataFrame:
     safe_claims = (
         entity_identifiers
-        .filter(pl.col('identifier_type_id').is_in(SAFE_MERGE_IDENTIFIER_TYPES))
-        .with_columns(_normalize_identifier_expr())
-        .filter(pl.col('normalized_identifier').is_not_null() & (pl.col('normalized_identifier') != ''))
-        .select(['entity_id', 'identifier_type_id', 'normalized_identifier'])
+        .with_columns([
+            pl.col('identifier_type').map_elements(_raw_accession, return_dtype=pl.Utf8).alias('identifier_type_id_raw'),
+            pl.col('identifier').cast(pl.Utf8),
+        ])
+        .filter(pl.col('identifier_type_id_raw').is_in(SAFE_MERGE_IDENTIFIER_TYPES))
+        .filter(pl.col('identifier').is_not_null() & (pl.col('identifier') != ''))
+        .select(['entity_id', 'identifier_type_id_raw', 'identifier'])
         .unique()
     )
 
@@ -82,12 +51,12 @@ def _build_entity_id_mapping(entities: pl.DataFrame, entity_identifiers: pl.Data
 
     primary_keys = (
         safe_claims
-        .join(_priority_df(), on='identifier_type_id', how='left')
-        .sort(['entity_id', 'priority_rank', 'identifier_type_id', 'normalized_identifier'])
+        .join(_priority_df(), on='identifier_type_id_raw', how='left')
+        .sort(['entity_id', 'priority_rank', 'identifier_type_id_raw', 'identifier'])
         .group_by('entity_id')
         .agg([
-            pl.col('identifier_type_id').first().alias('primary_identifier_type_id'),
-            pl.col('normalized_identifier').first().alias('primary_identifier'),
+            pl.col('identifier_type_id_raw').first().alias('primary_identifier_type_id'),
+            pl.col('identifier').first().alias('primary_identifier'),
         ])
     )
 
@@ -150,28 +119,29 @@ def deduplicate_target_schema_dir(output_dir: str | Path) -> dict[str, Any]:
         .drop('canonical_entity_id')
     )
 
-    identifiers_norm = entity_identifiers.with_columns(_normalize_identifier_expr())
     remapped_identifiers = (
-        identifiers_norm
+        entity_identifiers
         .join(entity_map, left_on='entity_id', right_on='old_entity_id', how='left')
         .with_columns([
             pl.coalesce([pl.col('canonical_entity_id'), pl.col('entity_id')]).alias('entity_id'),
-            pl.coalesce([pl.col('normalized_identifier'), pl.col('identifier')]).alias('identifier'),
         ])
-        .drop(['old_entity_id', 'canonical_entity_id', 'normalized_identifier'], strict=False)
+        .drop(['old_entity_id', 'canonical_entity_id'], strict=False)
     )
 
     canonical_identifier_rows = (
         remapped_identifiers
         .with_columns([
-            pl.col('identifier_type_id').replace(SAFE_MERGE_PRIORITY, default=1_000_000).alias('priority_rank'),
-            _normalize_identifier_expr(),
+            pl.col('identifier_type').map_elements(_raw_accession, return_dtype=pl.Utf8).alias('identifier_type_id_raw'),
+            pl.col('identifier_type').map_elements(lambda x: canonical_priority_rank(_raw_accession(x)), return_dtype=pl.Int64).alias('priority_rank'),
         ])
-        .sort(['entity_id', 'priority_rank', 'identifier_type_id', 'normalized_identifier'])
+        .sort(['entity_id', 'priority_rank', 'identifier_type_id_raw', 'identifier'])
         .group_by('entity_id')
         .agg([
-            pl.col('identifier_type_id').first().alias('canonical_identifier_type_id'),
+            pl.col('identifier_type_id_raw').first().alias('canonical_identifier_type_id_raw'),
             pl.col('identifier').first().alias('canonical_identifier'),
+        ])
+        .with_columns([
+            pl.col('canonical_identifier_type_id_raw').map_elements(format_cv_term, return_dtype=pl.Utf8).alias('canonical_identifier_type'),
         ])
     )
 
@@ -194,15 +164,15 @@ def deduplicate_target_schema_dir(output_dir: str | Path) -> dict[str, Any]:
         remapped_entities
         .group_by('entity_id')
         .agg([
-            pl.col('entity_type_id').drop_nulls().unique().alias('entity_type_ids'),
+            pl.col('entity_type').drop_nulls().unique().alias('entity_types'),
         ])
         .with_columns([
-            pl.when(pl.col('entity_type_ids').list.len() == 1)
-            .then(pl.col('entity_type_ids').list.first())
-            .otherwise(pl.col('entity_type_ids').list.first())
-            .alias('entity_type_id')
+            pl.when(pl.col('entity_types').list.len() == 1)
+            .then(pl.col('entity_types').list.first())
+            .otherwise(pl.col('entity_types').list.first())
+            .alias('entity_type')
         ])
-        .select(['entity_id', 'entity_type_id'])
+        .select(['entity_id', 'entity_type'])
     )
 
     display_name_summary = (
@@ -222,15 +192,12 @@ def deduplicate_target_schema_dir(output_dir: str | Path) -> dict[str, Any]:
         .join(display_name_summary, on='entity_id', how='left')
         .join(taxonomy_summary, on='entity_id', how='left')
         .join(canonical_identifier_rows, on='entity_id', how='left')
-        .with_columns([
-            pl.coalesce([pl.col('display_name'), pl.col('canonical_identifier')]).alias('display_name'),
-        ])
         .select([
             'entity_id',
-            'entity_type_id',
+            'entity_type',
             'display_name',
             'canonical_identifier',
-            'canonical_identifier_type_id',
+            'canonical_identifier_type',
             'taxonomy_id',
             'source',
         ])
@@ -239,7 +206,10 @@ def deduplicate_target_schema_dir(output_dir: str | Path) -> dict[str, Any]:
 
     entity_identifiers_dedup = (
         remapped_identifiers
-        .select(['entity_id', 'identifier', 'identifier_type_id', 'source'])
+        .with_columns([
+            pl.col('identifier_type').map_elements(_raw_accession, return_dtype=pl.Utf8).alias('identifier_type_id_raw'),
+        ])
+        .select(['entity_id', 'identifier', 'identifier_type', 'identifier_type_id_raw', 'source'])
         .unique()
         .join(
             canonical_identifier_rows,
@@ -247,10 +217,10 @@ def deduplicate_target_schema_dir(output_dir: str | Path) -> dict[str, Any]:
             how='left',
         )
         .with_columns([
-            ((pl.col('identifier_type_id') == pl.col('canonical_identifier_type_id')) & (pl.col('identifier') == pl.col('canonical_identifier'))).alias('is_canonical')
+            ((pl.col('identifier_type_id_raw') == pl.col('canonical_identifier_type_id_raw')) & (pl.col('identifier') == pl.col('canonical_identifier'))).alias('is_canonical')
         ])
-        .select(['entity_id', 'identifier', 'identifier_type_id', 'is_canonical', 'source'])
-        .sort(['entity_id', 'identifier_type_id', 'identifier', 'source'])
+        .select(['entity_id', 'identifier', 'identifier_type', 'is_canonical', 'source'])
+        .sort(['entity_id', 'identifier_type', 'identifier', 'source'])
     )
 
     if interactions_path.exists():
