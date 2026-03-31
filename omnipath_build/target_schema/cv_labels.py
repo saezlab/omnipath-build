@@ -29,5 +29,7 @@ CV_LABELS = build_cv_label_map()
 def format_cv_term(accession: str | None) -> str | None:
     if accession is None:
         return None
-    label = CV_LABELS.get(accession, accession)
+    label = CV_LABELS.get(accession)
+    if label is None:
+        return accession
     return f'{accession}:{label}'

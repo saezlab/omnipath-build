@@ -180,6 +180,7 @@ def deduplicate_target_schema_dir(output_dir: str | Path) -> dict[str, Any]:
         .group_by('entity_id')
         .agg([
             pl.col('display_name').drop_nulls().first().alias('display_name'),
+            pl.col('entity_attributes').drop_nulls().first().alias('entity_attributes'),
             pl.col('source').drop_nulls().first().alias('source'),
         ])
     )
@@ -198,6 +199,7 @@ def deduplicate_target_schema_dir(output_dir: str | Path) -> dict[str, Any]:
             'display_name',
             'canonical_identifier',
             'canonical_identifier_type',
+            'entity_attributes',
             'taxonomy_id',
             'source',
         ])

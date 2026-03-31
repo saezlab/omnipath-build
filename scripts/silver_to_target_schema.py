@@ -51,6 +51,7 @@ ENTITIES_SCHEMA = pa.schema([
     pa.field("display_name", pa.string()),
     pa.field("canonical_identifier", pa.string()),
     pa.field("canonical_identifier_type", pa.string()),
+    pa.field("entity_attributes", ATTRIBUTES_STRUCT),
     pa.field("taxonomy_id", pa.string()),
     pa.field("source", pa.string()),
 ])
@@ -227,10 +228,7 @@ class SourceConverter:
                 if member_ref is None:
                     continue
                 membership_annotations = membership.get("annotations") or []
-                merged_member_attrs = self._merge_attributes(
-                    member_ref.entity_attributes,
-                    self._annotations_to_attributes(membership_annotations),
-                )
+                merged_member_attrs = self._annotations_to_attributes(membership_annotations)
                 members.append({
                     "ref": member_ref,
                     "is_parent": bool(membership.get("is_parent", False)),
@@ -278,10 +276,7 @@ class SourceConverter:
             if member_ref is None:
                 continue
             membership_annotations = membership.get("annotations") or []
-            merged_member_attrs = self._merge_attributes(
-                member_ref.entity_attributes,
-                self._annotations_to_attributes(membership_annotations),
-            )
+            merged_member_attrs = self._annotations_to_attributes(membership_annotations)
             members.append({
                 "ref": member_ref,
                 "is_parent": bool(membership.get("is_parent", False)),
@@ -309,7 +304,7 @@ class SourceConverter:
                 "role_term_id": member["role_term_id"],
                 "stoichiometry": member["stoichiometry"],
                 "record_attributes": None,
-                "parent_attributes": parent.entity_attributes,
+                "parent_attributes": None,
                 "member_attributes": member["member_attributes"],
                 "evidence": evidence,
                 "source": self.source,
@@ -344,6 +339,7 @@ class SourceConverter:
             "display_name": display_name,
             "canonical_identifier": canonical[1] if canonical else None,
             "canonical_identifier_type": format_cv_term(canonical[0]) if canonical else None,
+            "entity_attributes": entity_attributes,
             "taxonomy_id": taxonomy_id,
             "source": self.source,
         })
@@ -439,7 +435,10 @@ class SourceConverter:
                 continue
 
             if not evidence_only:
-                if term == str(IdentifierNamespaceCv.NCBI_TAX_ID):
+                if term in {
+                    str(IdentifierNamespaceCv.NCBI_TAX_ID),
+                    str(IdentifierNamespaceCv.CV_TERM_ACCESSION),
+                }:
                     continue
                 if value is None:
                     continue
@@ -450,15 +449,6 @@ class SourceConverter:
                 "unit": unit,
             })
         return rows or None
-
-    def _merge_attributes(
-        self,
-        left: list[dict[str, str | None]] | None,
-        right: list[dict[str, str | None]] | None,
-    ) -> list[dict[str, str | None]] | None:
-        merged = list(left or [])
-        merged.extend(right or [])
-        return merged or None
 
     def _derive_role_term_id(self, annotations: list[dict[str, Any]]) -> str | None:
         for annotation in annotations:
