@@ -17,6 +17,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from omnipath_build.utils.path_manager import PathManager
+from omnipath_build.validators.identifier_shapes import validate_entity_identifier_shapes
 from pypath.internals.silver_schema import (
     ENTITY_SCHEMA,
     Entity as SilverEntity,
@@ -528,6 +529,10 @@ def _process_single_output(
 
     # Process first record
     _ensure_entity_record(first_record)
+    validate_entity_identifier_shapes(
+        first_record,
+        context=f'{resource_fn.source}.{resource_fn.function_name}[0]',
+    )
     normalized = _normalize_record(first_record)
     _coerce_list_fields(normalized, schema)
     batch.append(normalized)
@@ -544,6 +549,10 @@ def _process_single_output(
             continue
 
         _ensure_entity_record(record)
+        validate_entity_identifier_shapes(
+            record,
+            context=f'{resource_fn.source}.{resource_fn.function_name}[{total_records + len(batch)}]',
+        )
         normalized = _normalize_record(record)
         _coerce_list_fields(normalized, schema)
 
@@ -706,6 +715,13 @@ def _process_multi_output(
             return
 
         _ensure_entity_record(output_record)
+        validate_entity_identifier_shapes(
+            output_record,
+            context=(
+                f'{resource_fn.source}.{resource_fn.function_name}:{output_name}'
+                f'[{record_counts.get(output_name, 0) + len(batches.get(output_name, []))}]'
+            ),
+        )
 
         if output_name not in batches:
             batches[output_name] = []
