@@ -16,8 +16,8 @@ from omnipath_build.target_schema.id_mapping_tables import (
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description='Materialize optimized identifier mapping tables for target-schema mapping.')
-    parser.add_argument('--target-schema-root', type=Path, default=Path('data_v2/target_schema'))
-    parser.add_argument('--output-dir', type=Path, default=Path('data_v2/target_schema/_mapping_tables'))
+    parser.add_argument('--target-schema-root', type=Path, default=Path('data_v2/gold'))
+    parser.add_argument('--output-dir', type=Path, default=Path('data_v2/gold/_mapping_tables'))
     parser.add_argument(
         '--chemical-reference-sources',
         nargs='*',
@@ -56,6 +56,12 @@ def main() -> int:
     print(summary)
     print('Protein mapping quality:')
     _print_mapping_quality(args.output_dir / 'uniprot_reference_mappings.parquet', PROTEIN_REFERENCE_KEY_TYPES)
+    staging_dir = args.output_dir / 'staging' / 'chemical_reference_pairs'
+    if staging_dir.exists():
+        print('Chemical staging files:')
+        for path in sorted(staging_dir.glob('*.parquet')):
+            rows = len(pl.read_parquet(path))
+            print(f'  {path.name}: {rows:,} rows')
     print('Chemical mapping quality:')
     _print_mapping_quality(args.output_dir / 'chemical_reference_to_standard_inchi.parquet', CHEMICAL_REFERENCE_KEY_TYPES)
     print('Secondary UniProt table:')

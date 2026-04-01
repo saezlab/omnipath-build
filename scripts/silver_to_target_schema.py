@@ -587,7 +587,7 @@ def resolve_silver_dir(source: str, silver_dir: Path | None, inputs_package: str
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Convert per-source silver parquet into the target parquet schema.")
     parser.add_argument("sources", nargs="+", help="Source module(s) to process, e.g. signor reactome")
-    parser.add_argument("--output-root", type=Path, required=True, help="Root directory for converted per-source outputs")
+    parser.add_argument("--output-root", type=Path, default=Path("data_v2/gold"), help="Root directory for converted per-source outputs (default: data_v2/gold)")
     parser.add_argument("--silver-dir", type=Path, help="Optional explicit silver dir (single-source runs only)")
     parser.add_argument("--inputs-package", default="pypath.inputs_v2")
     parser.add_argument("--batch-size", type=int, default=10_000)

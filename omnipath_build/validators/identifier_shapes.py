@@ -50,7 +50,7 @@ VALIDATORS: dict[str, ValidationFn] = {
     str(IdentifierNamespaceCv.CHEMBL_COMPOUND): _regex(r'^CHEMBL\d+$'),
     str(IdentifierNamespaceCv.CHEMBL_TARGET): _regex(r'^CHEMBL\d+$'),
     str(IdentifierNamespaceCv.DRUGBANK): _regex(r'^DB\d+$'),
-    str(IdentifierNamespaceCv.KEGG_COMPOUND): _regex(r'^C\d{5}$'),
+    str(IdentifierNamespaceCv.KEGG_COMPOUND): _regex(r'^(?:C|D|G)\d{5}$'),
     str(IdentifierNamespaceCv.CAS): lambda value: bool(CAS_RE.fullmatch(value)),
     str(IdentifierNamespaceCv.PDB): _regex(r'^[0-9][A-Z0-9]{3}$'),
     str(IdentifierNamespaceCv.ALPHAFOLDDB): _regex(r'^AF-[A-Z0-9]+-F\d+$'),

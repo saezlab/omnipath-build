@@ -1,4 +1,4 @@
-.PHONY: setup pipeline pipeline-data pipeline-index generate-obo meilisearch-delete-indexes meilisearch-reset restart-entity-service restart-api-service
+.PHONY: setup pipeline pipeline-data pipeline-index generate-obo meilisearch-delete-indexes meilisearch-reset restart-entity-service restart-api-service target-schema-source target-schema-mappings target-schema-global target-schema-all
 
 # Load local environment defaults (e.g. MEILISEARCH_API_KEY) when available.
 ifneq (,$(wildcard .env))
@@ -87,6 +87,69 @@ pipeline:
 	@echo "Proceeding to stage 2/2: index import"
 	@echo "----------------------------------------------------------------------"
 	@$(MAKE) pipeline-index
+
+# =============================================================================
+# Target-schema pipeline shortcuts
+# =============================================================================
+# Usage:
+#   make target-schema-source SOURCES="signor reactome"
+#   make target-schema-source SOURCES="signor" TEST_MODE=1
+#   make target-schema-mappings
+#   make target-schema-global SOURCES="signor reactome"
+#   make target-schema-all SOURCES="signor reactome hmdb" TEST_MODE=1
+#
+# Options (via env vars):
+#   SOURCES="signor reactome"        # Required for target-schema-source/all
+#   TEST_MODE=1                       # Pass --silver-test-mode
+#   WITH_GLOBAL=1                     # Pass --with-global to target-schema-source
+#   NO_OVERWRITE=1                    # Pass --no-overwrite
+#   SKIP_SILVER=1                     # Pass --skip-silver
+#   SKIP_MAPPINGS=1                   # Pass --skip-mappings
+#   PRESERVE_SILVER=1                 # For target-schema-mappings, reuse existing silver (default 1)
+#   INPUTS_PACKAGE=...                # Override inputs package
+#   BATCH_SIZE=5000                   # Override batch size
+
+BATCH_SIZE ?= 10000
+PRESERVE_SILVER ?= 1
+
+target-schema-source:
+	@if [ -z "$(SOURCES)" ]; then \
+		echo 'Error: set SOURCES="signor reactome"'; \
+		exit 1; \
+	fi
+	@uv run python scripts/target_schema_pipeline.py source $(SOURCES) \
+		$(if $(TEST_MODE),--silver-test-mode) \
+		$(if $(WITH_GLOBAL),--with-global) \
+		$(if $(NO_OVERWRITE),--no-overwrite) \
+		$(if $(SKIP_SILVER),--skip-silver) \
+		$(if $(SKIP_MAPPINGS),--skip-mappings) \
+		$(if $(INPUTS_PACKAGE),--inputs-package $(INPUTS_PACKAGE)) \
+		--batch-size $(BATCH_SIZE)
+
+target-schema-mappings:
+	@uv run python scripts/target_schema_pipeline.py mappings \
+		$(if $(filter 1,$(PRESERVE_SILVER)),--preserve-silver) \
+		$(if $(TEST_MODE),--silver-test-mode) \
+		$(if $(NO_OVERWRITE),--no-overwrite) \
+		$(if $(INPUTS_PACKAGE),--inputs-package $(INPUTS_PACKAGE)) \
+		--batch-size $(BATCH_SIZE)
+
+target-schema-global:
+	@uv run python scripts/target_schema_pipeline.py global $(SOURCES) \
+		$(if $(NO_OVERWRITE),--no-overwrite)
+
+target-schema-all:
+	@if [ -z "$(SOURCES)" ]; then \
+		echo 'Error: set SOURCES="signor reactome"'; \
+		exit 1; \
+	fi
+	@uv run python scripts/target_schema_pipeline.py all $(SOURCES) \
+		$(if $(TEST_MODE),--silver-test-mode) \
+		$(if $(NO_OVERWRITE),--no-overwrite) \
+		$(if $(SKIP_SILVER),--skip-silver) \
+		$(if $(SKIP_MAPPINGS),--skip-mappings) \
+		$(if $(INPUTS_PACKAGE),--inputs-package $(INPUTS_PACKAGE)) \
+		--batch-size $(BATCH_SIZE)
 
 # =============================================================================
 # Meilisearch admin utilities
