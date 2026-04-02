@@ -93,10 +93,14 @@ pipeline:
 # =============================================================================
 # Usage:
 #   make target-schema-source SOURCES="signor reactome"
-#   make target-schema-source SOURCES="signor" TEST_MODE=1
+#   make target-schema-source SOURCES="mebocost" TEST_MODE=1
 #   make target-schema-mappings
 #   make target-schema-global SOURCES="signor reactome"
-#   make target-schema-all SOURCES="signor reactome hmdb" TEST_MODE=1
+#   make target-schema-all SOURCES="signor reactome hmdb mebocost" TEST_MODE=1
+#
+# Notes:
+#   - target-schema-source/all now auto-materialize resolver mappings if missing
+#   - target-schema-mappings is still available to prebuild id_resolver mapping tables
 #
 # Options (via env vars):
 #   SOURCES="signor reactome"        # Required for target-schema-source/all
@@ -105,12 +109,10 @@ pipeline:
 #   NO_OVERWRITE=1                    # Pass --no-overwrite
 #   SKIP_SILVER=1                     # Pass --skip-silver
 #   SKIP_MAPPINGS=1                   # Pass --skip-mappings
-#   PRESERVE_SILVER=1                 # For target-schema-mappings, reuse existing silver (default 1)
 #   INPUTS_PACKAGE=...                # Override inputs package
 #   BATCH_SIZE=5000                   # Override batch size
 
 BATCH_SIZE ?= 10000
-PRESERVE_SILVER ?= 1
 
 target-schema-source:
 	@if [ -z "$(SOURCES)" ]; then \
@@ -128,11 +130,7 @@ target-schema-source:
 
 target-schema-mappings:
 	@uv run python scripts/target_schema_pipeline.py mappings \
-		$(if $(filter 1,$(PRESERVE_SILVER)),--preserve-silver) \
-		$(if $(TEST_MODE),--silver-test-mode) \
-		$(if $(NO_OVERWRITE),--no-overwrite) \
-		$(if $(INPUTS_PACKAGE),--inputs-package $(INPUTS_PACKAGE)) \
-		--batch-size $(BATCH_SIZE)
+		$(if $(NO_OVERWRITE),--no-overwrite)
 
 target-schema-global:
 	@uv run python scripts/target_schema_pipeline.py global $(SOURCES) \

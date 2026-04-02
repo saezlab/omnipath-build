@@ -44,10 +44,10 @@ TEST_MODE_RECORD_LIMITS_BY_SOURCE: dict[str, int] = {
     'lipidmaps': 100,
     'hmdb': 100,
     'intact': 1000,
+        'stitch': 1000,
 }
 
 _PROGRESS_PREFIX = '__OMNIPATH_PROGRESS__'
-
 
 def _emit_progress(
     *,
@@ -172,17 +172,22 @@ def discover_resources(
 
         dataset_types = (Dataset, OntologyDataset, ArtifactDataset)
 
-        # Discover datasets for entities and ontology/artifact outputs
+        # Discover datasets for entities and ontology/artifact outputs.
+        # Resolver-specific translation datasets are declared on the dataset
+        # itself via kind='id_translation' and excluded from the regular silver
+        # parquet build.
         dataset_members = [
             (name, obj)
             for name, obj in inspect.getmembers(module)
-            if isinstance(obj, dataset_types)
+            if isinstance(obj, dataset_types) and getattr(obj, 'kind', None) != 'id_translation'
         ]
 
         # Also discover datasets nested inside Resource objects
         datasets_from_resources: List[tuple[str, object]] = []
         for _, resource_obj in resource_members:
             for ds_name, ds_obj in resource_obj.datasets().items():
+                if getattr(ds_obj, 'kind', None) == 'id_translation':
+                    continue
                 # Only add if not already in dataset_members (avoid duplicates)
                 if ds_name not in [n for n, _ in dataset_members]:
                     datasets_from_resources.append((ds_name, ds_obj))

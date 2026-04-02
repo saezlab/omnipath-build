@@ -153,6 +153,7 @@ class BufferedParquetWriter:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.writer: pq.ParquetWriter | None = None
         self.rows: list[dict[str, Any]] = []
+        self.row_count = 0
 
     def write(self, row: dict[str, Any]) -> None:
         self.rows.append(row)
@@ -166,12 +167,14 @@ class BufferedParquetWriter:
         if self.writer is None:
             self.writer = pq.ParquetWriter(self.path, self.schema)
         self.writer.write_table(table)
+        self.row_count += len(self.rows)
         self.rows.clear()
 
     def close(self) -> None:
         self.flush()
         if self.writer is None:
-            pq.write_table(pa.Table.from_pylist([], schema=self.schema), self.path)
+            if self.path.exists():
+                self.path.unlink()
             return
         self.writer.close()
 

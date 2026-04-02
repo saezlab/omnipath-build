@@ -17,7 +17,7 @@ from id_resolver.resolve.target_schema import normalize_target_schema_dir
 DEFAULT_DATA_V2_ROOT = Path('data_v2')
 DEFAULT_SILVER_ROOT = DEFAULT_DATA_V2_ROOT / 'silver'
 DEFAULT_GOLD_ROOT = DEFAULT_DATA_V2_ROOT / 'gold'
-DEFAULT_MAPPING_DIR = DEFAULT_GOLD_ROOT / '_mapping_tables'
+DEFAULT_MAPPING_DIR = Path('id_resolver/data')
 DEFAULT_GLOBAL_DIR = DEFAULT_GOLD_ROOT / '_global'
 DEFAULT_INPUTS_PACKAGE = 'pypath.inputs_v2'
 REFERENCE_MAPPING_SOURCES = ['uniprot', *CHEMICAL_SOURCES]
@@ -128,18 +128,6 @@ def rebuild_mapping_tables(
     return summary
 
 
-def _mapping_outputs_ready(mapping_dir: Path) -> bool:
-    required_files = [
-        mapping_dir / 'proteins' / 'protein_reference_to_uniprot.parquet',
-        mapping_dir / 'proteins' / 'uniprot_secondary_to_primary.parquet',
-        mapping_dir / 'chemicals' / 'chebi.parquet',
-        mapping_dir / 'chemicals' / 'hmdb.parquet',
-        mapping_dir / 'chemicals' / 'lipidmaps.parquet',
-        mapping_dir / 'chemicals' / 'swisslipids.parquet',
-    ]
-    return all(path.exists() for path in required_files)
-
-
 def normalize_sources(
     sources: Iterable[str],
     *,
@@ -148,11 +136,14 @@ def normalize_sources(
 ) -> None:
     for source in sources:
         source_dir = gold_root / source
-        summary = normalize_target_schema_dir(
-            source_dir=source_dir,
-            mapping_dir=mapping_dir,
-        )
-        print(f'[{source}] normalization: {summary}')
+        try:
+            summary = normalize_target_schema_dir(
+                source_dir=source_dir,
+                mapping_dir=mapping_dir,
+            )
+            print(f'[{source}] normalization: {summary}')
+        except FileNotFoundError as exc:
+            print(f'[{source}] normalization skipped: {exc}')
 
 
 def build_global_outputs(
@@ -187,7 +178,8 @@ def build_global_outputs(
 
 def _warn_missing_mappings(mapping_dir: Path) -> None:
     print(
-        f'Resolver mapping tables not found in {mapping_dir}. First run: make target-schema-mappings'
+        f'Resolver mapping tables not found in {mapping_dir}. '
+        'Use id_resolver/data or run `make target-schema-mappings` explicitly.'
     )
 
 
@@ -296,14 +288,11 @@ def main() -> int:
     )
 
     if not args.skip_mappings:
-        if _mapping_outputs_ready(args.mapping_dir):
-            normalize_sources(
-                sources,
-                gold_root=args.gold_root,
-                mapping_dir=args.mapping_dir,
-            )
-        else:
-            _warn_missing_mappings(args.mapping_dir)
+        normalize_sources(
+            sources,
+            gold_root=args.gold_root,
+            mapping_dir=args.mapping_dir,
+        )
 
     if args.command == 'all' or args.with_global:
         build_global_outputs(
