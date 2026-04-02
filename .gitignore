@@ -43,3 +43,4 @@ omnipath_build.code-workspace
 .meili-temp/
 .build/
 data_v2/
+*.sdf.gz
