@@ -7,16 +7,12 @@ from pathlib import Path
 from typing import Iterable
 
 from omnipath_build.loaders.silver import run_silver_loader
-from omnipath_build.target_schema.id_mapping_tables import (
-    DEFAULT_CHEMICAL_REFERENCE_SOURCES,
-    materialize_mapping_tables,
-)
-from scripts.apply_target_schema_identifier_mapping import (
-    apply_identifier_mapping_to_source,
-)
 from scripts.build_global_entity_identifiers import process_source
 from scripts.silver_to_target_schema import SourceConverter
 from scripts.target_schema_entity_dedup import deduplicate_target_schema_dir
+
+from id_resolver.build.mapping_tables import CHEMICAL_SOURCES, run_sources as materialize_resolver_tables
+from id_resolver.resolve.target_schema import normalize_target_schema_dir
 
 DEFAULT_DATA_V2_ROOT = Path('data_v2')
 DEFAULT_SILVER_ROOT = DEFAULT_DATA_V2_ROOT / 'silver'
@@ -24,7 +20,7 @@ DEFAULT_GOLD_ROOT = DEFAULT_DATA_V2_ROOT / 'gold'
 DEFAULT_MAPPING_DIR = DEFAULT_GOLD_ROOT / '_mapping_tables'
 DEFAULT_GLOBAL_DIR = DEFAULT_GOLD_ROOT / '_global'
 DEFAULT_INPUTS_PACKAGE = 'pypath.inputs_v2'
-REFERENCE_MAPPING_SOURCES = ['uniprot', *DEFAULT_CHEMICAL_REFERENCE_SOURCES]
+REFERENCE_MAPPING_SOURCES = ['uniprot', *CHEMICAL_SOURCES]
 
 
 def _source_relpath(source: str) -> Path:
@@ -115,7 +111,6 @@ def convert_sources_to_gold(
 
 def rebuild_mapping_tables(
     *,
-    gold_root: Path,
     mapping_dir: Path,
     chemical_reference_sources: Iterable[str],
     overwrite: bool,
@@ -124,26 +119,28 @@ def rebuild_mapping_tables(
         print(f'Removing existing mapping tables: {mapping_dir}')
         _remove_path(mapping_dir)
 
-    summary = materialize_mapping_tables(
-        target_schema_root=gold_root,
+    summary = materialize_resolver_tables(
+        sources=['uniprot', *chemical_reference_sources],
         output_dir=mapping_dir,
-        chemical_reference_sources=chemical_reference_sources,
     )
-    print(f'Materialized mapping tables in {mapping_dir}')
+    print(f'Materialized resolver mapping tables in {mapping_dir}')
     print(summary)
     return summary
 
 
 def _mapping_outputs_ready(mapping_dir: Path) -> bool:
     required_files = [
-        'uniprot_reference_mappings.parquet',
-        'uniprot_secondary_to_primary.parquet',
-        'chemical_reference_to_standard_inchi.parquet',
+        mapping_dir / 'proteins' / 'protein_reference_to_uniprot.parquet',
+        mapping_dir / 'proteins' / 'uniprot_secondary_to_primary.parquet',
+        mapping_dir / 'chemicals' / 'chebi.parquet',
+        mapping_dir / 'chemicals' / 'hmdb.parquet',
+        mapping_dir / 'chemicals' / 'lipidmaps.parquet',
+        mapping_dir / 'chemicals' / 'swisslipids.parquet',
     ]
-    return all((mapping_dir / name).exists() for name in required_files)
+    return all(path.exists() for path in required_files)
 
 
-def apply_mappings_for_sources(
+def normalize_sources(
     sources: Iterable[str],
     *,
     gold_root: Path,
@@ -151,19 +148,11 @@ def apply_mappings_for_sources(
 ) -> None:
     for source in sources:
         source_dir = gold_root / source
-        summary = apply_identifier_mapping_to_source(
+        summary = normalize_target_schema_dir(
             source_dir=source_dir,
             mapping_dir=mapping_dir,
-            dry_run=False,
         )
-        report = summary.pop('report', None)
-        if report is not None:
-            print(
-                f"[{source}] {summary} | unresolved preferred canonicals: "
-                f"bio={report['bio_unresolved_entities']} chem={report['chem_unresolved_entities']}"
-            )
-        else:
-            print(f'[{source}] {summary}')
+        print(f'[{source}] normalization: {summary}')
 
 
 def build_global_outputs(
@@ -198,7 +187,7 @@ def build_global_outputs(
 
 def _warn_missing_mappings(mapping_dir: Path) -> None:
     print(
-        f'Mapping tables not found in {mapping_dir}. First run: make target-schema-mappings'
+        f'Resolver mapping tables not found in {mapping_dir}. First run: make target-schema-mappings'
     )
 
 
@@ -206,7 +195,7 @@ def _add_common_source_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument('sources', nargs='+', help='Source module(s) to process, e.g. signor reactome')
     parser.add_argument('--silver-test-mode', action='store_true', help='Enable test mode only for the silver build step')
     parser.add_argument('--skip-silver', action='store_true', help='Reuse existing data_v2/silver inputs instead of rebuilding silver')
-    parser.add_argument('--skip-mappings', action='store_true', help='Skip identifier mapping for per-source outputs')
+    parser.add_argument('--skip-mappings', action='store_true', help='Skip id_resolver normalization for per-source outputs')
     parser.add_argument('--with-global', action='store_true', help='Also rebuild global outputs after per-source processing')
     parser.add_argument('--no-overwrite', action='store_true', help='Do not delete existing outputs before rebuilding')
     parser.add_argument('--silver-root', type=Path, default=DEFAULT_SILVER_ROOT)
@@ -218,38 +207,32 @@ def _add_common_source_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         '--chemical-reference-sources',
         nargs='*',
-        default=list(DEFAULT_CHEMICAL_REFERENCE_SOURCES),
+        default=list(CHEMICAL_SOURCES),
     )
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description='Consolidated target-schema pipeline: silver -> gold -> mappings -> global.',
+        description='Consolidated target-schema pipeline: silver -> gold -> resolver normalization -> global.',
     )
     subparsers = parser.add_subparsers(dest='command', required=True)
 
     source_parser = subparsers.add_parser(
         'source',
-        help='Build one or more sources from silver through mapped per-source gold outputs.',
+        help='Build one or more sources from silver through normalized per-source gold outputs.',
     )
     _add_common_source_args(source_parser)
 
     mappings_parser = subparsers.add_parser(
         'mappings',
-        help='Rebuild shared mapping tables under data_v2/gold/_mapping_tables.',
+        help='Materialize id_resolver mapping tables under data_v2/gold/_mapping_tables.',
     )
-    mappings_parser.add_argument('--gold-root', type=Path, default=DEFAULT_GOLD_ROOT)
     mappings_parser.add_argument('--mapping-dir', type=Path, default=DEFAULT_MAPPING_DIR)
-    mappings_parser.add_argument('--silver-root', type=Path, default=DEFAULT_SILVER_ROOT)
-    mappings_parser.add_argument('--inputs-package', default=DEFAULT_INPUTS_PACKAGE)
-    mappings_parser.add_argument('--batch-size', type=int, default=10_000)
-    mappings_parser.add_argument('--silver-test-mode', action='store_true', help='Enable test mode only for the silver build step')
-    mappings_parser.add_argument('--preserve-silver', action='store_true', help='Reuse existing silver outputs instead of deleting and rebuilding them')
     mappings_parser.add_argument('--no-overwrite', action='store_true', help='Do not delete existing mapping outputs before rebuilding')
     mappings_parser.add_argument(
         '--chemical-reference-sources',
         nargs='*',
-        default=list(DEFAULT_CHEMICAL_REFERENCE_SOURCES),
+        default=list(CHEMICAL_SOURCES),
     )
 
     global_parser = subparsers.add_parser(
@@ -275,24 +258,7 @@ def main() -> int:
     overwrite = not getattr(args, 'no_overwrite', False)
 
     if args.command == 'mappings':
-        mapping_sources = ['uniprot', *args.chemical_reference_sources]
-        build_silver_sources(
-            mapping_sources,
-            silver_root=args.silver_root,
-            inputs_package=args.inputs_package,
-            batch_size=args.batch_size,
-            overwrite=False if args.preserve_silver else overwrite,
-            test_mode=args.silver_test_mode,
-        )
-        convert_sources_to_gold(
-            mapping_sources,
-            silver_root=args.silver_root,
-            gold_root=args.gold_root,
-            batch_size=args.batch_size,
-            overwrite=overwrite,
-        )
         rebuild_mapping_tables(
-            gold_root=args.gold_root,
             mapping_dir=args.mapping_dir,
             chemical_reference_sources=args.chemical_reference_sources,
             overwrite=overwrite,
@@ -331,7 +297,7 @@ def main() -> int:
 
     if not args.skip_mappings:
         if _mapping_outputs_ready(args.mapping_dir):
-            apply_mappings_for_sources(
+            normalize_sources(
                 sources,
                 gold_root=args.gold_root,
                 mapping_dir=args.mapping_dir,
