@@ -22,10 +22,6 @@ gold-mappings:
 		$(if $(RESOLVER_MAPPING_DIR),--resolver-mapping-dir $(RESOLVER_MAPPING_DIR))
 
 gold-source:
-	@if [ -z "$(SOURCES)" ]; then \
-		echo 'Error: set SOURCES="signor reactome"'; \
-		exit 1; \
-	fi
 	@uv run python -m omnipath_build.pipeline.cli source $(SOURCES) \
 		--data-root $(DATA_ROOT) \
 		--inputs-package $(INPUTS_PACKAGE) \
