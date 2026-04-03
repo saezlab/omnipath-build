@@ -159,34 +159,6 @@ def _gold_files(version_dir: Path | None) -> list[Path]:
     return sorted(path for path in version_dir.iterdir() if path.is_file())
 
 
-def _derive_organisms(version_dir: Path | None) -> list[int]:
-    if version_dir is None:
-        return []
-
-    entities_path = version_dir / 'entities.parquet'
-    if not entities_path.exists():
-        return []
-
-    taxa = (
-        pl.read_parquet(entities_path, columns=['taxonomy_id'])
-        .select(pl.col('taxonomy_id').cast(pl.Utf8).str.strip_chars().alias('taxonomy_id'))
-        .drop_nulls()
-        .filter(pl.col('taxonomy_id') != '')
-        .unique()
-        .get_column('taxonomy_id')
-        .to_list()
-    )
-
-    organism_ids = sorted(
-        {
-            int(value)
-            for value in taxa
-            if str(value).isdigit() and int(value) > 1
-        }
-    )
-    return organism_ids
-
-
 def _interaction_participant_types(version_dir: Path | None) -> list[str]:
     if version_dir is None:
         return []
@@ -230,8 +202,6 @@ def _resource_row(*, source: str, resource: Resource, gold_root: Path) -> dict[s
     gold_files = _gold_files(version_dir)
     last_built_at = _iso_utc(_latest_file_mtime(gold_files))
 
-    organisms = _derive_organisms(version_dir)
-
     return {
         'resource_id': source,
         'resource_name': config.name,
@@ -241,10 +211,7 @@ def _resource_row(*, source: str, resource: Resource, gold_root: Path) -> dict[s
         'pubmed_id': config.pubmed,
         'primary_category': config.primary_category,
         'data_modalities': _data_modalities(version_dir),
-        'organisms': organisms,
         'interaction_participant_types': _interaction_participant_types(version_dir),
-        'downloadable': bool(gold_files),
-        'artifact_count': len(gold_files),
         'entity_count': _count_file(version_dir, 'entities.parquet'),
         'interaction_count': _count_file(version_dir, 'interactions.parquet'),
         'association_count': _count_file(version_dir, 'associations.parquet'),
