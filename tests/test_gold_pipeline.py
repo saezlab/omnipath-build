@@ -6,12 +6,12 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from omnipath_build.gold_pipeline.pipeline import (
+from omnipath_build.pipeline.dag import (
     _has_gold_buildable_dataset,
     build_task_graph,
-    run_gold_pipeline,
+    run_pipeline,
 )
-from omnipath_build.loaders.silver import ResourceFunction
+from omnipath_build.silver.build import ResourceFunction
 
 
 class GoldPipelineTests(unittest.TestCase):
@@ -56,7 +56,7 @@ class GoldPipelineTests(unittest.TestCase):
             ])
         )
 
-    def test_run_gold_pipeline_autodiscovers_sources_when_omitted(self) -> None:
+    def test_run_pipeline_autodiscovers_sources_when_omitted(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
 
@@ -75,14 +75,14 @@ class GoldPipelineTests(unittest.TestCase):
                 return {'source': source}
 
             with (
-                patch('omnipath_build.gold_pipeline.pipeline._discover_all_sources', return_value=['a', 'b']),
-                patch('omnipath_build.gold_pipeline.pipeline.build_resolver_mappings', side_effect=fake_build_mappings),
-                patch('omnipath_build.gold_pipeline.pipeline.build_silver_source', side_effect=fake_build_silver_source),
-                patch('omnipath_build.gold_pipeline.pipeline.build_gold_source', side_effect=fake_build_gold_source),
-                patch('omnipath_build.gold_pipeline.pipeline.module_file_hash', return_value='code-hash'),
-                patch('omnipath_build.gold_pipeline.pipeline.tree_sha256', return_value='tree-hash'),
+                patch('omnipath_build.pipeline.dag._discover_all_sources', return_value=['a', 'b']),
+                patch('omnipath_build.pipeline.dag.build_resolver_mappings', side_effect=fake_build_mappings),
+                patch('omnipath_build.pipeline.dag.build_silver_source', side_effect=fake_build_silver_source),
+                patch('omnipath_build.pipeline.dag.build_gold_source', side_effect=fake_build_gold_source),
+                patch('omnipath_build.pipeline.dag.module_file_hash', return_value='code-hash'),
+                patch('omnipath_build.pipeline.dag.tree_sha256', return_value='tree-hash'),
             ):
-                report = run_gold_pipeline(
+                report = run_pipeline(
                     command='source',
                     sources=[],
                     data_root=root,
@@ -95,7 +95,7 @@ class GoldPipelineTests(unittest.TestCase):
             self.assertIn('gold:a', report['tasks'])
             self.assertIn('gold:b', report['tasks'])
 
-    def test_run_gold_pipeline_continues_after_source_failure(self) -> None:
+    def test_run_pipeline_continues_after_source_failure(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
 
@@ -116,13 +116,13 @@ class GoldPipelineTests(unittest.TestCase):
                 return {'source': source}
 
             with (
-                patch('omnipath_build.gold_pipeline.pipeline.build_resolver_mappings', side_effect=fake_build_mappings),
-                patch('omnipath_build.gold_pipeline.pipeline.build_silver_source', side_effect=fake_build_silver_source),
-                patch('omnipath_build.gold_pipeline.pipeline.build_gold_source', side_effect=fake_build_gold_source),
-                patch('omnipath_build.gold_pipeline.pipeline.module_file_hash', return_value='code-hash'),
-                patch('omnipath_build.gold_pipeline.pipeline.tree_sha256', return_value='tree-hash'),
+                patch('omnipath_build.pipeline.dag.build_resolver_mappings', side_effect=fake_build_mappings),
+                patch('omnipath_build.pipeline.dag.build_silver_source', side_effect=fake_build_silver_source),
+                patch('omnipath_build.pipeline.dag.build_gold_source', side_effect=fake_build_gold_source),
+                patch('omnipath_build.pipeline.dag.module_file_hash', return_value='code-hash'),
+                patch('omnipath_build.pipeline.dag.tree_sha256', return_value='tree-hash'),
             ):
-                report = run_gold_pipeline(
+                report = run_pipeline(
                     command='source',
                     sources=['bad', 'good'],
                     data_root=root,
@@ -138,7 +138,7 @@ class GoldPipelineTests(unittest.TestCase):
                 'boom',
             )
 
-    def test_run_gold_pipeline_writes_reports_and_reuses_matching_tasks(self) -> None:
+    def test_run_pipeline_writes_reports_and_reuses_matching_tasks(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             calls: dict[str, int] = {
@@ -166,13 +166,13 @@ class GoldPipelineTests(unittest.TestCase):
                 return {'source': source, 'silver_dir': str(silver_dir), 'mapping_dir': str(mapping_dir), 'batch_size': batch_size}
 
             with (
-                patch('omnipath_build.gold_pipeline.pipeline.build_resolver_mappings', side_effect=fake_build_mappings),
-                patch('omnipath_build.gold_pipeline.pipeline.build_silver_source', side_effect=fake_build_silver_source),
-                patch('omnipath_build.gold_pipeline.pipeline.build_gold_source', side_effect=fake_build_gold_source),
-                patch('omnipath_build.gold_pipeline.pipeline.module_file_hash', return_value='code-hash'),
-                patch('omnipath_build.gold_pipeline.pipeline.tree_sha256', return_value='tree-hash'),
+                patch('omnipath_build.pipeline.dag.build_resolver_mappings', side_effect=fake_build_mappings),
+                patch('omnipath_build.pipeline.dag.build_silver_source', side_effect=fake_build_silver_source),
+                patch('omnipath_build.pipeline.dag.build_gold_source', side_effect=fake_build_gold_source),
+                patch('omnipath_build.pipeline.dag.module_file_hash', return_value='code-hash'),
+                patch('omnipath_build.pipeline.dag.tree_sha256', return_value='tree-hash'),
             ):
-                first = run_gold_pipeline(
+                first = run_pipeline(
                     command='source',
                     sources=['signor'],
                     data_root=root,
@@ -182,7 +182,7 @@ class GoldPipelineTests(unittest.TestCase):
                     jobs=2,
                     resolver_mapping_dir=None,
                 )
-                second = run_gold_pipeline(
+                second = run_pipeline(
                     command='source',
                     sources=['signor'],
                     data_root=root,

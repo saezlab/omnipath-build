@@ -13,9 +13,9 @@ from id_resolver.build.mapping_tables import (
     run_sources as materialize_resolver_tables,
 )
 from id_resolver.resolve.target_schema import normalize_target_schema_dir
+from omnipath_build.gold_package.converter import SourceConverter
+from omnipath_build.gold_package.dedup import deduplicate_target_schema_dir
 from omnipath_build.loaders.silver import run_silver_loader
-from scripts.silver_to_target_schema import SourceConverter
-from scripts.target_schema_entity_dedup import deduplicate_target_schema_dir
 
 REFERENCE_MAPPING_SOURCES = ['uniprot', *CHEMICAL_SOURCES]
 

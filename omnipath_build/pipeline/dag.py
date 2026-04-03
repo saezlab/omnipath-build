@@ -8,15 +8,14 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from omnipath_build.gold_pipeline.paths import (
+from omnipath_build.pipeline.paths import (
     GoldPipelinePaths,
     build_paths,
     next_numeric_version,
     source_version_dir,
     update_latest_pointer,
 )
-from omnipath_build.loaders.silver import ResourceFunction, discover_resources
-from omnipath_build.gold_pipeline.tasks import (
+from omnipath_build.pipeline.tasks import (
     build_gold_source,
     build_resolver_mappings,
     build_silver_source,
@@ -24,6 +23,7 @@ from omnipath_build.gold_pipeline.tasks import (
     resolver_mappings_ready,
     tree_sha256,
 )
+from omnipath_build.silver.build import ResourceFunction, discover_resources
 
 
 @dataclass(frozen=True)
@@ -136,13 +136,13 @@ def _task_fingerprint(
         }
     elif task.task_type == 'silver':
         payload['code'] = {
-            'silver_loader': module_file_hash('omnipath_build.loaders.silver'),
+            'silver_loader': module_file_hash('omnipath_build.silver.build'),
             'source_module': module_file_hash(f'{inputs_package}.{task.source}'),
         }
     elif task.task_type == 'gold':
         payload['code'] = {
-            'converter': module_file_hash('scripts.silver_to_target_schema'),
-            'dedup': module_file_hash('scripts.target_schema_entity_dedup'),
+            'converter': module_file_hash('omnipath_build.gold.convert'),
+            'dedup': module_file_hash('omnipath_build.gold.dedup'),
             'resolver': module_file_hash('id_resolver.resolve.target_schema'),
         }
     else:
@@ -463,7 +463,7 @@ def _discover_all_sources(inputs_package: str) -> list[str]:
 
 
 
-def run_gold_pipeline(
+def run_pipeline(
     *,
     command: str,
     sources: list[str],
@@ -522,3 +522,6 @@ def run_gold_pipeline(
     }
     _write_report(paths, report)
     return report
+
+
+run_gold_pipeline = run_pipeline

@@ -9,7 +9,8 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from omnipath_build.loaders.silver import DiscoveryError, run_silver_loader
+from omnipath_build.pipeline.cli import main as pipeline_main
+from omnipath_build.silver.build import DiscoveryError, run_silver_loader
 
 # Configure logging for the entire application
 logging.basicConfig(
@@ -67,40 +68,24 @@ def _handle_silver(args: argparse.Namespace) -> int:
 
 
 def _handle_gold(args: argparse.Namespace) -> int:
-    """Execute gold loader workflow based on CLI arguments."""
-    project_root = Path(__file__).resolve().parent.parent.parent
-
-    from omnipath_build.loaders.gold import run_gold_loader_new
-
-    data_root: Path = args.data_root
-    if not data_root.is_absolute():
-        data_root = project_root / data_root
-    output_dir: Path = args.output_dir
-    if not output_dir.is_absolute():
-        output_dir = project_root / output_dir
-
-    needs_data_root = args.step in (None, 'local_tables')
-    if needs_data_root and not data_root.exists():
-        print(f'Error: data root not found: {data_root}', file=sys.stderr)
-        return 1
-
-    local_tables_dir: Path | None = args.local_tables_dir
-    if local_tables_dir is not None and not local_tables_dir.is_absolute():
-        local_tables_dir = project_root / local_tables_dir
+    """Compatibility wrapper around the active gold pipeline CLI."""
+    argv = [args.pipeline_command]
+    if args.sources:
+        argv.extend(args.sources)
+    argv.extend(['--data-root', str(args.data_root)])
+    argv.extend(['--inputs-package', args.inputs_package])
+    argv.extend(['--batch-size', str(args.batch_size)])
+    argv.extend(['--jobs', str(args.jobs)])
+    if args.silver_test_mode:
+        argv.append('--silver-test-mode')
+    if args.resolver_mapping_dir is not None:
+        argv.extend(['--resolver-mapping-dir', str(args.resolver_mapping_dir)])
 
     try:
-        run_gold_loader_new(
-            data_root=data_root,
-            output_dir=output_dir,
-            step=args.step,
-            source=args.source,
-            local_tables_dir=local_tables_dir,
-        )
+        return pipeline_main(argv)
     except Exception as exc:  # noqa: BLE001
         print(f'Unexpected error: {exc}', file=sys.stderr)
         return 1
-
-    return 0
 
 
 def _handle_postgres(args: argparse.Namespace) -> int:
@@ -183,42 +168,51 @@ def _build_parser() -> argparse.ArgumentParser:
 
     gold_parser = subparsers.add_parser(
         'gold',
-        help='Build gold tables from prepared silver outputs.',
+        help='Compatibility wrapper around the active gold pipeline CLI.',
+    )
+    gold_parser.add_argument(
+        'pipeline_command',
+        choices=['source', 'mappings', 'all'],
+        help='Active gold pipeline command to run.',
+    )
+    gold_parser.add_argument(
+        'sources',
+        nargs='*',
+        help='Optional source modules for source/all commands.',
     )
     gold_parser.add_argument(
         '--data-root',
         type=Path,
-        default=Path('omnipath_build/data/silver'),
-        help='Path to data directory containing silver files (default: omnipath_build/data/silver)',
+        default=Path('data_v2'),
+        help='Pipeline data root (default: data_v2)',
     )
     gold_parser.add_argument(
-        '--output-dir',
+        '--inputs-package',
+        default='pypath.inputs_v2',
+        help='Python package containing generator modules (default: pypath.inputs_v2)',
+    )
+    gold_parser.add_argument(
+        '--batch-size',
+        type=int,
+        default=10_000,
+        help='Number of records per write batch',
+    )
+    gold_parser.add_argument(
+        '--jobs',
+        type=int,
+        default=4,
+        help='Parallel workers for the active gold pipeline',
+    )
+    gold_parser.add_argument(
+        '--silver-test-mode',
+        action='store_true',
+        help='Enable selective test limits for configured high-volume sources',
+    )
+    gold_parser.add_argument(
+        '--resolver-mapping-dir',
         type=Path,
-        default=Path('omnipath_build/data/gold'),
-        help='Path to output directory for gold tables (default: omnipath_build/data/gold)',
-    )
-    gold_parser.add_argument(
-        '--step',
-        type=str,
-        choices=[
-            'local_tables',
-            'entity_identifiers',
-            'global_tables',
-        ],
-        help=(
-            'Run only a specific step '
-            '(local_tables, entity_identifiers, global_tables)'
-        ),
-    )
-    gold_parser.add_argument(
-        '--source',
-        type=str,
-        help='Optional single source to process (local_tables step only)',
-    )
-    gold_parser.add_argument(
-        '--local-tables-dir',
-        type=Path,
-        help='Optional directory to read local_* tables from for entity_identifiers/global_tables (supports nested per-source directories).',
+        default=Path('id_resolver/data'),
+        help='Existing resolver mapping directory to reuse (default: id_resolver/data).',
     )
     gold_parser.set_defaults(handler=_handle_gold)
 
