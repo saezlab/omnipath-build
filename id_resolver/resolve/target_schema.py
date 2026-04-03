@@ -51,6 +51,7 @@ def _normalize_target_schema_identifiers(identifiers: pl.DataFrame) -> pl.DataFr
 def normalize_target_schema_dir(
     source_dir: str | Path,
     mapping_dir: str | Path,
+    source_name: str | None = None,
 ) -> dict[str, int]:
     source_dir = Path(source_dir)
     entities_path = source_dir / 'entities.parquet'
@@ -133,6 +134,8 @@ def normalize_target_schema_dir(
         .select(['entity_id', 'resolved_identifier', 'resolved_identifier_type'])
     )
 
+    source_value = source_name or source_dir.name
+
     additions = (
         preferred
         .select([
@@ -147,7 +150,7 @@ def normalize_target_schema_dir(
         )
         .with_columns([
             pl.lit(False).alias('is_canonical'),
-            pl.lit(source_dir.name).alias('source'),
+            pl.lit(source_value).alias('source'),
         ])
         .select(identifiers.columns)
     )
