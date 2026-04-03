@@ -15,6 +15,7 @@ from omnipath_build.pipeline.paths import (
     source_version_dir,
     update_latest_pointer,
 )
+from omnipath_build.pipeline.resources_index import build_resources_parquet
 from omnipath_build.pipeline.tasks import (
     build_gold_source,
     build_resolver_mappings,
@@ -141,6 +142,7 @@ def _task_fingerprint(
         }
     elif task.task_type == 'gold':
         payload['code'] = {
+            'pipeline_tasks': module_file_hash('omnipath_build.pipeline.tasks'),
             'converter': module_file_hash('omnipath_build.gold.convert'),
             'dedup': module_file_hash('omnipath_build.gold.dedup'),
             'resolver': module_file_hash('id_resolver.resolve.target_schema'),
@@ -442,10 +444,7 @@ def _run_dag(
 
 
 def _has_gold_buildable_dataset(functions: list[ResourceFunction]) -> bool:
-    return any(
-        fn.output_kind == 'entity' and fn.function_name != 'resource'
-        for fn in functions
-    )
+    return any(fn.function_name != 'resource' for fn in functions)
 
 
 
@@ -511,6 +510,13 @@ def run_pipeline(
         if gold_result and gold_result.version:
             update_latest_pointer(paths.gold_root, source, gold_result.version)
 
+    resources_parquet = None
+    if include_sources:
+        resources_parquet = build_resources_parquet(
+            gold_root=paths.gold_root,
+            inputs_package=inputs_package,
+        )
+
     mapping_result = results.get('resolver_mappings')
     report = {
         'run_id': _run_id(),
@@ -518,6 +524,7 @@ def run_pipeline(
         'command': command,
         'selected_sources': sources,
         'resolver_mapping_version': mapping_result.version if mapping_result else None,
+        'resources_parquet': str(resources_parquet) if resources_parquet else None,
         'tasks': {key: asdict(value) for key, value in results.items()},
     }
     _write_report(paths, report)

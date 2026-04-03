@@ -8,6 +8,8 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+import shutil
+
 from id_resolver.build.mapping_tables import (
     CHEMICAL_SOURCES,
     run_sources as materialize_resolver_tables,
@@ -133,6 +135,12 @@ def build_gold_source(
     finally:
         converter.close()
 
+    copied_artifacts: list[str] = []
+    for artifact in sorted(path for path in silver_dir.iterdir() if path.is_file() and path.suffix != '.parquet'):
+        target = output_dir / artifact.name
+        shutil.copy2(artifact, target)
+        copied_artifacts.append(artifact.name)
+
     dedup_summary = deduplicate_target_schema_dir(output_dir)
     canonicalize_summary = normalize_target_schema_dir(
         source_dir=output_dir,
@@ -141,6 +149,7 @@ def build_gold_source(
     )
     return {
         'files': sorted(p.name for p in output_dir.iterdir() if p.is_file()),
+        'copied_artifacts': copied_artifacts,
         'dedup_summary': dedup_summary,
         'canonicalize_summary': canonicalize_summary,
     }
