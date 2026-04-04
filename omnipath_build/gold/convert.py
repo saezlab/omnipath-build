@@ -11,12 +11,10 @@ import pyarrow.parquet as pq
 from pypath.internals.cv_terms import (
     BiologicalEffectCv,
     BiologicalRoleCv,
-    CausalMechanismCv,
     CausalStatementCv,
     ExperimentalRoleCv,
     IdentifierNamespaceCv,
     InteractionMetadataCv,
-    InteractionTypeCv,
     ParticipantMetadataCv,
 )
 from pypath.internals.cv_terms.entity_types import EntityTypeCv
@@ -60,8 +58,6 @@ INTERACTIONS_SCHEMA = pa.schema([
     pa.field("entity_b_id", pa.int64()),
     pa.field("direction", pa.int64()),
     pa.field("sign", pa.int64()),
-    pa.field("mechanism_term", pa.string()),
-    pa.field("statement_term", pa.string()),
     pa.field("record_attributes", ATTRIBUTES_STRUCT),
     pa.field("entity_a_attributes", ATTRIBUTES_STRUCT),
     pa.field("entity_b_attributes", ATTRIBUTES_STRUCT),
@@ -118,8 +114,6 @@ SIGN_NEGATIVE_TERMS = {
     str(CausalStatementCv.DOWN_REGULATES_QUANTITY_BY_DESTABLIZATION),
     str(CausalStatementCv.DOWN_REGULATES_QUANTITY_BY_REPRESSION),
 }
-STATEMENT_TERMS = {str(term) for term in CausalStatementCv} | {str(term) for term in InteractionTypeCv}
-MECHANISM_TERMS = {str(term) for term in CausalMechanismCv}
 ROLE_TERMS = (
     {str(term) for term in BiologicalRoleCv}
     | {str(term) for term in ExperimentalRoleCv}
@@ -253,8 +247,6 @@ class SourceConverter:
                     "entity_b_id": entity_b["ref"].entity_id,
                     "direction": self._derive_direction(parent_annotations, entity_a["membership_annotations"], entity_b["membership_annotations"]),
                     "sign": self._derive_sign(parent_annotations),
-                    "mechanism_term": self._derive_mechanism_term(parent_annotations),
-                    "statement_term": self._derive_statement_term(parent_annotations),
                     "record_attributes": non_evidence,
                     "entity_a_attributes": entity_a["member_attributes"],
                     "entity_b_attributes": entity_b["member_attributes"],
@@ -446,7 +438,7 @@ class SourceConverter:
             rows.append({
                 "term": self._normalize_attribute_term(term),
                 "value": value,
-                "unit": unit,
+                "unit": self._normalize_attribute_term(unit) if unit is not None else None,
             })
         return rows or None
 
@@ -503,25 +495,6 @@ class SourceConverter:
                     return 1
                 if "INHIB" in value or "NEGATIVE" in value or "REPRESS" in value:
                     return -1
-        return None
-
-    def _derive_mechanism_term(self, annotations: list[dict[str, Any]]) -> str | None:
-        for annotation in annotations:
-            term = self._string_or_none(annotation.get("term"))
-            if term in MECHANISM_TERMS:
-                return self._format_cv_term(term)
-        return None
-
-    def _derive_statement_term(self, annotations: list[dict[str, Any]]) -> str | None:
-        for annotation in annotations:
-            term = self._string_or_none(annotation.get("term"))
-            if term in STATEMENT_TERMS:
-                return self._format_cv_term(term)
-        for annotation in annotations:
-            term = self._string_or_none(annotation.get("term"))
-            value = self._string_or_none(annotation.get("value"))
-            if term == str(InteractionMetadataCv.CONTROL_TYPE) and value:
-                return value
         return None
 
     def _order_interaction_members(self, members: list[dict[str, Any]]) -> tuple[dict[str, Any], dict[str, Any]]:

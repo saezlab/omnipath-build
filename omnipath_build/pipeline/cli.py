@@ -25,6 +25,14 @@ def build_parser() -> argparse.ArgumentParser:
     common.add_argument('--silver-test-mode', action='store_true')
     common.add_argument('--jobs', type=int, default=4)
     common.add_argument(
+        '--overwrite',
+        nargs='?',
+        const='both',
+        choices=('gold', 'silver', 'both'),
+        default=None,
+        help='Force rebuilding selected stages: --overwrite gold, --overwrite silver, or --overwrite (both).',
+    )
+    common.add_argument(
         '--resolver-mapping-dir',
         type=Path,
         default=Path('id_resolver/data'),
@@ -71,6 +79,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         batch_size=getattr(args, 'batch_size', 10_000),
         test_mode=getattr(args, 'silver_test_mode', False),
         jobs=max(1, args.jobs),
+        overwrite=getattr(args, 'overwrite', None),
         resolver_mapping_dir=getattr(args, 'resolver_mapping_dir', None),
     )
     print(f"run_id={report['run_id']}")

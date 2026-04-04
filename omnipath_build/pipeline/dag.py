@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import asdict, dataclass
@@ -12,6 +11,7 @@ from omnipath_build.pipeline.paths import (
     GoldPipelinePaths,
     build_paths,
     next_numeric_version,
+    read_latest_pointer,
     source_version_dir,
     update_latest_pointer,
 )
@@ -20,9 +20,7 @@ from omnipath_build.pipeline.tasks import (
     build_gold_source,
     build_resolver_mappings,
     build_silver_source,
-    module_file_hash,
     resolver_mappings_ready,
-    tree_sha256,
 )
 from omnipath_build.silver.build import ResourceFunction, discover_resources
 
@@ -41,11 +39,8 @@ class TaskResult:
     task_type: str
     source: str | None
     status: str
-    fingerprint: str
     version: str | None
     output_dir: str | None
-    reused_from_run: str | None
-    dependency_versions: dict[str, str]
     metadata: dict[str, Any]
 
 
@@ -55,12 +50,6 @@ def utc_now() -> datetime:
 
 def iso_now() -> str:
     return utc_now().isoformat().replace('+00:00', 'Z')
-
-
-def _stable_json_sha(payload: dict[str, Any]) -> str:
-    return hashlib.sha256(
-        json.dumps(payload, sort_keys=True, separators=(',', ':')).encode('utf-8')
-    ).hexdigest()
 
 
 def _run_id() -> str:
@@ -77,13 +66,6 @@ def _latest_report_path(paths: GoldPipelinePaths) -> Path:
 
 def _changelog_path(paths: GoldPipelinePaths) -> Path:
     return paths.reports_root / 'changelog.ndjson'
-
-
-def _load_latest_report(paths: GoldPipelinePaths) -> dict[str, Any] | None:
-    latest = _latest_report_path(paths)
-    if not latest.exists():
-        return None
-    return json.loads(latest.read_text(encoding='utf-8'))
 
 
 def _write_report(paths: GoldPipelinePaths, report: dict[str, Any]) -> None:
@@ -115,75 +97,62 @@ def build_task_graph(sources: list[str], include_mappings: bool, include_sources
     return tasks
 
 
-def _task_fingerprint(
-    task: TaskDef,
-    inputs_package: str,
-    batch_size: int,
-    test_mode: bool,
-    dep_versions: dict[str, str],
-) -> str:
-    payload: dict[str, Any] = {
-        'task_type': task.task_type,
-        'source': task.source,
-        'batch_size': batch_size,
-        'test_mode': test_mode,
-        'deps': dep_versions,
-    }
-    if task.task_type == 'resolver_mappings':
-        payload['code'] = {
-            'mapping_tables': module_file_hash('id_resolver.build.mapping_tables'),
-            'protein_sources': module_file_hash('id_resolver.build.sources.proteins'),
-            'chemical_sources': module_file_hash('id_resolver.build.sources.chemicals'),
-        }
-    elif task.task_type == 'silver':
-        payload['code'] = {
-            'silver_loader': module_file_hash('omnipath_build.silver.build'),
-            'source_module': module_file_hash(f'{inputs_package}.{task.source}'),
-        }
-    elif task.task_type == 'gold':
-        payload['code'] = {
-            'pipeline_tasks': module_file_hash('omnipath_build.pipeline.tasks'),
-            'converter': module_file_hash('omnipath_build.gold.convert'),
-            'dedup': module_file_hash('omnipath_build.gold.dedup'),
-            'resolver': module_file_hash('id_resolver.resolve.target_schema'),
-        }
-    else:
-        raise ValueError(f'Unsupported task type: {task.task_type}')
-    return _stable_json_sha(payload)
+def _normalize_overwrite(overwrite: str | None) -> frozenset[str]:
+    if overwrite in {None, ''}:
+        return frozenset()
+    if overwrite == 'gold':
+        return frozenset({'gold'})
+    if overwrite in {'silver', 'both'}:
+        return frozenset({'silver', 'gold'})
+    raise ValueError(f'Unsupported overwrite mode: {overwrite}')
 
 
-def _reuse_previous_result(
-    previous_report: dict[str, Any] | None,
+def _reuse_existing_result(
     task: TaskDef,
-    fingerprint: str,
+    paths: GoldPipelinePaths,
+    resolver_mapping_dir: Path | None,
+    overwrite_task_types: frozenset[str],
 ) -> TaskResult | None:
-    if previous_report is None:
+    if task.task_type in overwrite_task_types:
         return None
-    previous_task = previous_report.get('tasks', {}).get(task.key)
-    if not previous_task:
+
+    if task.task_type == 'resolver_mappings':
+        mapping_dir = resolver_mapping_dir or Path('id_resolver/data')
+        if not resolver_mappings_ready(mapping_dir):
+            return None
+        return TaskResult(
+            task_key=task.key,
+            task_type=task.task_type,
+            source=task.source,
+            status='reused',
+            version='id-resolver-data',
+            output_dir=str(mapping_dir),
+            metadata={'external': resolver_mapping_dir is not None},
+        )
+
+    if task.source is None:
         return None
-    if previous_task.get('fingerprint') != fingerprint:
+
+    stage_root = paths.silver_root if task.task_type == 'silver' else paths.gold_root
+    version = read_latest_pointer(stage_root, task.source)
+    if version is None:
         return None
-    output_dir = previous_task.get('output_dir')
-    if output_dir and not Path(output_dir).exists():
+    output_dir = source_version_dir(stage_root, task.source, version)
+    if not output_dir.exists():
         return None
     return TaskResult(
         task_key=task.key,
         task_type=task.task_type,
         source=task.source,
         status='reused',
-        fingerprint=fingerprint,
-        version=previous_task.get('version'),
-        output_dir=output_dir,
-        reused_from_run=previous_report.get('run_id'),
-        dependency_versions=dict(previous_task.get('dependency_versions', {})),
-        metadata=dict(previous_task.get('metadata', {})),
+        version=version,
+        output_dir=str(output_dir),
+        metadata={},
     )
 
 
 def _failed_task_result(
     task: TaskDef,
-    dep_versions: dict[str, str],
     exc: Exception,
 ) -> TaskResult:
     return TaskResult(
@@ -191,11 +160,8 @@ def _failed_task_result(
         task_type=task.task_type,
         source=task.source,
         status='failed',
-        fingerprint='',
         version=None,
         output_dir=None,
-        reused_from_run=None,
-        dependency_versions=dep_versions,
         metadata={
             'error': {
                 'type': type(exc).__name__,
@@ -208,7 +174,6 @@ def _failed_task_result(
 
 def _skipped_task_result(
     task: TaskDef,
-    dep_versions: dict[str, str],
     reason: str,
     failed_dependencies: list[str],
 ) -> TaskResult:
@@ -217,11 +182,8 @@ def _skipped_task_result(
         task_type=task.task_type,
         source=task.source,
         status='skipped',
-        fingerprint='',
         version=None,
         output_dir=None,
-        reused_from_run=None,
-        dependency_versions=dep_versions,
         metadata={
             'reason': reason,
             'failed_dependencies': failed_dependencies,
@@ -234,59 +196,29 @@ def _execute_task(
     *,
     task: TaskDef,
     results: dict[str, TaskResult],
-    previous_report: dict[str, Any] | None,
     paths: GoldPipelinePaths,
     inputs_package: str,
     batch_size: int,
     test_mode: bool,
     resolver_mapping_dir: Path | None,
+    overwrite_task_types: frozenset[str],
 ) -> TaskResult:
-    dep_versions = {
-        dep: results[dep].version
-        for dep in task.deps
-        if results[dep].version is not None
-    }
-    fingerprint = _task_fingerprint(task, inputs_package, batch_size, test_mode, dep_versions)
-    reused = _reuse_previous_result(previous_report, task, fingerprint)
+    reused = _reuse_existing_result(task, paths, resolver_mapping_dir, overwrite_task_types)
     if reused is not None:
         return reused
 
     if task.task_type == 'resolver_mappings':
-        if resolver_mapping_dir is not None:
-            if not resolver_mappings_ready(resolver_mapping_dir):
-                raise FileNotFoundError(
-                    f'Resolver mapping dir is missing required files: {resolver_mapping_dir}'
-                )
-            version = f'external-{fingerprint[:12]}'
-            return TaskResult(
-                task_key=task.key,
-                task_type=task.task_type,
-                source=task.source,
-                status='executed',
-                fingerprint=fingerprint,
-                version=version,
-                output_dir=str(resolver_mapping_dir),
-                reused_from_run=None,
-                dependency_versions=dep_versions,
-                metadata={'external': True},
-            )
-
         output_dir = resolver_mapping_dir or Path('id_resolver/data')
-        version = 'id-resolver-data'
         metadata = build_resolver_mappings(output_dir)
-        result = TaskResult(
+        return TaskResult(
             task_key=task.key,
             task_type=task.task_type,
             source=task.source,
             status='executed',
-            fingerprint=fingerprint,
-            version=version,
+            version='id-resolver-data',
             output_dir=str(output_dir),
-            reused_from_run=None,
-            dependency_versions=dep_versions,
             metadata=metadata,
         )
-        return result
 
     if task.source is None:
         raise ValueError(f'Task source missing for {task.key}')
@@ -306,11 +238,8 @@ def _execute_task(
             task_type=task.task_type,
             source=task.source,
             status='executed',
-            fingerprint=fingerprint,
             version=version,
             output_dir=str(output_dir),
-            reused_from_run=None,
-            dependency_versions=dep_versions,
             metadata=metadata,
         )
 
@@ -326,17 +255,13 @@ def _execute_task(
             mapping_dir=mapping_dep,
             batch_size=batch_size,
         )
-        metadata['content_hash'] = tree_sha256(output_dir)
         return TaskResult(
             task_key=task.key,
             task_type=task.task_type,
             source=task.source,
             status='executed',
-            fingerprint=fingerprint,
             version=version,
             output_dir=str(output_dir),
-            reused_from_run=None,
-            dependency_versions=dep_versions,
             metadata=metadata,
         )
 
@@ -346,13 +271,13 @@ def _execute_task(
 def _run_dag(
     *,
     tasks: list[TaskDef],
-    previous_report: dict[str, Any] | None,
     paths: GoldPipelinePaths,
     inputs_package: str,
     batch_size: int,
     test_mode: bool,
     jobs: int,
     resolver_mapping_dir: Path | None,
+    overwrite_task_types: frozenset[str],
 ) -> dict[str, TaskResult]:
     task_map = {task.key: task for task in tasks}
     pending_deps = {task.key: len(task.deps) for task in tasks}
@@ -363,7 +288,6 @@ def _run_dag(
 
     ready = sorted([task.key for task in tasks if pending_deps[task.key] == 0])
     results: dict[str, TaskResult] = {}
-    blocked: set[str] = set()
 
     def submit(pool: ThreadPoolExecutor, key: str):
         task = task_map[key]
@@ -372,12 +296,12 @@ def _run_dag(
             _execute_task,
             task=task,
             results=snapshot,
-            previous_report=previous_report,
             paths=paths,
             inputs_package=inputs_package,
             batch_size=batch_size,
             test_mode=test_mode,
             resolver_mapping_dir=resolver_mapping_dir,
+            overwrite_task_types=overwrite_task_types,
         )
 
     with ThreadPoolExecutor(max_workers=max(1, jobs)) as pool:
@@ -394,20 +318,13 @@ def _run_dag(
                 try:
                     result = future.result()
                 except Exception as exc:  # noqa: BLE001
-                    dep_versions = {
-                        dep: results[dep].version
-                        for dep in task.deps
-                        if dep in results and results[dep].version is not None
-                    }
-                    result = _failed_task_result(task, dep_versions, exc)
+                    result = _failed_task_result(task, exc)
 
                 results[key] = result
                 print(f'[{result.status}] {key} -> {result.output_dir or result.version or result.metadata.get("error", {}).get("message", "-")}')
 
                 for dependent in dependents.get(key, []):
                     pending_deps[dependent] -= 1
-                    if result.status == 'failed':
-                        blocked.add(dependent)
                     if pending_deps[dependent] == 0:
                         dep_task = task_map[dependent]
                         failed_dependencies = [
@@ -415,14 +332,8 @@ def _run_dag(
                             if dep in results and results[dep].status in {'failed', 'skipped'}
                         ]
                         if failed_dependencies:
-                            dep_versions = {
-                                dep: results[dep].version
-                                for dep in dep_task.deps
-                                if dep in results and results[dep].version is not None
-                            }
                             skipped = _skipped_task_result(
                                 dep_task,
-                                dep_versions,
                                 'dependency_failed',
                                 failed_dependencies,
                             )
@@ -430,7 +341,6 @@ def _run_dag(
                             print(f'[skipped] {dependent} -> dependency_failed')
                             for child in dependents.get(dependent, []):
                                 pending_deps[child] -= 1
-                                blocked.add(child)
                                 if pending_deps[child] == 0:
                                     ready.append(child)
                         else:
@@ -444,7 +354,10 @@ def _run_dag(
 
 
 def _has_gold_buildable_dataset(functions: list[ResourceFunction]) -> bool:
-    return any(fn.function_name != 'resource' for fn in functions)
+    return any(
+        fn.function_name != 'resource' and fn.output_kind != 'ontology'
+        for fn in functions
+    )
 
 
 
@@ -472,6 +385,7 @@ def run_pipeline(
     test_mode: bool = False,
     jobs: int = 4,
     resolver_mapping_dir: str | Path | None = None,
+    overwrite: str | None = None,
 ) -> dict[str, Any]:
     include_mappings = command in {'mappings', 'source', 'all'}
     include_sources = command in {'source', 'all'}
@@ -489,17 +403,17 @@ def run_pipeline(
     ]:
         base.mkdir(parents=True, exist_ok=True)
 
-    previous_report = _load_latest_report(paths)
+    overwrite_task_types = _normalize_overwrite(overwrite)
     tasks = build_task_graph(sources, include_mappings=include_mappings, include_sources=include_sources)
     results = _run_dag(
         tasks=tasks,
-        previous_report=previous_report,
         paths=paths,
         inputs_package=inputs_package,
         batch_size=batch_size,
         test_mode=test_mode,
         jobs=jobs,
         resolver_mapping_dir=Path(resolver_mapping_dir) if resolver_mapping_dir is not None else None,
+        overwrite_task_types=overwrite_task_types,
     )
 
     for source in sources:
@@ -522,6 +436,7 @@ def run_pipeline(
         'run_id': _run_id(),
         'created_at': iso_now(),
         'command': command,
+        'overwrite': overwrite,
         'selected_sources': sources,
         'resolver_mapping_version': mapping_result.version if mapping_result else None,
         'resources_parquet': str(resources_parquet) if resources_parquet else None,

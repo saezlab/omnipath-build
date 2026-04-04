@@ -9,6 +9,7 @@ from typing import Any
 import polars as pl
 import pyarrow.parquet as pq
 
+from omnipath_build.gold.cv_terms import format_cv_term
 from omnipath_build.pipeline.paths import read_latest_pointer, source_version_dir
 from omnipath_build.silver.build import discover_resources
 from pypath.inputs_v2.base import Resource
@@ -207,7 +208,7 @@ def _resource_row(*, source: str, resource: Resource, gold_root: Path) -> dict[s
         'resource_name': config.name,
         'description': config.description,
         'homepage_url': config.url,
-        'license': str(config.license),
+        'license': format_cv_term(str(config.license)) or str(config.license),
         'pubmed_id': config.pubmed,
         'primary_category': config.primary_category,
         'data_modalities': _data_modalities(version_dir),
