@@ -88,11 +88,11 @@ def _build_entity_id_mapping(entities: pl.DataFrame, entity_identifiers: pl.Data
 def deduplicate_target_schema_dir(output_dir: str | Path) -> dict[str, Any]:
     output_dir = Path(output_dir)
     entities_path = output_dir / 'entities.parquet'
-    identifiers_path = output_dir / 'entity_identifiers.parquet'
+    identifiers_path = output_dir / 'entity_identifiers_resolved.parquet'
     interactions_path = output_dir / 'interactions.parquet'
     associations_path = output_dir / 'associations.parquet'
     annotations_path = output_dir / 'annotations.parquet'
-    cross_references_path = output_dir / 'entity_cross_references.parquet'
+    cross_references_path = output_dir / 'entity_identifiers_source.parquet'
     if not annotations_path.exists():
         legacy_annotations_path = output_dir / 'cv_annotations.parquet'
         annotations_path = legacy_annotations_path if legacy_annotations_path.exists() else annotations_path

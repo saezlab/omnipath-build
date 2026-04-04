@@ -216,7 +216,7 @@ def _resource_row(*, source: str, resource: Resource, gold_root: Path) -> dict[s
         'entity_count': _count_file(version_dir, 'entities.parquet'),
         'interaction_count': _count_file(version_dir, 'interactions.parquet'),
         'association_count': _count_file(version_dir, 'associations.parquet'),
-        'identifier_count': _count_file(version_dir, 'entity_identifiers.parquet'),
+        'identifier_count': _count_file(version_dir, 'entity_identifiers_resolved.parquet'),
         'ontology_term_count': _ontology_term_count(version_dir),
         'total_size_bytes': sum(path.stat().st_size for path in gold_files),
         'last_downloaded_at': _resource_download_mtime(resource),

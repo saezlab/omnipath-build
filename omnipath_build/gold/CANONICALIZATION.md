@@ -2,8 +2,8 @@
 
 ## Current model
 
-- `entity_cross_references.parquet` stores raw source-provided identifiers
-- `entity_identifiers.parquet` stores only authoritative identifiers produced by canonicalization
+- `entity_identifiers_source.parquet` stores raw source-provided identifiers
+- `entity_identifiers_resolved.parquet` stores only authoritative identifiers produced by canonicalization
 - `entities.canonical_identifier` is chosen from the authoritative identifier set
 
 ## Pipeline
@@ -32,7 +32,7 @@ Examples:
   - backbone conflicts: different backbones after normal comparison
   - near conflicts: differences only in stereo/protonation layers
 - No source namespace wins by default in conflicts
-- Raw source identifiers remain preserved in `entity_cross_references.parquet`
+- Raw source identifiers remain preserved in `entity_identifiers_source.parquet`
 
 ## Reporting
 

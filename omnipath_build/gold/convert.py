@@ -189,16 +189,16 @@ class SourceConverter:
         self.next_association_id = 1
 
         self.entities = BufferedParquetWriter(output_dir / "entities.parquet", ENTITIES_SCHEMA, batch_size)
-        self.entity_identifiers = BufferedParquetWriter(output_dir / "entity_identifiers.parquet", ENTITY_IDENTIFIERS_SCHEMA, batch_size)
-        self.entity_cross_references = BufferedParquetWriter(output_dir / "entity_cross_references.parquet", ENTITY_CROSS_REFERENCES_SCHEMA, batch_size)
+        self.entity_identifiers_resolved = BufferedParquetWriter(output_dir / "entity_identifiers_resolved.parquet", ENTITY_IDENTIFIERS_SCHEMA, batch_size)
+        self.entity_identifiers_source = BufferedParquetWriter(output_dir / "entity_identifiers_source.parquet", ENTITY_CROSS_REFERENCES_SCHEMA, batch_size)
         self.interactions = BufferedParquetWriter(output_dir / "interactions.parquet", INTERACTIONS_SCHEMA, batch_size)
         self.associations = BufferedParquetWriter(output_dir / "associations.parquet", ASSOCIATIONS_SCHEMA, batch_size)
         self.annotations = BufferedParquetWriter(output_dir / "annotations.parquet", ANNOTATIONS_SCHEMA, batch_size)
 
     def close(self) -> None:
         self.entities.close()
-        self.entity_identifiers.close()
-        self.entity_cross_references.close()
+        self.entity_identifiers_resolved.close()
+        self.entity_identifiers_source.close()
         self.interactions.close()
         self.associations.close()
         self.annotations.close()
@@ -347,7 +347,7 @@ class SourceConverter:
         for ident in identifiers:
             ident_type = self._string_or_none(ident.get("type"))
             ident_value = self._string_or_none(ident.get("value"))
-            self.entity_cross_references.write({
+            self.entity_identifiers_source.write({
                 "entity_id": entity_id,
                 "cross_reference": ident_value,
                 "cross_reference_type": format_cv_term(ident_type),

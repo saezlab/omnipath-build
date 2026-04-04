@@ -499,12 +499,12 @@ def _write_canonicalization_report(
 
         ## What this step does
 
-        - Reads raw source identifiers from `entity_cross_references.parquet`
+        - Reads raw source identifiers from `entity_identifiers_source.parquet`
         - Resolves supported identifiers to one canonical backbone per entity:
           - proteins -> UniProt
           - chemicals/lipids -> Standard InChI
         - Accepts an entity only when all supported evidence collapses to exactly one resolved backbone
-        - Expands that backbone to the full authoritative identifier set in `entity_identifiers.parquet`
+        - Expands that backbone to the full authoritative identifier set in `entity_identifiers_resolved.parquet`
         - Chooses `entities.canonical_identifier` from the authoritative identifier set by priority
 
         ## Conflict policy
@@ -514,7 +514,7 @@ def _write_canonicalization_report(
         - If they resolve to conflicting backbones, the entity is left unresolved
         - For chemicals, conflicts are split into backbone conflicts vs near conflicts that differ only by stereo/protonation layers
         - Identifier types below are shown as labels, not accessions
-        - Raw source identifiers remain preserved in `entity_cross_references.parquet`
+        - Raw source identifiers remain preserved in `entity_identifiers_source.parquet`
 
         ## Summary
 
@@ -670,8 +670,8 @@ def normalize_target_schema_dir(
     source_dir = Path(source_dir)
     mapping_dir = Path(mapping_dir)
     entities_path = source_dir / 'entities.parquet'
-    identifiers_path = source_dir / 'entity_identifiers.parquet'
-    cross_references_path = source_dir / 'entity_cross_references.parquet'
+    identifiers_path = source_dir / 'entity_identifiers_resolved.parquet'
+    cross_references_path = source_dir / 'entity_identifiers_source.parquet'
 
     if not entities_path.exists() or not cross_references_path.exists():
         summary = {
