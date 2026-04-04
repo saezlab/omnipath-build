@@ -15,6 +15,7 @@ from omnipath_build.pipeline.paths import (
     source_version_dir,
     update_latest_pointer,
 )
+from omnipath_build.gold.canonicalize import write_canonicalization_overview_report
 from omnipath_build.pipeline.resources_index import build_resources_parquet
 from omnipath_build.pipeline.tasks import (
     build_gold_source,
@@ -425,10 +426,20 @@ def run_pipeline(
             update_latest_pointer(paths.gold_root, source, gold_result.version)
 
     resources_parquet = None
+    canonicalization_overview = None
     if include_sources:
         resources_parquet = build_resources_parquet(
             gold_root=paths.gold_root,
             inputs_package=inputs_package,
+        )
+        source_summaries = {
+            source: results[f'gold:{source}'].metadata.get('canonicalize_summary', {})
+            for source in sources
+            if results.get(f'gold:{source}') is not None and results[f'gold:{source}'].status in {'executed', 'reused'}
+        }
+        canonicalization_overview = write_canonicalization_overview_report(
+            paths.gold_root,
+            source_summaries=source_summaries,
         )
 
     mapping_result = results.get('resolver_mappings')
@@ -440,6 +451,7 @@ def run_pipeline(
         'selected_sources': sources,
         'resolver_mapping_version': mapping_result.version if mapping_result else None,
         'resources_parquet': str(resources_parquet) if resources_parquet else None,
+        'canonicalization_overview': str(canonicalization_overview) if canonicalization_overview else None,
         'tasks': {key: asdict(value) for key, value in results.items()},
     }
     _write_report(paths, report)

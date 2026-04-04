@@ -92,6 +92,7 @@ def deduplicate_target_schema_dir(output_dir: str | Path) -> dict[str, Any]:
     interactions_path = output_dir / 'interactions.parquet'
     associations_path = output_dir / 'associations.parquet'
     annotations_path = output_dir / 'annotations.parquet'
+    cross_references_path = output_dir / 'entity_cross_references.parquet'
     if not annotations_path.exists():
         legacy_annotations_path = output_dir / 'cv_annotations.parquet'
         annotations_path = legacy_annotations_path if legacy_annotations_path.exists() else annotations_path
@@ -219,6 +220,19 @@ def deduplicate_target_schema_dir(output_dir: str | Path) -> dict[str, Any]:
         .select(['entity_id', 'identifier', 'identifier_type', 'is_canonical', 'source'])
         .sort(['entity_id', 'identifier_type', 'identifier', 'source'])
     )
+
+    if cross_references_path.exists():
+        cross_references = pl.read_parquet(cross_references_path)
+        cross_references = (
+            cross_references
+            .join(entity_map, left_on='entity_id', right_on='old_entity_id', how='left')
+            .with_columns([
+                pl.coalesce([pl.col('canonical_entity_id'), pl.col('entity_id')]).alias('entity_id'),
+            ])
+            .drop(['old_entity_id', 'canonical_entity_id'], strict=False)
+            .unique()
+        )
+        cross_references.write_parquet(cross_references_path)
 
     if interactions_path.exists():
         interactions = pl.read_parquet(interactions_path)

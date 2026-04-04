@@ -14,7 +14,7 @@ from id_resolver.build.mapping_tables import (
     CHEMICAL_SOURCES,
     run_sources as materialize_resolver_tables,
 )
-from id_resolver.resolve.target_schema import normalize_target_schema_dir
+from omnipath_build.gold.canonicalize import normalize_target_schema_dir
 from omnipath_build.gold.convert import SourceConverter
 from omnipath_build.gold.dedup import deduplicate_target_schema_dir
 from omnipath_build.silver.build import run_silver_loader
@@ -141,12 +141,12 @@ def build_gold_source(
         shutil.copy2(artifact, target)
         copied_artifacts.append(artifact.name)
 
-    dedup_summary = deduplicate_target_schema_dir(output_dir)
     canonicalize_summary = normalize_target_schema_dir(
         source_dir=output_dir,
         mapping_dir=mapping_dir,
         source_name=source,
     )
+    dedup_summary = deduplicate_target_schema_dir(output_dir)
     return {
         'files': sorted(p.name for p in output_dir.iterdir() if p.is_file()),
         'copied_artifacts': copied_artifacts,

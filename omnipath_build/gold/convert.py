@@ -19,7 +19,7 @@ from pypath.internals.cv_terms import (
 )
 from pypath.internals.cv_terms.entity_types import EntityTypeCv
 
-from omnipath_build.gold.canonical import choose_canonical_identifier
+from omnipath_build.gold.canonicalize import normalize_target_schema_dir, write_canonicalization_overview_report
 from omnipath_build.gold.cv_terms import format_cv_term
 from omnipath_build.gold.dedup import deduplicate_target_schema_dir
 from omnipath_build.silver.ensure import ensure_silver_dir
@@ -38,6 +38,13 @@ ENTITY_IDENTIFIERS_SCHEMA = pa.schema([
     pa.field("identifier", pa.string()),
     pa.field("identifier_type", pa.string()),
     pa.field("is_canonical", pa.bool_()),
+    pa.field("source", pa.string()),
+])
+
+ENTITY_CROSS_REFERENCES_SCHEMA = pa.schema([
+    pa.field("entity_id", pa.int64()),
+    pa.field("cross_reference", pa.string()),
+    pa.field("cross_reference_type", pa.string()),
     pa.field("source", pa.string()),
 ])
 
@@ -183,6 +190,7 @@ class SourceConverter:
 
         self.entities = BufferedParquetWriter(output_dir / "entities.parquet", ENTITIES_SCHEMA, batch_size)
         self.entity_identifiers = BufferedParquetWriter(output_dir / "entity_identifiers.parquet", ENTITY_IDENTIFIERS_SCHEMA, batch_size)
+        self.entity_cross_references = BufferedParquetWriter(output_dir / "entity_cross_references.parquet", ENTITY_CROSS_REFERENCES_SCHEMA, batch_size)
         self.interactions = BufferedParquetWriter(output_dir / "interactions.parquet", INTERACTIONS_SCHEMA, batch_size)
         self.associations = BufferedParquetWriter(output_dir / "associations.parquet", ASSOCIATIONS_SCHEMA, batch_size)
         self.annotations = BufferedParquetWriter(output_dir / "annotations.parquet", ANNOTATIONS_SCHEMA, batch_size)
@@ -190,6 +198,7 @@ class SourceConverter:
     def close(self) -> None:
         self.entities.close()
         self.entity_identifiers.close()
+        self.entity_cross_references.close()
         self.interactions.close()
         self.associations.close()
         self.annotations.close()
@@ -316,7 +325,6 @@ class SourceConverter:
         self.next_entity_id += 1
 
         identifiers = [ident for ident in (row.get("identifiers") or []) if ident and ident.get("value")]
-        canonical = self._choose_canonical_identifier(identifiers)
         display_name = self._choose_display_name(identifiers)
         taxonomy_id = self._extract_taxonomy_id(
             row.get("annotations") or [],
@@ -329,8 +337,8 @@ class SourceConverter:
             "entity_id": entity_id,
             "entity_type": format_cv_term(self._string_or_none(row.get("type"))),
             "display_name": display_name,
-            "canonical_identifier": canonical[1] if canonical else None,
-            "canonical_identifier_type": format_cv_term(canonical[0]) if canonical else None,
+            "canonical_identifier": None,
+            "canonical_identifier_type": None,
             "entity_attributes": entity_attributes,
             "taxonomy_id": taxonomy_id,
             "source": self.source,
@@ -339,18 +347,17 @@ class SourceConverter:
         for ident in identifiers:
             ident_type = self._string_or_none(ident.get("type"))
             ident_value = self._string_or_none(ident.get("value"))
-            self.entity_identifiers.write({
+            self.entity_cross_references.write({
                 "entity_id": entity_id,
-                "identifier": ident_value,
-                "identifier_type": format_cv_term(ident_type),
-                "is_canonical": canonical is not None and ident_type == canonical[0] and ident_value == canonical[1],
+                "cross_reference": ident_value,
+                "cross_reference_type": format_cv_term(ident_type),
                 "source": self.source,
             })
 
         return EntityRef(
             entity_id=entity_id,
-            canonical_identifier=canonical[1] if canonical else None,
-            canonical_identifier_type=format_cv_term(canonical[0]) if canonical else None,
+            canonical_identifier=None,
+            canonical_identifier_type=None,
             entity_type_id=self._string_or_none(row.get("type")),
             entity_attributes=entity_attributes,
         )
@@ -368,12 +375,6 @@ class SourceConverter:
                 "cv_term": cv_term,
                 "source": self.source,
             })
-
-    def _choose_canonical_identifier(self, identifiers: list[dict[str, Any]]) -> tuple[str, str] | None:
-        return choose_canonical_identifier([
-            (self._string_or_none(item.get("type")), self._string_or_none(item.get("value")))
-            for item in identifiers
-        ])
 
     def _choose_display_name(self, identifiers: list[dict[str, Any]]) -> str | None:
         for preferred_type in (str(IdentifierNamespaceCv.NAME), str(IdentifierNamespaceCv.GENE_NAME_PRIMARY), str(IdentifierNamespaceCv.SYSTEMATIC_NAME)):
@@ -564,6 +565,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--silver-dir", type=Path, help="Optional explicit silver dir (single-source runs only)")
     parser.add_argument("--inputs-package", default="pypath.inputs_v2")
     parser.add_argument("--batch-size", type=int, default=10_000)
+    parser.add_argument("--resolver-mapping-dir", type=Path, default=Path("id_resolver/data"), help="Resolver mapping directory for authoritative canonicalization (default: id_resolver/data)")
     parser.add_argument("--test-mode", action="store_true", help="Build silver in test mode if silver output is missing")
     return parser.parse_args()
 
@@ -573,6 +575,7 @@ def main() -> int:
     if args.silver_dir is not None and len(args.sources) != 1:
         raise SystemExit("--silver-dir can only be used with a single source")
 
+    canonicalization_summaries: dict[str, dict[str, object]] = {}
     for source in args.sources:
         source_silver_dir = resolve_silver_dir(
             source,
@@ -593,7 +596,14 @@ def main() -> int:
             converter.convert()
         finally:
             converter.close()
+        canonicalize_summary = normalize_target_schema_dir(
+            source_dir=source_output_dir,
+            mapping_dir=args.resolver_mapping_dir,
+            source_name=source,
+        )
         dedup_summary = deduplicate_target_schema_dir(source_output_dir)
-        print(f"[{source}] wrote target tables to {source_output_dir} (dedup: {dedup_summary})")
+        canonicalization_summaries[source] = canonicalize_summary
+        print(f"[{source}] wrote target tables to {source_output_dir} (canonicalize: {canonicalize_summary}, dedup: {dedup_summary})")
 
+    write_canonicalization_overview_report(args.output_root, source_summaries=canonicalization_summaries)
     return 0
