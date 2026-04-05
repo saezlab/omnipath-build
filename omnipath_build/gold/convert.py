@@ -90,6 +90,8 @@ ANNOTATIONS_SCHEMA = pa.schema([
 ])
 
 ACCESSION_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*:[^\s]+$")
+WIKIPATHWAYS_RE = re.compile(r"^WP\d+(?:_r\d+)?$")
+REACTOME_RE = re.compile(r"^R-[A-Z]{3}-\d+(?:-\d+)?$")
 INTERACTION_LIKE_TYPES = {
     str(EntityTypeCv.INTERACTION),
     str(EntityTypeCv.REACTION),
@@ -313,7 +315,9 @@ class SourceConverter:
         if self._string_or_none(row.get("type")) in PURE_INTERACTION_TYPES:
             self._process_entity_row(row)
             return None
-        return self._materialize_entity(row)
+        entity = self._materialize_entity(row)
+        self._emit_cv_annotations("entity", entity.entity_id, row.get("annotations") or [])
+        return entity
 
     def _materialize_entity(self, row: dict[str, Any]) -> EntityRef:
         entity_id = self.next_entity_id
@@ -507,17 +511,24 @@ class SourceConverter:
     def _cv_term_from_annotation(self, annotation: dict[str, Any]) -> str | None:
         term = self._string_or_none(annotation.get("term"))
         value = self._string_or_none(annotation.get("value"))
-        if term == str(IdentifierNamespaceCv.CV_TERM_ACCESSION) and value and ACCESSION_RE.match(value):
+        if term == str(IdentifierNamespaceCv.CV_TERM_ACCESSION) and value and self._is_cv_term_accession(value):
             return self._format_cv_term(value)
-        if term and value is None and ACCESSION_RE.match(term):
+        if term and value is None and self._is_cv_term_accession(term):
             return self._format_cv_term(term)
         return None
 
     def _format_cv_term(self, accession: str) -> str:
         return format_cv_term(accession) or accession
 
+    def _is_cv_term_accession(self, value: str) -> bool:
+        return bool(
+            ACCESSION_RE.match(value)
+            or WIKIPATHWAYS_RE.match(value)
+            or REACTOME_RE.match(value)
+        )
+
     def _normalize_attribute_term(self, term: str) -> str:
-        if ACCESSION_RE.match(term):
+        if self._is_cv_term_accession(term):
             return self._format_cv_term(term)
         return term
 
