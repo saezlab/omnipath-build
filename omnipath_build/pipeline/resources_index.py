@@ -144,6 +144,26 @@ def _count_file(version_dir: Path | None, name: str) -> int:
     return _parquet_rows(path)
 
 
+def _supports_interactions(*, interaction_count: int) -> bool:
+    return interaction_count > 0
+
+
+def _supports_annotations(*, annotation_count: int, ontology_term_count: int) -> bool:
+    return annotation_count > 0 or ontology_term_count > 0
+
+
+def _supports_ontology(*, ontology_term_count: int) -> bool:
+    return ontology_term_count > 0
+
+
+def _top_level_category(*, interaction_count: int, annotation_count: int, ontology_term_count: int) -> str | None:
+    if _supports_interactions(interaction_count=interaction_count):
+        return 'interaction'
+    if _supports_annotations(annotation_count=annotation_count, ontology_term_count=ontology_term_count):
+        return 'annotation'
+    return None
+
+
 def _ontology_term_count(version_dir: Path | None) -> int:
     if version_dir is None:
         return 0
@@ -202,6 +222,12 @@ def _resource_row(*, source: str, resource: Resource, gold_root: Path) -> dict[s
     version_dir = _current_gold_dir(gold_root, source)
     gold_files = _gold_files(version_dir)
     last_built_at = _iso_utc(_latest_file_mtime(gold_files))
+    entity_count = _count_file(version_dir, 'entities.parquet')
+    interaction_count = _count_file(version_dir, 'interactions.parquet')
+    association_count = _count_file(version_dir, 'associations.parquet')
+    annotation_count = _count_file(version_dir, 'annotations.parquet')
+    identifier_count = _count_file(version_dir, 'entity_identifiers_resolved.parquet')
+    ontology_term_count = _ontology_term_count(version_dir)
 
     return {
         'resource_id': source,
@@ -211,13 +237,25 @@ def _resource_row(*, source: str, resource: Resource, gold_root: Path) -> dict[s
         'license': format_cv_term(str(config.license)) or str(config.license),
         'pubmed_id': config.pubmed,
         'primary_category': config.primary_category,
+        'top_level_category': _top_level_category(
+            interaction_count=interaction_count,
+            annotation_count=annotation_count,
+            ontology_term_count=ontology_term_count,
+        ),
+        'supports_interactions': _supports_interactions(interaction_count=interaction_count),
+        'supports_annotations': _supports_annotations(
+            annotation_count=annotation_count,
+            ontology_term_count=ontology_term_count,
+        ),
+        'supports_ontology': _supports_ontology(ontology_term_count=ontology_term_count),
         'data_modalities': _data_modalities(version_dir),
         'interaction_participant_types': _interaction_participant_types(version_dir),
-        'entity_count': _count_file(version_dir, 'entities.parquet'),
-        'interaction_count': _count_file(version_dir, 'interactions.parquet'),
-        'association_count': _count_file(version_dir, 'associations.parquet'),
-        'identifier_count': _count_file(version_dir, 'entity_identifiers_resolved.parquet'),
-        'ontology_term_count': _ontology_term_count(version_dir),
+        'entity_count': entity_count,
+        'interaction_count': interaction_count,
+        'association_count': association_count,
+        'annotation_count': annotation_count,
+        'identifier_count': identifier_count,
+        'ontology_term_count': ontology_term_count,
         'total_size_bytes': sum(path.stat().st_size for path in gold_files),
         'last_downloaded_at': _resource_download_mtime(resource),
         'last_built_at': last_built_at,
