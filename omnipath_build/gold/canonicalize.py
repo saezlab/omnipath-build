@@ -105,8 +105,6 @@ def _normalize_entities(entities: pl.DataFrame) -> pl.DataFrame:
     return entities.with_columns([
         pl.col('entity_id').cast(pl.Int64),
         pl.col('entity_type').cast(pl.Utf8),
-        pl.col('canonical_identifier').cast(pl.Utf8),
-        pl.col('canonical_identifier_type').cast(pl.Utf8),
         pl.when(pl.col('taxonomy_id').is_null() | (pl.col('taxonomy_id').cast(pl.Utf8) == ''))
         .then(pl.lit(None, dtype=pl.Utf8))
         .otherwise(pl.col('taxonomy_id').cast(pl.Utf8))
@@ -114,11 +112,11 @@ def _normalize_entities(entities: pl.DataFrame) -> pl.DataFrame:
     ])
 
 
-def _normalize_cross_references(cross_references: pl.DataFrame) -> pl.DataFrame:
-    return cross_references.with_columns([
+def _normalize_source_identifiers(identifier_rows: pl.DataFrame) -> pl.DataFrame:
+    return identifier_rows.with_columns([
         pl.col('entity_id').cast(pl.Int64),
-        pl.col('cross_reference').cast(pl.Utf8),
-        pl.col('cross_reference_type').cast(pl.Utf8),
+        pl.col('identifier').cast(pl.Utf8),
+        pl.col('identifier_type').cast(pl.Utf8),
         pl.col('source').cast(pl.Utf8),
     ])
 
@@ -487,7 +485,7 @@ def _write_canonicalization_report(
         ['backbone conflicts', str(summary.get('exact_conflicts', 0))],
         ['near conflicts', str(summary.get('near_conflicts', 0))],
         ['authoritative identifier rows written', str(summary['identifier_rows_added'])],
-        ['entities with canonical identifier set', str(summary['entities_updated'])],
+        ['entities with resolved identifiers', str(summary['entities_updated'])],
     ]
     report = textwrap.dedent(
         f"""\
@@ -505,7 +503,7 @@ def _write_canonicalization_report(
           - chemicals/lipids -> Standard InChI
         - Accepts an entity only when all supported evidence collapses to exactly one resolved backbone
         - Expands that backbone to the full authoritative identifier set in `entity_identifiers_resolved.parquet`
-        - Chooses `entities.canonical_identifier` from the authoritative identifier set by priority
+        - Marks the preferred canonical identifier in `entity_identifiers_resolved.parquet` via `is_canonical`
 
         ## Conflict policy
 
@@ -671,9 +669,9 @@ def normalize_target_schema_dir(
     mapping_dir = Path(mapping_dir)
     entities_path = source_dir / 'entities.parquet'
     identifiers_path = source_dir / 'entity_identifiers_resolved.parquet'
-    cross_references_path = source_dir / 'entity_identifiers_source.parquet'
+    source_identifiers_path = source_dir / 'entity_identifiers_source.parquet'
 
-    if not entities_path.exists() or not cross_references_path.exists():
+    if not entities_path.exists() or not source_identifiers_path.exists():
         summary = {
             'entities_seen': 0,
             'eligible_entities': 0,
@@ -688,8 +686,8 @@ def normalize_target_schema_dir(
         return summary
 
     entities = _normalize_entities(pl.read_parquet(entities_path))
-    cross_references = _normalize_cross_references(pl.read_parquet(cross_references_path))
-    if entities.is_empty() or cross_references.is_empty():
+    source_identifiers = _normalize_source_identifiers(pl.read_parquet(source_identifiers_path))
+    if entities.is_empty() or source_identifiers.is_empty():
         _empty_identifier_rows().write_parquet(identifiers_path)
         summary = {
             'entities_seen': int(entities.height),
@@ -725,14 +723,14 @@ def normalize_target_schema_dir(
         return summary
 
     resolver_input = (
-        cross_references
+        source_identifiers
         .join(eligible_entities, on='entity_id', how='inner')
         .select([
             'entity_id',
             'entity_type',
             'taxonomy_id',
-            pl.col('cross_reference').alias('id'),
-            pl.col('cross_reference_type').alias('id_type'),
+            pl.col('identifier').alias('id'),
+            pl.col('identifier_type').alias('id_type'),
         ])
         .filter(pl.col('id').is_not_null() & (pl.col('id') != ''))
         .filter(pl.col('id_type').is_not_null() & (pl.col('id_type') != ''))
@@ -787,16 +785,7 @@ def normalize_target_schema_dir(
 
     canonical_rows = _canonical_identifier_rows(authoritative_identifiers)
 
-    updated_entities = (
-        entities
-        .drop(['canonical_identifier', 'canonical_identifier_type'], strict=False)
-        .join(canonical_rows, on='entity_id', how='left')
-        .with_columns([
-            pl.col('canonical_identifier').cast(pl.Utf8),
-            pl.col('canonical_identifier_type').cast(pl.Utf8),
-        ])
-        .select(entities.columns)
-    )
+    updated_entities = entities
 
     updated_identifiers = (
         authoritative_identifiers

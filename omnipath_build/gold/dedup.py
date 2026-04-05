@@ -171,11 +171,10 @@ def deduplicate_target_schema_dir(output_dir: str | Path) -> dict[str, Any]:
         .select(['entity_id', 'entity_type'])
     )
 
-    display_name_summary = (
+    entity_summary = (
         remapped_entities
         .group_by('entity_id')
         .agg([
-            pl.col('display_name').drop_nulls().first().alias('display_name'),
             pl.col('entity_attributes').drop_nulls().first().alias('entity_attributes'),
             pl.col('source').drop_nulls().first().alias('source'),
         ])
@@ -186,15 +185,11 @@ def deduplicate_target_schema_dir(output_dir: str | Path) -> dict[str, Any]:
         .select('entity_id')
         .unique()
         .join(type_summary, on='entity_id', how='left')
-        .join(display_name_summary, on='entity_id', how='left')
+        .join(entity_summary, on='entity_id', how='left')
         .join(taxonomy_summary, on='entity_id', how='left')
-        .join(canonical_identifier_rows, on='entity_id', how='left')
         .select([
             'entity_id',
             'entity_type',
-            'display_name',
-            'canonical_identifier',
-            'canonical_identifier_type',
             'entity_attributes',
             'taxonomy_id',
             'source',

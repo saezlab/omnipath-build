@@ -4,7 +4,7 @@
 
 - `entity_identifiers_source.parquet` stores raw source-provided identifiers
 - `entity_identifiers_resolved.parquet` stores only authoritative identifiers produced by canonicalization
-- `entities.canonical_identifier` is chosen from the authoritative identifier set
+- canonical identifier choice now lives in `entity_identifiers_resolved.parquet` via `is_canonical`
 
 ## Pipeline
 

@@ -41,19 +41,16 @@ ENTITY_IDENTIFIERS_SCHEMA = pa.schema([
     pa.field("source", pa.string()),
 ])
 
-ENTITY_CROSS_REFERENCES_SCHEMA = pa.schema([
+ENTITY_IDENTIFIERS_SOURCE_SCHEMA = pa.schema([
     pa.field("entity_id", pa.int64()),
-    pa.field("cross_reference", pa.string()),
-    pa.field("cross_reference_type", pa.string()),
+    pa.field("identifier", pa.string()),
+    pa.field("identifier_type", pa.string()),
     pa.field("source", pa.string()),
 ])
 
 ENTITIES_SCHEMA = pa.schema([
     pa.field("entity_id", pa.int64()),
     pa.field("entity_type", pa.string()),
-    pa.field("display_name", pa.string()),
-    pa.field("canonical_identifier", pa.string()),
-    pa.field("canonical_identifier_type", pa.string()),
     pa.field("entity_attributes", ATTRIBUTES_STRUCT),
     pa.field("taxonomy_id", pa.string()),
     pa.field("source", pa.string()),
@@ -137,8 +134,6 @@ EVIDENCE_TERMS = {
 @dataclass
 class EntityRef:
     entity_id: int
-    canonical_identifier: str | None
-    canonical_identifier_type: str | None
     entity_type_id: str | None
     entity_attributes: list[dict[str, str | None]] | None
 
@@ -190,7 +185,7 @@ class SourceConverter:
 
         self.entities = BufferedParquetWriter(output_dir / "entities.parquet", ENTITIES_SCHEMA, batch_size)
         self.entity_identifiers_resolved = BufferedParquetWriter(output_dir / "entity_identifiers_resolved.parquet", ENTITY_IDENTIFIERS_SCHEMA, batch_size)
-        self.entity_identifiers_source = BufferedParquetWriter(output_dir / "entity_identifiers_source.parquet", ENTITY_CROSS_REFERENCES_SCHEMA, batch_size)
+        self.entity_identifiers_source = BufferedParquetWriter(output_dir / "entity_identifiers_source.parquet", ENTITY_IDENTIFIERS_SOURCE_SCHEMA, batch_size)
         self.interactions = BufferedParquetWriter(output_dir / "interactions.parquet", INTERACTIONS_SCHEMA, batch_size)
         self.associations = BufferedParquetWriter(output_dir / "associations.parquet", ASSOCIATIONS_SCHEMA, batch_size)
         self.annotations = BufferedParquetWriter(output_dir / "annotations.parquet", ANNOTATIONS_SCHEMA, batch_size)
@@ -325,7 +320,6 @@ class SourceConverter:
         self.next_entity_id += 1
 
         identifiers = [ident for ident in (row.get("identifiers") or []) if ident and ident.get("value")]
-        display_name = self._choose_display_name(identifiers)
         taxonomy_id = self._extract_taxonomy_id(
             row.get("annotations") or [],
             identifiers,
@@ -336,9 +330,6 @@ class SourceConverter:
         self.entities.write({
             "entity_id": entity_id,
             "entity_type": format_cv_term(self._string_or_none(row.get("type"))),
-            "display_name": display_name,
-            "canonical_identifier": None,
-            "canonical_identifier_type": None,
             "entity_attributes": entity_attributes,
             "taxonomy_id": taxonomy_id,
             "source": self.source,
@@ -349,15 +340,13 @@ class SourceConverter:
             ident_value = self._string_or_none(ident.get("value"))
             self.entity_identifiers_source.write({
                 "entity_id": entity_id,
-                "cross_reference": ident_value,
-                "cross_reference_type": format_cv_term(ident_type),
+                "identifier": ident_value,
+                "identifier_type": format_cv_term(ident_type),
                 "source": self.source,
             })
 
         return EntityRef(
             entity_id=entity_id,
-            canonical_identifier=None,
-            canonical_identifier_type=None,
             entity_type_id=self._string_or_none(row.get("type")),
             entity_attributes=entity_attributes,
         )
@@ -375,13 +364,6 @@ class SourceConverter:
                 "cv_term": cv_term,
                 "source": self.source,
             })
-
-    def _choose_display_name(self, identifiers: list[dict[str, Any]]) -> str | None:
-        for preferred_type in (str(IdentifierNamespaceCv.NAME), str(IdentifierNamespaceCv.GENE_NAME_PRIMARY), str(IdentifierNamespaceCv.SYSTEMATIC_NAME)):
-            for ident in identifiers:
-                if self._string_or_none(ident.get("type")) == preferred_type and ident.get("value"):
-                    return self._string_or_none(ident.get("value"))
-        return None
 
     def _extract_taxonomy_id(
         self,
