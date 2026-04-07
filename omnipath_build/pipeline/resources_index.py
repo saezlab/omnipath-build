@@ -160,6 +160,14 @@ def _gold_files(version_dir: Path | None) -> list[Path]:
     return sorted(path for path in version_dir.iterdir() if path.is_file())
 
 
+def _ontology_labels(resource: Resource) -> list[str]:
+    values = []
+    for ontology in getattr(resource.config, 'annotation_ontologies', ()):
+        label = getattr(ontology, 'definition', None) or str(ontology)
+        values.append(str(label))
+    return values
+
+
 def _resource_row(*, source: str, resource: Resource, gold_root: Path) -> dict[str, Any]:
     config = resource.config
     version_dir = _current_gold_dir(gold_root, source)
@@ -185,6 +193,7 @@ def _resource_row(*, source: str, resource: Resource, gold_root: Path) -> dict[s
             annotation_count=annotation_count,
             ontology_term_count=ontology_term_count,
         ),
+        'annotation_ontologies': _ontology_labels(resource),
         'entity_count': entity_count,
         'interaction_count': interaction_count,
         'association_count': association_count,

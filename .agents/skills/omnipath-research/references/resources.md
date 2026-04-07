@@ -9,15 +9,18 @@ Use this as a quick guide for choosing source datasets.
 - Best for: causal signaling, direction/sign, pathway signaling context
 
 ### Reactome (`reactome`)
-- Type: interaction + annotation
+- Type: interaction + association + annotation
+- Annotation ontologies: Gene Ontology, Reactome Pathway Ontology
 - Best for: curated pathways, reactions, pathway membership
 
 ### WikiPathways (`wikipathways`)
 - Type: interaction + annotation
+- Annotation ontologies: WikiPathways Ontology
 - Best for: community-curated pathways and pathway structure
 
 ### IntAct (`intact`)
 - Type: interaction + annotation
+- Annotation ontologies: Molecular Interactions Ontology
 - Best for: molecular interaction evidence across proteins, chemicals, and nucleic acids
 
 ### BindingDB (`bindingdb`)
@@ -48,19 +51,23 @@ Use this as a quick guide for choosing source datasets.
 
 ### UniProt (`uniprot`)
 - Type: annotation
-- Best for: protein function, localization, disease associations, cross-references
+- Annotation ontologies: Gene Ontology, UniProt Keywords
+- Best for: protein function, localization, disease associations, ontology-backed protein annotations, cross-references
 
 ### HPO (`hpo`)
 - Type: annotation
+- Annotation ontologies: Human Phenotype Ontology
 - Best for: gene-phenotype associations and disease phenotype terms
 
 ### ChEBI (`chebi`)
 - Type: annotation
+- Annotation ontologies: ChEBI
 - Best for: small-molecule ontology and chemical classification
 
 ### CORUM (`corum`)
-- Type: annotation
-- Best for: mammalian protein complexes
+- Type: association + annotation
+- Annotation ontologies: Gene Ontology
+- Best for: mammalian protein complexes and GO-annotated complex records
 
 ## Other chemical or food resources
 
@@ -87,14 +94,7 @@ These are useful when the question is chemistry- or metabolite-centered, even if
 ### PTFI Discover (`ptfi`)
 - Best for: food composition and food metabolomics
 
-## Quick selection hints
+## Notes on interpretation
 
-- user asks about **causal signaling** -> start with `signor`
-- user asks about **pathways** -> start with `reactome` and `wikipathways`
-- user asks about **protein complexes** -> start with `corum`
-- user asks about **phenotypes or disease terms** -> start with `hpo`
-- user asks about **protein function or localization** -> start with `uniprot`
-- user asks about **small-molecule ontology or ChEBI terms** -> start with `chebi`
-- user asks about **drug-target or ligand binding** -> start with `bindingdb`, `guidetopharma`, or `chembl`
-- user asks about **chemical-protein networks** -> start with `stitch`
-- user asks about **metabolites** -> consider `hmdb`, `chebi`, `lipidmaps`, `swisslipids`, and then interaction resources such as `bindingdb` or `stitch`
+- `Type` is a coarse capability summary matching the current resource categories: `interaction`, `association`, `annotation`.
+- `Annotation ontologies` means ontology vocabularies whose terms appear as annotations.

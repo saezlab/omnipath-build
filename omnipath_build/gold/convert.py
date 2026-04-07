@@ -9,9 +9,7 @@ from typing import Any
 import pyarrow as pa
 import pyarrow.parquet as pq
 from pypath.internals.cv_terms import (
-    BiologicalEffectCv,
     BiologicalRoleCv,
-    CausalStatementCv,
     ExperimentalRoleCv,
     IdentifierNamespaceCv,
     InteractionMetadataCv,
@@ -22,6 +20,12 @@ from pypath.internals.cv_terms.entity_types import EntityTypeCv
 from omnipath_build.gold.canonicalize import normalize_target_schema_dir, write_canonicalization_overview_report
 from omnipath_build.gold.cv_terms import format_cv_term
 from omnipath_build.gold.dedup import deduplicate_target_schema_dir
+from omnipath_build.shared_interaction_schema import (
+    NEGATIVE_SIGN_ACCESSIONS,
+    POSITIVE_SIGN_ACCESSIONS,
+    SOURCE_ROLE_ACCESSIONS,
+    TARGET_ROLE_ACCESSIONS,
+)
 from omnipath_build.silver.ensure import ensure_silver_dir
 from omnipath_build.silver.paths import default_silver_dir
 
@@ -102,24 +106,8 @@ INTERACTION_LIKE_TYPES = {
 PURE_INTERACTION_TYPES = {
     str(EntityTypeCv.INTERACTION),
 }
-SIGN_POSITIVE_TERMS = {
-    str(BiologicalEffectCv.UP_REGULATES_ACTIVITY),
-    str(BiologicalEffectCv.UP_REGULATES_QUANTITY),
-    str(CausalStatementCv.UP_REGULATES),
-    str(CausalStatementCv.UP_REGULATES_ACTIVITY),
-    str(CausalStatementCv.UP_REGULATES_QUANTITY),
-    str(CausalStatementCv.UP_REGULATES_QUANTITY_BY_EXPRESSION),
-    str(CausalStatementCv.UP_REGULATES_QUANTITY_BY_STABILIZATION),
-}
-SIGN_NEGATIVE_TERMS = {
-    str(BiologicalEffectCv.DOWN_REGULATES_ACTIVITY),
-    str(BiologicalEffectCv.DOWN_REGULATES_QUANTITY),
-    str(CausalStatementCv.DOWN_REGULATES),
-    str(CausalStatementCv.DOWN_REGULATES_ACTIVITY),
-    str(CausalStatementCv.DOWN_REGULATES_QUANTITY),
-    str(CausalStatementCv.DOWN_REGULATES_QUANTITY_BY_DESTABLIZATION),
-    str(CausalStatementCv.DOWN_REGULATES_QUANTITY_BY_REPRESSION),
-}
+SIGN_POSITIVE_TERMS = {str(term) for term in POSITIVE_SIGN_ACCESSIONS}
+SIGN_NEGATIVE_TERMS = {str(term) for term in NEGATIVE_SIGN_ACCESSIONS}
 ROLE_TERMS = (
     {str(term) for term in BiologicalRoleCv}
     | {str(term) for term in ExperimentalRoleCv}
@@ -461,11 +449,7 @@ class SourceConverter:
 
         a_roles = {self._string_or_none(item.get("term")) for item in entity_a_annotations if item.get("term")}
         b_roles = {self._string_or_none(item.get("term")) for item in entity_b_annotations if item.get("term")}
-        if str(ParticipantMetadataCv.SOURCE) in a_roles and str(ParticipantMetadataCv.TARGET) in b_roles:
-            return 1
-        if str(BiologicalRoleCv.CONTROLLER) in a_roles and str(BiologicalRoleCv.CONTROLLED) in b_roles:
-            return 1
-        if str(BiologicalRoleCv.REACTANT) in a_roles and str(BiologicalRoleCv.PRODUCT) in b_roles:
+        if a_roles & SOURCE_ROLE_ACCESSIONS and b_roles & TARGET_ROLE_ACCESSIONS:
             return 1
         return None
 
@@ -491,17 +475,8 @@ class SourceConverter:
         first_terms = {self._string_or_none(item.get("term")) for item in first["membership_annotations"] if item.get("term")}
         second_terms = {self._string_or_none(item.get("term")) for item in second["membership_annotations"] if item.get("term")}
 
-        source_like = {
-            str(ParticipantMetadataCv.SOURCE),
-            str(BiologicalRoleCv.CONTROLLER),
-            str(BiologicalRoleCv.REACTANT),
-            str(BiologicalRoleCv.TEMPLATE),
-        }
-        target_like = {
-            str(ParticipantMetadataCv.TARGET),
-            str(BiologicalRoleCv.CONTROLLED),
-            str(BiologicalRoleCv.PRODUCT),
-        }
+        source_like = SOURCE_ROLE_ACCESSIONS
+        target_like = TARGET_ROLE_ACCESSIONS
         if first_terms & source_like and second_terms & target_like:
             return first, second
         if second_terms & source_like and first_terms & target_like:
