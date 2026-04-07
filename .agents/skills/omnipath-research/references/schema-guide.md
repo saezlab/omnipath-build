@@ -59,9 +59,9 @@ Typical fields include:
 - `source`
 
 Use this file to:
-- retrieve pathway membership
-- retrieve complex membership
-- inspect reaction participation or parent-member relationships
+- inspect parent-member relationships
+- retrieve structured memberships where a resource represents them explicitly
+- analyze reaction, complex, or other hierarchical records when present
 
 ## 5. `annotations.parquet`
 
@@ -74,6 +74,7 @@ Typical fields include:
 Use this file to:
 - inspect ontology-like annotations attached to entities or interactions
 - build cohorts within one resource based on terms already present in that resource
+- inspect direct term assignments exposed by a resource
 
 ## 6. Identifier tables
 
@@ -100,6 +101,13 @@ Important rule:
 - when joining resolved entities across resource-specific datasets, use `entity_identifiers_resolved.parquet`
 - prefer rows with `is_canonical = true`
 
+Standard cross-resource join pattern:
+1. filter `entity_identifiers_resolved.parquet` to `is_canonical = true`
+2. join across resources on `(identifier, identifier_type)`
+3. join back to `entities.parquet`, `annotations.parquet`, `interactions.parquet`, or `associations.parquet` as needed
+
+This design already supports cross-resource analysis cleanly. Adding identifier fields directly to `entities.parquet` would only be a denormalized convenience.
+
 ## 7. Practical joining pattern
 
 ### Within one resource
@@ -108,4 +116,6 @@ Important rule:
 ### Across resources
 - use resolved canonical identifiers where available
 - prefer `entity_identifiers_resolved.parquet` rows with `is_canonical = true`
+- join across resources on `(identifier, identifier_type)`
+- join back to local resource tables after the identifier join
 - treat unresolved entities as potentially non-joinable across resources

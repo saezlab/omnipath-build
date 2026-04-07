@@ -52,26 +52,21 @@ Identify:
 ### Step 2. Resolve concepts into ontology terms
 If the user gives words instead of accessions, search first.
 
-Example:
-
-```bash
-curl -sS -X POST http://localhost:8081/terms/search \
-  -H 'Content-Type: application/json' \
-  -d '{"queries": ["seizure", "nucleus", "phosphorylation"], "limit": 5}'
-```
-
 Then inspect the chosen terms and, if useful, expand descendants.
 
 ### Step 3. Choose resources
 Use `references/resources.md` to decide which datasets best match the question.
 
-Examples:
-- SIGNOR for causal signaling interactions
-- Reactome and WikiPathways for pathway membership
-- BindingDB for chemical-protein binding interactions
-
 ### Step 4. Download the needed resource artifacts
 Download one or more resource bundles and analyze them locally.
+
+### Step 5. Join across resources in the standard way
+When a question requires combining cohorts or memberships across source-specific datasets:
+1. filter `entity_identifiers_resolved.parquet` to rows with `is_canonical = true`
+2. join across resources on `(identifier, identifier_type)`
+3. join back to `entities.parquet`, `annotations.parquet`, `interactions.parquet`, or `associations.parquet` as needed
+
+This is the default cross-resource join pattern. Adding identifiers directly to `entities.parquet` would only be a denormalized convenience, not a requirement.
 
 ## The schemas the agent should expect
 
@@ -80,29 +75,6 @@ See:
 - `references/api-endpoints.md`
 - `references/resources.md`
 
-## Common user stories
-
-### A. “Get all associated proteins with the term Seizure, then get all their interactions within SIGNOR.”
-1. Search `seizure` and confirm the right HPO term.
-2. Choose resources that can provide seizure-associated proteins.
-3. Download the relevant resource artifacts.
-4. Build the protein cohort from entity annotations and identifiers.
-5. Download or inspect SIGNOR interactions for those proteins.
-
-### B. “Get enriched pathways from WikiPathways and Reactome for a given protein set.”
-1. Start from the given protein set.
-2. Choose `wikipathways` and `reactome`.
-3. Download their artifacts.
-4. Use association data to find pathway memberships.
-5. Summarize pathway overlap and enrichment by resource.
-
-### C. “Get enriched ChEBI terms for this metabolite set and check their interactions in BindingDB.”
-1. Start from the metabolite set.
-2. Resolve useful ontology terms if needed.
-3. Choose chemical-focused resources and BindingDB.
-4. Download the relevant artifacts.
-5. Match metabolites through identifiers and inspect interactions.
-
 ## Important rules
 
 - Prefer ontology search over guessing ontology accessions.
@@ -110,6 +82,8 @@ See:
 - Treat each resource as source-specific.
 - Use only resource-specific artifacts.
 - When joining across source-specific files, rely on resolved canonical identifiers where available.
+- Use `annotations.parquet` to inspect term-like annotations attached to entities or interactions.
+- Use `associations.parquet` to inspect parent-member relationships where present.
 
 ## What to report back
 
