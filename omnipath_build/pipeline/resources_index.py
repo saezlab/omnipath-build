@@ -116,23 +116,23 @@ def _current_gold_dir(gold_root: Path, source: str) -> Path | None:
     return path if path.exists() else None
 
 
-def _data_modalities(version_dir: Path | None) -> list[str]:
-    if version_dir is None:
-        return []
+def _resource_categories(
+    *,
+    interaction_count: int,
+    association_count: int,
+    annotation_count: int,
+    ontology_term_count: int,
+) -> list[str]:
+    categories: list[str] = []
 
-    modalities: list[str] = []
-    file_names = {path.name for path in version_dir.iterdir() if path.is_file()}
-    if 'entities.parquet' in file_names:
-        modalities.append('entities')
-    if 'interactions.parquet' in file_names:
-        modalities.append('interactions')
-    if 'associations.parquet' in file_names:
-        modalities.append('associations')
-    if 'annotations.parquet' in file_names:
-        modalities.append('annotations')
-    if any(path.suffix == '.obo' for path in version_dir.iterdir() if path.is_file()):
-        modalities.append('ontology')
-    return modalities
+    if interaction_count > 0:
+        categories.append('interaction')
+    if association_count > 0:
+        categories.append('association')
+    if annotation_count > 0 or ontology_term_count > 0:
+        categories.append('annotation')
+
+    return categories
 
 
 def _count_file(version_dir: Path | None, name: str) -> int:
@@ -142,26 +142,6 @@ def _count_file(version_dir: Path | None, name: str) -> int:
     if not path.exists():
         return 0
     return _parquet_rows(path)
-
-
-def _supports_interactions(*, interaction_count: int) -> bool:
-    return interaction_count > 0
-
-
-def _supports_annotations(*, annotation_count: int, ontology_term_count: int) -> bool:
-    return annotation_count > 0 or ontology_term_count > 0
-
-
-def _supports_ontology(*, ontology_term_count: int) -> bool:
-    return ontology_term_count > 0
-
-
-def _top_level_category(*, interaction_count: int, annotation_count: int, ontology_term_count: int) -> str | None:
-    if _supports_interactions(interaction_count=interaction_count):
-        return 'interaction'
-    if _supports_annotations(annotation_count=annotation_count, ontology_term_count=ontology_term_count):
-        return 'annotation'
-    return None
 
 
 def _ontology_term_count(version_dir: Path | None) -> int:
@@ -178,43 +158,6 @@ def _gold_files(version_dir: Path | None) -> list[Path]:
     if version_dir is None:
         return []
     return sorted(path for path in version_dir.iterdir() if path.is_file())
-
-
-def _interaction_participant_types(version_dir: Path | None) -> list[str]:
-    if version_dir is None:
-        return []
-
-    entities_path = version_dir / 'entities.parquet'
-    interactions_path = version_dir / 'interactions.parquet'
-    if not entities_path.exists() or not interactions_path.exists():
-        return []
-
-    entities = pl.read_parquet(entities_path, columns=['entity_id', 'entity_type'])
-    interactions = pl.read_parquet(interactions_path, columns=['entity_a_id', 'entity_b_id'])
-
-    pairs = (
-        interactions
-        .join(
-            entities.rename({'entity_id': 'entity_a_id', 'entity_type': 'entity_a_type'}),
-            on='entity_a_id',
-            how='left',
-        )
-        .join(
-            entities.rename({'entity_id': 'entity_b_id', 'entity_type': 'entity_b_type'}),
-            on='entity_b_id',
-            how='left',
-        )
-        .select('entity_a_type', 'entity_b_type')
-        .drop_nulls()
-        .iter_rows()
-    )
-
-    result = {
-        '|'.join(sorted((left, right)))
-        for left, right in pairs
-        if left and right
-    }
-    return sorted(result)
 
 
 def _resource_row(*, source: str, resource: Resource, gold_root: Path) -> dict[str, Any]:
@@ -236,20 +179,12 @@ def _resource_row(*, source: str, resource: Resource, gold_root: Path) -> dict[s
         'homepage_url': config.url,
         'license': format_cv_term(str(config.license)) or str(config.license),
         'pubmed_id': config.pubmed,
-        'primary_category': config.primary_category,
-        'top_level_category': _top_level_category(
+        'categories': _resource_categories(
             interaction_count=interaction_count,
+            association_count=association_count,
             annotation_count=annotation_count,
             ontology_term_count=ontology_term_count,
         ),
-        'supports_interactions': _supports_interactions(interaction_count=interaction_count),
-        'supports_annotations': _supports_annotations(
-            annotation_count=annotation_count,
-            ontology_term_count=ontology_term_count,
-        ),
-        'supports_ontology': _supports_ontology(ontology_term_count=ontology_term_count),
-        'data_modalities': _data_modalities(version_dir),
-        'interaction_participant_types': _interaction_participant_types(version_dir),
         'entity_count': entity_count,
         'interaction_count': interaction_count,
         'association_count': association_count,
