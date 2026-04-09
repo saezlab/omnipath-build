@@ -13,6 +13,7 @@ setup:
 	git submodule add -b main https://github.com/saezlab/download-manager.git download-manager || true
 	git submodule update --init --recursive --remote
 	uv sync
+	uv pip install -e ./cache-manager -e ./download-manager -e ./pypath
 
 silver-list:
 	@uv run python -m omnipath_build.cli.commands silver --list --inputs-package $(INPUTS_PACKAGE)
