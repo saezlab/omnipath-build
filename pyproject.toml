@@ -210,4 +210,6 @@ convention = "google"
 jupyter-contrib-nbextensions = {git = "https://github.com/deeenes/jupyter_contrib_nbextensions.git", branch = "master"}
 nbsphinx = {git = "https://github.com/deeenes/nbsphinx", branch = "timings"}
 pypath-omnipath = {path = "pypath", editable = true}
+cachedir = {path = "cache-manager", editable = true}
+dlmachine = {path = "download-manager", editable = true}
 ontograph = {git = "https://github.com/saezlab/ontograph.git", rev = "18b922a216e8f4654425c2e01a2c7232fa6595b5"}

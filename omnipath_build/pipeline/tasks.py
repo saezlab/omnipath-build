@@ -20,6 +20,10 @@ from omnipath_build.gold.dedup import deduplicate_target_schema_dir
 from omnipath_build.silver.build import run_silver_loader
 
 REFERENCE_MAPPING_SOURCES = ['uniprot', *CHEMICAL_SOURCES]
+TEST_MODE_REFERENCE_MAPPING_SOURCES = [
+    'uniprot',
+    'chebi',
+]
 
 
 def file_sha256(path: Path) -> str:
@@ -67,10 +71,15 @@ def resolver_mappings_ready(mapping_dir: Path) -> bool:
     return all(path.exists() for path in required)
 
 
-def build_resolver_mappings(output_dir: Path) -> dict[str, int]:
+def build_resolver_mappings(output_dir: Path, *, test_mode: bool = False) -> dict[str, int]:
     output_dir.mkdir(parents=True, exist_ok=True)
+    sources = (
+        TEST_MODE_REFERENCE_MAPPING_SOURCES
+        if test_mode else
+        REFERENCE_MAPPING_SOURCES
+    )
     return materialize_resolver_tables(
-        sources=REFERENCE_MAPPING_SOURCES,
+        sources=sources,
         output_dir=output_dir,
     )
 

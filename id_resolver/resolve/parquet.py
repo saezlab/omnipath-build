@@ -70,15 +70,30 @@ def _scan_protein_reference(mapping_dir: Path, protein_types: set[str]) -> pl.La
 
 
 def _scan_chemical_reference(mapping_dir: Path, chemical_sources: set[str]) -> pl.LazyFrame:
-    scans = [
-        pl.scan_parquet(mapping_dir / 'chemicals' / f'{source}.parquet').select([
-            pl.col('key_type').cast(pl.Utf8),
-            pl.col('key_value').cast(pl.Utf8),
-            pl.col('standard_inchi').cast(pl.Utf8).alias('_chemical_inchi'),
-            pl.col('source').cast(pl.Utf8).alias('_chemical_source'),
-        ])
-        for source in sorted(chemical_sources)
-    ]
+    scans = []
+    for source in sorted(chemical_sources):
+        path = mapping_dir / 'chemicals' / f'{source}.parquet'
+        if not path.exists():
+            continue
+        scans.append(
+            pl.scan_parquet(path).select([
+                pl.col('key_type').cast(pl.Utf8),
+                pl.col('key_value').cast(pl.Utf8),
+                pl.col('standard_inchi').cast(pl.Utf8).alias('_chemical_inchi'),
+                pl.col('source').cast(pl.Utf8).alias('_chemical_source'),
+            ])
+        )
+
+    if not scans:
+        return pl.LazyFrame(
+            schema={
+                'key_type': pl.Utf8,
+                'key_value': pl.Utf8,
+                '_chemical_inchi': pl.Utf8,
+                '_chemical_source': pl.Utf8,
+            }
+        )
+
     return scans[0] if len(scans) == 1 else pl.concat(scans, how='vertical_relaxed')
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -521,6 +522,10 @@ def _write_canonicalization_report(
     report = report + _markdown_table(['metric', 'value'], summary_rows)
     report = report + '\n' + _build_ambiguous_entity_report(ambiguous_entities)
     (source_dir / 'canonicalization_report.md').write_text(report, encoding='utf-8')
+    (source_dir / 'canonicalization_summary.json').write_text(
+        json.dumps(summary, indent=2, sort_keys=True) + '\n',
+        encoding='utf-8',
+    )
 
 
 def write_canonicalization_overview_report(

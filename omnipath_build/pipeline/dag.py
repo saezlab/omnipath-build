@@ -23,7 +23,11 @@ from omnipath_build.pipeline.tasks import (
     build_silver_source,
     resolver_mappings_ready,
 )
-from omnipath_build.silver.build import ResourceFunction, discover_resources
+from omnipath_build.silver.build import (
+    ResourceFunction,
+    TEST_MODE_INCLUDED_SOURCES,
+    discover_resources,
+)
 
 
 @dataclass(frozen=True)
@@ -141,6 +145,17 @@ def _reuse_existing_result(
     output_dir = source_version_dir(stage_root, task.source, version)
     if not output_dir.exists():
         return None
+    metadata: dict[str, Any] = {}
+    if task.task_type == 'gold':
+        summary_path = output_dir / 'canonicalization_summary.json'
+        if summary_path.exists():
+            try:
+                metadata['canonicalize_summary'] = json.loads(
+                    summary_path.read_text(encoding='utf-8')
+                )
+            except Exception:
+                metadata = {}
+
     return TaskResult(
         task_key=task.key,
         task_type=task.task_type,
@@ -148,7 +163,7 @@ def _reuse_existing_result(
         status='reused',
         version=version,
         output_dir=str(output_dir),
-        metadata={},
+        metadata=metadata,
     )
 
 
@@ -210,7 +225,7 @@ def _execute_task(
 
     if task.task_type == 'resolver_mappings':
         output_dir = resolver_mapping_dir or Path('id_resolver/data')
-        metadata = build_resolver_mappings(output_dir)
+        metadata = build_resolver_mappings(output_dir, test_mode=test_mode)
         return TaskResult(
             task_key=task.key,
             task_type=task.task_type,
@@ -362,17 +377,23 @@ def _has_gold_buildable_dataset(functions: list[ResourceFunction]) -> bool:
 
 
 
-def _discover_all_sources(inputs_package: str) -> list[str]:
+def _discover_all_sources(inputs_package: str, *, test_mode: bool = False) -> list[str]:
     discovered, _ = discover_resources(
         database_name='.',
         base_path=None,
         inputs_package=inputs_package,
     )
-    return sorted(
+    sources = sorted(
         source
         for source, functions in discovered.items()
         if _has_gold_buildable_dataset(functions)
     )
+    if test_mode:
+        sources = [
+            source for source in sources
+            if source in TEST_MODE_INCLUDED_SOURCES
+        ]
+    return sources
 
 
 
@@ -392,7 +413,7 @@ def run_pipeline(
     include_sources = command in {'source', 'all'}
 
     if include_sources and not sources:
-        sources = _discover_all_sources(inputs_package)
+        sources = _discover_all_sources(inputs_package, test_mode=test_mode)
         print(f'Autodiscovered {len(sources)} sources from {inputs_package}')
 
     paths = build_paths(data_root)
