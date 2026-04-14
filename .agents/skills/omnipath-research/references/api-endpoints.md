@@ -1,5 +1,10 @@
 # OmniPath API endpoints for research workflows
 
+Base URL for this project:
+- `https://dev.omnipathdb.org/api`
+
+All endpoint paths below are relative to that base URL.
+
 ## 1. Ontology discovery and term lookup
 
 ### List available ontologies
