@@ -13,7 +13,7 @@ setup:
 	git submodule add -b main https://github.com/saezlab/download-manager.git download-manager || true
 	git submodule update --init --recursive --remote
 	uv sync
-	-uv pip uninstall -y pypath-omnipath dlmachine cachedir
+	-uv pip uninstall pypath-omnipath dlmachine cachedir
 	uv pip install -e ./cache-manager -e ./download-manager -e ./pypath
 
 silver-list:
