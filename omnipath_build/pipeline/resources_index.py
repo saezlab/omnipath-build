@@ -173,10 +173,13 @@ def _resource_row(*, source: str, resource: Resource, gold_root: Path) -> dict[s
     version_dir = _current_gold_dir(gold_root, source)
     gold_files = _gold_files(version_dir)
     last_built_at = _iso_utc(_latest_file_mtime(gold_files))
-    entity_count = _count_file(version_dir, 'entities.parquet')
-    interaction_count = _count_file(version_dir, 'interactions.parquet')
-    association_count = _count_file(version_dir, 'associations.parquet')
-    annotation_count = _count_file(version_dir, 'annotations.parquet')
+    entity_count = _count_file(version_dir, 'entity.parquet')
+    interaction_count = _count_file(version_dir, 'interaction.parquet')
+    association_count = _count_file(version_dir, 'association.parquet')
+    annotation_count = (
+        _count_file(version_dir, 'entity_annotation.parquet')
+        + _count_file(version_dir, 'interaction_annotation.parquet')
+    )
     identifier_count = _count_file(version_dir, 'entity_identifiers.parquet')
     ontology_term_count = _ontology_term_count(version_dir)
 

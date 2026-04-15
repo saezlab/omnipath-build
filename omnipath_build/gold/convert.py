@@ -165,10 +165,10 @@ class SourceConverter:
         self.next_interaction_id = 1
         self.next_association_id = 1
 
-        self.entities = BufferedParquetWriter(output_dir / "entities.parquet", ENTITIES_SCHEMA, batch_size)
+        self.entities = BufferedParquetWriter(output_dir / "entity.parquet", ENTITIES_SCHEMA, batch_size)
         self.raw_entity_identifiers = BufferedParquetWriter(output_dir / "_entity_identifiers_source.parquet", RAW_ENTITY_IDENTIFIERS_SCHEMA, batch_size)
-        self.interactions = BufferedParquetWriter(output_dir / "interactions.parquet", INTERACTIONS_SCHEMA, batch_size)
-        self.associations = BufferedParquetWriter(output_dir / "associations.parquet", ASSOCIATIONS_SCHEMA, batch_size)
+        self.interactions = BufferedParquetWriter(output_dir / "interaction_evidence.parquet", INTERACTIONS_SCHEMA, batch_size)
+        self.associations = BufferedParquetWriter(output_dir / "association_evidence.parquet", ASSOCIATIONS_SCHEMA, batch_size)
         self.annotations = BufferedParquetWriter(output_dir / "annotations.parquet", ANNOTATIONS_SCHEMA, batch_size)
 
     def close(self) -> None:

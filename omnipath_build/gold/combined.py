@@ -23,7 +23,7 @@ ENTITY_SCHEMA = {
     'sources': pl.List(pl.String),
 }
 
-ENTITY_IDENTIFIER_SCHEMA = {
+ENTITY_IDENTIFIERS_SCHEMA = {
     'entity_id': pl.String,
     'entity_id_type': pl.String,
     'identifier': pl.String,
@@ -71,6 +71,18 @@ INTERACTION_EVIDENCE_SCHEMA = {
     ),
 }
 
+INTERACTION_SCHEMA = {
+    'interaction_id': pl.String,
+    'entity_a_id': pl.String,
+    'entity_a_id_type': pl.String,
+    'entity_b_id': pl.String,
+    'entity_b_id_type': pl.String,
+    'direction': pl.Int64,
+    'sign': pl.Int64,
+    'evidence_count': pl.Int64,
+    'sources': pl.List(pl.String),
+}
+
 ASSOCIATION_EVIDENCE_SCHEMA = {
     'source': pl.String,
     'association_id': pl.Int64,
@@ -110,26 +122,39 @@ ASSOCIATION_EVIDENCE_SCHEMA = {
     ),
 }
 
-ENTITY_ANNOTATION_EVIDENCE_SCHEMA = {
-    'source': pl.String,
+ASSOCIATION_SCHEMA = {
+    'association_id': pl.String,
+    'parent_entity_id': pl.String,
+    'parent_entity_id_type': pl.String,
+    'member_entity_id': pl.String,
+    'member_entity_id_type': pl.String,
+    'role_term_id': pl.String,
+    'stoichiometry': pl.String,
+    'sources': pl.List(pl.String),
+}
+
+ENTITY_ANNOTATION_SCHEMA = {
     'entity_id': pl.String,
     'entity_id_type': pl.String,
     'cv_term': pl.String,
+    'sources': pl.List(pl.String),
 }
 
-INTERACTION_ANNOTATION_EVIDENCE_SCHEMA = {
-    'source': pl.String,
-    'interaction_id': pl.Int64,
+INTERACTION_ANNOTATION_SCHEMA = {
+    'interaction_id': pl.String,
     'cv_term': pl.String,
+    'sources': pl.List(pl.String),
 }
 
 ARTIFACT_OUTPUTS = {
     'entity.parquet': ENTITY_SCHEMA,
-    'entity_identifier.parquet': ENTITY_IDENTIFIER_SCHEMA,
+    'entity_identifiers.parquet': ENTITY_IDENTIFIERS_SCHEMA,
     'interaction_evidence.parquet': INTERACTION_EVIDENCE_SCHEMA,
     'association_evidence.parquet': ASSOCIATION_EVIDENCE_SCHEMA,
-    'entity_annotation_evidence.parquet': ENTITY_ANNOTATION_EVIDENCE_SCHEMA,
-    'interaction_annotation_evidence.parquet': INTERACTION_ANNOTATION_EVIDENCE_SCHEMA,
+    'interaction.parquet': INTERACTION_SCHEMA,
+    'association.parquet': ASSOCIATION_SCHEMA,
+    'entity_annotation.parquet': ENTITY_ANNOTATION_SCHEMA,
+    'interaction_annotation.parquet': INTERACTION_ANNOTATION_SCHEMA,
 }
 
 
@@ -141,13 +166,12 @@ class GoldSourceDir:
 
 
 def discover_gold_source_dirs(gold_root: str | Path) -> list[GoldSourceDir]:
-    """Discover latest per-source gold version directories under a gold root."""
     root = Path(gold_root)
     if not root.exists():
         raise FileNotFoundError(f'Gold root does not exist: {root}')
 
     latest: dict[str, GoldSourceDir] = {}
-    for artifact_path in root.rglob('entities.parquet'):
+    for artifact_path in root.rglob('entity.parquet'):
         version_dir = artifact_path.parent
         if version_dir == root or not version_dir.name.isdigit():
             continue
@@ -166,31 +190,34 @@ def build_combined_parquets(
     gold_root: str | Path = 'data_v2/gold',
     output_dir: str | Path = 'data_v2/combined',
 ) -> dict[str, Any]:
-    """Build combined warehouse parquet artifacts from per-source gold outputs."""
     gold_root = Path(gold_root)
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     source_dirs = discover_gold_source_dirs(gold_root)
 
-    entities = _build_entity(source_dirs)
-    entity_identifiers = _build_entity_identifier(source_dirs)
-    interaction_evidence = _build_interaction_evidence(source_dirs)
-    association_evidence = _build_association_evidence(source_dirs)
-    entity_annotation_evidence = _build_entity_annotation_evidence(source_dirs)
-    interaction_annotation_evidence = _build_interaction_annotation_evidence(source_dirs)
-
     outputs = {
-        'entity.parquet': entities,
-        'entity_identifier.parquet': entity_identifiers,
-        'interaction_evidence.parquet': interaction_evidence,
-        'association_evidence.parquet': association_evidence,
-        'entity_annotation_evidence.parquet': entity_annotation_evidence,
-        'interaction_annotation_evidence.parquet': interaction_annotation_evidence,
+        'entity.parquet': _build_entity(source_dirs),
+        'entity_identifiers.parquet': _build_entity_identifiers(source_dirs),
+        'interaction_evidence.parquet': _build_interaction_evidence(source_dirs),
+        'association_evidence.parquet': _build_association_evidence(source_dirs),
+        'interaction.parquet': _build_interaction(source_dirs),
+        'association.parquet': _build_association(source_dirs),
+        'entity_annotation.parquet': _build_entity_annotation(source_dirs),
+        'interaction_annotation.parquet': _build_interaction_annotation(source_dirs),
     }
 
+    for stale_name in (
+        'entity_identifier.parquet',
+        'entity_annotation_evidence.parquet',
+        'interaction_annotation_evidence.parquet',
+    ):
+        stale_path = output_dir / stale_name
+        if stale_path.exists():
+            stale_path.unlink()
+
     for file_name, frame in outputs.items():
-        frame.write_parquet(output_dir / file_name)
+        _write_if_nonempty(frame, output_dir / file_name)
 
     summary = {
         'gold_root': str(gold_root),
@@ -216,13 +243,13 @@ def build_combined_parquets(
 
 
 def _build_entity(source_dirs: list[GoldSourceDir]) -> pl.DataFrame:
-    frames = _read_frames(source_dirs, 'entities.parquet', {
+    frames = _read_frames(source_dirs, 'entity.parquet', {
         'entity_id': pl.col('entity_id').cast(pl.String),
         'entity_id_type': pl.col('entity_id_type').cast(pl.String),
         'entity_type': pl.col('entity_type').cast(pl.String),
         'taxonomy_id': pl.col('taxonomy_id').cast(pl.String),
         'entity_attributes': pl.col('entity_attributes'),
-        'source': pl.col('source').cast(pl.String),
+        'sources': pl.col('sources'),
     })
     if not frames:
         return _empty_frame(ENTITY_SCHEMA)
@@ -234,14 +261,14 @@ def _build_entity(source_dirs: list[GoldSourceDir]) -> pl.DataFrame:
             pl.col('entity_type').drop_nulls().first().alias('entity_type'),
             pl.col('taxonomy_id').drop_nulls().first().alias('taxonomy_id'),
             pl.col('entity_attributes').drop_nulls().first().alias('entity_attributes'),
-            pl.col('source').drop_nulls().unique().sort().alias('sources'),
+            pl.col('sources').explode().drop_nulls().unique().sort().alias('sources'),
         ])
         .select(list(ENTITY_SCHEMA.keys()))
         .sort(['entity_id_type', 'entity_id'])
     )
 
 
-def _build_entity_identifier(source_dirs: list[GoldSourceDir]) -> pl.DataFrame:
+def _build_entity_identifiers(source_dirs: list[GoldSourceDir]) -> pl.DataFrame:
     frames = _read_frames(source_dirs, 'entity_identifiers.parquet', {
         'entity_id': pl.col('entity_id').cast(pl.String),
         'entity_id_type': pl.col('entity_id_type').cast(pl.String),
@@ -251,7 +278,7 @@ def _build_entity_identifier(source_dirs: list[GoldSourceDir]) -> pl.DataFrame:
         'sources': pl.col('sources'),
     })
     if not frames:
-        return _empty_frame(ENTITY_IDENTIFIER_SCHEMA)
+        return _empty_frame(ENTITY_IDENTIFIERS_SCHEMA)
     combined = pl.concat(frames, how='vertical_relaxed')
     return (
         combined
@@ -260,13 +287,13 @@ def _build_entity_identifier(source_dirs: list[GoldSourceDir]) -> pl.DataFrame:
             pl.col('is_canonical').any().alias('is_canonical'),
             pl.col('sources').explode().drop_nulls().unique().sort().alias('sources'),
         ])
-        .select(list(ENTITY_IDENTIFIER_SCHEMA.keys()))
+        .select(list(ENTITY_IDENTIFIERS_SCHEMA.keys()))
         .sort(['entity_id_type', 'entity_id', 'identifier_type', 'identifier'])
     )
 
 
 def _build_interaction_evidence(source_dirs: list[GoldSourceDir]) -> pl.DataFrame:
-    frames = _read_frames(source_dirs, 'interactions.parquet', {
+    frames = _read_frames(source_dirs, 'interaction_evidence.parquet', {
         'source': pl.col('source').cast(pl.String),
         'interaction_id': pl.col('interaction_id').cast(pl.Int64),
         'entity_a_id': pl.col('entity_a_id').cast(pl.String),
@@ -291,7 +318,7 @@ def _build_interaction_evidence(source_dirs: list[GoldSourceDir]) -> pl.DataFram
 
 
 def _build_association_evidence(source_dirs: list[GoldSourceDir]) -> pl.DataFrame:
-    frames = _read_frames(source_dirs, 'associations.parquet', {
+    frames = _read_frames(source_dirs, 'association_evidence.parquet', {
         'source': pl.col('source').cast(pl.String),
         'association_id': pl.col('association_id').cast(pl.Int64),
         'parent_entity_id': pl.col('parent_entity_id').cast(pl.String),
@@ -315,57 +342,113 @@ def _build_association_evidence(source_dirs: list[GoldSourceDir]) -> pl.DataFram
     )
 
 
-def _build_entity_annotation_evidence(source_dirs: list[GoldSourceDir]) -> pl.DataFrame:
-    frames = _read_annotation_frames(source_dirs)
-    if not frames:
-        return _empty_frame(ENTITY_ANNOTATION_EVIDENCE_SCHEMA)
-    combined = pl.concat(frames, how='vertical_relaxed')
-    return (
-        combined
-        .filter(pl.col('subject_type') == 'entity')
-        .filter(pl.col('subject_id').is_not_null() & (pl.col('subject_id') != ''))
-        .filter(pl.col('subject_id_type').is_not_null() & (pl.col('subject_id_type') != ''))
-        .select([
-            pl.col('source').cast(pl.String).alias('source'),
-            pl.col('subject_id').cast(pl.String).alias('entity_id'),
-            pl.col('subject_id_type').cast(pl.String).alias('entity_id_type'),
-            pl.col('cv_term').cast(pl.String).alias('cv_term'),
-        ])
-        .unique()
-        .sort(['source', 'entity_id_type', 'entity_id', 'cv_term'])
-    )
-
-
-def _build_interaction_annotation_evidence(source_dirs: list[GoldSourceDir]) -> pl.DataFrame:
-    frames = _read_annotation_frames(source_dirs)
-    if not frames:
-        return _empty_frame(INTERACTION_ANNOTATION_EVIDENCE_SCHEMA)
-    combined = pl.concat(frames, how='vertical_relaxed')
-    return (
-        combined
-        .filter(pl.col('subject_type') == 'interaction')
-        .with_columns([
-            pl.col('subject_id').cast(pl.Int64, strict=False).alias('interaction_id'),
-        ])
-        .filter(pl.col('interaction_id').is_not_null())
-        .select([
-            pl.col('source').cast(pl.String).alias('source'),
-            'interaction_id',
-            pl.col('cv_term').cast(pl.String).alias('cv_term'),
-        ])
-        .unique()
-        .sort(['source', 'interaction_id', 'cv_term'])
-    )
-
-
-def _read_annotation_frames(source_dirs: list[GoldSourceDir]) -> list[pl.DataFrame]:
-    return _read_frames(source_dirs, 'annotations.parquet', {
-        'subject_type': pl.col('subject_type').cast(pl.String),
-        'subject_id': pl.col('subject_id').cast(pl.String),
-        'subject_id_type': pl.col('subject_id_type').cast(pl.String),
-        'cv_term': pl.col('cv_term').cast(pl.String),
-        'source': pl.col('source').cast(pl.String),
+def _build_interaction(source_dirs: list[GoldSourceDir]) -> pl.DataFrame:
+    frames = _read_frames(source_dirs, 'interaction.parquet', {
+        'interaction_id': pl.col('interaction_id').cast(pl.String),
+        'entity_a_id': pl.col('entity_a_id').cast(pl.String),
+        'entity_a_id_type': pl.col('entity_a_id_type').cast(pl.String),
+        'entity_b_id': pl.col('entity_b_id').cast(pl.String),
+        'entity_b_id_type': pl.col('entity_b_id_type').cast(pl.String),
+        'direction': pl.col('direction').cast(pl.Int64, strict=False),
+        'sign': pl.col('sign').cast(pl.Int64, strict=False),
+        'evidence_count': pl.col('evidence_count').cast(pl.Int64),
+        'sources': pl.col('sources'),
     })
+    if not frames:
+        return _empty_frame(INTERACTION_SCHEMA)
+    combined = pl.concat(frames, how='vertical_relaxed')
+    return (
+        combined
+        .group_by([
+            'interaction_id',
+            'entity_a_id',
+            'entity_a_id_type',
+            'entity_b_id',
+            'entity_b_id_type',
+            'direction',
+            'sign',
+        ])
+        .agg([
+            pl.col('evidence_count').sum().cast(pl.Int64).alias('evidence_count'),
+            pl.col('sources').explode().drop_nulls().unique().sort().alias('sources'),
+        ])
+        .select(list(INTERACTION_SCHEMA.keys()))
+        .sort('interaction_id')
+    )
+
+
+def _build_association(source_dirs: list[GoldSourceDir]) -> pl.DataFrame:
+    frames = _read_frames(source_dirs, 'association.parquet', {
+        'association_id': pl.col('association_id').cast(pl.String),
+        'parent_entity_id': pl.col('parent_entity_id').cast(pl.String),
+        'parent_entity_id_type': pl.col('parent_entity_id_type').cast(pl.String),
+        'member_entity_id': pl.col('member_entity_id').cast(pl.String),
+        'member_entity_id_type': pl.col('member_entity_id_type').cast(pl.String),
+        'role_term_id': pl.col('role_term_id').cast(pl.String),
+        'stoichiometry': pl.col('stoichiometry').cast(pl.String),
+        'sources': pl.col('sources'),
+    })
+    if not frames:
+        return _empty_frame(ASSOCIATION_SCHEMA)
+    combined = pl.concat(frames, how='vertical_relaxed')
+    return (
+        combined
+        .group_by([
+            'association_id',
+            'parent_entity_id',
+            'parent_entity_id_type',
+            'member_entity_id',
+            'member_entity_id_type',
+            'role_term_id',
+            'stoichiometry',
+        ])
+        .agg([
+            pl.col('sources').explode().drop_nulls().unique().sort().alias('sources'),
+        ])
+        .select(list(ASSOCIATION_SCHEMA.keys()))
+        .sort('association_id')
+    )
+
+
+def _build_entity_annotation(source_dirs: list[GoldSourceDir]) -> pl.DataFrame:
+    frames = _read_frames(source_dirs, 'entity_annotation.parquet', {
+        'entity_id': pl.col('entity_id').cast(pl.String),
+        'entity_id_type': pl.col('entity_id_type').cast(pl.String),
+        'cv_term': pl.col('cv_term').cast(pl.String),
+        'sources': pl.col('sources'),
+    })
+    if not frames:
+        return _empty_frame(ENTITY_ANNOTATION_SCHEMA)
+    combined = pl.concat(frames, how='vertical_relaxed')
+    return (
+        combined
+        .group_by(['entity_id', 'entity_id_type', 'cv_term'])
+        .agg([
+            pl.col('sources').explode().drop_nulls().unique().sort().alias('sources'),
+        ])
+        .select(list(ENTITY_ANNOTATION_SCHEMA.keys()))
+        .sort(['entity_id_type', 'entity_id', 'cv_term'])
+    )
+
+
+def _build_interaction_annotation(source_dirs: list[GoldSourceDir]) -> pl.DataFrame:
+    frames = _read_frames(source_dirs, 'interaction_annotation.parquet', {
+        'interaction_id': pl.col('interaction_id').cast(pl.String),
+        'cv_term': pl.col('cv_term').cast(pl.String),
+        'sources': pl.col('sources'),
+    })
+    if not frames:
+        return _empty_frame(INTERACTION_ANNOTATION_SCHEMA)
+    combined = pl.concat(frames, how='vertical_relaxed')
+    return (
+        combined
+        .group_by(['interaction_id', 'cv_term'])
+        .agg([
+            pl.col('sources').explode().drop_nulls().unique().sort().alias('sources'),
+        ])
+        .select(list(INTERACTION_ANNOTATION_SCHEMA.keys()))
+        .sort(['interaction_id', 'cv_term'])
+    )
 
 
 def _read_frames(
@@ -389,6 +472,14 @@ def _empty_frame(schema: dict[str, pl.DataType]) -> pl.DataFrame:
         name: pl.Series([], dtype=dtype)
         for name, dtype in schema.items()
     })
+
+
+def _write_if_nonempty(frame: pl.DataFrame, path: Path) -> None:
+    if frame.is_empty():
+        if path.exists():
+            path.unlink()
+        return
+    frame.write_parquet(path)
 
 
 def build_parser() -> argparse.ArgumentParser:

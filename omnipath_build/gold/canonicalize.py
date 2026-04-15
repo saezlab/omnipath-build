@@ -766,11 +766,11 @@ def normalize_target_schema_dir(
 ) -> dict[str, Any]:
     source_dir = Path(source_dir)
     mapping_dir = Path(mapping_dir)
-    entities_path = source_dir / 'entities.parquet'
+    entities_path = source_dir / 'entity.parquet'
     identifiers_path = source_dir / 'entity_identifiers.parquet'
     raw_source_identifiers_path = source_dir / '_entity_identifiers_source.parquet'
-    interactions_path = source_dir / 'interactions.parquet'
-    associations_path = source_dir / 'associations.parquet'
+    interactions_path = source_dir / 'interaction_evidence.parquet'
+    associations_path = source_dir / 'association_evidence.parquet'
     annotations_path = source_dir / 'annotations.parquet'
 
     if not entities_path.exists() or not raw_source_identifiers_path.exists():
@@ -808,10 +808,16 @@ def normalize_target_schema_dir(
         updated_entities = (
             entities
             .join(entity_export_keys, left_on='entity_id', right_on='local_entity_id', how='left')
+            .with_columns([
+                pl.when(pl.col('source').is_null())
+                .then(pl.lit([], dtype=pl.List(pl.Utf8)))
+                .otherwise(pl.concat_list(pl.col('source').cast(pl.Utf8)))
+                .alias('sources'),
+            ])
             .select([
                 pl.col('export_entity_id').alias('entity_id'),
                 pl.col('export_entity_id_type').alias('entity_id_type'),
-                'entity_type', 'entity_attributes', 'taxonomy_id', 'source',
+                'entity_type', 'entity_attributes', 'taxonomy_id', 'sources',
             ])
         )
         source_identifier_rows = (
@@ -1017,13 +1023,19 @@ def normalize_target_schema_dir(
     updated_entities = (
         entities
         .join(entity_export_keys, left_on='entity_id', right_on='local_entity_id', how='left')
+        .with_columns([
+            pl.when(pl.col('source').is_null())
+            .then(pl.lit([], dtype=pl.List(pl.Utf8)))
+            .otherwise(pl.concat_list(pl.col('source').cast(pl.Utf8)))
+            .alias('sources'),
+        ])
         .select([
             pl.col('export_entity_id').alias('entity_id'),
             pl.col('export_entity_id_type').alias('entity_id_type'),
             'entity_type',
             'entity_attributes',
             'taxonomy_id',
-            'source',
+            'sources',
         ])
     )
 

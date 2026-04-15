@@ -6,7 +6,11 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import polars as pl
+
+from omnipath_build.gold.combined import build_combined_parquets
 from omnipath_build.gold.convert import INTERACTIONS_SCHEMA, SourceConverter
+from omnipath_build.gold.dedup import deduplicate_target_schema_dir
 from omnipath_build.pipeline.cli import build_parser
 from omnipath_build.pipeline.dag import (
     _has_gold_buildable_dataset,
@@ -56,6 +60,130 @@ class GoldPipelineTests(unittest.TestCase):
         gold = {task.key: task for task in tasks}['gold:signor']
         self.assertEqual(gold.deps, ('silver:signor', 'resolver_mappings'))
 
+    def test_dedup_creates_public_aggregate_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pl.DataFrame({
+                'entity_id': ['P1', 'P1', 'P2'],
+                'entity_id_type': ['uniprot', 'uniprot', 'uniprot'],
+                'entity_type': ['protein', 'protein', 'protein'],
+                'entity_attributes': [None, None, None],
+                'taxonomy_id': ['9606', '9606', '9606'],
+                'sources': [['signor'], ['signor'], ['signor']],
+            }).write_parquet(root / 'entity.parquet')
+            pl.DataFrame({
+                'entity_id': ['P1'],
+                'entity_id_type': ['uniprot'],
+                'identifier': ['P1'],
+                'identifier_type': ['uniprot'],
+                'is_canonical': [True],
+                'sources': [['source:signor']],
+            }).write_parquet(root / 'entity_identifiers.parquet')
+            pl.DataFrame({
+                'source': ['signor', 'signor'],
+                'interaction_id': [1, 2],
+                'entity_a_id': ['P1', 'P2'],
+                'entity_a_id_type': ['uniprot', 'uniprot'],
+                'entity_b_id': ['P2', 'P1'],
+                'entity_b_id_type': ['uniprot', 'uniprot'],
+                'direction': [None, None],
+                'sign': [1, 1],
+                'record_attributes': [None, None],
+                'entity_a_attributes': [None, None],
+                'entity_b_attributes': [None, None],
+                'evidence': [None, None],
+            }).write_parquet(root / 'interaction_evidence.parquet')
+            pl.DataFrame({
+                'source': ['signor'],
+                'association_id': [1],
+                'parent_entity_id': ['P1'],
+                'parent_entity_id_type': ['uniprot'],
+                'member_entity_id': ['P2'],
+                'member_entity_id_type': ['uniprot'],
+                'role_term_id': [None],
+                'stoichiometry': [None],
+                'record_attributes': [None],
+                'parent_attributes': [None],
+                'member_attributes': [None],
+                'evidence': [None],
+            }).write_parquet(root / 'association_evidence.parquet')
+            pl.DataFrame({
+                'subject_type': ['entity', 'interaction'],
+                'subject_id': ['P1', '1'],
+                'subject_id_type': ['uniprot', None],
+                'cv_term': ['OM:1:test', 'OM:2:test'],
+                'source': ['signor', 'signor'],
+            }).write_parquet(root / 'annotations.parquet')
+
+            deduplicate_target_schema_dir(root)
+
+            self.assertTrue((root / 'interaction.parquet').exists())
+            self.assertTrue((root / 'association.parquet').exists())
+            self.assertTrue((root / 'entity_annotation.parquet').exists())
+            self.assertTrue((root / 'interaction_annotation.parquet').exists())
+            self.assertFalse((root / 'annotations.parquet').exists())
+
+            interaction = pl.read_parquet(root / 'interaction.parquet')
+            self.assertEqual(interaction.height, 1)
+            self.assertEqual(interaction['evidence_count'].to_list(), [2])
+
+            entity_annotation = pl.read_parquet(root / 'entity_annotation.parquet')
+            self.assertEqual(entity_annotation.height, 1)
+
+            interaction_annotation = pl.read_parquet(root / 'interaction_annotation.parquet')
+            self.assertEqual(interaction_annotation.height, 1)
+
+    def test_combined_builder_uses_public_aligned_names(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source_dir = root / 'gold' / 'signor' / '1'
+            source_dir.mkdir(parents=True, exist_ok=True)
+
+            pl.DataFrame({
+                'entity_id': ['P1'],
+                'entity_id_type': ['uniprot'],
+                'entity_type': ['protein'],
+                'entity_attributes': [None],
+                'taxonomy_id': ['9606'],
+                'sources': [['signor']],
+            }).write_parquet(source_dir / 'entity.parquet')
+            pl.DataFrame({
+                'entity_id': ['P1'],
+                'entity_id_type': ['uniprot'],
+                'identifier': ['P1'],
+                'identifier_type': ['uniprot'],
+                'is_canonical': [True],
+                'sources': [['source:signor']],
+            }).write_parquet(source_dir / 'entity_identifiers.parquet')
+            pl.DataFrame({
+                'interaction_id': ['i1'],
+                'entity_a_id': ['P1'],
+                'entity_a_id_type': ['uniprot'],
+                'entity_b_id': ['P1'],
+                'entity_b_id_type': ['uniprot'],
+                'direction': [1],
+                'sign': [1],
+                'evidence_count': [2],
+                'sources': [['signor']],
+            }).write_parquet(source_dir / 'interaction.parquet')
+            pl.DataFrame({
+                'entity_id': ['P1'],
+                'entity_id_type': ['uniprot'],
+                'cv_term': ['OM:1:test'],
+                'sources': [['signor']],
+            }).write_parquet(source_dir / 'entity_annotation.parquet')
+
+            output_dir = root / 'combined'
+            summary = build_combined_parquets(gold_root=root / 'gold', output_dir=output_dir)
+
+            self.assertTrue((output_dir / 'entity.parquet').exists())
+            self.assertTrue((output_dir / 'entity_identifiers.parquet').exists())
+            self.assertTrue((output_dir / 'interaction.parquet').exists())
+            self.assertTrue((output_dir / 'entity_annotation.parquet').exists())
+            self.assertFalse((output_dir / 'entity_identifier.parquet').exists())
+            self.assertEqual(summary['row_counts']['entity.parquet'], 1)
+            self.assertEqual(summary['row_counts']['interaction.parquet'], 1)
+
     def test_has_gold_buildable_dataset_filters_ontology_only_sources(self) -> None:
         def stub(function_name: str, output_kind: str) -> ResourceFunction:
             return ResourceFunction(
@@ -96,7 +224,7 @@ class GoldPipelineTests(unittest.TestCase):
 
             def fake_build_gold_source(*, source: str, silver_dir: Path, output_dir: Path, mapping_dir: Path, batch_size: int):
                 output_dir.mkdir(parents=True, exist_ok=True)
-                (output_dir / 'entities.parquet').write_text(source, encoding='utf-8')
+                (output_dir / 'entity.parquet').write_text(source, encoding='utf-8')
                 return {'source': source}
 
             with (
@@ -136,7 +264,7 @@ class GoldPipelineTests(unittest.TestCase):
                 if source == 'bad':
                     raise RuntimeError('boom')
                 output_dir.mkdir(parents=True, exist_ok=True)
-                (output_dir / 'entities.parquet').write_text(source, encoding='utf-8')
+                (output_dir / 'entity.parquet').write_text(source, encoding='utf-8')
                 return {'source': source}
 
             with (
@@ -200,7 +328,7 @@ class GoldPipelineTests(unittest.TestCase):
             def fake_build_gold_source(*, source: str, silver_dir: Path, output_dir: Path, mapping_dir: Path, batch_size: int):
                 calls['gold'] += 1
                 output_dir.mkdir(parents=True, exist_ok=True)
-                (output_dir / 'entities.parquet').write_text(f'{source}:{silver_dir.name}:{mapping_dir.name}', encoding='utf-8')
+                (output_dir / 'entity.parquet').write_text(f'{source}:{silver_dir.name}:{mapping_dir.name}', encoding='utf-8')
                 return {'source': source, 'silver_dir': str(silver_dir), 'mapping_dir': str(mapping_dir), 'batch_size': batch_size}
 
             with (
@@ -273,7 +401,7 @@ class GoldPipelineTests(unittest.TestCase):
             def fake_build_gold_source(*, source: str, silver_dir: Path, output_dir: Path, mapping_dir: Path, batch_size: int):
                 calls['gold'] += 1
                 output_dir.mkdir(parents=True, exist_ok=True)
-                (output_dir / 'entities.parquet').write_text(f'{source}:{silver_dir.name}', encoding='utf-8')
+                (output_dir / 'entity.parquet').write_text(f'{source}:{silver_dir.name}', encoding='utf-8')
                 return {'source': source, 'silver_dir': str(silver_dir)}
 
             with (
@@ -332,7 +460,7 @@ class GoldPipelineTests(unittest.TestCase):
             def fake_build_gold_source(*, source: str, silver_dir: Path, output_dir: Path, mapping_dir: Path, batch_size: int):
                 calls['gold'] += 1
                 output_dir.mkdir(parents=True, exist_ok=True)
-                (output_dir / 'entities.parquet').write_text(f'{source}:{silver_dir.name}', encoding='utf-8')
+                (output_dir / 'entity.parquet').write_text(f'{source}:{silver_dir.name}', encoding='utf-8')
                 return {'source': source, 'silver_dir': str(silver_dir)}
 
             with (
