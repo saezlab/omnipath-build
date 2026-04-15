@@ -5,278 +5,85 @@ from typing import Any
 
 import polars as pl
 
-from omnipath_build.gold.canonical import (
-    SAFE_MERGE_IDENTIFIER_TYPES,
-    SAFE_MERGE_PRIORITY,
-    canonical_priority_rank,
-)
-from omnipath_build.gold.cv_terms import format_cv_term
 
-
-def _raw_accession(type_value: str | None) -> str | None:
-    if type_value is None:
-        return None
-    text = str(type_value)
-    parts = text.split(':')
-    if len(parts) >= 3:
-        return ':'.join(parts[:2])
-    return text
-
-
-def _priority_df() -> pl.DataFrame:
+def _empty_identifiers() -> pl.DataFrame:
     return pl.DataFrame({
-        'identifier_type_id_raw': list(SAFE_MERGE_PRIORITY.keys()),
-        'priority_rank': list(SAFE_MERGE_PRIORITY.values()),
+        'entity_id': pl.Series([], dtype=pl.Utf8),
+        'entity_id_type': pl.Series([], dtype=pl.Utf8),
+        'identifier': pl.Series([], dtype=pl.Utf8),
+        'identifier_type': pl.Series([], dtype=pl.Utf8),
+        'is_canonical': pl.Series([], dtype=pl.Boolean),
+        'sources': pl.Series([], dtype=pl.List(pl.Utf8)),
     })
 
 
-def _build_entity_id_mapping(entities: pl.DataFrame, entity_identifiers: pl.DataFrame) -> pl.DataFrame:
-    safe_claims = (
-        entity_identifiers
-        .with_columns([
-            pl.col('identifier_type').map_elements(_raw_accession, return_dtype=pl.Utf8).alias('identifier_type_id_raw'),
-            pl.col('identifier').cast(pl.Utf8),
-        ])
-        .filter(pl.col('identifier_type_id_raw').is_in(SAFE_MERGE_IDENTIFIER_TYPES))
-        .filter(pl.col('identifier').is_not_null() & (pl.col('identifier') != ''))
-        .select(['entity_id', 'identifier_type_id_raw', 'identifier'])
-        .unique()
-    )
-
-    if safe_claims.is_empty():
-        return entities.select([
-            pl.col('entity_id').alias('old_entity_id'),
-            pl.col('entity_id').alias('canonical_entity_id'),
-        ])
-
-    primary_keys = (
-        safe_claims
-        .join(_priority_df(), on='identifier_type_id_raw', how='left')
-        .sort(['entity_id', 'priority_rank', 'identifier_type_id_raw', 'identifier'])
-        .group_by('entity_id')
-        .agg([
-            pl.col('identifier_type_id_raw').first().alias('primary_identifier_type_id'),
-            pl.col('identifier').first().alias('primary_identifier'),
-        ])
-    )
-
-    primary_key_canonical = (
-        primary_keys
-        .group_by(['primary_identifier_type_id', 'primary_identifier'])
-        .agg(pl.col('entity_id').min().alias('canonical_entity_id'))
-    )
-
-    mapped = (
-        primary_keys
-        .join(primary_key_canonical, on=['primary_identifier_type_id', 'primary_identifier'], how='left')
-        .select([
-            pl.col('entity_id').alias('old_entity_id'),
-            pl.col('canonical_entity_id'),
-        ])
-    )
-
-    unmapped = (
+def _dedup_entities(entities: pl.DataFrame) -> pl.DataFrame:
+    if entities.is_empty():
+        return entities
+    return (
         entities
-        .select(pl.col('entity_id').alias('old_entity_id'))
-        .join(mapped, on='old_entity_id', how='left')
-        .with_columns(pl.coalesce([pl.col('canonical_entity_id'), pl.col('old_entity_id')]).alias('canonical_entity_id'))
-        .select(['old_entity_id', 'canonical_entity_id'])
+        .group_by(['entity_id', 'entity_id_type'])
+        .agg([
+            pl.col('entity_type').drop_nulls().first().alias('entity_type'),
+            pl.col('entity_attributes').drop_nulls().first().alias('entity_attributes'),
+            pl.col('taxonomy_id').drop_nulls().first().alias('taxonomy_id'),
+            pl.col('source').drop_nulls().first().alias('source'),
+        ])
+        .sort(['entity_id_type', 'entity_id'])
     )
-    return unmapped.unique().sort('old_entity_id')
+
+
+def _dedup_identifiers(identifier_rows: pl.DataFrame) -> pl.DataFrame:
+    if identifier_rows.is_empty():
+        return _empty_identifiers()
+    return (
+        identifier_rows
+        .group_by(['entity_id', 'entity_id_type', 'identifier', 'identifier_type'])
+        .agg([
+            pl.col('is_canonical').any().alias('is_canonical'),
+            pl.col('sources').explode().drop_nulls().unique().sort().alias('sources'),
+        ])
+        .sort(['entity_id_type', 'entity_id', 'identifier_type', 'identifier'])
+    )
 
 
 def deduplicate_target_schema_dir(output_dir: str | Path) -> dict[str, Any]:
     output_dir = Path(output_dir)
     entities_path = output_dir / 'entities.parquet'
-    identifiers_path = output_dir / 'entity_identifiers_resolved.parquet'
+    identifiers_path = output_dir / 'entity_identifiers.parquet'
     interactions_path = output_dir / 'interactions.parquet'
     associations_path = output_dir / 'associations.parquet'
     annotations_path = output_dir / 'annotations.parquet'
-    cross_references_path = output_dir / 'entity_identifiers_source.parquet'
     if not annotations_path.exists():
         legacy_annotations_path = output_dir / 'cv_annotations.parquet'
         annotations_path = legacy_annotations_path if legacy_annotations_path.exists() else annotations_path
 
-    if not entities_path.exists() or not identifiers_path.exists():
+    if not entities_path.exists():
         return {'merged_entities': 0, 'entity_count_before': 0, 'entity_count_after': 0}
 
     entities = pl.read_parquet(entities_path)
-    entity_identifiers = pl.read_parquet(identifiers_path)
-
     if entities.is_empty():
+        if identifiers_path.exists() and pl.read_parquet(identifiers_path).is_empty():
+            _empty_identifiers().write_parquet(identifiers_path)
         return {'merged_entities': 0, 'entity_count_before': 0, 'entity_count_after': 0}
 
-    entity_map = _build_entity_id_mapping(entities, entity_identifiers)
+    entities_dedup = _dedup_entities(entities)
+    entities_dedup.write_parquet(entities_path)
 
-    remapped_entities = (
-        entities
-        .join(entity_map, left_on='entity_id', right_on='old_entity_id', how='left')
-        .with_columns(pl.coalesce([pl.col('canonical_entity_id'), pl.col('entity_id')]).alias('entity_id'))
-        .drop('canonical_entity_id')
-    )
-
-    remapped_identifiers = (
-        entity_identifiers
-        .join(entity_map, left_on='entity_id', right_on='old_entity_id', how='left')
-        .with_columns([
-            pl.coalesce([pl.col('canonical_entity_id'), pl.col('entity_id')]).alias('entity_id'),
-        ])
-        .drop(['old_entity_id', 'canonical_entity_id'], strict=False)
-    )
-
-    canonical_identifier_rows = (
-        remapped_identifiers
-        .with_columns([
-            pl.col('identifier_type').map_elements(_raw_accession, return_dtype=pl.Utf8).alias('identifier_type_id_raw'),
-            pl.col('identifier_type').map_elements(lambda x: canonical_priority_rank(_raw_accession(x)), return_dtype=pl.Int64).alias('priority_rank'),
-        ])
-        .sort(['entity_id', 'priority_rank', 'identifier_type_id_raw', 'identifier'])
-        .group_by('entity_id')
-        .agg([
-            pl.col('identifier_type_id_raw').first().alias('canonical_identifier_type_id_raw'),
-            pl.col('identifier').first().alias('canonical_identifier'),
-        ])
-        .with_columns([
-            pl.col('canonical_identifier_type_id_raw').map_elements(format_cv_term, return_dtype=pl.Utf8).alias('canonical_identifier_type'),
-        ])
-    )
-
-    taxonomy_summary = (
-        remapped_entities
-        .group_by('entity_id')
-        .agg([
-            pl.col('taxonomy_id').drop_nulls().unique().alias('taxonomy_ids'),
-        ])
-        .with_columns([
-            pl.when(pl.col('taxonomy_ids').list.len() == 1)
-            .then(pl.col('taxonomy_ids').list.first())
-            .otherwise(pl.lit(None, dtype=pl.Utf8))
-            .alias('taxonomy_id')
-        ])
-        .select(['entity_id', 'taxonomy_id'])
-    )
-
-    type_summary = (
-        remapped_entities
-        .group_by('entity_id')
-        .agg([
-            pl.col('entity_type').drop_nulls().unique().alias('entity_types'),
-        ])
-        .with_columns([
-            pl.when(pl.col('entity_types').list.len() == 1)
-            .then(pl.col('entity_types').list.first())
-            .otherwise(pl.col('entity_types').list.first())
-            .alias('entity_type')
-        ])
-        .select(['entity_id', 'entity_type'])
-    )
-
-    entity_summary = (
-        remapped_entities
-        .group_by('entity_id')
-        .agg([
-            pl.col('entity_attributes').drop_nulls().first().alias('entity_attributes'),
-            pl.col('source').drop_nulls().first().alias('source'),
-        ])
-    )
-
-    entities_dedup = (
-        remapped_entities
-        .select('entity_id')
-        .unique()
-        .join(type_summary, on='entity_id', how='left')
-        .join(entity_summary, on='entity_id', how='left')
-        .join(taxonomy_summary, on='entity_id', how='left')
-        .select([
-            'entity_id',
-            'entity_type',
-            'entity_attributes',
-            'taxonomy_id',
-            'source',
-        ])
-        .sort('entity_id')
-    )
-
-    entity_identifiers_dedup = (
-        remapped_identifiers
-        .with_columns([
-            pl.col('identifier_type').map_elements(_raw_accession, return_dtype=pl.Utf8).alias('identifier_type_id_raw'),
-        ])
-        .select(['entity_id', 'identifier', 'identifier_type', 'identifier_type_id_raw', 'source'])
-        .unique()
-        .join(
-            canonical_identifier_rows,
-            on='entity_id',
-            how='left',
-        )
-        .with_columns([
-            ((pl.col('identifier_type_id_raw') == pl.col('canonical_identifier_type_id_raw')) & (pl.col('identifier') == pl.col('canonical_identifier'))).alias('is_canonical')
-        ])
-        .select(['entity_id', 'identifier', 'identifier_type', 'is_canonical', 'source'])
-        .sort(['entity_id', 'identifier_type', 'identifier', 'source'])
-    )
-
-    if cross_references_path.exists():
-        cross_references = pl.read_parquet(cross_references_path)
-        cross_references = (
-            cross_references
-            .join(entity_map, left_on='entity_id', right_on='old_entity_id', how='left')
-            .with_columns([
-                pl.coalesce([pl.col('canonical_entity_id'), pl.col('entity_id')]).alias('entity_id'),
-            ])
-            .drop(['old_entity_id', 'canonical_entity_id'], strict=False)
-            .unique()
-        )
-        cross_references.write_parquet(cross_references_path)
+    if identifiers_path.exists():
+        identifiers = pl.read_parquet(identifiers_path)
+        _dedup_identifiers(identifiers).write_parquet(identifiers_path)
 
     if interactions_path.exists():
-        interactions = pl.read_parquet(interactions_path)
-        interactions = (
-            interactions
-            .join(entity_map.rename({'old_entity_id': 'entity_a_id', 'canonical_entity_id': 'canonical_entity_a_id'}), on='entity_a_id', how='left')
-            .join(entity_map.rename({'old_entity_id': 'entity_b_id', 'canonical_entity_id': 'canonical_entity_b_id'}), on='entity_b_id', how='left')
-            .with_columns([
-                pl.coalesce([pl.col('canonical_entity_a_id'), pl.col('entity_a_id')]).alias('entity_a_id'),
-                pl.coalesce([pl.col('canonical_entity_b_id'), pl.col('entity_b_id')]).alias('entity_b_id'),
-            ])
-            .drop(['canonical_entity_a_id', 'canonical_entity_b_id'], strict=False)
-        )
-        interactions.write_parquet(interactions_path)
+        pl.read_parquet(interactions_path).unique().write_parquet(interactions_path)
 
     if associations_path.exists():
-        associations = pl.read_parquet(associations_path)
-        associations = (
-            associations
-            .join(entity_map.rename({'old_entity_id': 'parent_entity_id', 'canonical_entity_id': 'canonical_parent_entity_id'}), on='parent_entity_id', how='left')
-            .join(entity_map.rename({'old_entity_id': 'member_entity_id', 'canonical_entity_id': 'canonical_member_entity_id'}), on='member_entity_id', how='left')
-            .with_columns([
-                pl.coalesce([pl.col('canonical_parent_entity_id'), pl.col('parent_entity_id')]).alias('parent_entity_id'),
-                pl.coalesce([pl.col('canonical_member_entity_id'), pl.col('member_entity_id')]).alias('member_entity_id'),
-            ])
-            .drop(['canonical_parent_entity_id', 'canonical_member_entity_id'], strict=False)
-        )
-        associations.write_parquet(associations_path)
+        pl.read_parquet(associations_path).unique().write_parquet(associations_path)
 
     if annotations_path.exists():
-        annotations = pl.read_parquet(annotations_path)
-        annotations = (
-            annotations
-            .join(entity_map.rename({'old_entity_id': 'subject_id', 'canonical_entity_id': 'canonical_subject_id'}), on='subject_id', how='left')
-            .with_columns([
-                pl.when(pl.col('subject_type') == 'entity')
-                .then(pl.coalesce([pl.col('canonical_subject_id'), pl.col('subject_id')]))
-                .otherwise(pl.col('subject_id'))
-                .alias('subject_id')
-            ])
-            .drop('canonical_subject_id', strict=False)
-            .unique()
-        )
-        annotations.write_parquet(annotations_path)
+        pl.read_parquet(annotations_path).unique().write_parquet(annotations_path)
 
-    entities_dedup.write_parquet(entities_path)
-    entity_identifiers_dedup.write_parquet(identifiers_path)
-
-    merged_entities = int(entity_map.filter(pl.col('old_entity_id') != pl.col('canonical_entity_id')).height)
+    merged_entities = int(entities.height - entities_dedup.height)
     return {
         'merged_entities': merged_entities,
         'entity_count_before': int(entities.height),

@@ -369,11 +369,12 @@ def _chemical_identifier_rows(preferred_inchis: pl.DataFrame, mapping_dir: Path)
 
 def _empty_identifier_rows() -> pl.DataFrame:
     return pl.DataFrame({
-        'entity_id': pl.Series([], dtype=pl.Int64),
+        'entity_id': pl.Series([], dtype=pl.Utf8),
+        'entity_id_type': pl.Series([], dtype=pl.Utf8),
         'identifier': pl.Series([], dtype=pl.Utf8),
         'identifier_type': pl.Series([], dtype=pl.Utf8),
         'is_canonical': pl.Series([], dtype=pl.Boolean),
-        'source': pl.Series([], dtype=pl.Utf8),
+        'sources': pl.Series([], dtype=pl.List(pl.Utf8)),
     })
 
 
@@ -397,6 +398,99 @@ def _canonical_identifier_rows(identifier_rows: pl.DataFrame) -> pl.DataFrame:
             pl.col('identifier').first().alias('canonical_identifier'),
             pl.col('identifier_type').first().alias('canonical_identifier_type'),
         ])
+    )
+
+
+def _fallback_entity_id(source_name: str, local_entity_id: int) -> str:
+    return f'{source_name}:entity:{local_entity_id}'
+
+
+FALLBACK_ENTITY_ID_TYPE = 'omnipath:local_entity'
+
+
+def _entity_export_keys(
+    entities: pl.DataFrame,
+    canonical_rows: pl.DataFrame,
+    *,
+    source_name: str,
+) -> pl.DataFrame:
+    return (
+        entities
+        .select('entity_id')
+        .join(canonical_rows, on='entity_id', how='left')
+        .with_columns([
+            pl.when(pl.col('canonical_identifier').is_not_null() & (pl.col('canonical_identifier') != ''))
+            .then(pl.col('canonical_identifier'))
+            .otherwise(
+                pl.col('entity_id').map_elements(lambda x: _fallback_entity_id(source_name, int(x)), return_dtype=pl.Utf8)
+            )
+            .alias('export_entity_id'),
+            pl.when(pl.col('canonical_identifier_type').is_not_null() & (pl.col('canonical_identifier_type') != ''))
+            .then(pl.col('canonical_identifier_type'))
+            .otherwise(pl.lit(FALLBACK_ENTITY_ID_TYPE))
+            .alias('export_entity_id_type'),
+        ])
+        .select([
+            pl.col('entity_id').alias('local_entity_id'),
+            pl.col('export_entity_id').alias('export_entity_id'),
+            pl.col('export_entity_id_type').alias('export_entity_id_type'),
+        ])
+    )
+
+
+def _resolver_source_rows(
+    resolvable: pl.DataFrame,
+    preferred_uniprots: pl.DataFrame,
+    preferred_inchis: pl.DataFrame,
+) -> pl.DataFrame:
+    preferred_backbones = pl.concat([
+        preferred_uniprots.select([
+            'entity_id',
+            pl.col('primary_uniprot').alias('canonical_identifier'),
+            pl.lit(UNIPROT_TYPE).alias('canonical_identifier_type'),
+        ]),
+        preferred_inchis.select([
+            'entity_id',
+            pl.col('standard_inchi').alias('canonical_identifier'),
+            pl.lit(STANDARD_INCHI_TYPE).alias('canonical_identifier_type'),
+        ]),
+    ], how='vertical_relaxed')
+
+    if preferred_backbones.is_empty() or resolvable.is_empty():
+        return pl.DataFrame({
+            'entity_id': pl.Series([], dtype=pl.Int64),
+            'source_marker': pl.Series([], dtype=pl.Utf8),
+        })
+
+    return (
+        resolvable
+        .join(preferred_backbones, on='entity_id', how='inner')
+        .filter(
+            (pl.col(RESOLVED_ID_COLUMN) == pl.col('canonical_identifier'))
+            & (pl.col(RESOLVED_ID_TYPE_COLUMN) == pl.col('canonical_identifier_type'))
+            & pl.col(RESOLUTION_SOURCE_COLUMN).is_not_null()
+            & (pl.col(RESOLUTION_SOURCE_COLUMN) != '')
+        )
+        .select([
+            'entity_id',
+            pl.format('resolver:{}', pl.col(RESOLUTION_SOURCE_COLUMN)).alias('source_marker'),
+        ])
+        .unique()
+    )
+
+
+def _aggregate_identifier_rows(identifier_rows: pl.DataFrame) -> pl.DataFrame:
+    if identifier_rows.is_empty():
+        return _empty_identifier_rows()
+
+    return (
+        identifier_rows
+        .group_by(['entity_id', 'entity_id_type', 'identifier', 'identifier_type'])
+        .agg([
+            pl.col('is_canonical').any().alias('is_canonical'),
+            pl.col('source_marker').drop_nulls().unique().sort().alias('sources'),
+        ])
+        .sort(['entity_id_type', 'entity_id', 'identifier_type', 'identifier'])
     )
 
 
@@ -673,10 +767,13 @@ def normalize_target_schema_dir(
     source_dir = Path(source_dir)
     mapping_dir = Path(mapping_dir)
     entities_path = source_dir / 'entities.parquet'
-    identifiers_path = source_dir / 'entity_identifiers_resolved.parquet'
-    source_identifiers_path = source_dir / 'entity_identifiers_source.parquet'
+    identifiers_path = source_dir / 'entity_identifiers.parquet'
+    raw_source_identifiers_path = source_dir / '_entity_identifiers_source.parquet'
+    interactions_path = source_dir / 'interactions.parquet'
+    associations_path = source_dir / 'associations.parquet'
+    annotations_path = source_dir / 'annotations.parquet'
 
-    if not entities_path.exists() or not source_identifiers_path.exists():
+    if not entities_path.exists() or not raw_source_identifiers_path.exists():
         summary = {
             'entities_seen': 0,
             'eligible_entities': 0,
@@ -691,37 +788,164 @@ def normalize_target_schema_dir(
         return summary
 
     entities = _normalize_entities(pl.read_parquet(entities_path))
-    source_identifiers = _normalize_source_identifiers(pl.read_parquet(source_identifiers_path))
-    if entities.is_empty() or source_identifiers.is_empty():
-        _empty_identifier_rows().write_parquet(identifiers_path)
-        summary = {
-            'entities_seen': int(entities.height),
-            'eligible_entities': 0,
-            'resolved_entities': 0,
-            'ambiguous_entities': 0,
-            'exact_conflicts': 0,
-            'near_conflicts': 0,
-            'identifier_rows_added': 0,
-            'entities_updated': 0,
-        }
-        _write_canonicalization_report(source_dir, source_name=source_name, mapping_dir=mapping_dir, summary=summary, ambiguous_entities=[])
-        return summary
+    source_identifiers = _normalize_source_identifiers(pl.read_parquet(raw_source_identifiers_path))
+    source_value = source_name or source_dir.name
 
     eligible_entities = entities.filter(pl.col('entity_type').is_in(list(TARGET_ENTITY_TYPES))).select([
         'entity_id',
         'entity_type',
         'taxonomy_id',
     ])
-    if eligible_entities.is_empty():
-        _empty_identifier_rows().write_parquet(identifiers_path)
+
+    if entities.is_empty() or source_identifiers.is_empty() or eligible_entities.is_empty():
+        canonical_rows = pl.DataFrame({
+            'entity_id': pl.Series([], dtype=pl.Int64),
+            'canonical_identifier': pl.Series([], dtype=pl.Utf8),
+            'canonical_identifier_type': pl.Series([], dtype=pl.Utf8),
+        })
+        ambiguous_entities: list[dict[str, Any]] = []
+        entity_export_keys = _entity_export_keys(entities, canonical_rows, source_name=source_value)
+        updated_entities = (
+            entities
+            .join(entity_export_keys, left_on='entity_id', right_on='local_entity_id', how='left')
+            .select([
+                pl.col('export_entity_id').alias('entity_id'),
+                pl.col('export_entity_id_type').alias('entity_id_type'),
+                'entity_type', 'entity_attributes', 'taxonomy_id', 'source',
+            ])
+        )
+        source_identifier_rows = (
+            source_identifiers
+            .join(entity_export_keys, left_on='entity_id', right_on='local_entity_id', how='inner')
+            .with_columns([
+                ((pl.col('identifier') == pl.col('export_entity_id')) & (pl.col('identifier_type') == pl.col('export_entity_id_type'))).alias('is_canonical'),
+                pl.format('source:{}', pl.col('source')).alias('source_marker'),
+            ])
+            .select([
+                pl.col('export_entity_id').alias('entity_id'),
+                pl.col('export_entity_id_type').alias('entity_id_type'),
+                'identifier', 'identifier_type', 'is_canonical', 'source_marker',
+            ])
+        )
+        fallback_rows = entity_export_keys.select([
+            pl.col('export_entity_id').alias('entity_id'),
+            pl.col('export_entity_id_type').alias('entity_id_type'),
+            pl.col('export_entity_id').alias('identifier'),
+            pl.col('export_entity_id_type').alias('identifier_type'),
+            pl.lit(True).alias('is_canonical'),
+            pl.lit('pipeline:unresolved_fallback').alias('source_marker'),
+        ])
+        updated_identifiers = _aggregate_identifier_rows(pl.concat([
+            source_identifier_rows,
+            fallback_rows,
+        ], how='vertical_relaxed'))
+        updated_entities.write_parquet(entities_path)
+        updated_identifiers.write_parquet(identifiers_path)
+
+        if interactions_path.exists():
+            interactions = pl.read_parquet(interactions_path)
+            interactions = (
+                interactions
+                .join(
+                    entity_export_keys.rename({
+                        'local_entity_id': 'entity_a_id',
+                        'export_entity_id': 'entity_a_id_resolved',
+                        'export_entity_id_type': 'entity_a_id_type',
+                    }),
+                    on='entity_a_id',
+                    how='left',
+                )
+                .join(
+                    entity_export_keys.rename({
+                        'local_entity_id': 'entity_b_id',
+                        'export_entity_id': 'entity_b_id_resolved',
+                        'export_entity_id_type': 'entity_b_id_type',
+                    }),
+                    on='entity_b_id',
+                    how='left',
+                )
+                .with_columns([
+                    pl.col('entity_a_id_resolved').cast(pl.Utf8).alias('entity_a_id'),
+                    pl.col('entity_b_id_resolved').cast(pl.Utf8).alias('entity_b_id'),
+                ])
+                .drop(['entity_a_id_resolved', 'entity_b_id_resolved'], strict=False)
+                .select([
+                    'interaction_id', 'entity_a_id', 'entity_a_id_type', 'entity_b_id', 'entity_b_id_type',
+                    'direction', 'sign', 'record_attributes', 'entity_a_attributes', 'entity_b_attributes', 'evidence', 'source',
+                ])
+            )
+            interactions.write_parquet(interactions_path)
+
+        if associations_path.exists():
+            associations = pl.read_parquet(associations_path)
+            associations = (
+                associations
+                .join(
+                    entity_export_keys.rename({
+                        'local_entity_id': 'parent_entity_id',
+                        'export_entity_id': 'parent_entity_id_resolved',
+                        'export_entity_id_type': 'parent_entity_id_type',
+                    }),
+                    on='parent_entity_id',
+                    how='left',
+                )
+                .join(
+                    entity_export_keys.rename({
+                        'local_entity_id': 'member_entity_id',
+                        'export_entity_id': 'member_entity_id_resolved',
+                        'export_entity_id_type': 'member_entity_id_type',
+                    }),
+                    on='member_entity_id',
+                    how='left',
+                )
+                .with_columns([
+                    pl.col('parent_entity_id_resolved').cast(pl.Utf8).alias('parent_entity_id'),
+                    pl.col('member_entity_id_resolved').cast(pl.Utf8).alias('member_entity_id'),
+                ])
+                .drop(['parent_entity_id_resolved', 'member_entity_id_resolved'], strict=False)
+                .select([
+                    'association_id', 'parent_entity_id', 'parent_entity_id_type', 'member_entity_id', 'member_entity_id_type',
+                    'role_term_id', 'stoichiometry', 'record_attributes', 'parent_attributes', 'member_attributes', 'evidence', 'source',
+                ])
+            )
+            associations.write_parquet(associations_path)
+
+        if annotations_path.exists():
+            annotations = pl.read_parquet(annotations_path)
+            annotations = (
+                annotations
+                .with_columns([
+                    pl.col('subject_id').cast(pl.Utf8),
+                    pl.col('subject_id').cast(pl.Int64, strict=False).alias('subject_id_local'),
+                ])
+                .join(
+                    entity_export_keys.rename({
+                        'local_entity_id': 'subject_id_local',
+                        'export_entity_id': 'entity_subject_id',
+                        'export_entity_id_type': 'entity_subject_id_type',
+                    }),
+                    on='subject_id_local',
+                    how='left',
+                )
+                .with_columns([
+                    pl.when(pl.col('subject_type') == 'entity').then(pl.col('entity_subject_id')).otherwise(pl.col('subject_id')).alias('subject_id'),
+                    pl.when(pl.col('subject_type') == 'entity').then(pl.col('entity_subject_id_type')).otherwise(pl.lit(None, dtype=pl.Utf8)).alias('subject_id_type'),
+                ])
+                .drop(['subject_id_local', 'entity_subject_id', 'entity_subject_id_type'], strict=False)
+                .select(['subject_type', 'subject_id', 'subject_id_type', 'cv_term', 'source'])
+            )
+            annotations.write_parquet(annotations_path)
+
+        if raw_source_identifiers_path.exists():
+            raw_source_identifiers_path.unlink()
         summary = {
             'entities_seen': int(entities.height),
-            'eligible_entities': 0,
+            'eligible_entities': int(eligible_entities.height),
             'resolved_entities': 0,
             'ambiguous_entities': 0,
             'exact_conflicts': 0,
             'near_conflicts': 0,
-            'identifier_rows_added': 0,
+            'identifier_rows_added': int(updated_identifiers.height),
             'entities_updated': 0,
         }
         _write_canonicalization_report(source_dir, source_name=source_name, mapping_dir=mapping_dir, summary=summary, ambiguous_entities=[])
@@ -781,31 +1005,203 @@ def normalize_target_schema_dir(
         .select(['entity_id', 'standard_inchi'])
     )
 
-    source_value = source_name or source_dir.name
-
     authoritative_identifiers = pl.concat([
         _protein_identifier_rows(preferred_uniprots, mapping_dir),
         _chemical_identifier_rows(preferred_inchis, mapping_dir),
     ], how='vertical_relaxed').unique()
 
     canonical_rows = _canonical_identifier_rows(authoritative_identifiers)
+    entity_export_keys = _entity_export_keys(entities, canonical_rows, source_name=source_value)
+    resolver_sources = _resolver_source_rows(resolvable, preferred_uniprots, preferred_inchis)
 
-    updated_entities = entities
-
-    updated_identifiers = (
-        authoritative_identifiers
-        .join(canonical_rows, on='entity_id', how='left')
-        .with_columns([
-            ((pl.col('identifier') == pl.col('canonical_identifier')) & (pl.col('identifier_type') == pl.col('canonical_identifier_type'))).alias('is_canonical'),
-            pl.lit(source_value).alias('source'),
+    updated_entities = (
+        entities
+        .join(entity_export_keys, left_on='entity_id', right_on='local_entity_id', how='left')
+        .select([
+            pl.col('export_entity_id').alias('entity_id'),
+            pl.col('export_entity_id_type').alias('entity_id_type'),
+            'entity_type',
+            'entity_attributes',
+            'taxonomy_id',
+            'source',
         ])
-        .select(['entity_id', 'identifier', 'identifier_type', 'is_canonical', 'source'])
-        .unique()
-        .sort(['entity_id', 'identifier_type', 'identifier', 'source'])
     )
+
+    source_identifier_rows = (
+        source_identifiers
+        .join(entity_export_keys, left_on='entity_id', right_on='local_entity_id', how='inner')
+        .with_columns([
+            ((pl.col('identifier') == pl.col('export_entity_id')) & (pl.col('identifier_type') == pl.col('export_entity_id_type'))).alias('is_canonical'),
+            pl.format('source:{}', pl.col('source')).alias('source_marker'),
+        ])
+        .select([
+            pl.col('export_entity_id').alias('entity_id'),
+            pl.col('export_entity_id_type').alias('entity_id_type'),
+            'identifier', 'identifier_type', 'is_canonical', 'source_marker',
+        ])
+        .unique()
+    )
+
+    resolver_identifier_rows = (
+        authoritative_identifiers
+        .join(entity_export_keys, left_on='entity_id', right_on='local_entity_id', how='inner')
+        .join(resolver_sources, on='entity_id', how='left')
+        .with_columns([
+            ((pl.col('identifier') == pl.col('export_entity_id')) & (pl.col('identifier_type') == pl.col('export_entity_id_type'))).alias('is_canonical'),
+            pl.coalesce([pl.col('source_marker'), pl.lit('resolver:canonicalization')]).alias('source_marker'),
+        ])
+        .select([
+            pl.col('export_entity_id').alias('entity_id'),
+            pl.col('export_entity_id_type').alias('entity_id_type'),
+            'identifier', 'identifier_type', 'is_canonical', 'source_marker',
+        ])
+        .unique()
+    )
+
+    unresolved_fallback_rows = (
+        entity_export_keys
+        .join(canonical_rows.select('entity_id').rename({'entity_id': 'local_entity_id'}), on='local_entity_id', how='anti')
+        .select([
+            pl.col('export_entity_id').alias('entity_id'),
+            pl.col('export_entity_id_type').alias('entity_id_type'),
+            pl.col('export_entity_id').alias('identifier'),
+            pl.col('export_entity_id_type').alias('identifier_type'),
+            pl.lit(True).alias('is_canonical'),
+            pl.lit('pipeline:unresolved_fallback').alias('source_marker'),
+        ])
+    )
+
+    updated_identifiers = _aggregate_identifier_rows(pl.concat([
+        source_identifier_rows,
+        resolver_identifier_rows,
+        unresolved_fallback_rows,
+    ], how='vertical_relaxed'))
 
     updated_entities.write_parquet(entities_path)
     updated_identifiers.write_parquet(identifiers_path)
+
+    if interactions_path.exists():
+        interactions = pl.read_parquet(interactions_path)
+        interactions = (
+            interactions
+            .join(
+                entity_export_keys.rename({
+                    'local_entity_id': 'entity_a_id',
+                    'export_entity_id': 'entity_a_id_resolved',
+                    'export_entity_id_type': 'entity_a_id_type',
+                }),
+                on='entity_a_id',
+                how='left',
+            )
+            .join(
+                entity_export_keys.rename({
+                    'local_entity_id': 'entity_b_id',
+                    'export_entity_id': 'entity_b_id_resolved',
+                    'export_entity_id_type': 'entity_b_id_type',
+                }),
+                on='entity_b_id',
+                how='left',
+            )
+            .with_columns([
+                pl.col('entity_a_id_resolved').cast(pl.Utf8).alias('entity_a_id'),
+                pl.col('entity_b_id_resolved').cast(pl.Utf8).alias('entity_b_id'),
+            ])
+            .drop(['entity_a_id_resolved', 'entity_b_id_resolved'], strict=False)
+            .select([
+                'interaction_id',
+                'entity_a_id',
+                'entity_a_id_type',
+                'entity_b_id',
+                'entity_b_id_type',
+                'direction',
+                'sign',
+                'record_attributes',
+                'entity_a_attributes',
+                'entity_b_attributes',
+                'evidence',
+                'source',
+            ])
+        )
+        interactions.write_parquet(interactions_path)
+
+    if associations_path.exists():
+        associations = pl.read_parquet(associations_path)
+        associations = (
+            associations
+            .join(
+                entity_export_keys.rename({
+                    'local_entity_id': 'parent_entity_id',
+                    'export_entity_id': 'parent_entity_id_resolved',
+                    'export_entity_id_type': 'parent_entity_id_type',
+                }),
+                on='parent_entity_id',
+                how='left',
+            )
+            .join(
+                entity_export_keys.rename({
+                    'local_entity_id': 'member_entity_id',
+                    'export_entity_id': 'member_entity_id_resolved',
+                    'export_entity_id_type': 'member_entity_id_type',
+                }),
+                on='member_entity_id',
+                how='left',
+            )
+            .with_columns([
+                pl.col('parent_entity_id_resolved').cast(pl.Utf8).alias('parent_entity_id'),
+                pl.col('member_entity_id_resolved').cast(pl.Utf8).alias('member_entity_id'),
+            ])
+            .drop(['parent_entity_id_resolved', 'member_entity_id_resolved'], strict=False)
+            .select([
+                'association_id',
+                'parent_entity_id',
+                'parent_entity_id_type',
+                'member_entity_id',
+                'member_entity_id_type',
+                'role_term_id',
+                'stoichiometry',
+                'record_attributes',
+                'parent_attributes',
+                'member_attributes',
+                'evidence',
+                'source',
+            ])
+        )
+        associations.write_parquet(associations_path)
+
+    if annotations_path.exists():
+        annotations = pl.read_parquet(annotations_path)
+        annotations = (
+            annotations
+            .with_columns([
+                pl.col('subject_id').cast(pl.Utf8),
+                pl.col('subject_id').cast(pl.Int64, strict=False).alias('subject_id_local'),
+            ])
+            .join(
+                entity_export_keys.rename({
+                    'local_entity_id': 'subject_id_local',
+                    'export_entity_id': 'entity_subject_id',
+                    'export_entity_id_type': 'entity_subject_id_type',
+                }),
+                on='subject_id_local',
+                how='left',
+            )
+            .with_columns([
+                pl.when(pl.col('subject_type') == 'entity').then(pl.col('entity_subject_id')).otherwise(pl.col('subject_id')).alias('subject_id'),
+                pl.when(pl.col('subject_type') == 'entity').then(pl.col('entity_subject_id_type')).otherwise(pl.lit(None, dtype=pl.Utf8)).alias('subject_id_type'),
+            ])
+            .drop(['subject_id_local', 'entity_subject_id', 'entity_subject_id_type'], strict=False)
+            .select([
+                'subject_type',
+                'subject_id',
+                'subject_id_type',
+                'cv_term',
+                'source',
+            ])
+        )
+        annotations.write_parquet(annotations_path)
+
+    if raw_source_identifiers_path.exists():
+        raw_source_identifiers_path.unlink()
 
     summary = {
         'entities_seen': int(entities.height),

@@ -1,0 +1,19 @@
+services:
+  postgres:
+    image: postgres:18
+    environment:
+      POSTGRES_DB: omnipath
+      POSTGRES_USER: omnipath
+      POSTGRES_PASSWORD: omnipath
+    ports:
+      - "55432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U omnipath -d omnipath"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    volumes:
+      - postgres18_data:/var/lib/postgresql
+
+volumes:
+  postgres18_data:

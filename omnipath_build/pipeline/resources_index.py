@@ -177,7 +177,7 @@ def _resource_row(*, source: str, resource: Resource, gold_root: Path) -> dict[s
     interaction_count = _count_file(version_dir, 'interactions.parquet')
     association_count = _count_file(version_dir, 'associations.parquet')
     annotation_count = _count_file(version_dir, 'annotations.parquet')
-    identifier_count = _count_file(version_dir, 'entity_identifiers_resolved.parquet')
+    identifier_count = _count_file(version_dir, 'entity_identifiers.parquet')
     ontology_term_count = _ontology_term_count(version_dir)
 
     return {
@@ -216,7 +216,14 @@ def build_resources_parquet(*, gold_root: Path, inputs_package: str) -> Path:
 
     rows: list[dict[str, Any]] = []
     for source in sorted(discovered):
-        module = importlib.import_module(f'{inputs_package}.{source}')
+        try:
+            module = importlib.import_module(f'{inputs_package}.{source}')
+        except Exception as exc:  # noqa: BLE001
+            print(
+                f'[build_resources_parquet] skipping {inputs_package}.{source}: '
+                f'{exc.__class__.__name__}: {exc}'
+            )
+            continue
         resource = getattr(module, 'resource', None)
         if not isinstance(resource, Resource):
             continue

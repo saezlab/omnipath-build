@@ -88,18 +88,39 @@ def _handle_gold(args: argparse.Namespace) -> int:
         return 1
 
 
+def _handle_combined(args: argparse.Namespace) -> int:
+    """Build combined warehouse parquet artifacts."""
+    project_root = Path(__file__).resolve().parent.parent.parent
+
+    from omnipath_build.gold.combined import build_combined_parquets
+
+    gold_root: Path = args.gold_root
+    output_dir: Path = args.output_dir
+    if not gold_root.is_absolute():
+        gold_root = project_root / gold_root
+    if not output_dir.is_absolute():
+        output_dir = project_root / output_dir
+
+    try:
+        build_combined_parquets(gold_root=gold_root, output_dir=output_dir)
+        return 0
+    except Exception as exc:  # noqa: BLE001
+        print(f'Unexpected error: {exc}', file=sys.stderr)
+        return 1
+
+
 def _handle_postgres(args: argparse.Namespace) -> int:
     """Execute PostgreSQL loader workflow based on CLI arguments."""
     project_root = Path(__file__).resolve().parent.parent.parent
 
-    from omnipath_build._archive.postgres_loader import load_tables_to_postgres
+    from omnipath_build.postgres_combined import load_combined_schema_to_postgres
 
     output_dir: Path = args.output_dir
     if not output_dir.is_absolute():
         output_dir = project_root / output_dir
 
     try:
-        return load_tables_to_postgres(
+        return load_combined_schema_to_postgres(
             output_dir=output_dir,
             postgres_uri=args.postgres_uri,
             schema=args.schema,
@@ -216,15 +237,33 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     gold_parser.set_defaults(handler=_handle_gold)
 
+    combined_parser = subparsers.add_parser(
+        'combined',
+        help='Build combined warehouse parquet artifacts from per-source gold outputs.',
+    )
+    combined_parser.add_argument(
+        '--gold-root',
+        type=Path,
+        default=Path('data_v2/gold'),
+        help='Root directory containing per-source gold outputs (default: data_v2/gold)',
+    )
+    combined_parser.add_argument(
+        '--output-dir',
+        type=Path,
+        default=Path('data_v2/combined'),
+        help='Directory to write combined parquet artifacts (default: data_v2/combined)',
+    )
+    combined_parser.set_defaults(handler=_handle_combined)
+
     postgres_parser = subparsers.add_parser(
         'postgres',
-        help='Load gold tables from parquet files to PostgreSQL.',
+        help='Load combined gold parquet artifacts into the PostgreSQL warehouse schema.',
     )
     postgres_parser.add_argument(
         '--output-dir',
         type=Path,
-        default=Path('omnipath_build/data/gold'),
-        help='Path to output directory containing parquet files (default: omnipath_build/data/gold)',
+        default=Path('data_v2/combined'),
+        help='Path to the combined artifact directory or a single artifact directory (default: data_v2/combined)',
     )
     postgres_parser.add_argument(
         '--postgres-uri',

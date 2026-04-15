@@ -8,6 +8,7 @@ import inspect
 import json
 import os
 import pkgutil
+import traceback
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -175,7 +176,16 @@ def discover_resources(
         if leaf.startswith('_'):
             continue
 
-        module = importlib.import_module(module_name)
+        try:
+            module = importlib.import_module(module_name)
+        except Exception as exc:  # noqa: BLE001
+            print(
+                f'[discover_resources] skipping {module_name}: '
+                f'{exc.__class__.__name__}: {exc}'
+            )
+            if os.environ.get('OMNIPATH_DISCOVERY_TRACEBACK') == '1':
+                traceback.print_exc()
+            continue
 
         # First, discover Resource objects to emit their metadata
         resource_members = [
@@ -198,13 +208,22 @@ def discover_resources(
 
         # Also discover datasets nested inside Resource objects
         datasets_from_resources: List[tuple[str, object]] = []
-        for _, resource_obj in resource_members:
-            for ds_name, ds_obj in resource_obj.datasets().items():
-                if getattr(ds_obj, 'kind', None) == 'id_translation':
-                    continue
-                # Only add if not already in dataset_members (avoid duplicates)
-                if ds_name not in [n for n, _ in dataset_members]:
-                    datasets_from_resources.append((ds_name, ds_obj))
+        try:
+            for _, resource_obj in resource_members:
+                for ds_name, ds_obj in resource_obj.datasets().items():
+                    if getattr(ds_obj, 'kind', None) == 'id_translation':
+                        continue
+                    # Only add if not already in dataset_members (avoid duplicates)
+                    if ds_name not in [n for n, _ in dataset_members]:
+                        datasets_from_resources.append((ds_name, ds_obj))
+        except Exception as exc:  # noqa: BLE001
+            print(
+                f'[discover_resources] skipping {module_name}: '
+                f'{exc.__class__.__name__}: {exc}'
+            )
+            if os.environ.get('OMNIPATH_DISCOVERY_TRACEBACK') == '1':
+                traceback.print_exc()
+            continue
         dataset_members.extend(datasets_from_resources)
 
         if not dataset_members and not resource_members:
