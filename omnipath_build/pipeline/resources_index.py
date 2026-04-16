@@ -144,6 +144,24 @@ def _count_file(version_dir: Path | None, name: str) -> int:
     return _parquet_rows(path)
 
 
+def _identifier_count(version_dir: Path | None) -> int:
+    if version_dir is None:
+        return 0
+    path = version_dir / 'entity.parquet'
+    if not path.exists():
+        return 0
+    entity_frame = pl.read_parquet(path, columns=['canonical_identifier', 'identifiers'])
+    if entity_frame.is_empty():
+        return 0
+    nested_identifier_count = int(
+        entity_frame
+        .select(pl.col('identifiers').list.len().fill_null(0).sum().alias('identifier_count'))
+        .item()
+        or 0
+    )
+    return int(entity_frame.height + nested_identifier_count)
+
+
 def _ontology_term_count(version_dir: Path | None) -> int:
     if version_dir is None:
         return 0
@@ -180,7 +198,7 @@ def _resource_row(*, source: str, resource: Resource, gold_root: Path) -> dict[s
         _count_file(version_dir, 'entity_annotation.parquet')
         + _count_file(version_dir, 'interaction_annotation.parquet')
     )
-    identifier_count = _count_file(version_dir, 'entity_identifiers.parquet')
+    identifier_count = _identifier_count(version_dir)
     ontology_term_count = _ontology_term_count(version_dir)
 
     return {

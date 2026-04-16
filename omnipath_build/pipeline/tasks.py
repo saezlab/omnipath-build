@@ -1,14 +1,9 @@
 from __future__ import annotations
 
-import hashlib
-import importlib
-import json
 import shutil
 import tempfile
 from pathlib import Path
 from typing import Any
-
-import shutil
 
 from id_resolver.build.mapping_tables import (
     CHEMICAL_SOURCES,
@@ -24,40 +19,6 @@ TEST_MODE_REFERENCE_MAPPING_SOURCES = [
     'uniprot',
     'chebi',
 ]
-
-
-def file_sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open('rb') as handle:
-        while True:
-            chunk = handle.read(1024 * 1024)
-            if not chunk:
-                break
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def tree_sha256(path: Path) -> str:
-    files = [p for p in sorted(path.rglob('*')) if p.is_file()]
-    payload = [
-        {
-            'path': str(file.relative_to(path)),
-            'sha256': file_sha256(file),
-        }
-        for file in files
-    ]
-    return hashlib.sha256(
-        json.dumps(payload, sort_keys=True, separators=(',', ':')).encode('utf-8')
-    ).hexdigest()
-
-
-def module_file_hash(module_name: str) -> str:
-    module = importlib.import_module(module_name)
-    module_file = getattr(module, '__file__', None)
-    if not module_file:
-        raise FileNotFoundError(f'No __file__ for module {module_name}')
-    return file_sha256(Path(module_file))
-
 
 def resolver_mappings_ready(mapping_dir: Path) -> bool:
     required = [
