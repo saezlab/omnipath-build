@@ -29,6 +29,8 @@ Example `POST /terms/search` body:
 - `GET /resources/{resource_id}/download`
 - `POST /resources/download`
 
+Prefer saving downloads into `omnipath-data/` so later analyses can reuse the same bundles.
+
 Example `POST /resources/download` body:
 
 ```json

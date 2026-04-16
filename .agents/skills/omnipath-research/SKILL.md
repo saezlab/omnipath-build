@@ -27,6 +27,7 @@ Use this skill for biology questions that should be answered with the OmniPath A
 3. **Choose resources**
    - use `references/resources.md`
 4. **Download artifacts**
+   - save downloaded bundles under `omnipath-data/` and reuse them when possible instead of redownloading
    - ontology endpoints and download endpoints are listed in `references/api-endpoints.md`
 5. **Analyze and join**
    - treat each resource as source-specific
@@ -43,6 +44,7 @@ Use:
 ## Key rules
 
 - choose resources deliberately instead of downloading everything
+- keep downloaded bundles under `omnipath-data/` so repeated analyses can reuse them
 - use `entity_annotation.parquet` for entity-level term annotations
 - use `interaction_annotation.parquet` for interaction-level term annotations
 - use `interaction.parquet` / `interaction_evidence.parquet` for compact vs provenance-bearing interactions
