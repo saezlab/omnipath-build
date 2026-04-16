@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -17,10 +18,41 @@ from omnipath_build.pipeline.dag import (
     build_task_graph,
     run_pipeline,
 )
+from omnipath_build.pipeline.resource_archives import build_resource_archive
 from omnipath_build.silver.build import ResourceFunction
 
 
 class GoldPipelineTests(unittest.TestCase):
+    def test_build_resource_archive_writes_expected_members(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            version_dir = Path(tmp) / 'signor' / '1'
+            version_dir.mkdir(parents=True, exist_ok=True)
+            (version_dir / 'entity.parquet').write_text('entity', encoding='utf-8')
+            (version_dir / 'interaction.parquet').write_text('interaction', encoding='utf-8')
+
+            archive_path = build_resource_archive(version_dir, 'signor')
+
+            self.assertTrue(archive_path.exists())
+            with zipfile.ZipFile(archive_path) as zf:
+                self.assertEqual(zf.namelist(), ['entity.parquet', 'interaction.parquet'])
+
+    def test_build_resource_archive_replaces_existing_archive_without_self_inclusion(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            version_dir = Path(tmp) / 'signor' / '1'
+            version_dir.mkdir(parents=True, exist_ok=True)
+            (version_dir / 'entity.parquet').write_text('entity', encoding='utf-8')
+
+            first_archive = build_resource_archive(version_dir, 'signor')
+            self.assertTrue(first_archive.exists())
+
+            (version_dir / 'interaction.parquet').write_text('interaction', encoding='utf-8')
+            second_archive = build_resource_archive(version_dir, 'signor')
+
+            self.assertEqual(first_archive, second_archive)
+            with zipfile.ZipFile(second_archive) as zf:
+                self.assertEqual(zf.namelist(), ['entity.parquet', 'interaction.parquet'])
+                self.assertNotIn('signor.zip', zf.namelist())
+
     def test_interactions_schema_keeps_annotation_terms_out_of_materialized_columns(self) -> None:
         field_names = INTERACTIONS_SCHEMA.names
         self.assertNotIn('mechanism_term', field_names)
@@ -264,6 +296,46 @@ class GoldPipelineTests(unittest.TestCase):
                 stub('interactions', 'entity'),
             ])
         )
+
+    def test_run_pipeline_builds_prebuilt_resource_archives(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+
+            def fake_build_mappings(output_dir: Path) -> dict[str, int]:
+                output_dir.mkdir(parents=True, exist_ok=True)
+                return {'rows': 1}
+
+            def fake_build_silver_source(*, source: str, output_dir: Path, inputs_package: str, batch_size: int, test_mode: bool):
+                output_dir.mkdir(parents=True, exist_ok=True)
+                (output_dir / 'resource.parquet').write_text(source, encoding='utf-8')
+                return {'source': source}
+
+            def fake_build_gold_source(*, source: str, silver_dir: Path, output_dir: Path, mapping_dir: Path, batch_size: int):
+                output_dir.mkdir(parents=True, exist_ok=True)
+                (output_dir / 'entity.parquet').write_text(source, encoding='utf-8')
+                (output_dir / 'interaction.parquet').write_text(source, encoding='utf-8')
+                return {'source': source}
+
+            with (
+                patch('omnipath_build.pipeline.dag.build_resolver_mappings', side_effect=fake_build_mappings),
+                patch('omnipath_build.pipeline.dag.build_silver_source', side_effect=fake_build_silver_source),
+                patch('omnipath_build.pipeline.dag.build_gold_source', side_effect=fake_build_gold_source),
+                patch('omnipath_build.pipeline.dag.build_resources_parquet', return_value=root / 'gold' / 'resources.parquet'),
+            ):
+                report = run_pipeline(
+                    command='source',
+                    sources=['signor'],
+                    data_root=root,
+                    inputs_package='fake.inputs',
+                    jobs=2,
+                    resolver_mapping_dir=None,
+                )
+
+            gold_task = report['tasks']['gold:signor']
+            archive_path = Path(gold_task['metadata']['download_archive_path'])
+            self.assertTrue(archive_path.exists())
+            with zipfile.ZipFile(archive_path) as zf:
+                self.assertEqual(zf.namelist(), ['entity.parquet', 'interaction.parquet'])
 
     def test_run_pipeline_autodiscovers_sources_when_omitted(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

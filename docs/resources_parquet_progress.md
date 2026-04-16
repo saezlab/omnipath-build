@@ -23,7 +23,7 @@ Generated file:
 
 - `data_v2/gold/resources.parquet`
 
-Current columns:
+Current columns include:
 
 - `resource_id`
 - `resource_name`
@@ -31,15 +31,18 @@ Current columns:
 - `homepage_url`
 - `license`
 - `pubmed_id`
-- `primary_category`
-- `data_modalities`
-- `interaction_participant_types`
+- `categories`
+- `annotation_ontologies`
 - `entity_count`
 - `interaction_count`
 - `association_count`
+- `annotation_count`
 - `identifier_count`
 - `ontology_term_count`
 - `total_size_bytes`
+- `download_archive_exists`
+- `download_archive_name`
+- `download_archive_size_bytes`
 - `last_downloaded_at`
 - `last_built_at`
 - `build_status`
@@ -54,4 +57,4 @@ Removed from the design and implementation:
 
 ## Result
 
-We now have a usable `resources.parquet` for a dataset browser UI, based on current gold outputs and including ontology resources/artifacts in the same gold snapshot.
+We now have a usable `resources.parquet` for a dataset browser UI, based on current gold outputs and including ontology resources/artifacts in the same gold snapshot. Each resource gold version also gets a prebuilt `<resource_id>.zip` archive, and the archive metadata is exposed alongside the raw artifact sizes.

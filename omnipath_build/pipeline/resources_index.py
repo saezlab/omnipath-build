@@ -11,6 +11,7 @@ import pyarrow.parquet as pq
 
 from omnipath_build.gold.cv_terms import format_cv_term
 from omnipath_build.pipeline.paths import read_latest_pointer, source_version_dir
+from omnipath_build.pipeline.resource_archives import resource_archive_path
 from omnipath_build.silver.build import discover_resources
 from pypath.inputs_v2.base import Resource
 
@@ -172,10 +173,22 @@ def _ontology_term_count(version_dir: Path | None) -> int:
     return total
 
 
-def _gold_files(version_dir: Path | None) -> list[Path]:
+def _gold_files(version_dir: Path | None, source: str | None = None) -> list[Path]:
     if version_dir is None:
         return []
-    return sorted(path for path in version_dir.iterdir() if path.is_file())
+    archive_path = resource_archive_path(version_dir, source) if source else None
+    return sorted(
+        path
+        for path in version_dir.iterdir()
+        if path.is_file() and path != archive_path
+    )
+
+
+def _download_archive(version_dir: Path | None, source: str) -> Path | None:
+    if version_dir is None:
+        return None
+    archive_path = resource_archive_path(version_dir, source)
+    return archive_path if archive_path.exists() and archive_path.is_file() else None
 
 
 def _ontology_labels(resource: Resource) -> list[str]:
@@ -189,7 +202,8 @@ def _ontology_labels(resource: Resource) -> list[str]:
 def _resource_row(*, source: str, resource: Resource, gold_root: Path) -> dict[str, Any]:
     config = resource.config
     version_dir = _current_gold_dir(gold_root, source)
-    gold_files = _gold_files(version_dir)
+    gold_files = _gold_files(version_dir, source)
+    download_archive = _download_archive(version_dir, source)
     last_built_at = _iso_utc(_latest_file_mtime(gold_files))
     entity_count = _count_file(version_dir, 'entity.parquet')
     interaction_count = _count_file(version_dir, 'interaction.parquet')
@@ -222,6 +236,9 @@ def _resource_row(*, source: str, resource: Resource, gold_root: Path) -> dict[s
         'identifier_count': identifier_count,
         'ontology_term_count': ontology_term_count,
         'total_size_bytes': sum(path.stat().st_size for path in gold_files),
+        'download_archive_exists': download_archive is not None,
+        'download_archive_name': download_archive.name if download_archive else None,
+        'download_archive_size_bytes': download_archive.stat().st_size if download_archive else None,
         'last_downloaded_at': _resource_download_mtime(resource),
         'last_built_at': last_built_at,
         'build_status': 'success' if gold_files else 'not_built',

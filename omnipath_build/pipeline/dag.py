@@ -15,6 +15,7 @@ from omnipath_build.pipeline.paths import (
     source_version_dir,
     update_latest_pointer,
 )
+from omnipath_build.pipeline.resource_archives import build_resource_archive
 from omnipath_build.gold.canonicalize import write_canonicalization_overview_report
 from omnipath_build.pipeline.resources_index import build_resources_parquet
 from omnipath_build.pipeline.tasks import (
@@ -443,6 +444,12 @@ def run_pipeline(
         if silver_result and silver_result.version:
             update_latest_pointer(paths.silver_root, source, silver_result.version)
         gold_result = results.get(f'gold:{source}')
+        if gold_result and gold_result.output_dir and gold_result.status in {'executed', 'reused'}:
+            archive_path = build_resource_archive(Path(gold_result.output_dir), source)
+            gold_result.metadata = {
+                **gold_result.metadata,
+                'download_archive_path': str(archive_path),
+            }
         if gold_result and gold_result.version:
             update_latest_pointer(paths.gold_root, source, gold_result.version)
 
