@@ -1,121 +1,62 @@
 # OmniPath API schema guide
 
-This guide is intentionally API-facing and only covers the resource-specific datasets returned by the current API.
+API-facing summary of the resource-specific datasets returned by the current API.
 
-## 1. Resource-specific artifact files
+## Common artifact files
 
-When using resource download endpoints, expect parquet files such as:
-- `entities.parquet`
-- `interactions.parquet`
-- `associations.parquet`
-- `annotations.parquet`
-- `entity_identifiers_source.parquet`
-- `entity_identifiers_resolved.parquet`
+- `entity.parquet`
+- `entity_identifiers.parquet`
+- `interaction.parquet`
+- `interaction_evidence.parquet`
+- `association.parquet`
+- `association_evidence.parquet`
+- `entity_annotation.parquet`
+- `interaction_annotation.parquet`
 
-Not every resource will provide every file.
-Use the workspace manifest endpoint first to see what exists for a chosen resource.
+Not every resource ships every file.
 
-## 2. `entities.parquet`
+## File roles
 
-Typical fields include:
-- `entity_id`
-- `entity_type`
-- `entity_attributes`
-- `taxonomy_id`
-- `source`
+### `entity.parquet`
+Canonical entity table for the resource.
+Typical fields: `entity_id`, `entity_id_type`, `entity_type`, `entity_attributes`, `taxonomy_id`, `sources`.
+Use it to inspect the resource's entity universe and metadata.
 
-Use this file to:
-- define the local entity universe for a resource
-- inspect entity types such as proteins, pathways, complexes, or small molecules
-- join other resource files back to entity metadata
+### `entity_identifiers.parquet`
+Alternate identifiers and synonyms.
+Typical fields: `entity_id`, `entity_id_type`, `identifier`, `identifier_type`, `is_canonical`, `sources`.
+Use it for ID translation only, not as the default cross-resource join surface.
 
-## 3. `interactions.parquet`
+### `interaction.parquet`
+Compact semantic interaction table.
+Typical fields: `interaction_id`, `entity_a_id`, `entity_a_id_type`, `entity_b_id`, `entity_b_id_type`, `direction`, `sign`, `evidence_count`, `sources`.
 
-Typical fields include:
-- `interaction_id`
-- `entity_a_id`
-- `entity_b_id`
-- `direction`
-- `sign`
-- `record_attributes`
-- endpoint-specific attribute fields
-- `evidence`
-- `source`
+### `interaction_evidence.parquet`
+Provenance-bearing interaction assertions.
+Typical fields: `source`, `interaction_id`, `entity_a_id`, `entity_a_id_type`, `entity_b_id`, `entity_b_id_type`, `direction`, `sign`, `record_attributes`, `evidence`.
 
-Use this file to:
-- analyze source-specific interaction networks
-- study causal direction and sign where available
-- retrieve evidence-bearing interaction records for local analysis
+### `association.parquet`
+Compact parent-member relationships.
+Typical fields: `association_id`, `parent_entity_id`, `parent_entity_id_type`, `member_entity_id`, `member_entity_id_type`, `role_term_id`, `stoichiometry`, `sources`.
 
-## 4. `associations.parquet`
+### `association_evidence.parquet`
+Provenance-bearing parent-member assertions.
+Typical fields: `source`, `association_id`, `parent_entity_id`, `parent_entity_id_type`, `member_entity_id`, `member_entity_id_type`, `role_term_id`, `stoichiometry`, `evidence`.
 
-Typical fields include:
-- `association_id`
-- `parent_entity_id`
-- `member_entity_id`
-- `role_term_id`
-- `stoichiometry`
-- `evidence`
-- `source`
+### `entity_annotation.parquet`
+Entity-level ontology-like annotations.
+Typical fields: `entity_id`, `entity_id_type`, `cv_term`, `sources`.
+`cv_term` may contain ontology IDs, pathway IDs, or other controlled-vocabulary terms depending on the resource.
 
-Use this file to:
-- inspect parent-member relationships
-- retrieve structured memberships where a resource represents them explicitly
-- analyze reaction, complex, or other hierarchical records when present
+### `interaction_annotation.parquet`
+Interaction-level ontology-like annotations.
+Typical fields: `interaction_id`, `cv_term`, `sources`.
+`cv_term` may contain ontology IDs, pathway IDs, or other controlled-vocabulary terms depending on the resource.
 
-## 5. `annotations.parquet`
+## Join pattern
 
-Typical fields include:
-- `subject_type`
-- `subject_id`
-- `cv_term`
-- `source`
-
-Use this file to:
-- inspect ontology-like annotations attached to entities or interactions
-- build cohorts within one resource based on terms already present in that resource
-- inspect direct term assignments exposed by a resource
-
-## 6. Identifier tables
-
-### `entity_identifiers_source.parquet`
-Contains raw source-provided identifiers.
-
-Typical fields include:
-- `entity_id`
-- `identifier`
-- `identifier_type`
-- `source`
-
-### `entity_identifiers_resolved.parquet`
-Contains resolved authoritative identifiers where canonicalization succeeded.
-
-Typical fields include:
-- `entity_id`
-- `identifier`
-- `identifier_type`
-- `is_canonical`
-- `source`
-
-Important rule:
-- when joining resolved entities across resource-specific datasets, use `entity_identifiers_resolved.parquet`
-- prefer rows with `is_canonical = true`
-
-Standard cross-resource join pattern:
-1. filter `entity_identifiers_resolved.parquet` to `is_canonical = true`
-2. join across resources on `(identifier, identifier_type)`
-3. join back to `entities.parquet`, `annotations.parquet`, `interactions.parquet`, or `associations.parquet` as needed
-
-This design already supports cross-resource analysis cleanly. Adding identifier fields directly to `entities.parquet` would only be a denormalized convenience.
-
-## 7. Practical joining pattern
-
-### Within one resource
-- join `interactions.parquet` or `associations.parquet` back to `entities.parquet` using local `entity_id`
-
-### Across resources
-- use resolved canonical identifiers where available
-- prefer `entity_identifiers_resolved.parquet` rows with `is_canonical = true`
-- join across resources on `(identifier, identifier_type)`
-- join back to local resource tables after the identifier join
-- treat unresolved entities as potentially non-joinable across resources
+- use the canonical identifier columns already present in each public table for joins
+- entity-level joins: `(entity_id, entity_id_type)`
+- interaction tables carry canonical endpoint columns: `(entity_a_id, entity_a_id_type)` and `(entity_b_id, entity_b_id_type)`
+- association tables carry canonical parent/member columns: `(parent_entity_id, parent_entity_id_type)` and `(member_entity_id, member_entity_id_type)`
+- use `entity_identifiers.parquet` only to map alternate or user-supplied IDs to canonical ones
