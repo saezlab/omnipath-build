@@ -14,19 +14,7 @@ from psycopg2 import sql
 
 logger = logging.getLogger(__name__)
 
-ARTIFACT_NAMES = (
-    'entity.parquet',
-    'entity_identifiers.parquet',
-    'interaction_evidence.parquet',
-    'association_evidence.parquet',
-    'interaction.parquet',
-    'association.parquet',
-    'entity_annotation.parquet',
-    'interaction_annotation.parquet',
-)
-
 DEFAULT_BATCH_SIZE = 10_000
-
 
 def resolve_combined_dir(output_dir: str | Path) -> Path:
     path = Path(output_dir)
@@ -35,7 +23,6 @@ def resolve_combined_dir(output_dir: str | Path) -> Path:
     if not (path / 'entity.parquet').exists():
         raise FileNotFoundError(f'Combined output directory is missing required artifact: entity.parquet at {path}')
     return path
-
 
 def load_combined_schema_to_postgres(
     output_dir: str | Path,
@@ -56,7 +43,6 @@ def load_combined_schema_to_postgres(
     logger.info('Combined PostgreSQL schema load complete')
     return 0
 
-
 def ensure_schema(
     conn: psycopg2.extensions.connection,
     schema: str,
@@ -66,7 +52,17 @@ def ensure_schema(
         cur.execute(sql.SQL('CREATE SCHEMA IF NOT EXISTS {}').format(sql.Identifier(schema)))
 
         if drop_existing:
-            cur.execute(sql.SQL('DROP MATERIALIZED VIEW IF EXISTS {}.entity_summary CASCADE').format(sql.Identifier(schema)))
+            for materialized_view_name in (
+                'interaction_filter_counts',
+                'entity_filter_counts',
+                'entity_summary',
+            ):
+                cur.execute(
+                    sql.SQL('DROP MATERIALIZED VIEW IF EXISTS {}.{} CASCADE').format(
+                        sql.Identifier(schema),
+                        sql.Identifier(materialized_view_name),
+                    )
+                )
             for table_name in (
                 'interaction_annotation',
                 'entity_annotation',
@@ -88,13 +84,14 @@ def ensure_schema(
             sql.SQL(
                 """
                 CREATE TABLE IF NOT EXISTS {}.entity (
-                  entity_id text NOT NULL,
-                  entity_id_type text NOT NULL,
+                  entity_pk bigint PRIMARY KEY,
+                  canonical_identifier text NOT NULL,
+                  canonical_identifier_type text NOT NULL,
                   entity_type text,
                   taxonomy_id text,
                   entity_attributes jsonb,
                   sources text[] NOT NULL DEFAULT '{{}}',
-                  PRIMARY KEY (entity_id_type, entity_id)
+                  identifiers jsonb NOT NULL DEFAULT '[]'::jsonb
                 )
                 """
             ).format(sql.Identifier(schema))
@@ -103,15 +100,10 @@ def ensure_schema(
             sql.SQL(
                 """
                 CREATE TABLE IF NOT EXISTS {}.entity_identifier (
-                  entity_id text NOT NULL,
-                  entity_id_type text NOT NULL,
+                  entity_pk bigint NOT NULL REFERENCES {}.entity (entity_pk),
                   identifier text NOT NULL,
                   identifier_type text NOT NULL,
-                  is_canonical boolean NOT NULL,
-                  sources text[] NOT NULL DEFAULT '{{}}',
-                  PRIMARY KEY (entity_id_type, entity_id, identifier_type, identifier),
-                  FOREIGN KEY (entity_id_type, entity_id)
-                    REFERENCES {}.entity (entity_id_type, entity_id)
+                  PRIMARY KEY (entity_pk, identifier_type, identifier)
                 )
                 """
             ).format(sql.Identifier(schema), sql.Identifier(schema))
@@ -121,82 +113,46 @@ def ensure_schema(
                 """
                 CREATE TABLE IF NOT EXISTS {}.interaction_evidence (
                   source text NOT NULL,
-                  interaction_id bigint NOT NULL,
-                  entity_a_id text NOT NULL,
-                  entity_a_id_type text NOT NULL,
-                  entity_b_id text NOT NULL,
-                  entity_b_id_type text NOT NULL,
+                  interaction_pk bigint NOT NULL,
                   direction bigint,
                   sign bigint,
                   record_attributes jsonb,
                   entity_a_attributes jsonb,
                   entity_b_attributes jsonb,
                   evidence jsonb,
-                  PRIMARY KEY (source, interaction_id),
-                  FOREIGN KEY (entity_a_id_type, entity_a_id)
-                    REFERENCES {}.entity (entity_id_type, entity_id),
-                  FOREIGN KEY (entity_b_id_type, entity_b_id)
-                    REFERENCES {}.entity (entity_id_type, entity_id)
+                  PRIMARY KEY (source, interaction_pk)
                 )
                 """
-            ).format(sql.Identifier(schema), sql.Identifier(schema), sql.Identifier(schema))
+            ).format(sql.Identifier(schema))
         )
         cur.execute(
             sql.SQL(
                 """
                 CREATE TABLE IF NOT EXISTS {}.interaction (
-                  interaction_id text NOT NULL,
-                  entity_a_id text NOT NULL,
-                  entity_a_id_type text NOT NULL,
-                  entity_b_id text NOT NULL,
-                  entity_b_id_type text NOT NULL,
+                  interaction_pk bigint PRIMARY KEY,
+                  entity_a_pk bigint NOT NULL REFERENCES {}.entity (entity_pk),
+                  entity_b_pk bigint NOT NULL REFERENCES {}.entity (entity_pk),
                   direction bigint,
                   sign bigint,
                   evidence_count bigint NOT NULL,
-                  sources text[] NOT NULL DEFAULT '{{}}',
-                  PRIMARY KEY (interaction_id)
+                  sources text[] NOT NULL DEFAULT '{{}}'
                 )
                 """
-            ).format(sql.Identifier(schema))
+            ).format(sql.Identifier(schema), sql.Identifier(schema), sql.Identifier(schema))
         )
         cur.execute(
             sql.SQL(
                 """
                 CREATE TABLE IF NOT EXISTS {}.association_evidence (
                   source text NOT NULL,
-                  association_id bigint NOT NULL,
-                  parent_entity_id text NOT NULL,
-                  parent_entity_id_type text NOT NULL,
-                  member_entity_id text NOT NULL,
-                  member_entity_id_type text NOT NULL,
+                  association_pk bigint NOT NULL,
                   role_term_id text,
                   stoichiometry text,
                   record_attributes jsonb,
                   parent_attributes jsonb,
                   member_attributes jsonb,
                   evidence jsonb,
-                  PRIMARY KEY (source, association_id),
-                  FOREIGN KEY (parent_entity_id_type, parent_entity_id)
-                    REFERENCES {}.entity (entity_id_type, entity_id),
-                  FOREIGN KEY (member_entity_id_type, member_entity_id)
-                    REFERENCES {}.entity (entity_id_type, entity_id)
-                )
-                """
-            ).format(sql.Identifier(schema), sql.Identifier(schema), sql.Identifier(schema))
-        )
-        cur.execute(
-            sql.SQL(
-                """
-                CREATE TABLE IF NOT EXISTS {}.association (
-                  association_id text NOT NULL,
-                  parent_entity_id text NOT NULL,
-                  parent_entity_id_type text NOT NULL,
-                  member_entity_id text NOT NULL,
-                  member_entity_id_type text NOT NULL,
-                  role_term_id text,
-                  stoichiometry text,
-                  sources text[] NOT NULL DEFAULT '{{}}',
-                  PRIMARY KEY (association_id)
+                  PRIMARY KEY (source, association_pk)
                 )
                 """
             ).format(sql.Identifier(schema))
@@ -204,14 +160,25 @@ def ensure_schema(
         cur.execute(
             sql.SQL(
                 """
+                CREATE TABLE IF NOT EXISTS {}.association (
+                  association_pk bigint PRIMARY KEY,
+                  parent_entity_pk bigint NOT NULL REFERENCES {}.entity (entity_pk),
+                  member_entity_pk bigint NOT NULL REFERENCES {}.entity (entity_pk),
+                  role_term_id text,
+                  stoichiometry text,
+                  sources text[] NOT NULL DEFAULT '{{}}'
+                )
+                """
+            ).format(sql.Identifier(schema), sql.Identifier(schema), sql.Identifier(schema))
+        )
+        cur.execute(
+            sql.SQL(
+                """
                 CREATE TABLE IF NOT EXISTS {}.entity_annotation (
-                  entity_id text NOT NULL,
-                  entity_id_type text NOT NULL,
+                  entity_pk bigint NOT NULL REFERENCES {}.entity (entity_pk),
                   cv_term text NOT NULL,
                   sources text[] NOT NULL DEFAULT '{{}}',
-                  PRIMARY KEY (entity_id_type, entity_id, cv_term),
-                  FOREIGN KEY (entity_id_type, entity_id)
-                    REFERENCES {}.entity (entity_id_type, entity_id)
+                  PRIMARY KEY (entity_pk, cv_term)
                 )
                 """
             ).format(sql.Identifier(schema), sql.Identifier(schema))
@@ -220,18 +187,15 @@ def ensure_schema(
             sql.SQL(
                 """
                 CREATE TABLE IF NOT EXISTS {}.interaction_annotation (
-                  interaction_id text NOT NULL,
+                  interaction_pk bigint NOT NULL REFERENCES {}.interaction (interaction_pk),
                   cv_term text NOT NULL,
                   sources text[] NOT NULL DEFAULT '{{}}',
-                  PRIMARY KEY (interaction_id, cv_term),
-                  FOREIGN KEY (interaction_id)
-                    REFERENCES {}.interaction (interaction_id)
+                  PRIMARY KEY (interaction_pk, cv_term)
                 )
                 """
             ).format(sql.Identifier(schema), sql.Identifier(schema))
         )
     conn.commit()
-
 
 def load_tables(
     conn: psycopg2.extensions.connection,
@@ -240,21 +204,70 @@ def load_tables(
     batch_size: int,
 ) -> None:
     _truncate_tables(conn, schema)
+    
+    # Custom load for entity and entity_identifier
+    parquet_path = combined_dir / 'entity.parquet'
+    if parquet_path.exists():
+        logger.info('COPY entity.parquet -> %s.entity and %s.entity_identifier', schema, schema)
+        parquet_file = pq.ParquetFile(parquet_path)
+        
+        entity_columns = ('entity_pk', 'canonical_identifier', 'canonical_identifier_type', 'entity_type', 'taxonomy_id', 'entity_attributes', 'sources', 'identifiers')
+        identifier_columns = ('entity_pk', 'identifier', 'identifier_type')
+        
+        entity_copy = sql.SQL("COPY {}.entity ({}) FROM STDIN WITH (FORMAT CSV, NULL '\\N')").format(
+            sql.Identifier(schema), sql.SQL(', ').join(sql.Identifier(c) for c in entity_columns)
+        )
+        identifier_copy = sql.SQL("COPY {}.entity_identifier ({}) FROM STDIN WITH (FORMAT CSV, NULL '\\N')").format(
+            sql.Identifier(schema), sql.SQL(', ').join(sql.Identifier(c) for c in identifier_columns)
+        )
+        
+        total_entities = 0
+        total_identifiers = 0
+        with conn.cursor() as cur:
+            for batch in parquet_file.iter_batches(batch_size=batch_size):
+                rows = batch.to_pylist()
+                if not rows: continue
+                
+                ent_buf = io.StringIO()
+                id_buf = io.StringIO()
+                ent_writer = csv.writer(ent_buf, lineterminator='\n')
+                id_writer = csv.writer(id_buf, lineterminator='\n')
+                
+                for row in rows:
+                    ent_writer.writerow([
+                        _serialize_copy_value(
+                            row.get(c),
+                            _serialize_json if c in {'entity_attributes', 'identifiers'} else _serialize_pg_text_array if c == 'sources' else None,
+                        )
+                        for c in entity_columns
+                    ])
+                    total_entities += 1
+                    
+                    identifiers = row.get('identifiers')
+                    if identifiers:
+                        for ident in identifiers:
+                            id_writer.writerow([
+                                row['entity_pk'],
+                                _serialize_copy_value(ident.get('identifier'), None),
+                                _serialize_copy_value(ident.get('identifier_type'), None),
+                            ])
+                            total_identifiers += 1
+                
+                ent_buf.seek(0)
+                id_buf.seek(0)
+                cur.copy_expert(entity_copy.as_string(conn), ent_buf)
+                if id_buf.getvalue():
+                    cur.copy_expert(identifier_copy.as_string(conn), id_buf)
+        conn.commit()
+        logger.info('  loaded %s entity row(s), %s identifier row(s)', total_entities, total_identifiers)
+
+    # Standard loads for other tables
     _copy_parquet_to_table(
         conn,
-        parquet_path=combined_dir / 'entity.parquet',
+        parquet_path=combined_dir / 'interaction.parquet',
         schema=schema,
-        table='entity',
-        columns=('entity_id', 'entity_id_type', 'entity_type', 'taxonomy_id', 'entity_attributes', 'sources'),
-        serializers={'entity_attributes': _serialize_json, 'sources': _serialize_pg_text_array},
-        batch_size=batch_size,
-    )
-    _copy_parquet_to_table(
-        conn,
-        parquet_path=combined_dir / 'entity_identifiers.parquet',
-        schema=schema,
-        table='entity_identifier',
-        columns=('entity_id', 'entity_id_type', 'identifier', 'identifier_type', 'is_canonical', 'sources'),
+        table='interaction',
+        columns=('interaction_pk', 'entity_a_pk', 'entity_b_pk', 'direction', 'sign', 'evidence_count', 'sources'),
         serializers={'sources': _serialize_pg_text_array},
         batch_size=batch_size,
     )
@@ -263,27 +276,16 @@ def load_tables(
         parquet_path=combined_dir / 'interaction_evidence.parquet',
         schema=schema,
         table='interaction_evidence',
-        columns=(
-            'source', 'interaction_id', 'entity_a_id', 'entity_a_id_type', 'entity_b_id', 'entity_b_id_type',
-            'direction', 'sign', 'record_attributes', 'entity_a_attributes', 'entity_b_attributes', 'evidence',
-        ),
-        serializers={
-            'record_attributes': _serialize_json,
-            'entity_a_attributes': _serialize_json,
-            'entity_b_attributes': _serialize_json,
-            'evidence': _serialize_json,
-        },
+        columns=('source', 'interaction_pk', 'direction', 'sign', 'record_attributes', 'entity_a_attributes', 'entity_b_attributes', 'evidence'),
+        serializers={'record_attributes': _serialize_json, 'entity_a_attributes': _serialize_json, 'entity_b_attributes': _serialize_json, 'evidence': _serialize_json},
         batch_size=batch_size,
     )
     _copy_parquet_to_table(
         conn,
-        parquet_path=combined_dir / 'interaction.parquet',
+        parquet_path=combined_dir / 'association.parquet',
         schema=schema,
-        table='interaction',
-        columns=(
-            'interaction_id', 'entity_a_id', 'entity_a_id_type', 'entity_b_id', 'entity_b_id_type',
-            'direction', 'sign', 'evidence_count', 'sources',
-        ),
+        table='association',
+        columns=('association_pk', 'parent_entity_pk', 'member_entity_pk', 'role_term_id', 'stoichiometry', 'sources'),
         serializers={'sources': _serialize_pg_text_array},
         batch_size=batch_size,
     )
@@ -292,28 +294,8 @@ def load_tables(
         parquet_path=combined_dir / 'association_evidence.parquet',
         schema=schema,
         table='association_evidence',
-        columns=(
-            'source', 'association_id', 'parent_entity_id', 'parent_entity_id_type', 'member_entity_id', 'member_entity_id_type',
-            'role_term_id', 'stoichiometry', 'record_attributes', 'parent_attributes', 'member_attributes', 'evidence',
-        ),
-        serializers={
-            'record_attributes': _serialize_json,
-            'parent_attributes': _serialize_json,
-            'member_attributes': _serialize_json,
-            'evidence': _serialize_json,
-        },
-        batch_size=batch_size,
-    )
-    _copy_parquet_to_table(
-        conn,
-        parquet_path=combined_dir / 'association.parquet',
-        schema=schema,
-        table='association',
-        columns=(
-            'association_id', 'parent_entity_id', 'parent_entity_id_type', 'member_entity_id', 'member_entity_id_type',
-            'role_term_id', 'stoichiometry', 'sources',
-        ),
-        serializers={'sources': _serialize_pg_text_array},
+        columns=('source', 'association_pk', 'role_term_id', 'stoichiometry', 'record_attributes', 'parent_attributes', 'member_attributes', 'evidence'),
+        serializers={'record_attributes': _serialize_json, 'parent_attributes': _serialize_json, 'member_attributes': _serialize_json, 'evidence': _serialize_json},
         batch_size=batch_size,
     )
     _copy_parquet_to_table(
@@ -321,7 +303,7 @@ def load_tables(
         parquet_path=combined_dir / 'entity_annotation.parquet',
         schema=schema,
         table='entity_annotation',
-        columns=('entity_id', 'entity_id_type', 'cv_term', 'sources'),
+        columns=('entity_pk', 'cv_term', 'sources'),
         serializers={'sources': _serialize_pg_text_array},
         batch_size=batch_size,
     )
@@ -330,11 +312,10 @@ def load_tables(
         parquet_path=combined_dir / 'interaction_annotation.parquet',
         schema=schema,
         table='interaction_annotation',
-        columns=('interaction_id', 'cv_term', 'sources'),
+        columns=('interaction_pk', 'cv_term', 'sources'),
         serializers={'sources': _serialize_pg_text_array},
         batch_size=batch_size,
     )
-
 
 def _truncate_tables(conn: psycopg2.extensions.connection, schema: str) -> None:
     with conn.cursor() as cur:
@@ -348,7 +329,6 @@ def _truncate_tables(conn: psycopg2.extensions.connection, schema: str) -> None:
             )
         )
     conn.commit()
-
 
 def _copy_parquet_to_table(
     conn: psycopg2.extensions.connection,
@@ -391,7 +371,6 @@ def _copy_parquet_to_table(
     conn.commit()
     logger.info('  loaded %s row(s)', total_rows)
 
-
 def _serialize_copy_value(value: Any, serializer: Any | None) -> str:
     if value is None:
         return '\\N'
@@ -402,12 +381,10 @@ def _serialize_copy_value(value: Any, serializer: Any | None) -> str:
         return 'true' if value else 'false'
     return str(value)
 
-
 def _serialize_json(value: Any) -> str | None:
     if value is None:
         return None
     return json.dumps(value, separators=(',', ':'))
-
 
 def _serialize_pg_text_array(value: Any) -> str | None:
     if value is None:
@@ -422,7 +399,6 @@ def _serialize_pg_text_array(value: Any) -> str | None:
         escaped.append(f'"{text}"')
     return '{' + ','.join(escaped) + '}'
 
-
 def create_secondary_indexes(
     conn: psycopg2.extensions.connection,
     schema: str,
@@ -431,7 +407,6 @@ def create_secondary_indexes(
         sql.SQL('CREATE INDEX IF NOT EXISTS entity_taxonomy_idx ON {}.entity (taxonomy_id)').format(sql.Identifier(schema)),
         sql.SQL('CREATE INDEX IF NOT EXISTS entity_sources_gin_idx ON {}.entity USING GIN (sources)').format(sql.Identifier(schema)),
         sql.SQL('CREATE INDEX IF NOT EXISTS entity_identifier_type_idx ON {}.entity_identifier (identifier_type)').format(sql.Identifier(schema)),
-        sql.SQL('CREATE INDEX IF NOT EXISTS entity_identifier_sources_gin_idx ON {}.entity_identifier USING GIN (sources)').format(sql.Identifier(schema)),
         sql.SQL('CREATE INDEX IF NOT EXISTS interaction_sources_gin_idx ON {}.interaction USING GIN (sources)').format(sql.Identifier(schema)),
         sql.SQL('CREATE INDEX IF NOT EXISTS association_sources_gin_idx ON {}.association USING GIN (sources)').format(sql.Identifier(schema)),
         sql.SQL('CREATE INDEX IF NOT EXISTS entity_annotation_cv_term_idx ON {}.entity_annotation (cv_term)').format(sql.Identifier(schema)),
@@ -442,39 +417,50 @@ def create_secondary_indexes(
             cur.execute(statement)
     conn.commit()
 
-
 def create_derived_objects(
     conn: psycopg2.extensions.connection,
     schema: str,
 ) -> None:
     with conn.cursor() as cur:
-        cur.execute(sql.SQL('DROP MATERIALIZED VIEW IF EXISTS {}.entity_summary CASCADE').format(sql.Identifier(schema)))
+        for materialized_view_name in (
+            'interaction_filter_counts',
+            'entity_filter_counts',
+            'entity_summary',
+        ):
+            cur.execute(
+                sql.SQL('DROP MATERIALIZED VIEW IF EXISTS {}.{} CASCADE').format(
+                    sql.Identifier(schema),
+                    sql.Identifier(materialized_view_name),
+                )
+            )
+
         cur.execute(
             sql.SQL(
                 """
                 CREATE MATERIALIZED VIEW {}.entity_summary AS
                 WITH interaction_counts AS (
-                  SELECT entity_id_type, entity_id, COUNT(*)::bigint AS interaction_count
+                  SELECT entity_pk, COUNT(*)::bigint AS interaction_count
                   FROM (
-                    SELECT entity_a_id_type AS entity_id_type, entity_a_id AS entity_id FROM {}.interaction
+                    SELECT entity_a_pk AS entity_pk FROM {}.interaction
                     UNION ALL
-                    SELECT entity_b_id_type AS entity_id_type, entity_b_id AS entity_id FROM {}.interaction
+                    SELECT entity_b_pk AS entity_pk FROM {}.interaction
                   ) endpoints
-                  GROUP BY entity_id_type, entity_id
+                  GROUP BY entity_pk
                 ),
                 identifier_counts AS (
-                  SELECT entity_id_type, entity_id, COUNT(*)::bigint AS identifier_count
+                  SELECT entity_pk, COUNT(*)::bigint AS identifier_count
                   FROM {}.entity_identifier
-                  GROUP BY entity_id_type, entity_id
+                  GROUP BY entity_pk
                 ),
                 annotation_counts AS (
-                  SELECT entity_id_type, entity_id, COUNT(*)::bigint AS annotation_count
+                  SELECT entity_pk, COUNT(*)::bigint AS annotation_count
                   FROM {}.entity_annotation
-                  GROUP BY entity_id_type, entity_id
+                  GROUP BY entity_pk
                 )
                 SELECT
-                  e.entity_id,
-                  e.entity_id_type,
+                  e.entity_pk,
+                  e.canonical_identifier,
+                  e.canonical_identifier_type,
                   e.entity_type,
                   e.taxonomy_id,
                   e.sources,
@@ -483,11 +469,11 @@ def create_derived_objects(
                   COALESCE(ac.annotation_count, 0)::bigint AS annotation_count
                 FROM {}.entity e
                 LEFT JOIN identifier_counts ic
-                  ON ic.entity_id_type = e.entity_id_type AND ic.entity_id = e.entity_id
+                  ON ic.entity_pk = e.entity_pk
                 LEFT JOIN interaction_counts xc
-                  ON xc.entity_id_type = e.entity_id_type AND xc.entity_id = e.entity_id
+                  ON xc.entity_pk = e.entity_pk
                 LEFT JOIN annotation_counts ac
-                  ON ac.entity_id_type = e.entity_id_type AND ac.entity_id = e.entity_id
+                  ON ac.entity_pk = e.entity_pk
                 """
             ).format(
                 sql.Identifier(schema),
@@ -499,6 +485,130 @@ def create_derived_objects(
             )
         )
         cur.execute(
-            sql.SQL('CREATE UNIQUE INDEX entity_summary_pk_idx ON {}.entity_summary (entity_id_type, entity_id)').format(sql.Identifier(schema))
+            sql.SQL('CREATE UNIQUE INDEX entity_summary_pk_idx ON {}.entity_summary (entity_pk)').format(sql.Identifier(schema))
+        )
+
+        cur.execute(
+            sql.SQL(
+                """
+                CREATE MATERIALIZED VIEW {}.entity_filter_counts AS
+                WITH normalized_entities AS (
+                  SELECT
+                    e.entity_pk,
+                    CASE
+                      WHEN e.entity_type IS NULL OR btrim(e.entity_type) = '' THEN NULL
+                      ELSE lower(split_part(e.entity_type, ':', 3)) || ':' || split_part(e.entity_type, ':', 1) || ':' || split_part(e.entity_type, ':', 2)
+                    END AS entity_type,
+                    e.sources
+                  FROM {}.entity e
+                ),
+                entity_type_counts AS (
+                  SELECT
+                    'entity_type'::text AS filter_key,
+                    entity_type AS filter_value,
+                    COUNT(*)::bigint AS doc_count
+                  FROM normalized_entities
+                  WHERE entity_type IS NOT NULL
+                  GROUP BY entity_type
+                ),
+                source_counts AS (
+                  SELECT
+                    'sources'::text AS filter_key,
+                    source AS filter_value,
+                    COUNT(DISTINCT entity_pk)::bigint AS doc_count
+                  FROM normalized_entities
+                  CROSS JOIN LATERAL unnest(sources) AS source
+                  WHERE source IS NOT NULL AND btrim(source) <> ''
+                  GROUP BY source
+                )
+                SELECT * FROM entity_type_counts
+                UNION ALL
+                SELECT * FROM source_counts
+                """
+            ).format(
+                sql.Identifier(schema),
+                sql.Identifier(schema),
+            )
+        )
+        cur.execute(
+            sql.SQL('CREATE UNIQUE INDEX entity_filter_counts_key_value_idx ON {}.entity_filter_counts (filter_key, filter_value)').format(sql.Identifier(schema))
+        )
+        cur.execute(
+            sql.SQL('CREATE INDEX entity_filter_counts_key_count_idx ON {}.entity_filter_counts (filter_key, doc_count DESC, filter_value)').format(sql.Identifier(schema))
+        )
+
+        cur.execute(
+            sql.SQL(
+                """
+                CREATE MATERIALIZED VIEW {}.interaction_filter_counts AS
+                WITH normalized_interactions AS (
+                  SELECT
+                    i.interaction_pk,
+                    CASE
+                      WHEN i.direction IS NOT NULL AND i.direction <> 0 THEN 'true'
+                      ELSE 'false'
+                    END AS is_directed,
+                    COALESCE(i.sign, 0)::text AS sign,
+                    CASE
+                      WHEN ea.entity_type IS NULL OR btrim(ea.entity_type) = '' THEN NULL
+                      ELSE lower(split_part(ea.entity_type, ':', 3)) || ':' || split_part(ea.entity_type, ':', 1) || ':' || split_part(ea.entity_type, ':', 2)
+                    END AS entity_a_type,
+                    CASE
+                      WHEN eb.entity_type IS NULL OR btrim(eb.entity_type) = '' THEN NULL
+                      ELSE lower(split_part(eb.entity_type, ':', 3)) || ':' || split_part(eb.entity_type, ':', 1) || ':' || split_part(eb.entity_type, ':', 2)
+                    END AS entity_b_type
+                  FROM {}.interaction i
+                  JOIN {}.entity ea ON ea.entity_pk = i.entity_a_pk
+                  JOIN {}.entity eb ON eb.entity_pk = i.entity_b_pk
+                ),
+                direction_counts AS (
+                  SELECT
+                    'is_directed'::text AS filter_key,
+                    is_directed AS filter_value,
+                    COUNT(*)::bigint AS doc_count
+                  FROM normalized_interactions
+                  GROUP BY is_directed
+                ),
+                sign_counts AS (
+                  SELECT
+                    'sign'::text AS filter_key,
+                    sign AS filter_value,
+                    COUNT(*)::bigint AS doc_count
+                  FROM normalized_interactions
+                  GROUP BY sign
+                ),
+                interaction_type_counts AS (
+                  SELECT
+                    'interaction_type'::text AS filter_key,
+                    CASE
+                      WHEN entity_a_type IS NULL OR entity_b_type IS NULL THEN NULL
+                      WHEN entity_a_type <= entity_b_type THEN entity_a_type || '|' || entity_b_type
+                      ELSE entity_b_type || '|' || entity_a_type
+                    END AS filter_value,
+                    COUNT(*)::bigint AS doc_count
+                  FROM normalized_interactions
+                  GROUP BY 2
+                )
+                SELECT * FROM direction_counts
+                UNION ALL
+                SELECT * FROM sign_counts
+                UNION ALL
+                SELECT filter_key, filter_value, doc_count
+                FROM interaction_type_counts
+                WHERE filter_value IS NOT NULL
+                """
+            ).format(
+                sql.Identifier(schema),
+                sql.Identifier(schema),
+                sql.Identifier(schema),
+                sql.Identifier(schema),
+            )
+        )
+        cur.execute(
+            sql.SQL('CREATE UNIQUE INDEX interaction_filter_counts_key_value_idx ON {}.interaction_filter_counts (filter_key, filter_value)').format(sql.Identifier(schema))
+        )
+        cur.execute(
+            sql.SQL('CREATE INDEX interaction_filter_counts_key_count_idx ON {}.interaction_filter_counts (filter_key, doc_count DESC, filter_value)').format(sql.Identifier(schema))
         )
     conn.commit()
+

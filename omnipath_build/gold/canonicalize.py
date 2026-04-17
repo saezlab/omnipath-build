@@ -1016,7 +1016,24 @@ def normalize_target_schema_dir(
         _chemical_identifier_rows(preferred_inchis, mapping_dir),
     ], how='vertical_relaxed').unique()
 
-    canonical_rows = _canonical_identifier_rows(authoritative_identifiers)
+    preferred_canonical_rows = pl.concat([
+        preferred_uniprots.select([
+            'entity_id',
+            pl.col('primary_uniprot').alias('canonical_identifier'),
+            pl.lit(UNIPROT_TYPE).alias('canonical_identifier_type'),
+        ]),
+        preferred_inchis.select([
+            'entity_id',
+            pl.col('standard_inchi').alias('canonical_identifier'),
+            pl.lit(STANDARD_INCHI_TYPE).alias('canonical_identifier_type'),
+        ]),
+    ], how='vertical_relaxed')
+
+    canonical_rows = pl.concat([
+        preferred_canonical_rows,
+        _canonical_identifier_rows(authoritative_identifiers)
+        .join(preferred_canonical_rows.select('entity_id'), on='entity_id', how='anti'),
+    ], how='vertical_relaxed').unique(subset=['entity_id'], keep='first')
     entity_export_keys = _entity_export_keys(entities, canonical_rows, source_name=source_value)
     resolver_sources = _resolver_source_rows(resolvable, preferred_uniprots, preferred_inchis)
 
