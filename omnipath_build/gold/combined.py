@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
+import shutil
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -22,6 +25,8 @@ from omnipath_build.gold.schema import (
     aggregate_unique_string_lists,
     empty_frame,
 )
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -68,6 +73,7 @@ def build_combined_parquets(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     source_dirs = discover_gold_source_dirs(gold_root)
+    ontology_source_dirs = _discover_latest_ontology_source_dirs(gold_root)
     entity_output, entity_pk_map = _build_entity(source_dirs)
     interaction_output, interaction_pk_map = _build_interaction(source_dirs, entity_pk_map)
     association_output, association_pk_map = _build_association(source_dirs, entity_pk_map)
@@ -95,6 +101,9 @@ def build_combined_parquets(
     for file_name, frame in outputs.items():
         _write_if_nonempty(frame, output_dir / file_name)
 
+    ontology_artifacts = _copy_ontology_artifacts(ontology_source_dirs, output_dir)
+    ontology_artifacts.extend(_download_external_ontology_artifacts(output_dir))
+
     summary = {
         'gold_root': str(gold_root),
         'output_dir': str(output_dir),
@@ -110,12 +119,69 @@ def build_combined_parquets(
             file_name: int(frame.height)
             for file_name, frame in outputs.items()
         },
+        'ontology_artifacts': [
+            str(path.relative_to(output_dir))
+            for path in ontology_artifacts
+        ],
     }
     (output_dir / 'combined_build_summary.json').write_text(
         json.dumps(summary, indent=2) + '\n',
         encoding='utf-8',
     )
     return summary
+
+
+def _discover_latest_ontology_source_dirs(gold_root: Path) -> list[GoldSourceDir]:
+    latest: dict[str, GoldSourceDir] = {}
+    for artifact_path in gold_root.rglob('*.obo'):
+        version_dir = artifact_path.parent
+        if version_dir == gold_root or not version_dir.name.isdigit():
+            continue
+        source_rel = version_dir.parent.relative_to(gold_root)
+        source = source_rel.as_posix().replace('/', '.')
+        candidate = GoldSourceDir(source=source, version=version_dir.name, path=version_dir)
+        current = latest.get(source)
+        if current is None or int(candidate.version) > int(current.version):
+            latest[source] = candidate
+    return sorted(latest.values(), key=lambda item: item.source)
+
+
+def _copy_ontology_artifacts(source_dirs: list[GoldSourceDir], output_dir: Path) -> list[Path]:
+    ontology_root = output_dir / 'ontologies'
+    if ontology_root.exists():
+        shutil.rmtree(ontology_root)
+    ontology_root.mkdir(parents=True, exist_ok=True)
+
+    copied: list[Path] = []
+    for source_dir in source_dirs:
+        source_output_dir = ontology_root / source_dir.source.replace('.', '/')
+        source_output_dir.mkdir(parents=True, exist_ok=True)
+        for obo_path in sorted(source_dir.path.glob('*.obo')):
+            destination = source_output_dir / obo_path.name
+            shutil.copy2(obo_path, destination)
+            copied.append(destination)
+
+    return copied
+
+
+def _download_external_ontology_artifacts(output_dir: Path) -> list[Path]:
+    ontology_root = output_dir / 'ontologies'
+    downloads = {
+        'go/go.obo': 'https://purl.obolibrary.org/obo/go.obo',
+        'hp/hp.obo': 'https://purl.obolibrary.org/obo/hp.obo',
+    }
+
+    copied: list[Path] = []
+    for relative_dest, url in downloads.items():
+        destination = ontology_root / relative_dest
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        logger.info('Downloading ontology artifact %s -> %s', url, destination)
+        request = urllib.request.Request(url, headers={'User-Agent': 'omnipath-build/1.0'})
+        with urllib.request.urlopen(request) as response, destination.open('wb') as handle:
+            shutil.copyfileobj(response, handle)
+        copied.append(destination)
+
+    return copied
 
 
 def _build_entity(source_dirs: list[GoldSourceDir]) -> tuple[pl.DataFrame, pl.DataFrame]:

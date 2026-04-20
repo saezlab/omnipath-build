@@ -4,6 +4,8 @@ import csv
 import io
 import json
 import logging
+import re
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
@@ -50,11 +52,14 @@ def ensure_schema(
 ) -> None:
     with conn.cursor() as cur:
         cur.execute(sql.SQL('CREATE SCHEMA IF NOT EXISTS {}').format(sql.Identifier(schema)))
+        cur.execute('CREATE EXTENSION IF NOT EXISTS pg_trgm')
 
         if drop_existing:
             for materialized_view_name in (
                 'interaction_filter_counts',
                 'entity_filter_counts',
+                'entity_annotation_counts',
+                'entity_annotation_search',
                 'entity_summary',
             ):
                 cur.execute(
@@ -63,9 +68,15 @@ def ensure_schema(
                         sql.Identifier(materialized_view_name),
                     )
                 )
+            cur.execute(
+                sql.SQL('DROP VIEW IF EXISTS {}.annotation_term_search CASCADE').format(
+                    sql.Identifier(schema)
+                )
+            )
             for table_name in (
                 'interaction_annotation',
                 'entity_annotation',
+                'annotation_term',
                 'association',
                 'interaction',
                 'association_evidence',
@@ -195,6 +206,19 @@ def ensure_schema(
                 """
             ).format(sql.Identifier(schema), sql.Identifier(schema))
         )
+        cur.execute(
+            sql.SQL(
+                """
+                CREATE TABLE IF NOT EXISTS {}.annotation_term (
+                  accession text PRIMARY KEY,
+                  ontology_id text,
+                  label text,
+                  namespace text,
+                  definition text
+                )
+                """
+            ).format(sql.Identifier(schema))
+        )
     conn.commit()
 
 def load_tables(
@@ -316,16 +340,18 @@ def load_tables(
         serializers={'sources': _serialize_pg_text_array},
         batch_size=batch_size,
     )
+    _load_annotation_terms(conn, schema=schema, ontologies_dir=combined_dir / 'ontologies')
 
 def _truncate_tables(conn: psycopg2.extensions.connection, schema: str) -> None:
     with conn.cursor() as cur:
         cur.execute(
             sql.SQL(
-                'TRUNCATE TABLE {}.interaction_annotation, {}.entity_annotation, {}.association, {}.interaction, '
+                'TRUNCATE TABLE {}.interaction_annotation, {}.entity_annotation, {}.annotation_term, {}.association, {}.interaction, '
                 '{}.association_evidence, {}.interaction_evidence, {}.entity_identifier, {}.entity CASCADE'
             ).format(
                 sql.Identifier(schema), sql.Identifier(schema), sql.Identifier(schema), sql.Identifier(schema),
                 sql.Identifier(schema), sql.Identifier(schema), sql.Identifier(schema), sql.Identifier(schema),
+                sql.Identifier(schema),
             )
         )
     conn.commit()
@@ -371,6 +397,180 @@ def _copy_parquet_to_table(
     conn.commit()
     logger.info('  loaded %s row(s)', total_rows)
 
+
+def _load_annotation_terms(
+    conn: psycopg2.extensions.connection,
+    *,
+    schema: str,
+    ontologies_dir: Path,
+) -> None:
+    accessions = _fetch_annotation_accessions(conn, schema=schema)
+    if not accessions:
+        logger.info('No entity annotation accessions found; skipping annotation_term load')
+        return
+
+    term_rows = _collect_annotation_term_rows(ontologies_dir, accessions)
+    missing_accessions = accessions.difference(term_rows)
+    for accession in sorted(missing_accessions):
+        term_rows[accession] = {
+            'accession': accession,
+            'ontology_id': _ontology_id_from_accession(accession),
+            'label': None,
+            'namespace': None,
+            'definition': None,
+        }
+
+    logger.info(
+        'COPY annotation terms from %s (%s matched from OBO, %s placeholder)',
+        ontologies_dir,
+        len(term_rows) - len(missing_accessions),
+        len(missing_accessions),
+    )
+
+    copy_sql = sql.SQL("COPY {}.annotation_term ({}) FROM STDIN WITH (FORMAT CSV, NULL '\\N')").format(
+        sql.Identifier(schema),
+        sql.SQL(', ').join(
+            sql.Identifier(column)
+            for column in ('accession', 'ontology_id', 'label', 'namespace', 'definition')
+        ),
+    )
+
+    buffer = io.StringIO()
+    writer = csv.writer(buffer, lineterminator='\n')
+    for accession in sorted(term_rows):
+        row = term_rows[accession]
+        writer.writerow([
+            _serialize_copy_value(row.get('accession'), None),
+            _serialize_copy_value(row.get('ontology_id'), None),
+            _serialize_copy_value(row.get('label'), None),
+            _serialize_copy_value(row.get('namespace'), None),
+            _serialize_copy_value(row.get('definition'), None),
+        ])
+    buffer.seek(0)
+
+    with conn.cursor() as cur:
+        cur.copy_expert(copy_sql.as_string(conn), buffer)
+    conn.commit()
+    logger.info('  loaded %s annotation term row(s)', len(term_rows))
+
+
+def _fetch_annotation_accessions(
+    conn: psycopg2.extensions.connection,
+    *,
+    schema: str,
+) -> set[str]:
+    with conn.cursor() as cur:
+        cur.execute(
+            sql.SQL('SELECT DISTINCT cv_term FROM {}.entity_annotation').format(sql.Identifier(schema))
+        )
+        rows = cur.fetchall()
+    return {str(row[0]) for row in rows if row and row[0] is not None}
+
+
+def _collect_annotation_term_rows(ontologies_dir: Path, accessions: set[str]) -> dict[str, dict[str, str | None]]:
+    if not ontologies_dir.exists():
+        logger.warning('Ontology artifact directory does not exist: %s', ontologies_dir)
+        return {}
+
+    rows: dict[str, dict[str, str | None]] = {}
+    for obo_path in sorted(ontologies_dir.rglob('*.obo')):
+        for row in _iter_obo_terms(obo_path, accessions):
+            existing = rows.get(row['accession'])
+            if existing is None:
+                rows[row['accession']] = row
+                continue
+            for key in ('ontology_id', 'label', 'namespace', 'definition'):
+                if existing.get(key) is None and row.get(key) is not None:
+                    existing[key] = row[key]
+    return rows
+
+
+def _iter_obo_terms(obo_path: Path, accessions: set[str]) -> Iterable[dict[str, str | None]]:
+    ontology_id: str | None = None
+    in_term = False
+    current: dict[str, str | None] = {}
+
+    with obo_path.open('r', encoding='utf-8', errors='ignore') as handle:
+        for raw_line in handle:
+            line = raw_line.rstrip('\n')
+            stripped = line.strip()
+
+            if not stripped:
+                if in_term:
+                    row = _finalize_obo_term(current, ontology_id, accessions)
+                    if row is not None:
+                        yield row
+                    in_term = False
+                    current = {}
+                continue
+
+            if not in_term and ontology_id is None and stripped.startswith('ontology:'):
+                ontology_id = stripped.partition(':')[2].strip() or None
+                continue
+
+            if stripped == '[Term]':
+                if in_term:
+                    row = _finalize_obo_term(current, ontology_id, accessions)
+                    if row is not None:
+                        yield row
+                in_term = True
+                current = {}
+                continue
+
+            if not in_term or stripped.startswith('['):
+                if in_term:
+                    row = _finalize_obo_term(current, ontology_id, accessions)
+                    if row is not None:
+                        yield row
+                    in_term = False
+                    current = {}
+                continue
+
+            key, sep, value = stripped.partition(':')
+            if not sep:
+                continue
+            key = key.strip()
+            value = value.strip()
+            if key in {'id', 'name', 'namespace'} and key not in current:
+                current[key] = value
+            elif key == 'def' and 'def' not in current:
+                current['def'] = _parse_obo_definition(value)
+
+    if in_term:
+        row = _finalize_obo_term(current, ontology_id, accessions)
+        if row is not None:
+            yield row
+
+
+def _finalize_obo_term(
+    current: dict[str, str | None],
+    ontology_id: str | None,
+    accessions: set[str],
+) -> dict[str, str | None] | None:
+    accession = current.get('id')
+    if accession is None or accession not in accessions:
+        return None
+    return {
+        'accession': accession,
+        'ontology_id': ontology_id or _ontology_id_from_accession(accession),
+        'label': current.get('name'),
+        'namespace': current.get('namespace'),
+        'definition': current.get('def'),
+    }
+
+
+def _parse_obo_definition(value: str) -> str:
+    match = re.match(r'^"(.*)"(?:\s*\[.*\])?$', value)
+    if match:
+        return match.group(1).replace('\\"', '"')
+    return value
+
+
+def _ontology_id_from_accession(accession: str) -> str | None:
+    prefix, _, _ = accession.partition(':')
+    return prefix.lower() or None
+
+
 def _serialize_copy_value(value: Any, serializer: Any | None) -> str:
     if value is None:
         return '\\N'
@@ -404,15 +604,11 @@ def create_secondary_indexes(
     schema: str,
 ) -> None:
     statements = [
-        sql.SQL('CREATE INDEX IF NOT EXISTS entity_taxonomy_idx ON {}.entity (taxonomy_id)').format(sql.Identifier(schema)),
-        sql.SQL('CREATE INDEX IF NOT EXISTS entity_sources_gin_idx ON {}.entity USING GIN (sources)').format(sql.Identifier(schema)),
-        sql.SQL('CREATE INDEX IF NOT EXISTS entity_identifier_type_idx ON {}.entity_identifier (identifier_type)').format(sql.Identifier(schema)),
         sql.SQL('CREATE INDEX IF NOT EXISTS entity_identifier_entity_pk_idx ON {}.entity_identifier (entity_pk)').format(sql.Identifier(schema)),
         sql.SQL('CREATE INDEX IF NOT EXISTS entity_identifier_value_hash_idx ON {}.entity_identifier USING HASH (identifier)').format(sql.Identifier(schema)),
-        sql.SQL('CREATE INDEX IF NOT EXISTS interaction_sources_gin_idx ON {}.interaction USING GIN (sources)').format(sql.Identifier(schema)),
-        sql.SQL('CREATE INDEX IF NOT EXISTS association_sources_gin_idx ON {}.association USING GIN (sources)').format(sql.Identifier(schema)),
-        sql.SQL('CREATE INDEX IF NOT EXISTS entity_annotation_cv_term_idx ON {}.entity_annotation (cv_term)').format(sql.Identifier(schema)),
-        sql.SQL('CREATE INDEX IF NOT EXISTS interaction_annotation_cv_term_idx ON {}.interaction_annotation (cv_term)').format(sql.Identifier(schema)),
+        sql.SQL('CREATE INDEX IF NOT EXISTS annotation_term_label_trgm_idx ON {}.annotation_term USING GIN (label gin_trgm_ops)').format(sql.Identifier(schema)),
+        sql.SQL('CREATE INDEX IF NOT EXISTS annotation_term_accession_trgm_idx ON {}.annotation_term USING GIN (accession gin_trgm_ops)').format(sql.Identifier(schema)),
+        sql.SQL('CREATE INDEX IF NOT EXISTS annotation_term_definition_trgm_idx ON {}.annotation_term USING GIN (definition gin_trgm_ops)').format(sql.Identifier(schema)),
     ]
     with conn.cursor() as cur:
         for statement in statements:
@@ -424,9 +620,16 @@ def create_derived_objects(
     schema: str,
 ) -> None:
     with conn.cursor() as cur:
+        cur.execute(
+            sql.SQL('DROP VIEW IF EXISTS {}.annotation_term_search CASCADE').format(
+                sql.Identifier(schema)
+            )
+        )
         for materialized_view_name in (
             'interaction_filter_counts',
             'entity_filter_counts',
+            'entity_annotation_counts',
+            'entity_annotation_search',
             'entity_summary',
         ):
             cur.execute(
@@ -488,6 +691,48 @@ def create_derived_objects(
         )
         cur.execute(
             sql.SQL('CREATE UNIQUE INDEX entity_summary_pk_idx ON {}.entity_summary (entity_pk)').format(sql.Identifier(schema))
+        )
+
+        cur.execute(
+            sql.SQL(
+                """
+                CREATE MATERIALIZED VIEW {}.entity_annotation_counts AS
+                SELECT
+                  cv_term AS accession,
+                  COUNT(DISTINCT entity_pk)::bigint AS annotated_entity_count
+                FROM {}.entity_annotation
+                GROUP BY cv_term
+                """
+            ).format(
+                sql.Identifier(schema),
+                sql.Identifier(schema),
+            )
+        )
+        cur.execute(
+            sql.SQL('CREATE UNIQUE INDEX entity_annotation_counts_accession_idx ON {}.entity_annotation_counts (accession)').format(sql.Identifier(schema))
+        )
+        cur.execute(
+            sql.SQL('CREATE INDEX entity_annotation_counts_count_idx ON {}.entity_annotation_counts (annotated_entity_count DESC, accession)').format(sql.Identifier(schema))
+        )
+        cur.execute(
+            sql.SQL(
+                """
+                CREATE VIEW {}.annotation_term_search AS
+                SELECT
+                  t.accession,
+                  t.label,
+                  t.namespace,
+                  t.definition,
+                  COALESCE(c.annotated_entity_count, 0)::bigint AS annotated_entity_count
+                FROM {}.annotation_term t
+                LEFT JOIN {}.entity_annotation_counts c
+                  ON c.accession = t.accession
+                """
+            ).format(
+                sql.Identifier(schema),
+                sql.Identifier(schema),
+                sql.Identifier(schema),
+            )
         )
 
         cur.execute(
