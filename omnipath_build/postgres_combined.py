@@ -100,10 +100,10 @@ def ensure_schema(
             sql.SQL(
                 """
                 CREATE TABLE IF NOT EXISTS {}.entity_identifier (
+                  id bigserial PRIMARY KEY,
                   entity_pk bigint NOT NULL REFERENCES {}.entity (entity_pk),
                   identifier text NOT NULL,
-                  identifier_type text NOT NULL,
-                  PRIMARY KEY (entity_pk, identifier_type, identifier)
+                  identifier_type text NOT NULL
                 )
                 """
             ).format(sql.Identifier(schema), sql.Identifier(schema))
@@ -407,6 +407,8 @@ def create_secondary_indexes(
         sql.SQL('CREATE INDEX IF NOT EXISTS entity_taxonomy_idx ON {}.entity (taxonomy_id)').format(sql.Identifier(schema)),
         sql.SQL('CREATE INDEX IF NOT EXISTS entity_sources_gin_idx ON {}.entity USING GIN (sources)').format(sql.Identifier(schema)),
         sql.SQL('CREATE INDEX IF NOT EXISTS entity_identifier_type_idx ON {}.entity_identifier (identifier_type)').format(sql.Identifier(schema)),
+        sql.SQL('CREATE INDEX IF NOT EXISTS entity_identifier_entity_pk_idx ON {}.entity_identifier (entity_pk)').format(sql.Identifier(schema)),
+        sql.SQL('CREATE INDEX IF NOT EXISTS entity_identifier_value_hash_idx ON {}.entity_identifier USING HASH (identifier)').format(sql.Identifier(schema)),
         sql.SQL('CREATE INDEX IF NOT EXISTS interaction_sources_gin_idx ON {}.interaction USING GIN (sources)').format(sql.Identifier(schema)),
         sql.SQL('CREATE INDEX IF NOT EXISTS association_sources_gin_idx ON {}.association USING GIN (sources)').format(sql.Identifier(schema)),
         sql.SQL('CREATE INDEX IF NOT EXISTS entity_annotation_cv_term_idx ON {}.entity_annotation (cv_term)').format(sql.Identifier(schema)),

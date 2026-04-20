@@ -158,10 +158,23 @@ def _build_entity(source_dirs: list[GoldSourceDir]) -> tuple[pl.DataFrame, pl.Da
             pl.col('identifiers').struct.field('identifier').alias('identifier'),
             pl.col('identifiers').struct.field('identifier_type').alias('identifier_type'),
         ])
-        .unique()
     )
+    canonical_identifier_rows = (
+        source_entities
+        .select([
+            'canonical_identifier',
+            'canonical_identifier_type',
+            pl.col('canonical_identifier').alias('identifier'),
+            pl.col('canonical_identifier_type').alias('identifier_type'),
+        ])
+        .drop_nulls(['canonical_identifier', 'canonical_identifier_type'])
+    )
+    all_identifiers = pl.concat([
+        exploded_identifiers,
+        canonical_identifier_rows,
+    ], how='vertical_relaxed').unique()
     identifier_lists = (
-        exploded_identifiers
+        all_identifiers
         .sort(['canonical_identifier_type', 'canonical_identifier', 'identifier_type', 'identifier'])
         .group_by(['canonical_identifier', 'canonical_identifier_type'])
         .agg([

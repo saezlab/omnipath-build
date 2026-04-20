@@ -18,7 +18,7 @@ New columns:
 - `entity_pk`: integer surrogate key
 - `canonical_identifier`: canonical entity identifier
 - `canonical_identifier_type`: type of canonical identifier
-- `identifiers`: `list<struct<identifier, identifier_type>>` containing non-canonical identifiers
+- `identifiers`: `list<struct<identifier, identifier_type>>` containing all entity identifiers, including the canonical pair
 
 Kept:
 - `entity_type`
@@ -27,8 +27,8 @@ Kept:
 - `sources`
 
 Notes:
-- canonical identifiers are stored only here
-- non-canonical identifiers are folded into the entity row instead of being repeated in a separate identifier table
+- canonical identifiers are kept as scalar columns for direct access
+- the nested `identifiers` list now also includes the canonical identifier pair so downstream loads can rebuild a complete `entity_identifier` table from `entity.parquet` alone
 
 ### `interaction.parquet`
 
@@ -80,12 +80,12 @@ This file is eliminated in the reduced-size variant.
 
 Its contents are folded into `entity.parquet`:
 - the canonical identifier is kept as scalar columns on the entity row
-- non-canonical identifiers are stored in nested `identifiers`
+- all identifiers, including the canonical pair, are stored in nested `identifiers`
 
 ## Expected impact
 
 The biggest savings come from:
 - replacing repeated long string foreign keys with integer keys
 - removing repeated entity identifiers from `interaction_evidence.parquet`
-- eliminating canonical identifier duplication
+- eliminating a separate identifier artifact while still allowing downstream systems to reconstruct a complete identifier table from `entity.parquet`
 - dropping constant and empty columns
