@@ -10,6 +10,63 @@ from omnipath_build.gold.build_entities import build_entities
 from omnipath_build.gold.build_relations import build_relations
 
 
+def _run_combine(
+    output_root: Path,
+    combined_output_dir: Path | None,
+    results: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Run the combine step if any source succeeded."""
+    successful = [r for r in results if 'error' not in r]
+    if not successful:
+        print('COMBINE: no successful sources, skipping combine')
+        return None
+
+    print('\n========== COMBINE ==========')
+    try:
+        from omnipath_build.gold.new_combine import build_combined_parquets
+
+        combine_summary = build_combined_parquets(
+            gold_root=output_root,
+            output_dir=combined_output_dir or (output_root.parent / 'combined_new'),
+        )
+        print(f'Combine complete: {combine_summary["row_counts"]}')
+        return combine_summary
+    except Exception as e:
+        print(f'COMBINE ERROR: {e}', file=sys.stderr)
+        import traceback
+
+        traceback.print_exc()
+        return None
+
+
+def _run_postgres_load(
+    combined_output_dir: Path,
+    postgres_uri: str | None,
+    postgres_schema: str,
+    postgres_drop_existing: bool,
+) -> None:
+    """Run the postgres load step if URI is provided."""
+    if not postgres_uri:
+        return
+
+    print('\n========== POSTGRES LOAD ==========')
+    try:
+        from omnipath_build.postgres_new_combined import load_combined_schema_to_postgres
+
+        load_combined_schema_to_postgres(
+            output_dir=combined_output_dir,
+            postgres_uri=postgres_uri,
+            schema=postgres_schema,
+            drop_existing=postgres_drop_existing,
+        )
+        print('Postgres load complete')
+    except Exception as e:
+        print(f'POSTGRES LOAD ERROR: {e}', file=sys.stderr)
+        import traceback
+
+        traceback.print_exc()
+
+
 def resolve_silver_version(silver_source_dir: Path) -> Path:
     """Read the latest version file and return the actual silver data directory."""
     latest_file = silver_source_dir / 'latest'
@@ -77,6 +134,11 @@ def run_all_sources(
     mapping_dir: Path,
     output_root: Path,
     sources: list[str] | None = None,
+    combine: bool = True,
+    combined_output_dir: Path | None = None,
+    postgres_uri: str | None = None,
+    postgres_schema: str = 'public',
+    postgres_drop_existing: bool = False,
 ) -> list[dict[str, Any]]:
     """Run the B3 pipeline on all (or selected) sources under silver_root."""
     if sources is None:
@@ -126,6 +188,11 @@ def run_all_sources(
                 'error': str(e),
             })
 
+    if combine:
+        _run_combine(output_root, combined_output_dir, results)
+        final_combined_dir = combined_output_dir or (output_root.parent / 'combined_new')
+        _run_postgres_load(final_combined_dir, postgres_uri, postgres_schema, postgres_drop_existing)
+
     return results
 
 
@@ -157,6 +224,36 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help='Specific source names to process. Defaults to all sources.',
     )
+    parser.add_argument(
+        '--combine',
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help='Run the combine step after all sources (default: on).',
+    )
+    parser.add_argument(
+        '--combined-output-dir',
+        type=Path,
+        default=None,
+        help='Directory to write combined artifacts (default: <output-root>/../combined_new).',
+    )
+    parser.add_argument(
+        '--postgres-uri',
+        type=str,
+        default=None,
+        help='Postgres URI to load combined artifacts into (e.g. postgresql://user:pass@host/db).',
+    )
+    parser.add_argument(
+        '--postgres-schema',
+        type=str,
+        default='public',
+        help='Postgres schema to load into (default: public).',
+    )
+    parser.add_argument(
+        '--postgres-drop-existing',
+        action='store_true',
+        default=False,
+        help='Drop existing tables before loading into Postgres.',
+    )
     return parser.parse_args()
 
 
@@ -167,6 +264,11 @@ def main() -> int:
         mapping_dir=args.mapping_dir,
         output_root=args.output_root,
         sources=args.sources,
+        combine=args.combine,
+        combined_output_dir=args.combined_output_dir,
+        postgres_uri=args.postgres_uri,
+        postgres_schema=args.postgres_schema,
+        postgres_drop_existing=args.postgres_drop_existing,
     )
 
     print('\n========== SUMMARY ==========')

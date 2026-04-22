@@ -80,6 +80,39 @@ INTERACTION_ANNOTATION_SCHEMA = {
     'sources': pl.List(pl.String),
 }
 
+ENTITY_RELATION_SCHEMA = {
+    'relation_pk': pl.Int64,
+    'subject_entity_pk': pl.Int64,
+    'predicate': pl.String,
+    'object_entity_pk': pl.Int64,
+    'relation_category': pl.String,
+    'evidence_count': pl.Int64,
+    'sources': pl.List(pl.String),
+}
+
+ENTITY_RELATION_EVIDENCE_SCHEMA = {
+    'source': pl.String,
+    'relation_evidence_pk': pl.Int64,
+    'relation_pk': pl.Int64,
+    'subject_entity_pk': pl.Int64,
+    'predicate': pl.String,
+    'object_entity_pk': pl.Int64,
+    'relation_category': pl.String,
+    'record_attributes': ATTRIBUTE_STRUCT,
+    'subject_attributes': ATTRIBUTE_STRUCT,
+    'object_attributes': ATTRIBUTE_STRUCT,
+    'evidence': ATTRIBUTE_STRUCT,
+}
+
+ONTOLOGY_TERM_SCHEMA = {
+    'term_id': pl.String,
+    'ontology_prefix': pl.String,
+    'label': pl.String,
+    'definition': pl.String,
+    'synonyms': pl.List(pl.String),
+    'sources': pl.List(pl.String),
+}
+
 ARTIFACT_OUTPUTS = {
     'entity.parquet': ENTITY_SCHEMA,
     'interaction_evidence.parquet': INTERACTION_EVIDENCE_SCHEMA,
