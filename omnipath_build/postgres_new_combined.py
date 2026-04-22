@@ -371,9 +371,9 @@ def _serialize_json(value: Any) -> str | None:
     return json.dumps(value, separators=(',', ':'))
 
 
-def _serialize_pg_text_array(value: Any) -> str | None:
+def _serialize_pg_text_array(value: Any) -> str:
     if value is None:
-        return None
+        return '{}'
     items = list(value)
     escaped = []
     for item in items:

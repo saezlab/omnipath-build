@@ -35,7 +35,7 @@ def _parse_obo_definition(value: str) -> str:
 
 
 def _parse_obo_synonym(value: str) -> str:
-    match = re.match(r'^"(.*)"(?:\s+\w+)?(?:\s*\[.*\])?$', value)
+    match = re.match(r'^"(.*?)"(?:\s|$)', value)
     if match:
         return match.group(1).replace('\\"', '"')
     return value
