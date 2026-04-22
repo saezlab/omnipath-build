@@ -39,6 +39,29 @@ def _run_combine(
         return None
 
 
+def _run_build_ontology_terms(
+    silver_root: Path,
+    combined_output_dir: Path | None,
+) -> dict[str, Any] | None:
+    """Build ontology_term.parquet from all OBO files under silver_root."""
+    print('\n========== BUILD ONTOLOGY TERMS ==========')
+    try:
+        from omnipath_build.gold.build_ontology_terms import build_ontology_terms
+
+        summary = build_ontology_terms(
+            source_root=silver_root,
+            output_dir=combined_output_dir or (silver_root.parent / 'combined_new'),
+        )
+        print(f"Ontology terms built: {summary['term_count']} terms from {len(summary['obo_files'])} OBO files")
+        return summary
+    except Exception as e:
+        print(f'BUILD ONTOLOGY TERMS ERROR: {e}', file=sys.stderr)
+        import traceback
+
+        traceback.print_exc()
+        return None
+
+
 def _run_postgres_load(
     combined_output_dir: Path,
     postgres_uri: str | None,
@@ -188,9 +211,11 @@ def run_all_sources(
                 'error': str(e),
             })
 
+    final_combined_dir = combined_output_dir or (output_root.parent / 'combined_new')
+    _run_build_ontology_terms(silver_root, final_combined_dir)
+
     if combine:
         _run_combine(output_root, combined_output_dir, results)
-        final_combined_dir = combined_output_dir or (output_root.parent / 'combined_new')
         _run_postgres_load(final_combined_dir, postgres_uri, postgres_schema, postgres_drop_existing)
 
     return results

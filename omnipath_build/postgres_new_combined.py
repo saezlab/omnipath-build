@@ -54,6 +54,7 @@ def ensure_schema(
 ) -> None:
     with conn.cursor() as cur:
         cur.execute(sql.SQL('CREATE SCHEMA IF NOT EXISTS {}').format(sql.Identifier(schema)))
+        cur.execute('CREATE EXTENSION IF NOT EXISTS pg_trgm')
 
         if drop_existing:
             for table_name in (

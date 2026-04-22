@@ -293,40 +293,6 @@ def _build_relation_evidence(
     return deduped.select(list(ENTITY_RELATION_EVIDENCE_SCHEMA.keys()))
 
 
-def _build_ontology_terms(source_dirs: list[GoldSourceDir]) -> pl.DataFrame:
-    frames: list[pl.LazyFrame] = []
-    for source_dir in source_dirs:
-        frame = _scan_source_artifact(source_dir, 'entities/ontology_term.parquet', [
-            pl.lit(source_dir.source).alias('_source'),
-            pl.col('term_id').cast(pl.String),
-            pl.col('ontology_prefix').cast(pl.String),
-            pl.col('label').cast(pl.String),
-            pl.col('definition').cast(pl.String),
-            pl.col('synonyms'),
-        ])
-        if frame is not None:
-            frames.append(frame)
-
-    if not frames:
-        return empty_frame(ONTOLOGY_TERM_SCHEMA)
-
-    source_terms = pl.concat(frames, how='vertical_relaxed').collect()
-    combined = (
-        source_terms
-        .group_by('term_id')
-        .agg([
-            pl.col('ontology_prefix').drop_nulls().first().alias('ontology_prefix'),
-            pl.col('label').drop_nulls().first().alias('label'),
-            pl.col('definition').drop_nulls().first().alias('definition'),
-            aggregate_unique_string_lists('synonyms'),
-            aggregate_unique_string_lists('_source').alias('sources'),
-        ])
-        .select(list(ONTOLOGY_TERM_SCHEMA.keys()))
-        .sort('term_id')
-    )
-    return combined
-
-
 def _write_if_nonempty(frame: pl.DataFrame, path: Path) -> None:
     if frame.is_empty():
         if path.exists():
@@ -355,11 +321,20 @@ def build_combined_parquets(
         'entity_relation_evidence.parquet': _build_relation_evidence(
             source_dirs, relation_pk_map
         ),
-        'ontology_term.parquet': _build_ontology_terms(source_dirs),
     }
 
     for file_name, frame in outputs.items():
         _write_if_nonempty(frame, output_dir / file_name)
+
+    row_counts = {
+        file_name: int(frame.height)
+        for file_name, frame in outputs.items()
+    }
+
+    # Include ontology_term.parquet if it was built separately
+    ontology_term_path = output_dir / 'ontology_term.parquet'
+    if ontology_term_path.exists():
+        row_counts['ontology_term.parquet'] = int(pl.scan_parquet(ontology_term_path).select(pl.len()).collect().item())
 
     summary = {
         'gold_root': str(gold_root),
@@ -371,10 +346,7 @@ def build_combined_parquets(
             }
             for item in source_dirs
         ],
-        'row_counts': {
-            file_name: int(frame.height)
-            for file_name, frame in outputs.items()
-        },
+        'row_counts': row_counts,
     }
     (output_dir / 'combined_build_summary.json').write_text(
         json.dumps(summary, indent=2) + '\n',
