@@ -123,10 +123,6 @@ def ensure_schema(
                   source text NOT NULL,
                   relation_evidence_pk bigint PRIMARY KEY,
                   relation_pk bigint NOT NULL REFERENCES {}.entity_relation (relation_pk),
-                  subject_entity_pk bigint NOT NULL REFERENCES {}.entity (entity_pk),
-                  predicate text NOT NULL,
-                  object_entity_pk bigint NOT NULL REFERENCES {}.entity (entity_pk),
-                  relation_category text NOT NULL,
                   record_attributes jsonb,
                   subject_attributes jsonb,
                   object_attributes jsonb,
@@ -134,8 +130,6 @@ def ensure_schema(
                 )
                 """
             ).format(
-                sql.Identifier(schema),
-                sql.Identifier(schema),
                 sql.Identifier(schema),
                 sql.Identifier(schema),
             )
@@ -195,10 +189,6 @@ def load_tables(
             'source',
             'relation_evidence_pk',
             'relation_pk',
-            'subject_entity_pk',
-            'predicate',
-            'object_entity_pk',
-            'relation_category',
             'record_attributes',
             'subject_attributes',
             'object_attributes',

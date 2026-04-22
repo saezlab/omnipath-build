@@ -244,7 +244,6 @@ def _build_relation(
 
 def _build_relation_evidence(
     source_dirs: list[GoldSourceDir],
-    entity_pk_map: pl.DataFrame,
     relation_pk_map: pl.DataFrame,
 ) -> pl.DataFrame:
     frames: list[pl.LazyFrame] = []
@@ -254,10 +253,6 @@ def _build_relation_evidence(
             pl.col('source').cast(pl.String),
             pl.col('relation_evidence_pk').cast(pl.Int64),
             pl.col('relation_pk').cast(pl.Int64).alias('_local_relation_pk'),
-            pl.col('subject_entity_pk').cast(pl.Int64),
-            pl.col('predicate').cast(pl.String),
-            pl.col('object_entity_pk').cast(pl.Int64),
-            pl.col('relation_category').cast(pl.String),
             pl.col('record_attributes'),
             pl.col('subject_attributes'),
             pl.col('object_attributes'),
@@ -267,22 +262,6 @@ def _build_relation_evidence(
             mapped = (
                 frame
                 .join(
-                    entity_pk_map.rename({
-                        '_local_entity_pk': 'subject_entity_pk',
-                        'entity_pk': '_global_subject_pk',
-                    }).lazy(),
-                    on=['_source', 'subject_entity_pk'],
-                    how='inner',
-                )
-                .join(
-                    entity_pk_map.rename({
-                        '_local_entity_pk': 'object_entity_pk',
-                        'entity_pk': '_global_object_pk',
-                    }).lazy(),
-                    on=['_source', 'object_entity_pk'],
-                    how='inner',
-                )
-                .join(
                     relation_pk_map.lazy(),
                     on=['_source', '_local_relation_pk'],
                     how='inner',
@@ -291,10 +270,6 @@ def _build_relation_evidence(
                     pl.col('source'),
                     pl.col('relation_evidence_pk'),
                     pl.col('relation_pk'),
-                    pl.col('_global_subject_pk').alias('subject_entity_pk'),
-                    pl.col('predicate'),
-                    pl.col('_global_object_pk').alias('object_entity_pk'),
-                    pl.col('relation_category'),
                     pl.col('record_attributes'),
                     pl.col('subject_attributes'),
                     pl.col('object_attributes'),
@@ -311,14 +286,7 @@ def _build_relation_evidence(
         combined
         .drop('relation_evidence_pk')
         .unique()
-        .sort([
-            'source',
-            'relation_pk',
-            'subject_entity_pk',
-            'predicate',
-            'object_entity_pk',
-            'relation_category',
-        ])
+        .sort(['source', 'relation_pk'])
         .with_row_index('relation_evidence_pk', offset=1)
         .with_columns(pl.col('relation_evidence_pk').cast(pl.Int64))
     )
@@ -385,7 +353,7 @@ def build_combined_parquets(
         'entity.parquet': entity_output,
         'entity_relation.parquet': relation_output,
         'entity_relation_evidence.parquet': _build_relation_evidence(
-            source_dirs, entity_pk_map, relation_pk_map
+            source_dirs, relation_pk_map
         ),
         'ontology_term.parquet': _build_ontology_terms(source_dirs),
     }

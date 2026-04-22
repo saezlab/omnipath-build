@@ -215,8 +215,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         '--output-root',
         type=Path,
-        required=True,
-        help='Root directory for pipeline output (e.g. data_v2/gold_new).',
+        default=Path('data_v2/gold_new'),
+        help='Root directory for pipeline output (default: data_v2/gold_new).',
     )
     parser.add_argument(
         '--sources',
@@ -239,8 +239,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         '--postgres-uri',
         type=str,
-        default=None,
-        help='Postgres URI to load combined artifacts into (e.g. postgresql://user:pass@host/db).',
+        default='postgresql://omnipath:omnipath@localhost:55432/omnipath',
+        help='Postgres URI to load combined artifacts into (default: postgresql://omnipath:omnipath@localhost:55432/omnipath).',
     )
     parser.add_argument(
         '--postgres-schema',
