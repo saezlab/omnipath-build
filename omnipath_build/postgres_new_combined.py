@@ -42,6 +42,7 @@ def load_combined_schema_to_postgres(
         ensure_schema(conn, schema=schema, drop_existing=drop_existing)
         load_tables(conn, schema=schema, combined_dir=combined_dir, batch_size=batch_size)
         create_secondary_indexes(conn, schema=schema)
+        create_derived_objects(conn, schema=schema)
 
     logger.info('Combined PostgreSQL schema load complete')
     return 0
@@ -57,6 +58,11 @@ def ensure_schema(
         cur.execute('CREATE EXTENSION IF NOT EXISTS pg_trgm')
 
         if drop_existing:
+            cur.execute(
+                sql.SQL('DROP MATERIALIZED VIEW IF EXISTS {}.relation_annotation_term CASCADE').format(
+                    sql.Identifier(schema)
+                )
+            )
             for table_name in (
                 'entity_relation_evidence',
                 'entity_relation',
@@ -391,10 +397,13 @@ def create_secondary_indexes(
 ) -> None:
     statements = [
         sql.SQL('CREATE INDEX IF NOT EXISTS entity_identifier_value_hash_idx ON {}.entity_identifier USING HASH (identifier)').format(sql.Identifier(schema)),
+        sql.SQL('CREATE INDEX IF NOT EXISTS entity_identifier_identifier_lower_hash_idx ON {}.entity_identifier USING HASH (LOWER(identifier))').format(sql.Identifier(schema)),
+        sql.SQL('CREATE INDEX IF NOT EXISTS entity_taxonomy_idx ON {}.entity (taxonomy_id)').format(sql.Identifier(schema)),
         sql.SQL('CREATE INDEX IF NOT EXISTS entity_relation_subject_idx ON {}.entity_relation (subject_entity_pk)').format(sql.Identifier(schema)),
         sql.SQL('CREATE INDEX IF NOT EXISTS entity_relation_object_idx ON {}.entity_relation (object_entity_pk)').format(sql.Identifier(schema)),
         sql.SQL('CREATE INDEX IF NOT EXISTS entity_relation_subject_predicate_idx ON {}.entity_relation (subject_entity_pk, predicate)').format(sql.Identifier(schema)),
         sql.SQL('CREATE INDEX IF NOT EXISTS entity_relation_subject_category_idx ON {}.entity_relation (subject_entity_pk, relation_category)').format(sql.Identifier(schema)),
+        sql.SQL('CREATE INDEX IF NOT EXISTS entity_relation_object_category_idx ON {}.entity_relation (object_entity_pk, relation_category)').format(sql.Identifier(schema)),
         sql.SQL('CREATE INDEX IF NOT EXISTS entity_relation_evidence_relation_idx ON {}.entity_relation_evidence (relation_pk)').format(sql.Identifier(schema)),
         sql.SQL('CREATE INDEX IF NOT EXISTS ontology_term_label_trgm_idx ON {}.ontology_term USING GIN (label gin_trgm_ops)').format(sql.Identifier(schema)),
         sql.SQL('CREATE INDEX IF NOT EXISTS ontology_term_definition_trgm_idx ON {}.ontology_term USING GIN (definition gin_trgm_ops)').format(sql.Identifier(schema)),
@@ -402,4 +411,34 @@ def create_secondary_indexes(
     with conn.cursor() as cur:
         for statement in statements:
             cur.execute(statement)
+    conn.commit()
+
+
+def create_derived_objects(
+    conn: psycopg2.extensions.connection,
+    schema: str,
+) -> None:
+    sql_path = Path(__file__).resolve().parent / 'sql' / 'relation_annotation_terms.sql'
+    statement = sql.SQL(sql_path.read_text()).format(schema=sql.Identifier(schema))
+
+    with conn.cursor() as cur:
+        cur.execute(statement)
+        cur.execute(
+            sql.SQL(
+                'CREATE UNIQUE INDEX relation_annotation_term_pk_idx '
+                'ON {}.relation_annotation_term (relation_evidence_pk, scope, term_id)'
+            ).format(sql.Identifier(schema))
+        )
+        cur.execute(
+            sql.SQL(
+                'CREATE INDEX relation_annotation_term_scope_term_relation_idx '
+                'ON {}.relation_annotation_term (scope, term_id, relation_pk)'
+            ).format(sql.Identifier(schema))
+        )
+        cur.execute(
+            sql.SQL(
+                'CREATE INDEX relation_annotation_term_relation_idx '
+                'ON {}.relation_annotation_term (relation_pk)'
+            ).format(sql.Identifier(schema))
+        )
     conn.commit()
