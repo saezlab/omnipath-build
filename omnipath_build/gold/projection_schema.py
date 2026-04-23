@@ -198,12 +198,20 @@ def predicate_for_interaction(
     row: dict[str, Any],
     ordered_participants: list[dict[str, Any]],
 ) -> PredicateRule:
-    del ordered_participants
     row_type = string_or_none(row.get('type'))
     annotations = row.get('annotations') or []
-    sign = interaction_sign(annotations)
+
+    participant_annotations: list[dict[str, Any]] = []
+    for p in ordered_participants:
+        participant_annotations.extend(p.get('membership_annotations') or [])
+
+    sign = interaction_sign(annotations, participant_annotations)
 
     if row_type == str(EntityTypeCv.INTERACTION):
+        if sign > 0:
+            return PredicateRule('positively_regulates', 'interaction')
+        if sign < 0:
+            return PredicateRule('negatively_regulates', 'interaction')
         return PredicateRule('interacts_with', 'interaction')
     if row_type in {str(EntityTypeCv.CONTROL), str(EntityTypeCv.CATALYSIS), str(EntityTypeCv.DEGRADATION)}:
         if sign > 0:
@@ -325,8 +333,12 @@ def projected_attribute(annotation: dict[str, Any]) -> ProjectedAttribute | None
     )
 
 
-def interaction_sign(annotations: list[dict[str, Any]]) -> int:
-    for annotation in annotations:
+def interaction_sign(
+    record_annotations: list[dict[str, Any]],
+    participant_annotations: list[dict[str, Any]] | None = None,
+) -> int:
+    all_annotations = [*record_annotations, *(participant_annotations or [])]
+    for annotation in all_annotations:
         term = string_or_none(annotation.get('term'))
         value = (string_or_none(annotation.get('value')) or '').upper()
         if term in SIGN_POSITIVE_TERMS:

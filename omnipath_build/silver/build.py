@@ -60,6 +60,7 @@ TEST_MODE_INCLUDED_SOURCES: set[str] = {
     'hpo',
     'omnipath_ontology',
     'swisslipids',
+    'signor',
 }
 
 _PROGRESS_PREFIX = '__OMNIPATH_PROGRESS__'
