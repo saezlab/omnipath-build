@@ -223,21 +223,70 @@ def _canonicalize_entities(
     resolved = _repair_protein_resolutions(resolved, mapping_dir)
 
     resolvable = resolved.filter(pl.col(RESOLUTION_STATUS_COLUMN).is_in(['identity', 'mapped']))
-    ambiguous_entities = _collect_ambiguous_entities(resolved)
 
-    preferred_uniprots = (
+    protein_resolvable = (
         resolvable
         .filter(pl.col('entity_type').is_in(list(PROTEIN_ENTITY_TYPES)))
         .filter(pl.col(RESOLVED_ID_TYPE_COLUMN) == UNIPROT_TYPE)
+    )
+    # Textual protein names are intentionally weak evidence: short aliases and
+    # names can be shared between unrelated proteins, especially when taxonomy
+    # is missing. They should enrich identifiers, but they should not veto a
+    # unique accession/database-reference answer (UniProt/Ensembl/Entrez/etc.).
+    weak_protein_name_type_prefixes = ['OM:0200', 'OM:0201', 'OM:0202', 'OM:0203']
+    weak_protein_name_evidence = pl.col('id_type').cast(pl.Utf8).str.slice(0, 7).is_in(weak_protein_name_type_prefixes)
+    protein_resolution_summary = (
+        protein_resolvable
         .group_by('entity_pk')
         .agg([
             pl.col('taxonomy_id').drop_nulls().first().alias('entity_taxonomy_id'),
-            pl.col(RESOLVED_ID_COLUMN).n_unique().alias('_resolved_count'),
-            pl.col(RESOLVED_ID_COLUMN).first().alias('primary_uniprot'),
+            pl.col(RESOLVED_ID_COLUMN).n_unique().alias('_all_resolved_count'),
+            pl.col(RESOLVED_ID_COLUMN).first().alias('_all_primary_uniprot'),
+            pl.col(RESOLVED_ID_COLUMN).filter(~weak_protein_name_evidence).n_unique().alias('_strong_resolved_count'),
+            pl.col(RESOLVED_ID_COLUMN).filter(~weak_protein_name_evidence).first().alias('_strong_primary_uniprot'),
         ])
-        .filter(pl.col('_resolved_count') == 1)
+    )
+    preferred_uniprots_from_strong_evidence = (
+        protein_resolution_summary
+        .filter(pl.col('_strong_resolved_count') == 1)
+        .select([
+            'entity_pk',
+            'entity_taxonomy_id',
+            pl.col('_strong_primary_uniprot').alias('primary_uniprot'),
+        ])
+    )
+    preferred_uniprots = (
+        protein_resolution_summary
+        .with_columns([
+            pl.when(pl.col('_strong_resolved_count') == 1)
+            .then(pl.col('_strong_primary_uniprot'))
+            .when(pl.col('_all_resolved_count') == 1)
+            .then(pl.col('_all_primary_uniprot'))
+            .otherwise(pl.lit(None, dtype=pl.Utf8))
+            .alias('primary_uniprot'),
+        ])
+        .filter(pl.col('primary_uniprot').is_not_null())
         .select(['entity_pk', 'entity_taxonomy_id', 'primary_uniprot'])
     )
+
+    resolved_for_conflicts = resolved.join(
+        preferred_uniprots_from_strong_evidence.select([
+            'entity_pk',
+            pl.col('primary_uniprot').alias('_strong_primary_uniprot'),
+        ]),
+        on='entity_pk',
+        how='left',
+    ).filter(
+        ~(
+            pl.col('_strong_primary_uniprot').is_not_null()
+            & pl.col('entity_type').is_in(list(PROTEIN_ENTITY_TYPES))
+            & pl.col(RESOLUTION_STATUS_COLUMN).is_in(['identity', 'mapped'])
+            & (pl.col(RESOLVED_ID_TYPE_COLUMN) == UNIPROT_TYPE)
+            & weak_protein_name_evidence
+            & (pl.col(RESOLVED_ID_COLUMN) != pl.col('_strong_primary_uniprot'))
+        )
+    ).drop('_strong_primary_uniprot')
+    ambiguous_entities = _collect_ambiguous_entities(resolved_for_conflicts)
 
     preferred_inchis = (
         resolvable
