@@ -10,7 +10,7 @@ import polars as pl
 
 from omnipath_build.gold.build_relation_annotation import build_relation_annotation
 from omnipath_build.gold.build_resources import build_resources_parquet
-from omnipath_build.gold.schema import (
+from omnipath_build.gold.utils.table_schema import (
     EMPTY_IDENTIFIERS,
     ENTITY_RELATION_EVIDENCE_SCHEMA,
     ENTITY_RELATION_SCHEMA,
@@ -334,8 +334,8 @@ def _write_if_nonempty(frame: pl.DataFrame, path: Path) -> None:
 
 def build_combined_parquets(
     *,
-    gold_root: str | Path = 'data_v2/gold_new',
-    output_dir: str | Path = 'data_v2/combined_new',
+    gold_root: str | Path = 'data/gold',
+    output_dir: str | Path = 'data/combined',
     inputs_package: str = 'pypath.inputs_v2',
 ) -> dict[str, Any]:
     gold_root = Path(gold_root)
@@ -408,14 +408,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         '--gold-root',
         type=Path,
-        default=Path('data_v2/gold_new'),
-        help='Root directory containing per-source gold outputs (default: data_v2/gold_new)',
+        default=Path('data/gold'),
+        help='Root directory containing per-source gold outputs (default: data/gold)',
     )
     parser.add_argument(
         '--output-dir',
         type=Path,
-        default=Path('data_v2/combined_new'),
-        help='Directory to write combined parquet artifacts (default: data_v2/combined_new)',
+        default=Path('data/combined'),
+        help='Directory to write combined parquet artifacts (default: data/combined)',
     )
     parser.add_argument(
         '--inputs-package',

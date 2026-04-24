@@ -20,7 +20,7 @@ from id_resolver.resolve import (
     resolve_identifier_frame,
 )
 
-from omnipath_build.gold.canonicalization import (
+from omnipath_build.gold.utils.canonicalization import (
     _aggregate_identifier_rows,
     _build_ambiguous_entity_report,
     _canonical_identifier_rows,
@@ -38,8 +38,8 @@ from omnipath_build.gold.canonicalization import (
     ONTOLOGY_ENTITY_TYPE_LABEL,
     ONTOLOGY_IDENTIFIER_TYPE_LABEL,
 )
-from omnipath_build.gold.entity_extraction import extract_all_from_silver
-from omnipath_build.gold.projection_schema import string_or_none
+from omnipath_build.gold.utils.entity_extraction import extract_all_from_silver
+from omnipath_build.gold.utils.schema import string_or_none
 
 
 def _build_ontology_terms(ontology_term_rows: list[dict[str, Any]]) -> pl.DataFrame | None:

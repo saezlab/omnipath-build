@@ -19,7 +19,7 @@ from pypath.internals.cv_terms.entity_types import EntityTypeCv
 
 from omnipath_build.gold.canonicalize import normalize_target_schema_dir, write_canonicalization_overview_report
 from omnipath_build.gold.cv_terms import format_cv_term
-from omnipath_build.gold.dedup import deduplicate_target_schema_dir
+from omnipath_build._archive.dedup import deduplicate_target_schema_dir
 from omnipath_build.shared_interaction_schema import (
     NEGATIVE_SIGN_ACCESSIONS,
     POSITIVE_SIGN_ACCESSIONS,

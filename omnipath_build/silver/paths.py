@@ -16,7 +16,7 @@ __all__ = [
 ]
 
 DATABASES_DIR = 'databases'
-DEFAULT_SILVER_ROOT = Path('data_v2/silver')
+DEFAULT_SILVER_ROOT = Path('data/silver')
 DEFAULT_INPUTS_PACKAGE = 'pypath.inputs_v2'
 
 

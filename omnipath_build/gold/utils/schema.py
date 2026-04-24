@@ -12,7 +12,7 @@ from pypath.internals.cv_terms import (
 )
 from pypath.internals.cv_terms.entity_types import EntityTypeCv
 
-from omnipath_build.gold.cv_terms import format_cv_term
+from omnipath_build.gold.utils.cv_terms import format_cv_term
 from omnipath_build.shared_interaction_schema import (
     NEGATIVE_SIGN_ACCESSIONS,
     POSITIVE_SIGN_ACCESSIONS,

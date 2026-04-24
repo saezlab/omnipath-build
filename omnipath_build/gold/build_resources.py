@@ -10,7 +10,7 @@ from typing import Any
 import polars as pl
 import pyarrow.parquet as pq
 
-from omnipath_build.gold.cv_terms import format_cv_term
+from omnipath_build.gold.utils.cv_terms import format_cv_term
 from omnipath_build.silver.build import discover_resources
 from pypath.inputs_v2.base import Resource
 
@@ -225,8 +225,8 @@ def _resource_row(*, source: str, resource: Resource, gold_root: Path) -> dict[s
 
 def build_resources_parquet(
     *,
-    gold_root: str | Path = 'data_v2/gold_new',
-    output_path: str | Path = 'data_v2/combined_new/resources.parquet',
+    gold_root: str | Path = 'data/gold',
+    output_path: str | Path = 'data/combined/resources.parquet',
     inputs_package: str = 'pypath.inputs_v2',
 ) -> Path:
     gold_root = Path(gold_root)
@@ -267,14 +267,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         '--gold-root',
         type=Path,
-        default=Path('data_v2/gold_new'),
-        help='Root directory containing per-source gold outputs (default: data_v2/gold_new)',
+        default=Path('data/gold'),
+        help='Root directory containing per-source gold outputs (default: data/gold)',
     )
     parser.add_argument(
         '--output-path',
         type=Path,
-        default=Path('data_v2/combined_new/resources.parquet'),
-        help='Output parquet path (default: data_v2/combined_new/resources.parquet)',
+        default=Path('data/combined/resources.parquet'),
+        help='Output parquet path (default: data/combined/resources.parquet)',
     )
     parser.add_argument(
         '--inputs-package',

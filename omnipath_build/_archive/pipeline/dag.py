@@ -7,23 +7,21 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from omnipath_build.gold.build_ontology_terms import build_ontology_terms
-from omnipath_build.gold.combine import build_combined_parquets
 from omnipath_build.pipeline.paths import (
-    PipelinePaths,
+    GoldPipelinePaths,
     build_paths,
     next_numeric_version,
     read_latest_pointer,
-    source_stage_dir,
     source_version_dir,
     update_latest_pointer,
 )
+from omnipath_build.pipeline.resource_archives import build_resource_archive
+from omnipath_build.gold.canonicalize import write_canonicalization_overview_report
+from omnipath_build.pipeline.resources_index import build_resources_parquet
 from omnipath_build.pipeline.tasks import (
     build_gold_source,
     build_resolver_mappings,
     build_silver_source,
-    gold_output_ready,
-    resolve_silver_version,
     resolver_mappings_ready,
 )
 from omnipath_build.silver.build import (
@@ -47,6 +45,7 @@ class TaskResult:
     task_type: str
     source: str | None
     status: str
+    version: str | None
     output_dir: str | None
     metadata: dict[str, Any]
 
@@ -63,19 +62,19 @@ def _run_id() -> str:
     return utc_now().strftime('run-%Y%m%d-%H%M%S')
 
 
-def _report_path(paths: PipelinePaths, run_id: str) -> Path:
+def _report_path(paths: GoldPipelinePaths, run_id: str) -> Path:
     return paths.reports_root / 'runs' / f'{run_id}.json'
 
 
-def _latest_report_path(paths: PipelinePaths) -> Path:
+def _latest_report_path(paths: GoldPipelinePaths) -> Path:
     return paths.reports_root / 'latest.json'
 
 
-def _changelog_path(paths: PipelinePaths) -> Path:
+def _changelog_path(paths: GoldPipelinePaths) -> Path:
     return paths.reports_root / 'changelog.ndjson'
 
 
-def _write_report(paths: PipelinePaths, report: dict[str, Any]) -> None:
+def _write_report(paths: GoldPipelinePaths, report: dict[str, Any]) -> None:
     report_path = _report_path(paths, report['run_id'])
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(json.dumps(report, indent=2) + '\n', encoding='utf-8')
@@ -90,40 +89,17 @@ def _write_report(paths: PipelinePaths, report: dict[str, Any]) -> None:
         handle.write(json.dumps(report, sort_keys=True) + '\n')
 
 
-def build_task_graph(
-    *,
-    sources: list[str],
-    build_mappings: bool,
-    build_sources: bool,
-    combine: bool,
-    postgres: bool,
-) -> list[TaskDef]:
+def build_task_graph(sources: list[str], include_mappings: bool, include_sources: bool) -> list[TaskDef]:
     tasks: list[TaskDef] = []
-    silver_keys: list[str] = []
-    gold_keys: list[str] = []
-
-    if build_mappings:
+    if include_mappings:
         tasks.append(TaskDef('resolver_mappings', 'resolver_mappings', None, ()))
-
-    if build_sources:
+    if include_sources:
         for source in sources:
-            silver_key = f'silver:{source}'
-            gold_key = f'gold:{source}'
-            silver_keys.append(silver_key)
-            gold_keys.append(gold_key)
-            tasks.append(TaskDef(silver_key, 'silver', source, ()))
-            deps = [silver_key]
-            if build_mappings:
+            tasks.append(TaskDef(f'silver:{source}', 'silver', source, ()))
+            deps = [f'silver:{source}']
+            if include_mappings:
                 deps.append('resolver_mappings')
-            tasks.append(TaskDef(gold_key, 'gold', source, tuple(deps)))
-
-    if build_sources and combine:
-        tasks.append(TaskDef('ontology_terms', 'ontology_terms', None, tuple(silver_keys)))
-        combine_deps = [*gold_keys, 'ontology_terms']
-        tasks.append(TaskDef('combine', 'combine', None, tuple(combine_deps)))
-        if postgres:
-            tasks.append(TaskDef('postgres', 'postgres', None, ('combine',)))
-
+            tasks.append(TaskDef(f'gold:{source}', 'gold', source, tuple(deps)))
     return tasks
 
 
@@ -139,8 +115,7 @@ def _normalize_overwrite(overwrite: str | None) -> frozenset[str]:
 
 def _reuse_existing_result(
     task: TaskDef,
-    *,
-    paths: PipelinePaths,
+    paths: GoldPipelinePaths,
     resolver_mapping_dir: Path | None,
     overwrite_task_types: frozenset[str],
 ) -> TaskResult | None:
@@ -154,50 +129,55 @@ def _reuse_existing_result(
         return TaskResult(
             task_key=task.key,
             task_type=task.task_type,
-            source=None,
+            source=task.source,
             status='reused',
+            version='id-resolver-data',
             output_dir=str(mapping_dir),
             metadata={'external': resolver_mapping_dir is not None},
         )
 
-    if task.task_type == 'silver' and task.source is not None:
-        version = read_latest_pointer(paths.silver_root, task.source)
-        if version is None:
-            return None
-        output_dir = source_version_dir(paths.silver_root, task.source, version)
-        if not output_dir.exists():
-            return None
-        return TaskResult(
-            task_key=task.key,
-            task_type=task.task_type,
-            source=task.source,
-            status='reused',
-            output_dir=str(output_dir),
-            metadata={'version': version},
-        )
+    if task.source is None:
+        return None
 
-    if task.task_type == 'gold' and task.source is not None:
-        output_dir = source_stage_dir(paths.gold_root, task.source)
-        if not gold_output_ready(output_dir):
-            return None
-        return TaskResult(
-            task_key=task.key,
-            task_type=task.task_type,
-            source=task.source,
-            status='reused',
-            output_dir=str(output_dir),
-            metadata={'reused_existing_output': True},
-        )
+    stage_root = paths.silver_root if task.task_type == 'silver' else paths.gold_root
+    version = read_latest_pointer(stage_root, task.source)
+    if version is None:
+        return None
+    output_dir = source_version_dir(stage_root, task.source, version)
+    if not output_dir.exists():
+        return None
+    metadata: dict[str, Any] = {}
+    if task.task_type == 'gold':
+        summary_path = output_dir / 'canonicalization_summary.json'
+        if summary_path.exists():
+            try:
+                metadata['canonicalize_summary'] = json.loads(
+                    summary_path.read_text(encoding='utf-8')
+                )
+            except Exception:
+                metadata = {}
 
-    return None
+    return TaskResult(
+        task_key=task.key,
+        task_type=task.task_type,
+        source=task.source,
+        status='reused',
+        version=version,
+        output_dir=str(output_dir),
+        metadata=metadata,
+    )
 
 
-def _failed_task_result(task: TaskDef, exc: Exception) -> TaskResult:
+def _failed_task_result(
+    task: TaskDef,
+    exc: Exception,
+) -> TaskResult:
     return TaskResult(
         task_key=task.key,
         task_type=task.task_type,
         source=task.source,
         status='failed',
+        version=None,
         output_dir=None,
         metadata={
             'error': {
@@ -208,12 +188,18 @@ def _failed_task_result(task: TaskDef, exc: Exception) -> TaskResult:
     )
 
 
-def _skipped_task_result(task: TaskDef, reason: str, failed_dependencies: list[str]) -> TaskResult:
+
+def _skipped_task_result(
+    task: TaskDef,
+    reason: str,
+    failed_dependencies: list[str],
+) -> TaskResult:
     return TaskResult(
         task_key=task.key,
         task_type=task.task_type,
         source=task.source,
         status='skipped',
+        version=None,
         output_dir=None,
         metadata={
             'reason': reason,
@@ -222,35 +208,19 @@ def _skipped_task_result(task: TaskDef, reason: str, failed_dependencies: list[s
     )
 
 
-def _can_run_with_failed_dependencies(task: TaskDef, failed_dependencies: list[str]) -> bool:
-    if task.task_type == 'ontology_terms':
-        return all(dep.startswith('silver:') for dep in failed_dependencies)
-    if task.task_type == 'combine':
-        return all(dep.startswith('gold:') for dep in failed_dependencies)
-    return False
-
 
 def _execute_task(
     *,
     task: TaskDef,
     results: dict[str, TaskResult],
-    paths: PipelinePaths,
+    paths: GoldPipelinePaths,
     inputs_package: str,
     batch_size: int,
     test_mode: bool,
     resolver_mapping_dir: Path | None,
     overwrite_task_types: frozenset[str],
-    combined_output_dir: Path,
-    postgres_uri: str | None,
-    postgres_schema: str,
-    postgres_drop_existing: bool,
 ) -> TaskResult:
-    reused = _reuse_existing_result(
-        task,
-        paths=paths,
-        resolver_mapping_dir=resolver_mapping_dir,
-        overwrite_task_types=overwrite_task_types,
-    )
+    reused = _reuse_existing_result(task, paths, resolver_mapping_dir, overwrite_task_types)
     if reused is not None:
         return reused
 
@@ -260,15 +230,17 @@ def _execute_task(
         return TaskResult(
             task_key=task.key,
             task_type=task.task_type,
-            source=None,
+            source=task.source,
             status='executed',
+            version='id-resolver-data',
             output_dir=str(output_dir),
             metadata=metadata,
         )
 
+    if task.source is None:
+        raise ValueError(f'Task source missing for {task.key}')
+
     if task.task_type == 'silver':
-        if task.source is None:
-            raise ValueError(f'Task source missing for {task.key}')
         version = next_numeric_version(paths.silver_root, task.source)
         output_dir = source_version_dir(paths.silver_root, task.source, version)
         metadata = build_silver_source(
@@ -278,94 +250,36 @@ def _execute_task(
             batch_size=batch_size,
             test_mode=test_mode,
         )
-        metadata = {**metadata, 'version': version}
         return TaskResult(
             task_key=task.key,
             task_type=task.task_type,
             source=task.source,
             status='executed',
+            version=version,
             output_dir=str(output_dir),
             metadata=metadata,
         )
 
     if task.task_type == 'gold':
-        if task.source is None:
-            raise ValueError(f'Task source missing for {task.key}')
-        silver_result = results.get(f'silver:{task.source}')
-        if silver_result is None or silver_result.output_dir is None:
-            raise FileNotFoundError(f'Missing silver output for {task.source}')
-        mapping_result = results.get('resolver_mappings')
-        mapping_dir = Path(mapping_result.output_dir) if mapping_result and mapping_result.output_dir else (resolver_mapping_dir or Path('id_resolver/data'))
-        output_dir = source_stage_dir(paths.gold_root, task.source)
+        version = next_numeric_version(paths.gold_root, task.source)
+        output_dir = source_version_dir(paths.gold_root, task.source, version)
+        silver_dir = Path(results[f'silver:{task.source}'].output_dir or '')
+        mapping_dep = Path(results['resolver_mappings'].output_dir or '')
         metadata = build_gold_source(
             source=task.source,
-            silver_dir=Path(silver_result.output_dir),
+            silver_dir=silver_dir,
             output_dir=output_dir,
-            mapping_dir=mapping_dir,
+            mapping_dir=mapping_dep,
+            batch_size=batch_size,
         )
         return TaskResult(
             task_key=task.key,
             task_type=task.task_type,
             source=task.source,
             status='executed',
+            version=version,
             output_dir=str(output_dir),
             metadata=metadata,
-        )
-
-    if task.task_type == 'ontology_terms':
-        metadata = build_ontology_terms(
-            source_root=paths.silver_root,
-            output_dir=combined_output_dir,
-        )
-        return TaskResult(
-            task_key=task.key,
-            task_type=task.task_type,
-            source=None,
-            status='executed',
-            output_dir=str(combined_output_dir),
-            metadata=metadata,
-        )
-
-    if task.task_type == 'combine':
-        metadata = build_combined_parquets(
-            gold_root=paths.gold_root,
-            output_dir=combined_output_dir,
-            inputs_package=inputs_package,
-        )
-        return TaskResult(
-            task_key=task.key,
-            task_type=task.task_type,
-            source=None,
-            status='executed',
-            output_dir=str(combined_output_dir),
-            metadata=metadata,
-        )
-
-    if task.task_type == 'postgres':
-        if not postgres_uri:
-            return TaskResult(
-                task_key=task.key,
-                task_type=task.task_type,
-                source=None,
-                status='skipped',
-                output_dir=str(combined_output_dir),
-                metadata={'reason': 'missing_postgres_uri'},
-            )
-        from omnipath_build.postgres_new_combined import load_combined_schema_to_postgres
-
-        load_combined_schema_to_postgres(
-            output_dir=combined_output_dir,
-            postgres_uri=postgres_uri,
-            schema=postgres_schema,
-            drop_existing=postgres_drop_existing,
-        )
-        return TaskResult(
-            task_key=task.key,
-            task_type=task.task_type,
-            source=None,
-            status='executed',
-            output_dir=str(combined_output_dir),
-            metadata={'schema': postgres_schema},
         )
 
     raise ValueError(f'Unsupported task type: {task.task_type}')
@@ -374,17 +288,13 @@ def _execute_task(
 def _run_dag(
     *,
     tasks: list[TaskDef],
-    paths: PipelinePaths,
+    paths: GoldPipelinePaths,
     inputs_package: str,
     batch_size: int,
     test_mode: bool,
     jobs: int,
     resolver_mapping_dir: Path | None,
     overwrite_task_types: frozenset[str],
-    combined_output_dir: Path,
-    postgres_uri: str | None,
-    postgres_schema: str,
-    postgres_drop_existing: bool,
 ) -> dict[str, TaskResult]:
     task_map = {task.key: task for task in tasks}
     pending_deps = {task.key: len(task.deps) for task in tasks}
@@ -409,10 +319,6 @@ def _run_dag(
             test_mode=test_mode,
             resolver_mapping_dir=resolver_mapping_dir,
             overwrite_task_types=overwrite_task_types,
-            combined_output_dir=combined_output_dir,
-            postgres_uri=postgres_uri,
-            postgres_schema=postgres_schema,
-            postgres_drop_existing=postgres_drop_existing,
         )
 
     with ThreadPoolExecutor(max_workers=max(1, jobs)) as pool:
@@ -432,7 +338,7 @@ def _run_dag(
                     result = _failed_task_result(task, exc)
 
                 results[key] = result
-                print(f'[{result.status}] {key} -> {result.output_dir or result.metadata.get("error", {}).get("message", "-")}')
+                print(f'[{result.status}] {key} -> {result.output_dir or result.version or result.metadata.get("error", {}).get("message", "-")}')
 
                 for dependent in dependents.get(key, []):
                     pending_deps[dependent] -= 1
@@ -442,7 +348,7 @@ def _run_dag(
                             dep for dep in dep_task.deps
                             if dep in results and results[dep].status in {'failed', 'skipped'}
                         ]
-                        if failed_dependencies and not _can_run_with_failed_dependencies(dep_task, failed_dependencies):
+                        if failed_dependencies:
                             skipped = _skipped_task_result(
                                 dep_task,
                                 'dependency_failed',
@@ -471,6 +377,7 @@ def _has_gold_buildable_dataset(functions: list[ResourceFunction]) -> bool:
     )
 
 
+
 def _discover_all_sources(inputs_package: str, *, test_mode: bool = False) -> list[str]:
     discovered, _ = discover_resources(
         database_name='.',
@@ -490,25 +397,23 @@ def _discover_all_sources(inputs_package: str, *, test_mode: bool = False) -> li
     return sources
 
 
+
 def run_pipeline(
     *,
+    command: str,
     sources: list[str],
-    data_root: str | Path = 'data',
+    data_root: str | Path = 'data_v2',
     inputs_package: str = 'pypath.inputs_v2',
     batch_size: int = 10_000,
     test_mode: bool = False,
     jobs: int = 4,
     resolver_mapping_dir: str | Path | None = None,
     overwrite: str | None = None,
-    build_mappings: bool = True,
-    build_sources: bool = True,
-    combine: bool = True,
-    combined_output_dir: str | Path | None = None,
-    postgres_uri: str | None = None,
-    postgres_schema: str = 'public',
-    postgres_drop_existing: bool = False,
 ) -> dict[str, Any]:
-    if build_sources and not sources:
+    include_mappings = command in {'mappings', 'source', 'all'}
+    include_sources = command in {'source', 'all'}
+
+    if include_sources and not sources:
         sources = _discover_all_sources(inputs_package, test_mode=test_mode)
         print(f'Autodiscovered {len(sources)} sources from {inputs_package}')
 
@@ -521,18 +426,8 @@ def run_pipeline(
     ]:
         base.mkdir(parents=True, exist_ok=True)
 
-    resolved_mapping_dir = Path(resolver_mapping_dir) if resolver_mapping_dir is not None else None
-    final_combined_dir = Path(combined_output_dir) if combined_output_dir is not None else (paths.data_root / 'combined')
-    final_combined_dir.mkdir(parents=True, exist_ok=True)
-
     overwrite_task_types = _normalize_overwrite(overwrite)
-    tasks = build_task_graph(
-        sources=sources,
-        build_mappings=build_mappings,
-        build_sources=build_sources,
-        combine=combine,
-        postgres=postgres_uri is not None,
-    )
+    tasks = build_task_graph(sources, include_mappings=include_mappings, include_sources=include_sources)
     results = _run_dag(
         tasks=tasks,
         paths=paths,
@@ -540,40 +435,55 @@ def run_pipeline(
         batch_size=batch_size,
         test_mode=test_mode,
         jobs=jobs,
-        resolver_mapping_dir=resolved_mapping_dir,
+        resolver_mapping_dir=Path(resolver_mapping_dir) if resolver_mapping_dir is not None else None,
         overwrite_task_types=overwrite_task_types,
-        combined_output_dir=final_combined_dir,
-        postgres_uri=postgres_uri,
-        postgres_schema=postgres_schema,
-        postgres_drop_existing=postgres_drop_existing,
     )
 
     for source in sources:
         silver_result = results.get(f'silver:{source}')
-        if silver_result and silver_result.status in {'executed', 'reused'}:
-            version = silver_result.metadata.get('version')
-            if version:
-                update_latest_pointer(paths.silver_root, source, str(version))
-            elif silver_result.output_dir:
-                try:
-                    resolved_dir = resolve_silver_version(paths.silver_root / source.replace('.', '/'))
-                    update_latest_pointer(paths.silver_root, source, resolved_dir.name)
-                except FileNotFoundError:
-                    pass
+        if silver_result and silver_result.version:
+            update_latest_pointer(paths.silver_root, source, silver_result.version)
+        gold_result = results.get(f'gold:{source}')
+        if gold_result and gold_result.output_dir and gold_result.status in {'executed', 'reused'}:
+            archive_path = build_resource_archive(Path(gold_result.output_dir), source)
+            gold_result.metadata = {
+                **gold_result.metadata,
+                'download_archive_path': str(archive_path),
+            }
+        if gold_result and gold_result.version:
+            update_latest_pointer(paths.gold_root, source, gold_result.version)
 
+    resources_parquet = None
+    canonicalization_overview = None
+    if include_sources:
+        resources_parquet = build_resources_parquet(
+            gold_root=paths.gold_root,
+            inputs_package=inputs_package,
+        )
+        source_summaries = {
+            source: results[f'gold:{source}'].metadata.get('canonicalize_summary', {})
+            for source in sources
+            if results.get(f'gold:{source}') is not None and results[f'gold:{source}'].status in {'executed', 'reused'}
+        }
+        canonicalization_overview = write_canonicalization_overview_report(
+            paths.gold_root,
+            source_summaries=source_summaries,
+        )
+
+    mapping_result = results.get('resolver_mappings')
     report = {
         'run_id': _run_id(),
         'created_at': iso_now(),
-        'selected_sources': sources,
-        'data_root': str(paths.data_root),
-        'combined_output_dir': str(final_combined_dir),
-        'inputs_package': inputs_package,
+        'command': command,
         'overwrite': overwrite,
-        'build_mappings': build_mappings,
-        'build_sources': build_sources,
-        'combine': combine,
-        'postgres_enabled': postgres_uri is not None,
+        'selected_sources': sources,
+        'resolver_mapping_version': mapping_result.version if mapping_result else None,
+        'resources_parquet': str(resources_parquet) if resources_parquet else None,
+        'canonicalization_overview': str(canonicalization_overview) if canonicalization_overview else None,
         'tasks': {key: asdict(value) for key, value in results.items()},
     }
     _write_report(paths, report)
     return report
+
+
+run_gold_pipeline = run_pipeline

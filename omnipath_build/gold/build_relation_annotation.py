@@ -7,7 +7,7 @@ from typing import Any
 
 import polars as pl
 
-from omnipath_build.gold.schema import RELATION_ANNOTATION_TERM_SCHEMA, empty_frame
+from omnipath_build.gold.utils.table_schema import RELATION_ANNOTATION_TERM_SCHEMA, empty_frame
 
 
 def _write_if_nonempty(frame: pl.DataFrame, path: Path) -> None:
@@ -20,7 +20,7 @@ def _write_if_nonempty(frame: pl.DataFrame, path: Path) -> None:
 
 def build_relation_annotation(
     *,
-    output_dir: str | Path = 'data_v2/combined_new',
+    output_dir: str | Path = 'data/combined',
 ) -> dict[str, Any]:
     output_dir = Path(output_dir)
     entity_relation_path = output_dir / 'entity_relation.parquet'
@@ -187,8 +187,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         '--output-dir',
         type=Path,
-        default=Path('data_v2/combined_new'),
-        help='Directory containing combined parquet artifacts (default: data_v2/combined_new)',
+        default=Path('data/combined'),
+        help='Directory containing combined parquet artifacts (default: data/combined)',
     )
     return parser
 

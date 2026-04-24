@@ -20,8 +20,8 @@ from id_resolver.resolve import (
     resolve_identifier_frame,
 )
 
-from omnipath_build.gold.canonical import canonical_priority_rank
-from omnipath_build.gold.cv_terms import CV_LABELS
+from omnipath_build.gold.utils.canonical import canonical_priority_rank
+from omnipath_build.gold.utils.cv_terms import CV_LABELS
 
 
 def _raw_accession(type_value: str | None) -> str | None:

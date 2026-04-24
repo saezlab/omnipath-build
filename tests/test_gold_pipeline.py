@@ -9,9 +9,9 @@ from unittest.mock import patch
 
 import polars as pl
 
-from omnipath_build.gold.combined import build_combined_parquets
-from omnipath_build.gold.convert import INTERACTIONS_SCHEMA, SourceConverter
-from omnipath_build.gold.dedup import deduplicate_target_schema_dir
+from omnipath_build._archive.combined import build_combined_parquets
+from omnipath_build._archive.convert import INTERACTIONS_SCHEMA, SourceConverter
+from omnipath_build._archive.dedup import deduplicate_target_schema_dir
 from omnipath_build.pipeline.cli import build_parser
 from omnipath_build.pipeline.dag import (
     _has_gold_buildable_dataset,

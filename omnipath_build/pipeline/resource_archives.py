@@ -11,13 +11,14 @@ def resource_archive_name(resource_id: str) -> str:
     return f'{resource_id}{RESOURCE_ARCHIVE_SUFFIX}'
 
 
-def resource_archive_path(version_dir: Path, resource_id: str) -> Path:
-    return version_dir / resource_archive_name(resource_id)
+def resource_archive_path(source_dir: Path, resource_id: str) -> Path:
+    return source_dir / resource_archive_name(resource_id)
 
 
-def iter_resource_archive_inputs(version_dir: Path, resource_id: str):
-    archive_path = resource_archive_path(version_dir, resource_id)
-    for path in sorted(version_dir.iterdir()):
+def iter_resource_archive_inputs(source_dir: Path, resource_id: str):
+    source_dir = Path(source_dir)
+    archive_path = resource_archive_path(source_dir, resource_id)
+    for path in sorted(source_dir.rglob('*')):
         if not path.is_file():
             continue
         if path == archive_path:
@@ -25,20 +26,20 @@ def iter_resource_archive_inputs(version_dir: Path, resource_id: str):
         yield path
 
 
-def build_resource_archive(version_dir: Path, resource_id: str) -> Path:
-    version_dir = Path(version_dir)
-    version_dir.mkdir(parents=True, exist_ok=True)
+def build_resource_archive(source_dir: Path, resource_id: str) -> Path:
+    source_dir = Path(source_dir)
+    source_dir.mkdir(parents=True, exist_ok=True)
 
-    archive_path = resource_archive_path(version_dir, resource_id)
-    inputs = list(iter_resource_archive_inputs(version_dir, resource_id))
+    archive_path = resource_archive_path(source_dir, resource_id)
+    inputs = list(iter_resource_archive_inputs(source_dir, resource_id))
     if not inputs:
-        raise ValueError(f'No gold artifacts available to archive for resource {resource_id!r} in {version_dir}')
+        raise ValueError(f'No gold artifacts available to archive for resource {resource_id!r} in {source_dir}')
 
     if archive_path.exists():
         archive_path.unlink()
 
     with zipfile.ZipFile(archive_path, mode='w', compression=zipfile.ZIP_DEFLATED) as zf:
         for source_path in inputs:
-            zf.write(source_path, arcname=source_path.name)
+            zf.write(source_path, arcname=str(source_path.relative_to(source_dir)))
 
     return archive_path

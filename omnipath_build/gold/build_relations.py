@@ -7,7 +7,7 @@ from typing import Any
 import polars as pl
 import pyarrow.parquet as pq
 
-from omnipath_build.gold.entity_extraction import (
+from omnipath_build.gold.utils.entity_extraction import (
     ENTITY_RELATION_EVIDENCE_SCHEMA,
     ENTITY_RELATION_SCHEMA,
     BufferedParquetWriter,
@@ -16,7 +16,7 @@ from omnipath_build.gold.entity_extraction import (
     extract_entity_description,
     extract_ontology_entity_description,
 )
-from omnipath_build.gold.projection_schema import (
+from omnipath_build.gold.utils.schema import (
     AnnotationContext,
     PredicateRule,
     classify_annotation,

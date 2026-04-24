@@ -8,7 +8,7 @@ from typing import Any
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from omnipath_build.gold.projection_schema import (
+from omnipath_build.gold.utils.schema import (
     AnnotationContext,
     CV_TERM_ENTITY_TYPE,
     ONTOLOGY_IDENTIFIER_TERM,
@@ -22,7 +22,7 @@ from omnipath_build.gold.projection_schema import (
     projected_attribute,
     string_or_none,
 )
-from omnipath_build.gold.cv_terms import format_cv_term
+from omnipath_build.gold.utils.cv_terms import format_cv_term
 
 
 ATTRIBUTES_STRUCT = pa.list_(

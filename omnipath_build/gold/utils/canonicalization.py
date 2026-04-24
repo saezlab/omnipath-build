@@ -15,9 +15,9 @@ from id_resolver.resolve import (
     UNIPROT_TYPE,
 )
 
-from omnipath_build.gold.canonical import canonical_priority_rank
-from omnipath_build.gold.cv_terms import CV_LABELS, format_cv_term
-from omnipath_build.gold.projection_schema import (
+from omnipath_build.gold.utils.canonical import canonical_priority_rank
+from omnipath_build.gold.utils.cv_terms import CV_LABELS, format_cv_term
+from omnipath_build.gold.utils.schema import (
     CV_TERM_ENTITY_TYPE,
     ONTOLOGY_IDENTIFIER_TERM,
 )

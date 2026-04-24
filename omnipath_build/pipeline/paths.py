@@ -14,7 +14,7 @@ class PipelinePaths:
     reports_root: Path
 
 
-def build_paths(data_root: str | Path = 'data_v2') -> PipelinePaths:
+def build_paths(data_root: str | Path = 'data') -> PipelinePaths:
     data_root = Path(data_root)
     return PipelinePaths(
         data_root=data_root,

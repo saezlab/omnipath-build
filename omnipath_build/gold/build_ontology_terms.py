@@ -13,7 +13,7 @@ from typing import Any
 
 import polars as pl
 
-from omnipath_build.gold.schema import (
+from omnipath_build.gold.utils.table_schema import (
     ONTOLOGY_TERM_SCHEMA,
     aggregate_unique_string_lists,
     empty_frame,
@@ -222,14 +222,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         '--source-root',
         type=Path,
-        default=Path('data_v2/silver'),
-        help='Root directory to scan for OBO files (default: data_v2/silver)',
+        default=Path('data/silver'),
+        help='Root directory to scan for OBO files (default: data/silver)',
     )
     parser.add_argument(
         '--output-dir',
         type=Path,
-        default=Path('data_v2/combined_new'),
-        help='Directory to write ontology_term.parquet (default: data_v2/combined_new)',
+        default=Path('data/combined'),
+        help='Directory to write ontology_term.parquet (default: data/combined)',
     )
     return parser.parse_args()
 

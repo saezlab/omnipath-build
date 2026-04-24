@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from omnipath_build.pipeline.cli import main as pipeline_main
+from omnipath_build.pipeline.pipeline import main as pipeline_main
 from omnipath_build.silver.build import DiscoveryError, run_silver_loader
 
 # Configure logging for the entire application
@@ -69,7 +69,7 @@ def _handle_silver(args: argparse.Namespace) -> int:
 
 def _handle_gold(args: argparse.Namespace) -> int:
     """Compatibility wrapper around the active gold pipeline CLI."""
-    argv = [args.pipeline_command]
+    argv: list[str] = []
     if args.sources:
         argv.extend(args.sources)
     argv.extend(['--data-root', str(args.data_root)])
@@ -80,6 +80,8 @@ def _handle_gold(args: argparse.Namespace) -> int:
         argv.append('--silver-test-mode')
     if args.resolver_mapping_dir is not None:
         argv.extend(['--resolver-mapping-dir', str(args.resolver_mapping_dir)])
+    if args.pipeline_command == 'mappings':
+        argv.extend(['--no-build-sources', '--no-combine'])
 
     try:
         return pipeline_main(argv)
@@ -92,7 +94,7 @@ def _handle_combined(args: argparse.Namespace) -> int:
     """Build combined warehouse parquet artifacts."""
     project_root = Path(__file__).resolve().parent.parent.parent
 
-    from omnipath_build.gold.combined import build_combined_parquets
+    from omnipath_build.gold.combine import build_combined_parquets
 
     gold_root: Path = args.gold_root
     output_dir: Path = args.output_dir
@@ -113,7 +115,7 @@ def _handle_postgres(args: argparse.Namespace) -> int:
     """Execute PostgreSQL loader workflow based on CLI arguments."""
     project_root = Path(__file__).resolve().parent.parent.parent
 
-    from omnipath_build.postgres_combined import load_combined_schema_to_postgres
+    from omnipath_build.postgres_new_combined import load_combined_schema_to_postgres
 
     output_dir: Path = args.output_dir
     if not output_dir.is_absolute():
@@ -204,8 +206,8 @@ def _build_parser() -> argparse.ArgumentParser:
     gold_parser.add_argument(
         '--data-root',
         type=Path,
-        default=Path('data_v2'),
-        help='Pipeline data root (default: data_v2)',
+        default=Path('data'),
+        help='Pipeline data root (default: data)',
     )
     gold_parser.add_argument(
         '--inputs-package',
@@ -244,14 +246,14 @@ def _build_parser() -> argparse.ArgumentParser:
     combined_parser.add_argument(
         '--gold-root',
         type=Path,
-        default=Path('data_v2/gold'),
-        help='Root directory containing per-source gold outputs (default: data_v2/gold)',
+        default=Path('data/gold'),
+        help='Root directory containing per-source gold outputs (default: data/gold)',
     )
     combined_parser.add_argument(
         '--output-dir',
         type=Path,
-        default=Path('data_v2/combined'),
-        help='Directory to write combined parquet artifacts (default: data_v2/combined)',
+        default=Path('data/combined'),
+        help='Directory to write combined parquet artifacts (default: data/combined)',
     )
     combined_parser.set_defaults(handler=_handle_combined)
 
@@ -262,8 +264,8 @@ def _build_parser() -> argparse.ArgumentParser:
     postgres_parser.add_argument(
         '--output-dir',
         type=Path,
-        default=Path('data_v2/combined'),
-        help='Path to the combined artifact directory or a single artifact directory (default: data_v2/combined)',
+        default=Path('data/combined'),
+        help='Path to the combined artifact directory or a single artifact directory (default: data/combined)',
     )
     postgres_parser.add_argument(
         '--postgres-uri',

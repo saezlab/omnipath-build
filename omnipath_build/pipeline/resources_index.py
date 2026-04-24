@@ -9,7 +9,7 @@ from typing import Any
 import polars as pl
 import pyarrow.parquet as pq
 
-from omnipath_build.gold.cv_terms import format_cv_term
+from omnipath_build.gold.utils.cv_terms import format_cv_term
 from omnipath_build.pipeline.paths import read_latest_pointer, source_version_dir
 from omnipath_build.pipeline.resource_archives import resource_archive_path
 from omnipath_build.silver.build import discover_resources

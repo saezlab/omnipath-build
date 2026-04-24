@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import shutil
 import tempfile
 from pathlib import Path
@@ -9,9 +10,9 @@ from id_resolver.build.mapping_tables import (
     CHEMICAL_SOURCES,
     run_sources as materialize_resolver_tables,
 )
-from omnipath_build.gold.canonicalize import normalize_target_schema_dir
-from omnipath_build.gold.convert import SourceConverter
-from omnipath_build.gold.dedup import deduplicate_target_schema_dir
+from omnipath_build.gold.build_entities import build_entities
+from omnipath_build.gold.build_relations import build_relations
+from omnipath_build.pipeline.resource_archives import build_resource_archive
 from omnipath_build.silver.build import run_silver_loader
 
 REFERENCE_MAPPING_SOURCES = ['uniprot', *CHEMICAL_SOURCES]
@@ -19,6 +20,7 @@ TEST_MODE_REFERENCE_MAPPING_SOURCES = [
     'uniprot',
     'chebi',
 ]
+
 
 def resolver_mappings_ready(mapping_dir: Path) -> bool:
     required = [
@@ -54,7 +56,7 @@ def build_silver_source(
     test_mode: bool,
 ) -> dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix='op-gold-pipeline-silver-') as tmp:
+    with tempfile.TemporaryDirectory(prefix='op-pipeline-silver-') as tmp:
         stage_root = Path(tmp)
         _, _, selected_functions, outputs = run_silver_loader(
             database='.',
@@ -85,41 +87,96 @@ def build_silver_source(
     }
 
 
+def resolve_silver_version(silver_source_dir: Path) -> Path:
+    latest_file = silver_source_dir / 'latest'
+    if latest_file.exists():
+        latest_data = json.loads(latest_file.read_text(encoding='utf-8'))
+        version = str(latest_data.get('version', '1'))
+        version_dir = silver_source_dir / version
+        if version_dir.exists():
+            return version_dir
+
+    for subdir in sorted(silver_source_dir.iterdir()):
+        if subdir.is_dir() and subdir.name.isdigit():
+            return subdir
+
+    raise FileNotFoundError(f'No silver data found in {silver_source_dir}')
+
+
+def silver_has_data(silver_dir: Path) -> bool:
+    return any(
+        path.name != 'resource.parquet'
+        for path in silver_dir.glob('*.parquet')
+    )
+
+
+def gold_output_ready(output_dir: Path) -> bool:
+    entities_dir = output_dir / 'entities'
+    return (
+        (entities_dir / 'entity.parquet').exists()
+        and (entities_dir / 'entity_map.parquet').exists()
+    )
+
+
 def build_gold_source(
     *,
     source: str,
     silver_dir: Path,
     output_dir: Path,
     mapping_dir: Path,
-    batch_size: int,
 ) -> dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
-    converter = SourceConverter(
-        source=source,
+    entities_dir = output_dir / 'entities'
+    relations_dir = output_dir / 'relations'
+
+    if not silver_has_data(silver_dir):
+        return {
+            'output_dir': str(output_dir),
+            'entities_dir': str(entities_dir),
+            'relations_dir': str(relations_dir),
+            'skipped': 'no_data',
+            'entity_summary': None,
+            'relation_summary': None,
+        }
+
+    if entities_dir.exists():
+        shutil.rmtree(entities_dir)
+    if relations_dir.exists():
+        shutil.rmtree(relations_dir)
+    entities_dir.mkdir(parents=True, exist_ok=True)
+    relations_dir.mkdir(parents=True, exist_ok=True)
+
+    entity_summary = build_entities(
         silver_dir=silver_dir,
-        output_dir=output_dir,
-        batch_size=batch_size,
-    )
-    try:
-        converter.convert()
-    finally:
-        converter.close()
-
-    copied_artifacts: list[str] = []
-    for artifact in sorted(path for path in silver_dir.iterdir() if path.is_file() and path.suffix != '.parquet'):
-        target = output_dir / artifact.name
-        shutil.copy2(artifact, target)
-        copied_artifacts.append(artifact.name)
-
-    canonicalize_summary = normalize_target_schema_dir(
-        source_dir=output_dir,
         mapping_dir=mapping_dir,
+        output_dir=entities_dir,
         source_name=source,
     )
-    dedup_summary = deduplicate_target_schema_dir(output_dir)
+
+    entity_map_path = entities_dir / 'entity_map.parquet'
+    if not entity_map_path.exists():
+        return {
+            'output_dir': str(output_dir),
+            'entities_dir': str(entities_dir),
+            'relations_dir': str(relations_dir),
+            'skipped': 'missing_entity_map',
+            'entity_summary': entity_summary,
+            'relation_summary': None,
+        }
+
+    relation_summary = build_relations(
+        silver_dir=silver_dir,
+        entity_map_path=entity_map_path,
+        output_dir=relations_dir,
+        source_name=source,
+    )
+    archive_path = build_resource_archive(output_dir, source)
+
     return {
-        'files': sorted(p.name for p in output_dir.iterdir() if p.is_file()),
-        'copied_artifacts': copied_artifacts,
-        'dedup_summary': dedup_summary,
-        'canonicalize_summary': canonicalize_summary,
+        'output_dir': str(output_dir),
+        'entities_dir': str(entities_dir),
+        'relations_dir': str(relations_dir),
+        'download_archive_path': str(archive_path),
+        'entity_summary': entity_summary,
+        'relation_summary': relation_summary,
     }
