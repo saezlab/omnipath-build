@@ -44,3 +44,4 @@ omnipath_build.code-workspace
 .build/
 data_v2/
 *.sdf.gz
+data_old/

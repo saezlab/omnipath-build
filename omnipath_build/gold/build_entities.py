@@ -10,7 +10,6 @@ import polars as pl
 from id_resolver.resolve import (
     CHEMICAL_ENTITY_TYPES,
     PROTEIN_ENTITY_TYPES,
-    RESOLUTION_SOURCE_COLUMN,
     RESOLUTION_STATUS_COLUMN,
     RESOLVED_ID_COLUMN,
     RESOLVED_ID_TYPE_COLUMN,
@@ -26,19 +25,16 @@ from omnipath_build.gold.utils.canonicalization import (
     _canonical_identifier_rows,
     _chemical_identifier_rows,
     _collect_ambiguous_entities,
-    _display_label,
     _entity_export_keys,
-    _fallback_entity_id,
     _markdown_table,
     _protein_identifier_rows,
     _reduce_entities,
     _repair_protein_resolutions,
     _resolver_source_rows,
-    FALLBACK_ENTITY_ID_TYPE,
     ONTOLOGY_ENTITY_TYPE_LABEL,
     ONTOLOGY_IDENTIFIER_TYPE_LABEL,
 )
-from omnipath_build.gold.utils.entity_extraction import extract_all_from_silver
+from omnipath_build.gold.utils.silver_entity_extraction import extract_from_silver_tables
 from omnipath_build.gold.utils.schema import string_or_none
 
 
@@ -492,45 +488,15 @@ def build_entities(
     output_dir.mkdir(parents=True, exist_ok=True)
     mapping_dir = Path(mapping_dir)
 
-    # 1. Extract entities and ontology terms from silver
-    entity_descriptions, ontology_term_rows = extract_all_from_silver(silver_dir, source_name)
-    entity_occurrences = len(entity_descriptions)
-
-    # 2. Pre-dedup by fingerprint before canonicalization.
-    #    Entities with identical type + identifiers are indistinguishable to
-    #    the resolver. Sending them separately is guaranteed redundant work.
-    seen_fingerprints: set[str] = set()
-    deduped_descriptions: list[dict[str, Any]] = []
-    fingerprint_occurrences: dict[str, int] = {}
-
-    for desc in entity_descriptions:
-        fp = desc['_fingerprint']
-        fingerprint_occurrences[fp] = fingerprint_occurrences.get(fp, 0) + 1
-        if fp not in seen_fingerprints:
-            seen_fingerprints.add(fp)
-            deduped_descriptions.append(desc)
-
-    # 3. Build projector-format DataFrames from deduplicated descriptions
-    temp_entities = pl.DataFrame({
-        'entity_pk': range(1, len(deduped_descriptions) + 1),
-        '_fingerprint': [d['_fingerprint'] for d in deduped_descriptions],
-        'entity_type': [d['entity_type'] for d in deduped_descriptions],
-        'taxonomy_id': [d['taxonomy_id'] for d in deduped_descriptions],
-        'entity_attributes': [d['entity_attributes'] for d in deduped_descriptions],
-        'sources': [d['sources'] for d in deduped_descriptions],
-    })
-
-    temp_identifiers = pl.DataFrame([
-        {
-            'entity_pk': i + 1,
-            'identifier': ident['value'],
-            'identifier_type': ident['type'],
-            'source': source_name,
-        }
-        for i, desc in enumerate(deduped_descriptions)
-        for ident in desc['identifiers']
-        if ident.get('value') and ident.get('type')
-    ])
+    # 1. Extract entities and ontology terms from silver tables.
+    (
+        temp_entities,
+        temp_identifiers,
+        ontology_term_rows,
+        occurrence_fingerprint_map,
+        entity_occurrences,
+    ) = extract_from_silver_tables(silver_dir, source_name)
+    unique_fingerprint_count = int(temp_entities.height)
 
     # 4. Canonicalize
     canonicalized_entities, canonical_identifiers, summary, ambiguous_entities = _canonicalize_entities(
@@ -539,7 +505,7 @@ def build_entities(
 
     # Inject occurrence counts into summary for reporting
     summary['entity_occurrences'] = entity_occurrences
-    summary['unique_fingerprints'] = len(deduped_descriptions)
+    summary['unique_fingerprints'] = unique_fingerprint_count
 
     # 5. Dedup by canonical ID
     final_entities, entity_key_map = _reduce_entities(canonicalized_entities, canonical_identifiers)
@@ -574,6 +540,14 @@ def build_entities(
     # 7. Write outputs
     final_entities.write_parquet(output_dir / 'entity.parquet')
     fingerprint_map.write_parquet(output_dir / 'entity_map.parquet')
+    if occurrence_fingerprint_map is not None:
+        occurrence_map = (
+            occurrence_fingerprint_map
+            .join(fingerprint_map, on='_fingerprint', how='inner')
+            .select(['occurrence_id', '_fingerprint', 'entity_pk'])
+            .unique()
+        )
+        occurrence_map.write_parquet(output_dir / 'entity_occurrence_map.parquet')
 
     ontology_terms = _build_ontology_terms(ontology_term_rows)
     if ontology_terms is not None:

@@ -113,13 +113,13 @@ For each silver row, the script calls `classify_silver_record(row)` and routes t
 
 ### Entity lookup
 
-Every entity reference (parent or member) is resolved via `_lookup_entity_pk()`:
+Every entity reference (parent or member) is resolved through `entity_occurrence_map.parquet`:
 
-1. Call `extract_entity_description(row, source, record_class)` to get the fingerprint
-2. Look up `entity_map[fingerprint]` → final PK
-3. If missing, print a warning and skip
+1. Read the occurrence ID from `entity_occurrence.parquet` or `membership.parquet`.
+2. Look up `occurrence_id -> entity_pk` from `entity_occurrence_map.parquet`.
+3. If missing, skip that relation endpoint.
 
-This is O(1) per lookup. The fingerprint is computed from the same `(entity_type, sorted_identifiers)` logic used in `build_entities.py`, ensuring consistency.
+This is O(1) per lookup and avoids reconstructing nested silver rows during relation building.
 
 ---
 

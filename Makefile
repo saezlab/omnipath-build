@@ -2,7 +2,7 @@
 
 JOBS ?= 4
 BATCH_SIZE ?= 10000
-DATA_ROOT ?= data_v2
+DATA_ROOT ?= data
 INPUTS_PACKAGE ?= pypath.inputs_v2
 RESOLVER_MAPPING_DIR ?= id_resolver/data
 OVERWRITE ?=

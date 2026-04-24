@@ -18,6 +18,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from omnipath_build.silver.paths import PathManager
+from omnipath_build.silver.tables import SilverTableWriter, silver_table_dir
 from omnipath_build.silver.validate import validate_entity_identifier_shapes
 from pypath.internals.silver_schema import (
     ENTITY_SCHEMA,
@@ -302,30 +303,30 @@ def _ensure_entity_record(record: object) -> None:
 def _normalize_record(record: object) -> dict:
     """Convert a namedtuple-like record into a plain dictionary."""
     if hasattr(record, '_asdict'):
-        normalized = record._asdict()
+        record_dict = record._asdict()
         # Recursively normalize nested structures (e.g., membership entities)
-        for key, value in list(normalized.items()):
+        for key, value in list(record_dict.items()):
             if hasattr(value, '_asdict'):
-                normalized[key] = _normalize_record(value)
+                record_dict[key] = _normalize_record(value)
             elif isinstance(value, list):
-                normalized[key] = [
+                record_dict[key] = [
                     _normalize_record(item) if hasattr(item, '_asdict') else item
                     for item in value
                 ]
-        return normalized
+        return record_dict
     if isinstance(record, dict):
-        normalized = {}
+        record_dict = {}
         for key, value in record.items():
             if hasattr(value, '_asdict'):
-                normalized[key] = _normalize_record(value)
+                record_dict[key] = _normalize_record(value)
             elif isinstance(value, list):
-                normalized[key] = [
+                record_dict[key] = [
                     _normalize_record(item) if hasattr(item, '_asdict') else item
                     for item in value
                 ]
             else:
-                normalized[key] = value
-        return normalized
+                record_dict[key] = value
+        return record_dict
     raise TypeError(f'Cannot normalize record of type {type(record)!r}')
 
 
@@ -418,6 +419,7 @@ def process_resource_function(
     dry_run: bool = False,
     override: bool = False,
     test_mode: bool = False,
+    silver_writer: SilverTableWriter | None = None,
 ) -> Optional[Path] | Dict[str, Path]:
     """Stream records from a resource function into parquet file(s).
 
@@ -428,6 +430,7 @@ def process_resource_function(
         dry_run: If True, don't write to disk
         override: If True, overwrite existing files
         test_mode: If True, apply selective per-source limits (see TEST_MODE_RECORD_LIMITS_BY_SOURCE)
+        silver_writer: Source-level silver tables writer for entity datasets.
 
     Returns:
         - Optional[Path] for single-output functions
@@ -448,7 +451,10 @@ def process_resource_function(
                 resource_fn.function_name,
                 resource_fn.function_name,
             )
-        if potential_output.exists():
+        if potential_output.exists() and (
+            resource_fn.function_name == 'resource'
+            or resource_fn.output_kind in {'ontology', 'artifact'}
+        ):
             print(
                 f'[{resource_fn.source}.{resource_fn.function_name}] skipping (file exists: {potential_output})'
             )
@@ -510,7 +516,7 @@ def process_resource_function(
                 all_exist = False
                 break
 
-        if all_exist and existing_files:
+        if all_exist and existing_files and resource_fn.function_name == 'resource':
             output_list = ', '.join(existing_files.keys())
             print(
                 f'[{resource_fn.source}.{resource_fn.function_name}] skipping (multi-output files exist: {output_list})'
@@ -529,6 +535,7 @@ def process_resource_function(
             batch_size,
             dry_run,
             max_records,
+            silver_writer,
         )
     else:
         # Process as single-output function (existing logic)
@@ -540,6 +547,7 @@ def process_resource_function(
             batch_size,
             dry_run,
             max_records,
+            silver_writer,
         )
 
 
@@ -551,6 +559,7 @@ def _process_single_output(
     batch_size: int,
     dry_run: bool,
     max_records: int | None = None,
+    silver_writer: SilverTableWriter | None = None,
 ) -> Optional[Path]:
     """Process single-output function producing Entity records."""
     schema = ENTITY_SCHEMA
@@ -558,6 +567,9 @@ def _process_single_output(
     writer: Optional[pq.ParquetWriter] = None
     total_records = 0
     batch: List[dict] = []
+    write_nested = resource_fn.function_name == 'resource'
+    if dry_run:
+        silver_writer = None
 
     _emit_progress(
         source=resource_fn.source,
@@ -572,9 +584,18 @@ def _process_single_output(
         first_record,
         context=f'{resource_fn.source}.{resource_fn.function_name}[0]',
     )
-    normalized = _normalize_record(first_record)
-    _coerce_list_fields(normalized, schema)
-    batch.append(normalized)
+    if silver_writer is not None:
+        silver_writer.write_entity(
+            first_record,
+            dataset=resource_fn.function_name,
+            row_number=0,
+        )
+    if write_nested:
+        record_dict = _normalize_record(first_record)
+        _coerce_list_fields(record_dict, schema)
+        batch.append(record_dict)
+    else:
+        total_records += 1
 
     # Process remaining records
     for record in records_iter:
@@ -592,15 +613,24 @@ def _process_single_output(
             record,
             context=f'{resource_fn.source}.{resource_fn.function_name}[{total_records + len(batch)}]',
         )
-        normalized = _normalize_record(record)
-        _coerce_list_fields(normalized, schema)
+        row_number = total_records + len(batch)
+        if silver_writer is not None:
+            silver_writer.write_entity(
+                record,
+                dataset=resource_fn.function_name,
+                row_number=row_number,
+            )
+        if write_nested:
+            record_dict = _normalize_record(record)
+            _coerce_list_fields(record_dict, schema)
+            batch.append(record_dict)
+        else:
+            total_records += 1
 
-        batch.append(normalized)
-
-        # Print progress every 10 records
-        if len(batch) % 10000 == 0:
+        total_pending = total_records + len(batch)
+        if total_pending and total_pending % 10000 == 0:
             print(
-                f'[{resource_fn.source}.{resource_fn.function_name}] collected {total_records + len(batch):,} records...'
+                f'[{resource_fn.source}.{resource_fn.function_name}] collected {total_pending:,} records...'
             )
 
         if len(batch) >= batch_size:
@@ -672,6 +702,17 @@ def _process_single_output(
                 records=total_records,
             )
             return output_file
+        _emit_progress(
+            source=resource_fn.source,
+            function=resource_fn.function_name,
+            event='done',
+            records=total_records,
+        )
+        if silver_writer is not None:
+            print(
+                f'[{resource_fn.source}.{resource_fn.function_name}] wrote {total_records:,} records to silver tables'
+            )
+            return silver_writer.output_dir
         return output_file
 
     if dry_run:
@@ -726,12 +767,15 @@ def _process_multi_output(
     batch_size: int,
     dry_run: bool,
     max_records: int | None = None,
+    silver_writer: SilverTableWriter | None = None,
 ) -> Dict[str, Path]:
     """Process multi-output function that yields dicts with named outputs."""
     batches: Dict[str, List[dict]] = {}
     writers: Dict[str, pq.ParquetWriter] = {}
     output_files: Dict[str, Path] = {}
     record_counts: Dict[str, int] = {}
+    if dry_run:
+        silver_writer = None
 
     def ensure_output_paths(output_name: str) -> None:
         if output_name not in output_files:
@@ -773,12 +817,18 @@ def _process_multi_output(
                 records=0,
             )
 
-        normalized = _normalize_record(output_record)
-        _coerce_list_fields(normalized, ENTITY_SCHEMA)
-        batches[output_name].append(normalized)
+        row_number = record_counts.get(output_name, 0) + len(batches.get(output_name, []))
+        if silver_writer is not None:
+            silver_writer.write_entity(output_record, dataset=output_name, row_number=row_number)
+        if silver_writer is None:
+            record_dict = _normalize_record(output_record)
+            _coerce_list_fields(record_dict, ENTITY_SCHEMA)
+            batches[output_name].append(record_dict)
+        else:
+            record_counts[output_name] += 1
 
-        if len(batches[output_name]) % 10000 == 0:
-            total = record_counts[output_name] + len(batches[output_name])
+        total = record_counts[output_name] + len(batches[output_name])
+        if total and total % 10000 == 0:
             print(
                 f'[{resource_fn.source}.{resource_fn.function_name}:{output_name}] collected {total:,} records...'
             )
@@ -839,7 +889,7 @@ def _process_multi_output(
             if output_record is not None:
                 process_output_record(output_name, output_record)
 
-    # Flush remaining batches
+    # Flush remaining batches for legacy/debug dry-run paths only.
     for output_name, batch in batches.items():
         if not batch:
             continue
@@ -884,6 +934,13 @@ def _process_multi_output(
                 records=record_counts[output_name],
             )
         return {}
+
+    if silver_writer is not None:
+        for output_name, count in record_counts.items():
+            print(
+                f'[{resource_fn.source}.{resource_fn.function_name}:{output_name}] wrote {count:,} records to silver tables'
+            )
+        return {name: silver_writer.output_dir for name in record_counts}
 
     return output_files
 
@@ -981,21 +1038,21 @@ def run_silver_loader(
     # Select the subset to process based on CLI arguments.
     selected_functions: List[ResourceFunction] = []
 
-    normalized_source = None
+    selected_source = None
     if source:
-        normalized_source = _normalize_source_filter(source, inputs_package)
-        if normalized_source not in discovered:
+        selected_source = _normalize_source_filter(source, inputs_package)
+        if selected_source not in discovered:
             raise ValueError(
                 f'Unknown source "{source}". Use --list to inspect available modules under {inputs_package}.'
             )
 
-    if test_mode and normalized_source and normalized_source not in TEST_MODE_INCLUDED_SOURCES:
+    if test_mode and selected_source and selected_source not in TEST_MODE_INCLUDED_SOURCES:
         raise ValueError(
-            f'Source "{normalized_source}" is not included in test mode.'
+            f'Source "{selected_source}" is not included in test mode.'
         )
 
     for source_name, functions in discovered.items():
-        if normalized_source and source_name != normalized_source:
+        if selected_source and source_name != selected_source:
             continue
         if test_mode and source_name not in TEST_MODE_INCLUDED_SOURCES:
             continue
@@ -1010,20 +1067,47 @@ def run_silver_loader(
         )
 
     outputs: List[Optional[Path]] = []
-    for fn in selected_functions:
-        try:
-            result = process_resource_function(
-                fn,
-                path_manager=path_manager,
-                batch_size=batch_size,
-                dry_run=dry_run,
-                override=override,
-                test_mode=test_mode,
-            )
-            outputs.append(result)
-        except Exception as exc:  # noqa: BLE001
-            raise RuntimeError(
-                f'Failed to process {fn.source}.{fn.function_name}: {exc}'
-            ) from exc
+    silver_writers: dict[str, SilverTableWriter] = {}
+    try:
+        for fn in selected_functions:
+            writer = None
+            if fn.output_kind == 'entity' and fn.function_name != 'resource' and not dry_run:
+                writer = silver_writers.get(fn.source)
+                if writer is None:
+                    source_dir = path_manager.source_path(fn.source)
+                    if override:
+                        for legacy_file in source_dir.glob('*.parquet'):
+                            if legacy_file.name != 'resource.parquet':
+                                legacy_file.unlink()
+                        stale_dir = source_dir / 'normalized'
+                        if stale_dir.exists():
+                            for stale_file in stale_dir.glob('*.parquet'):
+                                stale_file.unlink()
+                            stale_dir.rmdir()
+                    writer = SilverTableWriter(
+                        silver_table_dir(source_dir),
+                        fn.source,
+                        batch_size=batch_size,
+                    )
+                    silver_writers[fn.source] = writer
+            try:
+                result = process_resource_function(
+                    fn,
+                    path_manager=path_manager,
+                    batch_size=batch_size,
+                    dry_run=dry_run,
+                    override=override,
+                    test_mode=test_mode,
+                    silver_writer=writer,
+                )
+                outputs.append(result)
+            except Exception as exc:  # noqa: BLE001
+                raise RuntimeError(
+                    f'Failed to process {fn.source}.{fn.function_name}: {exc}'
+                ) from exc
+    finally:
+        for writer in silver_writers.values():
+            writer.close()
+            print(f'[{writer.source}] wrote silver tables to {writer.output_dir}')
 
     return discovered, path_manager, selected_functions, outputs

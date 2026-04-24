@@ -79,11 +79,11 @@ silver parquet files
 
 ## Phase 1: Entity extraction
 
-Entry point: `extract_all_from_silver()` in `entity_extraction.py`
+Entry point: `extract_from_silver_tables()` in `silver_entity_extraction.py`
 
 ### What is extracted
 
-For every row in every silver parquet file, the script classifies the row (`classify_silver_record`) and extracts:
+For every occurrence in the silver tables, the script classifies the occurrence and extracts:
 
 1. **Parent entity** — for all rows except `ignored`, `ontology_term_only`, and `interaction_relation`
 2. **Ontology term rows** — for `ontology_term_only` rows and `entity_with_ontology_backing` rows

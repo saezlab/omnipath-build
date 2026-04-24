@@ -13,12 +13,7 @@ from omnipath_build.gold.utils.schema import (
     CV_TERM_ENTITY_TYPE,
     ONTOLOGY_IDENTIFIER_TERM,
     classify_annotation,
-    classify_silver_record,
-    extract_taxonomy_id,
-    infer_ontology_term_row,
     is_cv_term_accession,
-    is_pure_ontology_term_annotation,
-    materialize_ontology_object,
     projected_attribute,
     string_or_none,
 )
@@ -138,41 +133,6 @@ def collect_attributes(
     return rows or None
 
 
-def extract_entity_description(
-    row: dict[str, Any],
-    source: str,
-    record_class: str,
-) -> dict[str, Any] | None:
-    row_type = string_or_none(row.get('type'))
-    identifiers = row.get('identifiers') or []
-
-    if row_type is None and not identifiers:
-        return None
-
-    annotations = row.get('annotations') or []
-    context = AnnotationContext(record_class=record_class, parent_type=row_type)
-    entity_attributes = collect_attributes(annotations, context, buckets={'record_attribute'})
-
-    formatted_identifiers = [
-        {'type': format_cv_term(string_or_none(i.get('type'))),
-         'value': string_or_none(i.get('value'))}
-        for i in identifiers
-        if string_or_none(i.get('value')) is not None
-    ]
-
-    entity_type = format_cv_term(row_type)
-    fingerprint = compute_entity_fingerprint(entity_type, formatted_identifiers)
-
-    return {
-        '_fingerprint': fingerprint,
-        'entity_type': entity_type,
-        'taxonomy_id': extract_taxonomy_id(row),
-        'entity_attributes': entity_attributes,
-        'sources': [source],
-        'identifiers': formatted_identifiers,
-    }
-
-
 def extract_ontology_entity_description(
     annotation: dict[str, Any],
     source: str,
@@ -193,85 +153,3 @@ def extract_ontology_entity_description(
         'sources': [source],
         'identifiers': identifiers,
     }
-
-
-def extract_entities_and_ontologies_from_row(
-    row: dict[str, Any],
-    source: str,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Extract entity descriptions and ontology term rows from a single silver row.
-
-    Recursively processes members so nested complexes are handled correctly.
-    """
-    entities: list[dict[str, Any]] = []
-    ontology_terms: list[dict[str, Any]] = []
-
-    record_class = classify_silver_record(row)
-
-    if record_class == 'ignored':
-        return entities, ontology_terms
-
-    if record_class == 'ontology_term_only':
-        term_row = infer_ontology_term_row(row, source)
-        if term_row is not None:
-            ontology_terms.append(term_row)
-        return entities, ontology_terms
-
-    # Interaction rows do not materialize a parent entity in the old projector;
-    # they only create relations between members.
-    if record_class != 'interaction_relation':
-        parent = extract_entity_description(row, source, record_class)
-        if parent is not None:
-            entities.append(parent)
-
-        if record_class == 'entity_with_ontology_backing':
-            term_row = infer_ontology_term_row(row, source)
-            if term_row is not None:
-                ontology_terms.append(term_row)
-
-        # Ontology entities from parent annotations
-        for annotation in row.get('annotations') or []:
-            if is_pure_ontology_term_annotation(annotation):
-                ont = extract_ontology_entity_description(annotation, source)
-                if ont is not None:
-                    entities.append(ont)
-
-    # Members (recursive)
-    for membership in row.get('membership') or []:
-        member_row = membership.get('member') or {}
-        member_entities, member_ontologies = extract_entities_and_ontologies_from_row(
-            member_row, source
-        )
-        entities.extend(member_entities)
-        ontology_terms.extend(member_ontologies)
-
-    return entities, ontology_terms
-
-
-def extract_all_from_silver(
-    silver_dir: str | Path,
-    source: str,
-    batch_size: int = 10_000,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Extract all entity descriptions and ontology terms from silver files.
-
-    Returns:
-        (entity_descriptions, ontology_term_rows)
-    """
-    entity_descriptions: list[dict[str, Any]] = []
-    ontology_term_rows: list[dict[str, Any]] = []
-
-    silver_path = Path(silver_dir)
-    parquet_files = sorted(
-        path for path in silver_path.glob('*.parquet') if path.name != 'resource.parquet'
-    )
-
-    for parquet_path in parquet_files:
-        pf = pq.ParquetFile(parquet_path)
-        for batch in pf.iter_batches(batch_size=batch_size):
-            for row in batch.to_pylist():
-                entities, terms = extract_entities_and_ontologies_from_row(row, source)
-                entity_descriptions.extend(entities)
-                ontology_term_rows.extend(terms)
-
-    return entity_descriptions, ontology_term_rows
