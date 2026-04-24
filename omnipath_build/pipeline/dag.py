@@ -351,7 +351,7 @@ def _execute_task(
                 output_dir=str(combined_output_dir),
                 metadata={'reason': 'missing_postgres_uri'},
             )
-        from omnipath_build.postgres_new_combined import load_combined_schema_to_postgres
+        from omnipath_build.postgres import load_combined_schema_to_postgres
 
         load_combined_schema_to_postgres(
             output_dir=combined_output_dir,

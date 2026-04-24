@@ -57,7 +57,14 @@ def ensure_schema(
         cur.execute('CREATE EXTENSION IF NOT EXISTS pg_trgm')
 
         if drop_existing:
-            for table_name in (
+            relkind_to_drop_kind = {
+                'r': 'TABLE',
+                'p': 'TABLE',
+                'v': 'VIEW',
+                'm': 'MATERIALIZED VIEW',
+            }
+            for object_name in (
+                'resources',
                 'relation_annotation_term',
                 'entity_relation_evidence',
                 'entity_relation',
@@ -66,9 +73,25 @@ def ensure_schema(
                 'entity',
             ):
                 cur.execute(
-                    sql.SQL('DROP TABLE IF EXISTS {}.{} CASCADE').format(
+                    """
+                    SELECT c.relkind
+                    FROM pg_class c
+                    JOIN pg_namespace n ON n.oid = c.relnamespace
+                    WHERE n.nspname = %s AND c.relname = %s
+                    LIMIT 1
+                    """,
+                    (schema, object_name),
+                )
+                row = cur.fetchone()
+                if row is None:
+                    continue
+                drop_kind = relkind_to_drop_kind.get(row[0])
+                if drop_kind is None:
+                    continue
+                cur.execute(
+                    sql.SQL(f'DROP {drop_kind} {{}}.{{}} CASCADE').format(
                         sql.Identifier(schema),
-                        sql.Identifier(table_name),
+                        sql.Identifier(object_name),
                     )
                 )
 
@@ -167,7 +190,34 @@ def ensure_schema(
                 sql.Identifier(schema),
                 sql.Identifier(schema),
                 sql.Identifier(schema),
+                sql.Identifier(schema),
             )
+        )
+        cur.execute(
+            sql.SQL(
+                """
+                CREATE TABLE IF NOT EXISTS {}.resources (
+                  resource_id text PRIMARY KEY,
+                  resource_name text,
+                  description text,
+                  homepage_url text,
+                  license text,
+                  pubmed_id text,
+                  categories text[] NOT NULL DEFAULT '{{}}',
+                  annotation_ontologies text[] NOT NULL DEFAULT '{{}}',
+                  entity_count bigint NOT NULL DEFAULT 0,
+                  interaction_count bigint NOT NULL DEFAULT 0,
+                  membership_count bigint NOT NULL DEFAULT 0,
+                  annotation_count bigint NOT NULL DEFAULT 0,
+                  identifier_count bigint NOT NULL DEFAULT 0,
+                  ontology_term_count bigint NOT NULL DEFAULT 0,
+                  total_size_bytes bigint NOT NULL DEFAULT 0,
+                  last_downloaded_at timestamptz,
+                  last_built_at timestamptz,
+                  build_status text
+                )
+                """
+            ).format(sql.Identifier(schema))
         )
     conn.commit()
 
@@ -240,6 +290,37 @@ def load_tables(
         table='relation_annotation_term',
         columns=('relation_pk', 'relation_evidence_pk', 'source', 'scope', 'term_id'),
         serializers={},
+        batch_size=batch_size,
+    )
+    _copy_parquet_to_table(
+        conn,
+        parquet_path=combined_dir / 'resources.parquet',
+        schema=schema,
+        table='resources',
+        columns=(
+            'resource_id',
+            'resource_name',
+            'description',
+            'homepage_url',
+            'license',
+            'pubmed_id',
+            'categories',
+            'annotation_ontologies',
+            'entity_count',
+            'interaction_count',
+            'membership_count',
+            'annotation_count',
+            'identifier_count',
+            'ontology_term_count',
+            'total_size_bytes',
+            'last_downloaded_at',
+            'last_built_at',
+            'build_status',
+        ),
+        serializers={
+            'categories': _serialize_pg_text_array,
+            'annotation_ontologies': _serialize_pg_text_array,
+        },
         batch_size=batch_size,
     )
 
@@ -326,9 +407,10 @@ def _truncate_tables(conn: psycopg2.extensions.connection, schema: str) -> None:
     with conn.cursor() as cur:
         cur.execute(
             sql.SQL(
-                'TRUNCATE TABLE {}.relation_annotation_term, {}.ontology_term, {}.entity_relation_evidence, '
+                'TRUNCATE TABLE {}.resources, {}.relation_annotation_term, {}.ontology_term, {}.entity_relation_evidence, '
                 '{}.entity_relation, {}.entity_identifier, {}.entity CASCADE'
             ).format(
+                sql.Identifier(schema),
                 sql.Identifier(schema),
                 sql.Identifier(schema),
                 sql.Identifier(schema),
@@ -421,6 +503,7 @@ def create_secondary_indexes(
     schema: str,
 ) -> None:
     statements = [
+        sql.SQL('CREATE INDEX IF NOT EXISTS entity_identifier_entity_pk_idx ON {}.entity_identifier (entity_pk)').format(sql.Identifier(schema)),
         sql.SQL('CREATE INDEX IF NOT EXISTS entity_identifier_value_hash_idx ON {}.entity_identifier USING HASH (identifier)').format(sql.Identifier(schema)),
         sql.SQL('CREATE INDEX IF NOT EXISTS entity_identifier_identifier_lower_hash_idx ON {}.entity_identifier USING HASH (LOWER(identifier))').format(sql.Identifier(schema)),
         sql.SQL('CREATE INDEX IF NOT EXISTS entity_taxonomy_idx ON {}.entity (taxonomy_id)').format(sql.Identifier(schema)),
@@ -434,6 +517,8 @@ def create_secondary_indexes(
         sql.SQL('CREATE INDEX IF NOT EXISTS relation_annotation_term_relation_idx ON {}.relation_annotation_term (relation_pk)').format(sql.Identifier(schema)),
         sql.SQL('CREATE INDEX IF NOT EXISTS ontology_term_label_trgm_idx ON {}.ontology_term USING GIN (label gin_trgm_ops)').format(sql.Identifier(schema)),
         sql.SQL('CREATE INDEX IF NOT EXISTS ontology_term_definition_trgm_idx ON {}.ontology_term USING GIN (definition gin_trgm_ops)').format(sql.Identifier(schema)),
+        sql.SQL('CREATE INDEX IF NOT EXISTS resources_build_status_idx ON {}.resources (build_status)').format(sql.Identifier(schema)),
+        sql.SQL('CREATE INDEX IF NOT EXISTS resources_resource_name_trgm_idx ON {}.resources USING GIN (resource_name gin_trgm_ops)').format(sql.Identifier(schema)),
     ]
     with conn.cursor() as cur:
         for statement in statements:

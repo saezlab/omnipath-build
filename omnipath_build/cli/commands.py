@@ -80,9 +80,6 @@ def _handle_gold(args: argparse.Namespace) -> int:
         argv.append('--silver-test-mode')
     if args.resolver_mapping_dir is not None:
         argv.extend(['--resolver-mapping-dir', str(args.resolver_mapping_dir)])
-    if args.pipeline_command == 'mappings':
-        argv.extend(['--no-build-sources', '--no-combine'])
-
     try:
         return pipeline_main(argv)
     except Exception as exc:  # noqa: BLE001
@@ -115,7 +112,7 @@ def _handle_postgres(args: argparse.Namespace) -> int:
     """Execute PostgreSQL loader workflow based on CLI arguments."""
     project_root = Path(__file__).resolve().parent.parent.parent
 
-    from omnipath_build.postgres_new_combined import load_combined_schema_to_postgres
+    from omnipath_build.postgres import load_combined_schema_to_postgres
 
     output_dir: Path = args.output_dir
     if not output_dir.is_absolute():
@@ -191,17 +188,12 @@ def _build_parser() -> argparse.ArgumentParser:
 
     gold_parser = subparsers.add_parser(
         'gold',
-        help='Compatibility wrapper around the active gold pipeline CLI.',
-    )
-    gold_parser.add_argument(
-        'pipeline_command',
-        choices=['source', 'mappings', 'all'],
-        help='Active gold pipeline command to run.',
+        help='Run the active pipeline for selected or autodiscovered sources.',
     )
     gold_parser.add_argument(
         'sources',
         nargs='*',
-        help='Optional source modules for source/all commands.',
+        help='Optional source modules to process.',
     )
     gold_parser.add_argument(
         '--data-root',
