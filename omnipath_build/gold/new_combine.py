@@ -8,6 +8,8 @@ from typing import Any
 
 import polars as pl
 
+from omnipath_build.gold.build_relation_annotation import build_relation_annotation
+from omnipath_build.gold.build_resources import build_resources_parquet
 from omnipath_build.gold.schema import (
     EMPTY_IDENTIFIERS,
     ENTITY_RELATION_EVIDENCE_SCHEMA,
@@ -162,6 +164,7 @@ def _build_entity(
 def _build_relation(
     source_dirs: list[GoldSourceDir],
     entity_pk_map: pl.DataFrame,
+    entity_output: pl.DataFrame,
 ) -> tuple[pl.DataFrame, pl.DataFrame]:
     frames: list[pl.LazyFrame] = []
     for source_dir in source_dirs:
@@ -205,6 +208,11 @@ def _build_relation(
         )
     )
 
+    entity_types = entity_output.select([
+        pl.col('entity_pk').cast(pl.Int64),
+        pl.col('entity_type').cast(pl.String),
+    ])
+
     combined = (
         source_relations
         .group_by(['_global_subject_pk', 'predicate', '_global_object_pk', 'relation_category'])
@@ -212,6 +220,29 @@ def _build_relation(
             pl.col('evidence_count').sum().cast(pl.Int64).alias('evidence_count'),
             aggregate_unique_string_lists('sources'),
         ])
+        .join(
+            entity_types.rename({
+                'entity_pk': '_global_subject_pk',
+                'entity_type': '_subject_entity_type',
+            }),
+            on='_global_subject_pk',
+            how='left',
+        )
+        .join(
+            entity_types.rename({
+                'entity_pk': '_global_object_pk',
+                'entity_type': '_object_entity_type',
+            }),
+            on='_global_object_pk',
+            how='left',
+        )
+        .with_columns(
+            pl.concat_list(['_subject_entity_type', '_object_entity_type'])
+            .list.drop_nulls()
+            .list.unique()
+            .list.sort()
+            .alias('participant_types')
+        )
         .sort(['_global_subject_pk', 'predicate', '_global_object_pk', 'relation_category'])
         .with_row_index('relation_pk', offset=1)
         .with_columns(pl.col('relation_pk').cast(pl.Int64))
@@ -305,6 +336,7 @@ def build_combined_parquets(
     *,
     gold_root: str | Path = 'data_v2/gold_new',
     output_dir: str | Path = 'data_v2/combined_new',
+    inputs_package: str = 'pypath.inputs_v2',
 ) -> dict[str, Any]:
     gold_root = Path(gold_root)
     output_dir = Path(output_dir)
@@ -313,7 +345,7 @@ def build_combined_parquets(
     source_dirs = discover_gold_source_dirs(gold_root)
 
     entity_output, entity_pk_map = _build_entity(source_dirs)
-    relation_output, relation_pk_map = _build_relation(source_dirs, entity_pk_map)
+    relation_output, relation_pk_map = _build_relation(source_dirs, entity_pk_map, entity_output)
 
     outputs = {
         'entity.parquet': entity_output,
@@ -326,6 +358,13 @@ def build_combined_parquets(
     for file_name, frame in outputs.items():
         _write_if_nonempty(frame, output_dir / file_name)
 
+    relation_annotation_summary = build_relation_annotation(output_dir=output_dir)
+    resources_path = build_resources_parquet(
+        gold_root=gold_root,
+        output_path=output_dir / 'resources.parquet',
+        inputs_package=inputs_package,
+    )
+
     row_counts = {
         file_name: int(frame.height)
         for file_name, frame in outputs.items()
@@ -335,6 +374,11 @@ def build_combined_parquets(
     ontology_term_path = output_dir / 'ontology_term.parquet'
     if ontology_term_path.exists():
         row_counts['ontology_term.parquet'] = int(pl.scan_parquet(ontology_term_path).select(pl.len()).collect().item())
+    row_counts['relation_annotation_term.parquet'] = int(relation_annotation_summary['row_count'])
+    if resources_path.exists():
+        row_counts['resources.parquet'] = int(
+            pl.scan_parquet(resources_path).select(pl.len()).collect().item()
+        )
 
     summary = {
         'gold_root': str(gold_root),
@@ -347,6 +391,8 @@ def build_combined_parquets(
             for item in source_dirs
         ],
         'row_counts': row_counts,
+        'relation_annotation_summary': relation_annotation_summary,
+        'resources_path': str(resources_path),
     }
     (output_dir / 'combined_build_summary.json').write_text(
         json.dumps(summary, indent=2) + '\n',
@@ -371,12 +417,22 @@ def build_parser() -> argparse.ArgumentParser:
         default=Path('data_v2/combined_new'),
         help='Directory to write combined parquet artifacts (default: data_v2/combined_new)',
     )
+    parser.add_argument(
+        '--inputs-package',
+        type=str,
+        default='pypath.inputs_v2',
+        help='Python package containing resource definitions for resources.parquet metadata.',
+    )
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    build_combined_parquets(gold_root=args.gold_root, output_dir=args.output_dir)
+    build_combined_parquets(
+        gold_root=args.gold_root,
+        output_dir=args.output_dir,
+        inputs_package=args.inputs_package,
+    )
     return 0
 
 

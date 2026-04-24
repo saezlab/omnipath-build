@@ -86,6 +86,7 @@ ENTITY_RELATION_SCHEMA = {
     'predicate': pl.String,
     'object_entity_pk': pl.Int64,
     'relation_category': pl.String,
+    'participant_types': pl.List(pl.String),
     'evidence_count': pl.Int64,
     'sources': pl.List(pl.String),
 }
@@ -109,6 +110,14 @@ ONTOLOGY_TERM_SCHEMA = {
     'sources': pl.List(pl.String),
 }
 
+RELATION_ANNOTATION_TERM_SCHEMA = {
+    'relation_pk': pl.Int64,
+    'relation_evidence_pk': pl.Int64,
+    'source': pl.String,
+    'scope': pl.String,
+    'term_id': pl.String,
+}
+
 ARTIFACT_OUTPUTS = {
     'entity.parquet': ENTITY_SCHEMA,
     'interaction_evidence.parquet': INTERACTION_EVIDENCE_SCHEMA,
@@ -117,6 +126,7 @@ ARTIFACT_OUTPUTS = {
     'association.parquet': ASSOCIATION_SCHEMA,
     'entity_annotation.parquet': ENTITY_ANNOTATION_SCHEMA,
     'interaction_annotation.parquet': INTERACTION_ANNOTATION_SCHEMA,
+    'relation_annotation_term.parquet': RELATION_ANNOTATION_TERM_SCHEMA,
 }
 
 

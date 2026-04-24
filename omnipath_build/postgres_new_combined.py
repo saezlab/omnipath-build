@@ -42,7 +42,6 @@ def load_combined_schema_to_postgres(
         ensure_schema(conn, schema=schema, drop_existing=drop_existing)
         load_tables(conn, schema=schema, combined_dir=combined_dir, batch_size=batch_size)
         create_secondary_indexes(conn, schema=schema)
-        create_derived_objects(conn, schema=schema)
 
     logger.info('Combined PostgreSQL schema load complete')
     return 0
@@ -58,12 +57,8 @@ def ensure_schema(
         cur.execute('CREATE EXTENSION IF NOT EXISTS pg_trgm')
 
         if drop_existing:
-            cur.execute(
-                sql.SQL('DROP MATERIALIZED VIEW IF EXISTS {}.relation_annotation_term CASCADE').format(
-                    sql.Identifier(schema)
-                )
-            )
             for table_name in (
+                'relation_annotation_term',
                 'entity_relation_evidence',
                 'entity_relation',
                 'ontology_term',
@@ -113,6 +108,7 @@ def ensure_schema(
                   predicate text NOT NULL,
                   object_entity_pk bigint NOT NULL REFERENCES {}.entity (entity_pk),
                   relation_category text NOT NULL,
+                  participant_types text[] NOT NULL DEFAULT '{{}}',
                   evidence_count bigint NOT NULL,
                   sources text[] NOT NULL DEFAULT '{{}}'
                 )
@@ -155,6 +151,24 @@ def ensure_schema(
                 """
             ).format(sql.Identifier(schema))
         )
+        cur.execute(
+            sql.SQL(
+                """
+                CREATE TABLE IF NOT EXISTS {}.relation_annotation_term (
+                  relation_pk bigint NOT NULL REFERENCES {}.entity_relation (relation_pk),
+                  relation_evidence_pk bigint NOT NULL REFERENCES {}.entity_relation_evidence (relation_evidence_pk),
+                  source text NOT NULL,
+                  scope text NOT NULL,
+                  term_id text NOT NULL REFERENCES {}.ontology_term (term_id),
+                  PRIMARY KEY (relation_evidence_pk, scope, term_id)
+                )
+                """
+            ).format(
+                sql.Identifier(schema),
+                sql.Identifier(schema),
+                sql.Identifier(schema),
+            )
+        )
     conn.commit()
 
 
@@ -181,10 +195,11 @@ def load_tables(
             'predicate',
             'object_entity_pk',
             'relation_category',
+            'participant_types',
             'evidence_count',
             'sources',
         ),
-        serializers={'sources': _serialize_pg_text_array},
+        serializers={'participant_types': _serialize_pg_text_array, 'sources': _serialize_pg_text_array},
         batch_size=batch_size,
     )
     _copy_parquet_to_table(
@@ -216,6 +231,15 @@ def load_tables(
         table='ontology_term',
         columns=('term_id', 'ontology_prefix', 'label', 'definition', 'synonyms', 'sources'),
         serializers={'synonyms': _serialize_pg_text_array, 'sources': _serialize_pg_text_array},
+        batch_size=batch_size,
+    )
+    _copy_parquet_to_table(
+        conn,
+        parquet_path=combined_dir / 'relation_annotation_term.parquet',
+        schema=schema,
+        table='relation_annotation_term',
+        columns=('relation_pk', 'relation_evidence_pk', 'source', 'scope', 'term_id'),
+        serializers={},
         batch_size=batch_size,
     )
 
@@ -302,9 +326,10 @@ def _truncate_tables(conn: psycopg2.extensions.connection, schema: str) -> None:
     with conn.cursor() as cur:
         cur.execute(
             sql.SQL(
-                'TRUNCATE TABLE {}.ontology_term, {}.entity_relation_evidence, '
+                'TRUNCATE TABLE {}.relation_annotation_term, {}.ontology_term, {}.entity_relation_evidence, '
                 '{}.entity_relation, {}.entity_identifier, {}.entity CASCADE'
             ).format(
+                sql.Identifier(schema),
                 sql.Identifier(schema),
                 sql.Identifier(schema),
                 sql.Identifier(schema),
@@ -405,6 +430,8 @@ def create_secondary_indexes(
         sql.SQL('CREATE INDEX IF NOT EXISTS entity_relation_subject_category_idx ON {}.entity_relation (subject_entity_pk, relation_category)').format(sql.Identifier(schema)),
         sql.SQL('CREATE INDEX IF NOT EXISTS entity_relation_object_category_idx ON {}.entity_relation (object_entity_pk, relation_category)').format(sql.Identifier(schema)),
         sql.SQL('CREATE INDEX IF NOT EXISTS entity_relation_evidence_relation_idx ON {}.entity_relation_evidence (relation_pk)').format(sql.Identifier(schema)),
+        sql.SQL('CREATE INDEX IF NOT EXISTS relation_annotation_term_scope_term_relation_idx ON {}.relation_annotation_term (scope, term_id, relation_pk)').format(sql.Identifier(schema)),
+        sql.SQL('CREATE INDEX IF NOT EXISTS relation_annotation_term_relation_idx ON {}.relation_annotation_term (relation_pk)').format(sql.Identifier(schema)),
         sql.SQL('CREATE INDEX IF NOT EXISTS ontology_term_label_trgm_idx ON {}.ontology_term USING GIN (label gin_trgm_ops)').format(sql.Identifier(schema)),
         sql.SQL('CREATE INDEX IF NOT EXISTS ontology_term_definition_trgm_idx ON {}.ontology_term USING GIN (definition gin_trgm_ops)').format(sql.Identifier(schema)),
     ]
@@ -413,32 +440,3 @@ def create_secondary_indexes(
             cur.execute(statement)
     conn.commit()
 
-
-def create_derived_objects(
-    conn: psycopg2.extensions.connection,
-    schema: str,
-) -> None:
-    sql_path = Path(__file__).resolve().parent / 'sql' / 'relation_annotation_terms.sql'
-    statement = sql.SQL(sql_path.read_text()).format(schema=sql.Identifier(schema))
-
-    with conn.cursor() as cur:
-        cur.execute(statement)
-        cur.execute(
-            sql.SQL(
-                'CREATE UNIQUE INDEX relation_annotation_term_pk_idx '
-                'ON {}.relation_annotation_term (relation_evidence_pk, scope, term_id)'
-            ).format(sql.Identifier(schema))
-        )
-        cur.execute(
-            sql.SQL(
-                'CREATE INDEX relation_annotation_term_scope_term_relation_idx '
-                'ON {}.relation_annotation_term (scope, term_id, relation_pk)'
-            ).format(sql.Identifier(schema))
-        )
-        cur.execute(
-            sql.SQL(
-                'CREATE INDEX relation_annotation_term_relation_idx '
-                'ON {}.relation_annotation_term (relation_pk)'
-            ).format(sql.Identifier(schema))
-        )
-    conn.commit()
