@@ -1,4 +1,4 @@
-.PHONY: setup silver-list gold-mappings gold-source gold-all combined postgres-combined pipeline test overwrite-gold overwrite-silver overwrite
+.PHONY: setup silver silver-list gold-mappings gold-source gold-all combined postgres-combined pipeline test overwrite-gold overwrite-silver overwrite
 
 JOBS ?= 4
 BATCH_SIZE ?= 10000
@@ -8,12 +8,19 @@ RESOLVER_MAPPING_DIR ?= id_resolver/data
 OVERWRITE ?=
 TEST_MODE ?=
 STEP ?= all
+DATABASE ?= omnipath
+SOURCE ?=
+FUNCTION ?=
+BASE_PATH ?=
+DRY_RUN ?=
+SILVER_OVERRIDE ?=
 COMBINED_GOLD_ROOT ?= $(DATA_ROOT)/gold
 COMBINED_OUTPUT_DIR ?= $(DATA_ROOT)/combined
 DATABASE_URL ?= postgresql://omnipath:omnipath@localhost:55432/omnipath
 POSTGRES_URI ?= $(DATABASE_URL)
 POSTGRES_SCHEMA ?= public
 POSTGRES_DROP_EXISTING ?= 1
+PIPELINE_SCRIPT ?= omnipath_build/pipeline/pipeline.py
 
 setup:
 	git submodule add -b main https://github.com/saezlab/pypath.git pypath || true
@@ -22,6 +29,22 @@ setup:
 	uv sync
 	-uv pip uninstall pypath-omnipath dlmachine cachedir
 	uv pip install -e ./cache-manager -e ./download-manager -e ./pypath
+
+silver:
+	@if [ -z "$(SOURCE)" ]; then \
+		echo "SOURCE is required, e.g. make silver SOURCE=uniprot [FUNCTION=all_uniprots]"; \
+		exit 1; \
+	fi
+	@uv run python -m omnipath_build.cli.commands silver \
+		--database $(DATABASE) \
+		--inputs-package $(INPUTS_PACKAGE) \
+		--source $(SOURCE) \
+		$(if $(FUNCTION),--function $(FUNCTION)) \
+		$(if $(BASE_PATH),--base-path $(BASE_PATH)) \
+		--batch-size $(BATCH_SIZE) \
+		$(if $(TEST_MODE),--test-mode) \
+		$(if $(DRY_RUN),--dry-run) \
+		$(if $(SILVER_OVERRIDE),--override)
 
 silver-list:
 	@uv run python -m omnipath_build.cli.commands silver --list --inputs-package $(INPUTS_PACKAGE)
@@ -70,18 +93,32 @@ postgres-combined:
 
 pipeline:
 	@if [ "$(STEP)" = "all" ]; then \
-		$(MAKE) gold-all SOURCES="$(SOURCES)" DATA_ROOT="$(DATA_ROOT)" INPUTS_PACKAGE="$(INPUTS_PACKAGE)" BATCH_SIZE="$(BATCH_SIZE)" JOBS="$(JOBS)" TEST_MODE="$(TEST_MODE)" OVERWRITE="$(OVERWRITE)" RESOLVER_MAPPING_DIR="$(RESOLVER_MAPPING_DIR)" && \
-		$(MAKE) combined DATA_ROOT="$(DATA_ROOT)" COMBINED_GOLD_ROOT="$(COMBINED_GOLD_ROOT)" COMBINED_OUTPUT_DIR="$(COMBINED_OUTPUT_DIR)"; \
+		STEP_ARGS=""; \
 	elif [ "$(STEP)" = "gold" ]; then \
-		$(MAKE) gold-all SOURCES="$(SOURCES)" DATA_ROOT="$(DATA_ROOT)" INPUTS_PACKAGE="$(INPUTS_PACKAGE)" BATCH_SIZE="$(BATCH_SIZE)" JOBS="$(JOBS)" TEST_MODE="$(TEST_MODE)" OVERWRITE="$(OVERWRITE)" RESOLVER_MAPPING_DIR="$(RESOLVER_MAPPING_DIR)"; \
+		STEP_ARGS="--no-combine"; \
 	elif [ "$(STEP)" = "combined" ]; then \
-		$(MAKE) combined DATA_ROOT="$(DATA_ROOT)" COMBINED_GOLD_ROOT="$(COMBINED_GOLD_ROOT)" COMBINED_OUTPUT_DIR="$(COMBINED_OUTPUT_DIR)"; \
+		STEP_ARGS="--no-build-mappings --no-build-sources"; \
 	elif [ "$(STEP)" = "postgres" ]; then \
-		$(MAKE) postgres-combined COMBINED_OUTPUT_DIR="$(COMBINED_OUTPUT_DIR)" POSTGRES_URI="$(POSTGRES_URI)" POSTGRES_SCHEMA="$(POSTGRES_SCHEMA)" POSTGRES_DROP_EXISTING="$(POSTGRES_DROP_EXISTING)"; \
+		STEP_ARGS="--no-build-mappings --no-build-sources --no-combine --postgres-uri $(POSTGRES_URI) --postgres-schema $(POSTGRES_SCHEMA)"; \
 	else \
 		echo "Unknown STEP=$(STEP). Supported values: all, gold, combined, postgres"; \
 		exit 1; \
-	fi
+	fi; \
+	if [ "$(STEP)" = "postgres" ] && [ -z "$(POSTGRES_URI)" ]; then \
+		echo "POSTGRES_URI is required, e.g. make pipeline STEP=postgres POSTGRES_URI=postgresql://user:pass@host:5432/dbname"; \
+		exit 1; \
+	fi; \
+	uv run python $(PIPELINE_SCRIPT) $(SOURCES) \
+		--data-root $(DATA_ROOT) \
+		--inputs-package $(INPUTS_PACKAGE) \
+		--batch-size $(BATCH_SIZE) \
+		--jobs $(JOBS) \
+		$(if $(TEST_MODE),--silver-test-mode) \
+		$(if $(OVERWRITE),--overwrite $(OVERWRITE)) \
+		$(if $(RESOLVER_MAPPING_DIR),--resolver-mapping-dir $(RESOLVER_MAPPING_DIR)) \
+		--combined-output-dir $(COMBINED_OUTPUT_DIR) \
+		$$STEP_ARGS \
+		$(if $(POSTGRES_DROP_EXISTING),--postgres-drop-existing)
 
 test: TEST_MODE=1
 test: pipeline
