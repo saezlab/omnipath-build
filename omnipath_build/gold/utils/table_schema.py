@@ -145,5 +145,10 @@ def aggregate_unique_string_lists(column: str = 'sources') -> pl.Expr:
     return pl.col(column).explode().drop_nulls().unique().sort().alias(column)
 
 
+def aggregate_unique_attribute_lists(column: str = 'entity_attributes') -> pl.Expr:
+    """Flatten list-valued attribute rows and keep all unique attributes per group."""
+    return pl.col(column).explode().drop_nulls().unique(maintain_order=True).alias(column)
+
+
 def aggregate_unique_strings(column: str = 'source', *, alias: str | None = None) -> pl.Expr:
     return pl.col(column).drop_nulls().unique().sort().alias(alias or column)

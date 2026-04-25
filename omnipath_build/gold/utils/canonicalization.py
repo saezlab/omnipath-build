@@ -678,7 +678,7 @@ def _dedup_entities(entities: pl.DataFrame) -> pl.DataFrame:
         .group_by(['entity_id', 'entity_id_type'])
         .agg([
             pl.col('entity_type').drop_nulls().first().alias('entity_type'),
-            pl.col('entity_attributes').drop_nulls().first().alias('entity_attributes'),
+            pl.col('entity_attributes').explode().drop_nulls().unique(maintain_order=True).alias('entity_attributes'),
             pl.col('taxonomy_id').drop_nulls().first().alias('taxonomy_id'),
             pl.col('sources').explode().drop_nulls().unique().sort().alias('sources'),
         ])

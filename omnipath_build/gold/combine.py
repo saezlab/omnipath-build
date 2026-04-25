@@ -17,6 +17,7 @@ from omnipath_build.gold.utils.table_schema import (
     ENTITY_SCHEMA,
     IDENTIFIER_STRUCT,
     ONTOLOGY_TERM_SCHEMA,
+    aggregate_unique_attribute_lists,
     aggregate_unique_string_lists,
     empty_frame,
 )
@@ -132,7 +133,7 @@ def _build_entity(
         .agg([
             pl.col('entity_type').drop_nulls().first().alias('entity_type'),
             pl.col('taxonomy_id').drop_nulls().first().alias('taxonomy_id'),
-            pl.col('entity_attributes').drop_nulls().first().alias('entity_attributes'),
+            aggregate_unique_attribute_lists('entity_attributes'),
             aggregate_unique_string_lists('sources'),
         ])
         .join(identifier_lists, on=['canonical_identifier', 'canonical_identifier_type'], how='left')
