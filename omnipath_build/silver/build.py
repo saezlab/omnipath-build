@@ -29,7 +29,7 @@ from pypath.internals.ontology_schema import OntologyTerm
 __all__ = [
     'DiscoveryError',
     'ResourceFunction',
-    'TEST_MODE_INCLUDED_SOURCES',
+    'TEST_MODE_RECORD_LIMITS_BY_SOURCE',
     'discover_resources',
     'process_resource_function',
     'run_silver_loader',
@@ -48,20 +48,6 @@ TEST_MODE_RECORD_LIMITS_BY_SOURCE: dict[str, int] = {
     'hmdb': 100,
     'intact': 1000,
     'stitch': 1000,
-}
-
-# In test mode, only this subset of sources is included.
-TEST_MODE_INCLUDED_SOURCES: set[str] = {
-    'wikipathways',
-    'phenol_explorer',
-    'guidetopharma',
-    'corum',
-    'uniprot',
-    'chebi',
-    'hpo',
-    'omnipath_ontology',
-    'swisslipids',
-    'signor',
 }
 
 _PROGRESS_PREFIX = '__OMNIPATH_PROGRESS__'
@@ -1046,15 +1032,8 @@ def run_silver_loader(
                 f'Unknown source "{source}". Use --list to inspect available modules under {inputs_package}.'
             )
 
-    if test_mode and selected_source and selected_source not in TEST_MODE_INCLUDED_SOURCES:
-        raise ValueError(
-            f'Source "{selected_source}" is not included in test mode.'
-        )
-
     for source_name, functions in discovered.items():
         if selected_source and source_name != selected_source:
-            continue
-        if test_mode and source_name not in TEST_MODE_INCLUDED_SOURCES:
             continue
         for fn in functions:
             if function and fn.function_name != function:

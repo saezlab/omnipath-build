@@ -28,7 +28,6 @@ from omnipath_build.pipeline.tasks import (
 )
 from omnipath_build.silver.build import (
     ResourceFunction,
-    TEST_MODE_INCLUDED_SOURCES,
     discover_resources,
 )
 
@@ -482,11 +481,6 @@ def _discover_all_sources(inputs_package: str, *, test_mode: bool = False) -> li
         for source, functions in discovered.items()
         if _has_gold_buildable_dataset(functions)
     )
-    if test_mode:
-        sources = [
-            source for source in sources
-            if source in TEST_MODE_INCLUDED_SOURCES
-        ]
     return sources
 
 
