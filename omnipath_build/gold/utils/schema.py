@@ -222,7 +222,7 @@ def predicate_for_interaction(
     if row_type == str(EntityTypeCv.REACTION):
         if has_role_ordering(ordered_participants):
             return PredicateRule('transforms_to', 'interaction')
-        return PredicateRule('affects', 'interaction')
+        return PredicateRule('interacts_with', 'interaction')
     if sign > 0:
         return PredicateRule('positively_regulates', 'interaction')
     if sign < 0:
