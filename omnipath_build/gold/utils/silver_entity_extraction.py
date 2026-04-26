@@ -317,8 +317,6 @@ def extract_from_silver_tables(
         anns
         .filter((pl.col('term') == ONTOLOGY_IDENTIFIER_TERM) & pl.col('units').is_null())
         .filter(pl.col('value').is_not_null() & (pl.col('value') != ''))
-        .with_columns(pl.col('value').map_elements(_is_accession, return_dtype=pl.Boolean).alias('_is_accession'))
-        .filter(pl.col('_is_accession'))
         .join(occ_df.select(['occurrence_id', '_occurrence_index']), on='occurrence_id', how='left')
         .select([
             'occurrence_id',

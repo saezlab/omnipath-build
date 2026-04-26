@@ -13,7 +13,6 @@ from omnipath_build.gold.utils.schema import (
     CV_TERM_ENTITY_TYPE,
     ONTOLOGY_IDENTIFIER_TERM,
     classify_annotation,
-    is_cv_term_accession,
     projected_attribute,
     string_or_none,
 )
@@ -138,7 +137,7 @@ def extract_ontology_entity_description(
     source: str,
 ) -> dict[str, Any] | None:
     term_id = string_or_none(annotation.get('value'))
-    if term_id is None or not is_cv_term_accession(term_id):
+    if term_id is None:
         return None
 
     entity_type = format_cv_term(CV_TERM_ENTITY_TYPE)

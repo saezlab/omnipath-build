@@ -279,7 +279,7 @@ def is_pure_ontology_term_annotation(annotation: dict[str, Any]) -> bool:
     term = string_or_none(annotation.get('term'))
     value = string_or_none(annotation.get('value'))
     unit = string_or_none(annotation.get('units'))
-    return term == ONTOLOGY_IDENTIFIER_TERM and value is not None and unit is None and is_cv_term_accession(value)
+    return term == ONTOLOGY_IDENTIFIER_TERM and value is not None and unit is None
 
 
 def annotation_predicate(annotation: dict[str, Any]) -> str:
@@ -289,7 +289,8 @@ def annotation_predicate(annotation: dict[str, Any]) -> str:
         return 'has_annotation'
     if prefix in {'HP', 'MONDO'}:
         return 'associated_with'
-    if prefix in {'REACTOME', 'WP'}:
+    value_upper = value.upper()
+    if prefix in {'REACTOME', 'WP'} or value_upper.startswith(('WP', 'R-')):
         return 'involved_in'
     return 'has_annotation'
 
