@@ -3,8 +3,14 @@ from __future__ import annotations
 from pathlib import Path
 import zipfile
 
-
 RESOURCE_ARCHIVE_SUFFIX = '.zip'
+
+ARCHIVE_EXCLUDED_NAMES = frozenset({
+    'entity_map.parquet',
+    'entity_occurrence_map.parquet',
+    'canonicalization_report.md',
+    'canonicalization_summary.json',
+})
 
 
 def resource_archive_name(resource_id: str) -> str:
@@ -23,6 +29,8 @@ def iter_resource_archive_inputs(source_dir: Path, resource_id: str):
             continue
         if path == archive_path:
             continue
+        if path.name in ARCHIVE_EXCLUDED_NAMES:
+            continue
         yield path
 
 
@@ -40,6 +48,6 @@ def build_resource_archive(source_dir: Path, resource_id: str) -> Path:
 
     with zipfile.ZipFile(archive_path, mode='w', compression=zipfile.ZIP_DEFLATED) as zf:
         for source_path in inputs:
-            zf.write(source_path, arcname=str(source_path.relative_to(source_dir)))
+            zf.write(source_path, arcname=source_path.name)
 
     return archive_path

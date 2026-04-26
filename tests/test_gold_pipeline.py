@@ -26,15 +26,30 @@ class GoldPipelineTests(unittest.TestCase):
     def test_build_resource_archive_writes_expected_members(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             version_dir = Path(tmp) / 'signor' / '1'
-            version_dir.mkdir(parents=True, exist_ok=True)
-            (version_dir / 'entity.parquet').write_text('entity', encoding='utf-8')
-            (version_dir / 'interaction.parquet').write_text('interaction', encoding='utf-8')
+            entities_dir = version_dir / 'entities'
+            relations_dir = version_dir / 'relations'
+            entities_dir.mkdir(parents=True, exist_ok=True)
+            relations_dir.mkdir(parents=True, exist_ok=True)
+            (entities_dir / 'entity.parquet').write_text('entity', encoding='utf-8')
+            (entities_dir / 'entity_map.parquet').write_text('emap', encoding='utf-8')
+            (entities_dir / 'entity_occurrence_map.parquet').write_text('omap', encoding='utf-8')
+            (entities_dir / 'canonicalization_report.md').write_text('report', encoding='utf-8')
+            (entities_dir / 'canonicalization_summary.json').write_text('{}', encoding='utf-8')
+            (relations_dir / 'entity_relation.parquet').write_text('rel', encoding='utf-8')
 
             archive_path = build_resource_archive(version_dir, 'signor')
 
             self.assertTrue(archive_path.exists())
             with zipfile.ZipFile(archive_path) as zf:
-                self.assertEqual(zf.namelist(), ['entity.parquet', 'interaction.parquet'])
+                names = zf.namelist()
+                self.assertIn('entity.parquet', names)
+                self.assertIn('entity_relation.parquet', names)
+                self.assertNotIn('entity_map.parquet', names)
+                self.assertNotIn('entity_occurrence_map.parquet', names)
+                self.assertNotIn('canonicalization_report.md', names)
+                self.assertNotIn('canonicalization_summary.json', names)
+                for name in names:
+                    self.assertEqual(name, Path(name).name)
 
     def test_build_resource_archive_replaces_existing_archive_without_self_inclusion(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
