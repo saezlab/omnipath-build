@@ -1,4 +1,4 @@
-.PHONY: setup silver silver-list gold-mappings gold-source gold-all combined postgres-combined pipeline test overwrite-gold overwrite-silver overwrite
+.PHONY: setup silver silver-list gold-mappings gold-source gold-all combined postgres pipeline test overwrite-gold overwrite-silver overwrite
 
 JOBS ?= 4
 BATCH_SIZE ?= 10000
@@ -80,16 +80,29 @@ combined:
 		--gold-root $(COMBINED_GOLD_ROOT) \
 		--output-dir $(COMBINED_OUTPUT_DIR)
 
-postgres-combined:
+postgres:
 	@if [ -z "$(POSTGRES_URI)" ]; then \
-		echo "POSTGRES_URI is required, e.g. make postgres-combined POSTGRES_URI=postgresql://user:pass@host:5432/dbname"; \
+		echo "POSTGRES_URI is required, e.g. make postgres POSTGRES_URI=postgresql://user:pass@host:5432/dbname"; \
 		exit 1; \
-	fi
-	@uv run python -m omnipath_build.cli.commands postgres \
+	fi; \
+	if [ "$(STEP)" = "all" ]; then \
+		STEP_ARGS=""; \
+	elif [ "$(STEP)" = "tables" ]; then \
+		STEP_ARGS="--no-indexes --no-bitmaps"; \
+	elif [ "$(STEP)" = "indexes" ]; then \
+		STEP_ARGS="--no-tables --no-bitmaps"; \
+	elif [ "$(STEP)" = "bitmaps" ]; then \
+		STEP_ARGS="--no-tables --no-indexes"; \
+	else \
+		echo "Unknown STEP=$(STEP). Supported values: all, tables, indexes, bitmaps"; \
+		exit 1; \
+	fi; \
+	uv run python -m omnipath_build.cli.commands postgres \
 		--output-dir $(COMBINED_OUTPUT_DIR) \
 		--postgres-uri $(POSTGRES_URI) \
 		--schema $(POSTGRES_SCHEMA) \
-		$(if $(POSTGRES_DROP_EXISTING),--drop-existing)
+		$(if $(POSTGRES_DROP_EXISTING),--drop-existing) \
+		$$STEP_ARGS
 
 pipeline:
 	@if [ "$(STEP)" = "all" ]; then \

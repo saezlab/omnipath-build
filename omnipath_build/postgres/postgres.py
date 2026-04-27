@@ -39,16 +39,22 @@ def load_combined_schema_to_postgres(
     schema: str = 'public',
     drop_existing: bool = False,
     batch_size: int = DEFAULT_BATCH_SIZE,
+    tables: bool = True,
+    indexes: bool = True,
+    bitmaps: bool = True,
 ) -> int:
     combined_dir = resolve_combined_dir(output_dir)
     logger.info('Loading combined parquet artifacts from %s', combined_dir)
 
     with psycopg2.connect(postgres_uri) as conn:
-        ensure_schema(conn, schema=schema, drop_existing=drop_existing)
-        load_tables(conn, schema=schema, combined_dir=combined_dir, batch_size=batch_size)
-        create_secondary_indexes(conn, schema=schema)
-        create_bitmap_tables(conn, schema=schema)
-        populate_bitmap_tables(conn, schema=schema)
+        ensure_schema(conn, schema=schema, drop_existing=drop_existing and tables)
+        if tables:
+            load_tables(conn, schema=schema, combined_dir=combined_dir, batch_size=batch_size)
+        if indexes:
+            create_secondary_indexes(conn, schema=schema)
+        if bitmaps:
+            create_bitmap_tables(conn, schema=schema)
+            populate_bitmap_tables(conn, schema=schema)
 
     logger.info('Combined PostgreSQL schema load complete')
     return 0

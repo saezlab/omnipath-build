@@ -124,6 +124,9 @@ def _handle_postgres(args: argparse.Namespace) -> int:
             postgres_uri=args.postgres_uri,
             schema=args.schema,
             drop_existing=args.drop_existing,
+            tables=args.tables,
+            indexes=args.indexes,
+            bitmaps=args.bitmaps,
         )
     except Exception as exc:  # noqa: BLE001
         print(f'Unexpected error: {exc}', file=sys.stderr)
@@ -275,6 +278,24 @@ def _build_parser() -> argparse.ArgumentParser:
         '--drop-existing',
         action='store_true',
         help='Drop existing tables before creating new ones',
+    )
+    postgres_parser.add_argument(
+        '--tables',
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help='Load table data (default: true)',
+    )
+    postgres_parser.add_argument(
+        '--indexes',
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help='Create secondary indexes (default: true)',
+    )
+    postgres_parser.add_argument(
+        '--bitmaps',
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help='Create and populate bitmap tables (default: true)',
     )
     postgres_parser.set_defaults(handler=_handle_postgres)
 
