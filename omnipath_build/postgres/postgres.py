@@ -12,6 +12,7 @@ import psycopg2.extensions
 import pyarrow.parquet as pq
 from psycopg2 import sql
 
+from omnipath_build.postgres.bitmaps import create_bitmap_tables, populate_bitmap_tables
 from omnipath_build.postgres.indexes import create_secondary_indexes
 from omnipath_build.postgres.materialized_views import refresh_materialized_views
 from omnipath_build.postgres.schema import ensure_schema
@@ -46,6 +47,8 @@ def load_combined_schema_to_postgres(
         ensure_schema(conn, schema=schema, drop_existing=drop_existing)
         load_tables(conn, schema=schema, combined_dir=combined_dir, batch_size=batch_size)
         create_secondary_indexes(conn, schema=schema)
+        create_bitmap_tables(conn, schema=schema)
+        populate_bitmap_tables(conn, schema=schema)
 
     logger.info('Combined PostgreSQL schema load complete')
     return 0
