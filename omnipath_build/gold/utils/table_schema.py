@@ -115,7 +115,7 @@ RELATION_ANNOTATION_TERM_SCHEMA = {
     'relation_evidence_pk': pl.Int64,
     'source': pl.String,
     'scope': pl.String,
-    'term_id': pl.String,
+    'term_entity_pk': pl.Int64,
 }
 
 ARTIFACT_OUTPUTS = {

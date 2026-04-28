@@ -203,6 +203,7 @@ def _resource_row(*, source: str, resource: Resource, gold_root: Path) -> dict[s
         'homepage_url': config.url,
         'license': format_cv_term(str(config.license)) or str(config.license),
         'pubmed_id': config.pubmed,
+        'resource_kind': getattr(config, 'resource_kind', 'data_resource'),
         'categories': _resource_categories(
             interaction_count=interaction_count,
             membership_count=membership_count,

@@ -4,9 +4,6 @@ import argparse
 import json
 import logging
 import re
-import shutil
-import tempfile
-import urllib.request
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
@@ -20,12 +17,6 @@ from omnipath_build.gold.utils.table_schema import (
 )
 
 logger = logging.getLogger(__name__)
-
-EXTERNAL_ONTOLOGIES = {
-    'go': 'https://purl.obolibrary.org/obo/go.obo',
-    'hp': 'https://purl.obolibrary.org/obo/hp.obo',
-}
-
 
 def _parse_obo_definition(value: str) -> str:
     match = re.match(r'^"(.*)"(?:\s*\[.*\])?$', value)
@@ -140,36 +131,17 @@ def _discover_source_obo_files(source_root: Path) -> list[tuple[Path, str]]:
     return discovered
 
 
-def _download_external_ontologies(download_dir: Path) -> list[tuple[Path, str]]:
-    downloaded: list[tuple[Path, str]] = []
-    for name, url in EXTERNAL_ONTOLOGIES.items():
-        destination = download_dir / f'{name}.obo'
-        logger.info('Downloading ontology artifact %s -> %s', url, destination)
-        request = urllib.request.Request(url, headers={'User-Agent': 'omnipath-build/1.0'})
-        with urllib.request.urlopen(request) as response, destination.open('wb') as handle:
-            shutil.copyfileobj(response, handle)
-        downloaded.append((destination, name))
-    return downloaded
-
-
 def build_ontology_terms_dataframe(
     source_root: str | Path,
 ) -> tuple[pl.DataFrame, list[tuple[Path, str]]]:
     """Build ontology terms DataFrame from OBO files under source_root."""
     source_root = Path(source_root)
 
-    # 1. Discover source OBO files
     obo_files = _discover_source_obo_files(source_root)
 
-    # 2. Download external ontologies to a temp dir and parse immediately
-    with tempfile.TemporaryDirectory() as tmpdir:
-        external_obo_files = _download_external_ontologies(Path(tmpdir))
-        obo_files.extend(external_obo_files)
-
-        # 3. Parse all OBO terms
-        obo_rows: list[dict[str, Any]] = []
-        for obo_path, source in obo_files:
-            obo_rows.extend(_collect_obo_terms(obo_path, source))
+    obo_rows: list[dict[str, Any]] = []
+    for obo_path, source in obo_files:
+        obo_rows.extend(_collect_obo_terms(obo_path, source))
 
     if not obo_rows:
         return empty_frame(ONTOLOGY_TERM_SCHEMA), obo_files

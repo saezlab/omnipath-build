@@ -90,13 +90,19 @@ def _write_report(paths: PipelinePaths, report: dict[str, Any]) -> None:
 
 
 def build_task_graph(
-    *,
     sources: list[str],
-    build_mappings: bool,
-    build_sources: bool,
-    combine: bool,
-    postgres: bool,
+    gold_sources: list[str] | None = None,
+    build_mappings: bool | None = None,
+    build_sources: bool | None = None,
+    combine: bool = False,
+    postgres: bool = False,
+    include_mappings: bool | None = None,
+    include_sources: bool | None = None,
 ) -> list[TaskDef]:
+    if build_mappings is None:
+        build_mappings = bool(include_mappings)
+    if build_sources is None:
+        build_sources = True if include_sources is None else bool(include_sources)
     tasks: list[TaskDef] = []
     silver_keys: list[str] = []
     gold_keys: list[str] = []
@@ -104,13 +110,17 @@ def build_task_graph(
     if build_mappings:
         tasks.append(TaskDef('resolver_mappings', 'resolver_mappings', None, ()))
 
+    gold_source_set = set(gold_sources if gold_sources is not None else sources)
+
     if build_sources:
         for source in sources:
             silver_key = f'silver:{source}'
-            gold_key = f'gold:{source}'
             silver_keys.append(silver_key)
-            gold_keys.append(gold_key)
             tasks.append(TaskDef(silver_key, 'silver', source, ()))
+            if source not in gold_source_set:
+                continue
+            gold_key = f'gold:{source}'
+            gold_keys.append(gold_key)
             deps = [silver_key]
             if build_mappings:
                 deps.append('resolver_mappings')
@@ -465,23 +475,27 @@ def _run_dag(
 
 def _has_gold_buildable_dataset(functions: list[ResourceFunction]) -> bool:
     return any(
-        fn.function_name != 'resource' and fn.output_kind != 'ontology'
+        fn.function_name != 'resource' and fn.output_kind == 'entity'
         for fn in functions
     )
 
 
-def _discover_all_sources(inputs_package: str, *, test_mode: bool = False) -> list[str]:
+def _discover_sources_by_capability(inputs_package: str) -> tuple[list[str], list[str]]:
     discovered, _ = discover_resources(
         database_name='.',
         base_path=None,
         inputs_package=inputs_package,
     )
-    sources = sorted(
-        source
-        for source, functions in discovered.items()
-        if _has_gold_buildable_dataset(functions)
+    silver_sources = sorted(discovered)
+    gold_sources = sorted(
+        source for source, functions in discovered.items() if _has_gold_buildable_dataset(functions)
     )
-    return sources
+    return silver_sources, gold_sources
+
+
+def _discover_all_sources(inputs_package: str, *, test_mode: bool = False) -> list[str]:
+    silver_sources, _ = _discover_sources_by_capability(inputs_package)
+    return silver_sources
 
 
 def run_pipeline(
@@ -502,9 +516,14 @@ def run_pipeline(
     postgres_schema: str = 'public',
     postgres_drop_existing: bool = False,
 ) -> dict[str, Any]:
+    discovered_gold_sources: list[str] | None = None
     if build_sources and not sources:
-        sources = _discover_all_sources(inputs_package, test_mode=test_mode)
+        sources, discovered_gold_sources = _discover_sources_by_capability(inputs_package)
         print(f'Autodiscovered {len(sources)} sources from {inputs_package}')
+    elif build_sources:
+        _, all_gold_sources = _discover_sources_by_capability(inputs_package)
+        requested = set(sources)
+        discovered_gold_sources = [source for source in all_gold_sources if source in requested]
 
     paths = build_paths(data_root)
     for base in [
@@ -522,6 +541,7 @@ def run_pipeline(
     overwrite_task_types = _normalize_overwrite(overwrite)
     tasks = build_task_graph(
         sources=sources,
+        gold_sources=discovered_gold_sources,
         build_mappings=build_mappings,
         build_sources=build_sources,
         combine=combine,

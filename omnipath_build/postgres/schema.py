@@ -21,7 +21,6 @@ def ensure_schema(
                 'm': 'MATERIALIZED VIEW',
             }
             for object_name in (
-                'ontology_term_annotation_counts',
                 'resources',
                 'relation_annotation_term',
                 'entity_relation_evidence',
@@ -121,27 +120,13 @@ def ensure_schema(
         cur.execute(
             sql.SQL(
                 """
-                CREATE TABLE IF NOT EXISTS {}.ontology_term (
-                  term_id text PRIMARY KEY,
-                  ontology_prefix text,
-                  label text,
-                  definition text,
-                  synonyms text[] NOT NULL DEFAULT '{{}}',
-                  sources text[] NOT NULL DEFAULT '{{}}'
-                )
-                """
-            ).format(sql.Identifier(schema))
-        )
-        cur.execute(
-            sql.SQL(
-                """
                 CREATE TABLE IF NOT EXISTS {}.relation_annotation_term (
                   relation_pk bigint NOT NULL REFERENCES {}.entity_relation (relation_pk),
                   relation_evidence_pk bigint NOT NULL REFERENCES {}.entity_relation_evidence (relation_evidence_pk),
                   source text NOT NULL,
                   scope text NOT NULL,
-                  term_id text NOT NULL REFERENCES {}.ontology_term (term_id),
-                  PRIMARY KEY (relation_evidence_pk, scope, term_id)
+                  term_entity_pk bigint NOT NULL REFERENCES {}.entity (entity_pk),
+                  PRIMARY KEY (relation_evidence_pk, scope, term_entity_pk)
                 )
                 """
             ).format(
@@ -161,6 +146,7 @@ def ensure_schema(
                   homepage_url text,
                   license text,
                   pubmed_id text,
+                  resource_kind text,
                   categories text[] NOT NULL DEFAULT '{{}}',
                   annotation_ontologies text[] NOT NULL DEFAULT '{{}}',
                   entity_count bigint NOT NULL DEFAULT 0,

@@ -119,19 +119,31 @@ def populate_bitmap_tables(
         cur.execute(
             sql.SQL(
                 """
+                WITH relation_terms AS (
+                  SELECT
+                    ann.object_entity_pk AS term_entity_pk,
+                    er.relation_pk
+                  FROM {}.entity_relation ann
+                  JOIN {}.entity_relation er
+                    ON er.subject_entity_pk = ann.subject_entity_pk
+                    OR er.object_entity_pk = ann.subject_entity_pk
+                  WHERE ann.relation_category = 'annotation'
+                  UNION
+                  SELECT
+                    rat.term_entity_pk,
+                    rat.relation_pk
+                  FROM {}.relation_annotation_term rat
+                )
                 INSERT INTO {}.annotation_term_relation_bitmap (term_entity_pk, relation_bitmap, global_count)
                 SELECT
-                  ann.object_entity_pk AS term_entity_pk,
-                  rb_build_agg(DISTINCT er.relation_pk::integer),
-                  COUNT(DISTINCT er.relation_pk)::integer
-                FROM {}.entity_relation ann
-                JOIN {}.entity_relation er
-                  ON er.subject_entity_pk = ann.subject_entity_pk
-                  OR er.object_entity_pk = ann.subject_entity_pk
-                WHERE ann.relation_category = 'annotation'
-                GROUP BY ann.object_entity_pk
+                  term_entity_pk,
+                  rb_build_agg(DISTINCT relation_pk::integer),
+                  COUNT(DISTINCT relation_pk)::integer
+                FROM relation_terms
+                GROUP BY term_entity_pk
                 """
             ).format(
+                sql.Identifier(schema),
                 sql.Identifier(schema),
                 sql.Identifier(schema),
                 sql.Identifier(schema),

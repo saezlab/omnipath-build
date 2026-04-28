@@ -20,12 +20,16 @@ def create_secondary_indexes(
         sql.SQL('CREATE INDEX IF NOT EXISTS entity_relation_subject_category_idx ON {}.entity_relation (subject_entity_pk, relation_category)').format(sql.Identifier(schema)),
         sql.SQL('CREATE INDEX IF NOT EXISTS entity_relation_object_category_idx ON {}.entity_relation (object_entity_pk, relation_category)').format(sql.Identifier(schema)),
         sql.SQL('CREATE INDEX IF NOT EXISTS entity_relation_evidence_relation_idx ON {}.entity_relation_evidence (relation_pk)').format(sql.Identifier(schema)),
-        sql.SQL('CREATE INDEX IF NOT EXISTS relation_annotation_term_scope_term_relation_idx ON {}.relation_annotation_term (scope, term_id, relation_pk)').format(sql.Identifier(schema)),
+        sql.SQL('CREATE INDEX IF NOT EXISTS relation_annotation_term_scope_term_relation_idx ON {}.relation_annotation_term (scope, term_entity_pk, relation_pk)').format(sql.Identifier(schema)),
         sql.SQL('CREATE INDEX IF NOT EXISTS relation_annotation_term_relation_idx ON {}.relation_annotation_term (relation_pk)').format(sql.Identifier(schema)),
-        sql.SQL('CREATE INDEX IF NOT EXISTS ontology_term_label_trgm_idx ON {}.ontology_term USING GIN (label gin_trgm_ops)').format(sql.Identifier(schema)),
-        sql.SQL('CREATE INDEX IF NOT EXISTS ontology_term_definition_trgm_idx ON {}.ontology_term USING GIN (definition gin_trgm_ops)').format(sql.Identifier(schema)),
-        sql.SQL('CREATE UNIQUE INDEX IF NOT EXISTS ontology_term_annotation_counts_term_id_idx ON {}.ontology_term_annotation_counts (term_id)').format(sql.Identifier(schema)),
-        sql.SQL('CREATE INDEX IF NOT EXISTS ontology_term_annotation_counts_count_idx ON {}.ontology_term_annotation_counts (annotated_item_count DESC, term_id)').format(sql.Identifier(schema)),
+        sql.SQL(
+            """
+            CREATE INDEX IF NOT EXISTS entity_cv_term_idx
+            ON {}.entity (canonical_identifier)
+            WHERE entity_type = 'OM:0012:Cv Term'
+              AND canonical_identifier_type = 'OM:0204:Cv Term Accession'
+            """
+        ).format(sql.Identifier(schema)),
         sql.SQL('CREATE INDEX IF NOT EXISTS resources_build_status_idx ON {}.resources (build_status)').format(sql.Identifier(schema)),
         sql.SQL('CREATE INDEX IF NOT EXISTS resources_resource_name_trgm_idx ON {}.resources USING GIN (resource_name gin_trgm_ops)').format(sql.Identifier(schema)),
     ]

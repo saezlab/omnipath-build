@@ -14,7 +14,6 @@ from psycopg2 import sql
 
 from omnipath_build.postgres.bitmaps import create_bitmap_tables, populate_bitmap_tables
 from omnipath_build.postgres.indexes import create_secondary_indexes
-from omnipath_build.postgres.materialized_views import refresh_materialized_views
 from omnipath_build.postgres.schema import ensure_schema
 
 logger = logging.getLogger(__name__)
@@ -116,19 +115,10 @@ def load_tables(
     )
     _copy_parquet_to_table(
         conn,
-        parquet_path=combined_dir / 'ontology_term.parquet',
-        schema=schema,
-        table='ontology_term',
-        columns=('term_id', 'ontology_prefix', 'label', 'definition', 'synonyms', 'sources'),
-        serializers={'synonyms': _serialize_pg_text_array, 'sources': _serialize_pg_text_array},
-        batch_size=batch_size,
-    )
-    _copy_parquet_to_table(
-        conn,
         parquet_path=combined_dir / 'relation_annotation_term.parquet',
         schema=schema,
         table='relation_annotation_term',
-        columns=('relation_pk', 'relation_evidence_pk', 'source', 'scope', 'term_id'),
+        columns=('relation_pk', 'relation_evidence_pk', 'source', 'scope', 'term_entity_pk'),
         serializers={},
         batch_size=batch_size,
     )
@@ -144,6 +134,7 @@ def load_tables(
             'homepage_url',
             'license',
             'pubmed_id',
+            'resource_kind',
             'categories',
             'annotation_ontologies',
             'entity_count',
@@ -163,7 +154,6 @@ def load_tables(
         },
         batch_size=batch_size,
     )
-    refresh_materialized_views(conn, schema=schema)
 
 
 
@@ -249,16 +239,10 @@ def _load_entity_and_identifiers(
 def _truncate_tables(conn: psycopg2.extensions.connection, schema: str) -> None:
     with conn.cursor() as cur:
         cur.execute(
-            sql.SQL('DROP MATERIALIZED VIEW IF EXISTS {}.ontology_term_annotation_counts').format(
-                sql.Identifier(schema)
-            )
-        )
-        cur.execute(
             sql.SQL(
-                'TRUNCATE TABLE {}.resources, {}.relation_annotation_term, {}.ontology_term, {}.entity_relation_evidence, '
+                'TRUNCATE TABLE {}.resources, {}.relation_annotation_term, {}.entity_relation_evidence, '
                 '{}.entity_relation, {}.entity_identifier, {}.entity CASCADE'
             ).format(
-                sql.Identifier(schema),
                 sql.Identifier(schema),
                 sql.Identifier(schema),
                 sql.Identifier(schema),
@@ -344,6 +328,5 @@ def _serialize_pg_text_array(value: Any) -> str:
         text = str(item).replace('\\', '\\\\').replace('"', '\\"')
         escaped.append(f'"{text}"')
     return '{' + ','.join(escaped) + '}'
-
 
 

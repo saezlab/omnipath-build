@@ -7,6 +7,10 @@ from typing import Any
 
 import polars as pl
 
+from omnipath_build.gold.utils.canonicalization import (
+    ONTOLOGY_ENTITY_TYPE_LABEL,
+    ONTOLOGY_IDENTIFIER_TYPE_LABEL,
+)
 from omnipath_build.gold.utils.table_schema import RELATION_ANNOTATION_TERM_SCHEMA, empty_frame
 
 
@@ -25,14 +29,12 @@ def build_relation_annotation(
     output_dir = Path(output_dir)
     entity_relation_path = output_dir / 'entity_relation.parquet'
     entity_relation_evidence_path = output_dir / 'entity_relation_evidence.parquet'
-    ontology_term_path = output_dir / 'ontology_term.parquet'
     entity_path = output_dir / 'entity.parquet'
     relation_annotation_path = output_dir / 'relation_annotation_term.parquet'
 
     required_paths = [
         entity_relation_path,
         entity_relation_evidence_path,
-        ontology_term_path,
         entity_path,
     ]
     missing = [str(path) for path in required_paths if not path.exists()]
@@ -52,11 +54,17 @@ def build_relation_annotation(
 
     relations = pl.scan_parquet(entity_relation_path)
     relation_evidence = pl.scan_parquet(entity_relation_evidence_path)
-    ontology_terms = pl.scan_parquet(ontology_term_path).select(pl.col('term_id'))
-    entities = pl.scan_parquet(entity_path).select([
-        pl.col('entity_pk').cast(pl.Int64),
-        pl.col('canonical_identifier').cast(pl.String),
-    ])
+    term_entities = (
+        pl.scan_parquet(entity_path)
+        .filter(
+            (pl.col('entity_type') == ONTOLOGY_ENTITY_TYPE_LABEL)
+            & (pl.col('canonical_identifier_type') == ONTOLOGY_IDENTIFIER_TYPE_LABEL)
+        )
+        .select([
+            pl.col('entity_pk').cast(pl.Int64).alias('term_entity_pk'),
+            pl.col('canonical_identifier').cast(pl.String).alias('term_id'),
+        ])
+    )
 
     interaction_relation_evidence = (
         relations
@@ -103,7 +111,8 @@ def build_relation_annotation(
             ).alias('term_id')
         )
         .drop(['_raw_term', '_value', '_unit'])
-        .join(ontology_terms, on='term_id', how='inner')
+        .join(term_entities, on='term_id', how='inner')
+        .drop('term_id')
         .unique()
     )
 
@@ -138,21 +147,13 @@ def build_relation_annotation(
 
     participant_terms = (
         participant_term_candidates
-        .join(
-            entities.rename({
-                'entity_pk': 'term_entity_pk',
-                'canonical_identifier': 'term_id',
-            }),
-            on='term_entity_pk',
-            how='inner',
-        )
-        .join(ontology_terms, on='term_id', how='inner')
+        .join(term_entities.select('term_entity_pk'), on='term_entity_pk', how='inner')
         .select([
             pl.col('relation_pk'),
             pl.col('relation_evidence_pk'),
             pl.col('source'),
             pl.lit('participants').alias('scope'),
-            pl.col('term_id'),
+            pl.col('term_entity_pk'),
         ])
         .unique()
     )
@@ -160,7 +161,7 @@ def build_relation_annotation(
     combined = (
         pl.concat([interaction_terms, participant_terms], how='vertical_relaxed')
         .unique()
-        .sort(['relation_pk', 'relation_evidence_pk', 'scope', 'term_id', 'source'])
+        .sort(['relation_pk', 'relation_evidence_pk', 'scope', 'term_entity_pk', 'source'])
         .collect()
         .select(list(RELATION_ANNOTATION_TERM_SCHEMA.keys()))
     )
