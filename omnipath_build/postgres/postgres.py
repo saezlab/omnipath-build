@@ -2,19 +2,25 @@ from __future__ import annotations
 
 import io
 import json
+from typing import Any
 import logging
 from pathlib import Path
-from typing import Any
 
 import polars as pl
 import psycopg2
-import psycopg2.extensions
-import pyarrow.parquet as pq
 from psycopg2 import sql
+import pyarrow.parquet as pq
+import psycopg2.extensions
 
-from omnipath_build.postgres.bitmaps import create_bitmap_tables, populate_bitmap_tables
-from omnipath_build.postgres.indexes import create_secondary_indexes
 from omnipath_build.postgres.schema import ensure_schema
+from omnipath_build.postgres.bitmaps import (
+    create_bitmap_tables,
+    populate_bitmap_tables,
+)
+from omnipath_build.postgres.indexes import create_secondary_indexes
+from omnipath_build.postgres.materialized_views import (
+    create_ontology_terms_materialized_view,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +30,9 @@ DEFAULT_BATCH_SIZE = 200_000
 def resolve_combined_dir(output_dir: str | Path) -> Path:
     path = Path(output_dir)
     if not path.exists():
-        raise FileNotFoundError(f'Combined output directory does not exist: {path}')
+        raise FileNotFoundError(
+            f'Combined output directory does not exist: {path}'
+        )
     if not (path / 'entity.parquet').exists():
         raise FileNotFoundError(
             f'Combined output directory is missing required artifact: entity.parquet at {path}'
@@ -46,19 +54,26 @@ def load_combined_schema_to_postgres(
     logger.info('Loading combined parquet artifacts from %s', combined_dir)
 
     with psycopg2.connect(postgres_uri) as conn:
-        ensure_schema(conn, schema=schema, drop_existing=drop_existing and tables)
+        ensure_schema(
+            conn, schema=schema, drop_existing=drop_existing and tables
+        )
         if tables:
-            load_tables(conn, schema=schema, combined_dir=combined_dir, batch_size=batch_size)
+            load_tables(
+                conn,
+                schema=schema,
+                combined_dir=combined_dir,
+                batch_size=batch_size,
+            )
         if indexes:
             create_secondary_indexes(conn, schema=schema)
+        if tables or indexes:
+            create_ontology_terms_materialized_view(conn, schema=schema)
         if bitmaps:
             create_bitmap_tables(conn, schema=schema)
             populate_bitmap_tables(conn, schema=schema)
 
     logger.info('Combined PostgreSQL schema load complete')
     return 0
-
-
 
 
 def load_tables(
@@ -71,7 +86,12 @@ def load_tables(
 
     parquet_path = combined_dir / 'entity.parquet'
     if parquet_path.exists():
-        _load_entity_and_identifiers(conn, schema=schema, parquet_path=parquet_path, batch_size=batch_size)
+        _load_entity_and_identifiers(
+            conn,
+            schema=schema,
+            parquet_path=parquet_path,
+            batch_size=batch_size,
+        )
 
     _copy_parquet_to_table(
         conn,
@@ -88,7 +108,10 @@ def load_tables(
             'evidence_count',
             'sources',
         ),
-        serializers={'participant_types': _serialize_pg_text_array, 'sources': _serialize_pg_text_array},
+        serializers={
+            'participant_types': _serialize_pg_text_array,
+            'sources': _serialize_pg_text_array,
+        },
         batch_size=batch_size,
     )
     _copy_parquet_to_table(
@@ -118,7 +141,13 @@ def load_tables(
         parquet_path=combined_dir / 'relation_annotation_term.parquet',
         schema=schema,
         table='relation_annotation_term',
-        columns=('relation_pk', 'relation_evidence_pk', 'source', 'scope', 'term_entity_pk'),
+        columns=(
+            'relation_pk',
+            'relation_evidence_pk',
+            'source',
+            'scope',
+            'term_entity_pk',
+        ),
         serializers={},
         batch_size=batch_size,
     )
@@ -156,15 +185,17 @@ def load_tables(
     )
 
 
-
-
 def _load_entity_and_identifiers(
     conn: psycopg2.extensions.connection,
     schema: str,
     parquet_path: Path,
     batch_size: int,
 ) -> None:
-    logger.info('COPY entity.parquet -> %s.entity and %s.entity_identifier', schema, schema)
+    logger.info(
+        'COPY entity.parquet -> %s.entity and %s.entity_identifier',
+        schema,
+        schema,
+    )
 
     entity_columns = (
         'entity_pk',
@@ -178,7 +209,8 @@ def _load_entity_and_identifiers(
     entity_copy = sql.SQL(
         "COPY {}.entity ({}) FROM STDIN WITH (FORMAT CSV, NULL '\\N')"
     ).format(
-        sql.Identifier(schema), sql.SQL(', ').join(sql.Identifier(c) for c in entity_columns)
+        sql.Identifier(schema),
+        sql.SQL(', ').join(sql.Identifier(c) for c in entity_columns),
     )
     identifier_copy = sql.SQL(
         "COPY {}.entity_identifier (entity_pk, identifier, identifier_type) FROM STDIN WITH (FORMAT CSV, NULL '\\N')"
@@ -196,10 +228,13 @@ def _load_entity_and_identifiers(
 
             # Entity table
             ent_df = df.select(entity_columns)
-            ent_df = _apply_serializers(ent_df, {
-                'entity_attributes': _serialize_json,
-                'sources': _serialize_pg_text_array,
-            })
+            ent_df = _apply_serializers(
+                ent_df,
+                {
+                    'entity_attributes': _serialize_json,
+                    'sources': _serialize_pg_text_array,
+                },
+            )
 
             buffer = io.StringIO()
             ent_df.write_csv(buffer, null_value='\\N', include_header=False)
@@ -208,18 +243,24 @@ def _load_entity_and_identifiers(
             total_entities += ent_df.height
 
             # Identifiers: canonical + exploded additional identifiers
-            canon = df.select([
-                pl.col('entity_pk'),
-                pl.col('canonical_identifier').alias('identifier'),
-                pl.col('canonical_identifier_type').alias('identifier_type'),
-            ])
+            canon = df.select(
+                [
+                    pl.col('entity_pk'),
+                    pl.col('canonical_identifier').alias('identifier'),
+                    pl.col('canonical_identifier_type').alias(
+                        'identifier_type'
+                    ),
+                ]
+            )
             exploded = (
                 df.select(['entity_pk', 'identifiers'])
                 .explode('identifiers')
-                .with_columns([
-                    pl.col('identifiers').struct.field('identifier'),
-                    pl.col('identifiers').struct.field('identifier_type'),
-                ])
+                .with_columns(
+                    [
+                        pl.col('identifiers').struct.field('identifier'),
+                        pl.col('identifiers').struct.field('identifier_type'),
+                    ]
+                )
                 .drop('identifiers')
             )
             id_df = pl.concat([canon, exploded])
@@ -232,7 +273,9 @@ def _load_entity_and_identifiers(
 
     conn.commit()
     logger.info(
-        '  loaded %s entity row(s), %s identifier row(s)', total_entities, total_identifiers
+        '  loaded %s entity row(s), %s identifier row(s)',
+        total_entities,
+        total_identifiers,
     )
 
 
@@ -254,15 +297,25 @@ def _truncate_tables(conn: psycopg2.extensions.connection, schema: str) -> None:
     conn.commit()
 
 
-def _apply_serializers(df: pl.DataFrame, serializers: dict[str, Any]) -> pl.DataFrame:
+def _apply_serializers(
+    df: pl.DataFrame, serializers: dict[str, Any]
+) -> pl.DataFrame:
     for col, serializer in serializers.items():
         py_values = df[col].to_list()
         if serializer is _serialize_json:
-            serialized = [json.dumps(x, separators=(',', ':')) if x is not None else None for x in py_values]
+            serialized = [
+                json.dumps(x, separators=(',', ':')) if x is not None else None
+                for x in py_values
+            ]
         elif serializer is _serialize_pg_text_array:
-            serialized = [_serialize_pg_text_array(x) if x is not None else None for x in py_values]
+            serialized = [
+                _serialize_pg_text_array(x) if x is not None else None
+                for x in py_values
+            ]
         else:
-            serialized = [serializer(x) if x is not None else None for x in py_values]
+            serialized = [
+                serializer(x) if x is not None else None for x in py_values
+            ]
         df = df.with_columns(pl.Series(name=col, values=serialized))
     return df
 
@@ -282,7 +335,9 @@ def _copy_parquet_to_table(
         return
 
     logger.info('COPY %s -> %s.%s', parquet_path.name, schema, table)
-    copy_sql = sql.SQL("COPY {}.{} ({}) FROM STDIN WITH (FORMAT CSV, NULL '\\N')").format(
+    copy_sql = sql.SQL(
+        "COPY {}.{} ({}) FROM STDIN WITH (FORMAT CSV, NULL '\\N')"
+    ).format(
         sql.Identifier(schema),
         sql.Identifier(table),
         sql.SQL(', ').join(sql.Identifier(column) for column in columns),
@@ -328,5 +383,3 @@ def _serialize_pg_text_array(value: Any) -> str:
         text = str(item).replace('\\', '\\\\').replace('"', '\\"')
         escaped.append(f'"{text}"')
     return '{' + ','.join(escaped) + '}'
-
-

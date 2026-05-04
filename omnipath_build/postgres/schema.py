@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-import psycopg2.extensions
 from psycopg2 import sql
-
+import psycopg2.extensions
 
 def ensure_schema(
     conn: psycopg2.extensions.connection,
@@ -10,7 +9,11 @@ def ensure_schema(
     drop_existing: bool = False,
 ) -> None:
     with conn.cursor() as cur:
-        cur.execute(sql.SQL('CREATE SCHEMA IF NOT EXISTS {}').format(sql.Identifier(schema)))
+        cur.execute(
+            sql.SQL('CREATE SCHEMA IF NOT EXISTS {}').format(
+                sql.Identifier(schema)
+            )
+        )
         cur.execute('CREATE EXTENSION IF NOT EXISTS pg_trgm')
 
         if drop_existing:
@@ -25,6 +28,7 @@ def ensure_schema(
                 'relation_annotation_term',
                 'entity_relation_evidence',
                 'entity_relation',
+                'ontology_terms',
                 'ontology_term',
                 'entity_identifier',
                 'entity',
