@@ -151,7 +151,7 @@ def populate_bitmap_tables(
         )
         logger.info('  annotation_term_relation_bitmap: %s rows', cur.rowcount)
 
-        # 3. facet_entity_bitmap: entity_type and source facets
+        # 3. facet_entity_bitmap: entity_type, source, and ontology_id facets
         cur.execute(
             sql.SQL(
                 """
@@ -182,6 +182,28 @@ def populate_bitmap_tables(
                 CROSS JOIN LATERAL unnest(e.sources) AS source(value)
                 WHERE source.value <> ''
                 GROUP BY source.value
+                """
+            ).format(
+                sql.Identifier(schema),
+                sql.Identifier(schema),
+            )
+        )
+        cur.execute(
+            sql.SQL(
+                """
+                INSERT INTO {}.facet_entity_bitmap (facet_name, facet_value, entity_bitmap, entity_count)
+                SELECT
+                  'ontology_id',
+                  attr.value,
+                  rb_build_agg(DISTINCT e.entity_pk::integer),
+                  COUNT(DISTINCT e.entity_pk)::integer
+                FROM {}.entity e
+                CROSS JOIN LATERAL jsonb_to_recordset(COALESCE(e.entity_attributes, '[]'::jsonb))
+                  AS attr(term text, value text, unit text)
+                WHERE e.entity_type = 'OM:0012:Cv Term'
+                  AND attr.term IN ('OM:0803', 'OM:0803:Ontology Id')
+                  AND attr.value <> ''
+                GROUP BY attr.value
                 """
             ).format(
                 sql.Identifier(schema),

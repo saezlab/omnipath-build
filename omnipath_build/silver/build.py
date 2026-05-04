@@ -97,6 +97,7 @@ class ResourceFunction:
     file_extension: str | None = None
     file_stem: str | None = None
     document: object | None = None
+    ontology_id: str | None = None
 
 
 class DiscoveryError(RuntimeError):
@@ -244,11 +245,13 @@ def discover_resources(
             file_extension = None
             file_stem = None
             document = None
+            ontology_id = None
             if isinstance(dataset_obj, OntologyDataset):
                 output_kind = 'ontology'
                 file_extension = dataset_obj.extension
                 file_stem = dataset_obj.file_stem
                 document = dataset_obj.document
+                ontology_id = dataset_obj.ontology_id
             elif isinstance(dataset_obj, ArtifactDataset):
                 output_kind = 'artifact'
                 file_extension = dataset_obj.extension
@@ -265,6 +268,7 @@ def discover_resources(
                     file_extension=file_extension,
                     file_stem=file_stem,
                     document=document,
+                    ontology_id=ontology_id,
                 ),
             )
 
@@ -964,7 +968,11 @@ def _process_ontology_output(
 
     if silver_writer is not None:
         for row_number, term in enumerate(terms):
-            entity = ontology_term_to_entity(term)
+            if not resource_fn.ontology_id:
+                raise ValueError(
+                    f'Ontology resource {resource_fn.source}.{resource_fn.function_name} is missing ontology_id'
+                )
+            entity = ontology_term_to_entity(term, ontology_id=resource_fn.ontology_id)
             validate_entity_identifier_shapes(
                 entity,
                 context=f'{resource_fn.source}.{resource_fn.function_name}[{row_number}]',
