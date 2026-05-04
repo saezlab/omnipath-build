@@ -352,7 +352,7 @@ def extract_from_silver_tables(
 
     materialized_occurrences = (
         occ_class
-        .filter(~pl.col('record_class').is_in(['ignored', 'ontology_term_only', 'interaction_relation']))
+        .filter(~pl.col('record_class').is_in(['ignored', 'interaction_relation']))
         .join(identifiers_by_occ, on='occurrence_id', how='left')
         .join(direct_taxonomy, on='occurrence_id', how='left')
         .join(member_taxonomy, on='occurrence_id', how='left')

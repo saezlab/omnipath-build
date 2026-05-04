@@ -35,50 +35,6 @@ from omnipath_build.gold.utils.canonicalization import (
     ONTOLOGY_IDENTIFIER_TYPE_LABEL,
 )
 from omnipath_build.gold.utils.silver_entity_extraction import extract_from_silver_tables
-from omnipath_build.gold.utils.schema import string_or_none
-
-
-def _build_ontology_terms(ontology_term_rows: list[dict[str, Any]]) -> pl.DataFrame | None:
-    if not ontology_term_rows:
-        return None
-
-    index: dict[str, dict[str, Any]] = {}
-    for row in ontology_term_rows:
-        term_id = string_or_none(row.get('term_id'))
-        if term_id is None:
-            continue
-        existing = index.get(term_id)
-        incoming_synonyms = {str(v) for v in row.get('synonyms') or [] if v}
-        if existing is None:
-            index[term_id] = {
-                'term_id': term_id,
-                'ontology_prefix': string_or_none(row.get('ontology_prefix')),
-                'label': string_or_none(row.get('label')),
-                'definition': string_or_none(row.get('definition')),
-                'synonyms': incoming_synonyms,
-                'source': string_or_none(row.get('source')) or '',
-            }
-            continue
-        if existing['label'] is None:
-            existing['label'] = string_or_none(row.get('label'))
-        if existing['definition'] is None:
-            existing['definition'] = string_or_none(row.get('definition'))
-        existing['synonyms'].update(incoming_synonyms)
-
-    rows = []
-    for term_row in sorted(index.values(), key=lambda r: r['term_id']):
-        rows.append({
-            'term_id': term_row['term_id'],
-            'ontology_prefix': term_row['ontology_prefix'],
-            'label': term_row['label'],
-            'definition': term_row['definition'],
-            'synonyms': sorted(term_row['synonyms']) or None,
-            'source': term_row['source'],
-        })
-
-    return pl.DataFrame(rows)
-
-
 def _canonicalize_entities(
     entities: pl.DataFrame,
     source_identifiers: pl.DataFrame,
@@ -488,7 +444,7 @@ def build_entities(
     output_dir.mkdir(parents=True, exist_ok=True)
     mapping_dir = Path(mapping_dir)
 
-    # 1. Extract entities and ontology terms from silver tables.
+    # 1. Extract entities from silver tables.
     (
         temp_entities,
         temp_identifiers,
@@ -549,9 +505,9 @@ def build_entities(
         )
         occurrence_map.write_parquet(output_dir / 'entity_occurrence_map.parquet')
 
-    ontology_terms = _build_ontology_terms(ontology_term_rows)
-    if ontology_terms is not None:
-        ontology_terms.write_parquet(output_dir / 'ontology_term.parquet')
+    legacy_ontology_term_path = output_dir / 'ontology_term.parquet'
+    if legacy_ontology_term_path.exists():
+        legacy_ontology_term_path.unlink()
 
     _write_canonicalization_report(
         output_dir,
@@ -564,7 +520,7 @@ def build_entities(
     return {
         **summary,
         'entity_count': int(final_entities.height),
-        'ontology_term_count': len(ontology_term_rows),
+        'legacy_ontology_annotation_count': len(ontology_term_rows),
     }
 
 

@@ -48,6 +48,7 @@ TEST_MODE_RECORD_LIMITS_BY_SOURCE: dict[str, int] = {
     'hmdb': 100,
     'intact': 1000,
     'stitch': 1000,
+    'chembl': 1000,
 }
 
 _PROGRESS_PREFIX = '__OMNIPATH_PROGRESS__'
@@ -439,7 +440,7 @@ def process_resource_function(
             )
         if potential_output.exists() and (
             resource_fn.function_name == 'resource'
-            or resource_fn.output_kind in {'ontology', 'artifact'}
+            or resource_fn.output_kind == 'artifact'
         ):
             print(
                 f'[{resource_fn.source}.{resource_fn.function_name}] skipping (file exists: {potential_output})'
@@ -461,6 +462,7 @@ def process_resource_function(
             path_manager,
             records,
             dry_run=dry_run,
+            silver_writer=silver_writer,
         )
 
     # Peek at first record to detect multi-output
@@ -937,7 +939,9 @@ def _process_ontology_output(
     records: Iterable[OntologyTerm],
     *,
     dry_run: bool,
+    silver_writer: SilverTableWriter | None = None,
 ) -> Optional[Path]:
+    from pypath.inputs_v2.base import ontology_term_to_entity
     from pypath.inputs_v2.ontology_serializers import format_obo
 
     terms = [term for term in records if term is not None]
@@ -957,6 +961,23 @@ def _process_ontology_output(
     output_file.parent.mkdir(parents=True, exist_ok=True)
     content = format_obo(resource_fn.document, terms)
     output_file.write_text(content, encoding='utf-8')
+
+    if silver_writer is not None:
+        for row_number, term in enumerate(terms):
+            entity = ontology_term_to_entity(term)
+            validate_entity_identifier_shapes(
+                entity,
+                context=f'{resource_fn.source}.{resource_fn.function_name}[{row_number}]',
+            )
+            silver_writer.write_entity(
+                entity,
+                dataset=resource_fn.function_name,
+                row_number=row_number,
+            )
+        print(
+            f'[{resource_fn.source}.{resource_fn.function_name}] wrote {len(terms):,} ontology entities to silver tables'
+        )
+
     print(f'[{resource_fn.source}.{resource_fn.function_name}] wrote {len(terms):,} ontology terms to {output_file}')
     _emit_progress(source=resource_fn.source, function=resource_fn.function_name, event='done', records=len(terms))
     return output_file
@@ -1050,7 +1071,7 @@ def run_silver_loader(
     try:
         for fn in selected_functions:
             writer = None
-            if fn.output_kind == 'entity' and fn.function_name != 'resource' and not dry_run:
+            if fn.output_kind in {'entity', 'ontology'} and fn.function_name != 'resource' and not dry_run:
                 writer = silver_writers.get(fn.source)
                 if writer is None:
                     source_dir = path_manager.source_path(fn.source)

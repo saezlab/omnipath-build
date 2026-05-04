@@ -10,6 +10,7 @@ from typing import Any
 import polars as pl
 import pyarrow.parquet as pq
 
+from omnipath_build.gold.utils.canonicalization import ONTOLOGY_ENTITY_TYPE_LABEL
 from omnipath_build.gold.utils.cv_terms import format_cv_term
 from omnipath_build.silver.build import discover_resources
 from pypath.inputs_v2.base import Resource
@@ -153,6 +154,18 @@ def _identifier_count(source_dir: Path | None) -> int:
     return int(entity_frame.height + nested_identifier_count)
 
 
+def _ontology_entity_count(source_dir: Path | None) -> int:
+    if source_dir is None:
+        return 0
+    path = source_dir / 'entities' / 'entity.parquet'
+    if not path.exists():
+        return 0
+    frame = pl.read_parquet(path, columns=['entity_type'])
+    if frame.is_empty():
+        return 0
+    return int(frame.filter(pl.col('entity_type') == ONTOLOGY_ENTITY_TYPE_LABEL).height)
+
+
 def _relation_category_counts(source_dir: Path | None) -> dict[str, int]:
     if source_dir is None:
         return {}
@@ -194,7 +207,7 @@ def _resource_row(*, source: str, resource: Resource, gold_root: Path) -> dict[s
     interaction_count = int(relation_category_counts.get('interaction', 0))
     membership_count = int(relation_category_counts.get('membership', 0))
     annotation_count = int(relation_category_counts.get('annotation', 0))
-    ontology_term_count = _count_file(source_dir, 'entities/ontology_term.parquet')
+    ontology_term_count = _ontology_entity_count(source_dir)
 
     return {
         'resource_id': source,

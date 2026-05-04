@@ -72,14 +72,18 @@ VALIDATORS: dict[str, ValidationFn] = {
     str(IdentifierNamespaceCv.ZINC): _regex(r'^ZINC\d+$', flags=re.IGNORECASE),
     str(IdentifierNamespaceCv.REACTOME_STABLE_ID): _regex(r'^R-[A-Z]{3}-\d+(?:-\d+)?$'),
     str(IdentifierNamespaceCv.REACTOME_ID): _regex(r'^\d+$'),
-    str(IdentifierNamespaceCv.CV_TERM_ACCESSION): _regex(r'^[A-Za-z][A-Za-z0-9_]*:[^\s]+$'),
+    # CV term accessions are an umbrella identifier namespace used for many
+    # ontology-native IDs. Most OBO IDs are CURIE-like (GO:..., HP:..., MI:...),
+    # but pathway ontologies use native compact accessions such as WP1 or
+    # R-HSA-199420. Require a single non-empty token, but do not require a colon.
+    str(IdentifierNamespaceCv.CV_TERM_ACCESSION): _regex(r'^\S+$'),
     str(IdentifierNamespaceCv.NCBI_TAX_ID): _regex(r'^-?\d+$'),
     str(IdentifierNamespaceCv.SMILES): _non_empty,
     str(IdentifierNamespaceCv.STANDARD_INCHI): lambda value: value.startswith('InChI='),
     str(IdentifierNamespaceCv.STANDARD_INCHI_KEY): lambda value: bool(INCHI_KEY_RE.fullmatch(value)),
     str(IdentifierNamespaceCv.PUBMED): _regex(r'^\d+$'),
     str(IdentifierNamespaceCv.PUBMED_CENTRAL): _regex(r'^(?:PMC)?\d+$'),
-    str(IdentifierNamespaceCv.DOI): _regex(r'^10\.\S+$'),
+    str(IdentifierNamespaceCv.DOI): _regex(r'^(?:(?:https?://(?:dx\.)?doi\.org/)|doi:)?10\.\S+$', flags=re.IGNORECASE),
     str(IdentifierNamespaceCv.PATENT_NUMBER): _non_empty,
     str(IdentifierNamespaceCv.PHENOL_EXPLORER): _regex(r'^\d+$'),
     str(IdentifierNamespaceCv.FOODB): _regex(r'^(?:FOOD|FDB|FOODB)\d+$'),

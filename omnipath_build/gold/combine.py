@@ -10,11 +10,6 @@ import polars as pl
 
 from omnipath_build.gold.build_relation_annotation import build_relation_annotation
 from omnipath_build.gold.build_resources import build_resources_parquet
-from omnipath_build.gold.utils.canonicalization import (
-    ONTOLOGY_ENTITY_TYPE_LABEL,
-    ONTOLOGY_IDENTIFIER_TYPE_LABEL,
-)
-from omnipath_build.gold.utils.cv_terms import format_cv_term
 from omnipath_build.gold.utils.table_schema import (
     ATTRIBUTE_STRUCT,
     EMPTY_IDENTIFIERS,
@@ -22,12 +17,10 @@ from omnipath_build.gold.utils.table_schema import (
     ENTITY_RELATION_SCHEMA,
     ENTITY_SCHEMA,
     IDENTIFIER_STRUCT,
-    ONTOLOGY_TERM_SCHEMA,
     aggregate_unique_attribute_lists,
     aggregate_unique_string_lists,
     empty_frame,
 )
-from pypath.internals.cv_terms import IdentifierNamespaceCv, OntologyAnnotationCv
 
 
 @dataclass(frozen=True)
@@ -62,131 +55,8 @@ def _scan_source_artifact(
     return pl.scan_parquet(path).select(columns)
 
 
-def _empty_ontology_terms() -> pl.DataFrame:
-    return empty_frame(ONTOLOGY_TERM_SCHEMA)
-
-
-def _read_ontology_terms(path: Path) -> pl.DataFrame | None:
-    if not path.exists():
-        return None
-    return pl.read_parquet(path).select(list(ONTOLOGY_TERM_SCHEMA.keys()))
-
-
-def _build_ontology_terms(
-    source_dirs: list[GoldSourceDir],
-    output_dir: Path,
-) -> pl.DataFrame:
-    frames: list[pl.DataFrame] = []
-    combined_path = output_dir / 'ontology_term.parquet'
-    combined_terms = _read_ontology_terms(combined_path)
-    if combined_terms is not None:
-        frames.append(combined_terms)
-
-    for source_dir in source_dirs:
-        source_terms = _read_ontology_terms(source_dir.path / 'entities' / 'ontology_term.parquet')
-        if source_terms is not None:
-            frames.append(source_terms)
-
-    if not frames:
-        return _empty_ontology_terms()
-
-    return (
-        pl.concat(frames, how='vertical_relaxed')
-        .group_by('term_id')
-        .agg([
-            pl.col('ontology_prefix').drop_nulls().first().alias('ontology_prefix'),
-            pl.col('label').drop_nulls().first().alias('label'),
-            pl.col('definition').drop_nulls().first().alias('definition'),
-            aggregate_unique_string_lists('synonyms'),
-            aggregate_unique_string_lists('sources'),
-        ])
-        .select(list(ONTOLOGY_TERM_SCHEMA.keys()))
-        .sort('term_id')
-    )
-
-
-def _ontology_entity_rows(ontology_terms: pl.DataFrame) -> pl.DataFrame:
-    if ontology_terms.is_empty():
-        return pl.DataFrame({
-            '_source': pl.Series([], dtype=pl.String),
-            '_local_entity_pk': pl.Series([], dtype=pl.Int64),
-            'canonical_identifier': pl.Series([], dtype=pl.String),
-            'canonical_identifier_type': pl.Series([], dtype=pl.String),
-            'identifiers': pl.Series([], dtype=pl.List(IDENTIFIER_STRUCT)),
-            'entity_type': pl.Series([], dtype=pl.String),
-            'taxonomy_id': pl.Series([], dtype=pl.String),
-            'entity_attributes': pl.Series([], dtype=ATTRIBUTE_STRUCT),
-            'sources': pl.Series([], dtype=pl.List(pl.String)),
-        })
-
-    name_type = format_cv_term(str(IdentifierNamespaceCv.NAME))
-    synonym_type = format_cv_term(str(IdentifierNamespaceCv.SYNONYM))
-    definition_term = format_cv_term(str(OntologyAnnotationCv.DEFINITION))
-    obsolete_term = format_cv_term(str(OntologyAnnotationCv.IS_OBSOLETE))
-
-    rows: list[dict[str, Any]] = []
-    for term in ontology_terms.to_dicts():
-        term_id = term.get('term_id')
-        if not term_id:
-            continue
-        identifiers = [
-            {
-                'identifier': str(term_id),
-                'identifier_type': ONTOLOGY_IDENTIFIER_TYPE_LABEL,
-            },
-        ]
-        label = term.get('label')
-        if label:
-            identifiers.append({'identifier': str(label), 'identifier_type': name_type})
-        for synonym in term.get('synonyms') or []:
-            if synonym:
-                identifiers.append({'identifier': str(synonym), 'identifier_type': synonym_type})
-
-        attributes = []
-        if label:
-            attributes.append({'term': name_type, 'value': str(label), 'unit': None})
-        if term.get('definition'):
-            attributes.append({'term': definition_term, 'value': str(term['definition']), 'unit': None})
-        for synonym in term.get('synonyms') or []:
-            if synonym:
-                attributes.append({'term': synonym_type, 'value': str(synonym), 'unit': None})
-        if term.get('ontology_prefix'):
-            attributes.append({'term': 'ontology_prefix', 'value': str(term['ontology_prefix']).lower(), 'unit': None})
-        if str(term_id).endswith(':obsolete'):
-            attributes.append({'term': obsolete_term, 'value': 'true', 'unit': None})
-
-        sources = term.get('sources') or []
-        if not sources and term.get('ontology_prefix'):
-            sources = [str(term['ontology_prefix']).lower()]
-
-        rows.append({
-            '_source': None,
-            '_local_entity_pk': None,
-            'canonical_identifier': str(term_id),
-            'canonical_identifier_type': ONTOLOGY_IDENTIFIER_TYPE_LABEL,
-            'identifiers': identifiers,
-            'entity_type': ONTOLOGY_ENTITY_TYPE_LABEL,
-            'taxonomy_id': None,
-            'entity_attributes': attributes,
-            'sources': sorted({str(source) for source in sources if source}),
-        })
-
-    return pl.DataFrame(rows).select([
-        '_source',
-        '_local_entity_pk',
-        'canonical_identifier',
-        'canonical_identifier_type',
-        'identifiers',
-        'entity_type',
-        'taxonomy_id',
-        'entity_attributes',
-        'sources',
-    ])
-
-
 def _build_entity(
     source_dirs: list[GoldSourceDir],
-    ontology_terms: pl.DataFrame,
 ) -> tuple[pl.DataFrame, pl.DataFrame]:
     frames: list[pl.LazyFrame] = []
     for source_dir in source_dirs:
@@ -212,9 +82,6 @@ def _build_entity(
         })
 
     source_entities = pl.concat(frames, how='vertical_relaxed').collect()
-    ontology_entities = _ontology_entity_rows(ontology_terms)
-    if not ontology_entities.is_empty():
-        source_entities = pl.concat([source_entities, ontology_entities], how='vertical_relaxed')
     exploded_identifiers = (
         source_entities
         .select([
@@ -479,8 +346,7 @@ def build_combined_parquets(
 
     source_dirs = discover_gold_source_dirs(gold_root)
 
-    ontology_terms = _build_ontology_terms(source_dirs, output_dir)
-    entity_output, entity_pk_map = _build_entity(source_dirs, ontology_terms)
+    entity_output, entity_pk_map = _build_entity(source_dirs)
     relation_output, relation_pk_map = _build_relation(source_dirs, entity_pk_map, entity_output)
 
     outputs = {

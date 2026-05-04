@@ -7,7 +7,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from omnipath_build.gold.build_ontology_terms import build_ontology_terms
 from omnipath_build.gold.combine import build_combined_parquets
 from omnipath_build.pipeline.paths import (
     PipelinePaths,
@@ -127,9 +126,7 @@ def build_task_graph(
             tasks.append(TaskDef(gold_key, 'gold', source, tuple(deps)))
 
     if build_sources and combine:
-        tasks.append(TaskDef('ontology_terms', 'ontology_terms', None, tuple(silver_keys)))
-        combine_deps = [*gold_keys, 'ontology_terms']
-        tasks.append(TaskDef('combine', 'combine', None, tuple(combine_deps)))
+        tasks.append(TaskDef('combine', 'combine', None, tuple(gold_keys)))
         if postgres:
             tasks.append(TaskDef('postgres', 'postgres', None, ('combine',)))
 
@@ -232,8 +229,6 @@ def _skipped_task_result(task: TaskDef, reason: str, failed_dependencies: list[s
 
 
 def _can_run_with_failed_dependencies(task: TaskDef, failed_dependencies: list[str]) -> bool:
-    if task.task_type == 'ontology_terms':
-        return all(dep.startswith('silver:') for dep in failed_dependencies)
     if task.task_type == 'combine':
         return all(dep.startswith('gold:') for dep in failed_dependencies)
     return False
@@ -318,20 +313,6 @@ def _execute_task(
             source=task.source,
             status='executed',
             output_dir=str(output_dir),
-            metadata=metadata,
-        )
-
-    if task.task_type == 'ontology_terms':
-        metadata = build_ontology_terms(
-            source_root=paths.silver_root,
-            output_dir=combined_output_dir,
-        )
-        return TaskResult(
-            task_key=task.key,
-            task_type=task.task_type,
-            source=None,
-            status='executed',
-            output_dir=str(combined_output_dir),
             metadata=metadata,
         )
 
@@ -475,7 +456,7 @@ def _run_dag(
 
 def _has_gold_buildable_dataset(functions: list[ResourceFunction]) -> bool:
     return any(
-        fn.function_name != 'resource' and fn.output_kind == 'entity'
+        fn.function_name != 'resource' and fn.output_kind in {'entity', 'ontology'}
         for fn in functions
     )
 
