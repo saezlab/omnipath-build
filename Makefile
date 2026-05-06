@@ -50,27 +50,31 @@ silver-list:
 	@uv run python -m omnipath_build.cli.commands silver --list --inputs-package $(INPUTS_PACKAGE)
 
 gold-mappings:
-	@uv run python -m omnipath_build.pipeline.cli mappings \
+	@uv run python $(PIPELINE_SCRIPT) \
 		--data-root $(DATA_ROOT) \
 		--jobs 1 \
+		--no-build-sources \
+		--no-combine \
 		$(if $(RESOLVER_MAPPING_DIR),--resolver-mapping-dir $(RESOLVER_MAPPING_DIR))
 
 gold-source:
-	@uv run python -m omnipath_build.pipeline.cli source $(SOURCES) \
+	@uv run python $(PIPELINE_SCRIPT) $(SOURCES) \
 		--data-root $(DATA_ROOT) \
 		--inputs-package $(INPUTS_PACKAGE) \
 		--batch-size $(BATCH_SIZE) \
 		--jobs $(JOBS) \
+		--no-combine \
 		$(if $(TEST_MODE),--silver-test-mode) \
 		$(if $(OVERWRITE),--overwrite $(OVERWRITE)) \
 		$(if $(RESOLVER_MAPPING_DIR),--resolver-mapping-dir $(RESOLVER_MAPPING_DIR))
 
 gold-all:
-	@uv run python -m omnipath_build.pipeline.cli all $(SOURCES) \
+	@uv run python $(PIPELINE_SCRIPT) $(SOURCES) \
 		--data-root $(DATA_ROOT) \
 		--inputs-package $(INPUTS_PACKAGE) \
 		--batch-size $(BATCH_SIZE) \
 		--jobs $(JOBS) \
+		--no-combine \
 		$(if $(TEST_MODE),--silver-test-mode) \
 		$(if $(OVERWRITE),--overwrite $(OVERWRITE)) \
 		$(if $(RESOLVER_MAPPING_DIR),--resolver-mapping-dir $(RESOLVER_MAPPING_DIR))

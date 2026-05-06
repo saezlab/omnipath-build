@@ -150,7 +150,10 @@ def create_ontology_terms_materialized_view(
                   SELECT
                     te.entity_pk AS term_entity_pk,
                     te.canonical_identifier AS term_id,
-                    lower(split_part(te.canonical_identifier, ':', 1)) AS ontology_prefix,
+                    CASE
+                      WHEN te.canonical_identifier ~* '^KW-[0-9]+$' THEN 'kw'
+                      ELSE lower(split_part(te.canonical_identifier, ':', 1))
+                    END AS ontology_prefix,
                     COALESCE(iv.name, av.name, te.canonical_identifier) AS label,
                     av.definition,
                     av.ontology_id,

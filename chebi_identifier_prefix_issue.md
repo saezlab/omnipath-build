@@ -66,13 +66,12 @@ elif 'chebi' in db:
 
 No normalization is applied there or later in `pypath/pypath/inputs_v2/reactome.py`, so Reactome preserves whatever form appears in the source xref: sometimes bare numeric, sometimes `CHEBI:*`.
 
-## Proposed fix
+## Fix implemented
 
-Normalize all ChEBI identifiers to `CHEBI:<digits>` at input-module level before writing silver data.
+Normalize all ChEBI identifiers to bare numeric accessions (`<digits>`) at input-module level before writing silver data.
 
-Immediate candidates:
+Changes:
 
-- Add `transform='chebi'` to HMDB ChEBI field.
-- Add `transform='chebi'` to LIPID MAPS ChEBI field.
-- Add a shared ChEBI normalizer for Reactome xrefs, or apply it in Reactome schema fields.
-- Check similar extraction-only ChEBI fields, e.g. BindingDB, for the same issue.
+- ChEBI fields use regex extraction to keep only the numeric accession.
+- HMDB, LIPID MAPS, SwissLipids, ChEMBL, BindingDB, ChEBI, FooDB, Phenol-Explorer, WikiPathways, Reactome, IntAct, and SIGNOR now emit bare numeric ChEBI accessions for `IdentifierNamespaceCv.CHEBI` identifiers.
+- ChEBI ontology term IDs remain CURIE-style (`CHEBI:<digits>`) where they are ontology/CV term accessions rather than ChEBI entity identifiers.
