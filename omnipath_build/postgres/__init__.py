@@ -11,12 +11,14 @@ from omnipath_build.postgres.postgres import (
     load_combined_schema_to_postgres,
 )
 from omnipath_build.postgres.materialized_views import (
+    create_entity_relation_counts_materialized_view,
     create_ontology_terms_materialized_view,
 )
 
 __all__ = [
     'DEFAULT_BATCH_SIZE',
     'create_bitmap_tables',
+    'create_entity_relation_counts_materialized_view',
     'create_ontology_terms_materialized_view',
     'create_secondary_indexes',
     'ensure_schema',

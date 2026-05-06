@@ -16,6 +16,53 @@ ONTOLOGY_ID_SHORT_TERM = 'OM:0803'
 ONTOLOGY_ID_TERM = 'OM:0803:Ontology Id'
 
 
+def create_entity_relation_counts_materialized_view(
+    conn: psycopg2.extensions.connection,
+    schema: str,
+) -> None:
+    """Create precomputed per-entity relation counts for search relevance."""
+    logger.info(
+        'Creating entity_relation_counts materialized view in schema %s', schema
+    )
+
+    with conn.cursor() as cur:
+        cur.execute(
+            sql.SQL(
+                'DROP MATERIALIZED VIEW IF EXISTS {}.entity_relation_counts'
+            ).format(sql.Identifier(schema))
+        )
+        cur.execute(
+            sql.SQL(
+                """
+                CREATE MATERIALIZED VIEW {}.entity_relation_counts AS
+                SELECT entity_pk, COUNT(DISTINCT relation_pk)::bigint AS relation_count
+                FROM (
+                  SELECT subject_entity_pk AS entity_pk, relation_pk FROM {}.entity_relation
+                  UNION ALL
+                  SELECT object_entity_pk AS entity_pk, relation_pk FROM {}.entity_relation
+                ) relation_endpoints
+                GROUP BY entity_pk
+                """
+            ).format(
+                sql.Identifier(schema),
+                sql.Identifier(schema),
+                sql.Identifier(schema),
+            )
+        )
+        cur.execute(
+            sql.SQL(
+                'CREATE UNIQUE INDEX entity_relation_counts_pk_idx ON {}.entity_relation_counts (entity_pk)'
+            ).format(sql.Identifier(schema))
+        )
+        cur.execute(
+            sql.SQL(
+                'CREATE INDEX entity_relation_counts_count_idx ON {}.entity_relation_counts (relation_count DESC, entity_pk ASC)'
+            ).format(sql.Identifier(schema))
+        )
+
+    conn.commit()
+
+
 def create_ontology_terms_materialized_view(
     conn: psycopg2.extensions.connection,
     schema: str,

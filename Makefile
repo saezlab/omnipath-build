@@ -88,13 +88,15 @@ postgres:
 	if [ "$(STEP)" = "all" ]; then \
 		STEP_ARGS=""; \
 	elif [ "$(STEP)" = "tables" ]; then \
-		STEP_ARGS="--no-indexes --no-bitmaps"; \
+		STEP_ARGS="--no-indexes --no-bitmaps --no-views"; \
 	elif [ "$(STEP)" = "indexes" ]; then \
-		STEP_ARGS="--no-tables --no-bitmaps"; \
+		STEP_ARGS="--no-tables --no-bitmaps --no-views"; \
 	elif [ "$(STEP)" = "bitmaps" ]; then \
-		STEP_ARGS="--no-tables --no-indexes"; \
+		STEP_ARGS="--no-tables --no-indexes --no-views"; \
+	elif [ "$(STEP)" = "views" ]; then \
+		STEP_ARGS="--no-tables --no-indexes --no-bitmaps"; \
 	else \
-		echo "Unknown STEP=$(STEP). Supported values: all, tables, indexes, bitmaps"; \
+		echo "Unknown STEP=$(STEP). Supported values: all, tables, indexes, bitmaps, views"; \
 		exit 1; \
 	fi; \
 	uv run python -m omnipath_build.cli.commands postgres \

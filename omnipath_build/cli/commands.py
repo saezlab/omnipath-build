@@ -127,6 +127,7 @@ def _handle_postgres(args: argparse.Namespace) -> int:
             tables=args.tables,
             indexes=args.indexes,
             bitmaps=args.bitmaps,
+            views=args.views,
         )
     except Exception as exc:  # noqa: BLE001
         print(f'Unexpected error: {exc}', file=sys.stderr)
@@ -296,6 +297,12 @@ def _build_parser() -> argparse.ArgumentParser:
         action=argparse.BooleanOptionalAction,
         default=True,
         help='Create and populate bitmap tables (default: true)',
+    )
+    postgres_parser.add_argument(
+        '--views',
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help='Create materialized views (default: true)',
     )
     postgres_parser.set_defaults(handler=_handle_postgres)
 

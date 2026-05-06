@@ -151,7 +151,7 @@ def populate_bitmap_tables(
         )
         logger.info('  annotation_term_relation_bitmap: %s rows', cur.rowcount)
 
-        # 3. facet_entity_bitmap: entity_type, source, and ontology_id facets
+        # 3. facet_entity_bitmap: entity_type, taxonomy_id, source, and ontology_id facets
         cur.execute(
             sql.SQL(
                 """
@@ -167,6 +167,20 @@ def populate_bitmap_tables(
                 FROM {}.entity
                 WHERE entity_type IS NOT NULL
                 GROUP BY entity_type
+                """
+            ).format(
+                sql.Identifier(schema),
+                sql.Identifier(schema),
+            )
+        )
+        cur.execute(
+            sql.SQL(
+                """
+                INSERT INTO {}.facet_entity_bitmap (facet_name, facet_value, entity_bitmap, entity_count)
+                SELECT 'taxonomy_id', taxonomy_id, rb_build_agg(entity_pk::integer), COUNT(*)::integer
+                FROM {}.entity
+                WHERE taxonomy_id IS NOT NULL AND taxonomy_id <> ''
+                GROUP BY taxonomy_id
                 """
             ).format(
                 sql.Identifier(schema),

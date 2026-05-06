@@ -19,6 +19,7 @@ from omnipath_build.postgres.bitmaps import (
 )
 from omnipath_build.postgres.indexes import create_secondary_indexes
 from omnipath_build.postgres.materialized_views import (
+    create_entity_relation_counts_materialized_view,
     create_ontology_terms_materialized_view,
 )
 
@@ -49,6 +50,7 @@ def load_combined_schema_to_postgres(
     tables: bool = True,
     indexes: bool = True,
     bitmaps: bool = True,
+    views: bool = True,
 ) -> int:
     combined_dir = resolve_combined_dir(output_dir)
     logger.info('Loading combined parquet artifacts from %s', combined_dir)
@@ -66,7 +68,8 @@ def load_combined_schema_to_postgres(
             )
         if indexes:
             create_secondary_indexes(conn, schema=schema)
-        if tables or indexes:
+        if views:
+            create_entity_relation_counts_materialized_view(conn, schema=schema)
             create_ontology_terms_materialized_view(conn, schema=schema)
         if bitmaps:
             create_bitmap_tables(conn, schema=schema)

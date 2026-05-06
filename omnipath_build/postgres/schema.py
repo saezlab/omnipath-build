@@ -25,6 +25,7 @@ def ensure_schema(
             }
             for object_name in (
                 'resources',
+                'entity_relation_counts',
                 'relation_annotation_term',
                 'entity_relation_evidence',
                 'entity_relation',
