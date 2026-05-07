@@ -24,6 +24,7 @@ TEST_MODE_REFERENCE_MAPPING_SOURCES = [
 ]
 
 INPUTS_MODULE_HASH_FILE = 'inputs_module_hash.json'
+GOLD_SUCCESS_FILE = '_SUCCESS.json'
 
 
 def hash_inputs_module(inputs_package: str, source: str) -> dict[str, Any]:
@@ -72,17 +73,23 @@ def hash_inputs_module(inputs_package: str, source: str) -> dict[str, Any]:
 
 
 def write_inputs_module_hash(output_dir: Path, hash_info: dict[str, Any]) -> None:
-    (output_dir / INPUTS_MODULE_HASH_FILE).write_text(
+    path = output_dir / INPUTS_MODULE_HASH_FILE
+    tmp_path = path.with_suffix(path.suffix + '.tmp')
+    tmp_path.write_text(
         json.dumps(hash_info, indent=2, sort_keys=True) + '\n',
         encoding='utf-8',
     )
+    tmp_path.replace(path)
 
 
 def read_inputs_module_hash(output_dir: Path) -> dict[str, Any] | None:
     path = output_dir / INPUTS_MODULE_HASH_FILE
     if not path.exists():
         return None
-    return json.loads(path.read_text(encoding='utf-8'))
+    try:
+        return json.loads(path.read_text(encoding='utf-8'))
+    except json.JSONDecodeError:
+        return None
 
 
 def resolver_mappings_ready(mapping_dir: Path) -> bool:
@@ -177,10 +184,22 @@ def silver_has_data(silver_dir: Path) -> bool:
     )
 
 
+def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_suffix(path.suffix + '.tmp')
+    tmp_path.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + '\n',
+        encoding='utf-8',
+    )
+    tmp_path.replace(path)
+
+
 def gold_output_ready(output_dir: Path) -> bool:
     entities_dir = output_dir / 'entities'
+    success_path = output_dir / GOLD_SUCCESS_FILE
     return (
-        (entities_dir / 'entity.parquet').exists()
+        success_path.exists()
+        and (entities_dir / 'entity.parquet').exists()
         and (entities_dir / 'entity_map.parquet').exists()
     )
 
@@ -193,6 +212,9 @@ def build_gold_source(
     mapping_dir: Path,
 ) -> dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
+    success_path = output_dir / GOLD_SUCCESS_FILE
+    if success_path.exists():
+        success_path.unlink()
     entities_dir = output_dir / 'entities'
     relations_dir = output_dir / 'relations'
 
@@ -239,7 +261,7 @@ def build_gold_source(
     )
     archive_path = build_resource_archive(output_dir, source)
 
-    return {
+    metadata = {
         'output_dir': str(output_dir),
         'entities_dir': str(entities_dir),
         'relations_dir': str(relations_dir),
@@ -247,3 +269,5 @@ def build_gold_source(
         'entity_summary': entity_summary,
         'relation_summary': relation_summary,
     }
+    _write_json_atomic(success_path, metadata)
+    return metadata

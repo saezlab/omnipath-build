@@ -144,6 +144,56 @@ def _normalize_overwrite(overwrite: str | None) -> frozenset[str]:
     raise ValueError(f'Unsupported overwrite mode: {overwrite}')
 
 
+def _numeric_silver_versions_desc(paths: PipelinePaths, source: str) -> list[str]:
+    source_dir = source_stage_dir(paths.silver_root, source)
+    if not source_dir.exists():
+        return []
+
+    versions: list[int] = []
+    for child in source_dir.iterdir():
+        if not child.is_dir():
+            continue
+        try:
+            versions.append(int(child.name))
+        except ValueError:
+            continue
+    return [str(version) for version in sorted(versions, reverse=True)]
+
+
+def _matching_completed_silver_version(
+    *,
+    paths: PipelinePaths,
+    source: str,
+    current_hash: dict[str, Any],
+) -> tuple[str, Path] | None:
+    """Find the newest completed silver version matching the current inputs module.
+
+    The latest pointer is a convenience, not the source of truth. A run can be
+    interrupted after a source finishes but before the final report/pointer update
+    phase, so recovery scans completed numeric versions and repairs/reuses them.
+    The inputs hash is written last by ``build_silver_source`` and acts as the
+    completion marker.
+    """
+    latest_version = read_latest_pointer(paths.silver_root, source)
+    candidate_versions: list[str] = []
+    if latest_version is not None:
+        candidate_versions.append(latest_version)
+    for version in _numeric_silver_versions_desc(paths, source):
+        if version not in candidate_versions:
+            candidate_versions.append(version)
+
+    for version in candidate_versions:
+        output_dir = source_version_dir(paths.silver_root, source, version)
+        if not output_dir.exists():
+            continue
+        stored_hash = read_inputs_module_hash(output_dir)
+        if stored_hash is None:
+            continue
+        if stored_hash.get('sha256') == current_hash.get('sha256'):
+            return version, output_dir
+    return None
+
+
 def _reuse_existing_result(
     task: TaskDef,
     *,
@@ -170,16 +220,21 @@ def _reuse_existing_result(
         )
 
     if task.task_type == 'silver' and task.source is not None:
-        version = read_latest_pointer(paths.silver_root, task.source)
-        if version is None:
-            return None
-        output_dir = source_version_dir(paths.silver_root, task.source, version)
-        if not output_dir.exists():
-            return None
-        stored_hash = read_inputs_module_hash(output_dir)
         current_hash = hash_inputs_module(inputs_package, task.source)
-        if stored_hash is None or stored_hash.get('sha256') != current_hash.get('sha256'):
+        reusable = _matching_completed_silver_version(
+            paths=paths,
+            source=task.source,
+            current_hash=current_hash,
+        )
+        if reusable is None:
             return None
+        version, output_dir = reusable
+        update_latest_pointer(
+            paths.silver_root,
+            task.source,
+            version,
+            {'inputs_module_hash': current_hash},
+        )
         return TaskResult(
             task_key=task.key,
             task_type=task.task_type,
@@ -298,6 +353,11 @@ def _execute_task(
             test_mode=test_mode,
         )
         metadata = {**metadata, 'version': version}
+        pointer_metadata = {}
+        inputs_hash = metadata.get('inputs_module_hash')
+        if inputs_hash:
+            pointer_metadata['inputs_module_hash'] = inputs_hash
+        update_latest_pointer(paths.silver_root, task.source, version, pointer_metadata)
         return TaskResult(
             task_key=task.key,
             task_type=task.task_type,

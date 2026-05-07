@@ -50,14 +50,19 @@ def update_latest_pointer(
     payload = {'version': version}
     if metadata:
         payload.update(metadata)
-    pointer.write_text(json.dumps(payload, indent=2) + '\n', encoding='utf-8')
+    tmp_pointer = pointer.with_suffix(pointer.suffix + '.tmp')
+    tmp_pointer.write_text(json.dumps(payload, indent=2) + '\n', encoding='utf-8')
+    tmp_pointer.replace(pointer)
 
 
 def read_latest_pointer(stage_root: Path, source: str) -> str | None:
     pointer = stable_pointer_path(stage_root, source)
     if not pointer.exists():
         return None
-    payload = json.loads(pointer.read_text(encoding='utf-8'))
+    try:
+        payload = json.loads(pointer.read_text(encoding='utf-8'))
+    except json.JSONDecodeError:
+        return None
     version = payload.get('version')
     return str(version) if version else None
 
