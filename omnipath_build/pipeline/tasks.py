@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import json
 import shutil
-import tempfile
-from pathlib import Path
 from typing import Any
+import hashlib
+from pathlib import Path
+import tempfile
+import importlib.util
 
+from omnipath_build.silver.build import run_silver_loader
 from id_resolver.build.mapping_tables import (
     CHEMICAL_SOURCES,
     run_sources as materialize_resolver_tables,
@@ -13,13 +16,73 @@ from id_resolver.build.mapping_tables import (
 from omnipath_build.gold.build_entities import build_entities
 from omnipath_build.gold.build_relations import build_relations
 from omnipath_build.pipeline.resource_archives import build_resource_archive
-from omnipath_build.silver.build import run_silver_loader
 
 REFERENCE_MAPPING_SOURCES = ['uniprot', *CHEMICAL_SOURCES]
 TEST_MODE_REFERENCE_MAPPING_SOURCES = [
     'uniprot',
     'chebi',
 ]
+
+INPUTS_MODULE_HASH_FILE = 'inputs_module_hash.json'
+
+
+def hash_inputs_module(inputs_package: str, source: str) -> dict[str, Any]:
+    """Hash the Python files for the inputs_v2 module backing a source."""
+    module_name = f'{inputs_package}.{source}'
+    spec = importlib.util.find_spec(module_name)
+    if spec is None:
+        raise ModuleNotFoundError(f'Unable to find inputs module {module_name}')
+
+    files: list[Path] = []
+    if spec.origin and spec.origin not in {'built-in', 'namespace'}:
+        origin = Path(spec.origin)
+        if origin.exists() and origin.suffix == '.py':
+            files.append(origin)
+
+    for location in spec.submodule_search_locations or []:
+        root = Path(location)
+        if root.exists():
+            files.extend(path for path in root.rglob('*.py') if path.is_file())
+
+    files = sorted(set(files))
+    if not files:
+        raise FileNotFoundError(f'No Python files found for inputs module {module_name}')
+
+    root = Path(spec.submodule_search_locations[0]).parent if spec.submodule_search_locations else files[0].parent
+    digest = hashlib.sha256()
+    entries: list[dict[str, str]] = []
+    for path in files:
+        content = path.read_bytes()
+        file_hash = hashlib.sha256(content).hexdigest()
+        try:
+            rel_path = path.relative_to(root)
+        except ValueError:
+            rel_path = Path(path.name)
+        digest.update(str(rel_path).encode('utf-8'))
+        digest.update(b'\0')
+        digest.update(file_hash.encode('ascii'))
+        digest.update(b'\0')
+        entries.append({'path': str(path), 'sha256': file_hash})
+
+    return {
+        'module': module_name,
+        'sha256': digest.hexdigest(),
+        'files': entries,
+    }
+
+
+def write_inputs_module_hash(output_dir: Path, hash_info: dict[str, Any]) -> None:
+    (output_dir / INPUTS_MODULE_HASH_FILE).write_text(
+        json.dumps(hash_info, indent=2, sort_keys=True) + '\n',
+        encoding='utf-8',
+    )
+
+
+def read_inputs_module_hash(output_dir: Path) -> dict[str, Any] | None:
+    path = output_dir / INPUTS_MODULE_HASH_FILE
+    if not path.exists():
+        return None
+    return json.loads(path.read_text(encoding='utf-8'))
 
 
 def resolver_mappings_ready(mapping_dir: Path) -> bool:
@@ -56,6 +119,7 @@ def build_silver_source(
     test_mode: bool,
 ) -> dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
+    inputs_hash = hash_inputs_module(inputs_package, source)
     with tempfile.TemporaryDirectory(prefix='op-pipeline-silver-') as tmp:
         stage_root = Path(tmp)
         _, _, selected_functions, outputs = run_silver_loader(
@@ -80,10 +144,13 @@ def build_silver_source(
             else:
                 shutil.copy2(item, target)
 
+    write_inputs_module_hash(output_dir, inputs_hash)
+
     return {
         'files': sorted(p.name for p in output_dir.iterdir() if p.is_file()),
         'functions': [f.function_name for f in (selected_functions or [])],
         'outputs': [str(output) for output in (outputs or []) if output is not None],
+        'inputs_module_hash': inputs_hash,
     }
 
 

@@ -1,35 +1,36 @@
 from __future__ import annotations
 
 import json
-from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
-from dataclasses import asdict, dataclass
-from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any
+from pathlib import Path
+from datetime import UTC, datetime
+from dataclasses import asdict, dataclass
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 
 from omnipath_build.gold.combine import build_combined_parquets
-from omnipath_build.pipeline.paths import (
-    PipelinePaths,
-    build_paths,
-    next_numeric_version,
-    read_latest_pointer,
-    source_stage_dir,
-    source_version_dir,
-    update_latest_pointer,
-)
-from omnipath_build.pipeline.tasks import (
-    build_gold_source,
-    build_resolver_mappings,
-    build_silver_source,
-    gold_output_ready,
-    resolve_silver_version,
-    resolver_mappings_ready,
-)
 from omnipath_build.silver.build import (
     ResourceFunction,
     discover_resources,
 )
-
+from omnipath_build.pipeline.paths import (
+    PipelinePaths,
+    build_paths,
+    source_stage_dir,
+    source_version_dir,
+    read_latest_pointer,
+    next_numeric_version,
+    update_latest_pointer,
+)
+from omnipath_build.pipeline.tasks import (
+    build_gold_source,
+    gold_output_ready,
+    hash_inputs_module,
+    build_silver_source,
+    resolve_silver_version,
+    build_resolver_mappings,
+    read_inputs_module_hash,
+    resolver_mappings_ready,
+)
 
 @dataclass(frozen=True)
 class TaskDef:
@@ -146,7 +147,9 @@ def _normalize_overwrite(overwrite: str | None) -> frozenset[str]:
 def _reuse_existing_result(
     task: TaskDef,
     *,
+    results: dict[str, TaskResult],
     paths: PipelinePaths,
+    inputs_package: str,
     resolver_mapping_dir: Path | None,
     overwrite_task_types: frozenset[str],
 ) -> TaskResult | None:
@@ -173,16 +176,26 @@ def _reuse_existing_result(
         output_dir = source_version_dir(paths.silver_root, task.source, version)
         if not output_dir.exists():
             return None
+        stored_hash = read_inputs_module_hash(output_dir)
+        current_hash = hash_inputs_module(inputs_package, task.source)
+        if stored_hash is None or stored_hash.get('sha256') != current_hash.get('sha256'):
+            return None
         return TaskResult(
             task_key=task.key,
             task_type=task.task_type,
             source=task.source,
             status='reused',
             output_dir=str(output_dir),
-            metadata={'version': version},
+            metadata={
+                'version': version,
+                'inputs_module_hash': current_hash,
+            },
         )
 
     if task.task_type == 'gold' and task.source is not None:
+        silver_result = results.get(f'silver:{task.source}')
+        if silver_result is not None and silver_result.status != 'reused':
+            return None
         output_dir = source_stage_dir(paths.gold_root, task.source)
         if not gold_output_ready(output_dir):
             return None
@@ -251,7 +264,9 @@ def _execute_task(
 ) -> TaskResult:
     reused = _reuse_existing_result(
         task,
+        results=results,
         paths=paths,
+        inputs_package=inputs_package,
         resolver_mapping_dir=resolver_mapping_dir,
         overwrite_task_types=overwrite_task_types,
     )
@@ -548,11 +563,17 @@ def run_pipeline(
         if silver_result and silver_result.status in {'executed', 'reused'}:
             version = silver_result.metadata.get('version')
             if version:
-                update_latest_pointer(paths.silver_root, source, str(version))
+                pointer_metadata = {}
+                inputs_hash = silver_result.metadata.get('inputs_module_hash')
+                if inputs_hash:
+                    pointer_metadata['inputs_module_hash'] = inputs_hash
+                update_latest_pointer(paths.silver_root, source, str(version), pointer_metadata)
             elif silver_result.output_dir:
                 try:
                     resolved_dir = resolve_silver_version(paths.silver_root / source.replace('.', '/'))
-                    update_latest_pointer(paths.silver_root, source, resolved_dir.name)
+                    stored_hash = read_inputs_module_hash(resolved_dir)
+                    pointer_metadata = {'inputs_module_hash': stored_hash} if stored_hash else None
+                    update_latest_pointer(paths.silver_root, source, resolved_dir.name, pointer_metadata)
                 except FileNotFoundError:
                     pass
 

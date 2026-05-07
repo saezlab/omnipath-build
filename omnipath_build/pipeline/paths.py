@@ -2,9 +2,8 @@ from __future__ import annotations
 
 import json
 import shutil
-from dataclasses import dataclass
 from pathlib import Path
-
+from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class PipelinePaths:
@@ -40,10 +39,17 @@ def stable_pointer_path(stage_root: Path, source: str) -> Path:
     return source_stage_dir(stage_root, source) / 'latest'
 
 
-def update_latest_pointer(stage_root: Path, source: str, version: str) -> None:
+def update_latest_pointer(
+    stage_root: Path,
+    source: str,
+    version: str,
+    metadata: dict | None = None,
+) -> None:
     pointer = stable_pointer_path(stage_root, source)
     pointer.parent.mkdir(parents=True, exist_ok=True)
     payload = {'version': version}
+    if metadata:
+        payload.update(metadata)
     pointer.write_text(json.dumps(payload, indent=2) + '\n', encoding='utf-8')
 
 
