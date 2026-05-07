@@ -12,12 +12,14 @@ from typing import Optional
 from omnipath_build.pipeline.pipeline import main as pipeline_main
 from omnipath_build.silver.build import DiscoveryError, run_silver_loader
 
-# Configure logging for the entire application
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S',
-)
+def _configure_logging() -> None:
+    """Configure CLI logging after imported dependencies had a chance to mutate it."""
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S',
+        force=True,
+    )
 
 __all__ = [
     'main',
@@ -124,6 +126,9 @@ def _handle_postgres(args: argparse.Namespace) -> int:
             postgres_uri=args.postgres_uri,
             schema=args.schema,
             drop_existing=args.drop_existing,
+            batch_size=args.batch_size,
+            unlogged_tables=args.unlogged_tables,
+            foreign_keys=args.foreign_keys,
             tables=args.tables,
             indexes=args.indexes,
             bitmaps=args.bitmaps,
@@ -281,6 +286,24 @@ def _build_parser() -> argparse.ArgumentParser:
         help='Drop existing tables before creating new ones',
     )
     postgres_parser.add_argument(
+        '--batch-size',
+        type=int,
+        default=200_000,
+        help='Parquet/COPY batch size for table loading (default: 200000)',
+    )
+    postgres_parser.add_argument(
+        '--unlogged-tables',
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help='Create base tables as UNLOGGED tables to reduce WAL during rebuilds (default: false)',
+    )
+    postgres_parser.add_argument(
+        '--foreign-keys',
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help='Create foreign key constraints on base tables (default: false for faster rebuilds)',
+    )
+    postgres_parser.add_argument(
         '--tables',
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -313,6 +336,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     """Entry point for the database manager CLI."""
     parser = _build_parser()
     args = parser.parse_args(argv)
+    _configure_logging()
     handler = getattr(args, 'handler', None)
     if handler is None:
         parser.print_help()

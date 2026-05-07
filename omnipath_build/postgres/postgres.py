@@ -5,6 +5,7 @@ import json
 from typing import Any
 import logging
 from pathlib import Path
+import time
 
 import polars as pl
 import psycopg2
@@ -28,6 +29,29 @@ logger = logging.getLogger(__name__)
 DEFAULT_BATCH_SIZE = 200_000
 
 
+def _format_duration(seconds: float) -> str:
+    if seconds < 60:
+        return f'{seconds:.1f}s'
+    minutes, rem = divmod(seconds, 60)
+    if minutes < 60:
+        return f'{int(minutes)}m {rem:.0f}s'
+    hours, rem_minutes = divmod(minutes, 60)
+    return f'{int(hours)}h {int(rem_minutes)}m'
+
+
+def _log_step_start(message: str, *args: Any) -> float:
+    logger.info('▶ ' + message, *args)
+    return time.monotonic()
+
+
+def _log_step_done(started_at: float, message: str, *args: Any) -> None:
+    logger.info(
+        '✓ ' + message + ' in %s',
+        *args,
+        _format_duration(time.monotonic() - started_at),
+    )
+
+
 def resolve_combined_dir(output_dir: str | Path) -> Path:
     path = Path(output_dir)
     if not path.exists():
@@ -47,35 +71,66 @@ def load_combined_schema_to_postgres(
     schema: str = 'public',
     drop_existing: bool = False,
     batch_size: int = DEFAULT_BATCH_SIZE,
+    unlogged_tables: bool = False,
+    foreign_keys: bool = False,
     tables: bool = True,
     indexes: bool = True,
     bitmaps: bool = True,
     views: bool = True,
 ) -> int:
     combined_dir = resolve_combined_dir(output_dir)
-    logger.info('Loading combined parquet artifacts from %s', combined_dir)
+    overall_started_at = _log_step_start(
+        'Loading combined parquet artifacts from %s into schema %s',
+        combined_dir,
+        schema,
+    )
+    logger.info(
+        'Enabled steps: tables=%s indexes=%s views=%s bitmaps=%s; batch_size=%s; unlogged_tables=%s; foreign_keys=%s',
+        tables,
+        indexes,
+        views,
+        bitmaps,
+        f'{batch_size:,}',
+        unlogged_tables,
+        foreign_keys,
+    )
 
     with psycopg2.connect(postgres_uri) as conn:
+        started_at = _log_step_start('Ensuring PostgreSQL schema')
         ensure_schema(
-            conn, schema=schema, drop_existing=drop_existing and tables
+            conn,
+            schema=schema,
+            drop_existing=drop_existing and tables,
+            unlogged_tables=unlogged_tables and tables,
+            foreign_keys=foreign_keys and tables,
         )
+        _log_step_done(started_at, 'Schema ready')
+
         if tables:
+            started_at = _log_step_start('Loading base tables')
             load_tables(
                 conn,
                 schema=schema,
                 combined_dir=combined_dir,
                 batch_size=batch_size,
             )
+            _log_step_done(started_at, 'Base tables loaded')
         if indexes:
+            started_at = _log_step_start('Creating secondary indexes')
             create_secondary_indexes(conn, schema=schema)
+            _log_step_done(started_at, 'Secondary indexes created')
         if views:
+            started_at = _log_step_start('Creating materialized views')
             create_entity_relation_counts_materialized_view(conn, schema=schema)
             create_ontology_terms_materialized_view(conn, schema=schema)
+            _log_step_done(started_at, 'Materialized views created')
         if bitmaps:
+            started_at = _log_step_start('Creating and populating bitmap tables')
             create_bitmap_tables(conn, schema=schema)
             populate_bitmap_tables(conn, schema=schema)
+            _log_step_done(started_at, 'Bitmap tables populated')
 
-    logger.info('Combined PostgreSQL schema load complete')
+    _log_step_done(overall_started_at, 'Combined PostgreSQL schema load complete')
     return 0
 
 
@@ -85,7 +140,9 @@ def load_tables(
     combined_dir: Path,
     batch_size: int,
 ) -> None:
+    started_at = _log_step_start('Truncating existing tables')
     _truncate_tables(conn, schema)
+    _log_step_done(started_at, 'Existing tables truncated')
 
     parquet_path = combined_dir / 'entity.parquet'
     if parquet_path.exists():
@@ -222,9 +279,14 @@ def _load_entity_and_identifiers(
     total_entities = 0
     total_identifiers = 0
     parquet_file = pq.ParquetFile(parquet_path)
+    expected_entities = parquet_file.metadata.num_rows
+    started_at = time.monotonic()
+    next_log_at = batch_size
 
     with conn.cursor() as cur:
-        for batch in parquet_file.iter_batches(batch_size=batch_size):
+        for batch_index, batch in enumerate(
+            parquet_file.iter_batches(batch_size=batch_size), start=1
+        ):
             df = pl.from_arrow(batch)
             if df.is_empty():
                 continue
@@ -274,11 +336,31 @@ def _load_entity_and_identifiers(
             cur.copy_expert(identifier_copy.as_string(conn), buffer)
             total_identifiers += id_df.height
 
+            if total_entities >= next_log_at or total_entities >= expected_entities:
+                elapsed = max(time.monotonic() - started_at, 0.001)
+                rate = total_entities / elapsed
+                percent = (
+                    total_entities / expected_entities * 100
+                    if expected_entities
+                    else 100.0
+                )
+                logger.info(
+                    '  entity batch %s: %s/%s entities (%.1f%%), %s identifiers, %.0f entities/s',
+                    batch_index,
+                    f'{total_entities:,}',
+                    f'{expected_entities:,}',
+                    percent,
+                    f'{total_identifiers:,}',
+                    rate,
+                )
+                next_log_at = total_entities + batch_size
+
     conn.commit()
     logger.info(
-        '  loaded %s entity row(s), %s identifier row(s)',
-        total_entities,
-        total_identifiers,
+        '  loaded %s entity row(s), %s identifier row(s) in %s',
+        f'{total_entities:,}',
+        f'{total_identifiers:,}',
+        _format_duration(time.monotonic() - started_at),
     )
 
 
@@ -348,9 +430,14 @@ def _copy_parquet_to_table(
 
     total_rows = 0
     parquet_file = pq.ParquetFile(parquet_path)
+    expected_rows = parquet_file.metadata.num_rows
+    started_at = time.monotonic()
+    next_log_at = batch_size
 
     with conn.cursor() as cur:
-        for batch in parquet_file.iter_batches(batch_size=batch_size):
+        for batch_index, batch in enumerate(
+            parquet_file.iter_batches(batch_size=batch_size), start=1
+        ):
             df = pl.from_arrow(batch)
             if df.is_empty():
                 continue
@@ -364,8 +451,32 @@ def _copy_parquet_to_table(
             cur.copy_expert(copy_sql.as_string(conn), buffer)
             total_rows += df.height
 
+            if total_rows >= next_log_at or total_rows >= expected_rows:
+                elapsed = max(time.monotonic() - started_at, 0.001)
+                rate = total_rows / elapsed
+                percent = (
+                    total_rows / expected_rows * 100
+                    if expected_rows
+                    else 100.0
+                )
+                logger.info(
+                    '  %s batch %s: %s/%s rows (%.1f%%), %.0f rows/s',
+                    table,
+                    batch_index,
+                    f'{total_rows:,}',
+                    f'{expected_rows:,}',
+                    percent,
+                    rate,
+                )
+                next_log_at = total_rows + batch_size
+
     conn.commit()
-    logger.info('  loaded %s row(s)', total_rows)
+    logger.info(
+        '  loaded %s row(s) into %s in %s',
+        f'{total_rows:,}',
+        table,
+        _format_duration(time.monotonic() - started_at),
+    )
 
 
 def _serialize_json(value: Any) -> str | None:

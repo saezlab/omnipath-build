@@ -20,6 +20,9 @@ DATABASE_URL ?= postgresql://omnipath:omnipath@localhost:55432/omnipath
 POSTGRES_URI ?= $(DATABASE_URL)
 POSTGRES_SCHEMA ?= public
 POSTGRES_DROP_EXISTING ?= 1
+POSTGRES_BATCH_SIZE ?= 200000
+POSTGRES_UNLOGGED_TABLES ?= 1
+POSTGRES_FOREIGN_KEYS ?=
 PIPELINE_SCRIPT ?= omnipath_build/pipeline/pipeline.py
 
 setup:
@@ -103,11 +106,15 @@ postgres:
 		echo "Unknown STEP=$(STEP). Supported values: all, tables, indexes, bitmaps, views"; \
 		exit 1; \
 	fi; \
-	uv run python -m omnipath_build.cli.commands postgres \
+	echo "Loading PostgreSQL schema=$(POSTGRES_SCHEMA) step=$(STEP) output=$(COMBINED_OUTPUT_DIR) batch_size=$(POSTGRES_BATCH_SIZE) unlogged_tables=$(POSTGRES_UNLOGGED_TABLES) foreign_keys=$(POSTGRES_FOREIGN_KEYS)"; \
+	PYTHONUNBUFFERED=1 uv run python -m omnipath_build.cli.commands postgres \
 		--output-dir $(COMBINED_OUTPUT_DIR) \
 		--postgres-uri $(POSTGRES_URI) \
 		--schema $(POSTGRES_SCHEMA) \
+		--batch-size $(POSTGRES_BATCH_SIZE) \
 		$(if $(POSTGRES_DROP_EXISTING),--drop-existing) \
+		$(if $(POSTGRES_UNLOGGED_TABLES),--unlogged-tables) \
+		$(if $(POSTGRES_FOREIGN_KEYS),--foreign-keys) \
 		$$STEP_ARGS
 
 pipeline:

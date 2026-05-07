@@ -1,11 +1,27 @@
 from __future__ import annotations
 
 import logging
+import time
 
 import psycopg2.extensions
 from psycopg2 import sql
 
 logger = logging.getLogger(__name__)
+
+
+def _duration(seconds: float) -> str:
+    if seconds < 60:
+        return f'{seconds:.1f}s'
+    minutes, rem = divmod(seconds, 60)
+    return f'{int(minutes)}m {rem:.0f}s'
+
+
+def _log_done(started_at: float, message: str, *args: object) -> None:
+    logger.info(
+        '  ✓ ' + message + ' in %s',
+        *args,
+        _duration(time.monotonic() - started_at),
+    )
 
 
 def create_bitmap_tables(
@@ -80,7 +96,23 @@ def populate_bitmap_tables(
     logger.info('Populating bitmap tables in schema %s', schema)
 
     with conn.cursor() as cur:
+        index_started_at = time.monotonic()
+        logger.info('  ensuring bitmap helper indexes')
+        cur.execute(
+            sql.SQL(
+                """
+                CREATE INDEX IF NOT EXISTS entity_relation_annotation_subject_idx
+                ON {}.entity_relation (subject_entity_pk)
+                INCLUDE (object_entity_pk)
+                WHERE relation_category = 'annotation'
+                """
+            ).format(sql.Identifier(schema))
+        )
+        _log_done(index_started_at, 'bitmap helper indexes ready')
+
         # 1. annotation_term_entity_bitmap: term -> set of annotated entity PKs
+        step_started_at = time.monotonic()
+        logger.info('  building annotation_term_entity_bitmap')
         cur.execute(
             sql.SQL(
                 """
@@ -105,10 +137,16 @@ def populate_bitmap_tables(
                 sql.Identifier(schema),
             )
         )
-        logger.info('  annotation_term_entity_bitmap: %s rows', cur.rowcount)
+        _log_done(
+            step_started_at,
+            'annotation_term_entity_bitmap: %s rows',
+            cur.rowcount,
+        )
 
         # 2. annotation_term_relation_bitmap: term -> set of relation PKs
         #    where either endpoint is annotated with that term.
+        step_started_at = time.monotonic()
+        logger.info('  building annotation_term_relation_bitmap')
         cur.execute(
             sql.SQL(
                 """
@@ -126,9 +164,16 @@ def populate_bitmap_tables(
                   FROM {}.entity_relation ann
                   JOIN {}.entity_relation er
                     ON er.subject_entity_pk = ann.subject_entity_pk
-                    OR er.object_entity_pk = ann.subject_entity_pk
                   WHERE ann.relation_category = 'annotation'
-                  UNION
+                  UNION ALL
+                  SELECT
+                    ann.object_entity_pk AS term_entity_pk,
+                    er.relation_pk
+                  FROM {}.entity_relation ann
+                  JOIN {}.entity_relation er
+                    ON er.object_entity_pk = ann.subject_entity_pk
+                  WHERE ann.relation_category = 'annotation'
+                  UNION ALL
                   SELECT
                     rat.term_entity_pk,
                     rat.relation_pk
@@ -147,11 +192,19 @@ def populate_bitmap_tables(
                 sql.Identifier(schema),
                 sql.Identifier(schema),
                 sql.Identifier(schema),
+                sql.Identifier(schema),
+                sql.Identifier(schema),
             )
         )
-        logger.info('  annotation_term_relation_bitmap: %s rows', cur.rowcount)
+        _log_done(
+            step_started_at,
+            'annotation_term_relation_bitmap: %s rows',
+            cur.rowcount,
+        )
 
         # 3. facet_entity_bitmap: entity_type, taxonomy_id, source, and ontology_id facets
+        step_started_at = time.monotonic()
+        logger.info('  building facet_entity_bitmap')
         cur.execute(
             sql.SQL(
                 """
@@ -224,9 +277,11 @@ def populate_bitmap_tables(
                 sql.Identifier(schema),
             )
         )
-        logger.info('  facet_entity_bitmap: %s rows', cur.rowcount)
+        _log_done(step_started_at, 'facet_entity_bitmap: %s rows', cur.rowcount)
 
         # 4. facet_relation_bitmap: predicate, participant_type, source facets
+        step_started_at = time.monotonic()
+        logger.info('  building facet_relation_bitmap')
         cur.execute(
             sql.SQL(
                 """
@@ -277,7 +332,7 @@ def populate_bitmap_tables(
                 sql.Identifier(schema),
             )
         )
-        logger.info('  facet_relation_bitmap: %s rows', cur.rowcount)
+        _log_done(step_started_at, 'facet_relation_bitmap: %s rows', cur.rowcount)
 
     conn.commit()
     logger.info('Bitmap table population complete')

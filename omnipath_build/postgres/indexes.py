@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+import logging
+import time
+
 import psycopg2.extensions
 from psycopg2 import sql
+
+logger = logging.getLogger(__name__)
 
 
 def create_secondary_indexes(
@@ -34,6 +39,18 @@ def create_secondary_indexes(
         sql.SQL('CREATE INDEX IF NOT EXISTS resources_resource_name_trgm_idx ON {}.resources USING GIN (resource_name gin_trgm_ops)').format(sql.Identifier(schema)),
     ]
     with conn.cursor() as cur:
-        for statement in statements:
+        for index_number, statement in enumerate(statements, start=1):
+            started_at = time.monotonic()
+            logger.info(
+                '  creating secondary index %s/%s',
+                index_number,
+                len(statements),
+            )
             cur.execute(statement)
+            logger.info(
+                '  created secondary index %s/%s in %.1fs',
+                index_number,
+                len(statements),
+                time.monotonic() - started_at,
+            )
     conn.commit()
