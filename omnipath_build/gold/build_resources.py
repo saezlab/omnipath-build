@@ -103,18 +103,15 @@ def _resource_download_mtime(resource: Resource) -> str | None:
 def _resource_categories(
     *,
     interaction_count: int,
-    membership_count: int,
-    annotation_count: int,
+    association_count: int,
     ontology_term_count: int,
 ) -> list[str]:
     categories: list[str] = []
 
     if interaction_count > 0:
         categories.append('interaction')
-    if membership_count > 0:
-        categories.append('membership')
-    if annotation_count > 0 or ontology_term_count > 0:
-        categories.append('annotation')
+    if association_count > 0 or ontology_term_count > 0:
+        categories.append('association')
 
     return categories
 
@@ -205,8 +202,7 @@ def _resource_row(*, source: str, resource: Resource, gold_root: Path) -> dict[s
     relation_category_counts = _relation_category_counts(source_dir)
 
     interaction_count = int(relation_category_counts.get('interaction', 0))
-    membership_count = int(relation_category_counts.get('membership', 0))
-    annotation_count = int(relation_category_counts.get('annotation', 0))
+    association_count = int(relation_category_counts.get('association', 0))
     ontology_term_count = _ontology_entity_count(source_dir)
 
     return {
@@ -219,15 +215,13 @@ def _resource_row(*, source: str, resource: Resource, gold_root: Path) -> dict[s
         'resource_kind': getattr(config, 'resource_kind', 'data_resource'),
         'categories': _resource_categories(
             interaction_count=interaction_count,
-            membership_count=membership_count,
-            annotation_count=annotation_count,
+            association_count=association_count,
             ontology_term_count=ontology_term_count,
         ),
         'annotation_ontologies': _ontology_labels(resource),
         'entity_count': _count_file(source_dir, 'entities/entity.parquet'),
         'interaction_count': interaction_count,
-        'membership_count': membership_count,
-        'annotation_count': annotation_count,
+        'association_count': association_count,
         'identifier_count': _identifier_count(source_dir),
         'ontology_term_count': ontology_term_count,
         'total_size_bytes': sum(path.stat().st_size for path in gold_files),

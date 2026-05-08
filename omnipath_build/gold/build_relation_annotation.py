@@ -118,11 +118,12 @@ def build_relation_annotation(
 
     annotation_relations = (
         relations
-        .filter(pl.col('relation_category') == 'annotation')
+        .filter(pl.col('relation_category') == 'association')
         .select([
             pl.col('subject_entity_pk').cast(pl.Int64),
             pl.col('object_entity_pk').cast(pl.Int64).alias('term_entity_pk'),
         ])
+        .join(term_entities.select('term_entity_pk'), on='term_entity_pk', how='inner')
     )
 
     participant_term_candidates = pl.concat([

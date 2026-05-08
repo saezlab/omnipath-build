@@ -244,11 +244,11 @@ ONTOLOGY_TERM_SCHEMA = {
 | Old table | New equivalent | Reason |
 |-----------|---------------|--------|
 | `interaction.parquet` | `entity_relation.parquet` (category='interaction') | Unified schema |
-| `association.parquet` | `entity_relation.parquet` (category='membership') | Unified schema |
+| `association.parquet` | `entity_relation.parquet` (category='association') | Unified schema |
 | `interaction_evidence.parquet` | `entity_relation_evidence.parquet` | Unified schema |
 | `association_evidence.parquet` | `entity_relation_evidence.parquet` | Unified schema |
-| `entity_annotation.parquet` | `entity_relation.parquet` (category='annotation') | Annotations are now relations |
-| `interaction_annotation.parquet` | `entity_relation.parquet` (category='annotation') | Annotations are now relations |
+| `entity_annotation.parquet` | `entity_relation.parquet` (category='association') | Annotations are now relations |
+| `interaction_annotation.parquet` | `entity_relation.parquet` (category='association') | Annotations are now relations |
 
 ---
 

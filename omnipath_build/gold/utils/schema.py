@@ -49,24 +49,16 @@ INTERACTION_LIKE_TYPES = {
     str(EntityTypeCv.DEGRADATION),
 }
 
-MEMBERSHIP_RULES: dict[str, dict[str, str]] = {
-    str(EntityTypeCv.COMPLEX): {
-        'predicate': 'has_component',
-        'relation_category': 'membership',
-    },
-    str(EntityTypeCv.PROTEIN_FAMILY): {
-        'predicate': 'has_member',
-        'relation_category': 'membership',
-    },
-    str(EntityTypeCv.PATHWAY): {
-        'predicate': 'has_participant',
-        'relation_category': 'membership',
-    },
-    str(EntityTypeCv.REACTION): {
-        'predicate': 'has_participant',
-        'relation_category': 'membership',
-    },
+ASSOCIATION_PREDICATE = 'associated_with'
+ASSOCIATION_CATEGORY = 'association'
+
+MEMBERSHIP_RULES: dict[str, str] = {
+    str(EntityTypeCv.COMPLEX): 'has_member',
+    str(EntityTypeCv.PROTEIN_FAMILY): 'has_member',
+    str(EntityTypeCv.PATHWAY): 'has_participant',
+    str(EntityTypeCv.REACTION): 'has_participant',
 }
+
 
 EVIDENCE_IDENTIFIER_TERMS = {
     str(IdentifierNamespaceCv.PUBMED),
@@ -185,13 +177,9 @@ def source_identifier_rows(entity_pk: int, row: dict[str, Any], source: str) -> 
 
 def predicate_for_membership(parent_type: str | None, membership: dict[str, Any]) -> PredicateRule:
     del membership
-    rule = MEMBERSHIP_RULES.get(parent_type or '') or {
-        'predicate': 'has_member',
-        'relation_category': 'membership',
-    }
     return PredicateRule(
-        predicate=rule['predicate'],
-        relation_category=rule['relation_category'],
+        MEMBERSHIP_RULES.get(parent_type or '', 'has_member'),
+        ASSOCIATION_CATEGORY,
     )
 
 
@@ -215,7 +203,7 @@ def predicate_for_interaction(
             return PredicateRule('negatively_regulates', 'interaction')
         return PredicateRule('interacts_with', 'interaction')
     if row_type == str(EntityTypeCv.ASSOCIATION):
-        return PredicateRule('associated_with', 'annotation')
+        return PredicateRule(ASSOCIATION_PREDICATE, ASSOCIATION_CATEGORY)
     if row_type in {str(EntityTypeCv.CONTROL), str(EntityTypeCv.CATALYSIS), str(EntityTypeCv.DEGRADATION)}:
         if sign > 0:
             return PredicateRule('positively_regulates', 'interaction')
@@ -234,10 +222,16 @@ def predicate_for_interaction(
 
 
 def relation_category_for_predicate(predicate: str) -> str:
-    if predicate in {'has_component', 'has_member', 'has_participant'}:
-        return 'membership'
-    if predicate in {'has_annotation', 'associated_with', 'involved_in'}:
-        return 'annotation'
+    association_predicates = {
+        'has_component',
+        'has_member',
+        'has_participant',
+        'has_annotation',
+        'associated_with',
+        'involved_in',
+    }
+    if predicate in association_predicates:
+        return ASSOCIATION_CATEGORY
     return 'interaction'
 
 
@@ -288,14 +282,10 @@ def is_pure_ontology_term_annotation(annotation: dict[str, Any]) -> bool:
 def annotation_predicate(annotation: dict[str, Any]) -> str:
     value = string_or_none(annotation.get('value')) or ''
     prefix = value.split(':', 1)[0].upper() if ':' in value else ''
-    if prefix == 'GO':
-        return 'has_annotation'
-    if prefix in {'HP', 'MONDO'}:
-        return 'associated_with'
     value_upper = value.upper()
     if prefix in {'REACTOME', 'WP'} or value_upper.startswith(('WP', 'R-')):
         return 'involved_in'
-    return 'has_annotation'
+    return ASSOCIATION_PREDICATE
 
 
 def extract_taxonomy_id(row: dict[str, Any]) -> str | None:

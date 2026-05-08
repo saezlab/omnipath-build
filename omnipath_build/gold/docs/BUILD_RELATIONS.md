@@ -187,13 +187,12 @@ Entry point: `_project_memberships(parent_pk, row)`
 
 ### What triggers it
 
-Rows where `type` is one of:
-- `MI:0314` (Complex) → predicate `has_component`
-- `MI:0250` (Protein Family) → predicate `has_member`
-- `MI:0002` (Pathway) → predicate `has_participant`
-- `MI:0217` (Reaction) → predicate `has_participant`
+Any row with `membership` arrays regardless of type.
 
-Or any row with `membership` arrays regardless of type.
+Membership edges are projected as broad associations:
+- Complex / protein family / default membership → predicate `has_member`
+- Pathway / reaction membership → predicate `has_participant`
+- relation category `association`
 
 ### Parent evidence
 
@@ -230,14 +229,12 @@ For each annotation:
 3. If the ontology object should be materialized, extract its fingerprint
 4. Look up the ontology entity's final PK in `entity_map`
 5. Build a relation with predicate from `annotation_predicate()`:
-   - GO terms → `has_annotation`
-   - HP / MONDO → `associated_with`
    - REACTOME / WP → `involved_in`
-   - Default → `has_annotation`
+   - Default, including GO / HP / MONDO → `associated_with`
 
 ### Relation category
 
-All annotation relations have `relation_category = 'annotation'`.
+All annotation-style relations have `relation_category = 'association'`.
 
 ---
 

@@ -13,6 +13,8 @@ from omnipath_build.gold.utils.entity_extraction import (
     extract_ontology_entity_description,
 )
 from omnipath_build.gold.utils.schema import (
+    ASSOCIATION_CATEGORY,
+    ASSOCIATION_PREDICATE,
     AnnotationContext,
     CV_TERM_ENTITY_TYPE,
     INTERACTION_LIKE_TYPES,
@@ -99,8 +101,8 @@ class RelationWriterBase:
                 continue
 
             rule = PredicateRule(
-                predicate=disposition.predicate or 'has_annotation',
-                relation_category='annotation',
+                predicate=disposition.predicate or ASSOCIATION_PREDICATE,
+                relation_category=ASSOCIATION_CATEGORY,
             )
             self._write_relation_evidence(
                 subject_entity_pk=entity_pk,

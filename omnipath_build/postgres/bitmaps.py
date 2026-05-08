@@ -90,7 +90,7 @@ def populate_bitmap_tables(
 ) -> None:
     """Populate bitmap index tables from the current database snapshot.
 
-    Reads directly from entity_relation (relation_category = 'annotation')
+    Reads ontology-object association relations directly from entity_relation
     instead of an entity_annotation materialized view.
     """
     logger.info('Populating bitmap tables in schema %s', schema)
@@ -104,7 +104,7 @@ def populate_bitmap_tables(
                 CREATE INDEX IF NOT EXISTS entity_relation_annotation_subject_idx
                 ON {}.entity_relation (subject_entity_pk)
                 INCLUDE (object_entity_pk)
-                WHERE relation_category = 'annotation'
+                WHERE relation_category = 'association'
                 """
             ).format(sql.Identifier(schema))
         )
@@ -125,14 +125,18 @@ def populate_bitmap_tables(
                 """
                 INSERT INTO {}.annotation_term_entity_bitmap (term_entity_pk, entity_bitmap, global_count)
                 SELECT
-                  object_entity_pk AS term_entity_pk,
-                  rb_build_agg(subject_entity_pk::integer),
+                  er.object_entity_pk AS term_entity_pk,
+                  rb_build_agg(er.subject_entity_pk::integer),
                   COUNT(*)::integer
-                FROM {}.entity_relation
-                WHERE relation_category = 'annotation'
-                GROUP BY object_entity_pk
+                FROM {}.entity_relation er
+                JOIN {}.entity term
+                  ON term.entity_pk = er.object_entity_pk
+                WHERE er.relation_category = 'association'
+                  AND term.entity_type = 'OM:0012:Cv Term'
+                GROUP BY er.object_entity_pk
                 """
             ).format(
+                sql.Identifier(schema),
                 sql.Identifier(schema),
                 sql.Identifier(schema),
             )
@@ -157,22 +161,28 @@ def populate_bitmap_tables(
         cur.execute(
             sql.SQL(
                 """
-                WITH relation_terms AS (
+                WITH ontology_associations AS (
+                  SELECT ann.subject_entity_pk, ann.object_entity_pk
+                  FROM {}.entity_relation ann
+                  JOIN {}.entity term
+                    ON term.entity_pk = ann.object_entity_pk
+                  WHERE ann.relation_category = 'association'
+                    AND term.entity_type = 'OM:0012:Cv Term'
+                ),
+                relation_terms AS (
                   SELECT
                     ann.object_entity_pk AS term_entity_pk,
                     er.relation_pk
-                  FROM {}.entity_relation ann
+                  FROM ontology_associations ann
                   JOIN {}.entity_relation er
                     ON er.subject_entity_pk = ann.subject_entity_pk
-                  WHERE ann.relation_category = 'annotation'
                   UNION ALL
                   SELECT
                     ann.object_entity_pk AS term_entity_pk,
                     er.relation_pk
-                  FROM {}.entity_relation ann
+                  FROM ontology_associations ann
                   JOIN {}.entity_relation er
                     ON er.object_entity_pk = ann.subject_entity_pk
-                  WHERE ann.relation_category = 'annotation'
                   UNION ALL
                   SELECT
                     rat.term_entity_pk,
