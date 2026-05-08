@@ -42,6 +42,7 @@ AnnotationBucket = Literal[
 
 INTERACTION_LIKE_TYPES = {
     str(EntityTypeCv.INTERACTION),
+    str(EntityTypeCv.ASSOCIATION),
     str(EntityTypeCv.REACTION),
     str(EntityTypeCv.CATALYSIS),
     str(EntityTypeCv.CONTROL),
@@ -213,6 +214,8 @@ def predicate_for_interaction(
         if sign < 0:
             return PredicateRule('negatively_regulates', 'interaction')
         return PredicateRule('interacts_with', 'interaction')
+    if row_type == str(EntityTypeCv.ASSOCIATION):
+        return PredicateRule('associated_with', 'annotation')
     if row_type in {str(EntityTypeCv.CONTROL), str(EntityTypeCv.CATALYSIS), str(EntityTypeCv.DEGRADATION)}:
         if sign > 0:
             return PredicateRule('positively_regulates', 'interaction')
