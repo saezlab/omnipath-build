@@ -54,6 +54,7 @@ NEGATIVE_SIGN_ACCESSIONS = frozenset({
 
 SOURCE_ROLE_ACCESSIONS = frozenset({
     ParticipantMetadataCv.SOURCE.value,
+    ParticipantMetadataCv.LIGAND.value,
     BiologicalRoleCv.CONTROLLER.value,
     BiologicalRoleCv.REACTANT.value,
     BiologicalRoleCv.TEMPLATE.value,
@@ -70,6 +71,7 @@ SOURCE_ROLE_ACCESSIONS = frozenset({
 
 TARGET_ROLE_ACCESSIONS = frozenset({
     ParticipantMetadataCv.TARGET.value,
+    ParticipantMetadataCv.RECEPTOR.value,
     BiologicalRoleCv.CONTROLLED.value,
     BiologicalRoleCv.PRODUCT.value,
     BiologicalRoleCv.SUBSTRATE.value,

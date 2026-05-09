@@ -43,7 +43,7 @@ VALIDATORS: dict[str, ValidationFn] = {
     str(IdentifierNamespaceCv.HGNC): _regex(r'^(?:HGNC:)?\d+$'),
     str(IdentifierNamespaceCv.REFSEQ): lambda value: bool(REFSEQ_GENERIC_RE.fullmatch(value)),
     str(IdentifierNamespaceCv.REFSEQ_PROTEIN): lambda value: bool(REFSEQ_PROTEIN_RE.fullmatch(value)),
-    str(IdentifierNamespaceCv.CHEBI): _regex(r'^(?:CHEBI:)?\d+$'),
+    str(IdentifierNamespaceCv.CHEBI): _regex(r'^\d+$'),
     str(IdentifierNamespaceCv.PUBCHEM): _regex(r'^\d+$'),
     str(IdentifierNamespaceCv.PUBCHEM_COMPOUND): _regex(r'^\d+$'),
     str(IdentifierNamespaceCv.CHEMBL): _regex(r'^CHEMBL\d+$'),
