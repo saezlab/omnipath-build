@@ -46,6 +46,8 @@ ENTITY_RELATION_EVIDENCE_SCHEMA = pa.schema([
     pa.field('source', pa.string()),
     pa.field('relation_evidence_pk', pa.int64()),
     pa.field('relation_pk', pa.int64()),
+    pa.field('relation_key', pa.string()),
+    pa.field('raw_record_id', pa.string()),
     pa.field('record_attributes', ATTRIBUTES_STRUCT),
     pa.field('subject_attributes', ATTRIBUTES_STRUCT),
     pa.field('object_attributes', ATTRIBUTES_STRUCT),
@@ -54,9 +56,12 @@ ENTITY_RELATION_EVIDENCE_SCHEMA = pa.schema([
 
 ENTITY_RELATION_SCHEMA = pa.schema([
     pa.field('relation_pk', pa.int64()),
+    pa.field('relation_key', pa.string()),
     pa.field('subject_entity_pk', pa.int64()),
+    pa.field('subject_entity_key', pa.string()),
     pa.field('predicate', pa.string()),
     pa.field('object_entity_pk', pa.int64()),
+    pa.field('object_entity_key', pa.string()),
     pa.field('relation_category', pa.string()),
     pa.field('evidence_count', pa.int64()),
     pa.field('sources', pa.list_(pa.string())),

@@ -53,17 +53,8 @@ class SilverPathLayout:
         self.base_path = Path(base_path)
         self.db_path = self.base_path / database_name
 
-    def configuration_path(self) -> Path:
-        return self.db_path / self.CONFIGURATION
-
-    def resources_path(self) -> Path:
-        return self.configuration_path() / self.RESOURCES
-
     def data_path(self) -> Path:
         return self.db_path / self.DATA
-
-    def output_path(self) -> Path:
-        return self.db_path / self.OUTPUT
 
     def _normalize_source(self, source_name: str | Path) -> Path:
         if isinstance(source_name, Path):
@@ -75,21 +66,6 @@ class SilverPathLayout:
 
     def source_path(self, source_name: str) -> Path:
         return self.data_path() / self._normalize_source(source_name)
-
-    def source_function_path(self, source_name: str, function_name: str) -> Path:
-        return self.source_path(source_name) / function_name
-
-    def source_bronze_path(self, source_name: str, function_name: str) -> Path:
-        return self.source_function_path(source_name, function_name) / self.BRONZE
-
-    def source_silver_path(self, source_name: str, function_name: str) -> Path:
-        return self.source_function_path(source_name, function_name) / self.SILVER
-
-    def source_gold_path(self, source_name: str, function_name: str) -> Path:
-        return self.source_function_path(source_name, function_name) / self.GOLD
-
-    def bronze_latest_file(self, source_name: str, function_name: str) -> Path:
-        return self.source_bronze_path(source_name, function_name) / 'latest.parquet'
 
     def silver_file(self, source_name: str, function_name: str, table_name: str) -> Path:
         source_dir = self.source_path(source_name)
@@ -108,22 +84,6 @@ class SilverPathLayout:
         stem = file_stem or function_name
         ext = extension.lstrip('.')
         return source_dir / f'{stem}.{ext}'
-
-    def gold_file(self, source_name: str, function_name: str, table_name: str) -> Path:
-        gold_dir = self.source_gold_path(source_name, function_name)
-        return gold_dir / f'{table_name}.parquet'
-
-    def output_file(self, table_name: str) -> Path:
-        return self.output_path() / f'{table_name}.parquet'
-
-    def resource_config_file(self, module_name: str) -> Path:
-        return self.resources_path() / f'{module_name}.yaml'
-
-    def silver_tables_config(self) -> Path:
-        return self.configuration_path() / 'silver_tables.yaml'
-
-    def gold_tables_config(self) -> Path:
-        return self.configuration_path() / 'gold_tables.py'
 
 
 PathManager = SilverPathLayout

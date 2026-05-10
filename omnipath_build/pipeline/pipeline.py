@@ -19,7 +19,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--data-root', type=Path, default=Path('data'))
     parser.add_argument('--inputs-package', default='pypath.inputs_v2')
     parser.add_argument('--batch-size', type=int, default=10_000)
-    parser.add_argument('--silver-test-mode', action='store_true')
+    parser.add_argument('--test-mode', action='store_true')
     parser.add_argument('--jobs', type=int, default=4)
     parser.add_argument(
         '--overwrite',
@@ -89,7 +89,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         data_root=args.data_root,
         inputs_package=args.inputs_package,
         batch_size=args.batch_size,
-        test_mode=args.silver_test_mode,
+        test_mode=args.test_mode,
         jobs=max(1, args.jobs),
         resolver_mapping_dir=args.resolver_mapping_dir,
         overwrite=args.overwrite,

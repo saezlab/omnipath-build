@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import argparse
 import json
 from pathlib import Path
 from typing import Any
@@ -61,7 +60,7 @@ def build_relation_annotation(
             & (pl.col('canonical_identifier_type') == ONTOLOGY_IDENTIFIER_TYPE_LABEL)
         )
         .select([
-            pl.col('entity_pk').cast(pl.Int64).alias('term_entity_pk'),
+            pl.col('entity_id').cast(pl.Int64).alias('term_entity_id'),
             pl.col('canonical_identifier').cast(pl.String).alias('term_id'),
         ])
     )
@@ -70,18 +69,18 @@ def build_relation_annotation(
         relations
         .filter(pl.col('relation_category') == 'interaction')
         .select([
-            pl.col('relation_pk').cast(pl.Int64),
-            pl.col('subject_entity_pk').cast(pl.Int64),
-            pl.col('object_entity_pk').cast(pl.Int64),
+            pl.col('relation_id').cast(pl.Int64),
+            pl.col('subject_entity_id').cast(pl.Int64),
+            pl.col('object_entity_id').cast(pl.Int64),
         ])
         .join(
             relation_evidence.select([
-                pl.col('relation_evidence_pk').cast(pl.Int64),
-                pl.col('relation_pk').cast(pl.Int64),
+                pl.col('relation_evidence_id').cast(pl.Int64),
+                pl.col('relation_id').cast(pl.Int64),
                 pl.col('source').cast(pl.String),
                 pl.col('record_attributes'),
             ]),
-            on='relation_pk',
+            on='relation_id',
             how='inner',
         )
     )
@@ -91,8 +90,8 @@ def build_relation_annotation(
         .explode('record_attributes')
         .drop_nulls('record_attributes')
         .select([
-            pl.col('relation_pk'),
-            pl.col('relation_evidence_pk'),
+            pl.col('relation_id'),
+            pl.col('relation_evidence_id'),
             pl.col('source'),
             pl.lit('relation').alias('scope'),
             pl.col('record_attributes').struct.field('term').alias('_raw_term'),
@@ -120,41 +119,41 @@ def build_relation_annotation(
         relations
         .filter(pl.col('relation_category') == 'association')
         .select([
-            pl.col('subject_entity_pk').cast(pl.Int64),
-            pl.col('object_entity_pk').cast(pl.Int64).alias('term_entity_pk'),
+            pl.col('subject_entity_id').cast(pl.Int64),
+            pl.col('object_entity_id').cast(pl.Int64).alias('term_entity_id'),
         ])
-        .join(term_entities.select('term_entity_pk'), on='term_entity_pk', how='inner')
+        .join(term_entities.select('term_entity_id'), on='term_entity_id', how='inner')
     )
 
     participant_term_candidates = pl.concat([
         interaction_relation_evidence.select([
-            pl.col('relation_pk'),
-            pl.col('relation_evidence_pk'),
+            pl.col('relation_id'),
+            pl.col('relation_evidence_id'),
             pl.col('source'),
-            pl.col('subject_entity_pk').alias('annotated_entity_pk'),
+            pl.col('subject_entity_id').alias('annotated_entity_id'),
         ]),
         interaction_relation_evidence.select([
-            pl.col('relation_pk'),
-            pl.col('relation_evidence_pk'),
+            pl.col('relation_id'),
+            pl.col('relation_evidence_id'),
             pl.col('source'),
-            pl.col('object_entity_pk').alias('annotated_entity_pk'),
+            pl.col('object_entity_id').alias('annotated_entity_id'),
         ]),
     ], how='vertical_relaxed').join(
         annotation_relations,
-        left_on='annotated_entity_pk',
-        right_on='subject_entity_pk',
+        left_on='annotated_entity_id',
+        right_on='subject_entity_id',
         how='inner',
     )
 
     participant_terms = (
         participant_term_candidates
-        .join(term_entities.select('term_entity_pk'), on='term_entity_pk', how='inner')
+        .join(term_entities.select('term_entity_id'), on='term_entity_id', how='inner')
         .select([
-            pl.col('relation_pk'),
-            pl.col('relation_evidence_pk'),
+            pl.col('relation_id'),
+            pl.col('relation_evidence_id'),
             pl.col('source'),
             pl.lit('participants').alias('scope'),
-            pl.col('term_entity_pk'),
+            pl.col('term_entity_id'),
         ])
         .unique()
     )
@@ -162,7 +161,7 @@ def build_relation_annotation(
     combined = (
         pl.concat([interaction_terms, participant_terms], how='vertical_relaxed')
         .unique()
-        .sort(['relation_pk', 'relation_evidence_pk', 'scope', 'term_entity_pk', 'source'])
+        .sort(['relation_id', 'relation_evidence_id', 'scope', 'term_entity_id', 'source'])
         .collect()
         .select(list(RELATION_ANNOTATION_TERM_SCHEMA.keys()))
     )
@@ -182,24 +181,4 @@ def build_relation_annotation(
     return summary
 
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description='Build relation_annotation_term.parquet from combined parquet artifacts.',
-    )
-    parser.add_argument(
-        '--output-dir',
-        type=Path,
-        default=Path('data/combined'),
-        help='Directory containing combined parquet artifacts (default: data/combined)',
-    )
-    return parser
 
-
-def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
-    build_relation_annotation(output_dir=args.output_dir)
-    return 0
-
-
-if __name__ == '__main__':
-    raise SystemExit(main())

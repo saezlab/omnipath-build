@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import sys
 from pathlib import Path
@@ -78,8 +79,8 @@ def _handle_gold(args: argparse.Namespace) -> int:
     argv.extend(['--inputs-package', args.inputs_package])
     argv.extend(['--batch-size', str(args.batch_size)])
     argv.extend(['--jobs', str(args.jobs)])
-    if args.silver_test_mode:
-        argv.append('--silver-test-mode')
+    if args.test_mode:
+        argv.append('--test-mode')
     if args.resolver_mapping_dir is not None:
         argv.extend(['--resolver-mapping-dir', str(args.resolver_mapping_dir)])
     try:
@@ -93,7 +94,7 @@ def _handle_combined(args: argparse.Namespace) -> int:
     """Build combined warehouse parquet artifacts."""
     project_root = Path(__file__).resolve().parent.parent.parent
 
-    from omnipath_build.gold.combine import build_combined_parquets
+    from omnipath_build.gold.combine import build_combined
 
     gold_root: Path = args.gold_root
     output_dir: Path = args.output_dir
@@ -103,7 +104,20 @@ def _handle_combined(args: argparse.Namespace) -> int:
         output_dir = project_root / output_dir
 
     try:
-        build_combined_parquets(gold_root=gold_root, output_dir=output_dir)
+        affected_entity_keys: set[str] | None = None
+        affected_relation_keys: set[str] | None = None
+        if args.affected_entities is not None:
+            affected_entity_keys = set(json.loads(args.affected_entities.read_text()))
+        if args.affected_relations is not None:
+            affected_relation_keys = set(json.loads(args.affected_relations.read_text()))
+        build_combined(
+            gold_root=gold_root,
+            output_dir=output_dir,
+            affected_entity_keys=affected_entity_keys,
+            affected_relation_keys=affected_relation_keys,
+            freeze_monthly=args.freeze_monthly,
+            changed_source=args.changed_source,
+        )
         return 0
     except Exception as exc:  # noqa: BLE001
         print(f'Unexpected error: {exc}', file=sys.stderr)
@@ -120,6 +134,14 @@ def _handle_postgres(args: argparse.Namespace) -> int:
     if not output_dir.is_absolute():
         output_dir = project_root / output_dir
 
+    affected_entity_keys: list[str] | None = None
+    affected_relation_keys: list[str] | None = None
+    if args.mode == 'incremental':
+        if args.affected_entities is not None:
+            affected_entity_keys = json.loads(args.affected_entities.read_text())
+        if args.affected_relations is not None:
+            affected_relation_keys = json.loads(args.affected_relations.read_text())
+
     try:
         return load_combined_schema_to_postgres(
             output_dir=output_dir,
@@ -133,6 +155,10 @@ def _handle_postgres(args: argparse.Namespace) -> int:
             indexes=args.indexes,
             bitmaps=args.bitmaps,
             views=args.views,
+            mode=args.mode,
+            affected_entity_keys=affected_entity_keys,
+            affected_relation_keys=affected_relation_keys,
+            changed_source=args.changed_source,
         )
     except Exception as exc:  # noqa: BLE001
         print(f'Unexpected error: {exc}', file=sys.stderr)
@@ -228,7 +254,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help='Parallel workers for the active gold pipeline',
     )
     gold_parser.add_argument(
-        '--silver-test-mode',
+        '--test-mode',
         action='store_true',
         help='Enable selective test limits for configured high-volume sources',
     )
@@ -255,6 +281,32 @@ def _build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=Path('data/combined'),
         help='Directory to write combined parquet artifacts (default: data/combined)',
+    )
+    combined_parser.add_argument(
+        '--affected-entities',
+        type=Path,
+        default=None,
+        help='Path to JSON file with list of affected entity_keys.',
+    )
+    combined_parser.add_argument(
+        '--affected-relations',
+        type=Path,
+        default=None,
+        help='Path to JSON file with list of affected relation_keys.',
+    )
+    combined_parser.add_argument(
+        '--freeze-monthly',
+        action='store_true',
+        help=(
+            'After writing, copy the latest/ directory to an immutable '
+            'YYYY-MM/ snapshot. Useful for creating monthly baselines.'
+        ),
+    )
+    combined_parser.add_argument(
+        '--changed-source',
+        type=str,
+        default=None,
+        help='Name of the source that changed (for build manifest).',
     )
     combined_parser.set_defaults(handler=_handle_combined)
 
@@ -326,6 +378,31 @@ def _build_parser() -> argparse.ArgumentParser:
         action=argparse.BooleanOptionalAction,
         default=True,
         help='Create materialized views (default: true)',
+    )
+    postgres_parser.add_argument(
+        '--mode',
+        type=str,
+        choices=('full', 'incremental'),
+        default='full',
+        help='Loading mode: full rebuild or incremental update (default: full)',
+    )
+    postgres_parser.add_argument(
+        '--affected-entities',
+        type=Path,
+        default=None,
+        help='JSON file with list of affected entity_keys (for incremental mode)',
+    )
+    postgres_parser.add_argument(
+        '--affected-relations',
+        type=Path,
+        default=None,
+        help='JSON file with list of affected relation_keys (for incremental mode)',
+    )
+    postgres_parser.add_argument(
+        '--changed-source',
+        type=str,
+        default=None,
+        help='Name of the source that changed (for incremental entity_evidence update)',
     )
     postgres_parser.set_defaults(handler=_handle_postgres)
 

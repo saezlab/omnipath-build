@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import argparse
 import json
 import textwrap
 from pathlib import Path
@@ -34,6 +33,8 @@ from omnipath_build.gold.utils.canonicalization import (
     ONTOLOGY_ENTITY_TYPE_LABEL,
     ONTOLOGY_IDENTIFIER_TYPE_LABEL,
 )
+from omnipath_build.gold.utils.keys import compute_entity_key
+from omnipath_build.gold.utils.table_schema import ENTITY_EVIDENCE_SCHEMA
 from omnipath_build.gold.utils.silver_entity_extraction import extract_from_silver_tables
 def _canonicalize_entities(
     entities: pl.DataFrame,
@@ -433,6 +434,90 @@ def _write_canonicalization_report(
     )
 
 
+def _build_entity_evidence(
+    silver_dir: str | Path,
+    occurrence_map: pl.DataFrame | None,
+    final_entities: pl.DataFrame,
+    output_dir: Path,
+    source_name: str,
+) -> None:
+    """Build per-source entity_evidence.parquet mapping entity_keys to raw_record_ids."""
+    if occurrence_map is None or occurrence_map.is_empty():
+        empty_evidence = pl.DataFrame({
+            name: pl.Series([], dtype=dtype)
+            for name, dtype in ENTITY_EVIDENCE_SCHEMA.items()
+        })
+        empty_evidence.write_parquet(output_dir / 'entity_evidence.parquet')
+        return
+
+    silver_base = Path(silver_dir)
+    entity_occurrence_path = silver_base / 'entity_occurrence.parquet'
+    if not entity_occurrence_path.exists():
+        empty_evidence = pl.DataFrame({
+            name: pl.Series([], dtype=dtype)
+            for name, dtype in ENTITY_EVIDENCE_SCHEMA.items()
+        })
+        empty_evidence.write_parquet(output_dir / 'entity_evidence.parquet')
+        return
+
+    # occurrence_id -> raw_record_id from silver
+    raw_records = pl.read_parquet(entity_occurrence_path).select([
+        'occurrence_id',
+        pl.col('record_id').cast(pl.Utf8).alias('raw_record_id'),
+    ]).filter(pl.col('raw_record_id').is_not_null() & (pl.col('raw_record_id') != ''))
+
+    if raw_records.is_empty():
+        empty_evidence = pl.DataFrame({
+            name: pl.Series([], dtype=dtype)
+            for name, dtype in ENTITY_EVIDENCE_SCHEMA.items()
+        })
+        empty_evidence.write_parquet(output_dir / 'entity_evidence.parquet')
+        return
+
+    # entity_pk -> list of raw_record_ids
+    evidence = (
+        occurrence_map
+        .join(raw_records, on='occurrence_id', how='inner')
+        .group_by('entity_pk')
+        .agg([
+            pl.col('raw_record_id').unique().sort().alias('raw_record_ids'),
+        ])
+    )
+
+    # Join with final_entities to get entity_key and attributes
+    evidence_out = (
+        final_entities
+        .select([
+            'entity_pk',
+            'entity_key',
+            'entity_type',
+            'taxonomy_id',
+            'identifiers',
+            'entity_attributes',
+        ])
+        .join(evidence, on='entity_pk', how='inner')
+        .select([
+            pl.lit(source_name).alias('source'),
+            'entity_key',
+            'raw_record_ids',
+            'entity_type',
+            'taxonomy_id',
+            'identifiers',
+            'entity_attributes',
+        ])
+    )
+
+    if evidence_out.is_empty():
+        empty_evidence = pl.DataFrame({
+            name: pl.Series([], dtype=dtype)
+            for name, dtype in ENTITY_EVIDENCE_SCHEMA.items()
+        })
+        empty_evidence.write_parquet(output_dir / 'entity_evidence.parquet')
+        return
+
+    evidence_out.write_parquet(output_dir / 'entity_evidence.parquet')
+
+
 def build_entities(
     silver_dir: str | Path,
     mapping_dir: str | Path,
@@ -475,6 +560,26 @@ def build_entities(
         }))),
     ])
 
+    # Add stable entity_key
+    final_entities = final_entities.with_columns([
+        pl.struct(['canonical_identifier', 'canonical_identifier_type', 'taxonomy_id'])
+        .map_elements(
+            lambda row: compute_entity_key(row['canonical_identifier'], row['canonical_identifier_type'], row['taxonomy_id']),
+            return_dtype=pl.Utf8,
+        )
+        .alias('entity_key'),
+    ]).select([
+        'entity_pk',
+        'entity_key',
+        'canonical_identifier',
+        'canonical_identifier_type',
+        'identifiers',
+        'entity_type',
+        'taxonomy_id',
+        'entity_attributes',
+        'sources',
+    ])
+
     # 6. Build fingerprint -> final PK map
     fingerprint_map = (
         temp_entities.select(['entity_pk', '_fingerprint'])
@@ -496,6 +601,7 @@ def build_entities(
     # 7. Write outputs
     final_entities.write_parquet(output_dir / 'entity.parquet')
     fingerprint_map.write_parquet(output_dir / 'entity_map.parquet')
+    occurrence_map = None
     if occurrence_fingerprint_map is not None:
         occurrence_map = (
             occurrence_fingerprint_map
@@ -504,6 +610,15 @@ def build_entities(
             .unique()
         )
         occurrence_map.write_parquet(output_dir / 'entity_occurrence_map.parquet')
+
+    # Build entity_evidence.parquet linking entities to raw_record_ids
+    _build_entity_evidence(
+        silver_dir=silver_dir,
+        occurrence_map=occurrence_map,
+        final_entities=final_entities,
+        output_dir=output_dir,
+        source_name=source_name,
+    )
 
     legacy_ontology_term_path = output_dir / 'ontology_term.parquet'
     if legacy_ontology_term_path.exists():
@@ -524,26 +639,4 @@ def build_entities(
     }
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description='Build canonicalized entity.parquet from silver data.')
-    parser.add_argument('--silver-dir', type=Path, required=True, help='Directory containing silver parquet files.')
-    parser.add_argument('--mapping-dir', type=Path, default=Path('id_resolver/data'), help='Resolver mapping directory.')
-    parser.add_argument('--output-dir', type=Path, required=True, help='Output directory for entity.parquet and entity_map.parquet.')
-    parser.add_argument('--source-name', required=True, help='Source name for metadata.')
-    return parser.parse_args()
 
-
-def main() -> int:
-    args = parse_args()
-    summary = build_entities(
-        silver_dir=args.silver_dir,
-        mapping_dir=args.mapping_dir,
-        output_dir=args.output_dir,
-        source_name=args.source_name,
-    )
-    print(f'Entity build complete: {summary}')
-    return 0
-
-
-if __name__ == '__main__':
-    raise SystemExit(main())

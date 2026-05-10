@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from dataclasses import asdict, dataclass
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 
-from omnipath_build.gold.combine import build_combined_parquets
+from omnipath_build.gold.combine import build_combined
 from omnipath_build.silver.build import (
     ResourceFunction,
     discover_resources,
@@ -92,17 +92,11 @@ def _write_report(paths: PipelinePaths, report: dict[str, Any]) -> None:
 def build_task_graph(
     sources: list[str],
     gold_sources: list[str] | None = None,
-    build_mappings: bool | None = None,
-    build_sources: bool | None = None,
+    build_mappings: bool = True,
+    build_sources: bool = True,
     combine: bool = False,
     postgres: bool = False,
-    include_mappings: bool | None = None,
-    include_sources: bool | None = None,
 ) -> list[TaskDef]:
-    if build_mappings is None:
-        build_mappings = bool(include_mappings)
-    if build_sources is None:
-        build_sources = True if include_sources is None else bool(include_sources)
     tasks: list[TaskDef] = []
     silver_keys: list[str] = []
     gold_keys: list[str] = []
@@ -392,7 +386,7 @@ def _execute_task(
         )
 
     if task.task_type == 'combine':
-        metadata = build_combined_parquets(
+        metadata = build_combined(
             gold_root=paths.gold_root,
             output_dir=combined_output_dir,
             inputs_package=inputs_package,

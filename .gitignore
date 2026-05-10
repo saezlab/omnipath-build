@@ -45,3 +45,4 @@ omnipath_build.code-workspace
 data_v2/
 *.sdf.gz
 data_old/
+new_incremental_test/

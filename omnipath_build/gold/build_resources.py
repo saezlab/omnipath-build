@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import argparse
 import importlib
 from dataclasses import fields, is_dataclass
 from datetime import UTC, datetime
@@ -268,40 +267,4 @@ def build_resources_parquet(
     return output_path
 
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description='Build resources.parquet from B3 per-source gold outputs.',
-    )
-    parser.add_argument(
-        '--gold-root',
-        type=Path,
-        default=Path('data/gold'),
-        help='Root directory containing per-source gold outputs (default: data/gold)',
-    )
-    parser.add_argument(
-        '--output-path',
-        type=Path,
-        default=Path('data/combined/resources.parquet'),
-        help='Output parquet path (default: data/combined/resources.parquet)',
-    )
-    parser.add_argument(
-        '--inputs-package',
-        type=str,
-        default='pypath.inputs_v2',
-        help='Python package containing resource definitions.',
-    )
-    return parser
 
-
-def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
-    build_resources_parquet(
-        gold_root=args.gold_root,
-        output_path=args.output_path,
-        inputs_package=args.inputs_package,
-    )
-    return 0
-
-
-if __name__ == '__main__':
-    raise SystemExit(main())

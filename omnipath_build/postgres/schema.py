@@ -13,15 +13,15 @@ def ensure_schema(
 ) -> None:
     table_kind = 'UNLOGGED TABLE' if unlogged_tables else 'TABLE'
     entity_fk = (
-        ' REFERENCES {schema}.entity (entity_pk)' if foreign_keys else ''
+        ' REFERENCES {schema}.entity (entity_id)' if foreign_keys else ''
     )
     relation_fk = (
-        ' REFERENCES {schema}.entity_relation (relation_pk)'
+        ' REFERENCES {schema}.entity_relation (relation_id)'
         if foreign_keys
         else ''
     )
     evidence_fk = (
-        ' REFERENCES {schema}.entity_relation_evidence (relation_evidence_pk)'
+        ' REFERENCES {schema}.entity_relation_evidence (relation_evidence_id)'
         if foreign_keys
         else ''
     )
@@ -50,13 +50,14 @@ def ensure_schema(
             sql.SQL(
                 f"""
                 CREATE {table_kind} IF NOT EXISTS {{}}.entity (
-                  entity_pk bigint PRIMARY KEY,
+                  entity_id bigserial PRIMARY KEY,
+                  entity_key text NOT NULL UNIQUE,
                   canonical_identifier text NOT NULL,
                   canonical_identifier_type text NOT NULL,
                   entity_type text,
                   taxonomy_id text,
                   entity_attributes jsonb,
-                  sources text[] NOT NULL DEFAULT ARRAY[]::text[]
+                  sources jsonb
                 )
                 """
             ).format(sql.Identifier(schema))
@@ -66,7 +67,7 @@ def ensure_schema(
                 f"""
                 CREATE {table_kind} IF NOT EXISTS {{}}.entity_identifier (
                   id bigserial PRIMARY KEY,
-                  entity_pk bigint NOT NULL{entity_fk},
+                  entity_id bigint NOT NULL{entity_fk},
                   identifier text NOT NULL,
                   identifier_type text NOT NULL
                 )
@@ -77,14 +78,17 @@ def ensure_schema(
             sql.SQL(
                 f"""
                 CREATE {table_kind} IF NOT EXISTS {{}}.entity_relation (
-                  relation_pk bigint PRIMARY KEY,
-                  subject_entity_pk bigint NOT NULL{entity_fk},
+                  relation_id bigserial PRIMARY KEY,
+                  relation_key text NOT NULL UNIQUE,
+                  subject_entity_id bigint NOT NULL{entity_fk},
+                  subject_entity_key text NOT NULL,
                   predicate text NOT NULL,
-                  object_entity_pk bigint NOT NULL{entity_fk},
+                  object_entity_id bigint NOT NULL{entity_fk},
+                  object_entity_key text NOT NULL,
                   relation_category text NOT NULL,
-                  participant_types text[] NOT NULL DEFAULT ARRAY[]::text[],
+                  participant_types jsonb,
                   evidence_count bigint NOT NULL,
-                  sources text[] NOT NULL DEFAULT ARRAY[]::text[]
+                  sources jsonb
                 )
                 """
             ).format(sql.Identifier(schema))
@@ -93,9 +97,11 @@ def ensure_schema(
             sql.SQL(
                 f"""
                 CREATE {table_kind} IF NOT EXISTS {{}}.entity_relation_evidence (
+                  relation_evidence_id bigserial PRIMARY KEY,
+                  relation_id bigint NOT NULL{relation_fk},
+                  relation_key text NOT NULL,
                   source text NOT NULL,
-                  relation_evidence_pk bigint PRIMARY KEY,
-                  relation_pk bigint NOT NULL{relation_fk},
+                  raw_record_id text,
                   record_attributes jsonb,
                   subject_attributes jsonb,
                   object_attributes jsonb,
@@ -107,13 +113,29 @@ def ensure_schema(
         cur.execute(
             sql.SQL(
                 f"""
+                CREATE {table_kind} IF NOT EXISTS {{}}.entity_evidence (
+                  source text NOT NULL,
+                  entity_key text NOT NULL,
+                  raw_record_ids jsonb,
+                  entity_type text,
+                  taxonomy_id text,
+                  identifiers jsonb,
+                  entity_attributes jsonb,
+                  PRIMARY KEY (source, entity_key)
+                )
+                """
+            ).format(sql.Identifier(schema))
+        )
+        cur.execute(
+            sql.SQL(
+                f"""
                 CREATE {table_kind} IF NOT EXISTS {{}}.relation_annotation_term (
-                  relation_pk bigint NOT NULL{relation_fk},
-                  relation_evidence_pk bigint NOT NULL{evidence_fk},
+                  relation_id bigint NOT NULL{relation_fk},
+                  relation_evidence_id bigint NOT NULL{evidence_fk},
                   source text NOT NULL,
                   scope text NOT NULL,
-                  term_entity_pk bigint NOT NULL{entity_fk},
-                  PRIMARY KEY (relation_evidence_pk, scope, term_entity_pk)
+                  term_entity_id bigint NOT NULL{entity_fk},
+                  PRIMARY KEY (relation_id, source, scope, term_entity_id)
                 )
                 """
             ).format(sql.Identifier(schema))
@@ -129,8 +151,8 @@ def ensure_schema(
                   license text,
                   pubmed_id text,
                   resource_kind text,
-                  categories text[] NOT NULL DEFAULT ARRAY[]::text[],
-                  annotation_ontologies text[] NOT NULL DEFAULT ARRAY[]::text[],
+                  categories jsonb,
+                  annotation_ontologies jsonb,
                   entity_count bigint NOT NULL DEFAULT 0,
                   interaction_count bigint NOT NULL DEFAULT 0,
                   association_count bigint NOT NULL DEFAULT 0,

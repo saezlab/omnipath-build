@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import argparse
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +11,7 @@ from omnipath_build.gold.utils.entity_extraction import (
     collect_attributes,
     extract_ontology_entity_description,
 )
+from omnipath_build.gold.utils.keys import compute_relation_key
 from omnipath_build.gold.utils.schema import (
     ASSOCIATION_CATEGORY,
     ASSOCIATION_PREDICATE,
@@ -37,12 +37,14 @@ class RelationWriterBase:
         silver_dir: Path,
         output_dir: Path,
         entity_map: dict[str, int],
+        entity_key_map: dict[int, str],
         batch_size: int = 10_000,
     ) -> None:
         self.source = source
         self.silver_dir = silver_dir
         self.output_dir = output_dir
         self.entity_map = entity_map
+        self.entity_key_map = entity_key_map
         self.batch_size = batch_size
 
         self.next_relation_pk = 1
@@ -65,9 +67,12 @@ class RelationWriterBase:
         for relation_row in sorted(self.relation_index.values(), key=lambda row: row['relation_pk']):
             self.entity_relations.write({
                 'relation_pk': relation_row['relation_pk'],
+                'relation_key': relation_row['relation_key'],
                 'subject_entity_pk': relation_row['subject_entity_pk'],
+                'subject_entity_key': relation_row['subject_entity_key'],
                 'predicate': relation_row['predicate'],
                 'object_entity_pk': relation_row['object_entity_pk'],
+                'object_entity_key': relation_row['object_entity_key'],
                 'relation_category': relation_row['relation_category'],
                 'evidence_count': relation_row['evidence_count'],
                 'sources': sorted(relation_row['sources']),
@@ -81,6 +86,7 @@ class RelationWriterBase:
         entity_pk: int,
         annotations: list[dict[str, Any]],
         record_class: str,
+        raw_record_id: str | None,
     ) -> None:
         context = AnnotationContext(record_class=record_class, parent_type=None)
         evidence = collect_attributes(annotations, context, {'evidence'})
@@ -108,6 +114,7 @@ class RelationWriterBase:
                 subject_entity_pk=entity_pk,
                 predicate_rule=rule,
                 object_entity_pk=object_pk,
+                raw_record_id=raw_record_id,
                 record_attributes=None,
                 subject_attributes=None,
                 object_attributes=None,
@@ -119,6 +126,7 @@ class RelationWriterBase:
         subject_entity_pk: int,
         predicate_rule: PredicateRule,
         object_entity_pk: int,
+        raw_record_id: str | None,
         record_attributes: list[dict[str, str | None]] | None,
         subject_attributes: list[dict[str, str | None]] | None,
         object_attributes: list[dict[str, str | None]] | None,
@@ -132,11 +140,22 @@ class RelationWriterBase:
         )
         relation_row = self.relation_index.get(key)
         if relation_row is None:
+            subject_entity_key = self.entity_key_map.get(subject_entity_pk, '')
+            object_entity_key = self.entity_key_map.get(object_entity_pk, '')
+            relation_key = compute_relation_key(
+                subject_entity_key,
+                predicate_rule.predicate,
+                object_entity_key,
+                predicate_rule.relation_category,
+            )
             relation_row = {
                 'relation_pk': self.next_relation_pk,
+                'relation_key': relation_key,
                 'subject_entity_pk': subject_entity_pk,
+                'subject_entity_key': subject_entity_key,
                 'predicate': predicate_rule.predicate,
                 'object_entity_pk': object_entity_pk,
+                'object_entity_key': object_entity_key,
                 'relation_category': predicate_rule.relation_category,
                 'evidence_count': 0,
                 'sources': set(),
@@ -151,6 +170,8 @@ class RelationWriterBase:
             'source': self.source,
             'relation_evidence_pk': self.next_relation_evidence_pk,
             'relation_pk': relation_row['relation_pk'],
+            'relation_key': relation_row['relation_key'],
+            'raw_record_id': raw_record_id or '',
             'record_attributes': record_attributes,
             'subject_attributes': subject_attributes,
             'object_attributes': object_attributes,
@@ -168,10 +189,11 @@ class RelationBuilder(RelationWriterBase):
         silver_dir: Path,
         output_dir: Path,
         entity_map: dict[str, int],
+        entity_key_map: dict[int, str],
         occurrence_map: dict[str, int],
         batch_size: int = 10_000,
     ) -> None:
-        super().__init__(source, silver_dir, output_dir, entity_map, batch_size)
+        super().__init__(source, silver_dir, output_dir, entity_map, entity_key_map, batch_size)
         self.occurrence_map = occurrence_map
 
     def convert(self) -> None:
@@ -238,6 +260,7 @@ class RelationBuilder(RelationWriterBase):
                 'annotations': annotations_by_occ.get(occurrence_id, []),
                 'identifiers': identifiers_by_occ.get(occurrence_id, []),
                 'record_class': record_class,
+                'raw_record_id': string_or_none(row.get('record_id')),
             }
 
         for occurrence_id, row in occurrence_rows.items():
@@ -246,6 +269,7 @@ class RelationBuilder(RelationWriterBase):
             record_class = row['record_class']
             if record_class in {'ignored', 'ontology_term_only'}:
                 continue
+            raw_record_id = row.get('raw_record_id')
             if record_class == 'interaction_relation':
                 self._project_interaction_from_tables(row, occurrence_rows, membership_rows_by_parent.get(occurrence_id, []))
                 continue
@@ -255,7 +279,7 @@ class RelationBuilder(RelationWriterBase):
                 continue
             if record_class == 'membership_relation':
                 self._project_memberships_from_tables(parent_pk, row, occurrence_rows, membership_rows_by_parent.get(occurrence_id, []))
-            self._emit_annotation_relations(parent_pk, row.get('annotations') or [], record_class)
+            self._emit_annotation_relations(parent_pk, row.get('annotations') or [], record_class, raw_record_id)
 
     @staticmethod
     def _annotations_by_key(frame: pl.DataFrame, key_column: str) -> dict[str, list[dict[str, Any]]]:
@@ -295,6 +319,7 @@ class RelationBuilder(RelationWriterBase):
         memberships: list[dict[str, Any]],
     ) -> None:
         participants: list[dict[str, Any]] = []
+        raw_record_id = row.get('raw_record_id')
         for membership in memberships:
             member_id = membership['member_occurrence_id']
             member_row = occurrence_rows.get(member_id)
@@ -306,7 +331,7 @@ class RelationBuilder(RelationWriterBase):
             member_pk = self.occurrence_map.get(member_id)
             if member_pk is None:
                 continue
-            self._emit_annotation_relations(member_pk, member_row.get('annotations') or [], member_class)
+            self._emit_annotation_relations(member_pk, member_row.get('annotations') or [], member_class, raw_record_id)
             participants.append({'pk': member_pk, 'membership_annotations': membership.get('annotations') or []})
 
         ordered_participants = order_interaction_participants(participants)
@@ -333,6 +358,7 @@ class RelationBuilder(RelationWriterBase):
             subject_entity_pk=ordered_participants[0]['pk'],
             predicate_rule=rule,
             object_entity_pk=ordered_participants[1]['pk'],
+            raw_record_id=raw_record_id,
             record_attributes=record_attributes,
             subject_attributes=subject_attributes,
             object_attributes=object_attributes,
@@ -347,6 +373,7 @@ class RelationBuilder(RelationWriterBase):
         memberships: list[dict[str, Any]],
     ) -> None:
         parent_type = string_or_none(row.get('type'))
+        raw_record_id = row.get('raw_record_id')
         parent_evidence = collect_attributes(
             row.get('annotations') or [],
             AnnotationContext(record_class='membership_relation', parent_type=parent_type),
@@ -363,7 +390,7 @@ class RelationBuilder(RelationWriterBase):
             member_pk = self.occurrence_map.get(member_id)
             if member_pk is None:
                 continue
-            self._emit_annotation_relations(member_pk, member_row.get('annotations') or [], member_class)
+            self._emit_annotation_relations(member_pk, member_row.get('annotations') or [], member_class, raw_record_id)
 
             rule = predicate_for_membership(parent_type, membership)
             member_is_subject = bool(membership.get('is_parent', False))
@@ -399,6 +426,7 @@ class RelationBuilder(RelationWriterBase):
                 subject_entity_pk=subject_pk,
                 predicate_rule=rule,
                 object_entity_pk=object_pk,
+                raw_record_id=raw_record_id,
                 record_attributes=None,
                 subject_attributes=subject_attributes,
                 object_attributes=object_attributes,
@@ -430,6 +458,18 @@ def build_relations(
         strict=True,
     ))
 
+    # Load entity keys from entity.parquet
+    entity_parquet_path = Path(entity_map_path).with_name('entity.parquet')
+    entity_key_map: dict[int, str] = {}
+    if entity_parquet_path.exists():
+        entity_df = pl.read_parquet(entity_parquet_path)
+        if 'entity_key' in entity_df.columns:
+            entity_key_map = dict(zip(
+                entity_df['entity_pk'].to_list(),
+                entity_df['entity_key'].to_list(),
+                strict=True,
+            ))
+
     silver_dir = Path(silver_dir)
     if not has_silver_tables(silver_dir):
         raise FileNotFoundError(f'silver tables not found under {silver_dir}')
@@ -452,6 +492,7 @@ def build_relations(
         silver_dir=silver_dir,
         output_dir=output_dir,
         entity_map=entity_map,
+        entity_key_map=entity_key_map,
         occurrence_map=occurrence_map,
     )
     try:
@@ -465,26 +506,4 @@ def build_relations(
     }
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description='Build entity relations from silver data using canonical entity PKs.')
-    parser.add_argument('--silver-dir', type=Path, required=True, help='Directory containing silver parquet files.')
-    parser.add_argument('--entity-map', type=Path, required=True, help='Path to entity_map.parquet from build_entities.')
-    parser.add_argument('--output-dir', type=Path, required=True, help='Output directory for relation parquet files.')
-    parser.add_argument('--source-name', required=True, help='Source name for metadata.')
-    return parser.parse_args()
 
-
-def main() -> int:
-    args = parse_args()
-    summary = build_relations(
-        silver_dir=args.silver_dir,
-        entity_map_path=args.entity_map,
-        output_dir=args.output_dir,
-        source_name=args.source_name,
-    )
-    print(f'Relation build complete: {summary}')
-    return 0
-
-
-if __name__ == '__main__':
-    raise SystemExit(main())

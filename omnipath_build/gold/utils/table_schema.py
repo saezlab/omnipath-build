@@ -18,6 +18,7 @@ ATTRIBUTE_STRUCT = pl.List(
 
 ENTITY_SCHEMA = {
     'entity_pk': pl.Int64,
+    'entity_key': pl.String,
     'canonical_identifier': pl.String,
     'canonical_identifier_type': pl.String,
     'identifiers': pl.List(IDENTIFIER_STRUCT),
@@ -82,9 +83,12 @@ INTERACTION_ANNOTATION_SCHEMA = {
 
 ENTITY_RELATION_SCHEMA = {
     'relation_pk': pl.Int64,
+    'relation_key': pl.String,
     'subject_entity_pk': pl.Int64,
+    'subject_entity_key': pl.String,
     'predicate': pl.String,
     'object_entity_pk': pl.Int64,
+    'object_entity_key': pl.String,
     'relation_category': pl.String,
     'participant_types': pl.List(pl.String),
     'evidence_count': pl.Int64,
@@ -95,6 +99,8 @@ ENTITY_RELATION_EVIDENCE_SCHEMA = {
     'source': pl.String,
     'relation_evidence_pk': pl.Int64,
     'relation_pk': pl.Int64,
+    'relation_key': pl.String,
+    'raw_record_id': pl.String,
     'record_attributes': ATTRIBUTE_STRUCT,
     'subject_attributes': ATTRIBUTE_STRUCT,
     'object_attributes': ATTRIBUTE_STRUCT,
@@ -111,11 +117,59 @@ ONTOLOGY_TERM_SCHEMA = {
 }
 
 RELATION_ANNOTATION_TERM_SCHEMA = {
-    'relation_pk': pl.Int64,
-    'relation_evidence_pk': pl.Int64,
+    'relation_id': pl.Int64,
+    'relation_evidence_id': pl.Int64,
     'source': pl.String,
     'scope': pl.String,
-    'term_entity_pk': pl.Int64,
+    'term_entity_id': pl.Int64,
+}
+
+ENTITY_EVIDENCE_SCHEMA = {
+    'source': pl.String,
+    'entity_key': pl.String,
+    'raw_record_ids': pl.List(pl.String),
+    'entity_type': pl.String,
+    'taxonomy_id': pl.String,
+    'identifiers': pl.List(IDENTIFIER_STRUCT),
+    'entity_attributes': ATTRIBUTE_STRUCT,
+}
+
+COMBINED_ENTITY_SCHEMA = {
+    'entity_id': pl.Int64,
+    'entity_key': pl.String,
+    'canonical_identifier': pl.String,
+    'canonical_identifier_type': pl.String,
+    'identifiers': pl.List(IDENTIFIER_STRUCT),
+    'entity_type': pl.String,
+    'taxonomy_id': pl.String,
+    'entity_attributes': ATTRIBUTE_STRUCT,
+    'sources': pl.List(pl.String),
+}
+
+COMBINED_ENTITY_RELATION_SCHEMA = {
+    'relation_id': pl.Int64,
+    'relation_key': pl.String,
+    'subject_entity_id': pl.Int64,
+    'subject_entity_key': pl.String,
+    'predicate': pl.String,
+    'object_entity_id': pl.Int64,
+    'object_entity_key': pl.String,
+    'relation_category': pl.String,
+    'participant_types': pl.List(pl.String),
+    'evidence_count': pl.Int64,
+    'sources': pl.List(pl.String),
+}
+
+COMBINED_ENTITY_RELATION_EVIDENCE_SCHEMA = {
+    'relation_evidence_id': pl.Int64,
+    'relation_id': pl.Int64,
+    'relation_key': pl.String,
+    'source': pl.String,
+    'raw_record_id': pl.String,
+    'record_attributes': ATTRIBUTE_STRUCT,
+    'subject_attributes': ATTRIBUTE_STRUCT,
+    'object_attributes': ATTRIBUTE_STRUCT,
+    'evidence': ATTRIBUTE_STRUCT,
 }
 
 ARTIFACT_OUTPUTS = {

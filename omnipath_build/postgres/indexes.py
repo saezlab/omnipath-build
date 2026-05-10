@@ -14,19 +14,21 @@ def create_secondary_indexes(
     schema: str,
 ) -> None:
     statements = [
-        sql.SQL('CREATE INDEX IF NOT EXISTS entity_identifier_entity_pk_idx ON {}.entity_identifier (entity_pk)').format(sql.Identifier(schema)),
+        sql.SQL('CREATE INDEX IF NOT EXISTS entity_identifier_entity_id_idx ON {}.entity_identifier (entity_id)').format(sql.Identifier(schema)),
         sql.SQL('CREATE INDEX IF NOT EXISTS entity_identifier_value_hash_idx ON {}.entity_identifier USING HASH (identifier)').format(sql.Identifier(schema)),
         sql.SQL('CREATE INDEX IF NOT EXISTS entity_identifier_identifier_lower_hash_idx ON {}.entity_identifier USING HASH (LOWER(identifier))').format(sql.Identifier(schema)),
+        sql.SQL('CREATE INDEX IF NOT EXISTS entity_key_idx ON {}.entity (entity_key)').format(sql.Identifier(schema)),
         sql.SQL('CREATE INDEX IF NOT EXISTS entity_taxonomy_idx ON {}.entity (taxonomy_id)').format(sql.Identifier(schema)),
-        sql.SQL('CREATE INDEX IF NOT EXISTS entity_relation_subject_idx ON {}.entity_relation (subject_entity_pk)').format(sql.Identifier(schema)),
-        sql.SQL('CREATE INDEX IF NOT EXISTS entity_relation_object_idx ON {}.entity_relation (object_entity_pk)').format(sql.Identifier(schema)),
-        sql.SQL('CREATE INDEX IF NOT EXISTS entity_relation_subject_predicate_idx ON {}.entity_relation (subject_entity_pk, predicate)').format(sql.Identifier(schema)),
+        sql.SQL('CREATE INDEX IF NOT EXISTS entity_relation_subject_idx ON {}.entity_relation (subject_entity_id)').format(sql.Identifier(schema)),
+        sql.SQL('CREATE INDEX IF NOT EXISTS entity_relation_object_idx ON {}.entity_relation (object_entity_id)').format(sql.Identifier(schema)),
+        sql.SQL('CREATE INDEX IF NOT EXISTS entity_relation_subject_predicate_idx ON {}.entity_relation (subject_entity_id, predicate)').format(sql.Identifier(schema)),
         sql.SQL('CREATE INDEX IF NOT EXISTS entity_relation_category_predicate_idx ON {}.entity_relation (relation_category, predicate)').format(sql.Identifier(schema)),
-        sql.SQL('CREATE INDEX IF NOT EXISTS entity_relation_subject_category_idx ON {}.entity_relation (subject_entity_pk, relation_category)').format(sql.Identifier(schema)),
-        sql.SQL('CREATE INDEX IF NOT EXISTS entity_relation_object_category_idx ON {}.entity_relation (object_entity_pk, relation_category)').format(sql.Identifier(schema)),
-        sql.SQL('CREATE INDEX IF NOT EXISTS entity_relation_evidence_relation_idx ON {}.entity_relation_evidence (relation_pk)').format(sql.Identifier(schema)),
-        sql.SQL('CREATE INDEX IF NOT EXISTS relation_annotation_term_scope_term_relation_idx ON {}.relation_annotation_term (scope, term_entity_pk, relation_pk)').format(sql.Identifier(schema)),
-        sql.SQL('CREATE INDEX IF NOT EXISTS relation_annotation_term_relation_idx ON {}.relation_annotation_term (relation_pk)').format(sql.Identifier(schema)),
+        sql.SQL('CREATE INDEX IF NOT EXISTS entity_relation_subject_category_idx ON {}.entity_relation (subject_entity_id, relation_category)').format(sql.Identifier(schema)),
+        sql.SQL('CREATE INDEX IF NOT EXISTS entity_relation_object_category_idx ON {}.entity_relation (object_entity_id, relation_category)').format(sql.Identifier(schema)),
+        sql.SQL('CREATE INDEX IF NOT EXISTS entity_relation_evidence_relation_idx ON {}.entity_relation_evidence (relation_id)').format(sql.Identifier(schema)),
+        sql.SQL('CREATE INDEX IF NOT EXISTS entity_evidence_source_idx ON {}.entity_evidence (source)').format(sql.Identifier(schema)),
+        sql.SQL('CREATE INDEX IF NOT EXISTS relation_annotation_term_scope_term_relation_idx ON {}.relation_annotation_term (scope, term_entity_id, relation_id)').format(sql.Identifier(schema)),
+        sql.SQL('CREATE INDEX IF NOT EXISTS relation_annotation_term_relation_idx ON {}.relation_annotation_term (relation_id)').format(sql.Identifier(schema)),
         sql.SQL(
             """
             CREATE INDEX IF NOT EXISTS entity_cv_term_idx
