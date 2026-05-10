@@ -37,8 +37,7 @@ ENTITY_OCCURRENCE_SCHEMA = pa.schema([
     pa.field('entity_type', pa.string()),
     pa.field('source', pa.string(), nullable=False),
     pa.field('dataset', pa.string(), nullable=False),
-    pa.field('record_class_hint', pa.string()),
-    pa.field('row_number', pa.int64()),
+    pa.field('_raw_record_id', pa.int64()),
 ])
 
 ENTITY_IDENTIFIER_SCHEMA = pa.schema([
@@ -47,6 +46,7 @@ ENTITY_IDENTIFIER_SCHEMA = pa.schema([
     pa.field('identifier', pa.string()),
     pa.field('source', pa.string(), nullable=False),
     pa.field('dataset', pa.string(), nullable=False),
+    pa.field('_raw_record_id', pa.int64()),
 ])
 
 ENTITY_ANNOTATION_SCHEMA = pa.schema([
@@ -56,6 +56,7 @@ ENTITY_ANNOTATION_SCHEMA = pa.schema([
     pa.field('unit', pa.string()),
     pa.field('source', pa.string(), nullable=False),
     pa.field('dataset', pa.string(), nullable=False),
+    pa.field('_raw_record_id', pa.int64()),
 ])
 
 MEMBERSHIP_SCHEMA = pa.schema([
@@ -66,6 +67,7 @@ MEMBERSHIP_SCHEMA = pa.schema([
     pa.field('membership_role', pa.string()),
     pa.field('source', pa.string(), nullable=False),
     pa.field('dataset', pa.string(), nullable=False),
+    pa.field('_raw_record_id', pa.int64()),
 ])
 
 MEMBERSHIP_ANNOTATION_SCHEMA = pa.schema([
@@ -77,6 +79,7 @@ MEMBERSHIP_ANNOTATION_SCHEMA = pa.schema([
     pa.field('unit', pa.string()),
     pa.field('source', pa.string(), nullable=False),
     pa.field('dataset', pa.string(), nullable=False),
+    pa.field('_raw_record_id', pa.int64()),
 ])
 
 SILVER_TABLE_SCHEMAS = {
@@ -150,13 +153,20 @@ class SilverTableWriter:
         self._dataset_counts: dict[str, int] = {}
         self._membership_counts: dict[str, int] = {}
 
-    def write_entity(self, entity: Entity, *, dataset: str, row_number: int | None = None) -> str:
+    def write_entity(
+        self,
+        entity: Entity,
+        *,
+        dataset: str,
+        raw_record_id: int | None = None,
+    ) -> str:
         return self._write_entity(
             entity,
             dataset=dataset,
             parent_occurrence_id=None,
             entity_role='parent',
-            row_number=row_number,
+            raw_record_id=raw_record_id,
+            occurrence_suffix='parent',
         )
 
     def _next_occurrence_id(self, dataset: str) -> str:
@@ -176,19 +186,22 @@ class SilverTableWriter:
         dataset: str,
         parent_occurrence_id: str | None,
         entity_role: str,
-        row_number: int | None,
+        raw_record_id: int | None,
+        occurrence_suffix: str,
     ) -> str:
-        occurrence_id = self._next_occurrence_id(dataset)
+        if raw_record_id is not None:
+            occurrence_id = f'{dataset}:{raw_record_id}:{occurrence_suffix}'
+        else:
+            occurrence_id = self._next_occurrence_id(dataset)
         self._writers['entity_occurrence'].write({
             'occurrence_id': occurrence_id,
-            'record_id': None,
+            'record_id': str(raw_record_id) if raw_record_id is not None else None,
             'parent_occurrence_id': parent_occurrence_id,
             'entity_role': entity_role,
             'entity_type': _text(getattr(entity, 'type', None)),
             'source': self.source,
             'dataset': dataset,
-            'record_class_hint': None,
-            'row_number': row_number,
+            '_raw_record_id': raw_record_id,
         })
 
         for identifier in getattr(entity, 'identifiers', None) or []:
@@ -198,6 +211,7 @@ class SilverTableWriter:
                 'identifier': _text(getattr(identifier, 'value', None)),
                 'source': self.source,
                 'dataset': dataset,
+                '_raw_record_id': raw_record_id,
             })
 
         for annotation in getattr(entity, 'annotations', None) or []:
@@ -208,9 +222,10 @@ class SilverTableWriter:
                 'unit': _text(getattr(annotation, 'units', None)),
                 'source': self.source,
                 'dataset': dataset,
+                '_raw_record_id': raw_record_id,
             })
 
-        for membership in getattr(entity, 'membership', None) or []:
+        for membership_index, membership in enumerate(getattr(entity, 'membership', None) or []):
             member = getattr(membership, 'member', None)
             if member is None:
                 continue
@@ -219,9 +234,13 @@ class SilverTableWriter:
                 dataset=dataset,
                 parent_occurrence_id=occurrence_id,
                 entity_role='member',
-                row_number=row_number,
+                raw_record_id=raw_record_id,
+                occurrence_suffix=f'{occurrence_suffix}:member:{membership_index}',
             )
-            membership_id = self._next_membership_id(dataset)
+            if raw_record_id is not None:
+                membership_id = f'{dataset}:{raw_record_id}:{occurrence_suffix}:membership:{membership_index}'
+            else:
+                membership_id = self._next_membership_id(dataset)
             is_parent = getattr(membership, 'is_parent', None)
             self._writers['membership'].write({
                 'membership_id': membership_id,
@@ -231,6 +250,7 @@ class SilverTableWriter:
                 'membership_role': None,
                 'source': self.source,
                 'dataset': dataset,
+                '_raw_record_id': raw_record_id,
             })
             for annotation in getattr(membership, 'annotations', None) or []:
                 self._writers['membership_annotation'].write({
@@ -242,6 +262,7 @@ class SilverTableWriter:
                     'unit': _text(getattr(annotation, 'units', None)),
                     'source': self.source,
                     'dataset': dataset,
+                    '_raw_record_id': raw_record_id,
                 })
 
         return occurrence_id

@@ -18,13 +18,14 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from omnipath_build.silver.paths import PathManager
-from omnipath_build.silver.tables import SilverTableWriter, silver_table_dir
+from omnipath_build.silver.tables import SilverTableWriter, has_silver_tables, silver_table_dir
 from omnipath_build.silver.validate import validate_entity_identifier_shapes
 from pypath.internals.silver_schema import (
     ENTITY_SCHEMA,
     Entity as SilverEntity,
 )
 from pypath.internals.ontology_schema import OntologyTerm
+from pypath.inputs_v2.raw_records import ProvenancedRecord, RawRecordProvenance, changed_keys
 
 __all__ = [
     'DiscoveryError',
@@ -257,12 +258,31 @@ def discover_resources(
                 file_extension = dataset_obj.extension
                 file_stem = dataset_obj.file_stem
 
+            if output_kind in {'entity', 'ontology'}:
+                def dataset_call(
+                    dataset_obj=dataset_obj,
+                    source_name=relative_name,
+                    dataset_name=dataset_name,
+                ):
+                    raw_snapshot = getattr(dataset_obj, '_raw_snapshot_override', None)
+                    kwargs = {
+                        'source': source_name,
+                        'dataset': dataset_name,
+                        'use_preparse': True,
+                    }
+                    if raw_snapshot is not None:
+                        kwargs['raw_snapshot'] = raw_snapshot
+                    return dataset_obj(**kwargs)
+                dataset_call._raw_dataset = dataset_obj
+            else:
+                dataset_call = dataset_obj
+
             module_functions.append(
                 ResourceFunction(
                     source=relative_name,
                     function_name=dataset_name,
                     qualified_module=module_name,
-                    call=dataset_obj,
+                    call=dataset_call,
                     resource_id=resource_id,
                     output_kind=output_kind,
                     file_extension=file_extension,
@@ -283,11 +303,24 @@ def discover_resources(
     return discovered, path_manager
 
 
+def _unwrap_record(record: object) -> object:
+    if isinstance(record, ProvenancedRecord):
+        return record.record
+    return record
+
+
+def _record_provenance(record: object) -> RawRecordProvenance | None:
+    if isinstance(record, ProvenancedRecord):
+        return record.provenance
+    return None
+
+
 def _ensure_entity_record(record: object) -> None:
     """Validate that a record is a SilverEntity instance."""
-    if not isinstance(record, SilverEntity):
+    unwrapped = _unwrap_record(record)
+    if not isinstance(unwrapped, SilverEntity):
         raise ValueError(
-            f'Unsupported record type {type(record)!r}; expected pypath.internals.silver_schema.Entity',
+            f'Unsupported record type {type(unwrapped)!r}; expected pypath.internals.silver_schema.Entity',
         )
 
 
@@ -370,6 +403,7 @@ def _coerce_list_fields(record: dict, schema: pa.Schema) -> None:
 
 def _is_multi_output_record(record: object) -> bool:
     """Check if record is a multi-output dict (not a namedtuple with _asdict)."""
+    record = _unwrap_record(record)
     return isinstance(record, dict) and not hasattr(record, '_asdict')
 
 
@@ -572,18 +606,20 @@ def _process_single_output(
 
     # Process first record
     _ensure_entity_record(first_record)
+    first_provenance = _record_provenance(first_record)
+    first_entity = _unwrap_record(first_record)
     validate_entity_identifier_shapes(
-        first_record,
+        first_entity,
         context=f'{resource_fn.source}.{resource_fn.function_name}[0]',
     )
     if silver_writer is not None:
         silver_writer.write_entity(
-            first_record,
+            first_entity,
             dataset=resource_fn.function_name,
-            row_number=0,
+            raw_record_id=first_provenance.raw_record_id if first_provenance else None,
         )
     if write_nested:
-        record_dict = _normalize_record(first_record)
+        record_dict = _normalize_record(first_entity)
         _coerce_list_fields(record_dict, schema)
         batch.append(record_dict)
     else:
@@ -601,19 +637,20 @@ def _process_single_output(
             continue
 
         _ensure_entity_record(record)
+        provenance = _record_provenance(record)
+        entity = _unwrap_record(record)
         validate_entity_identifier_shapes(
-            record,
+            entity,
             context=f'{resource_fn.source}.{resource_fn.function_name}[{total_records + len(batch)}]',
         )
-        row_number = total_records + len(batch)
         if silver_writer is not None:
             silver_writer.write_entity(
-                record,
+                entity,
                 dataset=resource_fn.function_name,
-                row_number=row_number,
+                raw_record_id=provenance.raw_record_id if provenance else None,
             )
         if write_nested:
-            record_dict = _normalize_record(record)
+            record_dict = _normalize_record(entity)
             _coerce_list_fields(record_dict, schema)
             batch.append(record_dict)
         else:
@@ -754,7 +791,7 @@ def _process_single_output(
 def _process_multi_output(
     resource_fn: ResourceFunction,
     path_manager: PathManager,
-    first_record: dict,
+    first_record: object,
     records_iter: Iterator,
     batch_size: int,
     dry_run: bool,
@@ -784,14 +821,20 @@ def _process_multi_output(
                 ENTITY_SCHEMA,
             )
 
-    def process_output_record(output_name: str, output_record: object) -> None:
+    def process_output_record(
+        output_name: str,
+        output_record: object,
+        provenance: RawRecordProvenance | None = None,
+    ) -> None:
         """Process a single output record."""
         if output_record is None:
             return
 
         _ensure_entity_record(output_record)
+        output_entity = _unwrap_record(output_record)
+        output_provenance = _record_provenance(output_record) or provenance
         validate_entity_identifier_shapes(
-            output_record,
+            output_entity,
             context=(
                 f'{resource_fn.source}.{resource_fn.function_name}:{output_name}'
                 f'[{record_counts.get(output_name, 0) + len(batches.get(output_name, []))}]'
@@ -809,11 +852,14 @@ def _process_multi_output(
                 records=0,
             )
 
-        row_number = record_counts.get(output_name, 0) + len(batches.get(output_name, []))
         if silver_writer is not None:
-            silver_writer.write_entity(output_record, dataset=output_name, row_number=row_number)
+            silver_writer.write_entity(
+                output_entity,
+                dataset=output_name,
+                raw_record_id=output_provenance.raw_record_id if output_provenance else None,
+            )
         if silver_writer is None:
-            record_dict = _normalize_record(output_record)
+            record_dict = _normalize_record(output_entity)
             _coerce_list_fields(record_dict, ENTITY_SCHEMA)
             batches[output_name].append(record_dict)
         else:
@@ -847,9 +893,13 @@ def _process_multi_output(
             batches[output_name].clear()
 
     # Process first record
-    for output_name, output_record in first_record.items():
+    first_provenance = _record_provenance(first_record)
+    first_outputs = _unwrap_record(first_record)
+    if not isinstance(first_outputs, dict):
+        raise ValueError(f'Expected multi-output dict, got {type(first_outputs)!r}')
+    for output_name, output_record in first_outputs.items():
         if output_record is not None:
-            process_output_record(output_name, output_record)
+            process_output_record(output_name, output_record, first_provenance)
 
     # Process remaining records
     for record in records_iter:
@@ -877,9 +927,13 @@ def _process_multi_output(
                 'all records must be dicts or all must be single records'
             )
 
-        for output_name, output_record in record.items():
+        provenance = _record_provenance(record)
+        outputs = _unwrap_record(record)
+        if not isinstance(outputs, dict):
+            raise ValueError(f'Expected multi-output dict, got {type(outputs)!r}')
+        for output_name, output_record in outputs.items():
             if output_record is not None:
-                process_output_record(output_name, output_record)
+                process_output_record(output_name, output_record, provenance)
 
     # Flush remaining batches for legacy/debug dry-run paths only.
     for output_name, batch in batches.items():
@@ -980,7 +1034,6 @@ def _process_ontology_output(
             silver_writer.write_entity(
                 entity,
                 dataset=resource_fn.function_name,
-                row_number=row_number,
             )
         print(
             f'[{resource_fn.source}.{resource_fn.function_name}] wrote {len(terms):,} ontology entities to silver tables'
@@ -1079,6 +1132,31 @@ def run_silver_loader(
     try:
         for fn in selected_functions:
             writer = None
+            raw_dataset = getattr(fn.call, '_raw_dataset', None)
+            if (
+                raw_dataset is not None
+                and fn.output_kind == 'entity'
+                and fn.function_name != 'resource'
+                and not dry_run
+            ):
+                snapshot = raw_dataset.preparse(
+                    source=fn.source,
+                    dataset=fn.function_name,
+                )
+                raw_dataset._raw_snapshot_override = snapshot
+                source_dir = path_manager.source_path(fn.source)
+                if not override and not changed_keys(snapshot.delta_path) and has_silver_tables(source_dir):
+                    raw_dataset.accept_last_preparse()
+                    if hasattr(raw_dataset, '_raw_snapshot_override'):
+                        delattr(raw_dataset, '_raw_snapshot_override')
+                    result = silver_table_dir(source_dir)
+                    print(
+                        f'[{fn.source}.{fn.function_name}] raw delta empty; '
+                        f'skipping silver rewrite ({source_dir})'
+                    )
+                    outputs.append(result)
+                    continue
+
             if fn.output_kind in {'entity', 'ontology'} and fn.function_name != 'resource' and not dry_run:
                 writer = silver_writers.get(fn.source)
                 if writer is None:
@@ -1108,6 +1186,11 @@ def run_silver_loader(
                     test_mode=test_mode,
                     silver_writer=writer,
                 )
+                raw_dataset = getattr(fn.call, '_raw_dataset', None)
+                if raw_dataset is not None and hasattr(raw_dataset, 'accept_last_preparse'):
+                    raw_dataset.accept_last_preparse()
+                    if hasattr(raw_dataset, '_raw_snapshot_override'):
+                        delattr(raw_dataset, '_raw_snapshot_override')
                 outputs.append(result)
             except Exception as exc:  # noqa: BLE001
                 raise RuntimeError(
