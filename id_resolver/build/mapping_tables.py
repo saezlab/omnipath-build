@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Sequence
 
 from id_resolver.build.paths import activate_raw_download_data_dir, ensure_data_dir
-from id_resolver.build.sources.chemicals import CHEMICAL_SOURCES, materialize_chemical_source
+from id_resolver.build.sources.chemicals import CHEMICAL_SOURCES, materialize_chemical_sources
 from id_resolver.build.sources.proteins import materialize_proteins
 
 SOURCE_NAMES: tuple[str, ...] = (
@@ -16,7 +16,7 @@ SOURCE_NAMES: tuple[str, ...] = (
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description='Materialize standalone ID resolver mapping tables for individual authoritative sources.'
+        description='Materialize standalone long ID resolver lookup tables.'
     )
     parser.add_argument(
         'sources',
@@ -64,20 +64,23 @@ def run_sources(
 
     summary: dict[str, int] = {}
 
-    for source in sources:
-        if source == 'uniprot':
-            result = materialize_proteins(
-                output_dir=_output_subdir(base_dir, 'proteins'),
-                taxonomy_ids=taxonomy_ids,
-            )
-        else:
-            result = materialize_chemical_source(
-                source=source,
-                output_dir=_output_subdir(base_dir, 'chemicals'),
-                max_records=max_records,
-            )
+    selected = list(sources)
 
-        summary.update({f'{source}_{key}': value for key, value in result.items()})
+    if 'uniprot' in selected:
+        result = materialize_proteins(
+            output_dir=_output_subdir(base_dir, 'proteins'),
+            taxonomy_ids=taxonomy_ids,
+        )
+        summary.update({f'uniprot_{key}': value for key, value in result.items()})
+
+    chemical_sources = [source for source in selected if source in CHEMICAL_SOURCES]
+    if chemical_sources:
+        result = materialize_chemical_sources(
+            sources=chemical_sources,
+            output_dir=_output_subdir(base_dir, 'chemicals'),
+            max_records=max_records,
+        )
+        summary.update({f'chemicals_{key}': value for key, value in result.items()})
 
     return summary
 

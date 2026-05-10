@@ -101,19 +101,33 @@ def _markdown_table(headers: list[str], rows: list[list[str]]) -> str:
     return '\n'.join([header_line, divider_line, *body_lines]) + '\n'
 
 
-def _scan_protein_reference(mapping_dir: Path) -> pl.LazyFrame:
-    return pl.scan_parquet(mapping_dir / 'proteins' / 'protein_reference_to_uniprot.parquet').select([
+def _scan_protein_lookup(mapping_dir: Path) -> pl.LazyFrame:
+    return pl.scan_parquet(mapping_dir / 'proteins' / 'protein_identifier_lookup.parquet').select([
         pl.col('key_type').cast(pl.Utf8),
         pl.col('key_value').cast(pl.Utf8),
         pl.col('taxonomy_id').cast(pl.Utf8),
         pl.col('primary_uniprot').cast(pl.Utf8),
+        pl.col('mapping_type').cast(pl.Utf8),
+    ])
+
+
+def _scan_protein_reference(mapping_dir: Path) -> pl.LazyFrame:
+    return _scan_protein_lookup(mapping_dir).filter(
+        pl.col('mapping_type') != 'uniprot_secondary'
+    ).select([
+        'key_type',
+        'key_value',
+        'taxonomy_id',
+        'primary_uniprot',
     ])
 
 
 def _scan_uniprot_secondary(mapping_dir: Path) -> pl.LazyFrame:
-    return pl.scan_parquet(mapping_dir / 'proteins' / 'uniprot_secondary_to_primary.parquet').select([
-        pl.col('secondary_uniprot').cast(pl.Utf8),
-        pl.col('primary_uniprot').cast(pl.Utf8),
+    return _scan_protein_lookup(mapping_dir).filter(
+        pl.col('mapping_type') == 'uniprot_secondary'
+    ).select([
+        pl.col('key_value').alias('secondary_uniprot'),
+        pl.col('primary_uniprot'),
     ])
 
 
@@ -160,8 +174,8 @@ def _protein_identifier_rows(preferred_uniprots: pl.DataFrame, mapping_dir: Path
 
 
 def _chemical_mapping_paths(mapping_dir: Path) -> list[Path]:
-    chemicals_dir = mapping_dir / 'chemicals'
-    return sorted(path for path in chemicals_dir.glob('*.parquet') if path.is_file())
+    lookup_path = mapping_dir / 'chemicals' / 'chemical_identifier_lookup.parquet'
+    return [lookup_path] if lookup_path.exists() else []
 
 
 def _repair_protein_resolutions(resolved: pl.DataFrame, mapping_dir: Path) -> pl.DataFrame:

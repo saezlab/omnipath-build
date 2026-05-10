@@ -42,49 +42,43 @@ def _empty_result(df: pl.DataFrame) -> pl.DataFrame:
     ])
 
 
-def _scan_primary_uniprots(mapping_dir: Path) -> pl.LazyFrame:
-    return (
-        pl.scan_parquet(mapping_dir / 'proteins' / 'protein_reference_to_uniprot.parquet')
-        .filter(pl.col('key_type') == UNIPROT_TYPE)
-        .select(pl.col('key_value').cast(pl.Utf8).alias('primary_uniprot'))
-        .unique()
-    )
-
-
-def _scan_uniprot_secondary(mapping_dir: Path) -> pl.LazyFrame:
-    return pl.scan_parquet(mapping_dir / 'proteins' / 'uniprot_secondary_to_primary.parquet').select([
-        pl.col('secondary_uniprot').cast(pl.Utf8).alias('id'),
-        pl.col('primary_uniprot').cast(pl.Utf8).alias('_secondary_uniprot'),
-    ])
-
-
-def _scan_protein_reference(mapping_dir: Path, protein_types: set[str]) -> pl.LazyFrame:
-    return pl.scan_parquet(mapping_dir / 'proteins' / 'protein_reference_to_uniprot.parquet').filter(
-        pl.col('key_type').is_in(sorted(protein_types))
-    ).select([
+def _scan_protein_lookup(mapping_dir: Path) -> pl.LazyFrame:
+    return pl.scan_parquet(mapping_dir / 'proteins' / 'protein_identifier_lookup.parquet').select([
         pl.col('key_type').cast(pl.Utf8),
         pl.col('key_value').cast(pl.Utf8),
         _normalize_taxonomy(pl.col('taxonomy_id')).alias('taxonomy_id'),
         pl.col('primary_uniprot').cast(pl.Utf8),
+        pl.col('mapping_type').cast(pl.Utf8),
+    ])
+
+
+def _scan_primary_uniprots(mapping_dir: Path) -> pl.LazyFrame:
+    return _scan_protein_lookup(mapping_dir).select('primary_uniprot').unique()
+
+
+def _scan_uniprot_secondary(mapping_dir: Path) -> pl.LazyFrame:
+    return _scan_protein_lookup(mapping_dir).filter(
+        pl.col('mapping_type') == 'uniprot_secondary'
+    ).select([
+        pl.col('key_value').alias('id'),
+        pl.col('primary_uniprot').alias('_secondary_uniprot'),
+    ])
+
+
+def _scan_protein_reference(mapping_dir: Path, protein_types: set[str]) -> pl.LazyFrame:
+    return _scan_protein_lookup(mapping_dir).filter(
+        pl.col('key_type').is_in(sorted(protein_types)) & (pl.col('mapping_type') != 'uniprot_secondary')
+    ).select([
+        'key_type',
+        'key_value',
+        'taxonomy_id',
+        'primary_uniprot',
     ])
 
 
 def _scan_chemical_reference(mapping_dir: Path, chemical_sources: set[str]) -> pl.LazyFrame:
-    scans = []
-    for source in sorted(chemical_sources):
-        path = mapping_dir / 'chemicals' / f'{source}.parquet'
-        if not path.exists():
-            continue
-        scans.append(
-            pl.scan_parquet(path).select([
-                pl.col('key_type').cast(pl.Utf8),
-                pl.col('key_value').cast(pl.Utf8),
-                pl.col('standard_inchi').cast(pl.Utf8).alias('_chemical_inchi'),
-                pl.col('source').cast(pl.Utf8).alias('_chemical_source'),
-            ])
-        )
-
-    if not scans:
+    path = mapping_dir / 'chemicals' / 'chemical_identifier_lookup.parquet'
+    if not path.exists():
         return pl.LazyFrame(
             schema={
                 'key_type': pl.Utf8,
@@ -94,7 +88,14 @@ def _scan_chemical_reference(mapping_dir: Path, chemical_sources: set[str]) -> p
             }
         )
 
-    return scans[0] if len(scans) == 1 else pl.concat(scans, how='vertical_relaxed')
+    return pl.scan_parquet(path).filter(
+        pl.col('source').is_in(sorted(chemical_sources))
+    ).select([
+        pl.col('key_type').cast(pl.Utf8),
+        pl.col('key_value').cast(pl.Utf8),
+        pl.col('standard_inchi').cast(pl.Utf8).alias('_chemical_inchi'),
+        pl.col('source').cast(pl.Utf8).alias('_chemical_source'),
+    ])
 
 
 def resolve_identifier_frame(

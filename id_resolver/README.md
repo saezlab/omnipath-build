@@ -5,10 +5,9 @@ Small, source-authoritative mapping outputs built from narrow `pypath.inputs_v2`
 ## Scope
 
 - proteins
-  - reference identifier -> primary UniProt
-  - secondary UniProt -> primary UniProt
+  - any supported protein identifier -> primary UniProt
 - small molecules
-  - source-native identifier -> Standard InChI
+  - any supported chemical identifier -> Standard InChI
 
 No reconciliation or cross-reference conflict logic lives here.
 
@@ -40,19 +39,12 @@ Outputs are written to `id_resolver/data/proteins/` and `id_resolver/data/chemic
 ## Outputs
 
 ### Proteins
-- `protein_reference_to_uniprot.parquet`
-  - `key_type`, `key_value`, `taxonomy_id`, `primary_uniprot`
-- `uniprot_secondary_to_primary.parquet`
-  - `secondary_uniprot`, `primary_uniprot`
+- `protein_identifier_lookup.parquet`
+  - `source`, `key_type`, `key_value`, `taxonomy_id`, `primary_uniprot`, `mapping_type`
 
 ### Chemicals
-- `chebi.parquet`
-- `hmdb.parquet`
-- `lipidmaps.parquet`
-- `swisslipids.parquet`
-
-Chemical parquet columns:
-- `source`, `key_type`, `key_value`, `standard_inchi`
+- `chemical_identifier_lookup.parquet`
+  - `source`, `key_type`, `key_value`, `standard_inchi`
 
 ## Implementation model
 
@@ -65,7 +57,7 @@ Source-specific extraction lives in `pypath.inputs_v2` as narrow translation dat
 - `lipidmaps.resource.id_translation`
 - `swisslipids.resource.id_translation`
 
-`id_resolver` just executes those datasets and writes parquet, using PyArrow chunked writing.
+`id_resolver` executes those datasets and writes only the long lookup tables used by the resolver, using PyArrow chunked writing.
 
 ## CLI
 

@@ -94,12 +94,8 @@ def read_inputs_module_hash(output_dir: Path) -> dict[str, Any] | None:
 
 def resolver_mappings_ready(mapping_dir: Path) -> bool:
     required = [
-        mapping_dir / 'proteins' / 'protein_reference_to_uniprot.parquet',
-        mapping_dir / 'proteins' / 'uniprot_secondary_to_primary.parquet',
-        mapping_dir / 'chemicals' / 'chebi.parquet',
-        mapping_dir / 'chemicals' / 'hmdb.parquet',
-        mapping_dir / 'chemicals' / 'lipidmaps.parquet',
-        mapping_dir / 'chemicals' / 'swisslipids.parquet',
+        mapping_dir / 'proteins' / 'protein_identifier_lookup.parquet',
+        mapping_dir / 'chemicals' / 'chemical_identifier_lookup.parquet',
     ]
     return all(path.exists() for path in required)
 
