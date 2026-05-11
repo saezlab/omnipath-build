@@ -920,6 +920,20 @@ def _read_affected_column(path: Path, column: str) -> set[str]:
     }
 
 
+def _gold_delta_scope_available(delta_dir: Path) -> bool:
+    manifest_path = delta_dir / 'manifest.json'
+    if not manifest_path.exists():
+        return True
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+    except json.JSONDecodeError:
+        return False
+    targeting = manifest.get('targeting')
+    if not isinstance(targeting, dict):
+        return True
+    return targeting.get('affected_key_scope_available') is not False
+
+
 def _collect_affected_keys_from_gold_artifacts(
     *,
     paths: PipelinePaths,
@@ -937,6 +951,9 @@ def _collect_affected_keys_from_gold_artifacts(
             source_gold_dir,
         )
         if delta_dir is None:
+            missing_sources.append(source)
+            continue
+        if not _gold_delta_scope_available(delta_dir):
             missing_sources.append(source)
             continue
         entity_keys.update(_read_affected_column(

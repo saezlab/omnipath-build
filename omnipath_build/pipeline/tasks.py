@@ -10,6 +10,8 @@ from datetime import UTC, datetime
 import tempfile
 import importlib.util
 
+import duckdb
+import pyarrow.parquet as pq
 import polars as pl
 
 from omnipath_build.silver.build import run_silver_loader, discover_resources
@@ -143,9 +145,20 @@ def build_silver_source(
     source_root = output_dir.parent
     state_dir = source_root / SILVER_STATE_DIR
     previous_snapshot_dir = _latest_silver_snapshot_dir(source_root)
+    previous_inputs_hash = (
+        read_inputs_module_hash(previous_snapshot_dir)
+        if previous_snapshot_dir is not None else None
+    )
+    inputs_compatible = (
+        previous_inputs_hash is not None
+        and previous_inputs_hash.get('sha256') == inputs_hash.get('sha256')
+    )
+    state_ready = has_raw_keyed_silver_tables(state_dir)
+    supports_incremental = _source_supports_incremental_silver(source, inputs_package)
     incremental = (
-        has_raw_keyed_silver_tables(state_dir)
-        and _source_supports_incremental_silver(source, inputs_package)
+        state_ready
+        and supports_incremental
+        and inputs_compatible
     )
     output_dir.mkdir(parents=True, exist_ok=True)
     configured_cache = os.environ.get('PYPATH_DOWNLOAD_DATADIR')
@@ -203,6 +216,13 @@ def build_silver_source(
             staged_source_dir=staged_source_dir,
             output_dir=output_dir,
             inputs_hash=inputs_hash,
+            write_lineage_delta=incremental,
+            no_lineage_delta_reason=(
+                None if incremental else
+                'unsupported_source' if not supports_incremental else
+                'missing_previous_state' if not state_ready else
+                'inputs_changed_or_missing_previous_hash'
+            ),
         )
 
         for item in sorted(staged_source_dir.iterdir()):
@@ -270,66 +290,92 @@ def _silver_table_names() -> list[str]:
     return [f'{name}.parquet' for name in SILVER_TABLE_SCHEMAS]
 
 
-def _silver_compare_columns(frame: pl.DataFrame) -> list[str]:
-    return [
-        column
-        for column in frame.columns
-        if column not in {'_snapshot_id', '_silver_row_key', '_silver_row_hash', '_change_type'}
-    ]
+def _parquet_row_count(path: Path) -> int:
+    if not path.exists():
+        return 0
+    return int(pq.ParquetFile(path).metadata.num_rows)
 
 
-def _read_silver_table(path: Path, table_name: str) -> pl.DataFrame:
-    if path.exists():
-        return pl.read_parquet(path)
-    stem = table_name.removesuffix('.parquet')
-    schema = SILVER_TABLE_SCHEMAS[stem]
-    return pl.from_arrow(schema.empty_table())
+def _quote_identifier(value: str) -> str:
+    return '"' + value.replace('"', '""') + '"'
 
 
-def _with_silver_row_identity(frame: pl.DataFrame, table_name: str) -> pl.DataFrame:
-    compare_columns = _silver_compare_columns(frame)
-    if not compare_columns:
-        row_hash = pl.lit(0, dtype=pl.UInt64)
-    else:
-        row_hash = pl.struct([
-            pl.col(column)
-            for column in compare_columns
-        ]).hash()
-    return (
-        frame
-        .with_columns(row_hash.alias('_silver_row_hash'))
-        .with_columns(
-            pl.concat_str([
-                pl.lit(table_name.removesuffix('.parquet')),
-                pl.lit(':'),
-                pl.col('_silver_row_hash').cast(pl.String),
-            ]).alias('_silver_row_key')
-        )
+def _select_columns_sql(columns: list[str], alias: str) -> str:
+    return ',\n'.join(
+        f'{alias}.{_quote_identifier(column)}'
+        for column in columns
     )
 
 
-def _silver_delta_for_table(
+def _copy_silver_table(source_path: Path, target_path: Path) -> None:
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source_path, target_path)
+
+
+def _write_lineage_delta_for_table(
     *,
-    previous: pl.DataFrame,
-    current: pl.DataFrame,
-) -> pl.DataFrame:
-    previous_keys = previous.select('_silver_row_hash').unique()
-    current_keys = current.select('_silver_row_hash').unique()
-    removed = (
-        previous
-        .join(current_keys, on='_silver_row_hash', how='anti')
-        .with_columns(pl.lit('removed').alias('_change_type'))
-    )
-    added = (
-        current
-        .join(previous_keys, on='_silver_row_hash', how='anti')
-        .with_columns(pl.lit('added').alias('_change_type'))
-    )
-    if removed.is_empty() and added.is_empty():
-        return current.head(0).with_columns(
-            pl.lit(None, dtype=pl.String).alias('_change_type')
-        ).head(0)
-    return pl.concat([removed, added], how='diagonal_relaxed')
+    table_name: str,
+    previous_path: Path,
+    current_path: Path,
+    delta_path: Path,
+) -> dict[str, int]:
+    """Write silver delta rows by raw-record lineage, not by full row diff."""
+    columns = list(SILVER_TABLE_SCHEMAS[table_name.removesuffix('.parquet')].names)
+    selected_current = _select_columns_sql(columns, 'c')
+    selected_previous = _select_columns_sql(columns, 'p')
+    current_sql = "'" + str(current_path).replace("'", "''") + "'"
+    previous_sql = "'" + str(previous_path).replace("'", "''") + "'"
+    output_sql = "'" + str(delta_path).replace("'", "''") + "'"
+
+    delta_path.parent.mkdir(parents=True, exist_ok=True)
+    con = duckdb.connect()
+    try:
+        con.execute(
+            f"""
+            COPY (
+                WITH
+                previous_keys AS (
+                    SELECT DISTINCT _raw_record_key
+                    FROM read_parquet({previous_sql})
+                    WHERE _raw_record_key IS NOT NULL
+                ),
+                current_keys AS (
+                    SELECT DISTINCT _raw_record_key
+                    FROM read_parquet({current_sql})
+                    WHERE _raw_record_key IS NOT NULL
+                )
+                SELECT
+                    {selected_current},
+                    'added'::VARCHAR AS _change_type
+                FROM read_parquet({current_sql}) AS c
+                WHERE c._raw_record_key IS NOT NULL
+                  AND c._raw_record_key NOT IN (SELECT _raw_record_key FROM previous_keys)
+                UNION ALL
+                SELECT
+                    {selected_previous},
+                    'removed'::VARCHAR AS _change_type
+                FROM read_parquet({previous_sql}) AS p
+                WHERE p._raw_record_key IS NOT NULL
+                  AND p._raw_record_key NOT IN (SELECT _raw_record_key FROM current_keys)
+            ) TO {output_sql} (FORMAT PARQUET, COMPRESSION ZSTD)
+            """
+        )
+        counts = con.execute(
+            """
+            SELECT _change_type, count(*) AS count
+            FROM read_parquet(?)
+            GROUP BY _change_type
+            """,
+            [str(delta_path)],
+        ).fetchall()
+    finally:
+        con.close()
+
+    by_type = {str(change_type): int(count) for change_type, count in counts}
+    return {
+        'added': by_type.get('added', 0),
+        'removed': by_type.get('removed', 0),
+    }
 
 
 def _write_silver_state_and_delta(
@@ -338,6 +384,8 @@ def _write_silver_state_and_delta(
     staged_source_dir: Path,
     output_dir: Path,
     inputs_hash: dict[str, Any],
+    write_lineage_delta: bool,
+    no_lineage_delta_reason: str | None,
 ) -> dict[str, Any]:
     source_root = output_dir.parent
     state_dir = source_root / SILVER_STATE_DIR
@@ -350,38 +398,19 @@ def _write_silver_state_and_delta(
     for table_name in _silver_table_names():
         staged_path = staged_source_dir / table_name
         state_path = state_dir / table_name
-        current = _with_silver_row_identity(
-            _read_silver_table(staged_path, table_name),
-            table_name,
-        )
-        previous = _with_silver_row_identity(
-            _read_silver_table(state_path, table_name),
-            table_name,
-        )
-        delta = _silver_delta_for_table(previous=previous, current=current)
+        row_counts[table_name] = _parquet_row_count(staged_path)
 
-        current.write_parquet(staged_path)
-        current.write_parquet(state_path)
-        delta.write_parquet(delta_dir / table_name)
-
-        row_counts[table_name] = int(current.height)
-        if delta.is_empty():
-            delta_counts[table_name] = {'added': 0, 'removed': 0}
+        if write_lineage_delta:
+            delta_counts[table_name] = _write_lineage_delta_for_table(
+                table_name=table_name,
+                previous_path=state_path,
+                current_path=staged_path,
+                delta_path=delta_dir / table_name,
+            )
         else:
-            counts = {
-                row['_change_type']: row['count']
-                for row in (
-                    delta
-                    .group_by('_change_type')
-                    .agg(pl.len().alias('count'))
-                    .to_dicts()
-                )
-                if row['_change_type'] is not None
-            }
-            delta_counts[table_name] = {
-                'added': int(counts.get('added', 0)),
-                'removed': int(counts.get('removed', 0)),
-            }
+            delta_counts[table_name] = {'added': 0, 'removed': 0}
+
+        _copy_silver_table(staged_path, state_path)
 
     manifest = {
         'layer': 'silver',
@@ -393,6 +422,12 @@ def _write_silver_state_and_delta(
         'inputs_module_hash': inputs_hash,
         'row_counts': row_counts,
         'delta_counts': delta_counts,
+        'delta_strategy': (
+            'raw_record_lineage'
+            if write_lineage_delta else
+            'no_per_row_delta'
+        ),
+        'no_per_row_delta_reason': no_lineage_delta_reason,
     }
     _write_json_atomic(output_dir / 'manifest.json', manifest)
     _write_json_atomic(state_dir / 'manifest.json', manifest)
@@ -449,182 +484,6 @@ def _empty_string_frame(columns: list[str]) -> pl.DataFrame:
     })
 
 
-def _read_parquet_or_empty(path: Path, key_column: str) -> pl.DataFrame:
-    if not path.exists():
-        return pl.DataFrame({key_column: pl.Series([], dtype=pl.String)})
-    return pl.read_parquet(path)
-
-
-def _filter_by_keys(frame: pl.DataFrame, key_column: str, keys: set[str] | None) -> pl.DataFrame:
-    if keys is None or key_column not in frame.columns:
-        return frame
-    if not keys:
-        return frame.head(0)
-    return frame.filter(pl.col(key_column).cast(pl.String).is_in(sorted(keys)))
-
-
-def _row_hash_frame(
-    path: Path,
-    key_column: str,
-    compare_columns: list[str],
-    *,
-    key_filter: set[str] | None = None,
-) -> pl.DataFrame:
-    frame = _filter_by_keys(_read_parquet_or_empty(path, key_column), key_column, key_filter)
-    if key_column not in frame.columns:
-        return pl.DataFrame({
-            key_column: pl.Series([], dtype=pl.String),
-            '_row_hash': pl.Series([], dtype=pl.UInt64),
-        })
-    struct_columns = [
-        pl.col(column) if column in frame.columns else pl.lit(None).alias(column)
-        for column in compare_columns
-    ]
-    return (
-        frame
-        .select([
-            pl.col(key_column).cast(pl.String),
-            pl.struct(struct_columns).hash().alias('_row_hash'),
-        ])
-        .drop_nulls(key_column)
-        .unique()
-    )
-
-
-def _changed_key_rows(
-    *,
-    source: str,
-    previous_path: Path,
-    current_path: Path,
-    key_column: str,
-    compare_columns: list[str],
-    reason: str,
-    key_filter: set[str] | None = None,
-) -> pl.DataFrame:
-    previous = _row_hash_frame(
-        previous_path,
-        key_column,
-        compare_columns,
-        key_filter=key_filter,
-    )
-    current = _row_hash_frame(
-        current_path,
-        key_column,
-        compare_columns,
-        key_filter=key_filter,
-    )
-    removed = (
-        previous
-        .join(current, on=[key_column, '_row_hash'], how='anti')
-        .select([
-            pl.lit(source).alias('source'),
-            pl.col(key_column),
-            pl.lit('removed').alias('change_type'),
-            pl.lit(reason).alias('reason'),
-        ])
-    )
-    added = (
-        current
-        .join(previous, on=[key_column, '_row_hash'], how='anti')
-        .select([
-            pl.lit(source).alias('source'),
-            pl.col(key_column),
-            pl.lit('added').alias('change_type'),
-            pl.lit(reason).alias('reason'),
-        ])
-    )
-    rows = pl.concat([removed, added], how='vertical_relaxed')
-    if rows.is_empty():
-        return _empty_string_frame(['source', key_column, 'change_type', 'reason'])
-    return rows.unique()
-
-
-def _delta_rows(
-    *,
-    source: str,
-    previous_path: Path,
-    current_path: Path,
-    key_column: str,
-    compare_columns: list[str],
-    reason: str,
-    key_filter: set[str] | None = None,
-) -> pl.DataFrame:
-    previous = _filter_by_keys(
-        _read_parquet_or_empty(previous_path, key_column),
-        key_column,
-        key_filter,
-    )
-    current = _filter_by_keys(
-        _read_parquet_or_empty(current_path, key_column),
-        key_column,
-        key_filter,
-    )
-    previous_hashes = _row_hash_frame(
-        previous_path,
-        key_column,
-        compare_columns,
-        key_filter=key_filter,
-    )
-    current_hashes = _row_hash_frame(
-        current_path,
-        key_column,
-        compare_columns,
-        key_filter=key_filter,
-    )
-
-    removed_hashes = previous_hashes.join(
-        current_hashes,
-        on=[key_column, '_row_hash'],
-        how='anti',
-    )
-    added_hashes = current_hashes.join(
-        previous_hashes,
-        on=[key_column, '_row_hash'],
-        how='anti',
-    )
-
-    removed = (
-        previous
-        .with_columns([
-            pl.struct([
-                pl.col(column) if column in previous.columns else pl.lit(None).alias(column)
-                for column in compare_columns
-            ]).hash().alias('_row_hash'),
-        ])
-        .join(removed_hashes, on=[key_column, '_row_hash'], how='inner')
-        .with_columns([
-            pl.lit(source).alias('source'),
-            pl.lit('removed').alias('change_type'),
-            pl.lit(reason).alias('reason'),
-        ])
-    )
-    added = (
-        current
-        .with_columns([
-            pl.struct([
-                pl.col(column) if column in current.columns else pl.lit(None).alias(column)
-                for column in compare_columns
-            ]).hash().alias('_row_hash'),
-        ])
-        .join(added_hashes, on=[key_column, '_row_hash'], how='inner')
-        .with_columns([
-            pl.lit(source).alias('source'),
-            pl.lit('added').alias('change_type'),
-            pl.lit(reason).alias('reason'),
-        ])
-    )
-    if removed.is_empty() and added.is_empty():
-        if current_path.exists():
-            return current.head(0).with_columns([
-                pl.lit(None, dtype=pl.UInt64).alias('_row_hash'),
-                pl.lit(source).alias('source'),
-                pl.lit(None, dtype=pl.String).alias('change_type'),
-                pl.lit(reason).alias('reason'),
-            ]).head(0)
-        return _empty_string_frame(['source', key_column, 'change_type', 'reason'])
-    return pl.concat([removed, added], how='diagonal_relaxed')
-
-
 def _string_values(frame: pl.DataFrame, column: str) -> set[str]:
     if column not in frame.columns:
         return set()
@@ -655,6 +514,8 @@ def _read_silver_delta_manifest(silver_dir: Path) -> dict[str, Any] | None:
 
 def _manifest_delta_empty(manifest: dict[str, Any] | None) -> bool:
     if not manifest:
+        return False
+    if manifest.get('delta_strategy') != 'raw_record_lineage':
         return False
     delta_counts = manifest.get('delta_counts')
     if not isinstance(delta_counts, dict):
@@ -688,6 +549,14 @@ def _affected_silver_ids_from_delta(
     silver_dir: Path,
 ) -> tuple[set[str], set[str], dict[str, Any]]:
     manifest = _read_silver_delta_manifest(silver_dir)
+    if manifest and manifest.get('delta_strategy') == 'no_per_row_delta':
+        return set(), set(), {
+            'available': False,
+            'reason': manifest.get('no_per_row_delta_reason') or 'no_per_row_delta',
+            'manifest': manifest,
+            'delta_empty': False,
+            'delta_strategy': 'no_per_row_delta',
+        }
     delta_dir = _silver_delta_dir_from_manifest(silver_dir, manifest)
     raw_record_ids: set[str] = set()
     occurrence_ids: set[str] = set()
@@ -809,6 +678,35 @@ def _write_gold_scope_artifacts(
     }).write_parquet(delta_dir / 'affected_occurrence_ids.parquet')
 
 
+def _current_gold_key_frame(
+    *,
+    source: str,
+    path: Path,
+    key_column: str,
+    reason: str,
+) -> pl.DataFrame:
+    if not path.exists():
+        return _empty_affected_key_frame(key_column)
+    scan = pl.scan_parquet(path)
+    if key_column not in scan.collect_schema().names():
+        return _empty_affected_key_frame(key_column)
+    keys = (
+        scan
+        .select(pl.col(key_column).cast(pl.String).alias(key_column))
+        .drop_nulls()
+        .unique()
+        .collect()
+        .get_column(key_column)
+        .to_list()
+    )
+    return _affected_key_frame(
+        source=source,
+        key_column=key_column,
+        keys={key for key in keys if key},
+        reason=reason,
+    )
+
+
 def _derive_gold_key_scope_from_silver_delta(
     *,
     source: str,
@@ -900,6 +798,60 @@ def _write_gold_delta_artifacts(
     entities_delta_dir.mkdir(parents=True, exist_ok=True)
     relations_delta_dir.mkdir(parents=True, exist_ok=True)
 
+    if not previous_output_ready:
+        reason = 'source_first_build'
+        affected_entities = _current_gold_key_frame(
+            source=source,
+            path=staged_dir / 'entities' / 'entity.parquet',
+            key_column='entity_key',
+            reason=reason,
+        )
+        affected_relations = _current_gold_key_frame(
+            source=source,
+            path=staged_dir / 'relations' / 'entity_relation.parquet',
+            key_column='relation_key',
+            reason=reason,
+        )
+        _write_gold_scope_artifacts(
+            delta_dir=delta_dir,
+            raw_record_ids=set(),
+            occurrence_ids=set(),
+        )
+        affected_entities.write_parquet(delta_dir / 'affected_entity_keys.parquet')
+        affected_relations.write_parquet(delta_dir / 'affected_relation_keys.parquet')
+
+        manifest = {
+            'layer': 'gold',
+            'source': source,
+            'build_id': build_id,
+            'created_at': datetime.now(UTC).isoformat(),
+            'reason': reason,
+            'targeting': {
+                'strategy': 'first_build_key_scope',
+                'per_row_delta': False,
+                'affected_key_scope_available': True,
+            },
+            'affected_entity_count': int(affected_entities['entity_key'].n_unique())
+            if 'entity_key' in affected_entities.columns else 0,
+            'affected_relation_count': int(affected_relations['relation_key'].n_unique())
+            if 'relation_key' in affected_relations.columns else 0,
+            'delta_counts': {
+                'entity_delta.parquet': 0,
+                'entity_relation_delta.parquet': 0,
+                'entity_relation_evidence_delta.parquet': 0,
+            },
+        }
+        _write_json_atomic(delta_dir / 'manifest.json', manifest)
+        _write_json_atomic(output_dir / GOLD_DELTA_DIR / 'latest.json', {
+            'source': source,
+            'build_id': build_id,
+            'path': str(delta_dir),
+        })
+        return {
+            **manifest,
+            'delta_dir': str(delta_dir),
+        }
+
     reason = 'source_rebuild'
     (
         affected_entity_key_filter,
@@ -919,95 +871,17 @@ def _write_gold_delta_artifacts(
         raw_record_ids=set(silver_scope.get('raw_record_ids', [])),
         occurrence_ids=set(silver_scope.get('occurrence_ids', [])),
     )
-    entity_compare_columns = [
-        'source',
-        'entity_key',
-        'canonical_identifier',
-        'canonical_identifier_type',
-        'raw_record_id',
-        'occurrence_id',
-        'fingerprint',
-        'entity_type',
-        'taxonomy_id',
-        'identifiers',
-        'entity_attributes',
-    ]
-    relation_compare_columns = [
-        'relation_key',
-        'subject_entity_key',
-        'predicate',
-        'object_entity_key',
-        'relation_category',
-        'evidence_count',
-        'sources',
-    ]
-    relation_evidence_compare_columns = [
-        'relation_key',
-        'subject_entity_key',
-        'predicate',
-        'object_entity_key',
-        'relation_category',
-        'source',
-        'raw_record_id',
-        'record_attributes',
-        'subject_attributes',
-        'object_attributes',
-        'evidence',
-    ]
 
-    if affected_entity_key_filter is None:
-        affected_entities = _changed_key_rows(
-            source=source,
-            previous_path=previous_dir / 'entities' / 'entity_evidence.parquet',
-            current_path=staged_dir / 'entities' / 'entity_evidence.parquet',
-            key_column='entity_key',
-            compare_columns=entity_compare_columns,
-            reason=reason,
-        )
-    if affected_relation_key_filter is None:
-        affected_relations = _changed_key_rows(
-            source=source,
-            previous_path=previous_dir / 'relations' / 'entity_relation_evidence.parquet',
-            current_path=staged_dir / 'relations' / 'entity_relation_evidence.parquet',
-            key_column='relation_key',
-            compare_columns=relation_evidence_compare_columns,
-            reason=reason,
-        )
-    entity_delta = _delta_rows(
-        source=source,
-        previous_path=previous_dir / 'entities' / 'entity_evidence.parquet',
-        current_path=staged_dir / 'entities' / 'entity_evidence.parquet',
-        key_column='entity_key',
-        compare_columns=entity_compare_columns,
-        reason=reason,
-        key_filter=affected_entity_key_filter,
+    affected_key_scope_available = (
+        affected_entity_key_filter is not None
+        and affected_relation_key_filter is not None
     )
-    relation_delta = _delta_rows(
-        source=source,
-        previous_path=previous_dir / 'relations' / 'entity_relation.parquet',
-        current_path=staged_dir / 'relations' / 'entity_relation.parquet',
-        key_column='relation_key',
-        compare_columns=relation_compare_columns,
-        reason=reason,
-        key_filter=affected_relation_key_filter,
-    )
-    relation_evidence_delta = _delta_rows(
-        source=source,
-        previous_path=previous_dir / 'relations' / 'entity_relation_evidence.parquet',
-        current_path=staged_dir / 'relations' / 'entity_relation_evidence.parquet',
-        key_column='relation_key',
-        compare_columns=relation_evidence_compare_columns,
-        reason=reason,
-        key_filter=affected_relation_key_filter,
-    )
+    if not affected_key_scope_available:
+        affected_entities = _empty_affected_key_frame('entity_key')
+        affected_relations = _empty_affected_key_frame('relation_key')
 
     affected_entities.write_parquet(delta_dir / 'affected_entity_keys.parquet')
     affected_relations.write_parquet(delta_dir / 'affected_relation_keys.parquet')
-    entity_delta.write_parquet(entities_delta_dir / 'entity_delta.parquet')
-    relation_delta.write_parquet(relations_delta_dir / 'entity_relation_delta.parquet')
-    relation_evidence_delta.write_parquet(
-        relations_delta_dir / 'entity_relation_evidence_delta.parquet'
-    )
 
     manifest = {
         'layer': 'gold',
@@ -1025,11 +899,13 @@ def _write_gold_delta_artifacts(
         'affected_relation_count': int(affected_relations['relation_key'].n_unique())
         if 'relation_key' in affected_relations.columns else 0,
         'delta_counts': {
-            'entity_delta.parquet': int(entity_delta.height),
-            'entity_relation_delta.parquet': int(relation_delta.height),
-            'entity_relation_evidence_delta.parquet': int(relation_evidence_delta.height),
+            'entity_delta.parquet': 0,
+            'entity_relation_delta.parquet': 0,
+            'entity_relation_evidence_delta.parquet': 0,
         },
     }
+    manifest['targeting']['affected_key_scope_available'] = affected_key_scope_available
+    manifest['targeting']['per_row_delta'] = False
     _write_json_atomic(delta_dir / 'manifest.json', manifest)
     _write_json_atomic(output_dir / GOLD_DELTA_DIR / 'latest.json', {
         'source': source,
