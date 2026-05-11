@@ -106,8 +106,12 @@ class BufferedParquetWriter:
     def close(self) -> None:
         self.flush()
         if self.writer is None:
-            if self.path.exists():
-                self.path.unlink()
+            table = self.schema.empty_table()
+            writer = pq.ParquetWriter(self.path, self.schema)
+            try:
+                writer.write_table(table)
+            finally:
+                writer.close()
             return
         self.writer.close()
 

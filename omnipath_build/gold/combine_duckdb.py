@@ -1175,7 +1175,7 @@ def _export_relation_annotation(
         )
         select
             relation_id,
-            relation_evidence_id,
+            min(relation_evidence_id)::bigint as relation_evidence_id,
             source,
             scope,
             term_entity_id
@@ -1184,6 +1184,7 @@ def _export_relation_annotation(
             union
             select * from participant_terms
         )
+        group by relation_id, source, scope, term_entity_id
     """
     con.execute(
         f"copy ({query}) to '{_sql_path(relation_annotation_path)}' (format parquet)"

@@ -61,6 +61,7 @@ TEST_MODE_RECORD_LIMITS_BY_SOURCE: dict[str, int] = {
     'intact': 1000,
     'stitch': 1000,
     'chembl': 1000,
+    'rampdb': 1000,
 }
 
 _PROGRESS_PREFIX = '__OMNIPATH_PROGRESS__'

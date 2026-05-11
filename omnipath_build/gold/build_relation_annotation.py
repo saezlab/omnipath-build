@@ -1,17 +1,19 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from typing import Any
+from pathlib import Path
 
 import polars as pl
 
+from omnipath_build.gold.utils.table_schema import (
+    RELATION_ANNOTATION_TERM_SCHEMA,
+    empty_frame,
+)
 from omnipath_build.gold.utils.canonicalization import (
     ONTOLOGY_ENTITY_TYPE_LABEL,
     ONTOLOGY_IDENTIFIER_TYPE_LABEL,
 )
-from omnipath_build.gold.utils.table_schema import RELATION_ANNOTATION_TERM_SCHEMA, empty_frame
-
 
 def _write_if_nonempty(frame: pl.DataFrame, path: Path) -> None:
     if frame.is_empty():
@@ -160,7 +162,8 @@ def build_relation_annotation(
 
     combined = (
         pl.concat([interaction_terms, participant_terms], how='vertical_relaxed')
-        .unique()
+        .group_by(['relation_id', 'source', 'scope', 'term_entity_id'])
+        .agg(pl.col('relation_evidence_id').min())
         .sort(['relation_id', 'relation_evidence_id', 'scope', 'term_entity_id', 'source'])
         .collect()
         .select(list(RELATION_ANNOTATION_TERM_SCHEMA.keys()))
@@ -179,6 +182,5 @@ def build_relation_annotation(
         encoding='utf-8',
     )
     return summary
-
 
 
