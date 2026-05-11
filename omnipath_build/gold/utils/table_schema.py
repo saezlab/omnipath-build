@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import polars as pl
 
-
 IDENTIFIER_STRUCT = pl.Struct({
     'identifier': pl.String,
     'identifier_type': pl.String,
@@ -100,6 +99,10 @@ ENTITY_RELATION_EVIDENCE_SCHEMA = {
     'relation_evidence_pk': pl.Int64,
     'relation_pk': pl.Int64,
     'relation_key': pl.String,
+    'subject_entity_key': pl.String,
+    'predicate': pl.String,
+    'object_entity_key': pl.String,
+    'relation_category': pl.String,
     'raw_record_id': pl.String,
     'record_attributes': ATTRIBUTE_STRUCT,
     'subject_attributes': ATTRIBUTE_STRUCT,
@@ -127,7 +130,11 @@ RELATION_ANNOTATION_TERM_SCHEMA = {
 ENTITY_EVIDENCE_SCHEMA = {
     'source': pl.String,
     'entity_key': pl.String,
-    'raw_record_ids': pl.List(pl.String),
+    'canonical_identifier': pl.String,
+    'canonical_identifier_type': pl.String,
+    'raw_record_id': pl.String,
+    'occurrence_id': pl.String,
+    'fingerprint': pl.String,
     'entity_type': pl.String,
     'taxonomy_id': pl.String,
     'identifiers': pl.List(IDENTIFIER_STRUCT),

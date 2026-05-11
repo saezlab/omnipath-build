@@ -3,15 +3,15 @@
 
 from __future__ import annotations
 
-import argparse
-import json
-import logging
 import sys
-from pathlib import Path
+import json
 from typing import Optional
+import logging
+from pathlib import Path
+import argparse
 
-from omnipath_build.pipeline.pipeline import main as pipeline_main
 from omnipath_build.silver.build import DiscoveryError, run_silver_loader
+from omnipath_build.pipeline.pipeline import main as pipeline_main
 
 def _configure_logging() -> None:
     """Configure CLI logging after imported dependencies had a chance to mutate it."""
@@ -176,13 +176,6 @@ def _handle_postgres(args: argparse.Namespace) -> int:
     if not output_dir.is_absolute():
         output_dir = project_root / output_dir
 
-    affected_entity_keys: list[str] | None = None
-    affected_relation_keys: list[str] | None = None
-    if args.affected_entities is not None:
-        affected_entity_keys = json.loads(args.affected_entities.read_text())
-    if args.affected_relations is not None:
-        affected_relation_keys = json.loads(args.affected_relations.read_text())
-
     try:
         return load_combined_schema_to_postgres(
             output_dir=output_dir,
@@ -196,9 +189,7 @@ def _handle_postgres(args: argparse.Namespace) -> int:
             indexes=args.indexes,
             bitmaps=args.bitmaps,
             views=args.views,
-            affected_entity_keys=affected_entity_keys,
-            affected_relation_keys=affected_relation_keys,
-            changed_source=args.changed_source,
+            combine_run_dir=args.combine_run_dir,
         )
     except Exception as exc:  # noqa: BLE001
         print(f'Unexpected error: {exc}', file=sys.stderr)
@@ -508,22 +499,10 @@ def _build_parser() -> argparse.ArgumentParser:
         help='Create materialized views (default: true)',
     )
     postgres_parser.add_argument(
-        '--affected-entities',
+        '--combine-run-dir',
         type=Path,
         default=None,
-        help='JSON file with list of affected entity_keys.',
-    )
-    postgres_parser.add_argument(
-        '--affected-relations',
-        type=Path,
-        default=None,
-        help='JSON file with list of affected relation_keys.',
-    )
-    postgres_parser.add_argument(
-        '--changed-source',
-        type=str,
-        default=None,
-        help='Name of the source that changed (for entity_evidence update)',
+        help='Path to data/combined/runs/<run_id> delta artifacts. Defaults to runs/latest.json when available.',
     )
     postgres_parser.set_defaults(handler=_handle_postgres)
 

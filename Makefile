@@ -29,6 +29,7 @@ POSTGRES_DROP_EXISTING ?=
 POSTGRES_BATCH_SIZE ?= 200000
 POSTGRES_UNLOGGED_TABLES ?= 1
 POSTGRES_FOREIGN_KEYS ?=
+COMBINE_RUN_DIR ?=
 LOAD_POSTGRES ?=
 YES ?=
 STEP ?= all
@@ -102,13 +103,11 @@ postgres:
 	echo "Loading PostgreSQL schema=$(POSTGRES_SCHEMA) step=$(STEP) output=$(COMBINED_OUTPUT_DIR)"; \
 	PYTHONUNBUFFERED=1 uv run python -m omnipath_build.cli.commands postgres \
 		--output-dir $(COMBINED_OUTPUT_DIR) \
-		--postgres-uri $(POSTGRES_URI) \
-		--schema $(POSTGRES_SCHEMA) \
-		--batch-size $(POSTGRES_BATCH_SIZE) \
-		$(if $(AFFECTED_ENTITIES),--affected-entities $(AFFECTED_ENTITIES)) \
-		$(if $(AFFECTED_RELATIONS),--affected-relations $(AFFECTED_RELATIONS)) \
-		$(if $(CHANGED_SOURCE),--changed-source $(CHANGED_SOURCE)) \
-		$(if $(POSTGRES_DROP_EXISTING),--drop-existing) \
+			--postgres-uri $(POSTGRES_URI) \
+			--schema $(POSTGRES_SCHEMA) \
+			--batch-size $(POSTGRES_BATCH_SIZE) \
+			$(if $(COMBINE_RUN_DIR),--combine-run-dir $(COMBINE_RUN_DIR)) \
+			$(if $(POSTGRES_DROP_EXISTING),--drop-existing) \
 		$(if $(POSTGRES_UNLOGGED_TABLES),--unlogged-tables) \
 		$(if $(POSTGRES_FOREIGN_KEYS),--foreign-keys) \
 		$$STEP_ARGS

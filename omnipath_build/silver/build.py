@@ -3,31 +3,40 @@
 
 from __future__ import annotations
 
-import importlib
-import inspect
-import json
 import os
-import pkgutil
+from enum import Enum
+import json
 import time
+from typing import Dict, List, Callable, Iterable, Iterator, Optional
+import inspect
+from pathlib import Path
+import pkgutil
+import importlib
 import traceback
 from dataclasses import dataclass
-from enum import Enum
-from pathlib import Path
-from typing import Callable, Dict, Iterable, Iterator, List, Optional
 
 import pyarrow as pa
 import pyarrow.parquet as pq
 
 from omnipath_build.silver.paths import PathManager
-from omnipath_build.silver.tables import SilverTableWriter, has_silver_tables, silver_table_dir
+from omnipath_build.silver.tables import (
+    SilverTableWriter,
+    silver_table_dir,
+    has_silver_tables,
+    has_raw_keyed_silver_tables,
+)
+from pypath.inputs_v2.raw_records import (
+    ProvenancedRecord,
+    RawRecordProvenance,
+    changed_keys,
+)
 from omnipath_build.silver.validate import validate_entity_identifier_shapes
 from pypath.internals.silver_schema import (
     ENTITY_SCHEMA,
     Entity as SilverEntity,
 )
-from pypath.internals.ontology_schema import OntologyTerm
-from pypath.inputs_v2.raw_records import ProvenancedRecord, RawRecordProvenance, changed_keys
 from omnipath_build.pipeline.progress import set_phase, update_phase
+from pypath.internals.ontology_schema import OntologyTerm
 
 __all__ = [
     'DiscoveryError',
@@ -137,10 +146,10 @@ def discover_resources(
     path_manager = PathManager(database_name, base_path)
     _configure_pypath_download_dir()
     from pypath.inputs_v2.base import (
-        ArtifactDataset,
         Dataset,
-        OntologyDataset,
         Resource,
+        ArtifactDataset,
+        OntologyDataset,
     )  # Local import to avoid import-time side effects.
 
     try:
@@ -267,10 +276,12 @@ def discover_resources(
                     dataset_name=dataset_name,
                 ):
                     raw_snapshot = getattr(dataset_obj, '_raw_snapshot_override', None)
+                    changed_only = bool(getattr(dataset_obj, '_changed_only_override', False))
                     kwargs = {
                         'source': source_name,
                         'dataset': dataset_name,
                         'use_preparse': True,
+                        'changed_only': changed_only,
                     }
                     if raw_snapshot is not None:
                         kwargs['raw_snapshot'] = raw_snapshot
@@ -315,6 +326,26 @@ def _record_provenance(record: object) -> RawRecordProvenance | None:
     if isinstance(record, ProvenancedRecord):
         return record.provenance
     return None
+
+
+def _changed_keys_by_type(delta_path: Path) -> tuple[set[str], set[str]]:
+    if not delta_path.exists():
+        return set(), set()
+    table = pq.read_table(delta_path, columns=['_raw_record_key', '_change_type'])
+    added: set[str] = set()
+    removed: set[str] = set()
+    for raw_record_key, change_type in zip(
+        table.column('_raw_record_key').to_pylist(),
+        table.column('_change_type').to_pylist(),
+        strict=False,
+    ):
+        if raw_record_key is None:
+            continue
+        if change_type == 'added':
+            added.add(str(raw_record_key))
+        elif change_type == 'removed':
+            removed.add(str(raw_record_key))
+    return added, removed
 
 
 def _ensure_entity_record(record: object) -> None:
@@ -619,6 +650,8 @@ def _process_single_output(
             first_entity,
             dataset=resource_fn.function_name,
             raw_record_id=first_provenance.raw_record_id if first_provenance else None,
+            raw_record_key=first_provenance.raw_record_key if first_provenance else None,
+            snapshot_id=first_provenance.snapshot_id if first_provenance else None,
         )
     if write_nested:
         record_dict = _normalize_record(first_entity)
@@ -650,6 +683,8 @@ def _process_single_output(
                 entity,
                 dataset=resource_fn.function_name,
                 raw_record_id=provenance.raw_record_id if provenance else None,
+                raw_record_key=provenance.raw_record_key if provenance else None,
+                snapshot_id=provenance.snapshot_id if provenance else None,
             )
         if write_nested:
             record_dict = _normalize_record(entity)
@@ -859,6 +894,8 @@ def _process_multi_output(
                 output_entity,
                 dataset=output_name,
                 raw_record_id=output_provenance.raw_record_id if output_provenance else None,
+                raw_record_key=output_provenance.raw_record_key if output_provenance else None,
+                snapshot_id=output_provenance.snapshot_id if output_provenance else None,
             )
         if silver_writer is None:
             record_dict = _normalize_record(output_entity)
@@ -1086,6 +1123,8 @@ def run_silver_loader(
     override: bool = False,
     test_mode: bool = False,
     inputs_package: str = 'pypath.inputs_v2',
+    changed_only: bool = False,
+    silver_state_dir: Path | None = None,
 ) -> tuple[
     Dict[str, List[ResourceFunction]],
     PathManager,
@@ -1131,6 +1170,7 @@ def run_silver_loader(
 
     outputs: List[Optional[Path]] = []
     silver_writers: dict[str, SilverTableWriter] = {}
+    incremental_state_roots: dict[str, Path] = {}
     try:
         for fn in selected_functions:
             function_started = time.perf_counter()
@@ -1143,9 +1183,13 @@ def run_silver_loader(
             )
             writer = None
             raw_dataset = getattr(fn.call, '_raw_dataset', None)
+            incremental_state_dir: Path | None = None
+            incremental_added_keys: set[str] = set()
+            incremental_removed_keys: set[str] = set()
+            use_incremental_raw_rows = False
             if (
                 raw_dataset is not None
-                and fn.output_kind == 'entity'
+                and fn.output_kind in {'entity', 'ontology'}
                 and fn.function_name != 'resource'
                 and not dry_run
             ):
@@ -1178,6 +1222,9 @@ def run_silver_loader(
                     **preparse_kwargs,
                 )
                 delta_keys = changed_keys(snapshot.delta_path)
+                incremental_added_keys, incremental_removed_keys = _changed_keys_by_type(
+                    snapshot.delta_path
+                )
                 update_phase(f'preparse ready delta_keys={len(delta_keys):,}')
                 print(
                     f'[bronze:{fn.source}.{fn.function_name}] preparse ready '
@@ -1188,18 +1235,42 @@ def run_silver_loader(
                 )
                 raw_dataset._raw_snapshot_override = snapshot
                 source_dir = path_manager.source_path(fn.source)
+                candidate_state_dir = (
+                    silver_state_dir
+                    if silver_state_dir is not None
+                    else incremental_state_roots.get(fn.source)
+                )
                 if (
-                    not override
-                    and not delta_keys
-                    and has_silver_tables(source_dir)
+                    candidate_state_dir is not None
+                    and has_raw_keyed_silver_tables(candidate_state_dir)
+                ):
+                    incremental_state_dir = candidate_state_dir
+                    incremental_state_roots[fn.source] = candidate_state_dir
+                    use_incremental_raw_rows = True
+                raw_dataset._changed_only_override = (
+                    fn.output_kind == 'entity'
+                    and (changed_only or use_incremental_raw_rows)
+                )
+                if (
+                    not delta_keys
+                    and (
+                        incremental_state_dir is not None
+                        or (not override and has_silver_tables(source_dir))
+                    )
                 ):
                     raw_dataset.accept_last_preparse()
                     if hasattr(raw_dataset, '_raw_snapshot_override'):
                         delattr(raw_dataset, '_raw_snapshot_override')
-                    result = silver_table_dir(source_dir)
+                    if hasattr(raw_dataset, '_changed_only_override'):
+                        delattr(raw_dataset, '_changed_only_override')
+                    result = (
+                        silver_table_dir(source_dir)
+                        if incremental_state_dir is None
+                        else silver_table_dir(incremental_state_dir)
+                    )
                     print(
                         f'[{fn.source}.{fn.function_name}] raw delta empty; '
-                        f'skipping silver rewrite ({source_dir})'
+                        f'skipping silver mapping'
                         f' elapsed={time.perf_counter() - function_started:.1f}s',
                         flush=True,
                     )
@@ -1211,7 +1282,7 @@ def run_silver_loader(
                 writer = silver_writers.get(fn.source)
                 if writer is None:
                     source_dir = path_manager.source_path(fn.source)
-                    if override:
+                    if override and incremental_state_dir is None:
                         for legacy_file in source_dir.glob('*.parquet'):
                             if legacy_file.name != 'resource.parquet':
                                 legacy_file.unlink()
@@ -1224,8 +1295,29 @@ def run_silver_loader(
                         silver_table_dir(source_dir),
                         fn.source,
                         batch_size=batch_size,
+                        seed_from_dir=incremental_state_dir,
                     )
                     silver_writers[fn.source] = writer
+                if incremental_state_dir is not None:
+                    if fn.output_kind == 'ontology':
+                        writer.exclude_dataset(fn.function_name)
+                    else:
+                        writer.exclude_raw_record_keys(incremental_removed_keys)
+                    if delta_keys:
+                        print(
+                            f'[{fn.source}.{fn.function_name}] incremental silver update: '
+                            f'added_raw_keys={len(incremental_added_keys):,} '
+                            f'removed_raw_keys={len(incremental_removed_keys):,}',
+                            flush=True,
+                        )
+                    else:
+                        print(
+                            f'[{fn.source}.{fn.function_name}] raw delta empty; '
+                            'copying silver state forward',
+                            flush=True,
+                        )
+                elif writer.seed_from_dir is not None:
+                    writer.exclude_dataset(fn.function_name)
             try:
                 set_phase(phase_label, 'mapping records')
                 result = process_resource_function(
@@ -1242,6 +1334,8 @@ def run_silver_loader(
                     raw_dataset.accept_last_preparse()
                     if hasattr(raw_dataset, '_raw_snapshot_override'):
                         delattr(raw_dataset, '_raw_snapshot_override')
+                    if hasattr(raw_dataset, '_changed_only_override'):
+                        delattr(raw_dataset, '_changed_only_override')
                 outputs.append(result)
                 print(
                     f'[silver:{fn.source}.{fn.function_name}] done '

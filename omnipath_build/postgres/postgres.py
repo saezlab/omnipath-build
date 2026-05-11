@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import io
 import json
+import time
 from typing import Any
 import logging
 from pathlib import Path
-import time
 
 import polars as pl
 import psycopg2
@@ -15,15 +15,15 @@ import psycopg2.extensions
 
 from omnipath_build.postgres.schema import ensure_schema
 from omnipath_build.postgres.bitmaps import (
-    _add_to_facet_bitmaps,
-    _remove_from_facet_bitmaps,
     create_bitmap_tables,
+    _add_to_facet_bitmaps,
     populate_bitmap_tables,
+    _remove_from_facet_bitmaps,
 )
 from omnipath_build.postgres.indexes import create_secondary_indexes
 from omnipath_build.postgres.materialized_views import (
-    create_entity_relation_counts_materialized_view,
     create_ontology_terms_materialized_view,
+    create_entity_relation_counts_materialized_view,
 )
 
 logger = logging.getLogger(__name__)
@@ -73,6 +73,31 @@ def resolve_combined_dir(output_dir: str | Path) -> Path:
     )
 
 
+def resolve_combine_run_dir(
+    output_dir: str | Path,
+    combine_run_dir: str | Path | None = None,
+) -> Path | None:
+    if combine_run_dir is not None:
+        run_dir = Path(combine_run_dir)
+        return run_dir if (run_dir / 'manifest.json').exists() else None
+
+    root = Path(output_dir)
+    latest_path = root / 'runs' / 'latest.json'
+    if not latest_path.exists():
+        return None
+    try:
+        latest = json.loads(latest_path.read_text(encoding='utf-8'))
+    except json.JSONDecodeError:
+        return None
+    path = latest.get('path')
+    if not path:
+        return None
+    run_dir = Path(path)
+    if not run_dir.is_absolute():
+        run_dir = root / 'runs' / str(latest.get('run_id', ''))
+    return run_dir if (run_dir / 'manifest.json').exists() else None
+
+
 def load_combined_schema_to_postgres(
     output_dir: str | Path,
     postgres_uri: str,
@@ -85,11 +110,10 @@ def load_combined_schema_to_postgres(
     indexes: bool = True,
     bitmaps: bool = True,
     views: bool = True,
-    affected_entity_keys: list[str] | None = None,
-    affected_relation_keys: list[str] | None = None,
-    changed_source: str | None = None,
+    combine_run_dir: str | Path | None = None,
 ) -> int:
     combined_dir = resolve_combined_dir(output_dir)
+    run_dir = resolve_combine_run_dir(output_dir, combine_run_dir)
     overall_started_at = _log_step_start(
         'Loading combined parquet artifacts from %s into schema %s',
         combined_dir,
@@ -105,9 +129,6 @@ def load_combined_schema_to_postgres(
         unlogged_tables,
         foreign_keys,
     )
-    affected_entity_keys = affected_entity_keys or []
-    affected_relation_keys = affected_relation_keys or []
-
     with psycopg2.connect(postgres_uri) as conn:
         started_at = _log_step_start('Ensuring PostgreSQL schema')
         ensure_schema(
@@ -123,26 +144,22 @@ def load_combined_schema_to_postgres(
         affected_relation_ids_before: list[int] = []
         if tables:
             target_has_data = _base_tables_have_data(conn, schema)
-            has_delta = bool(affected_entity_keys or affected_relation_keys)
-            if has_delta and target_has_data and not drop_existing:
+            has_run_delta = (
+                run_dir is not None
+                and _run_delta_is_incremental(run_dir)
+                and _run_delta_has_work(run_dir)
+            )
+            if has_run_delta and target_has_data and not drop_existing:
                 logger.info(
-                    'PostgreSQL load action: incremental delta '
-                    'entities=%s relations=%s',
-                    len(affected_entity_keys),
-                    len(affected_relation_keys),
+                    'PostgreSQL load action: combine run delta run_dir=%s',
+                    run_dir,
                 )
                 if bitmaps:
                     started_at = _log_step_start('Ensuring bitmap tables')
                     create_bitmap_tables(conn, schema=schema)
                     _log_step_done(started_at, 'Bitmap tables ready')
 
-                affected_entity_ids_before, affected_relation_ids_before = _query_affected_ids(
-                    conn,
-                    schema=schema,
-                    affected_entity_keys=affected_entity_keys,
-                    affected_relation_keys=affected_relation_keys,
-                )
-
+                affected_entity_ids_before, affected_relation_ids_before = _run_delta_delete_ids(run_dir)
                 if bitmaps and (affected_entity_ids_before or affected_relation_ids_before):
                     started_at = _log_step_start('Removing affected IDs from bitmaps')
                     _remove_from_facet_bitmaps(
@@ -153,24 +170,16 @@ def load_combined_schema_to_postgres(
                     )
                     _log_step_done(started_at, 'Affected IDs removed from bitmaps')
 
-                started_at = _log_step_start('Loading base tables incrementally')
-                load_tables_incremental(
+                started_at = _log_step_start('Applying combine run delta')
+                load_tables_from_run_delta(
                     conn,
                     schema=schema,
-                    combined_dir=combined_dir,
-                    affected_entity_keys=affected_entity_keys,
-                    affected_relation_keys=affected_relation_keys,
-                    changed_source=changed_source,
+                    run_dir=run_dir,
                     batch_size=batch_size,
                 )
-                _log_step_done(started_at, 'Base tables loaded incrementally')
+                _log_step_done(started_at, 'Combine run delta applied')
 
-                affected_entity_ids_after, affected_relation_ids_after = _query_affected_ids(
-                    conn,
-                    schema=schema,
-                    affected_entity_keys=affected_entity_keys,
-                    affected_relation_keys=affected_relation_keys,
-                )
+                affected_entity_ids_after, affected_relation_ids_after = _run_delta_upsert_ids(run_dir)
                 if bitmaps and (affected_entity_ids_after or affected_relation_ids_after):
                     started_at = _log_step_start('Adding affected IDs to bitmaps')
                     _add_to_facet_bitmaps(
@@ -234,35 +243,6 @@ def _base_tables_have_data(
             ).format(sql.Identifier(schema), sql.Identifier(schema))
         )
         return bool(cur.fetchone()[0])
-
-
-def _query_affected_ids(
-    conn: psycopg2.extensions.connection,
-    schema: str,
-    affected_entity_keys: list[str],
-    affected_relation_keys: list[str],
-) -> tuple[list[int], list[int]]:
-    """Query affected entity/relation IDs from the database before update."""
-    affected_entity_ids: list[int] = []
-    affected_relation_ids: list[int] = []
-    with conn.cursor() as cur:
-        if affected_entity_keys:
-            cur.execute(
-                sql.SQL(
-                    'SELECT entity_id FROM {}.entity WHERE entity_key = ANY(%s)'
-                ).format(sql.Identifier(schema)),
-                (affected_entity_keys,),
-            )
-            affected_entity_ids = [row[0] for row in cur.fetchall()]
-        if affected_relation_keys:
-            cur.execute(
-                sql.SQL(
-                    'SELECT relation_id FROM {}.entity_relation WHERE relation_key = ANY(%s)'
-                ).format(sql.Identifier(schema)),
-                (affected_relation_keys,),
-            )
-            affected_relation_ids = [row[0] for row in cur.fetchall()]
-    return affected_entity_ids, affected_relation_ids
 
 
 def _load_tables_full(
@@ -530,206 +510,262 @@ def _load_entity_and_identifiers(
     )
 
 
-def load_tables_incremental(
+def load_tables_from_run_delta(
     conn: psycopg2.extensions.connection,
     schema: str,
-    combined_dir: Path,
-    affected_entity_keys: list[str],
-    affected_relation_keys: list[str],
-    changed_source: str | None,
+    run_dir: Path,
     batch_size: int,
-) -> tuple[list[int], list[int]]:
-    started_at = _log_step_start('Deleting old rows for affected keys')
-    changed_sources = [
-        item.strip()
-        for item in (changed_source or '').split(',')
-        if item.strip()
-    ]
+) -> None:
+    delta_dir = run_dir / 'delta'
+    started_at = _log_step_start('Deleting rows from combine delta')
+    entity_ids = _read_int_column(delta_dir / 'entity_delete.parquet', 'entity_id')
+    relation_ids = _read_int_column(
+        delta_dir / 'entity_relation_delete.parquet',
+        'relation_id',
+    )
+    entity_evidence_delete = _read_optional_frame(
+        delta_dir / 'entity_evidence_delete.parquet',
+        ['source', 'entity_key'],
+    )
+    relation_annotation_ids = _read_int_column(
+        delta_dir / 'relation_annotation_term_delete.parquet',
+        'relation_id',
+    )
+    relation_ids_for_annotation = sorted(set(relation_ids) | set(relation_annotation_ids))
 
-    affected_entity_ids: list[int] = []
-    affected_relation_ids: list[int] = []
     with conn.cursor() as cur:
-        if affected_entity_keys:
-            cur.execute(
-                sql.SQL(
-                    'SELECT entity_id FROM {}.entity WHERE entity_key = ANY(%s)'
-                ).format(sql.Identifier(schema)),
-                (affected_entity_keys,),
-            )
-            affected_entity_ids = [row[0] for row in cur.fetchall()]
-        if affected_relation_keys:
-            cur.execute(
-                sql.SQL(
-                    'SELECT relation_id FROM {}.entity_relation WHERE relation_key = ANY(%s)'
-                ).format(sql.Identifier(schema)),
-                (affected_relation_keys,),
-            )
-            affected_relation_ids = [row[0] for row in cur.fetchall()]
-
-        if affected_relation_ids:
+        if relation_ids_for_annotation:
             cur.execute(
                 sql.SQL(
                     'DELETE FROM {}.relation_annotation_term WHERE relation_id = ANY(%s)'
                 ).format(sql.Identifier(schema)),
-                (affected_relation_ids,),
+                (relation_ids_for_annotation,),
             )
+        if relation_ids:
             cur.execute(
                 sql.SQL(
                     'DELETE FROM {}.entity_relation_evidence WHERE relation_id = ANY(%s)'
                 ).format(sql.Identifier(schema)),
-                (affected_relation_ids,),
+                (relation_ids,),
             )
             cur.execute(
                 sql.SQL(
                     'DELETE FROM {}.entity_relation WHERE relation_id = ANY(%s)'
                 ).format(sql.Identifier(schema)),
-                (affected_relation_ids,),
+                (relation_ids,),
             )
-        if affected_entity_ids:
+        if not entity_evidence_delete.is_empty():
+            source_rows = entity_evidence_delete.filter(pl.col('source').is_not_null())
+            if not source_rows.is_empty():
+                pairs = [
+                    (row['source'], row['entity_key'])
+                    for row in source_rows.to_dicts()
+                    if row['entity_key'] is not None
+                ]
+                if pairs:
+                    cur.execute(
+                        sql.SQL(
+                            'DELETE FROM {}.entity_evidence e '
+                            'USING (SELECT * FROM unnest(%s::text[], %s::text[]) AS t(source, entity_key)) d '
+                            'WHERE e.source = d.source AND e.entity_key = d.entity_key'
+                        ).format(sql.Identifier(schema)),
+                        ([source for source, _ in pairs], [key for _, key in pairs]),
+                    )
+            null_source_keys = (
+                entity_evidence_delete
+                .filter(pl.col('source').is_null())
+                .get_column('entity_key')
+                .drop_nulls()
+                .unique()
+                .to_list()
+            )
+            if null_source_keys:
+                cur.execute(
+                    sql.SQL(
+                        'DELETE FROM {}.entity_evidence WHERE entity_key = ANY(%s)'
+                    ).format(sql.Identifier(schema)),
+                    (null_source_keys,),
+                )
+        if entity_ids:
             cur.execute(
                 sql.SQL(
                     'DELETE FROM {}.entity_identifier WHERE entity_id = ANY(%s)'
                 ).format(sql.Identifier(schema)),
-                (affected_entity_ids,),
+                (entity_ids,),
             )
             cur.execute(
                 sql.SQL(
                     'DELETE FROM {}.entity WHERE entity_id = ANY(%s)'
                 ).format(sql.Identifier(schema)),
-                (affected_entity_ids,),
-            )
-        if changed_sources:
-            cur.execute(
-                sql.SQL(
-                    'DELETE FROM {}.entity_evidence WHERE source = ANY(%s)'
-                ).format(sql.Identifier(schema)),
-                (changed_sources,),
+                (entity_ids,),
             )
     conn.commit()
     _log_step_done(
         started_at,
-        'Deleted %s entities, %s relations',
-        len(affected_entity_ids),
-        len(affected_relation_ids),
+        'Deleted delta rows entities=%s relations=%s entity_evidence_keys=%s',
+        len(entity_ids),
+        len(relation_ids),
+        0 if entity_evidence_delete.is_empty() else entity_evidence_delete.height,
     )
 
-    # Load new rows from parquets filtered to affected keys
-    parquet_path = combined_dir / 'entity.parquet'
-    if parquet_path.exists() and affected_entity_keys:
+    entity_upsert = delta_dir / 'entity_upsert.parquet'
+    if entity_upsert.exists():
         _load_entity_and_identifiers(
             conn,
             schema=schema,
-            parquet_path=parquet_path,
+            parquet_path=entity_upsert,
             batch_size=batch_size,
-            filter_keys=affected_entity_keys,
-            key_column='entity_key',
         )
+    _copy_parquet_to_table(
+        conn,
+        parquet_path=delta_dir / 'entity_relation_upsert.parquet',
+        schema=schema,
+        table='entity_relation',
+        columns=(
+            'relation_id',
+            'relation_key',
+            'subject_entity_id',
+            'subject_entity_key',
+            'predicate',
+            'object_entity_id',
+            'object_entity_key',
+            'relation_category',
+            'participant_types',
+            'evidence_count',
+            'sources',
+        ),
+        serializers={
+            'participant_types': _serialize_json,
+            'sources': _serialize_json,
+        },
+        batch_size=batch_size,
+    )
+    _copy_parquet_to_table(
+        conn,
+        parquet_path=delta_dir / 'entity_relation_evidence_upsert.parquet',
+        schema=schema,
+        table='entity_relation_evidence',
+        columns=(
+            'relation_evidence_id',
+            'relation_id',
+            'relation_key',
+            'source',
+            'raw_record_id',
+            'record_attributes',
+            'subject_attributes',
+            'object_attributes',
+            'evidence',
+        ),
+        serializers={
+            'record_attributes': _serialize_json,
+            'subject_attributes': _serialize_json,
+            'object_attributes': _serialize_json,
+            'evidence': _serialize_json,
+        },
+        batch_size=batch_size,
+    )
+    _copy_parquet_to_table(
+        conn,
+        parquet_path=delta_dir / 'entity_evidence_upsert.parquet',
+        schema=schema,
+        table='entity_evidence',
+        columns=(
+            'source',
+            'entity_key',
+            'raw_record_ids',
+            'entity_type',
+            'taxonomy_id',
+            'identifiers',
+            'entity_attributes',
+        ),
+        serializers={
+            'raw_record_ids': _serialize_json,
+            'identifiers': _serialize_json,
+            'entity_attributes': _serialize_json,
+        },
+        batch_size=batch_size,
+    )
+    _copy_parquet_to_table(
+        conn,
+        parquet_path=delta_dir / 'relation_annotation_term_upsert.parquet',
+        schema=schema,
+        table='relation_annotation_term',
+        columns=(
+            'relation_id',
+            'relation_evidence_id',
+            'source',
+            'scope',
+            'term_entity_id',
+        ),
+        serializers={},
+        batch_size=batch_size,
+    )
 
-    if affected_relation_keys:
-        _copy_parquet_to_table(
-            conn,
-            parquet_path=combined_dir / 'entity_relation.parquet',
-            schema=schema,
-            table='entity_relation',
-            columns=(
-                'relation_id',
-                'relation_key',
-                'subject_entity_id',
-                'subject_entity_key',
-                'predicate',
-                'object_entity_id',
-                'object_entity_key',
-                'relation_category',
-                'participant_types',
-                'evidence_count',
-                'sources',
-            ),
-            serializers={
-                'participant_types': _serialize_json,
-                'sources': _serialize_json,
-            },
-            batch_size=batch_size,
-            filter_column='relation_key',
-            filter_keys=affected_relation_keys,
-        )
-        _, loaded_relation_ids = _query_affected_ids(
-            conn,
-            schema=schema,
-            affected_entity_keys=[],
-            affected_relation_keys=affected_relation_keys,
-        )
-        _copy_parquet_to_table(
-            conn,
-            parquet_path=combined_dir / 'entity_relation_evidence.parquet',
-            schema=schema,
-            table='entity_relation_evidence',
-            columns=(
-                'relation_evidence_id',
-                'relation_id',
-                'relation_key',
-                'source',
-                'raw_record_id',
-                'record_attributes',
-                'subject_attributes',
-                'object_attributes',
-                'evidence',
-            ),
-            serializers={
-                'record_attributes': _serialize_json,
-                'subject_attributes': _serialize_json,
-                'object_attributes': _serialize_json,
-                'evidence': _serialize_json,
-            },
-            batch_size=batch_size,
-            filter_column='relation_key',
-            filter_keys=affected_relation_keys,
-        )
-        _copy_parquet_to_table(
-            conn,
-            parquet_path=combined_dir / 'relation_annotation_term.parquet',
-            schema=schema,
-            table='relation_annotation_term',
-            columns=(
-                'relation_id',
-                'relation_evidence_id',
-                'source',
-                'scope',
-                'term_entity_id',
-            ),
-            serializers={},
-            batch_size=batch_size,
-            filter_column='relation_id',
-            filter_keys=loaded_relation_ids,
-        )
 
-    # Entity evidence: reload for changed source, or all if no specific source
-    if changed_sources or not affected_entity_keys:
-        _copy_parquet_to_table(
-            conn,
-            parquet_path=combined_dir / 'entity_evidence.parquet',
-            schema=schema,
-            table='entity_evidence',
-            columns=(
-                'source',
-                'entity_key',
-                'raw_record_ids',
-                'entity_type',
-                'taxonomy_id',
-                'identifiers',
-                'entity_attributes',
-            ),
-            serializers={
-                'raw_record_ids': _serialize_json,
-                'identifiers': _serialize_json,
-                'entity_attributes': _serialize_json,
-            },
-            batch_size=batch_size,
-            filter_column='source',
-            filter_keys=changed_sources or None,
-        )
+def _run_delta_has_work(run_dir: Path) -> bool:
+    manifest_path = run_dir / 'manifest.json'
+    if manifest_path.exists():
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+        except json.JSONDecodeError:
+            manifest = {}
+        delta_counts = manifest.get('delta_counts')
+        if isinstance(delta_counts, dict):
+            return any(int(value or 0) > 0 for value in delta_counts.values())
+    return any(
+        path.exists() and pq.ParquetFile(path).metadata.num_rows > 0
+        for path in (run_dir / 'delta').glob('*.parquet')
+    )
 
-    # Resources are not updated incrementally; skip
-    return affected_entity_ids, affected_relation_ids
+
+def _run_delta_is_incremental(run_dir: Path) -> bool:
+    manifest_path = run_dir / 'manifest.json'
+    if not manifest_path.exists():
+        return False
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+    except json.JSONDecodeError:
+        return False
+    return manifest.get('mode') == 'incremental'
+
+
+def _run_delta_delete_ids(run_dir: Path) -> tuple[list[int], list[int]]:
+    delta_dir = run_dir / 'delta'
+    return (
+        _read_int_column(delta_dir / 'entity_delete.parquet', 'entity_id'),
+        _read_int_column(delta_dir / 'entity_relation_delete.parquet', 'relation_id'),
+    )
+
+
+def _run_delta_upsert_ids(run_dir: Path) -> tuple[list[int], list[int]]:
+    delta_dir = run_dir / 'delta'
+    return (
+        _read_int_column(delta_dir / 'entity_upsert.parquet', 'entity_id'),
+        _read_int_column(delta_dir / 'entity_relation_upsert.parquet', 'relation_id'),
+    )
+
+
+def _read_int_column(path: Path, column: str) -> list[int]:
+    if not path.exists():
+        return []
+    scan = pl.scan_parquet(path)
+    if column not in scan.collect_schema().names():
+        return []
+    frame = scan.select(column).collect()
+    return [
+        int(value)
+        for value in frame.get_column(column).drop_nulls().unique().to_list()
+    ]
+
+
+def _read_optional_frame(path: Path, columns: list[str]) -> pl.DataFrame:
+    if not path.exists():
+        return pl.DataFrame({column: pl.Series([], dtype=pl.String) for column in columns})
+    frame = pl.read_parquet(path)
+    for column in columns:
+        if column not in frame.columns:
+            frame = frame.with_columns(pl.lit(None, dtype=pl.String).alias(column))
+    return frame.select(columns)
 
 
 def _truncate_tables(conn: psycopg2.extensions.connection, schema: str) -> None:

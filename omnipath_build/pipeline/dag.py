@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import json
 import os
+import json
 from typing import Any
 from pathlib import Path
 from datetime import UTC, datetime
@@ -20,21 +20,23 @@ from omnipath_build.pipeline.paths import (
     build_paths,
     source_stage_dir,
     source_version_dir,
-    read_latest_pointer,
     next_numeric_version,
     update_latest_pointer,
 )
 from omnipath_build.pipeline.tasks import (
+    GOLD_DELTA_DIR,
     build_gold_source,
-    gold_output_ready,
-    hash_inputs_module,
     build_silver_source,
     resolve_silver_version,
     build_resolver_mappings,
     read_inputs_module_hash,
     resolver_mappings_ready,
 )
-from omnipath_build.pipeline.progress import phase, start_heartbeat, stop_heartbeat
+from omnipath_build.pipeline.progress import (
+    phase,
+    stop_heartbeat,
+    start_heartbeat,
+)
 
 @dataclass(frozen=True)
 class TaskDef:
@@ -194,64 +196,10 @@ def _executed_gold_sources(results: dict[str, TaskResult]) -> list[str]:
     )
 
 
-def _numeric_silver_versions_desc(paths: PipelinePaths, source: str) -> list[str]:
-    source_dir = source_stage_dir(paths.silver_root, source)
-    if not source_dir.exists():
-        return []
-
-    versions: list[int] = []
-    for child in source_dir.iterdir():
-        if not child.is_dir():
-            continue
-        try:
-            versions.append(int(child.name))
-        except ValueError:
-            continue
-    return [str(version) for version in sorted(versions, reverse=True)]
-
-
-def _matching_completed_silver_version(
-    *,
-    paths: PipelinePaths,
-    source: str,
-    current_hash: dict[str, Any],
-) -> tuple[str, Path] | None:
-    """Find the newest completed silver version matching the current inputs module.
-
-    The latest pointer is a convenience, not the source of truth. A run can be
-    interrupted after a source finishes but before the final report/pointer update
-    phase, so recovery scans completed numeric versions and repairs/reuses them.
-    The inputs hash is written last by ``build_silver_source`` and acts as the
-    completion marker.
-    """
-    latest_version = read_latest_pointer(paths.silver_root, source)
-    candidate_versions: list[str] = []
-    if latest_version is not None:
-        candidate_versions.append(latest_version)
-    for version in _numeric_silver_versions_desc(paths, source):
-        if version not in candidate_versions:
-            candidate_versions.append(version)
-
-    for version in candidate_versions:
-        output_dir = source_version_dir(paths.silver_root, source, version)
-        if not output_dir.exists():
-            continue
-        stored_hash = read_inputs_module_hash(output_dir)
-        if stored_hash is None:
-            continue
-        if stored_hash.get('sha256') == current_hash.get('sha256'):
-            return version, output_dir
-    return None
-
-
 def _reuse_existing_result(
     task: TaskDef,
     *,
-    results: dict[str, TaskResult],
-    paths: PipelinePaths,
-    inputs_package: str,
     resolver_mapping_dir: Path | None,
-    update_pointers: bool = True,
 ) -> TaskResult | None:
     if task.task_type == 'resolver_mappings':
         mapping_dir = resolver_mapping_dir or Path('id_resolver/data')
@@ -263,53 +211,8 @@ def _reuse_existing_result(
             source=None,
             status='reused',
             output_dir=str(mapping_dir),
-            metadata={'external': resolver_mapping_dir is not None},
-        )
-
-    if task.task_type == 'silver' and task.source is not None:
-        current_hash = hash_inputs_module(inputs_package, task.source)
-        reusable = _matching_completed_silver_version(
-            paths=paths,
-            source=task.source,
-            current_hash=current_hash,
-        )
-        if reusable is None:
-            return None
-        version, output_dir = reusable
-        if update_pointers:
-            update_latest_pointer(
-                paths.silver_root,
-                task.source,
-                version,
-                {'inputs_module_hash': current_hash},
+                metadata={'external': resolver_mapping_dir is not None},
             )
-        return TaskResult(
-            task_key=task.key,
-            task_type=task.task_type,
-            source=task.source,
-            status='reused',
-            output_dir=str(output_dir),
-            metadata={
-                'version': version,
-                'inputs_module_hash': current_hash,
-            },
-        )
-
-    if task.task_type == 'gold' and task.source is not None:
-        silver_result = results.get(f'silver:{task.source}')
-        if silver_result is not None and silver_result.status != 'reused':
-            return None
-        output_dir = source_stage_dir(paths.gold_root, task.source)
-        if not gold_output_ready(output_dir):
-            return None
-        return TaskResult(
-            task_key=task.key,
-            task_type=task.task_type,
-            source=task.source,
-            status='reused',
-            output_dir=str(output_dir),
-            metadata={'reused_existing_output': True},
-        )
 
     return None
 
@@ -405,11 +308,7 @@ def _plan_pipeline_tasks(
 
         reused = _reuse_existing_result(
             task,
-            results=results,
-            paths=paths,
-            inputs_package=inputs_package,
             resolver_mapping_dir=resolver_mapping_dir,
-            update_pointers=False,
         )
         if reused is not None:
             detail = reused.output_dir or reused.metadata.get('reason', 'ready')
@@ -454,15 +353,13 @@ def _plan_pipeline_tasks(
                 )
                 continue
 
-            affected = (
-                _collect_affected_keys(
+            affected = None
+            if actual_changed_sources:
+                affected = _collect_affected_keys_from_gold_artifacts(
                     paths=paths,
-                    combined_output_dir=combined_output_dir,
                     changed_sources=actual_changed_sources,
+                    results=results,
                 )
-                if actual_changed_sources
-                else None
-            )
             incremental = affected is not None
             metadata = {
                 'pipeline_incremental': incremental,
@@ -470,14 +367,21 @@ def _plan_pipeline_tasks(
                 'affected_entity_count': len(affected.entity_keys) if affected else None,
                 'affected_relation_count': len(affected.relation_keys) if affected else None,
             }
-            detail = (
-                'incremental '
-                f'sources={_format_names(actual_changed_sources)} '
-                f'entities={metadata["affected_entity_count"]} '
-                f'relations={metadata["affected_relation_count"]}'
-                if incremental else
-                f'bootstrap output={combined_output_dir}'
-            )
+            if incremental:
+                detail = (
+                    'incremental '
+                    f'sources={_format_names(actual_changed_sources)} '
+                    f'entities={metadata["affected_entity_count"]} '
+                    f'relations={metadata["affected_relation_count"]}'
+                )
+            elif actual_changed_sources and _combined_latest_exists(combined_output_dir):
+                detail = (
+                    'incremental after gold diff '
+                    f'sources={_format_names(actual_changed_sources)} '
+                    f'output={combined_output_dir}'
+                )
+            else:
+                detail = f'bootstrap output={combined_output_dir}'
             planned.append(PlannedTask(
                 task.key,
                 task.task_type,
@@ -605,9 +509,6 @@ def _execute_task(
     with phase(phase_label, 'checking reuse'):
         reused = _reuse_existing_result(
             task,
-            results=results,
-            paths=paths,
-            inputs_package=inputs_package,
             resolver_mapping_dir=resolver_mapping_dir,
         )
     if reused is not None:
@@ -647,23 +548,29 @@ def _execute_task(
                 batch_size=batch_size,
                 test_mode=test_mode,
             )
-            metadata = {**metadata, 'version': version}
-            pointer_metadata = {}
-            inputs_hash = metadata.get('inputs_module_hash')
-            if inputs_hash:
-                pointer_metadata['inputs_module_hash'] = inputs_hash
-            update_latest_pointer(
-                paths.silver_root,
-                task.source,
-                version,
-                pointer_metadata,
-            )
+            status = 'reused' if metadata.get('skipped') == 'empty_bronze_delta' else 'executed'
+            metadata = {
+                **metadata,
+                'version': metadata.get('version', version),
+            }
+            result_output_dir = metadata.get('output_dir') or str(output_dir)
+            if status == 'executed':
+                pointer_metadata = {}
+                inputs_hash = metadata.get('inputs_module_hash')
+                if inputs_hash:
+                    pointer_metadata['inputs_module_hash'] = inputs_hash
+                update_latest_pointer(
+                    paths.silver_root,
+                    task.source,
+                    version,
+                    pointer_metadata,
+                )
             return TaskResult(
                 task_key=task.key,
                 task_type=task.task_type,
                 source=task.source,
-                status='executed',
-                output_dir=str(output_dir),
+                status=status,
+                output_dir=str(result_output_dir),
                 metadata=metadata,
             )
 
@@ -671,6 +578,24 @@ def _execute_task(
             if task.source is None:
                 raise ValueError(f'Task source missing for {task.key}')
             silver_result = results.get(f'silver:{task.source}')
+            output_dir = source_stage_dir(paths.gold_root, task.source)
+            if (
+                silver_result is not None
+                and silver_result.status == 'reused'
+                and silver_result.metadata.get('skipped') == 'empty_bronze_delta'
+                and output_dir.exists()
+            ):
+                return TaskResult(
+                    task_key=task.key,
+                    task_type=task.task_type,
+                    source=task.source,
+                    status='reused',
+                    output_dir=str(output_dir),
+                    metadata={
+                        'reason': 'silver_noop',
+                        'silver_dir': silver_result.output_dir,
+                    },
+                )
             if silver_result is not None and silver_result.output_dir is not None:
                 silver_dir = Path(silver_result.output_dir)
             else:
@@ -683,7 +608,6 @@ def _execute_task(
                 if mapping_result and mapping_result.output_dir else
                 (resolver_mapping_dir or Path('id_resolver/data'))
             )
-            output_dir = source_stage_dir(paths.gold_root, task.source)
             print(
                 f'[start] gold:{task.source} '
                 f'-> silver={silver_dir} mappings={mapping_dir} output={output_dir}'
@@ -694,11 +618,12 @@ def _execute_task(
                 output_dir=output_dir,
                 mapping_dir=mapping_dir,
             )
+            status = 'reused' if metadata.get('skipped') == 'empty_silver_delta' else 'executed'
             return TaskResult(
                 task_key=task.key,
                 task_type=task.task_type,
                 source=task.source,
-                status='executed',
+                status=status,
                 output_dir=str(output_dir),
                 metadata=metadata,
             )
@@ -724,15 +649,13 @@ def _execute_task(
                         'affected_relation_count': 0,
                     },
                 )
-            affected = (
-                _collect_affected_keys(
+            affected = None
+            if actual_changed_sources:
+                affected = _collect_affected_keys_from_gold_artifacts(
                     paths=paths,
-                    combined_output_dir=combined_output_dir,
                     changed_sources=actual_changed_sources,
+                    results=results,
                 )
-                if actual_changed_sources
-                else None
-            )
             if affected is None:
                 print(
                     '[start] combine -> bootstrap '
@@ -794,10 +717,6 @@ def _execute_task(
             from omnipath_build.postgres import load_combined_schema_to_postgres
 
             combine_result = results.get('combine')
-            postgres_changed_sources = (
-                combine_result.metadata.get('changed_sources', [])
-                if combine_result else []
-            )
             incremental = bool(
                 combine_result
                 and combine_result.metadata.get('pipeline_incremental')
@@ -814,17 +733,9 @@ def _execute_task(
                 postgres_uri=postgres_uri,
                 schema=postgres_schema,
                 drop_existing=postgres_drop_existing,
-                affected_entity_keys=(
-                    combine_result.metadata.get('affected_entity_keys')
+                combine_run_dir=(
+                    combine_result.metadata.get('run_dir')
                     if incremental and combine_result else None
-                ),
-                affected_relation_keys=(
-                    combine_result.metadata.get('affected_relation_keys')
-                    if incremental and combine_result else None
-                ),
-                changed_source=(
-                    ','.join(postgres_changed_sources)
-                    if incremental and postgres_changed_sources else None
                 ),
             )
             return TaskResult(
@@ -964,150 +875,85 @@ class AffectedKeys:
     relation_keys: set[str]
 
 
-def _read_string_column(path: Path, column: str, *, source: str | None = None) -> set[str]:
+def _latest_gold_delta_dir(source_gold_dir: Path) -> Path | None:
+    latest_path = source_gold_dir / GOLD_DELTA_DIR / 'latest.json'
+    if not latest_path.exists():
+        return None
+    try:
+        latest = json.loads(latest_path.read_text(encoding='utf-8'))
+    except json.JSONDecodeError:
+        return None
+    path = latest.get('path')
+    if not path:
+        return None
+    delta_dir = Path(path)
+    if not delta_dir.is_absolute():
+        delta_dir = source_gold_dir / GOLD_DELTA_DIR / str(latest.get('build_id', ''))
+    return delta_dir if delta_dir.exists() else None
+
+
+def _gold_delta_dir_from_result(result: TaskResult | None, source_gold_dir: Path) -> Path | None:
+    if result is not None:
+        delta_summary = result.metadata.get('delta_summary')
+        if isinstance(delta_summary, dict):
+            delta_dir = delta_summary.get('delta_dir')
+            if delta_dir:
+                path = Path(delta_dir)
+                if path.exists():
+                    return path
+        if result.status == 'executed':
+            return None
+    return _latest_gold_delta_dir(source_gold_dir)
+
+
+def _read_affected_column(path: Path, column: str) -> set[str]:
     if not path.exists():
         return set()
     scan = pl.scan_parquet(path)
-    if source is not None and 'source' in scan.collect_schema().names():
-        scan = scan.filter(pl.col('source') == source)
     if column not in scan.collect_schema().names():
         return set()
-    values = (
-        scan
-        .select(pl.col(column).cast(pl.String))
-        .drop_nulls()
-        .unique()
-        .collect()
-        .get_column(column)
-        .to_list()
-    )
-    return {value for value in values if value}
+    frame = scan.select(pl.col(column).cast(pl.String)).collect()
+    return {
+        value
+        for value in frame.get_column(column).drop_nulls().unique().to_list()
+        if value
+    }
 
 
-def _read_key_hashes(
-    path: Path,
-    key_column: str,
-    compare_columns: list[str],
-    *,
-    source: str | None = None,
-) -> pl.DataFrame:
-    if not path.exists():
-        return pl.DataFrame({
-            key_column: pl.Series([], dtype=pl.String),
-            '_row_hash': pl.Series([], dtype=pl.UInt64),
-        })
-
-    scan = pl.scan_parquet(path)
-    schema_names = scan.collect_schema().names()
-    if source is not None and 'source' in schema_names:
-        scan = scan.filter(pl.col('source') == source)
-    if key_column not in schema_names:
-        return pl.DataFrame({
-            key_column: pl.Series([], dtype=pl.String),
-            '_row_hash': pl.Series([], dtype=pl.UInt64),
-        })
-
-    struct_columns = [
-        pl.col(column) if column in schema_names else pl.lit(None).alias(column)
-        for column in compare_columns
-    ]
-    return (
-        scan
-        .select([
-            pl.col(key_column).cast(pl.String),
-            pl.struct(struct_columns).hash().alias('_row_hash'),
-        ])
-        .drop_nulls(key_column)
-        .unique()
-        .collect()
-    )
-
-
-def _changed_keys_by_row_hash(
-    *,
-    previous_path: Path,
-    current_path: Path,
-    key_column: str,
-    compare_columns: list[str],
-    source: str,
-) -> set[str]:
-    previous = _read_key_hashes(
-        previous_path,
-        key_column,
-        compare_columns,
-        source=source,
-    )
-    current = _read_key_hashes(
-        current_path,
-        key_column,
-        compare_columns,
-    )
-    if previous.is_empty() and current.is_empty():
-        return set()
-
-    changed_previous = previous.join(
-        current,
-        on=[key_column, '_row_hash'],
-        how='anti',
-    )
-    changed_current = current.join(
-        previous,
-        on=[key_column, '_row_hash'],
-        how='anti',
-    )
-    changed = pl.concat(
-        [changed_previous.select(key_column), changed_current.select(key_column)],
-        how='vertical_relaxed',
-    )
-    return set(changed.get_column(key_column).unique().to_list())
-
-
-def _collect_affected_keys(
+def _collect_affected_keys_from_gold_artifacts(
     *,
     paths: PipelinePaths,
-    combined_output_dir: Path,
     changed_sources: list[str],
+    results: dict[str, TaskResult],
 ) -> AffectedKeys | None:
-    latest_dir = combined_output_dir / 'latest'
-    if latest_dir.is_symlink():
-        latest_dir = latest_dir.resolve()
-    if not latest_dir.exists():
-        return None
-
     entity_keys: set[str] = set()
     relation_keys: set[str] = set()
+    missing_sources: list[str] = []
+
     for source in changed_sources:
         source_gold_dir = source_stage_dir(paths.gold_root, source)
-        entity_keys.update(_changed_keys_by_row_hash(
-            previous_path=latest_dir / 'entity_evidence.parquet',
-            current_path=source_gold_dir / 'entities' / 'entity_evidence.parquet',
-            key_column='entity_key',
-            source=source,
-            compare_columns=[
-                'source',
-                'entity_key',
-                'raw_record_ids',
-                'entity_type',
-                'taxonomy_id',
-                'identifiers',
-                'entity_attributes',
-            ],
+        delta_dir = _gold_delta_dir_from_result(
+            results.get(f'gold:{source}'),
+            source_gold_dir,
+        )
+        if delta_dir is None:
+            missing_sources.append(source)
+            continue
+        entity_keys.update(_read_affected_column(
+            delta_dir / 'affected_entity_keys.parquet',
+            'entity_key',
         ))
-        relation_keys.update(_changed_keys_by_row_hash(
-            previous_path=latest_dir / 'entity_relation_evidence.parquet',
-            current_path=source_gold_dir / 'relations' / 'entity_relation_evidence.parquet',
-            key_column='relation_key',
-            source=source,
-            compare_columns=[
-                'relation_key',
-                'source',
-                'raw_record_id',
-                'record_attributes',
-                'subject_attributes',
-                'object_attributes',
-                'evidence',
-            ],
+        relation_keys.update(_read_affected_column(
+            delta_dir / 'affected_relation_keys.parquet',
+            'relation_key',
         ))
+
+    if missing_sources:
+        print(
+            '[plan]   affected keys unavailable until gold diff completes: '
+            f'{_format_names(missing_sources)}'
+        )
+        return None
 
     return AffectedKeys(
         entity_keys=entity_keys,

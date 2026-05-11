@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import json
-import shutil
 import time
-from dataclasses import dataclass
-from datetime import UTC, datetime
-from pathlib import Path
+import shutil
 from typing import Any
+from pathlib import Path
+from datetime import UTC, datetime
+from dataclasses import dataclass
 
 import duckdb
 
@@ -15,7 +15,6 @@ from omnipath_build.gold.utils.canonicalization import (
     ONTOLOGY_ENTITY_TYPE_LABEL,
     ONTOLOGY_IDENTIFIER_TYPE_LABEL,
 )
-
 
 @dataclass(frozen=True)
 class GoldSourceDir:
@@ -47,6 +46,7 @@ def build_combined_duckdb(
     )
     affected_entity_keys = affected_entity_keys or set()
     affected_relation_keys = affected_relation_keys or set()
+    run_id = _new_run_id()
 
     con = duckdb.connect(str(state_path))
     try:
@@ -78,6 +78,8 @@ def build_combined_duckdb(
             affected_entities_count = len(affected_entity_keys)
             affected_relations_count = len(affected_relation_keys)
 
+        effective_entity_keys = set(affected_entity_keys)
+        effective_relation_keys = set(affected_relation_keys)
         if bootstrap_state:
             _apply_bootstrap_batched(
                 con,
@@ -85,8 +87,10 @@ def build_combined_duckdb(
                 entity_batch_size=entity_batch_size,
                 relation_batch_size=relation_batch_size,
             )
+            effective_entity_keys = set()
+            effective_relation_keys = set()
         else:
-            _apply_incremental_batched(
+            effective_relation_keys = _apply_incremental_batched(
                 con,
                 source_dirs,
                 affected_entity_keys=affected_entity_keys,
@@ -104,6 +108,19 @@ def build_combined_duckdb(
         _log('exporting relation annotations')
         relation_annotation_summary = _export_relation_annotation(con, version_dir)
         _log(f'done relation annotations in {time.perf_counter() - started:.1f}s')
+        started = time.perf_counter()
+        _log(f'writing combine run artifacts run_id={run_id}')
+        run_summary = _write_run_artifacts(
+            con,
+            output_dir=output_dir,
+            latest_dir=version_dir,
+            run_id=run_id,
+            mode=mode,
+            changed_source=changed_source,
+            affected_entity_keys=effective_entity_keys,
+            affected_relation_keys=effective_relation_keys,
+        )
+        _log(f'done combine run artifacts in {time.perf_counter() - started:.1f}s')
         started = time.perf_counter()
         _log('building resources metadata')
         resources_path = build_resources_parquet(
@@ -129,12 +146,15 @@ def build_combined_duckdb(
             'state_path': str(state_path),
             'engine': 'duckdb',
             'mode': mode,
+            'run_id': run_id,
             'sources': [
                 {'source': item.source, 'path': str(item.path)}
                 for item in source_dirs
             ],
             'row_counts': row_counts,
             'relation_annotation_summary': relation_annotation_summary,
+            'run_summary': run_summary,
+            'run_dir': run_summary['run_dir'],
             'resources_path': str(resources_path),
         }
         (version_dir / 'combined_build_summary.json').write_text(
@@ -166,6 +186,10 @@ def _configure_duckdb(con: duckdb.DuckDBPyConnection, output_dir: Path) -> None:
     temp_dir.mkdir(parents=True, exist_ok=True)
     con.execute('set preserve_insertion_order = false')
     con.execute(f"set temp_directory = '{_sql_path(temp_dir)}'")
+
+
+def _new_run_id() -> str:
+    return datetime.now(UTC).strftime('%Y%m%dT%H%M%S%fZ')
 
 
 def _discover_gold_source_dirs(gold_root: Path) -> list[GoldSourceDir]:
@@ -340,7 +364,8 @@ def _apply_incremental_batched(
     affected_relation_keys: set[str],
     entity_batch_size: int,
     relation_batch_size: int,
-) -> None:
+) -> set[str]:
+    expanded_relation_keys = set(affected_relation_keys)
     if affected_entity_keys:
         started = time.perf_counter()
         _log(
@@ -360,17 +385,22 @@ def _apply_incremental_batched(
             _apply_entity_batch(con, source_dirs)
         _log(f'incremental: done entities in {time.perf_counter() - started:.1f}s')
 
-    if affected_relation_keys:
+        expanded_relation_keys.update(_relation_keys_for_entity_keys(
+            con,
+            affected_entity_keys,
+        ))
+
+    if expanded_relation_keys:
         started = time.perf_counter()
         _log(
             'incremental: replaying affected relation keys '
-            f'total={len(affected_relation_keys)}'
+            f'total={len(expanded_relation_keys)}'
         )
         for batch_index, batch in enumerate(
-            _iter_batches(sorted(affected_relation_keys), relation_batch_size),
+            _iter_batches(sorted(expanded_relation_keys), relation_batch_size),
             start=1,
         ):
-            total_batches = _batch_count(len(affected_relation_keys), relation_batch_size)
+            total_batches = _batch_count(len(expanded_relation_keys), relation_batch_size)
             _log(
                 'incremental relation batch '
                 f'{batch_index}/{total_batches} keys={len(batch)}'
@@ -381,6 +411,33 @@ def _apply_incremental_batched(
             'incremental: done relations/evidence in '
             f'{time.perf_counter() - started:.1f}s'
         )
+    return expanded_relation_keys
+
+
+def _relation_keys_for_entity_keys(
+    con: duckdb.DuckDBPyConnection,
+    entity_keys: set[str],
+) -> set[str]:
+    if not entity_keys:
+        return set()
+    _create_key_table(con, 'affected_entity_relation_keys', 'entity_key', entity_keys)
+    rows = con.execute("""
+        select relation_key
+        from entity_relation
+        where subject_entity_key in (
+            select entity_key from affected_entity_relation_keys
+        )
+        or object_entity_key in (
+            select entity_key from affected_entity_relation_keys
+        )
+    """).fetchall()
+    relation_keys = {row[0] for row in rows if row[0]}
+    if relation_keys:
+        _log(
+            'incremental: expanded entity keys to relation keys '
+            f'entities={len(entity_keys)} relations={len(relation_keys)}'
+        )
+    return relation_keys
 
 
 def _apply_source_key_batches(
@@ -917,7 +974,7 @@ def _recompute_entity_evidence(
     columns = [
         'source',
         'entity_key',
-        'raw_record_ids',
+        'raw_record_id',
         'entity_type',
         'taxonomy_id',
         'identifiers',
@@ -947,12 +1004,13 @@ def _recompute_entity_evidence(
         select
             source,
             entity_key,
-            raw_record_ids,
-            entity_type,
-            taxonomy_id,
-            identifiers,
-            entity_attributes
+            list_sort(list_distinct(list(raw_record_id) filter (where raw_record_id is not null and raw_record_id != ''))) as raw_record_ids,
+            first(entity_type order by entity_type nulls last) as entity_type,
+            first(taxonomy_id order by taxonomy_id nulls last) as taxonomy_id,
+            list_distinct(flatten(list(identifiers))) as identifiers,
+            list_distinct(flatten(list(entity_attributes))) as entity_attributes
         from source_entity_evidence
+        group by source, entity_key
     """)
 
 
@@ -1145,6 +1203,234 @@ def _export_relation_annotation(
     return summary
 
 
+def _write_run_artifacts(
+    con: duckdb.DuckDBPyConnection,
+    *,
+    output_dir: Path,
+    latest_dir: Path,
+    run_id: str,
+    mode: str,
+    changed_source: str | None,
+    affected_entity_keys: set[str],
+    affected_relation_keys: set[str],
+) -> dict[str, Any]:
+    run_dir = output_dir / 'runs' / run_id
+    affected_dir = run_dir / 'affected'
+    delta_dir = run_dir / 'delta'
+    affected_dir.mkdir(parents=True, exist_ok=True)
+    delta_dir.mkdir(parents=True, exist_ok=True)
+
+    full_build = mode == 'bootstrap'
+    if full_build:
+        _write_full_build_run_artifacts(
+            con,
+            affected_dir=affected_dir,
+            delta_dir=delta_dir,
+            changed_source=changed_source,
+            latest_dir=latest_dir,
+        )
+    else:
+        _create_key_table(con, 'run_affected_entity_keys', 'entity_key', affected_entity_keys)
+        _create_key_table(con, 'run_affected_relation_keys', 'relation_key', affected_relation_keys)
+        _write_incremental_run_artifacts(
+            con,
+            affected_dir=affected_dir,
+            delta_dir=delta_dir,
+            changed_source=changed_source,
+            latest_dir=latest_dir,
+        )
+
+    delta_counts = _run_delta_counts(con, delta_dir)
+    manifest = {
+        'layer': 'combined',
+        'run_id': run_id,
+        'mode': mode,
+        'created_at': datetime.now(UTC).isoformat(),
+        'changed_source': changed_source,
+        'latest_dir': str(latest_dir),
+        'run_dir': str(run_dir),
+        'affected_entity_count': (
+            int(con.execute('select count(*) from entity').fetchone()[0])
+            if full_build else len(affected_entity_keys)
+        ),
+        'affected_relation_count': (
+            int(con.execute('select count(*) from entity_relation').fetchone()[0])
+            if full_build else len(affected_relation_keys)
+        ),
+        'delta_counts': delta_counts,
+    }
+    (run_dir / 'manifest.json').write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + '\n',
+        encoding='utf-8',
+    )
+    (output_dir / 'runs' / 'latest.json').write_text(
+        json.dumps({
+            'run_id': run_id,
+            'path': str(run_dir),
+            'manifest': str(run_dir / 'manifest.json'),
+        }, indent=2, sort_keys=True) + '\n',
+        encoding='utf-8',
+    )
+    return manifest
+
+
+def _write_full_build_run_artifacts(
+    con: duckdb.DuckDBPyConnection,
+    *,
+    affected_dir: Path,
+    delta_dir: Path,
+    changed_source: str | None,
+    latest_dir: Path,
+) -> None:
+    source_value = _nullable_sql_literal(changed_source)
+    _copy_query(con, f"""
+        select
+            {source_value} as source,
+            entity_key,
+            'added'::varchar as change_type,
+            'bootstrap'::varchar as reason
+        from entity
+    """, affected_dir / 'entity_keys.parquet')
+    _copy_query(con, f"""
+        select
+            {source_value} as source,
+            relation_key,
+            'added'::varchar as change_type,
+            'bootstrap'::varchar as reason
+        from entity_relation
+    """, affected_dir / 'relation_keys.parquet')
+    _copy_empty_like(con, 'entity_delete', delta_dir / 'entity_delete.parquet')
+    _copy_empty_like(con, 'entity_relation_delete', delta_dir / 'entity_relation_delete.parquet')
+    _copy_empty_like(con, 'entity_evidence_delete', delta_dir / 'entity_evidence_delete.parquet')
+    _copy_empty_like(
+        con,
+        'relation_annotation_term_delete',
+        delta_dir / 'relation_annotation_term_delete.parquet',
+    )
+    _copy_query(con, 'select * from entity', delta_dir / 'entity_upsert.parquet')
+    _copy_query(con, 'select * from entity_relation', delta_dir / 'entity_relation_upsert.parquet')
+    _copy_query(
+        con,
+        'select * from entity_relation_evidence',
+        delta_dir / 'entity_relation_evidence_upsert.parquet',
+    )
+    _copy_query(con, 'select * from entity_evidence', delta_dir / 'entity_evidence_upsert.parquet')
+    _copy_query(
+        con,
+        f"select * from read_parquet('{_sql_path(latest_dir / 'relation_annotation_term.parquet')}')",
+        delta_dir / 'relation_annotation_term_upsert.parquet',
+    )
+
+
+def _write_incremental_run_artifacts(
+    con: duckdb.DuckDBPyConnection,
+    *,
+    affected_dir: Path,
+    delta_dir: Path,
+    changed_source: str | None,
+    latest_dir: Path,
+) -> None:
+    source_value = _nullable_sql_literal(changed_source)
+    _copy_query(con, f"""
+        select
+            {source_value} as source,
+            entity_key,
+            null::varchar as change_type,
+            'gold_delta'::varchar as reason
+        from run_affected_entity_keys
+    """, affected_dir / 'entity_keys.parquet')
+    _copy_query(con, f"""
+        select
+            {source_value} as source,
+            relation_key,
+            null::varchar as change_type,
+            'gold_delta'::varchar as reason
+        from run_affected_relation_keys
+    """, affected_dir / 'relation_keys.parquet')
+
+    _copy_query(con, """
+        select entity_id, entity_key
+        from entity_key_map
+        where entity_key in (select entity_key from run_affected_entity_keys)
+    """, delta_dir / 'entity_delete.parquet')
+    _copy_query(con, """
+        select relation_id, relation_key
+        from relation_key_map
+        where relation_key in (select relation_key from run_affected_relation_keys)
+    """, delta_dir / 'entity_relation_delete.parquet')
+    _copy_query(con, """
+        select null::varchar as source, entity_key
+        from run_affected_entity_keys
+    """, delta_dir / 'entity_evidence_delete.parquet')
+    _copy_query(con, """
+        select relation_id
+        from relation_key_map
+        where relation_key in (select relation_key from run_affected_relation_keys)
+    """, delta_dir / 'relation_annotation_term_delete.parquet')
+
+    _copy_query(con, """
+        select *
+        from entity
+        where entity_key in (select entity_key from run_affected_entity_keys)
+    """, delta_dir / 'entity_upsert.parquet')
+    _copy_query(con, """
+        select *
+        from entity_relation
+        where relation_key in (select relation_key from run_affected_relation_keys)
+    """, delta_dir / 'entity_relation_upsert.parquet')
+    _copy_query(con, """
+        select *
+        from entity_relation_evidence
+        where relation_key in (select relation_key from run_affected_relation_keys)
+    """, delta_dir / 'entity_relation_evidence_upsert.parquet')
+    _copy_query(con, """
+        select *
+        from entity_evidence
+        where entity_key in (select entity_key from run_affected_entity_keys)
+    """, delta_dir / 'entity_evidence_upsert.parquet')
+    annotation_path = latest_dir / 'relation_annotation_term.parquet'
+    _copy_query(con, f"""
+        select rat.*
+        from read_parquet('{_sql_path(annotation_path)}') rat
+        join relation_key_map rkm on rkm.relation_id = rat.relation_id
+        where rkm.relation_key in (select relation_key from run_affected_relation_keys)
+    """, delta_dir / 'relation_annotation_term_upsert.parquet')
+
+
+def _copy_empty_like(
+    con: duckdb.DuckDBPyConnection,
+    schema_name: str,
+    output_path: Path,
+) -> None:
+    schemas = {
+        'entity_delete': 'select null::bigint as entity_id, null::varchar as entity_key where false',
+        'entity_relation_delete': 'select null::bigint as relation_id, null::varchar as relation_key where false',
+        'entity_evidence_delete': 'select null::varchar as source, null::varchar as entity_key where false',
+        'relation_annotation_term_delete': 'select null::bigint as relation_id where false',
+    }
+    _copy_query(con, schemas[schema_name], output_path)
+
+
+def _run_delta_counts(con: duckdb.DuckDBPyConnection, delta_dir: Path) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for path in sorted(delta_dir.glob('*.parquet')):
+        counts[path.name] = int(con.execute(
+            f"select count(*) from read_parquet('{_sql_path(path)}')"
+        ).fetchone()[0])
+    return counts
+
+
+def _copy_query(
+    con: duckdb.DuckDBPyConnection,
+    query: str,
+    output_path: Path,
+) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    con.execute(
+        f"copy ({query}) to '{_sql_path(output_path)}' (format parquet)"
+    )
+
+
 def _row_counts(con: duckdb.DuckDBPyConnection) -> dict[str, int]:
     tables = {
         'entity.parquet': 'entity',
@@ -1198,6 +1484,12 @@ def _sql_path(path: Path) -> str:
 
 def _sql_literal(value: str) -> str:
     return value.replace("'", "''")
+
+
+def _nullable_sql_literal(value: str | None) -> str:
+    if value is None:
+        return 'null::varchar'
+    return f"'{_sql_literal(value)}'::varchar"
 
 
 def _log(message: str) -> None:

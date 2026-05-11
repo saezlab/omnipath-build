@@ -1,41 +1,51 @@
 from __future__ import annotations
 
 import json
-import textwrap
-from pathlib import Path
 from typing import Any
+from pathlib import Path
+import textwrap
 
 import polars as pl
+
 from id_resolver.resolve import (
-    CHEMICAL_ENTITY_TYPES,
-    PROTEIN_ENTITY_TYPES,
-    RESOLUTION_STATUS_COLUMN,
+    UNIPROT_TYPE,
     RESOLVED_ID_COLUMN,
-    RESOLVED_ID_TYPE_COLUMN,
     STANDARD_INCHI_TYPE,
     TARGET_ENTITY_TYPES,
-    UNIPROT_TYPE,
+    PROTEIN_ENTITY_TYPES,
+    CHEMICAL_ENTITY_TYPES,
+    RESOLVED_ID_TYPE_COLUMN,
+    RESOLUTION_STATUS_COLUMN,
     resolve_identifier_frame,
 )
-
+from omnipath_build.gold.utils.keys import compute_entity_key
+from omnipath_build.gold.utils.schema import ONTOLOGY_IDENTIFIER_TERM
+from omnipath_build.gold.utils.table_schema import (
+    EMPTY_IDENTIFIERS,
+    ENTITY_EVIDENCE_SCHEMA,
+)
 from omnipath_build.gold.utils.canonicalization import (
-    _aggregate_identifier_rows,
-    _build_ambiguous_entity_report,
-    _canonical_identifier_rows,
-    _chemical_identifier_rows,
-    _collect_ambiguous_entities,
-    _entity_export_keys,
-    _markdown_table,
-    _protein_identifier_rows,
-    _reduce_entities,
-    _repair_protein_resolutions,
-    _resolver_source_rows,
     ONTOLOGY_ENTITY_TYPE_LABEL,
     ONTOLOGY_IDENTIFIER_TYPE_LABEL,
+    _markdown_table,
+    _reduce_entities,
+    _entity_export_keys,
+    _resolver_source_rows,
+    _protein_identifier_rows,
+    _chemical_identifier_rows,
+    _aggregate_identifier_rows,
+    _canonical_identifier_rows,
+    _collect_ambiguous_entities,
+    _repair_protein_resolutions,
+    _build_ambiguous_entity_report,
 )
-from omnipath_build.gold.utils.keys import compute_entity_key
-from omnipath_build.gold.utils.table_schema import ENTITY_EVIDENCE_SCHEMA
-from omnipath_build.gold.utils.silver_entity_extraction import extract_from_silver_tables
+from omnipath_build.gold.utils.entity_extraction import (
+    extract_ontology_entity_description,
+)
+from omnipath_build.gold.utils.silver_entity_extraction import (
+    extract_from_silver_tables,
+)
+
 def _canonicalize_entities(
     entities: pl.DataFrame,
     source_identifiers: pl.DataFrame,
@@ -437,19 +447,12 @@ def _write_canonicalization_report(
 def _build_entity_evidence(
     silver_dir: str | Path,
     occurrence_map: pl.DataFrame | None,
+    fingerprint_map: pl.DataFrame | None,
     final_entities: pl.DataFrame,
     output_dir: Path,
     source_name: str,
-) -> None:
-    """Build per-source entity_evidence.parquet mapping entity_keys to raw_record_ids."""
-    if occurrence_map is None or occurrence_map.is_empty():
-        empty_evidence = pl.DataFrame({
-            name: pl.Series([], dtype=dtype)
-            for name, dtype in ENTITY_EVIDENCE_SCHEMA.items()
-        })
-        empty_evidence.write_parquet(output_dir / 'entity_evidence.parquet')
-        return
-
+) -> pl.DataFrame:
+    """Build source-local entity evidence keyed by raw records and occurrences."""
     silver_base = Path(silver_dir)
     entity_occurrence_path = silver_base / 'entity_occurrence.parquet'
     if not entity_occurrence_path.exists():
@@ -458,7 +461,7 @@ def _build_entity_evidence(
             for name, dtype in ENTITY_EVIDENCE_SCHEMA.items()
         })
         empty_evidence.write_parquet(output_dir / 'entity_evidence.parquet')
-        return
+        return empty_evidence
 
     # occurrence_id -> raw_record_id from silver
     raw_records = pl.read_parquet(entity_occurrence_path).select([
@@ -472,34 +475,49 @@ def _build_entity_evidence(
             for name, dtype in ENTITY_EVIDENCE_SCHEMA.items()
         })
         empty_evidence.write_parquet(output_dir / 'entity_evidence.parquet')
-        return
+        return empty_evidence
 
-    # entity_pk -> list of raw_record_ids
-    evidence = (
-        occurrence_map
-        .join(raw_records, on='occurrence_id', how='inner')
-        .group_by('entity_pk')
-        .agg([
-            pl.col('raw_record_id').unique().sort().alias('raw_record_ids'),
-        ])
+    occurrence_evidence = (
+        _empty_entity_evidence_index()
+        if occurrence_map is None or occurrence_map.is_empty()
+        else (
+            occurrence_map
+            .join(raw_records, on='occurrence_id', how='inner')
+            .select(['entity_pk', 'raw_record_id', 'occurrence_id', '_fingerprint'])
+        )
     )
+    ontology_evidence = _build_ontology_entity_evidence(
+        silver_base=silver_base,
+        raw_records=raw_records,
+        fingerprint_map=fingerprint_map,
+        source_name=source_name,
+    )
+    evidence_index = pl.concat(
+        [occurrence_evidence, ontology_evidence],
+        how='vertical_relaxed',
+    ).unique()
 
-    # Join with final_entities to get entity_key and attributes
-    evidence_out = (
+    evidence = (
         final_entities
         .select([
             'entity_pk',
             'entity_key',
+            'canonical_identifier',
+            'canonical_identifier_type',
             'entity_type',
             'taxonomy_id',
             'identifiers',
             'entity_attributes',
         ])
-        .join(evidence, on='entity_pk', how='inner')
+        .join(evidence_index, on='entity_pk', how='inner')
         .select([
             pl.lit(source_name).alias('source'),
             'entity_key',
-            'raw_record_ids',
+            'canonical_identifier',
+            'canonical_identifier_type',
+            'raw_record_id',
+            'occurrence_id',
+            pl.col('_fingerprint').alias('fingerprint'),
             'entity_type',
             'taxonomy_id',
             'identifiers',
@@ -507,15 +525,159 @@ def _build_entity_evidence(
         ])
     )
 
-    if evidence_out.is_empty():
+    if evidence.is_empty():
         empty_evidence = pl.DataFrame({
             name: pl.Series([], dtype=dtype)
             for name, dtype in ENTITY_EVIDENCE_SCHEMA.items()
         })
         empty_evidence.write_parquet(output_dir / 'entity_evidence.parquet')
-        return
+        return empty_evidence
 
-    evidence_out.write_parquet(output_dir / 'entity_evidence.parquet')
+    evidence.write_parquet(output_dir / 'entity_evidence.parquet')
+    return evidence
+
+
+def _build_ontology_entity_evidence(
+    *,
+    silver_base: Path,
+    raw_records: pl.DataFrame,
+    fingerprint_map: pl.DataFrame | None,
+    source_name: str,
+) -> pl.DataFrame:
+    empty = _empty_entity_evidence_index()
+    if fingerprint_map is None or fingerprint_map.is_empty():
+        return empty
+    annotation_path = silver_base / 'entity_annotation.parquet'
+    if not annotation_path.exists():
+        return empty
+
+    annotations = (
+        pl.read_parquet(annotation_path)
+        .filter(
+            (pl.col('term') == ONTOLOGY_IDENTIFIER_TERM)
+            & pl.col('value').is_not_null()
+            & (pl.col('value') != '')
+            & pl.col('unit').is_null()
+        )
+        .select(['occurrence_id', 'value'])
+    )
+    if annotations.is_empty():
+        return empty
+
+    fingerprint_rows = []
+    for row in annotations.unique().iter_rows(named=True):
+        desc = extract_ontology_entity_description(
+            {'value': row['value']},
+            source_name,
+        )
+        if desc is None:
+            continue
+        fingerprint_rows.append({
+            'occurrence_id': row['occurrence_id'],
+            '_fingerprint': desc['_fingerprint'],
+        })
+    if not fingerprint_rows:
+        return empty
+
+    ontology_occurrences = pl.DataFrame(fingerprint_rows)
+    return (
+        ontology_occurrences
+        .join(raw_records, on='occurrence_id', how='inner')
+        .join(fingerprint_map, on='_fingerprint', how='inner')
+        .select(['entity_pk', 'raw_record_id', 'occurrence_id', '_fingerprint'])
+        .unique()
+    )
+
+
+def _empty_entity_evidence_index() -> pl.DataFrame:
+    return pl.DataFrame({
+        'entity_pk': pl.Series([], dtype=pl.Int64),
+        'raw_record_id': pl.Series([], dtype=pl.Utf8),
+        'occurrence_id': pl.Series([], dtype=pl.Utf8),
+        '_fingerprint': pl.Series([], dtype=pl.Utf8),
+    })
+
+
+def reduce_entities_from_evidence(
+    entity_evidence: pl.DataFrame,
+    *,
+    entity_pk_map: pl.DataFrame | None = None,
+) -> pl.DataFrame:
+    """Project final source entities from source entity evidence facts."""
+    if entity_evidence.is_empty():
+        return pl.DataFrame({
+            'entity_pk': pl.Series([], dtype=pl.Int64),
+            'entity_key': pl.Series([], dtype=pl.Utf8),
+            'canonical_identifier': pl.Series([], dtype=pl.Utf8),
+            'canonical_identifier_type': pl.Series([], dtype=pl.Utf8),
+            'identifiers': pl.Series([], dtype=pl.List(pl.Struct({
+                'identifier': pl.Utf8,
+                'identifier_type': pl.Utf8,
+            }))),
+            'entity_type': pl.Series([], dtype=pl.Utf8),
+            'taxonomy_id': pl.Series([], dtype=pl.Utf8),
+            'entity_attributes': pl.Series([], dtype=pl.List(pl.Struct({
+                'term': pl.Utf8,
+                'value': pl.Utf8,
+                'unit': pl.Utf8,
+            }))),
+            'sources': pl.Series([], dtype=pl.List(pl.Utf8)),
+        })
+
+    reduced = (
+        entity_evidence
+        .group_by([
+            'entity_key',
+            'canonical_identifier',
+            'canonical_identifier_type',
+            'entity_type',
+            'taxonomy_id',
+        ])
+        .agg([
+            pl.col('identifiers').explode().drop_nulls().unique(maintain_order=True).alias('identifiers'),
+            pl.col('entity_attributes').explode().drop_nulls().unique(maintain_order=True).alias('entity_attributes'),
+            pl.col('source').drop_nulls().unique().sort().alias('sources'),
+        ])
+        .with_columns(
+            pl.when(pl.col('identifiers').is_null())
+            .then(EMPTY_IDENTIFIERS)
+            .otherwise(pl.col('identifiers'))
+            .alias('identifiers')
+        )
+        .sort(['canonical_identifier_type', 'canonical_identifier', 'entity_key'])
+    )
+
+    if entity_pk_map is not None and not entity_pk_map.is_empty():
+        reduced = reduced.join(
+            entity_pk_map.select(['entity_key', 'entity_pk']),
+            on='entity_key',
+            how='left',
+        )
+    if 'entity_pk' not in reduced.columns:
+        reduced = reduced.with_row_index('entity_pk', offset=1)
+    elif reduced['entity_pk'].null_count() > 0:
+        max_pk = int(reduced['entity_pk'].max() or 0)
+        reduced = (
+            reduced
+            .sort(['canonical_identifier_type', 'canonical_identifier', 'entity_key'])
+            .with_row_index('_new_entity_pk', offset=max_pk + 1)
+            .with_columns(
+                pl.coalesce(['entity_pk', '_new_entity_pk']).cast(pl.Int64).alias('entity_pk')
+            )
+            .drop('_new_entity_pk')
+        )
+
+    return reduced.select([
+        'entity_pk',
+        'entity_key',
+        'canonical_identifier',
+        'canonical_identifier_type',
+        'identifiers',
+        'entity_type',
+        'taxonomy_id',
+        'entity_attributes',
+        'sources',
+    ])
 
 
 def build_entities(
@@ -533,7 +695,7 @@ def build_entities(
     (
         temp_entities,
         temp_identifiers,
-        ontology_term_rows,
+        _ontology_term_rows,
         occurrence_fingerprint_map,
         entity_occurrences,
     ) = extract_from_silver_tables(silver_dir, source_name)
@@ -611,18 +773,20 @@ def build_entities(
         )
         occurrence_map.write_parquet(output_dir / 'entity_occurrence_map.parquet')
 
-    # Build entity_evidence.parquet linking entities to raw_record_ids
-    _build_entity_evidence(
+    # Build granular source entity evidence and project final entity rows from it.
+    entity_evidence = _build_entity_evidence(
         silver_dir=silver_dir,
         occurrence_map=occurrence_map,
+        fingerprint_map=fingerprint_map,
         final_entities=final_entities,
         output_dir=output_dir,
         source_name=source_name,
     )
-
-    legacy_ontology_term_path = output_dir / 'ontology_term.parquet'
-    if legacy_ontology_term_path.exists():
-        legacy_ontology_term_path.unlink()
+    reduced_final_entities = reduce_entities_from_evidence(
+        entity_evidence,
+        entity_pk_map=final_entities.select(['entity_key', 'entity_pk']),
+    )
+    reduced_final_entities.write_parquet(output_dir / 'entity.parquet')
 
     _write_canonicalization_report(
         output_dir,
@@ -635,8 +799,4 @@ def build_entities(
     return {
         **summary,
         'entity_count': int(final_entities.height),
-        'legacy_ontology_annotation_count': len(ontology_term_rows),
     }
-
-
-

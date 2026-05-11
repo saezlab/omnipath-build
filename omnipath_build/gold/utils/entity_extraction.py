@@ -1,23 +1,22 @@
 from __future__ import annotations
 
-import hashlib
 import json
-from pathlib import Path
 from typing import Any
+import hashlib
+from pathlib import Path
 
 import pyarrow as pa
 import pyarrow.parquet as pq
 
 from omnipath_build.gold.utils.schema import (
-    AnnotationContext,
     CV_TERM_ENTITY_TYPE,
     ONTOLOGY_IDENTIFIER_TERM,
+    AnnotationContext,
+    string_or_none,
     classify_annotation,
     projected_attribute,
-    string_or_none,
 )
 from omnipath_build.gold.utils.cv_terms import format_cv_term
-
 
 ATTRIBUTES_STRUCT = pa.list_(
     pa.struct([
@@ -47,6 +46,10 @@ ENTITY_RELATION_EVIDENCE_SCHEMA = pa.schema([
     pa.field('relation_evidence_pk', pa.int64()),
     pa.field('relation_pk', pa.int64()),
     pa.field('relation_key', pa.string()),
+    pa.field('subject_entity_key', pa.string()),
+    pa.field('predicate', pa.string()),
+    pa.field('object_entity_key', pa.string()),
+    pa.field('relation_category', pa.string()),
     pa.field('raw_record_id', pa.string()),
     pa.field('record_attributes', ATTRIBUTES_STRUCT),
     pa.field('subject_attributes', ATTRIBUTES_STRUCT),

@@ -11,6 +11,11 @@ ARCHIVE_EXCLUDED_NAMES = frozenset({
     'canonicalization_report.md',
     'canonicalization_summary.json',
 })
+ARCHIVE_EXCLUDED_PARTS = frozenset({
+    '_delta',
+    'delta',
+    'state',
+})
 
 
 def resource_archive_name(resource_id: str) -> str:
@@ -31,6 +36,8 @@ def iter_resource_archive_inputs(source_dir: Path, resource_id: str):
             continue
         if path.name in ARCHIVE_EXCLUDED_NAMES:
             continue
+        if ARCHIVE_EXCLUDED_PARTS.intersection(path.relative_to(source_dir).parts):
+            continue
         yield path
 
 
@@ -48,6 +55,6 @@ def build_resource_archive(source_dir: Path, resource_id: str) -> Path:
 
     with zipfile.ZipFile(archive_path, mode='w', compression=zipfile.ZIP_DEFLATED) as zf:
         for source_path in inputs:
-            zf.write(source_path, arcname=source_path.name)
+            zf.write(source_path, arcname=str(source_path.relative_to(source_dir)))
 
     return archive_path

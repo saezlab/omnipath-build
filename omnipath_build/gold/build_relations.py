@@ -1,34 +1,34 @@
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
+from pathlib import Path
 
 import polars as pl
+
+from omnipath_build.silver.tables import silver_table_dir, has_silver_tables
+from omnipath_build.gold.utils.keys import compute_relation_key
+from omnipath_build.gold.utils.schema import (
+    CV_TERM_ENTITY_TYPE,
+    ASSOCIATION_CATEGORY,
+    ASSOCIATION_PREDICATE,
+    INTERACTION_LIKE_TYPES,
+    ONTOLOGY_IDENTIFIER_TERM,
+    PredicateRule,
+    AnnotationContext,
+    string_or_none,
+    classify_annotation,
+    predicate_for_membership,
+    predicate_for_interaction,
+    materialize_ontology_object,
+    order_interaction_participants,
+)
 from omnipath_build.gold.utils.entity_extraction import (
-    ENTITY_RELATION_EVIDENCE_SCHEMA,
     ENTITY_RELATION_SCHEMA,
+    ENTITY_RELATION_EVIDENCE_SCHEMA,
     BufferedParquetWriter,
     collect_attributes,
     extract_ontology_entity_description,
 )
-from omnipath_build.gold.utils.keys import compute_relation_key
-from omnipath_build.gold.utils.schema import (
-    ASSOCIATION_CATEGORY,
-    ASSOCIATION_PREDICATE,
-    AnnotationContext,
-    CV_TERM_ENTITY_TYPE,
-    INTERACTION_LIKE_TYPES,
-    ONTOLOGY_IDENTIFIER_TERM,
-    PredicateRule,
-    classify_annotation,
-    materialize_ontology_object,
-    order_interaction_participants,
-    predicate_for_interaction,
-    predicate_for_membership,
-    string_or_none,
-)
-from omnipath_build.silver.tables import has_silver_tables, silver_table_dir
-
 
 class RelationWriterBase:
     def __init__(
@@ -171,6 +171,10 @@ class RelationWriterBase:
             'relation_evidence_pk': self.next_relation_evidence_pk,
             'relation_pk': relation_row['relation_pk'],
             'relation_key': relation_row['relation_key'],
+            'subject_entity_key': relation_row['subject_entity_key'],
+            'predicate': relation_row['predicate'],
+            'object_entity_key': relation_row['object_entity_key'],
+            'relation_category': relation_row['relation_category'],
             'raw_record_id': raw_record_id or '',
             'record_attributes': record_attributes,
             'subject_attributes': subject_attributes,
@@ -442,6 +446,86 @@ def _merge_attribute_lists(
     return rows or None
 
 
+def reduce_relations_from_evidence(
+    relation_evidence: pl.DataFrame,
+    *,
+    entity_pk_map: pl.DataFrame,
+    relation_pk_map: pl.DataFrame | None = None,
+) -> pl.DataFrame:
+    """Project final source relation rows from source relation evidence facts."""
+    if relation_evidence.is_empty():
+        return pl.DataFrame({
+            'relation_pk': pl.Series([], dtype=pl.Int64),
+            'relation_key': pl.Series([], dtype=pl.Utf8),
+            'subject_entity_pk': pl.Series([], dtype=pl.Int64),
+            'subject_entity_key': pl.Series([], dtype=pl.Utf8),
+            'predicate': pl.Series([], dtype=pl.Utf8),
+            'object_entity_pk': pl.Series([], dtype=pl.Int64),
+            'object_entity_key': pl.Series([], dtype=pl.Utf8),
+            'relation_category': pl.Series([], dtype=pl.Utf8),
+            'evidence_count': pl.Series([], dtype=pl.Int64),
+            'sources': pl.Series([], dtype=pl.List(pl.Utf8)),
+        })
+
+    subject_pk = entity_pk_map.select([
+        pl.col('entity_key').alias('subject_entity_key'),
+        pl.col('entity_pk').alias('subject_entity_pk'),
+    ])
+    object_pk = entity_pk_map.select([
+        pl.col('entity_key').alias('object_entity_key'),
+        pl.col('entity_pk').alias('object_entity_pk'),
+    ])
+    reduced = (
+        relation_evidence
+        .group_by([
+            'relation_key',
+            'subject_entity_key',
+            'predicate',
+            'object_entity_key',
+            'relation_category',
+        ])
+        .agg([
+            pl.len().cast(pl.Int64).alias('evidence_count'),
+            pl.col('source').drop_nulls().unique().sort().alias('sources'),
+        ])
+        .join(subject_pk, on='subject_entity_key', how='left')
+        .join(object_pk, on='object_entity_key', how='left')
+        .sort('relation_key')
+    )
+    if relation_pk_map is not None and not relation_pk_map.is_empty():
+        reduced = reduced.join(
+            relation_pk_map.select(['relation_key', 'relation_pk']),
+            on='relation_key',
+            how='left',
+        )
+    if 'relation_pk' not in reduced.columns:
+        reduced = reduced.with_row_index('relation_pk', offset=1)
+    elif reduced['relation_pk'].null_count() > 0:
+        max_pk = int(reduced['relation_pk'].max() or 0)
+        reduced = (
+            reduced
+            .sort('relation_key')
+            .with_row_index('_new_relation_pk', offset=max_pk + 1)
+            .with_columns(
+                pl.coalesce(['relation_pk', '_new_relation_pk']).cast(pl.Int64).alias('relation_pk')
+            )
+            .drop('_new_relation_pk')
+        )
+
+    return reduced.select([
+        'relation_pk',
+        'relation_key',
+        'subject_entity_pk',
+        'subject_entity_key',
+        'predicate',
+        'object_entity_pk',
+        'object_entity_key',
+        'relation_category',
+        'evidence_count',
+        'sources',
+    ])
+
+
 def build_relations(
     silver_dir: str | Path,
     entity_map_path: str | Path,
@@ -500,10 +584,16 @@ def build_relations(
     finally:
         builder.close()
 
+    relation_evidence = pl.read_parquet(output_dir / 'entity_relation_evidence.parquet')
+    existing_relations = pl.read_parquet(output_dir / 'entity_relation.parquet')
+    reduced_relations = reduce_relations_from_evidence(
+        relation_evidence,
+        entity_pk_map=entity_df.select(['entity_key', 'entity_pk']),
+        relation_pk_map=existing_relations.select(['relation_key', 'relation_pk']),
+    )
+    reduced_relations.write_parquet(output_dir / 'entity_relation.parquet')
+
     return {
         'relation_count': len(builder.relation_index),
         'relation_evidence_count': builder.next_relation_evidence_pk - 1,
     }
-
-
-
