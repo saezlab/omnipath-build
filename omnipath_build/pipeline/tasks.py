@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 from typing import Any
 import hashlib
@@ -123,6 +124,20 @@ def build_silver_source(
 ) -> dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
     inputs_hash = hash_inputs_module(inputs_package, source)
+    configured_cache = os.environ.get('PYPATH_DOWNLOAD_DATADIR')
+    if configured_cache:
+        configured_cache_path = Path(configured_cache).expanduser()
+        download_cache = (
+            configured_cache_path
+            if configured_cache_path.is_absolute()
+            else (Path.cwd() / configured_cache_path).resolve()
+        )
+    else:
+        download_cache = Path(__file__).resolve().parents[2] / 'pypath-data'
+    print(
+        f'[{source}] silver loader: cache='
+        f'{download_cache} test_mode={test_mode}'
+    )
     with tempfile.TemporaryDirectory(prefix='op-pipeline-silver-') as tmp:
         stage_root = Path(tmp)
         _, _, selected_functions, outputs = run_silver_loader(

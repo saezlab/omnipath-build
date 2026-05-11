@@ -70,11 +70,24 @@ def _handle_silver(args: argparse.Namespace) -> int:
     return 0
 
 
-def _handle_gold(args: argparse.Namespace) -> int:
-    """Compatibility wrapper around the active gold pipeline CLI."""
+def _handle_pipeline(args: argparse.Namespace) -> int:
+    """Execute the active incremental build pipeline."""
     argv: list[str] = []
+    positional_sources: list[str] = []
+    source_list = list(args.source_list)
+    from_stage = args.from_stage
     if args.sources:
-        argv.extend(args.sources)
+        for item in args.sources:
+            if item.startswith('sources='):
+                source_list.append(item.split('=', 1)[1])
+            elif item.startswith('from='):
+                from_stage = item.split('=', 1)[1]
+            else:
+                positional_sources.append(item)
+        argv.extend(positional_sources)
+    if source_list:
+        argv.extend(['--sources', ','.join(source_list)])
+    argv.extend(['--from', from_stage])
     argv.extend(['--data-root', str(args.data_root)])
     argv.extend(['--inputs-package', args.inputs_package])
     argv.extend(['--batch-size', str(args.batch_size)])
@@ -83,6 +96,33 @@ def _handle_gold(args: argparse.Namespace) -> int:
         argv.append('--test-mode')
     if args.resolver_mapping_dir is not None:
         argv.extend(['--resolver-mapping-dir', str(args.resolver_mapping_dir)])
+    if not getattr(args, 'build_mappings', True):
+        argv.append('--no-build-mappings')
+    if not getattr(args, 'build_sources', True):
+        argv.append('--no-build-sources')
+    if not getattr(args, 'combine', True):
+        argv.append('--no-combine')
+    combined_output_dir = getattr(args, 'combined_output_dir', None)
+    if combined_output_dir is not None:
+        argv.extend(['--combined-output-dir', str(combined_output_dir)])
+    argv.extend([
+        '--combine-entity-batch-size',
+        str(args.combine_entity_batch_size),
+    ])
+    argv.extend([
+        '--combine-relation-batch-size',
+        str(args.combine_relation_batch_size),
+    ])
+    postgres_uri = getattr(args, 'postgres_uri', None)
+    if postgres_uri is not None:
+        argv.extend(['--postgres-uri', postgres_uri])
+    postgres_schema = getattr(args, 'postgres_schema', None)
+    if postgres_schema is not None:
+        argv.extend(['--postgres-schema', postgres_schema])
+    if getattr(args, 'postgres_drop_existing', False):
+        argv.append('--postgres-drop-existing')
+    if getattr(args, 'yes', False):
+        argv.append('--yes')
     try:
         return pipeline_main(argv)
     except Exception as exc:  # noqa: BLE001
@@ -117,6 +157,8 @@ def _handle_combined(args: argparse.Namespace) -> int:
             affected_relation_keys=affected_relation_keys,
             freeze_monthly=args.freeze_monthly,
             changed_source=args.changed_source,
+            entity_batch_size=args.entity_batch_size,
+            relation_batch_size=args.relation_batch_size,
         )
         return 0
     except Exception as exc:  # noqa: BLE001
@@ -136,11 +178,10 @@ def _handle_postgres(args: argparse.Namespace) -> int:
 
     affected_entity_keys: list[str] | None = None
     affected_relation_keys: list[str] | None = None
-    if args.mode == 'incremental':
-        if args.affected_entities is not None:
-            affected_entity_keys = json.loads(args.affected_entities.read_text())
-        if args.affected_relations is not None:
-            affected_relation_keys = json.loads(args.affected_relations.read_text())
+    if args.affected_entities is not None:
+        affected_entity_keys = json.loads(args.affected_entities.read_text())
+    if args.affected_relations is not None:
+        affected_relation_keys = json.loads(args.affected_relations.read_text())
 
     try:
         return load_combined_schema_to_postgres(
@@ -155,7 +196,6 @@ def _handle_postgres(args: argparse.Namespace) -> int:
             indexes=args.indexes,
             bitmaps=args.bitmaps,
             views=args.views,
-            mode=args.mode,
             affected_entity_keys=affected_entity_keys,
             affected_relation_keys=affected_relation_keys,
             changed_source=args.changed_source,
@@ -221,50 +261,126 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     silver_parser.set_defaults(handler=_handle_silver)
 
-    gold_parser = subparsers.add_parser(
-        'gold',
-        help='Run the active pipeline for selected or autodiscovered sources.',
+    def add_pipeline_args(command_parser: argparse.ArgumentParser) -> None:
+        command_parser.add_argument(
+            'sources',
+            nargs='*',
+            help='Optional source modules to process.',
+        )
+        command_parser.add_argument(
+            '--sources',
+            dest='source_list',
+            action='append',
+            default=[],
+            help='Comma-separated source module list, e.g. signor,connectomedb.',
+        )
+        command_parser.add_argument(
+            '--from',
+            dest='from_stage',
+            choices=('download', 'bronze', 'silver', 'gold'),
+            default='download',
+            help='Pipeline stage to start from for selected sources (default: download).',
+        )
+        command_parser.add_argument(
+            '--data-root',
+            type=Path,
+            default=Path('data'),
+            help='Pipeline data root (default: data)',
+        )
+        command_parser.add_argument(
+            '--inputs-package',
+            default='pypath.inputs_v2',
+            help='Python package containing generator modules (default: pypath.inputs_v2)',
+        )
+        command_parser.add_argument(
+            '--batch-size',
+            type=int,
+            default=10_000,
+            help='Number of records per write batch',
+        )
+        command_parser.add_argument(
+            '--jobs',
+            type=int,
+            default=4,
+            help='Parallel workers for the active pipeline',
+        )
+        command_parser.add_argument(
+            '--test-mode',
+            action='store_true',
+            help='Enable selective test limits for configured high-volume sources',
+        )
+        command_parser.add_argument(
+            '--resolver-mapping-dir',
+            type=Path,
+            default=Path('id_resolver/data'),
+            help='Existing resolver mapping directory to reuse (default: id_resolver/data).',
+        )
+        command_parser.add_argument(
+            '--build-mappings',
+            action=argparse.BooleanOptionalAction,
+            default=True,
+            help='Build or reuse resolver mappings (default: on).',
+        )
+        command_parser.add_argument(
+            '--build-sources',
+            action=argparse.BooleanOptionalAction,
+            default=True,
+            help='Build silver and gold source outputs (default: on).',
+        )
+        command_parser.add_argument(
+            '--combine',
+            action=argparse.BooleanOptionalAction,
+            default=True,
+            help='Build combined outputs after source builds (default: on).',
+        )
+        command_parser.add_argument(
+            '--combined-output-dir',
+            type=Path,
+            default=None,
+            help='Directory to write combined artifacts (default: <data-root>/combined).',
+        )
+        command_parser.add_argument(
+            '--combine-entity-batch-size',
+            type=int,
+            default=50_000,
+            help='Number of entity keys per DuckDB combine batch.',
+        )
+        command_parser.add_argument(
+            '--combine-relation-batch-size',
+            type=int,
+            default=50_000,
+            help='Number of relation keys per DuckDB combine batch.',
+        )
+        command_parser.add_argument(
+            '--postgres-uri',
+            type=str,
+            default=None,
+            help='Optional Postgres URI for loading combined artifacts.',
+        )
+        command_parser.add_argument(
+            '--postgres-schema',
+            type=str,
+            default='public',
+            help='Postgres schema to load into (default: public).',
+        )
+        command_parser.add_argument(
+            '--postgres-drop-existing',
+            action='store_true',
+            default=False,
+            help='Drop existing tables before loading into Postgres.',
+        )
+        command_parser.add_argument(
+            '--yes',
+            action='store_true',
+            help='Execute the printed plan without waiting for Enter.',
+        )
+        command_parser.set_defaults(handler=_handle_pipeline)
+
+    pipeline_parser = subparsers.add_parser(
+        'pipeline',
+        help='Run the incremental build pipeline for selected or autodiscovered sources.',
     )
-    gold_parser.add_argument(
-        'sources',
-        nargs='*',
-        help='Optional source modules to process.',
-    )
-    gold_parser.add_argument(
-        '--data-root',
-        type=Path,
-        default=Path('data'),
-        help='Pipeline data root (default: data)',
-    )
-    gold_parser.add_argument(
-        '--inputs-package',
-        default='pypath.inputs_v2',
-        help='Python package containing generator modules (default: pypath.inputs_v2)',
-    )
-    gold_parser.add_argument(
-        '--batch-size',
-        type=int,
-        default=10_000,
-        help='Number of records per write batch',
-    )
-    gold_parser.add_argument(
-        '--jobs',
-        type=int,
-        default=4,
-        help='Parallel workers for the active gold pipeline',
-    )
-    gold_parser.add_argument(
-        '--test-mode',
-        action='store_true',
-        help='Enable selective test limits for configured high-volume sources',
-    )
-    gold_parser.add_argument(
-        '--resolver-mapping-dir',
-        type=Path,
-        default=Path('id_resolver/data'),
-        help='Existing resolver mapping directory to reuse (default: id_resolver/data).',
-    )
-    gold_parser.set_defaults(handler=_handle_gold)
+    add_pipeline_args(pipeline_parser)
 
     combined_parser = subparsers.add_parser(
         'combined',
@@ -307,6 +423,18 @@ def _build_parser() -> argparse.ArgumentParser:
         type=str,
         default=None,
         help='Name of the source that changed (for build manifest).',
+    )
+    combined_parser.add_argument(
+        '--entity-batch-size',
+        type=int,
+        default=50_000,
+        help='Number of entity keys per DuckDB combine batch (default: 50000).',
+    )
+    combined_parser.add_argument(
+        '--relation-batch-size',
+        type=int,
+        default=50_000,
+        help='Number of relation keys per DuckDB combine batch (default: 50000).',
     )
     combined_parser.set_defaults(handler=_handle_combined)
 
@@ -380,29 +508,22 @@ def _build_parser() -> argparse.ArgumentParser:
         help='Create materialized views (default: true)',
     )
     postgres_parser.add_argument(
-        '--mode',
-        type=str,
-        choices=('full', 'incremental'),
-        default='full',
-        help='Loading mode: full rebuild or incremental update (default: full)',
-    )
-    postgres_parser.add_argument(
         '--affected-entities',
         type=Path,
         default=None,
-        help='JSON file with list of affected entity_keys (for incremental mode)',
+        help='JSON file with list of affected entity_keys.',
     )
     postgres_parser.add_argument(
         '--affected-relations',
         type=Path,
         default=None,
-        help='JSON file with list of affected relation_keys (for incremental mode)',
+        help='JSON file with list of affected relation_keys.',
     )
     postgres_parser.add_argument(
         '--changed-source',
         type=str,
         default=None,
-        help='Name of the source that changed (for incremental entity_evidence update)',
+        help='Name of the source that changed (for entity_evidence update)',
     )
     postgres_parser.set_defaults(handler=_handle_postgres)
 

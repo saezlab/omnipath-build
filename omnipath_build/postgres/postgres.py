@@ -19,7 +19,6 @@ from omnipath_build.postgres.bitmaps import (
     _remove_from_facet_bitmaps,
     create_bitmap_tables,
     populate_bitmap_tables,
-    refresh_bitmap_tables_incremental,
 )
 from omnipath_build.postgres.indexes import create_secondary_indexes
 from omnipath_build.postgres.materialized_views import (
@@ -86,20 +85,18 @@ def load_combined_schema_to_postgres(
     indexes: bool = True,
     bitmaps: bool = True,
     views: bool = True,
-    mode: str = 'full',
     affected_entity_keys: list[str] | None = None,
     affected_relation_keys: list[str] | None = None,
     changed_source: str | None = None,
 ) -> int:
     combined_dir = resolve_combined_dir(output_dir)
     overall_started_at = _log_step_start(
-        'Loading combined parquet artifacts from %s into schema %s (mode=%s)',
+        'Loading combined parquet artifacts from %s into schema %s',
         combined_dir,
         schema,
-        mode,
     )
     logger.info(
-        'Enabled steps: tables=%s indexes=%s views=%s bitmaps=%s; batch_size=%s; unlogged_tables=%s; foreign_keys=%s; mode=%s',
+        'Enabled steps: tables=%s indexes=%s views=%s bitmaps=%s; batch_size=%s; unlogged_tables=%s; foreign_keys=%s',
         tables,
         indexes,
         views,
@@ -107,8 +104,9 @@ def load_combined_schema_to_postgres(
         f'{batch_size:,}',
         unlogged_tables,
         foreign_keys,
-        mode,
     )
+    affected_entity_keys = affected_entity_keys or []
+    affected_relation_keys = affected_relation_keys or []
 
     with psycopg2.connect(postgres_uri) as conn:
         started_at = _log_step_start('Ensuring PostgreSQL schema')
@@ -121,78 +119,121 @@ def load_combined_schema_to_postgres(
         )
         _log_step_done(started_at, 'Schema ready')
 
-    affected_entity_ids: list[int] = []
-    affected_relation_ids: list[int] = []
-    if tables:
-        if mode == 'incremental':
-            # Phase 0: Query affected IDs before base table update
-            affected_entity_ids, affected_relation_ids = _query_affected_ids(
-                conn,
-                schema=schema,
-                affected_entity_keys=affected_entity_keys or [],
-                affected_relation_keys=affected_relation_keys or [],
-            )
+        affected_entity_ids_before: list[int] = []
+        affected_relation_ids_before: list[int] = []
+        if tables:
+            target_has_data = _base_tables_have_data(conn, schema)
+            has_delta = bool(affected_entity_keys or affected_relation_keys)
+            if has_delta and target_has_data and not drop_existing:
+                logger.info(
+                    'PostgreSQL load action: incremental delta '
+                    'entities=%s relations=%s',
+                    len(affected_entity_keys),
+                    len(affected_relation_keys),
+                )
+                if bitmaps:
+                    started_at = _log_step_start('Ensuring bitmap tables')
+                    create_bitmap_tables(conn, schema=schema)
+                    _log_step_done(started_at, 'Bitmap tables ready')
 
-            # Phase 0b: Remove affected IDs from bitmaps BEFORE base tables change
-            if bitmaps and (affected_entity_ids or affected_relation_ids):
-                started_at = _log_step_start('Removing affected IDs from bitmaps')
-                _remove_from_facet_bitmaps(
+                affected_entity_ids_before, affected_relation_ids_before = _query_affected_ids(
                     conn,
                     schema=schema,
-                    affected_entity_ids=affected_entity_ids,
-                    affected_relation_ids=affected_relation_ids,
+                    affected_entity_keys=affected_entity_keys,
+                    affected_relation_keys=affected_relation_keys,
                 )
-                _log_step_done(started_at, 'Affected IDs removed from bitmaps')
 
-            # Phase 1: Update base tables
-            started_at = _log_step_start('Loading base tables incrementally')
-            load_tables_incremental(
-                conn,
-                schema=schema,
-                combined_dir=combined_dir,
-                affected_entity_keys=affected_entity_keys or [],
-                affected_relation_keys=affected_relation_keys or [],
-                changed_source=changed_source,
-                batch_size=batch_size,
-            )
-            _log_step_done(started_at, 'Base tables loaded incrementally')
+                if bitmaps and (affected_entity_ids_before or affected_relation_ids_before):
+                    started_at = _log_step_start('Removing affected IDs from bitmaps')
+                    _remove_from_facet_bitmaps(
+                        conn,
+                        schema=schema,
+                        affected_entity_ids=affected_entity_ids_before,
+                        affected_relation_ids=affected_relation_ids_before,
+                    )
+                    _log_step_done(started_at, 'Affected IDs removed from bitmaps')
 
-            # Phase 2: Add affected IDs to new bitmaps AFTER base tables updated
-            if bitmaps and (affected_entity_ids or affected_relation_ids):
-                started_at = _log_step_start('Adding affected IDs to bitmaps')
-                _add_to_facet_bitmaps(
+                started_at = _log_step_start('Loading base tables incrementally')
+                load_tables_incremental(
                     conn,
                     schema=schema,
-                    affected_entity_ids=affected_entity_ids,
-                    affected_relation_ids=affected_relation_ids,
+                    combined_dir=combined_dir,
+                    affected_entity_keys=affected_entity_keys,
+                    affected_relation_keys=affected_relation_keys,
+                    changed_source=changed_source,
+                    batch_size=batch_size,
                 )
-                _log_step_done(started_at, 'Affected IDs added to bitmaps')
-        else:
-            started_at = _log_step_start('Loading base tables')
-            _load_tables_full(
-                conn,
-                schema=schema,
-                combined_dir=combined_dir,
-                batch_size=batch_size,
-            )
-            _log_step_done(started_at, 'Base tables loaded')
-        if indexes:
-            started_at = _log_step_start('Creating secondary indexes')
-            create_secondary_indexes(conn, schema=schema)
-            _log_step_done(started_at, 'Secondary indexes created')
-        if views:
-            started_at = _log_step_start('Creating materialized views')
-            create_entity_relation_counts_materialized_view(conn, schema=schema)
-            create_ontology_terms_materialized_view(conn, schema=schema)
-            _log_step_done(started_at, 'Materialized views created')
-        if bitmaps and mode != 'incremental':
-            started_at = _log_step_start('Creating and populating bitmap tables')
-            create_bitmap_tables(conn, schema=schema)
-            populate_bitmap_tables(conn, schema=schema)
-            _log_step_done(started_at, 'Bitmap tables populated')
+                _log_step_done(started_at, 'Base tables loaded incrementally')
+
+                affected_entity_ids_after, affected_relation_ids_after = _query_affected_ids(
+                    conn,
+                    schema=schema,
+                    affected_entity_keys=affected_entity_keys,
+                    affected_relation_keys=affected_relation_keys,
+                )
+                if bitmaps and (affected_entity_ids_after or affected_relation_ids_after):
+                    started_at = _log_step_start('Adding affected IDs to bitmaps')
+                    _add_to_facet_bitmaps(
+                        conn,
+                        schema=schema,
+                        affected_entity_ids=affected_entity_ids_after,
+                        affected_relation_ids=affected_relation_ids_after,
+                    )
+                    _log_step_done(started_at, 'Affected IDs added to bitmaps')
+            elif not target_has_data or drop_existing:
+                logger.info(
+                    'PostgreSQL load action: bootstrap '
+                    '(target_has_data=%s drop_existing=%s)',
+                    target_has_data,
+                    drop_existing,
+                )
+                started_at = _log_step_start('Bootstrapping base tables')
+                _load_tables_full(
+                    conn,
+                    schema=schema,
+                    combined_dir=combined_dir,
+                    batch_size=batch_size,
+                )
+                _log_step_done(started_at, 'Base tables bootstrapped')
+            else:
+                logger.info(
+                    'PostgreSQL load action: no table delta supplied; '
+                    'leaving existing base tables unchanged'
+                )
+            if indexes:
+                started_at = _log_step_start('Creating secondary indexes')
+                create_secondary_indexes(conn, schema=schema)
+                _log_step_done(started_at, 'Secondary indexes created')
+            if views:
+                started_at = _log_step_start('Creating materialized views')
+                create_entity_relation_counts_materialized_view(conn, schema=schema)
+                create_ontology_terms_materialized_view(conn, schema=schema)
+                _log_step_done(started_at, 'Materialized views created')
+            if bitmaps and (not target_has_data or drop_existing):
+                started_at = _log_step_start('Creating and populating bitmap tables')
+                create_bitmap_tables(conn, schema=schema)
+                populate_bitmap_tables(conn, schema=schema)
+                _log_step_done(started_at, 'Bitmap tables populated')
 
     _log_step_done(overall_started_at, 'Combined PostgreSQL schema load complete')
     return 0
+
+
+def _base_tables_have_data(
+    conn: psycopg2.extensions.connection,
+    schema: str,
+) -> bool:
+    with conn.cursor() as cur:
+        cur.execute(
+            sql.SQL(
+                """
+                SELECT
+                    EXISTS (SELECT 1 FROM {}.entity LIMIT 1)
+                    OR EXISTS (SELECT 1 FROM {}.entity_relation LIMIT 1)
+                """
+            ).format(sql.Identifier(schema), sql.Identifier(schema))
+        )
+        return bool(cur.fetchone()[0])
 
 
 def _query_affected_ids(
@@ -365,7 +406,7 @@ def _load_entity_and_identifiers(
     schema: str,
     parquet_path: Path,
     batch_size: int,
-    filter_keys: list[str] | None = None,
+    filter_keys: list[Any] | None = None,
     key_column: str = 'entity_key',
 ) -> None:
     label = 'filtered entity' if filter_keys is not None else 'entity'
@@ -499,6 +540,11 @@ def load_tables_incremental(
     batch_size: int,
 ) -> tuple[list[int], list[int]]:
     started_at = _log_step_start('Deleting old rows for affected keys')
+    changed_sources = [
+        item.strip()
+        for item in (changed_source or '').split(',')
+        if item.strip()
+    ]
 
     affected_entity_ids: list[int] = []
     affected_relation_ids: list[int] = []
@@ -552,12 +598,12 @@ def load_tables_incremental(
                 ).format(sql.Identifier(schema)),
                 (affected_entity_ids,),
             )
-        if changed_source:
+        if changed_sources:
             cur.execute(
                 sql.SQL(
-                    "DELETE FROM {}.entity_evidence WHERE source = %s"
+                    'DELETE FROM {}.entity_evidence WHERE source = ANY(%s)'
                 ).format(sql.Identifier(schema)),
-                (changed_source,),
+                (changed_sources,),
             )
     conn.commit()
     _log_step_done(
@@ -606,6 +652,12 @@ def load_tables_incremental(
             filter_column='relation_key',
             filter_keys=affected_relation_keys,
         )
+        _, loaded_relation_ids = _query_affected_ids(
+            conn,
+            schema=schema,
+            affected_entity_keys=[],
+            affected_relation_keys=affected_relation_keys,
+        )
         _copy_parquet_to_table(
             conn,
             parquet_path=combined_dir / 'entity_relation_evidence.parquet',
@@ -632,9 +684,26 @@ def load_tables_incremental(
             filter_column='relation_key',
             filter_keys=affected_relation_keys,
         )
+        _copy_parquet_to_table(
+            conn,
+            parquet_path=combined_dir / 'relation_annotation_term.parquet',
+            schema=schema,
+            table='relation_annotation_term',
+            columns=(
+                'relation_id',
+                'relation_evidence_id',
+                'source',
+                'scope',
+                'term_entity_id',
+            ),
+            serializers={},
+            batch_size=batch_size,
+            filter_column='relation_id',
+            filter_keys=loaded_relation_ids,
+        )
 
     # Entity evidence: reload for changed source, or all if no specific source
-    if changed_source or not affected_entity_keys:
+    if changed_sources or not affected_entity_keys:
         _copy_parquet_to_table(
             conn,
             parquet_path=combined_dir / 'entity_evidence.parquet',
@@ -656,40 +725,8 @@ def load_tables_incremental(
             },
             batch_size=batch_size,
             filter_column='source',
-            filter_keys=[changed_source] if changed_source else None,
+            filter_keys=changed_sources or None,
         )
-
-    # Rebuild relation_annotation_term for affected relations via SQL
-    if affected_relation_keys:
-        started_at = _log_step_start('Rebuilding relation_annotation_term')
-        with conn.cursor() as cur:
-            cur.execute(
-                sql.SQL(
-                    """
-                    INSERT INTO {}.relation_annotation_term (
-                        relation_id, relation_evidence_id, source, scope, term_entity_id
-                    )
-                    SELECT DISTINCT
-                        e.relation_id,
-                        e.relation_evidence_id,
-                        e.source,
-                        'record' AS scope,
-                        term.entity_id AS term_entity_id
-                    FROM {}.entity_relation_evidence e
-                    JOIN {}.entity term
-                        ON term.canonical_identifier = (e.record_attributes->>'term_id')
-                    WHERE e.relation_key = ANY(%s)
-                        AND term.entity_type = 'OM:0012:Cv Term'
-                    """
-                ).format(
-                    sql.Identifier(schema),
-                    sql.Identifier(schema),
-                    sql.Identifier(schema),
-                ),
-                (affected_relation_keys,),
-            )
-        conn.commit()
-        _log_step_done(started_at, 'relation_annotation_term rebuilt')
 
     # Resources are not updated incrementally; skip
     return affected_entity_ids, affected_relation_ids

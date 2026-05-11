@@ -1,29 +1,37 @@
-.PHONY: setup silver silver-list gold-mappings gold-source gold-all combined postgres pipeline test overwrite-gold overwrite-silver overwrite
+.PHONY: setup silver silver-list resolver-mappings combined postgres pipeline test
 
 JOBS ?= 4
 BATCH_SIZE ?= 10000
+COMBINE_ENTITY_BATCH_SIZE ?= 50000
+COMBINE_RELATION_BATCH_SIZE ?= 50000
 DATA_ROOT ?= data
 INPUTS_PACKAGE ?= pypath.inputs_v2
 RESOLVER_MAPPING_DIR ?= id_resolver/data
-OVERWRITE ?=
 TEST_MODE ?=
-STEP ?= all
 DATABASE ?= omnipath
 SOURCE ?=
+SOURCES ?=
+FROM ?= download
 FUNCTION ?=
 BASE_PATH ?=
 DRY_RUN ?=
 SILVER_OVERRIDE ?=
 COMBINED_GOLD_ROOT ?= $(DATA_ROOT)/gold
 COMBINED_OUTPUT_DIR ?= $(DATA_ROOT)/combined
+AFFECTED_ENTITIES ?=
+AFFECTED_RELATIONS ?=
+CHANGED_SOURCE ?=
+FREEZE_MONTHLY ?=
 DATABASE_URL ?= postgresql://omnipath:omnipath@localhost:55432/omnipath
 POSTGRES_URI ?= $(DATABASE_URL)
 POSTGRES_SCHEMA ?= public
-POSTGRES_DROP_EXISTING ?= 1
+POSTGRES_DROP_EXISTING ?=
 POSTGRES_BATCH_SIZE ?= 200000
 POSTGRES_UNLOGGED_TABLES ?= 1
 POSTGRES_FOREIGN_KEYS ?=
-PIPELINE_SCRIPT ?= omnipath_build/pipeline/pipeline.py
+LOAD_POSTGRES ?=
+YES ?=
+STEP ?= all
 
 setup:
 	git submodule add -b main https://github.com/saezlab/pypath.git pypath || true
@@ -52,40 +60,25 @@ silver:
 silver-list:
 	@uv run python -m omnipath_build.cli.commands silver --list --inputs-package $(INPUTS_PACKAGE)
 
-gold-mappings:
-	@uv run python $(PIPELINE_SCRIPT) \
+resolver-mappings:
+	@PYTHONUNBUFFERED=1 uv run python -m omnipath_build.cli.commands pipeline \
 		--data-root $(DATA_ROOT) \
+		--inputs-package $(INPUTS_PACKAGE) \
 		--jobs 1 \
 		--no-build-sources \
 		--no-combine \
 		$(if $(RESOLVER_MAPPING_DIR),--resolver-mapping-dir $(RESOLVER_MAPPING_DIR))
 
-gold-source:
-	@uv run python $(PIPELINE_SCRIPT) $(SOURCES) \
-		--data-root $(DATA_ROOT) \
-		--inputs-package $(INPUTS_PACKAGE) \
-		--batch-size $(BATCH_SIZE) \
-		--jobs $(JOBS) \
-		--no-combine \
-		$(if $(TEST_MODE),--silver-test-mode) \
-		$(if $(OVERWRITE),--overwrite $(OVERWRITE)) \
-		$(if $(RESOLVER_MAPPING_DIR),--resolver-mapping-dir $(RESOLVER_MAPPING_DIR))
-
-gold-all:
-	@uv run python $(PIPELINE_SCRIPT) $(SOURCES) \
-		--data-root $(DATA_ROOT) \
-		--inputs-package $(INPUTS_PACKAGE) \
-		--batch-size $(BATCH_SIZE) \
-		--jobs $(JOBS) \
-		--no-combine \
-		$(if $(TEST_MODE),--silver-test-mode) \
-		$(if $(OVERWRITE),--overwrite $(OVERWRITE)) \
-		$(if $(RESOLVER_MAPPING_DIR),--resolver-mapping-dir $(RESOLVER_MAPPING_DIR))
-
 combined:
 	@uv run python -m omnipath_build.cli.commands combined \
 		--gold-root $(COMBINED_GOLD_ROOT) \
-		--output-dir $(COMBINED_OUTPUT_DIR)
+		--output-dir $(COMBINED_OUTPUT_DIR) \
+		--entity-batch-size $(COMBINE_ENTITY_BATCH_SIZE) \
+		--relation-batch-size $(COMBINE_RELATION_BATCH_SIZE) \
+		$(if $(AFFECTED_ENTITIES),--affected-entities $(AFFECTED_ENTITIES)) \
+		$(if $(AFFECTED_RELATIONS),--affected-relations $(AFFECTED_RELATIONS)) \
+		$(if $(CHANGED_SOURCE),--changed-source $(CHANGED_SOURCE)) \
+		$(if $(FREEZE_MONTHLY),--freeze-monthly)
 
 postgres:
 	@if [ -z "$(POSTGRES_URI)" ]; then \
@@ -106,54 +99,40 @@ postgres:
 		echo "Unknown STEP=$(STEP). Supported values: all, tables, indexes, bitmaps, views"; \
 		exit 1; \
 	fi; \
-	echo "Loading PostgreSQL schema=$(POSTGRES_SCHEMA) step=$(STEP) output=$(COMBINED_OUTPUT_DIR) batch_size=$(POSTGRES_BATCH_SIZE) unlogged_tables=$(POSTGRES_UNLOGGED_TABLES) foreign_keys=$(POSTGRES_FOREIGN_KEYS)"; \
+	echo "Loading PostgreSQL schema=$(POSTGRES_SCHEMA) step=$(STEP) output=$(COMBINED_OUTPUT_DIR)"; \
 	PYTHONUNBUFFERED=1 uv run python -m omnipath_build.cli.commands postgres \
 		--output-dir $(COMBINED_OUTPUT_DIR) \
 		--postgres-uri $(POSTGRES_URI) \
 		--schema $(POSTGRES_SCHEMA) \
 		--batch-size $(POSTGRES_BATCH_SIZE) \
+		$(if $(AFFECTED_ENTITIES),--affected-entities $(AFFECTED_ENTITIES)) \
+		$(if $(AFFECTED_RELATIONS),--affected-relations $(AFFECTED_RELATIONS)) \
+		$(if $(CHANGED_SOURCE),--changed-source $(CHANGED_SOURCE)) \
 		$(if $(POSTGRES_DROP_EXISTING),--drop-existing) \
 		$(if $(POSTGRES_UNLOGGED_TABLES),--unlogged-tables) \
 		$(if $(POSTGRES_FOREIGN_KEYS),--foreign-keys) \
 		$$STEP_ARGS
 
 pipeline:
-	@if [ "$(STEP)" = "all" ]; then \
-		STEP_ARGS=""; \
-	elif [ "$(STEP)" = "gold" ]; then \
-		STEP_ARGS="--no-combine"; \
-	elif [ "$(STEP)" = "combined" ]; then \
-		STEP_ARGS="--no-build-mappings --no-build-sources"; \
-	elif [ "$(STEP)" = "postgres" ]; then \
-		STEP_ARGS="--no-build-mappings --no-build-sources --no-combine --postgres-uri $(POSTGRES_URI) --postgres-schema $(POSTGRES_SCHEMA)"; \
-	else \
-		echo "Unknown STEP=$(STEP). Supported values: all, gold, combined, postgres"; \
+	@if [ "$(LOAD_POSTGRES)" != "" ] && [ -z "$(POSTGRES_URI)" ]; then \
+		echo "POSTGRES_URI is required when LOAD_POSTGRES=1"; \
 		exit 1; \
-	fi; \
-	if [ "$(STEP)" = "postgres" ] && [ -z "$(POSTGRES_URI)" ]; then \
-		echo "POSTGRES_URI is required, e.g. make pipeline STEP=postgres POSTGRES_URI=postgresql://user:pass@host:5432/dbname"; \
-		exit 1; \
-	fi; \
-	uv run python $(PIPELINE_SCRIPT) $(SOURCES) \
+	fi
+	@uv run python -m omnipath_build.cli.commands pipeline \
+		$(if $(SOURCES),--sources $(SOURCES)) \
+		--from $(FROM) \
 		--data-root $(DATA_ROOT) \
 		--inputs-package $(INPUTS_PACKAGE) \
 		--batch-size $(BATCH_SIZE) \
+		--combine-entity-batch-size $(COMBINE_ENTITY_BATCH_SIZE) \
+		--combine-relation-batch-size $(COMBINE_RELATION_BATCH_SIZE) \
 		--jobs $(JOBS) \
-		$(if $(TEST_MODE),--silver-test-mode) \
-		$(if $(OVERWRITE),--overwrite $(OVERWRITE)) \
+		$(if $(TEST_MODE),--test-mode) \
 		$(if $(RESOLVER_MAPPING_DIR),--resolver-mapping-dir $(RESOLVER_MAPPING_DIR)) \
 		--combined-output-dir $(COMBINED_OUTPUT_DIR) \
-		$$STEP_ARGS \
-		$(if $(POSTGRES_DROP_EXISTING),--postgres-drop-existing)
+		$(if $(LOAD_POSTGRES),--postgres-uri $(POSTGRES_URI) --postgres-schema $(POSTGRES_SCHEMA)) \
+		$(if $(POSTGRES_DROP_EXISTING),--postgres-drop-existing) \
+		$(if $(YES),--yes)
 
 test: TEST_MODE=1
 test: pipeline
-
-overwrite-gold: OVERWRITE=gold
-overwrite-gold: pipeline
-
-overwrite-silver: OVERWRITE=silver
-overwrite-silver: pipeline
-
-overwrite: OVERWRITE=both
-overwrite: pipeline

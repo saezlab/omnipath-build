@@ -8,6 +8,7 @@ import inspect
 import json
 import os
 import pkgutil
+import time
 import traceback
 from dataclasses import dataclass
 from enum import Enum
@@ -26,6 +27,7 @@ from pypath.internals.silver_schema import (
 )
 from pypath.internals.ontology_schema import OntologyTerm
 from pypath.inputs_v2.raw_records import ProvenancedRecord, RawRecordProvenance, changed_keys
+from omnipath_build.pipeline.progress import set_phase, update_phase
 
 __all__ = [
     'DiscoveryError',
@@ -1131,6 +1133,14 @@ def run_silver_loader(
     silver_writers: dict[str, SilverTableWriter] = {}
     try:
         for fn in selected_functions:
+            function_started = time.perf_counter()
+            phase_label = f'silver:{fn.source}.{fn.function_name}'
+            set_phase(phase_label, f'kind={fn.output_kind}')
+            print(
+                f'[silver:{fn.source}.{fn.function_name}] start '
+                f'kind={fn.output_kind}',
+                flush=True,
+            )
             writer = None
             raw_dataset = getattr(fn.call, '_raw_dataset', None)
             if (
@@ -1139,13 +1149,50 @@ def run_silver_loader(
                 and fn.function_name != 'resource'
                 and not dry_run
             ):
+                bronze_started = time.perf_counter()
+                max_records = _test_mode_record_limit(fn.source, test_mode)
+                preparse_kwargs: dict[str, int] = {}
+                if max_records is not None:
+                    preparse_kwargs['max_lines'] = max_records
+                set_phase(
+                    f'bronze:{fn.source}.{fn.function_name}',
+                    (
+                        'preparse'
+                        + (
+                            f' max_lines={max_records:,}'
+                            if max_records is not None else ''
+                        )
+                    ),
+                )
+                print(
+                    f'[bronze:{fn.source}.{fn.function_name}] preparse requested'
+                    + (
+                        f' max_lines={max_records:,}'
+                        if max_records is not None else ''
+                    ),
+                    flush=True,
+                )
                 snapshot = raw_dataset.preparse(
                     source=fn.source,
                     dataset=fn.function_name,
+                    **preparse_kwargs,
+                )
+                delta_keys = changed_keys(snapshot.delta_path)
+                update_phase(f'preparse ready delta_keys={len(delta_keys):,}')
+                print(
+                    f'[bronze:{fn.source}.{fn.function_name}] preparse ready '
+                    f'snapshot={snapshot.snapshot_id} '
+                    f'delta_keys={len(delta_keys):,} '
+                    f'elapsed={time.perf_counter() - bronze_started:.1f}s',
+                    flush=True,
                 )
                 raw_dataset._raw_snapshot_override = snapshot
                 source_dir = path_manager.source_path(fn.source)
-                if not override and not changed_keys(snapshot.delta_path) and has_silver_tables(source_dir):
+                if (
+                    not override
+                    and not delta_keys
+                    and has_silver_tables(source_dir)
+                ):
                     raw_dataset.accept_last_preparse()
                     if hasattr(raw_dataset, '_raw_snapshot_override'):
                         delattr(raw_dataset, '_raw_snapshot_override')
@@ -1153,11 +1200,14 @@ def run_silver_loader(
                     print(
                         f'[{fn.source}.{fn.function_name}] raw delta empty; '
                         f'skipping silver rewrite ({source_dir})'
+                        f' elapsed={time.perf_counter() - function_started:.1f}s',
+                        flush=True,
                     )
                     outputs.append(result)
                     continue
 
             if fn.output_kind in {'entity', 'ontology'} and fn.function_name != 'resource' and not dry_run:
+                set_phase(phase_label, 'preparing silver writer')
                 writer = silver_writers.get(fn.source)
                 if writer is None:
                     source_dir = path_manager.source_path(fn.source)
@@ -1177,6 +1227,7 @@ def run_silver_loader(
                     )
                     silver_writers[fn.source] = writer
             try:
+                set_phase(phase_label, 'mapping records')
                 result = process_resource_function(
                     fn,
                     path_manager=path_manager,
@@ -1192,6 +1243,11 @@ def run_silver_loader(
                     if hasattr(raw_dataset, '_raw_snapshot_override'):
                         delattr(raw_dataset, '_raw_snapshot_override')
                 outputs.append(result)
+                print(
+                    f'[silver:{fn.source}.{fn.function_name}] done '
+                    f'elapsed={time.perf_counter() - function_started:.1f}s',
+                    flush=True,
+                )
             except Exception as exc:  # noqa: BLE001
                 raise RuntimeError(
                     f'Failed to process {fn.source}.{fn.function_name}: {exc}'

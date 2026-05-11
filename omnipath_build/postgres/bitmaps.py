@@ -48,7 +48,7 @@ def _remove_from_facet_bitmaps(
         if affected_entity_ids:
             # Build bitmap of affected entity IDs once
             cur.execute(
-                "SELECT rb64_build(%s::bigint[])",
+                'SELECT rb_build(%s::integer[])',
                 (affected_entity_ids,),
             )
             affected_entity_bitmap = cur.fetchone()[0]
@@ -60,8 +60,8 @@ def _remove_from_facet_bitmaps(
                 sql.SQL(
                     """
                     UPDATE {}.facet_entity_bitmap
-                    SET entity_bitmap = rb64_andnot(entity_bitmap, %s::roaringbitmap64),
-                        entity_count = rb64_cardinality(rb64_andnot(entity_bitmap, %s::roaringbitmap64))
+                    SET entity_bitmap = rb_andnot(entity_bitmap, %s::roaringbitmap),
+                        entity_count = rb_cardinality(rb_andnot(entity_bitmap, %s::roaringbitmap))
                     """
                 ).format(sql.Identifier(schema)),
                 (affected_entity_bitmap, affected_entity_bitmap),
@@ -72,8 +72,8 @@ def _remove_from_facet_bitmaps(
                 sql.SQL(
                     """
                     UPDATE {}.annotation_term_entity_bitmap
-                    SET entity_bitmap = rb64_andnot(entity_bitmap, %s::roaringbitmap64),
-                        global_count = rb64_cardinality(rb64_andnot(entity_bitmap, %s::roaringbitmap64))
+                    SET entity_bitmap = rb_andnot(entity_bitmap, %s::roaringbitmap),
+                        global_count = rb_cardinality(rb_andnot(entity_bitmap, %s::roaringbitmap))
                     """
                 ).format(sql.Identifier(schema)),
                 (affected_entity_bitmap, affected_entity_bitmap),
@@ -81,7 +81,7 @@ def _remove_from_facet_bitmaps(
 
         if affected_relation_ids:
             cur.execute(
-                "SELECT rb64_build(%s::bigint[])",
+                'SELECT rb_build(%s::integer[])',
                 (affected_relation_ids,),
             )
             affected_relation_bitmap = cur.fetchone()[0]
@@ -91,8 +91,8 @@ def _remove_from_facet_bitmaps(
                 sql.SQL(
                     """
                     UPDATE {}.facet_relation_bitmap
-                    SET relation_bitmap = rb64_andnot(relation_bitmap, %s::roaringbitmap64),
-                        relation_count = rb64_cardinality(rb64_andnot(relation_bitmap, %s::roaringbitmap64))
+                    SET relation_bitmap = rb_andnot(relation_bitmap, %s::roaringbitmap),
+                        relation_count = rb_cardinality(rb_andnot(relation_bitmap, %s::roaringbitmap))
                     """
                 ).format(sql.Identifier(schema)),
                 (affected_relation_bitmap, affected_relation_bitmap),
@@ -103,8 +103,8 @@ def _remove_from_facet_bitmaps(
                 sql.SQL(
                     """
                     UPDATE {}.annotation_term_relation_bitmap
-                    SET relation_bitmap = rb64_andnot(relation_bitmap, %s::roaringbitmap64),
-                        global_count = rb64_cardinality(rb64_andnot(relation_bitmap, %s::roaringbitmap64))
+                    SET relation_bitmap = rb_andnot(relation_bitmap, %s::roaringbitmap),
+                        global_count = rb_cardinality(rb_andnot(relation_bitmap, %s::roaringbitmap))
                     """
                 ).format(sql.Identifier(schema)),
                 (affected_relation_bitmap, affected_relation_bitmap),
@@ -153,8 +153,8 @@ def _add_to_facet_bitmaps(
                     FROM affected
                     GROUP BY fv
                     ON CONFLICT (facet_name, facet_value) DO UPDATE SET
-                      entity_bitmap = rb64_add(facet_entity_bitmap.entity_bitmap, EXCLUDED.entity_bitmap),
-                      entity_count = rb64_cardinality(rb64_add(facet_entity_bitmap.entity_bitmap, EXCLUDED.entity_bitmap))
+                      entity_bitmap = rb_or(facet_entity_bitmap.entity_bitmap, EXCLUDED.entity_bitmap),
+                      entity_count = rb_cardinality(rb_or(facet_entity_bitmap.entity_bitmap, EXCLUDED.entity_bitmap))
                     """
                 ).format(sql.Identifier(schema), sql.Identifier(schema)),
                 (affected_entity_ids,),
@@ -178,8 +178,8 @@ def _add_to_facet_bitmaps(
                     FROM affected
                     GROUP BY fv
                     ON CONFLICT (facet_name, facet_value) DO UPDATE SET
-                      entity_bitmap = rb64_add(facet_entity_bitmap.entity_bitmap, EXCLUDED.entity_bitmap),
-                      entity_count = rb64_cardinality(rb64_add(facet_entity_bitmap.entity_bitmap, EXCLUDED.entity_bitmap))
+                      entity_bitmap = rb_or(facet_entity_bitmap.entity_bitmap, EXCLUDED.entity_bitmap),
+                      entity_count = rb_cardinality(rb_or(facet_entity_bitmap.entity_bitmap, EXCLUDED.entity_bitmap))
                     """
                 ).format(sql.Identifier(schema), sql.Identifier(schema)),
                 (affected_entity_ids,),
@@ -203,8 +203,8 @@ def _add_to_facet_bitmaps(
                     FROM affected
                     GROUP BY fv
                     ON CONFLICT (facet_name, facet_value) DO UPDATE SET
-                      entity_bitmap = rb64_add(facet_entity_bitmap.entity_bitmap, EXCLUDED.entity_bitmap),
-                      entity_count = rb64_cardinality(rb64_add(facet_entity_bitmap.entity_bitmap, EXCLUDED.entity_bitmap))
+                      entity_bitmap = rb_or(facet_entity_bitmap.entity_bitmap, EXCLUDED.entity_bitmap),
+                      entity_count = rb_cardinality(rb_or(facet_entity_bitmap.entity_bitmap, EXCLUDED.entity_bitmap))
                     """
                 ).format(sql.Identifier(schema), sql.Identifier(schema)),
                 (affected_entity_ids,),
@@ -232,8 +232,8 @@ def _add_to_facet_bitmaps(
                     FROM affected
                     GROUP BY fv
                     ON CONFLICT (facet_name, facet_value) DO UPDATE SET
-                      entity_bitmap = rb64_add(facet_entity_bitmap.entity_bitmap, EXCLUDED.entity_bitmap),
-                      entity_count = rb64_cardinality(rb64_add(facet_entity_bitmap.entity_bitmap, EXCLUDED.entity_bitmap))
+                      entity_bitmap = rb_or(facet_entity_bitmap.entity_bitmap, EXCLUDED.entity_bitmap),
+                      entity_count = rb_cardinality(rb_or(facet_entity_bitmap.entity_bitmap, EXCLUDED.entity_bitmap))
                     """
                 ).format(sql.Identifier(schema), sql.Identifier(schema)),
                 (affected_entity_ids,),
@@ -258,8 +258,8 @@ def _add_to_facet_bitmaps(
                       AND er.subject_entity_id = ANY(%s)
                     GROUP BY er.object_entity_id
                     ON CONFLICT (term_entity_id) DO UPDATE SET
-                      entity_bitmap = rb64_add(annotation_term_entity_bitmap.entity_bitmap, EXCLUDED.entity_bitmap),
-                      global_count = rb64_cardinality(rb64_add(annotation_term_entity_bitmap.entity_bitmap, EXCLUDED.entity_bitmap))
+                      entity_bitmap = rb_or(annotation_term_entity_bitmap.entity_bitmap, EXCLUDED.entity_bitmap),
+                      global_count = rb_cardinality(rb_or(annotation_term_entity_bitmap.entity_bitmap, EXCLUDED.entity_bitmap))
                     """
                 ).format(
                     sql.Identifier(schema),
@@ -292,8 +292,8 @@ def _add_to_facet_bitmaps(
                     GROUP BY fv, cat
                     ON CONFLICT (facet_name, facet_value) DO UPDATE SET
                       facet_category = EXCLUDED.facet_category,
-                      relation_bitmap = rb64_add(facet_relation_bitmap.relation_bitmap, EXCLUDED.relation_bitmap),
-                      relation_count = rb64_cardinality(rb64_add(facet_relation_bitmap.relation_bitmap, EXCLUDED.relation_bitmap))
+                      relation_bitmap = rb_or(facet_relation_bitmap.relation_bitmap, EXCLUDED.relation_bitmap),
+                      relation_count = rb_cardinality(rb_or(facet_relation_bitmap.relation_bitmap, EXCLUDED.relation_bitmap))
                     """
                 ).format(sql.Identifier(schema), sql.Identifier(schema)),
                 (affected_relation_ids,),
@@ -317,8 +317,8 @@ def _add_to_facet_bitmaps(
                     FROM affected
                     GROUP BY fv
                     ON CONFLICT (facet_name, facet_value) DO UPDATE SET
-                      relation_bitmap = rb64_add(facet_relation_bitmap.relation_bitmap, EXCLUDED.relation_bitmap),
-                      relation_count = rb64_cardinality(rb64_add(facet_relation_bitmap.relation_bitmap, EXCLUDED.relation_bitmap))
+                      relation_bitmap = rb_or(facet_relation_bitmap.relation_bitmap, EXCLUDED.relation_bitmap),
+                      relation_count = rb_cardinality(rb_or(facet_relation_bitmap.relation_bitmap, EXCLUDED.relation_bitmap))
                     """
                 ).format(sql.Identifier(schema), sql.Identifier(schema)),
                 (affected_relation_ids,),
@@ -342,8 +342,8 @@ def _add_to_facet_bitmaps(
                     FROM affected
                     GROUP BY fv
                     ON CONFLICT (facet_name, facet_value) DO UPDATE SET
-                      relation_bitmap = rb64_add(facet_relation_bitmap.relation_bitmap, EXCLUDED.relation_bitmap),
-                      relation_count = rb64_cardinality(rb64_add(facet_relation_bitmap.relation_bitmap, EXCLUDED.relation_bitmap))
+                      relation_bitmap = rb_or(facet_relation_bitmap.relation_bitmap, EXCLUDED.relation_bitmap),
+                      relation_count = rb_cardinality(rb_or(facet_relation_bitmap.relation_bitmap, EXCLUDED.relation_bitmap))
                     """
                 ).format(sql.Identifier(schema), sql.Identifier(schema)),
                 (affected_relation_ids,),
@@ -385,8 +385,8 @@ def _add_to_facet_bitmaps(
                     FROM relation_terms
                     GROUP BY term_entity_id
                     ON CONFLICT (term_entity_id) DO UPDATE SET
-                      relation_bitmap = rb64_add(annotation_term_relation_bitmap.relation_bitmap, EXCLUDED.relation_bitmap),
-                      global_count = rb64_cardinality(rb64_add(annotation_term_relation_bitmap.relation_bitmap, EXCLUDED.relation_bitmap))
+                      relation_bitmap = rb_or(annotation_term_relation_bitmap.relation_bitmap, EXCLUDED.relation_bitmap),
+                      global_count = rb_cardinality(rb_or(annotation_term_relation_bitmap.relation_bitmap, EXCLUDED.relation_bitmap))
                     """
                 ).format(
                     sql.Identifier(schema),

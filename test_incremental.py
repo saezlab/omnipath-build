@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """End-to-end test of incremental combine + incremental postgres load with bitmap verification."""
 
-import json
 import tempfile
 from pathlib import Path
 
@@ -134,13 +133,13 @@ def run_test():
         print("=== STEP 1: Create initial gold data ===")
         create_test_gold_data(gold_root, entity_type='protein')
 
-        print("=== STEP 2: Full combine ===")
+        print("=== STEP 2: Combine bootstrap ===")
         build_combined(gold_root=gold_root, output_dir=output_dir)
         latest_dir = output_dir / 'latest'
         assert latest_dir.exists()
         print(f"  Combined output in {latest_dir}")
 
-        print("=== STEP 3: Full Postgres load ===")
+        print("=== STEP 3: Postgres bootstrap ===")
         load_combined_schema_to_postgres(
             output_dir=output_dir,
             postgres_uri=POSTGRES_URI,
@@ -251,7 +250,6 @@ def run_test():
             schema='public',
             drop_existing=False,
             batch_size=10_000,
-            mode='incremental',
             affected_entity_keys=['key1', 'key3'],
             affected_relation_keys=['rel1', 'rel2'],
             changed_source='test_source',

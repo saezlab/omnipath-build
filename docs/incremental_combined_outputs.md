@@ -187,7 +187,10 @@ Why per raw record: each raw record contributes distinct evidence (PMID, method,
 
 ## 4. Combine
 
-The combine step has only one mode. It always reads the previous state from `latest/`, applies changes, and writes back to `latest/`. There is no separate "full build" mode — to force a complete rebuild from scratch, delete `latest/` and rerun.
+The combine step has only one mode. It updates the DuckDB state store and then
+exports `latest/`. On an empty state it bootstraps from the available gold
+outputs; otherwise affected keys drive a targeted update. There is no separate
+full-build engine or CLI mode.
 
 ### Update flow
 
@@ -228,7 +231,7 @@ uv run python -m omnipath_build.gold.combine \
   --affected-entities affected_entities.json \
   --affected-relations affected_relations.json
 
-# 3. Force a full rebuild (delete latest/ first)
+# 3. Force a fresh pipeline bootstrap
 rm -rf data/combined/latest
 uv run python -m omnipath_build.gold.combine \
   --gold-root data/gold \
@@ -319,7 +322,6 @@ sys.exit(main([
     '--output-dir', 'data/combined',
     '--postgres-uri', 'postgresql://user:pass@host:5432/db',
     '--schema', 'public',
-    '--mode', 'incremental',
     '--affected-entities', 'affected_entities.json',
     '--affected-relations', 'affected_relations.json',
     '--changed-source', 'connectomedb',
@@ -347,7 +349,9 @@ Bitmap tables use the PostgreSQL `roaringbitmap` extension and reference stable 
 | `annotation_term_entity_bitmap` | ontology term → set of annotated entity IDs |
 | `annotation_term_relation_bitmap` | ontology term → set of relation IDs |
 
-In incremental mode, bitmap tables are rebuilt entirely (they are small: ~100–1000 rows). In full mode, they are truncated and repopulated.
+During bootstrap, bitmap tables are created and populated from the loaded base
+tables. During delta updates, affected entity/relation IDs are removed from and
+added back to the bitmap tables.
 
 ---
 
@@ -375,7 +379,8 @@ data/combined/
 3. **Rollback granularity:**
    - **Intra-month:** Reverse entries in `build_manifest.jsonl` or re-run from the last monthly snapshot.
    - **Inter-month:** Point a symlink or loader config to any `YYYY-MM/` directory.
-   - **Full rebuild:** Delete `latest/` and rerun — this builds everything from scratch.
+   - **Fresh bootstrap:** Delete `latest/` and rerun the pipeline, or run the
+     standalone combine command without affected-key files.
 
 **Why this is safe:**
 
