@@ -10,6 +10,12 @@ from pypath.internals.cv_terms import (
     PharmacologicalActionCv,
 )
 
+
+def _optional_accession(enum_cls: type, name: str) -> tuple[str, ...]:
+    member = getattr(enum_cls, name, None)
+    return () if member is None else (member.value,)
+
+
 POSITIVE_SIGN_ACCESSIONS = frozenset({
     CausalStatementCv.UP_REGULATES.value,
     CausalStatementCv.UP_REGULATES_ACTIVITY.value,
@@ -54,7 +60,6 @@ NEGATIVE_SIGN_ACCESSIONS = frozenset({
 
 SOURCE_ROLE_ACCESSIONS = frozenset({
     ParticipantMetadataCv.SOURCE.value,
-    ParticipantMetadataCv.LIGAND.value,
     BiologicalRoleCv.CONTROLLER.value,
     BiologicalRoleCv.REACTANT.value,
     BiologicalRoleCv.TEMPLATE.value,
@@ -67,15 +72,16 @@ SOURCE_ROLE_ACCESSIONS = frozenset({
     LigandTypeCv.ACTIVATOR.value,
     LigandTypeCv.AGONIST.value,
     LigandTypeCv.ANTAGONIST.value,
+    *_optional_accession(ParticipantMetadataCv, 'LIGAND'),
 })
 
 TARGET_ROLE_ACCESSIONS = frozenset({
     ParticipantMetadataCv.TARGET.value,
-    ParticipantMetadataCv.RECEPTOR.value,
     BiologicalRoleCv.CONTROLLED.value,
     BiologicalRoleCv.PRODUCT.value,
     BiologicalRoleCv.SUBSTRATE.value,
     BiologicalRoleCv.REGULATOR_TARGET.value,
+    *_optional_accession(ParticipantMetadataCv, 'RECEPTOR'),
 })
 
 ACTIVATORY_PARAMETER_ACCESSIONS = frozenset({

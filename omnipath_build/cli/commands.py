@@ -134,6 +134,7 @@ def _handle_combined(args: argparse.Namespace) -> int:
     """Build combined warehouse parquet artifacts."""
     project_root = Path(__file__).resolve().parent.parent.parent
 
+    from omnipath_build.gold.build_entities import GoldPartitionConfig
     from omnipath_build.gold.combine import build_combined
 
     gold_root: Path = args.gold_root
@@ -150,6 +151,15 @@ def _handle_combined(args: argparse.Namespace) -> int:
             affected_entity_keys = set(json.loads(args.affected_entities.read_text()))
         if args.affected_relations is not None:
             affected_relation_keys = set(json.loads(args.affected_relations.read_text()))
+        partition_config = GoldPartitionConfig(
+            bucket_count=args.bucket_count,
+            part_count=args.part_count,
+            min_part_size_bytes=args.min_part_size_mb * 1024 * 1024,
+            duckdb_memory_limit=args.duckdb_memory_limit,
+            duckdb_threads=args.duckdb_threads,
+            duckdb_max_temp_directory_size=args.duckdb_max_temp_directory_size,
+            duckdb_partitioned_write_max_open_files=args.duckdb_partitioned_write_max_open_files,
+        )
         build_combined(
             gold_root=gold_root,
             output_dir=output_dir,
@@ -159,6 +169,7 @@ def _handle_combined(args: argparse.Namespace) -> int:
             changed_source=args.changed_source,
             entity_batch_size=args.entity_batch_size,
             relation_batch_size=args.relation_batch_size,
+            partition_config=partition_config,
         )
         return 0
     except Exception as exc:  # noqa: BLE001
@@ -426,6 +437,48 @@ def _build_parser() -> argparse.ArgumentParser:
         type=int,
         default=50_000,
         help='Number of relation keys per DuckDB combine batch (default: 50000).',
+    )
+    combined_parser.add_argument(
+        '--bucket-count',
+        type=int,
+        default=4096,
+        help='Number of deterministic logical buckets from gold onward.',
+    )
+    combined_parser.add_argument(
+        '--part-count',
+        type=int,
+        default=128,
+        help='Maximum number of compact physical Parquet parts per public table.',
+    )
+    combined_parser.add_argument(
+        '--min-part-size-mb',
+        type=int,
+        default=200,
+        help='Target minimum physical Parquet part size in MiB before creating another part.',
+    )
+    combined_parser.add_argument(
+        '--duckdb-memory-limit',
+        type=str,
+        default=None,
+        help="Optional DuckDB memory limit, for example '16GB'.",
+    )
+    combined_parser.add_argument(
+        '--duckdb-threads',
+        type=int,
+        default=None,
+        help='Optional DuckDB thread count.',
+    )
+    combined_parser.add_argument(
+        '--duckdb-max-temp-directory-size',
+        type=str,
+        default=None,
+        help="Optional DuckDB temporary spill limit, for example '500GB'.",
+    )
+    combined_parser.add_argument(
+        '--duckdb-partitioned-write-max-open-files',
+        type=int,
+        default=64,
+        help='Maximum open files DuckDB may keep for partitioned writes.',
     )
     combined_parser.set_defaults(handler=_handle_combined)
 

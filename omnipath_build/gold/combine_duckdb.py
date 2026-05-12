@@ -3,23 +3,43 @@ from __future__ import annotations
 import json
 import time
 import shutil
-from typing import Any
-from pathlib import Path
-from datetime import UTC, datetime
 from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any, Iterable
 
 import duckdb
 
 from omnipath_build.gold.build_resources import build_resources_parquet
+from omnipath_build.gold.build_entities import (
+    GoldPartitionConfig,
+    effective_partition_config_for_paths,
+    _configure_duckdb,
+    _register_hash_functions,
+    _stable_part_py,
+    _copy_part_query,
+    _copy_query,
+    _glob_or_none,
+    _sql_path,
+)
 from omnipath_build.gold.utils.canonicalization import (
     ONTOLOGY_ENTITY_TYPE_LABEL,
     ONTOLOGY_IDENTIFIER_TYPE_LABEL,
 )
 
+
 @dataclass(frozen=True)
 class GoldSourceDir:
     source: str
     path: Path
+
+
+@dataclass(frozen=True)
+class SourceDatasets:
+    entity: Path | None
+    entity_evidence: Path | None
+    entity_relation: Path | None
+    entity_relation_evidence: Path | None
 
 
 def build_combined_duckdb(
@@ -33,83 +53,96 @@ def build_combined_duckdb(
     changed_source: str | None = None,
     entity_batch_size: int = 50_000,
     relation_batch_size: int = 50_000,
+    partition_config: GoldPartitionConfig | None = None,
 ) -> dict[str, Any]:
-    """Build/update combined parquets through a DuckDB-backed keyed state store."""
+    """Build/update combined artifacts through a bounded-memory DuckDB state store.
+
+    The state database stores merged rows on disk. Expensive recomputations are
+    scoped to entity/relation parts. Public outputs are compact partitioned
+    Parquet datasets under latest/<table>/part=XXXXX/data.parquet.
+    """
+    cfg = partition_config or GoldPartitionConfig()
     gold_root = Path(gold_root)
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     source_dirs = _discover_gold_source_dirs(gold_root)
-    state_path = output_dir / 'state.duckdb'
-    incremental_requested = (
-        affected_entity_keys is not None or affected_relation_keys is not None
+    requested_part_count = cfg.part_count
+    cfg, input_bytes = effective_partition_config_for_paths(
+        cfg,
+        [source_dir.path for source_dir in source_dirs],
     )
+    state_path = output_dir / 'state.duckdb'
+    run_id = _new_run_id()
+    incremental_requested = affected_entity_keys is not None or affected_relation_keys is not None
     affected_entity_keys = affected_entity_keys or set()
     affected_relation_keys = affected_relation_keys or set()
-    run_id = _new_run_id()
 
     con = duckdb.connect(str(state_path))
     try:
-        _configure_duckdb(con, output_dir)
+        _configure_duckdb(con, output_dir, cfg)
+        _register_hash_functions(con)
         _ensure_state_schema(con)
 
-        if _state_is_empty(con) and (output_dir / 'latest').exists():
-            _log(f'importing existing combined latest from {output_dir / "latest"}')
-            _import_existing_latest(con, output_dir / 'latest')
-
         bootstrap_state = _state_is_empty(con) or not incremental_requested
+        mode = 'bootstrap' if bootstrap_state else 'incremental'
         if bootstrap_state:
             _log(
-                'starting DuckDB combine bootstrap '
-                f'entity_batch_size={entity_batch_size} '
-                f'relation_batch_size={relation_batch_size}'
+                'starting partitioned DuckDB combine bootstrap '
+                f'parts={cfg.part_count}/{requested_part_count} '
+                f'min_part_size={cfg.min_part_size_bytes} input_bytes={input_bytes}'
             )
             _reset_state(con)
-            mode = 'bootstrap'
-            affected_entities_count = 0
-            affected_relations_count = 0
+            entity_parts = set(range(cfg.part_count))
+            relation_parts = set(range(cfg.part_count))
+            effective_entity_keys: set[str] = set()
+            effective_relation_keys: set[str] = set()
         else:
             _log(
-                'starting incremental DuckDB combine '
-                f'entities={len(affected_entity_keys)} '
-                f'relations={len(affected_relation_keys)}'
+                'starting partitioned DuckDB combine incremental '
+                f'entities={len(affected_entity_keys)} relations={len(affected_relation_keys)} '
+                f'parts={cfg.part_count}/{requested_part_count} '
+                f'min_part_size={cfg.min_part_size_bytes} input_bytes={input_bytes}'
             )
-            mode = 'incremental'
-            affected_entities_count = len(affected_entity_keys)
-            affected_relations_count = len(affected_relation_keys)
+            effective_entity_keys = set(affected_entity_keys)
+            effective_relation_keys = set(affected_relation_keys)
+            entity_parts = _parts_for_keys(effective_entity_keys, cfg)
+            if effective_entity_keys:
+                effective_relation_keys.update(_relation_keys_for_entity_keys(con, effective_entity_keys))
+            relation_parts = _parts_for_keys(effective_relation_keys, cfg)
 
-        effective_entity_keys = set(affected_entity_keys)
-        effective_relation_keys = set(affected_relation_keys)
         if bootstrap_state:
-            _apply_bootstrap_batched(
-                con,
-                source_dirs,
-                entity_batch_size=entity_batch_size,
-                relation_batch_size=relation_batch_size,
-            )
-            effective_entity_keys = set()
-            effective_relation_keys = set()
+            _apply_entity_parts(con, source_dirs, parts=entity_parts, cfg=cfg, full_build=True)
+            _apply_relation_parts(con, source_dirs, parts=relation_parts, cfg=cfg, full_build=True)
         else:
-            effective_relation_keys = _apply_incremental_batched(
-                con,
-                source_dirs,
-                affected_entity_keys=affected_entity_keys,
-                affected_relation_keys=affected_relation_keys,
-                entity_batch_size=entity_batch_size,
-                relation_batch_size=relation_batch_size,
-            )
+            if effective_entity_keys:
+                _create_key_table(con, 'affected_entity_keys', 'entity_key', effective_entity_keys)
+                _apply_entity_parts(con, source_dirs, parts=entity_parts, cfg=cfg, full_build=False)
+            if effective_relation_keys:
+                _create_key_table(con, 'affected_relation_keys', 'relation_key', effective_relation_keys)
+                _apply_relation_parts(con, source_dirs, parts=relation_parts, cfg=cfg, full_build=False)
 
         version_dir = output_dir / 'latest'
         started = time.perf_counter()
-        _log(f'exporting parquet artifacts to {version_dir}')
-        _export_latest(con, version_dir)
+        _log(f'exporting partitioned parquet artifacts to {version_dir}')
+        _export_latest(
+            con,
+            version_dir,
+            cfg=cfg,
+            entity_parts=entity_parts if not bootstrap_state else set(range(cfg.part_count)),
+            relation_parts=relation_parts if not bootstrap_state else set(range(cfg.part_count)),
+            full_build=bootstrap_state,
+        )
         _log(f'done parquet export in {time.perf_counter() - started:.1f}s')
-        started = time.perf_counter()
-        _log('exporting relation annotations')
-        relation_annotation_summary = _export_relation_annotation(con, version_dir)
-        _log(f'done relation annotations in {time.perf_counter() - started:.1f}s')
-        started = time.perf_counter()
-        _log(f'writing combine run artifacts run_id={run_id}')
+
+        relation_annotation_summary = _export_relation_annotation(
+            con,
+            version_dir,
+            cfg=cfg,
+            relation_parts=relation_parts if not bootstrap_state else set(range(cfg.part_count)),
+            full_build=bootstrap_state,
+        )
+
         run_summary = _write_run_artifacts(
             con,
             output_dir=output_dir,
@@ -120,24 +153,18 @@ def build_combined_duckdb(
             affected_entity_keys=effective_entity_keys,
             affected_relation_keys=effective_relation_keys,
         )
-        _log(f'done combine run artifacts in {time.perf_counter() - started:.1f}s')
-        started = time.perf_counter()
-        _log('building resources metadata')
+
         resources_path = build_resources_parquet(
             gold_root=gold_root,
             output_path=version_dir / 'resources.parquet',
             inputs_package=inputs_package,
         )
-        _log(f'done resources metadata in {time.perf_counter() - started:.1f}s')
+
         row_counts = _row_counts(con)
-        row_counts['relation_annotation_term.parquet'] = int(
-            relation_annotation_summary['row_count']
-        )
+        row_counts['relation_annotation_term.parquet'] = int(relation_annotation_summary['row_count'])
         if resources_path.exists():
             row_counts['resources.parquet'] = int(
-                con.execute(
-                    f"select count(*) from read_parquet('{_sql_path(resources_path)}')"
-                ).fetchone()[0]
+                con.execute(f"select count(*) from read_parquet('{_sql_path(resources_path)}')").fetchone()[0]
             )
 
         summary = {
@@ -147,29 +174,31 @@ def build_combined_duckdb(
             'engine': 'duckdb',
             'mode': mode,
             'run_id': run_id,
-            'sources': [
-                {'source': item.source, 'path': str(item.path)}
-                for item in source_dirs
-            ],
+            'bucket_algorithm': 'stable_u64_sha256_mod_v1',
+            'bucket_count': cfg.bucket_count,
+            'part_count': cfg.part_count,
+            'requested_part_count': requested_part_count,
+            'min_part_size_bytes': cfg.min_part_size_bytes,
+            'partition_input_bytes': input_bytes,
+            'updated_entity_parts': sorted(entity_parts),
+            'updated_relation_parts': sorted(relation_parts),
+            'sources': [{'source': item.source, 'path': str(item.path)} for item in source_dirs],
             'row_counts': row_counts,
             'relation_annotation_summary': relation_annotation_summary,
             'run_summary': run_summary,
             'run_dir': run_summary['run_dir'],
             'resources_path': str(resources_path),
         }
-        (version_dir / 'combined_build_summary.json').write_text(
-            json.dumps(summary, indent=2) + '\n',
-            encoding='utf-8',
-        )
-
+        (version_dir / 'combined_build_summary.json').write_text(json.dumps(summary, indent=2) + '\n', encoding='utf-8')
         _append_build_manifest(
             version_dir,
             mode=mode,
             freeze_monthly=freeze_monthly,
             row_counts=row_counts,
-            affected_entities=affected_entities_count,
-            affected_relations=affected_relations_count,
+            affected_entities=len(effective_entity_keys),
+            affected_relations=len(effective_relation_keys),
             changed_source=changed_source,
+            cfg=cfg,
         )
 
         if freeze_monthly:
@@ -181,43 +210,29 @@ def build_combined_duckdb(
         con.close()
 
 
-def _configure_duckdb(con: duckdb.DuckDBPyConnection, output_dir: Path) -> None:
-    temp_dir = output_dir / '.duckdb_tmp'
-    temp_dir.mkdir(parents=True, exist_ok=True)
-    con.execute('set preserve_insertion_order = false')
-    con.execute(f"set temp_directory = '{_sql_path(temp_dir)}'")
-
-
-def _new_run_id() -> str:
-    return datetime.now(UTC).strftime('%Y%m%dT%H%M%S%fZ')
-
-
-def _discover_gold_source_dirs(gold_root: Path) -> list[GoldSourceDir]:
-    if not gold_root.exists():
-        raise FileNotFoundError(f'Gold root does not exist: {gold_root}')
-    sources: list[GoldSourceDir] = []
-    for source_dir in sorted(gold_root.iterdir()):
-        if not source_dir.is_dir():
-            continue
-        if (source_dir / 'entities' / 'entity.parquet').exists():
-            sources.append(GoldSourceDir(source=source_dir.name, path=source_dir))
-    return sources
+# ---------------------------------------------------------------------------
+# State schema.
+# ---------------------------------------------------------------------------
 
 
 def _ensure_state_schema(con: duckdb.DuckDBPyConnection) -> None:
-    con.execute("""
+    con.execute('''
         create table if not exists entity_key_map (
             entity_key varchar primary key,
-            entity_id bigint
+            entity_id bigint,
+            entity_bucket bigint,
+            entity_part bigint
         )
-    """)
-    con.execute("""
+    ''')
+    con.execute('''
         create table if not exists relation_key_map (
             relation_key varchar primary key,
-            relation_id bigint
+            relation_id bigint,
+            relation_bucket bigint,
+            relation_part bigint
         )
-    """)
-    con.execute("""
+    ''')
+    con.execute('''
         create table if not exists entity (
             entity_id bigint,
             entity_key varchar,
@@ -227,10 +242,37 @@ def _ensure_state_schema(con: duckdb.DuckDBPyConnection) -> None:
             entity_type varchar,
             taxonomy_id varchar,
             entity_attributes struct(term varchar, "value" varchar, unit varchar)[],
-            sources varchar[]
+            sources varchar[],
+            source_count bigint,
+            entity_bucket bigint,
+            entity_part bigint
         )
-    """)
-    con.execute("""
+    ''')
+    con.execute('''
+        create table if not exists entity_source (
+            entity_key varchar,
+            source varchar,
+            evidence_count bigint,
+            payload_hash varchar,
+            active boolean,
+            entity_bucket bigint,
+            entity_part bigint
+        )
+    ''')
+    con.execute('''
+        create table if not exists entity_evidence (
+            source varchar,
+            entity_key varchar,
+            raw_record_ids varchar[],
+            entity_type varchar,
+            taxonomy_id varchar,
+            identifiers struct(identifier varchar, identifier_type varchar)[],
+            entity_attributes struct(term varchar, "value" varchar, unit varchar)[],
+            entity_bucket bigint,
+            entity_part bigint
+        )
+    ''')
+    con.execute('''
         create table if not exists entity_relation (
             relation_id bigint,
             relation_key varchar,
@@ -242,10 +284,24 @@ def _ensure_state_schema(con: duckdb.DuckDBPyConnection) -> None:
             relation_category varchar,
             participant_types varchar[],
             evidence_count bigint,
-            sources varchar[]
+            sources varchar[],
+            source_count bigint,
+            relation_bucket bigint,
+            relation_part bigint
         )
-    """)
-    con.execute("""
+    ''')
+    con.execute('''
+        create table if not exists relation_source (
+            relation_key varchar,
+            source varchar,
+            evidence_count bigint,
+            payload_hash varchar,
+            active boolean,
+            relation_bucket bigint,
+            relation_part bigint
+        )
+    ''')
+    con.execute('''
         create table if not exists entity_relation_evidence (
             relation_evidence_id bigint,
             relation_id bigint,
@@ -255,20 +311,11 @@ def _ensure_state_schema(con: duckdb.DuckDBPyConnection) -> None:
             record_attributes struct(term varchar, "value" varchar, unit varchar)[],
             subject_attributes struct(term varchar, "value" varchar, unit varchar)[],
             object_attributes struct(term varchar, "value" varchar, unit varchar)[],
-            evidence struct(term varchar, "value" varchar, unit varchar)[]
+            evidence struct(term varchar, "value" varchar, unit varchar)[],
+            relation_bucket bigint,
+            relation_part bigint
         )
-    """)
-    con.execute("""
-        create table if not exists entity_evidence (
-            source varchar,
-            entity_key varchar,
-            raw_record_ids varchar[],
-            entity_type varchar,
-            taxonomy_id varchar,
-            identifiers struct(identifier varchar, identifier_type varchar)[],
-            entity_attributes struct(term varchar, "value" varchar, unit varchar)[]
-        )
-    """)
+    ''')
 
 
 def _reset_state(con: duckdb.DuckDBPyConnection) -> None:
@@ -276,9 +323,11 @@ def _reset_state(con: duckdb.DuckDBPyConnection) -> None:
         'entity_key_map',
         'relation_key_map',
         'entity',
-        'entity_relation',
-        'entity_relation_evidence',
+        'entity_source',
         'entity_evidence',
+        'entity_relation',
+        'relation_source',
+        'entity_relation_evidence',
     ]:
         con.execute(f'delete from {table}')
 
@@ -287,375 +336,57 @@ def _state_is_empty(con: duckdb.DuckDBPyConnection) -> bool:
     return int(con.execute('select count(*) from entity').fetchone()[0]) == 0
 
 
-def _import_existing_latest(con: duckdb.DuckDBPyConnection, latest_dir: Path) -> None:
-    imports = {
-        'entity': latest_dir / 'entity.parquet',
-        'entity_relation': latest_dir / 'entity_relation.parquet',
-        'entity_relation_evidence': latest_dir / 'entity_relation_evidence.parquet',
-        'entity_evidence': latest_dir / 'entity_evidence.parquet',
-    }
-    if not all(path.exists() for path in imports.values()):
-        return
-
-    for table, path in imports.items():
-        con.execute(f'delete from {table}')
-        con.execute(
-            f"insert into {table} select * from read_parquet('{_sql_path(path)}')"
-        )
-    con.execute('delete from entity_key_map')
-    con.execute("""
-        insert into entity_key_map(entity_key, entity_id)
-        select entity_key, entity_id from entity
-    """)
-    con.execute('delete from relation_key_map')
-    con.execute("""
-        insert into relation_key_map(relation_key, relation_id)
-        select relation_key, relation_id from entity_relation
-    """)
+# ---------------------------------------------------------------------------
+# Part recomputation.
+# ---------------------------------------------------------------------------
 
 
-def _apply_bootstrap_batched(
+def _apply_entity_parts(
     con: duckdb.DuckDBPyConnection,
     source_dirs: list[GoldSourceDir],
     *,
-    entity_batch_size: int,
-    relation_batch_size: int,
-) -> None:
-    started = time.perf_counter()
-    _log('bootstrap: replaying entity keys source-by-source')
-    for index, source_dir in enumerate(source_dirs, start=1):
-        _apply_source_key_batches(
-            con,
-            source_dirs,
-            source_dir,
-            source_index=index,
-            source_count=len(source_dirs),
-            relative_path='entities/entity.parquet',
-            key_column='entity_key',
-            key_table='affected_entity_keys',
-            batch_size=entity_batch_size,
-            apply_batch=lambda: _apply_entity_batch(con, source_dirs),
-        )
-    _log(f'bootstrap: done entities in {time.perf_counter() - started:.1f}s')
-
-    started = time.perf_counter()
-    _log('bootstrap: replaying relation keys source-by-source')
-    for index, source_dir in enumerate(source_dirs, start=1):
-        _apply_source_key_batches(
-            con,
-            source_dirs,
-            source_dir,
-            source_index=index,
-            source_count=len(source_dirs),
-            relative_path='relations/entity_relation.parquet',
-            key_column='relation_key',
-            key_table='affected_relation_keys',
-            batch_size=relation_batch_size,
-            apply_batch=lambda: _apply_relation_batch(con, source_dirs),
-        )
-    _log(f'bootstrap: done relations/evidence in {time.perf_counter() - started:.1f}s')
-
-
-def _apply_incremental_batched(
-    con: duckdb.DuckDBPyConnection,
-    source_dirs: list[GoldSourceDir],
-    *,
-    affected_entity_keys: set[str],
-    affected_relation_keys: set[str],
-    entity_batch_size: int,
-    relation_batch_size: int,
-) -> set[str]:
-    expanded_relation_keys = set(affected_relation_keys)
-    if affected_entity_keys:
-        started = time.perf_counter()
-        _log(
-            'incremental: replaying affected entity keys '
-            f'total={len(affected_entity_keys)}'
-        )
-        for batch_index, batch in enumerate(
-            _iter_batches(sorted(affected_entity_keys), entity_batch_size),
-            start=1,
-        ):
-            total_batches = _batch_count(len(affected_entity_keys), entity_batch_size)
-            _log(
-                'incremental entity batch '
-                f'{batch_index}/{total_batches} keys={len(batch)}'
-            )
-            _create_key_table(con, 'affected_entity_keys', 'entity_key', set(batch))
-            _apply_entity_batch(con, source_dirs)
-        _log(f'incremental: done entities in {time.perf_counter() - started:.1f}s')
-
-        expanded_relation_keys.update(_relation_keys_for_entity_keys(
-            con,
-            affected_entity_keys,
-        ))
-
-    if expanded_relation_keys:
-        started = time.perf_counter()
-        _log(
-            'incremental: replaying affected relation keys '
-            f'total={len(expanded_relation_keys)}'
-        )
-        for batch_index, batch in enumerate(
-            _iter_batches(sorted(expanded_relation_keys), relation_batch_size),
-            start=1,
-        ):
-            total_batches = _batch_count(len(expanded_relation_keys), relation_batch_size)
-            _log(
-                'incremental relation batch '
-                f'{batch_index}/{total_batches} keys={len(batch)}'
-            )
-            _create_key_table(con, 'affected_relation_keys', 'relation_key', set(batch))
-            _apply_relation_batch(con, source_dirs)
-        _log(
-            'incremental: done relations/evidence in '
-            f'{time.perf_counter() - started:.1f}s'
-        )
-    return expanded_relation_keys
-
-
-def _relation_keys_for_entity_keys(
-    con: duckdb.DuckDBPyConnection,
-    entity_keys: set[str],
-) -> set[str]:
-    if not entity_keys:
-        return set()
-    _create_key_table(con, 'affected_entity_relation_keys', 'entity_key', entity_keys)
-    rows = con.execute("""
-        select relation_key
-        from entity_relation
-        where subject_entity_key in (
-            select entity_key from affected_entity_relation_keys
-        )
-        or object_entity_key in (
-            select entity_key from affected_entity_relation_keys
-        )
-    """).fetchall()
-    relation_keys = {row[0] for row in rows if row[0]}
-    if relation_keys:
-        _log(
-            'incremental: expanded entity keys to relation keys '
-            f'entities={len(entity_keys)} relations={len(relation_keys)}'
-        )
-    return relation_keys
-
-
-def _apply_source_key_batches(
-    con: duckdb.DuckDBPyConnection,
-    source_dirs: list[GoldSourceDir],
-    source_dir: GoldSourceDir,
-    *,
-    source_index: int,
-    source_count: int,
-    relative_path: str,
-    key_column: str,
-    key_table: str,
-    batch_size: int,
-    apply_batch,
-) -> None:
-    path = source_dir.path / relative_path
-    if not path.exists():
-        return
-
-    pending_table = f'pending_{key_column}s'
-    con.execute(f'drop table if exists {pending_table}')
-    con.execute(f"""
-        create temp table {pending_table} as
-        select
-            row_number() over(order by {key_column}) as rn,
-            {key_column}
-        from (
-            select distinct try_cast({key_column} as varchar) as {key_column}
-            from read_parquet('{_sql_path(path)}')
-            where {key_column} is not null
-        )
-    """)
-    total_keys = int(con.execute(f'select count(*) from {pending_table}').fetchone()[0])
-    if total_keys == 0:
-        _log(
-            f'source {source_index}/{source_count} {source_dir.source}: '
-            f'no {key_column}s'
-        )
-        return
-
-    total_batches = _batch_count(total_keys, batch_size)
-    for batch_index in range(1, total_batches + 1):
-        low = (batch_index - 1) * batch_size
-        high = batch_index * batch_size
-        con.execute(f'drop table if exists {key_table}')
-        con.execute(f"""
-            create temp table {key_table} as
-            select {key_column}
-            from {pending_table}
-            where rn > {low} and rn <= {high}
-        """)
-        batch_keys = int(con.execute(f'select count(*) from {key_table}').fetchone()[0])
-        if batch_keys == 0:
-            continue
-        _log(
-            f'source {source_index}/{source_count} {source_dir.source}: '
-            f'{key_column} batch {batch_index}/{total_batches} keys={batch_keys}'
-        )
-        apply_batch()
-
-
-def _apply_entity_batch(
-    con: duckdb.DuckDBPyConnection,
-    source_dirs: list[GoldSourceDir],
-) -> None:
-    con.execute('BEGIN TRANSACTION')
-    try:
-        _recompute_entities(con, source_dirs, full_build=False)
-        _recompute_entity_evidence(con, source_dirs, full_build=False)
-        con.execute('COMMIT')
-    except Exception:
-        con.execute('ROLLBACK')
-        raise
-
-
-def _apply_relation_batch(
-    con: duckdb.DuckDBPyConnection,
-    source_dirs: list[GoldSourceDir],
-) -> None:
-    con.execute('BEGIN TRANSACTION')
-    try:
-        _recompute_relations(con, source_dirs, full_build=False)
-        _recompute_relation_evidence(con, source_dirs, full_build=False)
-        con.execute('COMMIT')
-    except Exception:
-        con.execute('ROLLBACK')
-        raise
-
-
-def _iter_batches(items: list[str], batch_size: int):
-    if batch_size <= 0:
-        raise ValueError('Batch size must be greater than zero')
-    for start in range(0, len(items), batch_size):
-        yield items[start:start + batch_size]
-
-
-def _batch_count(total: int, batch_size: int) -> int:
-    if batch_size <= 0:
-        raise ValueError('Batch size must be greater than zero')
-    return (total + batch_size - 1) // batch_size
-
-
-def _create_key_table(
-    con: duckdb.DuckDBPyConnection,
-    table: str,
-    column: str,
-    values: set[str],
-) -> None:
-    con.execute(f'drop table if exists {table}')
-    con.execute(f'create temp table {table}({column} varchar)')
-    if values:
-        con.executemany(
-            f'insert into {table} values (?)',
-            [(value,) for value in sorted(values)],
-        )
-
-
-def _source_union_sql(
-    source_dirs: list[GoldSourceDir],
-    relative_path: str,
-    columns: list[str],
-    *,
+    parts: set[int],
+    cfg: GoldPartitionConfig,
     full_build: bool,
-    key_column: str,
-    key_table: str,
-) -> str:
-    selects: list[str] = []
-    selected_columns = ', '.join(_column_expr(column) for column in columns)
-    for source_dir in source_dirs:
-        path = source_dir.path / relative_path
-        if not path.exists():
-            continue
-        where = ''
-        if not full_build:
-            where = f' where {key_column} in (select {key_column} from {key_table})'
-        selects.append(
-            "select "
-            f"'{_sql_literal(source_dir.source)}' as _source, "
-            f'{selected_columns} '
-            f"from read_parquet('{_sql_path(path)}')"
-            f'{where}'
-        )
-    if selects:
-        return '\nunion all\n'.join(selects)
-    return _empty_source_sql(columns)
+) -> None:
+    for index, part in enumerate(sorted(parts), start=1):
+        _log(f'entity part {index}/{len(parts)} part={part:05d}')
+        con.execute('begin transaction')
+        try:
+            _recompute_entity_part(con, source_dirs, entity_part=part, cfg=cfg, full_build=full_build)
+            _recompute_entity_evidence_part(con, source_dirs, entity_part=part, cfg=cfg, full_build=full_build)
+            con.execute('commit')
+        except Exception:
+            con.execute('rollback')
+            raise
 
 
-def _empty_source_sql(columns: list[str]) -> str:
-    typed_columns = {
-        'entity_pk': 'null::bigint as entity_pk',
-        'entity_key': 'null::varchar as entity_key',
-        'canonical_identifier': 'null::varchar as canonical_identifier',
-        'canonical_identifier_type': 'null::varchar as canonical_identifier_type',
-        'identifiers': '[]::struct(identifier varchar, identifier_type varchar)[] as identifiers',
-        'entity_type': 'null::varchar as entity_type',
-        'taxonomy_id': 'null::varchar as taxonomy_id',
-        'entity_attributes': '[]::struct(term varchar, "value" varchar, unit varchar)[] as entity_attributes',
-        'sources': '[]::varchar[] as sources',
-        'relation_pk': 'null::bigint as relation_pk',
-        'relation_key': 'null::varchar as relation_key',
-        'subject_entity_pk': 'null::bigint as subject_entity_pk',
-        'subject_entity_key': 'null::varchar as subject_entity_key',
-        'predicate': 'null::varchar as predicate',
-        'object_entity_pk': 'null::bigint as object_entity_pk',
-        'object_entity_key': 'null::varchar as object_entity_key',
-        'relation_category': 'null::varchar as relation_category',
-        'evidence_count': 'null::bigint as evidence_count',
-        'relation_evidence_pk': 'null::bigint as relation_evidence_pk',
-        'raw_record_id': 'null::varchar as raw_record_id',
-        'source': 'null::varchar as source',
-        'record_attributes': '[]::struct(term varchar, "value" varchar, unit varchar)[] as record_attributes',
-        'subject_attributes': '[]::struct(term varchar, "value" varchar, unit varchar)[] as subject_attributes',
-        'object_attributes': '[]::struct(term varchar, "value" varchar, unit varchar)[] as object_attributes',
-        'evidence': '[]::struct(term varchar, "value" varchar, unit varchar)[] as evidence',
-        'raw_record_ids': '[]::varchar[] as raw_record_ids',
-    }
-    selected = ', '.join(typed_columns[column] for column in columns)
-    return f'select null::varchar as _source, {selected} where false'
-
-
-def _column_expr(column: str) -> str:
-    casts = {
-        'entity_pk': 'bigint',
-        'relation_pk': 'bigint',
-        'relation_evidence_pk': 'bigint',
-        'subject_entity_pk': 'bigint',
-        'object_entity_pk': 'bigint',
-        'evidence_count': 'bigint',
-        'entity_key': 'varchar',
-        'canonical_identifier': 'varchar',
-        'canonical_identifier_type': 'varchar',
-        'entity_type': 'varchar',
-        'taxonomy_id': 'varchar',
-        'relation_key': 'varchar',
-        'subject_entity_key': 'varchar',
-        'predicate': 'varchar',
-        'object_entity_key': 'varchar',
-        'relation_category': 'varchar',
-        'source': 'varchar',
-        'raw_record_id': 'varchar',
-        'identifiers': 'struct(identifier varchar, identifier_type varchar)[]',
-        'entity_attributes': 'struct(term varchar, "value" varchar, unit varchar)[]',
-        'sources': 'varchar[]',
-        'record_attributes': 'struct(term varchar, "value" varchar, unit varchar)[]',
-        'subject_attributes': 'struct(term varchar, "value" varchar, unit varchar)[]',
-        'object_attributes': 'struct(term varchar, "value" varchar, unit varchar)[]',
-        'evidence': 'struct(term varchar, "value" varchar, unit varchar)[]',
-        'raw_record_ids': 'varchar[]',
-    }
-    if column not in casts:
-        return column
-    return f'try_cast({column} as {casts[column]}) as {column}'
-
-
-def _recompute_entities(
+def _apply_relation_parts(
     con: duckdb.DuckDBPyConnection,
     source_dirs: list[GoldSourceDir],
     *,
+    parts: set[int],
+    cfg: GoldPartitionConfig,
+    full_build: bool,
+) -> None:
+    for index, part in enumerate(sorted(parts), start=1):
+        _log(f'relation part {index}/{len(parts)} part={part:05d}')
+        con.execute('begin transaction')
+        try:
+            _recompute_relation_part(con, source_dirs, relation_part=part, cfg=cfg, full_build=full_build)
+            _recompute_relation_evidence_part(con, source_dirs, relation_part=part, cfg=cfg, full_build=full_build)
+            con.execute('commit')
+        except Exception:
+            con.execute('rollback')
+            raise
+
+
+def _recompute_entity_part(
+    con: duckdb.DuckDBPyConnection,
+    source_dirs: list[GoldSourceDir],
+    *,
+    entity_part: int,
+    cfg: GoldPartitionConfig,
     full_build: bool,
 ) -> None:
     columns = [
@@ -667,20 +398,27 @@ def _recompute_entities(
         'taxonomy_id',
         'entity_attributes',
         'sources',
+        'entity_bucket',
+        'entity_part',
     ]
     con.execute('drop table if exists source_entities')
     con.execute(f"""
         create temp table source_entities as
         {_source_union_sql(
+            con,
             source_dirs,
-            'entities/entity.parquet',
-            columns,
-            full_build=full_build,
+            dataset_name='entity',
+            columns=columns,
+            part_column='entity_part',
+            part_value=entity_part,
             key_column='entity_key',
             key_table='affected_entity_keys',
+            full_build=full_build,
+            cfg=cfg,
         )}
     """)
-    con.execute("""
+
+    con.execute(f"""
         create or replace temp view merged_entities as
         with ident_rows as (
             select entity_key, item.identifier as identifier, item.identifier_type as identifier_type
@@ -688,15 +426,10 @@ def _recompute_entities(
             union all
             select entity_key, canonical_identifier, canonical_identifier_type
             from source_entities
-            where canonical_identifier is not null
-              and canonical_identifier_type is not null
+            where canonical_identifier is not null and canonical_identifier_type is not null
         ),
         ident_lists as (
-            select
-                entity_key,
-                list_sort(list_distinct(list(
-                    struct_pack(identifier := identifier, identifier_type := identifier_type)
-                ))) as identifiers
+            select entity_key, list_sort(list_distinct(list(struct_pack(identifier := identifier, identifier_type := identifier_type)))) as identifiers
             from ident_rows
             group by entity_key
         ),
@@ -705,52 +438,66 @@ def _recompute_entities(
             from source_entities, unnest(entity_attributes) as t(item)
         ),
         attr_lists as (
-            select
-                entity_key,
-                list_distinct(list(struct_pack(term := term, value := value, unit := unit))) as entity_attributes
+            select entity_key, list_distinct(list(struct_pack(term := term, value := value, unit := unit))) as entity_attributes
             from attr_rows
             group by entity_key
         ),
         source_rows as (
-            select entity_key, item as source
+            select entity_key, coalesce(item, _source) as source
             from source_entities, unnest(sources) as t(item)
+            union all
+            select entity_key, _source as source from source_entities
         ),
         source_lists as (
             select entity_key, list_sort(list_distinct(list(source))) as sources
             from source_rows
+            where source is not null
+            group by entity_key
+        ),
+        base as (
+            select
+                entity_key,
+                first(canonical_identifier order by _source, canonical_identifier nulls last) as canonical_identifier,
+                first(canonical_identifier_type order by _source, canonical_identifier_type nulls last) as canonical_identifier_type,
+                first(entity_type order by _source, entity_type nulls last) as entity_type,
+                first(taxonomy_id order by _source, taxonomy_id nulls last) as taxonomy_id,
+                coalesce(min(entity_bucket), stable_bucket(entity_key, {cfg.bucket_count}))::bigint as entity_bucket,
+                coalesce(min(entity_part), stable_part(entity_key, {cfg.bucket_count}, {cfg.part_count}))::bigint as entity_part
+            from source_entities
             group by entity_key
         )
         select
-            se.entity_key,
-            first(canonical_identifier order by _source, canonical_identifier nulls last) as canonical_identifier,
-            first(canonical_identifier_type order by _source, canonical_identifier_type nulls last) as canonical_identifier_type,
+            b.entity_key,
+            b.canonical_identifier,
+            b.canonical_identifier_type,
             coalesce(il.identifiers, []::struct(identifier varchar, identifier_type varchar)[]) as identifiers,
-            first(entity_type order by _source, entity_type nulls last) as entity_type,
-            first(taxonomy_id order by _source, taxonomy_id nulls last) as taxonomy_id,
+            b.entity_type,
+            b.taxonomy_id,
             coalesce(al.entity_attributes, []::struct(term varchar, "value" varchar, unit varchar)[]) as entity_attributes,
-            coalesce(sl.sources, []::varchar[]) as sources
-        from source_entities se
+            coalesce(sl.sources, []::varchar[]) as sources,
+            coalesce(array_length(sl.sources), 0)::bigint as source_count,
+            b.entity_bucket,
+            b.entity_part
+        from base b
         left join ident_lists il using(entity_key)
         left join attr_lists al using(entity_key)
         left join source_lists sl using(entity_key)
-        group by se.entity_key, il.identifiers, al.entity_attributes, sl.sources
     """)
-    max_id = int(con.execute(
-        'select coalesce(max(entity_id), 0) from entity_key_map'
-    ).fetchone()[0])
+
+    max_id = int(con.execute('select coalesce(max(entity_id), 0) from entity_key_map').fetchone()[0])
     con.execute(f"""
-        insert into entity_key_map(entity_key, entity_id)
-        select entity_key, {max_id} + row_number() over(order by entity_key) as entity_id
+        insert into entity_key_map(entity_key, entity_id, entity_bucket, entity_part)
+        select entity_key, {max_id} + row_number() over(order by entity_key), entity_bucket, entity_part
         from merged_entities
         where entity_key not in (select entity_key from entity_key_map)
     """)
     if full_build:
-        con.execute('delete from entity')
+        con.execute(f'delete from entity where entity_part = {entity_part}')
+        con.execute(f'delete from entity_source where entity_part = {entity_part}')
     else:
-        con.execute("""
-            delete from entity
-            where entity_key in (select entity_key from affected_entity_keys)
-        """)
+        con.execute('delete from entity where entity_key in (select entity_key from affected_entity_keys)')
+        con.execute('delete from entity_source where entity_key in (select entity_key from affected_entity_keys)')
+
     con.execute("""
         insert into entity
         select
@@ -762,16 +509,94 @@ def _recompute_entities(
             e.entity_type,
             e.taxonomy_id,
             e.entity_attributes,
-            e.sources
+            e.sources,
+            e.source_count,
+            e.entity_bucket,
+            e.entity_part
         from merged_entities e
         join entity_key_map m using(entity_key)
     """)
+    con.execute(f"""
+        insert into entity_source
+        select
+            entity_key,
+            source,
+            count(*)::bigint as evidence_count,
+            sha256(entity_key || '|' || source) as payload_hash,
+            true as active,
+            min(coalesce(entity_bucket, stable_bucket(entity_key, {cfg.bucket_count})))::bigint as entity_bucket,
+            min(coalesce(entity_part, stable_part(entity_key, {cfg.bucket_count}, {cfg.part_count})))::bigint as entity_part
+        from (
+            select entity_key, _source as source, entity_bucket, entity_part
+            from source_entities
+            where _source is not null
+        )
+        group by entity_key, source
+    """)
 
 
-def _recompute_relations(
+def _recompute_entity_evidence_part(
     con: duckdb.DuckDBPyConnection,
     source_dirs: list[GoldSourceDir],
     *,
+    entity_part: int,
+    cfg: GoldPartitionConfig,
+    full_build: bool,
+) -> None:
+    columns = [
+        'source',
+        'entity_key',
+        'raw_record_id',
+        'entity_type',
+        'taxonomy_id',
+        'identifiers',
+        'entity_attributes',
+        'entity_bucket',
+        'entity_part',
+    ]
+    con.execute('drop table if exists source_entity_evidence')
+    con.execute(f"""
+        create temp table source_entity_evidence as
+        {_source_union_sql(
+            con,
+            source_dirs,
+            dataset_name='entity_evidence',
+            columns=columns,
+            part_column='entity_part',
+            part_value=entity_part,
+            key_column='entity_key',
+            key_table='affected_entity_keys',
+            full_build=full_build,
+            cfg=cfg,
+        )}
+    """)
+    if full_build:
+        con.execute(f'delete from entity_evidence where entity_part = {entity_part}')
+    else:
+        con.execute('delete from entity_evidence where entity_key in (select entity_key from affected_entity_keys)')
+    con.execute(f"""
+        insert into entity_evidence
+        select
+            coalesce(source, _source) as source,
+            entity_key,
+            list_sort(list_distinct(list(raw_record_id) filter (where raw_record_id is not null and raw_record_id != ''))) as raw_record_ids,
+            first(entity_type order by entity_type nulls last) as entity_type,
+            first(taxonomy_id order by taxonomy_id nulls last) as taxonomy_id,
+            list_distinct(flatten(list(identifiers))) as identifiers,
+            list_distinct(flatten(list(entity_attributes))) as entity_attributes,
+            coalesce(min(entity_bucket), stable_bucket(entity_key, {cfg.bucket_count}))::bigint as entity_bucket,
+            coalesce(min(entity_part), stable_part(entity_key, {cfg.bucket_count}, {cfg.part_count}))::bigint as entity_part
+        from source_entity_evidence
+        group by coalesce(source, _source), entity_key
+    """)
+
+
+def _recompute_relation_part(
+    con: duckdb.DuckDBPyConnection,
+    source_dirs: list[GoldSourceDir],
+    *,
+    relation_part: int,
+    cfg: GoldPartitionConfig,
     full_build: bool,
 ) -> None:
     columns = [
@@ -782,23 +607,30 @@ def _recompute_relations(
         'relation_category',
         'evidence_count',
         'sources',
+        'relation_bucket',
+        'relation_part',
     ]
     con.execute('drop table if exists source_relations')
     con.execute(f"""
         create temp table source_relations as
         {_source_union_sql(
+            con,
             source_dirs,
-            'relations/entity_relation.parquet',
-            columns,
-            full_build=full_build,
+            dataset_name='entity_relation',
+            columns=columns,
+            part_column='relation_part',
+            part_value=relation_part,
             key_column='relation_key',
             key_table='affected_relation_keys',
+            full_build=full_build,
+            cfg=cfg,
         )}
     """)
     con.execute("""
         create or replace temp view mapped_source_relations as
         select
             r.relation_key,
+            r._source,
             sm.entity_id as subject_entity_id,
             r.subject_entity_key,
             r.predicate,
@@ -806,33 +638,34 @@ def _recompute_relations(
             r.object_entity_key,
             r.relation_category,
             r.evidence_count,
-            r.sources
+            r.sources,
+            r.relation_bucket,
+            r.relation_part
         from source_relations r
         join entity_key_map sm on sm.entity_key = r.subject_entity_key
         join entity_key_map om on om.entity_key = r.object_entity_key
     """)
-    con.execute("""
+    con.execute(f"""
         create or replace temp view merged_relations as
         with source_rows as (
-            select relation_key, item as source
+            select relation_key, coalesce(item, _source) as source
             from mapped_source_relations, unnest(sources) as t(item)
+            union all
+            select relation_key, _source as source from source_relations
         ),
         source_lists as (
             select relation_key, list_sort(list_distinct(list(source))) as sources
             from source_rows
+            where source is not null
             group by relation_key
         ),
         participant_rows as (
-            select relation_key, subject_entity_id as entity_id
-            from mapped_source_relations
+            select relation_key, subject_entity_id as entity_id from mapped_source_relations
             union all
-            select relation_key, object_entity_id as entity_id
-            from mapped_source_relations
+            select relation_key, object_entity_id as entity_id from mapped_source_relations
         ),
         participant_type_lists as (
-            select
-                p.relation_key,
-                list_sort(list_distinct(list(e.entity_type) filter (where e.entity_type is not null))) as participant_types
+            select p.relation_key, list_sort(list_distinct(list(e.entity_type) filter (where e.entity_type is not null))) as participant_types
             from participant_rows p
             join entity e on e.entity_id = p.entity_id
             group by p.relation_key
@@ -846,7 +679,9 @@ def _recompute_relations(
                 first(object_entity_id order by object_entity_id nulls last) as object_entity_id,
                 first(object_entity_key order by object_entity_key nulls last) as object_entity_key,
                 first(relation_category order by relation_category nulls last) as relation_category,
-                sum(evidence_count)::bigint as evidence_count
+                sum(evidence_count)::bigint as evidence_count,
+                coalesce(min(relation_bucket), stable_bucket(relation_key, {cfg.bucket_count}))::bigint as relation_bucket,
+                coalesce(min(relation_part), stable_part(relation_key, {cfg.bucket_count}, {cfg.part_count}))::bigint as relation_part
             from mapped_source_relations
             group by relation_key
         )
@@ -858,40 +693,29 @@ def _recompute_relations(
             b.object_entity_id,
             b.object_entity_key,
             b.relation_category,
-            ptl.participant_types,
+            coalesce(ptl.participant_types, []::varchar[]) as participant_types,
             b.evidence_count,
-            coalesce(sl.sources, []::varchar[]) as sources
+            coalesce(sl.sources, []::varchar[]) as sources,
+            coalesce(array_length(sl.sources), 0)::bigint as source_count,
+            b.relation_bucket,
+            b.relation_part
         from base b
         left join participant_type_lists ptl using(relation_key)
         left join source_lists sl using(relation_key)
-        group by
-            b.relation_key,
-            b.subject_entity_id,
-            b.subject_entity_key,
-            b.predicate,
-            b.object_entity_id,
-            b.object_entity_key,
-            b.relation_category,
-            ptl.participant_types,
-            b.evidence_count,
-            sl.sources
     """)
-    max_id = int(con.execute(
-        'select coalesce(max(relation_id), 0) from relation_key_map'
-    ).fetchone()[0])
+    max_id = int(con.execute('select coalesce(max(relation_id), 0) from relation_key_map').fetchone()[0])
     con.execute(f"""
-        insert into relation_key_map(relation_key, relation_id)
-        select relation_key, {max_id} + row_number() over(order by relation_key) as relation_id
+        insert into relation_key_map(relation_key, relation_id, relation_bucket, relation_part)
+        select relation_key, {max_id} + row_number() over(order by relation_key), relation_bucket, relation_part
         from merged_relations
         where relation_key not in (select relation_key from relation_key_map)
     """)
     if full_build:
-        con.execute('delete from entity_relation')
+        con.execute(f'delete from entity_relation where relation_part = {relation_part}')
+        con.execute(f'delete from relation_source where relation_part = {relation_part}')
     else:
-        con.execute("""
-            delete from entity_relation
-            where relation_key in (select relation_key from affected_relation_keys)
-        """)
+        con.execute('delete from entity_relation where relation_key in (select relation_key from affected_relation_keys)')
+        con.execute('delete from relation_source where relation_key in (select relation_key from affected_relation_keys)')
     con.execute("""
         insert into entity_relation
         select
@@ -903,18 +727,40 @@ def _recompute_relations(
             r.object_entity_id,
             r.object_entity_key,
             r.relation_category,
-            coalesce(r.participant_types, []::varchar[]),
+            r.participant_types,
             r.evidence_count,
-            r.sources
+            r.sources,
+            r.source_count,
+            r.relation_bucket,
+            r.relation_part
         from merged_relations r
         join relation_key_map m using(relation_key)
     """)
+    con.execute("""
+        insert into relation_source
+        select
+            relation_key,
+            source,
+            count(*)::bigint as evidence_count,
+            sha256(relation_key || '|' || source) as payload_hash,
+            true as active,
+            min(relation_bucket)::bigint as relation_bucket,
+            min(relation_part)::bigint as relation_part
+        from (
+            select relation_key, _source as source, relation_bucket, relation_part
+            from source_relations
+            where _source is not null
+        )
+        group by relation_key, source
+    """)
 
 
-def _recompute_relation_evidence(
+def _recompute_relation_evidence_part(
     con: duckdb.DuckDBPyConnection,
     source_dirs: list[GoldSourceDir],
     *,
+    relation_part: int,
+    cfg: GoldPartitionConfig,
     full_build: bool,
 ) -> None:
     columns = [
@@ -925,283 +771,207 @@ def _recompute_relation_evidence(
         'subject_attributes',
         'object_attributes',
         'evidence',
+        'relation_bucket',
+        'relation_part',
     ]
     con.execute('drop table if exists source_relation_evidence')
     con.execute(f"""
         create temp table source_relation_evidence as
         {_source_union_sql(
+            con,
             source_dirs,
-            'relations/entity_relation_evidence.parquet',
-            columns,
-            full_build=full_build,
+            dataset_name='entity_relation_evidence',
+            columns=columns,
+            part_column='relation_part',
+            part_value=relation_part,
             key_column='relation_key',
             key_table='affected_relation_keys',
+            full_build=full_build,
+            cfg=cfg,
         )}
     """)
     if full_build:
-        con.execute('delete from entity_relation_evidence')
+        con.execute(f'delete from entity_relation_evidence where relation_part = {relation_part}')
     else:
-        con.execute("""
-            delete from entity_relation_evidence
-            where relation_key in (select relation_key from affected_relation_keys)
-        """)
-    max_id = int(con.execute("""
-        select coalesce(max(relation_evidence_id), 0) from entity_relation_evidence
-    """).fetchone()[0])
+        con.execute('delete from entity_relation_evidence where relation_key in (select relation_key from affected_relation_keys)')
+    max_id = int(con.execute('select coalesce(max(relation_evidence_id), 0) from entity_relation_evidence').fetchone()[0])
     con.execute(f"""
         insert into entity_relation_evidence
         select
-            {max_id} + row_number() over(order by e.source, m.relation_id, e.raw_record_id) as relation_evidence_id,
+            {max_id} + row_number() over(order by coalesce(e.source, e._source), m.relation_id, e.raw_record_id) as relation_evidence_id,
             m.relation_id,
             e.relation_key,
-            e.source,
+            coalesce(e.source, e._source) as source,
             e.raw_record_id,
             e.record_attributes,
             e.subject_attributes,
             e.object_attributes,
-            e.evidence
+            e.evidence,
+            coalesce(e.relation_bucket, stable_bucket(e.relation_key, {cfg.bucket_count}))::bigint as relation_bucket,
+            coalesce(e.relation_part, stable_part(e.relation_key, {cfg.bucket_count}, {cfg.part_count}))::bigint as relation_part
         from source_relation_evidence e
         join relation_key_map m using(relation_key)
     """)
 
 
-def _recompute_entity_evidence(
+# ---------------------------------------------------------------------------
+# Export.
+# ---------------------------------------------------------------------------
+
+
+def _export_latest(
     con: duckdb.DuckDBPyConnection,
-    source_dirs: list[GoldSourceDir],
+    version_dir: Path,
     *,
+    cfg: GoldPartitionConfig,
+    entity_parts: set[int],
+    relation_parts: set[int],
     full_build: bool,
 ) -> None:
-    columns = [
-        'source',
-        'entity_key',
-        'raw_record_id',
-        'entity_type',
-        'taxonomy_id',
-        'identifiers',
-        'entity_attributes',
-    ]
-    con.execute('drop table if exists source_entity_evidence')
-    con.execute(f"""
-        create temp table source_entity_evidence as
-        {_source_union_sql(
-            source_dirs,
-            'entities/entity_evidence.parquet',
-            columns,
-            full_build=full_build,
-            key_column='entity_key',
-            key_table='affected_entity_keys',
-        )}
-    """)
     if full_build:
-        con.execute('delete from entity_evidence')
+        tmp_dir = version_dir.parent / f'.{version_dir.name}.tmp'
+        if tmp_dir.exists():
+            shutil.rmtree(tmp_dir)
+        tmp_dir.mkdir(parents=True)
+        target_dir = tmp_dir
     else:
-        con.execute("""
-            delete from entity_evidence
-            where entity_key in (select entity_key from affected_entity_keys)
-        """)
-    con.execute("""
-        insert into entity_evidence
-        select
-            source,
-            entity_key,
-            list_sort(list_distinct(list(raw_record_id) filter (where raw_record_id is not null and raw_record_id != ''))) as raw_record_ids,
-            first(entity_type order by entity_type nulls last) as entity_type,
-            first(taxonomy_id order by taxonomy_id nulls last) as taxonomy_id,
-            list_distinct(flatten(list(identifiers))) as identifiers,
-            list_distinct(flatten(list(entity_attributes))) as entity_attributes
-        from source_entity_evidence
-        group by source, entity_key
-    """)
+        version_dir.mkdir(parents=True, exist_ok=True)
+        target_dir = version_dir
 
+    for name in ['entity', 'entity_evidence']:
+        (target_dir / name).mkdir(parents=True, exist_ok=True)
+    for part in sorted(entity_parts):
+        _copy_part_query(con, f'select * from entity where entity_part = {part} order by entity_key', target_dir / 'entity', part, cfg)
+        _copy_part_query(con, f'select * from entity_evidence where entity_part = {part} order by entity_key, source', target_dir / 'entity_evidence', part, cfg)
 
-def _export_latest(con: duckdb.DuckDBPyConnection, version_dir: Path) -> None:
-    tmp_dir = version_dir.parent / f'.{version_dir.name}.tmp'
-    if tmp_dir.exists():
-        shutil.rmtree(tmp_dir)
-    tmp_dir.mkdir(parents=True)
+    for name in ['entity_relation', 'entity_relation_evidence']:
+        (target_dir / name).mkdir(parents=True, exist_ok=True)
+    for part in sorted(relation_parts):
+        _copy_part_query(con, f'select * from entity_relation where relation_part = {part} order by relation_key', target_dir / 'entity_relation', part, cfg)
+        _copy_part_query(con, f'select * from entity_relation_evidence where relation_part = {part} order by relation_key, source, raw_record_id', target_dir / 'entity_relation_evidence', part, cfg)
 
-    exports = {
-        'entity.parquet': """
-            select
-                entity_id,
-                entity_key,
-                canonical_identifier,
-                canonical_identifier_type,
-                identifiers,
-                entity_type,
-                taxonomy_id,
-                entity_attributes,
-                sources
-            from entity
-        """,
-        'entity_relation.parquet': """
-            select
-                relation_id,
-                relation_key,
-                subject_entity_id,
-                subject_entity_key,
-                predicate,
-                object_entity_id,
-                object_entity_key,
-                relation_category,
-                participant_types,
-                evidence_count,
-                sources
-            from entity_relation
-        """,
-        'entity_relation_evidence.parquet': """
-            select
-                relation_evidence_id,
-                relation_id,
-                relation_key,
-                source,
-                raw_record_id,
-                record_attributes,
-                subject_attributes,
-                object_attributes,
-                evidence
-            from entity_relation_evidence
-        """,
-        'entity_evidence.parquet': """
-            select
-                source,
-                entity_key,
-                raw_record_ids,
-                entity_type,
-                taxonomy_id,
-                identifiers,
-                entity_attributes
-            from entity_evidence
-        """,
-    }
-    for file_name, query in exports.items():
-        con.execute(
-            f"copy ({query}) to '{_sql_path(tmp_dir / file_name)}' (format parquet)"
-        )
-
-    if version_dir.exists():
-        backup_dir = version_dir.parent / f'.{version_dir.name}.previous'
-        if backup_dir.exists():
+    if full_build:
+        if version_dir.exists():
+            backup_dir = version_dir.parent / f'.{version_dir.name}.previous'
+            if backup_dir.exists():
+                shutil.rmtree(backup_dir)
+            version_dir.replace(backup_dir)
+            tmp_dir.replace(version_dir)
             shutil.rmtree(backup_dir)
-        version_dir.replace(backup_dir)
-        tmp_dir.replace(version_dir)
-        shutil.rmtree(backup_dir)
-    else:
-        tmp_dir.replace(version_dir)
+        else:
+            tmp_dir.replace(version_dir)
 
 
 def _export_relation_annotation(
     con: duckdb.DuckDBPyConnection,
     output_dir: Path,
+    *,
+    cfg: GoldPartitionConfig,
+    relation_parts: set[int],
+    full_build: bool,
 ) -> dict[str, Any]:
-    relation_annotation_path = output_dir / 'relation_annotation_term.parquet'
+    root = output_dir / 'relation_annotation_term'
+    if full_build and root.exists():
+        shutil.rmtree(root)
+    root.mkdir(parents=True, exist_ok=True)
+
     term_entity_type = _sql_literal(ONTOLOGY_ENTITY_TYPE_LABEL)
     term_identifier_type = _sql_literal(ONTOLOGY_IDENTIFIER_TYPE_LABEL)
-    query = f"""
-        with term_entities as (
-            select
-                entity_id::bigint as term_entity_id,
-                canonical_identifier::varchar as term_id
-            from entity
-            where entity_type = '{term_entity_type}'
-              and canonical_identifier_type = '{term_identifier_type}'
-        ),
-        interaction_relation_evidence as (
-            select
-                r.relation_id::bigint as relation_id,
-                r.subject_entity_id::bigint as subject_entity_id,
-                r.object_entity_id::bigint as object_entity_id,
-                e.relation_evidence_id::bigint as relation_evidence_id,
-                e.source::varchar as source,
-                e.record_attributes
-            from entity_relation r
-            join entity_relation_evidence e using(relation_id)
-            where r.relation_category = 'interaction'
-        ),
-        interaction_terms as (
-            select distinct
-                i.relation_id,
-                i.relation_evidence_id,
-                i.source,
-                'relation'::varchar as scope,
-                t.term_entity_id
-            from interaction_relation_evidence i,
-                unnest(i.record_attributes) as attr(item)
-            join term_entities t
-              on t.term_id = coalesce(
-                    nullif(regexp_extract(attr.item.term, '^([^:]+:[^:]+)$|^([^:]+:[^:]+):', 1), ''),
-                    nullif(regexp_extract(attr.item.term, '^([^:]+:[^:]+)$|^([^:]+:[^:]+):', 2), '')
-                )
-            where attr.item.term is not null
-              and regexp_matches(attr.item.term, '^[^:]+:[^:]+')
-              and attr.item.value is null
-              and attr.item.unit is null
-        ),
-        annotation_relations as (
-            select
-                r.subject_entity_id::bigint as subject_entity_id,
-                r.object_entity_id::bigint as term_entity_id
-            from entity_relation r
-            join term_entities t on t.term_entity_id = r.object_entity_id
-            where r.relation_category = 'association'
-        ),
-        participant_candidates as (
+    total = 0
+    for part in sorted(relation_parts):
+        query = f"""
+            with term_entities as (
+                select entity_id::bigint as term_entity_id, canonical_identifier::varchar as term_id
+                from entity
+                where entity_type = '{term_entity_type}'
+                  and canonical_identifier_type = '{term_identifier_type}'
+            ),
+            interaction_relation_evidence as (
+                select
+                    r.relation_id::bigint as relation_id,
+                    r.subject_entity_id::bigint as subject_entity_id,
+                    r.object_entity_id::bigint as object_entity_id,
+                    e.relation_evidence_id::bigint as relation_evidence_id,
+                    e.source::varchar as source,
+                    e.record_attributes
+                from entity_relation r
+                join entity_relation_evidence e using(relation_id)
+                where r.relation_category = 'interaction'
+                  and r.relation_part = {part}
+            ),
+            interaction_terms as (
+                select distinct
+                    i.relation_id,
+                    i.relation_evidence_id,
+                    i.source,
+                    'relation'::varchar as scope,
+                    t.term_entity_id
+                from interaction_relation_evidence i,
+                    unnest(i.record_attributes) as attr(item)
+                join term_entities t
+                  on t.term_id = coalesce(
+                        nullif(regexp_extract(attr.item.term, '^([^:]+:[^:]+)$|^([^:]+:[^:]+):', 1), ''),
+                        nullif(regexp_extract(attr.item.term, '^([^:]+:[^:]+)$|^([^:]+:[^:]+):', 2), '')
+                    )
+                where attr.item.term is not null
+                  and regexp_matches(attr.item.term, '^[^:]+:[^:]+')
+                  and attr.item.value is null
+                  and attr.item.unit is null
+            ),
+            annotation_relations as (
+                select r.subject_entity_id::bigint as subject_entity_id, r.object_entity_id::bigint as term_entity_id
+                from entity_relation r
+                join term_entities t on t.term_entity_id = r.object_entity_id
+                where r.relation_category = 'association'
+            ),
+            participant_candidates as (
+                select relation_id, relation_evidence_id, source, subject_entity_id as annotated_entity_id
+                from interaction_relation_evidence
+                union all
+                select relation_id, relation_evidence_id, source, object_entity_id as annotated_entity_id
+                from interaction_relation_evidence
+            ),
+            participant_terms as (
+                select distinct
+                    c.relation_id,
+                    c.relation_evidence_id,
+                    c.source,
+                    'participants'::varchar as scope,
+                    a.term_entity_id
+                from participant_candidates c
+                join annotation_relations a on a.subject_entity_id = c.annotated_entity_id
+                join term_entities t on t.term_entity_id = a.term_entity_id
+            )
             select
                 relation_id,
-                relation_evidence_id,
+                min(relation_evidence_id)::bigint as relation_evidence_id,
                 source,
-                subject_entity_id as annotated_entity_id
-            from interaction_relation_evidence
-            union all
-            select
-                relation_id,
-                relation_evidence_id,
-                source,
-                object_entity_id as annotated_entity_id
-            from interaction_relation_evidence
-        ),
-        participant_terms as (
-            select distinct
-                c.relation_id,
-                c.relation_evidence_id,
-                c.source,
-                'participants'::varchar as scope,
-                a.term_entity_id
-            from participant_candidates c
-            join annotation_relations a
-              on a.subject_entity_id = c.annotated_entity_id
-            join term_entities t
-              on t.term_entity_id = a.term_entity_id
-        )
-        select
-            relation_id,
-            min(relation_evidence_id)::bigint as relation_evidence_id,
-            source,
-            scope,
-            term_entity_id
-        from (
-            select * from interaction_terms
-            union
-            select * from participant_terms
-        )
-        group by relation_id, source, scope, term_entity_id
-    """
-    con.execute(
-        f"copy ({query}) to '{_sql_path(relation_annotation_path)}' (format parquet)"
-    )
-    row_count = int(con.execute(f'select count(*) from ({query})').fetchone()[0])
+                scope,
+                term_entity_id,
+                {part}::bigint as relation_part
+            from (
+                select * from interaction_terms
+                union
+                select * from participant_terms
+            )
+            group by relation_id, source, scope, term_entity_id
+        """
+        total += _copy_part_query(con, query, root, part, cfg)
+
     summary = {
         'output_dir': str(output_dir),
-        'relation_annotation_path': str(relation_annotation_path),
-        'row_count': row_count,
+        'relation_annotation_path': str(root),
+        'row_count': total,
         'missing_inputs': [],
         'engine': 'duckdb',
     }
-    (output_dir / 'relation_annotation_summary.json').write_text(
-        json.dumps(summary, indent=2) + '\n',
-        encoding='utf-8',
-    )
+    (output_dir / 'relation_annotation_summary.json').write_text(json.dumps(summary, indent=2) + '\n', encoding='utf-8')
     return summary
+
+
+# ---------------------------------------------------------------------------
+# Run artifacts.
+# ---------------------------------------------------------------------------
 
 
 def _write_run_artifacts(
@@ -1217,31 +987,18 @@ def _write_run_artifacts(
 ) -> dict[str, Any]:
     run_dir = output_dir / 'runs' / run_id
     affected_dir = run_dir / 'affected'
-    delta_dir = run_dir / 'delta'
     affected_dir.mkdir(parents=True, exist_ok=True)
-    delta_dir.mkdir(parents=True, exist_ok=True)
 
-    full_build = mode == 'bootstrap'
-    if full_build:
-        _write_full_build_run_artifacts(
-            con,
-            affected_dir=affected_dir,
-            delta_dir=delta_dir,
-            changed_source=changed_source,
-            latest_dir=latest_dir,
-        )
+    if mode == 'bootstrap':
+        _copy_query(con, "select null::varchar as source, entity_key, 'added'::varchar as change_type, 'bootstrap'::varchar as reason from entity", affected_dir / 'entity_keys.parquet')
+        _copy_query(con, "select null::varchar as source, relation_key, 'added'::varchar as change_type, 'bootstrap'::varchar as reason from entity_relation", affected_dir / 'relation_keys.parquet')
     else:
         _create_key_table(con, 'run_affected_entity_keys', 'entity_key', affected_entity_keys)
         _create_key_table(con, 'run_affected_relation_keys', 'relation_key', affected_relation_keys)
-        _write_incremental_run_artifacts(
-            con,
-            affected_dir=affected_dir,
-            delta_dir=delta_dir,
-            changed_source=changed_source,
-            latest_dir=latest_dir,
-        )
+        source_value = _nullable_sql_literal(changed_source)
+        _copy_query(con, f"select {source_value} as source, entity_key, null::varchar as change_type, 'gold_delta'::varchar as reason from run_affected_entity_keys", affected_dir / 'entity_keys.parquet')
+        _copy_query(con, f"select {source_value} as source, relation_key, null::varchar as change_type, 'gold_delta'::varchar as reason from run_affected_relation_keys", affected_dir / 'relation_keys.parquet')
 
-    delta_counts = _run_delta_counts(con, delta_dir)
     manifest = {
         'layer': 'combined',
         'run_id': run_id,
@@ -1250,186 +1007,215 @@ def _write_run_artifacts(
         'changed_source': changed_source,
         'latest_dir': str(latest_dir),
         'run_dir': str(run_dir),
-        'affected_entity_count': (
-            int(con.execute('select count(*) from entity').fetchone()[0])
-            if full_build else len(affected_entity_keys)
-        ),
-        'affected_relation_count': (
-            int(con.execute('select count(*) from entity_relation').fetchone()[0])
-            if full_build else len(affected_relation_keys)
-        ),
-        'delta_counts': delta_counts,
+        'affected_entity_count': int(con.execute('select count(*) from entity').fetchone()[0]) if mode == 'bootstrap' else len(affected_entity_keys),
+        'affected_relation_count': int(con.execute('select count(*) from entity_relation').fetchone()[0]) if mode == 'bootstrap' else len(affected_relation_keys),
     }
-    (run_dir / 'manifest.json').write_text(
-        json.dumps(manifest, indent=2, sort_keys=True) + '\n',
-        encoding='utf-8',
-    )
-    (output_dir / 'runs' / 'latest.json').write_text(
-        json.dumps({
-            'run_id': run_id,
-            'path': str(run_dir),
-            'manifest': str(run_dir / 'manifest.json'),
-        }, indent=2, sort_keys=True) + '\n',
-        encoding='utf-8',
-    )
+    (run_dir / 'manifest.json').write_text(json.dumps(manifest, indent=2, sort_keys=True) + '\n', encoding='utf-8')
+    (output_dir / 'runs' / 'latest.json').write_text(json.dumps({'run_id': run_id, 'path': str(run_dir), 'manifest': str(run_dir / 'manifest.json')}, indent=2, sort_keys=True) + '\n', encoding='utf-8')
     return manifest
 
 
-def _write_full_build_run_artifacts(
+# ---------------------------------------------------------------------------
+# Source discovery and SQL helpers.
+# ---------------------------------------------------------------------------
+
+
+def _discover_gold_source_dirs(gold_root: Path) -> list[GoldSourceDir]:
+    if not gold_root.exists():
+        raise FileNotFoundError(f'Gold root does not exist: {gold_root}')
+    sources: list[GoldSourceDir] = []
+    for source_dir in sorted(gold_root.iterdir()):
+        if not source_dir.is_dir():
+            continue
+        datasets = _source_datasets(source_dir)
+        if datasets.entity is not None:
+            sources.append(GoldSourceDir(source=source_dir.name, path=source_dir))
+    return sources
+
+
+def _source_datasets(source_dir: Path) -> SourceDatasets:
+    return SourceDatasets(
+        entity=_first_existing(source_dir / 'entities' / 'entity', source_dir / 'entities' / 'entity.parquet'),
+        entity_evidence=_first_existing(source_dir / 'entities' / 'entity_evidence', source_dir / 'entities' / 'entity_evidence.parquet'),
+        entity_relation=_first_existing(source_dir / 'relations' / 'entity_relation', source_dir / 'relations' / 'entity_relation.parquet'),
+        entity_relation_evidence=_first_existing(source_dir / 'relations' / 'entity_relation_evidence', source_dir / 'relations' / 'entity_relation_evidence.parquet'),
+    )
+
+
+def _source_union_sql(
     con: duckdb.DuckDBPyConnection,
+    source_dirs: list[GoldSourceDir],
     *,
-    affected_dir: Path,
-    delta_dir: Path,
-    changed_source: str | None,
-    latest_dir: Path,
-) -> None:
-    source_value = _nullable_sql_literal(changed_source)
-    _copy_query(con, f"""
-        select
-            {source_value} as source,
-            entity_key,
-            'added'::varchar as change_type,
-            'bootstrap'::varchar as reason
-        from entity
-    """, affected_dir / 'entity_keys.parquet')
-    _copy_query(con, f"""
-        select
-            {source_value} as source,
-            relation_key,
-            'added'::varchar as change_type,
-            'bootstrap'::varchar as reason
-        from entity_relation
-    """, affected_dir / 'relation_keys.parquet')
-    _copy_empty_like(con, 'entity_delete', delta_dir / 'entity_delete.parquet')
-    _copy_empty_like(con, 'entity_relation_delete', delta_dir / 'entity_relation_delete.parquet')
-    _copy_empty_like(con, 'entity_evidence_delete', delta_dir / 'entity_evidence_delete.parquet')
-    _copy_empty_like(
-        con,
-        'relation_annotation_term_delete',
-        delta_dir / 'relation_annotation_term_delete.parquet',
-    )
-    _copy_query(con, 'select * from entity', delta_dir / 'entity_upsert.parquet')
-    _copy_query(con, 'select * from entity_relation', delta_dir / 'entity_relation_upsert.parquet')
-    _copy_query(
-        con,
-        'select * from entity_relation_evidence',
-        delta_dir / 'entity_relation_evidence_upsert.parquet',
-    )
-    _copy_query(con, 'select * from entity_evidence', delta_dir / 'entity_evidence_upsert.parquet')
-    _copy_query(
-        con,
-        f"select * from read_parquet('{_sql_path(latest_dir / 'relation_annotation_term.parquet')}')",
-        delta_dir / 'relation_annotation_term_upsert.parquet',
-    )
+    dataset_name: str,
+    columns: list[str],
+    part_column: str,
+    part_value: int,
+    key_column: str,
+    key_table: str,
+    full_build: bool,
+    cfg: GoldPartitionConfig,
+) -> str:
+    selects: list[str] = []
+    for source_dir in source_dirs:
+        datasets = _source_datasets(source_dir.path)
+        path = getattr(datasets, dataset_name)
+        if path is None:
+            continue
+        source_sql = _read_dataset_sql(path)
+        existing_columns = _dataset_columns(con, path)
+        selected_columns = ', '.join(_column_expr(column, existing_columns, key_column, cfg) for column in columns)
+        part_filter = (
+            f'stable_part(try_cast({key_column} as varchar), '
+            f'{cfg.bucket_count}, {cfg.part_count}) = {part_value}'
+        )
+        filters = [part_filter, f'{key_column} is not null']
+        if not full_build:
+            filters.append(f'try_cast({key_column} as varchar) in (select {key_column} from {key_table})')
+        selects.append(
+            "select "
+            f"'{_sql_literal(source_dir.source)}' as _source, "
+            f'{selected_columns} '
+            f'from {source_sql} '
+            f"where {' and '.join(filters)}"
+        )
+    if selects:
+        return '\nunion all\n'.join(selects)
+    return _empty_source_sql(columns)
 
 
-def _write_incremental_run_artifacts(
-    con: duckdb.DuckDBPyConnection,
-    *,
-    affected_dir: Path,
-    delta_dir: Path,
-    changed_source: str | None,
-    latest_dir: Path,
-) -> None:
-    source_value = _nullable_sql_literal(changed_source)
-    _copy_query(con, f"""
-        select
-            {source_value} as source,
-            entity_key,
-            null::varchar as change_type,
-            'gold_delta'::varchar as reason
-        from run_affected_entity_keys
-    """, affected_dir / 'entity_keys.parquet')
-    _copy_query(con, f"""
-        select
-            {source_value} as source,
-            relation_key,
-            null::varchar as change_type,
-            'gold_delta'::varchar as reason
-        from run_affected_relation_keys
-    """, affected_dir / 'relation_keys.parquet')
-
-    _copy_query(con, """
-        select entity_id, entity_key
-        from entity_key_map
-        where entity_key in (select entity_key from run_affected_entity_keys)
-    """, delta_dir / 'entity_delete.parquet')
-    _copy_query(con, """
-        select relation_id, relation_key
-        from relation_key_map
-        where relation_key in (select relation_key from run_affected_relation_keys)
-    """, delta_dir / 'entity_relation_delete.parquet')
-    _copy_query(con, """
-        select null::varchar as source, entity_key
-        from run_affected_entity_keys
-    """, delta_dir / 'entity_evidence_delete.parquet')
-    _copy_query(con, """
-        select relation_id
-        from relation_key_map
-        where relation_key in (select relation_key from run_affected_relation_keys)
-    """, delta_dir / 'relation_annotation_term_delete.parquet')
-
-    _copy_query(con, """
-        select *
-        from entity
-        where entity_key in (select entity_key from run_affected_entity_keys)
-    """, delta_dir / 'entity_upsert.parquet')
-    _copy_query(con, """
-        select *
-        from entity_relation
-        where relation_key in (select relation_key from run_affected_relation_keys)
-    """, delta_dir / 'entity_relation_upsert.parquet')
-    _copy_query(con, """
-        select *
-        from entity_relation_evidence
-        where relation_key in (select relation_key from run_affected_relation_keys)
-    """, delta_dir / 'entity_relation_evidence_upsert.parquet')
-    _copy_query(con, """
-        select *
-        from entity_evidence
-        where entity_key in (select entity_key from run_affected_entity_keys)
-    """, delta_dir / 'entity_evidence_upsert.parquet')
-    annotation_path = latest_dir / 'relation_annotation_term.parquet'
-    _copy_query(con, f"""
-        select rat.*
-        from read_parquet('{_sql_path(annotation_path)}') rat
-        join relation_key_map rkm on rkm.relation_id = rat.relation_id
-        where rkm.relation_key in (select relation_key from run_affected_relation_keys)
-    """, delta_dir / 'relation_annotation_term_upsert.parquet')
+def _column_expr(column: str, existing_columns: set[str], key_column: str, cfg: GoldPartitionConfig) -> str:
+    casts = _column_casts()
+    if column.endswith('_bucket'):
+        return f'stable_bucket(try_cast({key_column} as varchar), {cfg.bucket_count})::bigint as {column}'
+    if column.endswith('_part'):
+        return f'stable_part(try_cast({key_column} as varchar), {cfg.bucket_count}, {cfg.part_count})::bigint as {column}'
+    if column in existing_columns:
+        return f'try_cast({column} as {casts[column]}) as {column}'
+    return _empty_column_expr(column)
 
 
-def _copy_empty_like(
-    con: duckdb.DuckDBPyConnection,
-    schema_name: str,
-    output_path: Path,
-) -> None:
-    schemas = {
-        'entity_delete': 'select null::bigint as entity_id, null::varchar as entity_key where false',
-        'entity_relation_delete': 'select null::bigint as relation_id, null::varchar as relation_key where false',
-        'entity_evidence_delete': 'select null::varchar as source, null::varchar as entity_key where false',
-        'relation_annotation_term_delete': 'select null::bigint as relation_id where false',
+def _empty_source_sql(columns: list[str]) -> str:
+    selected = ', '.join(_empty_column_expr(column) for column in columns)
+    return f'select null::varchar as _source, {selected} where false'
+
+
+def _empty_column_expr(column: str) -> str:
+    typed = {
+        'entity_key': 'null::varchar as entity_key',
+        'canonical_identifier': 'null::varchar as canonical_identifier',
+        'canonical_identifier_type': 'null::varchar as canonical_identifier_type',
+        'identifiers': '[]::struct(identifier varchar, identifier_type varchar)[] as identifiers',
+        'entity_type': 'null::varchar as entity_type',
+        'taxonomy_id': 'null::varchar as taxonomy_id',
+        'entity_attributes': '[]::struct(term varchar, "value" varchar, unit varchar)[] as entity_attributes',
+        'sources': '[]::varchar[] as sources',
+        'entity_bucket': 'null::bigint as entity_bucket',
+        'entity_part': 'null::bigint as entity_part',
+        'source': 'null::varchar as source',
+        'raw_record_id': 'null::varchar as raw_record_id',
+        'raw_record_ids': '[]::varchar[] as raw_record_ids',
+        'relation_key': 'null::varchar as relation_key',
+        'subject_entity_key': 'null::varchar as subject_entity_key',
+        'predicate': 'null::varchar as predicate',
+        'object_entity_key': 'null::varchar as object_entity_key',
+        'relation_category': 'null::varchar as relation_category',
+        'evidence_count': 'null::bigint as evidence_count',
+        'relation_bucket': 'null::bigint as relation_bucket',
+        'relation_part': 'null::bigint as relation_part',
+        'record_attributes': '[]::struct(term varchar, "value" varchar, unit varchar)[] as record_attributes',
+        'subject_attributes': '[]::struct(term varchar, "value" varchar, unit varchar)[] as subject_attributes',
+        'object_attributes': '[]::struct(term varchar, "value" varchar, unit varchar)[] as object_attributes',
+        'evidence': '[]::struct(term varchar, "value" varchar, unit varchar)[] as evidence',
     }
-    _copy_query(con, schemas[schema_name], output_path)
+    return typed[column]
 
 
-def _run_delta_counts(con: duckdb.DuckDBPyConnection, delta_dir: Path) -> dict[str, int]:
-    counts: dict[str, int] = {}
-    for path in sorted(delta_dir.glob('*.parquet')):
-        counts[path.name] = int(con.execute(
-            f"select count(*) from read_parquet('{_sql_path(path)}')"
-        ).fetchone()[0])
-    return counts
+def _column_casts() -> dict[str, str]:
+    return {
+        'entity_key': 'varchar',
+        'canonical_identifier': 'varchar',
+        'canonical_identifier_type': 'varchar',
+        'identifiers': 'struct(identifier varchar, identifier_type varchar)[]',
+        'entity_type': 'varchar',
+        'taxonomy_id': 'varchar',
+        'entity_attributes': 'struct(term varchar, "value" varchar, unit varchar)[]',
+        'sources': 'varchar[]',
+        'entity_bucket': 'bigint',
+        'entity_part': 'bigint',
+        'source': 'varchar',
+        'raw_record_id': 'varchar',
+        'raw_record_ids': 'varchar[]',
+        'relation_key': 'varchar',
+        'subject_entity_key': 'varchar',
+        'predicate': 'varchar',
+        'object_entity_key': 'varchar',
+        'relation_category': 'varchar',
+        'evidence_count': 'bigint',
+        'relation_bucket': 'bigint',
+        'relation_part': 'bigint',
+        'record_attributes': 'struct(term varchar, "value" varchar, unit varchar)[]',
+        'subject_attributes': 'struct(term varchar, "value" varchar, unit varchar)[]',
+        'object_attributes': 'struct(term varchar, "value" varchar, unit varchar)[]',
+        'evidence': 'struct(term varchar, "value" varchar, unit varchar)[]',
+    }
 
 
-def _copy_query(
-    con: duckdb.DuckDBPyConnection,
-    query: str,
-    output_path: Path,
-) -> None:
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    con.execute(
-        f"copy ({query}) to '{_sql_path(output_path)}' (format parquet)"
-    )
+def _read_dataset_sql(path: Path) -> str:
+    if path.is_dir():
+        return f"read_parquet('{_sql_path(path / '**' / '*.parquet')}', union_by_name=true, hive_partitioning=true)"
+    return f"read_parquet('{_sql_path(path)}', union_by_name=true)"
+
+
+def _dataset_columns(con: duckdb.DuckDBPyConnection, path: Path) -> set[str]:
+    try:
+        rows = con.execute(f"describe select * from {_read_dataset_sql(path)} limit 0").fetchall()
+        return {row[0] for row in rows}
+    except Exception:
+        return set()
+
+
+def _first_existing(*paths: Path) -> Path | None:
+    for path in paths:
+        if path.exists():
+            return path
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Incremental helpers.
+# ---------------------------------------------------------------------------
+
+
+def _relation_keys_for_entity_keys(con: duckdb.DuckDBPyConnection, entity_keys: set[str]) -> set[str]:
+    if not entity_keys:
+        return set()
+    _create_key_table(con, 'affected_entity_relation_keys', 'entity_key', entity_keys)
+    rows = con.execute('''
+        select relation_key
+        from entity_relation
+        where subject_entity_key in (select entity_key from affected_entity_relation_keys)
+           or object_entity_key in (select entity_key from affected_entity_relation_keys)
+    ''').fetchall()
+    relation_keys = {row[0] for row in rows if row[0]}
+    if relation_keys:
+        _log(f'incremental: expanded entity keys to relation keys entities={len(entity_keys)} relations={len(relation_keys)}')
+    return relation_keys
+
+
+def _parts_for_keys(keys: set[str], cfg: GoldPartitionConfig) -> set[int]:
+    return {_stable_part_py(key, cfg.bucket_count, cfg.part_count) for key in keys if key is not None}
+
+
+def _create_key_table(con: duckdb.DuckDBPyConnection, table: str, column: str, values: set[str]) -> None:
+    con.execute(f'drop table if exists {table}')
+    con.execute(f'create temp table {table}({column} varchar)')
+    if values:
+        con.executemany(f'insert into {table} values (?)', [(value,) for value in sorted(values)])
+
+
+# ---------------------------------------------------------------------------
+# Misc.
+# ---------------------------------------------------------------------------
 
 
 def _row_counts(con: duckdb.DuckDBPyConnection) -> dict[str, int]:
@@ -1439,10 +1225,7 @@ def _row_counts(con: duckdb.DuckDBPyConnection) -> dict[str, int]:
         'entity_relation_evidence.parquet': 'entity_relation_evidence',
         'entity_evidence.parquet': 'entity_evidence',
     }
-    return {
-        file_name: int(con.execute(f'select count(*) from {table}').fetchone()[0])
-        for file_name, table in tables.items()
-    }
+    return {file_name: int(con.execute(f'select count(*) from {table}').fetchone()[0]) for file_name, table in tables.items()}
 
 
 def _append_build_manifest(
@@ -1451,6 +1234,7 @@ def _append_build_manifest(
     mode: str,
     freeze_monthly: bool,
     row_counts: dict[str, int],
+    cfg: GoldPartitionConfig,
     affected_entities: int = 0,
     affected_relations: int = 0,
     changed_source: str | None = None,
@@ -1465,6 +1249,14 @@ def _append_build_manifest(
         'affected_relations': affected_relations,
         'row_counts': row_counts,
         'engine': 'duckdb',
+        'bucket_algorithm': 'stable_u64_sha256_mod_v1',
+        'bucket_count': cfg.bucket_count,
+        'part_count': cfg.part_count,
+        'min_part_size_bytes': cfg.min_part_size_bytes,
+        'entity_bucket_count': cfg.bucket_count,
+        'entity_part_count': cfg.part_count,
+        'relation_bucket_count': cfg.bucket_count,
+        'relation_part_count': cfg.part_count,
     }
     with manifest_path.open('a', encoding='utf-8') as handle:
         handle.write(json.dumps(entry, sort_keys=True) + '\n')
@@ -1479,8 +1271,8 @@ def _freeze_monthly_snapshot(output_dir: Path, source_dir: Path) -> Path:
     return snapshot_dir
 
 
-def _sql_path(path: Path) -> str:
-    return str(path).replace("'", "''")
+def _new_run_id() -> str:
+    return datetime.now(UTC).strftime('%Y%m%dT%H%M%S%fZ')
 
 
 def _sql_literal(value: str) -> str:

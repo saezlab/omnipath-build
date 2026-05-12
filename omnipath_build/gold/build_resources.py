@@ -30,7 +30,66 @@ def _pypath_data_root() -> Path:
 
 
 def _parquet_rows(path: Path) -> int:
+    if path.is_dir():
+        return sum(
+            int(pq.ParquetFile(file_path).metadata.num_rows)
+            for file_path in _parquet_files(path)
+        )
     return int(pq.ParquetFile(path).metadata.num_rows)
+
+
+def _parquet_files(path: Path) -> list[Path]:
+    if path.is_file():
+        return [path]
+    if path.is_dir():
+        return sorted(child for child in path.rglob('*.parquet') if child.is_file())
+    return []
+
+
+def _resolve_parquet_table_path(*candidates: Path) -> Path | None:
+    expanded: list[Path] = []
+    seen: set[Path] = set()
+    for candidate in candidates:
+        variants = (
+            [candidate.with_suffix(''), candidate]
+            if candidate.suffix == '.parquet' else
+            [candidate, candidate.with_suffix('.parquet')]
+        )
+        for variant in variants:
+            if variant not in seen:
+                expanded.append(variant)
+                seen.add(variant)
+
+    for candidate in expanded:
+        if candidate.is_dir() and _parquet_files(candidate):
+            return candidate
+    for candidate in expanded:
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _gold_table_path(source_dir: Path | None, group_name: str, table_name: str) -> Path | None:
+    if source_dir is None:
+        return None
+    parent_dir = source_dir / group_name
+    return _resolve_parquet_table_path(
+        parent_dir / table_name,
+        parent_dir / f'{table_name}.parquet',
+    )
+
+
+def _polars_parquet_source(path: Path) -> str:
+    if path.is_dir():
+        return str(path / '**' / '*.parquet')
+    return str(path)
+
+
+def _scan_parquet_table(path: Path) -> pl.LazyFrame:
+    return pl.scan_parquet(
+        _polars_parquet_source(path),
+        hive_partitioning=False,
+    )
 
 
 def _collect_subfolders(obj: Any, seen: set[int] | None = None) -> set[str]:
@@ -129,54 +188,65 @@ def _count_file(source_dir: Path | None, relative_path: str) -> int:
     return _parquet_rows(path)
 
 
+def _count_table(source_dir: Path | None, group_name: str, table_name: str) -> int:
+    path = _gold_table_path(source_dir, group_name, table_name)
+    if path is None:
+        return 0
+    return _parquet_rows(path)
+
+
 def _identifier_count(source_dir: Path | None) -> int:
-    if source_dir is None:
+    path = _gold_table_path(source_dir, 'entities', 'entity')
+    if path is None:
         return 0
 
-    path = source_dir / 'entities' / 'entity.parquet'
-    if not path.exists():
+    scan = _scan_parquet_table(path)
+    if 'identifiers' not in scan.collect_schema().names():
         return 0
 
-    entity_frame = pl.read_parquet(path, columns=['canonical_identifier', 'identifiers'])
-    if entity_frame.is_empty():
+    result = scan.select([
+        pl.len().alias('entity_count'),
+        pl.col('identifiers').list.len().fill_null(0).sum().alias('nested_identifier_count'),
+    ]).collect()
+    if result.is_empty():
         return 0
-
-    nested_identifier_count = int(
-        entity_frame
-        .select(pl.col('identifiers').list.len().fill_null(0).sum().alias('identifier_count'))
-        .item()
-        or 0
-    )
-    return int(entity_frame.height + nested_identifier_count)
+    entity_count = int(result.item(0, 'entity_count') or 0)
+    nested_identifier_count = int(result.item(0, 'nested_identifier_count') or 0)
+    return entity_count + nested_identifier_count
 
 
 def _ontology_entity_count(source_dir: Path | None) -> int:
-    if source_dir is None:
+    path = _gold_table_path(source_dir, 'entities', 'entity')
+    if path is None:
         return 0
-    path = source_dir / 'entities' / 'entity.parquet'
-    if not path.exists():
+    scan = _scan_parquet_table(path)
+    if 'entity_type' not in scan.collect_schema().names():
         return 0
-    frame = pl.read_parquet(path, columns=['entity_type'])
-    if frame.is_empty():
-        return 0
-    return int(frame.filter(pl.col('entity_type') == ONTOLOGY_ENTITY_TYPE_LABEL).height)
+    return int(
+        scan
+        .filter(pl.col('entity_type') == ONTOLOGY_ENTITY_TYPE_LABEL)
+        .select(pl.len().alias('count'))
+        .collect()
+        .item(0, 'count')
+        or 0
+    )
 
 
 def _relation_category_counts(source_dir: Path | None) -> dict[str, int]:
-    if source_dir is None:
+    path = _gold_table_path(source_dir, 'relations', 'entity_relation')
+    if path is None:
         return {}
 
-    path = source_dir / 'relations' / 'entity_relation.parquet'
-    if not path.exists():
+    scan = _scan_parquet_table(path)
+    if 'relation_category' not in scan.collect_schema().names():
         return {}
-
-    frame = pl.read_parquet(path, columns=['relation_category'])
+    frame = scan.group_by('relation_category').len().collect()
     if frame.is_empty():
         return {}
 
     return {
         str(category): int(count)
-        for category, count in frame.group_by('relation_category').len().iter_rows()
+        for category, count in frame.iter_rows()
     }
 
 
@@ -218,7 +288,7 @@ def _resource_row(*, source: str, resource: Resource, gold_root: Path) -> dict[s
             ontology_term_count=ontology_term_count,
         ),
         'annotation_ontologies': _ontology_labels(resource),
-        'entity_count': _count_file(source_dir, 'entities/entity.parquet'),
+        'entity_count': _count_table(source_dir, 'entities', 'entity'),
         'interaction_count': interaction_count,
         'association_count': association_count,
         'identifier_count': _identifier_count(source_dir),
@@ -265,6 +335,3 @@ def build_resources_parquet(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     pl.DataFrame(rows).sort('resource_id').write_parquet(output_path)
     return output_path
-
-
-

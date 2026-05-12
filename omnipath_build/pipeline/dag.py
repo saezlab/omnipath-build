@@ -334,6 +334,11 @@ def _plan_pipeline_tasks(
                     'changed_sources': [],
                     'affected_entity_count': 0,
                     'affected_relation_count': 0,
+                    'affected_entity_bucket_count': 0,
+                    'affected_entity_part_count': 0,
+                    'affected_relation_bucket_count': 0,
+                    'affected_relation_part_count': 0,
+                    'affected_gold_delta_artifacts': {},
                 }
                 planned.append(PlannedTask(
                     task.key,
@@ -366,6 +371,11 @@ def _plan_pipeline_tasks(
                 'changed_sources': actual_changed_sources,
                 'affected_entity_count': len(affected.entity_keys) if affected else None,
                 'affected_relation_count': len(affected.relation_keys) if affected else None,
+                'affected_entity_bucket_count': len(affected.entity_buckets) if affected else None,
+                'affected_entity_part_count': len(affected.entity_parts) if affected else None,
+                'affected_relation_bucket_count': len(affected.relation_buckets) if affected else None,
+                'affected_relation_part_count': len(affected.relation_parts) if affected else None,
+                'affected_gold_delta_artifacts': affected.artifact_paths if affected else {},
             }
             if incremental:
                 detail = (
@@ -647,6 +657,15 @@ def _execute_task(
                         'affected_relation_keys': [],
                         'affected_entity_count': 0,
                         'affected_relation_count': 0,
+                        'affected_entity_buckets': [],
+                        'affected_entity_parts': [],
+                        'affected_relation_buckets': [],
+                        'affected_relation_parts': [],
+                        'affected_entity_bucket_count': 0,
+                        'affected_entity_part_count': 0,
+                        'affected_relation_bucket_count': 0,
+                        'affected_relation_part_count': 0,
+                        'affected_gold_delta_artifacts': {},
                     },
                 )
             affected = None
@@ -667,6 +686,8 @@ def _execute_task(
                     f'sources={_format_names(actual_changed_sources)} '
                     f'entities={len(affected.entity_keys)} '
                     f'relations={len(affected.relation_keys)} '
+                    f'entity_parts={len(affected.entity_parts)} '
+                    f'relation_parts={len(affected.relation_parts)} '
                     f'output={combined_output_dir}'
                 )
             metadata = build_combined(
@@ -688,11 +709,30 @@ def _execute_task(
                 'changed_sources': actual_changed_sources,
                 'affected_entity_count': len(affected.entity_keys) if affected else 0,
                 'affected_relation_count': len(affected.relation_keys) if affected else 0,
+                'affected_entity_bucket_count': len(affected.entity_buckets) if affected else 0,
+                'affected_entity_part_count': len(affected.entity_parts) if affected else 0,
+                'affected_relation_bucket_count': len(affected.relation_buckets) if affected else 0,
+                'affected_relation_part_count': len(affected.relation_parts) if affected else 0,
                 'affected_entity_keys': (
                     sorted(affected.entity_keys) if affected else None
                 ),
                 'affected_relation_keys': (
                     sorted(affected.relation_keys) if affected else None
+                ),
+                'affected_entity_buckets': (
+                    sorted(affected.entity_buckets) if affected else None
+                ),
+                'affected_entity_parts': (
+                    sorted(affected.entity_parts) if affected else None
+                ),
+                'affected_relation_buckets': (
+                    sorted(affected.relation_buckets) if affected else None
+                ),
+                'affected_relation_parts': (
+                    sorted(affected.relation_parts) if affected else None
+                ),
+                'affected_gold_delta_artifacts': (
+                    affected.artifact_paths if affected else {}
                 ),
             }
             return TaskResult(
@@ -873,6 +913,11 @@ def _discover_sources_by_capability(inputs_package: str) -> tuple[list[str], lis
 class AffectedKeys:
     entity_keys: set[str]
     relation_keys: set[str]
+    entity_buckets: set[int]
+    entity_parts: set[int]
+    relation_buckets: set[int]
+    relation_parts: set[int]
+    artifact_paths: dict[str, dict[str, str]]
 
 
 def _latest_gold_delta_dir(source_gold_dir: Path) -> Path | None:
@@ -920,6 +965,20 @@ def _read_affected_column(path: Path, column: str) -> set[str]:
     }
 
 
+def _read_affected_int_column(path: Path, column: str) -> set[int]:
+    if not path.exists():
+        return set()
+    scan = pl.scan_parquet(path)
+    if column not in scan.collect_schema().names():
+        return set()
+    frame = scan.select(pl.col(column).cast(pl.Int64)).collect()
+    return {
+        int(value)
+        for value in frame.get_column(column).drop_nulls().unique().to_list()
+        if value is not None
+    }
+
+
 def _gold_delta_scope_available(delta_dir: Path) -> bool:
     manifest_path = delta_dir / 'manifest.json'
     if not manifest_path.exists():
@@ -942,6 +1001,11 @@ def _collect_affected_keys_from_gold_artifacts(
 ) -> AffectedKeys | None:
     entity_keys: set[str] = set()
     relation_keys: set[str] = set()
+    entity_buckets: set[int] = set()
+    entity_parts: set[int] = set()
+    relation_buckets: set[int] = set()
+    relation_parts: set[int] = set()
+    artifact_paths: dict[str, dict[str, str]] = {}
     missing_sources: list[str] = []
 
     for source in changed_sources:
@@ -956,13 +1020,42 @@ def _collect_affected_keys_from_gold_artifacts(
         if not _gold_delta_scope_available(delta_dir):
             missing_sources.append(source)
             continue
+        source_artifacts = {
+            'affected_entity_keys': delta_dir / 'affected_entity_keys.parquet',
+            'affected_entity_buckets': delta_dir / 'affected_entity_buckets.parquet',
+            'affected_entity_parts': delta_dir / 'affected_entity_parts.parquet',
+            'affected_relation_keys': delta_dir / 'affected_relation_keys.parquet',
+            'affected_relation_buckets': delta_dir / 'affected_relation_buckets.parquet',
+            'affected_relation_parts': delta_dir / 'affected_relation_parts.parquet',
+        }
+        artifact_paths[source] = {
+            name: str(path)
+            for name, path in source_artifacts.items()
+            if path.exists()
+        }
         entity_keys.update(_read_affected_column(
-            delta_dir / 'affected_entity_keys.parquet',
+            source_artifacts['affected_entity_keys'],
             'entity_key',
         ))
         relation_keys.update(_read_affected_column(
-            delta_dir / 'affected_relation_keys.parquet',
+            source_artifacts['affected_relation_keys'],
             'relation_key',
+        ))
+        entity_buckets.update(_read_affected_int_column(
+            source_artifacts['affected_entity_buckets'],
+            'entity_bucket',
+        ))
+        entity_parts.update(_read_affected_int_column(
+            source_artifacts['affected_entity_parts'],
+            'entity_part',
+        ))
+        relation_buckets.update(_read_affected_int_column(
+            source_artifacts['affected_relation_buckets'],
+            'relation_bucket',
+        ))
+        relation_parts.update(_read_affected_int_column(
+            source_artifacts['affected_relation_parts'],
+            'relation_part',
         ))
 
     if missing_sources:
@@ -975,6 +1068,11 @@ def _collect_affected_keys_from_gold_artifacts(
     return AffectedKeys(
         entity_keys=entity_keys,
         relation_keys=relation_keys,
+        entity_buckets=entity_buckets,
+        entity_parts=entity_parts,
+        relation_buckets=relation_buckets,
+        relation_parts=relation_parts,
+        artifact_paths=artifact_paths,
     )
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import glob
 import io
 import json
 import time
@@ -10,6 +11,7 @@ from pathlib import Path
 import polars as pl
 import psycopg2
 from psycopg2 import sql
+import pyarrow.dataset as ds
 import pyarrow.parquet as pq
 import psycopg2.extensions
 
@@ -60,16 +62,49 @@ def resolve_combined_dir(output_dir: str | Path) -> Path:
         raise FileNotFoundError(
             f'Combined output directory does not exist: {path}'
         )
-    if (path / 'entity.parquet').exists():
+    if resolve_parquet_artifact(path, 'entity', required=False) is not None:
         return path
     # Try following a 'latest' symlink or directory for combined outputs
     latest = path / 'latest'
     if latest.is_symlink() or latest.is_dir():
         resolved = latest.resolve()
-        if (resolved / 'entity.parquet').exists():
+        if (
+            resolve_parquet_artifact(resolved, 'entity', required=False)
+            is not None
+        ):
             return resolved
     raise FileNotFoundError(
-        f'Combined output directory is missing required artifact: entity.parquet at {path}'
+        'Combined output directory is missing required artifact: '
+        f'entity dataset or entity.parquet at {path}'
+    )
+
+
+def resolve_parquet_artifact(
+    base_dir: str | Path,
+    table_name: str,
+    *,
+    required: bool = True,
+) -> Path | None:
+    base_path = Path(base_dir)
+    table_dir = base_path / table_name
+    if _directory_contains_parquet(table_dir):
+        return table_dir
+
+    table_file = base_path / f'{table_name}.parquet'
+    if table_file.exists():
+        return table_file
+
+    if required:
+        raise FileNotFoundError(
+            f'Missing parquet artifact for {table_name}: '
+            f'expected {table_dir} or {table_file}'
+        )
+    return None
+
+
+def _directory_contains_parquet(path: Path) -> bool:
+    return path.is_dir() and any(
+        child.is_file() for child in path.rglob('*.parquet')
     )
 
 
@@ -255,8 +290,8 @@ def _load_tables_full(
     _truncate_tables(conn, schema)
     _log_step_done(started_at, 'Existing tables truncated')
 
-    parquet_path = combined_dir / 'entity.parquet'
-    if parquet_path.exists():
+    parquet_path = resolve_parquet_artifact(combined_dir, 'entity', required=False)
+    if parquet_path is not None:
         _load_entity_and_identifiers(
             conn,
             schema=schema,
@@ -266,7 +301,11 @@ def _load_tables_full(
 
     _copy_parquet_to_table(
         conn,
-        parquet_path=combined_dir / 'entity_relation.parquet',
+        parquet_path=resolve_parquet_artifact(
+            combined_dir,
+            'entity_relation',
+            required=False,
+        ),
         schema=schema,
         table='entity_relation',
         columns=(
@@ -290,7 +329,11 @@ def _load_tables_full(
     )
     _copy_parquet_to_table(
         conn,
-        parquet_path=combined_dir / 'entity_relation_evidence.parquet',
+        parquet_path=resolve_parquet_artifact(
+            combined_dir,
+            'entity_relation_evidence',
+            required=False,
+        ),
         schema=schema,
         table='entity_relation_evidence',
         columns=(
@@ -314,7 +357,11 @@ def _load_tables_full(
     )
     _copy_parquet_to_table(
         conn,
-        parquet_path=combined_dir / 'entity_evidence.parquet',
+        parquet_path=resolve_parquet_artifact(
+            combined_dir,
+            'entity_evidence',
+            required=False,
+        ),
         schema=schema,
         table='entity_evidence',
         columns=(
@@ -335,7 +382,11 @@ def _load_tables_full(
     )
     _copy_parquet_to_table(
         conn,
-        parquet_path=combined_dir / 'relation_annotation_term.parquet',
+        parquet_path=resolve_parquet_artifact(
+            combined_dir,
+            'relation_annotation_term',
+            required=False,
+        ),
         schema=schema,
         table='relation_annotation_term',
         columns=(
@@ -350,7 +401,11 @@ def _load_tables_full(
     )
     _copy_parquet_to_table(
         conn,
-        parquet_path=combined_dir / 'resources.parquet',
+        parquet_path=resolve_parquet_artifact(
+            combined_dir,
+            'resources',
+            required=False,
+        ),
         schema=schema,
         table='resources',
         columns=(
@@ -384,15 +439,16 @@ def _load_tables_full(
 def _load_entity_and_identifiers(
     conn: psycopg2.extensions.connection,
     schema: str,
-    parquet_path: Path,
+    parquet_path: str | Path,
     batch_size: int,
     filter_keys: list[Any] | None = None,
     key_column: str = 'entity_key',
 ) -> None:
     label = 'filtered entity' if filter_keys is not None else 'entity'
     logger.info(
-        'COPY %s.parquet -> %s.entity and %s.entity_identifier',
+        'COPY %s %s -> %s.entity and %s.entity_identifier',
         label,
+        _parquet_source_label(parquet_path),
         schema,
         schema,
     )
@@ -419,14 +475,19 @@ def _load_entity_and_identifiers(
 
     total_entities = 0
     total_identifiers = 0
-    parquet_file = pq.ParquetFile(parquet_path)
-    expected_entities = parquet_file.metadata.num_rows
+    parquet_dataset = _open_parquet_dataset(parquet_path)
+    expected_entities = parquet_dataset.count_rows()
     started_at = time.monotonic()
     next_log_at = batch_size
+    source_columns = list(dict.fromkeys([*entity_columns, 'identifiers']))
 
     with conn.cursor() as cur:
         for batch_index, batch in enumerate(
-            parquet_file.iter_batches(batch_size=batch_size), start=1
+            parquet_dataset.scanner(
+                batch_size=batch_size,
+                columns=source_columns,
+            ).to_batches(),
+            start=1,
         ):
             df = pl.from_arrow(batch)
             if df.is_empty():
@@ -813,7 +874,7 @@ def _apply_serializers(
 def _copy_parquet_to_table(
     conn: psycopg2.extensions.connection,
     *,
-    parquet_path: Path,
+    parquet_path: str | Path | None,
     schema: str,
     table: str,
     columns: tuple[str, ...],
@@ -822,7 +883,11 @@ def _copy_parquet_to_table(
     filter_column: str | None = None,
     filter_keys: list[str] | None = None,
 ) -> None:
-    if not parquet_path.exists():
+    if parquet_path is None:
+        logger.info('Skipping missing artifact for table: %s', table)
+        return
+
+    if not _parquet_source_exists(parquet_path):
         logger.info('Skipping missing artifact: %s', parquet_path)
         return
 
@@ -831,7 +896,13 @@ def _copy_parquet_to_table(
         return
 
     label = 'filtered' if filter_keys is not None else ''
-    logger.info('COPY %s %s -> %s.%s', label, parquet_path.name, schema, table)
+    logger.info(
+        'COPY %s %s -> %s.%s',
+        label,
+        _parquet_source_label(parquet_path),
+        schema,
+        table,
+    )
     copy_sql = sql.SQL(
         "COPY {}.{} ({}) FROM STDIN WITH (FORMAT CSV, NULL '\\N')"
     ).format(
@@ -841,14 +912,21 @@ def _copy_parquet_to_table(
     )
 
     total_rows = 0
-    parquet_file = pq.ParquetFile(parquet_path)
-    expected_rows = parquet_file.metadata.num_rows
+    parquet_dataset = _open_parquet_dataset(parquet_path)
+    expected_rows = parquet_dataset.count_rows()
     started_at = time.monotonic()
     next_log_at = batch_size
+    source_columns = list(
+        dict.fromkeys([*columns, *([filter_column] if filter_column else [])])
+    )
 
     with conn.cursor() as cur:
         for batch_index, batch in enumerate(
-            parquet_file.iter_batches(batch_size=batch_size), start=1
+            parquet_dataset.scanner(
+                batch_size=batch_size,
+                columns=source_columns,
+            ).to_batches(),
+            start=1,
         ):
             df = pl.from_arrow(batch)
             if df.is_empty():
@@ -894,6 +972,27 @@ def _copy_parquet_to_table(
         table,
         _format_duration(time.monotonic() - started_at),
     )
+
+
+def _parquet_source_exists(source: str | Path) -> bool:
+    if isinstance(source, Path):
+        return source.exists()
+    if glob.has_magic(source):
+        return bool(glob.glob(source, recursive=True))
+    return Path(source).exists()
+
+
+def _parquet_source_label(source: str | Path) -> str:
+    return source.name if isinstance(source, Path) else source
+
+
+def _open_parquet_dataset(source: str | Path) -> ds.Dataset:
+    if isinstance(source, str) and glob.has_magic(source):
+        paths = glob.glob(source, recursive=True)
+        if not paths:
+            raise FileNotFoundError(f'No parquet files matched: {source}')
+        return ds.dataset(paths, format='parquet', partitioning='hive')
+    return ds.dataset(str(source), format='parquet', partitioning='hive')
 
 
 def _serialize_json(value: Any) -> str | None:

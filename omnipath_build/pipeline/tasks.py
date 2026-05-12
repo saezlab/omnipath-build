@@ -32,6 +32,14 @@ from omnipath_build.gold.build_relations import (
     build_relations,
     reduce_relations_from_evidence,
 )
+from omnipath_build.gold.utils.partitioning import (
+    ENTITY_BUCKET_COUNT,
+    ENTITY_PART_COUNT,
+    RELATION_BUCKET_COUNT,
+    RELATION_PART_COUNT,
+    add_entity_partition_columns,
+    add_relation_partition_columns,
+)
 from omnipath_build.pipeline.resource_archives import build_resource_archive
 
 REFERENCE_MAPPING_SOURCES = ['uniprot', *CHEMICAL_SOURCES]
@@ -45,6 +53,9 @@ GOLD_SUCCESS_FILE = '_SUCCESS.json'
 GOLD_DELTA_DIR = '_delta'
 SILVER_STATE_DIR = 'state'
 SILVER_DELTA_DIR = 'delta'
+GOLD_BUCKET_ALGORITHM = 'stable_u64_sha256_mod_v1'
+GOLD_ENTITY_KEY_ALGORITHM = 'sha256_v1'
+GOLD_RELATION_KEY_ALGORITHM = 'sha256_v1'
 
 
 def hash_inputs_module(inputs_package: str, source: str) -> dict[str, Any]:
@@ -294,6 +305,92 @@ def _parquet_row_count(path: Path) -> int:
     if not path.exists():
         return 0
     return int(pq.ParquetFile(path).metadata.num_rows)
+
+
+def _parquet_table_files(path: Path) -> list[Path]:
+    if path.is_file():
+        return [path]
+    if path.is_dir():
+        return sorted(child for child in path.rglob('*.parquet') if child.is_file())
+    return []
+
+
+def _resolve_parquet_table_path(*candidates: Path) -> Path | None:
+    """Resolve a logical table as a partitioned dataset dir or legacy file."""
+    expanded: list[Path] = []
+    seen: set[Path] = set()
+    for candidate in candidates:
+        variants = (
+            [candidate.with_suffix(''), candidate]
+            if candidate.suffix == '.parquet' else
+            [candidate, candidate.with_suffix('.parquet')]
+        )
+        for variant in variants:
+            if variant not in seen:
+                expanded.append(variant)
+                seen.add(variant)
+
+    for candidate in expanded:
+        if candidate.is_dir() and _parquet_table_files(candidate):
+            return candidate
+    for candidate in expanded:
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _gold_subtable_path(parent_dir: Path, table_name: str) -> Path | None:
+    return _resolve_parquet_table_path(
+        parent_dir / table_name,
+        parent_dir / f'{table_name}.parquet',
+    )
+
+
+def _gold_table_path(output_dir: Path, group_name: str, table_name: str) -> Path | None:
+    return _gold_subtable_path(output_dir / group_name, table_name)
+
+
+def _require_parquet_table_path(path: Path | None, description: str) -> Path:
+    if path is None:
+        raise FileNotFoundError(f'missing parquet table: {description}')
+    return path
+
+
+def _polars_parquet_source(path: Path) -> str:
+    if path.is_dir():
+        return str(path / '**' / '*.parquet')
+    return str(path)
+
+
+def _read_parquet_table(path: Path, *, columns: list[str] | None = None) -> pl.DataFrame:
+    return pl.read_parquet(
+        _polars_parquet_source(path),
+        columns=columns,
+        hive_partitioning=False,
+    )
+
+
+def _scan_parquet_table(path: Path) -> pl.LazyFrame:
+    return pl.scan_parquet(
+        _polars_parquet_source(path),
+        hive_partitioning=False,
+    )
+
+
+def _copy_parquet_table(source_path: Path, target_dir: Path, table_name: str) -> None:
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target_dataset = target_dir / table_name
+    target_file = target_dir / f'{table_name}.parquet'
+    for target in (target_dataset, target_file):
+        if target.is_dir():
+            shutil.rmtree(target)
+        elif target.exists():
+            target.unlink()
+
+    if source_path.is_dir():
+        shutil.copytree(source_path, target_dataset)
+    else:
+        shutil.copy2(source_path, target_file)
 
 
 def _quote_identifier(value: str) -> str:
@@ -623,27 +720,43 @@ def _empty_affected_key_frame(key_column: str) -> pl.DataFrame:
     return _empty_string_frame(['source', key_column, 'change_type', 'reason'])
 
 
-def _entity_keys_for_raw_records(path: Path, raw_record_ids: set[str]) -> set[str]:
-    if not path.exists() or not raw_record_ids:
+def _parquet_scan(path: Path | None) -> pl.LazyFrame | None:
+    if path is None:
+        return None
+    resolved_path = _resolve_parquet_table_path(path)
+    if resolved_path is not None:
+        return _scan_parquet_table(resolved_path)
+    return None
+
+
+def _entity_keys_for_raw_records(path: Path | None, raw_record_ids: set[str]) -> set[str]:
+    if not raw_record_ids:
         return set()
-    frame = pl.read_parquet(path)
-    if 'entity_key' not in frame.columns or 'raw_record_id' not in frame.columns:
+    scan = _parquet_scan(path)
+    if scan is None:
+        return set()
+    schema_names = scan.collect_schema().names()
+    if 'entity_key' not in schema_names or 'raw_record_id' not in schema_names:
         return set()
     scoped = (
-        frame
+        scan
         .select(['entity_key', 'raw_record_id'])
         .filter(pl.col('raw_record_id').cast(pl.String).is_in(sorted(raw_record_ids)))
+        .collect()
     )
     return _string_values(scoped, 'entity_key')
 
 
-def _relation_keys_for_raw_records(path: Path, raw_record_ids: set[str]) -> set[str]:
-    if not path.exists() or not raw_record_ids:
+def _relation_keys_for_raw_records(path: Path | None, raw_record_ids: set[str]) -> set[str]:
+    if not raw_record_ids:
         return set()
-    frame = pl.read_parquet(path)
-    if 'relation_key' not in frame.columns or 'raw_record_id' not in frame.columns:
+    scan = _parquet_scan(path)
+    if scan is None:
         return set()
-    scoped = frame.filter(pl.col('raw_record_id').cast(pl.String).is_in(sorted(raw_record_ids)))
+    schema_names = scan.collect_schema().names()
+    if 'relation_key' not in schema_names or 'raw_record_id' not in schema_names:
+        return set()
+    scoped = scan.filter(pl.col('raw_record_id').cast(pl.String).is_in(sorted(raw_record_ids))).collect()
     return _string_values(scoped, 'relation_key')
 
 
@@ -681,13 +794,13 @@ def _write_gold_scope_artifacts(
 def _current_gold_key_frame(
     *,
     source: str,
-    path: Path,
+    path: Path | None,
     key_column: str,
     reason: str,
 ) -> pl.DataFrame:
-    if not path.exists():
+    scan = _parquet_scan(path)
+    if scan is None:
         return _empty_affected_key_frame(key_column)
-    scan = pl.scan_parquet(path)
     if key_column not in scan.collect_schema().names():
         return _empty_affected_key_frame(key_column)
     keys = (
@@ -705,6 +818,135 @@ def _current_gold_key_frame(
         keys={key for key in keys if key},
         reason=reason,
     )
+
+
+def _empty_affected_partition_frame(partition_column: str) -> pl.DataFrame:
+    return pl.DataFrame({
+        'source': pl.Series([], dtype=pl.String),
+        partition_column: pl.Series([], dtype=pl.Int64),
+        'affected_key_count': pl.Series([], dtype=pl.Int64),
+        'reason': pl.Series([], dtype=pl.String),
+    })
+
+
+def _affected_partition_frames(
+    affected_keys: pl.DataFrame,
+    *,
+    key_column: str,
+    bucket_column: str,
+    part_column: str,
+    add_partition_columns: Any,
+) -> tuple[pl.DataFrame, pl.DataFrame]:
+    if affected_keys.is_empty() or key_column not in affected_keys.columns:
+        return (
+            _empty_affected_partition_frame(bucket_column),
+            _empty_affected_partition_frame(part_column),
+        )
+
+    partitioned = add_partition_columns(affected_keys)
+    reason_expr = (
+        pl.col('reason').cast(pl.String)
+        if 'reason' in partitioned.columns else
+        pl.lit('').alias('reason')
+    )
+    source_expr = (
+        pl.col('source').cast(pl.String)
+        if 'source' in partitioned.columns else
+        pl.lit('').alias('source')
+    )
+    partitioned = (
+        partitioned
+        .select([
+            source_expr.alias('source'),
+            pl.col(key_column).cast(pl.String).alias(key_column),
+            pl.col(bucket_column).cast(pl.Int64).alias(bucket_column),
+            pl.col(part_column).cast(pl.Int64).alias(part_column),
+            reason_expr.alias('reason'),
+        ])
+        .filter(
+            pl.col(key_column).is_not_null()
+            & (pl.col(key_column) != '')
+            & pl.col(bucket_column).is_not_null()
+            & pl.col(part_column).is_not_null()
+        )
+    )
+    if partitioned.is_empty():
+        return (
+            _empty_affected_partition_frame(bucket_column),
+            _empty_affected_partition_frame(part_column),
+        )
+
+    buckets = (
+        partitioned
+        .group_by(['source', bucket_column, 'reason'])
+        .agg(pl.col(key_column).n_unique().cast(pl.Int64).alias('affected_key_count'))
+        .sort(['source', bucket_column, 'reason'])
+    )
+    parts = (
+        partitioned
+        .group_by(['source', part_column, 'reason'])
+        .agg(pl.col(key_column).n_unique().cast(pl.Int64).alias('affected_key_count'))
+        .sort(['source', part_column, 'reason'])
+    )
+    return buckets, parts
+
+
+def _write_affected_partition_artifacts(
+    *,
+    delta_dir: Path,
+    affected_entities: pl.DataFrame,
+    affected_relations: pl.DataFrame,
+) -> dict[str, Any]:
+    entity_buckets, entity_parts = _affected_partition_frames(
+        affected_entities,
+        key_column='entity_key',
+        bucket_column='entity_bucket',
+        part_column='entity_part',
+        add_partition_columns=add_entity_partition_columns,
+    )
+    relation_buckets, relation_parts = _affected_partition_frames(
+        affected_relations,
+        key_column='relation_key',
+        bucket_column='relation_bucket',
+        part_column='relation_part',
+        add_partition_columns=add_relation_partition_columns,
+    )
+
+    entity_buckets_path = delta_dir / 'affected_entity_buckets.parquet'
+    entity_parts_path = delta_dir / 'affected_entity_parts.parquet'
+    relation_buckets_path = delta_dir / 'affected_relation_buckets.parquet'
+    relation_parts_path = delta_dir / 'affected_relation_parts.parquet'
+    entity_buckets.write_parquet(entity_buckets_path)
+    entity_parts.write_parquet(entity_parts_path)
+    relation_buckets.write_parquet(relation_buckets_path)
+    relation_parts.write_parquet(relation_parts_path)
+
+    def unique_count(frame: pl.DataFrame, column: str) -> int:
+        if column not in frame.columns:
+            return 0
+        return int(frame.get_column(column).drop_nulls().n_unique())
+
+    return {
+        'entity_key_algorithm': GOLD_ENTITY_KEY_ALGORITHM,
+        'relation_key_algorithm': GOLD_RELATION_KEY_ALGORITHM,
+        'bucket_algorithm': GOLD_BUCKET_ALGORITHM,
+        'entity_bucket_count': ENTITY_BUCKET_COUNT,
+        'entity_part_count': ENTITY_PART_COUNT,
+        'relation_bucket_count': RELATION_BUCKET_COUNT,
+        'relation_part_count': RELATION_PART_COUNT,
+        'affected_entity_bucket_count': unique_count(entity_buckets, 'entity_bucket'),
+        'affected_entity_part_count': unique_count(entity_parts, 'entity_part'),
+        'affected_relation_bucket_count': unique_count(relation_buckets, 'relation_bucket'),
+        'affected_relation_part_count': unique_count(relation_parts, 'relation_part'),
+        'delta_artifacts': {
+            'affected_entity_keys': 'affected_entity_keys.parquet',
+            'affected_entity_buckets': entity_buckets_path.name,
+            'affected_entity_parts': entity_parts_path.name,
+            'affected_relation_keys': 'affected_relation_keys.parquet',
+            'affected_relation_buckets': relation_buckets_path.name,
+            'affected_relation_parts': relation_parts_path.name,
+        },
+    }
 
 
 def _derive_gold_key_scope_from_silver_delta(
@@ -748,10 +990,10 @@ def _derive_gold_key_scope_from_silver_delta(
         )
         return None, None, _empty_affected_key_frame('entity_key'), _empty_affected_key_frame('relation_key'), scope_metadata
 
-    previous_entity_path = previous_dir / 'entities' / 'entity_evidence.parquet'
-    current_entity_path = staged_dir / 'entities' / 'entity_evidence.parquet'
-    previous_relation_path = previous_dir / 'relations' / 'entity_relation_evidence.parquet'
-    current_relation_path = staged_dir / 'relations' / 'entity_relation_evidence.parquet'
+    previous_entity_path = _gold_table_path(previous_dir, 'entities', 'entity_evidence')
+    current_entity_path = _gold_table_path(staged_dir, 'entities', 'entity_evidence')
+    previous_relation_path = _gold_table_path(previous_dir, 'relations', 'entity_relation_evidence')
+    current_relation_path = _gold_table_path(staged_dir, 'relations', 'entity_relation_evidence')
 
     entity_keys = set()
     entity_keys.update(_entity_keys_for_raw_records(previous_entity_path, raw_record_ids))
@@ -802,13 +1044,13 @@ def _write_gold_delta_artifacts(
         reason = 'source_first_build'
         affected_entities = _current_gold_key_frame(
             source=source,
-            path=staged_dir / 'entities' / 'entity.parquet',
+            path=_gold_table_path(staged_dir, 'entities', 'entity'),
             key_column='entity_key',
             reason=reason,
         )
         affected_relations = _current_gold_key_frame(
             source=source,
-            path=staged_dir / 'relations' / 'entity_relation.parquet',
+            path=_gold_table_path(staged_dir, 'relations', 'entity_relation'),
             key_column='relation_key',
             reason=reason,
         )
@@ -819,6 +1061,11 @@ def _write_gold_delta_artifacts(
         )
         affected_entities.write_parquet(delta_dir / 'affected_entity_keys.parquet')
         affected_relations.write_parquet(delta_dir / 'affected_relation_keys.parquet')
+        partition_metadata = _write_affected_partition_artifacts(
+            delta_dir=delta_dir,
+            affected_entities=affected_entities,
+            affected_relations=affected_relations,
+        )
 
         manifest = {
             'layer': 'gold',
@@ -835,6 +1082,7 @@ def _write_gold_delta_artifacts(
             if 'entity_key' in affected_entities.columns else 0,
             'affected_relation_count': int(affected_relations['relation_key'].n_unique())
             if 'relation_key' in affected_relations.columns else 0,
+            **partition_metadata,
             'delta_counts': {
                 'entity_delta.parquet': 0,
                 'entity_relation_delta.parquet': 0,
@@ -882,6 +1130,11 @@ def _write_gold_delta_artifacts(
 
     affected_entities.write_parquet(delta_dir / 'affected_entity_keys.parquet')
     affected_relations.write_parquet(delta_dir / 'affected_relation_keys.parquet')
+    partition_metadata = _write_affected_partition_artifacts(
+        delta_dir=delta_dir,
+        affected_entities=affected_entities,
+        affected_relations=affected_relations,
+    )
 
     manifest = {
         'layer': 'gold',
@@ -898,6 +1151,7 @@ def _write_gold_delta_artifacts(
         if 'entity_key' in affected_entities.columns else 0,
         'affected_relation_count': int(affected_relations['relation_key'].n_unique())
         if 'relation_key' in affected_relations.columns else 0,
+        **partition_metadata,
         'delta_counts': {
             'entity_delta.parquet': 0,
             'entity_relation_delta.parquet': 0,
@@ -919,15 +1173,13 @@ def _write_gold_delta_artifacts(
 
 
 def gold_output_ready(output_dir: Path) -> bool:
-    entities_dir = output_dir / 'entities'
-    relations_dir = output_dir / 'relations'
     success_path = output_dir / GOLD_SUCCESS_FILE
     return (
         success_path.exists()
-        and (entities_dir / 'entity.parquet').exists()
-        and (entities_dir / 'entity_map.parquet').exists()
+        and _gold_table_path(output_dir, 'entities', 'entity') is not None
+        and _gold_table_path(output_dir, 'entities', 'entity_map') is not None
         and _parquet_has_columns(
-            entities_dir / 'entity_evidence.parquet',
+            _gold_table_path(output_dir, 'entities', 'entity_evidence'),
             {
                 'source',
                 'entity_key',
@@ -939,7 +1191,7 @@ def gold_output_ready(output_dir: Path) -> bool:
             },
         )
         and _parquet_has_columns(
-            relations_dir / 'entity_relation_evidence.parquet',
+            _gold_table_path(output_dir, 'relations', 'entity_relation_evidence'),
             {
                 'relation_key',
                 'subject_entity_key',
@@ -953,11 +1205,11 @@ def gold_output_ready(output_dir: Path) -> bool:
     )
 
 
-def _parquet_has_columns(path: Path, columns: set[str]) -> bool:
-    if not path.exists():
+def _parquet_has_columns(path: Path | None, columns: set[str]) -> bool:
+    if path is None:
         return False
     try:
-        schema = pl.scan_parquet(path).collect_schema()
+        schema = _scan_parquet_table(path).collect_schema()
     except (OSError, pl.exceptions.PolarsError):
         return False
     return columns.issubset(set(schema.names()))
@@ -1011,18 +1263,37 @@ def _build_gold_source_incremental(
         output_dir=changed_entities_dir,
         source_name=source,
     )
+    changed_entity_map_path = _require_parquet_table_path(
+        _gold_subtable_path(changed_entities_dir, 'entity_map'),
+        f'{changed_entities_dir}/entity_map',
+    )
     relation_summary = build_relations(
         silver_dir=changed_silver_dir,
-        entity_map_path=changed_entities_dir / 'entity_map.parquet',
+        entity_map_path=changed_entity_map_path,
         output_dir=changed_relations_dir,
         source_name=source,
     )
 
-    previous_entity_evidence = pl.read_parquet(output_dir / 'entities' / 'entity_evidence.parquet')
-    previous_relation_evidence = pl.read_parquet(output_dir / 'relations' / 'entity_relation_evidence.parquet')
-    changed_entity_evidence = pl.read_parquet(changed_entities_dir / 'entity_evidence.parquet')
-    changed_relation_evidence = pl.read_parquet(changed_relations_dir / 'entity_relation_evidence.parquet')
-    previous_entities = pl.read_parquet(output_dir / 'entities' / 'entity.parquet')
+    previous_entity_evidence = _read_parquet_table(_require_parquet_table_path(
+        _gold_table_path(output_dir, 'entities', 'entity_evidence'),
+        f'{output_dir}/entities/entity_evidence',
+    ))
+    previous_relation_evidence = _read_parquet_table(_require_parquet_table_path(
+        _gold_table_path(output_dir, 'relations', 'entity_relation_evidence'),
+        f'{output_dir}/relations/entity_relation_evidence',
+    ))
+    changed_entity_evidence = _read_parquet_table(_require_parquet_table_path(
+        _gold_subtable_path(changed_entities_dir, 'entity_evidence'),
+        f'{changed_entities_dir}/entity_evidence',
+    ))
+    changed_relation_evidence = _read_parquet_table(_require_parquet_table_path(
+        _gold_subtable_path(changed_relations_dir, 'entity_relation_evidence'),
+        f'{changed_relations_dir}/entity_relation_evidence',
+    ))
+    previous_entities = _read_parquet_table(_require_parquet_table_path(
+        _gold_table_path(output_dir, 'entities', 'entity'),
+        f'{output_dir}/entities/entity',
+    ))
 
     original_changed_entity_evidence = changed_entity_evidence
     previous_identity = (
@@ -1113,10 +1384,10 @@ def _build_gold_source_incremental(
     merged_entity_evidence.write_parquet(entities_dir / 'entity_evidence.parquet')
     merged_entities.write_parquet(entities_dir / 'entity.parquet')
 
-    changed_entity_key_map = changed_entities_dir / 'entity_map.parquet'
-    if changed_entity_key_map.exists():
+    changed_entity_key_map = _gold_subtable_path(changed_entities_dir, 'entity_map')
+    if changed_entity_key_map is not None:
         changed_map = (
-            pl.read_parquet(changed_entity_key_map)
+            _read_parquet_table(changed_entity_key_map)
             .join(
                 changed_entities.select(['entity_pk', 'entity_key']),
                 on='entity_pk',
@@ -1125,7 +1396,10 @@ def _build_gold_source_incremental(
             .join(merged_entities.select(['entity_key', 'entity_pk']), on='entity_key', how='inner')
             .select(['_fingerprint', 'entity_pk'])
         )
-        previous_map = pl.read_parquet(output_dir / 'entities' / 'entity_map.parquet')
+        previous_map = _read_parquet_table(_require_parquet_table_path(
+            _gold_table_path(output_dir, 'entities', 'entity_map'),
+            f'{output_dir}/entities/entity_map',
+        ))
         merged_map = (
             previous_map
             .join(changed_map.select('_fingerprint'), on='_fingerprint', how='anti')
@@ -1134,12 +1408,15 @@ def _build_gold_source_incremental(
         )
         merged_map.write_parquet(entities_dir / 'entity_map.parquet')
     else:
-        shutil.copy2(output_dir / 'entities' / 'entity_map.parquet', entities_dir / 'entity_map.parquet')
+        _copy_parquet_table(_require_parquet_table_path(
+            _gold_table_path(output_dir, 'entities', 'entity_map'),
+            f'{output_dir}/entities/entity_map',
+        ), entities_dir, 'entity_map')
 
-    changed_occurrence_map = changed_entities_dir / 'entity_occurrence_map.parquet'
-    if changed_occurrence_map.exists():
+    changed_occurrence_map = _gold_subtable_path(changed_entities_dir, 'entity_occurrence_map')
+    if changed_occurrence_map is not None:
         changed_occ = (
-            pl.read_parquet(changed_occurrence_map)
+            _read_parquet_table(changed_occurrence_map)
             .join(
                 changed_entities.select(['entity_pk', 'entity_key']),
                 on='entity_pk',
@@ -1148,7 +1425,10 @@ def _build_gold_source_incremental(
             .join(merged_entities.select(['entity_key', 'entity_pk']), on='entity_key', how='inner')
             .select(['occurrence_id', '_fingerprint', 'entity_pk'])
         )
-        previous_occ = pl.read_parquet(output_dir / 'entities' / 'entity_occurrence_map.parquet')
+        previous_occ = _read_parquet_table(_require_parquet_table_path(
+            _gold_table_path(output_dir, 'entities', 'entity_occurrence_map'),
+            f'{output_dir}/entities/entity_occurrence_map',
+        ))
         merged_occ = (
             previous_occ
             .join(changed_occ.select('occurrence_id'), on='occurrence_id', how='anti')
@@ -1157,10 +1437,10 @@ def _build_gold_source_incremental(
         )
         merged_occ.write_parquet(entities_dir / 'entity_occurrence_map.parquet')
     else:
-        shutil.copy2(
-            output_dir / 'entities' / 'entity_occurrence_map.parquet',
-            entities_dir / 'entity_occurrence_map.parquet',
-        )
+        _copy_parquet_table(_require_parquet_table_path(
+            _gold_table_path(output_dir, 'entities', 'entity_occurrence_map'),
+            f'{output_dir}/entities/entity_occurrence_map',
+        ), entities_dir, 'entity_occurrence_map')
 
     for extra in ('canonicalization_report.md', 'canonicalization_summary.json'):
         source_extra = output_dir / 'entities' / extra
@@ -1174,7 +1454,10 @@ def _build_gold_source_incremental(
         [kept_relation_evidence, changed_relation_evidence],
         how='diagonal_relaxed',
     )
-    previous_relations = pl.read_parquet(output_dir / 'relations' / 'entity_relation.parquet')
+    previous_relations = _read_parquet_table(_require_parquet_table_path(
+        _gold_table_path(output_dir, 'relations', 'entity_relation'),
+        f'{output_dir}/relations/entity_relation',
+    ))
     merged_relations = reduce_relations_from_evidence(
         merged_relation_evidence,
         entity_pk_map=merged_entities.select(['entity_key', 'entity_pk']),
@@ -1280,8 +1563,8 @@ def build_gold_source(
                 source_name=source,
             )
 
-            entity_map_path = entities_dir / 'entity_map.parquet'
-            if not entity_map_path.exists():
+            entity_map_path = _gold_subtable_path(entities_dir, 'entity_map')
+            if entity_map_path is None:
                 return {
                     'output_dir': str(output_dir),
                     'entities_dir': str(output_dir / 'entities'),

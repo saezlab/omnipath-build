@@ -7,6 +7,13 @@ from pathlib import Path
 import polars as pl
 
 from omnipath_build.gold.combine import build_combined
+from omnipath_build.gold.utils.partitioning import (
+    ENTITY_PART_COUNT,
+    RELATION_PART_COUNT,
+    add_entity_partition_columns,
+    add_relation_partition_columns,
+    write_part_dataset,
+)
 from omnipath_build.postgres import load_combined_schema_to_postgres
 
 POSTGRES_URI = 'postgresql://omnipath:omnipath@localhost:55432/omnipath'
@@ -32,7 +39,15 @@ def create_test_gold_data(gold_root: Path, entity_type: str = 'protein') -> None
         'entity_attributes': [None, None],
         'sources': [['test_source'], ['test_source']],
     })
-    entity_df.write_parquet(entities_dir / 'entity.parquet')
+    entity_df = add_entity_partition_columns(entity_df)
+    write_part_dataset(
+        entity_df,
+        entities_dir / 'entity',
+        part_col='entity_part',
+        bucket_col='entity_bucket',
+        key_col='entity_key',
+        part_count=ENTITY_PART_COUNT,
+    )
 
     entity_evidence_df = pl.DataFrame({
         'source': ['test_source', 'test_source'],
@@ -43,7 +58,15 @@ def create_test_gold_data(gold_root: Path, entity_type: str = 'protein') -> None
         'identifiers': [None, None],
         'entity_attributes': [None, None],
     })
-    entity_evidence_df.write_parquet(entities_dir / 'entity_evidence.parquet')
+    entity_evidence_df = add_entity_partition_columns(entity_evidence_df)
+    write_part_dataset(
+        entity_evidence_df,
+        entities_dir / 'entity_evidence',
+        part_col='entity_part',
+        bucket_col='entity_bucket',
+        key_col='entity_key',
+        part_count=ENTITY_PART_COUNT,
+    )
 
     relation_df = pl.DataFrame({
         'relation_pk': [1],
@@ -57,7 +80,15 @@ def create_test_gold_data(gold_root: Path, entity_type: str = 'protein') -> None
         'evidence_count': [1],
         'sources': [['test_source']],
     })
-    relation_df.write_parquet(relations_dir / 'entity_relation.parquet')
+    relation_df = add_relation_partition_columns(relation_df)
+    write_part_dataset(
+        relation_df,
+        relations_dir / 'entity_relation',
+        part_col='relation_part',
+        bucket_col='relation_bucket',
+        key_col='relation_key',
+        part_count=RELATION_PART_COUNT,
+    )
 
     record_attrs = pl.Series(
         [[{'term': None, 'value': None, 'unit': None}]],
@@ -90,7 +121,15 @@ def create_test_gold_data(gold_root: Path, entity_type: str = 'protein') -> None
             pl.Field('unit', pl.String),
         ]))),
     })
-    relation_evidence_df.write_parquet(relations_dir / 'entity_relation_evidence.parquet')
+    relation_evidence_df = add_relation_partition_columns(relation_evidence_df)
+    write_part_dataset(
+        relation_evidence_df,
+        relations_dir / 'entity_relation_evidence',
+        part_col='relation_part',
+        bucket_col='relation_bucket',
+        key_col='relation_key',
+        part_count=RELATION_PART_COUNT,
+    )
 
 
 def query_bitmaps(postgres_uri: str, schema: str = 'public') -> dict:
@@ -175,7 +214,15 @@ def run_test():
             'sources': [['test_source'], ['test_source'], ['test_source']],
         })
         source_dir = gold_root / 'test_source'
-        entity_df.write_parquet(source_dir / 'entities' / 'entity.parquet')
+        entity_df = add_entity_partition_columns(entity_df)
+        write_part_dataset(
+            entity_df,
+            source_dir / 'entities' / 'entity',
+            part_col='entity_part',
+            bucket_col='entity_bucket',
+            key_col='entity_key',
+            part_count=ENTITY_PART_COUNT,
+        )
 
         # Update evidence too
         entity_evidence_df = pl.DataFrame({
@@ -187,7 +234,15 @@ def run_test():
             'identifiers': [None, None, None],
             'entity_attributes': [None, None, None],
         })
-        entity_evidence_df.write_parquet(source_dir / 'entities' / 'entity_evidence.parquet')
+        entity_evidence_df = add_entity_partition_columns(entity_evidence_df)
+        write_part_dataset(
+            entity_evidence_df,
+            source_dir / 'entities' / 'entity_evidence',
+            part_col='entity_part',
+            bucket_col='entity_bucket',
+            key_col='entity_key',
+            part_count=ENTITY_PART_COUNT,
+        )
 
         # Add a new relation
         relation_df = pl.DataFrame({
@@ -202,7 +257,15 @@ def run_test():
             'evidence_count': [1, 1],
             'sources': [['test_source'], ['test_source']],
         })
-        relation_df.write_parquet(source_dir / 'relations' / 'entity_relation.parquet')
+        relation_df = add_relation_partition_columns(relation_df)
+        write_part_dataset(
+            relation_df,
+            source_dir / 'relations' / 'entity_relation',
+            part_col='relation_part',
+            bucket_col='relation_bucket',
+            key_col='relation_key',
+            part_count=RELATION_PART_COUNT,
+        )
 
         record_attrs = pl.Series(
             [[{'term': None, 'value': None, 'unit': None}],
@@ -232,7 +295,15 @@ def run_test():
             'object_attributes': empty_attrs,
             'evidence': empty_attrs,
         })
-        relation_evidence_df.write_parquet(source_dir / 'relations' / 'entity_relation_evidence.parquet')
+        relation_evidence_df = add_relation_partition_columns(relation_evidence_df)
+        write_part_dataset(
+            relation_evidence_df,
+            source_dir / 'relations' / 'entity_relation_evidence',
+            part_col='relation_part',
+            bucket_col='relation_bucket',
+            key_col='relation_key',
+            part_count=RELATION_PART_COUNT,
+        )
 
         print("=== STEP 6: Incremental combine ===")
         build_combined(
@@ -250,9 +321,6 @@ def run_test():
             schema='public',
             drop_existing=False,
             batch_size=10_000,
-            affected_entity_keys=['key1', 'key3'],
-            affected_relation_keys=['rel1', 'rel2'],
-            changed_source='test_source',
         )
 
         print("=== STEP 8: Verify updated bitmaps ===")
