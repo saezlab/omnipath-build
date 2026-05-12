@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import sys
-import json
 from typing import Optional
 import logging
 from pathlib import Path
@@ -113,6 +112,10 @@ def _handle_pipeline(args: argparse.Namespace) -> int:
         '--combine-relation-batch-size',
         str(args.combine_relation_batch_size),
     ])
+    argv.extend([
+        '--combine-min-part-size-mb',
+        str(args.combine_min_part_size_mb),
+    ])
     postgres_uri = getattr(args, 'postgres_uri', None)
     if postgres_uri is not None:
         argv.extend(['--postgres-uri', postgres_uri])
@@ -123,6 +126,10 @@ def _handle_pipeline(args: argparse.Namespace) -> int:
         argv.append('--postgres-drop-existing')
     if getattr(args, 'yes', False):
         argv.append('--yes')
+    argv.extend([
+        '--memory-sample-interval-seconds',
+        str(args.memory_sample_interval_seconds),
+    ])
     try:
         return pipeline_main(argv)
     except Exception as exc:  # noqa: BLE001
@@ -145,12 +152,6 @@ def _handle_combined(args: argparse.Namespace) -> int:
         output_dir = project_root / output_dir
 
     try:
-        affected_entity_keys: set[str] | None = None
-        affected_relation_keys: set[str] | None = None
-        if args.affected_entities is not None:
-            affected_entity_keys = set(json.loads(args.affected_entities.read_text()))
-        if args.affected_relations is not None:
-            affected_relation_keys = set(json.loads(args.affected_relations.read_text()))
         partition_config = GoldPartitionConfig(
             bucket_count=args.bucket_count,
             part_count=args.part_count,
@@ -158,13 +159,13 @@ def _handle_combined(args: argparse.Namespace) -> int:
             duckdb_memory_limit=args.duckdb_memory_limit,
             duckdb_threads=args.duckdb_threads,
             duckdb_max_temp_directory_size=args.duckdb_max_temp_directory_size,
-            duckdb_partitioned_write_max_open_files=args.duckdb_partitioned_write_max_open_files,
-        )
+        duckdb_partitioned_write_max_open_files=args.duckdb_partitioned_write_max_open_files,
+    )
         build_combined(
             gold_root=gold_root,
             output_dir=output_dir,
-            affected_entity_keys=affected_entity_keys,
-            affected_relation_keys=affected_relation_keys,
+            affected_entity_key_paths=args.affected_entities,
+            affected_relation_key_paths=args.affected_relations,
             freeze_monthly=args.freeze_monthly,
             changed_source=args.changed_source,
             entity_batch_size=args.entity_batch_size,
@@ -354,6 +355,12 @@ def _build_parser() -> argparse.ArgumentParser:
             help='Number of relation keys per DuckDB combine batch.',
         )
         command_parser.add_argument(
+            '--combine-min-part-size-mb',
+            type=int,
+            default=100,
+            help='Target minimum combine part size in MiB before creating another part.',
+        )
+        command_parser.add_argument(
             '--postgres-uri',
             type=str,
             default=None,
@@ -375,6 +382,12 @@ def _build_parser() -> argparse.ArgumentParser:
             '--yes',
             action='store_true',
             help='Execute the printed plan without waiting for Enter.',
+        )
+        command_parser.add_argument(
+            '--memory-sample-interval-seconds',
+            type=float,
+            default=5.0,
+            help='Interval for phase-aware RSS memory samples (default: 5 seconds).',
         )
         command_parser.set_defaults(handler=_handle_pipeline)
 
@@ -404,13 +417,15 @@ def _build_parser() -> argparse.ArgumentParser:
         '--affected-entities',
         type=Path,
         default=None,
-        help='Path to JSON file with list of affected entity_keys.',
+        action='append',
+        help='Path to parquet file with affected entity_key rows. Repeat for multiple sources.',
     )
     combined_parser.add_argument(
         '--affected-relations',
         type=Path,
         default=None,
-        help='Path to JSON file with list of affected relation_keys.',
+        action='append',
+        help='Path to parquet file with affected relation_key rows. Repeat for multiple sources.',
     )
     combined_parser.add_argument(
         '--freeze-monthly',
@@ -453,7 +468,7 @@ def _build_parser() -> argparse.ArgumentParser:
     combined_parser.add_argument(
         '--min-part-size-mb',
         type=int,
-        default=200,
+        default=100,
         help='Target minimum physical Parquet part size in MiB before creating another part.',
     )
     combined_parser.add_argument(

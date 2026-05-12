@@ -9,6 +9,7 @@ from pathlib import Path
 from datetime import UTC, datetime
 import tempfile
 import importlib.util
+from dataclasses import dataclass
 
 import duckdb
 import pyarrow.parquet as pq
@@ -19,18 +20,21 @@ from omnipath_build.silver.tables import (
     SILVER_TABLE_SCHEMAS,
     has_raw_keyed_silver_tables,
 )
-from omnipath_build.gold.utils.keys import compute_relation_key
 from id_resolver.build.mapping_tables import (
     CHEMICAL_SOURCES,
     run_sources as materialize_resolver_tables,
 )
 from omnipath_build.gold.build_entities import (
     build_entities,
-    reduce_entities_from_evidence,
 )
 from omnipath_build.gold.build_relations import (
     build_relations,
-    reduce_relations_from_evidence,
+)
+from omnipath_build.gold.source_state import (
+    gold_source_state_ready,
+    initialize_gold_source_state,
+    merge_gold_source_state,
+    publish_staged_gold_state,
 )
 from omnipath_build.gold.utils.partitioning import (
     ENTITY_BUCKET_COUNT,
@@ -56,6 +60,17 @@ SILVER_DELTA_DIR = 'delta'
 GOLD_BUCKET_ALGORITHM = 'stable_u64_sha256_mod_v1'
 GOLD_ENTITY_KEY_ALGORITHM = 'sha256_v1'
 GOLD_RELATION_KEY_ALGORITHM = 'sha256_v1'
+
+
+@dataclass(frozen=True)
+class SilverDeltaScope:
+    available: bool
+    delta_empty: bool
+    raw_record_ids_path: Path | None
+    occurrence_ids_path: Path | None
+    raw_record_id_count: int
+    occurrence_id_count: int
+    metadata: dict[str, Any]
 
 
 def hash_inputs_module(inputs_package: str, source: str) -> dict[str, Any]:
@@ -433,6 +448,10 @@ def _duckdb_read_parquet_table_sql(path: Path) -> str:
     return f"read_parquet('{escaped}')"
 
 
+def _sql_path(path: Path) -> str:
+    return str(path).replace("'", "''")
+
+
 def _sql_string(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
@@ -443,6 +462,54 @@ def _copy_query_to_parquet(con: duckdb.DuckDBPyConnection, query: str, output_pa
     con.execute(
         f"copy ({query}) to '{output_sql}' "
         "(format parquet, compression zstd)"
+    )
+
+
+def _write_empty_string_parquet(output_path: Path, column: str) -> None:
+    con = duckdb.connect()
+    try:
+        _copy_query_to_parquet(
+            con,
+            f'select null::varchar as {column} where false',
+            output_path,
+        )
+    finally:
+        con.close()
+
+
+def _silver_delta_union_sql(paths: list[tuple[str, Path]]) -> str:
+    selects: list[str] = []
+    for table_name, path in paths:
+        source_sql = _duckdb_read_parquet_table_sql(path)
+        schema_names = set(SILVER_TABLE_SCHEMAS[table_name].names)
+        raw_selects: list[str] = []
+        occurrence_selects: list[str] = []
+        for column in ('record_id', 'raw_record_id', '_raw_record_id'):
+            if column in schema_names:
+                raw_selects.append(f"""
+                    select try_cast({column} as varchar) as raw_record_id
+                    from {source_sql}
+                    where {column} is not null
+                """)
+        for column in ('occurrence_id', 'parent_occurrence_id', 'member_occurrence_id'):
+            if column in schema_names:
+                occurrence_selects.append(f"""
+                    select try_cast({column} as varchar) as occurrence_id
+                    from {source_sql}
+                    where {column} is not null
+                """)
+        raw_sql = '\nunion\n'.join(raw_selects) or 'select null::varchar as raw_record_id where false'
+        occurrence_sql = '\nunion\n'.join(occurrence_selects) or 'select null::varchar as occurrence_id where false'
+        selects.append(f"""
+            select raw_record_id, null::varchar as occurrence_id
+            from ({raw_sql})
+            union
+            select null::varchar as raw_record_id, occurrence_id
+            from ({occurrence_sql})
+        """)
+    return '\nunion\n'.join(
+        f'select raw_record_id, occurrence_id from ({select_sql})'
+        for select_sql in selects
     )
 
 
@@ -685,57 +752,54 @@ def _silver_delta_dir_from_manifest(silver_dir: Path, manifest: dict[str, Any] |
     return None
 
 
-def _affected_silver_ids_from_delta(
+def _silver_delta_scope_from_delta(
     *,
     silver_dir: Path,
-) -> tuple[set[str], set[str], dict[str, Any]]:
+    output_dir: Path,
+) -> SilverDeltaScope:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    raw_ids_path = output_dir / 'affected_raw_record_ids.parquet'
+    occurrence_ids_path = output_dir / 'affected_occurrence_ids.parquet'
     manifest = _read_silver_delta_manifest(silver_dir)
     if manifest and manifest.get('delta_strategy') == 'no_per_row_delta':
-        return set(), set(), {
+        metadata = {
             'available': False,
             'reason': manifest.get('no_per_row_delta_reason') or 'no_per_row_delta',
             'manifest': manifest,
             'delta_empty': False,
             'delta_strategy': 'no_per_row_delta',
         }
+        _write_empty_string_parquet(raw_ids_path, 'raw_record_id')
+        _write_empty_string_parquet(occurrence_ids_path, 'occurrence_id')
+        return SilverDeltaScope(False, False, raw_ids_path, occurrence_ids_path, 0, 0, metadata)
     delta_dir = _silver_delta_dir_from_manifest(silver_dir, manifest)
-    raw_record_ids: set[str] = set()
-    occurrence_ids: set[str] = set()
     row_counts: dict[str, int] = {}
     unreadable_tables: list[str] = []
 
     if delta_dir is None:
-        return raw_record_ids, occurrence_ids, {
+        metadata = {
             'available': False,
             'reason': 'missing_silver_delta_dir',
             'manifest': manifest,
         }
+        _write_empty_string_parquet(raw_ids_path, 'raw_record_id')
+        _write_empty_string_parquet(occurrence_ids_path, 'occurrence_id')
+        return SilverDeltaScope(False, False, raw_ids_path, occurrence_ids_path, 0, 0, metadata)
 
+    delta_tables: list[tuple[str, Path]] = []
     for table_name in _silver_table_names():
         path = delta_dir / table_name
         if not path.exists():
             unreadable_tables.append(table_name)
             continue
         try:
-            delta = _read_parquet_table(path)
-        except (OSError, pl.exceptions.PolarsError):
+            row_counts[table_name] = _parquet_row_count(path)
+        except (OSError, duckdb.Error):
             unreadable_tables.append(table_name)
             continue
-        row_counts[table_name] = int(delta.height)
-        if delta.is_empty():
-            continue
+        delta_tables.append((table_name, path))
 
-        raw_record_ids.update(_string_values(delta, 'record_id'))
-        raw_record_ids.update(_string_values(delta, 'raw_record_id'))
-        raw_record_ids.update(_string_values(delta, '_raw_record_id'))
-        occurrence_ids.update(_string_values(delta, 'occurrence_id'))
-        occurrence_ids.update(_string_values(delta, 'parent_occurrence_id'))
-        occurrence_ids.update(_string_values(delta, 'member_occurrence_id'))
-
-    if occurrence_ids:
-        raw_record_ids.update(_raw_record_ids_for_occurrences(silver_dir, occurrence_ids))
-
-    return raw_record_ids, occurrence_ids, {
+    metadata = {
         'available': True,
         'manifest': manifest,
         'delta_dir': str(delta_dir),
@@ -743,21 +807,86 @@ def _affected_silver_ids_from_delta(
         'delta_row_counts': row_counts,
         'unreadable_tables': unreadable_tables,
     }
+    if not delta_tables:
+        _write_empty_string_parquet(raw_ids_path, 'raw_record_id')
+        _write_empty_string_parquet(occurrence_ids_path, 'occurrence_id')
+        return SilverDeltaScope(
+            True,
+            metadata['delta_empty'],
+            raw_ids_path,
+            occurrence_ids_path,
+            0,
+            0,
+            metadata,
+        )
 
-
-def _raw_record_ids_for_occurrences(silver_dir: Path, occurrence_ids: set[str]) -> set[str]:
-    if not occurrence_ids:
-        return set()
-    occurrence_path = silver_dir / 'entity_occurrence'
-    if not occurrence_path.exists():
-        return set()
-    occurrences = _scan_parquet_table(occurrence_path)
-    if 'occurrence_id' not in occurrences.collect_schema().names():
-        return set()
-    scoped = occurrences.filter(pl.col('occurrence_id').cast(pl.String).is_in(sorted(occurrence_ids))).collect()
-    values = _string_values(scoped, 'record_id')
-    values.update(_string_values(scoped, '_raw_record_id'))
-    return values
+    con = duckdb.connect()
+    try:
+        union_sql = _silver_delta_union_sql(delta_tables)
+        occurrence_path = silver_dir / 'entity_occurrence'
+        occurrence_sql = (
+            _duckdb_read_parquet_table_sql(occurrence_path)
+            if occurrence_path.exists() else
+            None
+        )
+        _copy_query_to_parquet(
+            con,
+            f"""
+                select distinct occurrence_id
+                from ({union_sql})
+                where occurrence_id is not null
+                  and occurrence_id <> ''
+            """,
+            occurrence_ids_path,
+        )
+        occurrence_join_sql = (
+            f"""
+            union
+            select distinct try_cast(o.record_id as varchar) as raw_record_id
+            from {occurrence_sql} o
+            join read_parquet('{_sql_path(occurrence_ids_path)}') ids
+              on ids.occurrence_id = try_cast(o.occurrence_id as varchar)
+            where o.record_id is not null
+            union
+            select distinct try_cast(o._raw_record_id as varchar) as raw_record_id
+            from {occurrence_sql} o
+            join read_parquet('{_sql_path(occurrence_ids_path)}') ids
+              on ids.occurrence_id = try_cast(o.occurrence_id as varchar)
+            where o._raw_record_id is not null
+            """
+            if occurrence_sql is not None else
+            ''
+        )
+        _copy_query_to_parquet(
+            con,
+            f"""
+                select distinct raw_record_id
+                from (
+                    select raw_record_id from ({union_sql})
+                    {occurrence_join_sql}
+                )
+                where raw_record_id is not null
+                  and raw_record_id <> ''
+            """,
+            raw_ids_path,
+        )
+        raw_count = int(con.execute(
+            f"select count(*) from read_parquet('{_sql_path(raw_ids_path)}')",
+        ).fetchone()[0])
+        occurrence_count = int(con.execute(
+            f"select count(*) from read_parquet('{_sql_path(occurrence_ids_path)}')",
+        ).fetchone()[0])
+    finally:
+        con.close()
+    return SilverDeltaScope(
+        True,
+        metadata['delta_empty'],
+        raw_ids_path,
+        occurrence_ids_path,
+        raw_count,
+        occurrence_count,
+        metadata,
+    )
 
 
 def _empty_affected_key_frame(key_column: str) -> pl.DataFrame:
@@ -771,37 +900,6 @@ def _parquet_scan(path: Path | None) -> pl.LazyFrame | None:
     if resolved_path is not None:
         return _scan_parquet_table(resolved_path)
     return None
-
-
-def _entity_keys_for_raw_records(path: Path | None, raw_record_ids: set[str]) -> set[str]:
-    if not raw_record_ids:
-        return set()
-    scan = _parquet_scan(path)
-    if scan is None:
-        return set()
-    schema_names = scan.collect_schema().names()
-    if 'entity_key' not in schema_names or 'raw_record_id' not in schema_names:
-        return set()
-    scoped = (
-        scan
-        .select(['entity_key', 'raw_record_id'])
-        .filter(pl.col('raw_record_id').cast(pl.String).is_in(sorted(raw_record_ids)))
-        .collect()
-    )
-    return _string_values(scoped, 'entity_key')
-
-
-def _relation_keys_for_raw_records(path: Path | None, raw_record_ids: set[str]) -> set[str]:
-    if not raw_record_ids:
-        return set()
-    scan = _parquet_scan(path)
-    if scan is None:
-        return set()
-    schema_names = scan.collect_schema().names()
-    if 'relation_key' not in schema_names or 'raw_record_id' not in schema_names:
-        return set()
-    scoped = scan.filter(pl.col('raw_record_id').cast(pl.String).is_in(sorted(raw_record_ids))).collect()
-    return _string_values(scoped, 'relation_key')
 
 
 def _affected_key_frame(
@@ -819,20 +917,6 @@ def _affected_key_frame(
         'change_type': ['affected'] * len(keys),
         'reason': [reason] * len(keys),
     })
-
-
-def _write_gold_scope_artifacts(
-    *,
-    delta_dir: Path,
-    raw_record_ids: set[str],
-    occurrence_ids: set[str],
-) -> None:
-    pl.DataFrame({
-        'raw_record_id': pl.Series(sorted(raw_record_ids), dtype=pl.String),
-    }).write_parquet(delta_dir / 'affected_raw_record_ids.parquet')
-    pl.DataFrame({
-        'occurrence_id': pl.Series(sorted(occurrence_ids), dtype=pl.String),
-    }).write_parquet(delta_dir / 'affected_occurrence_ids.parquet')
 
 
 def _current_gold_key_frame(
@@ -1185,89 +1269,321 @@ def _write_first_build_key_scope_artifacts(
     }
 
 
-def _derive_gold_key_scope_from_silver_delta(
+def _write_gold_key_scope_from_silver_delta(
     *,
     source: str,
-    silver_dir: Path,
     previous_dir: Path,
     staged_dir: Path,
     previous_output_ready: bool,
-) -> tuple[set[str] | None, set[str] | None, pl.DataFrame, pl.DataFrame, dict[str, Any]]:
-    raw_record_ids, occurrence_ids, silver_scope = _affected_silver_ids_from_delta(silver_dir=silver_dir)
+    silver_scope: SilverDeltaScope,
+    delta_dir: Path,
+) -> dict[str, Any]:
     reason = 'silver_delta_target'
     scope_metadata = {
-        **silver_scope,
-        'raw_record_ids': sorted(raw_record_ids),
-        'occurrence_ids': sorted(occurrence_ids),
-        'raw_record_id_count': len(raw_record_ids),
-        'occurrence_id_count': len(occurrence_ids),
+        **silver_scope.metadata,
+        'raw_record_ids_path': str(silver_scope.raw_record_ids_path) if silver_scope.raw_record_ids_path else None,
+        'occurrence_ids_path': str(silver_scope.occurrence_ids_path) if silver_scope.occurrence_ids_path else None,
+        'raw_record_id_count': silver_scope.raw_record_id_count,
+        'occurrence_id_count': silver_scope.occurrence_id_count,
         'strategy': 'full_gold_diff',
     }
+    _copy_silver_scope_artifacts(delta_dir=delta_dir, silver_scope=silver_scope)
 
     if not previous_output_ready:
         scope_metadata['fallback_reason'] = 'missing_or_invalid_previous_gold'
-        return None, None, _empty_affected_key_frame('entity_key'), _empty_affected_key_frame('relation_key'), scope_metadata
+        _write_empty_gold_key_scope_artifacts(delta_dir)
+        return {
+            **_empty_gold_key_scope_metadata(),
+            'targeting': scope_metadata,
+            'affected_key_scope_available': False,
+        }
 
-    if silver_scope.get('delta_empty') is True:
+    if silver_scope.delta_empty:
         scope_metadata['strategy'] = 'empty_silver_delta'
-        return set(), set(), _empty_affected_key_frame('entity_key'), _empty_affected_key_frame('relation_key'), scope_metadata
+        _write_empty_gold_key_scope_artifacts(delta_dir)
+        return {
+            **_empty_gold_key_scope_metadata(),
+            'targeting': scope_metadata,
+            'affected_key_scope_available': True,
+        }
 
     if (
-        not silver_scope.get('available')
-        or silver_scope.get('unreadable_tables')
-        or not raw_record_ids
+        not silver_scope.available
+        or silver_scope.metadata.get('unreadable_tables')
+        or silver_scope.raw_record_id_count == 0
+        or silver_scope.raw_record_ids_path is None
     ):
         scope_metadata['fallback_reason'] = (
-            silver_scope.get('reason')
-            if not silver_scope.get('available')
+            silver_scope.metadata.get('reason')
+            if not silver_scope.available
             else 'unreadable_silver_delta_tables'
-            if silver_scope.get('unreadable_tables')
+            if silver_scope.metadata.get('unreadable_tables')
             else 'silver_delta_without_raw_record_ids'
         )
-        return None, None, _empty_affected_key_frame('entity_key'), _empty_affected_key_frame('relation_key'), scope_metadata
+        _write_empty_gold_key_scope_artifacts(delta_dir)
+        return {
+            **_empty_gold_key_scope_metadata(),
+            'targeting': scope_metadata,
+            'affected_key_scope_available': False,
+        }
 
     previous_entity_path = _gold_table_path(previous_dir, 'entities', 'entity_evidence')
     current_entity_path = _gold_table_path(staged_dir, 'entities', 'entity_evidence')
     previous_relation_path = _gold_table_path(previous_dir, 'relations', 'entity_relation_evidence')
     current_relation_path = _gold_table_path(staged_dir, 'relations', 'entity_relation_evidence')
+    raw_ids_sql = f"read_parquet('{_sql_path(silver_scope.raw_record_ids_path)}', union_by_name=true)"
+    source_sql = _sql_string(source)
+    reason_sql = _sql_string(reason)
 
-    entity_keys = set()
-    entity_keys.update(_entity_keys_for_raw_records(previous_entity_path, raw_record_ids))
-    entity_keys.update(_entity_keys_for_raw_records(current_entity_path, raw_record_ids))
-    relation_keys = set()
-    relation_keys.update(_relation_keys_for_raw_records(previous_relation_path, raw_record_ids))
-    relation_keys.update(_relation_keys_for_raw_records(current_relation_path, raw_record_ids))
+    con = duckdb.connect()
+    try:
+        entity_scope = _gold_raw_record_key_scope_sql(
+            previous_path=previous_entity_path,
+            current_path=current_entity_path,
+            raw_ids_sql=raw_ids_sql,
+            key_column='entity_key',
+            bucket_column='entity_bucket',
+            part_column='entity_part',
+        )
+        relation_scope = _gold_raw_record_key_scope_sql(
+            previous_path=previous_relation_path,
+            current_path=current_relation_path,
+            raw_ids_sql=raw_ids_sql,
+            key_column='relation_key',
+            bucket_column='relation_bucket',
+            part_column='relation_part',
+        )
+        partition_metadata = _write_gold_key_scope_from_duckdb(
+            con,
+            delta_dir=delta_dir,
+            source_sql=source_sql,
+            reason_sql=reason_sql,
+            entity_scope=entity_scope,
+            relation_scope=relation_scope,
+        )
+    finally:
+        con.close()
 
     scope_metadata['strategy'] = 'silver_delta_target'
-    scope_metadata['affected_entity_count'] = len(entity_keys)
-    scope_metadata['affected_relation_count'] = len(relation_keys)
-    return (
-        entity_keys,
-        relation_keys,
-        _affected_key_frame(
-            source=source,
-            key_column='entity_key',
-            keys=entity_keys,
-            reason=reason,
-        ),
-        _affected_key_frame(
-            source=source,
-            key_column='relation_key',
-            keys=relation_keys,
-            reason=reason,
-        ),
-        scope_metadata,
+    return {
+        **partition_metadata,
+        'targeting': scope_metadata,
+        'affected_key_scope_available': True,
+    }
+
+
+def _copy_silver_scope_artifacts(*, delta_dir: Path, silver_scope: SilverDeltaScope) -> None:
+    if silver_scope.raw_record_ids_path and silver_scope.raw_record_ids_path.exists():
+        shutil.copy2(silver_scope.raw_record_ids_path, delta_dir / 'affected_raw_record_ids.parquet')
+    else:
+        _write_empty_string_parquet(delta_dir / 'affected_raw_record_ids.parquet', 'raw_record_id')
+    if silver_scope.occurrence_ids_path and silver_scope.occurrence_ids_path.exists():
+        shutil.copy2(silver_scope.occurrence_ids_path, delta_dir / 'affected_occurrence_ids.parquet')
+    else:
+        _write_empty_string_parquet(delta_dir / 'affected_occurrence_ids.parquet', 'occurrence_id')
+
+
+def _empty_gold_key_scope_metadata() -> dict[str, Any]:
+    return {
+        'entity_key_algorithm': GOLD_ENTITY_KEY_ALGORITHM,
+        'relation_key_algorithm': GOLD_RELATION_KEY_ALGORITHM,
+        'bucket_algorithm': GOLD_BUCKET_ALGORITHM,
+        'entity_bucket_count': ENTITY_BUCKET_COUNT,
+        'entity_part_count': ENTITY_PART_COUNT,
+        'relation_bucket_count': RELATION_BUCKET_COUNT,
+        'relation_part_count': RELATION_PART_COUNT,
+        'affected_entity_bucket_count': 0,
+        'affected_entity_part_count': 0,
+        'affected_relation_bucket_count': 0,
+        'affected_relation_part_count': 0,
+        'affected_entity_count': 0,
+        'affected_relation_count': 0,
+        'delta_artifacts': {
+            'affected_entity_keys': 'affected_entity_keys.parquet',
+            'affected_entity_buckets': 'affected_entity_buckets.parquet',
+            'affected_entity_parts': 'affected_entity_parts.parquet',
+            'affected_relation_keys': 'affected_relation_keys.parquet',
+            'affected_relation_buckets': 'affected_relation_buckets.parquet',
+            'affected_relation_parts': 'affected_relation_parts.parquet',
+        },
+    }
+
+
+def _write_empty_gold_key_scope_artifacts(delta_dir: Path) -> None:
+    _empty_affected_key_frame('entity_key').write_parquet(delta_dir / 'affected_entity_keys.parquet')
+    _empty_affected_key_frame('relation_key').write_parquet(delta_dir / 'affected_relation_keys.parquet')
+    _empty_affected_partition_frame('entity_bucket').write_parquet(delta_dir / 'affected_entity_buckets.parquet')
+    _empty_affected_partition_frame('entity_part').write_parquet(delta_dir / 'affected_entity_parts.parquet')
+    _empty_affected_partition_frame('relation_bucket').write_parquet(delta_dir / 'affected_relation_buckets.parquet')
+    _empty_affected_partition_frame('relation_part').write_parquet(delta_dir / 'affected_relation_parts.parquet')
+
+
+def _gold_raw_record_key_scope_sql(
+    *,
+    previous_path: Path | None,
+    current_path: Path | None,
+    raw_ids_sql: str,
+    key_column: str,
+    bucket_column: str,
+    part_column: str,
+) -> str:
+    selects: list[str] = []
+    for path in (previous_path, current_path):
+        scan = _parquet_scan(path)
+        if scan is None:
+            continue
+        schema_names = scan.collect_schema().names()
+        if (
+            key_column not in schema_names
+            or 'raw_record_id' not in schema_names
+        ):
+            continue
+        source_sql = _duckdb_read_parquet_table_sql(path)
+        bucket_expr = (
+            f'try_cast({bucket_column} as bigint) as {bucket_column}'
+            if bucket_column in schema_names else
+            f'null::bigint as {bucket_column}'
+        )
+        part_expr = (
+            f'try_cast({part_column} as bigint) as {part_column}'
+            if part_column in schema_names else
+            f'null::bigint as {part_column}'
+        )
+        selects.append(f"""
+            select
+                try_cast({key_column} as varchar) as {key_column},
+                {bucket_expr},
+                {part_expr}
+            from {source_sql}
+            where try_cast(raw_record_id as varchar) in (
+                select try_cast(raw_record_id as varchar)
+                from {raw_ids_sql}
+            )
+              and {key_column} is not null
+        """)
+    if not selects:
+        return f"""
+            select
+                null::varchar as {key_column},
+                null::bigint as {bucket_column},
+                null::bigint as {part_column}
+            where false
+        """
+    return '\nunion\n'.join(selects)
+
+
+def _write_gold_key_scope_from_duckdb(
+    con: duckdb.DuckDBPyConnection,
+    *,
+    delta_dir: Path,
+    source_sql: str,
+    reason_sql: str,
+    entity_scope: str,
+    relation_scope: str,
+) -> dict[str, Any]:
+    _copy_key_scope_domain(
+        con,
+        delta_dir=delta_dir,
+        source_sql=source_sql,
+        reason_sql=reason_sql,
+        scope_sql=entity_scope,
+        key_column='entity_key',
+        bucket_column='entity_bucket',
+        part_column='entity_part',
+    )
+    _copy_key_scope_domain(
+        con,
+        delta_dir=delta_dir,
+        source_sql=source_sql,
+        reason_sql=reason_sql,
+        scope_sql=relation_scope,
+        key_column='relation_key',
+        bucket_column='relation_bucket',
+        part_column='relation_part',
+    )
+
+    affected_entity_count = int(con.execute(f"select count(distinct entity_key) from ({entity_scope})").fetchone()[0] or 0)
+    affected_relation_count = int(con.execute(f"select count(distinct relation_key) from ({relation_scope})").fetchone()[0] or 0)
+    affected_entity_bucket_count = int(con.execute(f"select count(distinct entity_bucket) from ({entity_scope}) where entity_bucket is not null").fetchone()[0] or 0)
+    affected_entity_part_count = int(con.execute(f"select count(distinct entity_part) from ({entity_scope}) where entity_part is not null").fetchone()[0] or 0)
+    affected_relation_bucket_count = int(con.execute(f"select count(distinct relation_bucket) from ({relation_scope}) where relation_bucket is not null").fetchone()[0] or 0)
+    affected_relation_part_count = int(con.execute(f"select count(distinct relation_part) from ({relation_scope}) where relation_part is not null").fetchone()[0] or 0)
+    return {
+        **_empty_gold_key_scope_metadata(),
+        'affected_entity_count': affected_entity_count,
+        'affected_relation_count': affected_relation_count,
+        'affected_entity_bucket_count': affected_entity_bucket_count,
+        'affected_entity_part_count': affected_entity_part_count,
+        'affected_relation_bucket_count': affected_relation_bucket_count,
+        'affected_relation_part_count': affected_relation_part_count,
+    }
+
+
+def _copy_key_scope_domain(
+    con: duckdb.DuckDBPyConnection,
+    *,
+    delta_dir: Path,
+    source_sql: str,
+    reason_sql: str,
+    scope_sql: str,
+    key_column: str,
+    bucket_column: str,
+    part_column: str,
+) -> None:
+    domain = 'entity' if key_column == 'entity_key' else 'relation'
+    _copy_query_to_parquet(
+        con,
+        f"""
+            select distinct
+                {source_sql} as source,
+                {key_column},
+                'affected'::varchar as change_type,
+                {reason_sql} as reason
+            from ({scope_sql})
+            where {key_column} is not null
+        """,
+        delta_dir / f'affected_{domain}_keys.parquet',
+    )
+    _copy_query_to_parquet(
+        con,
+        f"""
+            select
+                {source_sql} as source,
+                {bucket_column},
+                count(distinct {key_column})::bigint as affected_key_count,
+                {reason_sql} as reason
+            from ({scope_sql})
+            where {bucket_column} is not null
+            group by {bucket_column}
+            order by {bucket_column}
+        """,
+        delta_dir / f'affected_{domain}_buckets.parquet',
+    )
+    _copy_query_to_parquet(
+        con,
+        f"""
+            select
+                {source_sql} as source,
+                {part_column},
+                count(distinct {key_column})::bigint as affected_key_count,
+                {reason_sql} as reason
+            from ({scope_sql})
+            where {part_column} is not null
+            group by {part_column}
+            order by {part_column}
+        """,
+        delta_dir / f'affected_{domain}_parts.parquet',
     )
 
 
 def _write_gold_delta_artifacts(
     *,
     source: str,
-    silver_dir: Path,
     previous_dir: Path,
     staged_dir: Path,
     output_dir: Path,
     previous_output_ready: bool,
+    silver_scope: SilverDeltaScope,
 ) -> dict[str, Any]:
     build_id = _now_build_id()
     delta_dir = output_dir / GOLD_DELTA_DIR / build_id
@@ -1278,11 +1594,8 @@ def _write_gold_delta_artifacts(
 
     if not previous_output_ready:
         reason = 'source_first_build'
-        _write_gold_scope_artifacts(
-            delta_dir=delta_dir,
-            raw_record_ids=set(),
-            occurrence_ids=set(),
-        )
+        _write_empty_string_parquet(delta_dir / 'affected_raw_record_ids.parquet', 'raw_record_id')
+        _write_empty_string_parquet(delta_dir / 'affected_occurrence_ids.parquet', 'occurrence_id')
         key_scope_metadata = _write_first_build_key_scope_artifacts(
             source=source,
             staged_dir=staged_dir,
@@ -1320,40 +1633,16 @@ def _write_gold_delta_artifacts(
         }
 
     reason = 'source_rebuild'
-    (
-        affected_entity_key_filter,
-        affected_relation_key_filter,
-        affected_entities,
-        affected_relations,
-        silver_scope,
-    ) = _derive_gold_key_scope_from_silver_delta(
+    key_scope_metadata = _write_gold_key_scope_from_silver_delta(
         source=source,
-        silver_dir=silver_dir,
         previous_dir=previous_dir,
         staged_dir=staged_dir,
         previous_output_ready=previous_output_ready,
-    )
-    _write_gold_scope_artifacts(
+        silver_scope=silver_scope,
         delta_dir=delta_dir,
-        raw_record_ids=set(silver_scope.get('raw_record_ids', [])),
-        occurrence_ids=set(silver_scope.get('occurrence_ids', [])),
     )
-
-    affected_key_scope_available = (
-        affected_entity_key_filter is not None
-        and affected_relation_key_filter is not None
-    )
-    if not affected_key_scope_available:
-        affected_entities = _empty_affected_key_frame('entity_key')
-        affected_relations = _empty_affected_key_frame('relation_key')
-
-    affected_entities.write_parquet(delta_dir / 'affected_entity_keys.parquet')
-    affected_relations.write_parquet(delta_dir / 'affected_relation_keys.parquet')
-    partition_metadata = _write_affected_partition_artifacts(
-        delta_dir=delta_dir,
-        affected_entities=affected_entities,
-        affected_relations=affected_relations,
-    )
+    targeting = key_scope_metadata.pop('targeting')
+    affected_key_scope_available = bool(key_scope_metadata.pop('affected_key_scope_available'))
 
     manifest = {
         'layer': 'gold',
@@ -1363,14 +1652,10 @@ def _write_gold_delta_artifacts(
         'reason': reason,
         'targeting': {
             key: value
-            for key, value in silver_scope.items()
-            if key not in {'raw_record_ids', 'occurrence_ids', 'manifest'}
+            for key, value in targeting.items()
+            if key != 'manifest'
         },
-        'affected_entity_count': int(affected_entities['entity_key'].n_unique())
-        if 'entity_key' in affected_entities.columns else 0,
-        'affected_relation_count': int(affected_relations['relation_key'].n_unique())
-        if 'relation_key' in affected_relations.columns else 0,
-        **partition_metadata,
+        **key_scope_metadata,
         'delta_counts': {
             'entity_delta.parquet': 0,
             'entity_relation_delta.parquet': 0,
@@ -1434,29 +1719,56 @@ def _parquet_has_columns(path: Path | None, columns: set[str]) -> bool:
     return columns.issubset(set(schema.names()))
 
 
-def _filter_silver_for_raw_records(
+def _filter_silver_for_raw_record_scope(
     *,
     silver_dir: Path,
     output_dir: Path,
-    raw_record_ids: set[str],
+    raw_record_ids_path: Path,
 ) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
-    for name in SILVER_TABLE_SCHEMAS:
-        path = silver_dir / name
-        if not path.exists():
-            continue
-        frame = _read_parquet_table(path)
-        if not raw_record_ids:
-            filtered = frame.head(0)
-        elif 'record_id' in frame.columns:
-            filtered = frame.filter(pl.col('record_id').cast(pl.String).is_in(sorted(raw_record_ids)))
-        elif '_raw_record_id' in frame.columns:
-            filtered = frame.filter(pl.col('_raw_record_id').cast(pl.String).is_in(sorted(raw_record_ids)))
-        else:
-            filtered = frame.head(0)
-        target = output_dir / name
-        target.mkdir(parents=True, exist_ok=True)
-        filtered.write_parquet(target / 'part=00000.parquet')
+    con = duckdb.connect()
+    try:
+        raw_ids_sql = f"read_parquet('{_sql_path(raw_record_ids_path)}', union_by_name=true)"
+        con.execute('drop table if exists changed_raw_record_ids')
+        con.execute(f"""
+            create temp table changed_raw_record_ids as
+            select distinct try_cast(raw_record_id as varchar) as raw_record_id
+            from {raw_ids_sql}
+            where raw_record_id is not null
+              and try_cast(raw_record_id as varchar) <> ''
+        """)
+        raw_id_count = int(con.execute('select count(*) from changed_raw_record_ids').fetchone()[0])
+        for name in SILVER_TABLE_SCHEMAS:
+            path = silver_dir / name
+            if not path.exists():
+                continue
+            target = output_dir / name
+            target.mkdir(parents=True, exist_ok=True)
+            source_sql = _duckdb_read_parquet_table_sql(path)
+            schema_names = set(SILVER_TABLE_SCHEMAS[name].names)
+            if raw_id_count == 0:
+                query = f'select * from {source_sql} where false'
+            elif 'record_id' in schema_names:
+                query = f"""
+                    select *
+                    from {source_sql}
+                    where try_cast(record_id as varchar) in (
+                        select raw_record_id from changed_raw_record_ids
+                    )
+                """
+            elif '_raw_record_id' in schema_names:
+                query = f"""
+                    select *
+                    from {source_sql}
+                    where try_cast(_raw_record_id as varchar) in (
+                        select raw_record_id from changed_raw_record_ids
+                    )
+                """
+            else:
+                query = f'select * from {source_sql} where false'
+            _copy_query_to_parquet(con, query, target / 'part=00000.parquet')
+    finally:
+        con.close()
 
 
 def _build_gold_source_incremental(
@@ -1466,20 +1778,18 @@ def _build_gold_source_incremental(
     output_dir: Path,
     staged_dir: Path,
     mapping_dir: Path,
-    raw_record_ids: set[str],
+    silver_scope: SilverDeltaScope,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     changed_silver_dir = staged_dir / '_changed_silver'
     changed_entities_dir = staged_dir / '_changed_gold' / 'entities'
     changed_relations_dir = staged_dir / '_changed_gold' / 'relations'
-    entities_dir = staged_dir / 'entities'
-    relations_dir = staged_dir / 'relations'
-    entities_dir.mkdir(parents=True, exist_ok=True)
-    relations_dir.mkdir(parents=True, exist_ok=True)
 
-    _filter_silver_for_raw_records(
+    if silver_scope.raw_record_ids_path is None:
+        raise ValueError('silver_scope.raw_record_ids_path is required for incremental gold')
+    _filter_silver_for_raw_record_scope(
         silver_dir=silver_dir,
         output_dir=changed_silver_dir,
-        raw_record_ids=raw_record_ids,
+        raw_record_ids_path=silver_scope.raw_record_ids_path,
     )
     entity_summary = build_entities(
         silver_dir=changed_silver_dir,
@@ -1497,221 +1807,19 @@ def _build_gold_source_incremental(
         output_dir=changed_relations_dir,
         source_name=source,
     )
-
-    previous_entity_evidence = _read_parquet_table(_require_parquet_table_path(
-        _gold_table_path(output_dir, 'entities', 'entity_evidence'),
-        f'{output_dir}/entities/entity_evidence',
-    ))
-    previous_relation_evidence = _read_parquet_table(_require_parquet_table_path(
-        _gold_table_path(output_dir, 'relations', 'entity_relation_evidence'),
-        f'{output_dir}/relations/entity_relation_evidence',
-    ))
-    changed_entity_evidence = _read_parquet_table(_require_parquet_table_path(
-        _gold_subtable_path(changed_entities_dir, 'entity_evidence'),
-        f'{changed_entities_dir}/entity_evidence',
-    ))
-    changed_relation_evidence = _read_parquet_table(_require_parquet_table_path(
-        _gold_subtable_path(changed_relations_dir, 'entity_relation_evidence'),
-        f'{changed_relations_dir}/entity_relation_evidence',
-    ))
-    previous_entities = _read_parquet_table(_require_parquet_table_path(
-        _gold_table_path(output_dir, 'entities', 'entity'),
-        f'{output_dir}/entities/entity',
-    ))
-
-    original_changed_entity_evidence = changed_entity_evidence
-    previous_identity = (
-        previous_entity_evidence
-        .select([
-            'fingerprint',
-            pl.col('entity_key').alias('_previous_entity_key'),
-            pl.col('canonical_identifier').alias('_previous_canonical_identifier'),
-            pl.col('canonical_identifier_type').alias('_previous_canonical_identifier_type'),
-        ])
-        .unique()
+    merged_entity_summary, merged_relation_summary = merge_gold_source_state(
+        source=source,
+        output_dir=output_dir,
+        staged_dir=staged_dir,
+        changed_entities_dir=changed_entities_dir,
+        changed_relations_dir=changed_relations_dir,
+        raw_record_ids_path=silver_scope.raw_record_ids_path,
+        raw_record_id_count=silver_scope.raw_record_id_count,
     )
-    changed_entity_evidence = (
-        changed_entity_evidence
-        .join(previous_identity, on='fingerprint', how='left')
-        .with_columns([
-            pl.coalesce(['_previous_entity_key', 'entity_key']).alias('entity_key'),
-            pl.coalesce(['_previous_canonical_identifier', 'canonical_identifier']).alias('canonical_identifier'),
-            pl.coalesce(['_previous_canonical_identifier_type', 'canonical_identifier_type']).alias('canonical_identifier_type'),
-        ])
-        .drop([
-            '_previous_entity_key',
-            '_previous_canonical_identifier',
-            '_previous_canonical_identifier_type',
-        ])
+    return (
+        {**entity_summary, **merged_entity_summary},
+        {**relation_summary, **merged_relation_summary},
     )
-    changed_entities = reduce_entities_from_evidence(
-        changed_entity_evidence,
-        entity_pk_map=previous_entities.select(['entity_key', 'entity_pk']),
-    )
-    changed_key_remap = (
-        original_changed_entity_evidence
-        .select([
-            pl.col('entity_key').alias('_old_entity_key'),
-            'fingerprint',
-        ])
-        .join(changed_entity_evidence.select(['fingerprint', 'entity_key']).unique(), on='fingerprint', how='inner')
-        .select(['_old_entity_key', 'entity_key'])
-        .unique()
-    )
-    if not changed_relation_evidence.is_empty() and not changed_key_remap.is_empty():
-        subject_remap = changed_key_remap.rename({
-            '_old_entity_key': 'subject_entity_key',
-            'entity_key': '_new_subject_entity_key',
-        })
-        object_remap = changed_key_remap.rename({
-            '_old_entity_key': 'object_entity_key',
-            'entity_key': '_new_object_entity_key',
-        })
-        changed_relation_evidence = (
-            changed_relation_evidence
-            .join(subject_remap, on='subject_entity_key', how='left')
-            .join(object_remap, on='object_entity_key', how='left')
-            .with_columns([
-                pl.coalesce(['_new_subject_entity_key', 'subject_entity_key']).alias('subject_entity_key'),
-                pl.coalesce(['_new_object_entity_key', 'object_entity_key']).alias('object_entity_key'),
-            ])
-            .drop(['_new_subject_entity_key', '_new_object_entity_key'])
-            .with_columns(
-                pl.struct([
-                    'subject_entity_key',
-                    'predicate',
-                    'object_entity_key',
-                    'relation_category',
-                ]).map_elements(
-                    lambda row: compute_relation_key(
-                        row['subject_entity_key'],
-                        row['predicate'],
-                        row['object_entity_key'],
-                        row['relation_category'],
-                    ),
-                    return_dtype=pl.String,
-                ).alias('relation_key')
-            )
-        )
-
-    kept_entity_evidence = previous_entity_evidence.filter(
-        ~pl.col('raw_record_id').cast(pl.String).is_in(sorted(raw_record_ids))
-    )
-    merged_entity_evidence = pl.concat(
-        [kept_entity_evidence, changed_entity_evidence],
-        how='diagonal_relaxed',
-    )
-    merged_entities = reduce_entities_from_evidence(
-        merged_entity_evidence,
-        entity_pk_map=previous_entities.select(['entity_key', 'entity_pk']),
-    )
-    merged_entity_evidence.write_parquet(entities_dir / 'entity_evidence.parquet')
-    merged_entities.write_parquet(entities_dir / 'entity.parquet')
-
-    changed_entity_key_map = _gold_subtable_path(changed_entities_dir, 'entity_map')
-    if changed_entity_key_map is not None:
-        changed_map = (
-            _read_parquet_table(changed_entity_key_map)
-            .join(
-                changed_entities.select(['entity_pk', 'entity_key']),
-                on='entity_pk',
-                how='inner',
-            )
-            .join(merged_entities.select(['entity_key', 'entity_pk']), on='entity_key', how='inner')
-            .select(['_fingerprint', 'entity_pk'])
-        )
-        previous_map = _read_parquet_table(_require_parquet_table_path(
-            _gold_table_path(output_dir, 'entities', 'entity_map'),
-            f'{output_dir}/entities/entity_map',
-        ))
-        merged_map = (
-            previous_map
-            .join(changed_map.select('_fingerprint'), on='_fingerprint', how='anti')
-            .vstack(changed_map)
-            .unique()
-        )
-        merged_map.write_parquet(entities_dir / 'entity_map.parquet')
-    else:
-        _copy_parquet_table(_require_parquet_table_path(
-            _gold_table_path(output_dir, 'entities', 'entity_map'),
-            f'{output_dir}/entities/entity_map',
-        ), entities_dir, 'entity_map')
-
-    changed_occurrence_map = _gold_subtable_path(changed_entities_dir, 'entity_occurrence_map')
-    if changed_occurrence_map is not None:
-        changed_occ = (
-            _read_parquet_table(changed_occurrence_map)
-            .join(
-                changed_entities.select(['entity_pk', 'entity_key']),
-                on='entity_pk',
-                how='inner',
-            )
-            .join(merged_entities.select(['entity_key', 'entity_pk']), on='entity_key', how='inner')
-            .select(['occurrence_id', '_fingerprint', 'entity_pk'])
-        )
-        previous_occ = _read_parquet_table(_require_parquet_table_path(
-            _gold_table_path(output_dir, 'entities', 'entity_occurrence_map'),
-            f'{output_dir}/entities/entity_occurrence_map',
-        ))
-        merged_occ = (
-            previous_occ
-            .join(changed_occ.select('occurrence_id'), on='occurrence_id', how='anti')
-            .vstack(changed_occ)
-            .unique()
-        )
-        merged_occ.write_parquet(entities_dir / 'entity_occurrence_map.parquet')
-    else:
-        _copy_parquet_table(_require_parquet_table_path(
-            _gold_table_path(output_dir, 'entities', 'entity_occurrence_map'),
-            f'{output_dir}/entities/entity_occurrence_map',
-        ), entities_dir, 'entity_occurrence_map')
-
-    for extra in ('canonicalization_report.md', 'canonicalization_summary.json'):
-        source_extra = output_dir / 'entities' / extra
-        if source_extra.exists():
-            shutil.copy2(source_extra, entities_dir / extra)
-
-    kept_relation_evidence = previous_relation_evidence.filter(
-        ~pl.col('raw_record_id').cast(pl.String).is_in(sorted(raw_record_ids))
-    )
-    merged_relation_evidence = pl.concat(
-        [kept_relation_evidence, changed_relation_evidence],
-        how='diagonal_relaxed',
-    )
-    previous_relations = _read_parquet_table(_require_parquet_table_path(
-        _gold_table_path(output_dir, 'relations', 'entity_relation'),
-        f'{output_dir}/relations/entity_relation',
-    ))
-    merged_relations = reduce_relations_from_evidence(
-        merged_relation_evidence,
-        entity_pk_map=merged_entities.select(['entity_key', 'entity_pk']),
-        relation_pk_map=previous_relations.select(['relation_key', 'relation_pk']),
-    )
-    relation_pk_map = merged_relations.select(['relation_key', 'relation_pk'])
-    merged_relation_evidence = (
-        merged_relation_evidence
-        .drop(['relation_evidence_pk', 'relation_pk'])
-        .join(relation_pk_map, on='relation_key', how='left')
-        .with_row_index('relation_evidence_pk', offset=1)
-        .select(list(changed_relation_evidence.columns))
-    )
-    merged_relation_evidence.write_parquet(relations_dir / 'entity_relation_evidence.parquet')
-    merged_relations.write_parquet(relations_dir / 'entity_relation.parquet')
-
-    entity_summary = {
-        **entity_summary,
-        'incremental': True,
-        'changed_raw_record_count': len(raw_record_ids),
-        'entity_count': int(merged_entities.height),
-    }
-    relation_summary = {
-        **relation_summary,
-        'incremental': True,
-        'changed_raw_record_count': len(raw_record_ids),
-        'relation_count': int(merged_relations.height),
-        'relation_evidence_count': int(merged_relation_evidence.height),
-    }
-    return entity_summary, relation_summary
 
 
 def build_gold_source(
@@ -1724,36 +1832,11 @@ def build_gold_source(
     output_dir.mkdir(parents=True, exist_ok=True)
     success_path = output_dir / GOLD_SUCCESS_FILE
     previous_output_ready = gold_output_ready(output_dir)
-
-    raw_record_ids, _, silver_scope = _affected_silver_ids_from_delta(silver_dir=silver_dir)
-    can_incremental = (
-        previous_output_ready
-        and silver_scope.get('available') is True
-        and not silver_scope.get('unreadable_tables')
-    )
-    if can_incremental and silver_scope.get('delta_empty') is True:
-        return {
-            'output_dir': str(output_dir),
-            'entities_dir': str(output_dir / 'entities'),
-            'relations_dir': str(output_dir / 'relations'),
-            'skipped': 'empty_silver_delta',
-            'entity_summary': {
-                'incremental': True,
-                'skipped': 'empty_silver_delta',
-                'changed_raw_record_count': 0,
-            },
-            'relation_summary': {
-                'incremental': True,
-                'skipped': 'empty_silver_delta',
-                'changed_raw_record_count': 0,
-            },
-            'silver_scope': silver_scope,
-        }
-
-    if success_path.exists():
-        success_path.unlink()
+    previous_state_ready = gold_source_state_ready(output_dir)
 
     if not silver_has_data(silver_dir):
+        if success_path.exists():
+            success_path.unlink()
         return {
             'output_dir': str(output_dir),
             'entities_dir': str(output_dir / 'entities'),
@@ -1770,14 +1853,51 @@ def build_gold_source(
         entities_dir.mkdir(parents=True, exist_ok=True)
         relations_dir.mkdir(parents=True, exist_ok=True)
 
-        if can_incremental and raw_record_ids:
+        silver_scope = _silver_delta_scope_from_delta(
+            silver_dir=silver_dir,
+            output_dir=staged_dir / '_silver_delta_scope',
+        )
+        can_incremental = (
+            previous_output_ready
+            and previous_state_ready
+            and silver_scope.available
+            and not silver_scope.metadata.get('unreadable_tables')
+        )
+        if can_incremental and silver_scope.delta_empty:
+            return {
+                'output_dir': str(output_dir),
+                'entities_dir': str(output_dir / 'entities'),
+                'relations_dir': str(output_dir / 'relations'),
+                'skipped': 'empty_silver_delta',
+                'entity_summary': {
+                    'incremental': True,
+                    'skipped': 'empty_silver_delta',
+                    'changed_raw_record_count': 0,
+                },
+                'relation_summary': {
+                    'incremental': True,
+                    'skipped': 'empty_silver_delta',
+                    'changed_raw_record_count': 0,
+                },
+                'silver_scope': {
+                    **silver_scope.metadata,
+                    'raw_record_id_count': silver_scope.raw_record_id_count,
+                    'occurrence_id_count': silver_scope.occurrence_id_count,
+                },
+            }
+
+        if success_path.exists():
+            success_path.unlink()
+
+        used_incremental = can_incremental and silver_scope.raw_record_id_count > 0
+        if used_incremental:
             entity_summary, relation_summary = _build_gold_source_incremental(
                 source=source,
                 silver_dir=silver_dir,
                 output_dir=output_dir,
                 staged_dir=staged_dir,
                 mapping_dir=mapping_dir,
-                raw_record_ids=raw_record_ids,
+                silver_scope=silver_scope,
             )
         else:
             entity_summary = build_entities(
@@ -1804,14 +1924,22 @@ def build_gold_source(
                 output_dir=relations_dir,
                 source_name=source,
             )
+            state_summary = initialize_gold_source_state(
+                source=source,
+                output_dir=staged_dir,
+            )
+            entity_summary = {
+                **entity_summary,
+                'source_state': state_summary,
+            }
 
         delta_summary = _write_gold_delta_artifacts(
             source=source,
-            silver_dir=silver_dir,
             previous_dir=output_dir,
             staged_dir=staged_dir,
             output_dir=output_dir,
             previous_output_ready=previous_output_ready,
+            silver_scope=silver_scope,
         )
 
         for name in ('entities', 'relations'):
@@ -1819,6 +1947,7 @@ def build_gold_source(
             if target.exists():
                 shutil.rmtree(target)
             shutil.copytree(staged_dir / name, target)
+        publish_staged_gold_state(staged_dir=staged_dir, output_dir=output_dir)
 
     archive_path = build_resource_archive(output_dir, source)
 

@@ -8,9 +8,9 @@ from datetime import UTC, datetime
 from dataclasses import asdict, dataclass
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 
-import polars as pl
-
+from omnipath_build.gold.build_entities import GoldPartitionConfig
 from omnipath_build.gold.combine import build_combined
+from omnipath_build.gold.source_state import gold_source_state_ready
 from omnipath_build.silver.build import (
     ResourceFunction,
     discover_resources,
@@ -32,6 +32,7 @@ from omnipath_build.pipeline.tasks import (
     read_inputs_module_hash,
     resolver_mappings_ready,
 )
+from omnipath_build.pipeline.memory import start_memory_monitor
 from omnipath_build.pipeline.progress import (
     phase,
     stop_heartbeat,
@@ -325,8 +326,6 @@ def _plan_pipeline_tasks(
 
         if task.task_type == 'combine':
             actual_changed_sources = _executed_gold_sources(results)
-            if not actual_changed_sources and start_stage == 'gold':
-                actual_changed_sources = changed_sources
             if not actual_changed_sources and _combined_latest_exists(combined_output_dir):
                 metadata = {
                     'reason': 'no_executed_gold_sources',
@@ -360,7 +359,7 @@ def _plan_pipeline_tasks(
 
             affected = None
             if actual_changed_sources:
-                affected = _collect_affected_keys_from_gold_artifacts(
+                affected = _collect_affected_scope_from_gold_artifacts(
                     paths=paths,
                     changed_sources=actual_changed_sources,
                     results=results,
@@ -369,12 +368,12 @@ def _plan_pipeline_tasks(
             metadata = {
                 'pipeline_incremental': incremental,
                 'changed_sources': actual_changed_sources,
-                'affected_entity_count': len(affected.entity_keys) if affected else None,
-                'affected_relation_count': len(affected.relation_keys) if affected else None,
-                'affected_entity_bucket_count': len(affected.entity_buckets) if affected else None,
-                'affected_entity_part_count': len(affected.entity_parts) if affected else None,
-                'affected_relation_bucket_count': len(affected.relation_buckets) if affected else None,
-                'affected_relation_part_count': len(affected.relation_parts) if affected else None,
+                'affected_entity_count': affected.affected_entity_count if affected else None,
+                'affected_relation_count': affected.affected_relation_count if affected else None,
+                'affected_entity_bucket_count': affected.entity_bucket_count if affected else None,
+                'affected_entity_part_count': affected.entity_part_count if affected else None,
+                'affected_relation_bucket_count': affected.relation_bucket_count if affected else None,
+                'affected_relation_part_count': affected.relation_part_count if affected else None,
                 'affected_gold_delta_artifacts': affected.artifact_paths if affected else {},
             }
             if incremental:
@@ -509,6 +508,7 @@ def _execute_task(
     combined_output_dir: Path,
     combine_entity_batch_size: int,
     combine_relation_batch_size: int,
+    combine_min_part_size_mb: int,
     start_stage: str,
     changed_sources: list[str],
     postgres_uri: str | None,
@@ -594,6 +594,7 @@ def _execute_task(
                 and silver_result.status == 'reused'
                 and silver_result.metadata.get('skipped') == 'empty_bronze_delta'
                 and output_dir.exists()
+                and gold_source_state_ready(output_dir)
             ):
                 return TaskResult(
                     task_key=task.key,
@@ -640,8 +641,6 @@ def _execute_task(
 
         if task.task_type == 'combine':
             actual_changed_sources = _executed_gold_sources(results)
-            if not actual_changed_sources and start_stage == 'gold':
-                actual_changed_sources = changed_sources
             if not actual_changed_sources and _combined_latest_exists(combined_output_dir):
                 return TaskResult(
                     task_key=task.key,
@@ -653,14 +652,8 @@ def _execute_task(
                         'reason': 'no_executed_gold_sources',
                         'pipeline_incremental': True,
                         'changed_sources': [],
-                        'affected_entity_keys': [],
-                        'affected_relation_keys': [],
                         'affected_entity_count': 0,
                         'affected_relation_count': 0,
-                        'affected_entity_buckets': [],
-                        'affected_entity_parts': [],
-                        'affected_relation_buckets': [],
-                        'affected_relation_parts': [],
                         'affected_entity_bucket_count': 0,
                         'affected_entity_part_count': 0,
                         'affected_relation_bucket_count': 0,
@@ -670,7 +663,7 @@ def _execute_task(
                 )
             affected = None
             if actual_changed_sources:
-                affected = _collect_affected_keys_from_gold_artifacts(
+                affected = _collect_affected_scope_from_gold_artifacts(
                     paths=paths,
                     changed_sources=actual_changed_sources,
                     results=results,
@@ -684,17 +677,17 @@ def _execute_task(
                 print(
                     '[start] combine -> incremental '
                     f'sources={_format_names(actual_changed_sources)} '
-                    f'entities={len(affected.entity_keys)} '
-                    f'relations={len(affected.relation_keys)} '
-                    f'entity_parts={len(affected.entity_parts)} '
-                    f'relation_parts={len(affected.relation_parts)} '
+                    f'entities={affected.affected_entity_count} '
+                    f'relations={affected.affected_relation_count} '
+                    f'entity_parts={affected.entity_part_count} '
+                    f'relation_parts={affected.relation_part_count} '
                     f'output={combined_output_dir}'
                 )
             metadata = build_combined(
                 gold_root=paths.gold_root,
                 output_dir=combined_output_dir,
-                affected_entity_keys=affected.entity_keys if affected else None,
-                affected_relation_keys=affected.relation_keys if affected else None,
+                affected_entity_key_paths=affected.entity_key_paths if affected else None,
+                affected_relation_key_paths=affected.relation_key_paths if affected else None,
                 inputs_package=inputs_package,
                 changed_source=(
                     ','.join(actual_changed_sources)
@@ -702,35 +695,33 @@ def _execute_task(
                 ),
                 entity_batch_size=combine_entity_batch_size,
                 relation_batch_size=combine_relation_batch_size,
+                partition_config=GoldPartitionConfig(
+                    min_part_size_bytes=combine_min_part_size_mb * 1024 * 1024,
+                ),
+            )
+            combine_run_summary = metadata.get('run_summary')
+            exact_entity_count = (
+                combine_run_summary.get('affected_entity_count')
+                if isinstance(combine_run_summary, dict) else
+                None
+            )
+            exact_relation_count = (
+                combine_run_summary.get('affected_relation_count')
+                if isinstance(combine_run_summary, dict) else
+                None
             )
             metadata = {
                 **metadata,
                 'pipeline_incremental': affected is not None,
                 'changed_sources': actual_changed_sources,
-                'affected_entity_count': len(affected.entity_keys) if affected else 0,
-                'affected_relation_count': len(affected.relation_keys) if affected else 0,
-                'affected_entity_bucket_count': len(affected.entity_buckets) if affected else 0,
-                'affected_entity_part_count': len(affected.entity_parts) if affected else 0,
-                'affected_relation_bucket_count': len(affected.relation_buckets) if affected else 0,
-                'affected_relation_part_count': len(affected.relation_parts) if affected else 0,
-                'affected_entity_keys': (
-                    sorted(affected.entity_keys) if affected else None
-                ),
-                'affected_relation_keys': (
-                    sorted(affected.relation_keys) if affected else None
-                ),
-                'affected_entity_buckets': (
-                    sorted(affected.entity_buckets) if affected else None
-                ),
-                'affected_entity_parts': (
-                    sorted(affected.entity_parts) if affected else None
-                ),
-                'affected_relation_buckets': (
-                    sorted(affected.relation_buckets) if affected else None
-                ),
-                'affected_relation_parts': (
-                    sorted(affected.relation_parts) if affected else None
-                ),
+                'affected_entity_count': exact_entity_count if exact_entity_count is not None else (affected.affected_entity_count if affected else 0),
+                'affected_relation_count': exact_relation_count if exact_relation_count is not None else (affected.affected_relation_count if affected else 0),
+                'source_affected_entity_count': affected.affected_entity_count if affected else 0,
+                'source_affected_relation_count': affected.affected_relation_count if affected else 0,
+                'affected_entity_bucket_count': affected.entity_bucket_count if affected else 0,
+                'affected_entity_part_count': affected.entity_part_count if affected else 0,
+                'affected_relation_bucket_count': affected.relation_bucket_count if affected else 0,
+                'affected_relation_part_count': affected.relation_part_count if affected else 0,
                 'affected_gold_delta_artifacts': (
                     affected.artifact_paths if affected else {}
                 ),
@@ -802,6 +793,7 @@ def _run_dag(
     combined_output_dir: Path,
     combine_entity_batch_size: int,
     combine_relation_batch_size: int,
+    combine_min_part_size_mb: int,
     start_stage: str,
     changed_sources: list[str],
     postgres_uri: str | None,
@@ -833,6 +825,7 @@ def _run_dag(
             combined_output_dir=combined_output_dir,
             combine_entity_batch_size=combine_entity_batch_size,
             combine_relation_batch_size=combine_relation_batch_size,
+            combine_min_part_size_mb=combine_min_part_size_mb,
             start_stage=start_stage,
             changed_sources=changed_sources,
             postgres_uri=postgres_uri,
@@ -910,13 +903,15 @@ def _discover_sources_by_capability(inputs_package: str) -> tuple[list[str], lis
 
 
 @dataclass(frozen=True)
-class AffectedKeys:
-    entity_keys: set[str]
-    relation_keys: set[str]
-    entity_buckets: set[int]
-    entity_parts: set[int]
-    relation_buckets: set[int]
-    relation_parts: set[int]
+class AffectedScope:
+    entity_key_paths: list[Path]
+    relation_key_paths: list[Path]
+    affected_entity_count: int
+    affected_relation_count: int
+    entity_bucket_count: int
+    entity_part_count: int
+    relation_bucket_count: int
+    relation_part_count: int
     artifact_paths: dict[str, dict[str, str]]
 
 
@@ -951,34 +946,6 @@ def _gold_delta_dir_from_result(result: TaskResult | None, source_gold_dir: Path
     return _latest_gold_delta_dir(source_gold_dir)
 
 
-def _read_affected_column(path: Path, column: str) -> set[str]:
-    if not path.exists():
-        return set()
-    scan = pl.scan_parquet(path)
-    if column not in scan.collect_schema().names():
-        return set()
-    frame = scan.select(pl.col(column).cast(pl.String)).collect()
-    return {
-        value
-        for value in frame.get_column(column).drop_nulls().unique().to_list()
-        if value
-    }
-
-
-def _read_affected_int_column(path: Path, column: str) -> set[int]:
-    if not path.exists():
-        return set()
-    scan = pl.scan_parquet(path)
-    if column not in scan.collect_schema().names():
-        return set()
-    frame = scan.select(pl.col(column).cast(pl.Int64)).collect()
-    return {
-        int(value)
-        for value in frame.get_column(column).drop_nulls().unique().to_list()
-        if value is not None
-    }
-
-
 def _gold_delta_scope_available(delta_dir: Path) -> bool:
     manifest_path = delta_dir / 'manifest.json'
     if not manifest_path.exists():
@@ -993,18 +960,20 @@ def _gold_delta_scope_available(delta_dir: Path) -> bool:
     return targeting.get('affected_key_scope_available') is not False
 
 
-def _collect_affected_keys_from_gold_artifacts(
+def _collect_affected_scope_from_gold_artifacts(
     *,
     paths: PipelinePaths,
     changed_sources: list[str],
     results: dict[str, TaskResult],
-) -> AffectedKeys | None:
-    entity_keys: set[str] = set()
-    relation_keys: set[str] = set()
-    entity_buckets: set[int] = set()
-    entity_parts: set[int] = set()
-    relation_buckets: set[int] = set()
-    relation_parts: set[int] = set()
+) -> AffectedScope | None:
+    entity_key_paths: list[Path] = []
+    relation_key_paths: list[Path] = []
+    affected_entity_count = 0
+    affected_relation_count = 0
+    entity_bucket_count = 0
+    entity_part_count = 0
+    relation_bucket_count = 0
+    relation_part_count = 0
     artifact_paths: dict[str, dict[str, str]] = {}
     missing_sources: list[str] = []
 
@@ -1033,30 +1002,28 @@ def _collect_affected_keys_from_gold_artifacts(
             for name, path in source_artifacts.items()
             if path.exists()
         }
-        entity_keys.update(_read_affected_column(
-            source_artifacts['affected_entity_keys'],
-            'entity_key',
-        ))
-        relation_keys.update(_read_affected_column(
-            source_artifacts['affected_relation_keys'],
-            'relation_key',
-        ))
-        entity_buckets.update(_read_affected_int_column(
-            source_artifacts['affected_entity_buckets'],
-            'entity_bucket',
-        ))
-        entity_parts.update(_read_affected_int_column(
-            source_artifacts['affected_entity_parts'],
-            'entity_part',
-        ))
-        relation_buckets.update(_read_affected_int_column(
-            source_artifacts['affected_relation_buckets'],
-            'relation_bucket',
-        ))
-        relation_parts.update(_read_affected_int_column(
-            source_artifacts['affected_relation_parts'],
-            'relation_part',
-        ))
+        manifest_path = delta_dir / 'manifest.json'
+        manifest: dict[str, Any] = {}
+        if manifest_path.exists():
+            try:
+                parsed = json.loads(manifest_path.read_text(encoding='utf-8'))
+            except json.JSONDecodeError:
+                parsed = {}
+            if isinstance(parsed, dict):
+                manifest = parsed
+        entity_key_path = source_artifacts['affected_entity_keys']
+        relation_key_path = source_artifacts['affected_relation_keys']
+        if not entity_key_path.exists() or not relation_key_path.exists():
+            missing_sources.append(source)
+            continue
+        entity_key_paths.append(entity_key_path)
+        relation_key_paths.append(relation_key_path)
+        affected_entity_count += int(manifest.get('affected_entity_count', 0) or 0)
+        affected_relation_count += int(manifest.get('affected_relation_count', 0) or 0)
+        entity_bucket_count += int(manifest.get('affected_entity_bucket_count', 0) or 0)
+        entity_part_count += int(manifest.get('affected_entity_part_count', 0) or 0)
+        relation_bucket_count += int(manifest.get('affected_relation_bucket_count', 0) or 0)
+        relation_part_count += int(manifest.get('affected_relation_part_count', 0) or 0)
 
     if missing_sources:
         print(
@@ -1065,13 +1032,15 @@ def _collect_affected_keys_from_gold_artifacts(
         )
         return None
 
-    return AffectedKeys(
-        entity_keys=entity_keys,
-        relation_keys=relation_keys,
-        entity_buckets=entity_buckets,
-        entity_parts=entity_parts,
-        relation_buckets=relation_buckets,
-        relation_parts=relation_parts,
+    return AffectedScope(
+        entity_key_paths=entity_key_paths,
+        relation_key_paths=relation_key_paths,
+        affected_entity_count=affected_entity_count,
+        affected_relation_count=affected_relation_count,
+        entity_bucket_count=entity_bucket_count,
+        entity_part_count=entity_part_count,
+        relation_bucket_count=relation_bucket_count,
+        relation_part_count=relation_part_count,
         artifact_paths=artifact_paths,
     )
 
@@ -1092,22 +1061,16 @@ def run_pipeline(
     combined_output_dir: str | Path | None = None,
     combine_entity_batch_size: int = 50_000,
     combine_relation_batch_size: int = 50_000,
+    combine_min_part_size_mb: int = 100,
     confirm_plan: bool = True,
     postgres_uri: str | None = None,
     postgres_schema: str = 'public',
     postgres_drop_existing: bool = False,
+    memory_sample_interval_seconds: float = 5.0,
 ) -> dict[str, Any]:
     start_stage = _normalize_start_stage(start_stage)
 
-    discovered_gold_sources: list[str] | None = None
-    if build_sources and not sources:
-        sources, discovered_gold_sources = _discover_sources_by_capability(inputs_package)
-        print(f'Autodiscovered {len(sources)} sources from {inputs_package}')
-    elif build_sources:
-        _, all_gold_sources = _discover_sources_by_capability(inputs_package)
-        requested = set(sources)
-        discovered_gold_sources = [source for source in all_gold_sources if source in requested]
-
+    run_id = _run_id()
     paths = build_paths(data_root)
     for base in [
         paths.data_root,
@@ -1117,98 +1080,117 @@ def run_pipeline(
     ]:
         base.mkdir(parents=True, exist_ok=True)
 
-    resolved_mapping_dir = Path(resolver_mapping_dir) if resolver_mapping_dir is not None else None
-    final_combined_dir = Path(combined_output_dir) if combined_output_dir is not None else (paths.data_root / 'combined')
-    final_combined_dir.mkdir(parents=True, exist_ok=True)
+    memory_monitor = start_memory_monitor(
+        output_path=paths.reports_root / 'memory' / f'{run_id}.ndjson',
+        interval_seconds=memory_sample_interval_seconds,
+    )
+    memory_summary: dict[str, Any] | None = None
 
-    changed_sources = sorted(discovered_gold_sources or [])
-    tasks = build_task_graph(
-        sources=sources,
-        gold_sources=discovered_gold_sources,
-        build_mappings=build_mappings,
-        build_sources=build_sources,
-        combine=combine,
-        postgres=postgres_uri is not None,
-        start_stage=start_stage,
-    )
-    print(
-        '[pipeline] '
-        f'from={start_stage} test_mode={test_mode} jobs={jobs} '
-        f'data_root={paths.data_root} combined={final_combined_dir}'
-    )
-    print(
-        '[pipeline] '
-        f'sources={len(sources)}:{_format_names(sources)} '
-        f'gold_sources={len(changed_sources)}:{_format_names(changed_sources)}'
-    )
-    print(
-        '[pipeline] '
-        f'download_cache={_download_cache_dir()} '
-        'cache hits appear as "Using existing local file from cache"; '
-        'cache misses appear as "No valid version in cache".'
-    )
-    if test_mode:
-        print(
-            '[pipeline] test_mode limits selected high-volume resources after '
-            'download/cache resolution; it does not bypass raw download lookup.'
-        )
-    planned = _plan_pipeline_tasks(
-        tasks=tasks,
-        paths=paths,
-        inputs_package=inputs_package,
-        resolver_mapping_dir=resolved_mapping_dir,
-        combined_output_dir=final_combined_dir,
-        changed_sources=changed_sources,
-        start_stage=start_stage,
-        postgres_uri=postgres_uri,
-        postgres_drop_existing=postgres_drop_existing,
-    )
-    _print_execution_plan(planned)
-    if confirm_plan:
-        _confirm_execution_plan()
-    start_heartbeat()
+    discovered_gold_sources: list[str] | None = None
     try:
-        results = _run_dag(
+        if build_sources and not sources:
+            sources, discovered_gold_sources = _discover_sources_by_capability(inputs_package)
+            print(f'Autodiscovered {len(sources)} sources from {inputs_package}')
+        elif build_sources:
+            _, all_gold_sources = _discover_sources_by_capability(inputs_package)
+            requested = set(sources)
+            discovered_gold_sources = [source for source in all_gold_sources if source in requested]
+
+        resolved_mapping_dir = Path(resolver_mapping_dir) if resolver_mapping_dir is not None else None
+        final_combined_dir = Path(combined_output_dir) if combined_output_dir is not None else (paths.data_root / 'combined')
+        final_combined_dir.mkdir(parents=True, exist_ok=True)
+
+        changed_sources = sorted(discovered_gold_sources or [])
+        tasks = build_task_graph(
+            sources=sources,
+            gold_sources=discovered_gold_sources,
+            build_mappings=build_mappings,
+            build_sources=build_sources,
+            combine=combine,
+            postgres=postgres_uri is not None,
+            start_stage=start_stage,
+        )
+        print(
+            '[pipeline] '
+            f'from={start_stage} test_mode={test_mode} jobs={jobs} '
+            f'data_root={paths.data_root} combined={final_combined_dir}'
+        )
+        print(
+            '[pipeline] '
+            f'sources={len(sources)}:{_format_names(sources)} '
+            f'gold_sources={len(changed_sources)}:{_format_names(changed_sources)}'
+        )
+        print(
+            '[pipeline] '
+            f'download_cache={_download_cache_dir()} '
+            'cache hits appear as "Using existing local file from cache"; '
+            'cache misses appear as "No valid version in cache".'
+        )
+        if test_mode:
+            print(
+                '[pipeline] test_mode limits selected high-volume resources after '
+                'download/cache resolution; it does not bypass raw download lookup.'
+            )
+        planned = _plan_pipeline_tasks(
             tasks=tasks,
             paths=paths,
             inputs_package=inputs_package,
-            batch_size=batch_size,
-            test_mode=test_mode,
-            jobs=jobs,
             resolver_mapping_dir=resolved_mapping_dir,
             combined_output_dir=final_combined_dir,
-            combine_entity_batch_size=combine_entity_batch_size,
-            combine_relation_batch_size=combine_relation_batch_size,
-            start_stage=start_stage,
             changed_sources=changed_sources,
+            start_stage=start_stage,
             postgres_uri=postgres_uri,
-            postgres_schema=postgres_schema,
             postgres_drop_existing=postgres_drop_existing,
         )
-    finally:
-        stop_heartbeat()
+        _print_execution_plan(planned)
+        if confirm_plan:
+            _confirm_execution_plan()
+        start_heartbeat()
+        try:
+            results = _run_dag(
+                tasks=tasks,
+                paths=paths,
+                inputs_package=inputs_package,
+                batch_size=batch_size,
+                test_mode=test_mode,
+                jobs=jobs,
+                resolver_mapping_dir=resolved_mapping_dir,
+                combined_output_dir=final_combined_dir,
+                combine_entity_batch_size=combine_entity_batch_size,
+                combine_relation_batch_size=combine_relation_batch_size,
+                combine_min_part_size_mb=combine_min_part_size_mb,
+                start_stage=start_stage,
+                changed_sources=changed_sources,
+                postgres_uri=postgres_uri,
+                postgres_schema=postgres_schema,
+                postgres_drop_existing=postgres_drop_existing,
+            )
+        finally:
+            stop_heartbeat()
 
-    for source in sources:
-        silver_result = results.get(f'silver:{source}')
-        if silver_result and silver_result.status in {'executed', 'reused'}:
-            version = silver_result.metadata.get('version')
-            if version:
-                pointer_metadata = {}
-                inputs_hash = silver_result.metadata.get('inputs_module_hash')
-                if inputs_hash:
-                    pointer_metadata['inputs_module_hash'] = inputs_hash
-                update_latest_pointer(paths.silver_root, source, str(version), pointer_metadata)
-            elif silver_result.output_dir:
-                try:
-                    resolved_dir = resolve_silver_version(paths.silver_root / source.replace('.', '/'))
-                    stored_hash = read_inputs_module_hash(resolved_dir)
-                    pointer_metadata = {'inputs_module_hash': stored_hash} if stored_hash else None
-                    update_latest_pointer(paths.silver_root, source, resolved_dir.name, pointer_metadata)
-                except FileNotFoundError:
-                    pass
+        for source in sources:
+            silver_result = results.get(f'silver:{source}')
+            if silver_result and silver_result.status in {'executed', 'reused'}:
+                version = silver_result.metadata.get('version')
+                if version:
+                    pointer_metadata = {}
+                    inputs_hash = silver_result.metadata.get('inputs_module_hash')
+                    if inputs_hash:
+                        pointer_metadata['inputs_module_hash'] = inputs_hash
+                    update_latest_pointer(paths.silver_root, source, str(version), pointer_metadata)
+                elif silver_result.output_dir:
+                    try:
+                        resolved_dir = resolve_silver_version(paths.silver_root / source.replace('.', '/'))
+                        stored_hash = read_inputs_module_hash(resolved_dir)
+                        pointer_metadata = {'inputs_module_hash': stored_hash} if stored_hash else None
+                        update_latest_pointer(paths.silver_root, source, resolved_dir.name, pointer_metadata)
+                    except FileNotFoundError:
+                        pass
+    finally:
+        memory_summary = memory_monitor.stop()
 
     report = {
-        'run_id': _run_id(),
+        'run_id': run_id,
         'created_at': iso_now(),
         'selected_sources': sources,
         'data_root': str(paths.data_root),
@@ -1220,6 +1202,7 @@ def run_pipeline(
         'build_sources': build_sources,
         'combine': combine,
         'postgres_enabled': postgres_uri is not None,
+        'memory': memory_summary,
         'tasks': {key: asdict(value) for key, value in results.items()},
     }
     _write_report(paths, report)

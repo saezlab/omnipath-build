@@ -4,6 +4,7 @@ JOBS ?= 4
 BATCH_SIZE ?= 10000
 COMBINE_ENTITY_BATCH_SIZE ?= 50000
 COMBINE_RELATION_BATCH_SIZE ?= 50000
+COMBINE_MIN_PART_SIZE_MB ?= 100
 DATA_ROOT ?= data
 INPUTS_PACKAGE ?= pypath.inputs_v2
 RESOLVER_MAPPING_DIR ?= id_resolver/data
@@ -33,6 +34,7 @@ COMBINE_RUN_DIR ?=
 LOAD_POSTGRES ?=
 YES ?=
 STEP ?= all
+MEMORY_SAMPLE_INTERVAL_SECONDS ?= 5
 
 setup:
 	git submodule add -b main https://github.com/saezlab/pypath.git pypath || true
@@ -76,6 +78,7 @@ combined:
 		--output-dir $(COMBINED_OUTPUT_DIR) \
 		--entity-batch-size $(COMBINE_ENTITY_BATCH_SIZE) \
 		--relation-batch-size $(COMBINE_RELATION_BATCH_SIZE) \
+		--min-part-size-mb $(COMBINE_MIN_PART_SIZE_MB) \
 		$(if $(AFFECTED_ENTITIES),--affected-entities $(AFFECTED_ENTITIES)) \
 		$(if $(AFFECTED_RELATIONS),--affected-relations $(AFFECTED_RELATIONS)) \
 		$(if $(CHANGED_SOURCE),--changed-source $(CHANGED_SOURCE)) \
@@ -125,12 +128,14 @@ pipeline:
 		--batch-size $(BATCH_SIZE) \
 		--combine-entity-batch-size $(COMBINE_ENTITY_BATCH_SIZE) \
 		--combine-relation-batch-size $(COMBINE_RELATION_BATCH_SIZE) \
+		--combine-min-part-size-mb $(COMBINE_MIN_PART_SIZE_MB) \
 		--jobs $(JOBS) \
 		$(if $(TEST_MODE),--test-mode) \
 		$(if $(RESOLVER_MAPPING_DIR),--resolver-mapping-dir $(RESOLVER_MAPPING_DIR)) \
 		--combined-output-dir $(COMBINED_OUTPUT_DIR) \
 		$(if $(LOAD_POSTGRES),--postgres-uri $(POSTGRES_URI) --postgres-schema $(POSTGRES_SCHEMA)) \
 		$(if $(POSTGRES_DROP_EXISTING),--postgres-drop-existing) \
+		--memory-sample-interval-seconds $(MEMORY_SAMPLE_INTERVAL_SECONDS) \
 		$(if $(YES),--yes)
 
 test: TEST_MODE=1

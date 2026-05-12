@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-import atexit
-import threading
 import time
+import atexit
+from typing import Any, Iterator
+import threading
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Iterator
-
 
 @dataclass
 class ActivePhase:
@@ -38,6 +37,22 @@ def _format_active(now: float) -> str:
             f'{phase.label}({elapsed:.0f}s{stale_suffix}; {phase.detail})'
         )
     return '[active] ' + ' | '.join(parts)
+
+
+def active_phase_snapshot() -> list[dict[str, Any]]:
+    """Return active phase labels in a JSON-serializable form."""
+    now = time.perf_counter()
+    with _lock:
+        phases = list(_active.values())
+    return [
+        {
+            'label': phase.label,
+            'detail': phase.detail,
+            'elapsed_seconds': now - phase.started_at,
+            'stale_seconds': now - phase.updated_at,
+        }
+        for phase in sorted(phases, key=lambda item: item.started_at)
+    ]
 
 
 def _heartbeat() -> None:

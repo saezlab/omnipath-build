@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-import argparse
 import sys
-from pathlib import Path
 from typing import Sequence
+from pathlib import Path
+import argparse
 
 from omnipath_build.pipeline.dag import run_pipeline
-
 
 def _normalize_key_value_args(argv: Sequence[str] | None) -> list[str] | None:
     if argv is None:
@@ -104,6 +103,12 @@ def build_parser() -> argparse.ArgumentParser:
         help='Number of relation keys per DuckDB combine batch.',
     )
     parser.add_argument(
+        '--combine-min-part-size-mb',
+        type=int,
+        default=100,
+        help='Target minimum combine part size in MiB before creating another part.',
+    )
+    parser.add_argument(
         '--postgres-uri',
         type=str,
         default=None,
@@ -125,6 +130,12 @@ def build_parser() -> argparse.ArgumentParser:
         '--yes',
         action='store_true',
         help='Execute the printed plan without waiting for Enter.',
+    )
+    parser.add_argument(
+        '--memory-sample-interval-seconds',
+        type=float,
+        default=5.0,
+        help='Interval for phase-aware RSS memory samples (default: 5 seconds).',
     )
     return parser
 
@@ -149,10 +160,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         combined_output_dir=args.combined_output_dir,
         combine_entity_batch_size=args.combine_entity_batch_size,
         combine_relation_batch_size=args.combine_relation_batch_size,
+        combine_min_part_size_mb=args.combine_min_part_size_mb,
         confirm_plan=not args.yes,
         postgres_uri=args.postgres_uri,
         postgres_schema=args.postgres_schema,
         postgres_drop_existing=args.postgres_drop_existing,
+        memory_sample_interval_seconds=args.memory_sample_interval_seconds,
     )
     print(f"run_id={report['run_id']}")
     return 0

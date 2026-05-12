@@ -29,7 +29,8 @@ from omnipath_build.silver.tables import (
 from pypath.inputs_v2.raw_records import (
     ProvenancedRecord,
     RawRecordProvenance,
-    changed_keys,
+    changed_key_count,
+    changed_key_counts_by_type,
 )
 from omnipath_build.silver.validate import validate_entity_identifier_shapes
 from pypath.internals.silver_schema import (
@@ -328,26 +329,6 @@ def _record_provenance(record: object) -> RawRecordProvenance | None:
     if isinstance(record, ProvenancedRecord):
         return record.provenance
     return None
-
-
-def _changed_keys_by_type(delta_path: Path) -> tuple[set[str], set[str]]:
-    if not delta_path.exists():
-        return set(), set()
-    table = pq.read_table(delta_path, columns=['_raw_record_key', '_change_type'])
-    added: set[str] = set()
-    removed: set[str] = set()
-    for raw_record_key, change_type in zip(
-        table.column('_raw_record_key').to_pylist(),
-        table.column('_change_type').to_pylist(),
-        strict=False,
-    ):
-        if raw_record_key is None:
-            continue
-        if change_type == 'added':
-            added.add(str(raw_record_key))
-        elif change_type == 'removed':
-            removed.add(str(raw_record_key))
-    return added, removed
 
 
 def _ensure_entity_record(record: object) -> None:
@@ -1192,8 +1173,8 @@ def run_silver_loader(
             writer = None
             raw_dataset = getattr(fn.call, '_raw_dataset', None)
             incremental_state_dir: Path | None = None
-            incremental_added_keys: set[str] = set()
-            incremental_removed_keys: set[str] = set()
+            incremental_added_count = 0
+            incremental_removed_count = 0
             use_incremental_raw_rows = False
             if (
                 raw_dataset is not None
@@ -1229,15 +1210,15 @@ def run_silver_loader(
                     dataset=fn.function_name,
                     **preparse_kwargs,
                 )
-                delta_keys = changed_keys(snapshot.delta_path)
-                incremental_added_keys, incremental_removed_keys = _changed_keys_by_type(
-                    snapshot.delta_path
-                )
-                update_phase(f'preparse ready delta_keys={len(delta_keys):,}')
+                delta_key_count = changed_key_count(snapshot.delta_path)
+                delta_key_counts = changed_key_counts_by_type(snapshot.delta_path)
+                incremental_added_count = delta_key_counts['added']
+                incremental_removed_count = delta_key_counts['removed']
+                update_phase(f'preparse ready delta_keys={delta_key_count:,}')
                 print(
                     f'[bronze:{fn.source}.{fn.function_name}] preparse ready '
                     f'snapshot={snapshot.snapshot_id} '
-                    f'delta_keys={len(delta_keys):,} '
+                    f'delta_keys={delta_key_count:,} '
                     f'elapsed={time.perf_counter() - bronze_started:.1f}s',
                     flush=True,
                 )
@@ -1260,7 +1241,7 @@ def run_silver_loader(
                     and (changed_only or use_incremental_raw_rows)
                 )
                 if (
-                    not delta_keys
+                    delta_key_count == 0
                     and (
                         incremental_state_dir is not None
                         or (not override and has_silver_tables(source_dir))
@@ -1314,11 +1295,11 @@ def run_silver_loader(
                         writer.exclude_dataset(fn.function_name)
                     else:
                         writer.exclude_raw_record_delta(snapshot.delta_path)
-                    if delta_keys:
+                    if delta_key_count:
                         print(
                             f'[{fn.source}.{fn.function_name}] incremental silver update: '
-                            f'added_raw_keys={len(incremental_added_keys):,} '
-                            f'removed_raw_keys={len(incremental_removed_keys):,}',
+                            f'added_raw_keys={incremental_added_count:,} '
+                            f'removed_raw_keys={incremental_removed_count:,}',
                             flush=True,
                         )
                     else:

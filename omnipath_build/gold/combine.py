@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 from pathlib import Path
 from typing import Any
 
@@ -13,8 +12,8 @@ def build_combined(
     *,
     gold_root: str | Path = 'data/gold',
     output_dir: str | Path = 'data/combined',
-    affected_entity_keys: set[str] | None = None,
-    affected_relation_keys: set[str] | None = None,
+    affected_entity_key_paths: list[str | Path] | None = None,
+    affected_relation_key_paths: list[str | Path] | None = None,
     inputs_package: str = 'pypath.inputs_v2',
     freeze_monthly: bool = False,
     changed_source: str | None = None,
@@ -26,8 +25,8 @@ def build_combined(
     return build_combined_duckdb(
         gold_root=gold_root,
         output_dir=output_dir,
-        affected_entity_keys=affected_entity_keys,
-        affected_relation_keys=affected_relation_keys,
+        affected_entity_key_paths=affected_entity_key_paths,
+        affected_relation_key_paths=affected_relation_key_paths,
         inputs_package=inputs_package,
         freeze_monthly=freeze_monthly,
         changed_source=changed_source,
@@ -63,13 +62,15 @@ def build_parser() -> argparse.ArgumentParser:
         '--affected-entities',
         type=Path,
         default=None,
-        help='Path to JSON file with list of affected entity_keys.',
+        action='append',
+        help='Path to parquet file with affected entity_key rows. Repeat for multiple sources.',
     )
     parser.add_argument(
         '--affected-relations',
         type=Path,
         default=None,
-        help='Path to JSON file with list of affected relation_keys.',
+        action='append',
+        help='Path to parquet file with affected relation_key rows. Repeat for multiple sources.',
     )
     parser.add_argument(
         '--freeze-monthly',
@@ -145,13 +146,6 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
-    affected_entity_keys: set[str] | None = None
-    affected_relation_keys: set[str] | None = None
-    if args.affected_entities is not None:
-        affected_entity_keys = set(json.loads(args.affected_entities.read_text()))
-    if args.affected_relations is not None:
-        affected_relation_keys = set(json.loads(args.affected_relations.read_text()))
-
     partition_config = GoldPartitionConfig(
         bucket_count=args.bucket_count,
         part_count=args.part_count,
@@ -164,8 +158,8 @@ def main(argv: list[str] | None = None) -> int:
     build_combined(
         gold_root=args.gold_root,
         output_dir=args.output_dir,
-        affected_entity_keys=affected_entity_keys,
-        affected_relation_keys=affected_relation_keys,
+        affected_entity_key_paths=args.affected_entities,
+        affected_relation_key_paths=args.affected_relations,
         inputs_package=args.inputs_package,
         freeze_monthly=args.freeze_monthly,
         changed_source=args.changed_source,
