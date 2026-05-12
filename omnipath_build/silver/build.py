@@ -20,6 +20,7 @@ import pyarrow.parquet as pq
 
 from omnipath_build.silver.paths import PathManager
 from omnipath_build.silver.tables import (
+    SILVER_TABLE_SCHEMAS,
     SilverTableWriter,
     silver_table_dir,
     has_silver_tables,
@@ -652,6 +653,8 @@ def _process_single_output(
             dataset=resource_fn.function_name,
             raw_record_id=first_provenance.raw_record_id if first_provenance else None,
             raw_record_key=first_provenance.raw_record_key if first_provenance else None,
+            raw_record_bucket=first_provenance.raw_record_bucket if first_provenance else None,
+            raw_record_part=first_provenance.raw_record_part if first_provenance else None,
             snapshot_id=first_provenance.snapshot_id if first_provenance else None,
         )
     if write_nested:
@@ -685,6 +688,8 @@ def _process_single_output(
                 dataset=resource_fn.function_name,
                 raw_record_id=provenance.raw_record_id if provenance else None,
                 raw_record_key=provenance.raw_record_key if provenance else None,
+                raw_record_bucket=provenance.raw_record_bucket if provenance else None,
+                raw_record_part=provenance.raw_record_part if provenance else None,
                 snapshot_id=provenance.snapshot_id if provenance else None,
             )
         if write_nested:
@@ -896,6 +901,8 @@ def _process_multi_output(
                 dataset=output_name,
                 raw_record_id=output_provenance.raw_record_id if output_provenance else None,
                 raw_record_key=output_provenance.raw_record_key if output_provenance else None,
+                raw_record_bucket=output_provenance.raw_record_bucket if output_provenance else None,
+                raw_record_part=output_provenance.raw_record_part if output_provenance else None,
                 snapshot_id=output_provenance.snapshot_id if output_provenance else None,
             )
         if silver_writer is None:
@@ -1284,9 +1291,12 @@ def run_silver_loader(
                 if writer is None:
                     source_dir = path_manager.source_path(fn.source)
                     if override and incremental_state_dir is None:
-                        for legacy_file in source_dir.glob('*.parquet'):
-                            if legacy_file.name != 'resource.parquet':
-                                legacy_file.unlink()
+                        for table_name in SILVER_TABLE_SCHEMAS:
+                            table_dir = source_dir / table_name
+                            if table_dir.exists():
+                                import shutil
+
+                                shutil.rmtree(table_dir)
                         stale_dir = source_dir / 'normalized'
                         if stale_dir.exists():
                             for stale_file in stale_dir.glob('*.parquet'):
@@ -1303,7 +1313,7 @@ def run_silver_loader(
                     if fn.output_kind == 'ontology':
                         writer.exclude_dataset(fn.function_name)
                     else:
-                        writer.exclude_raw_record_keys(incremental_removed_keys)
+                        writer.exclude_raw_record_delta(snapshot.delta_path)
                     if delta_keys:
                         print(
                             f'[{fn.source}.{fn.function_name}] incremental silver update: '

@@ -42,6 +42,8 @@ from omnipath_build.gold.build_entities import (
     _copy_part_query,
     _copy_query,
     _glob_or_none,
+    _read_parquet_dataset_sql,
+    _silver_table_path,
     _sql_path,
 )
 
@@ -626,8 +628,8 @@ def _write_filtered_silver_parent_part(
         shutil.rmtree(part_state_dir)
     part_state_dir.mkdir(parents=True, exist_ok=True)
 
-    occurrence_path = silver_base / 'entity_occurrence.parquet'
-    membership_path = silver_base / 'membership.parquet'
+    occurrence_path = _silver_table_path(silver_base, 'entity_occurrence')
+    membership_path = _silver_table_path(silver_base, 'membership')
     if not occurrence_path.exists():
         raise FileNotFoundError(f'missing silver entity_occurrence table: {occurrence_path}')
 
@@ -635,7 +637,7 @@ def _write_filtered_silver_parent_part(
     con.execute(f"""
         create temp table _parent_occurrence_ids as
         select distinct try_cast(occurrence_id as varchar) as occurrence_id
-        from read_parquet('{_sql_path(occurrence_path)}')
+        from {_read_parquet_dataset_sql(occurrence_path)}
         where occurrence_id is not null
           and (parent_occurrence_id is null or try_cast(parent_occurrence_id as varchar) = '')
           and stable_part(try_cast(occurrence_id as varchar), {cfg.bucket_count}, {cfg.part_count}) = {parent_part}
@@ -647,7 +649,7 @@ def _write_filtered_silver_parent_part(
     if membership_path.exists():
         _copy_query(con, f"""
             select *
-            from read_parquet('{_sql_path(membership_path)}')
+            from {_read_parquet_dataset_sql(membership_path)}
             where try_cast(parent_occurrence_id as varchar) in (select occurrence_id from _parent_occurrence_ids)
         """, part_state_dir / 'membership.parquet')
     else:
@@ -665,16 +667,16 @@ def _write_filtered_silver_parent_part(
 
     _copy_query(con, f"""
         select *
-        from read_parquet('{_sql_path(occurrence_path)}')
+        from {_read_parquet_dataset_sql(occurrence_path)}
         where try_cast(occurrence_id as varchar) in (select occurrence_id from _included_occurrence_ids)
     """, part_state_dir / 'entity_occurrence.parquet')
 
     for table in ['entity_identifier', 'entity_annotation']:
-        source_path = silver_base / f'{table}.parquet'
+        source_path = _silver_table_path(silver_base, table)
         if source_path.exists():
             _copy_query(con, f"""
                 select *
-                from read_parquet('{_sql_path(source_path)}')
+                from {_read_parquet_dataset_sql(source_path)}
                 where try_cast(occurrence_id as varchar) in (select occurrence_id from _included_occurrence_ids)
             """, part_state_dir / f'{table}.parquet')
         else:
@@ -687,11 +689,11 @@ def _write_filtered_silver_parent_part(
         from read_parquet('{_sql_path(part_state_dir / 'membership.parquet')}')
         where membership_id is not null
     """)
-    membership_annotation_path = silver_base / 'membership_annotation.parquet'
+    membership_annotation_path = _silver_table_path(silver_base, 'membership_annotation')
     if membership_annotation_path.exists():
         _copy_query(con, f"""
             select *
-            from read_parquet('{_sql_path(membership_annotation_path)}')
+            from {_read_parquet_dataset_sql(membership_annotation_path)}
             where try_cast(membership_id as varchar) in (select membership_id from _included_membership_ids)
         """, part_state_dir / 'membership_annotation.parquet')
     else:

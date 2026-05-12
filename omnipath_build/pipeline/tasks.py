@@ -298,13 +298,15 @@ def _source_supports_incremental_silver(source: str, inputs_package: str) -> boo
 
 
 def _silver_table_names() -> list[str]:
-    return [f'{name}.parquet' for name in SILVER_TABLE_SCHEMAS]
+    return list(SILVER_TABLE_SCHEMAS)
 
 
 def _parquet_row_count(path: Path) -> int:
     if not path.exists():
         return 0
-    return int(pq.ParquetFile(path).metadata.num_rows)
+    if path.is_file():
+        return int(pq.ParquetFile(path).metadata.num_rows)
+    return sum(int(pq.ParquetFile(file).metadata.num_rows) for file in _parquet_table_files(path))
 
 
 def _parquet_table_files(path: Path) -> list[Path]:
@@ -406,7 +408,29 @@ def _select_columns_sql(columns: list[str], alias: str) -> str:
 
 def _copy_silver_table(source_path: Path, target_path: Path) -> None:
     target_path.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(source_path, target_path)
+    if target_path.exists():
+        if target_path.is_dir():
+            shutil.rmtree(target_path)
+        else:
+            target_path.unlink()
+    if source_path.is_dir():
+        shutil.copytree(source_path, target_path)
+    else:
+        shutil.copy2(source_path, target_path)
+
+
+def _duckdb_read_parquet_table_sql(path: Path) -> str:
+    if path.is_dir():
+        value = str(path / '**' / '*.parquet')
+        escaped = value.replace("'", "''")
+        return (
+            "read_parquet("
+            f"'{escaped}', "
+            "union_by_name=true, hive_partitioning=true)"
+        )
+    value = str(path)
+    escaped = value.replace("'", "''")
+    return f"read_parquet('{escaped}')"
 
 
 def _write_lineage_delta_for_table(
@@ -417,14 +441,20 @@ def _write_lineage_delta_for_table(
     delta_path: Path,
 ) -> dict[str, int]:
     """Write silver delta rows by raw-record lineage, not by full row diff."""
-    columns = list(SILVER_TABLE_SCHEMAS[table_name.removesuffix('.parquet')].names)
+    columns = list(SILVER_TABLE_SCHEMAS[table_name].names)
     selected_current = _select_columns_sql(columns, 'c')
     selected_previous = _select_columns_sql(columns, 'p')
-    current_sql = "'" + str(current_path).replace("'", "''") + "'"
-    previous_sql = "'" + str(previous_path).replace("'", "''") + "'"
-    output_sql = "'" + str(delta_path).replace("'", "''") + "'"
+    current_sql = _duckdb_read_parquet_table_sql(current_path)
+    previous_sql = _duckdb_read_parquet_table_sql(previous_path)
+    output_file = delta_path / 'part=00000.parquet'
+    output_sql = "'" + str(output_file).replace("'", "''") + "'"
 
-    delta_path.parent.mkdir(parents=True, exist_ok=True)
+    if delta_path.exists():
+        if delta_path.is_dir():
+            shutil.rmtree(delta_path)
+        else:
+            delta_path.unlink()
+    delta_path.mkdir(parents=True, exist_ok=True)
     con = duckdb.connect()
     try:
         con.execute(
@@ -433,25 +463,25 @@ def _write_lineage_delta_for_table(
                 WITH
                 previous_keys AS (
                     SELECT DISTINCT _raw_record_key
-                    FROM read_parquet({previous_sql})
+                    FROM {previous_sql}
                     WHERE _raw_record_key IS NOT NULL
                 ),
                 current_keys AS (
                     SELECT DISTINCT _raw_record_key
-                    FROM read_parquet({current_sql})
+                    FROM {current_sql}
                     WHERE _raw_record_key IS NOT NULL
                 )
                 SELECT
                     {selected_current},
                     'added'::VARCHAR AS _change_type
-                FROM read_parquet({current_sql}) AS c
+                FROM {current_sql} AS c
                 WHERE c._raw_record_key IS NOT NULL
                   AND c._raw_record_key NOT IN (SELECT _raw_record_key FROM previous_keys)
                 UNION ALL
                 SELECT
                     {selected_previous},
                     'removed'::VARCHAR AS _change_type
-                FROM read_parquet({previous_sql}) AS p
+                FROM {previous_sql} AS p
                 WHERE p._raw_record_key IS NOT NULL
                   AND p._raw_record_key NOT IN (SELECT _raw_record_key FROM current_keys)
             ) TO {output_sql} (FORMAT PARQUET, COMPRESSION ZSTD)
@@ -463,7 +493,7 @@ def _write_lineage_delta_for_table(
             FROM read_parquet(?)
             GROUP BY _change_type
             """,
-            [str(delta_path)],
+            [str(output_file)],
         ).fetchall()
     finally:
         con.close()
@@ -555,8 +585,9 @@ def resolve_silver_version(silver_source_dir: Path) -> Path:
 
 def silver_has_data(silver_dir: Path) -> bool:
     return any(
-        path.name != 'resource.parquet'
-        for path in silver_dir.glob('*.parquet')
+        (silver_dir / table_name).exists()
+        and _parquet_row_count(silver_dir / table_name) > 0
+        for table_name in _silver_table_names()
     )
 
 
@@ -673,7 +704,7 @@ def _affected_silver_ids_from_delta(
             unreadable_tables.append(table_name)
             continue
         try:
-            delta = pl.read_parquet(path)
+            delta = _read_parquet_table(path)
         except (OSError, pl.exceptions.PolarsError):
             unreadable_tables.append(table_name)
             continue
@@ -704,13 +735,13 @@ def _affected_silver_ids_from_delta(
 def _raw_record_ids_for_occurrences(silver_dir: Path, occurrence_ids: set[str]) -> set[str]:
     if not occurrence_ids:
         return set()
-    occurrence_path = silver_dir / 'entity_occurrence.parquet'
+    occurrence_path = silver_dir / 'entity_occurrence'
     if not occurrence_path.exists():
         return set()
-    occurrences = pl.read_parquet(occurrence_path)
-    if 'occurrence_id' not in occurrences.columns:
+    occurrences = _scan_parquet_table(occurrence_path)
+    if 'occurrence_id' not in occurrences.collect_schema().names():
         return set()
-    scoped = occurrences.filter(pl.col('occurrence_id').cast(pl.String).is_in(sorted(occurrence_ids)))
+    scoped = occurrences.filter(pl.col('occurrence_id').cast(pl.String).is_in(sorted(occurrence_ids))).collect()
     values = _string_values(scoped, 'record_id')
     values.update(_string_values(scoped, '_raw_record_id'))
     return values
@@ -1222,8 +1253,11 @@ def _filter_silver_for_raw_records(
     raw_record_ids: set[str],
 ) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
-    for path in silver_dir.glob('*.parquet'):
-        frame = pl.read_parquet(path)
+    for name in SILVER_TABLE_SCHEMAS:
+        path = silver_dir / name
+        if not path.exists():
+            continue
+        frame = _read_parquet_table(path)
         if not raw_record_ids:
             filtered = frame.head(0)
         elif 'record_id' in frame.columns:
@@ -1232,7 +1266,9 @@ def _filter_silver_for_raw_records(
             filtered = frame.filter(pl.col('_raw_record_id').cast(pl.String).is_in(sorted(raw_record_ids)))
         else:
             filtered = frame.head(0)
-        filtered.write_parquet(output_dir / path.name)
+        target = output_dir / name
+        target.mkdir(parents=True, exist_ok=True)
+        filtered.write_parquet(target / 'part=00000.parquet')
 
 
 def _build_gold_source_incremental(

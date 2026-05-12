@@ -11,9 +11,13 @@ from __future__ import annotations
 from typing import Any
 from pathlib import Path
 
+import duckdb
 import pyarrow as pa
 import pyarrow.compute as pc
+import pyarrow.dataset as ds
 import pyarrow.parquet as pq
+
+from pypath.inputs_v2.raw_records import RAW_RECORD_BUCKET_COUNT
 
 from pypath.internals.silver_schema import Entity
 
@@ -41,6 +45,8 @@ ENTITY_OCCURRENCE_SCHEMA = pa.schema([
     pa.field('dataset', pa.string(), nullable=False),
     pa.field('_raw_record_id', pa.int64()),
     pa.field('_raw_record_key', pa.string()),
+    pa.field('raw_record_bucket', pa.int64()),
+    pa.field('raw_record_part', pa.int64()),
     pa.field('_snapshot_id', pa.string()),
 ])
 
@@ -52,6 +58,8 @@ ENTITY_IDENTIFIER_SCHEMA = pa.schema([
     pa.field('dataset', pa.string(), nullable=False),
     pa.field('_raw_record_id', pa.int64()),
     pa.field('_raw_record_key', pa.string()),
+    pa.field('raw_record_bucket', pa.int64()),
+    pa.field('raw_record_part', pa.int64()),
     pa.field('_snapshot_id', pa.string()),
 ])
 
@@ -64,6 +72,8 @@ ENTITY_ANNOTATION_SCHEMA = pa.schema([
     pa.field('dataset', pa.string(), nullable=False),
     pa.field('_raw_record_id', pa.int64()),
     pa.field('_raw_record_key', pa.string()),
+    pa.field('raw_record_bucket', pa.int64()),
+    pa.field('raw_record_part', pa.int64()),
     pa.field('_snapshot_id', pa.string()),
 ])
 
@@ -77,6 +87,8 @@ MEMBERSHIP_SCHEMA = pa.schema([
     pa.field('dataset', pa.string(), nullable=False),
     pa.field('_raw_record_id', pa.int64()),
     pa.field('_raw_record_key', pa.string()),
+    pa.field('raw_record_bucket', pa.int64()),
+    pa.field('raw_record_part', pa.int64()),
     pa.field('_snapshot_id', pa.string()),
 ])
 
@@ -91,6 +103,8 @@ MEMBERSHIP_ANNOTATION_SCHEMA = pa.schema([
     pa.field('dataset', pa.string(), nullable=False),
     pa.field('_raw_record_id', pa.int64()),
     pa.field('_raw_record_key', pa.string()),
+    pa.field('raw_record_bucket', pa.int64()),
+    pa.field('raw_record_part', pa.int64()),
     pa.field('_snapshot_id', pa.string()),
 ])
 
@@ -109,16 +123,16 @@ def silver_table_dir(source_dir: str | Path) -> Path:
 
 def has_silver_tables(source_dir: str | Path) -> bool:
     base = silver_table_dir(source_dir)
-    return all((base / f'{name}.parquet').exists() for name in SILVER_TABLE_SCHEMAS)
+    return all((base / name).exists() for name in SILVER_TABLE_SCHEMAS)
 
 
 def has_raw_keyed_silver_tables(source_dir: str | Path) -> bool:
     base = silver_table_dir(source_dir)
     for name in SILVER_TABLE_SCHEMAS:
-        path = base / f'{name}.parquet'
+        path = base / name
         if not path.exists():
             return False
-        schema = pq.read_schema(path)
+        schema = ds.dataset(path, format='parquet').schema
         if '_raw_record_key' not in schema.names:
             return False
     return True
@@ -134,12 +148,13 @@ def _text(value: Any) -> str | None:
 
 
 class _BufferedWriter:
-    def __init__(self, path: Path, schema: pa.Schema, batch_size: int) -> None:
-        self.path = path
+    def __init__(self, root: Path, schema: pa.Schema, batch_size: int) -> None:
+        self.root = root
         self.schema = schema
         self.batch_size = batch_size
         self.rows: list[dict[str, Any]] = []
-        self.writer: pq.ParquetWriter | None = None
+        self.writers: dict[int, pq.ParquetWriter] = {}
+        self.root.mkdir(parents=True, exist_ok=True)
 
     def write(self, row: dict[str, Any]) -> None:
         self.rows.append(row)
@@ -153,16 +168,40 @@ class _BufferedWriter:
         self.rows.clear()
 
     def write_table(self, table: pa.Table) -> None:
-        if self.writer is None:
-            self.writer = pq.ParquetWriter(self.path, self.schema)
-        self.writer.write_table(table.cast(self.schema, safe=False))
+        table = table.cast(self.schema, safe=False)
+        parts = sorted({
+            int(part)
+            for part in table.column('raw_record_part').to_pylist()
+            if part is not None
+        })
+        if not parts and table.num_rows:
+            table = table.set_column(
+                table.schema.get_field_index('raw_record_part'),
+                'raw_record_part',
+                pa.array([0] * table.num_rows, type=pa.int64()),
+            )
+            parts = [0]
+        for part_int in parts:
+            part_table = table.filter(
+                pc.equal(table.column('raw_record_part'), pa.scalar(part_int, type=pa.int64()))
+            )
+            writer = self.writers.get(part_int)
+            if writer is None:
+                part_dir = self.root / f'part={part_int:05d}'
+                part_dir.mkdir(parents=True, exist_ok=True)
+                writer = pq.ParquetWriter(part_dir / 'data.parquet', self.schema)
+                self.writers[part_int] = writer
+            writer.write_table(part_table)
 
     def close(self) -> None:
         self.flush()
-        if self.writer is not None:
-            self.writer.close()
-        else:
-            pq.write_table(pa.Table.from_pylist([], schema=self.schema), self.path)
+        empty = pa.Table.from_pylist([], schema=self.schema)
+        if not self.writers:
+            part_dir = self.root / 'part=00000'
+            part_dir.mkdir(parents=True, exist_ok=True)
+            pq.write_table(empty, part_dir / 'data.parquet')
+        for writer in self.writers.values():
+            writer.close()
 
 
 class SilverTableWriter:
@@ -181,10 +220,11 @@ class SilverTableWriter:
         self.batch_size = batch_size
         self.seed_from_dir = Path(seed_from_dir) if seed_from_dir is not None else None
         self._excluded_raw_record_keys: set[str] = set()
+        self._excluded_raw_record_delta_path: Path | None = None
         self._excluded_datasets: set[str] = set()
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self._writers = {
-            name: _BufferedWriter(self.output_dir / f'{name}.parquet', schema, batch_size)
+            name: _BufferedWriter(self.output_dir / name, schema, batch_size)
             for name, schema in SILVER_TABLE_SCHEMAS.items()
         }
         self._dataset_counts: dict[str, int] = {}
@@ -192,6 +232,9 @@ class SilverTableWriter:
 
     def exclude_raw_record_keys(self, keys: set[str]) -> None:
         self._excluded_raw_record_keys.update(key for key in keys if key)
+
+    def exclude_raw_record_delta(self, delta_path: str | Path) -> None:
+        self._excluded_raw_record_delta_path = Path(delta_path)
 
     def exclude_dataset(self, dataset: str) -> None:
         self._excluded_datasets.add(dataset)
@@ -203,8 +246,15 @@ class SilverTableWriter:
         dataset: str,
         raw_record_id: int | None = None,
         raw_record_key: str | None = None,
+        raw_record_bucket: int | None = None,
+        raw_record_part: int | None = None,
         snapshot_id: str | None = None,
     ) -> str:
+        raw_record_bucket, raw_record_part = _raw_record_partition(
+            raw_record_key,
+            raw_record_bucket,
+            raw_record_part,
+        )
         return self._write_entity(
             entity,
             dataset=dataset,
@@ -212,6 +262,8 @@ class SilverTableWriter:
             entity_role='parent',
             raw_record_id=raw_record_id,
             raw_record_key=raw_record_key,
+            raw_record_bucket=raw_record_bucket,
+            raw_record_part=raw_record_part,
             snapshot_id=snapshot_id,
             occurrence_suffix='parent',
         )
@@ -235,6 +287,8 @@ class SilverTableWriter:
         entity_role: str,
         raw_record_id: int | None,
         raw_record_key: str | None,
+        raw_record_bucket: int | None,
+        raw_record_part: int | None,
         snapshot_id: str | None,
         occurrence_suffix: str,
     ) -> str:
@@ -252,6 +306,8 @@ class SilverTableWriter:
             'dataset': dataset,
             '_raw_record_id': raw_record_id,
             '_raw_record_key': raw_record_key,
+            'raw_record_bucket': raw_record_bucket,
+            'raw_record_part': raw_record_part,
             '_snapshot_id': snapshot_id,
         })
 
@@ -264,6 +320,8 @@ class SilverTableWriter:
                 'dataset': dataset,
                 '_raw_record_id': raw_record_id,
                 '_raw_record_key': raw_record_key,
+                'raw_record_bucket': raw_record_bucket,
+                'raw_record_part': raw_record_part,
                 '_snapshot_id': snapshot_id,
             })
 
@@ -277,6 +335,8 @@ class SilverTableWriter:
                 'dataset': dataset,
                 '_raw_record_id': raw_record_id,
                 '_raw_record_key': raw_record_key,
+                'raw_record_bucket': raw_record_bucket,
+                'raw_record_part': raw_record_part,
                 '_snapshot_id': snapshot_id,
             })
 
@@ -291,6 +351,8 @@ class SilverTableWriter:
                 entity_role='member',
                 raw_record_id=raw_record_id,
                 raw_record_key=raw_record_key,
+                raw_record_bucket=raw_record_bucket,
+                raw_record_part=raw_record_part,
                 snapshot_id=snapshot_id,
                 occurrence_suffix=f'{occurrence_suffix}:member:{membership_index}',
             )
@@ -309,6 +371,8 @@ class SilverTableWriter:
                 'dataset': dataset,
                 '_raw_record_id': raw_record_id,
                 '_raw_record_key': raw_record_key,
+                'raw_record_bucket': raw_record_bucket,
+                'raw_record_part': raw_record_part,
                 '_snapshot_id': snapshot_id,
             })
             for annotation in getattr(membership, 'annotations', None) or []:
@@ -323,6 +387,8 @@ class SilverTableWriter:
                     'dataset': dataset,
                     '_raw_record_id': raw_record_id,
                     '_raw_record_key': raw_record_key,
+                    'raw_record_bucket': raw_record_bucket,
+                    'raw_record_part': raw_record_part,
                     '_snapshot_id': snapshot_id,
                 })
 
@@ -336,16 +402,55 @@ class SilverTableWriter:
 
     def _write_seed_rows(self) -> None:
         for name, schema in SILVER_TABLE_SCHEMAS.items():
-            path = self.seed_from_dir / f'{name}.parquet'
+            path = self.seed_from_dir / name
             if not path.exists():
                 continue
-            parquet = pq.ParquetFile(path)
-            for batch in parquet.iter_batches(batch_size=self.batch_size):
-                table = pa.Table.from_batches([batch])
+            if self._excluded_raw_record_delta_path is not None:
+                self._write_seed_rows_with_delta_filter(name, path, schema)
+                continue
+            dataset = ds.dataset(path, format='parquet')
+            for batch in dataset.to_batches(batch_size=self.batch_size):
+                table = pa.Table.from_batches([batch], schema=batch.schema)
                 table = self._filter_seed_table(table)
                 if table.num_rows == 0:
                     continue
                 self._writers[name].write_table(_align_table_to_schema(table, schema))
+
+    def _write_seed_rows_with_delta_filter(
+        self,
+        name: str,
+        path: Path,
+        schema: pa.Schema,
+    ) -> None:
+        filters = ["d._raw_record_key is null"]
+        if self._excluded_datasets:
+            excluded = ', '.join(_sql_literal(dataset) for dataset in sorted(self._excluded_datasets))
+            filters.append(f"s.dataset not in ({excluded})")
+        con = duckdb.connect()
+        try:
+            reader = con.execute(f"""
+                select s.*
+                from {_read_dataset_sql(path)} s
+                left join (
+                    select distinct _raw_record_key
+                    from {_read_dataset_sql(self._excluded_raw_record_delta_path)}
+                    where _change_type = 'removed'
+                      and _raw_record_key is not null
+                ) d using (_raw_record_key)
+                where {' and '.join(filters)}
+                order by s.raw_record_part, s._raw_record_key
+            """).fetch_record_batch(rows_per_batch=self.batch_size)
+            while True:
+                try:
+                    batch = reader.read_next_batch()
+                except StopIteration:
+                    break
+                if batch.num_rows == 0:
+                    continue
+                table = pa.Table.from_batches([batch])
+                self._writers[name].write_table(_align_table_to_schema(table, schema))
+        finally:
+            con.close()
 
     def _filter_seed_table(self, table: pa.Table) -> pa.Table:
         mask = pa.array([True] * table.num_rows)
@@ -374,3 +479,32 @@ def _align_table_to_schema(table: pa.Table, schema: pa.Schema) -> pa.Table:
         else:
             columns.append(pa.nulls(table.num_rows, type=field.type))
     return pa.Table.from_arrays(columns, schema=schema)
+
+
+def _raw_record_partition(
+    raw_record_key: str | None,
+    raw_record_bucket: int | None,
+    raw_record_part: int | None,
+) -> tuple[int | None, int | None]:
+    if raw_record_bucket is not None and raw_record_part is not None:
+        return raw_record_bucket, raw_record_part
+    if raw_record_key is None:
+        return None, None
+    import hashlib
+
+    digest = hashlib.sha256(raw_record_key.encode('utf-8')).digest()
+    bucket = int.from_bytes(digest[:8], 'big', signed=False) % RAW_RECORD_BUCKET_COUNT
+    part = 0
+    return bucket, part
+
+
+def _read_dataset_sql(path: Path) -> str:
+    return (
+        "read_parquet("
+        f"{_sql_literal(str(path / '**' / '*.parquet'))}, "
+        "union_by_name=true, hive_partitioning=true)"
+    )
+
+
+def _sql_literal(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"

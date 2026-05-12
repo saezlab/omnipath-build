@@ -66,12 +66,34 @@ def build_combined_duckdb(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    source_dirs = _discover_gold_source_dirs(gold_root)
     requested_part_count = cfg.part_count
+    source_dirs = _discover_gold_source_dirs(gold_root) if gold_root.exists() else []
     cfg, input_bytes = effective_partition_config_for_paths(
         cfg,
         [source_dir.path for source_dir in source_dirs],
     )
+    if input_bytes == 0:
+        _log(
+            'skipping partitioned DuckDB combine; '
+            f'no gold parquet input bytes found under {gold_root}'
+        )
+        return {
+            'gold_root': str(gold_root),
+            'output_dir': str(output_dir),
+            'engine': 'duckdb',
+            'mode': 'skipped',
+            'skipped': 'empty_gold_input',
+            'bucket_algorithm': 'stable_u64_sha256_mod_v1',
+            'bucket_count': cfg.bucket_count,
+            'part_count': 0,
+            'requested_part_count': requested_part_count,
+            'min_part_size_bytes': cfg.min_part_size_bytes,
+            'partition_input_bytes': input_bytes,
+            'updated_entity_parts': [],
+            'updated_relation_parts': [],
+            'sources': [{'source': item.source, 'path': str(item.path)} for item in source_dirs],
+            'row_counts': {},
+        }
     state_path = output_dir / 'state.duckdb'
     run_id = _new_run_id()
     incremental_requested = affected_entity_keys is not None or affected_relation_keys is not None

@@ -943,7 +943,7 @@ def _build_entity_evidence(
     source_name: str,
 ) -> pl.DataFrame:
     silver_base = Path(silver_dir)
-    entity_occurrence_path = silver_base / 'entity_occurrence.parquet'
+    entity_occurrence_path = _silver_table_path(silver_base, 'entity_occurrence')
     if not entity_occurrence_path.exists():
         empty_evidence = pl.DataFrame({
             name: pl.Series([], dtype=dtype)
@@ -952,7 +952,7 @@ def _build_entity_evidence(
         empty_evidence.write_parquet(output_dir / 'entity_evidence.parquet')
         return empty_evidence
 
-    raw_records = pl.read_parquet(entity_occurrence_path).select([
+    raw_records = _read_silver_polars_table(entity_occurrence_path).select([
         'occurrence_id',
         pl.col('record_id').cast(pl.Utf8).alias('raw_record_id'),
     ]).filter(pl.col('raw_record_id').is_not_null() & (pl.col('raw_record_id') != ''))
@@ -1035,12 +1035,12 @@ def _build_ontology_entity_evidence(
     empty = _empty_entity_evidence_index()
     if fingerprint_map is None or fingerprint_map.is_empty():
         return empty
-    annotation_path = silver_base / 'entity_annotation.parquet'
+    annotation_path = _silver_table_path(silver_base, 'entity_annotation')
     if not annotation_path.exists():
         return empty
 
     annotations = (
-        pl.read_parquet(annotation_path)
+        _read_silver_polars_table(annotation_path)
         .filter(
             (pl.col('term') == ONTOLOGY_IDENTIFIER_TERM)
             & pl.col('value').is_not_null()
@@ -1084,6 +1084,10 @@ def _empty_entity_evidence_index() -> pl.DataFrame:
         'occurrence_id': pl.Series([], dtype=pl.Utf8),
         '_fingerprint': pl.Series([], dtype=pl.Utf8),
     })
+
+
+def _read_silver_polars_table(path: Path) -> pl.DataFrame:
+    return pl.read_parquet(str(path / '**' / '*.parquet'), hive_partitioning=False)
 
 
 def reduce_entities_from_evidence(
@@ -1185,7 +1189,7 @@ def _write_filtered_silver_occurrence_part(
         shutil.rmtree(part_state_dir)
     part_state_dir.mkdir(parents=True, exist_ok=True)
 
-    occurrence_path = silver_base / 'entity_occurrence.parquet'
+    occurrence_path = _silver_table_path(silver_base, 'entity_occurrence')
     if not occurrence_path.exists():
         raise FileNotFoundError(f'missing silver entity_occurrence table: {occurrence_path}')
 
@@ -1193,7 +1197,7 @@ def _write_filtered_silver_occurrence_part(
     con.execute(f"""
         create temp table _part_occurrence_ids as
         select distinct try_cast(occurrence_id as varchar) as occurrence_id
-        from read_parquet('{_sql_path(occurrence_path)}')
+        from {_read_parquet_dataset_sql(occurrence_path)}
         where occurrence_id is not null
           and stable_part(try_cast(occurrence_id as varchar), {cfg.bucket_count}, {cfg.part_count}) = {occ_part}
     """)
@@ -1201,52 +1205,52 @@ def _write_filtered_silver_occurrence_part(
     if row_count == 0:
         return 0
 
-    _copy_query(con, f"""
+    _copy_silver_dataset_query(con, f"""
         select *
-        from read_parquet('{_sql_path(occurrence_path)}')
+        from {_read_parquet_dataset_sql(occurrence_path)}
         where try_cast(occurrence_id as varchar) in (select occurrence_id from _part_occurrence_ids)
-    """, part_state_dir / 'entity_occurrence.parquet')
+    """, part_state_dir / 'entity_occurrence')
 
     _copy_silver_table_filtered_by_occurrence(
         con,
-        silver_base / 'entity_identifier.parquet',
-        part_state_dir / 'entity_identifier.parquet',
+        _silver_table_path(silver_base, 'entity_identifier'),
+        part_state_dir / 'entity_identifier',
     )
     _copy_silver_table_filtered_by_occurrence(
         con,
-        silver_base / 'entity_annotation.parquet',
-        part_state_dir / 'entity_annotation.parquet',
+        _silver_table_path(silver_base, 'entity_annotation'),
+        part_state_dir / 'entity_annotation',
     )
 
-    membership_path = silver_base / 'membership.parquet'
+    membership_path = _silver_table_path(silver_base, 'membership')
     if membership_path.exists():
         con.execute('drop table if exists _part_membership_ids')
-        _copy_query(con, f"""
+        _copy_silver_dataset_query(con, f"""
             select *
-            from read_parquet('{_sql_path(membership_path)}')
+            from {_read_parquet_dataset_sql(membership_path)}
             where try_cast(parent_occurrence_id as varchar) in (select occurrence_id from _part_occurrence_ids)
                or try_cast(member_occurrence_id as varchar) in (select occurrence_id from _part_occurrence_ids)
-        """, part_state_dir / 'membership.parquet')
+        """, part_state_dir / 'membership')
         con.execute(f"""
             create temp table _part_membership_ids as
             select distinct try_cast(membership_id as varchar) as membership_id
-            from read_parquet('{_sql_path(part_state_dir / 'membership.parquet')}')
+            from {_read_parquet_dataset_sql(part_state_dir / 'membership')}
             where membership_id is not null
         """)
     else:
-        _copy_query(con, "select null::varchar as membership_id, null::varchar as parent_occurrence_id, null::varchar as member_occurrence_id where false", part_state_dir / 'membership.parquet')
+        _copy_silver_dataset_query(con, "select null::varchar as membership_id, null::varchar as parent_occurrence_id, null::varchar as member_occurrence_id where false", part_state_dir / 'membership')
         con.execute('drop table if exists _part_membership_ids')
         con.execute('create temp table _part_membership_ids(membership_id varchar)')
 
-    membership_annotation_path = silver_base / 'membership_annotation.parquet'
+    membership_annotation_path = _silver_table_path(silver_base, 'membership_annotation')
     if membership_annotation_path.exists():
-        _copy_query(con, f"""
+        _copy_silver_dataset_query(con, f"""
             select *
-            from read_parquet('{_sql_path(membership_annotation_path)}')
+            from {_read_parquet_dataset_sql(membership_annotation_path)}
             where try_cast(membership_id as varchar) in (select membership_id from _part_membership_ids)
-        """, part_state_dir / 'membership_annotation.parquet')
+        """, part_state_dir / 'membership_annotation')
     else:
-        _copy_query(con, "select null::varchar as membership_id, null::varchar as term, null::varchar as value, null::varchar as unit where false", part_state_dir / 'membership_annotation.parquet')
+        _copy_silver_dataset_query(con, "select null::varchar as membership_id, null::varchar as term, null::varchar as value, null::varchar as unit where false", part_state_dir / 'membership_annotation')
 
     return row_count
 
@@ -1257,13 +1261,36 @@ def _copy_silver_table_filtered_by_occurrence(
     output_path: Path,
 ) -> None:
     if source_path.exists():
-        _copy_query(con, f"""
+        _copy_silver_dataset_query(con, f"""
             select *
-            from read_parquet('{_sql_path(source_path)}')
+            from {_read_parquet_dataset_sql(source_path)}
             where try_cast(occurrence_id as varchar) in (select occurrence_id from _part_occurrence_ids)
         """, output_path)
     else:
-        _copy_query(con, "select null::varchar as occurrence_id where false", output_path)
+        _copy_silver_dataset_query(con, "select null::varchar as occurrence_id where false", output_path)
+
+
+def _copy_silver_dataset_query(
+    con: duckdb.DuckDBPyConnection,
+    query: str,
+    output_dir: Path,
+) -> None:
+    if output_dir.exists():
+        shutil.rmtree(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _copy_query(con, query, output_dir / 'part=00000.parquet')
+
+
+def _silver_table_path(silver_base: Path, name: str) -> Path:
+    return silver_base / name
+
+
+def _read_parquet_dataset_sql(path: Path) -> str:
+    return (
+        "read_parquet("
+        f"'{_sql_path(path / '**' / '*.parquet')}', "
+        "union_by_name=true, hive_partitioning=true)"
+    )
 
 
 def _write_empty_entity_outputs(

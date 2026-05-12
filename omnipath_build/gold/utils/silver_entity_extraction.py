@@ -182,10 +182,10 @@ def extract_from_silver_tables(
         raise FileNotFoundError(f'silver tables not found under {silver_dir}')
 
     base = silver_table_dir(silver_dir)
-    occ = pl.scan_parquet(base / 'entity_occurrence.parquet')
-    ids_raw = pl.scan_parquet(base / 'entity_identifier.parquet')
-    anns_raw = pl.scan_parquet(base / 'entity_annotation.parquet')
-    memberships = pl.scan_parquet(base / 'membership.parquet')
+    occ = _scan_silver_table(base, 'entity_occurrence')
+    ids_raw = _scan_silver_table(base, 'entity_identifier')
+    anns_raw = _scan_silver_table(base, 'entity_annotation')
+    memberships = _scan_silver_table(base, 'membership')
 
     occurrence_count = occ.select(pl.len()).collect().item()
     if occurrence_count == 0:
@@ -453,3 +453,7 @@ def extract_from_silver_tables(
     ontology_terms = _ontology_term_rows_from_frames(ontology_only, ids_fmt, anns, source)
 
     return temp_entities, temp_identifiers, ontology_terms, occurrence_fingerprint_map, entity_occurrences
+
+
+def _scan_silver_table(base: Path, name: str) -> pl.LazyFrame:
+    return pl.scan_parquet(base / name / '**' / '*.parquet')
