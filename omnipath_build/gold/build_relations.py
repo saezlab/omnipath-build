@@ -41,10 +41,12 @@ from omnipath_build.gold.build_entities import (
     _configure_duckdb,
     _copy_part_query,
     _copy_query,
+    _create_part_temp_table,
     _glob_or_none,
     _read_parquet_dataset_sql,
     _silver_table_path,
     _sql_path,
+    _write_frame_partition_files,
 )
 
 
@@ -574,8 +576,12 @@ def build_relations(
                 if not evidence.is_empty():
                     evidence = _add_relation_part_columns(evidence, cfg)
                     (work_dir / 'relation_evidence').mkdir(parents=True, exist_ok=True)
-                    evidence.write_parquet(
-                        work_dir / 'relation_evidence' / f'parent_part={parent_part:05d}.parquet'
+                    _write_frame_partition_files(
+                        evidence,
+                        work_dir / 'relation_evidence',
+                        part_column='relation_part',
+                        part_count=cfg.part_count,
+                        filename=f'parent_part={parent_part:05d}.parquet',
                     )
                     _log_relations(
                         source_name,
@@ -793,23 +799,24 @@ def _finalize_relation_outputs(
             )
         return {'relation_count': 0, 'relation_evidence_count': 0}
 
-    con.execute('drop table if exists relation_evidence_work')
-    con.execute(f"""
-        create temp table relation_evidence_work as
-        select * from read_parquet('{_sql_path(evidence_glob)}', union_by_name=true)
-        where relation_key is not null
-    """)
-
     _load_or_create_relation_registry(con, output_dir)
     for relation_part in range(cfg.part_count):
+        _create_part_temp_table(
+            con,
+            table_name='relation_evidence_part',
+            root=work_dir / 'relation_evidence',
+            fallback_glob=evidence_glob,
+            part_column='relation_part',
+            part=relation_part,
+            extra_filter='relation_key is not null',
+        )
         max_pk = int(con.execute('select coalesce(max(relation_pk), 0) from relation_key_registry').fetchone()[0])
         con.execute('drop table if exists _new_relation_keys')
-        con.execute(f"""
+        con.execute("""
             create temp table _new_relation_keys as
             select distinct relation_key, relation_bucket, relation_part
-            from relation_evidence_work
-            where relation_part = {relation_part}
-              and relation_key not in (select relation_key from relation_key_registry)
+            from relation_evidence_part
+            where relation_key not in (select relation_key from relation_key_registry)
         """)
         con.execute(f"""
             insert into relation_key_registry(relation_key, relation_pk, relation_bucket, relation_part)
@@ -834,11 +841,20 @@ def _finalize_relation_outputs(
     evidence_count = 0
     evidence_offset = 0
     for relation_part in range(cfg.part_count):
+        _create_part_temp_table(
+            con,
+            table_name='relation_evidence_part',
+            root=work_dir / 'relation_evidence',
+            fallback_glob=evidence_glob,
+            part_column='relation_part',
+            part=relation_part,
+            extra_filter='relation_key is not null',
+        )
         relation_query = f"""
             with needed_entity_keys as (
-                select subject_entity_key as entity_key from relation_evidence_work where relation_part = {relation_part}
+                select subject_entity_key as entity_key from relation_evidence_part
                 union
-                select object_entity_key as entity_key from relation_evidence_work where relation_part = {relation_part}
+                select object_entity_key as entity_key from relation_evidence_part
             ),
             entity_lookup as (
                 select
@@ -859,9 +875,8 @@ def _finalize_relation_outputs(
                     list_sort(list_distinct(list(e.source) filter (where e.source is not null))) as sources,
                     r.relation_bucket,
                     r.relation_part
-                from relation_evidence_work e
+                from relation_evidence_part e
                 join relation_key_registry r using(relation_key)
-                where e.relation_part = {relation_part}
                 group by r.relation_pk, e.relation_key, r.relation_bucket, r.relation_part
             )
             select
@@ -901,9 +916,8 @@ def _finalize_relation_outputs(
                 e.relation_category,
                 r.relation_bucket,
                 r.relation_part
-            from relation_evidence_work e
+            from relation_evidence_part e
             join relation_key_registry r using(relation_key)
-            where e.relation_part = {relation_part}
             order by e.source, e.relation_key, e.raw_record_id
         """
         part_count = _copy_part_query(con, evidence_query, output_dir / 'entity_relation_evidence', relation_part, cfg)

@@ -517,8 +517,16 @@ def _recompute_entity_part(
         con.execute(f'delete from entity where entity_part = {entity_part}')
         con.execute(f'delete from entity_source where entity_part = {entity_part}')
     else:
-        con.execute('delete from entity where entity_key in (select entity_key from affected_entity_keys)')
-        con.execute('delete from entity_source where entity_key in (select entity_key from affected_entity_keys)')
+        con.execute(f"""
+            delete from entity
+            where entity_key in (select entity_key from affected_entity_keys)
+              and stable_part(entity_key, {cfg.bucket_count}, {cfg.part_count}) = {entity_part}
+        """)
+        con.execute(f"""
+            delete from entity_source
+            where entity_key in (select entity_key from affected_entity_keys)
+              and stable_part(entity_key, {cfg.bucket_count}, {cfg.part_count}) = {entity_part}
+        """)
 
     con.execute("""
         insert into entity
@@ -595,7 +603,11 @@ def _recompute_entity_evidence_part(
     if full_build:
         con.execute(f'delete from entity_evidence where entity_part = {entity_part}')
     else:
-        con.execute('delete from entity_evidence where entity_key in (select entity_key from affected_entity_keys)')
+        con.execute(f"""
+            delete from entity_evidence
+            where entity_key in (select entity_key from affected_entity_keys)
+              and stable_part(entity_key, {cfg.bucket_count}, {cfg.part_count}) = {entity_part}
+        """)
     con.execute(f"""
         insert into entity_evidence
         select
@@ -736,8 +748,16 @@ def _recompute_relation_part(
         con.execute(f'delete from entity_relation where relation_part = {relation_part}')
         con.execute(f'delete from relation_source where relation_part = {relation_part}')
     else:
-        con.execute('delete from entity_relation where relation_key in (select relation_key from affected_relation_keys)')
-        con.execute('delete from relation_source where relation_key in (select relation_key from affected_relation_keys)')
+        con.execute(f"""
+            delete from entity_relation
+            where relation_key in (select relation_key from affected_relation_keys)
+              and stable_part(relation_key, {cfg.bucket_count}, {cfg.part_count}) = {relation_part}
+        """)
+        con.execute(f"""
+            delete from relation_source
+            where relation_key in (select relation_key from affected_relation_keys)
+              and stable_part(relation_key, {cfg.bucket_count}, {cfg.part_count}) = {relation_part}
+        """)
     con.execute("""
         insert into entity_relation
         select
@@ -815,7 +835,11 @@ def _recompute_relation_evidence_part(
     if full_build:
         con.execute(f'delete from entity_relation_evidence where relation_part = {relation_part}')
     else:
-        con.execute('delete from entity_relation_evidence where relation_key in (select relation_key from affected_relation_keys)')
+        con.execute(f"""
+            delete from entity_relation_evidence
+            where relation_key in (select relation_key from affected_relation_keys)
+              and stable_part(relation_key, {cfg.bucket_count}, {cfg.part_count}) = {relation_part}
+        """)
     max_id = int(con.execute('select coalesce(max(relation_evidence_id), 0) from entity_relation_evidence').fetchone()[0])
     con.execute(f"""
         insert into entity_relation_evidence

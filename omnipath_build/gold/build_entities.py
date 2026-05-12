@@ -720,8 +720,12 @@ def _canonicalize_occurrence_part(
     if not entity_evidence.is_empty():
         entity_evidence = _add_entity_part_columns(entity_evidence, cfg)
         (output_dir / 'canonical_entity_evidence').mkdir(parents=True, exist_ok=True)
-        entity_evidence.write_parquet(
-            output_dir / 'canonical_entity_evidence' / f'occ_part={occ_part:05d}.parquet'
+        _write_frame_partition_files(
+            entity_evidence,
+            output_dir / 'canonical_entity_evidence',
+            part_column='entity_part',
+            part_count=cfg.part_count,
+            filename=f'occ_part={occ_part:05d}.parquet',
         )
 
     if occurrence_map is not None and not occurrence_map.is_empty():
@@ -733,8 +737,12 @@ def _canonicalize_occurrence_part(
         )
         occurrence_entity_keys = _add_occurrence_part_columns(occurrence_entity_keys, cfg)
         (output_dir / 'occurrence_entity_keys').mkdir(parents=True, exist_ok=True)
-        occurrence_entity_keys.write_parquet(
-            output_dir / 'occurrence_entity_keys' / f'occ_part={occ_part:05d}.parquet'
+        _write_frame_partition_files(
+            occurrence_entity_keys,
+            output_dir / 'occurrence_entity_keys',
+            part_column='occ_part',
+            part_count=cfg.part_count,
+            filename=f'occ_part={occ_part:05d}.parquet',
         )
 
     if not fingerprint_map.is_empty():
@@ -746,8 +754,12 @@ def _canonicalize_occurrence_part(
         )
         fingerprint_entity_keys = _add_fingerprint_part_columns(fingerprint_entity_keys, cfg)
         (output_dir / 'fingerprint_entity_keys').mkdir(parents=True, exist_ok=True)
-        fingerprint_entity_keys.write_parquet(
-            output_dir / 'fingerprint_entity_keys' / f'occ_part={occ_part:05d}.parquet'
+        _write_frame_partition_files(
+            fingerprint_entity_keys,
+            output_dir / 'fingerprint_entity_keys',
+            part_column='fingerprint_part',
+            part_count=cfg.part_count,
+            filename=f'occ_part={occ_part:05d}.parquet',
         )
 
     summary['entity_occurrences'] = int(entity_occurrences)
@@ -782,28 +794,28 @@ def _finalize_entity_outputs(
     ])
     (output_dir / '_state' / 'entity_key_registry').mkdir(parents=True, exist_ok=True)
 
-    con.execute('drop table if exists entity_evidence_work')
     if evidence_glob is None:
         _write_empty_entity_outputs(con, output_dir, cfg)
         return {'entity': 0, 'entity_evidence': 0, 'entity_occurrence_map': 0, 'entity_map': 0}
 
-    con.execute(f"""
-        create temp table entity_evidence_work as
-        select *
-        from read_parquet('{_sql_path(evidence_glob)}', union_by_name=true)
-        where entity_key is not null
-    """)
-
     _load_or_create_entity_registry(con, output_dir)
     for entity_part in range(cfg.part_count):
+        _create_part_temp_table(
+            con,
+            table_name='entity_evidence_part',
+            root=work_dir / 'canonical_entity_evidence',
+            fallback_glob=evidence_glob,
+            part_column='entity_part',
+            part=entity_part,
+            extra_filter='entity_key is not null',
+        )
         max_pk = int(con.execute('select coalesce(max(entity_pk), 0) from entity_key_registry').fetchone()[0])
         con.execute('drop table if exists _new_entity_keys')
-        con.execute(f"""
+        con.execute("""
             create temp table _new_entity_keys as
             select distinct entity_key, entity_bucket, entity_part
-            from entity_evidence_work
-            where entity_part = {entity_part}
-              and entity_key not in (select entity_key from entity_key_registry)
+            from entity_evidence_part
+            where entity_key not in (select entity_key from entity_key_registry)
         """)
         con.execute(f"""
             insert into entity_key_registry(entity_key, entity_pk, entity_bucket, entity_part)
@@ -830,6 +842,15 @@ def _finalize_entity_outputs(
     entity_count = 0
     evidence_count = 0
     for entity_part in range(cfg.part_count):
+        _create_part_temp_table(
+            con,
+            table_name='entity_evidence_part',
+            root=work_dir / 'canonical_entity_evidence',
+            fallback_glob=evidence_glob,
+            part_column='entity_part',
+            part=entity_part,
+            extra_filter='entity_key is not null',
+        )
         entity_query = f"""
             select
                 r.entity_pk,
@@ -843,9 +864,8 @@ def _finalize_entity_outputs(
                 list_sort(list_distinct(list(e.source) filter (where e.source is not null))) as sources,
                 r.entity_bucket,
                 r.entity_part
-            from entity_evidence_work e
+            from entity_evidence_part e
             join entity_key_registry r using(entity_key)
-            where e.entity_part = {entity_part}
             group by r.entity_pk, e.entity_key, r.entity_bucket, r.entity_part
             order by e.entity_key
         """
@@ -869,21 +889,23 @@ def _finalize_entity_outputs(
                 e.entity_part,
                 e.occ_bucket,
                 e.occ_part
-            from entity_evidence_work e
+            from entity_evidence_part e
             join entity_key_registry r using(entity_key)
-            where e.entity_part = {entity_part}
             order by e.entity_key, e.source, e.raw_record_id, e.occurrence_id
         """
         evidence_count += _copy_part_query(con, evidence_query, output_dir / 'entity_evidence', entity_part, cfg)
 
     occurrence_count = 0
     if occurrence_glob is not None:
-        con.execute('drop table if exists occurrence_entity_keys')
-        con.execute(f"""
-            create temp table occurrence_entity_keys as
-            select * from read_parquet('{_sql_path(occurrence_glob)}', union_by_name=true)
-        """)
         for occ_part in range(cfg.part_count):
+            _create_part_temp_table(
+                con,
+                table_name='occurrence_entity_keys_part',
+                root=work_dir / 'occurrence_entity_keys',
+                fallback_glob=occurrence_glob,
+                part_column='occ_part',
+                part=occ_part,
+            )
             query = f"""
                 select
                     o.occurrence_id,
@@ -892,21 +914,23 @@ def _finalize_entity_outputs(
                     o.entity_key,
                     o.occ_bucket,
                     o.occ_part
-                from occurrence_entity_keys o
+                from occurrence_entity_keys_part o
                 join entity_key_registry r using(entity_key)
-                where o.occ_part = {occ_part}
                 order by o.occurrence_id
             """
             occurrence_count += _copy_part_query(con, query, output_dir / 'entity_occurrence_map', occ_part, cfg)
 
     entity_map_count = 0
     if fingerprint_glob is not None:
-        con.execute('drop table if exists fingerprint_entity_keys')
-        con.execute(f"""
-            create temp table fingerprint_entity_keys as
-            select * from read_parquet('{_sql_path(fingerprint_glob)}', union_by_name=true)
-        """)
         for fingerprint_part in range(cfg.part_count):
+            _create_part_temp_table(
+                con,
+                table_name='fingerprint_entity_keys_part',
+                root=work_dir / 'fingerprint_entity_keys',
+                fallback_glob=fingerprint_glob,
+                part_column='fingerprint_part',
+                part=fingerprint_part,
+            )
             query = f"""
                 select
                     f._fingerprint,
@@ -914,9 +938,8 @@ def _finalize_entity_outputs(
                     f.entity_key,
                     f.fingerprint_bucket,
                     f.fingerprint_part
-                from fingerprint_entity_keys f
+                from fingerprint_entity_keys_part f
                 join entity_key_registry r using(entity_key)
-                where f.fingerprint_part = {fingerprint_part}
                 order by f._fingerprint
             """
             entity_map_count += _copy_part_query(con, query, output_dir / 'entity_map', fingerprint_part, cfg)
@@ -1607,6 +1630,65 @@ def _copy_part_query(
 def _copy_query(con: duckdb.DuckDBPyConnection, query: str, output_path: Path) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     con.execute(f"copy ({query}) to '{_sql_path(output_path)}' (format parquet, compression zstd)")
+
+
+def _write_frame_partition_files(
+    frame: pl.DataFrame,
+    root: Path,
+    *,
+    part_column: str,
+    part_count: int,
+    filename: str,
+) -> None:
+    for part in range(part_count):
+        part_frame = frame.filter(pl.col(part_column) == part)
+        if part_frame.is_empty():
+            continue
+        part_dir = root / f'{part_column}={part:05d}'
+        part_dir.mkdir(parents=True, exist_ok=True)
+        part_frame.write_parquet(part_dir / filename)
+
+
+def _partition_glob_or_none(root: Path, part_column: str, part: int) -> str | None:
+    return _glob_or_none(root / f'{part_column}={part:05d}')
+
+
+def _has_partition_dirs(root: Path, part_column: str) -> bool:
+    if not root.exists() or not root.is_dir():
+        return False
+    prefix = f'{part_column}='
+    return any(path.is_dir() and path.name.startswith(prefix) for path in root.iterdir())
+
+
+def _create_part_temp_table(
+    con: duckdb.DuckDBPyConnection,
+    *,
+    table_name: str,
+    root: Path,
+    fallback_glob: str,
+    part_column: str,
+    part: int,
+    extra_filter: str = 'true',
+) -> None:
+    con.execute(f'drop table if exists {table_name}')
+    part_glob = _partition_glob_or_none(root, part_column, part)
+    if part_glob is None and _has_partition_dirs(root, part_column):
+        con.execute(f"""
+            create temp table {table_name} as
+            select *
+            from read_parquet('{_sql_path(fallback_glob)}', union_by_name=true)
+            where false
+        """)
+        return
+
+    read_glob = part_glob or fallback_glob
+    con.execute(f"""
+        create temp table {table_name} as
+        select *
+        from read_parquet('{_sql_path(read_glob)}', union_by_name=true)
+        where {extra_filter}
+          and {part_column} = {part}
+    """)
 
 
 def _glob_or_none(root: Path) -> str | None:

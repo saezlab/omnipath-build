@@ -433,6 +433,19 @@ def _duckdb_read_parquet_table_sql(path: Path) -> str:
     return f"read_parquet('{escaped}')"
 
 
+def _sql_string(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+def _copy_query_to_parquet(con: duckdb.DuckDBPyConnection, query: str, output_path: Path) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_sql = str(output_path).replace("'", "''")
+    con.execute(
+        f"copy ({query}) to '{output_sql}' "
+        "(format parquet, compression zstd)"
+    )
+
+
 def _write_lineage_delta_for_table(
     *,
     table_name: str,
@@ -980,6 +993,198 @@ def _write_affected_partition_artifacts(
     }
 
 
+def _write_first_build_key_scope_artifacts(
+    *,
+    source: str,
+    staged_dir: Path,
+    delta_dir: Path,
+    reason: str,
+) -> dict[str, Any]:
+    entity_path = _gold_table_path(staged_dir, 'entities', 'entity')
+    relation_path = _gold_table_path(staged_dir, 'relations', 'entity_relation')
+    source_sql = _sql_string(source)
+    reason_sql = _sql_string(reason)
+
+    if entity_path is None and relation_path is None:
+        affected_entities = _empty_affected_key_frame('entity_key')
+        affected_relations = _empty_affected_key_frame('relation_key')
+        affected_entities.write_parquet(delta_dir / 'affected_entity_keys.parquet')
+        affected_relations.write_parquet(delta_dir / 'affected_relation_keys.parquet')
+        partition_metadata = _write_affected_partition_artifacts(
+            delta_dir=delta_dir,
+            affected_entities=affected_entities,
+            affected_relations=affected_relations,
+        )
+        return {
+            **partition_metadata,
+            'affected_entity_count': 0,
+            'affected_relation_count': 0,
+        }
+
+    con = duckdb.connect()
+    temp_dir = delta_dir / '.duckdb_tmp'
+    try:
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        con.execute('set preserve_insertion_order = false')
+        temp_dir_sql = str(temp_dir).replace("'", "''")
+        con.execute(f"set temp_directory = '{temp_dir_sql}'")
+
+        if entity_path is None:
+            _empty_affected_key_frame('entity_key').write_parquet(delta_dir / 'affected_entity_keys.parquet')
+            _empty_affected_partition_frame('entity_bucket').write_parquet(delta_dir / 'affected_entity_buckets.parquet')
+            _empty_affected_partition_frame('entity_part').write_parquet(delta_dir / 'affected_entity_parts.parquet')
+            affected_entity_count = 0
+            affected_entity_bucket_count = 0
+            affected_entity_part_count = 0
+        else:
+            entity_sql = _duckdb_read_parquet_table_sql(entity_path)
+            entity_scope = f"""
+                select
+                    try_cast(entity_key as varchar) as entity_key,
+                    try_cast(entity_bucket as bigint) as entity_bucket,
+                    try_cast(entity_part as bigint) as entity_part
+                from {entity_sql}
+                where entity_key is not null
+                  and try_cast(entity_key as varchar) <> ''
+            """
+            _copy_query_to_parquet(
+                con,
+                f"""
+                    select
+                        {source_sql} as source,
+                        entity_key,
+                        'affected'::varchar as change_type,
+                        {reason_sql} as reason
+                    from ({entity_scope})
+                """,
+                delta_dir / 'affected_entity_keys.parquet',
+            )
+            _copy_query_to_parquet(
+                con,
+                f"""
+                    select
+                        {source_sql} as source,
+                        entity_bucket,
+                        count(*)::bigint as affected_key_count,
+                        {reason_sql} as reason
+                    from ({entity_scope})
+                    where entity_bucket is not null
+                    group by entity_bucket
+                    order by entity_bucket
+                """,
+                delta_dir / 'affected_entity_buckets.parquet',
+            )
+            _copy_query_to_parquet(
+                con,
+                f"""
+                    select
+                        {source_sql} as source,
+                        entity_part,
+                        count(*)::bigint as affected_key_count,
+                        {reason_sql} as reason
+                    from ({entity_scope})
+                    where entity_part is not null
+                    group by entity_part
+                    order by entity_part
+                """,
+                delta_dir / 'affected_entity_parts.parquet',
+            )
+            affected_entity_count = int(con.execute(f"select count(*) from ({entity_scope})").fetchone()[0])
+            affected_entity_bucket_count = int(con.execute(f"select count(distinct entity_bucket) from ({entity_scope}) where entity_bucket is not null").fetchone()[0])
+            affected_entity_part_count = int(con.execute(f"select count(distinct entity_part) from ({entity_scope}) where entity_part is not null").fetchone()[0])
+
+        if relation_path is None:
+            _empty_affected_key_frame('relation_key').write_parquet(delta_dir / 'affected_relation_keys.parquet')
+            _empty_affected_partition_frame('relation_bucket').write_parquet(delta_dir / 'affected_relation_buckets.parquet')
+            _empty_affected_partition_frame('relation_part').write_parquet(delta_dir / 'affected_relation_parts.parquet')
+            affected_relation_count = 0
+            affected_relation_bucket_count = 0
+            affected_relation_part_count = 0
+        else:
+            relation_sql = _duckdb_read_parquet_table_sql(relation_path)
+            relation_scope = f"""
+                select
+                    try_cast(relation_key as varchar) as relation_key,
+                    try_cast(relation_bucket as bigint) as relation_bucket,
+                    try_cast(relation_part as bigint) as relation_part
+                from {relation_sql}
+                where relation_key is not null
+                  and try_cast(relation_key as varchar) <> ''
+            """
+            _copy_query_to_parquet(
+                con,
+                f"""
+                    select
+                        {source_sql} as source,
+                        relation_key,
+                        'affected'::varchar as change_type,
+                        {reason_sql} as reason
+                    from ({relation_scope})
+                """,
+                delta_dir / 'affected_relation_keys.parquet',
+            )
+            _copy_query_to_parquet(
+                con,
+                f"""
+                    select
+                        {source_sql} as source,
+                        relation_bucket,
+                        count(*)::bigint as affected_key_count,
+                        {reason_sql} as reason
+                    from ({relation_scope})
+                    where relation_bucket is not null
+                    group by relation_bucket
+                    order by relation_bucket
+                """,
+                delta_dir / 'affected_relation_buckets.parquet',
+            )
+            _copy_query_to_parquet(
+                con,
+                f"""
+                    select
+                        {source_sql} as source,
+                        relation_part,
+                        count(*)::bigint as affected_key_count,
+                        {reason_sql} as reason
+                    from ({relation_scope})
+                    where relation_part is not null
+                    group by relation_part
+                    order by relation_part
+                """,
+                delta_dir / 'affected_relation_parts.parquet',
+            )
+            affected_relation_count = int(con.execute(f"select count(*) from ({relation_scope})").fetchone()[0])
+            affected_relation_bucket_count = int(con.execute(f"select count(distinct relation_bucket) from ({relation_scope}) where relation_bucket is not null").fetchone()[0])
+            affected_relation_part_count = int(con.execute(f"select count(distinct relation_part) from ({relation_scope}) where relation_part is not null").fetchone()[0])
+    finally:
+        con.close()
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+    return {
+        'entity_key_algorithm': GOLD_ENTITY_KEY_ALGORITHM,
+        'relation_key_algorithm': GOLD_RELATION_KEY_ALGORITHM,
+        'bucket_algorithm': GOLD_BUCKET_ALGORITHM,
+        'entity_bucket_count': ENTITY_BUCKET_COUNT,
+        'entity_part_count': ENTITY_PART_COUNT,
+        'relation_bucket_count': RELATION_BUCKET_COUNT,
+        'relation_part_count': RELATION_PART_COUNT,
+        'affected_entity_bucket_count': affected_entity_bucket_count,
+        'affected_entity_part_count': affected_entity_part_count,
+        'affected_relation_bucket_count': affected_relation_bucket_count,
+        'affected_relation_part_count': affected_relation_part_count,
+        'delta_artifacts': {
+            'affected_entity_keys': 'affected_entity_keys.parquet',
+            'affected_entity_buckets': 'affected_entity_buckets.parquet',
+            'affected_entity_parts': 'affected_entity_parts.parquet',
+            'affected_relation_keys': 'affected_relation_keys.parquet',
+            'affected_relation_buckets': 'affected_relation_buckets.parquet',
+            'affected_relation_parts': 'affected_relation_parts.parquet',
+        },
+        'affected_entity_count': affected_entity_count,
+        'affected_relation_count': affected_relation_count,
+    }
+
+
 def _derive_gold_key_scope_from_silver_delta(
     *,
     source: str,
@@ -1073,29 +1278,16 @@ def _write_gold_delta_artifacts(
 
     if not previous_output_ready:
         reason = 'source_first_build'
-        affected_entities = _current_gold_key_frame(
-            source=source,
-            path=_gold_table_path(staged_dir, 'entities', 'entity'),
-            key_column='entity_key',
-            reason=reason,
-        )
-        affected_relations = _current_gold_key_frame(
-            source=source,
-            path=_gold_table_path(staged_dir, 'relations', 'entity_relation'),
-            key_column='relation_key',
-            reason=reason,
-        )
         _write_gold_scope_artifacts(
             delta_dir=delta_dir,
             raw_record_ids=set(),
             occurrence_ids=set(),
         )
-        affected_entities.write_parquet(delta_dir / 'affected_entity_keys.parquet')
-        affected_relations.write_parquet(delta_dir / 'affected_relation_keys.parquet')
-        partition_metadata = _write_affected_partition_artifacts(
+        key_scope_metadata = _write_first_build_key_scope_artifacts(
+            source=source,
+            staged_dir=staged_dir,
             delta_dir=delta_dir,
-            affected_entities=affected_entities,
-            affected_relations=affected_relations,
+            reason=reason,
         )
 
         manifest = {
@@ -1109,11 +1301,7 @@ def _write_gold_delta_artifacts(
                 'per_row_delta': False,
                 'affected_key_scope_available': True,
             },
-            'affected_entity_count': int(affected_entities['entity_key'].n_unique())
-            if 'entity_key' in affected_entities.columns else 0,
-            'affected_relation_count': int(affected_relations['relation_key'].n_unique())
-            if 'relation_key' in affected_relations.columns else 0,
-            **partition_metadata,
+            **key_scope_metadata,
             'delta_counts': {
                 'entity_delta.parquet': 0,
                 'entity_relation_delta.parquet': 0,
