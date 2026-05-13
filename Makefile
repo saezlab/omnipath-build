@@ -212,41 +212,24 @@ rewrite_pipeline:
 		echo "SOURCES or SOURCE is required, e.g. make rewrite_pipeline SOURCES=signor,uniprot"; \
 		exit 1; \
 	fi
-	@uv run python -m omnipath_build.cli.commands bronze-rewrite \
+	@uv run python -m omnipath_build.cli.commands rewrite-pipeline \
 		$(if $(SOURCES),$(SOURCES),$(SOURCE)) \
 		--data-root $(BRONZE_REWRITE_DATA_ROOT) \
 		--inputs-package $(INPUTS_PACKAGE) \
 		--batch-size $(BATCH_SIZE) \
 		$(if $(FUNCTION),--function $(FUNCTION)) \
 		$(if $(MAX_RECORDS),--max-records $(MAX_RECORDS)) \
-		$(if $(FORCE_REFRESH),--force-refresh)
-	@uv run python -m omnipath_build.cli.commands silver-rewrite \
-		$(if $(SOURCES),$(SOURCES),$(SOURCE)) \
-		--data-root $(BRONZE_REWRITE_DATA_ROOT) \
-		--inputs-package $(INPUTS_PACKAGE) \
-		--batch-size $(BATCH_SIZE) \
-		$(if $(FUNCTION),--function $(FUNCTION))
-	@uv run python -m omnipath_build.cli.commands gold-rewrite \
-		$(if $(SOURCES),$(SOURCES),$(SOURCE)) \
-		--data-root $(BRONZE_REWRITE_DATA_ROOT) \
-		--inputs-package $(INPUTS_PACKAGE) \
+		$(if $(FORCE_REFRESH),--force-refresh) \
 		--resolver-mapping-dir $(RESOLVER_MAPPING_DIR) \
 		--bucket-count $(GOLD_BUCKET_COUNT) \
-		--part-count $(GOLD_PART_COUNT) \
-		--min-part-size-mb $(GOLD_MIN_PART_SIZE_MB) \
+		--gold-part-count $(GOLD_PART_COUNT) \
+		--combined-part-count $(COMBINED_REWRITE_PART_COUNT) \
+		--gold-min-part-size-mb $(GOLD_MIN_PART_SIZE_MB) \
 		--duckdb-partitioned-write-max-open-files $(GOLD_DUCKDB_PARTITIONED_WRITE_MAX_OPEN_FILES) \
 		$(if $(GOLD_DUCKDB_MEMORY_LIMIT),--duckdb-memory-limit $(GOLD_DUCKDB_MEMORY_LIMIT)) \
 		$(if $(GOLD_DUCKDB_THREADS),--duckdb-threads $(GOLD_DUCKDB_THREADS)) \
-		$(if $(GOLD_DUCKDB_MAX_TEMP_DIRECTORY_SIZE),--duckdb-max-temp-directory-size $(GOLD_DUCKDB_MAX_TEMP_DIRECTORY_SIZE))
-	@uv run python -m omnipath_build.cli.commands combined-rewrite \
-		$(if $(SOURCES),$(SOURCES),$(SOURCE)) \
-		--data-root $(BRONZE_REWRITE_DATA_ROOT) \
-		--inputs-package $(INPUTS_PACKAGE) \
-		--bucket-count $(GOLD_BUCKET_COUNT) \
-		--part-count $(COMBINED_REWRITE_PART_COUNT) \
-		$(if $(GOLD_DUCKDB_MEMORY_LIMIT),--duckdb-memory-limit $(GOLD_DUCKDB_MEMORY_LIMIT)) \
-		$(if $(GOLD_DUCKDB_THREADS),--duckdb-threads $(GOLD_DUCKDB_THREADS)) \
-		$(if $(GOLD_DUCKDB_MAX_TEMP_DIRECTORY_SIZE),--duckdb-max-temp-directory-size $(GOLD_DUCKDB_MAX_TEMP_DIRECTORY_SIZE))
+		$(if $(GOLD_DUCKDB_MAX_TEMP_DIRECTORY_SIZE),--duckdb-max-temp-directory-size $(GOLD_DUCKDB_MAX_TEMP_DIRECTORY_SIZE)) \
+		--memory-sample-interval-seconds $(MEMORY_SAMPLE_INTERVAL_SECONDS)
 
 test: TEST_MODE=1
 test: pipeline

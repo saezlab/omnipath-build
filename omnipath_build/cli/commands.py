@@ -4,10 +4,13 @@
 from __future__ import annotations
 
 import sys
+import json
+import time
 from typing import Optional
 import logging
 from pathlib import Path
 import argparse
+import subprocess
 
 from omnipath_build.silver.build import DiscoveryError, run_silver_loader
 from omnipath_build.pipeline.pipeline import main as pipeline_main
@@ -349,6 +352,167 @@ def _handle_combined_rewrite(args: argparse.Namespace) -> int:
     except Exception as exc:  # noqa: BLE001
         print(f'Unexpected error: {exc}', file=sys.stderr)
         return 1
+
+
+def _handle_rewrite_pipeline(args: argparse.Namespace) -> int:
+    """Run the rewrite pipeline with phase-aware RSS sampling."""
+    from datetime import UTC, datetime
+
+    from omnipath_build.pipeline.memory import start_memory_monitor
+    from omnipath_build.pipeline.progress import phase
+
+    selected_sources = _split_source_args(args.sources)
+    if not selected_sources:
+        print('Unexpected error: No sources selected.', file=sys.stderr)
+        return 1
+
+    run_id = datetime.now(UTC).strftime('%Y%m%dT%H%M%S%fZ')
+    memory_log = args.data_root / 'reports' / 'memory' / f'rewrite-{run_id}.ndjson'
+    memory_summary_path = (
+        args.data_root / 'reports' / 'memory' / f'rewrite-{run_id}.summary.json'
+    )
+    latest_summary_path = args.data_root / 'reports' / 'memory' / 'rewrite-latest.json'
+    monitor = start_memory_monitor(
+        output_path=memory_log,
+        interval_seconds=args.memory_sample_interval_seconds,
+    )
+    source_args = [','.join(selected_sources)]
+    stage_summaries: list[dict[str, object]] = []
+    started_at = time.perf_counter()
+
+    stages = [
+        (
+            'bronze',
+            [
+                'bronze-rewrite',
+                *source_args,
+                '--data-root',
+                str(args.data_root),
+                '--inputs-package',
+                args.inputs_package,
+                '--batch-size',
+                str(args.batch_size),
+                *(['--function', args.function] if args.function else []),
+                *(['--max-records', str(args.max_records)] if args.max_records is not None else []),
+                *(['--force-refresh'] if args.force_refresh else []),
+            ],
+        ),
+        (
+            'silver',
+            [
+                'silver-rewrite',
+                *source_args,
+                '--data-root',
+                str(args.data_root),
+                '--inputs-package',
+                args.inputs_package,
+                '--batch-size',
+                str(args.batch_size),
+                *(['--function', args.function] if args.function else []),
+            ],
+        ),
+        (
+            'gold',
+            [
+                'gold-rewrite',
+                *source_args,
+                '--data-root',
+                str(args.data_root),
+                '--inputs-package',
+                args.inputs_package,
+                '--resolver-mapping-dir',
+                str(args.resolver_mapping_dir),
+                '--bucket-count',
+                str(args.bucket_count),
+                '--part-count',
+                str(args.gold_part_count),
+                '--min-part-size-mb',
+                str(args.gold_min_part_size_mb),
+                '--duckdb-partitioned-write-max-open-files',
+                str(args.duckdb_partitioned_write_max_open_files),
+                *(['--duckdb-memory-limit', args.duckdb_memory_limit] if args.duckdb_memory_limit else []),
+                *(['--duckdb-threads', str(args.duckdb_threads)] if args.duckdb_threads is not None else []),
+                *(['--duckdb-max-temp-directory-size', args.duckdb_max_temp_directory_size] if args.duckdb_max_temp_directory_size else []),
+            ],
+        ),
+        (
+            'combined',
+            [
+                'combined-rewrite',
+                *source_args,
+                '--data-root',
+                str(args.data_root),
+                '--inputs-package',
+                args.inputs_package,
+                '--bucket-count',
+                str(args.bucket_count),
+                '--part-count',
+                str(args.combined_part_count),
+                *(['--duckdb-memory-limit', args.duckdb_memory_limit] if args.duckdb_memory_limit else []),
+                *(['--duckdb-threads', str(args.duckdb_threads)] if args.duckdb_threads is not None else []),
+                *(['--duckdb-max-temp-directory-size', args.duckdb_max_temp_directory_size] if args.duckdb_max_temp_directory_size else []),
+            ],
+        ),
+    ]
+
+    try:
+        for stage_name, stage_args in stages:
+            label = f'rewrite:{stage_name}'
+            command = [sys.executable, '-m', 'omnipath_build.cli.commands', *stage_args]
+            stage_started = time.perf_counter()
+            print(
+                f'[{label}] start command={" ".join(stage_args)}',
+                flush=True,
+            )
+            with phase(label, 'running'):
+                monitor.sample_now()
+                completed = subprocess.run(command, check=False)
+                monitor.sample_now()
+            elapsed = time.perf_counter() - stage_started
+            summary = monitor.summary()
+            phase_peak = summary.get('peak_by_phase', {}).get(label, {})
+            stage_summary = {
+                'stage': stage_name,
+                'label': label,
+                'elapsed_seconds': elapsed,
+                'return_code': completed.returncode,
+                'peak_rss_bytes': phase_peak.get('rss_bytes'),
+                'peak_rss_mebibytes': phase_peak.get('rss_mebibytes'),
+            }
+            stage_summaries.append(stage_summary)
+            peak_text = (
+                f'{float(phase_peak["rss_mebibytes"]):.1f} MiB'
+                if phase_peak.get('rss_mebibytes') is not None
+                else 'n/a'
+            )
+            print(
+                f'[{label}] done elapsed={elapsed:.1f}s '
+                f'peak_rss={peak_text} return_code={completed.returncode}',
+                flush=True,
+            )
+            if completed.returncode != 0:
+                return completed.returncode
+        return 0
+    finally:
+        summary = monitor.stop()
+        summary['run_id'] = run_id
+        summary['sources'] = selected_sources
+        summary['elapsed_seconds'] = time.perf_counter() - started_at
+        summary['stages'] = stage_summaries
+        memory_summary_path.parent.mkdir(parents=True, exist_ok=True)
+        memory_summary_path.write_text(
+            json.dumps(summary, indent=2, sort_keys=True) + '\n',
+            encoding='utf-8',
+        )
+        latest_summary_path.write_text(
+            json.dumps(summary, indent=2, sort_keys=True) + '\n',
+            encoding='utf-8',
+        )
+        print(
+            '[rewrite:pipeline] memory_summary='
+            f'{memory_summary_path} latest={latest_summary_path}',
+            flush=True,
+        )
 
 
 def _split_source_args(values: list[str]) -> list[str]:
@@ -833,6 +997,109 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Optional DuckDB temporary spill limit, for example '500GB'.",
     )
     combined_rewrite_parser.set_defaults(handler=_handle_combined_rewrite)
+
+    rewrite_pipeline_parser = subparsers.add_parser(
+        'rewrite-pipeline',
+        help='Run the full rewrite pipeline with stage-level memory tracking.',
+    )
+    rewrite_pipeline_parser.add_argument(
+        'sources',
+        nargs='+',
+        help='Source modules to process, e.g. signor uniprot or signor,uniprot.',
+    )
+    rewrite_pipeline_parser.add_argument(
+        '--function',
+        help='Specific raw dataset/function within each selected source.',
+    )
+    rewrite_pipeline_parser.add_argument(
+        '--data-root',
+        type=Path,
+        default=Path('data_rewrite'),
+        help='Rewrite data root (default: data_rewrite).',
+    )
+    rewrite_pipeline_parser.add_argument(
+        '--inputs-package',
+        default='pypath.inputs_v2',
+        help='Python package containing generator modules (default: pypath.inputs_v2).',
+    )
+    rewrite_pipeline_parser.add_argument(
+        '--batch-size',
+        type=int,
+        default=10_000,
+        help='Rows per DuckDB insert batch.',
+    )
+    rewrite_pipeline_parser.add_argument(
+        '--max-records',
+        type=int,
+        default=None,
+        help='Limit raw records per selected dataset for quick local trials.',
+    )
+    rewrite_pipeline_parser.add_argument(
+        '--force-refresh',
+        action='store_true',
+        help='Force pypath downloads to refresh before parsing.',
+    )
+    rewrite_pipeline_parser.add_argument(
+        '--resolver-mapping-dir',
+        type=Path,
+        default=Path('id_resolver/data'),
+        help='Identifier resolver mapping directory used by gold canonicalization.',
+    )
+    rewrite_pipeline_parser.add_argument(
+        '--bucket-count',
+        type=int,
+        default=4096,
+        help='Number of deterministic logical buckets from gold onward.',
+    )
+    rewrite_pipeline_parser.add_argument(
+        '--gold-part-count',
+        type=int,
+        default=128,
+        help='Maximum number of compact physical Parquet parts per source gold table.',
+    )
+    rewrite_pipeline_parser.add_argument(
+        '--combined-part-count',
+        type=int,
+        default=16,
+        help='Internal combined recompute part count.',
+    )
+    rewrite_pipeline_parser.add_argument(
+        '--gold-min-part-size-mb',
+        type=int,
+        default=200,
+        help='Target minimum physical Parquet part size in MiB.',
+    )
+    rewrite_pipeline_parser.add_argument(
+        '--duckdb-memory-limit',
+        type=str,
+        default=None,
+        help="Optional DuckDB memory limit, for example '16GB'.",
+    )
+    rewrite_pipeline_parser.add_argument(
+        '--duckdb-threads',
+        type=int,
+        default=None,
+        help='Optional DuckDB thread count.',
+    )
+    rewrite_pipeline_parser.add_argument(
+        '--duckdb-max-temp-directory-size',
+        type=str,
+        default=None,
+        help="Optional DuckDB temporary spill limit, for example '500GB'.",
+    )
+    rewrite_pipeline_parser.add_argument(
+        '--duckdb-partitioned-write-max-open-files',
+        type=int,
+        default=16,
+        help='DuckDB partitioned writer open-file limit.',
+    )
+    rewrite_pipeline_parser.add_argument(
+        '--memory-sample-interval-seconds',
+        type=float,
+        default=5.0,
+        help='Interval for rewrite stage RSS memory samples.',
+    )
+    rewrite_pipeline_parser.set_defaults(handler=_handle_rewrite_pipeline)
 
     combined_parser = subparsers.add_parser(
         'combined',

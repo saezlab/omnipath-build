@@ -18,6 +18,7 @@ from omnipath_build.gold.utils.schema import (
     SIGN_NEGATIVE_TERMS,
     SIGN_POSITIVE_TERMS,
     SOURCE_ROLE_ACCESSIONS,
+    STOICHIOMETRY_TERM,
     TAXONOMY_IDENTIFIER_TERM,
     TARGET_ROLE_ACCESSIONS,
 )
@@ -448,8 +449,34 @@ def _build_relation_tables(
 ) -> None:
     del cfg
     s = _sql_literal(source)
+    evidence_terms = _sql_string_list(EVIDENCE_IDENTIFIER_TERMS)
     ontology_type_sql = _sql_literal(ontology_type)
     ontology_id_type_sql = _sql_literal(ontology_identifier_type)
+    empty_attrs = '[]::struct(term varchar, value varchar, unit varchar)[]'
+    con.execute(f"""
+        create temp table _gold_membership_annotation_fmt as
+        select
+            ma.membership_id,
+            ma.parent_occurrence_id,
+            ma.member_occurrence_id,
+            ma.term,
+            nullif(ma.value, '') as value,
+            ma.unit,
+            case
+                when ma.term is not null and not starts_with(ma.term, 'http') and regexp_matches(ma.term, '^[^:]+:[^ ]+$')
+                    then coalesce(term_label.formatted, ma.term)
+                else ma.term
+            end as term_fmt,
+            case
+                when ma.unit is not null and not starts_with(ma.unit, 'http') and regexp_matches(ma.unit, '^[^:]+:[^ ]+$')
+                    then coalesce(unit_label.formatted, ma.unit)
+                else ma.unit
+            end as unit_fmt
+        from silver_membership_annotation ma
+        left join _gold_cv_label term_label on term_label.accession = ma.term
+        left join _gold_cv_label unit_label on unit_label.accession = ma.unit
+        where ma.source = {s}
+    """)
     con.execute(f"""
         create temp table _gold_membership_annotations as
         select
@@ -458,9 +485,48 @@ def _build_relation_tables(
             bool_or(ma.term in ({target_roles})) as has_target_role,
             bool_or(ma.term in ({positive_terms}) or upper(coalesce(ma.value, '')) like '%ACTIV%') as positive_sign,
             bool_or(ma.term in ({negative_terms}) or regexp_matches(upper(coalesce(ma.value, '')), 'INHIB|NEGATIVE|REPRESS')) as negative_sign
-        from silver_membership_annotation ma
-        where ma.source = {s}
+        from _gold_membership_annotation_fmt ma
         group by ma.membership_id
+    """)
+    con.execute(f"""
+        create temp table _gold_record_relation_attrs as
+        select
+            occurrence_id,
+            list(struct_pack(term := term_fmt, value := value, unit := unit_fmt) order by term_fmt, value, unit_fmt)
+                filter (
+                    where term is not null
+                      and term != {_sql_literal(TAXONOMY_IDENTIFIER_TERM)}
+                      and term not in ({evidence_terms})
+                      and not (term = {_sql_literal(ONTOLOGY_IDENTIFIER_TERM)} and unit is null)
+                ) as record_attributes,
+            list(struct_pack(term := term, value := value, unit := unit) order by term, value, unit)
+                filter (where term in ({evidence_terms}) and value is not null) as evidence
+        from _gold_annotation_fmt
+        group by occurrence_id
+    """)
+    con.execute(f"""
+        create temp table _gold_membership_relation_attrs as
+        select
+            membership_id,
+            list(struct_pack(term := term_fmt, value := value, unit := unit_fmt) order by term_fmt, value, unit_fmt)
+                filter (
+                    where term is not null
+                      and term != {_sql_literal(TAXONOMY_IDENTIFIER_TERM)}
+                      and term != {_sql_literal(STOICHIOMETRY_TERM)}
+                      and term not in ({evidence_terms})
+                      and not (term = {_sql_literal(ONTOLOGY_IDENTIFIER_TERM)} and unit is null)
+                ) as subject_attributes,
+            list(struct_pack(term := term_fmt, value := value, unit := unit_fmt) order by term_fmt, value, unit_fmt)
+                filter (
+                    where term is not null
+                      and term != {_sql_literal(TAXONOMY_IDENTIFIER_TERM)}
+                      and term not in ({evidence_terms})
+                      and not (term = {_sql_literal(ONTOLOGY_IDENTIFIER_TERM)} and unit is null)
+                ) as object_attributes,
+            list(struct_pack(term := term, value := value, unit := unit) order by term, value, unit)
+                filter (where term in ({evidence_terms}) and value is not null) as evidence
+        from _gold_membership_annotation_fmt
+        group by membership_id
     """)
     con.execute(f"""
         create temp table _gold_record_sign as
@@ -489,11 +555,14 @@ def _build_relation_tables(
         create temp table _relation_evidence_raw as
         with membership_rel as (
             select
+                'membership' as relation_kind,
                 m.parent_occurrence_id,
                 case when coalesce(m.is_parent, false) then member.entity_key else parent_map.entity_key end as subject_key,
                 {membership_predicate} as predicate,
                 case when coalesce(m.is_parent, false) then parent_map.entity_key else member.entity_key end as object_key,
-                {_sql_literal(ASSOCIATION_CATEGORY)} as relation_category
+                {_sql_literal(ASSOCIATION_CATEGORY)} as relation_category,
+                case when coalesce(m.is_parent, false) then m.membership_id else null end as subject_membership_id,
+                case when coalesce(m.is_parent, false) then null else m.membership_id end as object_membership_id
             from silver_membership m
             join _gold_occurrence_base parent on parent.occurrence_id = m.parent_occurrence_id
             join _gold_entity_occurrence_map_out parent_map on parent_map.occurrence_id = m.parent_occurrence_id
@@ -503,6 +572,7 @@ def _build_relation_tables(
         ),
         interaction_rel as (
             select
+                'interaction' as relation_kind,
                 parent.occurrence_id as parent_occurrence_id,
                 case
                     when count(*) filter(where p.has_source_role) = 1 and count(*) filter(where p.has_target_role) = 1
@@ -525,7 +595,17 @@ def _build_relation_tables(
                         then max(p.entity_key) filter(where p.has_target_role)
                     else min(p.entity_key) filter(where p.member_order = 2)
                 end as object_key,
-                case when parent.entity_type = 'MI:0915' then {_sql_literal(ASSOCIATION_CATEGORY)} else 'interaction' end as relation_category
+                case when parent.entity_type = 'MI:0915' then {_sql_literal(ASSOCIATION_CATEGORY)} else 'interaction' end as relation_category,
+                case
+                    when count(*) filter(where p.has_source_role) = 1 and count(*) filter(where p.has_target_role) = 1
+                        then max(p.membership_id) filter(where p.has_source_role)
+                    else min(p.membership_id) filter(where p.member_order = 1)
+                end as subject_membership_id,
+                case
+                    when count(*) filter(where p.has_source_role) = 1 and count(*) filter(where p.has_target_role) = 1
+                        then max(p.membership_id) filter(where p.has_target_role)
+                    else min(p.membership_id) filter(where p.member_order = 2)
+                end as object_membership_id
             from _gold_occurrence_base parent
             join _gold_membership_participants p on p.parent_occurrence_id = parent.occurrence_id
             left join _gold_record_sign sign on sign.occurrence_id = parent.occurrence_id
@@ -535,6 +615,7 @@ def _build_relation_tables(
         ),
         annotation_rel as (
             select
+                'annotation' as relation_kind,
                 a.occurrence_id as parent_occurrence_id,
                 subject_map.entity_key as subject_key,
                 case
@@ -545,7 +626,9 @@ def _build_relation_tables(
                     else {_sql_literal(ASSOCIATION_PREDICATE)}
                 end as predicate,
                 object_map.entity_key as object_key,
-                {_sql_literal(ASSOCIATION_CATEGORY)} as relation_category
+                {_sql_literal(ASSOCIATION_CATEGORY)} as relation_category,
+                null::varchar as subject_membership_id,
+                null::varchar as object_membership_id
             from _gold_annotation_fmt a
             join _gold_entity_occurrence_map_out subject_map on subject_map.occurrence_id = a.occurrence_id
             join _gold_entity_map_out object_map
@@ -569,16 +652,31 @@ def _build_relation_tables(
             object.entity_key as object_entity_key,
             rel.relation_category,
             coalesce(parent.record_id, '') as raw_record_id,
-            []::struct(term varchar, value varchar, unit varchar)[] as record_attributes,
-            []::struct(term varchar, value varchar, unit varchar)[] as subject_attributes,
-            []::struct(term varchar, value varchar, unit varchar)[] as object_attributes,
-            []::struct(term varchar, value varchar, unit varchar)[] as evidence,
+            case
+                when rel.relation_kind = 'interaction'
+                    then coalesce(record_attrs.record_attributes, {empty_attrs})
+                else {empty_attrs}
+            end as record_attributes,
+            coalesce(subject_attrs.subject_attributes, {empty_attrs}) as subject_attributes,
+            coalesce(object_attrs.object_attributes, {empty_attrs}) as object_attributes,
+            case
+                when rel.relation_kind in ('interaction', 'membership')
+                    then list_concat(
+                        coalesce(record_attrs.evidence, {empty_attrs}),
+                        coalesce(subject_attrs.evidence, {empty_attrs}),
+                        coalesce(object_attrs.evidence, {empty_attrs})
+                    )
+                else {empty_attrs}
+            end as evidence,
             _gold_bucket(_gold_relation_key(subject.entity_key, rel.predicate, object.entity_key, rel.relation_category))::bigint as relation_bucket,
             _gold_part(_gold_relation_key(subject.entity_key, rel.predicate, object.entity_key, rel.relation_category))::bigint as relation_part
         from rel
         join _entity_registry_out subject on subject.entity_key = rel.subject_key
         join _entity_registry_out object on object.entity_key = rel.object_key
         left join _gold_occurrence_base parent on parent.occurrence_id = rel.parent_occurrence_id
+        left join _gold_record_relation_attrs record_attrs on record_attrs.occurrence_id = rel.parent_occurrence_id
+        left join _gold_membership_relation_attrs subject_attrs on subject_attrs.membership_id = rel.subject_membership_id
+        left join _gold_membership_relation_attrs object_attrs on object_attrs.membership_id = rel.object_membership_id
     """)
     con.execute("""
         create temp table _relation_registry_out as
@@ -668,7 +766,10 @@ def _drop_temp(con: duckdb.DuckDBPyConnection) -> None:
         '_gold_entity_occurrence_map_out',
         '_gold_entity_evidence_attr',
         '_gold_entity_evidence_out',
+        '_gold_membership_annotation_fmt',
         '_gold_membership_annotations',
+        '_gold_record_relation_attrs',
+        '_gold_membership_relation_attrs',
         '_gold_record_sign',
         '_gold_membership_participants',
         '_relation_evidence_raw',

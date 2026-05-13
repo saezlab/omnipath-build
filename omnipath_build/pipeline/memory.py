@@ -109,6 +109,11 @@ class MemoryMonitor:
             'peak_by_phase': peak_by_phase,
         }
 
+    def sample_now(self) -> None:
+        """Record an immediate sample outside the interval cadence."""
+        if self.enabled:
+            self._record_sample()
+
     def _run(self) -> None:
         while not self._stop_event.wait(self.interval_seconds):
             self._record_sample()
