@@ -167,6 +167,12 @@ rewrite_pipeline:
 		$(if $(FUNCTION),--function $(FUNCTION)) \
 		$(if $(MAX_RECORDS),--max-records $(MAX_RECORDS)) \
 		$(if $(FORCE_REFRESH),--force-refresh)
+	@uv run python -m omnipath_build.cli.commands silver-rewrite \
+		$(if $(SOURCES),$(SOURCES),$(SOURCE)) \
+		--data-root $(BRONZE_REWRITE_DATA_ROOT) \
+		--inputs-package $(INPUTS_PACKAGE) \
+		--batch-size $(BATCH_SIZE) \
+		$(if $(FUNCTION),--function $(FUNCTION))
 
 test: TEST_MODE=1
 test: pipeline

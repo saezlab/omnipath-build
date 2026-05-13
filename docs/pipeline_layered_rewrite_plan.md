@@ -135,6 +135,28 @@ each dataset as `typed_current_table`.
 
 ### 1. Silver Rewrite
 
+Initial implementation files:
+
+```text
+omnipath_build/rewrite/silver.py
+omnipath_build/rewrite/__init__.py
+omnipath_build/cli/commands.py
+Makefile
+```
+
+The rewrite command now runs bronze and then silver:
+
+```bash
+make rewrite_pipeline SOURCES=signor,uniprot
+```
+
+Silver can also be run against existing rewrite bronze state:
+
+```bash
+uv run python -m omnipath_build.cli.commands silver-rewrite signor,uniprot \
+  --data-root data_rewrite
+```
+
 Implement silver tables in the same source DuckDB files:
 
 ```text
@@ -174,6 +196,24 @@ raw_record_part
 snapshot_id
 source_run_id
 ```
+
+Current silver rewrite behavior:
+
+- reads dataset-local typed bronze tables directly from source DuckDB state;
+- uses `bronze_raw_record_change` for affected raw-record IDs;
+- bootstraps a dataset from all current bronze rows if no silver rows exist yet;
+- deletes and rewrites affected silver rows by `(source, dataset, raw_record_id)`;
+- maps raw dictionaries with the existing dataset mapper and expands entities
+  into DuckDB silver tables.
+
+Verified manually:
+
+- `signor` rewrite silver row counts match current `data/silver/signor/state`
+  for all five canonical silver tables.
+- `uniprot` protein rows match current state, while rewrite also maps the
+  available `ontology` bronze dataset into silver. The current checked-in
+  `data/silver/uniprot/state` only contains `proteins`, so the total source
+  counts differ by the ontology rows.
 
 For manual comparison while silver is being implemented, inspect summary counts
 and selected row probes against current:

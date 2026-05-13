@@ -198,6 +198,56 @@ def _handle_bronze_rewrite(args: argparse.Namespace) -> int:
         return 1
 
 
+def _handle_silver_rewrite(args: argparse.Namespace) -> int:
+    """Materialize silver rewrite DuckDB state from rewrite bronze state."""
+    from omnipath_build.rewrite.silver import materialize_silver_duckdb
+    from omnipath_build.silver.build import discover_resources
+
+    try:
+        discovered, _path_manager = discover_resources(
+            database_name=args.database,
+            base_path=None,
+            inputs_package=args.inputs_package,
+        )
+        selected_sources = _split_source_args(args.sources)
+        unknown_sources = [
+            source for source in selected_sources if source not in discovered
+        ]
+        if unknown_sources:
+            raise ValueError(
+                'Unknown source(s) '
+                f'{", ".join(unknown_sources)}. Use silver --list to inspect sources.'
+            )
+        for selected_source in selected_sources:
+            functions = [
+                fn
+                for fn in discovered[selected_source]
+                if args.function is None or fn.function_name == args.function
+            ]
+            print(f'[silver-rewrite:{selected_source}] start', flush=True)
+            result = materialize_silver_duckdb(
+                source=selected_source,
+                resource_functions=functions,
+                data_root=args.data_root,
+                batch_size=args.batch_size,
+            )
+            row_summary = ', '.join(
+                f'{name}={count:,}'
+                for name, count in sorted(result.rows_by_table.items())
+            )
+            print(
+                f'[silver-rewrite:{selected_source}] '
+                f'mapped_raw_records={result.mapped_raw_record_count:,} '
+                f'deleted_raw_records={result.deleted_raw_record_count:,} '
+                f'state={result.source_state_path} rows: {row_summary}',
+                flush=True,
+            )
+        return 0
+    except Exception as exc:  # noqa: BLE001
+        print(f'Unexpected error: {exc}', file=sys.stderr)
+        return 1
+
+
 def _split_source_args(values: list[str]) -> list[str]:
     """Normalize comma-separated and positional source arguments."""
     sources: list[str] = []
@@ -516,6 +566,43 @@ def _build_parser() -> argparse.ArgumentParser:
         help='Force pypath downloads to refresh before parsing.',
     )
     bronze_rewrite_parser.set_defaults(handler=_handle_bronze_rewrite)
+
+    silver_rewrite_parser = subparsers.add_parser(
+        'silver-rewrite',
+        help='Materialize rewrite silver DuckDB state from rewrite bronze state.',
+    )
+    silver_rewrite_parser.add_argument(
+        'sources',
+        nargs='+',
+        help='Source module to process, e.g. uniprot or signor.',
+    )
+    silver_rewrite_parser.add_argument(
+        '--function',
+        help='Specific raw dataset/function within the source.',
+    )
+    silver_rewrite_parser.add_argument(
+        '--database',
+        default='omnipath',
+        help='Database name used for resource discovery (default: omnipath).',
+    )
+    silver_rewrite_parser.add_argument(
+        '--data-root',
+        type=Path,
+        default=Path('data_rewrite'),
+        help='Rewrite data root (default: data_rewrite).',
+    )
+    silver_rewrite_parser.add_argument(
+        '--inputs-package',
+        default='pypath.inputs_v2',
+        help='Python package containing generator modules (default: pypath.inputs_v2).',
+    )
+    silver_rewrite_parser.add_argument(
+        '--batch-size',
+        type=int,
+        default=10_000,
+        help='Rows per DuckDB insert batch.',
+    )
+    silver_rewrite_parser.set_defaults(handler=_handle_silver_rewrite)
 
     combined_parser = subparsers.add_parser(
         'combined',
