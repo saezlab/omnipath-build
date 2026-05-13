@@ -1,31 +1,22 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import UTC, datetime
 import hashlib
 import json
 import shutil
 import tempfile
 import zipfile
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import duckdb
 
-from omnipath_build.gold.build_entities import GoldPartitionConfig
-from omnipath_build.pipeline.resource_archives import build_resource_archive
 from omnipath_build.rewrite.bronze import source_state_path
+from omnipath_build.rewrite.gold_config import GoldPartitionConfig
 from omnipath_build.rewrite.gold_direct import build_gold_source_duckdb
 
 
-GOLD_TABLES = (
-    'entity',
-    'entity_evidence',
-    'entity_map',
-    'entity_occurrence_map',
-    'entity_relation',
-    'entity_relation_evidence',
-)
 @dataclass(frozen=True)
 class GoldRewriteResult:
     source: str
@@ -99,12 +90,11 @@ def _export_gold_archive(
 
     with tempfile.TemporaryDirectory(prefix=f'op-rewrite-gold-archive-{source}-') as tmp_name:
         temp_root = Path(tmp_name)
-        temp_source_dir = temp_root / source
-        _export_archive_input_tables(
+        temp_archive_path = temp_root / f'{source}.zip'
+        _write_gold_archive_from_state(
             state_path=state_path,
-            source_dir=temp_source_dir,
+            archive_path=temp_archive_path,
         )
-        temp_archive_path = build_resource_archive(temp_source_dir, source)
         content_hash = _sha256_zip_contents(temp_archive_path)
         latest_path = data_root / 'artifacts' / 'gold' / source / 'latest.json'
         latest = _read_json(latest_path)
@@ -166,32 +156,90 @@ def _latest_archive_pointer(*, data_root: Path, source: str) -> tuple[Path, str,
     return Path(str(latest['archive_path'])), str(latest['version']), False
 
 
-def _export_archive_input_tables(
+def _write_gold_archive_from_state(
     *,
     state_path: Path,
-    source_dir: Path,
+    archive_path: Path,
 ) -> None:
     tables = {
-        'gold_entity': source_dir / 'entities' / 'entity',
-        'gold_entity_relation': source_dir / 'relations' / 'entity_relation',
-        'gold_entity_relation_evidence': source_dir / 'relations' / 'entity_relation_evidence',
+        'gold_entity': ('entities/entity.parquet', '''
+            select
+                entity_pk as entity_id,
+                canonical_identifier,
+                canonical_identifier_type,
+                identifiers,
+                entity_type,
+                taxonomy_id,
+                entity_attributes,
+                sources
+            from gold_entity
+            order by entity_key
+        '''),
+        'gold_entity_relation': ('relations/entity_relation.parquet', '''
+            select
+                relation_pk as relation_id,
+                subject_entity_pk as subject_entity_id,
+                predicate,
+                object_entity_pk as object_entity_id,
+                relation_category,
+                evidence_count,
+                sources
+            from gold_entity_relation
+            order by relation_key
+        '''),
+        'gold_entity_relation_evidence': ('relations/entity_relation_evidence.parquet', '''
+            select
+                relation_evidence_pk as relation_evidence_id,
+                relation_pk as relation_id,
+                source,
+                record_attributes,
+                subject_attributes,
+                object_attributes,
+                evidence
+            from gold_entity_relation_evidence
+            order by relation_pk, source, raw_record_id
+        '''),
     }
     con = duckdb.connect(str(state_path), read_only=True)
     try:
-        for table, output_dir in tables.items():
-            output_dir.mkdir(parents=True, exist_ok=True)
-            con.execute(
-                f"""
-                copy (select * from {_quote_identifier(table)})
-                to '{_sql_path(output_dir / 'part=00000.parquet')}'
-                (format parquet, compression zstd)
-                """
-            )
+        with tempfile.TemporaryDirectory(prefix='op-rewrite-gold-archive-tables-') as table_tmp_name:
+            table_tmp = Path(table_tmp_name)
+            archive_entries: list[tuple[Path, str]] = []
+            for table, (archive_name, query) in tables.items():
+                if not _table_exists(con, table):
+                    continue
+                output_path = table_tmp / archive_name
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                con.execute(
+                    f"""
+                    copy ({query})
+                    to '{_sql_path(output_path)}'
+                    (format parquet, compression zstd)
+                    """
+                )
+                archive_entries.append((output_path, archive_name))
+            if not archive_entries:
+                raise ValueError(f'No gold tables available to archive in {state_path}')
+            archive_path.parent.mkdir(parents=True, exist_ok=True)
+            with zipfile.ZipFile(archive_path, mode='w', compression=zipfile.ZIP_DEFLATED) as zf:
+                for source_path, archive_name in archive_entries:
+                    zf.write(source_path, arcname=archive_name)
     finally:
         con.close()
 
-def _quote_identifier(value: str) -> str:
-    return '"' + value.replace('"', '""') + '"'
+
+def _table_exists(con: duckdb.DuckDBPyConnection, table: str) -> bool:
+    return bool(
+        con.execute(
+            """
+            select count(*)
+            from information_schema.tables
+            where table_schema = 'main'
+              and table_name = ?
+            """,
+            [table],
+        ).fetchone()[0]
+    )
 
 
 def _sql_path(path: Path) -> str:

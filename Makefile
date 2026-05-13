@@ -1,4 +1,4 @@
-.PHONY: setup silver silver-list resolver-mappings combined postgres pipeline bronze-rewrite silver-rewrite gold-rewrite rewrite_pipeline test
+.PHONY: setup silver silver-list resolver-mappings combined postgres pipeline bronze-rewrite silver-rewrite gold-rewrite combined-rewrite rewrite_pipeline test
 
 JOBS ?= 4
 BATCH_SIZE ?= 10000
@@ -40,6 +40,7 @@ MAX_RECORDS ?=
 FORCE_REFRESH ?=
 GOLD_BUCKET_COUNT ?= 4096
 GOLD_PART_COUNT ?= 128
+COMBINED_REWRITE_PART_COUNT ?= 16
 GOLD_MIN_PART_SIZE_MB ?= 200
 GOLD_DUCKDB_MEMORY_LIMIT ?=
 GOLD_DUCKDB_THREADS ?=
@@ -191,6 +192,21 @@ gold-rewrite:
 		$(if $(GOLD_DUCKDB_THREADS),--duckdb-threads $(GOLD_DUCKDB_THREADS)) \
 		$(if $(GOLD_DUCKDB_MAX_TEMP_DIRECTORY_SIZE),--duckdb-max-temp-directory-size $(GOLD_DUCKDB_MAX_TEMP_DIRECTORY_SIZE))
 
+combined-rewrite:
+	@if [ -z "$(SOURCES)$(SOURCE)" ]; then \
+		echo "SOURCES or SOURCE is required, e.g. make combined-rewrite SOURCES=signor,uniprot"; \
+		exit 1; \
+	fi
+	@uv run python -m omnipath_build.cli.commands combined-rewrite \
+		$(if $(SOURCES),$(SOURCES),$(SOURCE)) \
+		--data-root $(BRONZE_REWRITE_DATA_ROOT) \
+		--inputs-package $(INPUTS_PACKAGE) \
+		--bucket-count $(GOLD_BUCKET_COUNT) \
+		--part-count $(COMBINED_REWRITE_PART_COUNT) \
+		$(if $(GOLD_DUCKDB_MEMORY_LIMIT),--duckdb-memory-limit $(GOLD_DUCKDB_MEMORY_LIMIT)) \
+		$(if $(GOLD_DUCKDB_THREADS),--duckdb-threads $(GOLD_DUCKDB_THREADS)) \
+		$(if $(GOLD_DUCKDB_MAX_TEMP_DIRECTORY_SIZE),--duckdb-max-temp-directory-size $(GOLD_DUCKDB_MAX_TEMP_DIRECTORY_SIZE))
+
 rewrite_pipeline:
 	@if [ -z "$(SOURCES)$(SOURCE)" ]; then \
 		echo "SOURCES or SOURCE is required, e.g. make rewrite_pipeline SOURCES=signor,uniprot"; \
@@ -219,6 +235,15 @@ rewrite_pipeline:
 		--part-count $(GOLD_PART_COUNT) \
 		--min-part-size-mb $(GOLD_MIN_PART_SIZE_MB) \
 		--duckdb-partitioned-write-max-open-files $(GOLD_DUCKDB_PARTITIONED_WRITE_MAX_OPEN_FILES) \
+		$(if $(GOLD_DUCKDB_MEMORY_LIMIT),--duckdb-memory-limit $(GOLD_DUCKDB_MEMORY_LIMIT)) \
+		$(if $(GOLD_DUCKDB_THREADS),--duckdb-threads $(GOLD_DUCKDB_THREADS)) \
+		$(if $(GOLD_DUCKDB_MAX_TEMP_DIRECTORY_SIZE),--duckdb-max-temp-directory-size $(GOLD_DUCKDB_MAX_TEMP_DIRECTORY_SIZE))
+	@uv run python -m omnipath_build.cli.commands combined-rewrite \
+		$(if $(SOURCES),$(SOURCES),$(SOURCE)) \
+		--data-root $(BRONZE_REWRITE_DATA_ROOT) \
+		--inputs-package $(INPUTS_PACKAGE) \
+		--bucket-count $(GOLD_BUCKET_COUNT) \
+		--part-count $(COMBINED_REWRITE_PART_COUNT) \
 		$(if $(GOLD_DUCKDB_MEMORY_LIMIT),--duckdb-memory-limit $(GOLD_DUCKDB_MEMORY_LIMIT)) \
 		$(if $(GOLD_DUCKDB_THREADS),--duckdb-threads $(GOLD_DUCKDB_THREADS)) \
 		$(if $(GOLD_DUCKDB_MAX_TEMP_DIRECTORY_SIZE),--duckdb-max-temp-directory-size $(GOLD_DUCKDB_MAX_TEMP_DIRECTORY_SIZE))

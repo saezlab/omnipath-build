@@ -307,6 +307,50 @@ def _handle_gold_rewrite(args: argparse.Namespace) -> int:
         return 1
 
 
+def _handle_combined_rewrite(args: argparse.Namespace) -> int:
+    """Build rewrite combined DuckDB state and public parquet export."""
+    try:
+        from omnipath_build.rewrite.combine_duckdb import CombinedRewriteConfig
+        from omnipath_build.rewrite.combine import materialize_combined_duckdb
+
+        selected_sources = _split_source_args(args.sources)
+        cfg = CombinedRewriteConfig(
+            bucket_count=args.bucket_count,
+            part_count=args.part_count,
+            duckdb_memory_limit=args.duckdb_memory_limit,
+            duckdb_threads=args.duckdb_threads,
+            duckdb_max_temp_directory_size=args.duckdb_max_temp_directory_size,
+        )
+        print(
+            '[combined-rewrite] start '
+            f'sources={",".join(selected_sources)} data_root={args.data_root}',
+            flush=True,
+        )
+        result = materialize_combined_duckdb(
+            sources=selected_sources,
+            data_root=args.data_root,
+            inputs_package=args.inputs_package,
+            config=cfg,
+        )
+        row_summary = ', '.join(
+            f'{name}={count:,}'
+            for name, count in sorted(result.row_counts.items())
+        )
+        print(
+            '[combined-rewrite] '
+            f'state={result.combined_state_path} '
+            f'latest={result.latest_dir} '
+            f'reports={result.reports_dir} '
+            f'mode={result.mode} '
+            f'rows: {row_summary}',
+            flush=True,
+        )
+        return 0
+    except Exception as exc:  # noqa: BLE001
+        print(f'Unexpected error: {exc}', file=sys.stderr)
+        return 1
+
+
 def _split_source_args(values: list[str]) -> list[str]:
     """Normalize comma-separated and positional source arguments."""
     sources: list[str] = []
@@ -737,6 +781,58 @@ def _build_parser() -> argparse.ArgumentParser:
         help='DuckDB partitioned writer open-file limit.',
     )
     gold_rewrite_parser.set_defaults(handler=_handle_gold_rewrite)
+
+    combined_rewrite_parser = subparsers.add_parser(
+        'combined-rewrite',
+        help='Materialize rewrite combined DuckDB state from rewrite source-gold state.',
+    )
+    combined_rewrite_parser.add_argument(
+        'sources',
+        nargs='+',
+        help='Source modules to combine, e.g. signor uniprot or signor,uniprot.',
+    )
+    combined_rewrite_parser.add_argument(
+        '--data-root',
+        type=Path,
+        default=Path('data_rewrite'),
+        help='Rewrite data root (default: data_rewrite).',
+    )
+    combined_rewrite_parser.add_argument(
+        '--inputs-package',
+        default='pypath.inputs_v2',
+        help='Python package containing generator modules (default: pypath.inputs_v2).',
+    )
+    combined_rewrite_parser.add_argument(
+        '--bucket-count',
+        type=int,
+        default=4096,
+        help='Number of deterministic logical buckets from gold onward.',
+    )
+    combined_rewrite_parser.add_argument(
+        '--part-count',
+        type=int,
+        default=16,
+        help='Internal combined recompute part count; rewrite exports are flat Parquet files.',
+    )
+    combined_rewrite_parser.add_argument(
+        '--duckdb-memory-limit',
+        type=str,
+        default=None,
+        help="Optional DuckDB memory limit, for example '16GB'.",
+    )
+    combined_rewrite_parser.add_argument(
+        '--duckdb-threads',
+        type=int,
+        default=None,
+        help='Optional DuckDB thread count.',
+    )
+    combined_rewrite_parser.add_argument(
+        '--duckdb-max-temp-directory-size',
+        type=str,
+        default=None,
+        help="Optional DuckDB temporary spill limit, for example '500GB'.",
+    )
+    combined_rewrite_parser.set_defaults(handler=_handle_combined_rewrite)
 
     combined_parser = subparsers.add_parser(
         'combined',

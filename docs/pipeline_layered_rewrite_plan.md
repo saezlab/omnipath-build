@@ -252,16 +252,6 @@ data/silver/<source>/<version>/manifest.json
 data/silver/<source>/latest.json
 ```
 
-Open silver follow-ups before source gold:
-
-- Decide whether ontology datasets should be included in rewrite silver by
-  default, or match current source-state behavior and exclude them unless the
-  current pipeline starts retaining ontology silver state.
-- Add focused tests around bootstrap mapping, empty change scope reuse, and
-  `(source, dataset, raw_record_id)` delete scoping.
-- Add a lightweight row-count comparison command or script once a second source
-  besides `signor` has exact parity.
-
 ### Source Gold Rewrite
 
 Implemented files:
@@ -335,6 +325,11 @@ relations/entity_relation.parquet
 relations/entity_relation_evidence.parquet
 ```
 
+Archive creation now writes these public archive Parquet members directly from
+the source DuckDB state. It no longer exports DuckDB tables to an intermediate
+source-gold Parquet directory and then reads those Parquets back through the
+generic archive builder.
+
 The archive is written only when staged source-gold state differs from current
 source-gold state. Gold has one update path: apply the current source scope to
 source-gold state. `source_run_scope_raw_record` is the primary source update
@@ -346,26 +341,28 @@ gold scopes, and reuses the latest archive pointer. If the latest archive is
 missing, gold regenerates the archive from current DuckDB state without marking
 gold changed.
 
-For a non-empty source scope, the direct builder loads only scoped silver rows,
-builds scoped changed source-gold frames, stabilizes existing fingerprints
-against current `gold_entity_map`, and merges the scoped frames into current
-source-gold DuckDB state. The merge replaces scoped entity evidence,
-occurrence-map rows, relation evidence, fingerprint-map rows, and recomputed
-affected entity/relation aggregates. Raw-record deletions are handled from
-`source_run_scope_raw_record`: even when silver has no current occurrences left
-for a deleted raw record, gold removes the old entity evidence, occurrence-map
-rows, and relation evidence for that raw record. After the merge, staged frames
-are not compared as a whole source. Gold decides `gold_changed` from the
-explicit scoped dependency closure: scoped entity evidence, occurrence maps,
-fingerprint maps, affected entity aggregates, scoped relation evidence, affected
-relation aggregates, and registry rows for affected keys. State and zip archive
-are written only if that scoped delta is non-empty. If there is no scoped delta,
-`source_run_scope_entity` and `source_run_scope_relation` are cleared for the run
-and the latest archive pointer is reused. If there is a scoped delta, gold writes
-scoped entity/relation keys to
-`source_run_scope_entity` and `source_run_scope_relation`; deleted keys remain
-in the scope tables with nullable final partition columns so downstream layers
-can delete stale combined state.
+For a non-empty source scope, the direct builder loads only scoped silver rows
+and builds scoped changed source-gold frames. Current source-gold state remains
+in DuckDB for the incremental apply path: changed frames are staged as temporary
+DuckDB tables, existing fingerprints are stabilized from scoped DuckDB probes,
+registry rows are extended in DuckDB, affected current rows are selected by SQL,
+and the final scoped delete/insert mutation is applied in place to `gold_*`
+tables. The apply path no longer reads all current source-gold tables into
+Polars and then replaces the full DuckDB state. Raw-record deletions are handled
+from `source_run_scope_raw_record`: even when silver has no current occurrences
+left for a deleted raw record, gold removes the old entity evidence,
+occurrence-map rows, and relation evidence for that raw record. After the merge,
+staged frames are not compared as a whole source. Gold decides `gold_changed`
+from the explicit scoped dependency closure: scoped entity evidence, occurrence
+maps, fingerprint maps, affected entity aggregates, scoped relation evidence,
+affected relation aggregates, and registry rows for affected keys. State and zip
+archive are written only if that scoped delta is non-empty. If there is no
+scoped delta, `source_run_scope_entity` and `source_run_scope_relation` are
+cleared for the run and the latest archive pointer is reused. If there is a
+scoped delta, gold writes scoped entity/relation keys to
+`source_run_scope_entity` and `source_run_scope_relation`; deleted keys remain in
+the scope tables with nullable final partition columns so downstream layers can
+delete stale combined state.
 
 Scoped frame construction is internally chunked by raw-record ID. Gold first
 loads bounded silver chunks to extract entity candidates, deduplicates
@@ -444,19 +441,170 @@ select count(*) from (
 );
 ```
 
-Open gold follow-ups:
+### Combined Rewrite
 
-- Make source-gold canonicalization deterministic for ambiguous resolver/taxonomy
-  cases, then establish that deterministic output as the comparison baseline.
-- Add focused tests for direct DuckDB source-gold materialization and zip export.
-- Add tests for no-op gold reruns reusing the latest archive and clearing source
-  scopes.
-- Add tests for the silver-scope no-op gate in gold.
-- Add focused tests for scoped gold updates, especially raw-record deletes,
-  relation aggregate recomputation, and existing-fingerprint stabilization.
-- Move the final source-gold comparison and table replacement from materialized
-  Polars frames toward DuckDB temp tables when larger sources make final changed
-  frames too large to keep in memory.
+Implemented files:
+
+```text
+omnipath_build/rewrite/combine.py
+omnipath_build/rewrite/combine_duckdb.py
+omnipath_build/rewrite/build_resources.py
+omnipath_build/rewrite/__init__.py
+omnipath_build/cli/commands.py
+Makefile
+```
+
+The rewrite command now runs bronze, silver, source gold, and then combined:
+
+```bash
+make rewrite_pipeline SOURCES=signor,uniprot
+```
+
+Combined can also be run against existing rewrite source-gold state:
+
+```bash
+uv run python -m omnipath_build.cli.commands combined-rewrite signor,uniprot \
+  --data-root data_rewrite
+```
+
+The combined rewrite reads source-local DuckDB files directly:
+
+```text
+data_rewrite/state/sources/<source>.duckdb
+```
+
+and writes combined state to:
+
+```text
+data_rewrite/state/combined.duckdb
+```
+
+Public combined exports are written to:
+
+```text
+data_rewrite/artifacts/combined/latest/
+  entity.parquet
+  entity_evidence.parquet
+  entity_relation.parquet
+  entity_relation_evidence.parquet
+  relation_annotation_term.parquet
+  resources.parquet
+```
+
+Combined reports are written separately:
+
+```text
+data_rewrite/reports/combined/
+  combined_build_summary.json
+  relation_annotation_summary.json
+  build_manifest.jsonl
+  latest.json
+  runs/<combined_run_id>.json
+```
+
+There is no `data_rewrite/combined/` output directory in the rewrite path, and
+combined no longer writes `runs/<run_id>/affected/` Parquet artifacts. Affected
+keys are internal state/scope only.
+
+Public combined Parquet does not expose internal source/merge keys or
+partitioning columns such as `entity_key`, `relation_key`, `entity_bucket`,
+`entity_part`, `relation_bucket`, or `relation_part`. The public join contract
+is the stable numeric IDs: `entity_id`, `relation_id`,
+`subject_entity_id`, `object_entity_id`, and `term_entity_id`.
+
+The rewrite has its own combine engine copy under `omnipath_build/rewrite`.
+The legacy/current `omnipath_build/gold/combine_duckdb.py` and
+`omnipath_build/gold/build_resources.py` paths remain unchanged. The rewrite
+engine accepts attached source DuckDB shards in addition to legacy source-gold
+Parquet directories. Source tables are read from
+`gold_entity`, `gold_entity_evidence`, `gold_entity_relation`, and
+`gold_entity_relation_evidence`.
+
+Combined rewrite has a local `CombinedRewriteConfig` instead of importing
+source-gold `GoldPartitionConfig`. `bucket_count` remains the stable hashing
+space, while `part_count` is only an internal recompute chunk count. The default
+combined rewrite `part_count` is `16`; source-gold still defaults to `128`.
+
+Combined state currently includes the existing combine state tables:
+
+```text
+entity_key_map
+relation_key_map
+entity
+entity_source
+entity_evidence
+entity_relation
+relation_source
+entity_relation_evidence
+```
+
+and adds rewrite-oriented run metadata/scope tables:
+
+```text
+combined_run
+combined_run_scope_entity
+combined_run_scope_relation
+```
+
+These scope tables are for recompute and reporting inside
+`combined.duckdb`; they are not downstream handoff artifacts.
+
+When combined state is empty, the rewrite bootstraps from all selected source
+state. When combined state exists, it builds affected global key tables from
+`source_run_scope_entity` and `source_run_scope_relation` in the attached source
+state files, expands relation scope for affected entities, and recomputes the
+affected parts.
+
+Manual `signor,uniprot` validation:
+
+- bootstrap from `data_rewrite/state/sources/*.duckdb` completed and exported
+  `data_rewrite/artifacts/combined/latest`;
+- incremental combine from source scope tables completed and preserved row
+  counts;
+- state/export row counts matched internally:
+  - `entity`: `70,227`
+  - `entity_evidence`: `77,895`
+  - `entity_relation`: `512,266`
+  - `entity_relation_evidence`: `520,751`
+  - `relation_annotation_term`: `649,816`
+  - `resources`: `30`
+
+Observed parity gap against current `data/combined/latest`:
+
+- current reference has `69,756` entities and `1,225,579` relations;
+- rewrite has `70,227` entities and `512,266` relations;
+- this follows the already documented source-gold mismatch, especially
+  `uniprot` source-gold relation aggregation (`523,918` rewrite relations vs
+  `1,192,785` current source-gold relations while relation evidence row counts
+  match).
+
+Useful manual probes:
+
+```sql
+select count(*) from combined_run;
+select count(*)
+from combined_run_scope_entity
+where combined_run_id = '<combined_run_id>';
+select count(*)
+from combined_run_scope_relation
+where combined_run_id = '<combined_run_id>';
+select count(*) from entity;
+select count(*) from entity_evidence;
+select count(*) from entity_relation;
+select count(*) from entity_relation_evidence;
+```
+
+Postgres handoff contract:
+
+- bootstrap/full refresh reads only the flat public snapshot under
+  `data_rewrite/artifacts/combined/latest`;
+- incremental loading should read concrete delete/upsert staging tables from
+  `data_rewrite/state/combined.duckdb`, not affected-key files;
+- if an external loader cannot read DuckDB state directly, a future optional
+  export can materialize those delete/upsert staging tables under
+  `data_rewrite/artifacts/postgres_delta/<combined_run_id>/`;
+- affected entity/relation keys remain internal recompute scope and are not a
+  Postgres handoff contract.
 
 ## Next Steps
 
@@ -465,14 +613,11 @@ Open gold follow-ups:
 Extend the scoped merge tests until changed, deleted, and source-all scopes are
 covered well enough to use source scopes as combined input.
 
-### 2. Combined Rewrite
+### 2. Combined Rewrite Hardening
 
-Implement combined state in `combined.duckdb`.
-
-Attach source DuckDB files, read source-gold state directly, maintain global ID
-registries, and export combined Parquet.
-
-Validate against current `./data/combined/latest`.
+Continue parity work after source-gold relation aggregation is aligned with the
+current checked-in reference. Add tests for bootstrap, empty source scopes, and
+incremental changed/deleted source scopes.
 
 ### 3. Pipeline Metadata
 
