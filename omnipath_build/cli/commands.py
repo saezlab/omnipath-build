@@ -137,6 +137,78 @@ def _handle_pipeline(args: argparse.Namespace) -> int:
         return 1
 
 
+def _handle_bronze_rewrite(args: argparse.Namespace) -> int:
+    """Materialize bronze rewrite DuckDB state for selected raw datasets."""
+    import itertools
+
+    from omnipath_build.rewrite.bronze import materialize_bronze_duckdb
+    from omnipath_build.silver.build import discover_resources
+
+    try:
+        discovered, _path_manager = discover_resources(
+            database_name=args.database,
+            base_path=None,
+            inputs_package=args.inputs_package,
+        )
+        selected_sources = _split_source_args(args.sources)
+        unknown_sources = [
+            source for source in selected_sources if source not in discovered
+        ]
+        if unknown_sources:
+            raise ValueError(
+                'Unknown source(s) '
+                f'{", ".join(unknown_sources)}. Use silver --list to inspect sources.'
+            )
+        snapshots = []
+        for selected_source in selected_sources:
+            for fn in discovered[selected_source]:
+                if fn.function_name == 'resource':
+                    continue
+                if args.function and fn.function_name != args.function:
+                    continue
+                raw_dataset = getattr(fn.call, '_raw_dataset', None)
+                if raw_dataset is None:
+                    continue
+
+                records = raw_dataset.raw(force_refresh=args.force_refresh)
+                if args.max_records is not None:
+                    records = itertools.islice(records, args.max_records)
+                print(
+                    f'[bronze-rewrite:{fn.source}.{fn.function_name}] start',
+                    flush=True,
+                )
+                snapshot = materialize_bronze_duckdb(
+                    records=records,
+                    source=fn.source,
+                    dataset=fn.function_name,
+                    data_root=args.data_root,
+                    batch_size=args.batch_size,
+                )
+                snapshots.append(snapshot)
+                print(
+                    f'[bronze-rewrite:{fn.source}.{fn.function_name}] '
+                    f'snapshot={snapshot.snapshot_id} state={snapshot.source_state_path}',
+                    flush=True,
+                )
+        if not snapshots:
+            raise ValueError('No raw datasets matched the requested filters.')
+        return 0
+    except Exception as exc:  # noqa: BLE001
+        print(f'Unexpected error: {exc}', file=sys.stderr)
+        return 1
+
+
+def _split_source_args(values: list[str]) -> list[str]:
+    """Normalize comma-separated and positional source arguments."""
+    sources: list[str] = []
+    for value in values:
+        for item in value.split(','):
+            item = item.strip()
+            if item:
+                sources.append(item)
+    return sources
+
+
 def _handle_combined(args: argparse.Namespace) -> int:
     """Build combined warehouse parquet artifacts."""
     project_root = Path(__file__).resolve().parent.parent.parent
@@ -396,6 +468,54 @@ def _build_parser() -> argparse.ArgumentParser:
         help='Run the incremental build pipeline for selected or autodiscovered sources.',
     )
     add_pipeline_args(pipeline_parser)
+
+    bronze_rewrite_parser = subparsers.add_parser(
+        'bronze-rewrite',
+        help='Materialize rewrite bronze raw-record DuckDB state.',
+    )
+    bronze_rewrite_parser.add_argument(
+        'sources',
+        nargs='+',
+        help='Source module to process, e.g. uniprot or signor.',
+    )
+    bronze_rewrite_parser.add_argument(
+        '--function',
+        help='Specific raw dataset/function within the source.',
+    )
+    bronze_rewrite_parser.add_argument(
+        '--database',
+        default='omnipath',
+        help='Database name used for resource discovery (default: omnipath).',
+    )
+    bronze_rewrite_parser.add_argument(
+        '--data-root',
+        type=Path,
+        default=Path('data_rewrite'),
+        help='Rewrite data root (default: data_rewrite).',
+    )
+    bronze_rewrite_parser.add_argument(
+        '--inputs-package',
+        default='pypath.inputs_v2',
+        help='Python package containing generator modules (default: pypath.inputs_v2).',
+    )
+    bronze_rewrite_parser.add_argument(
+        '--batch-size',
+        type=int,
+        default=50_000,
+        help='Rows per DuckDB insert batch.',
+    )
+    bronze_rewrite_parser.add_argument(
+        '--max-records',
+        type=int,
+        default=None,
+        help='Limit raw records per selected dataset for quick local trials.',
+    )
+    bronze_rewrite_parser.add_argument(
+        '--force-refresh',
+        action='store_true',
+        help='Force pypath downloads to refresh before parsing.',
+    )
+    bronze_rewrite_parser.set_defaults(handler=_handle_bronze_rewrite)
 
     combined_parser = subparsers.add_parser(
         'combined',

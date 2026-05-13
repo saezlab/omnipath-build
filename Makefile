@@ -1,4 +1,4 @@
-.PHONY: setup silver silver-list resolver-mappings combined postgres pipeline test
+.PHONY: setup silver silver-list resolver-mappings combined postgres pipeline bronze-rewrite rewrite_pipeline test
 
 JOBS ?= 4
 BATCH_SIZE ?= 10000
@@ -35,6 +35,9 @@ LOAD_POSTGRES ?=
 YES ?=
 STEP ?= all
 MEMORY_SAMPLE_INTERVAL_SECONDS ?= 5
+BRONZE_REWRITE_DATA_ROOT ?= data_rewrite
+MAX_RECORDS ?=
+FORCE_REFRESH ?=
 
 setup:
 	git submodule add -b main https://github.com/saezlab/pypath.git pypath || true
@@ -137,6 +140,33 @@ pipeline:
 		$(if $(POSTGRES_DROP_EXISTING),--postgres-drop-existing) \
 		--memory-sample-interval-seconds $(MEMORY_SAMPLE_INTERVAL_SECONDS) \
 		$(if $(YES),--yes)
+
+bronze-rewrite:
+	@if [ -z "$(SOURCE)" ]; then \
+		echo "SOURCE is required, e.g. make bronze-rewrite SOURCE=uniprot [FUNCTION=proteins]"; \
+		exit 1; \
+	fi
+	@uv run python -m omnipath_build.cli.commands bronze-rewrite $(SOURCE) \
+		--data-root $(BRONZE_REWRITE_DATA_ROOT) \
+		--inputs-package $(INPUTS_PACKAGE) \
+		--batch-size $(BATCH_SIZE) \
+		$(if $(FUNCTION),--function $(FUNCTION)) \
+		$(if $(MAX_RECORDS),--max-records $(MAX_RECORDS)) \
+		$(if $(FORCE_REFRESH),--force-refresh)
+
+rewrite_pipeline:
+	@if [ -z "$(SOURCES)$(SOURCE)" ]; then \
+		echo "SOURCES or SOURCE is required, e.g. make rewrite_pipeline SOURCES=signor,uniprot"; \
+		exit 1; \
+	fi
+	@uv run python -m omnipath_build.cli.commands bronze-rewrite \
+		$(if $(SOURCES),$(SOURCES),$(SOURCE)) \
+		--data-root $(BRONZE_REWRITE_DATA_ROOT) \
+		--inputs-package $(INPUTS_PACKAGE) \
+		--batch-size $(BATCH_SIZE) \
+		$(if $(FUNCTION),--function $(FUNCTION)) \
+		$(if $(MAX_RECORDS),--max-records $(MAX_RECORDS)) \
+		$(if $(FORCE_REFRESH),--force-refresh)
 
 test: TEST_MODE=1
 test: pipeline

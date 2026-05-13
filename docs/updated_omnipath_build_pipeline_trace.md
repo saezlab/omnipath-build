@@ -1215,16 +1215,12 @@ order by artifact_kind, source;
 
 - Introduce `data/state/pipeline.duckdb`.
 - Introduce `data/state/sources/<source>.duckdb`.
-- Continue writing current Parquet state and delta artifacts.
-- Also write equivalent source-state tables and run-scope tables.
-- Add validation comparing current Parquet outputs to DB-derived exports.
 
 ### Phase 2: Make gold and combine read scopes from DuckDB
 
 - Gold writes source scopes into source state.
 - Combine reads source scopes from source state instead of
   `data/gold/<source>/_delta/`.
-- Keep `_delta/` as compatibility/debug export only.
 
 ### Phase 3: Move silver state into source DuckDB
 
@@ -1236,13 +1232,12 @@ order by artifact_kind, source;
 
 - Write raw record registry/current/change tables into source state.
 - Silver reads raw records from source state.
-- Keep `data/bronze/` only as compatibility/debug export.
 
 ### Phase 5: Make source-gold DuckDB authoritative
 
 - Source-gold tables and registries live in source state.
 - Gold zip is exported from source state.
-- Stop retaining unzipped `data/gold/<source>/entities/` and `relations/` by default.
+- Stop retaining unzipped `data/gold/<source>/entities/` and `relations/`
 
 ### Phase 6: Make combined DuckDB authoritative
 
@@ -1270,23 +1265,6 @@ data/combined/runs/<run_id>/affected/
 ```
 
 Keep optional debug exports behind flags.
-
-## 17. Compatibility aliases
-
-During migration, old paths can be kept as aliases or exports:
-
-| Old path | Target status |
-|---|---|
-| `data/bronze/.../state/records/` | optional debug export |
-| `data/bronze/.../<snapshot_id>/delta/` | optional debug export |
-| `data/silver/<source>/state/` | optional debug export |
-| `data/silver/<source>/<version>/delta/` | optional debug export |
-| `data/gold/<source>/state.duckdb` | replaced by `data/state/sources/<source>.duckdb` |
-| `data/gold/<source>/entities/` | temporary export for zip only |
-| `data/gold/<source>/relations/` | temporary export for zip only |
-| `data/gold/<source>/_delta/` | optional debug export from source scope tables |
-| `data/combined/state.duckdb` | moved to `data/state/combined.duckdb`, or kept as alias |
-| `data/combined/runs/<run_id>/affected/` | optional debug export from combined scope tables |
 
 ## 18. Summary
 
