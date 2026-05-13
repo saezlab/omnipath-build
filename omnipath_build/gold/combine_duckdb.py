@@ -303,6 +303,7 @@ def _ensure_state_schema(con: duckdb.DuckDBPyConnection) -> None:
             taxonomy_id varchar,
             identifiers struct(identifier varchar, identifier_type varchar)[],
             entity_attributes struct(term varchar, "value" varchar, unit varchar)[],
+            evidence struct(term varchar, "value" varchar, unit varchar)[],
             entity_bucket bigint,
             entity_part bigint
         )
@@ -596,6 +597,7 @@ def _recompute_entity_evidence_part(
         'taxonomy_id',
         'identifiers',
         'entity_attributes',
+        'evidence',
         'entity_bucket',
         'entity_part',
     ]
@@ -633,6 +635,10 @@ def _recompute_entity_evidence_part(
             first(taxonomy_id order by taxonomy_id nulls last) as taxonomy_id,
             list_distinct(flatten(list(identifiers))) as identifiers,
             list_distinct(flatten(list(entity_attributes))) as entity_attributes,
+            coalesce(
+                list_distinct(flatten(list(evidence) filter (where evidence is not null))),
+                []::struct(term varchar, "value" varchar, unit varchar)[]
+            ) as evidence,
             coalesce(min(entity_bucket), stable_bucket(entity_key, {cfg.bucket_count}))::bigint as entity_bucket,
             coalesce(min(entity_part), stable_part(entity_key, {cfg.bucket_count}, {cfg.part_count}))::bigint as entity_part
         from source_entity_evidence
@@ -903,15 +909,96 @@ def _export_latest(
         (target_dir / name).mkdir(parents=True, exist_ok=True)
     for part in sorted(entity_parts):
         update_phase(f'export entity part={part:05d}')
-        _copy_part_query(con, f'select * from entity where entity_part = {part} order by entity_key', target_dir / 'entity', part, cfg)
-        _copy_part_query(con, f'select * from entity_evidence where entity_part = {part} order by entity_key, source', target_dir / 'entity_evidence', part, cfg)
+        _copy_part_query(
+            con,
+            f'''
+                select
+                    entity_id,
+                    entity_key,
+                    canonical_identifier,
+                    canonical_identifier_type,
+                    identifiers,
+                    entity_type,
+                    taxonomy_id,
+                    entity_attributes,
+                    sources,
+                    source_count
+                from entity
+                where entity_part = {part}
+                order by entity_key
+            ''',
+            target_dir / 'entity',
+            part,
+            cfg,
+        )
+        _copy_part_query(
+            con,
+            f'''
+                select
+                    m.entity_id,
+                    e.source,
+                    e.raw_record_ids,
+                    e.entity_type,
+                    e.taxonomy_id,
+                    e.identifiers,
+                    e.entity_attributes,
+                    e.evidence
+                from entity_evidence e
+                join entity_key_map m using(entity_key)
+                where e.entity_part = {part}
+                order by m.entity_id, e.source
+            ''',
+            target_dir / 'entity_evidence',
+            part,
+            cfg,
+        )
 
     for name in ['entity_relation', 'entity_relation_evidence']:
         (target_dir / name).mkdir(parents=True, exist_ok=True)
     for part in sorted(relation_parts):
         update_phase(f'export relation part={part:05d}')
-        _copy_part_query(con, f'select * from entity_relation where relation_part = {part} order by relation_key', target_dir / 'entity_relation', part, cfg)
-        _copy_part_query(con, f'select * from entity_relation_evidence where relation_part = {part} order by relation_key, source, raw_record_id', target_dir / 'entity_relation_evidence', part, cfg)
+        _copy_part_query(
+            con,
+            f'''
+                select
+                    relation_id,
+                    relation_key,
+                    subject_entity_id,
+                    predicate,
+                    object_entity_id,
+                    relation_category,
+                    participant_types,
+                    evidence_count,
+                    sources,
+                    source_count
+                from entity_relation
+                where relation_part = {part}
+                order by relation_key
+            ''',
+            target_dir / 'entity_relation',
+            part,
+            cfg,
+        )
+        _copy_part_query(
+            con,
+            f'''
+                select
+                    relation_evidence_id,
+                    relation_id,
+                    source,
+                    raw_record_id,
+                    record_attributes,
+                    subject_attributes,
+                    object_attributes,
+                    evidence
+                from entity_relation_evidence
+                where relation_part = {part}
+                order by relation_id, source, raw_record_id
+            ''',
+            target_dir / 'entity_relation_evidence',
+            part,
+            cfg,
+        )
 
     if full_build:
         if version_dir.exists():
@@ -1050,16 +1137,20 @@ def _write_run_artifacts(
     affected_relation_count: int,
 ) -> dict[str, Any]:
     run_dir = output_dir / 'runs' / run_id
-    affected_dir = run_dir / 'affected'
-    affected_dir.mkdir(parents=True, exist_ok=True)
+    run_dir.mkdir(parents=True, exist_ok=True)
 
     if mode == 'bootstrap':
-        _copy_query(con, "select null::varchar as source, entity_key, 'added'::varchar as change_type, 'bootstrap'::varchar as reason from entity", affected_dir / 'entity_keys.parquet')
-        _copy_query(con, "select null::varchar as source, relation_key, 'added'::varchar as change_type, 'bootstrap'::varchar as reason from entity_relation", affected_dir / 'relation_keys.parquet')
+        affected_artifacts: dict[str, str] = {}
     else:
+        affected_dir = run_dir / 'affected'
+        affected_dir.mkdir(parents=True, exist_ok=True)
         source_value = _nullable_sql_literal(changed_source)
         _copy_query(con, f"select {source_value} as source, entity_key, null::varchar as change_type, 'gold_delta'::varchar as reason from affected_entity_keys", affected_dir / 'entity_keys.parquet')
         _copy_query(con, f"select {source_value} as source, relation_key, null::varchar as change_type, 'gold_delta'::varchar as reason from affected_relation_keys", affected_dir / 'relation_keys.parquet')
+        affected_artifacts = {
+            'entity_keys': str(affected_dir / 'entity_keys.parquet'),
+            'relation_keys': str(affected_dir / 'relation_keys.parquet'),
+        }
 
     manifest = {
         'layer': 'combined',
@@ -1071,6 +1162,7 @@ def _write_run_artifacts(
         'run_dir': str(run_dir),
         'affected_entity_count': int(con.execute('select count(*) from entity').fetchone()[0]) if mode == 'bootstrap' else affected_entity_count,
         'affected_relation_count': int(con.execute('select count(*) from entity_relation').fetchone()[0]) if mode == 'bootstrap' else affected_relation_count,
+        'affected_artifacts': affected_artifacts,
     }
     (run_dir / 'manifest.json').write_text(json.dumps(manifest, indent=2, sort_keys=True) + '\n', encoding='utf-8')
     (output_dir / 'runs' / 'latest.json').write_text(json.dumps({'run_id': run_id, 'path': str(run_dir), 'manifest': str(run_dir / 'manifest.json')}, indent=2, sort_keys=True) + '\n', encoding='utf-8')

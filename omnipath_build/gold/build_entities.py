@@ -25,7 +25,10 @@ from id_resolver.resolve import (
 )
 from omnipath_build.silver.tables import silver_table_dir, has_silver_tables
 from omnipath_build.gold.utils.keys import compute_entity_key
-from omnipath_build.gold.utils.schema import ONTOLOGY_IDENTIFIER_TERM
+from omnipath_build.gold.utils.schema import (
+    EVIDENCE_IDENTIFIER_TERMS,
+    ONTOLOGY_IDENTIFIER_TERM,
+)
 from omnipath_build.gold.utils.table_schema import (
     EMPTY_IDENTIFIERS,
     ENTITY_EVIDENCE_SCHEMA,
@@ -885,6 +888,7 @@ def _finalize_entity_outputs(
                 e.taxonomy_id,
                 e.identifiers,
                 e.entity_attributes,
+                e.evidence,
                 e.entity_bucket,
                 e.entity_part,
                 e.occ_bucket,
@@ -988,6 +992,7 @@ def _build_entity_evidence(
         empty_evidence.write_parquet(output_dir / 'entity_evidence.parquet')
         return empty_evidence
 
+    entity_level_evidence = _build_entity_level_evidence(silver_base)
     occurrence_evidence = (
         _empty_entity_evidence_index()
         if occurrence_map is None or occurrence_map.is_empty()
@@ -995,6 +1000,7 @@ def _build_entity_evidence(
             occurrence_map
             .join(raw_records, on='occurrence_id', how='inner')
             .select(['entity_pk', 'raw_record_id', 'occurrence_id', '_fingerprint'])
+            .join(entity_level_evidence, on='occurrence_id', how='left')
         )
     )
     ontology_evidence = _build_ontology_entity_evidence(
@@ -1033,6 +1039,7 @@ def _build_entity_evidence(
             'taxonomy_id',
             'identifiers',
             'entity_attributes',
+            'evidence',
         ])
     )
 
@@ -1096,6 +1103,7 @@ def _build_ontology_entity_evidence(
         .join(raw_records, on='occurrence_id', how='inner')
         .join(fingerprint_map, on='_fingerprint', how='inner')
         .select(['entity_pk', 'raw_record_id', 'occurrence_id', '_fingerprint'])
+        .with_columns(pl.lit([], dtype=ENTITY_EVIDENCE_SCHEMA['evidence']).alias('evidence'))
         .unique()
     )
 
@@ -1106,7 +1114,45 @@ def _empty_entity_evidence_index() -> pl.DataFrame:
         'raw_record_id': pl.Series([], dtype=pl.Utf8),
         'occurrence_id': pl.Series([], dtype=pl.Utf8),
         '_fingerprint': pl.Series([], dtype=pl.Utf8),
+        'evidence': pl.Series([], dtype=ENTITY_EVIDENCE_SCHEMA['evidence']),
     })
+
+
+def _build_entity_level_evidence(silver_base: Path) -> pl.DataFrame:
+    annotation_path = _silver_table_path(silver_base, 'entity_annotation')
+    if not annotation_path.exists():
+        return pl.DataFrame({
+            'occurrence_id': pl.Series([], dtype=pl.Utf8),
+            'evidence': pl.Series([], dtype=ENTITY_EVIDENCE_SCHEMA['evidence']),
+        })
+
+    annotations = (
+        _read_silver_polars_table(annotation_path)
+        .filter(
+            pl.col('term').is_in(list(EVIDENCE_IDENTIFIER_TERMS))
+            & pl.col('value').is_not_null()
+            & (pl.col('value') != '')
+        )
+        .select([
+            'occurrence_id',
+            pl.struct([
+                pl.col('term').cast(pl.Utf8).alias('term'),
+                pl.col('value').cast(pl.Utf8).alias('value'),
+                pl.col('unit').cast(pl.Utf8).alias('unit'),
+            ]).alias('evidence_item'),
+        ])
+    )
+    if annotations.is_empty():
+        return pl.DataFrame({
+            'occurrence_id': pl.Series([], dtype=pl.Utf8),
+            'evidence': pl.Series([], dtype=ENTITY_EVIDENCE_SCHEMA['evidence']),
+        })
+    return (
+        annotations
+        .unique()
+        .group_by('occurrence_id')
+        .agg(pl.col('evidence_item').alias('evidence'))
+    )
 
 
 def _read_silver_polars_table(path: Path) -> pl.DataFrame:
@@ -1351,6 +1397,7 @@ def _write_empty_entity_outputs(
                 null::varchar as taxonomy_id,
                 []::struct(identifier varchar, identifier_type varchar)[] as identifiers,
                 []::struct(term varchar, "value" varchar, unit varchar)[] as entity_attributes,
+                []::struct(term varchar, "value" varchar, unit varchar)[] as evidence,
                 null::bigint as entity_bucket,
                 {part}::bigint as entity_part,
                 null::bigint as occ_bucket,

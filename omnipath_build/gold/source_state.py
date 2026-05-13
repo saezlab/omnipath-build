@@ -224,6 +224,20 @@ def _merge_entity_state(
 ) -> dict[str, int]:
     changed_evidence_sql = _read_dataset_sql(changed_entities_dir / 'entity_evidence')
 
+    con.execute('drop table if exists changed_entity_evidence_input')
+    con.execute(f'''
+        create temp table changed_entity_evidence_input as
+        select *
+        from {changed_evidence_sql}
+        where raw_record_id is not null
+    ''')
+    con.execute('drop table if exists changed_input_fingerprints')
+    con.execute('''
+        create temp table changed_input_fingerprints as
+        select distinct try_cast(fingerprint as varchar) as fingerprint
+        from changed_entity_evidence_input
+        where fingerprint is not null
+    ''')
     con.execute('drop table if exists affected_entity_keys')
     con.execute('''
         create temp table affected_entity_keys as
@@ -247,6 +261,9 @@ def _merge_entity_state(
         from entity_evidence e
         join changed_raw_record_ids r on r.raw_record_id = try_cast(e.raw_record_id as varchar)
         where e.fingerprint is not null
+        union
+        select fingerprint
+        from changed_input_fingerprints
     ''')
     con.execute('drop table if exists previous_fingerprint_identity')
     con.execute('''
@@ -257,16 +274,18 @@ def _merge_entity_state(
             first(canonical_identifier order by canonical_identifier nulls last) as canonical_identifier,
             first(canonical_identifier_type order by canonical_identifier_type nulls last) as canonical_identifier_type
         from entity_evidence
-        where fingerprint is not null
+        where try_cast(fingerprint as varchar) in (
+            select fingerprint from changed_input_fingerprints
+        )
         group by try_cast(fingerprint as varchar)
     ''')
     con.execute('drop table if exists changed_entity_key_remap')
-    con.execute(f'''
+    con.execute('''
         create temp table changed_entity_key_remap as
         select distinct
             c.entity_key as old_entity_key,
             coalesce(p.entity_key, c.entity_key) as new_entity_key
-        from {changed_evidence_sql} c
+        from changed_entity_evidence_input c
         left join previous_fingerprint_identity p
           on p.fingerprint = try_cast(c.fingerprint as varchar)
         where c.entity_key is not null
@@ -275,11 +294,7 @@ def _merge_entity_state(
     con.execute('drop table if exists changed_entity_evidence_stable')
     con.execute(f'''
         create temp table changed_entity_evidence_stable as
-        with changed as (
-            select * from {changed_evidence_sql}
-            where raw_record_id is not null
-        ),
-        stable as (
+        with stable as (
             select
                 c.source,
                 coalesce(p.entity_key, c.entity_key) as entity_key,
@@ -291,8 +306,9 @@ def _merge_entity_state(
                 c.entity_type,
                 c.taxonomy_id,
                 c.identifiers,
-                c.entity_attributes
-            from changed c
+                c.entity_attributes,
+                c.evidence
+            from changed_entity_evidence_input c
             left join previous_fingerprint_identity p
               on p.fingerprint = try_cast(c.fingerprint as varchar)
         )
@@ -308,6 +324,7 @@ def _merge_entity_state(
             taxonomy_id,
             identifiers,
             entity_attributes,
+            evidence,
             stable_bucket(entity_key, {cfg.bucket_count})::bigint as entity_bucket,
             stable_part(entity_key, {cfg.bucket_count}, {cfg.part_count})::bigint as entity_part,
             stable_bucket(occurrence_id, {cfg.bucket_count})::bigint as occ_bucket,
@@ -373,6 +390,7 @@ def _merge_entity_state(
             e.taxonomy_id,
             e.identifiers,
             e.entity_attributes,
+            e.evidence,
             e.entity_bucket,
             e.entity_part,
             e.occ_bucket,

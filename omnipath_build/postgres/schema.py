@@ -81,10 +81,8 @@ def ensure_schema(
                   relation_id bigserial PRIMARY KEY,
                   relation_key text NOT NULL UNIQUE,
                   subject_entity_id bigint NOT NULL{entity_fk},
-                  subject_entity_key text NOT NULL,
                   predicate text NOT NULL,
                   object_entity_id bigint NOT NULL{entity_fk},
-                  object_entity_key text NOT NULL,
                   relation_category text NOT NULL,
                   participant_types jsonb,
                   evidence_count bigint NOT NULL,
@@ -99,7 +97,6 @@ def ensure_schema(
                 CREATE {table_kind} IF NOT EXISTS {{}}.entity_relation_evidence (
                   relation_evidence_id bigserial PRIMARY KEY,
                   relation_id bigint NOT NULL{relation_fk},
-                  relation_key text NOT NULL,
                   source text NOT NULL,
                   raw_record_id text,
                   record_attributes jsonb,
@@ -114,14 +111,15 @@ def ensure_schema(
             sql.SQL(
                 f"""
                 CREATE {table_kind} IF NOT EXISTS {{}}.entity_evidence (
+                  entity_id bigint NOT NULL{entity_fk},
                   source text NOT NULL,
-                  entity_key text NOT NULL,
                   raw_record_ids jsonb,
                   entity_type text,
                   taxonomy_id text,
                   identifiers jsonb,
                   entity_attributes jsonb,
-                  PRIMARY KEY (source, entity_key)
+                  evidence jsonb,
+                  PRIMARY KEY (source, entity_id)
                 )
                 """
             ).format(sql.Identifier(schema))

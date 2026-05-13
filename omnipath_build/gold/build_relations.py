@@ -109,7 +109,6 @@ class RelationWriterBase:
         raw_record_id: str | None,
     ) -> None:
         context = AnnotationContext(record_class=record_class, parent_type=None)
-        evidence = collect_attributes(annotations, context, {'evidence'})
 
         for annotation in annotations:
             disposition = classify_annotation(annotation, context)
@@ -138,7 +137,7 @@ class RelationWriterBase:
                 record_attributes=None,
                 subject_attributes=None,
                 object_attributes=None,
-                evidence=evidence,
+                evidence=None,
             )
 
     def _write_relation_evidence(

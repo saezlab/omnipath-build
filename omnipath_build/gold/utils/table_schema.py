@@ -139,6 +139,7 @@ ENTITY_EVIDENCE_SCHEMA = {
     'taxonomy_id': pl.String,
     'identifiers': pl.List(IDENTIFIER_STRUCT),
     'entity_attributes': ATTRIBUTE_STRUCT,
+    'evidence': ATTRIBUTE_STRUCT,
 }
 
 COMBINED_ENTITY_SCHEMA = {

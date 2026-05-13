@@ -312,10 +312,8 @@ def _load_tables_full(
             'relation_id',
             'relation_key',
             'subject_entity_id',
-            'subject_entity_key',
             'predicate',
             'object_entity_id',
-            'object_entity_key',
             'relation_category',
             'participant_types',
             'evidence_count',
@@ -339,7 +337,6 @@ def _load_tables_full(
         columns=(
             'relation_evidence_id',
             'relation_id',
-            'relation_key',
             'source',
             'raw_record_id',
             'record_attributes',
@@ -365,18 +362,20 @@ def _load_tables_full(
         schema=schema,
         table='entity_evidence',
         columns=(
+            'entity_id',
             'source',
-            'entity_key',
             'raw_record_ids',
             'entity_type',
             'taxonomy_id',
             'identifiers',
             'entity_attributes',
+            'evidence',
         ),
         serializers={
             'raw_record_ids': _serialize_json,
             'identifiers': _serialize_json,
             'entity_attributes': _serialize_json,
+            'evidence': _serialize_json,
         },
         batch_size=batch_size,
     )
@@ -586,7 +585,7 @@ def load_tables_from_run_delta(
     )
     entity_evidence_delete = _read_optional_frame(
         delta_dir / 'entity_evidence_delete.parquet',
-        ['source', 'entity_key'],
+        ['source', 'entity_id', 'entity_key'],
     )
     relation_annotation_ids = _read_int_column(
         delta_dir / 'relation_annotation_term_delete.parquet',
@@ -618,34 +617,53 @@ def load_tables_from_run_delta(
         if not entity_evidence_delete.is_empty():
             source_rows = entity_evidence_delete.filter(pl.col('source').is_not_null())
             if not source_rows.is_empty():
-                pairs = [
-                    (row['source'], row['entity_key'])
-                    for row in source_rows.to_dicts()
-                    if row['entity_key'] is not None
-                ]
-                if pairs:
-                    cur.execute(
-                        sql.SQL(
-                            'DELETE FROM {}.entity_evidence e '
-                            'USING (SELECT * FROM unnest(%s::text[], %s::text[]) AS t(source, entity_key)) d '
-                            'WHERE e.source = d.source AND e.entity_key = d.entity_key'
-                        ).format(sql.Identifier(schema)),
-                        ([source for source, _ in pairs], [key for _, key in pairs]),
-                    )
-            null_source_keys = (
-                entity_evidence_delete
-                .filter(pl.col('source').is_null())
-                .get_column('entity_key')
-                .drop_nulls()
-                .unique()
-                .to_list()
-            )
-            if null_source_keys:
+                if 'entity_id' in source_rows.columns:
+                    pairs = [
+                        (row['source'], row['entity_id'])
+                        for row in source_rows.to_dicts()
+                        if row['entity_id'] is not None
+                    ]
+                    if pairs:
+                        cur.execute(
+                            sql.SQL(
+                                'DELETE FROM {}.entity_evidence e '
+                                'USING (SELECT * FROM unnest(%s::text[], %s::bigint[]) AS t(source, entity_id)) d '
+                                'WHERE e.source = d.source AND e.entity_id = d.entity_id'
+                            ).format(sql.Identifier(schema)),
+                            ([source for source, _ in pairs], [entity_id for _, entity_id in pairs]),
+                        )
+                elif 'entity_key' in source_rows.columns:
+                    pairs = [
+                        (row['source'], row['entity_key'])
+                        for row in source_rows.to_dicts()
+                        if row['entity_key'] is not None
+                    ]
+                    if pairs:
+                        cur.execute(
+                            sql.SQL(
+                                'DELETE FROM {}.entity_evidence ev '
+                                'USING {}.entity e, '
+                                '(SELECT * FROM unnest(%s::text[], %s::text[]) AS t(source, entity_key)) d '
+                                'WHERE ev.source = d.source AND e.entity_key = d.entity_key AND ev.entity_id = e.entity_id'
+                            ).format(sql.Identifier(schema), sql.Identifier(schema)),
+                            ([source for source, _ in pairs], [key for _, key in pairs]),
+                        )
+            null_source_ids: list[int] = []
+            if 'entity_id' in entity_evidence_delete.columns:
+                null_source_ids = (
+                    entity_evidence_delete
+                    .filter(pl.col('source').is_null())
+                    .get_column('entity_id')
+                    .drop_nulls()
+                    .unique()
+                    .to_list()
+                )
+            if null_source_ids:
                 cur.execute(
                     sql.SQL(
-                        'DELETE FROM {}.entity_evidence WHERE entity_key = ANY(%s)'
+                        'DELETE FROM {}.entity_evidence WHERE entity_id = ANY(%s)'
                     ).format(sql.Identifier(schema)),
-                    (null_source_keys,),
+                    (null_source_ids,),
                 )
         if entity_ids:
             cur.execute(
@@ -686,10 +704,8 @@ def load_tables_from_run_delta(
             'relation_id',
             'relation_key',
             'subject_entity_id',
-            'subject_entity_key',
             'predicate',
             'object_entity_id',
-            'object_entity_key',
             'relation_category',
             'participant_types',
             'evidence_count',
@@ -709,7 +725,6 @@ def load_tables_from_run_delta(
         columns=(
             'relation_evidence_id',
             'relation_id',
-            'relation_key',
             'source',
             'raw_record_id',
             'record_attributes',
@@ -731,18 +746,20 @@ def load_tables_from_run_delta(
         schema=schema,
         table='entity_evidence',
         columns=(
+            'entity_id',
             'source',
-            'entity_key',
             'raw_record_ids',
             'entity_type',
             'taxonomy_id',
             'identifiers',
             'entity_attributes',
+            'evidence',
         ),
         serializers={
             'raw_record_ids': _serialize_json,
             'identifiers': _serialize_json,
             'entity_attributes': _serialize_json,
+            'evidence': _serialize_json,
         },
         batch_size=batch_size,
     )
