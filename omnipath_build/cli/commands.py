@@ -248,6 +248,65 @@ def _handle_silver_rewrite(args: argparse.Namespace) -> int:
         return 1
 
 
+def _handle_gold_rewrite(args: argparse.Namespace) -> int:
+    """Materialize source-gold rewrite DuckDB state from rewrite silver state."""
+    from omnipath_build.gold.build_entities import GoldPartitionConfig
+    from omnipath_build.rewrite.gold import materialize_gold_duckdb
+    from omnipath_build.silver.build import discover_resources
+
+    try:
+        discovered, _path_manager = discover_resources(
+            database_name=args.database,
+            base_path=None,
+            inputs_package=args.inputs_package,
+        )
+        selected_sources = _split_source_args(args.sources)
+        unknown_sources = [
+            source for source in selected_sources if source not in discovered
+        ]
+        if unknown_sources:
+            raise ValueError(
+                'Unknown source(s) '
+                f'{", ".join(unknown_sources)}. Use silver --list to inspect sources.'
+            )
+        cfg = GoldPartitionConfig(
+            bucket_count=args.bucket_count,
+            part_count=args.part_count,
+            min_part_size_bytes=args.min_part_size_mb * 1024 * 1024,
+            duckdb_memory_limit=args.duckdb_memory_limit,
+            duckdb_threads=args.duckdb_threads,
+            duckdb_max_temp_directory_size=args.duckdb_max_temp_directory_size,
+            duckdb_partitioned_write_max_open_files=(
+                args.duckdb_partitioned_write_max_open_files
+            ),
+        )
+        for selected_source in selected_sources:
+            print(f'[gold-rewrite:{selected_source}] start', flush=True)
+            result = materialize_gold_duckdb(
+                source=selected_source,
+                data_root=args.data_root,
+                mapping_dir=args.resolver_mapping_dir,
+                partition_config=cfg,
+            )
+            row_summary = ', '.join(
+                f'{name}={count:,}'
+                for name, count in sorted(result.rows_by_table.items())
+            )
+            print(
+                f'[gold-rewrite:{selected_source}] '
+                f'state={result.source_state_path} '
+                f'archive={result.archive_path} '
+                f'gold_changed={result.gold_changed} '
+                f'archive_written={result.archive_written} '
+                f'rows: {row_summary}',
+                flush=True,
+            )
+        return 0
+    except Exception as exc:  # noqa: BLE001
+        print(f'Unexpected error: {exc}', file=sys.stderr)
+        return 1
+
+
 def _split_source_args(values: list[str]) -> list[str]:
     """Normalize comma-separated and positional source arguments."""
     sources: list[str] = []
@@ -603,6 +662,81 @@ def _build_parser() -> argparse.ArgumentParser:
         help='Rows per DuckDB insert batch.',
     )
     silver_rewrite_parser.set_defaults(handler=_handle_silver_rewrite)
+
+    gold_rewrite_parser = subparsers.add_parser(
+        'gold-rewrite',
+        help='Materialize rewrite source-gold DuckDB state from rewrite silver state.',
+    )
+    gold_rewrite_parser.add_argument(
+        'sources',
+        nargs='+',
+        help='Source module to process, e.g. uniprot or signor.',
+    )
+    gold_rewrite_parser.add_argument(
+        '--database',
+        default='omnipath',
+        help='Database name used for resource discovery (default: omnipath).',
+    )
+    gold_rewrite_parser.add_argument(
+        '--data-root',
+        type=Path,
+        default=Path('data_rewrite'),
+        help='Rewrite data root (default: data_rewrite).',
+    )
+    gold_rewrite_parser.add_argument(
+        '--inputs-package',
+        default='pypath.inputs_v2',
+        help='Python package containing generator modules (default: pypath.inputs_v2).',
+    )
+    gold_rewrite_parser.add_argument(
+        '--resolver-mapping-dir',
+        type=Path,
+        default=Path('id_resolver/data'),
+        help='Identifier resolver mapping directory used by gold canonicalization.',
+    )
+    gold_rewrite_parser.add_argument(
+        '--bucket-count',
+        type=int,
+        default=4096,
+        help='Number of deterministic logical buckets from gold onward.',
+    )
+    gold_rewrite_parser.add_argument(
+        '--part-count',
+        type=int,
+        default=128,
+        help='Maximum number of compact physical Parquet parts per source gold table.',
+    )
+    gold_rewrite_parser.add_argument(
+        '--min-part-size-mb',
+        type=int,
+        default=200,
+        help='Target minimum physical Parquet part size in MiB before creating another part.',
+    )
+    gold_rewrite_parser.add_argument(
+        '--duckdb-memory-limit',
+        type=str,
+        default=None,
+        help="Optional DuckDB memory limit, for example '16GB'.",
+    )
+    gold_rewrite_parser.add_argument(
+        '--duckdb-threads',
+        type=int,
+        default=None,
+        help='Optional DuckDB thread count.',
+    )
+    gold_rewrite_parser.add_argument(
+        '--duckdb-max-temp-directory-size',
+        type=str,
+        default=None,
+        help="Optional DuckDB temporary spill limit, for example '500GB'.",
+    )
+    gold_rewrite_parser.add_argument(
+        '--duckdb-partitioned-write-max-open-files',
+        type=int,
+        default=16,
+        help='DuckDB partitioned writer open-file limit.',
+    )
+    gold_rewrite_parser.set_defaults(handler=_handle_gold_rewrite)
 
     combined_parser = subparsers.add_parser(
         'combined',

@@ -38,9 +38,8 @@ The rewrite entry point is:
 make rewrite_pipeline SOURCES=signor,uniprot
 ```
 
-This currently runs the bronze rewrite only. It discovers raw datasets through
-the existing `pypath.inputs_v2` resource discovery path and writes source-local
-DuckDB state:
+The bronze stage discovers raw datasets through the existing `pypath.inputs_v2`
+resource discovery path and writes source-local DuckDB state:
 
 ```text
 data_rewrite/
@@ -131,11 +130,9 @@ order by dataset;
 The `bronze_dataset_snapshot.manifest_json` records the typed table name for
 each dataset as `typed_current_table`.
 
-## Next Steps
+### Silver Rewrite
 
-### 1. Silver Rewrite
-
-Initial implementation files:
+Implemented files:
 
 ```text
 omnipath_build/rewrite/silver.py
@@ -157,7 +154,7 @@ uv run python -m omnipath_build.cli.commands silver-rewrite signor,uniprot \
   --data-root data_rewrite
 ```
 
-Implement silver tables in the same source DuckDB files:
+Silver tables are stored in the same source DuckDB files:
 
 ```text
 silver_entity_occurrence
@@ -167,14 +164,14 @@ silver_membership
 silver_membership_annotation
 ```
 
-Read affected raw records from DuckDB and update silver tables by scope.
+The silver rewrite reads affected raw records from DuckDB and updates silver
+tables by scope. It uses `bronze_raw_record_change` as the affected raw-record
+scope and falls back to a dataset bootstrap from all current bronze rows when
+silver state for that dataset does not exist yet.
 
-Validate silver outputs against current `./data/silver`.
-
-Use `bronze_raw_record_change` as the affected raw-record scope. For first runs,
-all added raw keys should be mapped. For subsequent runs, only added and removed
-raw keys should drive silver updates where the dataset supports raw-keyed
-incremental mapping.
+Affected silver rows are deleted by `(source, dataset, raw_record_id)`, because
+raw record IDs are stable per dataset and can collide across datasets in one
+source DuckDB.
 
 The current parser mapper path expects Python dictionaries. The silver rewrite
 should read from the dataset-local typed raw tables and avoid `json.loads` in
@@ -184,16 +181,16 @@ the hot path.
 dataset-local typed raw tables with original raw parser column names
 ```
 
-Then emit silver rows into DuckDB with lineage columns:
+Silver rows include the existing silver lineage columns plus `source_run_id`:
 
 ```text
 source
 dataset
-raw_record_key
-raw_record_id
+_raw_record_key
+_raw_record_id
 raw_record_bucket
 raw_record_part
-snapshot_id
+_snapshot_id
 source_run_id
 ```
 
@@ -206,7 +203,7 @@ Current silver rewrite behavior:
 - maps raw dictionaries with the existing dataset mapper and expands entities
   into DuckDB silver tables.
 
-Verified manually:
+Verified manually for current `data_rewrite` state:
 
 - `signor` rewrite silver row counts match current `data/silver/signor/state`
   for all five canonical silver tables.
@@ -215,8 +212,37 @@ Verified manually:
   `data/silver/uniprot/state` only contains `proteins`, so the total source
   counts differ by the ontology rows.
 
-For manual comparison while silver is being implemented, inspect summary counts
-and selected row probes against current:
+Useful manual probes:
+
+```sql
+select dataset, count(*)
+from silver_entity_occurrence
+group by dataset
+order by dataset;
+
+select dataset, count(*)
+from silver_entity_identifier
+group by dataset
+order by dataset;
+
+select dataset, count(*)
+from silver_entity_annotation
+group by dataset
+order by dataset;
+
+select dataset, count(*)
+from silver_membership
+group by dataset
+order by dataset;
+
+select dataset, count(*)
+from silver_membership_annotation
+group by dataset
+order by dataset;
+```
+
+For manual comparison, inspect summary counts and selected row probes against
+current:
 
 ```text
 data/silver/<source>/state/<table>/part=00000/data.parquet
@@ -226,16 +252,220 @@ data/silver/<source>/<version>/manifest.json
 data/silver/<source>/latest.json
 ```
 
-### 2. Source Gold Rewrite
+Open silver follow-ups before source gold:
 
-Implement source-gold tables and key registries in source DuckDB files.
+- Decide whether ontology datasets should be included in rewrite silver by
+  default, or match current source-state behavior and exclude them unless the
+  current pipeline starts retaining ontology silver state.
+- Add focused tests around bootstrap mapping, empty change scope reuse, and
+  `(source, dataset, raw_record_id)` delete scoping.
+- Add a lightweight row-count comparison command or script once a second source
+  besides `signor` has exact parity.
 
-Use one merge path for both incremental updates and full source scopes.
+### Source Gold Rewrite
 
-Export source gold compatibility artifacts and validate against current
-`./data/gold`.
+Implemented files:
 
-### 3. Combined Rewrite
+```text
+omnipath_build/rewrite/gold.py
+omnipath_build/rewrite/gold_direct.py
+omnipath_build/rewrite/__init__.py
+omnipath_build/cli/commands.py
+Makefile
+```
+
+The rewrite command now runs bronze, silver, and then source gold:
+
+```bash
+make rewrite_pipeline SOURCES=signor,uniprot
+```
+
+Gold can also be run against existing rewrite silver state:
+
+```bash
+uv run python -m omnipath_build.cli.commands gold-rewrite signor \
+  --data-root data_rewrite
+```
+
+The gold rewrite builds source-gold from rewrite silver DuckDB tables directly.
+The rewrite-owned `gold_direct.py` contains the source-gold builder
+orchestration, silver extraction, entity/relation assembly, and DuckDB writes.
+It no longer exports rewrite silver to temporary Parquet or calls the legacy
+Parquet-oriented source-gold builders. The durable rewrite state is source-local
+DuckDB:
+
+```text
+data_rewrite/state/sources/<source>.duckdb
+```
+
+Gold tables are written into the source DuckDB with a `gold_` prefix:
+
+```text
+gold_entity
+gold_entity_evidence
+gold_entity_map
+gold_entity_occurrence_map
+gold_entity_relation
+gold_entity_relation_evidence
+gold_entity_key_registry
+gold_relation_key_registry
+source_run_scope_entity
+source_run_scope_relation
+```
+
+The rewrite does not write compatibility gold artifacts under
+`data_rewrite/gold`. Validate table parity by querying DuckDB and comparing
+against current `./data/gold`.
+
+The rewrite does write the public per-source gold zip archive:
+
+```text
+data_rewrite/artifacts/gold/<source>/
+  latest.json
+  <gold_version>/
+    <source>.zip
+    manifest.json
+```
+
+The current archive compatibility shape is preserved:
+
+```text
+entities/entity.parquet
+relations/entity_relation.parquet
+relations/entity_relation_evidence.parquet
+```
+
+The archive is written only when staged source-gold state differs from current
+source-gold state. Gold has one update path: apply the current source scope to
+source-gold state. `source_run_scope_raw_record` is the primary source update
+scope and `source_run_scope_occurrence` is the occurrence detail scope. If there
+is no previous `gold_*` state, gold bootstraps by treating all current silver
+raw records as the source scope. If both persisted scopes are empty and current
+`gold_*` state exists, gold skips staged frame construction entirely, clears
+gold scopes, and reuses the latest archive pointer. If the latest archive is
+missing, gold regenerates the archive from current DuckDB state without marking
+gold changed.
+
+For a non-empty source scope, the direct builder loads only scoped silver rows,
+builds scoped changed source-gold frames, stabilizes existing fingerprints
+against current `gold_entity_map`, and merges the scoped frames into current
+source-gold DuckDB state. The merge replaces scoped entity evidence,
+occurrence-map rows, relation evidence, fingerprint-map rows, and recomputed
+affected entity/relation aggregates. Raw-record deletions are handled from
+`source_run_scope_raw_record`: even when silver has no current occurrences left
+for a deleted raw record, gold removes the old entity evidence, occurrence-map
+rows, and relation evidence for that raw record. After the merge, staged frames
+are not compared as a whole source. Gold decides `gold_changed` from the
+explicit scoped dependency closure: scoped entity evidence, occurrence maps,
+fingerprint maps, affected entity aggregates, scoped relation evidence, affected
+relation aggregates, and registry rows for affected keys. State and zip archive
+are written only if that scoped delta is non-empty. If there is no scoped delta,
+`source_run_scope_entity` and `source_run_scope_relation` are cleared for the run
+and the latest archive pointer is reused. If there is a scoped delta, gold writes
+scoped entity/relation keys to
+`source_run_scope_entity` and `source_run_scope_relation`; deleted keys remain
+in the scope tables with nullable final partition columns so downstream layers
+can delete stale combined state.
+
+Scoped frame construction is internally chunked by raw-record ID. Gold first
+loads bounded silver chunks to extract entity candidates, deduplicates
+fingerprints globally across the scope, canonicalizes that scoped candidate set,
+then reloads bounded silver chunks to project entity evidence and relation
+evidence against the global scoped entity maps. This avoids materializing all
+scoped silver tables in one Polars frame. The final changed source-gold frames
+are still materialized for the current DuckDB-state comparison and merge.
+
+Manual `signor` validation with the same effective gold partition config as the
+current reference (`part_count=1`, `min_part_size_mb=200`):
+
+- row counts match current `data/gold/signor` for all six source-gold tables;
+- `gold_entity_evidence` and `gold_entity_relation_evidence` row counts match;
+- full entity/relation key sets do not yet match the checked-in reference.
+- latest direct-builder archive verified at
+  `data_rewrite/artifacts/gold/signor/20260513T110328957155Z/signor.zip`.
+- no-op rerun verified with `gold_changed=False`, `archive_written=False`, and
+  empty `source_run_scope_entity` / `source_run_scope_relation`.
+- silver no-op followed by gold no-op verified with empty raw, occurrence,
+  entity, and relation scope tables; gold returns immediately without building
+  staged frames.
+- synthetic deletion-scope probe on a copied `signor` state verified that a
+  raw-record scope with no current silver occurrences removes old entity
+  evidence, occurrence-map rows, and relation evidence, and writes a new archive
+  only for the copied changed state. The same probe verified scoped gold output
+  scopes: 7 affected entity keys and 76 affected relation keys for the sampled
+  raw record.
+- chunked bootstrap probe on a copied `signor` state with the internal chunk
+  size forced to 100 raw records verified the same row counts as the default
+  source build.
+
+Observed mismatch details:
+
+- `entity_key` set symmetric difference: `2,082` each direction;
+- `relation_key` set symmetric difference: `12,898` each direction;
+- full `entity_evidence` tuple difference over canonical identifier, taxonomy,
+  occurrence, fingerprint, type, and raw ID: `14,020` each direction.
+
+The mismatch appears to be taxonomy/canonicalization content, not row-count,
+archive-shape, or rewrite silver drift. Example mismatches include the same
+UniProt canonical identifier with different taxonomy IDs between rewrite and
+current gold.
+
+Parity investigation so far:
+
+- rewrite silver and current silver have identical row counts for all five
+  silver tables;
+- `entity_occurrence`, `entity_identifier`, `entity_annotation`, and
+  `membership` tuple comparisons matched exactly for `signor`;
+- rebuilding source-gold entities from the existing current silver did not
+  reproduce the checked-in `data/gold/signor` entity keys either;
+- therefore this gap is downstream of silver, likely in source-gold
+  canonicalization/reduction where grouped `first()` choices depend on input
+  row ordering for ambiguous resolver/taxonomy cases.
+
+Useful manual probes:
+
+```sql
+select count(*) from gold_entity;
+select count(*) from gold_entity_evidence;
+select count(*) from gold_entity_map;
+select count(*) from gold_entity_occurrence_map;
+select count(*) from gold_entity_relation;
+select count(*) from gold_entity_relation_evidence;
+
+select count(*) from (
+  select entity_key from gold_entity
+  except
+  select entity_key
+  from read_parquet(
+    'data/gold/signor/entities/entity/**/*.parquet',
+    union_by_name=true,
+    hive_partitioning=true
+  )
+);
+```
+
+Open gold follow-ups:
+
+- Make source-gold canonicalization deterministic for ambiguous resolver/taxonomy
+  cases, then establish that deterministic output as the comparison baseline.
+- Add focused tests for direct DuckDB source-gold materialization and zip export.
+- Add tests for no-op gold reruns reusing the latest archive and clearing source
+  scopes.
+- Add tests for the silver-scope no-op gate in gold.
+- Add focused tests for scoped gold updates, especially raw-record deletes,
+  relation aggregate recomputation, and existing-fingerprint stabilization.
+- Move the final source-gold comparison and table replacement from materialized
+  Polars frames toward DuckDB temp tables when larger sources make final changed
+  frames too large to keep in memory.
+
+## Next Steps
+
+### 1. Source Gold Incremental Merge
+
+Extend the scoped merge tests until changed, deleted, and source-all scopes are
+covered well enough to use source scopes as combined input.
+
+### 2. Combined Rewrite
 
 Implement combined state in `combined.duckdb`.
 
@@ -244,7 +474,7 @@ registries, and export combined Parquet.
 
 Validate against current `./data/combined/latest`.
 
-### 4. Pipeline Metadata
+### 3. Pipeline Metadata
 
 Add orchestration metadata once source and combined layers are stable enough to
 need run tracking:
@@ -265,13 +495,13 @@ input_signature
 latest_pointer
 ```
 
-### 5. Postgres Handoff
+### 4. Postgres Handoff
 
 Generate concrete combined table delete/upsert deltas from combined DuckDB state.
 
 Validate bootstrap and incremental Postgres loads end with equivalent tables.
 
-### 6. Cutover
+### 5. Cutover
 
 After all layers pass comparison:
 

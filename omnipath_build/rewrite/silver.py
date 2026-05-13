@@ -48,6 +48,7 @@ def materialize_silver_duckdb(
     deleted_raw_record_ids: set[int] = set()
     try:
         _ensure_silver_schema(con)
+        _reset_silver_scopes(con)
         for fn in resource_functions:
             if fn.source != source or fn.function_name == 'resource':
                 continue
@@ -80,6 +81,14 @@ def materialize_silver_duckdb(
                 full_dataset_bootstrap = bool(affected_ids)
             if not affected_ids:
                 continue
+            _insert_raw_scope(
+                con,
+                source=source,
+                dataset=fn.function_name,
+                source_run_id=source_run_id,
+                raw_record_ids=affected_ids,
+                reason='bronze_change',
+            )
             _delete_silver_rows_for_raw_ids(
                 con,
                 source=source,
@@ -135,6 +144,7 @@ def materialize_silver_duckdb(
                     )
                 mapped_raw_record_count += 1
         writer.close()
+        _refresh_occurrence_scope(con)
         rows_by_table = {
             name: int(
                 con.execute(f'select count(*) from {_quote_identifier(SILVER_TABLE_PREFIX + name)}').fetchone()[0]
@@ -325,6 +335,116 @@ def _ensure_silver_schema(con: duckdb.DuckDBPyConnection) -> None:
             f'create table if not exists {_quote_identifier(SILVER_TABLE_PREFIX + name)} '
             f'({", ".join(fields)})'
         )
+    con.execute('''
+        create table if not exists source_run_scope_raw_record(
+            source_run_id varchar,
+            source varchar,
+            dataset varchar,
+            raw_record_id bigint,
+            raw_record_key varchar,
+            reason varchar
+        )
+    ''')
+    con.execute('''
+        create table if not exists source_run_scope_occurrence(
+            source_run_id varchar,
+            source varchar,
+            occurrence_id varchar,
+            raw_record_id bigint,
+            reason varchar
+        )
+    ''')
+
+
+def _reset_silver_scopes(con: duckdb.DuckDBPyConnection) -> None:
+    con.execute('delete from source_run_scope_raw_record')
+    con.execute('delete from source_run_scope_occurrence')
+
+
+def _insert_raw_scope(
+    con: duckdb.DuckDBPyConnection,
+    *,
+    source: str,
+    dataset: str,
+    source_run_id: str,
+    raw_record_ids: set[int],
+    reason: str,
+) -> None:
+    if not raw_record_ids:
+        return
+    id_table = pa.Table.from_arrays(
+        [pa.array(sorted(raw_record_ids), type=pa.int64())],
+        names=['raw_record_id'],
+    )
+    con.register('silver_scope_raw_ids', id_table)
+    try:
+        con.execute(
+            """
+            insert into source_run_scope_raw_record(
+                source_run_id,
+                source,
+                dataset,
+                raw_record_id,
+                raw_record_key,
+                reason
+            )
+            select distinct
+                ? as source_run_id,
+                ? as source,
+                ? as dataset,
+                i.raw_record_id,
+                coalesce(c.raw_record_key, r.raw_record_key) as raw_record_key,
+                ? as reason
+            from silver_scope_raw_ids i
+            left join bronze_raw_record_change c
+              on c.source_run_id = ?
+             and c.source = ?
+             and c.dataset = ?
+             and c.raw_record_id = i.raw_record_id
+            left join bronze_raw_record_registry r
+              on r.source = ?
+             and r.dataset = ?
+             and r.raw_record_id = i.raw_record_id
+            """,
+            [
+                source_run_id,
+                source,
+                dataset,
+                reason,
+                source_run_id,
+                source,
+                dataset,
+                source,
+                dataset,
+            ],
+        )
+    finally:
+        con.unregister('silver_scope_raw_ids')
+
+
+def _refresh_occurrence_scope(con: duckdb.DuckDBPyConnection) -> None:
+    con.execute('delete from source_run_scope_occurrence')
+    con.execute('''
+        insert into source_run_scope_occurrence(
+            source_run_id,
+            source,
+            occurrence_id,
+            raw_record_id,
+            reason
+        )
+        select distinct
+            r.source_run_id,
+            o.source,
+            o.occurrence_id,
+            o._raw_record_id as raw_record_id,
+            r.reason
+        from source_run_scope_raw_record r
+        join silver_entity_occurrence o
+          on o.source = r.source
+         and o._raw_record_id = r.raw_record_id
+        where o.occurrence_id is not null
+          and o._raw_record_id is not null
+    ''')
 
 
 def _latest_bronze_snapshot(

@@ -1,4 +1,4 @@
-.PHONY: setup silver silver-list resolver-mappings combined postgres pipeline bronze-rewrite rewrite_pipeline test
+.PHONY: setup silver silver-list resolver-mappings combined postgres pipeline bronze-rewrite silver-rewrite gold-rewrite rewrite_pipeline test
 
 JOBS ?= 4
 BATCH_SIZE ?= 10000
@@ -38,6 +38,13 @@ MEMORY_SAMPLE_INTERVAL_SECONDS ?= 5
 BRONZE_REWRITE_DATA_ROOT ?= data_rewrite
 MAX_RECORDS ?=
 FORCE_REFRESH ?=
+GOLD_BUCKET_COUNT ?= 4096
+GOLD_PART_COUNT ?= 128
+GOLD_MIN_PART_SIZE_MB ?= 200
+GOLD_DUCKDB_MEMORY_LIMIT ?=
+GOLD_DUCKDB_THREADS ?=
+GOLD_DUCKDB_MAX_TEMP_DIRECTORY_SIZE ?=
+GOLD_DUCKDB_PARTITIONED_WRITE_MAX_OPEN_FILES ?= 16
 
 setup:
 	git submodule add -b main https://github.com/saezlab/pypath.git pypath || true
@@ -154,6 +161,36 @@ bronze-rewrite:
 		$(if $(MAX_RECORDS),--max-records $(MAX_RECORDS)) \
 		$(if $(FORCE_REFRESH),--force-refresh)
 
+silver-rewrite:
+	@if [ -z "$(SOURCES)$(SOURCE)" ]; then \
+		echo "SOURCES or SOURCE is required, e.g. make silver-rewrite SOURCES=signor,uniprot"; \
+		exit 1; \
+	fi
+	@uv run python -m omnipath_build.cli.commands silver-rewrite \
+		$(if $(SOURCES),$(SOURCES),$(SOURCE)) \
+		--data-root $(BRONZE_REWRITE_DATA_ROOT) \
+		--inputs-package $(INPUTS_PACKAGE) \
+		--batch-size $(BATCH_SIZE) \
+		$(if $(FUNCTION),--function $(FUNCTION))
+
+gold-rewrite:
+	@if [ -z "$(SOURCES)$(SOURCE)" ]; then \
+		echo "SOURCES or SOURCE is required, e.g. make gold-rewrite SOURCES=signor,uniprot"; \
+		exit 1; \
+	fi
+	@uv run python -m omnipath_build.cli.commands gold-rewrite \
+		$(if $(SOURCES),$(SOURCES),$(SOURCE)) \
+		--data-root $(BRONZE_REWRITE_DATA_ROOT) \
+		--inputs-package $(INPUTS_PACKAGE) \
+		--resolver-mapping-dir $(RESOLVER_MAPPING_DIR) \
+		--bucket-count $(GOLD_BUCKET_COUNT) \
+		--part-count $(GOLD_PART_COUNT) \
+		--min-part-size-mb $(GOLD_MIN_PART_SIZE_MB) \
+		--duckdb-partitioned-write-max-open-files $(GOLD_DUCKDB_PARTITIONED_WRITE_MAX_OPEN_FILES) \
+		$(if $(GOLD_DUCKDB_MEMORY_LIMIT),--duckdb-memory-limit $(GOLD_DUCKDB_MEMORY_LIMIT)) \
+		$(if $(GOLD_DUCKDB_THREADS),--duckdb-threads $(GOLD_DUCKDB_THREADS)) \
+		$(if $(GOLD_DUCKDB_MAX_TEMP_DIRECTORY_SIZE),--duckdb-max-temp-directory-size $(GOLD_DUCKDB_MAX_TEMP_DIRECTORY_SIZE))
+
 rewrite_pipeline:
 	@if [ -z "$(SOURCES)$(SOURCE)" ]; then \
 		echo "SOURCES or SOURCE is required, e.g. make rewrite_pipeline SOURCES=signor,uniprot"; \
@@ -173,6 +210,18 @@ rewrite_pipeline:
 		--inputs-package $(INPUTS_PACKAGE) \
 		--batch-size $(BATCH_SIZE) \
 		$(if $(FUNCTION),--function $(FUNCTION))
+	@uv run python -m omnipath_build.cli.commands gold-rewrite \
+		$(if $(SOURCES),$(SOURCES),$(SOURCE)) \
+		--data-root $(BRONZE_REWRITE_DATA_ROOT) \
+		--inputs-package $(INPUTS_PACKAGE) \
+		--resolver-mapping-dir $(RESOLVER_MAPPING_DIR) \
+		--bucket-count $(GOLD_BUCKET_COUNT) \
+		--part-count $(GOLD_PART_COUNT) \
+		--min-part-size-mb $(GOLD_MIN_PART_SIZE_MB) \
+		--duckdb-partitioned-write-max-open-files $(GOLD_DUCKDB_PARTITIONED_WRITE_MAX_OPEN_FILES) \
+		$(if $(GOLD_DUCKDB_MEMORY_LIMIT),--duckdb-memory-limit $(GOLD_DUCKDB_MEMORY_LIMIT)) \
+		$(if $(GOLD_DUCKDB_THREADS),--duckdb-threads $(GOLD_DUCKDB_THREADS)) \
+		$(if $(GOLD_DUCKDB_MAX_TEMP_DIRECTORY_SIZE),--duckdb-max-temp-directory-size $(GOLD_DUCKDB_MAX_TEMP_DIRECTORY_SIZE))
 
 test: TEST_MODE=1
 test: pipeline
