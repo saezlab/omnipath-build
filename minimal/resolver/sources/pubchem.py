@@ -11,6 +11,10 @@ import polars as pl
 
 from minimal.resolver.parquet import write_parquet_from_dict_rows
 from minimal.resolver.paths import ensure_chemicals_data_dir
+from pypath.internals.cv_terms import (
+    IdentifierNamespaceCv,
+    cv_term_label_accession,
+)
 
 PUBCHEM_CURRENT_SDF_BASE_URL = (
     'https://ftp.ncbi.nlm.nih.gov/pubchem/Compound/CURRENT-Full/SDF/'
@@ -20,7 +24,9 @@ PUBCHEM_FIRST_COMPOUND_SDF_URL = (
     'Compound_000000001_000500000.sdf.gz'
 )
 PUBCHEM_SOURCE = 'pubchem'
-PUBCHEM_COMPOUND_TYPE = 'OM:0002:Pubchem Compound'
+PUBCHEM_COMPOUND_TYPE = cv_term_label_accession(
+    IdentifierNamespaceCv.PUBCHEM_COMPOUND
+)
 PUBCHEM_IDENTIFIER_LOOKUP_SCHEMA: dict[str, pl.DataType] = {
     'source': pl.Utf8,
     'key_type': pl.Utf8,

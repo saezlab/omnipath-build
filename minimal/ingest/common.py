@@ -17,9 +17,11 @@ from omnipath_build.gold.utils.schema import (
     predicate_for_interaction,
     order_interaction_participants,
 )
-
-CV_TERM_ENTITY_TYPE = 'cv_term'
-CV_TERM_ID_TYPE = 'OM:0204:Cv Term Accession'
+from pypath.internals.cv_terms import cv_term_label_accession
+from minimal.cv_terms import (
+    CV_TERM_ENTITY_TYPE,
+    CV_TERM_ID_TYPE,
+)
 
 
 @dataclass(frozen=True)
@@ -156,10 +158,26 @@ def text_or_none(value: object) -> str | None:
 
     if value is None:
         return None
+    text = cv_term_label_accession(value)
+    if text:
+        return text
     if hasattr(value, 'value'):
         value = value.value
     text = str(value).strip()
     return text or None
+
+
+def entity_type_accession(entity_type: str | None) -> str | None:
+    """Return the accession part of an entity type."""
+
+    if entity_type is None:
+        return None
+    parts = entity_type.split(':', 2)
+    if len(parts) >= 2 and parts[1].isdigit():
+        return f'{parts[0]}:{parts[1]}'
+    if len(parts) == 3 and parts[2].isdigit():
+        return f'{parts[1]}:{parts[2]}'
+    return entity_type
 
 
 def copy_value(value: object) -> str:
@@ -182,7 +200,11 @@ def ontology_annotation_relation(
     term = string_or_none(annotation.get('term'))
     value = string_or_none(annotation.get('value'))
     unit = string_or_none(annotation.get('unit', annotation.get('units')))
-    if term != ONTOLOGY_IDENTIFIER_TERM or value is None or unit is not None:
+    if (
+        entity_type_accession(term) != entity_type_accession(ONTOLOGY_IDENTIFIER_TERM)
+        or value is None
+        or unit is not None
+    ):
         return None
     digest = hashlib.md5(f'{term}\0{value}'.encode()).hexdigest()
     return AnnotationRelationSpec(
@@ -201,7 +223,7 @@ def ontology_annotation_relation(
 def is_interaction_like(entity_type: str | None) -> bool:
     """Return whether an entity type should be handled as an interaction."""
 
-    return entity_type in INTERACTION_LIKE_TYPES
+    return entity_type_accession(entity_type) in INTERACTION_LIKE_TYPES
 
 
 def interaction_relation_spec(

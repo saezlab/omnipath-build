@@ -10,6 +10,10 @@ from minimal.resolver.paths import (
     activate_raw_download_data_dir,
     ensure_proteins_data_dir,
 )
+from pypath.internals.cv_terms import (
+    IdentifierNamespaceCv,
+    cv_term_label_accession,
+)
 from pypath.inputs_v2.uniprot import resource as uniprot_resource
 
 PROTEIN_IDENTIFIER_LOOKUP_SCHEMA: dict[str, pl.DataType] = {
@@ -22,7 +26,22 @@ PROTEIN_IDENTIFIER_LOOKUP_SCHEMA: dict[str, pl.DataType] = {
 }
 
 PROTEIN_SOURCE = 'uniprot'
-UNIPROT_TYPE = 'MI:1097:Uniprot'
+UNIPROT_TYPE = cv_term_label_accession(IdentifierNamespaceCv.UNIPROT)
+KEY_TYPE_ALIASES = {
+    'MI:1097:Uniprot': UNIPROT_TYPE,
+    'MI:0476:Ensembl': cv_term_label_accession(IdentifierNamespaceCv.ENSEMBL),
+    'MI:0477:Entrez': cv_term_label_accession(IdentifierNamespaceCv.ENTREZ),
+    'MI:1095:HGNC': cv_term_label_accession(IdentifierNamespaceCv.HGNC),
+    'OM:0200:Gene Name Primary': cv_term_label_accession(
+        IdentifierNamespaceCv.GENE_NAME_PRIMARY
+    ),
+    'OM:0201:Gene Name Synonym': cv_term_label_accession(
+        IdentifierNamespaceCv.GENE_NAME_SYNONYM
+    ),
+    'OM:0221:Uniprot Entry Name': cv_term_label_accession(
+        IdentifierNamespaceCv.UNIPROT_ENTRY_NAME
+    ),
+}
 PROTEIN_IDENTIFIER_LOOKUP_OUTPUT_FILENAME = 'protein_identifier_lookup.parquet'
 
 
@@ -37,7 +56,7 @@ def _protein_identifier_rows(
         primary_uniprot = row.get('primary_uniprot')
         if primary_uniprot:
             primary_uniprots.add(str(primary_uniprot))
-        key_type = row.get('key_type')
+        key_type = KEY_TYPE_ALIASES.get(row.get('key_type'), row.get('key_type'))
         yield {
             'source': PROTEIN_SOURCE,
             'key_type': key_type,

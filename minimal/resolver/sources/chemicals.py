@@ -11,6 +11,10 @@ from minimal.resolver.paths import (
     activate_raw_download_data_dir,
     ensure_chemicals_data_dir,
 )
+from pypath.internals.cv_terms import (
+    IdentifierNamespaceCv,
+    cv_term_label_accession,
+)
 from pypath.inputs_v2.chebi import resource as chebi_resource
 from pypath.inputs_v2.hmdb import resource as hmdb_resource
 from pypath.inputs_v2.lipidmaps import resource as lipidmaps_resource
@@ -32,6 +36,10 @@ CHEMICAL_SOURCES: tuple[str, ...] = (
     'pubchem',
 )
 CHEMICAL_IDENTIFIER_LOOKUP_OUTPUT_FILENAME = 'chemical_identifier_lookup.parquet'
+CHEBI_TYPE = cv_term_label_accession(IdentifierNamespaceCv.CHEBI)
+HMDB_TYPE = cv_term_label_accession(IdentifierNamespaceCv.HMDB)
+LIPIDMAPS_TYPE = cv_term_label_accession(IdentifierNamespaceCv.LIPIDMAPS)
+SWISSLIPIDS_TYPE = cv_term_label_accession(IdentifierNamespaceCv.SWISSLIPIDS)
 
 
 def _clean(value: object) -> str | None:
@@ -67,7 +75,7 @@ def _chebi_row(row: dict) -> dict | None:
         return None
     return {
         'source': 'chebi',
-        'key_type': 'MI:0474:Chebi',
+        'key_type': CHEBI_TYPE,
         'key_value': key_value,
         'standard_inchi_key': standard_inchi_key,
         'standard_inchi': standard_inchi,
@@ -82,7 +90,7 @@ def _hmdb_row(row: dict) -> dict | None:
         return None
     return {
         'source': 'hmdb',
-        'key_type': 'OM:0004:Hmdb',
+        'key_type': HMDB_TYPE,
         'key_value': key_value,
         'standard_inchi_key': standard_inchi_key,
         'standard_inchi': standard_inchi,
@@ -97,7 +105,7 @@ def _lipidmaps_row(row: dict) -> dict | None:
         return None
     return {
         'source': 'lipidmaps',
-        'key_type': 'OM:0003:Lipidmaps',
+        'key_type': LIPIDMAPS_TYPE,
         'key_value': key_value,
         'standard_inchi_key': standard_inchi_key,
         'standard_inchi': standard_inchi,
@@ -112,7 +120,7 @@ def _swisslipids_row(row: dict) -> dict | None:
         return None
     return {
         'source': 'swisslipids',
-        'key_type': 'OM:0009:Swisslipids',
+        'key_type': SWISSLIPIDS_TYPE,
         'key_value': key_value,
         'standard_inchi_key': standard_inchi_key,
         'standard_inchi': standard_inchi,

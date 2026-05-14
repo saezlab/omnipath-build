@@ -5,29 +5,51 @@ from dataclasses import field, dataclass
 
 from psycopg2 import sql
 import psycopg2.extensions
+from pypath.internals.cv_terms import (
+    IdentifierNamespaceCv,
+    cv_term_label_accession,
+)
 
-PROTEIN_ENTITY_TYPES = (
-    'MI:0326',
-    'MI:0326:Protein',
-    'MI:0250',
-    'MI:0250:Gene',
-    'protein',
-    'gene',
+from minimal.cv_terms import (
+    CHEMICAL_ENTITY_TYPE_ALIASES,
+    CV_TERM_ENTITY_TYPE,
+    CV_TERM_ID_TYPE,
+    PROTEIN_ENTITY_TYPE_ALIASES,
+    SUPPORTED_ENTITY_TYPE_ALIASES,
 )
-CHEMICAL_ENTITY_TYPES = (
-    'MI:0328',
-    'MI:0328:Small Molecule',
-    'OM:0011',
-    'OM:0011:Lipid',
-    'chemical',
-    'small_molecule',
-    'compound',
-    'drug',
+
+PROTEIN_ENTITY_TYPES = PROTEIN_ENTITY_TYPE_ALIASES
+CHEMICAL_ENTITY_TYPES = CHEMICAL_ENTITY_TYPE_ALIASES
+SUPPORTED_ENTITY_TYPES = SUPPORTED_ENTITY_TYPE_ALIASES
+UNIPROT_TYPE = cv_term_label_accession(IdentifierNamespaceCv.UNIPROT)
+ENSEMBL_TYPE = cv_term_label_accession(IdentifierNamespaceCv.ENSEMBL)
+ENTREZ_TYPE = cv_term_label_accession(IdentifierNamespaceCv.ENTREZ)
+HGNC_TYPE = cv_term_label_accession(IdentifierNamespaceCv.HGNC)
+GENE_NAME_PRIMARY_TYPE = cv_term_label_accession(
+    IdentifierNamespaceCv.GENE_NAME_PRIMARY
 )
-SUPPORTED_ENTITY_TYPES = PROTEIN_ENTITY_TYPES + CHEMICAL_ENTITY_TYPES
-CV_TERM_ENTITY_TYPE = 'cv_term'
-CV_TERM_ID_TYPE = 'OM:0204:Cv Term Accession'
-ONTOLOGY_IDENTIFIER_TERM = 'OM:0204'
+GENE_NAME_SYNONYM_TYPE = cv_term_label_accession(
+    IdentifierNamespaceCv.GENE_NAME_SYNONYM
+)
+UNIPROT_ENTRY_NAME_TYPE = cv_term_label_accession(
+    IdentifierNamespaceCv.UNIPROT_ENTRY_NAME
+)
+CHEBI_TYPE = cv_term_label_accession(IdentifierNamespaceCv.CHEBI)
+PUBCHEM_COMPOUND_TYPE = cv_term_label_accession(
+    IdentifierNamespaceCv.PUBCHEM_COMPOUND
+)
+HMDB_TYPE = cv_term_label_accession(IdentifierNamespaceCv.HMDB)
+LIPIDMAPS_TYPE = cv_term_label_accession(IdentifierNamespaceCv.LIPIDMAPS)
+SWISSLIPIDS_TYPE = cv_term_label_accession(IdentifierNamespaceCv.SWISSLIPIDS)
+STANDARD_INCHI_KEY_TYPE = cv_term_label_accession(
+    IdentifierNamespaceCv.STANDARD_INCHI_KEY
+)
+STANDARD_INCHI_TYPE = cv_term_label_accession(
+    IdentifierNamespaceCv.STANDARD_INCHI
+)
+ONTOLOGY_IDENTIFIER_TERM = cv_term_label_accession(
+    IdentifierNamespaceCv.CV_TERM_ACCESSION
+)
 ASSOCIATION_CATEGORY = 'association'
 ASSOCIATION_PREDICATE = 'associated_with'
 PATHWAY_PREDICATE = 'involved_in'
@@ -38,7 +60,7 @@ DEFAULT_POLICIES: tuple[
     (
         'protein',
         'uniprot',
-        'MI:1097:Uniprot',
+        UNIPROT_TYPE,
         'uniprot_primary',
         'accept',
         False,
@@ -46,7 +68,7 @@ DEFAULT_POLICIES: tuple[
     (
         'protein',
         'uniprot',
-        'MI:1097:Uniprot',
+        UNIPROT_TYPE,
         'uniprot_secondary',
         'accept',
         False,
@@ -54,7 +76,7 @@ DEFAULT_POLICIES: tuple[
     (
         'protein',
         'uniprot',
-        'MI:0476:Ensembl',
+        ENSEMBL_TYPE,
         'uniprot_reference',
         'accept',
         True,
@@ -62,24 +84,16 @@ DEFAULT_POLICIES: tuple[
     (
         'protein',
         'uniprot',
-        'MI:0477:Entrez',
+        ENTREZ_TYPE,
         'uniprot_reference',
         'accept',
         True,
     ),
-    ('protein', 'uniprot', 'MI:1095:HGNC', 'uniprot_reference', 'accept', True),
+    ('protein', 'uniprot', HGNC_TYPE, 'uniprot_reference', 'accept', True),
     (
         'protein',
         'uniprot',
-        'OM:0200:Gene Name Primary',
-        'uniprot_reference',
-        'accept',
-        True,
-    ),
-    (
-        'protein',
-        'uniprot',
-        'OM:0201:Gene Name Synonym',
+        GENE_NAME_PRIMARY_TYPE,
         'uniprot_reference',
         'accept',
         True,
@@ -87,16 +101,24 @@ DEFAULT_POLICIES: tuple[
     (
         'protein',
         'uniprot',
-        'OM:0221:Uniprot Entry Name',
+        GENE_NAME_SYNONYM_TYPE,
         'uniprot_reference',
         'accept',
         True,
     ),
-    ('chemical', 'chebi', 'MI:0474:Chebi', None, 'accept', False),
-    ('chemical', 'pubchem', 'OM:0002:Pubchem Compound', None, 'accept', False),
-    ('chemical', 'hmdb', 'OM:0004:Hmdb', None, 'accept', False),
-    ('chemical', 'lipidmaps', 'OM:0003:Lipidmaps', None, 'accept', False),
-    ('chemical', 'swisslipids', 'OM:0009:Swisslipids', None, 'accept', False),
+    (
+        'protein',
+        'uniprot',
+        UNIPROT_ENTRY_NAME_TYPE,
+        'uniprot_reference',
+        'accept',
+        True,
+    ),
+    ('chemical', 'chebi', CHEBI_TYPE, None, 'accept', False),
+    ('chemical', 'pubchem', PUBCHEM_COMPOUND_TYPE, None, 'accept', False),
+    ('chemical', 'hmdb', HMDB_TYPE, None, 'accept', False),
+    ('chemical', 'lipidmaps', LIPIDMAPS_TYPE, None, 'accept', False),
+    ('chemical', 'swisslipids', SWISSLIPIDS_TYPE, None, 'accept', False),
 )
 
 
@@ -287,23 +309,7 @@ def _create_entity_keys(cur: psycopg2.extensions.cursor, schema: str) -> None:
               ee.entity_type,
               NULLIF(ee.taxonomy_id, '') AS taxonomy_id,
               i.type AS key_type,
-              CASE i.type
-                WHEN 'MI:1097' THEN 'MI:1097:Uniprot'
-                WHEN 'MI:0476' THEN 'MI:0476:Ensembl'
-                WHEN 'MI:0477' THEN 'MI:0477:Entrez'
-                WHEN 'MI:1095' THEN 'MI:1095:HGNC'
-                WHEN 'OM:0200' THEN 'OM:0200:Gene Name Primary'
-                WHEN 'OM:0201' THEN 'OM:0201:Gene Name Synonym'
-                WHEN 'OM:0221' THEN 'OM:0221:Uniprot Entry Name'
-                WHEN 'MI:0474' THEN 'MI:0474:Chebi'
-                WHEN 'OM:0002' THEN 'OM:0002:Pubchem Compound'
-                WHEN 'OM:0004' THEN 'OM:0004:Hmdb'
-                WHEN 'OM:0003' THEN 'OM:0003:Lipidmaps'
-                WHEN 'OM:0009' THEN 'OM:0009:Swisslipids'
-                WHEN 'MI:2010' THEN 'MI:2010:Standard Inchi'
-                WHEN 'MI:1101' THEN 'MI:1101:Standard Inchi Key'
-                ELSE i.type
-              END AS resolver_key_type,
+              i.type AS resolver_key_type,
               i.value AS key_value,
               i.value_hash AS key_value_hash
             FROM _entity_scope s
@@ -395,8 +401,8 @@ def _insert_protein_candidates(
             )
             SELECT
               k.entity_evidence_id,
-              'protein',
-              'MI:1097:Uniprot',
+              k.entity_type,
+              %s,
               p.primary_uniprot,
               NULLIF(p.taxonomy_id, ''),
               p.source,
@@ -428,7 +434,7 @@ def _insert_protein_candidates(
               )
             """
         ).format(sql.Identifier(schema), sql.Identifier(schema)),
-        [list(PROTEIN_ENTITY_TYPES)],
+        [UNIPROT_TYPE, list(PROTEIN_ENTITY_TYPES)],
     )
 
 
@@ -451,8 +457,8 @@ def _insert_chemical_candidates(
             )
             SELECT
               k.entity_evidence_id,
-              'chemical',
-              'MI:1101:Standard Inchi Key',
+              k.entity_type,
+              %s,
               c.standard_inchi_key,
               NULL::text,
               c.source,
@@ -477,7 +483,7 @@ def _insert_chemical_candidates(
               AND c.standard_inchi_key <> ''
             """
         ).format(sql.Identifier(schema), sql.Identifier(schema)),
-        [list(CHEMICAL_ENTITY_TYPES)],
+        [STANDARD_INCHI_KEY_TYPE, list(CHEMICAL_ENTITY_TYPES)],
     )
 
 
@@ -498,8 +504,8 @@ def _insert_standard_inchi_key_identity_candidates(
         )
         SELECT
           entity_evidence_id,
-          'chemical',
-          'MI:1101:Standard Inchi Key',
+          entity_type,
+          %s,
           key_value,
           NULL::text,
           'identity',
@@ -507,11 +513,15 @@ def _insert_standard_inchi_key_identity_candidates(
           'standard_inchi_key_identity'
         FROM _entity_key
         WHERE entity_type = ANY(%s)
-          AND resolver_key_type = 'MI:1101:Standard Inchi Key'
+          AND resolver_key_type = %s
           AND key_value IS NOT NULL
           AND key_value <> ''
         """,
-        [list(CHEMICAL_ENTITY_TYPES)],
+        [
+            STANDARD_INCHI_KEY_TYPE,
+            list(CHEMICAL_ENTITY_TYPES),
+            STANDARD_INCHI_KEY_TYPE,
+        ],
     )
 
 
@@ -534,8 +544,8 @@ def _insert_standard_inchi_identity_candidates(
             )
             SELECT DISTINCT
               k.entity_evidence_id,
-              'chemical',
-              'MI:1101:Standard Inchi Key',
+              k.entity_type,
+              %s,
               c.standard_inchi_key,
               NULL::text,
               'identity',
@@ -545,12 +555,16 @@ def _insert_standard_inchi_identity_candidates(
             JOIN {}.resolver_chemical_identifier_lookup c
               ON c.standard_inchi = k.key_value
             WHERE k.entity_type = ANY(%s)
-              AND k.resolver_key_type = 'MI:2010:Standard Inchi'
+              AND k.resolver_key_type = %s
               AND c.standard_inchi_key IS NOT NULL
               AND c.standard_inchi_key <> ''
             """
         ).format(sql.Identifier(schema)),
-        [list(CHEMICAL_ENTITY_TYPES)],
+        [
+            STANDARD_INCHI_KEY_TYPE,
+            list(CHEMICAL_ENTITY_TYPES),
+            STANDARD_INCHI_TYPE,
+        ],
     )
 
 
@@ -583,7 +597,7 @@ def _insert_chemical_resolver_identifier_links(
               JOIN {}.resolver_chemical_identifier_lookup c
                 ON c.standard_inchi_key = k.key_value
               WHERE k.entity_type = ANY(%s)
-                AND k.resolver_key_type = 'MI:1101:Standard Inchi Key'
+                AND k.resolver_key_type = %s
               UNION
               SELECT DISTINCT
                 k.entity_evidence_id,
@@ -593,22 +607,22 @@ def _insert_chemical_resolver_identifier_links(
               JOIN {}.resolver_chemical_identifier_lookup c
                 ON c.standard_inchi = k.key_value
               WHERE k.entity_type = ANY(%s)
-                AND k.resolver_key_type = 'MI:2010:Standard Inchi'
+                AND k.resolver_key_type = %s
             )
-            SELECT
+            SELECT DISTINCT
               entity_evidence_id,
               type,
               value
             FROM (
               SELECT
                 entity_evidence_id,
-                'MI:1101:Standard Inchi Key'::text AS type,
+                %s::text AS type,
                 standard_inchi_key AS value
               FROM mapped
               UNION ALL
               SELECT
                 entity_evidence_id,
-                'MI:2010:Standard Inchi'::text AS type,
+                %s::text AS type,
                 standard_inchi AS value
               FROM mapped
             ) identifiers
@@ -623,7 +637,11 @@ def _insert_chemical_resolver_identifier_links(
         [
             list(CHEMICAL_ENTITY_TYPES),
             list(CHEMICAL_ENTITY_TYPES),
+            STANDARD_INCHI_KEY_TYPE,
             list(CHEMICAL_ENTITY_TYPES),
+            STANDARD_INCHI_TYPE,
+            STANDARD_INCHI_KEY_TYPE,
+            STANDARD_INCHI_TYPE,
         ],
     )
     cur.execute(
@@ -780,9 +798,9 @@ def _create_entity_resolution_stage(
                 WHEN cc.candidate_count = 1
                   THEN si.entity_type
                 WHEN ee.entity_type = ANY(%s)
-                  THEN 'protein'
+                  THEN ee.entity_type
                 WHEN ee.entity_type = ANY(%s)
-                  THEN 'chemical'
+                  THEN ee.entity_type
                 ELSE NULL
               END AS entity_type,
               CASE

@@ -1,0 +1,46 @@
+from __future__ import annotations
+
+from pypath.internals.cv_terms import (
+    EntityTypeCv,
+    IdentifierNamespaceCv,
+    cv_term_label_accession,
+)
+
+
+PROTEIN_ENTITY_TYPE = cv_term_label_accession(EntityTypeCv.PROTEIN)
+GENE_ENTITY_TYPE = cv_term_label_accession(EntityTypeCv.GENE)
+SMALL_MOLECULE_ENTITY_TYPE = cv_term_label_accession(EntityTypeCv.SMALL_MOLECULE)
+LIPID_ENTITY_TYPE = cv_term_label_accession(EntityTypeCv.LIPID)
+CV_TERM_ENTITY_TYPE = cv_term_label_accession(EntityTypeCv.CV_TERM)
+
+PROTEIN_ENTITY_TYPE_ALIASES = (
+    PROTEIN_ENTITY_TYPE,
+    str(EntityTypeCv.PROTEIN),
+    'Protein:MI:0326',
+    'MI:0326:Protein',
+    GENE_ENTITY_TYPE,
+    str(EntityTypeCv.GENE),
+    'Gene:MI:0250',
+    'MI:0250:Gene',
+    'protein',
+    'gene',
+)
+CHEMICAL_ENTITY_TYPE_ALIASES = (
+    SMALL_MOLECULE_ENTITY_TYPE,
+    str(EntityTypeCv.SMALL_MOLECULE),
+    'Small Molecule:MI:0328',
+    'MI:0328:Small Molecule',
+    LIPID_ENTITY_TYPE,
+    str(EntityTypeCv.LIPID),
+    'Lipid:OM:0011',
+    'OM:0011:Lipid',
+    'chemical',
+    'small_molecule',
+    'compound',
+    'drug',
+)
+SUPPORTED_ENTITY_TYPE_ALIASES = (
+    PROTEIN_ENTITY_TYPE_ALIASES + CHEMICAL_ENTITY_TYPE_ALIASES
+)
+
+CV_TERM_ID_TYPE = cv_term_label_accession(IdentifierNamespaceCv.CV_TERM_ACCESSION)

@@ -4,9 +4,14 @@ from dataclasses import dataclass
 
 from psycopg2 import sql
 import psycopg2.extensions
+from pypath.internals.cv_terms import (
+    OntologyAnnotationCv,
+    cv_term_label_accession,
+)
 
-CV_TERM_ENTITY_TYPE = 'cv_term'
-ONTOLOGY_ID_TERM = 'OM:0803'
+from minimal.cv_terms import CV_TERM_ENTITY_TYPE
+
+ONTOLOGY_ID_TERM = cv_term_label_accession(OntologyAnnotationCv.ONTOLOGY_ID)
 
 
 @dataclass(frozen=True)

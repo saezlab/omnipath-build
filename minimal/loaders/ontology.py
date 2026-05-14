@@ -10,11 +10,11 @@ import psycopg2.extensions
 from pypath.internals.cv_terms import (
     OntologyAnnotationCv,
     IdentifierNamespaceCv,
+    cv_term_label_accession,
 )
 from pypath.internals.ontology_schema import OntologyTerm, OntologyRelationship
 
-CV_TERM_ENTITY_TYPE = 'cv_term'
-CV_TERM_ID_TYPE = 'OM:0204:Cv Term Accession'
+from minimal.cv_terms import CV_TERM_ENTITY_TYPE, CV_TERM_ID_TYPE
 
 
 @dataclass(frozen=True)
@@ -82,14 +82,14 @@ def _flush(
                   taxonomy_id,
                   resolution_status
                 )
-                VALUES ('cv_term', %s, %s, NULL, 'resolved')
+                VALUES (%s, %s, %s, NULL, 'resolved')
                 ON CONFLICT (entity_type, id_type, id_hash)
                 DO UPDATE SET resolution_status = 'resolved'
                 """
             )
             .format(sql.Identifier(schema))
             .as_string(cur.connection),
-            [(CV_TERM_ID_TYPE, term.id) for term, _ in rows],
+            [(CV_TERM_ENTITY_TYPE, CV_TERM_ID_TYPE, term.id) for term, _ in rows],
         )
         cur.execute(
             'CREATE TEMP TABLE IF NOT EXISTS _ontology_term_id (term_id text PRIMARY KEY) ON COMMIT DROP'
@@ -116,14 +116,14 @@ def _flush(
                 SELECT t.term_id, e.entity_id
                 FROM _ontology_term_id t
                 JOIN {}.entity e
-                  ON e.entity_type = 'cv_term'
+                  ON e.entity_type = %s
                  AND e.id_type = %s
                  AND e.id_hash = md5(t.term_id)
                  AND e.id = t.term_id
                 ON CONFLICT (term_id) DO UPDATE SET entity_id = EXCLUDED.entity_id
                 """
             ).format(sql.Identifier(schema)),
-            [CV_TERM_ID_TYPE],
+            [CV_TERM_ENTITY_TYPE, CV_TERM_ID_TYPE],
         )
         annotation_rows = [
             (term.id, annotation[0], annotation[1], annotation[2])
@@ -161,21 +161,21 @@ def _term_annotations(
     ontology_id: str,
 ) -> list[tuple[str, str | None, str | None]]:
     rows: list[tuple[str, str | None, str | None]] = [
-        (str(OntologyAnnotationCv.ONTOLOGY_ID), ontology_id, None),
-        (str(IdentifierNamespaceCv.CV_TERM_ACCESSION), term.id, None),
+        (cv_term_label_accession(OntologyAnnotationCv.ONTOLOGY_ID), ontology_id, None),
+        (cv_term_label_accession(IdentifierNamespaceCv.CV_TERM_ACCESSION), term.id, None),
     ]
     if term.name:
-        rows.append((str(IdentifierNamespaceCv.NAME), term.name, None))
+        rows.append((cv_term_label_accession(IdentifierNamespaceCv.NAME), term.name, None))
     if term.definition:
         rows.append(
-            (str(OntologyAnnotationCv.DEFINITION), term.definition, None)
+            (cv_term_label_accession(OntologyAnnotationCv.DEFINITION), term.definition, None)
         )
     if term.namespace:
         rows.append(('ontology:namespace', term.namespace, None))
     if term.is_obsolete is not None:
         rows.append(
             (
-                str(OntologyAnnotationCv.IS_OBSOLETE),
+                cv_term_label_accession(OntologyAnnotationCv.IS_OBSOLETE),
                 str(bool(term.is_obsolete)).lower(),
                 None,
             )
@@ -183,21 +183,41 @@ def _term_annotations(
     for alt_id in term.alt_ids or []:
         if alt_id and alt_id != term.id:
             rows.append(
-                (str(IdentifierNamespaceCv.CV_TERM_ACCESSION), alt_id, 'alt_id')
+                (
+                    cv_term_label_accession(
+                        IdentifierNamespaceCv.CV_TERM_ACCESSION
+                    ),
+                    alt_id,
+                    'alt_id',
+                )
             )
     for synonym in term.synonyms or []:
         if synonym and synonym != term.name:
-            rows.append((str(IdentifierNamespaceCv.SYNONYM), synonym, None))
+            rows.append(
+                (
+                    cv_term_label_accession(IdentifierNamespaceCv.SYNONYM),
+                    synonym,
+                    None,
+                )
+            )
     for comment in term.comments or []:
         if comment:
-            rows.append((str(OntologyAnnotationCv.COMMENT), comment, None))
+            rows.append(
+                (cv_term_label_accession(OntologyAnnotationCv.COMMENT), comment, None)
+            )
     for xref in term.xrefs or []:
         if xref:
             rows.append(('ontology:xref', xref, None))
     for parent in term.is_a or []:
         if parent:
             rows.append(
-                (str(IdentifierNamespaceCv.CV_TERM_ACCESSION), parent, 'is_a')
+                (
+                    cv_term_label_accession(
+                        IdentifierNamespaceCv.CV_TERM_ACCESSION
+                    ),
+                    parent,
+                    'is_a',
+                )
             )
     for relationship in term.relationships or []:
         rows.extend(_relationship_annotations(relationship))
@@ -211,7 +231,7 @@ def _relationship_annotations(
         return []
     rows = [
         (
-            str(IdentifierNamespaceCv.CV_TERM_ACCESSION),
+            cv_term_label_accession(IdentifierNamespaceCv.CV_TERM_ACCESSION),
             relationship.target,
             relationship.type,
         )
