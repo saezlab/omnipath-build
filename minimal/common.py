@@ -1,0 +1,251 @@
+from __future__ import annotations
+
+import hashlib
+from dataclasses import dataclass
+from collections.abc import Iterable
+
+from pypath.inputs_v2.raw_records import ProvenancedRecord
+from pypath.internals.silver_schema import Entity
+from omnipath_build.gold.utils.schema import (
+    ASSOCIATION_CATEGORY,
+    INTERACTION_LIKE_TYPES,
+    ONTOLOGY_IDENTIFIER_TERM,
+    PredicateRule,
+    string_or_none,
+    annotation_predicate,
+    predicate_for_membership,
+    predicate_for_interaction,
+    order_interaction_participants,
+)
+
+CV_TERM_ENTITY_TYPE = 'cv_term'
+CV_TERM_ID_TYPE = 'cv_term_accession'
+
+
+@dataclass(frozen=True)
+class IngestStats:
+    """Summary counts from an evidence ingest run."""
+
+    source_rows: int = 0
+    entity_evidence: int = 0
+    relation_evidence: int = 0
+    annotations: int = 0
+    identifiers: int = 0
+
+
+@dataclass
+class MutableStats:
+    """Mutable accumulator for ingest counts."""
+
+    source_rows: int = 0
+    entity_evidence: int = 0
+    relation_evidence: int = 0
+    annotations: int = 0
+    identifiers: int = 0
+
+    def freeze(self) -> IngestStats:
+        """Return an immutable public stats snapshot."""
+
+        return IngestStats(
+            source_rows=self.source_rows,
+            entity_evidence=self.entity_evidence,
+            relation_evidence=self.relation_evidence,
+            annotations=self.annotations,
+            identifiers=self.identifiers,
+        )
+
+
+@dataclass(frozen=True)
+class AnnotationRelationSpec:
+    """Prepared ontology-annotation relation evidence."""
+
+    relation_occurrence_id: str
+    subject_occurrence_id: str
+    predicate_rule: PredicateRule
+    object_entity_type: str
+    object_id_type: str
+    object_id: str
+
+
+@dataclass(frozen=True)
+class RelationSpec:
+    """Prepared relation evidence before backend-specific persistence."""
+
+    relation_occurrence_id: str
+    subject_ref: object
+    predicate_rule: PredicateRule
+    object_ref: object
+
+
+def unwrap_record(
+    item: Entity | ProvenancedRecord,
+) -> tuple[object, object | None]:
+    """Return the payload and optional raw-record provenance."""
+
+    if isinstance(item, ProvenancedRecord):
+        return item.record, item.provenance
+    return item, None
+
+
+def entity_to_row(entity: Entity) -> dict[str, object]:
+    """Convert a silver entity object into the row shape used by ingest."""
+
+    return {
+        'type': text_or_none(getattr(entity, 'type', None)),
+        'identifiers': [
+            identifier_to_row(identifier)
+            for identifier in getattr(entity, 'identifiers', None) or []
+        ],
+        'annotations': annotations_to_rows(
+            getattr(entity, 'annotations', None) or []
+        ),
+        'membership': [
+            {
+                'member': entity_to_row(membership.member),
+                'is_parent': getattr(membership, 'is_parent', None),
+                'annotations': annotations_to_rows(
+                    getattr(membership, 'annotations', None) or []
+                ),
+            }
+            for membership in getattr(entity, 'membership', None) or []
+            if getattr(membership, 'member', None) is not None
+        ],
+    }
+
+
+def identifier_to_row(identifier: object) -> dict[str, str | None]:
+    """Convert an identifier object into serializable fields."""
+
+    return {
+        'type': text_or_none(getattr(identifier, 'type', None)),
+        'value': text_or_none(getattr(identifier, 'value', None)),
+    }
+
+
+def annotations_to_rows(
+    annotations: Iterable[object],
+) -> list[dict[str, str | None]]:
+    """Convert annotation objects into serializable fields."""
+
+    return [annotation_to_row(annotation) for annotation in annotations]
+
+
+def annotation_to_row(annotation: object) -> dict[str, str | None]:
+    """Convert one annotation object or dict into serializable fields."""
+
+    if isinstance(annotation, dict):
+        return {
+            'term': text_or_none(annotation.get('term')),
+            'value': text_or_none(annotation.get('value')),
+            'unit': text_or_none(
+                annotation.get('unit', annotation.get('units'))
+            ),
+        }
+    return {
+        'term': text_or_none(getattr(annotation, 'term', None)),
+        'value': text_or_none(getattr(annotation, 'value', None)),
+        'unit': text_or_none(
+            getattr(annotation, 'unit', None)
+            or getattr(annotation, 'units', None)
+        ),
+    }
+
+
+def text_or_none(value: object) -> str | None:
+    """Normalize enum-like values and blank strings to nullable text."""
+
+    if value is None:
+        return None
+    if hasattr(value, 'value'):
+        value = value.value
+    text = str(value).strip()
+    return text or None
+
+
+def copy_value(value: object) -> str:
+    """Render a Python value for PostgreSQL CSV COPY."""
+
+    if value is None:
+        return '\\N'
+    if isinstance(value, bool):
+        return 'true' if value else 'false'
+    return str(value)
+
+
+def ontology_annotation_relation(
+    annotation: dict[str, str | None],
+    *,
+    subject_occurrence_id: str,
+) -> AnnotationRelationSpec | None:
+    """Build relation evidence for ontology-backed entity annotations."""
+
+    term = string_or_none(annotation.get('term'))
+    value = string_or_none(annotation.get('value'))
+    unit = string_or_none(annotation.get('unit', annotation.get('units')))
+    if term != ONTOLOGY_IDENTIFIER_TERM or value is None or unit is not None:
+        return None
+    digest = hashlib.md5(f'{term}\0{value}'.encode()).hexdigest()
+    return AnnotationRelationSpec(
+        relation_occurrence_id=f'{subject_occurrence_id}:annotation:{digest}',
+        subject_occurrence_id=subject_occurrence_id,
+        predicate_rule=PredicateRule(
+            annotation_predicate(annotation),
+            ASSOCIATION_CATEGORY,
+        ),
+        object_entity_type=CV_TERM_ENTITY_TYPE,
+        object_id_type=CV_TERM_ID_TYPE,
+        object_id=value,
+    )
+
+
+def is_interaction_like(entity_type: str | None) -> bool:
+    """Return whether an entity type should be handled as an interaction."""
+
+    return entity_type in INTERACTION_LIKE_TYPES
+
+
+def interaction_relation_spec(
+    row: dict[str, object],
+    member_refs: list[tuple[object, object]],
+    *,
+    occurrence_id: str,
+) -> RelationSpec | None:
+    """Build an interaction relation spec from two member references."""
+
+    participants = [
+        {
+            'ref': member_ref,
+            'membership_annotations': annotations_to_rows(
+                getattr(membership, 'annotations', None) or []
+            ),
+        }
+        for member_ref, membership in member_refs
+    ]
+    ordered = order_interaction_participants(participants)
+    if len(ordered) != 2:
+        return None
+    return RelationSpec(
+        relation_occurrence_id=f'{occurrence_id}:interaction',
+        subject_ref=ordered[0]['ref'],
+        predicate_rule=predicate_for_interaction(row, ordered),
+        object_ref=ordered[1]['ref'],
+    )
+
+
+def membership_relation_spec(
+    *,
+    parent_ref: object,
+    member_ref: object,
+    membership: object,
+    parent_type: str | None,
+    relation_occurrence_id: str,
+) -> RelationSpec:
+    """Build a membership relation spec from parent/member references."""
+
+    member_is_subject = bool(getattr(membership, 'is_parent', False))
+    return RelationSpec(
+        relation_occurrence_id=relation_occurrence_id,
+        subject_ref=member_ref if member_is_subject else parent_ref,
+        predicate_rule=predicate_for_membership(parent_type, {}),
+        object_ref=parent_ref if member_is_subject else member_ref,
+    )

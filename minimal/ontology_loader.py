@@ -1,0 +1,238 @@
+from __future__ import annotations
+
+import time
+from dataclasses import dataclass
+from collections.abc import Iterable
+
+from psycopg2 import sql
+import psycopg2.extensions
+
+from pypath.internals.cv_terms import (
+    OntologyAnnotationCv,
+    IdentifierNamespaceCv,
+)
+from pypath.internals.ontology_schema import OntologyTerm, OntologyRelationship
+
+CV_TERM_ENTITY_TYPE = 'cv_term'
+CV_TERM_ID_TYPE = 'cv_term_accession'
+
+
+@dataclass(frozen=True)
+class OntologyLoadStats:
+    """Loaded ontology term and metadata counts."""
+
+    terms: int = 0
+    annotations: int = 0
+
+
+def load_ontology_terms(
+    conn: psycopg2.extensions.connection,
+    records: Iterable[OntologyTerm],
+    *,
+    schema: str = 'minimal',
+    ontology_id: str,
+    batch_size: int = 5000,
+    progress_every: int = 5000,
+) -> OntologyLoadStats:
+    """Load ontology terms directly into entity and annotation tables."""
+
+    stats = _MutableOntologyStats()
+    buffer: list[
+        tuple[OntologyTerm, list[tuple[str, str | None, str | None]]]
+    ] = []
+    started_at = time.monotonic()
+    for term in records:
+        if not isinstance(term, OntologyTerm) or not term.id:
+            continue
+        buffer.append((term, _term_annotations(term, ontology_id)))
+        stats.terms += 1
+        stats.annotations += len(buffer[-1][1])
+        if batch_size > 0 and len(buffer) >= batch_size:
+            _flush(conn, schema, buffer)
+            buffer.clear()
+        if progress_every > 0 and stats.terms % progress_every == 0:
+            elapsed = time.monotonic() - started_at
+            rate = stats.terms / elapsed if elapsed else 0.0
+            print(
+                f'[{ontology_id}] ontology load progress '
+                f'terms={stats.terms:,} annotations={stats.annotations:,} '
+                f'rate={rate:,.1f}/s',
+                flush=True,
+            )
+    _flush(conn, schema, buffer)
+    conn.commit()
+    return stats.freeze()
+
+
+def _flush(
+    conn: psycopg2.extensions.connection,
+    schema: str,
+    rows: list[tuple[OntologyTerm, list[tuple[str, str | None, str | None]]]],
+) -> None:
+    if not rows:
+        return
+    with conn.cursor() as cur:
+        cur.executemany(
+            sql.SQL(
+                """
+                INSERT INTO {}.entity (
+                  entity_type,
+                  id_type,
+                  id,
+                  taxonomy_id,
+                  resolution_status
+                )
+                VALUES ('cv_term', 'cv_term_accession', %s, NULL, 'resolved')
+                ON CONFLICT (entity_type, id_type, id_hash)
+                DO UPDATE SET resolution_status = 'resolved'
+                """
+            )
+            .format(sql.Identifier(schema))
+            .as_string(cur.connection),
+            [(term.id,) for term, _ in rows],
+        )
+        cur.execute(
+            'CREATE TEMP TABLE IF NOT EXISTS _ontology_term_id (term_id text PRIMARY KEY) ON COMMIT DROP'
+        )
+        cur.executemany(
+            'INSERT INTO _ontology_term_id (term_id) VALUES (%s) ON CONFLICT DO NOTHING',
+            [(term.id,) for term, _ in rows],
+        )
+        cur.execute(
+            sql.SQL(
+                """
+                CREATE TEMP TABLE IF NOT EXISTS _ontology_entity_map (
+                  term_id text PRIMARY KEY,
+                  entity_id bigint NOT NULL
+                ) ON COMMIT DROP
+                """
+            )
+        )
+        cur.execute('TRUNCATE _ontology_entity_map')
+        cur.execute(
+            sql.SQL(
+                """
+                INSERT INTO _ontology_entity_map (term_id, entity_id)
+                SELECT t.term_id, e.entity_id
+                FROM _ontology_term_id t
+                JOIN {}.entity e
+                  ON e.entity_type = 'cv_term'
+                 AND e.id_type = 'cv_term_accession'
+                 AND e.id_hash = md5(t.term_id)
+                 AND e.id = t.term_id
+                ON CONFLICT (term_id) DO UPDATE SET entity_id = EXCLUDED.entity_id
+                """
+            ).format(sql.Identifier(schema))
+        )
+        annotation_rows = [
+            (term.id, annotation[0], annotation[1], annotation[2])
+            for term, annotations in rows
+            for annotation in annotations
+        ]
+        cur.executemany(
+            sql.SQL(
+                """
+                INSERT INTO {}.annotation (
+                  term,
+                  value,
+                  unit,
+                  scope,
+                  entity_id
+                )
+                SELECT %s, %s, %s, 'entity', m.entity_id
+                FROM _ontology_entity_map m
+                WHERE m.term_id = %s
+                ON CONFLICT DO NOTHING
+                """
+            )
+            .format(sql.Identifier(schema))
+            .as_string(cur.connection),
+            [
+                (term, value, unit, term_id)
+                for term_id, term, value, unit in annotation_rows
+            ],
+        )
+        cur.execute('TRUNCATE _ontology_term_id')
+
+
+def _term_annotations(
+    term: OntologyTerm,
+    ontology_id: str,
+) -> list[tuple[str, str | None, str | None]]:
+    rows: list[tuple[str, str | None, str | None]] = [
+        (str(OntologyAnnotationCv.ONTOLOGY_ID), ontology_id, None),
+        (str(IdentifierNamespaceCv.CV_TERM_ACCESSION), term.id, None),
+    ]
+    if term.name:
+        rows.append((str(IdentifierNamespaceCv.NAME), term.name, None))
+    if term.definition:
+        rows.append(
+            (str(OntologyAnnotationCv.DEFINITION), term.definition, None)
+        )
+    if term.namespace:
+        rows.append(('ontology:namespace', term.namespace, None))
+    if term.is_obsolete is not None:
+        rows.append(
+            (
+                str(OntologyAnnotationCv.IS_OBSOLETE),
+                str(bool(term.is_obsolete)).lower(),
+                None,
+            )
+        )
+    for alt_id in term.alt_ids or []:
+        if alt_id and alt_id != term.id:
+            rows.append(
+                (str(IdentifierNamespaceCv.CV_TERM_ACCESSION), alt_id, 'alt_id')
+            )
+    for synonym in term.synonyms or []:
+        if synonym and synonym != term.name:
+            rows.append((str(IdentifierNamespaceCv.SYNONYM), synonym, None))
+    for comment in term.comments or []:
+        if comment:
+            rows.append((str(OntologyAnnotationCv.COMMENT), comment, None))
+    for xref in term.xrefs or []:
+        if xref:
+            rows.append(('ontology:xref', xref, None))
+    for parent in term.is_a or []:
+        if parent:
+            rows.append(
+                (str(IdentifierNamespaceCv.CV_TERM_ACCESSION), parent, 'is_a')
+            )
+    for relationship in term.relationships or []:
+        rows.extend(_relationship_annotations(relationship))
+    return rows
+
+
+def _relationship_annotations(
+    relationship: OntologyRelationship,
+) -> list[tuple[str, str | None, str | None]]:
+    if not relationship.type or not relationship.target:
+        return []
+    rows = [
+        (
+            str(IdentifierNamespaceCv.CV_TERM_ACCESSION),
+            relationship.target,
+            relationship.type,
+        )
+    ]
+    if relationship.target_name:
+        rows.append(
+            (
+                'ontology:relationship_target_name',
+                relationship.target_name,
+                relationship.type,
+            )
+        )
+    return rows
+
+
+@dataclass
+class _MutableOntologyStats:
+    terms: int = 0
+    annotations: int = 0
+
+    def freeze(self) -> OntologyLoadStats:
+        return OntologyLoadStats(
+            terms=self.terms,
+            annotations=self.annotations,
+        )

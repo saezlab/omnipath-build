@@ -385,13 +385,26 @@ def _apply_entity_parts(
     cfg: GoldPartitionConfig,
     full_build: bool,
 ) -> None:
+    if not full_build:
+        update_phase(f'entity keys across {len(parts)} parts')
+        _log(f'entity keys across {len(parts)} parts')
+        con.execute('begin transaction')
+        try:
+            _recompute_entity_part(con, source_dirs, entity_part=None, cfg=cfg, full_build=False)
+            _recompute_entity_evidence_part(con, source_dirs, entity_part=None, cfg=cfg, full_build=False)
+            con.execute('commit')
+        except Exception:
+            con.execute('rollback')
+            raise
+        return
+
     for index, part in enumerate(sorted(parts), start=1):
         update_phase(f'entity part {index}/{len(parts)} part={part:05d}')
         _log(f'entity part {index}/{len(parts)} part={part:05d}')
         con.execute('begin transaction')
         try:
-            _recompute_entity_part(con, source_dirs, entity_part=part, cfg=cfg, full_build=full_build)
-            _recompute_entity_evidence_part(con, source_dirs, entity_part=part, cfg=cfg, full_build=full_build)
+            _recompute_entity_part(con, source_dirs, entity_part=part, cfg=cfg, full_build=True)
+            _recompute_entity_evidence_part(con, source_dirs, entity_part=part, cfg=cfg, full_build=True)
             con.execute('commit')
         except Exception:
             con.execute('rollback')
@@ -406,13 +419,26 @@ def _apply_relation_parts(
     cfg: GoldPartitionConfig,
     full_build: bool,
 ) -> None:
+    if not full_build:
+        update_phase(f'relation keys across {len(parts)} parts')
+        _log(f'relation keys across {len(parts)} parts')
+        con.execute('begin transaction')
+        try:
+            _recompute_relation_part(con, source_dirs, relation_part=None, cfg=cfg, full_build=False)
+            _recompute_relation_evidence_part(con, source_dirs, relation_part=None, cfg=cfg, full_build=False)
+            con.execute('commit')
+        except Exception:
+            con.execute('rollback')
+            raise
+        return
+
     for index, part in enumerate(sorted(parts), start=1):
         update_phase(f'relation part {index}/{len(parts)} part={part:05d}')
         _log(f'relation part {index}/{len(parts)} part={part:05d}')
         con.execute('begin transaction')
         try:
-            _recompute_relation_part(con, source_dirs, relation_part=part, cfg=cfg, full_build=full_build)
-            _recompute_relation_evidence_part(con, source_dirs, relation_part=part, cfg=cfg, full_build=full_build)
+            _recompute_relation_part(con, source_dirs, relation_part=part, cfg=cfg, full_build=True)
+            _recompute_relation_evidence_part(con, source_dirs, relation_part=part, cfg=cfg, full_build=True)
             con.execute('commit')
         except Exception:
             con.execute('rollback')
@@ -423,7 +449,7 @@ def _recompute_entity_part(
     con: duckdb.DuckDBPyConnection,
     source_dirs: list[GoldSourceDir],
     *,
-    entity_part: int,
+    entity_part: int | None,
     cfg: GoldPartitionConfig,
     full_build: bool,
 ) -> None:
@@ -530,18 +556,18 @@ def _recompute_entity_part(
         where entity_key not in (select entity_key from entity_key_map)
     """)
     if full_build:
+        if entity_part is None:
+            raise ValueError('entity_part is required for full entity recompute')
         con.execute(f'delete from entity where entity_part = {entity_part}')
         con.execute(f'delete from entity_source where entity_part = {entity_part}')
     else:
-        con.execute(f"""
+        con.execute("""
             delete from entity
             where entity_key in (select entity_key from affected_entity_keys)
-              and stable_part(entity_key, {cfg.bucket_count}, {cfg.part_count}) = {entity_part}
         """)
-        con.execute(f"""
+        con.execute("""
             delete from entity_source
             where entity_key in (select entity_key from affected_entity_keys)
-              and stable_part(entity_key, {cfg.bucket_count}, {cfg.part_count}) = {entity_part}
         """)
 
     con.execute("""
@@ -585,7 +611,7 @@ def _recompute_entity_evidence_part(
     con: duckdb.DuckDBPyConnection,
     source_dirs: list[GoldSourceDir],
     *,
-    entity_part: int,
+    entity_part: int | None,
     cfg: GoldPartitionConfig,
     full_build: bool,
 ) -> None:
@@ -618,12 +644,13 @@ def _recompute_entity_evidence_part(
         )}
     """)
     if full_build:
+        if entity_part is None:
+            raise ValueError('entity_part is required for full entity evidence recompute')
         con.execute(f'delete from entity_evidence where entity_part = {entity_part}')
     else:
-        con.execute(f"""
+        con.execute("""
             delete from entity_evidence
             where entity_key in (select entity_key from affected_entity_keys)
-              and stable_part(entity_key, {cfg.bucket_count}, {cfg.part_count}) = {entity_part}
         """)
     con.execute(f"""
         insert into entity_evidence
@@ -650,7 +677,7 @@ def _recompute_relation_part(
     con: duckdb.DuckDBPyConnection,
     source_dirs: list[GoldSourceDir],
     *,
-    relation_part: int,
+    relation_part: int | None,
     cfg: GoldPartitionConfig,
     full_build: bool,
 ) -> None:
@@ -766,18 +793,18 @@ def _recompute_relation_part(
         where relation_key not in (select relation_key from relation_key_map)
     """)
     if full_build:
+        if relation_part is None:
+            raise ValueError('relation_part is required for full relation recompute')
         con.execute(f'delete from entity_relation where relation_part = {relation_part}')
         con.execute(f'delete from relation_source where relation_part = {relation_part}')
     else:
-        con.execute(f"""
+        con.execute("""
             delete from entity_relation
             where relation_key in (select relation_key from affected_relation_keys)
-              and stable_part(relation_key, {cfg.bucket_count}, {cfg.part_count}) = {relation_part}
         """)
-        con.execute(f"""
+        con.execute("""
             delete from relation_source
             where relation_key in (select relation_key from affected_relation_keys)
-              and stable_part(relation_key, {cfg.bucket_count}, {cfg.part_count}) = {relation_part}
         """)
     con.execute("""
         insert into entity_relation
@@ -822,7 +849,7 @@ def _recompute_relation_evidence_part(
     con: duckdb.DuckDBPyConnection,
     source_dirs: list[GoldSourceDir],
     *,
-    relation_part: int,
+    relation_part: int | None,
     cfg: GoldPartitionConfig,
     full_build: bool,
 ) -> None:
@@ -854,12 +881,13 @@ def _recompute_relation_evidence_part(
         )}
     """)
     if full_build:
+        if relation_part is None:
+            raise ValueError('relation_part is required for full relation evidence recompute')
         con.execute(f'delete from entity_relation_evidence where relation_part = {relation_part}')
     else:
-        con.execute(f"""
+        con.execute("""
             delete from entity_relation_evidence
             where relation_key in (select relation_key from affected_relation_keys)
-              and stable_part(relation_key, {cfg.bucket_count}, {cfg.part_count}) = {relation_part}
         """)
     max_id = int(con.execute('select coalesce(max(relation_evidence_id), 0) from entity_relation_evidence').fetchone()[0])
     con.execute(f"""
@@ -1203,7 +1231,7 @@ def _source_union_sql(
     dataset_name: str,
     columns: list[str],
     part_column: str,
-    part_value: int,
+    part_value: int | None,
     key_column: str,
     key_table: str,
     full_build: bool,
@@ -1215,14 +1243,30 @@ def _source_union_sql(
         path = getattr(datasets, dataset_name)
         if path is None:
             continue
-        source_sql = _read_dataset_sql(path)
+        source_sql = _read_dataset_sql(
+            path,
+            part_dirs=(
+                _source_dataset_part_dirs(
+                    source_dir.path,
+                    path,
+                    dataset_name=dataset_name,
+                    combined_part=part_value,
+                    combined_part_count=cfg.part_count,
+                    bucket_count=cfg.bucket_count,
+                )
+                if part_value is not None else None
+            ),
+        )
         existing_columns = _dataset_columns(con, path)
         selected_columns = ', '.join(_column_expr(column, existing_columns, key_column, cfg) for column in columns)
-        part_filter = (
-            f'stable_part(try_cast({key_column} as varchar), '
-            f'{cfg.bucket_count}, {cfg.part_count}) = {part_value}'
-        )
-        filters = [part_filter, f'{key_column} is not null']
+        filters = [f'{key_column} is not null']
+        if part_value is not None:
+            filters.append(
+                f'stable_part(try_cast({key_column} as varchar), '
+                f'{cfg.bucket_count}, {cfg.part_count}) = {part_value}'
+            )
+        elif full_build:
+            raise ValueError('part_value is required for full source union')
         if not full_build:
             filters.append(f'try_cast({key_column} as varchar) in (select {key_column} from {key_table})')
         selects.append(
@@ -1314,10 +1358,82 @@ def _column_casts() -> dict[str, str]:
     }
 
 
-def _read_dataset_sql(path: Path) -> str:
+def _read_dataset_sql(path: Path, *, part_dirs: list[Path] | None = None) -> str:
+    if part_dirs:
+        values = ', '.join(
+            "'" + _sql_path(part_dir / '*.parquet').replace("'", "''") + "'"
+            for part_dir in part_dirs
+        )
+        return f"read_parquet([{values}], union_by_name=true, hive_partitioning=true)"
     if path.is_dir():
         return f"read_parquet('{_sql_path(path / '**' / '*.parquet')}', union_by_name=true, hive_partitioning=true)"
     return f"read_parquet('{_sql_path(path)}', union_by_name=true)"
+
+
+def _source_dataset_part_dirs(
+    source_dir: Path,
+    dataset_path: Path,
+    *,
+    dataset_name: str,
+    combined_part: int,
+    combined_part_count: int,
+    bucket_count: int,
+) -> list[Path] | None:
+    """Return source hive part directories that can overlap a combined part.
+
+    Gold source outputs may use a different part_count than combined outputs
+    (for example, a large BindingDB source may have 10/12 source parts while
+    combined currently has 18).  Filtering only with stable_part(key, combined)
+    prevents DuckDB from pruning the source hive part directories, so each
+    incremental combined part can scan every large source file.  Restricting the
+    parquet glob to the overlapping source part directories preserves correctness
+    while keeping incremental combine proportional to the touched hash ranges.
+    """
+    if not dataset_path.is_dir():
+        return None
+    source_part_count = _source_dataset_part_count(source_dir, dataset_name)
+    if source_part_count is None or source_part_count <= 0:
+        return None
+    start_bucket = combined_part * bucket_count // combined_part_count
+    end_bucket = ((combined_part + 1) * bucket_count // combined_part_count) - 1
+    if end_bucket < start_bucket:
+        return None
+    parts: list[Path] = []
+    for source_part in range(source_part_count):
+        source_start = source_part * bucket_count // source_part_count
+        source_end = ((source_part + 1) * bucket_count // source_part_count) - 1
+        if source_start <= end_bucket and source_end >= start_bucket:
+            part_dir = dataset_path / f'part={source_part:05d}'
+            if part_dir.exists():
+                parts.append(part_dir)
+    return parts or None
+
+
+def _source_dataset_part_count(source_dir: Path, dataset_name: str) -> int | None:
+    manifest_path = (
+        source_dir / 'entities' / 'manifest.json'
+        if dataset_name in {'entity', 'entity_evidence'}
+        else source_dir / 'relations' / 'manifest.json'
+    )
+    if not manifest_path.exists():
+        return None
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+    except Exception:
+        return None
+    keys = (
+        ('entity_part_count', 'part_count')
+        if dataset_name in {'entity', 'entity_evidence'}
+        else ('relation_part_count', 'part_count')
+    )
+    for key in keys:
+        value = manifest.get(key)
+        if value is not None:
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                continue
+    return None
 
 
 def _dataset_columns(con: duckdb.DuckDBPyConnection, path: Path) -> set[str]:
