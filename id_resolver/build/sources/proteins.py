@@ -57,11 +57,18 @@ def _protein_identifier_rows(
     taxonomy_ids: Iterable[int | str] | None = None,
 ) -> Iterable[dict]:
     primary_uniprots: set[str] = set()
+    primary_taxonomy: dict[str, set[str]] = {}
 
     for row in uniprot_resource.reference_id_translation.raw(taxonomy_ids=taxonomy_ids):
         primary_uniprot = row.get('primary_uniprot')
         if primary_uniprot:
-            primary_uniprots.add(str(primary_uniprot))
+            primary_uniprot = str(primary_uniprot)
+            primary_uniprots.add(primary_uniprot)
+            taxonomy_id = row.get('taxonomy_id')
+            if taxonomy_id:
+                primary_taxonomy.setdefault(primary_uniprot, set()).add(
+                    str(taxonomy_id)
+                )
         key_type = row.get('key_type')
         yield {
             'source': PROTEIN_SOURCE,
@@ -80,7 +87,9 @@ def _protein_identifier_rows(
             'source': PROTEIN_SOURCE,
             'key_type': UNIPROT_TYPE,
             'key_value': row.get('secondary_uniprot'),
-            'taxonomy_id': None,
+            'taxonomy_id': _single_taxonomy_id(
+                primary_taxonomy.get(str(primary_uniprot))
+            ),
             'primary_uniprot': primary_uniprot,
             'mapping_type': 'uniprot_secondary',
         }
@@ -90,10 +99,18 @@ def _protein_identifier_rows(
             'source': PROTEIN_SOURCE,
             'key_type': UNIPROT_TYPE,
             'key_value': primary_uniprot,
-            'taxonomy_id': None,
+            'taxonomy_id': _single_taxonomy_id(
+                primary_taxonomy.get(primary_uniprot)
+            ),
             'primary_uniprot': primary_uniprot,
             'mapping_type': 'uniprot_primary',
         }
+
+
+def _single_taxonomy_id(values: set[str] | None) -> str | None:
+    if not values or len(values) != 1:
+        return None
+    return next(iter(values))
 
 
 def build_protein_identifier_lookup(

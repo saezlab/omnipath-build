@@ -21,13 +21,13 @@ from minimal.ingest.common import (
     membership_relation_spec,
     interaction_relation_spec,
     ontology_annotation_relation,
+    extract_taxonomy_id,
 )
 from minimal.ingest.preparse import ProvenancedRecord
 from pypath.internals.silver_schema import Entity
 from omnipath_build.gold.utils.schema import (
     ASSOCIATION_CATEGORY,
     string_or_none,
-    extract_taxonomy_id,
 )
 
 class BulkMinimalIngestor:

@@ -18,6 +18,7 @@ from omnipath_build.gold.utils.schema import (
     order_interaction_participants,
 )
 from pypath.internals.cv_terms import cv_term_label_accession
+from pypath.internals.cv_terms import IdentifierNamespaceCv
 from minimal.cv_terms import (
     CV_TERM_ENTITY_TYPE,
     CV_TERM_ID_TYPE,
@@ -188,6 +189,52 @@ def copy_value(value: object) -> str:
     if isinstance(value, bool):
         return 'true' if value else 'false'
     return str(value)
+
+
+TAXONOMY_IDENTIFIER_TERM = cv_term_label_accession(
+    IdentifierNamespaceCv.NCBI_TAX_ID
+)
+
+
+def extract_taxonomy_id(row: dict[str, object]) -> str | None:
+    """Extract NCBI taxonomy from normalized minimal identifiers/annotations."""
+
+    for ident in row.get('identifiers') or []:
+        if not isinstance(ident, dict):
+            continue
+        if (
+            text_or_none(ident.get('type')) == TAXONOMY_IDENTIFIER_TERM
+            and text_or_none(ident.get('value'))
+        ):
+            return text_or_none(ident.get('value'))
+    for annotation in row.get('annotations') or []:
+        if not isinstance(annotation, dict):
+            continue
+        if (
+            text_or_none(annotation.get('term')) == TAXONOMY_IDENTIFIER_TERM
+            and text_or_none(annotation.get('value'))
+        ):
+            return text_or_none(annotation.get('value'))
+
+    member_tax_ids: set[str] = set()
+    for membership in row.get('membership') or []:
+        if not isinstance(membership, dict):
+            continue
+        member = membership.get('member') or {}
+        if not isinstance(member, dict):
+            continue
+        for annotation in member.get('annotations') or []:
+            if not isinstance(annotation, dict):
+                continue
+            if (
+                text_or_none(annotation.get('term')) == TAXONOMY_IDENTIFIER_TERM
+                and text_or_none(annotation.get('value'))
+            ):
+                member_tax_ids.add(text_or_none(annotation.get('value')) or '')
+    member_tax_ids.discard('')
+    if len(member_tax_ids) == 1:
+        return next(iter(member_tax_ids))
+    return None
 
 
 def ontology_annotation_relation(

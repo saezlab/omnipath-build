@@ -1,9 +1,0 @@
-{
-  "dataset": "interactions",
-  "delta_path": "new_incremental_test/bronze/connectomedb/interactions/20260510T121308159851Z/delta.parquet",
-  "manifest_path": "new_incremental_test/bronze/connectomedb/interactions/20260510T121308159851Z/manifest.json",
-  "records_path": "new_incremental_test/bronze/connectomedb/interactions/state/records.parquet",
-  "snapshot_id": "20260510T121308159851Z",
-  "source": "connectomedb",
-  "updated_at": "2026-05-10T12:13:09.067092+00:00"
-}

@@ -304,6 +304,32 @@ def _ensure_resolution_schema(
     cur.execute(
         sql.SQL(
             """
+            CREATE TABLE IF NOT EXISTS {}.resources (
+              resource_id text PRIMARY KEY,
+              resource_name text,
+              description text,
+              homepage_url text,
+              license text,
+              pubmed_id text,
+              resource_kind text,
+              categories jsonb,
+              annotation_ontologies jsonb,
+              entity_count bigint NOT NULL DEFAULT 0,
+              interaction_count bigint NOT NULL DEFAULT 0,
+              association_count bigint NOT NULL DEFAULT 0,
+              identifier_count bigint NOT NULL DEFAULT 0,
+              ontology_term_count bigint NOT NULL DEFAULT 0,
+              total_size_bytes bigint NOT NULL DEFAULT 0,
+              last_downloaded_at timestamptz,
+              last_built_at timestamptz,
+              build_status text
+            )
+            """
+        ).format(schema_id)
+    )
+    cur.execute(
+        sql.SQL(
+            """
             CREATE UNIQUE INDEX IF NOT EXISTS resolver_mapping_policy_unique_idx
             ON {}.resolver_mapping_policy (
               entity_family,
@@ -882,6 +908,7 @@ def _ensure_resolution_indexes(
             'resolver_chemical_identifier_lookup',
             ('key_type', 'key_value'),
         ),
+        ('resources_build_status_idx', 'resources', ('build_status',)),
     ]
     for name, table, columns in specs:
         cur.execute(

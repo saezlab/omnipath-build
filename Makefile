@@ -42,6 +42,7 @@ MINIMAL_COMMIT_EVERY ?= 1000
 MINIMAL_PROGRESS_EVERY ?= 1000
 MINIMAL_DERIVE ?=
 MINIMAL_DROP_EXISTING ?=
+MINIMAL_OBO_DIR ?= $(DATA_ROOT)/obo
 BOOTSTRAP ?=
 MINIMAL_RAW_RECORDS_ROOT ?= $(DATA_ROOT)
 COMBINE_RUN_DIR ?=
@@ -233,6 +234,7 @@ ingest:
 			--batch-size "$(MINIMAL_BATCH_SIZE)" \
 			--commit-every "$(MINIMAL_COMMIT_EVERY)" \
 			--progress-every "$(MINIMAL_PROGRESS_EVERY)" \
+			--obo-output-dir "$(MINIMAL_OBO_DIR)" \
 			$(if $(MINIMAL_RAW_RECORDS_ROOT),--raw-records-root "$(MINIMAL_RAW_RECORDS_ROOT)") \
 			--use-latest-preparse \
 			$(if $(REFRESH),--refresh) \

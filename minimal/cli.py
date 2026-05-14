@@ -3,14 +3,19 @@ from __future__ import annotations
 import os
 import sys
 import argparse
+from pathlib import Path
 
 import psycopg2
+
+from pypath.internals.ontology_schema import OntologyTerm
+from pypath.inputs_v2.ontology_serializers import format_obo
 
 from minimal.db import (
     ensure_schema,
     rebuild_bitmap_tables,
     rebuild_derived_tables,
     create_secondary_indexes,
+    sync_resources_table,
 )
 from minimal.ingest import (
     MinimalIngestor,
@@ -130,6 +135,8 @@ def main(argv: list[str] | None = None) -> int:
         default=True,
         help='Create and populate bitmap tables.',
     )
+    derive.add_argument('--inputs-package', default='pypath.inputs_v2')
+    derive.add_argument('--database', default='omnipath')
 
     ingest = subparsers.add_parser('ingest')
     ingest.add_argument('--source', required=True)
@@ -178,6 +185,17 @@ def main(argv: list[str] | None = None) -> int:
     )
     ingest.add_argument('--commit-every', type=int, default=1000)
     ingest.add_argument('--progress-every', type=int, default=1000)
+    ingest.add_argument(
+        '--obo-artifacts',
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help='Write ontology datasets as OBO artifacts for the API service.',
+    )
+    ingest.add_argument(
+        '--obo-output-dir',
+        default='data/obo',
+        help='Directory for OBO artifacts written from ontology datasets.',
+    )
 
     args = parser.parse_args(argv)
     if args.command == 'preparse':
@@ -251,11 +269,21 @@ def main(argv: list[str] | None = None) -> int:
                 print('[derive] indexes=ready', flush=True)
             if args.tables:
                 table_stats = rebuild_derived_tables(conn, schema=args.schema)
+                discovered, _ = discover_resources(
+                    database_name=args.database,
+                    inputs_package=args.inputs_package,
+                )
+                resource_stats = sync_resources_table(
+                    conn,
+                    discovered,
+                    schema=args.schema,
+                )
                 print(
                     '[derive] '
                     f'entity_relation_counts='
                     f'{table_stats.entity_relation_counts} '
-                    f'ontology_terms={table_stats.ontology_terms}',
+                    f'ontology_terms={table_stats.ontology_terms} '
+                    f'resources={resource_stats.resources}',
                     flush=True,
                 )
             if args.bitmaps:
@@ -382,9 +410,20 @@ def _handle_ingest(
             ),
         )
         if fn.output_kind == 'ontology':
+            terms = _collect_ontology_terms(records)
+            if args.obo_artifacts:
+                obo_path = _write_ontology_obo(
+                    fn,
+                    terms,
+                    output_dir=Path(args.obo_output_dir),
+                )
+                print(
+                    f'[{fn.source}.{fn.function_name}] obo={obo_path}',
+                    flush=True,
+                )
             stats = load_ontology_terms(
                 conn,
-                records,
+                terms,
                 schema=args.schema,
                 ontology_id=fn.ontology_id or fn.function_name,
                 batch_size=args.batch_size,
@@ -433,6 +472,30 @@ def _handle_ingest(
         if not args.use_latest_preparse:
             accept_dataset_preparse(raw_dataset)
     return 0
+
+
+def _collect_ontology_terms(records: object) -> list[OntologyTerm]:
+    terms: list[OntologyTerm] = []
+    for record in records:
+        value = getattr(record, 'record', record)
+        if isinstance(value, OntologyTerm) and value.id:
+            terms.append(value)
+    return terms
+
+
+def _write_ontology_obo(
+    fn: object,
+    terms: list[OntologyTerm],
+    *,
+    output_dir: Path,
+) -> Path:
+    extension = (getattr(fn, 'file_extension', None) or 'obo').lstrip('.')
+    file_stem = getattr(fn, 'file_stem', None) or getattr(fn, 'function_name')
+    document = getattr(fn, 'document')
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / f'{file_stem}.{extension}'
+    output_path.write_text(format_obo(document, terms), encoding='utf-8')
+    return output_path
 
 
 if __name__ == '__main__':

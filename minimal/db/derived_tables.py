@@ -185,7 +185,9 @@ def _populate_ontology_terms(
               te.term_id,
               CASE
                 WHEN te.term_id ~* '^KW-[0-9]+$' THEN 'kw'
-                ELSE lower(split_part(te.term_id, ':', 1))
+                WHEN position(':' in te.term_id) > 0
+                  THEN lower(split_part(te.term_id, ':', 1))
+                ELSE NULL
               END AS ontology_prefix,
               COALESCE(av.label, te.term_id) AS label,
               av.definition,

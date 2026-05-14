@@ -3,6 +3,7 @@ from __future__ import annotations
 from io import StringIO
 import csv
 import time
+import re
 from pathlib import Path
 from dataclasses import dataclass
 
@@ -283,7 +284,12 @@ def _copy_batch(
     writer = csv.writer(buffer, lineterminator='\n')
     arrays = [batch.column(column).to_pylist() for column in columns]
     for row in zip(*arrays, strict=True):
-        writer.writerow([_copy_value(value) for value in row])
+        writer.writerow(
+            [
+                _copy_value(_normalize_key_type(value) if column == 'key_type' else value)
+                for column, value in zip(columns, row, strict=True)
+            ]
+        )
     buffer.seek(0)
     cur.copy_expert(
         sql.SQL("COPY {}.{} ({}) FROM STDIN WITH (FORMAT CSV, NULL '\\N')")
@@ -301,3 +307,17 @@ def _copy_value(value: object) -> str:
     if value is None:
         return '\\N'
     return str(value)
+
+
+_ACCESSION_LABEL_RE = re.compile(r'^([A-Z][A-Z0-9_]*:\d+):(.+)$')
+
+
+def _normalize_key_type(value: object) -> object:
+    if value is None:
+        return None
+    text = str(value)
+    match = _ACCESSION_LABEL_RE.match(text)
+    if not match:
+        return value
+    accession, label = match.groups()
+    return f'{label}:{accession}'
