@@ -91,6 +91,15 @@ def main(argv: list[str] | None = None) -> int:
     ingest.add_argument('--raw-records-root')
     ingest.add_argument('--force-refresh', action='store_true')
     ingest.add_argument(
+        '--full-current',
+        action='store_true',
+        help=(
+            'Ingest all current source rows from the snapshot instead of only '
+            'the snapshot delta. Use this explicitly when bootstrapping '
+            'minimal tables from an existing raw snapshot.'
+        ),
+    )
+    ingest.add_argument(
         '--backend',
         choices=('bulk', 'simple'),
         default='bulk',
@@ -245,7 +254,7 @@ def _handle_ingest(
             raw_records_root=args.raw_records_root,
             use_preparse=True,
             raw_snapshot=snapshot,
-            changed_only=fn.output_kind == 'entity',
+            changed_only=fn.output_kind == 'entity' and not args.full_current,
         )
         if fn.output_kind == 'ontology':
             stats = load_ontology_terms(

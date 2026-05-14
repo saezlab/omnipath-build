@@ -1,4 +1,4 @@
-.PHONY: setup silver silver-list resolver-mappings combined postgres pipeline bronze-rewrite silver-rewrite gold-rewrite combined-rewrite rewrite_pipeline test
+.PHONY: setup silver silver-list resolver-mappings combined postgres pipeline minimal_pipeline_setup minimal_pipeline bronze-rewrite silver-rewrite gold-rewrite combined-rewrite rewrite_pipeline test
 
 JOBS ?= 4
 BATCH_SIZE ?= 10000
@@ -30,6 +30,17 @@ POSTGRES_DROP_EXISTING ?=
 POSTGRES_BATCH_SIZE ?= 200000
 POSTGRES_UNLOGGED_TABLES ?= 1
 POSTGRES_FOREIGN_KEYS ?=
+MINIMAL_SCHEMA ?= minimal
+MINIMAL_MAPPING_DIR ?= $(RESOLVER_MAPPING_DIR)
+MINIMAL_BACKEND ?= bulk
+MINIMAL_BATCH_SIZE ?= 5000
+MINIMAL_RESOLVER_BATCH_SIZE ?= 100000
+MINIMAL_COMMIT_EVERY ?= 1000
+MINIMAL_PROGRESS_EVERY ?= 1000
+MINIMAL_DERIVE ?= 1
+MINIMAL_DROP_EXISTING ?=
+BOOTSTRAP ?=
+MINIMAL_RAW_RECORDS_ROOT ?=
 COMBINE_RUN_DIR ?=
 LOAD_POSTGRES ?=
 YES ?=
@@ -148,6 +159,76 @@ pipeline:
 		$(if $(POSTGRES_DROP_EXISTING),--postgres-drop-existing) \
 		--memory-sample-interval-seconds $(MEMORY_SAMPLE_INTERVAL_SECONDS) \
 		$(if $(YES),--yes)
+
+minimal_pipeline_setup:
+	@if [ -z "$(DATABASE_URL)" ]; then \
+		echo "DATABASE_URL is required, e.g. make minimal_pipeline_setup DATABASE_URL=postgresql://user:pass@host:5432/dbname"; \
+		exit 1; \
+	fi
+	@set -e; \
+	echo "[minimal] init-db schema=$(MINIMAL_SCHEMA)"; \
+	PYTHONUNBUFFERED=1 uv run python -m minimal.cli \
+		--database-url "$(DATABASE_URL)" \
+		--schema "$(MINIMAL_SCHEMA)" \
+		init-db \
+		$(if $(MINIMAL_DROP_EXISTING),--drop-existing); \
+	echo "[minimal] load-resolver mapping_dir=$(MINIMAL_MAPPING_DIR)"; \
+	PYTHONUNBUFFERED=1 uv run python -m minimal.cli \
+		--database-url "$(DATABASE_URL)" \
+		--schema "$(MINIMAL_SCHEMA)" \
+		load-resolver \
+		--mapping-dir "$(MINIMAL_MAPPING_DIR)" \
+		--batch-size "$(MINIMAL_RESOLVER_BATCH_SIZE)"; \
+	echo "[minimal] create secondary indexes schema=$(MINIMAL_SCHEMA)"; \
+	PYTHONUNBUFFERED=1 uv run python -m minimal.cli \
+		--database-url "$(DATABASE_URL)" \
+		--schema "$(MINIMAL_SCHEMA)" \
+		derive \
+		--no-tables \
+		--no-bitmaps
+
+minimal_pipeline:
+	@if [ -z "$(SOURCES)$(SOURCE)" ]; then \
+		echo "SOURCES or SOURCE is required, e.g. make minimal_pipeline SOURCES=uniprot"; \
+		exit 1; \
+	fi
+	@if [ -z "$(DATABASE_URL)" ]; then \
+		echo "DATABASE_URL is required, e.g. make minimal_pipeline SOURCES=uniprot DATABASE_URL=postgresql://user:pass@host:5432/dbname"; \
+		exit 1; \
+	fi
+	@set -e; \
+	SOURCE_LIST=$$(printf '%s' "$(if $(SOURCES),$(SOURCES),$(SOURCE))" | tr ',' ' '); \
+	for source in $$SOURCE_LIST; do \
+		echo "[minimal] ingest source=$$source"; \
+		PYTHONUNBUFFERED=1 uv run python -m minimal.cli \
+			--database-url "$(DATABASE_URL)" \
+			--schema "$(MINIMAL_SCHEMA)" \
+			ingest \
+			--source "$$source" \
+			--database "$(DATABASE)" \
+			--inputs-package "$(INPUTS_PACKAGE)" \
+			--backend "$(MINIMAL_BACKEND)" \
+			--batch-size "$(MINIMAL_BATCH_SIZE)" \
+			--commit-every "$(MINIMAL_COMMIT_EVERY)" \
+			--progress-every "$(MINIMAL_PROGRESS_EVERY)" \
+			$(if $(MINIMAL_RAW_RECORDS_ROOT),--raw-records-root "$(MINIMAL_RAW_RECORDS_ROOT)") \
+			$(if $(FORCE_REFRESH),--force-refresh) \
+			$(if $(BOOTSTRAP),--full-current); \
+		echo "[minimal] canonicalize source=$$source"; \
+		PYTHONUNBUFFERED=1 uv run python -m minimal.cli \
+			--database-url "$(DATABASE_URL)" \
+			--schema "$(MINIMAL_SCHEMA)" \
+			canonicalize \
+			--source "$$source"; \
+	done; \
+	if [ "$(MINIMAL_DERIVE)" != "" ]; then \
+		echo "[minimal] refresh derived tables and bitmaps schema=$(MINIMAL_SCHEMA)"; \
+		PYTHONUNBUFFERED=1 uv run python -m minimal.cli \
+			--database-url "$(DATABASE_URL)" \
+			--schema "$(MINIMAL_SCHEMA)" \
+			derive \
+			--no-indexes; \
+	fi
 
 bronze-rewrite:
 	@if [ -z "$(SOURCE)" ]; then \

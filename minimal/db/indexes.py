@@ -86,12 +86,6 @@ def create_secondary_indexes(
         ).format(schema_id),
         sql.SQL(
             """
-            CREATE INDEX IF NOT EXISTS annotation_term_value_idx
-            ON {}.annotation (term, value)
-            """
-        ).format(schema_id),
-        sql.SQL(
-            """
             CREATE INDEX IF NOT EXISTS annotation_relation_evidence_term_idx
             ON {}.annotation (relation_evidence_id, term, unit)
             """

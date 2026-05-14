@@ -153,21 +153,7 @@ def ensure_schema(
                 sql.Identifier(schema),
             )
         )
-        cur.execute(
-            sql.SQL(
-                """
-                CREATE UNIQUE INDEX IF NOT EXISTS annotation_dedupe_idx
-                ON {}.annotation (
-                  scope,
-                  term,
-                  COALESCE(value, ''),
-                  COALESCE(unit, ''),
-                  COALESCE(entity_evidence_id, 0),
-                  COALESCE(relation_evidence_id, 0)
-                )
-                """
-            ).format(sql.Identifier(schema))
-        )
+        _drop_obsolete_annotation_indexes(cur, schema)
         _ensure_resolution_schema(cur, schema)
 
     conn.commit()
@@ -546,11 +532,34 @@ def _ensure_candidate_hash_key(
     )
 
 
+def _drop_obsolete_annotation_indexes(
+    cur: psycopg2.extensions.cursor,
+    schema: str,
+) -> None:
+    schema_id = sql.Identifier(schema)
+    cur.execute(
+        sql.SQL('DROP INDEX IF EXISTS {}.annotation_term_value_idx').format(
+            schema_id
+        )
+    )
+    cur.execute(
+        sql.SQL('DROP INDEX IF EXISTS {}.annotation_dedupe_idx').format(
+            schema_id
+        )
+    )
+    cur.execute(
+        sql.SQL('ALTER TABLE {}.annotation DROP COLUMN IF EXISTS value_hash').format(
+            schema_id
+        )
+    )
+
+
 def _ensure_entity_annotation_target(
     cur: psycopg2.extensions.cursor,
     schema: str,
 ) -> None:
     schema_id = sql.Identifier(schema)
+    _drop_obsolete_annotation_indexes(cur, schema)
     cur.execute(
         sql.SQL(
             'ALTER TABLE {}.annotation ADD COLUMN IF NOT EXISTS entity_id bigint'
@@ -609,27 +618,6 @@ def _ensure_entity_annotation_target(
               + (relation_evidence_id IS NOT NULL)::int
               + (entity_id IS NOT NULL)::int
               = 1
-            )
-            """
-        ).format(schema_id)
-    )
-    cur.execute(
-        sql.SQL('DROP INDEX IF EXISTS {}.annotation_dedupe_idx').format(
-            schema_id
-        )
-    )
-    cur.execute(
-        sql.SQL(
-            """
-            CREATE UNIQUE INDEX annotation_dedupe_idx
-            ON {}.annotation (
-              scope,
-              term,
-              COALESCE(value, ''),
-              COALESCE(unit, ''),
-              COALESCE(entity_evidence_id, 0),
-              COALESCE(relation_evidence_id, 0),
-              COALESCE(entity_id, 0)
             )
             """
         ).format(schema_id)

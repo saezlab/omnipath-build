@@ -75,6 +75,35 @@ materialized chemical resolver sources.
 Row-hash-based gating can be added later on top of the existing preparse
 metadata once the minimal ingest path is working.
 
+## Make Orchestration
+
+One-time database setup is explicit:
+
+```bash
+make minimal_pipeline_setup
+```
+
+This creates the minimal schema, loads resolver mappings, and creates
+secondary indexes.
+
+The normal source pipeline is:
+
+```bash
+make minimal_pipeline SOURCES=uniprot
+```
+
+This ingests each source, canonicalizes each source, and refreshes derived
+tables and bitmaps. The default ingest path remains incremental: source-row
+synchronization removes stale rows and entity datasets ingest only changed rows
+from the snapshot delta.
+
+When bootstrapping minimal tables from an existing raw snapshot, opt into full
+current-row ingest explicitly:
+
+```bash
+make minimal_pipeline SOURCES=uniprot BOOTSTRAP=1
+```
+
 ## Minimal Deliverables
 
 1. `minimal/schema.py` for DDL.
