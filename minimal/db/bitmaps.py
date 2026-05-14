@@ -27,7 +27,7 @@ class BitmapStats:
 def rebuild_bitmap_tables(
     conn: psycopg2.extensions.connection,
     *,
-    schema: str = 'minimal',
+    schema: str = 'public',
 ) -> BitmapStats:
     """Create and fully rebuild bitmap index tables."""
 

@@ -29,7 +29,7 @@ def load_ontology_terms(
     conn: psycopg2.extensions.connection,
     records: Iterable[OntologyTerm],
     *,
-    schema: str = 'minimal',
+    schema: str = 'public',
     ontology_id: str,
     batch_size: int = 5000,
     progress_every: int = 5000,

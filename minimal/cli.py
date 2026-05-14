@@ -48,7 +48,7 @@ def main(argv: list[str] | None = None) -> int:
         default=os.environ.get('DATABASE_URL'),
         help='PostgreSQL connection URL. Defaults to DATABASE_URL.',
     )
-    parser.add_argument('--schema', default='minimal')
+    parser.add_argument('--schema', default='public')
 
     subparsers = parser.add_subparsers(dest='command', required=True)
     init_db = subparsers.add_parser('init-db')
@@ -95,7 +95,10 @@ def main(argv: list[str] | None = None) -> int:
     resolver.add_argument('--no-indexes', action='store_true')
 
     preparse = subparsers.add_parser('preparse')
-    preparse.add_argument('--source', required=True)
+    preparse.add_argument(
+        '--source',
+        help='Optional source to run. Omit to discover all compatible sources.',
+    )
     preparse.add_argument('--dataset')
     preparse.add_argument('--inputs-package', default='pypath.inputs_v2')
     preparse.add_argument('--database', default='omnipath')
@@ -139,7 +142,10 @@ def main(argv: list[str] | None = None) -> int:
     derive.add_argument('--database', default='omnipath')
 
     ingest = subparsers.add_parser('ingest')
-    ingest.add_argument('--source', required=True)
+    ingest.add_argument(
+        '--source',
+        help='Optional source to run. Omit to discover all compatible sources.',
+    )
     ingest.add_argument('--dataset')
     ingest.add_argument('--inputs-package', default='pypath.inputs_v2')
     ingest.add_argument('--database', default='omnipath')
@@ -338,16 +344,20 @@ def _selected_resource_functions(
         database_name=args.database,
         inputs_package=args.inputs_package,
     )
-    if args.source not in discovered:
-        print(f'Unknown source: {args.source}', file=sys.stderr)
+    source_names = [args.source] if args.source else sorted(discovered)
+    unknown = [source for source in source_names if source not in discovered]
+    if unknown:
+        print(f'Unknown source(s): {", ".join(unknown)}', file=sys.stderr)
         return None
 
     selected = [
         fn
-        for fn in discovered[args.source]
+        for source in source_names
+        for fn in discovered[source]
         if fn.function_name != 'resource'
         and fn.output_kind in {'entity', 'ontology'}
         and (args.dataset is None or fn.function_name == args.dataset)
+        and getattr(fn.call, '_raw_dataset', None) is not None
     ]
     if not selected:
         print('No matching entity/ontology datasets found.', file=sys.stderr)

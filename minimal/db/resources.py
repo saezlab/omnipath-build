@@ -21,7 +21,7 @@ def sync_resources_table(
     conn: psycopg2.extensions.connection,
     discovered: dict[str, list[object]],
     *,
-    schema: str = 'minimal',
+    schema: str = 'public',
 ) -> ResourceTableStats:
     """Upsert discovered resource metadata and minimal source-level counts."""
 

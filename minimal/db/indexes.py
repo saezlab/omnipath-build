@@ -6,9 +6,9 @@ import psycopg2.extensions
 def create_secondary_indexes(
     conn: psycopg2.extensions.connection,
     *,
-    schema: str = 'minimal',
+    schema: str = 'public',
 ) -> None:
-    """Create query-oriented indexes for the minimal schema."""
+    """Create query-oriented indexes for the minimal tables."""
 
     schema_id = sql.Identifier(schema)
     statements = [

@@ -165,7 +165,7 @@ class CanonicalizationStats:
 def canonicalize(
     conn: psycopg2.extensions.connection,
     *,
-    schema: str = 'minimal',
+    schema: str = 'public',
     source: str | None = None,
     dataset: str | None = None,
     unresolved_only: bool = False,

@@ -43,7 +43,7 @@ class ResolverLoadStats:
 def load_resolver_tables(
     conn: psycopg2.extensions.connection,
     *,
-    schema: str = 'minimal',
+    schema: str = 'public',
     mapping_dir: str | Path = 'data',
     batch_size: int = 100_000,
     drop_existing: bool = True,

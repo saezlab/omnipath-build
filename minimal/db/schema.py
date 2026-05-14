@@ -3,10 +3,11 @@ from __future__ import annotations
 from psycopg2 import sql
 import psycopg2.extensions
 
+
 def ensure_schema(
     conn: psycopg2.extensions.connection,
     *,
-    schema: str = 'minimal',
+    schema: str = 'public',
     drop_existing: bool = False,
 ) -> None:
     """Create or refresh the minimal evidence and resolution schema."""

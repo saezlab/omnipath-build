@@ -33,7 +33,7 @@ POSTGRES_DROP_EXISTING ?=
 POSTGRES_BATCH_SIZE ?= 200000
 POSTGRES_UNLOGGED_TABLES ?= 1
 POSTGRES_FOREIGN_KEYS ?=
-MINIMAL_SCHEMA ?= minimal
+MINIMAL_SCHEMA ?= public
 MINIMAL_MAPPING_DIR ?= $(DATA_ROOT)
 MINIMAL_BACKEND ?= bulk
 MINIMAL_BATCH_SIZE ?= 5000
@@ -192,42 +192,43 @@ db-setup:
 		--no-bitmaps
 
 preparse:
-	@if [ -z "$(SELECTED_SOURCES)" ]; then \
-		echo "SOURCES or SOURCE is required, e.g. make preparse SOURCES=uniprot"; \
-		exit 1; \
-	fi
 	@set -e; \
-	SOURCE_LIST=$$(printf '%s' "$(SELECTED_SOURCES)" | tr ',' ' '); \
-	for source in $$SOURCE_LIST; do \
-		echo "[minimal] preparse source=$$source"; \
+	if [ -z "$(SELECTED_SOURCES)" ]; then \
+		echo "[minimal] preparse source=ALL"; \
 		PYTHONUNBUFFERED=1 uv run python -m minimal.cli \
 			--schema "$(MINIMAL_SCHEMA)" \
 			preparse \
-			--source "$$source" \
 			--database "$(DATABASE)" \
 			--inputs-package "$(INPUTS_PACKAGE)" \
 			$(if $(MINIMAL_RAW_RECORDS_ROOT),--raw-records-root "$(MINIMAL_RAW_RECORDS_ROOT)") \
 			$(if $(FORCE_REFRESH),--force-refresh); \
-	done
+	else \
+		SOURCE_LIST=$$(printf '%s' "$(SELECTED_SOURCES)" | tr ',' ' '); \
+		for source in $$SOURCE_LIST; do \
+			echo "[minimal] preparse source=$$source"; \
+			PYTHONUNBUFFERED=1 uv run python -m minimal.cli \
+				--schema "$(MINIMAL_SCHEMA)" \
+				preparse \
+				--source "$$source" \
+				--database "$(DATABASE)" \
+				--inputs-package "$(INPUTS_PACKAGE)" \
+				$(if $(MINIMAL_RAW_RECORDS_ROOT),--raw-records-root "$(MINIMAL_RAW_RECORDS_ROOT)") \
+				$(if $(FORCE_REFRESH),--force-refresh); \
+		done; \
+	fi
 
 ingest:
-	@if [ -z "$(SELECTED_SOURCES)" ]; then \
-		echo "SOURCES or SOURCE is required, e.g. make ingest SOURCES=uniprot"; \
-		exit 1; \
-	fi
 	@if [ -z "$(DATABASE_URL)" ]; then \
 		echo "DATABASE_URL is required, e.g. make ingest SOURCES=uniprot DATABASE_URL=postgresql://user:pass@host:5432/dbname"; \
 		exit 1; \
 	fi
 	@set -e; \
-	SOURCE_LIST=$$(printf '%s' "$(SELECTED_SOURCES)" | tr ',' ' '); \
-	for source in $$SOURCE_LIST; do \
-		echo "[minimal] ingest source=$$source"; \
+	if [ -z "$(SELECTED_SOURCES)" ]; then \
+		echo "[minimal] ingest source=ALL"; \
 		PYTHONUNBUFFERED=1 uv run python -m minimal.cli \
 			--database-url "$(DATABASE_URL)" \
 			--schema "$(MINIMAL_SCHEMA)" \
 			ingest \
-			--source "$$source" \
 			--database "$(DATABASE)" \
 			--inputs-package "$(INPUTS_PACKAGE)" \
 			--backend "$(MINIMAL_BACKEND)" \
@@ -239,27 +240,52 @@ ingest:
 			--use-latest-preparse \
 			$(if $(REFRESH),--refresh) \
 			$(if $(BOOTSTRAP),--full-current); \
-	done
+	else \
+		SOURCE_LIST=$$(printf '%s' "$(SELECTED_SOURCES)" | tr ',' ' '); \
+		for source in $$SOURCE_LIST; do \
+			echo "[minimal] ingest source=$$source"; \
+			PYTHONUNBUFFERED=1 uv run python -m minimal.cli \
+				--database-url "$(DATABASE_URL)" \
+				--schema "$(MINIMAL_SCHEMA)" \
+				ingest \
+				--source "$$source" \
+				--database "$(DATABASE)" \
+				--inputs-package "$(INPUTS_PACKAGE)" \
+				--backend "$(MINIMAL_BACKEND)" \
+				--batch-size "$(MINIMAL_BATCH_SIZE)" \
+				--commit-every "$(MINIMAL_COMMIT_EVERY)" \
+				--progress-every "$(MINIMAL_PROGRESS_EVERY)" \
+				--obo-output-dir "$(MINIMAL_OBO_DIR)" \
+				$(if $(MINIMAL_RAW_RECORDS_ROOT),--raw-records-root "$(MINIMAL_RAW_RECORDS_ROOT)") \
+				--use-latest-preparse \
+				$(if $(REFRESH),--refresh) \
+				$(if $(BOOTSTRAP),--full-current); \
+		done; \
+	fi
 
 canonicalize:
-	@if [ -z "$(SELECTED_SOURCES)" ]; then \
-		echo "SOURCES or SOURCE is required, e.g. make canonicalize SOURCES=uniprot"; \
-		exit 1; \
-	fi
 	@if [ -z "$(DATABASE_URL)" ]; then \
 		echo "DATABASE_URL is required, e.g. make canonicalize SOURCES=uniprot DATABASE_URL=postgresql://user:pass@host:5432/dbname"; \
 		exit 1; \
 	fi
 	@set -e; \
-	SOURCE_LIST=$$(printf '%s' "$(SELECTED_SOURCES)" | tr ',' ' '); \
-	for source in $$SOURCE_LIST; do \
-		echo "[minimal] canonicalize source=$$source"; \
+	if [ -z "$(SELECTED_SOURCES)" ]; then \
+		echo "[minimal] canonicalize source=ALL"; \
 		PYTHONUNBUFFERED=1 uv run python -m minimal.cli \
 			--database-url "$(DATABASE_URL)" \
 			--schema "$(MINIMAL_SCHEMA)" \
-			canonicalize \
-			--source "$$source"; \
-	done
+			canonicalize; \
+	else \
+		SOURCE_LIST=$$(printf '%s' "$(SELECTED_SOURCES)" | tr ',' ' '); \
+		for source in $$SOURCE_LIST; do \
+			echo "[minimal] canonicalize source=$$source"; \
+			PYTHONUNBUFFERED=1 uv run python -m minimal.cli \
+				--database-url "$(DATABASE_URL)" \
+				--schema "$(MINIMAL_SCHEMA)" \
+				canonicalize \
+				--source "$$source"; \
+		done; \
+	fi
 
 derive:
 	@if [ -z "$(DATABASE_URL)" ]; then \

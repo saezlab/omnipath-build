@@ -105,7 +105,7 @@ One-time database setup is explicit:
 make db-setup
 ```
 
-This creates the minimal schema, loads resolver mappings, and creates
+This creates the public schema tables, loads resolver mappings, and creates
 secondary indexes.
 
 The source pipeline has four explicit phases:
@@ -115,6 +115,12 @@ make preparse sources=uniprot
 make ingest sources=uniprot
 make canonicalize sources=uniprot
 make derive
+```
+
+Omit `SOURCE`/`SOURCES` to discover and run every raw-backed minimal source:
+
+```bash
+make minimal_pipeline
 ```
 
 `preparse` materializes raw source snapshots and computes the raw delta.

@@ -32,7 +32,7 @@ class DerivedTableStats:
 def rebuild_derived_tables(
     conn: psycopg2.extensions.connection,
     *,
-    schema: str = 'minimal',
+    schema: str = 'public',
 ) -> DerivedTableStats:
     """Create and fully rebuild derived search/count tables."""
 

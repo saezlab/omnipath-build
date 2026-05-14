@@ -37,7 +37,7 @@ class MinimalIngestor:
         self,
         conn: psycopg2.extensions.connection,
         *,
-        schema: str = 'minimal',
+        schema: str = 'public',
     ) -> None:
         self.conn = conn
         self.schema = schema
