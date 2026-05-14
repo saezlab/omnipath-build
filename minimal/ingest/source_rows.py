@@ -65,7 +65,7 @@ def sync_source_snapshot(
 
 def _create_staging_tables(cur: psycopg2.extensions.cursor) -> None:
     cur.execute('DROP TABLE IF EXISTS stg_current_source_row')
-    cur.execute('DROP TABLE IF EXISTS stg_removed_source_row')
+    _create_removed_source_row_table(cur)
     cur.execute(
         """
         CREATE TEMP TABLE stg_current_source_row (
@@ -75,6 +75,14 @@ def _create_staging_tables(cur: psycopg2.extensions.cursor) -> None:
           snapshot_id text
         ) ON COMMIT DROP
         """
+    )
+
+
+def _create_removed_source_row_table(
+    cur: psycopg2.extensions.cursor,
+) -> None:
+    cur.execute(
+        'DROP TABLE IF EXISTS stg_removed_source_row'
     )
     cur.execute(
         """

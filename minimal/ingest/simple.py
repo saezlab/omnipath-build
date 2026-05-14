@@ -7,7 +7,7 @@ from collections.abc import Iterable
 from psycopg2 import sql
 import psycopg2.extensions
 
-from minimal.common import (
+from minimal.ingest.common import (
     CV_TERM_ID_TYPE,
     CV_TERM_ENTITY_TYPE,
     IngestStats,
@@ -287,17 +287,9 @@ class MinimalIngestor:
                     INSERT INTO {}.source_row
                       (source, dataset, row_id, snapshot_id)
                     VALUES (%s, %s, %s, %s)
-                    ON CONFLICT (source, dataset, row_id)
-                    DO UPDATE SET
-                      snapshot_id = EXCLUDED.snapshot_id,
-                      processed_at = NULL
-                    WHERE {}.source_row.snapshot_id IS DISTINCT FROM
-                      EXCLUDED.snapshot_id
+                    ON CONFLICT (source, dataset, row_id) DO NOTHING
                     """
-                ).format(
-                    sql.Identifier(self.schema),
-                    sql.Identifier(self.schema),
-                ),
+                ).format(sql.Identifier(self.schema)),
                 [source, dataset, row_id, snapshot_id],
             )
 

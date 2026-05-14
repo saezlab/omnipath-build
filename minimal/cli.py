@@ -6,13 +6,19 @@ import argparse
 
 import psycopg2
 
-from minimal.ingest import MinimalIngestor
-from minimal.schema import ensure_schema
-from minimal.bulk_ingest import BulkMinimalIngestor
-from minimal.source_rows import sync_source_snapshot
+from minimal.db import (
+    ensure_schema,
+    rebuild_bitmap_tables,
+    rebuild_derived_tables,
+    create_secondary_indexes,
+)
+from minimal.ingest import (
+    MinimalIngestor,
+    BulkMinimalIngestor,
+    sync_source_snapshot,
+)
+from minimal.loaders import load_ontology_terms, load_resolver_tables
 from minimal.canonicalize import canonicalize
-from minimal.ontology_loader import load_ontology_terms
-from minimal.resolver_loader import load_resolver_tables
 from omnipath_build.silver.build import discover_resources
 
 def main(argv: list[str] | None = None) -> int:
@@ -55,6 +61,26 @@ def main(argv: list[str] | None = None) -> int:
         '--skip-relations',
         action='store_true',
         help='Resolve entities only and leave relation resolution unchanged.',
+    )
+
+    derive = subparsers.add_parser('derive')
+    derive.add_argument(
+        '--indexes',
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help='Create secondary indexes.',
+    )
+    derive.add_argument(
+        '--tables',
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help='Create and populate derived search/count tables.',
+    )
+    derive.add_argument(
+        '--bitmaps',
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help='Create and populate bitmap tables.',
     )
 
     ingest = subparsers.add_parser('ingest')
@@ -129,6 +155,33 @@ def main(argv: list[str] | None = None) -> int:
                 f'relation_unmapped={stats.relation_unmapped}',
                 flush=True,
             )
+            return 0
+        if args.command == 'derive':
+            ensure_schema(conn, schema=args.schema)
+            if args.indexes:
+                create_secondary_indexes(conn, schema=args.schema)
+                print('[derive] indexes=ready', flush=True)
+            if args.tables:
+                table_stats = rebuild_derived_tables(conn, schema=args.schema)
+                print(
+                    '[derive] '
+                    f'entity_relation_counts='
+                    f'{table_stats.entity_relation_counts} '
+                    f'ontology_terms={table_stats.ontology_terms}',
+                    flush=True,
+                )
+            if args.bitmaps:
+                bitmap_stats = rebuild_bitmap_tables(conn, schema=args.schema)
+                print(
+                    '[derive] '
+                    f'annotation_term_entities='
+                    f'{bitmap_stats.annotation_term_entities} '
+                    f'annotation_term_relations='
+                    f'{bitmap_stats.annotation_term_relations} '
+                    f'entity_facets={bitmap_stats.entity_facets} '
+                    f'relation_facets={bitmap_stats.relation_facets}',
+                    flush=True,
+                )
             return 0
         if args.command == 'ingest':
             ensure_schema(conn, schema=args.schema)

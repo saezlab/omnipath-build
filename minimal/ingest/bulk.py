@@ -10,7 +10,7 @@ from collections.abc import Iterable
 from psycopg2 import sql
 import psycopg2.extensions
 
-from minimal.common import (
+from minimal.ingest.common import (
     IngestStats,
     MutableStats as _MutableStats,
     copy_value,
@@ -403,14 +403,9 @@ class BulkMinimalIngestor:
                   (source, dataset, row_id, snapshot_id)
                 SELECT DISTINCT source, dataset, row_id, snapshot_id
                 FROM stg_source_row
-                ON CONFLICT (source, dataset, row_id)
-                DO UPDATE SET
-                  snapshot_id = EXCLUDED.snapshot_id,
-                  processed_at = NULL
-                WHERE {}.source_row.snapshot_id IS DISTINCT FROM
-                  EXCLUDED.snapshot_id
+                ON CONFLICT (source, dataset, row_id) DO NOTHING
                 """
-            ).format(schema, schema)
+            ).format(schema)
         )
         cur.execute(
             sql.SQL(
