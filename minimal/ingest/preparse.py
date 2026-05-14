@@ -176,9 +176,7 @@ def materialize_raw_records(
         old_records = None
         old_snapshot_id = None
 
-    if snapshot_dir.exists():
-        shutil.rmtree(snapshot_dir)
-    snapshot_dir.mkdir(parents=True, exist_ok=True)
+    dataset_dir.mkdir(parents=True, exist_ok=True)
 
     started = datetime.now(UTC)
     print(
@@ -207,6 +205,24 @@ def materialize_raw_records(
             old_records=old_records,
             output_path=tmp_delta,
         )
+        if old_records is not None and not delta_stats['delta_rows_by_type']:
+            print(
+                f'[minimal-preparse:{source}.{dataset}] unchanged '
+                f'latest={old_snapshot_id}',
+                flush=True,
+            )
+            return RawSnapshot(
+                source=str(latest.get('source') or source),
+                dataset=str(latest.get('dataset') or dataset),
+                snapshot_id=str(latest['snapshot_id']),
+                records_path=Path(latest['records_path']),
+                delta_path=Path(latest['delta_path']),
+                manifest_path=Path(latest['manifest_path']),
+            )
+
+        if snapshot_dir.exists():
+            shutil.rmtree(snapshot_dir)
+        snapshot_dir.mkdir(parents=True, exist_ok=True)
         shutil.move(str(tmp_records), records_path)
         shutil.move(str(tmp_delta), delta_path)
 

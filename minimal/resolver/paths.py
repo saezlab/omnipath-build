@@ -6,8 +6,8 @@ from pathlib import Path
 RESOLVER_ROOT = Path(__file__).resolve().parent
 PACKAGE_ROOT = RESOLVER_ROOT.parent
 PROJECT_ROOT = PACKAGE_ROOT.parent
-DATA_DIR = PACKAGE_ROOT / 'data'
-RAW_DATA_DIR = PROJECT_ROOT / 'pypath-data'
+DATA_DIR = PROJECT_ROOT / 'data'
+RAW_DATA_DIR = PROJECT_ROOT / 'data'
 PROTEINS_DATA_DIR = DATA_DIR / 'proteins'
 CHEMICALS_DATA_DIR = DATA_DIR / 'chemicals'
 

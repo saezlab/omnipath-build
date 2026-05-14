@@ -44,7 +44,7 @@ def load_resolver_tables(
     conn: psycopg2.extensions.connection,
     *,
     schema: str = 'minimal',
-    mapping_dir: str | Path = 'minimal/data',
+    mapping_dir: str | Path = 'data',
     batch_size: int = 100_000,
     drop_existing: bool = True,
     indexes: bool = True,

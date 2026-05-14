@@ -61,7 +61,7 @@ def main(argv: list[str] | None = None) -> int:
         choices=RESOLVER_SOURCE_NAMES,
         help='One or more resolver sources to materialize.',
     )
-    build_resolver.add_argument('--output-dir', default='minimal/data')
+    build_resolver.add_argument('--output-dir', default='data')
     build_resolver.add_argument(
         '--taxonomy-id',
         dest='taxonomy_ids',
@@ -85,7 +85,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     resolver = subparsers.add_parser('load-resolver')
-    resolver.add_argument('--mapping-dir', default='minimal/data')
+    resolver.add_argument('--mapping-dir', default='data')
     resolver.add_argument('--batch-size', type=int, default=100_000)
     resolver.add_argument(
         '--drop-existing',

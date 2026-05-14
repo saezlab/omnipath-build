@@ -27,7 +27,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         '--output-dir',
         type=Path,
         default=None,
-        help='Base output directory. Defaults to minimal/data/.',
+        help='Base output directory. Defaults to ./data/.',
     )
     parser.add_argument(
         '--taxonomy-id',
