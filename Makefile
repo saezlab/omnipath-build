@@ -1,4 +1,4 @@
-.PHONY: setup silver silver-list resolver-mappings combined postgres pipeline db-setup preparse ingest canonicalize derive load minimal_pipeline_setup minimal_pipeline bronze-rewrite silver-rewrite gold-rewrite combined-rewrite rewrite_pipeline test
+.PHONY: setup silver silver-list resolver-mappings combined postgres pipeline minimal-resolver db-setup preparse ingest canonicalize derive load minimal_pipeline_setup minimal_pipeline minimal-all bronze-rewrite silver-rewrite gold-rewrite combined-rewrite rewrite_pipeline test
 
 JOBS ?= 4
 BATCH_SIZE ?= 10000
@@ -34,7 +34,8 @@ POSTGRES_BATCH_SIZE ?= 200000
 POSTGRES_UNLOGGED_TABLES ?= 1
 POSTGRES_FOREIGN_KEYS ?=
 MINIMAL_SCHEMA ?= public
-MINIMAL_MAPPING_DIR ?= $(DATA_ROOT)
+MINIMAL_MAPPING_DIR ?= minimal/data
+MINIMAL_RESOLVER_SOURCES ?= uniprot chebi hmdb lipidmaps swisslipids pubchem
 MINIMAL_BACKEND ?= bulk
 MINIMAL_BATCH_SIZE ?= 5000
 MINIMAL_RESOLVER_BATCH_SIZE ?= 100000
@@ -163,6 +164,14 @@ pipeline:
 		$(if $(POSTGRES_DROP_EXISTING),--postgres-drop-existing) \
 		--memory-sample-interval-seconds $(MEMORY_SAMPLE_INTERVAL_SECONDS) \
 		$(if $(YES),--yes)
+
+minimal-resolver:
+	@echo "[minimal] build-resolver output_dir=$(MINIMAL_MAPPING_DIR) sources=$(MINIMAL_RESOLVER_SOURCES)"
+	@PYTHONUNBUFFERED=1 uv run python -m minimal.cli build-resolver \
+		--output-dir "$(MINIMAL_MAPPING_DIR)" \
+		$(if $(MAX_RECORDS),--max-records $(MAX_RECORDS)) \
+		$(if $(MINIMAL_PUBCHEM_URL),--pubchem-url "$(MINIMAL_PUBCHEM_URL)") \
+		$(MINIMAL_RESOLVER_SOURCES)
 
 db-setup:
 	@if [ -z "$(DATABASE_URL)" ]; then \
@@ -307,6 +316,11 @@ minimal_pipeline: load
 	@if [ "$(MINIMAL_DERIVE)" != "" ]; then \
 		$(MAKE) derive; \
 	fi
+
+minimal-all:
+	@$(MAKE) minimal-resolver
+	@$(MAKE) db-setup
+	@$(MAKE) minimal_pipeline MINIMAL_DERIVE=1
 
 bronze-rewrite:
 	@if [ -z "$(SOURCE)" ]; then \
