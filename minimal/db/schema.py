@@ -287,8 +287,17 @@ def _ensure_resolution_schema(
               source text NOT NULL,
               key_type text NOT NULL,
               key_value text NOT NULL,
+              standard_inchi_key text NOT NULL,
               standard_inchi text NOT NULL
             )
+            """
+        ).format(schema_id)
+    )
+    cur.execute(
+        sql.SQL(
+            """
+            ALTER TABLE {}.resolver_chemical_identifier_lookup
+            ADD COLUMN IF NOT EXISTS standard_inchi_key text
             """
         ).format(schema_id)
     )

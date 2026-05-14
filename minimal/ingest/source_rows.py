@@ -17,6 +17,7 @@ class SourceSnapshotSyncStats:
 
     current_rows: int = 0
     removed_rows: int = 0
+    refreshed_rows: int = 0
 
 
 def sync_source_snapshot(
@@ -28,12 +29,15 @@ def sync_source_snapshot(
     snapshot_id: str,
     records_path: str | Path,
     delta_path: str | Path,
+    refresh: bool = False,
 ) -> SourceSnapshotSyncStats:
     """Apply raw snapshot membership to row-scoped evidence tables.
 
     The preparse layer owns raw-record hash comparison. This function receives
     the resulting stable row IDs: all current row IDs for lineage updates and
-    removed row IDs for evidence deletion.
+    removed row IDs for evidence deletion. When refresh is true, existing
+    source-scoped evidence is removed before current rows are reprocessed; this
+    covers parser or mapper changes which do not alter raw row hashes.
     """
 
     with conn.cursor() as cur:
@@ -45,13 +49,23 @@ def sync_source_snapshot(
             snapshot_id=snapshot_id,
             records_path=Path(records_path),
         )
+        refreshed_rows = (
+            _load_refresh_rows(
+                cur,
+                schema=schema,
+                source=source,
+                dataset=dataset,
+            )
+            if refresh
+            else 0
+        )
         removed_rows = _load_removed_rows(
             cur,
             source=source,
             dataset=dataset,
             delta_path=Path(delta_path),
         )
-        if removed_rows:
+        if removed_rows or refreshed_rows:
             _delete_removed_source_row_evidence(cur, schema=schema)
         _upsert_current_source_rows(cur, schema=schema)
         _update_current_evidence_snapshot(cur, schema=schema)
@@ -60,6 +74,7 @@ def sync_source_snapshot(
     return SourceSnapshotSyncStats(
         current_rows=current_rows,
         removed_rows=removed_rows,
+        refreshed_rows=refreshed_rows,
     )
 
 
@@ -128,6 +143,27 @@ def _load_removed_rows(
         dataset=dataset,
         snapshot_id=None,
     )
+
+
+def _load_refresh_rows(
+    cur: psycopg2.extensions.cursor,
+    *,
+    schema: str,
+    source: str,
+    dataset: str,
+) -> int:
+    cur.execute(
+        sql.SQL(
+            """
+            INSERT INTO stg_removed_source_row (source, dataset, row_id)
+            SELECT source, dataset, row_id
+            FROM {}.source_row
+            WHERE source = %s AND dataset = %s
+            """
+        ).format(sql.Identifier(schema)),
+        [source, dataset],
+    )
+    return int(cur.rowcount or 0)
 
 
 def _iter_current_row_ids(records_path: Path) -> Iterator[int]:

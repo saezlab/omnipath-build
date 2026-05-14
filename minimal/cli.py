@@ -17,8 +17,18 @@ from minimal.ingest import (
     BulkMinimalIngestor,
     sync_source_snapshot,
 )
+from minimal.ingest.preparse import (
+    accept_dataset_preparse,
+    iter_mapped_records,
+    load_latest_raw_snapshot,
+    preparse_dataset,
+)
 from minimal.loaders import load_ontology_terms, load_resolver_tables
 from minimal.canonicalize import canonicalize
+from minimal.resolver.mapping_tables import (
+    SOURCE_NAMES as RESOLVER_SOURCE_NAMES,
+    run_sources as build_resolver_sources,
+)
 from omnipath_build.silver.build import discover_resources
 
 def main(argv: list[str] | None = None) -> int:
@@ -39,8 +49,38 @@ def main(argv: list[str] | None = None) -> int:
     init_db = subparsers.add_parser('init-db')
     init_db.add_argument('--drop-existing', action='store_true')
 
+    build_resolver = subparsers.add_parser('build-resolver')
+    build_resolver.add_argument(
+        'sources',
+        nargs='+',
+        choices=RESOLVER_SOURCE_NAMES,
+        help='One or more resolver sources to materialize.',
+    )
+    build_resolver.add_argument('--output-dir', default='minimal/data')
+    build_resolver.add_argument(
+        '--taxonomy-id',
+        dest='taxonomy_ids',
+        action='append',
+        default=None,
+        help='Optional UniProt taxonomy filter. Can be repeated.',
+    )
+    build_resolver.add_argument(
+        '--max-records',
+        type=int,
+        default=None,
+        help='Optional cap for chemical source rows in smoke tests.',
+    )
+    build_resolver.add_argument(
+        '--pubchem-url',
+        default=None,
+        help=(
+            'Optional single PubChem SDF .gz URL/path. '
+            'Defaults to all current PubChem full-SDF shards.'
+        ),
+    )
+
     resolver = subparsers.add_parser('load-resolver')
-    resolver.add_argument('--mapping-dir', default='id_resolver/data')
+    resolver.add_argument('--mapping-dir', default='minimal/data')
     resolver.add_argument('--batch-size', type=int, default=100_000)
     resolver.add_argument(
         '--drop-existing',
@@ -48,6 +88,14 @@ def main(argv: list[str] | None = None) -> int:
         default=True,
     )
     resolver.add_argument('--no-indexes', action='store_true')
+
+    preparse = subparsers.add_parser('preparse')
+    preparse.add_argument('--source', required=True)
+    preparse.add_argument('--dataset')
+    preparse.add_argument('--inputs-package', default='pypath.inputs_v2')
+    preparse.add_argument('--database', default='omnipath')
+    preparse.add_argument('--raw-records-root')
+    preparse.add_argument('--force-refresh', action='store_true')
 
     canon = subparsers.add_parser('canonicalize')
     canon.add_argument('--source')
@@ -91,6 +139,23 @@ def main(argv: list[str] | None = None) -> int:
     ingest.add_argument('--raw-records-root')
     ingest.add_argument('--force-refresh', action='store_true')
     ingest.add_argument(
+        '--use-latest-preparse',
+        action='store_true',
+        help=(
+            'Use the latest accepted minimal preparse snapshot instead of '
+            'materializing a new raw snapshot during ingest.'
+        ),
+    )
+    ingest.add_argument(
+        '--refresh',
+        action='store_true',
+        help=(
+            'Reload selected source evidence from the latest raw snapshot. '
+            'Use this after input mapper or parser changes that do not change '
+            'raw row hashes.'
+        ),
+    )
+    ingest.add_argument(
         '--full-current',
         action='store_true',
         help=(
@@ -115,6 +180,20 @@ def main(argv: list[str] | None = None) -> int:
     ingest.add_argument('--progress-every', type=int, default=1000)
 
     args = parser.parse_args(argv)
+    if args.command == 'preparse':
+        return _handle_preparse(args)
+    if args.command == 'build-resolver':
+        summary = build_resolver_sources(
+            sources=args.sources,
+            output_dir=args.output_dir,
+            taxonomy_ids=args.taxonomy_ids,
+            max_records=args.max_records,
+            pubchem_url=args.pubchem_url,
+        )
+        for key, value in summary.items():
+            print(f'{key}: {value}', flush=True)
+        return 0
+
     if not args.database_url:
         print('DATABASE_URL is required.', file=sys.stderr)
         return 2
@@ -199,17 +278,41 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-def _handle_ingest(
-    conn: psycopg2.extensions.connection,
+def _handle_preparse(args: argparse.Namespace) -> int:
+    selected = _selected_resource_functions(args)
+    if selected is None:
+        return 2
+
+    for fn in selected:
+        raw_dataset = getattr(fn.call, '_raw_dataset', None)
+        if raw_dataset is None:
+            continue
+        snapshot = preparse_dataset(
+            raw_dataset,
+            source=fn.source,
+            dataset=fn.function_name,
+            raw_records_root=args.raw_records_root,
+            force_refresh=args.force_refresh,
+        )
+        accept_dataset_preparse(raw_dataset)
+        print(
+            f'[{fn.source}.{fn.function_name}] '
+            f'preparse_snapshot={snapshot.snapshot_id}',
+            flush=True,
+        )
+    return 0
+
+
+def _selected_resource_functions(
     args: argparse.Namespace,
-) -> int:
+) -> list[object] | None:
     discovered, _ = discover_resources(
         database_name=args.database,
         inputs_package=args.inputs_package,
     )
     if args.source not in discovered:
         print(f'Unknown source: {args.source}', file=sys.stderr)
-        return 2
+        return None
 
     selected = [
         fn
@@ -220,17 +323,36 @@ def _handle_ingest(
     ]
     if not selected:
         print('No matching entity/ontology datasets found.', file=sys.stderr)
+        return None
+    return selected
+
+
+def _handle_ingest(
+    conn: psycopg2.extensions.connection,
+    args: argparse.Namespace,
+) -> int:
+    selected = _selected_resource_functions(args)
+    if selected is None:
         return 2
 
     for fn in selected:
         raw_dataset = getattr(fn.call, '_raw_dataset', None)
         if raw_dataset is None:
             continue
-        snapshot = raw_dataset.preparse(
-            source=fn.source,
-            dataset=fn.function_name,
-            raw_records_root=args.raw_records_root,
-            force_refresh=args.force_refresh,
+        snapshot = (
+            load_latest_raw_snapshot(
+                source=fn.source,
+                dataset=fn.function_name,
+                raw_records_root=args.raw_records_root,
+            )
+            if args.use_latest_preparse
+            else preparse_dataset(
+                raw_dataset,
+                source=fn.source,
+                dataset=fn.function_name,
+                raw_records_root=args.raw_records_root,
+                force_refresh=args.force_refresh,
+            )
         )
         if fn.output_kind == 'entity':
             sync_stats = sync_source_snapshot(
@@ -241,20 +363,23 @@ def _handle_ingest(
                 snapshot_id=snapshot.snapshot_id,
                 records_path=snapshot.records_path,
                 delta_path=snapshot.delta_path,
+                refresh=args.refresh,
             )
             print(
                 f'[{fn.source}.{fn.function_name}] '
                 f'current_rows={sync_stats.current_rows} '
-                f'removed_rows={sync_stats.removed_rows}',
+                f'removed_rows={sync_stats.removed_rows} '
+                f'refreshed_rows={sync_stats.refreshed_rows}',
                 flush=True,
             )
-        records = raw_dataset(
-            source=fn.source,
-            dataset=fn.function_name,
-            raw_records_root=args.raw_records_root,
-            use_preparse=True,
-            raw_snapshot=snapshot,
-            changed_only=fn.output_kind == 'entity' and not args.full_current,
+        records = iter_mapped_records(
+            raw_dataset,
+            snapshot,
+            changed_only=(
+                fn.output_kind == 'entity'
+                and not args.full_current
+                and not args.refresh
+            ),
         )
         if fn.output_kind == 'ontology':
             stats = load_ontology_terms(
@@ -271,6 +396,8 @@ def _handle_ingest(
                 f'annotations={stats.annotations}',
                 flush=True,
             )
+            if not args.use_latest_preparse:
+                accept_dataset_preparse(raw_dataset)
             continue
 
         ingestor = (
@@ -303,6 +430,8 @@ def _handle_ingest(
             f'annotations={stats.annotations}',
             flush=True,
         )
+        if not args.use_latest_preparse:
+            accept_dataset_preparse(raw_dataset)
     return 0
 
 

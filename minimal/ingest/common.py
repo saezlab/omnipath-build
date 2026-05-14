@@ -4,7 +4,7 @@ import hashlib
 from dataclasses import dataclass
 from collections.abc import Iterable
 
-from pypath.inputs_v2.raw_records import ProvenancedRecord
+from minimal.ingest.preparse import ProvenancedRecord
 from pypath.internals.silver_schema import Entity
 from omnipath_build.gold.utils.schema import (
     ASSOCIATION_CATEGORY,
@@ -19,7 +19,7 @@ from omnipath_build.gold.utils.schema import (
 )
 
 CV_TERM_ENTITY_TYPE = 'cv_term'
-CV_TERM_ID_TYPE = 'cv_term_accession'
+CV_TERM_ID_TYPE = 'OM:0204:Cv Term Accession'
 
 
 @dataclass(frozen=True)

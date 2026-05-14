@@ -1,4 +1,4 @@
-.PHONY: setup silver silver-list resolver-mappings combined postgres pipeline minimal_pipeline_setup minimal_pipeline bronze-rewrite silver-rewrite gold-rewrite combined-rewrite rewrite_pipeline test
+.PHONY: setup silver silver-list resolver-mappings combined postgres pipeline db-setup preparse ingest canonicalize derive load minimal_pipeline_setup minimal_pipeline bronze-rewrite silver-rewrite gold-rewrite combined-rewrite rewrite_pipeline test
 
 JOBS ?= 4
 BATCH_SIZE ?= 10000
@@ -12,6 +12,9 @@ TEST_MODE ?=
 DATABASE ?= omnipath
 SOURCE ?=
 SOURCES ?=
+source ?=
+sources ?=
+SELECTED_SOURCES = $(strip $(if $(SOURCES),$(SOURCES),$(if $(SOURCE),$(SOURCE),$(if $(sources),$(sources),$(source)))))
 FROM ?= download
 FUNCTION ?=
 BASE_PATH ?=
@@ -37,10 +40,10 @@ MINIMAL_BATCH_SIZE ?= 5000
 MINIMAL_RESOLVER_BATCH_SIZE ?= 100000
 MINIMAL_COMMIT_EVERY ?= 1000
 MINIMAL_PROGRESS_EVERY ?= 1000
-MINIMAL_DERIVE ?= 1
+MINIMAL_DERIVE ?=
 MINIMAL_DROP_EXISTING ?=
 BOOTSTRAP ?=
-MINIMAL_RAW_RECORDS_ROOT ?=
+MINIMAL_RAW_RECORDS_ROOT ?= $(DATA_ROOT)
 COMBINE_RUN_DIR ?=
 LOAD_POSTGRES ?=
 YES ?=
@@ -160,9 +163,9 @@ pipeline:
 		--memory-sample-interval-seconds $(MEMORY_SAMPLE_INTERVAL_SECONDS) \
 		$(if $(YES),--yes)
 
-minimal_pipeline_setup:
+db-setup:
 	@if [ -z "$(DATABASE_URL)" ]; then \
-		echo "DATABASE_URL is required, e.g. make minimal_pipeline_setup DATABASE_URL=postgresql://user:pass@host:5432/dbname"; \
+		echo "DATABASE_URL is required, e.g. make db-setup DATABASE_URL=postgresql://user:pass@host:5432/dbname"; \
 		exit 1; \
 	fi
 	@set -e; \
@@ -187,17 +190,36 @@ minimal_pipeline_setup:
 		--no-tables \
 		--no-bitmaps
 
-minimal_pipeline:
-	@if [ -z "$(SOURCES)$(SOURCE)" ]; then \
-		echo "SOURCES or SOURCE is required, e.g. make minimal_pipeline SOURCES=uniprot"; \
-		exit 1; \
-	fi
-	@if [ -z "$(DATABASE_URL)" ]; then \
-		echo "DATABASE_URL is required, e.g. make minimal_pipeline SOURCES=uniprot DATABASE_URL=postgresql://user:pass@host:5432/dbname"; \
+preparse:
+	@if [ -z "$(SELECTED_SOURCES)" ]; then \
+		echo "SOURCES or SOURCE is required, e.g. make preparse SOURCES=uniprot"; \
 		exit 1; \
 	fi
 	@set -e; \
-	SOURCE_LIST=$$(printf '%s' "$(if $(SOURCES),$(SOURCES),$(SOURCE))" | tr ',' ' '); \
+	SOURCE_LIST=$$(printf '%s' "$(SELECTED_SOURCES)" | tr ',' ' '); \
+	for source in $$SOURCE_LIST; do \
+		echo "[minimal] preparse source=$$source"; \
+		PYTHONUNBUFFERED=1 uv run python -m minimal.cli \
+			--schema "$(MINIMAL_SCHEMA)" \
+			preparse \
+			--source "$$source" \
+			--database "$(DATABASE)" \
+			--inputs-package "$(INPUTS_PACKAGE)" \
+			$(if $(MINIMAL_RAW_RECORDS_ROOT),--raw-records-root "$(MINIMAL_RAW_RECORDS_ROOT)") \
+			$(if $(FORCE_REFRESH),--force-refresh); \
+	done
+
+ingest:
+	@if [ -z "$(SELECTED_SOURCES)" ]; then \
+		echo "SOURCES or SOURCE is required, e.g. make ingest SOURCES=uniprot"; \
+		exit 1; \
+	fi
+	@if [ -z "$(DATABASE_URL)" ]; then \
+		echo "DATABASE_URL is required, e.g. make ingest SOURCES=uniprot DATABASE_URL=postgresql://user:pass@host:5432/dbname"; \
+		exit 1; \
+	fi
+	@set -e; \
+	SOURCE_LIST=$$(printf '%s' "$(SELECTED_SOURCES)" | tr ',' ' '); \
 	for source in $$SOURCE_LIST; do \
 		echo "[minimal] ingest source=$$source"; \
 		PYTHONUNBUFFERED=1 uv run python -m minimal.cli \
@@ -212,22 +234,50 @@ minimal_pipeline:
 			--commit-every "$(MINIMAL_COMMIT_EVERY)" \
 			--progress-every "$(MINIMAL_PROGRESS_EVERY)" \
 			$(if $(MINIMAL_RAW_RECORDS_ROOT),--raw-records-root "$(MINIMAL_RAW_RECORDS_ROOT)") \
-			$(if $(FORCE_REFRESH),--force-refresh) \
+			--use-latest-preparse \
+			$(if $(REFRESH),--refresh) \
 			$(if $(BOOTSTRAP),--full-current); \
+	done
+
+canonicalize:
+	@if [ -z "$(SELECTED_SOURCES)" ]; then \
+		echo "SOURCES or SOURCE is required, e.g. make canonicalize SOURCES=uniprot"; \
+		exit 1; \
+	fi
+	@if [ -z "$(DATABASE_URL)" ]; then \
+		echo "DATABASE_URL is required, e.g. make canonicalize SOURCES=uniprot DATABASE_URL=postgresql://user:pass@host:5432/dbname"; \
+		exit 1; \
+	fi
+	@set -e; \
+	SOURCE_LIST=$$(printf '%s' "$(SELECTED_SOURCES)" | tr ',' ' '); \
+	for source in $$SOURCE_LIST; do \
 		echo "[minimal] canonicalize source=$$source"; \
 		PYTHONUNBUFFERED=1 uv run python -m minimal.cli \
 			--database-url "$(DATABASE_URL)" \
 			--schema "$(MINIMAL_SCHEMA)" \
 			canonicalize \
 			--source "$$source"; \
-	done; \
-	if [ "$(MINIMAL_DERIVE)" != "" ]; then \
-		echo "[minimal] refresh derived tables and bitmaps schema=$(MINIMAL_SCHEMA)"; \
-		PYTHONUNBUFFERED=1 uv run python -m minimal.cli \
-			--database-url "$(DATABASE_URL)" \
-			--schema "$(MINIMAL_SCHEMA)" \
-			derive \
-			--no-indexes; \
+	done
+
+derive:
+	@if [ -z "$(DATABASE_URL)" ]; then \
+		echo "DATABASE_URL is required, e.g. make derive DATABASE_URL=postgresql://user:pass@host:5432/dbname"; \
+		exit 1; \
+	fi
+	@echo "[minimal] refresh derived tables and bitmaps schema=$(MINIMAL_SCHEMA)"
+	@PYTHONUNBUFFERED=1 uv run python -m minimal.cli \
+		--database-url "$(DATABASE_URL)" \
+		--schema "$(MINIMAL_SCHEMA)" \
+		derive \
+		--no-indexes
+
+load: preparse ingest canonicalize
+
+minimal_pipeline_setup: db-setup
+
+minimal_pipeline: load
+	@if [ "$(MINIMAL_DERIVE)" != "" ]; then \
+		$(MAKE) derive; \
 	fi
 
 bronze-rewrite:

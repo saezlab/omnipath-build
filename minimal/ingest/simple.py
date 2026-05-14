@@ -21,7 +21,7 @@ from minimal.ingest.common import (
     interaction_relation_spec,
     ontology_annotation_relation,
 )
-from pypath.inputs_v2.raw_records import ProvenancedRecord
+from minimal.ingest.preparse import ProvenancedRecord
 from pypath.internals.silver_schema import Entity
 from omnipath_build.gold.utils.schema import (
     ASSOCIATION_CATEGORY,

@@ -26,6 +26,7 @@ CHEMICAL_COLUMNS = (
     'source',
     'key_type',
     'key_value',
+    'standard_inchi_key',
     'standard_inchi',
 )
 
@@ -42,7 +43,7 @@ def load_resolver_tables(
     conn: psycopg2.extensions.connection,
     *,
     schema: str = 'minimal',
-    mapping_dir: str | Path = 'id_resolver/data',
+    mapping_dir: str | Path = 'minimal/data',
     batch_size: int = 100_000,
     drop_existing: bool = True,
     indexes: bool = True,
@@ -145,8 +146,17 @@ def _ensure_tables(
               source text NOT NULL,
               key_type text NOT NULL,
               key_value text NOT NULL,
+              standard_inchi_key text NOT NULL,
               standard_inchi text NOT NULL
             )
+            """
+        ).format(schema_id, sql.Identifier(CHEMICAL_TABLE))
+    )
+    cur.execute(
+        sql.SQL(
+            """
+            ALTER TABLE {}.{}
+            ADD COLUMN IF NOT EXISTS standard_inchi_key text
             """
         ).format(schema_id, sql.Identifier(CHEMICAL_TABLE))
     )
@@ -199,6 +209,12 @@ def _create_indexes(cur: psycopg2.extensions.cursor, schema: str) -> None:
             ('standard_inchi',),
             'hash',
         ),
+        (
+            'resolver_chemical_lookup_inchi_key_idx',
+            CHEMICAL_TABLE,
+            ('standard_inchi_key',),
+            'btree',
+        ),
     ]
     for name, table, columns, index_method in specs:
         method_sql = (
@@ -228,6 +244,13 @@ def _copy_parquet(
     label: str,
 ) -> int:
     parquet = pq.ParquetFile(path)
+    missing_columns = [column for column in columns if column not in parquet.schema.names]
+    if missing_columns:
+        raise ValueError(
+            f'{path} is missing required resolver column(s): '
+            f'{", ".join(missing_columns)}. '
+            'Build minimal resolver tables with `minimal.cli build-resolver`.'
+        )
     total = 0
     started = time.monotonic()
     with conn.cursor() as cur:

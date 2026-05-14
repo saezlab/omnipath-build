@@ -14,7 +14,7 @@ from pypath.internals.cv_terms import (
 from pypath.internals.ontology_schema import OntologyTerm, OntologyRelationship
 
 CV_TERM_ENTITY_TYPE = 'cv_term'
-CV_TERM_ID_TYPE = 'cv_term_accession'
+CV_TERM_ID_TYPE = 'OM:0204:Cv Term Accession'
 
 
 @dataclass(frozen=True)
@@ -82,14 +82,14 @@ def _flush(
                   taxonomy_id,
                   resolution_status
                 )
-                VALUES ('cv_term', 'cv_term_accession', %s, NULL, 'resolved')
+                VALUES ('cv_term', %s, %s, NULL, 'resolved')
                 ON CONFLICT (entity_type, id_type, id_hash)
                 DO UPDATE SET resolution_status = 'resolved'
                 """
             )
             .format(sql.Identifier(schema))
             .as_string(cur.connection),
-            [(term.id,) for term, _ in rows],
+            [(CV_TERM_ID_TYPE, term.id) for term, _ in rows],
         )
         cur.execute(
             'CREATE TEMP TABLE IF NOT EXISTS _ontology_term_id (term_id text PRIMARY KEY) ON COMMIT DROP'
@@ -117,12 +117,13 @@ def _flush(
                 FROM _ontology_term_id t
                 JOIN {}.entity e
                   ON e.entity_type = 'cv_term'
-                 AND e.id_type = 'cv_term_accession'
+                 AND e.id_type = %s
                  AND e.id_hash = md5(t.term_id)
                  AND e.id = t.term_id
                 ON CONFLICT (term_id) DO UPDATE SET entity_id = EXCLUDED.entity_id
                 """
-            ).format(sql.Identifier(schema))
+            ).format(sql.Identifier(schema)),
+            [CV_TERM_ID_TYPE],
         )
         annotation_rows = [
             (term.id, annotation[0], annotation[1], annotation[2])

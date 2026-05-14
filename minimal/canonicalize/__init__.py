@@ -26,7 +26,7 @@ CHEMICAL_ENTITY_TYPES = (
 )
 SUPPORTED_ENTITY_TYPES = PROTEIN_ENTITY_TYPES + CHEMICAL_ENTITY_TYPES
 CV_TERM_ENTITY_TYPE = 'cv_term'
-CV_TERM_ID_TYPE = 'cv_term_accession'
+CV_TERM_ID_TYPE = 'OM:0204:Cv Term Accession'
 ONTOLOGY_IDENTIFIER_TERM = 'OM:0204'
 ASSOCIATION_CATEGORY = 'association'
 ASSOCIATION_PREDICATE = 'associated_with'
@@ -93,6 +93,7 @@ DEFAULT_POLICIES: tuple[
         True,
     ),
     ('chemical', 'chebi', 'MI:0474:Chebi', None, 'accept', False),
+    ('chemical', 'pubchem', 'OM:0002:Pubchem Compound', None, 'accept', False),
     ('chemical', 'hmdb', 'OM:0004:Hmdb', None, 'accept', False),
     ('chemical', 'lipidmaps', 'OM:0003:Lipidmaps', None, 'accept', False),
     ('chemical', 'swisslipids', 'OM:0009:Swisslipids', None, 'accept', False),
@@ -140,7 +141,9 @@ def canonicalize(
             _create_raw_candidate_table(cur)
             _insert_protein_candidates(cur, schema)
             _insert_chemical_candidates(cur, schema)
-            _insert_standard_inchi_identity_candidates(cur)
+            _insert_standard_inchi_key_identity_candidates(cur)
+            _insert_standard_inchi_identity_candidates(cur, schema)
+            _insert_chemical_resolver_identifier_links(cur, schema)
             _aggregate_candidates(cur, schema)
             _create_entity_resolution_stage(cur, schema)
             _insert_entities(cur, schema)
@@ -293,10 +296,12 @@ def _create_entity_keys(cur: psycopg2.extensions.cursor, schema: str) -> None:
                 WHEN 'OM:0201' THEN 'OM:0201:Gene Name Synonym'
                 WHEN 'OM:0221' THEN 'OM:0221:Uniprot Entry Name'
                 WHEN 'MI:0474' THEN 'MI:0474:Chebi'
+                WHEN 'OM:0002' THEN 'OM:0002:Pubchem Compound'
                 WHEN 'OM:0004' THEN 'OM:0004:Hmdb'
                 WHEN 'OM:0003' THEN 'OM:0003:Lipidmaps'
                 WHEN 'OM:0009' THEN 'OM:0009:Swisslipids'
                 WHEN 'MI:2010' THEN 'MI:2010:Standard Inchi'
+                WHEN 'MI:1101' THEN 'MI:1101:Standard Inchi Key'
                 ELSE i.type
               END AS resolver_key_type,
               i.value AS key_value,
@@ -391,7 +396,7 @@ def _insert_protein_candidates(
             SELECT
               k.entity_evidence_id,
               'protein',
-              'uniprot_primary',
+              'MI:1097:Uniprot',
               p.primary_uniprot,
               NULLIF(p.taxonomy_id, ''),
               p.source,
@@ -447,8 +452,8 @@ def _insert_chemical_candidates(
             SELECT
               k.entity_evidence_id,
               'chemical',
-              'standard_inchi',
-              c.standard_inchi,
+              'MI:1101:Standard Inchi Key',
+              c.standard_inchi_key,
               NULL::text,
               c.source,
               k.key_type,
@@ -468,15 +473,15 @@ def _insert_chemical_candidates(
              )
              AND pol.action = 'accept'
             WHERE k.entity_type = ANY(%s)
-              AND c.standard_inchi IS NOT NULL
-              AND c.standard_inchi <> ''
+              AND c.standard_inchi_key IS NOT NULL
+              AND c.standard_inchi_key <> ''
             """
         ).format(sql.Identifier(schema), sql.Identifier(schema)),
         [list(CHEMICAL_ENTITY_TYPES)],
     )
 
 
-def _insert_standard_inchi_identity_candidates(
+def _insert_standard_inchi_key_identity_candidates(
     cur: psycopg2.extensions.cursor,
 ) -> None:
     cur.execute(
@@ -494,19 +499,170 @@ def _insert_standard_inchi_identity_candidates(
         SELECT
           entity_evidence_id,
           'chemical',
-          'standard_inchi',
+          'MI:1101:Standard Inchi Key',
           key_value,
           NULL::text,
           'identity',
           key_type,
-          'standard_inchi_identity'
+          'standard_inchi_key_identity'
         FROM _entity_key
         WHERE entity_type = ANY(%s)
-          AND resolver_key_type = 'MI:2010:Standard Inchi'
+          AND resolver_key_type = 'MI:1101:Standard Inchi Key'
           AND key_value IS NOT NULL
           AND key_value <> ''
         """,
         [list(CHEMICAL_ENTITY_TYPES)],
+    )
+
+
+def _insert_standard_inchi_identity_candidates(
+    cur: psycopg2.extensions.cursor,
+    schema: str,
+) -> None:
+    cur.execute(
+        sql.SQL(
+            """
+            INSERT INTO _raw_resolution_candidate (
+              entity_evidence_id,
+              entity_type,
+              id_type,
+              id,
+              taxonomy_id,
+              resolver_source,
+              key_type,
+              mapping_type
+            )
+            SELECT DISTINCT
+              k.entity_evidence_id,
+              'chemical',
+              'MI:1101:Standard Inchi Key',
+              c.standard_inchi_key,
+              NULL::text,
+              'identity',
+              k.key_type,
+              'standard_inchi_identity'
+            FROM _entity_key k
+            JOIN {}.resolver_chemical_identifier_lookup c
+              ON c.standard_inchi = k.key_value
+            WHERE k.entity_type = ANY(%s)
+              AND k.resolver_key_type = 'MI:2010:Standard Inchi'
+              AND c.standard_inchi_key IS NOT NULL
+              AND c.standard_inchi_key <> ''
+            """
+        ).format(sql.Identifier(schema)),
+        [list(CHEMICAL_ENTITY_TYPES)],
+    )
+
+
+def _insert_chemical_resolver_identifier_links(
+    cur: psycopg2.extensions.cursor,
+    schema: str,
+) -> None:
+    cur.execute('DROP TABLE IF EXISTS _chemical_resolver_identifier')
+    cur.execute(
+        sql.SQL(
+            """
+            CREATE TEMP TABLE _chemical_resolver_identifier ON COMMIT DROP AS
+            WITH mapped AS (
+              SELECT DISTINCT
+                k.entity_evidence_id,
+                c.standard_inchi_key,
+                c.standard_inchi
+              FROM _entity_key k
+              JOIN {}.resolver_chemical_identifier_lookup c
+                ON c.key_type = k.resolver_key_type
+               AND md5(c.key_value) = k.key_value_hash
+               AND c.key_value = k.key_value
+              WHERE k.entity_type = ANY(%s)
+              UNION
+              SELECT DISTINCT
+                k.entity_evidence_id,
+                c.standard_inchi_key,
+                c.standard_inchi
+              FROM _entity_key k
+              JOIN {}.resolver_chemical_identifier_lookup c
+                ON c.standard_inchi_key = k.key_value
+              WHERE k.entity_type = ANY(%s)
+                AND k.resolver_key_type = 'MI:1101:Standard Inchi Key'
+              UNION
+              SELECT DISTINCT
+                k.entity_evidence_id,
+                c.standard_inchi_key,
+                c.standard_inchi
+              FROM _entity_key k
+              JOIN {}.resolver_chemical_identifier_lookup c
+                ON c.standard_inchi = k.key_value
+              WHERE k.entity_type = ANY(%s)
+                AND k.resolver_key_type = 'MI:2010:Standard Inchi'
+            )
+            SELECT
+              entity_evidence_id,
+              type,
+              value
+            FROM (
+              SELECT
+                entity_evidence_id,
+                'MI:1101:Standard Inchi Key'::text AS type,
+                standard_inchi_key AS value
+              FROM mapped
+              UNION ALL
+              SELECT
+                entity_evidence_id,
+                'MI:2010:Standard Inchi'::text AS type,
+                standard_inchi AS value
+              FROM mapped
+            ) identifiers
+            WHERE value IS NOT NULL
+              AND value <> ''
+            """
+        ).format(
+            sql.Identifier(schema),
+            sql.Identifier(schema),
+            sql.Identifier(schema),
+        ),
+        [
+            list(CHEMICAL_ENTITY_TYPES),
+            list(CHEMICAL_ENTITY_TYPES),
+            list(CHEMICAL_ENTITY_TYPES),
+        ],
+    )
+    cur.execute(
+        """
+        CREATE UNIQUE INDEX ON _chemical_resolver_identifier (
+          entity_evidence_id,
+          type,
+          md5(value)
+        )
+        """
+    )
+    cur.execute(
+        sql.SQL(
+            """
+            INSERT INTO {}.identifier (type, value)
+            SELECT DISTINCT type, value
+            FROM _chemical_resolver_identifier
+            ON CONFLICT (type, value_hash) DO NOTHING
+            """
+        ).format(sql.Identifier(schema))
+    )
+    cur.execute(
+        sql.SQL(
+            """
+            INSERT INTO {}.entity_evidence_identifier (
+              entity_evidence_id,
+              identifier_id
+            )
+            SELECT DISTINCT
+              r.entity_evidence_id,
+              i.identifier_id
+            FROM _chemical_resolver_identifier r
+            JOIN {}.identifier i
+              ON i.type = r.type
+             AND i.value_hash = md5(r.value)
+             AND i.value = r.value
+            ON CONFLICT DO NOTHING
+            """
+        ).format(sql.Identifier(schema), sql.Identifier(schema))
     )
 
 
