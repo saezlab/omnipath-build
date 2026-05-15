@@ -13,15 +13,19 @@ from typing import Any
 
 import duckdb
 import pyarrow as pa
+import pyarrow.compute as pc
 import pyarrow.dataset as ds
 import pyarrow.parquet as pq
 
 PREPARSE_VERSION = 'minimal_raw_records_v1'
+RAW_RECORD_PART_COUNT = 16
+RAW_RECORD_ID_PART_STRIDE = 1_000_000_000_000
 METADATA_COLUMNS = {
     '_source',
     '_dataset',
     '_raw_record_key',
     '_raw_record_id',
+    'raw_record_part',
 }
 
 
@@ -333,15 +337,14 @@ def _write_records(
     if output_path.exists():
         shutil.rmtree(output_path)
     output_path.mkdir(parents=True, exist_ok=True)
-    output_file = output_path / 'data.parquet'
-    writer: pq.ParquetWriter | None = None
+    writers: dict[int, pq.ParquetWriter] = {}
     batch: list[dict[str, Any]] = []
     schema_names: list[str] | None = None
     schema: pa.Schema | None = None
     rows = 0
 
     def flush() -> None:
-        nonlocal batch, schema_names, writer, schema
+        nonlocal batch, schema_names, schema
         if not batch:
             return
         if schema_names is None:
@@ -355,26 +358,43 @@ def _write_records(
             for row in batch
         ]
         table = pa.Table.from_pylist(normalized)
-        if writer is None:
+        if schema is None:
             schema = table.schema
-            writer = pq.ParquetWriter(
-                output_file,
-                schema,
-                compression='zstd',
-                use_dictionary=True,
-            )
         else:
             table = table.cast(schema, safe=False)
-        writer.write_table(table)
+        for part in sorted(set(table.column('raw_record_part').to_pylist())):
+            if part is None:
+                continue
+            part_int = int(part)
+            part_table = table.filter(
+                pc.equal(
+                    table.column('raw_record_part'),
+                    pa.scalar(part_int, type=pa.int64()),
+                )
+            )
+            writer = writers.get(part_int)
+            if writer is None:
+                part_dir = output_path / f'part={part_int:05d}'
+                part_dir.mkdir(parents=True, exist_ok=True)
+                writer = pq.ParquetWriter(
+                    part_dir / 'data.parquet',
+                    schema,
+                    compression='zstd',
+                    use_dictionary=True,
+                )
+                writers[part_int] = writer
+            writer.write_table(part_table)
         batch = []
 
     try:
         for record in records:
             clean = _clean_record(record)
+            key = _record_hash(clean)
             row = {
                 '_source': source,
                 '_dataset': dataset,
-                '_raw_record_key': _record_hash(clean),
+                '_raw_record_key': key,
+                'raw_record_part': _stable_part(key),
                 **clean,
             }
             if schema_names is not None:
@@ -390,7 +410,7 @@ def _write_records(
                 flush()
         flush()
     finally:
-        if writer is None:
+        if schema is None:
             table = pa.Table.from_pylist(
                 [],
                 schema=pa.schema(
@@ -398,11 +418,14 @@ def _write_records(
                         pa.field('_source', pa.string()),
                         pa.field('_dataset', pa.string()),
                         pa.field('_raw_record_key', pa.string()),
+                        pa.field('raw_record_part', pa.int64()),
                     ]
                 ),
             )
-            pq.write_table(table, output_file, compression='zstd')
-        else:
+            part_dir = output_path / 'part=00000'
+            part_dir.mkdir(parents=True, exist_ok=True)
+            pq.write_table(table, part_dir / 'data.parquet', compression='zstd')
+        for writer in writers.values():
             writer.close()
 
     duplicate_stats = _duplicate_stats(output_path) if rows else {}
@@ -418,57 +441,67 @@ def _write_records_with_ids(
     if output_path.exists():
         shutil.rmtree(output_path)
     output_path.mkdir(parents=True, exist_ok=True)
-    output_file = output_path / 'data.parquet'
-    old_map_sql = _old_raw_record_id_map_sql(old_records)
     con = duckdb.connect()
     try:
-        con.execute(
-            f"""
-            COPY (
-                WITH
-                old_map AS ({old_map_sql}),
-                new_keys AS (
-                    SELECT DISTINCT _raw_record_key
-                    FROM {_read_records_sql(new_records)}
-                ),
-                max_old AS (
-                    SELECT coalesce(max(_raw_record_id), 0) AS max_id
-                    FROM old_map
-                ),
-                added_map AS (
+        for part in range(RAW_RECORD_PART_COUNT):
+            part_dir = output_path / f'part={part:05d}'
+            part_dir.mkdir(parents=True, exist_ok=True)
+            output_file = part_dir / 'data.parquet'
+            old_map_sql = _old_raw_record_id_map_sql(old_records, part=part)
+            con.execute(
+                f"""
+                COPY (
+                    WITH
+                    old_map AS ({old_map_sql}),
+                    new_keys AS (
+                        SELECT DISTINCT _raw_record_key, raw_record_part
+                        FROM {_read_records_sql(new_records)}
+                        WHERE raw_record_part = {part}
+                    ),
+                    max_old AS (
+                        SELECT coalesce(
+                            max(_raw_record_id % {RAW_RECORD_ID_PART_STRIDE}),
+                            0
+                        ) AS max_local_id
+                        FROM old_map
+                    ),
+                    added_map AS (
+                        SELECT
+                            _raw_record_key,
+                            (
+                                {part + 1} * {RAW_RECORD_ID_PART_STRIDE}
+                                + (SELECT max_local_id FROM max_old)
+                                + row_number() OVER (ORDER BY _raw_record_key)
+                            )::BIGINT AS _raw_record_id
+                        FROM new_keys
+                        WHERE _raw_record_key NOT IN (
+                            SELECT _raw_record_key FROM old_map
+                        )
+                    ),
+                    id_map AS (
+                        SELECT _raw_record_key, _raw_record_id
+                        FROM old_map
+                        WHERE _raw_record_key IN (
+                            SELECT _raw_record_key FROM new_keys
+                        )
+                        UNION ALL
+                        SELECT _raw_record_key, _raw_record_id
+                        FROM added_map
+                    )
                     SELECT
-                        _raw_record_key,
-                        (
-                            (SELECT max_id FROM max_old)
-                            + row_number() OVER (ORDER BY _raw_record_key)
-                        )::BIGINT AS _raw_record_id
-                    FROM new_keys
-                    WHERE _raw_record_key NOT IN (
-                        SELECT _raw_record_key FROM old_map
-                    )
-                ),
-                id_map AS (
-                    SELECT _raw_record_key, _raw_record_id
-                    FROM old_map
-                    WHERE _raw_record_key IN (
-                        SELECT _raw_record_key FROM new_keys
-                    )
-                    UNION ALL
-                    SELECT _raw_record_key, _raw_record_id
-                    FROM added_map
-                )
-                SELECT
-                    n._source,
-                    n._dataset,
-                    n._raw_record_key,
-                    CAST(m._raw_record_id AS BIGINT) AS _raw_record_id,
-                    n.* EXCLUDE (_source, _dataset, _raw_record_key)
-                FROM {_read_records_sql(new_records)} n
-                JOIN id_map m USING (_raw_record_key)
-                ORDER BY m._raw_record_id
-            ) TO {_sql_literal(str(output_file))} (FORMAT PARQUET, COMPRESSION ZSTD)
-            """
-        )
+                        n._source,
+                        n._dataset,
+                        n._raw_record_key,
+                        CAST(m._raw_record_id AS BIGINT) AS _raw_record_id,
+                        n.raw_record_part,
+                        n.* EXCLUDE (_source, _dataset, _raw_record_key, raw_record_part)
+                    FROM {_read_records_sql(new_records)} n
+                    JOIN id_map m USING (_raw_record_key)
+                    WHERE n.raw_record_part = {part}
+                    ORDER BY n._raw_record_key
+                ) TO {_sql_literal(str(output_file))} (FORMAT PARQUET, COMPRESSION ZSTD)
+                """
+            )
         min_id, max_id, distinct_ids = con.execute(
             f"""
             SELECT
@@ -496,40 +529,44 @@ def _write_delta(
     if output_path.exists():
         shutil.rmtree(output_path)
     output_path.mkdir(parents=True, exist_ok=True)
-    output_file = output_path / 'data.parquet'
-    old_map_sql = _old_raw_record_id_map_sql(old_records)
     con = duckdb.connect()
     try:
-        con.execute(
-            f"""
-            COPY (
-                WITH
-                old_keys AS ({old_map_sql}),
-                new_keys AS (
-                    SELECT DISTINCT _raw_record_key, _raw_record_id
-                    FROM {_read_records_sql(new_records)}
-                )
-                SELECT
-                    _raw_record_key,
-                    _raw_record_id,
-                    'added' AS _change_type
-                FROM new_keys
-                WHERE _raw_record_key NOT IN (
-                    SELECT _raw_record_key FROM old_keys
-                )
-                UNION ALL
-                SELECT
-                    _raw_record_key,
-                    _raw_record_id,
-                    'removed' AS _change_type
-                FROM old_keys
-                WHERE _raw_record_key NOT IN (
-                    SELECT _raw_record_key FROM new_keys
-                )
-                ORDER BY _raw_record_id, _change_type
-            ) TO {_sql_literal(str(output_file))} (FORMAT PARQUET, COMPRESSION ZSTD)
-            """
-        )
+        for part in range(RAW_RECORD_PART_COUNT):
+            part_dir = output_path / f'part={part:05d}'
+            part_dir.mkdir(parents=True, exist_ok=True)
+            output_file = part_dir / 'data.parquet'
+            old_map_sql = _old_raw_record_id_map_sql(old_records, part=part)
+            con.execute(
+                f"""
+                COPY (
+                    WITH
+                    old_keys AS ({old_map_sql}),
+                    new_keys AS (
+                        SELECT DISTINCT _raw_record_key, _raw_record_id, raw_record_part
+                        FROM {_read_records_sql(new_records)}
+                        WHERE raw_record_part = {part}
+                    )
+                    SELECT
+                        _raw_record_key,
+                        _raw_record_id,
+                        'added' AS _change_type
+                    FROM new_keys
+                    WHERE _raw_record_key NOT IN (
+                        SELECT _raw_record_key FROM old_keys
+                    )
+                    UNION ALL
+                    SELECT
+                        _raw_record_key,
+                        _raw_record_id,
+                        'removed' AS _change_type
+                    FROM old_keys
+                    WHERE _raw_record_key NOT IN (
+                        SELECT _raw_record_key FROM new_keys
+                    )
+                    ORDER BY _raw_record_key, _change_type
+                ) TO {_sql_literal(str(output_file))} (FORMAT PARQUET, COMPRESSION ZSTD)
+                """
+            )
         stats = con.execute(
             f"""
             SELECT _change_type, count(*) AS rows
@@ -543,19 +580,27 @@ def _write_delta(
     return {'delta_rows_by_type': dict(stats)}
 
 
-def _old_raw_record_id_map_sql(old_records: Path | None) -> str:
+def _old_raw_record_id_map_sql(old_records: Path | None, *, part: int) -> str:
     if old_records is None:
         return """
             SELECT
                 '' AS _raw_record_key,
-                CAST(NULL AS BIGINT) AS _raw_record_id
+                CAST(NULL AS BIGINT) AS _raw_record_id,
+                CAST(NULL AS BIGINT) AS raw_record_part
             WHERE false
         """
+    part_expr = (
+        'raw_record_part'
+        if _records_have_column(old_records, 'raw_record_part')
+        else _legacy_raw_record_part_sql()
+    )
     return f"""
         SELECT
             _raw_record_key,
-            min(_raw_record_id)::BIGINT AS _raw_record_id
+            min(_raw_record_id)::BIGINT AS _raw_record_id,
+            min({part_expr})::BIGINT AS raw_record_part
         FROM {_read_records_sql(old_records)}
+        WHERE {part_expr} = {part}
         GROUP BY _raw_record_key
     """
 
@@ -671,3 +716,26 @@ def _read_records_sql(path: Path) -> str:
         f"{_sql_literal(str(path / '**' / '*.parquet'))}, "
         "union_by_name=true, hive_partitioning=true)"
     )
+
+
+def _records_have_column(path: Path, column: str) -> bool:
+    if not path.exists():
+        return False
+    try:
+        return column in ds.dataset(path, format='parquet').schema.names
+    except Exception:
+        return False
+
+
+def _legacy_raw_record_part_sql() -> str:
+    cases = ' '.join(
+        f"WHEN '{hex_digit}' THEN {part}"
+        for part, hex_digit in enumerate('0123456789abcdef')
+    )
+    return f"CASE lower(substr(_raw_record_key, 1, 1)) {cases} ELSE 0 END"
+
+
+def _stable_part(raw_record_key: str) -> int:
+    if not raw_record_key:
+        return 0
+    return int(raw_record_key[0], 16) % RAW_RECORD_PART_COUNT
