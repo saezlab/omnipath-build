@@ -31,23 +31,38 @@ def ensure_schema(
     *,
     schema: str = 'public',
     drop_existing: bool = False,
+    progress: bool = False,
 ) -> None:
     """Create or refresh the minimal evidence and resolution schema."""
 
+    def log_step(message: str) -> None:
+        if progress:
+            print(f'[schema] {message}', flush=True)
+
+    started = None
+    if progress:
+        import time
+
+        started = time.perf_counter()
+        log_step(f'ensure start schema={schema} drop_existing={drop_existing}')
+
     with conn.cursor() as cur:
         if drop_existing:
+            log_step('drop existing schema')
             cur.execute(
                 sql.SQL('DROP SCHEMA IF EXISTS {} CASCADE').format(
                     sql.Identifier(schema)
                 )
             )
 
+        log_step('create schema')
         cur.execute(
             sql.SQL('CREATE SCHEMA IF NOT EXISTS {}').format(
                 sql.Identifier(schema)
             )
         )
 
+        log_step('create identifier table')
         cur.execute(
             sql.SQL(
                 """
@@ -60,7 +75,9 @@ def ensure_schema(
                 """
             ).format(sql.Identifier(schema))
         )
+        log_step('ensure identifier indexes')
         _ensure_identifier_hash_key(cur, schema)
+        log_step('create entity_evidence table')
         cur.execute(
             sql.SQL(
                 """
@@ -81,6 +98,7 @@ def ensure_schema(
                 """
             ).format(sql.Identifier(schema), sql.Identifier(schema))
         )
+        log_step('create entity_evidence_identifier table')
         cur.execute(
             sql.SQL(
                 """
@@ -98,6 +116,7 @@ def ensure_schema(
                 sql.Identifier(schema),
             )
         )
+        log_step('create relation_evidence table')
         cur.execute(
             sql.SQL(
                 """
@@ -135,6 +154,7 @@ def ensure_schema(
                 sql.Identifier(schema),
             )
         )
+        log_step('create annotation table')
         cur.execute(
             sql.SQL(
                 """
@@ -161,10 +181,16 @@ def ensure_schema(
                 sql.Identifier(schema),
             )
         )
+        log_step('drop obsolete annotation indexes')
         _drop_obsolete_annotation_indexes(cur, schema)
-        _ensure_resolution_schema(cur, schema)
+        _ensure_resolution_schema(cur, schema, progress=progress)
 
+    log_step('commit')
     conn.commit()
+    if started is not None:
+        import time
+
+        log_step(f'ensure done elapsed={time.perf_counter() - started:.1f}s')
 
 
 def reset_content_tables(
@@ -208,9 +234,17 @@ def reset_content_tables(
 def _ensure_resolution_schema(
     cur: psycopg2.extensions.cursor,
     schema: str,
+    *,
+    progress: bool = False,
 ) -> None:
+    def log_step(message: str) -> None:
+        if progress:
+            print(f'[schema] {message}', flush=True)
+
     schema_id = sql.Identifier(schema)
+    log_step('drop obsolete canonicalization tables')
     _drop_obsolete_canonicalization_tables(cur, schema)
+    log_step('create entity table')
     cur.execute(
         sql.SQL(
             """
@@ -229,9 +263,13 @@ def _ensure_resolution_schema(
             """
         ).format(schema_id)
     )
+    log_step('ensure entity indexes')
     _ensure_entity_hash_key(cur, schema)
+    log_step('ensure annotation target')
     _ensure_entity_annotation_target(cur, schema)
+    log_step('ensure relation evidence endpoints')
     _ensure_relation_evidence_entity_endpoints(cur, schema)
+    log_step('create entity_resolution_candidate table')
     cur.execute(
         sql.SQL(
             """
@@ -259,7 +297,9 @@ def _ensure_resolution_schema(
             """
         ).format(schema_id, schema_id)
     )
+    log_step('ensure candidate indexes')
     _ensure_candidate_hash_key(cur, schema)
+    log_step('create entity_evidence_resolution table')
     cur.execute(
         sql.SQL(
             """
@@ -295,7 +335,9 @@ def _ensure_resolution_schema(
             """
         ).format(schema_id, schema_id, schema_id)
     )
+    log_step('ensure entity resolution check')
     _ensure_entity_resolution_entity_check(cur, schema)
+    log_step('create resolver_mapping_policy table')
     cur.execute(
         sql.SQL(
             """
@@ -312,6 +354,7 @@ def _ensure_resolution_schema(
             """
         ).format(schema_id)
     )
+    log_step('create resolver protein lookup table')
     cur.execute(
         sql.SQL(
             """
@@ -327,6 +370,7 @@ def _ensure_resolution_schema(
             """
         ).format(schema_id)
     )
+    log_step('create resolver chemical lookup table')
     cur.execute(
         sql.SQL(
             """
@@ -341,6 +385,7 @@ def _ensure_resolution_schema(
             """
         ).format(schema_id)
     )
+    log_step('ensure resolver chemical columns')
     cur.execute(
         sql.SQL(
             """
@@ -353,6 +398,7 @@ def _ensure_resolution_schema(
         'resolver_protein_identifier_lookup',
         'resolver_chemical_identifier_lookup',
     ):
+        log_step(f'ensure {table} hash column')
         cur.execute(
             sql.SQL(
                 """
@@ -362,6 +408,7 @@ def _ensure_resolution_schema(
                 """
             ).format(schema_id, sql.Identifier(table))
         )
+    log_step('create resources table')
     cur.execute(
         sql.SQL(
             """
@@ -388,6 +435,7 @@ def _ensure_resolution_schema(
             """
         ).format(schema_id)
     )
+    log_step('create resolver policy index')
     cur.execute(
         sql.SQL(
             """
@@ -401,6 +449,7 @@ def _ensure_resolution_schema(
             """
         ).format(schema_id)
     )
+    log_step('create relation table')
     cur.execute(
         sql.SQL(
             """
@@ -417,6 +466,7 @@ def _ensure_resolution_schema(
             """
         ).format(schema_id, schema_id, schema_id)
     )
+    log_step('create relation unique index')
     cur.execute(
         sql.SQL(
             """
@@ -431,6 +481,7 @@ def _ensure_resolution_schema(
             """
         ).format(schema_id)
     )
+    log_step('create relation_evidence_relation table')
     cur.execute(
         sql.SQL(
             """
@@ -447,6 +498,7 @@ def _ensure_resolution_schema(
             """
         ).format(schema_id, schema_id, schema_id)
     )
+    log_step('create relation_evidence_annotation table')
     cur.execute(
         sql.SQL(
             """
@@ -464,17 +516,21 @@ def _ensure_resolution_schema(
             """
         ).format(schema_id, schema_id, schema_id, schema_id)
     )
+    log_step('ensure relation annotation key')
     _ensure_relation_annotation_key(cur, schema)
+    log_step('drop relation_evidence_resolution table')
     cur.execute(
         sql.SQL('DROP TABLE IF EXISTS {}.relation_evidence_resolution').format(
             schema_id
         )
     )
+    log_step('drop relation_annotation_evidence table')
     cur.execute(
         sql.SQL('DROP TABLE IF EXISTS {}.relation_annotation_evidence').format(
             schema_id
         )
     )
+    log_step('ensure resolution indexes')
     _ensure_resolution_indexes(cur, schema)
 
 

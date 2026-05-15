@@ -105,6 +105,12 @@ def main(argv: list[str] | None = None) -> int:
         action='store_true',
         help='Resolve entities only and leave relation resolution unchanged.',
     )
+    canon.add_argument(
+        '--ensure-schema',
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help='Ensure minimal schema exists before canonicalization.',
+    )
 
     derive = subparsers.add_parser('derive')
     derive.add_argument(
@@ -136,6 +142,12 @@ def main(argv: list[str] | None = None) -> int:
     ingest.add_argument('--inputs-package', default='pypath.inputs_v2')
     ingest.add_argument('--database', default='omnipath')
     ingest.add_argument('--force-refresh', action='store_true')
+    ingest.add_argument(
+        '--ensure-schema',
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help='Ensure minimal schema exists before ingest.',
+    )
     ingest.add_argument(
         '--backend',
         choices=('bulk', 'simple'),
@@ -179,7 +191,9 @@ def main(argv: list[str] | None = None) -> int:
         print('DATABASE_URL is required.', file=sys.stderr)
         return 2
 
+    print(f'[minimal] connecting database schema={args.schema}', flush=True)
     with psycopg2.connect(args.database_url) as conn:
+        print('[minimal] database connected', flush=True)
         if args.command == 'init-db':
             ensure_schema(
                 conn,
@@ -215,7 +229,10 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 0
         if args.command == 'canonicalize':
-            ensure_schema(conn, schema=args.schema)
+            if args.ensure_schema:
+                ensure_schema(conn, schema=args.schema, progress=True)
+            else:
+                print('[minimal] schema check skipped', flush=True)
             stats = canonicalize(
                 conn,
                 schema=args.schema,
@@ -275,7 +292,10 @@ def main(argv: list[str] | None = None) -> int:
                 )
             return 0
         if args.command == 'ingest':
-            ensure_schema(conn, schema=args.schema)
+            if args.ensure_schema:
+                ensure_schema(conn, schema=args.schema, progress=True)
+            else:
+                print('[minimal] schema check skipped', flush=True)
             return _handle_ingest(conn, args)
 
     return 0

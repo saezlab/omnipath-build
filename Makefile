@@ -229,6 +229,7 @@ ingest:
 			--commit-every "$(MINIMAL_COMMIT_EVERY)" \
 			--progress-every "$(MINIMAL_PROGRESS_EVERY)" \
 			--obo-output-dir "$(MINIMAL_OBO_DIR)" \
+			--no-ensure-schema \
 			$(if $(FORCE_REFRESH),--force-refresh); \
 	else \
 		SOURCE_LIST=$$(printf '%s' "$(SELECTED_SOURCES)" | tr ',' ' '); \
@@ -246,6 +247,7 @@ ingest:
 				--commit-every "$(MINIMAL_COMMIT_EVERY)" \
 				--progress-every "$(MINIMAL_PROGRESS_EVERY)" \
 				--obo-output-dir "$(MINIMAL_OBO_DIR)" \
+				--no-ensure-schema \
 				$(if $(FORCE_REFRESH),--force-refresh); \
 		done; \
 	fi
@@ -261,7 +263,8 @@ canonicalize:
 		PYTHONUNBUFFERED=1 uv run python -m minimal.cli \
 			--database-url "$(DATABASE_URL)" \
 			--schema "$(MINIMAL_SCHEMA)" \
-			canonicalize; \
+			canonicalize \
+			--no-ensure-schema; \
 	else \
 		SOURCE_LIST=$$(printf '%s' "$(SELECTED_SOURCES)" | tr ',' ' '); \
 		for source in $$SOURCE_LIST; do \
@@ -270,7 +273,8 @@ canonicalize:
 				--database-url "$(DATABASE_URL)" \
 				--schema "$(MINIMAL_SCHEMA)" \
 				canonicalize \
-				--source "$$source"; \
+				--source "$$source" \
+				--no-ensure-schema; \
 		done; \
 	fi
 
