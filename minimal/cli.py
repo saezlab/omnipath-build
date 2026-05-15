@@ -16,6 +16,7 @@ from minimal.db import (
     rebuild_bitmap_tables,
     rebuild_derived_tables,
     create_secondary_indexes,
+    reset_content_tables,
     sync_resources_table,
 )
 from minimal.ingest import (
@@ -54,6 +55,8 @@ def main(argv: list[str] | None = None) -> int:
     subparsers = parser.add_subparsers(dest='command', required=True)
     init_db = subparsers.add_parser('init-db')
     init_db.add_argument('--drop-existing', action='store_true')
+
+    subparsers.add_parser('reset-content')
 
     build_resolver = subparsers.add_parser('build-resolver')
     build_resolver.add_argument(
@@ -235,6 +238,18 @@ def main(argv: list[str] | None = None) -> int:
                 schema=args.schema,
                 drop_existing=args.drop_existing,
             )
+            return 0
+        if args.command == 'reset-content':
+            tables = reset_content_tables(conn, schema=args.schema)
+            print(
+                f'[reset-content] schema={args.schema} tables={len(tables)}',
+                flush=True,
+            )
+            if tables:
+                print(
+                    '[reset-content] truncated=' + ','.join(tables),
+                    flush=True,
+                )
             return 0
         if args.command == 'load-resolver':
             stats = load_resolver_tables(

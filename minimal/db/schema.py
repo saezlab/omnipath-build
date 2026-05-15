@@ -4,6 +4,29 @@ from psycopg2 import sql
 import psycopg2.extensions
 
 
+CONTENT_TABLES: tuple[str, ...] = (
+    'annotation_term_entity_bitmap',
+    'annotation_term_relation_bitmap',
+    'facet_entity_bitmap',
+    'facet_relation_bitmap',
+    'entity_relation_counts',
+    'ontology_terms',
+    'relation_evidence_annotation',
+    'relation_evidence_relation',
+    'entity_evidence_resolution',
+    'entity_resolution_candidate',
+    'annotation',
+    'relation',
+    'relation_evidence',
+    'entity_evidence_identifier',
+    'entity_evidence',
+    'identifier',
+    'entity',
+    'source_row',
+    'resources',
+)
+
+
 def ensure_schema(
     conn: psycopg2.extensions.connection,
     *,
@@ -159,6 +182,44 @@ def ensure_schema(
         _ensure_resolution_schema(cur, schema)
 
     conn.commit()
+
+
+def reset_content_tables(
+    conn: psycopg2.extensions.connection,
+    *,
+    schema: str = 'public',
+) -> list[str]:
+    """Truncate minimal content tables without touching resolver tables."""
+
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT table_name
+            FROM information_schema.tables
+            WHERE table_schema = %s
+              AND table_type = 'BASE TABLE'
+              AND table_name = ANY(%s)
+            """,
+            [schema, list(CONTENT_TABLES)],
+        )
+        existing_tables = {row[0] for row in cur.fetchall()}
+        tables_to_truncate = [
+            table for table in CONTENT_TABLES if table in existing_tables
+        ]
+        if tables_to_truncate:
+            cur.execute(
+                sql.SQL('TRUNCATE {} RESTART IDENTITY').format(
+                    sql.SQL(', ').join(
+                        sql.SQL('{}.{}').format(
+                            sql.Identifier(schema),
+                            sql.Identifier(table),
+                        )
+                        for table in tables_to_truncate
+                    )
+                )
+            )
+    conn.commit()
+    return tables_to_truncate
 
 
 def _ensure_source_row_hash_key(

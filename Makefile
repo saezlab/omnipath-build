@@ -1,4 +1,4 @@
-.PHONY: setup silver silver-list resolver-mappings combined postgres pipeline minimal-resolver db-setup preparse ingest canonicalize derive load minimal_pipeline_setup minimal_pipeline minimal-all bronze-rewrite silver-rewrite gold-rewrite combined-rewrite rewrite_pipeline test
+.PHONY: setup silver silver-list resolver-mappings combined postgres pipeline minimal-resolver db-setup minimal-reset-content preparse ingest canonicalize derive load minimal_pipeline_setup minimal_pipeline minimal-all bronze-rewrite silver-rewrite gold-rewrite combined-rewrite rewrite_pipeline test
 
 JOBS ?= 4
 BATCH_SIZE ?= 10000
@@ -200,6 +200,17 @@ db-setup:
 		derive \
 		--no-tables \
 		--no-bitmaps
+
+minimal-reset-content:
+	@if [ -z "$(DATABASE_URL)" ]; then \
+		echo "DATABASE_URL is required, e.g. make minimal-reset-content DATABASE_URL=postgresql://user:pass@host:5432/dbname"; \
+		exit 1; \
+	fi
+	@echo "[minimal] reset content tables schema=$(MINIMAL_SCHEMA)"
+	@PYTHONUNBUFFERED=1 uv run python -m minimal.cli \
+		--database-url "$(DATABASE_URL)" \
+		--schema "$(MINIMAL_SCHEMA)" \
+		reset-content
 
 preparse:
 	@set -e; \
