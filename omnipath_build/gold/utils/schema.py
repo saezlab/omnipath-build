@@ -188,6 +188,7 @@ def predicate_for_interaction(
     ordered_participants: list[dict[str, Any]],
 ) -> PredicateRule:
     row_type = string_or_none(row.get('type'))
+    row_type_accession = entity_type_accession(row_type)
     annotations = row.get('annotations') or []
 
     participant_annotations: list[dict[str, Any]] = []
@@ -196,21 +197,21 @@ def predicate_for_interaction(
 
     sign = interaction_sign(annotations, participant_annotations)
 
-    if row_type == str(EntityTypeCv.INTERACTION):
+    if row_type_accession == str(EntityTypeCv.INTERACTION):
         if sign > 0:
             return PredicateRule('positively_regulates', 'interaction')
         if sign < 0:
             return PredicateRule('negatively_regulates', 'interaction')
         return PredicateRule('interacts_with', 'interaction')
-    if row_type == str(EntityTypeCv.ASSOCIATION):
+    if row_type_accession == str(EntityTypeCv.ASSOCIATION):
         return PredicateRule(ASSOCIATION_PREDICATE, ASSOCIATION_CATEGORY)
-    if row_type in {str(EntityTypeCv.CONTROL), str(EntityTypeCv.CATALYSIS), str(EntityTypeCv.DEGRADATION)}:
+    if row_type_accession in {str(EntityTypeCv.CONTROL), str(EntityTypeCv.CATALYSIS), str(EntityTypeCv.DEGRADATION)}:
         if sign > 0:
             return PredicateRule('positively_regulates', 'interaction')
         if sign < 0:
             return PredicateRule('negatively_regulates', 'interaction')
         return PredicateRule('regulates', 'interaction')
-    if row_type == str(EntityTypeCv.REACTION):
+    if row_type_accession == str(EntityTypeCv.REACTION):
         if has_role_ordering(ordered_participants):
             return PredicateRule('transforms_to', 'interaction')
         return PredicateRule('interacts_with', 'interaction')
@@ -430,6 +431,18 @@ def is_cv_term_accession(value: str) -> bool:
         return False
     prefix, suffix = value.split(':', 1)
     return bool(prefix) and bool(suffix.strip()) and ' ' not in suffix
+
+
+def entity_type_accession(entity_type: str | None) -> str | None:
+    """Return the accession part of an entity type label."""
+    if entity_type is None:
+        return None
+    parts = entity_type.split(':', 2)
+    if len(parts) >= 2 and parts[1].isdigit():
+        return f'{parts[0]}:{parts[1]}'
+    if len(parts) == 3 and parts[2].isdigit():
+        return f'{parts[1]}:{parts[2]}'
+    return entity_type
 
 
 def string_or_none(value: Any) -> str | None:

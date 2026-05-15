@@ -7,6 +7,14 @@ services:
       POSTGRES_PASSWORD: omnipath
     ports:
       - "55432:5432"
+    command:
+      - postgres
+      - -c
+      - max_wal_size=8GB
+      - -c
+      - min_wal_size=1GB
+      - -c
+      - checkpoint_timeout=15min
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U omnipath -d omnipath"]
       interval: 5s

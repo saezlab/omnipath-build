@@ -2,14 +2,17 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, time
+from decimal import Decimal
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import shutil
 import tempfile
 from typing import Any
+import unicodedata
 
 import duckdb
 import pyarrow as pa
@@ -18,13 +21,16 @@ import pyarrow.dataset as ds
 import pyarrow.parquet as pq
 
 PREPARSE_VERSION = 'minimal_raw_records_v1'
-RAW_RECORD_PART_COUNT = 16
-RAW_RECORD_ID_PART_STRIDE = 1_000_000_000_000
+CANONICALIZATION_VERSION = 1
+RAW_RECORD_HASH_ALGORITHM = 'sha256'
+RAW_RECORD_PARTITION_BITS = 9
+RAW_RECORD_BUCKET_COUNT = 2**RAW_RECORD_PARTITION_BITS
 METADATA_COLUMNS = {
     '_source',
     '_dataset',
     '_raw_record_key',
     '_raw_record_id',
+    'raw_record_bucket',
     'raw_record_part',
 }
 
@@ -35,6 +41,7 @@ class RawSnapshot:
     dataset: str
     snapshot_id: str
     records_path: Path
+    index_path: Path
     delta_path: Path
     manifest_path: Path
 
@@ -45,7 +52,8 @@ class RawRecordProvenance:
     dataset: str
     snapshot_id: str
     raw_record_key: str
-    raw_record_id: int
+    raw_record_id: bytes
+    raw_record_bucket: int
 
 
 @dataclass(frozen=True)
@@ -112,6 +120,10 @@ def load_latest_raw_snapshot(
         dataset=str(latest.get('dataset') or dataset),
         snapshot_id=str(latest['snapshot_id']),
         records_path=Path(latest['records_path']),
+        index_path=Path(
+            latest.get('index_path')
+            or Path(latest['records_path']).parent / 'index'
+        ),
         delta_path=Path(latest['delta_path']),
         manifest_path=Path(latest['manifest_path']),
     )
@@ -145,7 +157,8 @@ def iter_mapped_records(
                 dataset=str(raw_row.get('_dataset') or snapshot.dataset),
                 snapshot_id=snapshot.snapshot_id,
                 raw_record_key=str(raw_row['_raw_record_key']),
-                raw_record_id=int(raw_row['_raw_record_id']),
+                raw_record_id=_raw_record_id_bytes(raw_row['_raw_record_id']),
+                raw_record_bucket=int(raw_row.get('raw_record_bucket') or 0),
             ),
         )
 
@@ -170,15 +183,31 @@ def materialize_raw_records(
     snapshot_id = datetime.now(UTC).strftime('%Y%m%dT%H%M%S%fZ')
     snapshot_dir = dataset_dir / snapshot_id
     records_path = snapshot_dir / 'records'
+    index_path = snapshot_dir / 'index'
     delta_path = snapshot_dir / 'delta'
     manifest_path = snapshot_dir / 'manifest.json'
 
     latest = _read_latest(dataset_dir)
     old_snapshot_id = latest.get('snapshot_id') if latest else None
     old_records = Path(latest['records_path']) if latest else None
+    old_index = (
+        Path(str(latest['index_path']))
+        if latest and latest.get('index_path')
+        else (
+            Path(latest['records_path']).parent / 'index'
+            if latest and latest.get('records_path')
+            else None
+        )
+    )
     if old_records is not None and not old_records.exists():
         old_records = None
+        old_index = None
         old_snapshot_id = None
+    if old_index is not None and not old_index.exists():
+        old_index = None
+
+    partitioning = _partitioning_config_from_latest(latest)
+    _assert_supported_partitioning(partitioning)
 
     dataset_dir.mkdir(parents=True, exist_ok=True)
 
@@ -189,25 +218,24 @@ def materialize_raw_records(
         flush=True,
     )
     with tempfile.TemporaryDirectory(dir=snapshot_dir.parent) as tmpdir:
-        tmp_unassigned_records = Path(tmpdir) / 'records.unassigned'
         tmp_records = Path(tmpdir) / 'records'
+        tmp_index = Path(tmpdir) / 'index'
         tmp_delta = Path(tmpdir) / 'delta'
         stats = _write_records(
             records,
-            output_path=tmp_unassigned_records,
+            output_path=tmp_records,
+            index_path=tmp_index,
             source=source,
             dataset=dataset,
             batch_size=batch_size,
-        )
-        id_stats = _write_records_with_ids(
-            new_records=tmp_unassigned_records,
-            old_records=old_records,
-            output_path=tmp_records,
+            partition_bits=int(partitioning['partition_bits']),
+            bucket_count=int(partitioning['bucket_count']),
         )
         delta_stats = _write_delta(
-            new_records=tmp_records,
-            old_records=old_records,
+            new_index=tmp_index,
+            old_index=old_index,
             output_path=tmp_delta,
+            partitioning=partitioning,
         )
         if old_records is not None and not delta_stats['delta_rows_by_type']:
             print(
@@ -220,6 +248,10 @@ def materialize_raw_records(
                 dataset=str(latest.get('dataset') or dataset),
                 snapshot_id=str(latest['snapshot_id']),
                 records_path=Path(latest['records_path']),
+                index_path=Path(
+                    latest.get('index_path')
+                    or Path(latest['records_path']).parent / 'index'
+                ),
                 delta_path=Path(latest['delta_path']),
                 manifest_path=Path(latest['manifest_path']),
             )
@@ -228,6 +260,7 @@ def materialize_raw_records(
             shutil.rmtree(snapshot_dir)
         snapshot_dir.mkdir(parents=True, exist_ok=True)
         shutil.move(str(tmp_records), records_path)
+        shutil.move(str(tmp_index), index_path)
         shutil.move(str(tmp_delta), delta_path)
 
     manifest = {
@@ -235,13 +268,20 @@ def materialize_raw_records(
         'dataset': dataset,
         'snapshot_id': snapshot_id,
         'previous_snapshot_id': old_snapshot_id,
+        'mode': 'incremental' if old_records is not None else 'bootstrap',
         'created_at': started.isoformat(),
         'completed_at': datetime.now(UTC).isoformat(),
         'preparse_version': PREPARSE_VERSION,
+        'identity': {
+            'type': 'content_hash',
+            'algorithm': RAW_RECORD_HASH_ALGORITHM,
+            'canonicalization_version': CANONICALIZATION_VERSION,
+        },
+        'partitioning': partitioning,
         'records_path': str(records_path),
+        'index_path': str(index_path),
         'delta_path': str(delta_path),
         **stats,
-        **id_stats,
         **delta_stats,
     }
     _write_json(manifest_path, manifest)
@@ -256,6 +296,7 @@ def materialize_raw_records(
         dataset=dataset,
         snapshot_id=snapshot_id,
         records_path=records_path,
+        index_path=index_path,
         delta_path=delta_path,
         manifest_path=manifest_path,
     )
@@ -265,9 +306,11 @@ def accept_raw_snapshot(snapshot: RawSnapshot) -> None:
     dataset_dir = snapshot.records_path.parent.parent
     state_dir = dataset_dir / 'state'
     state_records_path = state_dir / 'records'
+    state_index_path = state_dir / 'index'
     state_dir.mkdir(parents=True, exist_ok=True)
 
     accepted_records_path = snapshot.records_path
+    accepted_index_path = snapshot.index_path
     if snapshot.records_path != state_records_path:
         tmp_state_records_path = state_dir / 'records.tmp'
         if tmp_state_records_path.exists():
@@ -278,7 +321,21 @@ def accept_raw_snapshot(snapshot: RawSnapshot) -> None:
         tmp_state_records_path.replace(state_records_path)
         accepted_records_path = state_records_path
 
-    _rewrite_manifest_records_path(snapshot.manifest_path, accepted_records_path)
+    if snapshot.index_path.exists() and snapshot.index_path != state_index_path:
+        tmp_state_index_path = state_dir / 'index.tmp'
+        if tmp_state_index_path.exists():
+            shutil.rmtree(tmp_state_index_path)
+        shutil.move(str(snapshot.index_path), tmp_state_index_path)
+        if state_index_path.exists():
+            shutil.rmtree(state_index_path)
+        tmp_state_index_path.replace(state_index_path)
+        accepted_index_path = state_index_path
+
+    _rewrite_manifest_paths(
+        snapshot.manifest_path,
+        records_path=accepted_records_path,
+        index_path=accepted_index_path,
+    )
     _write_json(
         dataset_dir / 'latest.json',
         {
@@ -286,6 +343,7 @@ def accept_raw_snapshot(snapshot: RawSnapshot) -> None:
             'dataset': snapshot.dataset,
             'snapshot_id': snapshot.snapshot_id,
             'records_path': str(accepted_records_path),
+            'index_path': str(accepted_index_path),
             'delta_path': str(snapshot.delta_path),
             'manifest_path': str(snapshot.manifest_path),
             'updated_at': datetime.now(UTC).isoformat(),
@@ -304,15 +362,16 @@ def iter_changed_raw_record_dicts(
     records_path: Path,
     delta_path: Path,
 ) -> Iterator[dict[str, Any]]:
+    added_path = delta_path / 'added'
+    if not _has_parquet_files(added_path):
+        return
     con = duckdb.connect()
     try:
         reader = con.execute(
             f"""
             SELECT r.*
             FROM {_read_records_sql(records_path)} r
-            JOIN {_read_records_sql(delta_path)} d USING (_raw_record_key)
-            WHERE d._change_type = 'added'
-            ORDER BY r._raw_record_id
+            JOIN {_read_records_sql(added_path)} d USING (_raw_record_id)
             """
         ).fetch_record_batch(rows_per_batch=10_000)
         while True:
@@ -330,18 +389,33 @@ def _write_records(
     records: Iterable[dict[str, Any]],
     *,
     output_path: Path,
+    index_path: Path,
     source: str,
     dataset: str,
     batch_size: int,
+    partition_bits: int,
+    bucket_count: int,
 ) -> dict[str, Any]:
     if output_path.exists():
         shutil.rmtree(output_path)
+    if index_path.exists():
+        shutil.rmtree(index_path)
     output_path.mkdir(parents=True, exist_ok=True)
-    writers: dict[int, pq.ParquetWriter] = {}
+    index_path.mkdir(parents=True, exist_ok=True)
+    record_writers: dict[int, pq.ParquetWriter] = {}
+    index_writers: dict[int, pq.ParquetWriter] = {}
     batch: list[dict[str, Any]] = []
     schema_names: list[str] | None = None
     schema: pa.Schema | None = None
+    index_schema = pa.schema(
+        [
+            pa.field('_raw_record_id', pa.binary(32)),
+            pa.field('raw_record_bucket', pa.int64()),
+        ]
+    )
     rows = 0
+    bucket_counts: dict[int, int] = {}
+    bucket_width = _bucket_width(bucket_count)
 
     def flush() -> None:
         nonlocal batch, schema_names, schema
@@ -354,46 +428,82 @@ def _write_records(
                     seen.setdefault(name, None)
             schema_names = list(seen)
         normalized = [
-            {name: _stringify_if_unsupported(row.get(name)) for name in schema_names}
+            {
+                name: (
+                    _raw_record_id_bytes(row.get(name))
+                    if name == '_raw_record_id' and row.get(name) is not None
+                    else _stringify_if_unsupported(row.get(name))
+                )
+                for name in schema_names
+            }
             for row in batch
         ]
         table = pa.Table.from_pylist(normalized)
         if schema is None:
             schema = _schema_with_storable_nulls(table.schema)
         table = table.cast(schema, safe=False)
-        for part in sorted(set(table.column('raw_record_part').to_pylist())):
-            if part is None:
+        for bucket in sorted(set(table.column('raw_record_bucket').to_pylist())):
+            if bucket is None:
                 continue
-            part_int = int(part)
-            part_table = table.filter(
+            bucket_int = int(bucket)
+            bucket_table = table.filter(
                 pc.equal(
-                    table.column('raw_record_part'),
-                    pa.scalar(part_int, type=pa.int64()),
+                    table.column('raw_record_bucket'),
+                    pa.scalar(bucket_int, type=pa.int64()),
                 )
             )
-            writer = writers.get(part_int)
+            writer = record_writers.get(bucket_int)
             if writer is None:
-                part_dir = output_path / f'part={part_int:05d}'
-                part_dir.mkdir(parents=True, exist_ok=True)
+                bucket_dir = output_path / _bucket_dir_name(
+                    bucket_int,
+                    bucket_count=bucket_count,
+                )
+                bucket_dir.mkdir(parents=True, exist_ok=True)
                 writer = pq.ParquetWriter(
-                    part_dir / 'data.parquet',
+                    bucket_dir / 'data.parquet',
                     schema,
                     compression='zstd',
                     use_dictionary=True,
                 )
-                writers[part_int] = writer
-            writer.write_table(part_table)
+                record_writers[bucket_int] = writer
+            writer.write_table(bucket_table)
+
+            index_writer = index_writers.get(bucket_int)
+            if index_writer is None:
+                index_bucket_dir = index_path / _bucket_dir_name(
+                    bucket_int,
+                    bucket_count=bucket_count,
+                )
+                index_bucket_dir.mkdir(parents=True, exist_ok=True)
+                index_writer = pq.ParquetWriter(
+                    index_bucket_dir / 'data.parquet',
+                    index_schema,
+                    compression='zstd',
+                    use_dictionary=True,
+                )
+                index_writers[bucket_int] = index_writer
+            index_writer.write_table(
+                bucket_table
+                .select(['_raw_record_id', 'raw_record_bucket'])
+                .cast(index_schema, safe=False)
+            )
+            bucket_counts[bucket_int] = (
+                bucket_counts.get(bucket_int, 0) + bucket_table.num_rows
+            )
         batch = []
 
     try:
         for record in records:
             clean = _clean_record(record)
-            key = _record_hash(clean)
+            raw_record_id = raw_record_hash(clean)
+            key = raw_record_id.hex()
+            bucket = raw_record_bucket(raw_record_id, partition_bits=partition_bits)
             row = {
                 '_source': source,
                 '_dataset': dataset,
                 '_raw_record_key': key,
-                'raw_record_part': _stable_part(key),
+                '_raw_record_id': raw_record_id,
+                'raw_record_bucket': bucket,
                 **clean,
             }
             if schema_names is not None:
@@ -417,191 +527,130 @@ def _write_records(
                         pa.field('_source', pa.string()),
                         pa.field('_dataset', pa.string()),
                         pa.field('_raw_record_key', pa.string()),
-                        pa.field('raw_record_part', pa.int64()),
+                        pa.field('_raw_record_id', pa.binary(32)),
+                        pa.field('raw_record_bucket', pa.int64()),
                     ]
                 ),
             )
-            part_dir = output_path / 'part=00000'
-            part_dir.mkdir(parents=True, exist_ok=True)
-            pq.write_table(table, part_dir / 'data.parquet', compression='zstd')
-        for writer in writers.values():
+            bucket_dir = output_path / f'raw_record_bucket={0:0{bucket_width}d}'
+            bucket_dir.mkdir(parents=True, exist_ok=True)
+            pq.write_table(table, bucket_dir / 'data.parquet', compression='zstd')
+            index_bucket_dir = index_path / f'raw_record_bucket={0:0{bucket_width}d}'
+            index_bucket_dir.mkdir(parents=True, exist_ok=True)
+            pq.write_table(
+                table.select(['_raw_record_id', 'raw_record_bucket']).cast(
+                    index_schema,
+                    safe=False,
+                ),
+                index_bucket_dir / 'data.parquet',
+                compression='zstd',
+            )
+        for writer in record_writers.values():
+            writer.close()
+        for writer in index_writers.values():
             writer.close()
 
     duplicate_stats = _duplicate_stats(output_path) if rows else {}
-    return {'rows': rows, **duplicate_stats}
-
-
-def _write_records_with_ids(
-    *,
-    new_records: Path,
-    old_records: Path | None,
-    output_path: Path,
-) -> dict[str, Any]:
-    if output_path.exists():
-        shutil.rmtree(output_path)
-    output_path.mkdir(parents=True, exist_ok=True)
-    con = duckdb.connect()
-    try:
-        for part in range(RAW_RECORD_PART_COUNT):
-            part_dir = output_path / f'part={part:05d}'
-            part_dir.mkdir(parents=True, exist_ok=True)
-            output_file = part_dir / 'data.parquet'
-            old_map_sql = _old_raw_record_id_map_sql(old_records, part=part)
-            con.execute(
-                f"""
-                COPY (
-                    WITH
-                    old_map AS ({old_map_sql}),
-                    new_keys AS (
-                        SELECT DISTINCT _raw_record_key, raw_record_part
-                        FROM {_read_records_sql(new_records)}
-                        WHERE raw_record_part = {part}
-                    ),
-                    max_old AS (
-                        SELECT coalesce(
-                            max(_raw_record_id % {RAW_RECORD_ID_PART_STRIDE}),
-                            0
-                        ) AS max_local_id
-                        FROM old_map
-                    ),
-                    added_map AS (
-                        SELECT
-                            _raw_record_key,
-                            (
-                                {part + 1} * {RAW_RECORD_ID_PART_STRIDE}
-                                + (SELECT max_local_id FROM max_old)
-                                + row_number() OVER (ORDER BY _raw_record_key)
-                            )::BIGINT AS _raw_record_id
-                        FROM new_keys
-                        WHERE _raw_record_key NOT IN (
-                            SELECT _raw_record_key FROM old_map
-                        )
-                    ),
-                    id_map AS (
-                        SELECT _raw_record_key, _raw_record_id
-                        FROM old_map
-                        WHERE _raw_record_key IN (
-                            SELECT _raw_record_key FROM new_keys
-                        )
-                        UNION ALL
-                        SELECT _raw_record_key, _raw_record_id
-                        FROM added_map
-                    )
-                    SELECT
-                        n._source,
-                        n._dataset,
-                        n._raw_record_key,
-                        CAST(m._raw_record_id AS BIGINT) AS _raw_record_id,
-                        n.raw_record_part,
-                        n.* EXCLUDE (_source, _dataset, _raw_record_key, raw_record_part)
-                    FROM {_read_records_sql(new_records)} n
-                    JOIN id_map m USING (_raw_record_key)
-                    WHERE n.raw_record_part = {part}
-                    ORDER BY n._raw_record_key
-                ) TO {_sql_literal(str(output_file))} (FORMAT PARQUET, COMPRESSION ZSTD)
-                """
-            )
-        min_id, max_id, distinct_ids = con.execute(
-            f"""
-            SELECT
-                min(_raw_record_id),
-                max(_raw_record_id),
-                count(DISTINCT _raw_record_id)
-            FROM {_read_records_sql(output_path)}
-            """
-        ).fetchone()
-    finally:
-        con.close()
+    bucket_fingerprints = _bucket_fingerprints(
+        index_path,
+        bucket_count=bucket_count,
+    )
     return {
-        'min_raw_record_id': int(min_id or 0),
-        'max_raw_record_id': int(max_id or 0),
-        'distinct_raw_record_ids': int(distinct_ids or 0),
+        'rows': rows,
+        'bucket_count_with_rows': len(bucket_counts),
+        'largest_bucket_size': max(bucket_counts.values(), default=0),
+        'bucket_fingerprints': bucket_fingerprints,
+        **duplicate_stats,
     }
 
 
 def _write_delta(
     *,
-    new_records: Path,
-    old_records: Path | None,
+    new_index: Path,
+    old_index: Path | None,
     output_path: Path,
+    partitioning: dict[str, int | str],
 ) -> dict[str, Any]:
     if output_path.exists():
         shutil.rmtree(output_path)
     output_path.mkdir(parents=True, exist_ok=True)
+    added_root = output_path / 'added'
+    removed_root = output_path / 'removed'
+    added_root.mkdir(parents=True, exist_ok=True)
+    removed_root.mkdir(parents=True, exist_ok=True)
+
+    bucket_count = int(partitioning['bucket_count'])
+    if old_index is None:
+        return {
+            'delta_rows_by_type': {},
+            'delta_bucket_counts': {'added': 0, 'removed': 0, 'skipped': 0},
+            'changed_bucket_count': 0,
+            'skipped_bucket_count': 0,
+        }
+
+    new_fingerprints = _bucket_fingerprints(new_index, bucket_count=bucket_count)
+    old_fingerprints = _bucket_fingerprints(old_index, bucket_count=bucket_count)
+    delta_rows_by_type = {'added': 0, 'removed': 0}
+    changed_bucket_count = 0
+    skipped_bucket_count = 0
     con = duckdb.connect()
     try:
-        for part in range(RAW_RECORD_PART_COUNT):
-            part_dir = output_path / f'part={part:05d}'
-            part_dir.mkdir(parents=True, exist_ok=True)
-            output_file = part_dir / 'data.parquet'
-            old_map_sql = _old_raw_record_id_map_sql(old_records, part=part)
-            con.execute(
-                f"""
-                COPY (
-                    WITH
-                    old_keys AS ({old_map_sql}),
-                    new_keys AS (
-                        SELECT DISTINCT _raw_record_key, _raw_record_id, raw_record_part
-                        FROM {_read_records_sql(new_records)}
-                        WHERE raw_record_part = {part}
+        for bucket in range(bucket_count):
+            old_fp = old_fingerprints.get(str(bucket))
+            new_fp = new_fingerprints.get(str(bucket))
+            if old_fp == new_fp:
+                skipped_bucket_count += 1
+                continue
+            changed_bucket_count += 1
+            new_sql = _bucket_index_sql(new_index, bucket, bucket_count=bucket_count)
+            old_sql = _bucket_index_sql(old_index, bucket, bucket_count=bucket_count)
+            added_count = _write_delta_bucket(
+                con,
+                output_root=added_root,
+                bucket=bucket,
+                bucket_count=bucket_count,
+                select_sql=f"""
+                    SELECT n._raw_record_id, n.raw_record_bucket
+                    FROM ({new_sql}) n
+                    WHERE n._raw_record_id NOT IN (
+                        SELECT _raw_record_id FROM ({old_sql})
                     )
-                    SELECT
-                        _raw_record_key,
-                        _raw_record_id,
-                        'added' AS _change_type
-                    FROM new_keys
-                    WHERE _raw_record_key NOT IN (
-                        SELECT _raw_record_key FROM old_keys
-                    )
-                    UNION ALL
-                    SELECT
-                        _raw_record_key,
-                        _raw_record_id,
-                        'removed' AS _change_type
-                    FROM old_keys
-                    WHERE _raw_record_key NOT IN (
-                        SELECT _raw_record_key FROM new_keys
-                    )
-                    ORDER BY _raw_record_key, _change_type
-                ) TO {_sql_literal(str(output_file))} (FORMAT PARQUET, COMPRESSION ZSTD)
-                """
+                    ORDER BY n._raw_record_id
+                """,
             )
-        stats = con.execute(
-            f"""
-            SELECT _change_type, count(*) AS rows
-            FROM {_read_records_sql(output_path)}
-            GROUP BY _change_type
-            ORDER BY _change_type
-            """
-        ).fetchall()
+            removed_count = _write_delta_bucket(
+                con,
+                output_root=removed_root,
+                bucket=bucket,
+                bucket_count=bucket_count,
+                select_sql=f"""
+                    SELECT o._raw_record_id, o.raw_record_bucket
+                    FROM ({old_sql}) o
+                    WHERE o._raw_record_id NOT IN (
+                        SELECT _raw_record_id FROM ({new_sql})
+                    )
+                    ORDER BY o._raw_record_id
+                """,
+            )
+            delta_rows_by_type['added'] += added_count
+            delta_rows_by_type['removed'] += removed_count
     finally:
         con.close()
-    return {'delta_rows_by_type': dict(stats)}
-
-
-def _old_raw_record_id_map_sql(old_records: Path | None, *, part: int) -> str:
-    if old_records is None:
-        return """
-            SELECT
-                '' AS _raw_record_key,
-                CAST(NULL AS BIGINT) AS _raw_record_id,
-                CAST(NULL AS BIGINT) AS raw_record_part
-            WHERE false
-        """
-    part_expr = (
-        'raw_record_part'
-        if _records_have_column(old_records, 'raw_record_part')
-        else _legacy_raw_record_part_sql()
-    )
-    return f"""
-        SELECT
-            _raw_record_key,
-            min(_raw_record_id)::BIGINT AS _raw_record_id,
-            min({part_expr})::BIGINT AS raw_record_part
-        FROM {_read_records_sql(old_records)}
-        WHERE {part_expr} = {part}
-        GROUP BY _raw_record_key
-    """
+    delta_rows_by_type = {
+        change_type: count
+        for change_type, count in delta_rows_by_type.items()
+        if count
+    }
+    return {
+        'delta_rows_by_type': delta_rows_by_type,
+        'delta_bucket_counts': {
+            'added': _partition_dir_count(added_root),
+            'removed': _partition_dir_count(removed_root),
+            'skipped': skipped_bucket_count,
+        },
+        'changed_bucket_count': changed_bucket_count,
+        'skipped_bucket_count': skipped_bucket_count,
+    }
 
 
 def _clean_record(record: dict[str, Any]) -> dict[str, Any]:
@@ -614,37 +663,96 @@ def _clean_record(record: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-def _record_hash(record: dict[str, Any]) -> str:
-    digest = hashlib.blake2b(digest_size=32)
-    for key in sorted(record):
-        digest.update(key.encode('utf-8', errors='surrogatepass'))
-        digest.update(b'\x1f')
-        digest.update(_canonical_bytes(record[key]))
-        digest.update(b'\x1e')
-    return digest.hexdigest()
-
-
-def _canonical_bytes(value: Any) -> bytes:
+def canonical_raw_row_bytes(row: dict[str, Any]) -> bytes:
+    """Return deterministic bytes for a raw parser row."""
     return json.dumps(
-        _canonical_value(value),
+        {
+            'canonicalization_version': CANONICALIZATION_VERSION,
+            'row': _canonical_value(row),
+        },
         sort_keys=True,
         separators=(',', ':'),
         ensure_ascii=False,
     ).encode('utf-8', errors='surrogatepass')
 
 
+def raw_record_hash(row: dict[str, Any]) -> bytes:
+    return hashlib.sha256(canonical_raw_row_bytes(row)).digest()
+
+
+def raw_record_bucket(
+    raw_record_id: bytes,
+    *,
+    partition_bits: int = RAW_RECORD_PARTITION_BITS,
+) -> int:
+    if partition_bits <= 0:
+        return 0
+    return int.from_bytes(raw_record_id, 'big') >> (256 - partition_bits)
+
+
 def _canonical_value(value: Any) -> Any:
     if value is None:
-        return None
-    if isinstance(value, (str, int, float, bool)):
-        return value
+        return {'type': 'null'}
+    if isinstance(value, bool):
+        return {'type': 'bool', 'value': value}
+    if isinstance(value, int):
+        return {'type': 'number', 'value': str(value)}
+    if isinstance(value, float):
+        if math.isnan(value):
+            return {'type': 'nan'}
+        if math.isinf(value):
+            return {'type': 'number', 'value': 'Infinity' if value > 0 else '-Infinity'}
+        return {'type': 'number', 'value': _canonical_decimal(Decimal(str(value)))}
+    if isinstance(value, Decimal):
+        if value.is_nan():
+            return {'type': 'nan'}
+        if value.is_infinite():
+            return {'type': 'number', 'value': 'Infinity' if value > 0 else '-Infinity'}
+        return {'type': 'number', 'value': _canonical_decimal(value)}
+    if isinstance(value, str):
+        return {
+            'type': 'string',
+            'value': unicodedata.normalize('NFC', value),
+        }
     if isinstance(value, bytes):
-        return value.decode('utf-8', errors='replace')
+        return {
+            'type': 'string',
+            'value': unicodedata.normalize(
+                'NFC',
+                value.decode('utf-8', errors='replace'),
+            ),
+        }
+    if isinstance(value, datetime):
+        timestamp = value
+        if timestamp.tzinfo is not None:
+            timestamp = timestamp.astimezone(UTC)
+        return {'type': 'timestamp', 'value': timestamp.isoformat()}
+    if isinstance(value, (date, time)):
+        return {'type': 'timestamp', 'value': value.isoformat()}
     if isinstance(value, (list, tuple)):
-        return [_canonical_value(item) for item in value]
+        return {
+            'type': 'array',
+            'value': [_canonical_value(item) for item in value],
+        }
     if isinstance(value, dict):
-        return {str(k): _canonical_value(v) for k, v in sorted(value.items())}
-    return str(value)
+        return {
+            'type': 'object',
+            'value': {
+                unicodedata.normalize('NFC', str(k)): _canonical_value(v)
+                for k, v in sorted(value.items(), key=lambda item: str(item[0]))
+            },
+        }
+    return {
+        'type': 'string',
+        'value': unicodedata.normalize('NFC', str(value)),
+    }
+
+
+def _canonical_decimal(value: Decimal) -> str:
+    normalized = value.normalize()
+    if normalized == 0:
+        return '0'
+    return format(normalized, 'f')
 
 
 def _stringify_if_unsupported(value: Any) -> Any:
@@ -691,12 +799,179 @@ def _duplicate_stats(records_path: Path) -> dict[str, Any]:
     }
 
 
-def _rewrite_manifest_records_path(manifest_path: Path, records_path: Path) -> None:
+def _bucket_fingerprints(
+    index_path: Path,
+    *,
+    bucket_count: int,
+) -> dict[str, dict[str, Any]]:
+    fingerprints: dict[str, dict[str, Any]] = {}
+    for bucket in range(bucket_count):
+        bucket_path = index_path / _bucket_dir_name(
+            bucket,
+            bucket_count=bucket_count,
+        )
+        if not _has_parquet_files(bucket_path):
+            continue
+        raw_ids: list[bytes] = []
+        dataset = ds.dataset(bucket_path, format='parquet')
+        for batch in dataset.to_batches(
+            columns=['_raw_record_id'],
+            batch_size=100_000,
+        ):
+            for value in batch.column('_raw_record_id').to_pylist():
+                if value is not None:
+                    raw_ids.append(_raw_record_id_bytes(value))
+        digest = hashlib.sha256()
+        for raw_id in sorted(raw_ids):
+            digest.update(raw_id)
+        fingerprints[str(bucket)] = {
+            'count': len(raw_ids),
+            'digest': digest.hexdigest(),
+        }
+    return fingerprints
+
+
+def _write_delta_bucket(
+    con: duckdb.DuckDBPyConnection,
+    *,
+    output_root: Path,
+    bucket: int,
+    bucket_count: int,
+    select_sql: str,
+) -> int:
+    count = int(
+        con.execute(f'SELECT count(*) FROM ({select_sql})').fetchone()[0] or 0
+    )
+    if count == 0:
+        return 0
+    bucket_dir = output_root / _bucket_dir_name(bucket, bucket_count=bucket_count)
+    bucket_dir.mkdir(parents=True, exist_ok=True)
+    output_file = bucket_dir / 'data.parquet'
+    con.execute(
+        f"""
+        COPY (
+            SELECT
+                _raw_record_id,
+                raw_record_bucket,
+                {_sql_literal(output_root.name)} AS _change_type
+            FROM ({select_sql})
+        ) TO {_sql_literal(str(output_file))} (FORMAT PARQUET, COMPRESSION ZSTD)
+        """
+    )
+    return count
+
+
+def _bucket_index_sql(
+    index_path: Path,
+    bucket: int,
+    *,
+    bucket_count: int,
+) -> str:
+    bucket_path = index_path / _bucket_dir_name(bucket, bucket_count=bucket_count)
+    if not _has_parquet_files(bucket_path):
+        return """
+            SELECT
+                CAST(NULL AS BLOB) AS _raw_record_id,
+                CAST(NULL AS BIGINT) AS raw_record_bucket
+            WHERE false
+        """
+    return f"""
+        SELECT
+            _raw_record_id,
+            try_cast(raw_record_bucket AS BIGINT) AS raw_record_bucket
+        FROM {_read_records_sql(bucket_path)}
+    """
+
+
+def _partitioning_config_from_latest(
+    latest: dict[str, Any] | None,
+) -> dict[str, int | str]:
+    if latest:
+        manifest_path = latest.get('manifest_path')
+        if manifest_path:
+            try:
+                manifest = json.loads(Path(str(manifest_path)).read_text())
+            except (OSError, json.JSONDecodeError):
+                manifest = {}
+            partitioning = manifest.get('partitioning')
+            if isinstance(partitioning, dict):
+                return {
+                    'scheme': str(partitioning.get('scheme') or 'hash_prefix'),
+                    'partition_bits': int(
+                        partitioning.get('partition_bits')
+                        or RAW_RECORD_PARTITION_BITS
+                    ),
+                    'bucket_count': int(
+                        partitioning.get('bucket_count')
+                        or RAW_RECORD_BUCKET_COUNT
+                    ),
+                }
+    return {
+        'scheme': 'hash_prefix',
+        'partition_bits': RAW_RECORD_PARTITION_BITS,
+        'bucket_count': RAW_RECORD_BUCKET_COUNT,
+    }
+
+
+def _assert_supported_partitioning(partitioning: dict[str, int | str]) -> None:
+    if partitioning.get('scheme') != 'hash_prefix':
+        raise ValueError(f'Unsupported raw record partitioning: {partitioning!r}')
+    partition_bits = int(partitioning['partition_bits'])
+    bucket_count = int(partitioning['bucket_count'])
+    if bucket_count != 2**partition_bits:
+        raise ValueError(
+            'Raw record bucket_count must equal 2 ** partition_bits: '
+            f'{partitioning!r}'
+        )
+
+
+def _raw_record_id_bytes(value: Any) -> bytes:
+    if isinstance(value, bytes):
+        raw = value
+    elif isinstance(value, bytearray):
+        raw = bytes(value)
+    elif isinstance(value, memoryview):
+        raw = value.tobytes()
+    elif isinstance(value, str):
+        raw = bytes.fromhex(value)
+    else:
+        raw = bytes(value)
+    if len(raw) != 32:
+        raise ValueError(f'Expected 32-byte raw record hash, got {len(raw)} bytes')
+    return raw
+
+
+def _bucket_dir_name(bucket: int, *, bucket_count: int) -> str:
+    return f'raw_record_bucket={bucket:0{_bucket_width(bucket_count)}d}'
+
+
+def _bucket_width(bucket_count: int) -> int:
+    return max(3, len(str(bucket_count - 1)))
+
+
+def _partition_dir_count(path: Path) -> int:
+    if not path.exists():
+        return 0
+    return sum(1 for child in path.iterdir() if child.is_dir())
+
+
+def _has_parquet_files(path: Path) -> bool:
+    return path.exists() and any(path.rglob('*.parquet'))
+
+
+def _rewrite_manifest_paths(
+    manifest_path: Path,
+    *,
+    records_path: Path,
+    index_path: Path,
+) -> None:
     if not manifest_path.exists():
         return
     manifest = json.loads(manifest_path.read_text())
     manifest['records_path'] = str(records_path)
+    manifest['index_path'] = str(index_path)
     manifest['accepted_records_path'] = str(records_path)
+    manifest['accepted_index_path'] = str(index_path)
     manifest['accepted_at'] = datetime.now(UTC).isoformat()
     _write_json(manifest_path, manifest)
 
@@ -723,26 +998,3 @@ def _read_records_sql(path: Path) -> str:
         f"{_sql_literal(str(path / '**' / '*.parquet'))}, "
         "union_by_name=true, hive_partitioning=true)"
     )
-
-
-def _records_have_column(path: Path, column: str) -> bool:
-    if not path.exists():
-        return False
-    try:
-        return column in ds.dataset(path, format='parquet').schema.names
-    except Exception:
-        return False
-
-
-def _legacy_raw_record_part_sql() -> str:
-    cases = ' '.join(
-        f"WHEN '{hex_digit}' THEN {part}"
-        for part, hex_digit in enumerate('0123456789abcdef')
-    )
-    return f"CASE lower(substr(_raw_record_key, 1, 1)) {cases} ELSE 0 END"
-
-
-def _stable_part(raw_record_key: str) -> int:
-    if not raw_record_key:
-        return 0
-    return int(raw_record_key[0], 16) % RAW_RECORD_PART_COUNT

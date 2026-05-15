@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import sys
 import argparse
+import json
 from pathlib import Path
 
 import psycopg2
@@ -191,7 +192,7 @@ def main(argv: list[str] | None = None) -> int:
     ingest.add_argument(
         '--batch-size',
         type=int,
-        default=5000,
+        default=25_000,
         help='Source rows per bulk staging flush.',
     )
     ingest.add_argument('--commit-every', type=int, default=1000)
@@ -430,6 +431,7 @@ def _handle_ingest(
                 force_refresh=args.force_refresh,
             )
         )
+        is_first_snapshot = _is_first_preparse_snapshot(snapshot)
         if fn.output_kind == 'entity':
             sync_stats = sync_source_snapshot(
                 conn,
@@ -440,10 +442,12 @@ def _handle_ingest(
                 records_path=snapshot.records_path,
                 delta_path=snapshot.delta_path,
                 refresh=args.refresh,
+                sync_current_rows=False,
             )
             print(
                 f'[{fn.source}.{fn.function_name}] '
-                f'current_rows={sync_stats.current_rows} '
+                f'snapshot_rows={_preparse_snapshot_rows(snapshot):,} '
+                f'synced_current_rows={sync_stats.current_rows} '
                 f'removed_rows={sync_stats.removed_rows} '
                 f'refreshed_rows={sync_stats.refreshed_rows}',
                 flush=True,
@@ -455,6 +459,7 @@ def _handle_ingest(
                 fn.output_kind == 'entity'
                 and not args.full_current
                 and not args.refresh
+                and not is_first_snapshot
             ),
         )
         if fn.output_kind == 'ontology':
@@ -529,6 +534,28 @@ def _collect_ontology_terms(records: object) -> list[OntologyTerm]:
         if isinstance(value, OntologyTerm) and value.id:
             terms.append(value)
     return terms
+
+
+def _is_first_preparse_snapshot(snapshot: object) -> bool:
+    manifest = _read_preparse_manifest(snapshot)
+    return False if manifest is None else not manifest.get('previous_snapshot_id')
+
+
+def _preparse_snapshot_rows(snapshot: object) -> int:
+    manifest = _read_preparse_manifest(snapshot)
+    if manifest is None:
+        return 0
+    return int(manifest.get('rows', 0) or 0)
+
+
+def _read_preparse_manifest(snapshot: object) -> dict[str, object] | None:
+    manifest_path = getattr(snapshot, 'manifest_path', None)
+    if manifest_path is None:
+        return None
+    try:
+        return json.loads(Path(manifest_path).read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
 
 
 def _write_ontology_obo(

@@ -133,6 +133,14 @@ def annotations_to_rows(
     return [annotation_to_row(annotation) for annotation in annotations]
 
 
+def interaction_relation_annotations(
+    row: dict[str, object],
+) -> list[dict[str, str | None]]:
+    """Return annotations that should be carried by relation evidence."""
+
+    return annotations_to_rows(row.get('annotations') or [])
+
+
 def annotation_to_row(annotation: object) -> dict[str, str | None]:
     """Convert one annotation object or dict into serializable fields."""
 
@@ -188,6 +196,8 @@ def copy_value(value: object) -> str:
         return '\\N'
     if isinstance(value, bool):
         return 'true' if value else 'false'
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        return '\\x' + bytes(value).hex()
     return str(value)
 
 

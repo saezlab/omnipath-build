@@ -33,14 +33,15 @@ def ensure_schema(
                   source_row_id bigserial PRIMARY KEY,
                   source text NOT NULL,
                   dataset text NOT NULL,
-                  row_id bigint NOT NULL,
+                  raw_record_hash bytea NOT NULL,
                   snapshot_id text,
                   processed_at timestamptz,
-                  UNIQUE (source, dataset, row_id)
+                  UNIQUE (source, dataset, raw_record_hash)
                 )
                 """
             ).format(sql.Identifier(schema))
         )
+        _ensure_source_row_hash_key(cur, schema)
         cur.execute(
             sql.SQL(
                 """
@@ -160,6 +161,49 @@ def ensure_schema(
     conn.commit()
 
 
+def _ensure_source_row_hash_key(
+    cur: psycopg2.extensions.cursor,
+    schema: str,
+) -> None:
+    schema_id = sql.Identifier(schema)
+    cur.execute(
+        sql.SQL(
+            """
+            ALTER TABLE {}.source_row
+            ADD COLUMN IF NOT EXISTS raw_record_hash bytea
+            """
+        ).format(schema_id)
+    )
+    cur.execute(
+        """
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = %s
+          AND table_name = 'source_row'
+          AND column_name = 'row_id'
+        """,
+        [schema],
+    )
+    if cur.fetchone():
+        cur.execute(
+            sql.SQL(
+                """
+                ALTER TABLE {}.source_row
+                ALTER COLUMN row_id DROP NOT NULL
+                """
+            ).format(schema_id)
+        )
+    cur.execute(
+        sql.SQL(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS source_row_raw_record_hash_idx
+            ON {}.source_row (source, dataset, raw_record_hash)
+            WHERE raw_record_hash IS NOT NULL
+            """
+        ).format(schema_id)
+    )
+
+
 def _ensure_resolution_schema(
     cur: psycopg2.extensions.cursor,
     schema: str,
@@ -274,6 +318,7 @@ def _ensure_resolution_schema(
               source text NOT NULL,
               key_type text NOT NULL,
               key_value text NOT NULL,
+              key_value_hash text GENERATED ALWAYS AS (md5(key_value)) STORED,
               taxonomy_id text,
               primary_uniprot text NOT NULL,
               mapping_type text NOT NULL
@@ -288,6 +333,7 @@ def _ensure_resolution_schema(
               source text NOT NULL,
               key_type text NOT NULL,
               key_value text NOT NULL,
+              key_value_hash text GENERATED ALWAYS AS (md5(key_value)) STORED,
               standard_inchi_key text NOT NULL,
               standard_inchi text NOT NULL
             )
@@ -302,6 +348,19 @@ def _ensure_resolution_schema(
             """
         ).format(schema_id)
     )
+    for table in (
+        'resolver_protein_identifier_lookup',
+        'resolver_chemical_identifier_lookup',
+    ):
+        cur.execute(
+            sql.SQL(
+                """
+                ALTER TABLE {}.{}
+                ADD COLUMN IF NOT EXISTS key_value_hash text
+                GENERATED ALWAYS AS (md5(key_value)) STORED
+                """
+            ).format(schema_id, sql.Identifier(table))
+        )
     cur.execute(
         sql.SQL(
             """
@@ -397,15 +456,14 @@ def _ensure_resolution_schema(
               relation_evidence_id bigint NOT NULL
                 REFERENCES {}.relation_evidence(relation_evidence_id)
                 ON DELETE CASCADE,
-              annotation_id bigint NOT NULL
+              annotation_id bigint PRIMARY KEY
                 REFERENCES {}.annotation(annotation_id)
-                ON DELETE CASCADE,
-              PRIMARY KEY (relation_id, relation_evidence_id, annotation_id),
-              UNIQUE (annotation_id)
+                ON DELETE CASCADE
             )
             """
         ).format(schema_id, schema_id, schema_id, schema_id)
     )
+    _ensure_relation_annotation_key(cur, schema)
     cur.execute(
         sql.SQL('DROP TABLE IF EXISTS {}.relation_evidence_resolution').format(
             schema_id
@@ -466,6 +524,42 @@ def _ensure_identifier_hash_key(
             """
         ).format(schema_id)
     )
+
+
+def _ensure_relation_annotation_key(
+    cur: psycopg2.extensions.cursor,
+    schema: str,
+) -> None:
+    schema_id = sql.Identifier(schema)
+    cur.execute(
+        """
+        SELECT c.conname, array_agg(a.attname ORDER BY cols.ordinality)
+        FROM pg_constraint c
+        JOIN pg_class rel ON rel.oid = c.conrelid
+        JOIN pg_namespace ns ON ns.oid = rel.relnamespace
+        JOIN unnest(c.conkey) WITH ORDINALITY AS cols(attnum, ordinality)
+          ON true
+        JOIN pg_attribute a
+          ON a.attrelid = rel.oid
+         AND a.attnum = cols.attnum
+        WHERE ns.nspname = %s
+          AND rel.relname = 'relation_evidence_annotation'
+          AND c.contype = 'p'
+        GROUP BY c.conname
+        """,
+        [schema],
+    )
+    for constraint_name, columns in cur.fetchall():
+        if list(columns) == ['annotation_id']:
+            continue
+        cur.execute(
+            sql.SQL(
+                'ALTER TABLE {}.relation_evidence_annotation DROP CONSTRAINT {}'
+            ).format(
+                schema_id,
+                sql.Identifier(constraint_name),
+            )
+        )
 
 
 def _ensure_entity_hash_key(
@@ -873,11 +967,6 @@ def _ensure_resolution_indexes(
             'relation_evidence',
             ('source', 'dataset'),
         ),
-        (
-            'relation_evidence_relation_relation_idx',
-            'relation_evidence_relation',
-            ('relation_evidence_id',),
-        ),
         ('annotation_entity_idx', 'annotation', ('entity_id',)),
         (
             'annotation_entity_evidence_term_idx',
@@ -885,14 +974,14 @@ def _ensure_resolution_indexes(
             ('entity_evidence_id', 'term', 'unit'),
         ),
         (
-            'relation_evidence_annotation_annotation_idx',
-            'relation_evidence_annotation',
-            ('annotation_id',),
-        ),
-        (
             'relation_evidence_annotation_relation_evidence_idx',
             'relation_evidence_annotation',
             ('relation_evidence_id',),
+        ),
+        (
+            'resolver_protein_lookup_key_hash_value_idx',
+            'resolver_protein_identifier_lookup',
+            ('key_type', 'key_value_hash', 'key_value', 'mapping_type', 'source'),
         ),
         (
             'resolver_protein_lookup_key_tax_idx',
@@ -903,6 +992,11 @@ def _ensure_resolution_indexes(
             'resolver_protein_lookup_key_idx',
             'resolver_protein_identifier_lookup',
             ('key_type', 'key_value'),
+        ),
+        (
+            'resolver_chemical_lookup_key_hash_value_idx',
+            'resolver_chemical_identifier_lookup',
+            ('key_type', 'key_value_hash', 'key_value', 'source'),
         ),
         (
             'resolver_chemical_lookup_key_idx',

@@ -288,7 +288,7 @@ def _create_entity_scope(
             """
             (
               r.entity_evidence_id IS NULL
-              OR r.status <> 'resolved'
+              OR r.status IS DISTINCT FROM 'resolved'
             )
             """
         )
@@ -321,6 +321,7 @@ def _create_entity_scope(
         ).format(sql.Identifier(schema), join_sql, where_sql),
         params,
     )
+    cur.execute('ANALYZE _entity_scope')
 
 
 def _create_entity_keys(cur: psycopg2.extensions.cursor, schema: str) -> None:
@@ -424,7 +425,7 @@ def _create_entity_taxonomy_conflict_table(
             FROM _entity_key k
             JOIN {}.resolver_protein_identifier_lookup p
               ON p.key_type = k.resolver_key_type
-             AND md5(p.key_value) = k.key_value_hash
+             AND p.key_value_hash = k.key_value_hash
              AND p.key_value = k.key_value
             JOIN {}.resolver_mapping_policy pol
               ON pol.entity_family = 'protein'
@@ -487,7 +488,7 @@ def _insert_protein_candidates(
             FROM _entity_key k
             JOIN {}.resolver_protein_identifier_lookup p
               ON p.key_type = k.resolver_key_type
-             AND md5(p.key_value) = k.key_value_hash
+             AND p.key_value_hash = k.key_value_hash
              AND p.key_value = k.key_value
             JOIN {}.resolver_mapping_policy pol
               ON pol.entity_family = 'protein'
@@ -551,7 +552,7 @@ def _insert_chemical_candidates(
             FROM _entity_key k
             JOIN {}.resolver_chemical_identifier_lookup c
               ON c.key_type = k.resolver_key_type
-             AND md5(c.key_value) = k.key_value_hash
+             AND c.key_value_hash = k.key_value_hash
              AND c.key_value = k.key_value
             JOIN {}.resolver_mapping_policy pol
               ON pol.entity_family = 'chemical'
@@ -669,7 +670,7 @@ def _insert_chemical_resolver_identifier_links(
               FROM _entity_key k
               JOIN {}.resolver_chemical_identifier_lookup c
                 ON c.key_type = k.resolver_key_type
-               AND md5(c.key_value) = k.key_value_hash
+               AND c.key_value_hash = k.key_value_hash
                AND c.key_value = k.key_value
               WHERE k.entity_type = ANY(%s)
               UNION
@@ -764,7 +765,11 @@ def _insert_chemical_resolver_identifier_links(
              AND i.value = r.value
             ON CONFLICT DO NOTHING
             """
-        ).format(sql.Identifier(schema), sql.Identifier(schema))
+        ).format(
+            sql.Identifier(schema),
+            sql.Identifier(schema),
+            sql.Identifier(schema),
+        )
     )
 
 
@@ -1049,13 +1054,18 @@ def _insert_entities(cur: psycopg2.extensions.cursor, schema: str) -> None:
             ON CONFLICT (entity_type, id_type, id_hash)
             DO UPDATE SET
               taxonomy_id = COALESCE({}.entity.taxonomy_id, EXCLUDED.taxonomy_id),
-              resolution_status = CASE
-                WHEN EXCLUDED.resolution_status = 'resolved'
-                  THEN 'resolved'
-                ELSE 'unresolved'
-              END
+          resolution_status = CASE
+            WHEN {}.entity.resolution_status = 'resolved'
+              OR EXCLUDED.resolution_status = 'resolved'
+              THEN 'resolved'
+            ELSE 'unresolved'
+          END
             """
-        ).format(sql.Identifier(schema), sql.Identifier(schema))
+        ).format(
+            sql.Identifier(schema),
+            sql.Identifier(schema),
+            sql.Identifier(schema),
+        )
     )
 
 
@@ -1251,13 +1261,11 @@ def _insert_relation_evidence_links(
     cur: psycopg2.extensions.cursor,
     schema: str,
 ) -> None:
+    cur.execute('DROP TABLE IF EXISTS _relation_link')
     cur.execute(
         sql.SQL(
             """
-            INSERT INTO {}.relation_evidence_relation (
-              relation_id,
-              relation_evidence_id
-            )
+            CREATE TEMP TABLE _relation_link ON COMMIT DROP AS
             SELECT
               r.relation_id,
               ep.relation_evidence_id
@@ -1269,9 +1277,31 @@ def _insert_relation_evidence_links(
              AND r.relation_category IS NOT DISTINCT FROM ep.relation_category
             WHERE ep.subject_entity_id IS NOT NULL
               AND ep.object_entity_id IS NOT NULL
-            ON CONFLICT DO NOTHING
             """
         ).format(sql.Identifier(schema), sql.Identifier(schema))
+    )
+    cur.execute(
+        """
+        CREATE UNIQUE INDEX ON _relation_link (
+          relation_evidence_id
+        )
+        """
+    )
+    cur.execute('ANALYZE _relation_link')
+    cur.execute(
+        sql.SQL(
+            """
+            INSERT INTO {}.relation_evidence_relation (
+              relation_id,
+              relation_evidence_id
+            )
+            SELECT
+              relation_id,
+              relation_evidence_id
+            FROM _relation_link
+            ON CONFLICT DO NOTHING
+            """
+        ).format(sql.Identifier(schema))
     )
 
 
@@ -1288,18 +1318,15 @@ def _insert_relation_evidence_annotation_links(
               annotation_id
             )
             SELECT
-              rer.relation_id,
-              rer.relation_evidence_id,
+              rl.relation_id,
+              rl.relation_evidence_id,
               a.annotation_id
-            FROM {}.relation_evidence_relation rer
-            JOIN _relation_scope rs
-              ON rs.relation_evidence_id = rer.relation_evidence_id
+            FROM _relation_link rl
             JOIN {}.annotation a
-              ON a.relation_evidence_id = rer.relation_evidence_id
+              ON a.relation_evidence_id = rl.relation_evidence_id
             ON CONFLICT DO NOTHING
             """
         ).format(
-            sql.Identifier(schema),
             sql.Identifier(schema),
             sql.Identifier(schema),
         )

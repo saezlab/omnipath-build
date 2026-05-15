@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 from datetime import UTC, datetime
 from collections.abc import Iterable
+import hashlib
 
 from psycopg2 import sql
 import psycopg2.extensions
@@ -16,6 +17,7 @@ from minimal.ingest.common import (
     unwrap_record as _unwrap,
     annotation_to_row as _annotation_to_row,
     annotations_to_rows as _annotations_to_rows,
+    interaction_relation_annotations,
     is_interaction_like,
     membership_relation_spec,
     interaction_relation_spec,
@@ -29,6 +31,12 @@ from omnipath_build.gold.utils.schema import (
     PredicateRule,
     string_or_none,
 )
+
+
+def _synthetic_raw_record_hash(source: str, dataset: str, index: int) -> bytes:
+    payload = f'{source}\0{dataset}\0{index}'.encode('utf-8')
+    return hashlib.sha256(payload).digest()
+
 
 class MinimalIngestor:
     """Stream silver entities into minimal evidence tables."""
@@ -60,9 +68,18 @@ class MinimalIngestor:
             entity, provenance = _unwrap(item)
             if not isinstance(entity, Entity):
                 continue
-            row_id = int(provenance.raw_record_id) if provenance else index
+            raw_record_hash = (
+                provenance.raw_record_id
+                if provenance
+                else _synthetic_raw_record_hash(source, dataset, index)
+            )
             snapshot_id = provenance.snapshot_id if provenance else None
-            self._insert_source_row(source, dataset, row_id, snapshot_id)
+            row_id = self._insert_source_row(
+                source,
+                dataset,
+                raw_record_hash,
+                snapshot_id,
+            )
             self._ingest_entity_tree(
                 entity,
                 source=source,
@@ -106,52 +123,65 @@ class MinimalIngestor:
         parent_entity_evidence_id: int | None,
         entity_role: str,
         stats: _MutableStats,
-    ) -> int:
+    ) -> int | None:
         row = _entity_to_row(entity)
-        entity_evidence_id = self._insert_entity_evidence(
-            source=source,
-            dataset=dataset,
-            row_id=row_id,
-            snapshot_id=snapshot_id,
-            occurrence_id=occurrence_id,
-            parent_entity_evidence_id=parent_entity_evidence_id,
-            entity_role=entity_role,
-            entity_type=row.get('type'),
-            taxonomy_id=extract_taxonomy_id(row),
+        entity_type = string_or_none(row.get('type'))
+        memberships = list(getattr(entity, 'membership', None) or [])
+        relation_only_interaction = (
+            is_interaction_like(entity_type)
+            and sum(
+                1
+                for membership in memberships
+                if getattr(membership, 'member', None) is not None
+            )
+            == 2
         )
-        stats.entity_evidence += 1
 
-        for identifier in row.get('identifiers') or []:
-            ident_type = string_or_none(identifier.get('type'))
-            ident_value = string_or_none(identifier.get('value'))
-            if ident_type is None or ident_value is None:
-                continue
-            identifier_id = self._identifier_id(ident_type, ident_value)
-            self._link_entity_identifier(entity_evidence_id, identifier_id)
-            stats.identifiers += 1
-
-        for annotation in row.get('annotations') or []:
-            relation_id = self._insert_annotation_relation_evidence(
+        entity_evidence_id: int | None = None
+        if not relation_only_interaction:
+            entity_evidence_id = self._insert_entity_evidence(
                 source=source,
                 dataset=dataset,
                 row_id=row_id,
                 snapshot_id=snapshot_id,
-                subject_entity_evidence_id=entity_evidence_id,
-                subject_occurrence_id=occurrence_id,
-                annotation=annotation,
+                occurrence_id=occurrence_id,
+                parent_entity_evidence_id=parent_entity_evidence_id,
+                entity_role=entity_role,
+                entity_type=row.get('type'),
+                taxonomy_id=extract_taxonomy_id(row),
             )
-            if relation_id is not None:
-                stats.relation_evidence += 1
-                continue
-            if self._insert_annotation(
-                scope='entity',
-                annotation=annotation,
-                entity_evidence_id=entity_evidence_id,
-                relation_evidence_id=None,
-            ):
-                stats.annotations += 1
+            stats.entity_evidence += 1
 
-        memberships = list(getattr(entity, 'membership', None) or [])
+            for identifier in row.get('identifiers') or []:
+                ident_type = string_or_none(identifier.get('type'))
+                ident_value = string_or_none(identifier.get('value'))
+                if ident_type is None or ident_value is None:
+                    continue
+                identifier_id = self._identifier_id(ident_type, ident_value)
+                self._link_entity_identifier(entity_evidence_id, identifier_id)
+                stats.identifiers += 1
+
+            for annotation in row.get('annotations') or []:
+                relation_id = self._insert_annotation_relation_evidence(
+                    source=source,
+                    dataset=dataset,
+                    row_id=row_id,
+                    snapshot_id=snapshot_id,
+                    subject_entity_evidence_id=entity_evidence_id,
+                    subject_occurrence_id=occurrence_id,
+                    annotation=annotation,
+                )
+                if relation_id is not None:
+                    stats.relation_evidence += 1
+                    continue
+                if self._insert_annotation(
+                    scope='entity',
+                    annotation=annotation,
+                    entity_evidence_id=entity_evidence_id,
+                    relation_evidence_id=None,
+                ):
+                    stats.annotations += 1
+
         member_ids: list[tuple[int, object]] = []
         for member_index, membership in enumerate(memberships):
             member = getattr(membership, 'member', None)
@@ -168,10 +198,10 @@ class MinimalIngestor:
                 entity_role='member',
                 stats=stats,
             )
-            member_ids.append((member_id, membership))
+            if member_id is not None:
+                member_ids.append((member_id, membership))
 
-        entity_type = string_or_none(row.get('type'))
-        if is_interaction_like(entity_type) and len(member_ids) == 2:
+        if relation_only_interaction and len(member_ids) == 2:
             relation_id = self._insert_interaction_relation(
                 row,
                 member_ids,
@@ -185,10 +215,12 @@ class MinimalIngestor:
                 stats.relation_evidence += 1
                 stats.annotations += self._insert_relation_annotations(
                     relation_id,
-                    row.get('annotations') or [],
+                    interaction_relation_annotations(row),
                     scope='relation',
                 )
         elif member_ids:
+            if entity_evidence_id is None:
+                return None
             for member_index, (member_id, membership) in enumerate(member_ids):
                 relation_id = self._insert_membership_relation(
                     parent_id=entity_evidence_id,
@@ -277,21 +309,24 @@ class MinimalIngestor:
         self,
         source: str,
         dataset: str,
-        row_id: int,
+        raw_record_hash: bytes,
         snapshot_id: str | None,
-    ) -> None:
+    ) -> int:
         with self.conn.cursor() as cur:
             cur.execute(
                 sql.SQL(
                     """
                     INSERT INTO {}.source_row
-                      (source, dataset, row_id, snapshot_id)
+                      (source, dataset, raw_record_hash, snapshot_id)
                     VALUES (%s, %s, %s, %s)
-                    ON CONFLICT (source, dataset, row_id) DO NOTHING
+                    ON CONFLICT (source, dataset, raw_record_hash)
+                    DO UPDATE SET snapshot_id = EXCLUDED.snapshot_id
+                    RETURNING source_row_id
                     """
                 ).format(sql.Identifier(self.schema)),
-                [source, dataset, row_id, snapshot_id],
+                [source, dataset, bytes(raw_record_hash), snapshot_id],
             )
+            return int(cur.fetchone()[0])
 
     def _mark_source_row_processed(
         self,
@@ -305,10 +340,10 @@ class MinimalIngestor:
                     """
                     UPDATE {}.source_row
                     SET processed_at = %s
-                    WHERE source = %s AND dataset = %s AND row_id = %s
+                    WHERE source_row_id = %s
                     """
                 ).format(sql.Identifier(self.schema)),
-                [datetime.now(UTC), source, dataset, row_id],
+                [datetime.now(UTC), row_id],
             )
 
     def _insert_entity_evidence(

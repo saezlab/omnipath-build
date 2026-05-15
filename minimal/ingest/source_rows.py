@@ -30,24 +30,30 @@ def sync_source_snapshot(
     records_path: str | Path,
     delta_path: str | Path,
     refresh: bool = False,
+    sync_current_rows: bool = True,
 ) -> SourceSnapshotSyncStats:
     """Apply raw snapshot membership to row-scoped evidence tables.
 
     The preparse layer owns raw-record hash comparison. This function receives
-    the resulting stable row IDs: all current row IDs for lineage updates and
-    removed row IDs for evidence deletion. When refresh is true, existing
+    bounded batches of raw-record hashes, resolves them to source_row_id values,
+    and uses those bigint IDs for lineage updates and evidence deletion. When
+    refresh is true, existing
     source-scoped evidence is removed before current rows are reprocessed; this
     covers parser or mapper changes which do not alter raw row hashes.
     """
 
     with conn.cursor() as cur:
         _create_staging_tables(cur)
-        current_rows = _load_current_rows(
-            cur,
-            source=source,
-            dataset=dataset,
-            snapshot_id=snapshot_id,
-            records_path=Path(records_path),
+        current_rows = (
+            _load_current_rows(
+                cur,
+                source=source,
+                dataset=dataset,
+                snapshot_id=snapshot_id,
+                records_path=Path(records_path),
+            )
+            if sync_current_rows
+            else 0
         )
         refreshed_rows = (
             _load_refresh_rows(
@@ -65,10 +71,13 @@ def sync_source_snapshot(
             dataset=dataset,
             delta_path=Path(delta_path),
         )
+        if removed_rows:
+            _resolve_staged_row_ids(cur, schema=schema, table='stg_removed_source_row')
         if removed_rows or refreshed_rows:
             _delete_removed_source_row_evidence(cur, schema=schema)
-        _upsert_current_source_rows(cur, schema=schema)
-        _update_current_evidence_snapshot(cur, schema=schema)
+        if sync_current_rows:
+            _upsert_current_source_rows(cur, schema=schema)
+            _update_current_evidence_snapshot(cur, schema=schema)
 
     conn.commit()
     return SourceSnapshotSyncStats(
@@ -86,6 +95,7 @@ def _create_staging_tables(cur: psycopg2.extensions.cursor) -> None:
         CREATE TEMP TABLE stg_current_source_row (
           source text NOT NULL,
           dataset text NOT NULL,
+          raw_record_hash bytea NOT NULL,
           row_id bigint NOT NULL,
           snapshot_id text
         ) ON COMMIT DROP
@@ -104,6 +114,7 @@ def _create_removed_source_row_table(
         CREATE TEMP TABLE stg_removed_source_row (
           source text NOT NULL,
           dataset text NOT NULL,
+          raw_record_hash bytea,
           row_id bigint NOT NULL
         ) ON COMMIT DROP
         """
@@ -121,7 +132,7 @@ def _load_current_rows(
     return _copy_record_ids(
         cur,
         table='stg_current_source_row',
-        rows=_iter_current_row_ids(records_path),
+        rows=_iter_current_hashes(records_path),
         source=source,
         dataset=dataset,
         snapshot_id=snapshot_id,
@@ -138,7 +149,7 @@ def _load_removed_rows(
     return _copy_record_ids(
         cur,
         table='stg_removed_source_row',
-        rows=_iter_removed_row_ids(delta_path),
+        rows=_iter_removed_hashes(delta_path),
         source=source,
         dataset=dataset,
         snapshot_id=None,
@@ -155,8 +166,10 @@ def _load_refresh_rows(
     cur.execute(
         sql.SQL(
             """
-            INSERT INTO stg_removed_source_row (source, dataset, row_id)
-            SELECT source, dataset, row_id
+            INSERT INTO stg_removed_source_row (
+              source, dataset, raw_record_hash, row_id
+            )
+            SELECT source, dataset, raw_record_hash, source_row_id
             FROM {}.source_row
             WHERE source = %s AND dataset = %s
             """
@@ -166,7 +179,7 @@ def _load_refresh_rows(
     return int(cur.rowcount or 0)
 
 
-def _iter_current_row_ids(records_path: Path) -> Iterator[int]:
+def _iter_current_hashes(records_path: Path) -> Iterator[bytes]:
     if not records_path.exists():
         return
     dataset = ds.dataset(records_path, format='parquet')
@@ -176,30 +189,30 @@ def _iter_current_row_ids(records_path: Path) -> Iterator[int]:
     ):
         for value in batch.column('_raw_record_id').to_pylist():
             if value is not None:
-                yield int(value)
+                yield _raw_record_hash_bytes(value)
 
 
-def _iter_removed_row_ids(delta_path: Path) -> Iterator[int]:
+def _iter_removed_hashes(delta_path: Path) -> Iterator[bytes]:
     if not delta_path.exists():
         return
-    dataset = ds.dataset(delta_path, format='parquet')
+    removed_path = delta_path / 'removed'
+    if not any(removed_path.rglob('*.parquet')):
+        return
+    dataset = ds.dataset(removed_path, format='parquet')
     for batch in dataset.to_batches(
-        columns=['_raw_record_id', '_change_type'],
+        columns=['_raw_record_id'],
         batch_size=100_000,
     ):
-        table = pa.Table.from_batches([batch])
-        for row in table.to_pylist():
-            if row.get('_change_type') == 'removed':
-                value = row.get('_raw_record_id')
-                if value is not None:
-                    yield int(value)
+        for value in batch.column('_raw_record_id').to_pylist():
+            if value is not None:
+                yield _raw_record_hash_bytes(value)
 
 
 def _copy_record_ids(
     cur: psycopg2.extensions.cursor,
     *,
     table: str,
-    rows: Iterable[int],
+    rows: Iterable[bytes],
     source: str,
     dataset: str,
     snapshot_id: str | None,
@@ -207,25 +220,83 @@ def _copy_record_ids(
     buffer = StringIO()
     writer = csv.writer(buffer)
     count = 0
-    for row_id in rows:
+    pending = 0
+    columns = (
+        '(source, dataset, raw_record_hash, row_id)'
+        if snapshot_id is None
+        else '(source, dataset, raw_record_hash, row_id, snapshot_id)'
+    )
+
+    def flush() -> None:
+        nonlocal buffer, writer, pending
+        if pending == 0:
+            return
+        buffer.seek(0)
+        cur.copy_expert(
+            f'COPY {table} {columns} FROM STDIN WITH (FORMAT CSV)',
+            buffer,
+        )
+        buffer.close()
+        buffer = StringIO()
+        writer = csv.writer(buffer)
+        pending = 0
+
+    for raw_record_hash in rows:
         if snapshot_id is None:
-            writer.writerow([source, dataset, row_id])
+            writer.writerow([source, dataset, _bytea_csv(raw_record_hash), 0])
         else:
-            writer.writerow([source, dataset, row_id, snapshot_id])
+            writer.writerow(
+                [source, dataset, _bytea_csv(raw_record_hash), 0, snapshot_id]
+            )
         count += 1
+        pending += 1
+        if pending >= 100_000:
+            flush()
     if count == 0:
         return 0
-    buffer.seek(0)
-    columns = (
-        '(source, dataset, row_id)'
-        if snapshot_id is None
-        else '(source, dataset, row_id, snapshot_id)'
-    )
-    cur.copy_expert(
-        f'COPY {table} {columns} FROM STDIN WITH (FORMAT CSV)',
-        buffer,
-    )
+    flush()
     return count
+
+
+def _resolve_staged_row_ids(
+    cur: psycopg2.extensions.cursor,
+    *,
+    schema: str,
+    table: str,
+) -> None:
+    cur.execute(
+        sql.SQL(
+            """
+            UPDATE {} stg
+            SET row_id = sr.source_row_id
+            FROM {}.source_row sr
+            WHERE stg.row_id = 0
+              AND sr.source = stg.source
+              AND sr.dataset = stg.dataset
+              AND sr.raw_record_hash = stg.raw_record_hash
+            """
+        ).format(sql.Identifier(table), sql.Identifier(schema))
+    )
+
+
+def _raw_record_hash_bytes(value: object) -> bytes:
+    if isinstance(value, bytes):
+        raw = value
+    elif isinstance(value, bytearray):
+        raw = bytes(value)
+    elif isinstance(value, memoryview):
+        raw = value.tobytes()
+    elif isinstance(value, str):
+        raw = bytes.fromhex(value)
+    else:
+        raw = bytes(value)
+    if len(raw) != 32:
+        raise ValueError(f'Expected 32-byte raw record hash, got {len(raw)} bytes')
+    return raw
+
+
+def _bytea_csv(value: bytes) -> str:
+    return '\\x' + value.hex()
 
 
 def _delete_removed_source_row_evidence(
@@ -380,9 +451,7 @@ def _delete_removed_source_row_evidence(
             """
             DELETE FROM {}.source_row sr
             USING stg_removed_source_row rm
-            WHERE rm.source = sr.source
-              AND rm.dataset = sr.dataset
-              AND rm.row_id = sr.row_id
+            WHERE rm.row_id = sr.source_row_id
             """
         ).format(schema_id)
     )
@@ -436,14 +505,17 @@ def _upsert_current_source_rows(
     cur.execute(
         sql.SQL(
             """
-            INSERT INTO {}.source_row (source, dataset, row_id, snapshot_id)
-            SELECT DISTINCT source, dataset, row_id, snapshot_id
+            INSERT INTO {}.source_row (
+              source, dataset, raw_record_hash, snapshot_id
+            )
+            SELECT DISTINCT source, dataset, raw_record_hash, snapshot_id
             FROM stg_current_source_row
-            ON CONFLICT (source, dataset, row_id)
+            ON CONFLICT (source, dataset, raw_record_hash)
             DO UPDATE SET snapshot_id = EXCLUDED.snapshot_id
             """
         ).format(schema_id)
     )
+    _resolve_staged_row_ids(cur, schema=schema, table='stg_current_source_row')
 
 
 def _update_current_evidence_snapshot(
