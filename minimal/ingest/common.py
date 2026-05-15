@@ -199,6 +199,19 @@ def copy_value(value: object) -> str:
 TAXONOMY_IDENTIFIER_TERM = cv_term_label_accession(
     IdentifierNamespaceCv.NCBI_TAX_ID
 )
+STANDARD_INCHI_IDENTIFIER_TERM = cv_term_label_accession(
+    IdentifierNamespaceCv.STANDARD_INCHI
+)
+
+
+def include_identifier(ident_type: str | None, ident_value: str | None) -> bool:
+    """Return whether an identifier belongs in the generic identifier table."""
+
+    return (
+        ident_type is not None
+        and ident_value is not None
+        and ident_type != STANDARD_INCHI_IDENTIFIER_TERM
+    )
 
 
 def extract_taxonomy_id(row: dict[str, object]) -> str | None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from itertools import islice
 import os
 import sys
 import time
@@ -13,6 +14,7 @@ from pypath.inputs_v2.ontology_serializers import format_obo
 
 from minimal.db import (
     delete_source_content,
+    ensure_deferred_indexes,
     ensure_schema,
     rebuild_bitmap_tables,
     rebuild_derived_tables,
@@ -49,6 +51,12 @@ def main(argv: list[str] | None = None) -> int:
     subparsers = parser.add_subparsers(dest='command', required=True)
     init_db = subparsers.add_parser('init-db')
     init_db.add_argument('--drop-existing', action='store_true')
+    init_db.add_argument(
+        '--indexes',
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help='Create deferrable indexes during schema setup.',
+    )
 
     subparsers.add_parser('reset-content')
 
@@ -143,6 +151,12 @@ def main(argv: list[str] | None = None) -> int:
     ingest.add_argument('--database', default='omnipath')
     ingest.add_argument('--force-refresh', action='store_true')
     ingest.add_argument(
+        '--max-records',
+        type=int,
+        default=None,
+        help='Optional cap on source rows per dataset for smoke tests.',
+    )
+    ingest.add_argument(
         '--ensure-schema',
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -199,6 +213,7 @@ def main(argv: list[str] | None = None) -> int:
                 conn,
                 schema=args.schema,
                 drop_existing=args.drop_existing,
+                indexes=args.indexes,
             )
             return 0
         if args.command == 'reset-content':
@@ -230,9 +245,19 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.command == 'canonicalize':
             if args.ensure_schema:
-                ensure_schema(conn, schema=args.schema, progress=True)
+                ensure_schema(
+                    conn,
+                    schema=args.schema,
+                    progress=True,
+                    indexes=False,
+                )
             else:
                 print('[minimal] schema check skipped', flush=True)
+            ensure_deferred_indexes(
+                conn,
+                schema=args.schema,
+                progress=True,
+            )
             stats = canonicalize(
                 conn,
                 schema=args.schema,
@@ -255,8 +280,13 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 0
         if args.command == 'derive':
-            ensure_schema(conn, schema=args.schema)
+            ensure_schema(conn, schema=args.schema, indexes=False)
             if args.indexes:
+                ensure_deferred_indexes(
+                    conn,
+                    schema=args.schema,
+                    progress=True,
+                )
                 create_secondary_indexes(conn, schema=args.schema)
                 print('[derive] indexes=ready', flush=True)
             if args.tables:
@@ -391,6 +421,8 @@ def _handle_ingest(
                 flush=True,
             )
             records = raw_dataset(force_refresh=args.force_refresh)
+            if args.max_records is not None:
+                records = islice(records, args.max_records)
             if fn.output_kind == 'ontology':
                 terms = _collect_ontology_terms(records)
                 if args.obo_artifacts:

@@ -21,6 +21,7 @@ from minimal.ingest.common import (
     interaction_relation_spec,
     ontology_annotation_relation,
     extract_taxonomy_id,
+    include_identifier,
 )
 from pypath.internals.silver_schema import Entity
 from omnipath_build.gold.utils.schema import (
@@ -136,7 +137,7 @@ class MinimalIngestor:
             for identifier in row.get('identifiers') or []:
                 ident_type = string_or_none(identifier.get('type'))
                 ident_value = string_or_none(identifier.get('value'))
-                if ident_type is None or ident_value is None:
+                if not include_identifier(ident_type, ident_value):
                     continue
                 identifier_id = self._identifier_id(ident_type, ident_value)
                 self._link_entity_identifier(entity_evidence_id, identifier_id)

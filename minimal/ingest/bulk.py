@@ -22,6 +22,7 @@ from minimal.ingest.common import (
     interaction_relation_spec,
     ontology_annotation_relation,
     extract_taxonomy_id,
+    include_identifier,
 )
 from pypath.internals.silver_schema import Entity
 from omnipath_build.gold.utils.schema import (
@@ -140,7 +141,7 @@ class BulkMinimalIngestor:
             for identifier in row.get('identifiers') or []:
                 ident_type = string_or_none(identifier.get('type'))
                 ident_value = string_or_none(identifier.get('value'))
-                if ident_type is None or ident_value is None:
+                if not include_identifier(ident_type, ident_value):
                     continue
                 buffers.identifiers.append(
                     (
@@ -570,7 +571,7 @@ class BulkMinimalIngestor:
                   term, value, unit, scope,
                   entity_evidence_id, relation_evidence_id
                 )
-                SELECT DISTINCT
+                SELECT
                   s.term, s.value, s.unit, s.scope,
                   e.entity_evidence_id, NULL::bigint
                 FROM stg_annotation s
@@ -580,7 +581,6 @@ class BulkMinimalIngestor:
                  AND e.row_id = s.row_id
                  AND e.occurrence_id = s.target_occurrence_id
                 WHERE s.target_kind = 'entity'
-                ON CONFLICT DO NOTHING
                 """
             ).format(schema, schema)
         )
@@ -591,7 +591,7 @@ class BulkMinimalIngestor:
                   term, value, unit, scope,
                   entity_evidence_id, relation_evidence_id
                 )
-                SELECT DISTINCT
+                SELECT
                   s.term, s.value, s.unit, s.scope,
                   NULL::bigint, r.relation_evidence_id
                 FROM stg_annotation s
@@ -601,7 +601,6 @@ class BulkMinimalIngestor:
                  AND r.row_id = s.row_id
                  AND r.relation_occurrence_id = s.target_occurrence_id
                 WHERE s.target_kind = 'relation'
-                ON CONFLICT DO NOTHING
                 """
             ).format(schema, schema)
         )

@@ -32,6 +32,7 @@ def ensure_schema(
     schema: str = 'public',
     drop_existing: bool = False,
     progress: bool = False,
+    indexes: bool = True,
 ) -> None:
     """Create or refresh the minimal evidence and resolution schema."""
 
@@ -44,7 +45,10 @@ def ensure_schema(
         import time
 
         started = time.perf_counter()
-        log_step(f'ensure start schema={schema} drop_existing={drop_existing}')
+        log_step(
+            f'ensure start schema={schema} drop_existing={drop_existing} '
+            f'indexes={indexes}'
+        )
 
     with conn.cursor() as cur:
         if drop_existing:
@@ -183,7 +187,7 @@ def ensure_schema(
         )
         log_step('drop obsolete annotation indexes')
         _drop_obsolete_annotation_indexes(cur, schema)
-        _ensure_resolution_schema(cur, schema, progress=progress)
+        _ensure_resolution_schema(cur, schema, progress=progress, indexes=indexes)
 
     log_step('commit')
     conn.commit()
@@ -191,6 +195,24 @@ def ensure_schema(
         import time
 
         log_step(f'ensure done elapsed={time.perf_counter() - started:.1f}s')
+
+
+def ensure_deferred_indexes(
+    conn: psycopg2.extensions.connection,
+    *,
+    schema: str = 'public',
+    progress: bool = False,
+) -> None:
+    """Create indexes that can be deferred during a scratch content load."""
+
+    def log_step(message: str) -> None:
+        if progress:
+            print(f'[schema] {message}', flush=True)
+
+    log_step('ensure deferred indexes')
+    with conn.cursor() as cur:
+        _ensure_resolution_indexes(cur, schema)
+    conn.commit()
 
 
 def reset_content_tables(
@@ -236,6 +258,7 @@ def _ensure_resolution_schema(
     schema: str,
     *,
     progress: bool = False,
+    indexes: bool = True,
 ) -> None:
     def log_step(message: str) -> None:
         if progress:
@@ -362,7 +385,6 @@ def _ensure_resolution_schema(
               source text NOT NULL,
               key_type text NOT NULL,
               key_value text NOT NULL,
-              key_value_hash text GENERATED ALWAYS AS (md5(key_value)) STORED,
               taxonomy_id text,
               primary_uniprot text NOT NULL,
               mapping_type text NOT NULL
@@ -378,7 +400,6 @@ def _ensure_resolution_schema(
               source text NOT NULL,
               key_type text NOT NULL,
               key_value text NOT NULL,
-              key_value_hash text GENERATED ALWAYS AS (md5(key_value)) STORED,
               standard_inchi_key text NOT NULL,
               standard_inchi text NOT NULL
             )
@@ -394,20 +415,6 @@ def _ensure_resolution_schema(
             """
         ).format(schema_id)
     )
-    for table in (
-        'resolver_protein_identifier_lookup',
-        'resolver_chemical_identifier_lookup',
-    ):
-        log_step(f'ensure {table} hash column')
-        cur.execute(
-            sql.SQL(
-                """
-                ALTER TABLE {}.{}
-                ADD COLUMN IF NOT EXISTS key_value_hash text
-                GENERATED ALWAYS AS (md5(key_value)) STORED
-                """
-            ).format(schema_id, sql.Identifier(table))
-        )
     log_step('create resources table')
     cur.execute(
         sql.SQL(
@@ -530,8 +537,11 @@ def _ensure_resolution_schema(
             schema_id
         )
     )
-    log_step('ensure resolution indexes')
-    _ensure_resolution_indexes(cur, schema)
+    if indexes:
+        log_step('ensure resolution indexes')
+        _ensure_resolution_indexes(cur, schema)
+    else:
+        log_step('defer resolution indexes')
 
 
 def _ensure_identifier_hash_key(
@@ -971,12 +981,12 @@ def _ensure_resolution_indexes(
     schema: str,
 ) -> None:
     schema_id = sql.Identifier(schema)
+    cur.execute(
+        sql.SQL(
+            'DROP INDEX IF EXISTS {}.entity_evidence_identifier_entity_idx'
+        ).format(schema_id)
+    )
     specs = [
-        (
-            'entity_evidence_identifier_entity_idx',
-            'entity_evidence_identifier',
-            ('entity_evidence_id', 'identifier_id'),
-        ),
         (
             'entity_evidence_identifier_identifier_idx',
             'entity_evidence_identifier',
@@ -1036,11 +1046,6 @@ def _ensure_resolution_indexes(
             ('relation_evidence_id',),
         ),
         (
-            'resolver_protein_lookup_key_hash_value_idx',
-            'resolver_protein_identifier_lookup',
-            ('key_type', 'key_value_hash', 'key_value', 'mapping_type', 'source'),
-        ),
-        (
             'resolver_protein_lookup_key_tax_idx',
             'resolver_protein_identifier_lookup',
             ('key_type', 'key_value', 'taxonomy_id'),
@@ -1048,17 +1053,12 @@ def _ensure_resolution_indexes(
         (
             'resolver_protein_lookup_key_idx',
             'resolver_protein_identifier_lookup',
-            ('key_type', 'key_value'),
-        ),
-        (
-            'resolver_chemical_lookup_key_hash_value_idx',
-            'resolver_chemical_identifier_lookup',
-            ('key_type', 'key_value_hash', 'key_value', 'source'),
+            ('key_type', 'key_value', 'mapping_type', 'source'),
         ),
         (
             'resolver_chemical_lookup_key_idx',
             'resolver_chemical_identifier_lookup',
-            ('key_type', 'key_value'),
+            ('key_type', 'key_value', 'source'),
         ),
         ('resources_build_status_idx', 'resources', ('build_status',)),
     ]

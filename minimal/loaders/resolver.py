@@ -133,7 +133,6 @@ def _ensure_tables(
               source text NOT NULL,
               key_type text NOT NULL,
               key_value text NOT NULL,
-              key_value_hash text GENERATED ALWAYS AS (md5(key_value)) STORED,
               taxonomy_id text,
               primary_uniprot text NOT NULL,
               mapping_type text NOT NULL
@@ -148,7 +147,6 @@ def _ensure_tables(
               source text NOT NULL,
               key_type text NOT NULL,
               key_value text NOT NULL,
-              key_value_hash text GENERATED ALWAYS AS (md5(key_value)) STORED,
               standard_inchi_key text NOT NULL,
               standard_inchi text NOT NULL
             )
@@ -163,16 +161,6 @@ def _ensure_tables(
             """
         ).format(schema_id, sql.Identifier(CHEMICAL_TABLE))
     )
-    for table in (PROTEIN_TABLE, CHEMICAL_TABLE):
-        cur.execute(
-            sql.SQL(
-                """
-                ALTER TABLE {}.{}
-                ADD COLUMN IF NOT EXISTS key_value_hash text
-                GENERATED ALWAYS AS (md5(key_value)) STORED
-                """
-            ).format(schema_id, sql.Identifier(table))
-        )
     if not drop_existing:
         for table in (PROTEIN_TABLE, CHEMICAL_TABLE):
             cur.execute(
@@ -187,12 +175,6 @@ def _create_indexes(cur: psycopg2.extensions.cursor, schema: str) -> None:
     schema_id = sql.Identifier(schema)
     specs = [
         (
-            'resolver_protein_lookup_key_hash_value_idx',
-            PROTEIN_TABLE,
-            ('key_type', 'key_value_hash', 'key_value', 'mapping_type', 'source'),
-            'btree',
-        ),
-        (
             'resolver_protein_lookup_key_tax_idx',
             PROTEIN_TABLE,
             ('key_type', 'key_value', 'taxonomy_id'),
@@ -201,7 +183,7 @@ def _create_indexes(cur: psycopg2.extensions.cursor, schema: str) -> None:
         (
             'resolver_protein_lookup_key_idx',
             PROTEIN_TABLE,
-            ('key_type', 'key_value'),
+            ('key_type', 'key_value', 'mapping_type', 'source'),
             'btree',
         ),
         (
@@ -217,15 +199,9 @@ def _create_indexes(cur: psycopg2.extensions.cursor, schema: str) -> None:
             'btree',
         ),
         (
-            'resolver_chemical_lookup_key_hash_value_idx',
-            CHEMICAL_TABLE,
-            ('key_type', 'key_value_hash', 'key_value', 'source'),
-            'btree',
-        ),
-        (
             'resolver_chemical_lookup_key_idx',
             CHEMICAL_TABLE,
-            ('key_type', 'key_value'),
+            ('key_type', 'key_value', 'source'),
             'btree',
         ),
         (

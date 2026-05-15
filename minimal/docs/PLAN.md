@@ -96,7 +96,11 @@ make db-setup
 ```
 
 This creates the public schema tables, loads resolver mappings, and creates
-secondary indexes.
+secondary indexes for non-scratch setup.
+
+For scratch loads, pass `MINIMAL_DROP_EXISTING=1`; schema setup defers
+secondary evidence indexes until after ingest so bulk loading does not maintain
+them row by row.
 
 The source pipeline has three explicit phases:
 
@@ -114,7 +118,8 @@ make minimal_pipeline
 
 `ingest` refreshes source evidence by streaming current parser output into
 minimal evidence tables. `canonicalize` resolves scoped evidence into entity
-and relation graph tables. `derive` refreshes derived tables and bitmaps.
+and relation graph tables, creating deferred evidence indexes first if they are
+missing. `derive` refreshes derived tables, bitmaps, and query-oriented indexes.
 
 For normal source loading, use the convenience target:
 
@@ -123,8 +128,10 @@ make load sources=uniprot
 ```
 
 This runs `ingest` and `canonicalize`, but does not run `derive`. That keeps
-multi-source loads cheap. Run `make derive` once after all selected sources are
-loaded when the schema should be query-ready.
+multi-source loads cheap. Canonicalization creates any deferred evidence indexes
+before resolving, so scratch loads get fast ingest and indexed canonicalization.
+Run `make derive` once after all selected sources are loaded when the schema
+should be query-ready.
 
 ## Minimal Deliverables
 

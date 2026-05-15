@@ -336,8 +336,7 @@ def _create_entity_keys(cur: psycopg2.extensions.cursor, schema: str) -> None:
               NULLIF(ee.taxonomy_id, '') AS taxonomy_id,
               i.type AS key_type,
               i.type AS resolver_key_type,
-              i.value AS key_value,
-              i.value_hash AS key_value_hash
+              i.value AS key_value
             FROM _entity_scope s
             JOIN {}.entity_evidence ee
               ON ee.entity_evidence_id = s.entity_evidence_id
@@ -359,7 +358,7 @@ def _create_entity_keys(cur: psycopg2.extensions.cursor, schema: str) -> None:
         CREATE INDEX ON _entity_key (
           entity_type,
           resolver_key_type,
-          key_value_hash
+          key_value
         )
         """
     )
@@ -367,7 +366,7 @@ def _create_entity_keys(cur: psycopg2.extensions.cursor, schema: str) -> None:
         """
         CREATE INDEX ON _entity_key (
           resolver_key_type,
-          key_value_hash,
+          key_value,
           taxonomy_id
         )
         """
@@ -425,7 +424,6 @@ def _create_entity_taxonomy_conflict_table(
             FROM _entity_key k
             JOIN {}.resolver_protein_identifier_lookup p
               ON p.key_type = k.resolver_key_type
-             AND p.key_value_hash = k.key_value_hash
              AND p.key_value = k.key_value
             JOIN {}.resolver_mapping_policy pol
               ON pol.entity_family = 'protein'
@@ -488,7 +486,6 @@ def _insert_protein_candidates(
             FROM _entity_key k
             JOIN {}.resolver_protein_identifier_lookup p
               ON p.key_type = k.resolver_key_type
-             AND p.key_value_hash = k.key_value_hash
              AND p.key_value = k.key_value
             JOIN {}.resolver_mapping_policy pol
               ON pol.entity_family = 'protein'
@@ -552,7 +549,6 @@ def _insert_chemical_candidates(
             FROM _entity_key k
             JOIN {}.resolver_chemical_identifier_lookup c
               ON c.key_type = k.resolver_key_type
-             AND c.key_value_hash = k.key_value_hash
              AND c.key_value = k.key_value
             JOIN {}.resolver_mapping_policy pol
               ON pol.entity_family = 'chemical'
@@ -670,7 +666,6 @@ def _insert_chemical_resolver_identifier_links(
               FROM _entity_key k
               JOIN {}.resolver_chemical_identifier_lookup c
                 ON c.key_type = k.resolver_key_type
-               AND c.key_value_hash = k.key_value_hash
                AND c.key_value = k.key_value
               WHERE k.entity_type = ANY(%s)
               UNION

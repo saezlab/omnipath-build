@@ -183,7 +183,7 @@ db-setup:
 		--database-url "$(DATABASE_URL)" \
 		--schema "$(MINIMAL_SCHEMA)" \
 		init-db \
-		$(if $(MINIMAL_DROP_EXISTING),--drop-existing); \
+		$(if $(MINIMAL_DROP_EXISTING),--drop-existing --no-indexes); \
 	echo "[minimal] load-resolver mapping_dir=$(MINIMAL_MAPPING_DIR)"; \
 	PYTHONUNBUFFERED=1 uv run python -m minimal.cli \
 		--database-url "$(DATABASE_URL)" \
@@ -191,13 +191,17 @@ db-setup:
 		load-resolver \
 		--mapping-dir "$(MINIMAL_MAPPING_DIR)" \
 		--batch-size "$(MINIMAL_RESOLVER_BATCH_SIZE)"; \
-	echo "[minimal] create secondary indexes schema=$(MINIMAL_SCHEMA)"; \
-	PYTHONUNBUFFERED=1 uv run python -m minimal.cli \
-		--database-url "$(DATABASE_URL)" \
-		--schema "$(MINIMAL_SCHEMA)" \
-		derive \
-		--no-tables \
-		--no-bitmaps
+	if [ -z "$(MINIMAL_DROP_EXISTING)" ]; then \
+		echo "[minimal] create secondary indexes schema=$(MINIMAL_SCHEMA)"; \
+		PYTHONUNBUFFERED=1 uv run python -m minimal.cli \
+			--database-url "$(DATABASE_URL)" \
+			--schema "$(MINIMAL_SCHEMA)" \
+			derive \
+			--no-tables \
+			--no-bitmaps; \
+	else \
+		echo "[minimal] deferring secondary indexes until after ingest"; \
+	fi
 
 minimal-reset-content:
 	@if [ -z "$(DATABASE_URL)" ]; then \
@@ -230,6 +234,7 @@ ingest:
 			--progress-every "$(MINIMAL_PROGRESS_EVERY)" \
 			--obo-output-dir "$(MINIMAL_OBO_DIR)" \
 			--no-ensure-schema \
+			$(if $(MAX_RECORDS),--max-records "$(MAX_RECORDS)") \
 			$(if $(FORCE_REFRESH),--force-refresh); \
 	else \
 		SOURCE_LIST=$$(printf '%s' "$(SELECTED_SOURCES)" | tr ',' ' '); \
@@ -248,6 +253,7 @@ ingest:
 				--progress-every "$(MINIMAL_PROGRESS_EVERY)" \
 				--obo-output-dir "$(MINIMAL_OBO_DIR)" \
 				--no-ensure-schema \
+				$(if $(MAX_RECORDS),--max-records "$(MAX_RECORDS)") \
 				$(if $(FORCE_REFRESH),--force-refresh); \
 		done; \
 	fi
@@ -287,8 +293,7 @@ derive:
 	@PYTHONUNBUFFERED=1 uv run python -m minimal.cli \
 		--database-url "$(DATABASE_URL)" \
 		--schema "$(MINIMAL_SCHEMA)" \
-		derive \
-		--no-indexes
+		derive
 
 load: ingest canonicalize
 
