@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 import time
-from datetime import UTC, datetime
 from collections.abc import Iterable
-import hashlib
 
 from psycopg2 import sql
 import psycopg2.extensions
@@ -24,18 +22,12 @@ from minimal.ingest.common import (
     ontology_annotation_relation,
     extract_taxonomy_id,
 )
-from minimal.ingest.preparse import ProvenancedRecord
 from pypath.internals.silver_schema import Entity
 from omnipath_build.gold.utils.schema import (
     ASSOCIATION_CATEGORY,
     PredicateRule,
     string_or_none,
 )
-
-
-def _synthetic_raw_record_hash(source: str, dataset: str, index: int) -> bytes:
-    payload = f'{source}\0{dataset}\0{index}'.encode('utf-8')
-    return hashlib.sha256(payload).digest()
 
 
 class MinimalIngestor:
@@ -53,7 +45,7 @@ class MinimalIngestor:
 
     def ingest_records(
         self,
-        records: Iterable[Entity | ProvenancedRecord],
+        records: Iterable[Entity],
         *,
         source: str,
         dataset: str,
@@ -65,21 +57,11 @@ class MinimalIngestor:
         stats = _MutableStats()
         started_at = time.monotonic()
         for index, item in enumerate(records, start=1):
-            entity, provenance = _unwrap(item)
+            entity, _ = _unwrap(item)
             if not isinstance(entity, Entity):
                 continue
-            raw_record_hash = (
-                provenance.raw_record_id
-                if provenance
-                else _synthetic_raw_record_hash(source, dataset, index)
-            )
-            snapshot_id = provenance.snapshot_id if provenance else None
-            row_id = self._insert_source_row(
-                source,
-                dataset,
-                raw_record_hash,
-                snapshot_id,
-            )
+            snapshot_id = None
+            row_id = index
             self._ingest_entity_tree(
                 entity,
                 source=source,
@@ -91,7 +73,6 @@ class MinimalIngestor:
                 entity_role='parent',
                 stats=stats,
             )
-            self._mark_source_row_processed(source, dataset, row_id)
             stats.source_rows += 1
             if commit_every > 0 and index % commit_every == 0:
                 self.conn.commit()
@@ -304,47 +285,6 @@ class MinimalIngestor:
             predicate_rule=spec.predicate_rule,
             object_entity_evidence_id=int(spec.object_ref),
         )
-
-    def _insert_source_row(
-        self,
-        source: str,
-        dataset: str,
-        raw_record_hash: bytes,
-        snapshot_id: str | None,
-    ) -> int:
-        with self.conn.cursor() as cur:
-            cur.execute(
-                sql.SQL(
-                    """
-                    INSERT INTO {}.source_row
-                      (source, dataset, raw_record_hash, snapshot_id)
-                    VALUES (%s, %s, %s, %s)
-                    ON CONFLICT (source, dataset, raw_record_hash)
-                    DO UPDATE SET snapshot_id = EXCLUDED.snapshot_id
-                    RETURNING source_row_id
-                    """
-                ).format(sql.Identifier(self.schema)),
-                [source, dataset, bytes(raw_record_hash), snapshot_id],
-            )
-            return int(cur.fetchone()[0])
-
-    def _mark_source_row_processed(
-        self,
-        source: str,
-        dataset: str,
-        row_id: int,
-    ) -> None:
-        with self.conn.cursor() as cur:
-            cur.execute(
-                sql.SQL(
-                    """
-                    UPDATE {}.source_row
-                    SET processed_at = %s
-                    WHERE source_row_id = %s
-                    """
-                ).format(sql.Identifier(self.schema)),
-                [datetime.now(UTC), row_id],
-            )
 
     def _insert_entity_evidence(
         self,

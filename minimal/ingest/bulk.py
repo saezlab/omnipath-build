@@ -3,10 +3,8 @@ from __future__ import annotations
 from io import StringIO
 import csv
 import time
-from datetime import UTC, datetime
 from dataclasses import field, dataclass
 from collections.abc import Iterable
-import hashlib
 
 from psycopg2 import sql
 import psycopg2.extensions
@@ -25,17 +23,11 @@ from minimal.ingest.common import (
     ontology_annotation_relation,
     extract_taxonomy_id,
 )
-from minimal.ingest.preparse import ProvenancedRecord
 from pypath.internals.silver_schema import Entity
 from omnipath_build.gold.utils.schema import (
     ASSOCIATION_CATEGORY,
     string_or_none,
 )
-
-
-def _synthetic_raw_record_hash(source: str, dataset: str, index: int) -> bytes:
-    payload = f'{source}\0{dataset}\0{index}'.encode('utf-8')
-    return hashlib.sha256(payload).digest()
 
 
 class BulkMinimalIngestor:
@@ -57,7 +49,7 @@ class BulkMinimalIngestor:
 
     def ingest_records(
         self,
-        records: Iterable[Entity | ProvenancedRecord],
+        records: Iterable[Entity],
         *,
         source: str,
         dataset: str,
@@ -72,27 +64,18 @@ class BulkMinimalIngestor:
         rows_since_flush = 0
 
         for index, item in enumerate(records, start=1):
-            entity, provenance = _unwrap(item)
+            entity, _ = _unwrap(item)
             if not isinstance(entity, Entity):
                 continue
             row_id = index
-            raw_record_hash = (
-                provenance.raw_record_id
-                if provenance
-                else _synthetic_raw_record_hash(source, dataset, index)
-            )
-            row_key = provenance.raw_record_key if provenance else str(index)
-            snapshot_id = provenance.snapshot_id if provenance else None
-            buffers.source_rows.append(
-                (source, dataset, row_id, raw_record_hash, snapshot_id)
-            )
+            snapshot_id = None
             self._flatten_entity_tree(
                 entity,
                 source=source,
                 dataset=dataset,
                 row_id=row_id,
                 snapshot_id=snapshot_id,
-                occurrence_id=f'{dataset}:{row_key}:parent',
+                occurrence_id=f'{dataset}:{row_id}:parent',
                 parent_occurrence_id=None,
                 entity_role='parent',
                 buffers=buffers,
@@ -392,9 +375,6 @@ class BulkMinimalIngestor:
             return
         with self.conn.cursor() as cur:
             _create_staging_tables(cur)
-            _copy_rows(
-                cur, 'stg_source_row', _SOURCE_ROW_COLUMNS, buffers.source_rows
-            )
             _copy_rows(cur, 'stg_entity', _ENTITY_COLUMNS, buffers.entities)
             _copy_rows(
                 cur,
@@ -423,19 +403,6 @@ class BulkMinimalIngestor:
 
     def _insert_from_staging(self, cur: psycopg2.extensions.cursor) -> None:
         schema = sql.Identifier(self.schema)
-        cur.execute(
-            sql.SQL(
-                """
-                INSERT INTO {}.source_row
-                  (source, dataset, raw_record_hash, snapshot_id)
-                SELECT DISTINCT source, dataset, raw_record_hash, snapshot_id
-                FROM stg_source_row
-                ON CONFLICT (source, dataset, raw_record_hash)
-                DO UPDATE SET snapshot_id = EXCLUDED.snapshot_id
-                """
-            ).format(schema)
-        )
-        self._resolve_staged_source_row_ids(cur)
         cur.execute(
             sql.SQL(
                 """
@@ -638,57 +605,6 @@ class BulkMinimalIngestor:
                 """
             ).format(schema, schema)
         )
-        cur.execute(
-            sql.SQL(
-                """
-                UPDATE {}.source_row target
-                SET processed_at = %s
-                FROM stg_source_row s
-                WHERE target.source_row_id = s.row_id
-                """
-            ).format(schema),
-            [datetime.now(UTC)],
-        )
-
-    def _resolve_staged_source_row_ids(
-        self,
-        cur: psycopg2.extensions.cursor,
-    ) -> None:
-        schema = sql.Identifier(self.schema)
-        cur.execute(
-            sql.SQL(
-                """
-                CREATE TEMP TABLE stg_source_row_id_map ON COMMIT DROP AS
-                SELECT
-                  s.row_id AS row_ref,
-                  sr.source_row_id
-                FROM stg_source_row s
-                JOIN {}.source_row sr
-                  ON sr.source = s.source
-                 AND sr.dataset = s.dataset
-                 AND sr.raw_record_hash = s.raw_record_hash
-                """
-            ).format(schema)
-        )
-        for table in (
-            'stg_source_row',
-            'stg_entity',
-            'stg_identifier_ref',
-            'stg_relation',
-            'stg_annotation_relation',
-            'stg_annotation',
-        ):
-            cur.execute(
-                sql.SQL(
-                    """
-                    UPDATE {} t
-                    SET row_id = m.source_row_id
-                    FROM stg_source_row_id_map m
-                    WHERE t.row_id = m.row_ref
-                    """
-                ).format(sql.Identifier(table))
-            )
-
     @staticmethod
     def _print_progress(
         source: str,
@@ -712,7 +628,6 @@ class BulkMinimalIngestor:
 
 @dataclass
 class _BulkBuffers:
-    source_rows: list[tuple[object, ...]] = field(default_factory=list)
     entities: list[tuple[object, ...]] = field(default_factory=list)
     identifiers: list[tuple[object, ...]] = field(default_factory=list)
     relations: list[tuple[object, ...]] = field(default_factory=list)
@@ -721,8 +636,7 @@ class _BulkBuffers:
 
     def __bool__(self) -> bool:
         return bool(
-            self.source_rows
-            or self.entities
+            self.entities
             or self.identifiers
             or self.relations
             or self.annotation_relations
@@ -730,7 +644,6 @@ class _BulkBuffers:
         )
 
     def clear(self) -> None:
-        self.source_rows.clear()
         self.entities.clear()
         self.identifiers.clear()
         self.relations.clear()
@@ -738,13 +651,6 @@ class _BulkBuffers:
         self.annotations.clear()
 
 
-_SOURCE_ROW_COLUMNS = (
-    'source',
-    'dataset',
-    'row_id',
-    'raw_record_hash',
-    'snapshot_id',
-)
 _ENTITY_COLUMNS = (
     'source',
     'dataset',
@@ -802,23 +708,11 @@ _ANNOTATION_COLUMNS = (
 
 
 def _create_staging_tables(cur: psycopg2.extensions.cursor) -> None:
-    cur.execute('DROP TABLE IF EXISTS stg_source_row')
     cur.execute('DROP TABLE IF EXISTS stg_entity')
     cur.execute('DROP TABLE IF EXISTS stg_identifier_ref')
     cur.execute('DROP TABLE IF EXISTS stg_relation')
     cur.execute('DROP TABLE IF EXISTS stg_annotation_relation')
     cur.execute('DROP TABLE IF EXISTS stg_annotation')
-    cur.execute(
-        """
-        CREATE TEMP TABLE stg_source_row (
-          source text,
-          dataset text,
-          row_id bigint,
-          raw_record_hash bytea,
-          snapshot_id text
-        ) ON COMMIT DROP
-        """
-    )
     cur.execute(
         """
         CREATE TEMP TABLE stg_entity (

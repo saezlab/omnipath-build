@@ -1,4 +1,4 @@
-.PHONY: setup silver silver-list resolver-mappings combined postgres pipeline minimal-resolver db-setup minimal-reset-content preparse ingest canonicalize derive load minimal_pipeline_setup minimal_pipeline minimal-all bronze-rewrite silver-rewrite gold-rewrite combined-rewrite rewrite_pipeline test
+.PHONY: setup silver silver-list resolver-mappings combined postgres pipeline minimal-resolver db-setup minimal-reset-content ingest canonicalize derive load minimal_pipeline_setup minimal_pipeline minimal-all bronze-rewrite silver-rewrite gold-rewrite combined-rewrite rewrite_pipeline test
 
 JOBS ?= 4
 BATCH_SIZE ?= 10000
@@ -38,15 +38,13 @@ MINIMAL_SCHEMA ?= public
 MINIMAL_MAPPING_DIR ?= $(DATA_ROOT)
 MINIMAL_RESOLVER_SOURCES ?= uniprot chebi hmdb lipidmaps swisslipids pubchem
 MINIMAL_BACKEND ?= bulk
-MINIMAL_BATCH_SIZE ?= 5000
+MINIMAL_BATCH_SIZE ?= 50000
 MINIMAL_RESOLVER_BATCH_SIZE ?= 100000
 MINIMAL_COMMIT_EVERY ?= 1000
 MINIMAL_PROGRESS_EVERY ?= 1000
 MINIMAL_DERIVE ?=
 MINIMAL_DROP_EXISTING ?=
 MINIMAL_OBO_DIR ?= $(DATA_ROOT)/obo
-BOOTSTRAP ?=
-MINIMAL_RAW_RECORDS_ROOT ?= $(DATA_ROOT)
 COMBINE_RUN_DIR ?=
 LOAD_POSTGRES ?=
 YES ?=
@@ -212,36 +210,6 @@ minimal-reset-content:
 		--schema "$(MINIMAL_SCHEMA)" \
 		reset-content
 
-preparse:
-	@set -e; \
-	if [ -z "$(SELECTED_SOURCES)" ]; then \
-		echo "[minimal] preparse source=ALL"; \
-		PYTHONUNBUFFERED=1 uv run python -m minimal.cli \
-			--schema "$(MINIMAL_SCHEMA)" \
-			preparse \
-			--database "$(DATABASE)" \
-			--inputs-package "$(INPUTS_PACKAGE)" \
-			$(if $(DATASET),--dataset "$(DATASET)") \
-			$(if $(MINIMAL_RAW_RECORDS_ROOT),--raw-records-root "$(MINIMAL_RAW_RECORDS_ROOT)") \
-			$(if $(SKIP_EXISTING_PREPARSE),--skip-existing) \
-			$(if $(FORCE_REFRESH),--force-refresh); \
-	else \
-		SOURCE_LIST=$$(printf '%s' "$(SELECTED_SOURCES)" | tr ',' ' '); \
-		for source in $$SOURCE_LIST; do \
-			echo "[minimal] preparse source=$$source"; \
-			PYTHONUNBUFFERED=1 uv run python -m minimal.cli \
-				--schema "$(MINIMAL_SCHEMA)" \
-				preparse \
-				--source "$$source" \
-				--database "$(DATABASE)" \
-				--inputs-package "$(INPUTS_PACKAGE)" \
-				$(if $(DATASET),--dataset "$(DATASET)") \
-				$(if $(MINIMAL_RAW_RECORDS_ROOT),--raw-records-root "$(MINIMAL_RAW_RECORDS_ROOT)") \
-				$(if $(SKIP_EXISTING_PREPARSE),--skip-existing) \
-				$(if $(FORCE_REFRESH),--force-refresh); \
-		done; \
-	fi
-
 ingest:
 	@if [ -z "$(DATABASE_URL)" ]; then \
 		echo "DATABASE_URL is required, e.g. make ingest SOURCES=uniprot DATABASE_URL=postgresql://user:pass@host:5432/dbname"; \
@@ -261,10 +229,7 @@ ingest:
 			--commit-every "$(MINIMAL_COMMIT_EVERY)" \
 			--progress-every "$(MINIMAL_PROGRESS_EVERY)" \
 			--obo-output-dir "$(MINIMAL_OBO_DIR)" \
-			$(if $(MINIMAL_RAW_RECORDS_ROOT),--raw-records-root "$(MINIMAL_RAW_RECORDS_ROOT)") \
-			--use-latest-preparse \
-			$(if $(REFRESH),--refresh) \
-			$(if $(BOOTSTRAP),--full-current); \
+			$(if $(FORCE_REFRESH),--force-refresh); \
 	else \
 		SOURCE_LIST=$$(printf '%s' "$(SELECTED_SOURCES)" | tr ',' ' '); \
 		for source in $$SOURCE_LIST; do \
@@ -281,10 +246,7 @@ ingest:
 				--commit-every "$(MINIMAL_COMMIT_EVERY)" \
 				--progress-every "$(MINIMAL_PROGRESS_EVERY)" \
 				--obo-output-dir "$(MINIMAL_OBO_DIR)" \
-				$(if $(MINIMAL_RAW_RECORDS_ROOT),--raw-records-root "$(MINIMAL_RAW_RECORDS_ROOT)") \
-				--use-latest-preparse \
-				$(if $(REFRESH),--refresh) \
-				$(if $(BOOTSTRAP),--full-current); \
+				$(if $(FORCE_REFRESH),--force-refresh); \
 		done; \
 	fi
 
@@ -324,7 +286,7 @@ derive:
 		derive \
 		--no-indexes
 
-load: preparse ingest canonicalize
+load: ingest canonicalize
 
 minimal_pipeline_setup: db-setup
 

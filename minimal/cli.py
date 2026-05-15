@@ -3,7 +3,6 @@ from __future__ import annotations
 import os
 import sys
 import argparse
-import json
 from pathlib import Path
 
 import psycopg2
@@ -12,6 +11,7 @@ from pypath.internals.ontology_schema import OntologyTerm
 from pypath.inputs_v2.ontology_serializers import format_obo
 
 from minimal.db import (
+    delete_source_content,
     ensure_schema,
     rebuild_bitmap_tables,
     rebuild_derived_tables,
@@ -22,13 +22,6 @@ from minimal.db import (
 from minimal.ingest import (
     MinimalIngestor,
     BulkMinimalIngestor,
-    sync_source_snapshot,
-)
-from minimal.ingest.preparse import (
-    accept_dataset_preparse,
-    iter_mapped_records,
-    load_latest_raw_snapshot,
-    preparse_dataset,
 )
 from minimal.loaders import load_ontology_terms, load_resolver_tables
 from minimal.canonicalize import canonicalize
@@ -98,22 +91,6 @@ def main(argv: list[str] | None = None) -> int:
     )
     resolver.add_argument('--no-indexes', action='store_true')
 
-    preparse = subparsers.add_parser('preparse')
-    preparse.add_argument(
-        '--source',
-        help='Optional source to run. Omit to discover all compatible sources.',
-    )
-    preparse.add_argument('--dataset')
-    preparse.add_argument('--inputs-package', default='pypath.inputs_v2')
-    preparse.add_argument('--database', default='omnipath')
-    preparse.add_argument('--raw-records-root')
-    preparse.add_argument('--force-refresh', action='store_true')
-    preparse.add_argument(
-        '--skip-existing',
-        action='store_true',
-        help='Skip datasets that already have an accepted latest preparse snapshot.',
-    )
-
     canon = subparsers.add_parser('canonicalize')
     canon.add_argument('--source')
     canon.add_argument('--dataset')
@@ -155,37 +132,9 @@ def main(argv: list[str] | None = None) -> int:
         '--source',
         help='Optional source to run. Omit to discover all compatible sources.',
     )
-    ingest.add_argument('--dataset')
     ingest.add_argument('--inputs-package', default='pypath.inputs_v2')
     ingest.add_argument('--database', default='omnipath')
-    ingest.add_argument('--raw-records-root')
     ingest.add_argument('--force-refresh', action='store_true')
-    ingest.add_argument(
-        '--use-latest-preparse',
-        action='store_true',
-        help=(
-            'Use the latest accepted minimal preparse snapshot instead of '
-            'materializing a new raw snapshot during ingest.'
-        ),
-    )
-    ingest.add_argument(
-        '--refresh',
-        action='store_true',
-        help=(
-            'Reload selected source evidence from the latest raw snapshot. '
-            'Use this after input mapper or parser changes that do not change '
-            'raw row hashes.'
-        ),
-    )
-    ingest.add_argument(
-        '--full-current',
-        action='store_true',
-        help=(
-            'Ingest all current source rows from the snapshot instead of only '
-            'the snapshot delta. Use this explicitly when bootstrapping '
-            'minimal tables from an existing raw snapshot.'
-        ),
-    )
     ingest.add_argument(
         '--backend',
         choices=('bulk', 'simple'),
@@ -195,7 +144,7 @@ def main(argv: list[str] | None = None) -> int:
     ingest.add_argument(
         '--batch-size',
         type=int,
-        default=25_000,
+        default=50_000,
         help='Source rows per bulk staging flush.',
     )
     ingest.add_argument('--commit-every', type=int, default=1000)
@@ -213,8 +162,6 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     args = parser.parse_args(argv)
-    if args.command == 'preparse':
-        return _handle_preparse(args)
     if args.command == 'build-resolver':
         summary = build_resolver_sources(
             sources=args.sources,
@@ -333,64 +280,6 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-def _handle_preparse(args: argparse.Namespace) -> int:
-    selected = _selected_resource_functions(args)
-    if selected is None:
-        return 2
-
-    for fn in selected:
-        raw_dataset = getattr(fn.call, '_raw_dataset', None)
-        if raw_dataset is None:
-            continue
-        if args.skip_existing and args.force_refresh:
-            print(
-                f'[{fn.source}.{fn.function_name}] '
-                'skip_existing_ignored_due_to_force_refresh',
-                flush=True,
-            )
-        if args.skip_existing and not args.force_refresh:
-            try:
-                snapshot = load_latest_raw_snapshot(
-                    source=fn.source,
-                    dataset=fn.function_name,
-                    raw_records_root=args.raw_records_root,
-                )
-            except FileNotFoundError:
-                pass
-            else:
-                if not (
-                    snapshot.records_path.exists()
-                    and snapshot.delta_path.exists()
-                    and snapshot.manifest_path.exists()
-                ):
-                    print(
-                        f'[{fn.source}.{fn.function_name}] '
-                        'existing_preparse_incomplete; reparsing',
-                        flush=True,
-                    )
-                else:
-                    print(
-                        f'[{fn.source}.{fn.function_name}] '
-                        f'skipped_existing_preparse={snapshot.snapshot_id}',
-                        flush=True,
-                    )
-                    continue
-        snapshot = preparse_dataset(
-            raw_dataset,
-            source=fn.source,
-            dataset=fn.function_name,
-            raw_records_root=args.raw_records_root,
-            force_refresh=args.force_refresh,
-        )
-        accept_dataset_preparse(raw_dataset)
-        print(
-            f'[{fn.source}.{fn.function_name}] '
-            f'preparse_snapshot={snapshot.snapshot_id}',
-            flush=True,
-        )
-    return 0
-
-
 def _selected_resource_functions(
     args: argparse.Namespace,
 ) -> list[object] | None:
@@ -410,7 +299,10 @@ def _selected_resource_functions(
         for fn in discovered[source]
         if fn.function_name != 'resource'
         and fn.output_kind in {'entity', 'ontology'}
-        and (args.dataset is None or fn.function_name == args.dataset)
+        and (
+            getattr(args, 'dataset', None) is None
+            or fn.function_name == getattr(args, 'dataset')
+        )
         and getattr(fn.call, '_raw_dataset', None) is not None
     ]
     if not selected:
@@ -427,118 +319,76 @@ def _handle_ingest(
     if selected is None:
         return 2
 
+    selected_by_source: dict[str, list[object]] = {}
     for fn in selected:
-        raw_dataset = getattr(fn.call, '_raw_dataset', None)
-        if raw_dataset is None:
-            continue
-        snapshot = (
-            load_latest_raw_snapshot(
-                source=fn.source,
-                dataset=fn.function_name,
-                raw_records_root=args.raw_records_root,
-            )
-            if args.use_latest_preparse
-            else preparse_dataset(
-                raw_dataset,
-                source=fn.source,
-                dataset=fn.function_name,
-                raw_records_root=args.raw_records_root,
-                force_refresh=args.force_refresh,
-            )
-        )
-        is_first_snapshot = _is_first_preparse_snapshot(snapshot)
-        if fn.output_kind == 'entity':
-            sync_stats = sync_source_snapshot(
-                conn,
-                schema=args.schema,
-                source=fn.source,
-                dataset=fn.function_name,
-                snapshot_id=snapshot.snapshot_id,
-                records_path=snapshot.records_path,
-                delta_path=snapshot.delta_path,
-                refresh=args.refresh,
-                sync_current_rows=False,
-            )
-            print(
-                f'[{fn.source}.{fn.function_name}] '
-                f'snapshot_rows={_preparse_snapshot_rows(snapshot):,} '
-                f'synced_current_rows={sync_stats.current_rows} '
-                f'removed_rows={sync_stats.removed_rows} '
-                f'refreshed_rows={sync_stats.refreshed_rows}',
-                flush=True,
-            )
-        records = iter_mapped_records(
-            raw_dataset,
-            snapshot,
-            changed_only=(
-                fn.output_kind == 'entity'
-                and not args.full_current
-                and not args.refresh
-                and not is_first_snapshot
-            ),
-        )
-        if fn.output_kind == 'ontology':
-            terms = _collect_ontology_terms(records)
-            if args.obo_artifacts:
-                obo_path = _write_ontology_obo(
-                    fn,
+        selected_by_source.setdefault(fn.source, []).append(fn)
+
+    for source, functions in selected_by_source.items():
+        print(f'[{source}] refresh deleting existing source content', flush=True)
+        delete_source_content(conn, schema=args.schema, source=source)
+        for fn in functions:
+            raw_dataset = getattr(fn.call, '_raw_dataset', None)
+            if raw_dataset is None:
+                continue
+            records = raw_dataset(force_refresh=args.force_refresh)
+            if fn.output_kind == 'ontology':
+                terms = _collect_ontology_terms(records)
+                if args.obo_artifacts:
+                    obo_path = _write_ontology_obo(
+                        fn,
+                        terms,
+                        output_dir=Path(args.obo_output_dir),
+                    )
+                    print(
+                        f'[{fn.source}.{fn.function_name}] obo={obo_path}',
+                        flush=True,
+                    )
+                stats = load_ontology_terms(
+                    conn,
                     terms,
-                    output_dir=Path(args.obo_output_dir),
+                    schema=args.schema,
+                    ontology_id=fn.ontology_id or fn.function_name,
+                    batch_size=args.batch_size,
+                    progress_every=args.progress_every,
                 )
                 print(
-                    f'[{fn.source}.{fn.function_name}] obo={obo_path}',
+                    f'[{fn.source}.{fn.function_name}] '
+                    f'ontology_terms={stats.terms} '
+                    f'annotations={stats.annotations}',
                     flush=True,
                 )
-            stats = load_ontology_terms(
-                conn,
-                terms,
-                schema=args.schema,
-                ontology_id=fn.ontology_id or fn.function_name,
-                batch_size=args.batch_size,
-                progress_every=args.progress_every,
+                continue
+
+            ingestor = (
+                BulkMinimalIngestor(conn, schema=args.schema)
+                if args.backend == 'bulk'
+                else MinimalIngestor(conn, schema=args.schema)
             )
+            if args.backend == 'bulk':
+                stats = ingestor.ingest_records(
+                    records,
+                    source=fn.source,
+                    dataset=fn.function_name,
+                    batch_size=args.batch_size,
+                    progress_every=args.progress_every,
+                )
+            else:
+                stats = ingestor.ingest_records(
+                    records,
+                    source=fn.source,
+                    dataset=fn.function_name,
+                    commit_every=args.commit_every,
+                    progress_every=args.progress_every,
+                )
             print(
                 f'[{fn.source}.{fn.function_name}] '
-                f'ontology_terms={stats.terms} '
+                f'rows={stats.source_rows} '
+                f'entities={stats.entity_evidence} '
+                f'relations={stats.relation_evidence} '
+                f'identifiers={stats.identifiers} '
                 f'annotations={stats.annotations}',
                 flush=True,
             )
-            if not args.use_latest_preparse:
-                accept_dataset_preparse(raw_dataset)
-            continue
-
-        ingestor = (
-            BulkMinimalIngestor(conn, schema=args.schema)
-            if args.backend == 'bulk'
-            else MinimalIngestor(conn, schema=args.schema)
-        )
-        if args.backend == 'bulk':
-            stats = ingestor.ingest_records(
-                records,
-                source=fn.source,
-                dataset=fn.function_name,
-                batch_size=args.batch_size,
-                progress_every=args.progress_every,
-            )
-        else:
-            stats = ingestor.ingest_records(
-                records,
-                source=fn.source,
-                dataset=fn.function_name,
-                commit_every=args.commit_every,
-                progress_every=args.progress_every,
-            )
-        print(
-            f'[{fn.source}.{fn.function_name}] '
-            f'rows={stats.source_rows} '
-            f'entities={stats.entity_evidence} '
-            f'relations={stats.relation_evidence} '
-            f'identifiers={stats.identifiers} '
-            f'annotations={stats.annotations}',
-            flush=True,
-        )
-        if not args.use_latest_preparse:
-            accept_dataset_preparse(raw_dataset)
     return 0
 
 
@@ -549,28 +399,6 @@ def _collect_ontology_terms(records: object) -> list[OntologyTerm]:
         if isinstance(value, OntologyTerm) and value.id:
             terms.append(value)
     return terms
-
-
-def _is_first_preparse_snapshot(snapshot: object) -> bool:
-    manifest = _read_preparse_manifest(snapshot)
-    return False if manifest is None else not manifest.get('previous_snapshot_id')
-
-
-def _preparse_snapshot_rows(snapshot: object) -> int:
-    manifest = _read_preparse_manifest(snapshot)
-    if manifest is None:
-        return 0
-    return int(manifest.get('rows', 0) or 0)
-
-
-def _read_preparse_manifest(snapshot: object) -> dict[str, object] | None:
-    manifest_path = getattr(snapshot, 'manifest_path', None)
-    if manifest_path is None:
-        return None
-    try:
-        return json.loads(Path(manifest_path).read_text())
-    except (OSError, json.JSONDecodeError):
-        return None
 
 
 def _write_ontology_obo(

@@ -22,7 +22,6 @@ CONTENT_TABLES: tuple[str, ...] = (
     'entity_evidence',
     'identifier',
     'entity',
-    'source_row',
     'resources',
 )
 
@@ -49,22 +48,6 @@ def ensure_schema(
             )
         )
 
-        cur.execute(
-            sql.SQL(
-                """
-                CREATE TABLE IF NOT EXISTS {}.source_row (
-                  source_row_id bigserial PRIMARY KEY,
-                  source text NOT NULL,
-                  dataset text NOT NULL,
-                  raw_record_hash bytea NOT NULL,
-                  snapshot_id text,
-                  processed_at timestamptz,
-                  UNIQUE (source, dataset, raw_record_hash)
-                )
-                """
-            ).format(sql.Identifier(schema))
-        )
-        _ensure_source_row_hash_key(cur, schema)
         cur.execute(
             sql.SQL(
                 """
@@ -220,49 +203,6 @@ def reset_content_tables(
             )
     conn.commit()
     return tables_to_truncate
-
-
-def _ensure_source_row_hash_key(
-    cur: psycopg2.extensions.cursor,
-    schema: str,
-) -> None:
-    schema_id = sql.Identifier(schema)
-    cur.execute(
-        sql.SQL(
-            """
-            ALTER TABLE {}.source_row
-            ADD COLUMN IF NOT EXISTS raw_record_hash bytea
-            """
-        ).format(schema_id)
-    )
-    cur.execute(
-        """
-        SELECT 1
-        FROM information_schema.columns
-        WHERE table_schema = %s
-          AND table_name = 'source_row'
-          AND column_name = 'row_id'
-        """,
-        [schema],
-    )
-    if cur.fetchone():
-        cur.execute(
-            sql.SQL(
-                """
-                ALTER TABLE {}.source_row
-                ALTER COLUMN row_id DROP NOT NULL
-                """
-            ).format(schema_id)
-        )
-    cur.execute(
-        sql.SQL(
-            """
-            CREATE UNIQUE INDEX IF NOT EXISTS source_row_raw_record_hash_idx
-            ON {}.source_row (source, dataset, raw_record_hash)
-            WHERE raw_record_hash IS NOT NULL
-            """
-        ).format(schema_id)
-    )
 
 
 def _ensure_resolution_schema(

@@ -4,7 +4,6 @@ import hashlib
 from dataclasses import dataclass
 from collections.abc import Iterable
 
-from minimal.ingest.preparse import ProvenancedRecord
 from pypath.internals.silver_schema import Entity
 from omnipath_build.gold.utils.schema import (
     ASSOCIATION_CATEGORY,
@@ -80,13 +79,9 @@ class RelationSpec:
     object_ref: object
 
 
-def unwrap_record(
-    item: Entity | ProvenancedRecord,
-) -> tuple[object, object | None]:
-    """Return the payload and optional raw-record provenance."""
+def unwrap_record(item: object) -> tuple[object, None]:
+    """Return the payload and no external provenance."""
 
-    if isinstance(item, ProvenancedRecord):
-        return item.record, item.provenance
     return item, None
 
 

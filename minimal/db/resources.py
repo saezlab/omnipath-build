@@ -204,20 +204,17 @@ def _source_counts(
                   AND e.entity_type = %s
               ) AS ontology_term_count,
               (
-                SELECT MAX(processed_at)
-                FROM {}.source_row
-                WHERE source = %s
+                SELECT NULL::timestamptz
               ) AS last_built_at,
               (
                 SELECT EXISTS (
                   SELECT 1
-                  FROM {}.source_row
+                  FROM {}.entity_evidence
                   WHERE source = %s
                 )
               ) AS has_rows
             """
         ).format(
-            sql.Identifier(schema),
             sql.Identifier(schema),
             sql.Identifier(schema),
             sql.Identifier(schema),
@@ -240,7 +237,6 @@ def _source_counts(
             source,
             source,
             CV_TERM_ENTITY_TYPE,
-            source,
             source,
         ],
     )

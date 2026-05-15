@@ -14,12 +14,6 @@ def create_secondary_indexes(
     statements = [
         sql.SQL(
             """
-            CREATE INDEX IF NOT EXISTS source_row_snapshot_idx
-            ON {}.source_row (source, dataset, snapshot_id)
-            """
-        ).format(schema_id),
-        sql.SQL(
-            """
             CREATE INDEX IF NOT EXISTS entity_evidence_source_dataset_row_idx
             ON {}.entity_evidence (source, dataset, row_id)
             """
