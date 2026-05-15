@@ -48,7 +48,7 @@ Entity resolution is implemented as a separate pass:
 - `entity_resolution_candidate`: every accepted resolver candidate for an
   evidence entity, kept as audit/debug data.
 - `entity_evidence_resolution`: one status row per evidence entity.
-- `entity`: one general entity table for resolved and unresolved supported
+- `entity`: one general entity table for resolved and unresolved typed
   evidence. Resolved rows use CV-formatted canonical identifier types such as
   `MI:1097:Uniprot` and `MI:1101:Standard Inchi Key`; unresolved rows use
   `evidence_identifier_set` hashes.
@@ -62,7 +62,7 @@ agree on the same UniProt or standard InChIKey resolve cleanly; identifiers
 that point at different values remain explicit ambiguous evidence while mapping
 to an unresolved fallback entity. Standard InChI remains linked through the
 identifier table for chemical evidence. Evidence with zero candidates but a
-supported entity type is grouped by `entity_type`, `taxonomy_id`, and sorted
+non-empty entity type is grouped by `entity_type`, `taxonomy_id`, and sorted
 identifier set, so repeated unresolved mentions collapse to one `entity` row.
 
 The executable pass is:

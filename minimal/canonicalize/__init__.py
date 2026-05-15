@@ -15,12 +15,10 @@ from minimal.cv_terms import (
     CV_TERM_ENTITY_TYPE,
     CV_TERM_ID_TYPE,
     PROTEIN_ENTITY_TYPE_ALIASES,
-    SUPPORTED_ENTITY_TYPE_ALIASES,
 )
 
 PROTEIN_ENTITY_TYPES = PROTEIN_ENTITY_TYPE_ALIASES
 CHEMICAL_ENTITY_TYPES = CHEMICAL_ENTITY_TYPE_ALIASES
-SUPPORTED_ENTITY_TYPES = SUPPORTED_ENTITY_TYPE_ALIASES
 UNIPROT_TYPE = cv_term_label_accession(IdentifierNamespaceCv.UNIPROT)
 ENSEMBL_TYPE = cv_term_label_accession(IdentifierNamespaceCv.ENSEMBL)
 ENTREZ_TYPE = cv_term_label_accession(IdentifierNamespaceCv.ENTREZ)
@@ -917,7 +915,6 @@ def _create_entity_resolution_stage(
               s.entity_evidence_id,
               CASE
                 WHEN ee.entity_type IS NULL
-                  OR NOT (ee.entity_type = ANY(%s))
                   THEN 'unsupported'
                 WHEN COALESCE(cc.candidate_count, 0) = 0
                   THEN 'unresolved'
@@ -928,9 +925,7 @@ def _create_entity_resolution_stage(
               CASE
                 WHEN scc.candidate_count = 1
                   THEN si.entity_type
-                WHEN ee.entity_type = ANY(%s)
-                  THEN ee.entity_type
-                WHEN ee.entity_type = ANY(%s)
+                WHEN ee.entity_type IS NOT NULL
                   THEN ee.entity_type
                 ELSE NULL
               END AS entity_type,
@@ -938,7 +933,7 @@ def _create_entity_resolution_stage(
                 WHEN scc.candidate_count = 1
                   THEN si.id_type
                 WHEN COALESCE(scc.candidate_count, 0) <> 1
-                 AND ee.entity_type = ANY(%s)
+                 AND ee.entity_type IS NOT NULL
                   THEN 'evidence_identifier_set'
                 ELSE NULL
               END AS id_type,
@@ -946,7 +941,7 @@ def _create_entity_resolution_stage(
                 WHEN scc.candidate_count = 1
                   THEN si.id
                 WHEN COALESCE(scc.candidate_count, 0) <> 1
-                 AND ee.entity_type = ANY(%s)
+                 AND ee.entity_type IS NOT NULL
                   THEN COALESCE(
                     fp.id,
                     'fallback:' || md5(
@@ -961,7 +956,7 @@ def _create_entity_resolution_stage(
                 WHEN scc.candidate_count = 1
                   THEN si.taxonomy_id
                 WHEN COALESCE(scc.candidate_count, 0) <> 1
-                 AND ee.entity_type = ANY(%s)
+                 AND ee.entity_type IS NOT NULL
                   THEN NULLIF(ee.taxonomy_id, '')
                 ELSE NULL
               END AS taxonomy_id,
@@ -969,8 +964,7 @@ def _create_entity_resolution_stage(
                 AS candidate_count,
               CASE
                 WHEN ee.entity_type IS NULL
-                  OR NOT (ee.entity_type = ANY(%s))
-                  THEN 'unsupported_entity_type'
+                  THEN 'missing_entity_type'
                 WHEN COALESCE(cc.candidate_count, 0) = 0
                  AND COALESCE(tc.conflict_count, 0) > 0
                   THEN 'different_taxon'
@@ -1004,13 +998,6 @@ def _create_entity_resolution_stage(
             list(DIRECT_MAPPING_TYPES),
             list(STABLE_REFERENCE_IDENTIFIER_TYPES),
             list(WEAK_IDENTIFIER_TYPES),
-            list(SUPPORTED_ENTITY_TYPES),
-            list(PROTEIN_ENTITY_TYPES),
-            list(CHEMICAL_ENTITY_TYPES),
-            list(SUPPORTED_ENTITY_TYPES),
-            list(SUPPORTED_ENTITY_TYPES),
-            list(SUPPORTED_ENTITY_TYPES),
-            list(SUPPORTED_ENTITY_TYPES),
         ],
     )
     cur.execute(
