@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import argparse
 import os
 import sys
-import argparse
+import time
 from pathlib import Path
 
 import psycopg2
@@ -283,9 +284,23 @@ def main(argv: list[str] | None = None) -> int:
 def _selected_resource_functions(
     args: argparse.Namespace,
 ) -> list[object] | None:
+    started = time.perf_counter()
+    print(
+        '[minimal] discovering input resources '
+        f'package={args.inputs_package} database={args.database}',
+        flush=True,
+    )
     discovered, _ = discover_resources(
         database_name=args.database,
         inputs_package=args.inputs_package,
+        progress=True,
+    )
+    dataset_count = sum(len(functions) for functions in discovered.values())
+    print(
+        '[minimal] discovery ready '
+        f'sources={len(discovered)} resource_functions={dataset_count} '
+        f'elapsed={time.perf_counter() - started:.1f}s',
+        flush=True,
     )
     source_names = [args.source] if args.source else sorted(discovered)
     unknown = [source for source in source_names if source not in discovered]
@@ -308,6 +323,12 @@ def _selected_resource_functions(
     if not selected:
         print('No matching entity/ontology datasets found.', file=sys.stderr)
         return None
+    print(
+        '[minimal] refresh plan '
+        f'sources={len(set(fn.source for fn in selected))} '
+        f'datasets={len(selected)}',
+        flush=True,
+    )
     return selected
 
 
@@ -324,12 +345,31 @@ def _handle_ingest(
         selected_by_source.setdefault(fn.source, []).append(fn)
 
     for source, functions in selected_by_source.items():
+        source_started = time.perf_counter()
+        dataset_names = ','.join(fn.function_name for fn in functions)
+        print(
+            f'[{source}] refresh start datasets={len(functions)} '
+            f'names={dataset_names}',
+            flush=True,
+        )
+        delete_started = time.perf_counter()
         print(f'[{source}] refresh deleting existing source content', flush=True)
         delete_source_content(conn, schema=args.schema, source=source)
+        print(
+            f'[{source}] refresh delete done '
+            f'elapsed={time.perf_counter() - delete_started:.1f}s',
+            flush=True,
+        )
         for fn in functions:
             raw_dataset = getattr(fn.call, '_raw_dataset', None)
             if raw_dataset is None:
                 continue
+            dataset_started = time.perf_counter()
+            print(
+                f'[{fn.source}.{fn.function_name}] stream start '
+                f'kind={fn.output_kind}',
+                flush=True,
+            )
             records = raw_dataset(force_refresh=args.force_refresh)
             if fn.output_kind == 'ontology':
                 terms = _collect_ontology_terms(records)
@@ -355,6 +395,11 @@ def _handle_ingest(
                     f'[{fn.source}.{fn.function_name}] '
                     f'ontology_terms={stats.terms} '
                     f'annotations={stats.annotations}',
+                    flush=True,
+                )
+                print(
+                    f'[{fn.source}.{fn.function_name}] stream done '
+                    f'elapsed={time.perf_counter() - dataset_started:.1f}s',
                     flush=True,
                 )
                 continue
@@ -389,6 +434,16 @@ def _handle_ingest(
                 f'annotations={stats.annotations}',
                 flush=True,
             )
+            print(
+                f'[{fn.source}.{fn.function_name}] stream done '
+                f'elapsed={time.perf_counter() - dataset_started:.1f}s',
+                flush=True,
+            )
+        print(
+            f'[{source}] refresh done '
+            f'elapsed={time.perf_counter() - source_started:.1f}s',
+            flush=True,
+        )
     return 0
 
 

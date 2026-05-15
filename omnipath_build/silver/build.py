@@ -68,6 +68,27 @@ TEST_MODE_RECORD_LIMITS_BY_SOURCE: dict[str, int] = {
 
 _PROGRESS_PREFIX = '__OMNIPATH_PROGRESS__'
 
+
+def _emit_discovery_progress(
+    *,
+    enabled: bool,
+    started: float,
+    scanned_modules: int,
+    discovered: Dict[str, List['ResourceFunction']],
+) -> float | None:
+    if not enabled:
+        return None
+    function_count = sum(len(functions) for functions in discovered.values())
+    print(
+        '[discover_resources] progress '
+        f'modules={scanned_modules} sources={len(discovered)} '
+        f'functions={function_count} '
+        f'elapsed={time.perf_counter() - started:.1f}s',
+        flush=True,
+    )
+    return time.perf_counter()
+
+
 def _emit_progress(
     *,
     source: str,
@@ -139,6 +160,7 @@ def discover_resources(
     database_name: str,
     base_path: Optional[Path] = None,
     inputs_package: str = 'pypath.inputs_v2',
+    progress: bool = False,
 ) -> tuple[Dict[str, List[ResourceFunction]], PathManager]:
     """Discover generator functions from the inputs_v2 package.
 
@@ -146,8 +168,16 @@ def discover_resources(
     1. Resource objects - emits metadata() to resource.parquet (processed first)
     2. Dataset objects - emits data entities to <dataset_name>.parquet
     """
+    started = time.perf_counter()
+    last_progress = started
+    scanned_modules = 0
     path_manager = PathManager(database_name, base_path)
     _configure_pypath_download_dir()
+    if progress:
+        print(
+            f'[discover_resources] importing package={inputs_package}',
+            flush=True,
+        )
     from pypath.inputs_v2.base import (
         Dataset,
         Resource,
@@ -162,6 +192,12 @@ def discover_resources(
             f'Unable to import inputs package "{inputs_package}": {exc}'
         ) from exc
 
+    if progress:
+        print(
+            f'[discover_resources] walking package={inputs_package}',
+            flush=True,
+        )
+
     package_paths = getattr(root_module, '__path__', None)
     if package_paths is None:
         raise DiscoveryError(
@@ -172,6 +208,17 @@ def discover_resources(
     discovered: Dict[str, List[ResourceFunction]] = {}
 
     for module_info in pkgutil.walk_packages(package_paths, prefix):
+        scanned_modules += 1
+        now = time.perf_counter()
+        if progress and now - last_progress >= 5:
+            last = _emit_discovery_progress(
+                enabled=True,
+                started=started,
+                scanned_modules=scanned_modules,
+                discovered=discovered,
+            )
+            if last is not None:
+                last_progress = last
         module_name = module_info.name
         relative_name = module_name[len(prefix) :]
         if not relative_name:
@@ -314,6 +361,16 @@ def discover_resources(
     if not discovered:
         raise DiscoveryError(
             f'No resource functions found under package "{inputs_package}"'
+        )
+
+    if progress:
+        function_count = sum(len(functions) for functions in discovered.values())
+        print(
+            '[discover_resources] done '
+            f'modules={scanned_modules} sources={len(discovered)} '
+            f'functions={function_count} '
+            f'elapsed={time.perf_counter() - started:.1f}s',
+            flush=True,
         )
 
     return discovered, path_manager
