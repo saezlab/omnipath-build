@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 import sys
 
+import duckdb
+
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -79,3 +81,34 @@ def test_materialize_raw_records_writes_new_snapshot_when_changed(
     assert len(_run_dirs(dataset_dir)) == 2
     manifest = json.loads(second.manifest_path.read_text())
     assert manifest['delta_rows_by_type'] == {'added': 1, 'removed': 1}
+
+
+def test_materialize_raw_records_promotes_all_null_first_batch_columns(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / 'raw-records'
+
+    snapshot = materialize_raw_records(
+        records=[
+            {'id': '1', 'optional': None},
+            {'id': '2', 'optional': 'later'},
+        ],
+        source='demo',
+        dataset='items',
+        output_root=root,
+        batch_size=1,
+    )
+
+    con = duckdb.connect()
+    try:
+        values = con.execute(
+            f"""
+            SELECT optional
+            FROM read_parquet('{snapshot.records_path}/**/*.parquet', union_by_name=true)
+            ORDER BY id
+            """
+        ).fetchall()
+    finally:
+        con.close()
+
+    assert values == [(None,), ('later',)]
