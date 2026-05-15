@@ -17,6 +17,7 @@ sources ?=
 SELECTED_SOURCES = $(strip $(if $(SOURCES),$(SOURCES),$(if $(SOURCE),$(SOURCE),$(if $(sources),$(sources),$(source)))))
 FROM ?= download
 FUNCTION ?=
+DATASET ?=
 BASE_PATH ?=
 DRY_RUN ?=
 SILVER_OVERRIDE ?=
@@ -209,7 +210,9 @@ preparse:
 			preparse \
 			--database "$(DATABASE)" \
 			--inputs-package "$(INPUTS_PACKAGE)" \
+			$(if $(DATASET),--dataset "$(DATASET)") \
 			$(if $(MINIMAL_RAW_RECORDS_ROOT),--raw-records-root "$(MINIMAL_RAW_RECORDS_ROOT)") \
+			$(if $(SKIP_EXISTING_PREPARSE),--skip-existing) \
 			$(if $(FORCE_REFRESH),--force-refresh); \
 	else \
 		SOURCE_LIST=$$(printf '%s' "$(SELECTED_SOURCES)" | tr ',' ' '); \
@@ -221,7 +224,9 @@ preparse:
 				--source "$$source" \
 				--database "$(DATABASE)" \
 				--inputs-package "$(INPUTS_PACKAGE)" \
+				$(if $(DATASET),--dataset "$(DATASET)") \
 				$(if $(MINIMAL_RAW_RECORDS_ROOT),--raw-records-root "$(MINIMAL_RAW_RECORDS_ROOT)") \
+				$(if $(SKIP_EXISTING_PREPARSE),--skip-existing) \
 				$(if $(FORCE_REFRESH),--force-refresh); \
 		done; \
 	fi

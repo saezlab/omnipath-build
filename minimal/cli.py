@@ -104,6 +104,11 @@ def main(argv: list[str] | None = None) -> int:
     preparse.add_argument('--database', default='omnipath')
     preparse.add_argument('--raw-records-root')
     preparse.add_argument('--force-refresh', action='store_true')
+    preparse.add_argument(
+        '--skip-existing',
+        action='store_true',
+        help='Skip datasets that already have an accepted latest preparse snapshot.',
+    )
 
     canon = subparsers.add_parser('canonicalize')
     canon.add_argument('--source')
@@ -321,6 +326,39 @@ def _handle_preparse(args: argparse.Namespace) -> int:
         raw_dataset = getattr(fn.call, '_raw_dataset', None)
         if raw_dataset is None:
             continue
+        if args.skip_existing and args.force_refresh:
+            print(
+                f'[{fn.source}.{fn.function_name}] '
+                'skip_existing_ignored_due_to_force_refresh',
+                flush=True,
+            )
+        if args.skip_existing and not args.force_refresh:
+            try:
+                snapshot = load_latest_raw_snapshot(
+                    source=fn.source,
+                    dataset=fn.function_name,
+                    raw_records_root=args.raw_records_root,
+                )
+            except FileNotFoundError:
+                pass
+            else:
+                if not (
+                    snapshot.records_path.exists()
+                    and snapshot.delta_path.exists()
+                    and snapshot.manifest_path.exists()
+                ):
+                    print(
+                        f'[{fn.source}.{fn.function_name}] '
+                        'existing_preparse_incomplete; reparsing',
+                        flush=True,
+                    )
+                else:
+                    print(
+                        f'[{fn.source}.{fn.function_name}] '
+                        f'skipped_existing_preparse={snapshot.snapshot_id}',
+                        flush=True,
+                    )
+                    continue
         snapshot = preparse_dataset(
             raw_dataset,
             source=fn.source,
