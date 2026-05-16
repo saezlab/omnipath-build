@@ -231,6 +231,7 @@ def _source_counts(
             sql.Identifier(schema),
             sql.Identifier(schema),
             sql.Identifier(schema),
+            sql.Identifier(schema),
         ),
         [
             source,

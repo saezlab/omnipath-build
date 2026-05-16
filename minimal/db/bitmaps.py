@@ -294,7 +294,15 @@ def _populate_facet_entity_bitmap(
               AND source <> ''
             GROUP BY source
             """
-        ).format(schema_id, schema_id, schema_id, schema_id, schema_id),
+        ).format(
+            schema_id,
+            schema_id,
+            schema_id,
+            schema_id,
+            schema_id,
+            schema_id,
+            schema_id,
+        ),
         sql.SQL(
             """
             INSERT INTO {}.facet_entity_bitmap (
@@ -319,6 +327,7 @@ def _populate_facet_entity_bitmap(
             GROUP BY a.value
             """
         ).format(
+            schema_id,
             schema_id,
             schema_id,
             schema_id,
@@ -416,7 +425,53 @@ def _populate_facet_relation_bitmap(
             WHERE entity_type IS NOT NULL
             GROUP BY entity_type
             """
-        ).format(schema_id, schema_id, schema_id, schema_id, schema_id),
+        ).format(
+            schema_id,
+            schema_id,
+            schema_id,
+            schema_id,
+            schema_id,
+            schema_id,
+            schema_id,
+        ),
+        sql.SQL(
+            """
+            INSERT INTO {}.facet_relation_bitmap (
+              facet_name,
+              facet_value,
+              relation_bitmap,
+              relation_count
+            )
+            WITH relation_taxonomy AS (
+              SELECT r.relation_id, subject.taxonomy_id
+              FROM {}.relation r
+              JOIN {}.entity subject
+                ON subject.entity_id = r.subject_entity_id
+              WHERE subject.taxonomy_id IS NOT NULL
+                AND subject.taxonomy_id <> ''
+              UNION
+              SELECT r.relation_id, object.taxonomy_id
+              FROM {}.relation r
+              JOIN {}.entity object
+                ON object.entity_id = r.object_entity_id
+              WHERE object.taxonomy_id IS NOT NULL
+                AND object.taxonomy_id <> ''
+            )
+            SELECT
+              'taxonomy_id',
+              taxonomy_id,
+              rb_build_agg(relation_id::integer),
+              COUNT(*)::integer
+            FROM relation_taxonomy
+            GROUP BY taxonomy_id
+            """
+        ).format(
+            schema_id,
+            schema_id,
+            schema_id,
+            schema_id,
+            schema_id,
+        ),
     ]
     for statement in statements:
         cur.execute(statement)
