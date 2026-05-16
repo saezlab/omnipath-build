@@ -164,6 +164,7 @@ def canonicalize(
             _insert_scoped_entity_types(cur, schema)
             _insert_entities(cur, schema)
             _upsert_entity_resolution(cur, schema)
+            _insert_entity_annotations(cur, schema)
 
         entities = _count_schema_table(cur, schema, 'entity')
         entity_status = _status_counts(
@@ -184,7 +185,7 @@ def canonicalize(
                 _delete_scoped_relation_evidence(cur, schema)
                 _insert_relations(cur, schema)
                 _insert_relation_evidence_links(cur, schema)
-                _insert_relation_evidence_annotation_links(cur, schema)
+                _refresh_relation_annotations(cur, schema)
             relations = _count_schema_table(cur, schema, 'relation')
             relation_mapped, relation_unmapped = _relation_mapping_counts(
                 cur, schema
@@ -931,77 +932,7 @@ def _insert_entities(cur: psycopg2.extensions.cursor, schema: str) -> None:
     cur.execute(
         sql.SQL(
             """
-            WITH evidence_identifier_json AS (
-              SELECT
-                k.entity_evidence_id,
-                jsonb_agg(
-                  jsonb_build_object(
-                    'identifier_type', k.key_type,
-                    'identifier_type_id', k.key_identifier_type_id,
-                    'identifier', k.key_value
-                  )
-                  ORDER BY k.key_type, k.key_value
-                ) AS identifiers
-              FROM _entity_key k
-              GROUP BY k.entity_evidence_id
-            ),
-            resolver_identifier_json AS (
-              SELECT
-                st.entity_evidence_id,
-                jsonb_agg(
-                  identifier_object
-                  ORDER BY
-                    identifier_object ->> 'identifier_type',
-                    identifier_object ->> 'identifier'
-                ) AS identifiers
-              FROM _entity_resolution_stage st
-              JOIN LATERAL (
-                SELECT DISTINCT
-                  jsonb_strip_nulls(
-                    jsonb_build_object(
-                      'identifier_type', key_type.name,
-                      'identifier_type_id', key_type.identifier_type_id,
-                      'identifier', p.key_value,
-                      'taxonomy_id', NULLIF(p.taxonomy_id, '')
-                    )
-                  ) AS identifier_object
-                FROM {}.resolver_protein_identifier_lookup p
-                JOIN {}.identifier_type key_type
-                  ON key_type.identifier_type_id =
-                     p.key_identifier_type_id
-                JOIN {}.identifier_type canonical_type
-                  ON canonical_type.identifier_type_id =
-                     p.canonical_identifier_type_id
-                WHERE st.status = 'resolved'
-                  AND st.entity_type = ANY(%s)
-                  AND canonical_type.name = st.id_type
-                  AND p.canonical_identifier = st.id
-                  AND p.key_value <> st.id
-                  AND st.taxonomy_id IS NOT NULL
-                  AND NULLIF(p.taxonomy_id, '') = st.taxonomy_id
-                UNION
-                SELECT DISTINCT
-                  jsonb_build_object(
-                    'identifier_type', key_type.name,
-                    'identifier_type_id', key_type.identifier_type_id,
-                    'identifier', c.key_value
-                  ) AS identifier_object
-                FROM {}.resolver_chemical_identifier_lookup c
-                JOIN {}.identifier_type key_type
-                  ON key_type.identifier_type_id =
-                     c.key_identifier_type_id
-                JOIN {}.identifier_type canonical_type
-                  ON canonical_type.identifier_type_id =
-                     c.canonical_identifier_type_id
-                WHERE st.status = 'resolved'
-                  AND st.entity_type = ANY(%s)
-                  AND canonical_type.name = st.id_type
-                  AND c.canonical_identifier = st.id
-                  AND c.key_value <> st.id
-              ) identifiers ON TRUE
-              GROUP BY st.entity_evidence_id
-            ),
-            staged AS (
+            WITH staged AS (
               SELECT
                 st.*,
                 et.entity_type_id,
@@ -1009,25 +940,12 @@ def _insert_entities(cur: psycopg2.extensions.cursor, schema: str) -> None:
                 CASE
                   WHEN st.status = 'resolved' THEN 1::smallint
                   ELSE 2::smallint
-                END AS entity_resolution_status_id,
-                CASE
-                  WHEN st.status = 'resolved'
-                    THEN COALESCE(rij.identifiers, '[]'::jsonb)
-                  ELSE jsonb_build_object(
-                    'reason', st.reason,
-                    'evidence_identifiers',
-                    COALESCE(eij.identifiers, '[]'::jsonb)
-                  )
-                END AS entity_identifiers
+                END AS entity_resolution_status_id
               FROM _entity_resolution_stage st
               LEFT JOIN {}.identifier_type it
                 ON it.name = st.id_type
               JOIN {}.entity_type et
                 ON et.name = st.entity_type
-              LEFT JOIN evidence_identifier_json eij
-                ON eij.entity_evidence_id = st.entity_evidence_id
-              LEFT JOIN resolver_identifier_json rij
-                ON rij.entity_evidence_id = st.entity_evidence_id
             )
             INSERT INTO {}.entity (
               entity_type_id,
@@ -1042,7 +960,7 @@ def _insert_entities(cur: psycopg2.extensions.cursor, schema: str) -> None:
               taxonomy_id,
               canonical_identifier_type_id,
               id AS canonical_identifier,
-              MIN(entity_identifiers::text)::jsonb AS identifiers,
+              '[]'::jsonb AS identifiers,
               MIN(entity_resolution_status_id) AS resolution_status_id
             FROM staged
             WHERE status IN ('resolved', 'unresolved', 'ambiguous')
@@ -1072,14 +990,7 @@ def _insert_entities(cur: psycopg2.extensions.cursor, schema: str) -> None:
             sql.Identifier(schema),
             sql.Identifier(schema),
             sql.Identifier(schema),
-            sql.Identifier(schema),
-            sql.Identifier(schema),
-            sql.Identifier(schema),
-            sql.Identifier(schema),
-            sql.Identifier(schema),
-            sql.Identifier(schema),
         ),
-        [list(PROTEIN_ENTITY_TYPES), list(CHEMICAL_ENTITY_TYPES)],
     )
 
 
@@ -1146,6 +1057,38 @@ def _upsert_entity_resolution(
             sql.Identifier(schema),
             sql.Identifier(schema),
             sql.Identifier(schema),
+            sql.Identifier(schema),
+            sql.Identifier(schema),
+            sql.Identifier(schema),
+        )
+    )
+
+
+def _insert_entity_annotations(
+    cur: psycopg2.extensions.cursor,
+    schema: str,
+) -> None:
+    cur.execute(
+        sql.SQL(
+            """
+            INSERT INTO {}.entity_annotation (
+              entity_id,
+              annotation_key,
+              scope
+            )
+            SELECT DISTINCT
+              er.entity_id,
+              eea.annotation_key,
+              eea.scope
+            FROM _entity_scope es
+            JOIN {}.entity_evidence_resolution er
+              ON er.entity_evidence_id = es.entity_evidence_id
+            JOIN {}.entity_evidence_annotation eea
+              ON eea.entity_evidence_id = es.entity_evidence_id
+            WHERE er.entity_id IS NOT NULL
+            ON CONFLICT DO NOTHING
+            """
+        ).format(
             sql.Identifier(schema),
             sql.Identifier(schema),
             sql.Identifier(schema),
@@ -1254,14 +1197,24 @@ def _delete_scoped_relation_evidence(
     cur: psycopg2.extensions.cursor,
     schema: str,
 ) -> None:
+    cur.execute('DROP TABLE IF EXISTS _affected_relation')
     cur.execute(
         sql.SQL(
             """
-            DELETE FROM {}.relation_evidence_annotation rea
-            USING _relation_scope rs
-            WHERE rea.relation_evidence_id = rs.relation_evidence_id
+            CREATE TEMP TABLE _affected_relation ON COMMIT DROP AS
+            SELECT DISTINCT rer.relation_id
+            FROM {}.relation_evidence_relation rer
+            JOIN _relation_scope rs
+              ON rs.relation_evidence_id = rer.relation_evidence_id
             """
         ).format(sql.Identifier(schema))
+    )
+    cur.execute(
+        """
+        CREATE UNIQUE INDEX ON _affected_relation (
+          relation_id
+        )
+        """
     )
     cur.execute(
         sql.SQL(
@@ -1355,28 +1308,48 @@ def _insert_relation_evidence_links(
     )
 
 
-def _insert_relation_evidence_annotation_links(
+def _refresh_relation_annotations(
     cur: psycopg2.extensions.cursor,
     schema: str,
 ) -> None:
     cur.execute(
+        """
+        INSERT INTO _affected_relation (relation_id)
+        SELECT DISTINCT relation_id
+        FROM _relation_link
+        ON CONFLICT DO NOTHING
+        """
+    )
+    cur.execute(
         sql.SQL(
             """
-            INSERT INTO {}.relation_evidence_annotation (
+            DELETE FROM {}.relation_annotation ra
+            USING _affected_relation ar
+            WHERE ra.relation_id = ar.relation_id
+            """
+        ).format(sql.Identifier(schema))
+    )
+    cur.execute(
+        sql.SQL(
+            """
+            INSERT INTO {}.relation_annotation (
               relation_id,
-              relation_evidence_id,
-              annotation_id
+              annotation_key,
+              scope
             )
             SELECT
-              rl.relation_id,
-              rl.relation_evidence_id,
-              a.annotation_id
-            FROM _relation_link rl
-            JOIN {}.annotation a
-              ON a.relation_evidence_id = rl.relation_evidence_id
+              rer.relation_id,
+              rea.annotation_key,
+              rea.scope
+            FROM {}.relation_evidence_relation rer
+            JOIN _affected_relation ar
+              ON ar.relation_id = rer.relation_id
+            JOIN {}.relation_evidence_annotation rea
+              ON rea.relation_evidence_id = rer.relation_evidence_id
             ON CONFLICT DO NOTHING
             """
         ).format(
+            sql.Identifier(schema),
             sql.Identifier(schema),
             sql.Identifier(schema),
         )

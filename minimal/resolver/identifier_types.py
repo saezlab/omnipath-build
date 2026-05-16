@@ -29,6 +29,7 @@ IDENTIFIER_TYPE_NAMES: tuple[str, ...] = (
     cv_term_label_accession(IdentifierNamespaceCv.CV_TERM_ACCESSION),
     FALLBACK_IDENTIFIER_TYPE,
     cv_term_label_accession(IdentifierNamespaceCv.NAME),
+    cv_term_label_accession(IdentifierNamespaceCv.CHEMBL_COMPOUND),
 )
 
 IDENTIFIER_TYPE_IDS: dict[str, int] = {

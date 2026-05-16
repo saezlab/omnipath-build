@@ -20,6 +20,7 @@ from pypath.internals.cv_terms import (
     cv_term_label_accession,
 )
 from pypath.inputs_v2.chebi import resource as chebi_resource
+from pypath.inputs_v2.chembl import resource as chembl_resource
 from pypath.inputs_v2.hmdb import resource as hmdb_resource
 from pypath.inputs_v2.lipidmaps import resource as lipidmaps_resource
 from pypath.inputs_v2.swisslipids import resource as swisslipids_resource
@@ -33,6 +34,7 @@ CHEMICAL_IDENTIFIER_LOOKUP_SCHEMA: dict[str, pl.DataType] = {
 
 CHEMICAL_SOURCES: tuple[str, ...] = (
     'chebi',
+    'chembl',
     'hmdb',
     'lipidmaps',
     'swisslipids',
@@ -41,6 +43,9 @@ CHEMICAL_SOURCES: tuple[str, ...] = (
 CHEMICAL_IDENTIFIER_LOOKUP_OUTPUT_FILENAME = 'chemical_identifier_lookup.parquet'
 IDENTIFIER_TYPE_OUTPUT_FILENAME = 'identifier_type.parquet'
 CHEBI_TYPE = cv_term_label_accession(IdentifierNamespaceCv.CHEBI)
+CHEMBL_COMPOUND_TYPE = cv_term_label_accession(
+    IdentifierNamespaceCv.CHEMBL_COMPOUND
+)
 HMDB_TYPE = cv_term_label_accession(IdentifierNamespaceCv.HMDB)
 LIPIDMAPS_TYPE = cv_term_label_accession(IdentifierNamespaceCv.LIPIDMAPS)
 SWISSLIPIDS_TYPE = cv_term_label_accession(IdentifierNamespaceCv.SWISSLIPIDS)
@@ -88,6 +93,18 @@ def _chebi_row(row: dict) -> dict | None:
     }
 
 
+def _chembl_row(row: dict) -> dict | None:
+    key_value = _clean(row.get('chembl_id'))
+    standard_inchi_key = _clean_inchikey(row.get('standard_inchi_key'))
+    if not key_value or not standard_inchi_key:
+        return None
+    return {
+        'key_type': CHEMBL_COMPOUND_TYPE,
+        'key_value': key_value,
+        'standard_inchi_key': standard_inchi_key,
+    }
+
+
 def _hmdb_row(row: dict) -> dict | None:
     key_value = _clean(row.get('accession'))
     standard_inchi = _clean_inchi(row.get('inchi'))
@@ -132,6 +149,7 @@ def _swisslipids_row(row: dict) -> dict | None:
 
 _CHEMICAL_DATASETS: dict[str, tuple[object, Callable[[dict], dict | None]]] = {
     'chebi': (chebi_resource.molecules, _chebi_row),
+    'chembl': (chembl_resource.molecules, _chembl_row),
     'hmdb': (hmdb_resource.metabolites, _hmdb_row),
     'lipidmaps': (lipidmaps_resource.lipids, _lipidmaps_row),
     'swisslipids': (swisslipids_resource.lipids, _swisslipids_row),

@@ -11,6 +11,7 @@ from minimal.ingest.common import (
     CV_TERM_ENTITY_TYPE,
     IngestStats,
     MutableStats as _MutableStats,
+    annotation_key as _annotation_key,
     entity_to_row as _entity_to_row,
     unwrap_record as _unwrap,
     annotation_to_row as _annotation_to_row,
@@ -600,25 +601,55 @@ class MinimalIngestor:
         term = string_or_none(row.get('term'))
         if term is None:
             return False
+        value = string_or_none(row.get('value'))
+        unit = string_or_none(row.get('unit'))
+        annotation_key = _annotation_key(term, value, unit)
         with self.conn.cursor() as cur:
             cur.execute(
                 sql.SQL(
                     """
                     INSERT INTO {}.annotation (
-                      term, value, unit, scope,
-                      entity_evidence_id, relation_evidence_id
+                      annotation_key,
+                      term,
+                      value,
+                      unit
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s)
                     ON CONFLICT DO NOTHING
                     """
                 ).format(sql.Identifier(self.schema)),
-                [
-                    term,
-                    string_or_none(row.get('value')),
-                    string_or_none(row.get('unit')),
-                    scope,
-                    entity_evidence_id,
-                    relation_evidence_id,
-                ],
+                [annotation_key, term, value, unit],
             )
+            if entity_evidence_id is not None:
+                cur.execute(
+                    sql.SQL(
+                        """
+                        INSERT INTO {}.entity_evidence_annotation (
+                          entity_evidence_id,
+                          annotation_key,
+                          scope
+                        )
+                        VALUES (%s, %s, %s)
+                        ON CONFLICT DO NOTHING
+                        """
+                    ).format(sql.Identifier(self.schema)),
+                    [entity_evidence_id, annotation_key, scope],
+                )
+            elif relation_evidence_id is not None:
+                cur.execute(
+                    sql.SQL(
+                        """
+                        INSERT INTO {}.relation_evidence_annotation (
+                          relation_evidence_id,
+                          annotation_key,
+                          scope
+                        )
+                        VALUES (%s, %s, %s)
+                        ON CONFLICT DO NOTHING
+                        """
+                    ).format(sql.Identifier(self.schema)),
+                    [relation_evidence_id, annotation_key, scope],
+                )
+            else:
+                return False
             return bool(cur.rowcount)

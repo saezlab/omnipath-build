@@ -15,6 +15,7 @@ from minimal.ingest.common import (
     copy_value,
     entity_to_row as _entity_to_row,
     unwrap_record as _unwrap,
+    annotation_key as _annotation_key,
     annotation_to_row as _annotation_to_row,
     interaction_relation_annotations,
     is_interaction_like,
@@ -322,6 +323,8 @@ class BulkMinimalIngestor:
         term = string_or_none(row.get('term'))
         if term is None:
             return False
+        value = string_or_none(row.get('value'))
+        unit = string_or_none(row.get('unit', row.get('units')))
         buffers.annotations.append(
             (
                 source,
@@ -330,9 +333,10 @@ class BulkMinimalIngestor:
                 target_kind,
                 target_occurrence_id,
                 scope,
+                _annotation_key(term, value, unit),
                 term,
-                string_or_none(row.get('value')),
-                string_or_none(row.get('unit', row.get('units'))),
+                value,
+                unit,
             )
         )
         return True
@@ -398,6 +402,7 @@ class BulkMinimalIngestor:
                 _ANNOTATION_COLUMNS,
                 buffers.annotations,
             )
+            _index_staging_tables(cur)
             self._insert_from_staging(cur)
         self.conn.commit()
         buffers.clear()
@@ -627,41 +632,70 @@ class BulkMinimalIngestor:
             sql.SQL(
                 """
                 INSERT INTO {}.annotation (
-                  term, value, unit, scope,
-                  entity_evidence_id, relation_evidence_id
+                  annotation_key,
+                  term,
+                  value,
+                  unit
                 )
-                SELECT
-                  s.term, s.value, s.unit, s.scope,
-                  e.entity_evidence_id, NULL::bigint
+                SELECT DISTINCT
+                  s.annotation_key,
+                  s.term,
+                  s.value,
+                  s.unit
                 FROM stg_annotation s
-                JOIN {}.entity_evidence e
-                  ON e.source = s.source
-                 AND e.dataset = s.dataset
-                 AND e.row_id = s.row_id
-                 AND e.occurrence_id = s.target_occurrence_id
-                WHERE s.target_kind = 'entity'
+                WHERE s.term IS NOT NULL
+                ON CONFLICT DO NOTHING
                 """
-            ).format(schema, schema)
+            ).format(schema)
+        )
+        _create_evidence_id_maps(cur, self.schema)
+        cur.execute(
+            sql.SQL(
+                """
+                INSERT INTO {}.entity_evidence_annotation (
+                  entity_evidence_id,
+                  annotation_key,
+                  scope
+                )
+                SELECT DISTINCT
+                  em.entity_evidence_id,
+                  s.annotation_key,
+                  s.scope
+                FROM stg_annotation s
+                JOIN stg_entity_id_map em
+                  ON em.source = s.source
+                 AND em.dataset = s.dataset
+                 AND em.row_id = s.row_id
+                 AND em.occurrence_id = s.target_occurrence_id
+                WHERE s.target_kind = 'entity'
+                  AND s.scope IS NOT NULL
+                ON CONFLICT DO NOTHING
+                """
+            ).format(schema)
         )
         cur.execute(
             sql.SQL(
                 """
-                INSERT INTO {}.annotation (
-                  term, value, unit, scope,
-                  entity_evidence_id, relation_evidence_id
+                INSERT INTO {}.relation_evidence_annotation (
+                  relation_evidence_id,
+                  annotation_key,
+                  scope
                 )
-                SELECT
-                  s.term, s.value, s.unit, s.scope,
-                  NULL::bigint, r.relation_evidence_id
+                SELECT DISTINCT
+                  rm.relation_evidence_id,
+                  s.annotation_key,
+                  s.scope
                 FROM stg_annotation s
-                JOIN {}.relation_evidence r
-                  ON r.source = s.source
-                 AND r.dataset = s.dataset
-                 AND r.row_id = s.row_id
-                 AND r.relation_occurrence_id = s.target_occurrence_id
+                JOIN stg_relation_id_map rm
+                  ON rm.source = s.source
+                 AND rm.dataset = s.dataset
+                 AND rm.row_id = s.row_id
+                 AND rm.relation_occurrence_id = s.target_occurrence_id
                 WHERE s.target_kind = 'relation'
+                  AND s.scope IS NOT NULL
+                ON CONFLICT DO NOTHING
                 """
-            ).format(schema, schema)
+            ).format(schema)
         )
     @staticmethod
     def _print_progress(
@@ -759,6 +793,7 @@ _ANNOTATION_COLUMNS = (
     'target_kind',
     'target_occurrence_id',
     'scope',
+    'annotation_key',
     'term',
     'value',
     'unit',
@@ -839,12 +874,140 @@ def _create_staging_tables(cur: psycopg2.extensions.cursor) -> None:
           target_kind text,
           target_occurrence_id text,
           scope text,
+          annotation_key uuid,
           term text,
           value text,
           unit text
         ) ON COMMIT DROP
         """
     )
+
+
+def _index_staging_tables(cur: psycopg2.extensions.cursor) -> None:
+    cur.execute(
+        """
+        CREATE INDEX stg_annotation_target_idx
+        ON stg_annotation (
+          target_kind,
+          source,
+          dataset,
+          row_id,
+          target_occurrence_id
+        )
+        """
+    )
+    cur.execute(
+        """
+        CREATE INDEX stg_annotation_value_idx
+        ON stg_annotation (term, value, unit)
+        """
+    )
+    cur.execute(
+        """
+        CREATE INDEX stg_annotation_relation_key_idx
+        ON stg_annotation_relation (
+          source,
+          dataset,
+          row_id,
+          relation_occurrence_id
+        )
+        """
+    )
+    for table in (
+        'stg_entity',
+        'stg_identifier_ref',
+        'stg_relation',
+        'stg_annotation_relation',
+        'stg_annotation',
+    ):
+        cur.execute(sql.SQL('ANALYZE {}').format(sql.Identifier(table)))
+
+
+def _create_evidence_id_maps(
+    cur: psycopg2.extensions.cursor,
+    schema: str,
+) -> None:
+    schema_id = sql.Identifier(schema)
+    cur.execute('DROP TABLE IF EXISTS stg_entity_id_map')
+    cur.execute(
+        sql.SQL(
+            """
+            CREATE TEMP TABLE stg_entity_id_map
+            ON COMMIT DROP AS
+            SELECT DISTINCT
+              s.source,
+              s.dataset,
+              s.row_id,
+              s.occurrence_id,
+              e.entity_evidence_id
+            FROM stg_entity s
+            JOIN {}.entity_evidence e
+              ON e.source = s.source
+             AND e.dataset = s.dataset
+             AND e.row_id = s.row_id
+             AND e.occurrence_id = s.occurrence_id
+            """
+        ).format(schema_id)
+    )
+    cur.execute(
+        """
+        CREATE UNIQUE INDEX stg_entity_id_map_key_idx
+        ON stg_entity_id_map (
+          source,
+          dataset,
+          row_id,
+          occurrence_id
+        )
+        """
+    )
+    cur.execute('DROP TABLE IF EXISTS stg_relation_id_map')
+    cur.execute(
+        sql.SQL(
+            """
+            CREATE TEMP TABLE stg_relation_id_map
+            ON COMMIT DROP AS
+            SELECT DISTINCT
+              s.source,
+              s.dataset,
+              s.row_id,
+              s.relation_occurrence_id,
+              r.relation_evidence_id
+            FROM (
+              SELECT
+                source,
+                dataset,
+                row_id,
+                relation_occurrence_id
+              FROM stg_relation
+              UNION
+              SELECT
+                source,
+                dataset,
+                row_id,
+                relation_occurrence_id
+              FROM stg_annotation_relation
+            ) s
+            JOIN {}.relation_evidence r
+              ON r.source = s.source
+             AND r.dataset = s.dataset
+             AND r.row_id = s.row_id
+             AND r.relation_occurrence_id = s.relation_occurrence_id
+            """
+        ).format(schema_id)
+    )
+    cur.execute(
+        """
+        CREATE UNIQUE INDEX stg_relation_id_map_key_idx
+        ON stg_relation_id_map (
+          source,
+          dataset,
+          row_id,
+          relation_occurrence_id
+        )
+        """
+    )
+    for table in ('stg_entity_id_map', 'stg_relation_id_map'):
+        cur.execute(sql.SQL('ANALYZE {}').format(sql.Identifier(table)))
 
 
 def _copy_rows(

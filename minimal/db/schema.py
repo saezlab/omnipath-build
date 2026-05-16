@@ -11,7 +11,10 @@ CONTENT_TABLES: tuple[str, ...] = (
     'facet_relation_bitmap',
     'entity_relation_counts',
     'ontology_terms',
+    'relation_annotation',
     'relation_evidence_annotation',
+    'entity_annotation',
+    'entity_evidence_annotation',
     'relation_evidence_relation',
     'entity_evidence_resolution',
     'annotation',
@@ -194,30 +197,18 @@ def ensure_schema(
             sql.SQL(
                 """
                 CREATE TABLE IF NOT EXISTS {}.annotation (
-                  annotation_id bigserial PRIMARY KEY,
+                  annotation_key uuid PRIMARY KEY,
                   term text NOT NULL,
                   value text,
-                  unit text,
-                  scope text NOT NULL,
-                  entity_evidence_id bigint
-                    REFERENCES {}.entity_evidence(entity_evidence_id),
-                  relation_evidence_id bigint
-                    REFERENCES {}.relation_evidence(relation_evidence_id),
-                  CHECK (
-                    (entity_evidence_id IS NOT NULL)::int
-                    + (relation_evidence_id IS NOT NULL)::int
-                    = 1
-                  )
+                  unit text
                 )
                 """
-            ).format(
-                sql.Identifier(schema),
-                sql.Identifier(schema),
-                sql.Identifier(schema),
-            )
+            ).format(sql.Identifier(schema))
         )
-        log_step('drop obsolete annotation indexes')
-        _drop_obsolete_annotation_indexes(cur, schema)
+        log_step('ensure annotation value schema')
+        _ensure_annotation_value_schema(cur, schema)
+        log_step('create evidence annotation tables')
+        _ensure_evidence_annotation_tables(cur, schema)
         _ensure_resolution_schema(cur, schema, progress=progress, indexes=indexes)
 
     log_step('commit')
@@ -368,8 +359,10 @@ def _ensure_resolution_schema(
     _ensure_static_identifier_types(cur, schema)
     log_step('ensure entity indexes')
     _ensure_entity_canonical_key(cur, schema)
-    log_step('ensure annotation target')
-    _ensure_entity_annotation_target(cur, schema)
+    log_step('ensure annotation value schema')
+    _ensure_annotation_value_schema(cur, schema)
+    log_step('create evidence annotation tables')
+    _ensure_evidence_annotation_tables(cur, schema)
     log_step('ensure relation evidence endpoints')
     _ensure_relation_evidence_entity_endpoints(cur, schema)
     log_step('drop obsolete entity_resolution_candidate table')
@@ -577,26 +570,8 @@ def _ensure_resolution_schema(
             """
         ).format(schema_id, schema_id, schema_id)
     )
-    log_step('create relation_evidence_annotation table')
-    cur.execute(
-        sql.SQL(
-            """
-            CREATE TABLE IF NOT EXISTS {}.relation_evidence_annotation (
-              relation_id bigint NOT NULL
-                REFERENCES {}.relation(relation_id)
-                ON DELETE CASCADE,
-              relation_evidence_id bigint NOT NULL
-                REFERENCES {}.relation_evidence(relation_evidence_id)
-                ON DELETE CASCADE,
-              annotation_id bigint PRIMARY KEY
-                REFERENCES {}.annotation(annotation_id)
-                ON DELETE CASCADE
-            )
-            """
-        ).format(schema_id, schema_id, schema_id, schema_id)
-    )
-    log_step('ensure relation annotation key')
-    _ensure_relation_annotation_key(cur, schema)
+    log_step('create canonical annotation tables')
+    _ensure_canonical_annotation_tables(cur, schema)
     log_step('drop relation_evidence_resolution table')
     cur.execute(
         sql.SQL('DROP TABLE IF EXISTS {}.relation_evidence_resolution').format(
@@ -770,40 +745,162 @@ def _ensure_identifier_evidence_key(
     )
 
 
-def _ensure_relation_annotation_key(
+def _annotation_legacy_columns(
+    cur: psycopg2.extensions.cursor,
+    schema: str,
+) -> set[str]:
+    cur.execute(
+        """
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_schema = %s
+          AND table_name = 'annotation'
+        """,
+        [schema],
+    )
+    return {row[0] for row in cur.fetchall()}
+
+
+def _ensure_annotation_value_schema(
+    cur: psycopg2.extensions.cursor,
+    schema: str,
+) -> None:
+    schema_id = sql.Identifier(schema)
+    legacy_columns = _annotation_legacy_columns(cur, schema)
+    if legacy_columns and (
+        'annotation_key' not in legacy_columns
+        or legacy_columns
+        & {'scope', 'entity_evidence_id', 'relation_evidence_id', 'entity_id'}
+    ):
+        for table in (
+            'relation_annotation',
+            'entity_annotation',
+            'relation_evidence_annotation',
+            'entity_evidence_annotation',
+        ):
+            cur.execute(
+                sql.SQL('DROP TABLE IF EXISTS {}.{} CASCADE').format(
+                    schema_id,
+                    sql.Identifier(table),
+                )
+            )
+        cur.execute(sql.SQL('DROP TABLE {}.annotation CASCADE').format(schema_id))
+    cur.execute(
+        sql.SQL(
+            """
+            CREATE TABLE IF NOT EXISTS {}.annotation (
+              annotation_key uuid PRIMARY KEY,
+              term text NOT NULL,
+              value text,
+              unit text
+            )
+            """
+        ).format(schema_id)
+    )
+    _drop_obsolete_annotation_indexes(cur, schema)
+    cur.execute(
+        sql.SQL(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS annotation_value_idx
+            ON {}.annotation (term, value, unit)
+            NULLS NOT DISTINCT
+            """
+        ).format(schema_id)
+    )
+
+
+def _ensure_evidence_annotation_tables(
     cur: psycopg2.extensions.cursor,
     schema: str,
 ) -> None:
     schema_id = sql.Identifier(schema)
     cur.execute(
         """
-        SELECT c.conname, array_agg(a.attname ORDER BY cols.ordinality)
-        FROM pg_constraint c
-        JOIN pg_class rel ON rel.oid = c.conrelid
-        JOIN pg_namespace ns ON ns.oid = rel.relnamespace
-        JOIN unnest(c.conkey) WITH ORDINALITY AS cols(attnum, ordinality)
-          ON true
-        JOIN pg_attribute a
-          ON a.attrelid = rel.oid
-         AND a.attnum = cols.attnum
-        WHERE ns.nspname = %s
-          AND rel.relname = 'relation_evidence_annotation'
-          AND c.contype = 'p'
-        GROUP BY c.conname
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = %s
+          AND table_name = 'relation_evidence_annotation'
+          AND column_name = 'relation_id'
         """,
         [schema],
     )
-    for constraint_name, columns in cur.fetchall():
-        if list(columns) == ['annotation_id']:
-            continue
+    if cur.fetchone() is not None:
         cur.execute(
             sql.SQL(
-                'ALTER TABLE {}.relation_evidence_annotation DROP CONSTRAINT {}'
-            ).format(
-                schema_id,
-                sql.Identifier(constraint_name),
-            )
+                'DROP TABLE IF EXISTS {}.relation_evidence_annotation CASCADE'
+            ).format(schema_id)
         )
+    cur.execute(
+        sql.SQL(
+            """
+            CREATE TABLE IF NOT EXISTS {}.entity_evidence_annotation (
+              entity_evidence_id bigint NOT NULL
+                REFERENCES {}.entity_evidence(entity_evidence_id)
+                ON DELETE CASCADE,
+              annotation_key uuid NOT NULL
+                REFERENCES {}.annotation(annotation_key)
+                ON DELETE CASCADE,
+              scope text NOT NULL,
+              PRIMARY KEY (entity_evidence_id, annotation_key, scope)
+            )
+            """
+        ).format(schema_id, schema_id, schema_id)
+    )
+    cur.execute(
+        sql.SQL(
+            """
+            CREATE TABLE IF NOT EXISTS {}.relation_evidence_annotation (
+              relation_evidence_id bigint NOT NULL
+                REFERENCES {}.relation_evidence(relation_evidence_id)
+                ON DELETE CASCADE,
+              annotation_key uuid NOT NULL
+                REFERENCES {}.annotation(annotation_key)
+                ON DELETE CASCADE,
+              scope text NOT NULL,
+              PRIMARY KEY (relation_evidence_id, annotation_key, scope)
+            )
+            """
+        ).format(schema_id, schema_id, schema_id)
+    )
+
+
+def _ensure_canonical_annotation_tables(
+    cur: psycopg2.extensions.cursor,
+    schema: str,
+) -> None:
+    schema_id = sql.Identifier(schema)
+    cur.execute(
+        sql.SQL(
+            """
+            CREATE TABLE IF NOT EXISTS {}.entity_annotation (
+              entity_id bigint NOT NULL
+                REFERENCES {}.entity(entity_id)
+                ON DELETE CASCADE,
+              annotation_key uuid NOT NULL
+                REFERENCES {}.annotation(annotation_key)
+                ON DELETE CASCADE,
+              scope text NOT NULL,
+              PRIMARY KEY (entity_id, annotation_key, scope)
+            )
+            """
+        ).format(schema_id, schema_id, schema_id)
+    )
+    cur.execute(
+        sql.SQL(
+            """
+            CREATE TABLE IF NOT EXISTS {}.relation_annotation (
+              relation_id bigint NOT NULL
+                REFERENCES {}.relation(relation_id)
+                ON DELETE CASCADE,
+              annotation_key uuid NOT NULL
+                REFERENCES {}.annotation(annotation_key)
+                ON DELETE CASCADE,
+              scope text NOT NULL,
+              PRIMARY KEY (relation_id, annotation_key, scope)
+            )
+            """
+        ).format(schema_id, schema_id, schema_id)
+    )
 
 
 def _ensure_static_identifier_types(
@@ -1255,76 +1352,6 @@ def _drop_obsolete_annotation_indexes(
     )
 
 
-def _ensure_entity_annotation_target(
-    cur: psycopg2.extensions.cursor,
-    schema: str,
-) -> None:
-    schema_id = sql.Identifier(schema)
-    _drop_obsolete_annotation_indexes(cur, schema)
-    cur.execute(
-        sql.SQL(
-            'ALTER TABLE {}.annotation ADD COLUMN IF NOT EXISTS entity_id bigint'
-        ).format(schema_id)
-    )
-    cur.execute(
-        sql.SQL(
-            """
-            DO $$
-            BEGIN
-              IF NOT EXISTS (
-                SELECT 1
-                FROM pg_constraint
-                WHERE conname = 'annotation_entity_id_fkey'
-                  AND conrelid = '{}.annotation'::regclass
-              ) THEN
-                ALTER TABLE {}.annotation
-                ADD CONSTRAINT annotation_entity_id_fkey
-                FOREIGN KEY (entity_id)
-                REFERENCES {}.entity(entity_id)
-                ON DELETE CASCADE;
-              END IF;
-            END
-            $$;
-            """
-        ).format(schema_id, schema_id, schema_id)
-    )
-    cur.execute(
-        """
-        SELECT conname
-        FROM pg_constraint c
-        JOIN pg_class rel ON rel.oid = c.conrelid
-        JOIN pg_namespace ns ON ns.oid = rel.relnamespace
-        WHERE ns.nspname = %s
-          AND rel.relname = 'annotation'
-          AND c.contype = 'c'
-          AND pg_get_constraintdef(c.oid) LIKE 'CHECK %%entity_evidence_id%%'
-          AND pg_get_constraintdef(c.oid) LIKE '%%relation_evidence_id%%'
-        """,
-        [schema],
-    )
-    for (constraint_name,) in cur.fetchall():
-        cur.execute(
-            sql.SQL('ALTER TABLE {}.annotation DROP CONSTRAINT {}').format(
-                schema_id,
-                sql.Identifier(constraint_name),
-            )
-        )
-    cur.execute(
-        sql.SQL(
-            """
-            ALTER TABLE {}.annotation
-            ADD CONSTRAINT annotation_target_check
-            CHECK (
-              (entity_evidence_id IS NOT NULL)::int
-              + (relation_evidence_id IS NOT NULL)::int
-              + (entity_id IS NOT NULL)::int
-              = 1
-            )
-            """
-        ).format(schema_id)
-    )
-
-
 def _ensure_relation_evidence_entity_endpoints(
     cur: psycopg2.extensions.cursor,
     schema: str,
@@ -1627,16 +1654,26 @@ def _ensure_resolution_indexes(
             'relation_evidence',
             ('source', 'dataset'),
         ),
-        ('annotation_entity_idx', 'annotation', ('entity_id',)),
         (
-            'annotation_entity_evidence_term_idx',
-            'annotation',
-            ('entity_evidence_id', 'term', 'unit'),
+            'entity_evidence_annotation_annotation_key_idx',
+            'entity_evidence_annotation',
+            ('annotation_key',),
         ),
         (
             'relation_evidence_annotation_relation_evidence_idx',
             'relation_evidence_annotation',
             ('relation_evidence_id',),
+        ),
+        (
+            'relation_evidence_annotation_annotation_key_idx',
+            'relation_evidence_annotation',
+            ('annotation_key',),
+        ),
+        ('entity_annotation_annotation_key_idx', 'entity_annotation', ('annotation_key',)),
+        (
+            'relation_annotation_annotation_key_idx',
+            'relation_annotation',
+            ('annotation_key',),
         ),
         (
             'resolver_protein_lookup_key_tax_idx',

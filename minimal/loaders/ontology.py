@@ -15,6 +15,7 @@ from pypath.internals.cv_terms import (
 from pypath.internals.ontology_schema import OntologyTerm, OntologyRelationship
 
 from minimal.cv_terms import CV_TERM_ENTITY_TYPE, CV_TERM_ID_TYPE
+from minimal.ingest.common import annotation_key as _annotation_key
 
 
 @dataclass(frozen=True)
@@ -169,7 +170,13 @@ def _flush(
             [CV_TERM_ENTITY_TYPE, CV_TERM_ID_TYPE],
         )
         annotation_rows = [
-            (term.id, annotation[0], annotation[1], annotation[2])
+            (
+                term.id,
+                _annotation_key(annotation[0], annotation[1], annotation[2]),
+                annotation[0],
+                annotation[1],
+                annotation[2],
+            )
             for term, annotations in rows
             for annotation in annotations
         ]
@@ -177,13 +184,31 @@ def _flush(
             sql.SQL(
                 """
                 INSERT INTO {}.annotation (
+                  annotation_key,
                   term,
                   value,
-                  unit,
-                  scope,
-                  entity_id
+                  unit
                 )
-                SELECT %s, %s, %s, 'entity', m.entity_id
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT DO NOTHING
+                """
+            )
+            .format(sql.Identifier(schema))
+            .as_string(cur.connection),
+            [
+                (annotation_key, term, value, unit)
+                for _, annotation_key, term, value, unit in annotation_rows
+            ],
+        )
+        cur.executemany(
+            sql.SQL(
+                """
+                INSERT INTO {}.entity_annotation (
+                  entity_id,
+                  annotation_key,
+                  scope
+                )
+                SELECT m.entity_id, %s::uuid, 'entity'
                 FROM _ontology_entity_map m
                 WHERE m.term_id = %s
                 ON CONFLICT DO NOTHING
@@ -192,8 +217,8 @@ def _flush(
             .format(sql.Identifier(schema))
             .as_string(cur.connection),
             [
-                (term, value, unit, term_id)
-                for term_id, term, value, unit in annotation_rows
+                (annotation_key, term_id)
+                for term_id, annotation_key, _, _, _ in annotation_rows
             ],
         )
         cur.execute('TRUNCATE _ontology_term_id')

@@ -319,14 +319,17 @@ def _populate_facet_entity_bitmap(
             FROM {}.entity e
             JOIN {}.entity_type et
               ON et.entity_type_id = e.entity_type_id
+            JOIN {}.entity_annotation ea
+              ON ea.entity_id = e.entity_id
             JOIN {}.annotation a
-              ON a.entity_id = e.entity_id
+              ON a.annotation_key = ea.annotation_key
             WHERE et.name = {}
               AND a.term = {}
               AND COALESCE(a.value, '') <> ''
             GROUP BY a.value
             """
         ).format(
+            schema_id,
             schema_id,
             schema_id,
             schema_id,

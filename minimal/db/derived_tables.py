@@ -151,21 +151,21 @@ def _populate_ontology_terms(
               SELECT
                 te.entity_id,
                 (
-                  ARRAY_AGG(a.value ORDER BY a.annotation_id)
+                  ARRAY_AGG(a.value ORDER BY a.annotation_key)
                   FILTER (
                     WHERE a.term = {}
                       AND COALESCE(a.value, '') <> ''
                   )
                 )[1] AS label,
                 (
-                  ARRAY_AGG(a.value ORDER BY a.annotation_id)
+                  ARRAY_AGG(a.value ORDER BY a.annotation_key)
                   FILTER (
                     WHERE a.term = {}
                       AND COALESCE(a.value, '') <> ''
                   )
                 )[1] AS definition,
                 (
-                  ARRAY_AGG(a.value ORDER BY a.annotation_id)
+                  ARRAY_AGG(a.value ORDER BY a.annotation_key)
                   FILTER (
                     WHERE a.term = {}
                       AND COALESCE(a.value, '') <> ''
@@ -180,8 +180,10 @@ def _populate_ontology_terms(
                     AND COALESCE(a.value, '') <> ''
                   ) AS synonyms
               FROM term_entities te
+              LEFT JOIN {}.entity_annotation ea
+                ON ea.entity_id = te.entity_id
               LEFT JOIN {}.annotation a
-                ON a.entity_id = te.entity_id
+                ON a.annotation_key = ea.annotation_key
               GROUP BY te.entity_id
             )
             SELECT
@@ -219,6 +221,7 @@ def _populate_ontology_terms(
             sql.Literal(ONTOLOGY_ID_TERM),
             sql.Literal(SYNONYM_TERM),
             sql.Literal(CV_TERM_ACCESSION_TERM),
+            schema_id,
             schema_id,
         )
     )

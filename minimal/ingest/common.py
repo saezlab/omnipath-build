@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import uuid
 from dataclasses import dataclass
 from collections.abc import Iterable
 
@@ -155,6 +157,22 @@ def annotation_to_row(annotation: object) -> dict[str, str | None]:
             or getattr(annotation, 'units', None)
         ),
     }
+
+
+def annotation_key(
+    term: str,
+    value: str | None,
+    unit: str | None,
+) -> str:
+    """Return a deterministic UUID key for an annotation value."""
+
+    payload = json.dumps(
+        [term, value, unit],
+        ensure_ascii=False,
+        separators=(',', ':'),
+    )
+    digest = hashlib.sha256(payload.encode('utf-8')).digest()
+    return str(uuid.UUID(bytes=digest[:16]))
 
 
 def text_or_none(value: object) -> str | None:

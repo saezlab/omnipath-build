@@ -70,9 +70,9 @@ def delete_source_content(
         cur.execute(
             sql.SQL(
                 """
-                DELETE FROM {}.annotation a
+                DELETE FROM {}.relation_evidence_annotation rea
                 USING {}.relation_evidence re
-                WHERE a.relation_evidence_id = re.relation_evidence_id
+                WHERE rea.relation_evidence_id = re.relation_evidence_id
                   AND re.source = %s
                 """
             ).format(schema_id, schema_id),
@@ -81,9 +81,9 @@ def delete_source_content(
         cur.execute(
             sql.SQL(
                 """
-                DELETE FROM {}.annotation a
+                DELETE FROM {}.entity_evidence_annotation eea
                 USING {}.entity_evidence ee
-                WHERE a.entity_evidence_id = ee.entity_evidence_id
+                WHERE eea.entity_evidence_id = ee.entity_evidence_id
                   AND ee.source = %s
                 """
             ).format(schema_id, schema_id),
@@ -165,10 +165,37 @@ def delete_source_content(
                   )
                   AND NOT EXISTS (
                     SELECT 1
-                    FROM {}.annotation a
-                    WHERE a.entity_id = e.entity_id
+                    FROM {}.entity_annotation ea
+                    WHERE ea.entity_id = e.entity_id
                   )
                 """
             ).format(schema_id, schema_id, schema_id, schema_id)
+        )
+        cur.execute(
+            sql.SQL(
+                """
+                DELETE FROM {}.annotation a
+                WHERE NOT EXISTS (
+                    SELECT 1
+                    FROM {}.entity_evidence_annotation eea
+                    WHERE eea.annotation_key = a.annotation_key
+                  )
+                  AND NOT EXISTS (
+                    SELECT 1
+                    FROM {}.relation_evidence_annotation rea
+                    WHERE rea.annotation_key = a.annotation_key
+                  )
+                  AND NOT EXISTS (
+                    SELECT 1
+                    FROM {}.entity_annotation ea
+                    WHERE ea.annotation_key = a.annotation_key
+                  )
+                  AND NOT EXISTS (
+                    SELECT 1
+                    FROM {}.relation_annotation ra
+                    WHERE ra.annotation_key = a.annotation_key
+                  )
+                """
+            ).format(schema_id, schema_id, schema_id, schema_id, schema_id)
         )
     conn.commit()
