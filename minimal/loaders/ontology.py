@@ -75,21 +75,57 @@ def _flush(
         cur.executemany(
             sql.SQL(
                 """
-                INSERT INTO {}.entity (
-                  entity_type,
-                  id_type,
-                  id,
-                  taxonomy_id,
-                  resolution_status
+                WITH entity_type_row AS (
+                  INSERT INTO {}.entity_type (name)
+                  VALUES (%s)
+                  ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name
+                  RETURNING entity_type_id
                 )
-                VALUES (%s, %s, %s, NULL, 'resolved')
-                ON CONFLICT (entity_type, id_type, id_hash)
-                DO UPDATE SET resolution_status = 'resolved'
+                INSERT INTO {}.entity (
+                  entity_type_id,
+                  taxonomy_id,
+                  canonical_identifier_type_id,
+                  canonical_identifier,
+                  identifiers,
+                  resolution_status_id
+                )
+                SELECT
+                  entity_type_row.entity_type_id,
+                  NULL::text,
+                  it.identifier_type_id,
+                  %s,
+                  jsonb_build_array(
+                    jsonb_build_object(
+                      'identifier_type', it.name,
+                      'identifier_type_id', it.identifier_type_id,
+                      'identifier', %s
+                    )
+                  ),
+                  1
+                FROM entity_type_row
+                CROSS JOIN {}.identifier_type it
+                WHERE it.name = %s
+                ON CONFLICT (
+                  entity_type_id,
+                  taxonomy_id,
+                  canonical_identifier_type_id,
+                  canonical_identifier
+                )
+                DO UPDATE SET
+                  identifiers = EXCLUDED.identifiers,
+                  resolution_status_id = 1
                 """
             )
-            .format(sql.Identifier(schema))
+            .format(
+                sql.Identifier(schema),
+                sql.Identifier(schema),
+                sql.Identifier(schema),
+            )
             .as_string(cur.connection),
-            [(CV_TERM_ENTITY_TYPE, CV_TERM_ID_TYPE, term.id) for term, _ in rows],
+            [
+                (CV_TERM_ENTITY_TYPE, term.id, term.id, CV_TERM_ID_TYPE)
+                for term, _ in rows
+            ],
         )
         cur.execute(
             'CREATE TEMP TABLE IF NOT EXISTS _ontology_term_id (term_id text PRIMARY KEY) ON COMMIT DROP'
@@ -115,14 +151,21 @@ def _flush(
                 INSERT INTO _ontology_entity_map (term_id, entity_id)
                 SELECT t.term_id, e.entity_id
                 FROM _ontology_term_id t
+                JOIN {}.entity_type et
+                  ON et.name = %s
                 JOIN {}.entity e
-                  ON e.entity_type = %s
-                 AND e.id_type = %s
-                 AND e.id_hash = md5(t.term_id)
-                 AND e.id = t.term_id
+                  ON e.entity_type_id = et.entity_type_id
+                JOIN {}.identifier_type it
+                  ON it.name = %s
+                 AND e.canonical_identifier_type_id = it.identifier_type_id
+                 AND e.canonical_identifier = t.term_id
                 ON CONFLICT (term_id) DO UPDATE SET entity_id = EXCLUDED.entity_id
                 """
-            ).format(sql.Identifier(schema)),
+            ).format(
+                sql.Identifier(schema),
+                sql.Identifier(schema),
+                sql.Identifier(schema),
+            ),
             [CV_TERM_ENTITY_TYPE, CV_TERM_ID_TYPE],
         )
         annotation_rows = [

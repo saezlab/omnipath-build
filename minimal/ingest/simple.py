@@ -354,13 +354,37 @@ class MinimalIngestor:
             cur.execute(
                 sql.SQL(
                     """
-                    INSERT INTO {}.identifier (type, value)
-                    VALUES (%s, %s)
-                    ON CONFLICT (type, value_hash) DO NOTHING
+                    INSERT INTO {}.identifier_type (identifier_type_id, name)
+                    SELECT
+                      COALESCE(MAX(identifier_type_id), 0) + 1,
+                      %s
+                    FROM {}.identifier_type
+                    ON CONFLICT (name) DO NOTHING
+                    """
+                ).format(
+                    sql.Identifier(self.schema),
+                    sql.Identifier(self.schema),
+                ),
+                [ident_type],
+            )
+            cur.execute(
+                sql.SQL(
+                    """
+                    INSERT INTO {}.identifier_evidence (
+                      identifier_type_id,
+                      value
+                    )
+                    SELECT identifier_type_id, %s
+                    FROM {}.identifier_type
+                    WHERE name = %s
+                    ON CONFLICT (identifier_type_id, value) DO NOTHING
                     RETURNING identifier_id
                     """
-                ).format(sql.Identifier(self.schema)),
-                [ident_type, ident_value],
+                ).format(
+                    sql.Identifier(self.schema),
+                    sql.Identifier(self.schema),
+                ),
+                [ident_value, ident_type],
             )
             row = cur.fetchone()
             if row:
@@ -370,13 +394,17 @@ class MinimalIngestor:
                     sql.SQL(
                         """
                         SELECT identifier_id
-                        FROM {}.identifier
-                        WHERE type = %s
-                          AND value_hash = md5(%s)
-                          AND value = %s
+                        FROM {}.identifier_evidence i
+                        JOIN {}.identifier_type it
+                          ON it.identifier_type_id = i.identifier_type_id
+                        WHERE it.name = %s
+                          AND i.value = %s
                         """
-                    ).format(sql.Identifier(self.schema)),
-                    [ident_type, ident_value, ident_value],
+                    ).format(
+                        sql.Identifier(self.schema),
+                        sql.Identifier(self.schema),
+                    ),
+                    [ident_type, ident_value],
                 )
                 identifier_id = int(cur.fetchone()[0])
         self._identifier_cache[key] = identifier_id
@@ -494,20 +522,51 @@ class MinimalIngestor:
             cur.execute(
                 sql.SQL(
                     """
-                    INSERT INTO {}.entity (
-                      entity_type,
-                      id_type,
-                      id,
-                      taxonomy_id,
-                      resolution_status
+                    WITH entity_type_row AS (
+                      INSERT INTO {}.entity_type (name)
+                      VALUES (%s)
+                      ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name
+                      RETURNING entity_type_id
                     )
-                    VALUES (%s, %s, %s, NULL, 'resolved')
-                    ON CONFLICT (entity_type, id_type, id_hash)
-                    DO UPDATE SET resolution_status = 'resolved'
+                    INSERT INTO {}.entity (
+                      entity_type_id,
+                      taxonomy_id,
+                      canonical_identifier_type_id,
+                      canonical_identifier,
+                      identifiers,
+                      resolution_status_id
+                    )
+                    SELECT
+                      entity_type_row.entity_type_id,
+                      NULL::text,
+                      it.identifier_type_id,
+                      %s,
+                      jsonb_build_array(
+                        jsonb_build_object(
+                          'identifier_type', it.name,
+                          'identifier_type_id', it.identifier_type_id,
+                          'identifier', %s
+                        )
+                      ),
+                      1
+                    FROM entity_type_row
+                    CROSS JOIN {}.identifier_type it
+                    WHERE it.name = %s
+                    ON CONFLICT (
+                      entity_type_id,
+                      taxonomy_id,
+                      canonical_identifier_type_id,
+                      canonical_identifier
+                    )
+                    DO UPDATE SET resolution_status_id = 1
                     RETURNING entity_id
                     """
-                ).format(sql.Identifier(self.schema)),
-                [CV_TERM_ENTITY_TYPE, CV_TERM_ID_TYPE, term_id],
+                ).format(
+                    sql.Identifier(self.schema),
+                    sql.Identifier(self.schema),
+                    sql.Identifier(self.schema),
+                ),
+                [CV_TERM_ENTITY_TYPE, term_id, term_id, CV_TERM_ID_TYPE],
             )
             return int(cur.fetchone()[0])
 

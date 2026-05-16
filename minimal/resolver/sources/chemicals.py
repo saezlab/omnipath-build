@@ -6,7 +6,11 @@ from typing import Callable, Iterable
 
 import polars as pl
 
-from minimal.resolver.parquet import write_parquet_from_dict_rows
+from minimal.resolver.identifier_types import (
+    IDENTIFIER_TYPE_SCHEMA,
+    identifier_type_id,
+    identifier_type_rows,
+)
 from minimal.resolver.paths import (
     activate_raw_download_data_dir,
     ensure_chemicals_data_dir,
@@ -21,11 +25,10 @@ from pypath.inputs_v2.lipidmaps import resource as lipidmaps_resource
 from pypath.inputs_v2.swisslipids import resource as swisslipids_resource
 
 CHEMICAL_IDENTIFIER_LOOKUP_SCHEMA: dict[str, pl.DataType] = {
-    'source': pl.Utf8,
-    'key_type': pl.Utf8,
+    'key_identifier_type_id': pl.UInt32,
     'key_value': pl.Utf8,
-    'standard_inchi_key': pl.Utf8,
-    'standard_inchi': pl.Utf8,
+    'canonical_identifier_type_id': pl.UInt32,
+    'canonical_identifier': pl.Utf8,
 }
 
 CHEMICAL_SOURCES: tuple[str, ...] = (
@@ -36,10 +39,14 @@ CHEMICAL_SOURCES: tuple[str, ...] = (
     'pubchem',
 )
 CHEMICAL_IDENTIFIER_LOOKUP_OUTPUT_FILENAME = 'chemical_identifier_lookup.parquet'
+IDENTIFIER_TYPE_OUTPUT_FILENAME = 'identifier_type.parquet'
 CHEBI_TYPE = cv_term_label_accession(IdentifierNamespaceCv.CHEBI)
 HMDB_TYPE = cv_term_label_accession(IdentifierNamespaceCv.HMDB)
 LIPIDMAPS_TYPE = cv_term_label_accession(IdentifierNamespaceCv.LIPIDMAPS)
 SWISSLIPIDS_TYPE = cv_term_label_accession(IdentifierNamespaceCv.SWISSLIPIDS)
+STANDARD_INCHI_KEY_TYPE = cv_term_label_accession(
+    IdentifierNamespaceCv.STANDARD_INCHI_KEY
+)
 
 
 def _clean(value: object) -> str | None:
@@ -74,7 +81,6 @@ def _chebi_row(row: dict) -> dict | None:
     if not key_value or not standard_inchi or not standard_inchi_key:
         return None
     return {
-        'source': 'chebi',
         'key_type': CHEBI_TYPE,
         'key_value': key_value,
         'standard_inchi_key': standard_inchi_key,
@@ -89,7 +95,6 @@ def _hmdb_row(row: dict) -> dict | None:
     if not key_value or not standard_inchi or not standard_inchi_key:
         return None
     return {
-        'source': 'hmdb',
         'key_type': HMDB_TYPE,
         'key_value': key_value,
         'standard_inchi_key': standard_inchi_key,
@@ -104,7 +109,6 @@ def _lipidmaps_row(row: dict) -> dict | None:
     if not key_value or not standard_inchi or not standard_inchi_key:
         return None
     return {
-        'source': 'lipidmaps',
         'key_type': LIPIDMAPS_TYPE,
         'key_value': key_value,
         'standard_inchi_key': standard_inchi_key,
@@ -119,7 +123,6 @@ def _swisslipids_row(row: dict) -> dict | None:
     if not key_value or not standard_inchi or not standard_inchi_key:
         return None
     return {
-        'source': 'swisslipids',
         'key_type': SWISSLIPIDS_TYPE,
         'key_value': key_value,
         'standard_inchi_key': standard_inchi_key,
@@ -190,7 +193,7 @@ def build_chemical_identifier_lookup(
     )
     if not rows:
         return pl.DataFrame(schema=CHEMICAL_IDENTIFIER_LOOKUP_SCHEMA)
-    return pl.DataFrame(rows, schema=CHEMICAL_IDENTIFIER_LOOKUP_SCHEMA).unique()
+    return _normalize_chemical_identifier_lookup(rows)[0]
 
 
 def materialize_chemical_sources(
@@ -208,14 +211,63 @@ def materialize_chemical_sources(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     activate_raw_download_data_dir()
-    row_count = write_parquet_from_dict_rows(
+    lookup, identifier_types = _normalize_chemical_identifier_lookup(
         _chemical_identifier_rows(
             selected,
             max_records=max_records,
             pubchem_url=pubchem_url,
-        ),
-        CHEMICAL_IDENTIFIER_LOOKUP_SCHEMA,
-        output_dir / CHEMICAL_IDENTIFIER_LOOKUP_OUTPUT_FILENAME,
+        )
     )
+    lookup.write_parquet(output_dir / CHEMICAL_IDENTIFIER_LOOKUP_OUTPUT_FILENAME)
+    identifier_types.write_parquet(output_dir / IDENTIFIER_TYPE_OUTPUT_FILENAME)
 
-    return {'chemical_identifier_lookup_rows': row_count}
+    return {
+        'chemical_identifier_lookup_rows': lookup.height,
+        'identifier_type_rows': identifier_types.height,
+    }
+
+
+def _normalize_chemical_identifier_lookup(
+    rows: Iterable[dict],
+) -> tuple[pl.DataFrame, pl.DataFrame]:
+    normalized_rows: list[dict[str, object]] = []
+    type_names = {STANDARD_INCHI_KEY_TYPE}
+    for row in rows:
+        key_type = row.get('key_type')
+        if key_type is None:
+            continue
+        key_type = str(key_type)
+        type_names.add(key_type)
+        standard_inchi_key = row.get('standard_inchi_key')
+        normalized_rows.append(
+            {
+                'key_identifier_type_id': identifier_type_id(key_type),
+                'key_value': row.get('key_value'),
+                'canonical_identifier_type_id': identifier_type_id(
+                    STANDARD_INCHI_KEY_TYPE
+                ),
+                'canonical_identifier': standard_inchi_key,
+            }
+        )
+
+    identifier_types = pl.DataFrame(
+        identifier_type_rows(type_names),
+        schema=IDENTIFIER_TYPE_SCHEMA,
+    )
+    if not normalized_rows:
+        return (
+            pl.DataFrame(schema=CHEMICAL_IDENTIFIER_LOOKUP_SCHEMA),
+            identifier_types,
+        )
+
+    lookup = (
+        pl.DataFrame(normalized_rows, schema=CHEMICAL_IDENTIFIER_LOOKUP_SCHEMA)
+        .filter(
+            pl.col('key_value').is_not_null()
+            & (pl.col('key_value') != '')
+            & pl.col('canonical_identifier').is_not_null()
+            & (pl.col('canonical_identifier') != '')
+        )
+        .unique()
+    )
+    return lookup, identifier_types

@@ -200,8 +200,10 @@ def _source_counts(
                   ON ee.entity_evidence_id = r.entity_evidence_id
                 JOIN {}.entity e
                   ON e.entity_id = r.entity_id
+                JOIN {}.entity_type et
+                  ON et.entity_type_id = e.entity_type_id
                 WHERE ee.source = %s
-                  AND e.entity_type = %s
+                  AND et.name = %s
               ) AS ontology_term_count,
               (
                 SELECT NULL::timestamptz

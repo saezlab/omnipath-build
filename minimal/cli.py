@@ -26,7 +26,11 @@ from minimal.ingest import (
     MinimalIngestor,
     BulkMinimalIngestor,
 )
-from minimal.loaders import load_ontology_terms, load_resolver_tables
+from minimal.loaders import (
+    load_ontology_terms,
+    load_resolver_sources,
+    load_resolver_tables,
+)
 from minimal.canonicalize import canonicalize
 from minimal.resolver.mapping_tables import (
     SOURCE_NAMES as RESOLVER_SOURCE_NAMES,
@@ -91,8 +95,36 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     resolver = subparsers.add_parser('load-resolver')
+    resolver.add_argument(
+        '--sources',
+        nargs='+',
+        choices=RESOLVER_SOURCE_NAMES,
+        default=None,
+        help=(
+            'Stream resolver sources directly into PostgreSQL. '
+            'If omitted, load parquet files from --mapping-dir.'
+        ),
+    )
     resolver.add_argument('--mapping-dir', default='data')
     resolver.add_argument('--batch-size', type=int, default=100_000)
+    resolver.add_argument(
+        '--taxonomy-id',
+        dest='taxonomy_ids',
+        action='append',
+        default=None,
+        help='Optional UniProt taxonomy filter for direct source loading.',
+    )
+    resolver.add_argument(
+        '--max-records',
+        type=int,
+        default=None,
+        help='Optional cap for direct chemical source rows in smoke tests.',
+    )
+    resolver.add_argument(
+        '--pubchem-url',
+        default=None,
+        help='Optional single PubChem SDF .gz URL/path for direct PubChem load.',
+    )
     resolver.add_argument(
         '--drop-existing',
         action=argparse.BooleanOptionalAction,
@@ -229,16 +261,30 @@ def main(argv: list[str] | None = None) -> int:
                 )
             return 0
         if args.command == 'load-resolver':
-            stats = load_resolver_tables(
-                conn,
-                schema=args.schema,
-                mapping_dir=args.mapping_dir,
-                batch_size=args.batch_size,
-                drop_existing=args.drop_existing,
-                indexes=not args.no_indexes,
-            )
+            if args.sources:
+                stats = load_resolver_sources(
+                    conn,
+                    sources=args.sources,
+                    schema=args.schema,
+                    batch_size=args.batch_size,
+                    drop_existing=args.drop_existing,
+                    indexes=not args.no_indexes,
+                    taxonomy_ids=args.taxonomy_ids,
+                    max_records=args.max_records,
+                    pubchem_url=args.pubchem_url,
+                )
+            else:
+                stats = load_resolver_tables(
+                    conn,
+                    schema=args.schema,
+                    mapping_dir=args.mapping_dir,
+                    batch_size=args.batch_size,
+                    drop_existing=args.drop_existing,
+                    indexes=not args.no_indexes,
+                )
             print(
                 f'[resolver] proteins={stats.protein_rows} '
+                f'protein_ambiguous={stats.protein_ambiguous_rows} '
                 f'chemicals={stats.chemical_rows}',
                 flush=True,
             )

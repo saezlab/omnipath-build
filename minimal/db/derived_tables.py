@@ -138,10 +138,14 @@ def _populate_ontology_terms(
               sources
             )
             WITH term_entities AS (
-              SELECT e.entity_id, e.id AS term_id
+              SELECT e.entity_id, e.canonical_identifier AS term_id
               FROM {}.entity e
-              WHERE e.entity_type = {}
-                AND e.id_type = {}
+              JOIN {}.entity_type et
+                ON et.entity_type_id = e.entity_type_id
+               AND et.name = {}
+              JOIN {}.identifier_type it
+                ON it.name = {}
+               AND e.canonical_identifier_type_id = it.identifier_type_id
             ),
             annotation_values AS (
               SELECT
@@ -206,7 +210,9 @@ def _populate_ontology_terms(
         ).format(
             schema_id,
             schema_id,
+            schema_id,
             sql.Literal(CV_TERM_ENTITY_TYPE),
+            schema_id,
             sql.Literal(CV_TERM_ID_TYPE),
             sql.Literal(NAME_TERM),
             sql.Literal(DEFINITION_TERM),

@@ -1,3 +1,41 @@
+"""Canonicalize evidence entities into graph entities and relations.
+
+Example input evidence can contain repeated participants across interaction
+rows:
+
+1. TP53/P04637 -> MDM2/Q00987
+2. TP53/P04637 -> EGFR/P00533
+3. BRCA1/P38398 -> MDM2/Q00987
+
+Ingest keeps those as six separate `entity_evidence` occurrences and three
+`relation_evidence` rows. Each participant occurrence links to rows in
+`identifier_evidence`; for example both TP53 occurrences link to the same
+UniProt and gene-name evidence identifiers, but keep separate
+`entity_evidence_id` values.
+
+Canonicalization first groups equivalent evidence occurrences by entity type,
+taxonomy, and the set of evidence identifier IDs. The two TP53 occurrences
+therefore share one entity group, while MDM2 also shares one entity group
+across rows 1 and 3. Each group is resolved through normalized resolver tables.
+Protein resolver joins are taxonomy-scoped: a protein evidence group must carry
+taxonomy, and the resolver row must have the same taxonomy. Chemicals resolve
+through taxonless chemical resolver rows.
+
+For each group, resolver candidates are ranked by identifier strength. A direct
+UniProt or standard InChI key candidate wins over stable cross references, which
+win over weak names. If the best rank has exactly one canonical target, every
+evidence occurrence in that group gets one `entity_evidence_resolution` row
+pointing to the canonical `entity`. If two evidence identifiers in the same
+group disagree at the same best rank, the group becomes `ambiguous`. If there is
+no accepted resolver candidate, the group gets an unresolved fallback entity
+with a normalized resolution reason.
+
+After entity resolution, relation canonicalization replaces each
+`relation_evidence` endpoint occurrence with the resolved canonical `entity_id`
+and upserts distinct graph `relation` rows. In the example above, six evidence
+participants collapse to four graph entities: TP53, MDM2, EGFR, and BRCA1.
+"""
+
 from __future__ import annotations
 
 from typing import Any
@@ -16,6 +54,7 @@ from minimal.cv_terms import (
     CV_TERM_ID_TYPE,
     PROTEIN_ENTITY_TYPE_ALIASES,
 )
+from minimal.resolver.identifier_types import FALLBACK_IDENTIFIER_TYPE
 
 PROTEIN_ENTITY_TYPES = PROTEIN_ENTITY_TYPE_ALIASES
 CHEMICAL_ENTITY_TYPES = CHEMICAL_ENTITY_TYPE_ALIASES
@@ -69,82 +108,11 @@ WEAK_IDENTIFIER_TYPES = (
     UNIPROT_ENTRY_NAME_TYPE,
 )
 DIRECT_MAPPING_TYPES = (
-    'uniprot_primary',
-    'uniprot_secondary',
     'standard_inchi_key_identity',
-    'standard_inchi_identity',
 )
 ASSOCIATION_CATEGORY = 'association'
 ASSOCIATION_PREDICATE = 'associated_with'
 PATHWAY_PREDICATE = 'involved_in'
-
-DEFAULT_POLICIES: tuple[
-    tuple[str, str | None, str, str | None, str, bool], ...
-] = (
-    (
-        'protein',
-        'uniprot',
-        UNIPROT_TYPE,
-        'uniprot_primary',
-        'accept',
-        False,
-    ),
-    (
-        'protein',
-        'uniprot',
-        UNIPROT_TYPE,
-        'uniprot_secondary',
-        'accept',
-        False,
-    ),
-    (
-        'protein',
-        'uniprot',
-        ENSEMBL_TYPE,
-        'uniprot_reference',
-        'accept',
-        True,
-    ),
-    (
-        'protein',
-        'uniprot',
-        ENTREZ_TYPE,
-        'uniprot_reference',
-        'accept',
-        True,
-    ),
-    ('protein', 'uniprot', HGNC_TYPE, 'uniprot_reference', 'accept', True),
-    (
-        'protein',
-        'uniprot',
-        GENE_NAME_PRIMARY_TYPE,
-        'uniprot_reference',
-        'accept',
-        True,
-    ),
-    (
-        'protein',
-        'uniprot',
-        GENE_NAME_SYNONYM_TYPE,
-        'uniprot_reference',
-        'accept',
-        True,
-    ),
-    (
-        'protein',
-        'uniprot',
-        UNIPROT_ENTRY_NAME_TYPE,
-        'uniprot_reference',
-        'accept',
-        True,
-    ),
-    ('chemical', 'chebi', CHEBI_TYPE, None, 'accept', False),
-    ('chemical', 'pubchem', PUBCHEM_COMPOUND_TYPE, None, 'accept', False),
-    ('chemical', 'hmdb', HMDB_TYPE, None, 'accept', False),
-    ('chemical', 'lipidmaps', LIPIDMAPS_TYPE, None, 'accept', False),
-    ('chemical', 'swisslipids', SWISSLIPIDS_TYPE, None, 'accept', False),
-)
-
 
 @dataclass(frozen=True)
 class CanonicalizationStats:
@@ -172,7 +140,6 @@ def canonicalize(
     """Resolve scoped evidence and materialize the general entity graph."""
 
     with conn.cursor() as cur:
-        _ensure_default_policy(cur, schema)
         _create_entity_scope(
             cur,
             schema=schema,
@@ -181,22 +148,23 @@ def canonicalize(
             unresolved_only=unresolved_only,
         )
         entity_scope = _count(cur, '_entity_scope')
+        candidate_rows = 0
         if entity_scope:
             _create_entity_keys(cur, schema)
-            _delete_scoped_candidates(cur, schema)
-            _create_raw_candidate_table(cur)
-            _create_entity_taxonomy_conflict_table(cur, schema)
-            _insert_protein_candidates(cur, schema)
-            _insert_chemical_candidates(cur, schema)
-            _insert_standard_inchi_key_identity_candidates(cur)
-            _insert_standard_inchi_identity_candidates(cur, schema)
-            _insert_chemical_resolver_identifier_links(cur, schema)
-            _aggregate_candidates(cur, schema)
-            _create_entity_resolution_stage(cur, schema)
+            _create_entity_groups(cur, schema)
+            _create_raw_group_candidate_table(cur)
+            _insert_group_protein_candidates(cur, schema)
+            _insert_group_chemical_candidates(cur, schema)
+            _insert_group_standard_inchi_key_identity_candidates(cur)
+            _create_entity_group_taxonomy_conflict_table(cur, schema)
+            _aggregate_group_candidates(cur)
+            candidate_rows = _count(cur, '_entity_group_resolution_candidate')
+            _create_entity_group_resolution_stage(cur)
+            _project_entity_group_resolution_stage(cur)
+            _insert_scoped_entity_types(cur, schema)
             _insert_entities(cur, schema)
             _upsert_entity_resolution(cur, schema)
 
-        candidate_rows = _scoped_candidate_count(cur, schema)
         entities = _count_schema_table(cur, schema, 'entity')
         entity_status = _status_counts(
             cur, schema, 'entity_evidence_resolution'
@@ -234,31 +202,6 @@ def canonicalize(
         relation_unmapped=relation_unmapped,
     )
 
-
-def _ensure_default_policy(
-    cur: psycopg2.extensions.cursor, schema: str
-) -> None:
-    cur.executemany(
-        sql.SQL(
-            """
-            INSERT INTO {}.resolver_mapping_policy (
-              entity_family,
-              resolver_source,
-              key_type,
-              mapping_type,
-              action,
-              requires_taxonomy
-            )
-            VALUES (%s, %s, %s, %s, %s, %s)
-            ON CONFLICT DO NOTHING
-            """
-        )
-        .format(sql.Identifier(schema))
-        .as_string(cur.connection),
-        DEFAULT_POLICIES,
-    )
-
-
 def _create_entity_scope(
     cur: psycopg2.extensions.cursor,
     *,
@@ -288,7 +231,7 @@ def _create_entity_scope(
             """
             (
               r.entity_evidence_id IS NULL
-              OR r.status IS DISTINCT FROM 'resolved'
+              OR rs.name IS DISTINCT FROM 'resolved'
             )
             """
         )
@@ -303,8 +246,10 @@ def _create_entity_scope(
             """
             LEFT JOIN {}.entity_evidence_resolution r
               ON r.entity_evidence_id = ee.entity_evidence_id
+            LEFT JOIN {}.resolution_status rs
+              ON rs.resolution_status_id = r.status_id
             """
-        ).format(sql.Identifier(schema))
+        ).format(sql.Identifier(schema), sql.Identifier(schema))
         if unresolved_only
         else sql.SQL('')
     )
@@ -334,20 +279,25 @@ def _create_entity_keys(cur: psycopg2.extensions.cursor, schema: str) -> None:
               ee.entity_evidence_id,
               ee.entity_type,
               NULLIF(ee.taxonomy_id, '') AS taxonomy_id,
-              i.type AS key_type,
-              i.type AS resolver_key_type,
+              i.identifier_id,
+              i.identifier_type_id AS key_identifier_type_id,
+              it.name AS key_type,
+              it.name AS resolver_key_type,
               i.value AS key_value
             FROM _entity_scope s
             JOIN {}.entity_evidence ee
               ON ee.entity_evidence_id = s.entity_evidence_id
             JOIN {}.entity_evidence_identifier eei
               ON eei.entity_evidence_id = ee.entity_evidence_id
-            JOIN {}.identifier i
+            JOIN {}.identifier_evidence i
               ON i.identifier_id = eei.identifier_id
+            JOIN {}.identifier_type it
+              ON it.identifier_type_id = i.identifier_type_id
             WHERE i.value IS NOT NULL
               AND i.value <> ''
             """
         ).format(
+            sql.Identifier(schema),
             sql.Identifier(schema),
             sql.Identifier(schema),
             sql.Identifier(schema),
@@ -357,7 +307,7 @@ def _create_entity_keys(cur: psycopg2.extensions.cursor, schema: str) -> None:
         """
         CREATE INDEX ON _entity_key (
           entity_type,
-          resolver_key_type,
+          key_identifier_type_id,
           key_value
         )
         """
@@ -365,7 +315,7 @@ def _create_entity_keys(cur: psycopg2.extensions.cursor, schema: str) -> None:
     cur.execute(
         """
         CREATE INDEX ON _entity_key (
-          resolver_key_type,
+          key_identifier_type_id,
           key_value,
           taxonomy_id
         )
@@ -374,27 +324,171 @@ def _create_entity_keys(cur: psycopg2.extensions.cursor, schema: str) -> None:
     cur.execute('ANALYZE _entity_key')
 
 
-def _delete_scoped_candidates(
+def _create_entity_groups(
     cur: psycopg2.extensions.cursor,
     schema: str,
 ) -> None:
+    cur.execute('DROP TABLE IF EXISTS _entity_group_member')
+    cur.execute('DROP TABLE IF EXISTS _entity_group_key')
+    cur.execute('DROP TABLE IF EXISTS _entity_group')
     cur.execute(
         sql.SQL(
             """
-            DELETE FROM {}.entity_resolution_candidate c
-            USING _entity_scope s
-            WHERE c.entity_evidence_id = s.entity_evidence_id
+            CREATE TEMP TABLE _entity_group ON COMMIT DROP AS
+            WITH scoped_evidence AS (
+              SELECT
+                ee.entity_evidence_id,
+                ee.entity_type,
+                NULLIF(ee.taxonomy_id, '') AS taxonomy_id,
+                COALESCE(
+                  array_agg(
+                    DISTINCT k.identifier_id
+                    ORDER BY k.identifier_id
+                  ) FILTER (WHERE k.identifier_id IS NOT NULL),
+                  ARRAY[]::bigint[]
+                ) AS identifier_ids
+              FROM _entity_scope s
+              JOIN {}.entity_evidence ee
+                ON ee.entity_evidence_id = s.entity_evidence_id
+              LEFT JOIN _entity_key k
+                ON k.entity_evidence_id = ee.entity_evidence_id
+              GROUP BY
+                ee.entity_evidence_id,
+                ee.entity_type,
+                NULLIF(ee.taxonomy_id, '')
+            ),
+            grouped AS (
+              SELECT DISTINCT
+                entity_type,
+                taxonomy_id,
+                identifier_ids
+              FROM scoped_evidence
+            )
+            SELECT
+              row_number() OVER (
+                ORDER BY
+                  entity_type NULLS LAST,
+                  taxonomy_id NULLS LAST,
+                  identifier_ids
+              )::bigint AS entity_group_id,
+              entity_type,
+              taxonomy_id,
+              identifier_ids
+            FROM grouped
             """
         ).format(sql.Identifier(schema))
     )
-
-
-def _create_raw_candidate_table(cur: psycopg2.extensions.cursor) -> None:
-    cur.execute('DROP TABLE IF EXISTS _raw_resolution_candidate')
     cur.execute(
         """
-        CREATE TEMP TABLE _raw_resolution_candidate (
-          entity_evidence_id bigint NOT NULL,
+        CREATE UNIQUE INDEX ON _entity_group (
+          entity_group_id
+        )
+        """
+    )
+    cur.execute(
+        """
+        CREATE UNIQUE INDEX ON _entity_group (
+          entity_type,
+          taxonomy_id,
+          identifier_ids
+        ) NULLS NOT DISTINCT
+        """
+    )
+    cur.execute(
+        sql.SQL(
+            """
+            CREATE TEMP TABLE _entity_group_member ON COMMIT DROP AS
+            WITH scoped_evidence AS (
+              SELECT
+                ee.entity_evidence_id,
+                ee.entity_type,
+                NULLIF(ee.taxonomy_id, '') AS taxonomy_id,
+                COALESCE(
+                  array_agg(
+                    DISTINCT k.identifier_id
+                    ORDER BY k.identifier_id
+                  ) FILTER (WHERE k.identifier_id IS NOT NULL),
+                  ARRAY[]::bigint[]
+                ) AS identifier_ids
+              FROM _entity_scope s
+              JOIN {}.entity_evidence ee
+                ON ee.entity_evidence_id = s.entity_evidence_id
+              LEFT JOIN _entity_key k
+                ON k.entity_evidence_id = ee.entity_evidence_id
+              GROUP BY
+                ee.entity_evidence_id,
+                ee.entity_type,
+                NULLIF(ee.taxonomy_id, '')
+            )
+            SELECT
+              se.entity_evidence_id,
+              g.entity_group_id
+            FROM scoped_evidence se
+            JOIN _entity_group g
+              ON g.entity_type IS NOT DISTINCT FROM se.entity_type
+             AND g.taxonomy_id IS NOT DISTINCT FROM se.taxonomy_id
+             AND g.identifier_ids = se.identifier_ids
+            """
+        ).format(sql.Identifier(schema))
+    )
+    cur.execute(
+        """
+        CREATE UNIQUE INDEX ON _entity_group_member (
+          entity_evidence_id
+        )
+        """
+    )
+    cur.execute(
+        """
+        CREATE INDEX ON _entity_group_member (
+          entity_group_id
+        )
+        """
+    )
+    cur.execute(
+        """
+        CREATE TEMP TABLE _entity_group_key ON COMMIT DROP AS
+        SELECT DISTINCT
+          gm.entity_group_id,
+          k.identifier_id,
+          k.entity_type,
+          k.taxonomy_id,
+          k.key_identifier_type_id,
+          k.key_type,
+          k.resolver_key_type,
+          k.key_value
+        FROM _entity_group_member gm
+        JOIN _entity_key k
+          ON k.entity_evidence_id = gm.entity_evidence_id
+        """
+    )
+    cur.execute(
+        """
+        CREATE INDEX ON _entity_group_key (
+          entity_group_id
+        )
+        """
+    )
+    cur.execute(
+        """
+        CREATE INDEX ON _entity_group_key (
+          key_identifier_type_id,
+          key_value,
+          taxonomy_id
+        )
+        """
+    )
+    cur.execute('ANALYZE _entity_group')
+    cur.execute('ANALYZE _entity_group_member')
+    cur.execute('ANALYZE _entity_group_key')
+
+
+def _create_raw_group_candidate_table(cur: psycopg2.extensions.cursor) -> None:
+    cur.execute('DROP TABLE IF EXISTS _raw_group_resolution_candidate')
+    cur.execute(
+        """
+        CREATE TEMP TABLE _raw_group_resolution_candidate (
+          entity_group_id bigint NOT NULL,
           entity_type text NOT NULL,
           id_type text NOT NULL,
           id text NOT NULL,
@@ -407,39 +501,89 @@ def _create_raw_candidate_table(cur: psycopg2.extensions.cursor) -> None:
     )
 
 
-def _create_entity_taxonomy_conflict_table(
+def _create_entity_group_taxonomy_conflict_table(
     cur: psycopg2.extensions.cursor,
     schema: str,
 ) -> None:
-    cur.execute('DROP TABLE IF EXISTS _entity_taxonomy_conflict')
+    cur.execute('DROP TABLE IF EXISTS _entity_group_taxonomy_conflict')
     cur.execute(
         sql.SQL(
             """
-            CREATE TEMP TABLE _entity_taxonomy_conflict ON COMMIT DROP AS
+            CREATE TEMP TABLE _entity_group_taxonomy_conflict ON COMMIT DROP AS
             SELECT DISTINCT
-              k.entity_evidence_id,
-              p.primary_uniprot,
+              k.entity_group_id,
+              p.canonical_identifier,
               k.taxonomy_id AS evidence_taxonomy_id,
               NULLIF(p.taxonomy_id, '') AS resolver_taxonomy_id
-            FROM _entity_key k
+            FROM _entity_group_key k
             JOIN {}.resolver_protein_identifier_lookup p
-              ON p.key_type = k.resolver_key_type
+              ON p.key_identifier_type_id = k.key_identifier_type_id
              AND p.key_value = k.key_value
-            JOIN {}.resolver_mapping_policy pol
-              ON pol.entity_family = 'protein'
-             AND pol.key_type = p.key_type
-             AND COALESCE(pol.mapping_type, '') = COALESCE(p.mapping_type, '')
-             AND (
-                  pol.resolver_source IS NULL
-                  OR pol.resolver_source = p.source
-             )
-             AND pol.action = 'accept'
+            LEFT JOIN _raw_group_resolution_candidate rc
+              ON rc.entity_group_id = k.entity_group_id
             WHERE k.entity_type = ANY(%s)
-              AND p.primary_uniprot IS NOT NULL
-              AND p.primary_uniprot <> ''
+              AND rc.entity_group_id IS NULL
+              AND k.key_identifier_type_id IS NOT NULL
+              AND p.canonical_identifier IS NOT NULL
+              AND p.canonical_identifier <> ''
               AND k.taxonomy_id IS NOT NULL
               AND NULLIF(p.taxonomy_id, '') IS NOT NULL
               AND NULLIF(p.taxonomy_id, '') <> k.taxonomy_id
+            """
+        ).format(
+            sql.Identifier(schema),
+        ),
+        [list(PROTEIN_ENTITY_TYPES)],
+    )
+    cur.execute(
+        """
+        CREATE INDEX ON _entity_group_taxonomy_conflict (
+          entity_group_id
+        )
+        """
+    )
+    cur.execute('ANALYZE _entity_group_taxonomy_conflict')
+
+
+def _insert_group_protein_candidates(
+    cur: psycopg2.extensions.cursor,
+    schema: str,
+) -> None:
+    cur.execute(
+        sql.SQL(
+            """
+            INSERT INTO _raw_group_resolution_candidate (
+              entity_group_id,
+              entity_type,
+              id_type,
+              id,
+              taxonomy_id,
+              resolver_source,
+              key_type,
+              mapping_type
+            )
+            SELECT DISTINCT
+              k.entity_group_id,
+              k.entity_type,
+              canonical_type.name,
+              p.canonical_identifier,
+              COALESCE(NULLIF(p.taxonomy_id, ''), k.taxonomy_id),
+              NULL::text,
+              k.key_type,
+              NULL::text
+            FROM _entity_group_key k
+            JOIN {}.resolver_protein_identifier_lookup p
+              ON p.key_identifier_type_id = k.key_identifier_type_id
+             AND p.key_value = k.key_value
+            JOIN {}.identifier_type canonical_type
+              ON canonical_type.identifier_type_id =
+                 p.canonical_identifier_type_id
+            WHERE k.entity_type = ANY(%s)
+              AND k.key_identifier_type_id IS NOT NULL
+              AND p.canonical_identifier IS NOT NULL
+              AND p.canonical_identifier <> ''
+              AND k.taxonomy_id IS NOT NULL
+              AND NULLIF(p.taxonomy_id, '') = k.taxonomy_id
             """
         ).format(
             sql.Identifier(schema),
@@ -447,25 +591,17 @@ def _create_entity_taxonomy_conflict_table(
         ),
         [list(PROTEIN_ENTITY_TYPES)],
     )
-    cur.execute(
-        """
-        CREATE INDEX ON _entity_taxonomy_conflict (
-          entity_evidence_id
-        )
-        """
-    )
-    cur.execute('ANALYZE _entity_taxonomy_conflict')
 
 
-def _insert_protein_candidates(
+def _insert_group_chemical_candidates(
     cur: psycopg2.extensions.cursor,
     schema: str,
 ) -> None:
     cur.execute(
         sql.SQL(
             """
-            INSERT INTO _raw_resolution_candidate (
-              entity_evidence_id,
+            INSERT INTO _raw_group_resolution_candidate (
+              entity_group_id,
               entity_type,
               id_type,
               id,
@@ -474,107 +610,39 @@ def _insert_protein_candidates(
               key_type,
               mapping_type
             )
-            SELECT
-              k.entity_evidence_id,
+            SELECT DISTINCT
+              k.entity_group_id,
               k.entity_type,
-              %s,
-              p.primary_uniprot,
+              canonical_type.name,
+              c.canonical_identifier,
               k.taxonomy_id,
-              p.source,
-              k.key_type,
-              p.mapping_type
-            FROM _entity_key k
-            JOIN {}.resolver_protein_identifier_lookup p
-              ON p.key_type = k.resolver_key_type
-             AND p.key_value = k.key_value
-            JOIN {}.resolver_mapping_policy pol
-              ON pol.entity_family = 'protein'
-             AND pol.key_type = p.key_type
-             AND COALESCE(pol.mapping_type, '') = COALESCE(p.mapping_type, '')
-             AND (
-                  pol.resolver_source IS NULL
-                  OR pol.resolver_source = p.source
-             )
-             AND pol.action = 'accept'
-            WHERE k.entity_type = ANY(%s)
-              AND p.primary_uniprot IS NOT NULL
-              AND p.primary_uniprot <> ''
-              AND (
-                    pol.requires_taxonomy = false
-                    OR (
-                      k.taxonomy_id IS NOT NULL
-                      AND NULLIF(p.taxonomy_id, '') = k.taxonomy_id
-                    )
-              )
-              AND NOT (
-                    k.taxonomy_id IS NOT NULL
-                    AND NULLIF(p.taxonomy_id, '') IS NOT NULL
-                    AND NULLIF(p.taxonomy_id, '') <> k.taxonomy_id
-              )
-            """
-        ).format(
-            sql.Identifier(schema),
-            sql.Identifier(schema),
-        ),
-        [UNIPROT_TYPE, list(PROTEIN_ENTITY_TYPES)],
-    )
-
-
-def _insert_chemical_candidates(
-    cur: psycopg2.extensions.cursor,
-    schema: str,
-) -> None:
-    cur.execute(
-        sql.SQL(
-            """
-            INSERT INTO _raw_resolution_candidate (
-              entity_evidence_id,
-              entity_type,
-              id_type,
-              id,
-              taxonomy_id,
-              resolver_source,
-              key_type,
-              mapping_type
-            )
-            SELECT
-              k.entity_evidence_id,
-              k.entity_type,
-              %s,
-              c.standard_inchi_key,
-              k.taxonomy_id,
-              c.source,
+              NULL::text,
               k.key_type,
               NULL::text
-            FROM _entity_key k
+            FROM _entity_group_key k
             JOIN {}.resolver_chemical_identifier_lookup c
-              ON c.key_type = k.resolver_key_type
+              ON c.key_identifier_type_id = k.key_identifier_type_id
              AND c.key_value = k.key_value
-            JOIN {}.resolver_mapping_policy pol
-              ON pol.entity_family = 'chemical'
-             AND pol.key_type = c.key_type
-             AND COALESCE(pol.mapping_type, '') = ''
-             AND (
-                  pol.resolver_source IS NULL
-                  OR pol.resolver_source = c.source
-             )
-             AND pol.action = 'accept'
+            JOIN {}.identifier_type canonical_type
+              ON canonical_type.identifier_type_id =
+                 c.canonical_identifier_type_id
             WHERE k.entity_type = ANY(%s)
-              AND c.standard_inchi_key IS NOT NULL
-              AND c.standard_inchi_key <> ''
+              AND k.key_identifier_type_id IS NOT NULL
+              AND c.canonical_identifier IS NOT NULL
+              AND c.canonical_identifier <> ''
             """
         ).format(sql.Identifier(schema), sql.Identifier(schema)),
-        [STANDARD_INCHI_KEY_TYPE, list(CHEMICAL_ENTITY_TYPES)],
+        [list(CHEMICAL_ENTITY_TYPES)],
     )
 
 
-def _insert_standard_inchi_key_identity_candidates(
+def _insert_group_standard_inchi_key_identity_candidates(
     cur: psycopg2.extensions.cursor,
 ) -> None:
     cur.execute(
         """
-        INSERT INTO _raw_resolution_candidate (
-          entity_evidence_id,
+        INSERT INTO _raw_group_resolution_candidate (
+          entity_group_id,
           entity_type,
           id_type,
           id,
@@ -584,7 +652,7 @@ def _insert_standard_inchi_key_identity_candidates(
           mapping_type
         )
         SELECT
-          entity_evidence_id,
+          entity_group_id,
           entity_type,
           %s,
           key_value,
@@ -592,7 +660,7 @@ def _insert_standard_inchi_key_identity_candidates(
           'identity',
           key_type,
           'standard_inchi_key_identity'
-        FROM _entity_key
+        FROM _entity_group_key
         WHERE entity_type = ANY(%s)
           AND resolver_key_type = %s
           AND key_value IS NOT NULL
@@ -606,408 +674,252 @@ def _insert_standard_inchi_key_identity_candidates(
     )
 
 
-def _insert_standard_inchi_identity_candidates(
-    cur: psycopg2.extensions.cursor,
-    schema: str,
-) -> None:
-    cur.execute(
-        sql.SQL(
-            """
-            INSERT INTO _raw_resolution_candidate (
-              entity_evidence_id,
-              entity_type,
-              id_type,
-              id,
-              taxonomy_id,
-              resolver_source,
-              key_type,
-              mapping_type
-            )
-            SELECT DISTINCT
-              k.entity_evidence_id,
-              k.entity_type,
-              %s,
-              c.standard_inchi_key,
-              k.taxonomy_id,
-              'identity',
-              k.key_type,
-              'standard_inchi_identity'
-            FROM _entity_key k
-            JOIN {}.resolver_chemical_identifier_lookup c
-              ON c.standard_inchi = k.key_value
-            WHERE k.entity_type = ANY(%s)
-              AND k.resolver_key_type = %s
-              AND c.standard_inchi_key IS NOT NULL
-              AND c.standard_inchi_key <> ''
-            """
-        ).format(sql.Identifier(schema)),
-        [
-            STANDARD_INCHI_KEY_TYPE,
-            list(CHEMICAL_ENTITY_TYPES),
-            STANDARD_INCHI_TYPE,
-        ],
-    )
-
-
-def _insert_chemical_resolver_identifier_links(
-    cur: psycopg2.extensions.cursor,
-    schema: str,
-) -> None:
-    cur.execute('DROP TABLE IF EXISTS _chemical_resolver_identifier')
-    cur.execute(
-        sql.SQL(
-            """
-            CREATE TEMP TABLE _chemical_resolver_identifier ON COMMIT DROP AS
-            WITH mapped AS (
-              SELECT DISTINCT
-                k.entity_evidence_id,
-                c.standard_inchi_key,
-                c.standard_inchi
-              FROM _entity_key k
-              JOIN {}.resolver_chemical_identifier_lookup c
-                ON c.key_type = k.resolver_key_type
-               AND c.key_value = k.key_value
-              WHERE k.entity_type = ANY(%s)
-              UNION
-              SELECT DISTINCT
-                k.entity_evidence_id,
-                c.standard_inchi_key,
-                c.standard_inchi
-              FROM _entity_key k
-              JOIN {}.resolver_chemical_identifier_lookup c
-                ON c.standard_inchi_key = k.key_value
-              WHERE k.entity_type = ANY(%s)
-                AND k.resolver_key_type = %s
-              UNION
-              SELECT DISTINCT
-                k.entity_evidence_id,
-                c.standard_inchi_key,
-                c.standard_inchi
-              FROM _entity_key k
-              JOIN {}.resolver_chemical_identifier_lookup c
-                ON c.standard_inchi = k.key_value
-              WHERE k.entity_type = ANY(%s)
-                AND k.resolver_key_type = %s
-            )
-            SELECT DISTINCT
-              entity_evidence_id,
-              type,
-              value
-            FROM (
-              SELECT
-                entity_evidence_id,
-                %s::text AS type,
-                standard_inchi_key AS value
-              FROM mapped
-              UNION ALL
-              SELECT
-                entity_evidence_id,
-                %s::text AS type,
-                standard_inchi AS value
-              FROM mapped
-            ) identifiers
-            WHERE value IS NOT NULL
-              AND value <> ''
-            """
-        ).format(
-            sql.Identifier(schema),
-            sql.Identifier(schema),
-            sql.Identifier(schema),
-        ),
-        [
-            list(CHEMICAL_ENTITY_TYPES),
-            list(CHEMICAL_ENTITY_TYPES),
-            STANDARD_INCHI_KEY_TYPE,
-            list(CHEMICAL_ENTITY_TYPES),
-            STANDARD_INCHI_TYPE,
-            STANDARD_INCHI_KEY_TYPE,
-            STANDARD_INCHI_TYPE,
-        ],
-    )
+def _aggregate_group_candidates(cur: psycopg2.extensions.cursor) -> None:
+    cur.execute('DROP TABLE IF EXISTS _entity_group_resolution_candidate')
     cur.execute(
         """
-        CREATE UNIQUE INDEX ON _chemical_resolver_identifier (
-          entity_evidence_id,
-          type,
-          md5(value)
-        )
+        CREATE TEMP TABLE _entity_group_resolution_candidate ON COMMIT DROP AS
+        SELECT
+          entity_group_id,
+          entity_type,
+          id_type,
+          id,
+          md5(id) AS id_hash,
+          CASE
+            WHEN COUNT(DISTINCT taxonomy_id) = 1
+              THEN MIN(taxonomy_id)
+            ELSE NULL
+          END AS taxonomy_id,
+          COUNT(*) AS support_count,
+          COALESCE(
+            ARRAY_AGG(DISTINCT resolver_source ORDER BY resolver_source)
+              FILTER (WHERE resolver_source IS NOT NULL),
+            ARRAY[]::text[]
+          ) AS resolver_sources,
+          ARRAY_AGG(DISTINCT key_type ORDER BY key_type) AS key_types,
+          ARRAY_AGG(DISTINCT mapping_type ORDER BY mapping_type)
+            FILTER (WHERE mapping_type IS NOT NULL) AS mapping_types
+        FROM _raw_group_resolution_candidate
+        GROUP BY
+          entity_group_id,
+          entity_type,
+          id_type,
+          id
         """
     )
     cur.execute(
-        sql.SQL(
-            """
-            INSERT INTO {}.identifier (type, value)
-            SELECT DISTINCT type, value
-            FROM _chemical_resolver_identifier
-            ON CONFLICT (type, value_hash) DO NOTHING
-            """
-        ).format(sql.Identifier(schema))
-    )
-    cur.execute(
-        sql.SQL(
-            """
-            INSERT INTO {}.entity_evidence_identifier (
-              entity_evidence_id,
-              identifier_id
-            )
-            SELECT DISTINCT
-              r.entity_evidence_id,
-              i.identifier_id
-            FROM _chemical_resolver_identifier r
-            JOIN {}.identifier i
-              ON i.type = r.type
-             AND i.value_hash = md5(r.value)
-             AND i.value = r.value
-            ON CONFLICT DO NOTHING
-            """
-        ).format(
-            sql.Identifier(schema),
-            sql.Identifier(schema),
-            sql.Identifier(schema),
+        """
+        CREATE UNIQUE INDEX ON _entity_group_resolution_candidate (
+          entity_group_id,
+          entity_type,
+          id_type,
+          id_hash
         )
+        """
     )
+    cur.execute('ANALYZE _entity_group_resolution_candidate')
 
 
-def _aggregate_candidates(cur: psycopg2.extensions.cursor, schema: str) -> None:
-    cur.execute(
-        sql.SQL(
-            """
-            INSERT INTO {}.entity_resolution_candidate (
-              entity_evidence_id,
-              entity_type,
-              id_type,
-              id,
-              taxonomy_id,
-              support_count,
-              resolver_sources,
-              key_types,
-              mapping_types
-            )
-            SELECT
-              entity_evidence_id,
-              entity_type,
-              id_type,
-              id,
-              CASE
-                WHEN COUNT(DISTINCT taxonomy_id) = 1
-                  THEN MIN(taxonomy_id)
-                ELSE NULL
-              END AS taxonomy_id,
-              COUNT(*) AS support_count,
-              ARRAY_AGG(DISTINCT resolver_source ORDER BY resolver_source)
-                FILTER (WHERE resolver_source IS NOT NULL) AS resolver_sources,
-              ARRAY_AGG(DISTINCT key_type ORDER BY key_type) AS key_types,
-              ARRAY_AGG(DISTINCT mapping_type ORDER BY mapping_type)
-                FILTER (WHERE mapping_type IS NOT NULL) AS mapping_types
-            FROM _raw_resolution_candidate
-            GROUP BY
-              entity_evidence_id,
-              entity_type,
-              id_type,
-              id
-            ON CONFLICT (
-              entity_evidence_id,
-              entity_type,
-              id_type,
-              id_hash
-            )
-            DO UPDATE SET
-              taxonomy_id = EXCLUDED.taxonomy_id,
-              support_count = EXCLUDED.support_count,
-              resolver_sources = EXCLUDED.resolver_sources,
-              key_types = EXCLUDED.key_types,
-              mapping_types = EXCLUDED.mapping_types,
-              created_at = now()
-            """
-        ).format(sql.Identifier(schema))
-    )
-
-
-def _create_entity_resolution_stage(
+def _create_entity_group_resolution_stage(
     cur: psycopg2.extensions.cursor,
-    schema: str,
 ) -> None:
-    cur.execute('DROP TABLE IF EXISTS _entity_resolution_stage')
+    cur.execute('DROP TABLE IF EXISTS _entity_group_resolution_stage')
     cur.execute(
-        sql.SQL(
-            """
-            CREATE TEMP TABLE _entity_resolution_stage ON COMMIT DROP AS
-            WITH candidate_counts AS (
-              SELECT
-                c.entity_evidence_id,
-                COUNT(*) AS candidate_count
-              FROM {}.entity_resolution_candidate c
-              JOIN _entity_scope s
-                ON s.entity_evidence_id = c.entity_evidence_id
-              GROUP BY c.entity_evidence_id
-            ),
-            ranked_candidates AS (
-              SELECT
-                c.*,
-                CASE
-                  WHEN c.key_types && %s::text[]
-                    OR COALESCE(c.mapping_types, ARRAY[]::text[])
-                       && %s::text[]
-                    THEN 100
-                  WHEN c.key_types && %s::text[]
-                    THEN 80
-                  WHEN c.key_types && %s::text[]
-                    THEN 20
-                  ELSE 0
-                END AS resolution_rank
-              FROM {}.entity_resolution_candidate c
-              JOIN _entity_scope s
-                ON s.entity_evidence_id = c.entity_evidence_id
-            ),
-            best_rank AS (
-              SELECT
-                entity_evidence_id,
-                MAX(resolution_rank) AS resolution_rank
-              FROM ranked_candidates
-              GROUP BY entity_evidence_id
-            ),
-            selected_candidate_counts AS (
-              SELECT
-                c.entity_evidence_id,
-                COUNT(*) AS candidate_count
-              FROM ranked_candidates c
-              JOIN best_rank b
-                ON b.entity_evidence_id = c.entity_evidence_id
-               AND b.resolution_rank = c.resolution_rank
-              GROUP BY c.entity_evidence_id
-            ),
-            singleton AS (
-              SELECT
-                c.entity_evidence_id,
-                MAX(c.entity_type) AS entity_type,
-                MAX(c.id_type) AS id_type,
-                MAX(c.id) AS id,
-                MAX(c.id_hash) AS id_hash,
-                MAX(c.taxonomy_id) AS taxonomy_id
-              FROM ranked_candidates c
-              JOIN best_rank b
-                ON b.entity_evidence_id = c.entity_evidence_id
-               AND b.resolution_rank = c.resolution_rank
-              GROUP BY c.entity_evidence_id
-              HAVING COUNT(*) = 1
-            ),
-            fingerprint AS (
-              SELECT
-                k.entity_evidence_id,
-                'fallback:' || md5(
-                  COALESCE(k.entity_type, '') || '|' ||
-                  COALESCE(k.taxonomy_id, '') || '|' ||
-                  string_agg(
-                    k.key_type || '=' || k.key_value,
-                    '|'
-                    ORDER BY k.key_type, k.key_value
-                  )
-                ) AS id
-              FROM _entity_key k
-              GROUP BY k.entity_evidence_id, k.entity_type, k.taxonomy_id
-            ),
-            taxonomy_conflicts AS (
-              SELECT entity_evidence_id, COUNT(*) AS conflict_count
-              FROM _entity_taxonomy_conflict
-              GROUP BY entity_evidence_id
-            )
-            SELECT
-              s.entity_evidence_id,
-              CASE
-                WHEN ee.entity_type IS NULL
-                  THEN 'unsupported'
-                WHEN COALESCE(cc.candidate_count, 0) = 0
-                  THEN 'unresolved'
-                WHEN scc.candidate_count = 1
-                  THEN 'resolved'
-                ELSE 'ambiguous'
-              END AS status,
-              CASE
-                WHEN scc.candidate_count = 1
-                  THEN si.entity_type
-                WHEN ee.entity_type IS NOT NULL
-                  THEN ee.entity_type
-                ELSE NULL
-              END AS entity_type,
-              CASE
-                WHEN scc.candidate_count = 1
-                  THEN si.id_type
-                WHEN COALESCE(scc.candidate_count, 0) <> 1
-                 AND ee.entity_type IS NOT NULL
-                  THEN 'evidence_identifier_set'
-                ELSE NULL
-              END AS id_type,
-              CASE
-                WHEN scc.candidate_count = 1
-                  THEN si.id
-                WHEN COALESCE(scc.candidate_count, 0) <> 1
-                 AND ee.entity_type IS NOT NULL
-                  THEN COALESCE(
-                    fp.id,
-                    'fallback:' || md5(
-                      COALESCE(ee.entity_type, '') || '|' ||
-                      COALESCE(NULLIF(ee.taxonomy_id, ''), '') || '|' ||
-                      'no_identifiers|' || ee.entity_evidence_id::text
-                    )
-                  )
-                ELSE NULL
-              END AS id,
-              CASE
-                WHEN scc.candidate_count = 1
-                  THEN si.taxonomy_id
-                WHEN COALESCE(scc.candidate_count, 0) <> 1
-                 AND ee.entity_type IS NOT NULL
-                  THEN NULLIF(ee.taxonomy_id, '')
-                ELSE NULL
-              END AS taxonomy_id,
-              COALESCE(scc.candidate_count, cc.candidate_count, 0)
-                AS candidate_count,
-              CASE
-                WHEN ee.entity_type IS NULL
-                  THEN 'missing_entity_type'
-                WHEN COALESCE(cc.candidate_count, 0) = 0
-                 AND COALESCE(tc.conflict_count, 0) > 0
-                  THEN 'different_taxon'
-                WHEN COALESCE(cc.candidate_count, 0) = 0
-                  THEN 'no_accepted_resolver_candidate'
-                WHEN scc.candidate_count > 1
-                  THEN 'multiple_entity_candidates'
-                ELSE NULL
-              END AS reason
-            FROM _entity_scope s
-            JOIN {}.entity_evidence ee
-              ON ee.entity_evidence_id = s.entity_evidence_id
-            LEFT JOIN candidate_counts cc
-              ON cc.entity_evidence_id = s.entity_evidence_id
-            LEFT JOIN selected_candidate_counts scc
-              ON scc.entity_evidence_id = s.entity_evidence_id
-            LEFT JOIN singleton si
-              ON si.entity_evidence_id = s.entity_evidence_id
-            LEFT JOIN fingerprint fp
-              ON fp.entity_evidence_id = s.entity_evidence_id
-            LEFT JOIN taxonomy_conflicts tc
-              ON tc.entity_evidence_id = s.entity_evidence_id
-            """
-        ).format(
-            sql.Identifier(schema),
-            sql.Identifier(schema),
-            sql.Identifier(schema),
+        """
+        CREATE TEMP TABLE _entity_group_resolution_stage ON COMMIT DROP AS
+        WITH candidate_presence AS (
+          SELECT DISTINCT c.entity_group_id
+          FROM _entity_group_resolution_candidate c
         ),
+        ranked_candidates AS (
+          SELECT
+            c.*,
+            CASE
+              WHEN c.key_types && %s::text[]
+                OR COALESCE(c.mapping_types, ARRAY[]::text[])
+                   && %s::text[]
+                THEN 100
+              WHEN c.key_types && %s::text[]
+                THEN 80
+              WHEN c.key_types && %s::text[]
+                THEN 20
+              ELSE 0
+            END AS resolution_rank
+          FROM _entity_group_resolution_candidate c
+        ),
+        best_rank AS (
+          SELECT
+            entity_group_id,
+            MAX(resolution_rank) AS resolution_rank
+          FROM ranked_candidates
+          GROUP BY entity_group_id
+        ),
+        selected_candidate_state AS (
+          SELECT
+            c.entity_group_id,
+            COUNT(*) > 1 AS has_multiple_best
+          FROM ranked_candidates c
+          JOIN best_rank b
+            ON b.entity_group_id = c.entity_group_id
+           AND b.resolution_rank = c.resolution_rank
+          GROUP BY c.entity_group_id
+        ),
+        singleton AS (
+          SELECT
+            c.entity_group_id,
+            MAX(c.entity_type) AS entity_type,
+            MAX(c.id_type) AS id_type,
+            MAX(c.id) AS id,
+            MAX(c.id_hash) AS id_hash,
+            MAX(c.taxonomy_id) AS taxonomy_id
+          FROM ranked_candidates c
+          JOIN best_rank b
+            ON b.entity_group_id = c.entity_group_id
+           AND b.resolution_rank = c.resolution_rank
+          GROUP BY c.entity_group_id
+          HAVING COUNT(*) = 1
+        ),
+        fallback AS (
+          SELECT
+            g.entity_group_id,
+            md5(
+              COALESCE(g.entity_type, '') || '|' ||
+              COALESCE(g.taxonomy_id, '') || '|' ||
+              COALESCE(
+                string_agg(
+                  k.key_type || '=' || k.key_value,
+                  '|'
+                  ORDER BY k.key_type, k.key_value
+                ),
+                'no_identifiers'
+              )
+            ) AS id
+          FROM _entity_group g
+          LEFT JOIN _entity_group_key k
+            ON k.entity_group_id = g.entity_group_id
+          GROUP BY g.entity_group_id, g.entity_type, g.taxonomy_id
+        ),
+        taxonomy_conflicts AS (
+          SELECT entity_group_id, COUNT(*) AS conflict_count
+          FROM _entity_group_taxonomy_conflict
+          GROUP BY entity_group_id
+        )
+        SELECT
+          g.entity_group_id,
+          CASE
+            WHEN g.entity_type IS NULL
+              THEN 'unsupported'
+            WHEN cp.entity_group_id IS NULL
+              THEN 'unresolved'
+            WHEN si.entity_group_id IS NOT NULL
+              THEN 'resolved'
+            ELSE 'ambiguous'
+          END AS status,
+          CASE
+            WHEN si.entity_group_id IS NOT NULL
+              THEN si.entity_type
+            WHEN g.entity_type IS NOT NULL
+              THEN g.entity_type
+            ELSE NULL
+          END AS entity_type,
+          CASE
+            WHEN si.entity_group_id IS NOT NULL
+              THEN si.id_type
+            WHEN si.entity_group_id IS NULL
+             AND g.entity_type IS NOT NULL
+              THEN %s
+            ELSE NULL
+          END AS id_type,
+          CASE
+            WHEN si.entity_group_id IS NOT NULL
+              THEN si.id
+            WHEN si.entity_group_id IS NULL
+             AND g.entity_type IS NOT NULL
+              THEN fb.id
+            ELSE NULL
+          END AS id,
+          CASE
+            WHEN si.entity_group_id IS NOT NULL
+              THEN si.taxonomy_id
+            WHEN si.entity_group_id IS NULL
+             AND g.entity_type IS NOT NULL
+              THEN g.taxonomy_id
+            ELSE NULL
+          END AS taxonomy_id,
+          CASE
+            WHEN g.entity_type IS NULL
+              THEN 'missing_entity_type'
+            WHEN cp.entity_group_id IS NULL
+             AND COALESCE(tc.conflict_count, 0) > 0
+              THEN 'different_taxon'
+            WHEN cp.entity_group_id IS NULL
+              THEN 'no_accepted_resolver_candidate'
+            WHEN scs.has_multiple_best
+              THEN 'multiple_entity_candidates'
+            ELSE NULL
+          END AS reason
+        FROM _entity_group g
+        LEFT JOIN candidate_presence cp
+          ON cp.entity_group_id = g.entity_group_id
+        LEFT JOIN selected_candidate_state scs
+          ON scs.entity_group_id = g.entity_group_id
+        LEFT JOIN singleton si
+          ON si.entity_group_id = g.entity_group_id
+        LEFT JOIN fallback fb
+          ON fb.entity_group_id = g.entity_group_id
+        LEFT JOIN taxonomy_conflicts tc
+          ON tc.entity_group_id = g.entity_group_id
+        """,
         [
             list(DIRECT_IDENTIFIER_TYPES),
             list(DIRECT_MAPPING_TYPES),
             list(STABLE_REFERENCE_IDENTIFIER_TYPES),
             list(WEAK_IDENTIFIER_TYPES),
+            FALLBACK_IDENTIFIER_TYPE,
         ],
     )
     cur.execute(
-        'CREATE UNIQUE INDEX ON _entity_resolution_stage (entity_evidence_id)'
+        """
+        CREATE UNIQUE INDEX ON _entity_group_resolution_stage (
+          entity_group_id
+        )
+        """
+    )
+    cur.execute('ANALYZE _entity_group_resolution_stage')
+
+
+def _project_entity_group_resolution_stage(
+    cur: psycopg2.extensions.cursor,
+) -> None:
+    cur.execute('DROP TABLE IF EXISTS _entity_resolution_stage')
+    cur.execute(
+        """
+        CREATE TEMP TABLE _entity_resolution_stage ON COMMIT DROP AS
+        SELECT
+          gm.entity_evidence_id,
+          gr.status,
+          gr.entity_type,
+          gr.id_type,
+          gr.id,
+          md5(gr.id) AS id_hash,
+          gr.taxonomy_id,
+          gr.reason
+        FROM _entity_group_member gm
+        JOIN _entity_group_resolution_stage gr
+          ON gr.entity_group_id = gm.entity_group_id
+        """
+    )
+    cur.execute(
+        """
+        CREATE UNIQUE INDEX ON _entity_resolution_stage (
+          entity_evidence_id
+        )
+        """
     )
     cur.execute(
         """
         CREATE INDEX ON _entity_resolution_stage (
           entity_type,
-          id_type,
           md5(id)
         )
         """
@@ -1019,48 +931,172 @@ def _insert_entities(cur: psycopg2.extensions.cursor, schema: str) -> None:
     cur.execute(
         sql.SQL(
             """
+            WITH evidence_identifier_json AS (
+              SELECT
+                k.entity_evidence_id,
+                jsonb_agg(
+                  jsonb_build_object(
+                    'identifier_type', k.key_type,
+                    'identifier_type_id', k.key_identifier_type_id,
+                    'identifier', k.key_value
+                  )
+                  ORDER BY k.key_type, k.key_value
+                ) AS identifiers
+              FROM _entity_key k
+              GROUP BY k.entity_evidence_id
+            ),
+            resolver_identifier_json AS (
+              SELECT
+                st.entity_evidence_id,
+                jsonb_agg(
+                  identifier_object
+                  ORDER BY
+                    identifier_object ->> 'identifier_type',
+                    identifier_object ->> 'identifier'
+                ) AS identifiers
+              FROM _entity_resolution_stage st
+              JOIN LATERAL (
+                SELECT DISTINCT
+                  jsonb_strip_nulls(
+                    jsonb_build_object(
+                      'identifier_type', key_type.name,
+                      'identifier_type_id', key_type.identifier_type_id,
+                      'identifier', p.key_value,
+                      'taxonomy_id', NULLIF(p.taxonomy_id, '')
+                    )
+                  ) AS identifier_object
+                FROM {}.resolver_protein_identifier_lookup p
+                JOIN {}.identifier_type key_type
+                  ON key_type.identifier_type_id =
+                     p.key_identifier_type_id
+                JOIN {}.identifier_type canonical_type
+                  ON canonical_type.identifier_type_id =
+                     p.canonical_identifier_type_id
+                WHERE st.status = 'resolved'
+                  AND st.entity_type = ANY(%s)
+                  AND canonical_type.name = st.id_type
+                  AND p.canonical_identifier = st.id
+                  AND p.key_value <> st.id
+                  AND st.taxonomy_id IS NOT NULL
+                  AND NULLIF(p.taxonomy_id, '') = st.taxonomy_id
+                UNION
+                SELECT DISTINCT
+                  jsonb_build_object(
+                    'identifier_type', key_type.name,
+                    'identifier_type_id', key_type.identifier_type_id,
+                    'identifier', c.key_value
+                  ) AS identifier_object
+                FROM {}.resolver_chemical_identifier_lookup c
+                JOIN {}.identifier_type key_type
+                  ON key_type.identifier_type_id =
+                     c.key_identifier_type_id
+                JOIN {}.identifier_type canonical_type
+                  ON canonical_type.identifier_type_id =
+                     c.canonical_identifier_type_id
+                WHERE st.status = 'resolved'
+                  AND st.entity_type = ANY(%s)
+                  AND canonical_type.name = st.id_type
+                  AND c.canonical_identifier = st.id
+                  AND c.key_value <> st.id
+              ) identifiers ON TRUE
+              GROUP BY st.entity_evidence_id
+            ),
+            staged AS (
+              SELECT
+                st.*,
+                et.entity_type_id,
+                it.identifier_type_id AS canonical_identifier_type_id,
+                CASE
+                  WHEN st.status = 'resolved' THEN 1::smallint
+                  ELSE 2::smallint
+                END AS entity_resolution_status_id,
+                CASE
+                  WHEN st.status = 'resolved'
+                    THEN COALESCE(rij.identifiers, '[]'::jsonb)
+                  ELSE jsonb_build_object(
+                    'reason', st.reason,
+                    'evidence_identifiers',
+                    COALESCE(eij.identifiers, '[]'::jsonb)
+                  )
+                END AS entity_identifiers
+              FROM _entity_resolution_stage st
+              LEFT JOIN {}.identifier_type it
+                ON it.name = st.id_type
+              JOIN {}.entity_type et
+                ON et.name = st.entity_type
+              LEFT JOIN evidence_identifier_json eij
+                ON eij.entity_evidence_id = st.entity_evidence_id
+              LEFT JOIN resolver_identifier_json rij
+                ON rij.entity_evidence_id = st.entity_evidence_id
+            )
             INSERT INTO {}.entity (
-              entity_type,
-              id_type,
-              id,
+              entity_type_id,
               taxonomy_id,
-              resolution_status
+              canonical_identifier_type_id,
+              canonical_identifier,
+              identifiers,
+              resolution_status_id
             )
             SELECT
-              entity_type,
-              id_type,
-              id,
-              CASE
-                WHEN COUNT(DISTINCT taxonomy_id) = 1
-                  THEN MIN(taxonomy_id)
-                ELSE NULL
-              END AS taxonomy_id,
-              CASE
-                WHEN BOOL_OR(status = 'resolved')
-                  THEN 'resolved'
-                ELSE 'unresolved'
-              END AS resolution_status
-            FROM _entity_resolution_stage
+              entity_type_id,
+              taxonomy_id,
+              canonical_identifier_type_id,
+              id AS canonical_identifier,
+              MIN(entity_identifiers::text)::jsonb AS identifiers,
+              MIN(entity_resolution_status_id) AS resolution_status_id
+            FROM staged
             WHERE status IN ('resolved', 'unresolved', 'ambiguous')
-              AND entity_type IS NOT NULL
-              AND id_type IS NOT NULL
               AND id IS NOT NULL
-            GROUP BY entity_type, id_type, id
-            ON CONFLICT (entity_type, id_type, id_hash)
+            GROUP BY
+              entity_type_id,
+              taxonomy_id,
+              canonical_identifier_type_id,
+              id
+            ON CONFLICT (
+              entity_type_id,
+              taxonomy_id,
+              canonical_identifier_type_id,
+              canonical_identifier
+            )
             DO UPDATE SET
               taxonomy_id = COALESCE({}.entity.taxonomy_id, EXCLUDED.taxonomy_id),
-          resolution_status = CASE
-            WHEN {}.entity.resolution_status = 'resolved'
-              OR EXCLUDED.resolution_status = 'resolved'
-              THEN 'resolved'
-            ELSE 'unresolved'
-          END
+              identifiers = EXCLUDED.identifiers,
+              resolution_status_id = LEAST(
+                {}.entity.resolution_status_id,
+                EXCLUDED.resolution_status_id
+              )
             """
         ).format(
             sql.Identifier(schema),
             sql.Identifier(schema),
             sql.Identifier(schema),
-        )
+            sql.Identifier(schema),
+            sql.Identifier(schema),
+            sql.Identifier(schema),
+            sql.Identifier(schema),
+            sql.Identifier(schema),
+            sql.Identifier(schema),
+            sql.Identifier(schema),
+            sql.Identifier(schema),
+        ),
+        [list(PROTEIN_ENTITY_TYPES), list(CHEMICAL_ENTITY_TYPES)],
+    )
+
+
+def _insert_scoped_entity_types(
+    cur: psycopg2.extensions.cursor,
+    schema: str,
+) -> None:
+    cur.execute(
+        sql.SQL(
+            """
+            INSERT INTO {}.entity_type (name)
+            SELECT DISTINCT entity_type
+            FROM _entity_resolution_stage
+            WHERE entity_type IS NOT NULL
+            ON CONFLICT (name) DO NOTHING
+            """
+        ).format(sql.Identifier(schema))
     )
 
 
@@ -1073,34 +1109,47 @@ def _upsert_entity_resolution(
             """
             INSERT INTO {}.entity_evidence_resolution (
               entity_evidence_id,
-              status,
+              status_id,
               entity_id,
-              candidate_count,
-              reason,
+              reason_id,
               resolved_at
             )
             SELECT
               st.entity_evidence_id,
-              st.status,
+              rs.resolution_status_id,
               e.entity_id,
-              st.candidate_count,
-              st.reason,
+              rr.resolution_reason_id,
               now()
             FROM _entity_resolution_stage st
+            LEFT JOIN {}.identifier_type it
+              ON it.name = st.id_type
+            JOIN {}.resolution_status rs
+              ON rs.name = st.status
+            LEFT JOIN {}.resolution_reason rr
+              ON rr.name = st.reason
+            LEFT JOIN {}.entity_type et
+              ON et.name = st.entity_type
             LEFT JOIN {}.entity e
-              ON e.entity_type = st.entity_type
-             AND e.id_type = st.id_type
-             AND e.id_hash = md5(st.id)
-             AND e.id = st.id
+              ON e.entity_type_id = et.entity_type_id
+             AND e.taxonomy_id IS NOT DISTINCT FROM st.taxonomy_id
+             AND e.canonical_identifier_type_id IS NOT DISTINCT FROM
+                 it.identifier_type_id
+             AND e.canonical_identifier = st.id
             ON CONFLICT (entity_evidence_id)
             DO UPDATE SET
-              status = EXCLUDED.status,
+              status_id = EXCLUDED.status_id,
               entity_id = EXCLUDED.entity_id,
-              candidate_count = EXCLUDED.candidate_count,
-              reason = EXCLUDED.reason,
+              reason_id = EXCLUDED.reason_id,
               resolved_at = now()
             """
-        ).format(sql.Identifier(schema), sql.Identifier(schema))
+        ).format(
+            sql.Identifier(schema),
+            sql.Identifier(schema),
+            sql.Identifier(schema),
+            sql.Identifier(schema),
+            sql.Identifier(schema),
+            sql.Identifier(schema),
+        )
     )
 
 
@@ -1160,12 +1209,12 @@ def _create_relation_endpoint(
               re.relation_category,
               CASE
                 WHEN re.subject_entity_id IS NOT NULL THEN 'resolved'
-                ELSE sr.status
+                ELSE srs.name
               END AS subject_status,
               COALESCE(re.subject_entity_id, sr.entity_id) AS subject_entity_id,
               CASE
                 WHEN re.object_entity_id IS NOT NULL THEN 'resolved'
-                ELSE orr.status
+                ELSE ors.name
               END AS object_status,
               COALESCE(re.object_entity_id, orr.entity_id) AS object_entity_id
             FROM _relation_scope rs
@@ -1173,10 +1222,16 @@ def _create_relation_endpoint(
               ON re.relation_evidence_id = rs.relation_evidence_id
             LEFT JOIN {}.entity_evidence_resolution sr
               ON sr.entity_evidence_id = re.subject_entity_evidence_id
+            LEFT JOIN {}.resolution_status srs
+              ON srs.resolution_status_id = sr.status_id
             LEFT JOIN {}.entity_evidence_resolution orr
               ON orr.entity_evidence_id = re.object_entity_evidence_id
+            LEFT JOIN {}.resolution_status ors
+              ON ors.resolution_status_id = orr.status_id
             """
         ).format(
+            sql.Identifier(schema),
+            sql.Identifier(schema),
             sql.Identifier(schema),
             sql.Identifier(schema),
             sql.Identifier(schema),
@@ -1349,23 +1404,6 @@ def _count_schema_table(
     return int(cur.fetchone()[0])
 
 
-def _scoped_candidate_count(
-    cur: psycopg2.extensions.cursor,
-    schema: str,
-) -> int:
-    cur.execute(
-        sql.SQL(
-            """
-            SELECT COUNT(*)
-            FROM {}.entity_resolution_candidate c
-            JOIN _entity_scope s
-              ON s.entity_evidence_id = c.entity_evidence_id
-            """
-        ).format(sql.Identifier(schema))
-    )
-    return int(cur.fetchone()[0])
-
-
 def _relation_mapping_counts(
     cur: psycopg2.extensions.cursor,
     schema: str,
@@ -1394,11 +1432,17 @@ def _status_counts(
     cur.execute(
         sql.SQL(
             """
-            SELECT status, COUNT(*)
-            FROM {}.{}
-            GROUP BY status
-            ORDER BY status
+            SELECT rs.name, COUNT(*)
+            FROM {}.{} t
+            JOIN {}.resolution_status rs
+              ON rs.resolution_status_id = t.status_id
+            GROUP BY rs.name
+            ORDER BY rs.name
             """
-        ).format(sql.Identifier(schema), sql.Identifier(table))
+        ).format(
+            sql.Identifier(schema),
+            sql.Identifier(table),
+            sql.Identifier(schema),
+        )
     )
     return {str(status): int(count) for status, count in cur.fetchall()}

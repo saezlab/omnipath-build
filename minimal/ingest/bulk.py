@@ -407,13 +407,40 @@ class BulkMinimalIngestor:
         cur.execute(
             sql.SQL(
                 """
-                INSERT INTO {}.identifier (type, value)
-                SELECT DISTINCT type, value
-                FROM stg_identifier_ref
-                WHERE type IS NOT NULL AND value IS NOT NULL
-                ON CONFLICT (type, value_hash) DO NOTHING
+                WITH missing AS (
+                  SELECT DISTINCT s.type AS name
+                  FROM stg_identifier_ref s
+                  LEFT JOIN {}.identifier_type it
+                    ON it.name = s.type
+                  WHERE s.type IS NOT NULL
+                    AND it.identifier_type_id IS NULL
+                ),
+                base AS (
+                  SELECT COALESCE(MAX(identifier_type_id), 0) AS max_id
+                  FROM {}.identifier_type
+                )
+                INSERT INTO {}.identifier_type (identifier_type_id, name)
+                SELECT
+                  base.max_id + row_number() OVER (ORDER BY missing.name),
+                  missing.name
+                FROM missing
+                CROSS JOIN base
+                ON CONFLICT (name) DO NOTHING
                 """
-            ).format(schema)
+            ).format(schema, schema, schema)
+        )
+        cur.execute(
+            sql.SQL(
+                """
+                INSERT INTO {}.identifier_evidence (identifier_type_id, value)
+                SELECT DISTINCT it.identifier_type_id, s.value
+                FROM stg_identifier_ref s
+                JOIN {}.identifier_type it
+                  ON it.name = s.type
+                WHERE s.type IS NOT NULL AND s.value IS NOT NULL
+                ON CONFLICT (identifier_type_id, value) DO NOTHING
+                """
+            ).format(schema, schema)
         )
         cur.execute(
             sql.SQL(
@@ -465,36 +492,64 @@ class BulkMinimalIngestor:
                  AND e.dataset = s.dataset
                  AND e.row_id = s.row_id
                  AND e.occurrence_id = s.occurrence_id
-                JOIN {}.identifier i
-                  ON i.type = s.type
-                 AND i.value_hash = md5(s.value)
+                JOIN {}.identifier_type it
+                  ON it.name = s.type
+                JOIN {}.identifier_evidence i
+                  ON i.identifier_type_id = it.identifier_type_id
                  AND i.value = s.value
                 ON CONFLICT DO NOTHING
                 """
-            ).format(schema, schema, schema)
+            ).format(schema, schema, schema, schema)
         )
         cur.execute(
             sql.SQL(
                 """
+                WITH entity_type_rows AS (
+                  INSERT INTO {}.entity_type (name)
+                  SELECT DISTINCT object_entity_type
+                  FROM stg_annotation_relation
+                  WHERE object_entity_type IS NOT NULL
+                  ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name
+                  RETURNING entity_type_id, name
+                )
                 INSERT INTO {}.entity (
-                  entity_type,
-                  id_type,
-                  id,
+                  entity_type_id,
                   taxonomy_id,
-                  resolution_status
+                  canonical_identifier_type_id,
+                  canonical_identifier,
+                  identifiers,
+                  resolution_status_id
                 )
                 SELECT DISTINCT
-                  object_entity_type,
-                  object_id_type,
-                  object_id,
+                  et.entity_type_id,
                   NULL::text,
-                  'resolved'
-                FROM stg_annotation_relation
-                WHERE object_id IS NOT NULL
-                ON CONFLICT (entity_type, id_type, id_hash)
-                DO UPDATE SET resolution_status = 'resolved'
+                  it.identifier_type_id,
+                  s.object_id,
+                  jsonb_build_array(
+                    jsonb_build_object(
+                      'identifier_type', it.name,
+                      'identifier_type_id', it.identifier_type_id,
+                      'identifier', s.object_id
+                    )
+                  ),
+                  1
+                FROM stg_annotation_relation s
+                JOIN {}.entity_type et
+                  ON et.name = s.object_entity_type
+                JOIN {}.identifier_type it
+                  ON it.name = s.object_id_type
+                WHERE s.object_id IS NOT NULL
+                ON CONFLICT (
+                  entity_type_id,
+                  taxonomy_id,
+                  canonical_identifier_type_id,
+                  canonical_identifier
+                )
+                DO UPDATE SET
+                  identifiers = EXCLUDED.identifiers,
+                  resolution_status_id = 1
                 """
-            ).format(schema)
+            ).format(schema, schema, schema, schema)
         )
         cur.execute(
             sql.SQL(
@@ -554,15 +609,19 @@ class BulkMinimalIngestor:
                  AND subject.dataset = s.dataset
                  AND subject.row_id = s.row_id
                  AND subject.occurrence_id = s.subject_occurrence_id
+                JOIN {}.entity_type et
+                  ON et.name = s.object_entity_type
                 JOIN {}.entity object
-                  ON object.entity_type = s.object_entity_type
-                 AND object.id_type = s.object_id_type
-                 AND object.id_hash = md5(s.object_id)
-                 AND object.id = s.object_id
+                  ON object.entity_type_id = et.entity_type_id
+                JOIN {}.identifier_type it
+                  ON it.name = s.object_id_type
+                 AND object.canonical_identifier_type_id =
+                     it.identifier_type_id
+                 AND object.canonical_identifier = s.object_id
                 ON CONFLICT (source, dataset, row_id, relation_occurrence_id)
                 DO NOTHING
                 """
-            ).format(schema, schema, schema)
+            ).format(schema, schema, schema, schema, schema)
         )
         cur.execute(
             sql.SQL(

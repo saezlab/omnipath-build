@@ -27,7 +27,7 @@ def create_secondary_indexes(
         sql.SQL(
             """
             CREATE INDEX IF NOT EXISTS entity_type_taxonomy_idx
-            ON {}.entity (entity_type, taxonomy_id)
+            ON {}.entity (entity_type_id, taxonomy_id)
             """
         ).format(schema_id),
         sql.SQL(

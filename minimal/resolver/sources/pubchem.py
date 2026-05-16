@@ -10,6 +10,11 @@ from urllib.parse import urljoin
 import polars as pl
 
 from minimal.resolver.parquet import write_parquet_from_dict_rows
+from minimal.resolver.identifier_types import (
+    IDENTIFIER_TYPE_SCHEMA,
+    identifier_type_id,
+    identifier_type_rows,
+)
 from minimal.resolver.paths import ensure_chemicals_data_dir
 from pypath.internals.cv_terms import (
     IdentifierNamespaceCv,
@@ -23,18 +28,20 @@ PUBCHEM_FIRST_COMPOUND_SDF_URL = (
     PUBCHEM_CURRENT_SDF_BASE_URL +
     'Compound_000000001_000500000.sdf.gz'
 )
-PUBCHEM_SOURCE = 'pubchem'
 PUBCHEM_COMPOUND_TYPE = cv_term_label_accession(
     IdentifierNamespaceCv.PUBCHEM_COMPOUND
 )
+STANDARD_INCHI_KEY_TYPE = cv_term_label_accession(
+    IdentifierNamespaceCv.STANDARD_INCHI_KEY
+)
 PUBCHEM_IDENTIFIER_LOOKUP_SCHEMA: dict[str, pl.DataType] = {
-    'source': pl.Utf8,
-    'key_type': pl.Utf8,
+    'key_identifier_type_id': pl.UInt32,
     'key_value': pl.Utf8,
-    'standard_inchi_key': pl.Utf8,
-    'standard_inchi': pl.Utf8,
+    'canonical_identifier_type_id': pl.UInt32,
+    'canonical_identifier': pl.Utf8,
 }
 PUBCHEM_IDENTIFIER_LOOKUP_OUTPUT_FILENAME = 'chemical_identifier_lookup.parquet'
+IDENTIFIER_TYPE_OUTPUT_FILENAME = 'identifier_type.parquet'
 
 _FIELD_RE = re.compile(r'^>\s*<([^>]+)>')
 _PUBCHEM_SDF_FILENAME_RE = re.compile(
@@ -63,7 +70,6 @@ def _row_from_record(record: dict[str, str]) -> dict | None:
     if not pubchem_cid or not standard_inchi_key or not standard_inchi:
         return None
     return {
-        'source': PUBCHEM_SOURCE,
         'key_type': PUBCHEM_COMPOUND_TYPE,
         'key_value': pubchem_cid,
         'standard_inchi_key': standard_inchi_key,
@@ -202,12 +208,21 @@ def materialize_pubchem_compound_sdf(
     rows = iter_pubchem_compound_rows(source)
     if max_records is not None:
         rows = _take(rows, max_records)
+    rows = _normalized_pubchem_rows(rows)
     row_count = write_parquet_from_dict_rows(
         rows,
         PUBCHEM_IDENTIFIER_LOOKUP_SCHEMA,
         output_dir / PUBCHEM_IDENTIFIER_LOOKUP_OUTPUT_FILENAME,
     )
-    return {'chemical_identifier_lookup_rows': row_count}
+    type_count = write_parquet_from_dict_rows(
+        identifier_type_rows({PUBCHEM_COMPOUND_TYPE, STANDARD_INCHI_KEY_TYPE}),
+        IDENTIFIER_TYPE_SCHEMA,
+        output_dir / IDENTIFIER_TYPE_OUTPUT_FILENAME,
+    )
+    return {
+        'chemical_identifier_lookup_rows': row_count,
+        'identifier_type_rows': type_count,
+    }
 
 
 def materialize_pubchem_first_compound_sdf(
@@ -230,3 +245,16 @@ def _take(rows: Iterable[dict], max_records: int) -> Iterable[dict]:
             break
         yield row
         emitted += 1
+
+
+def _normalized_pubchem_rows(rows: Iterable[dict]) -> Iterable[dict]:
+    key_identifier_type_id = identifier_type_id(PUBCHEM_COMPOUND_TYPE)
+    canonical_identifier_type_id = identifier_type_id(STANDARD_INCHI_KEY_TYPE)
+    for row in rows:
+        standard_inchi_key = row.get('standard_inchi_key')
+        yield {
+            'key_identifier_type_id': key_identifier_type_id,
+            'key_value': row.get('key_value'),
+            'canonical_identifier_type_id': canonical_identifier_type_id,
+            'canonical_identifier': standard_inchi_key,
+        }

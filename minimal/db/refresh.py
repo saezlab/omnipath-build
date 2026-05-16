@@ -112,7 +112,7 @@ def delete_source_content(
         cur.execute(
             sql.SQL(
                 """
-                DELETE FROM {}.identifier i
+                DELETE FROM {}.identifier_evidence i
                 USING _refresh_removed_identifier ri
                 WHERE i.identifier_id = ri.identifier_id
                   AND NOT EXISTS (

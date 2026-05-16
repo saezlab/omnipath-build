@@ -13,6 +13,8 @@ def _arrow_type(dtype: pl.DataType) -> pa.DataType:
         return pa.string()
     if dtype == pl.UInt32:
         return pa.uint32()
+    if dtype == pl.UInt64:
+        return pa.uint64()
     raise TypeError(f'Unsupported parquet dtype conversion: {dtype!r}')
 
 
