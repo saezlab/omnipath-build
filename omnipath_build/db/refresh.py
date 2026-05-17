@@ -149,6 +149,10 @@ def _create_source_cleanup_scope(
         sql.SQL(
             """
             CREATE TEMP TABLE _refresh_removed_entity ON COMMIT DROP AS
+            SELECT DISTINCT ot.term_entity_id AS entity_id
+            FROM {}.ontology_terms ot
+            WHERE ot.source_id = %s
+            UNION
             SELECT DISTINCT r.entity_id
             FROM {}.entity_evidence_resolution r
             WHERE r.source_id = %s
@@ -164,8 +168,8 @@ def _create_source_cleanup_scope(
             WHERE re.source_id = %s
               AND re.object_entity_id IS NOT NULL
             """
-        ).format(schema_id, schema_id, schema_id),
-        [source_id, source_id, source_id],
+        ).format(schema_id, schema_id, schema_id, schema_id),
+        [source_id, source_id, source_id, source_id],
     )
     cur.execute(
         """
@@ -254,6 +258,13 @@ def _drop_source_partitions(
         cur.execute('SELECT to_regclass(%s) IS NOT NULL', [f'{schema}.{partition}'])
         if not bool(cur.fetchone()[0]):
             continue
+        if table == 'entity_evidence':
+            cur.execute(
+                sql.SQL('DELETE FROM {}.{}').format(
+                    sql.Identifier(schema),
+                    sql.Identifier(partition),
+                )
+            )
         cur.execute(
             sql.SQL('ALTER TABLE {}.{} DETACH PARTITION {}.{}').format(
                 sql.Identifier(schema),
@@ -279,6 +290,7 @@ def _delete_source_evidence_rows(
 ) -> None:
     schema_id = sql.Identifier(schema)
     for table in (
+        'ontology_terms',
         'relation_evidence_annotation',
         'relation_evidence_relation',
         'relation_evidence',

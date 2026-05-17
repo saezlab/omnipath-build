@@ -12,22 +12,8 @@ from dataclasses import dataclass
 
 from psycopg2 import sql
 import psycopg2.extensions
-from pypath.internals.cv_terms import (
-    IdentifierNamespaceCv,
-    OntologyAnnotationCv,
-    cv_term_label_accession,
-)
 
-from omnipath_build.cv_terms import CV_TERM_ENTITY_TYPE, CV_TERM_ID_TYPE
-
-NAME_TERM = cv_term_label_accession(IdentifierNamespaceCv.NAME)
-SYNONYM_TERM = cv_term_label_accession(IdentifierNamespaceCv.SYNONYM)
-CV_TERM_ACCESSION_TERM = cv_term_label_accession(
-    IdentifierNamespaceCv.CV_TERM_ACCESSION
-)
-DEFINITION_TERM = cv_term_label_accession(OntologyAnnotationCv.DEFINITION)
-ONTOLOGY_ID_TERM = cv_term_label_accession(OntologyAnnotationCv.ONTOLOGY_ID)
-
+from omnipath_build.db.schema import _ensure_ontology_terms_table
 
 @dataclass(frozen=True)
 class DerivedTableStats:
@@ -49,7 +35,7 @@ def rebuild_derived_tables(
         _create_derived_tables(cur, schema)
         entity_identifiers = _refresh_entity_identifiers(cur, schema)
         relation_counts = _populate_entity_relation_counts(cur, schema)
-        ontology_terms = _populate_ontology_terms(cur, schema)
+        ontology_terms = _count_ontology_terms(cur, schema)
         _create_derived_indexes(cur, schema)
     conn.commit()
     return DerivedTableStats(
@@ -77,25 +63,7 @@ def _create_derived_tables(
             """
         ).format(schema_id, schema_id)
     )
-    cur.execute(
-        sql.SQL(
-            """
-            CREATE TABLE IF NOT EXISTS {}.ontology_terms (
-              term_entity_id bigint PRIMARY KEY
-                REFERENCES {}.entity(entity_id)
-                ON DELETE CASCADE,
-              term_id text NOT NULL,
-              ontology_prefix text,
-              label text NOT NULL,
-              definition text,
-              ontology_id text,
-              synonyms text[] NOT NULL DEFAULT '{{}}',
-              synonyms_text text NOT NULL DEFAULT '',
-              sources text[] NOT NULL DEFAULT '{{}}'
-            )
-            """
-        ).format(schema_id, schema_id)
-    )
+    _ensure_ontology_terms_table(cur, schema)
 
 
 def _refresh_entity_identifiers(
@@ -321,119 +289,16 @@ def _populate_entity_relation_counts(
     return int(cur.rowcount)
 
 
-def _populate_ontology_terms(
+def _count_ontology_terms(
     cur: psycopg2.extensions.cursor,
     schema: str,
 ) -> int:
-    schema_id = sql.Identifier(schema)
-    cur.execute(sql.SQL('TRUNCATE {}.ontology_terms').format(schema_id))
     cur.execute(
-        sql.SQL(
-            """
-            INSERT INTO {}.ontology_terms (
-              term_entity_id,
-              term_id,
-              ontology_prefix,
-              label,
-              definition,
-              ontology_id,
-              synonyms,
-              synonyms_text,
-              sources
-            )
-            WITH term_entities AS (
-              SELECT e.entity_id, e.canonical_identifier AS term_id
-              FROM {}.entity e
-              JOIN {}.vocab_entity_type et
-                ON et.entity_type_id = e.entity_type_id
-               AND et.name = {}
-              JOIN {}.vocab_identifier_type it
-                ON it.name = {}
-               AND e.canonical_identifier_type_id = it.identifier_type_id
-            ),
-            annotation_values AS (
-              SELECT
-                te.entity_id,
-                (
-                  ARRAY_AGG(a.value ORDER BY a.annotation_key)
-                  FILTER (
-                    WHERE a.term = {}
-                      AND COALESCE(a.value, '') <> ''
-                  )
-                )[1] AS label,
-                (
-                  ARRAY_AGG(a.value ORDER BY a.annotation_key)
-                  FILTER (
-                    WHERE a.term = {}
-                      AND COALESCE(a.value, '') <> ''
-                  )
-                )[1] AS definition,
-                (
-                  ARRAY_AGG(a.value ORDER BY a.annotation_key)
-                  FILTER (
-                    WHERE a.term = {}
-                      AND COALESCE(a.value, '') <> ''
-                  )
-                )[1] AS ontology_id,
-                ARRAY_AGG(DISTINCT a.value ORDER BY a.value)
-                  FILTER (
-                    WHERE (
-                      a.term = {}
-                      OR (a.term = {} AND a.unit = 'alt_id')
-                    )
-                    AND COALESCE(a.value, '') <> ''
-                  ) AS synonyms
-              FROM term_entities te
-              LEFT JOIN {}.entity_evidence_resolution er
-                ON er.entity_id = te.entity_id
-              LEFT JOIN {}.entity_evidence_annotation ea
-                ON ea.source_id = er.source_id
-               AND ea.entity_evidence_id = er.entity_evidence_id
-              LEFT JOIN {}.annotation a
-                ON a.annotation_key = ea.annotation_key
-              GROUP BY te.entity_id
-            )
-            SELECT
-              te.entity_id AS term_entity_id,
-              te.term_id,
-              CASE
-                WHEN te.term_id ~* '^KW-[0-9]+$' THEN 'kw'
-                WHEN position(':' in te.term_id) > 0
-                  THEN lower(split_part(te.term_id, ':', 1))
-                ELSE NULL
-              END AS ontology_prefix,
-              COALESCE(av.label, te.term_id) AS label,
-              av.definition,
-              av.ontology_id,
-              COALESCE(av.synonyms, '{{}}'::text[]) AS synonyms,
-              array_to_string(COALESCE(av.synonyms, '{{}}'::text[]), ' ')
-                AS synonyms_text,
-              CASE
-                WHEN av.ontology_id IS NULL THEN '{{}}'::text[]
-                ELSE ARRAY[av.ontology_id]
-              END AS sources
-            FROM term_entities te
-            LEFT JOIN annotation_values av
-              ON av.entity_id = te.entity_id
-            """
-        ).format(
-            schema_id,
-            schema_id,
-            schema_id,
-            sql.Literal(CV_TERM_ENTITY_TYPE),
-            schema_id,
-            sql.Literal(CV_TERM_ID_TYPE),
-            sql.Literal(NAME_TERM),
-            sql.Literal(DEFINITION_TERM),
-            sql.Literal(ONTOLOGY_ID_TERM),
-            sql.Literal(SYNONYM_TERM),
-            sql.Literal(CV_TERM_ACCESSION_TERM),
-            schema_id,
-            schema_id,
-            schema_id,
+        sql.SQL('SELECT COUNT(*) FROM {}.ontology_terms').format(
+            sql.Identifier(schema)
         )
     )
-    return int(cur.rowcount)
+    return int(cur.fetchone()[0])
 
 
 def _create_derived_indexes(

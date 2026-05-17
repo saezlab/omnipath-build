@@ -12,12 +12,12 @@ from dataclasses import dataclass
 
 from psycopg2 import sql
 import psycopg2.extensions
+
+from omnipath_build.cv_terms import CV_TERM_ENTITY_TYPE
 from pypath.internals.cv_terms import (
     OntologyAnnotationCv,
     cv_term_label_accession,
 )
-
-from omnipath_build.cv_terms import CV_TERM_ENTITY_TYPE
 
 ONTOLOGY_ID_TERM = cv_term_label_accession(OntologyAnnotationCv.ONTOLOGY_ID)
 
@@ -303,6 +303,11 @@ def _populate_facet_entity_bitmap(
               JOIN {}.data_source ds
                 ON ds.source_id = re.source_id
               WHERE re.object_entity_id IS NOT NULL
+              UNION
+              SELECT DISTINCT ot.term_entity_id AS entity_id, ds.name AS source
+              FROM {}.ontology_terms ot
+              JOIN {}.data_source ds
+                ON ds.source_id = ot.source_id
             )
             SELECT
               'source',
@@ -315,6 +320,8 @@ def _populate_facet_entity_bitmap(
             GROUP BY source
             """
         ).format(
+            schema_id,
+            schema_id,
             schema_id,
             schema_id,
             schema_id,

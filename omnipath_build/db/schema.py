@@ -43,6 +43,7 @@ CONTENT_TABLES: tuple[str, ...] = (
 )
 
 SOURCE_PARTITIONED_TABLES: tuple[str, ...] = (
+    'ontology_terms',
     'entity_evidence',
     'entity_evidence_identifier',
     'relation_evidence',
@@ -53,6 +54,7 @@ SOURCE_PARTITIONED_TABLES: tuple[str, ...] = (
 )
 
 SOURCE_PARTITION_DROP_ORDER: tuple[str, ...] = (
+    'ontology_terms',
     'relation_evidence_annotation',
     'relation_evidence_relation',
     'relation_evidence',
@@ -603,7 +605,6 @@ def reset_content_tables(
     """Truncate refresh-loaded content while keeping resolver tables intact."""
 
     with conn.cursor() as cur:
-        _drop_existing_source_partitions(cur, schema)
         if _table_exists(cur, schema, 'annotation'):
             _drop_obsolete_annotation_indexes(cur, schema)
         tables_to_truncate = _existing_content_tables(cur, schema)
@@ -619,6 +620,7 @@ def reset_content_tables(
                     )
                 )
             )
+        _drop_existing_source_partitions(cur, schema)
     conn.commit()
     return tables_to_truncate
 
@@ -674,6 +676,25 @@ def _table_exists(
 ) -> bool:
     cur.execute('SELECT to_regclass(%s) IS NOT NULL', [f'{schema}.{table}'])
     return bool(cur.fetchone()[0])
+
+
+def _is_partitioned_table(
+    cur: psycopg2.extensions.cursor,
+    schema: str,
+    table: str,
+) -> bool:
+    cur.execute(
+        """
+        SELECT c.relkind = 'p'
+        FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = %s
+          AND c.relname = %s
+        """,
+        [schema, table],
+    )
+    row = cur.fetchone()
+    return bool(row and row[0])
 
 
 def _ensure_resolution_schema(
@@ -950,6 +971,8 @@ def _ensure_resolution_schema(
             """
         ).format(schema_id)
     )
+    log_step('create ontology terms table')
+    _ensure_ontology_terms_table(cur, schema)
     log_step('create resolver policy index')
     cur.execute(
         sql.SQL(
@@ -1478,6 +1501,61 @@ def _ensure_canonical_annotation_tables(
         sql.SQL('DROP TABLE IF EXISTS {}.relation_annotation CASCADE').format(
             sql.Identifier(schema)
         )
+    )
+
+
+def _ensure_ontology_terms_table(
+    cur: psycopg2.extensions.cursor,
+    schema: str,
+) -> None:
+    schema_id = sql.Identifier(schema)
+    cur.execute(
+        """
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = %s
+          AND table_name = 'ontology_terms'
+          AND column_name = 'source_id'
+        """,
+        [schema],
+    )
+    has_source_id = cur.fetchone() is not None
+    if _table_exists(cur, schema, 'ontology_terms') and (
+        not has_source_id
+        or not _is_partitioned_table(cur, schema, 'ontology_terms')
+    ):
+        cur.execute(
+            sql.SQL('DROP TABLE {}.ontology_terms CASCADE').format(schema_id)
+        )
+    cur.execute(
+        sql.SQL(
+            """
+            CREATE TABLE IF NOT EXISTS {}.ontology_terms (
+              source_id bigint NOT NULL
+                REFERENCES {}.data_source(source_id),
+              term_entity_id bigint NOT NULL
+                REFERENCES {}.entity(entity_id)
+                ON DELETE CASCADE,
+              term_id text NOT NULL,
+              ontology_prefix text,
+              label text NOT NULL,
+              definition text,
+              ontology_id text,
+              synonyms text[] NOT NULL DEFAULT '{{}}',
+              synonyms_text text NOT NULL DEFAULT '',
+              sources text[] NOT NULL DEFAULT '{{}}',
+              PRIMARY KEY (source_id, term_entity_id)
+            ) PARTITION BY LIST (source_id)
+            """
+        ).format(schema_id, schema_id, schema_id)
+    )
+    cur.execute(
+        sql.SQL(
+            """
+            CREATE TABLE IF NOT EXISTS {}.ontology_terms_default
+            PARTITION OF {}.ontology_terms DEFAULT
+            """
+        ).format(schema_id, schema_id)
     )
 
 

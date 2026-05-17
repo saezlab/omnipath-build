@@ -1,9 +1,8 @@
-"""Load ontology datasets as canonical CV-term entities.
+"""Load ontology datasets as canonical CV-term entities and catalog rows.
 
 Ontology datasets bypass ordinary evidence ingest because every term already
-has a stable ontology accession. Terms are written directly as resolved
-``CV Term`` entities with name, synonym, definition, ontology ID, and
-relationship metadata attached as annotations and graph relations.
+has a stable ontology accession. Terms are written directly as canonical
+``CV Term`` entities and as source-partitioned ``ontology_terms`` catalog rows.
 """
 
 from __future__ import annotations
@@ -15,16 +14,8 @@ from collections.abc import Iterable
 from psycopg2 import sql
 import psycopg2.extensions
 
-from pypath.internals.cv_terms import (
-    OntologyAnnotationCv,
-    IdentifierNamespaceCv,
-    cv_term_label_accession,
-)
-from pypath.internals.ontology_schema import OntologyTerm, OntologyRelationship
-
-from omnipath_build.cv_terms import CV_TERM_ENTITY_TYPE, CV_TERM_ID_TYPE
-from omnipath_build.ingest.common import annotation_key as _annotation_key
-
+from omnipath_build.cv_terms import CV_TERM_ID_TYPE, CV_TERM_ENTITY_TYPE
+from pypath.internals.ontology_schema import OntologyTerm
 
 @dataclass(frozen=True)
 class OntologyLoadStats:
@@ -39,25 +30,32 @@ def load_ontology_terms(
     records: Iterable[OntologyTerm],
     *,
     schema: str = 'public',
+    source: str,
+    dataset: str,
     ontology_id: str,
     batch_size: int = 5000,
     progress_every: int = 5000,
 ) -> OntologyLoadStats:
-    """Load ontology terms directly into entity and annotation tables."""
+    """Load ontology terms directly into entity and ontology_terms tables."""
 
     stats = _MutableOntologyStats()
-    buffer: list[
-        tuple[OntologyTerm, list[tuple[str, str | None, str | None]]]
-    ] = []
+    buffer: list[OntologyTerm] = []
     started_at = time.monotonic()
     for term in records:
         if not isinstance(term, OntologyTerm) or not term.id:
             continue
-        buffer.append((term, _term_annotations(term, ontology_id)))
+        buffer.append(term)
         stats.terms += 1
-        stats.annotations += len(buffer[-1][1])
+        stats.annotations += len(_term_synonyms(term))
         if batch_size > 0 and len(buffer) >= batch_size:
-            _flush(conn, schema, buffer)
+            _flush(
+                conn,
+                schema,
+                buffer,
+                source=source,
+                dataset=dataset,
+                ontology_id=ontology_id,
+            )
             buffer.clear()
         if progress_every > 0 and stats.terms % progress_every == 0:
             elapsed = time.monotonic() - started_at
@@ -68,7 +66,14 @@ def load_ontology_terms(
                 f'rate={rate:,.1f}/s',
                 flush=True,
             )
-    _flush(conn, schema, buffer)
+    _flush(
+        conn,
+        schema,
+        buffer,
+        source=source,
+        dataset=dataset,
+        ontology_id=ontology_id,
+    )
     conn.commit()
     return stats.freeze()
 
@@ -76,11 +81,38 @@ def load_ontology_terms(
 def _flush(
     conn: psycopg2.extensions.connection,
     schema: str,
-    rows: list[tuple[OntologyTerm, list[tuple[str, str | None, str | None]]]],
+    rows: list[OntologyTerm],
+    *,
+    source: str,
+    dataset: str,
+    ontology_id: str,
 ) -> None:
     if not rows:
         return
     with conn.cursor() as cur:
+        cur.execute(
+            sql.SQL(
+                """
+                INSERT INTO {}.data_source (name)
+                VALUES (%s)
+                ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name
+                RETURNING source_id
+                """
+            ).format(sql.Identifier(schema)),
+            [source],
+        )
+        source_id = int(cur.fetchone()[0])
+        cur.execute(
+            sql.SQL(
+                """
+                INSERT INTO {}.dataset (source_id, name)
+                VALUES (%s, %s)
+                ON CONFLICT (source_id, name) DO UPDATE
+                SET name = EXCLUDED.name
+                """
+            ).format(sql.Identifier(schema)),
+            [source_id, dataset],
+        )
         cur.executemany(
             sql.SQL(
                 """
@@ -100,7 +132,7 @@ def _flush(
                 )
                 SELECT
                   entity_type_row.entity_type_id,
-                  NULL::text,
+                  NULL::bigint,
                   it.identifier_type_id,
                   %s,
                   jsonb_build_array(
@@ -133,7 +165,7 @@ def _flush(
             .as_string(cur.connection),
             [
                 (CV_TERM_ENTITY_TYPE, term.id, term.id, CV_TERM_ID_TYPE)
-                for term, _ in rows
+                for term in rows
             ],
         )
         cur.execute(
@@ -141,7 +173,7 @@ def _flush(
         )
         cur.executemany(
             'INSERT INTO _ontology_term_id (term_id) VALUES (%s) ON CONFLICT DO NOTHING',
-            [(term.id,) for term, _ in rows],
+            [(term.id,) for term in rows],
         )
         cur.execute(
             sql.SQL(
@@ -177,150 +209,128 @@ def _flush(
             ),
             [CV_TERM_ENTITY_TYPE, CV_TERM_ID_TYPE],
         )
-        annotation_rows = [
-            (
-                term.id,
-                _annotation_key(annotation[0], annotation[1], annotation[2]),
-                annotation[0],
-                annotation[1],
-                annotation[2],
-            )
-            for term, annotations in rows
-            for annotation in annotations
-        ]
+        term_rows = [_ontology_term_row(term, ontology_id) for term in rows]
         cur.executemany(
             sql.SQL(
                 """
-                INSERT INTO {}.annotation (
-                  annotation_key,
-                  term,
-                  value,
-                  unit
+                INSERT INTO {}.ontology_terms (
+                  source_id,
+                  term_entity_id,
+                  term_id,
+                  ontology_prefix,
+                  label,
+                  definition,
+                  ontology_id,
+                  synonyms,
+                  synonyms_text,
+                  sources
                 )
-                VALUES (%s, %s, %s, %s)
-                ON CONFLICT DO NOTHING
-                """
-            )
-            .format(sql.Identifier(schema))
-            .as_string(cur.connection),
-            [
-                (annotation_key, term, value, unit)
-                for _, annotation_key, term, value, unit in annotation_rows
-            ],
-        )
-        cur.executemany(
-            sql.SQL(
-                """
-                INSERT INTO {}.entity_annotation (
-                  entity_id,
-                  annotation_key,
-                  scope
-                )
-                SELECT m.entity_id, %s::uuid, 'entity'
+                SELECT
+                  %s,
+                  m.entity_id,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s
                 FROM _ontology_entity_map m
                 WHERE m.term_id = %s
-                ON CONFLICT DO NOTHING
+                ON CONFLICT (source_id, term_entity_id) DO UPDATE SET
+                  term_id = EXCLUDED.term_id,
+                  ontology_prefix = EXCLUDED.ontology_prefix,
+                  label = EXCLUDED.label,
+                  definition = EXCLUDED.definition,
+                  ontology_id = EXCLUDED.ontology_id,
+                  synonyms = EXCLUDED.synonyms,
+                  synonyms_text = EXCLUDED.synonyms_text,
+                  sources = EXCLUDED.sources
                 """
             )
             .format(sql.Identifier(schema))
             .as_string(cur.connection),
             [
-                (annotation_key, term_id)
-                for term_id, annotation_key, _, _, _ in annotation_rows
+                (
+                    source_id,
+                    term_id,
+                    ontology_prefix,
+                    label,
+                    definition,
+                    ontology_id_value,
+                    synonyms,
+                    synonyms_text,
+                    sources,
+                    term_id,
+                )
+                for (
+                    term_id,
+                    ontology_prefix,
+                    label,
+                    definition,
+                    ontology_id_value,
+                    synonyms,
+                    synonyms_text,
+                    sources,
+                ) in term_rows
             ],
         )
         cur.execute('TRUNCATE _ontology_term_id')
 
 
-def _term_annotations(
+def _ontology_term_row(
     term: OntologyTerm,
     ontology_id: str,
-) -> list[tuple[str, str | None, str | None]]:
-    rows: list[tuple[str, str | None, str | None]] = [
-        (cv_term_label_accession(OntologyAnnotationCv.ONTOLOGY_ID), ontology_id, None),
-        (cv_term_label_accession(IdentifierNamespaceCv.CV_TERM_ACCESSION), term.id, None),
-    ]
-    if term.name:
-        rows.append((cv_term_label_accession(IdentifierNamespaceCv.NAME), term.name, None))
-    if term.definition:
-        rows.append(
-            (cv_term_label_accession(OntologyAnnotationCv.DEFINITION), term.definition, None)
-        )
-    if term.namespace:
-        rows.append(('ontology:namespace', term.namespace, None))
-    if term.is_obsolete is not None:
-        rows.append(
-            (
-                cv_term_label_accession(OntologyAnnotationCv.IS_OBSOLETE),
-                str(bool(term.is_obsolete)).lower(),
-                None,
-            )
-        )
-    for alt_id in term.alt_ids or []:
-        if alt_id and alt_id != term.id:
-            rows.append(
-                (
-                    cv_term_label_accession(
-                        IdentifierNamespaceCv.CV_TERM_ACCESSION
-                    ),
-                    alt_id,
-                    'alt_id',
-                )
-            )
-    for synonym in term.synonyms or []:
-        if synonym and synonym != term.name:
-            rows.append(
-                (
-                    cv_term_label_accession(IdentifierNamespaceCv.SYNONYM),
-                    synonym,
-                    None,
-                )
-            )
-    for comment in term.comments or []:
-        if comment:
-            rows.append(
-                (cv_term_label_accession(OntologyAnnotationCv.COMMENT), comment, None)
-            )
-    for xref in term.xrefs or []:
-        if xref:
-            rows.append(('ontology:xref', xref, None))
-    for parent in term.is_a or []:
-        if parent:
-            rows.append(
-                (
-                    cv_term_label_accession(
-                        IdentifierNamespaceCv.CV_TERM_ACCESSION
-                    ),
-                    parent,
-                    'is_a',
-                )
-            )
-    for relationship in term.relationships or []:
-        rows.extend(_relationship_annotations(relationship))
-    return rows
+) -> tuple[
+    str,
+    str | None,
+    str,
+    str | None,
+    str,
+    list[str],
+    str,
+    list[str],
+]:
+    synonyms = _term_synonyms(term)
+    return (
+        term.id,
+        _ontology_prefix(term.id),
+        term.name or term.id,
+        term.definition,
+        ontology_id,
+        synonyms,
+        ' '.join(synonyms),
+        [ontology_id],
+    )
 
 
-def _relationship_annotations(
-    relationship: OntologyRelationship,
-) -> list[tuple[str, str | None, str | None]]:
-    if not relationship.type or not relationship.target:
-        return []
-    rows = [
-        (
-            cv_term_label_accession(IdentifierNamespaceCv.CV_TERM_ACCESSION),
-            relationship.target,
-            relationship.type,
-        )
+def _ontology_prefix(term_id: str) -> str | None:
+    if term_id.upper().startswith('KW-'):
+        return 'kw'
+    if ':' in term_id:
+        return term_id.split(':', 1)[0].lower()
+    return None
+
+
+def _term_synonyms(term: OntologyTerm) -> list[str]:
+    values = [
+        *(term.synonyms or []),
+        *(
+            alt_id
+            for alt_id in term.alt_ids or []
+            if alt_id and alt_id != term.id
+        ),
     ]
-    if relationship.target_name:
-        rows.append(
-            (
-                'ontology:relationship_target_name',
-                relationship.target_name,
-                relationship.type,
-            )
-        )
-    return rows
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        value = str(value).strip()
+        if not value or value == term.name or value in seen:
+            continue
+        seen.add(value)
+        result.append(value)
+    return result
 
 
 @dataclass

@@ -7,15 +7,14 @@ evidence/graph tables or from bitmap tables when they have been refreshed.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Any
+from dataclasses import dataclass
 
 from psycopg2 import sql
 from psycopg2.extras import Json
 import psycopg2.extensions
 
 from omnipath_build.cv_terms import CV_TERM_ENTITY_TYPE
-
 
 @dataclass(frozen=True)
 class ResourceTableStats:
@@ -207,8 +206,15 @@ def _present_sources(
             FROM {}.relation_evidence re
             JOIN {}.data_source ds
               ON ds.source_id = re.source_id
+            UNION
+            SELECT ds.name
+            FROM {}.ontology_terms ot
+            JOIN {}.data_source ds
+              ON ds.source_id = ot.source_id
             """
         ).format(
+            sql.Identifier(schema),
+            sql.Identifier(schema),
             sql.Identifier(schema),
             sql.Identifier(schema),
             sql.Identifier(schema),
@@ -304,29 +310,27 @@ def _source_counts(
                   AND rc.name = 'association'
               ) AS association_count,
               (
-                SELECT COUNT(DISTINCT r.entity_id)::bigint
-                FROM {}.entity_evidence_resolution r
-                JOIN {}.entity_evidence ee
-                  ON ee.source_id = r.source_id
-                 AND ee.entity_evidence_id = r.entity_evidence_id
-                JOIN {}.entity e
-                  ON e.entity_id = r.entity_id
-                JOIN {}.vocab_entity_type et
-                  ON et.entity_type_id = e.entity_type_id
-                WHERE ee.source_id = (SELECT source_id FROM selected_source)
-                  AND et.name = %s
+                SELECT COUNT(*)::bigint
+                FROM {}.ontology_terms ot
+                WHERE ot.source_id = (SELECT source_id FROM selected_source)
               ) AS ontology_term_count,
               (
                 SELECT NULL::timestamptz
               ) AS last_built_at,
               (
                 SELECT EXISTS (
-	                  SELECT 1
-	                  FROM {}.entity_evidence
-	                  WHERE source_id = (
-	                    SELECT source_id FROM selected_source
-	                  )
-	                )
+                  SELECT 1
+                  FROM {}.entity_evidence
+                  WHERE source_id = (
+                    SELECT source_id FROM selected_source
+                  )
+                  UNION ALL
+                  SELECT 1
+                  FROM {}.ontology_terms
+                  WHERE source_id = (
+                    SELECT source_id FROM selected_source
+                  )
+                )
               ) AS has_rows
             """
         ).format(
@@ -344,13 +348,8 @@ def _source_counts(
             sql.Identifier(schema),
             sql.Identifier(schema),
             sql.Identifier(schema),
-            sql.Identifier(schema),
-            sql.Identifier(schema),
         ),
-        [
-            source,
-            CV_TERM_ENTITY_TYPE,
-        ],
+        [source],
     )
     row = cur.fetchone()
     return {

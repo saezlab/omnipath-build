@@ -556,6 +556,8 @@ def _handle_ingest(
                     conn,
                     terms,
                     schema=args.schema,
+                    source=fn.source,
+                    dataset=fn.function_name,
                     ontology_id=fn.ontology_id or fn.function_name,
                     batch_size=args.batch_size,
                     progress_every=args.progress_every,
