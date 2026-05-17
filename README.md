@@ -10,9 +10,9 @@ make setup
 
 This project uses `uv` for dependency management.
 
-## Minimal PostgreSQL Pipeline
+## PostgreSQL Pipeline
 
-The minimal pipeline writes `inputs_v2` sources directly to PostgreSQL evidence
+The omnipath_build pipeline writes `inputs_v2` sources directly to PostgreSQL evidence
 tables, then canonicalizes them into entity and relation tables.
 
 The default database URL is:
@@ -28,19 +28,19 @@ Override it with `DATABASE_URL=...` when needed.
 Build local resolver parquet files:
 
 ```bash
-make minimal-resolver
+make resolver
 ```
 
 Limit resolver builds for smoke tests:
 
 ```bash
-make minimal-resolver MAX_RECORDS=100000
+make resolver MAX_RECORDS=100000
 ```
 
 Use a single PubChem SDF shard during development:
 
 ```bash
-make minimal-resolver MINIMAL_PUBCHEM_URL=https://example.org/pubchem.sdf.gz
+make resolver PUBCHEM_URL=https://example.org/pubchem.sdf.gz
 ```
 
 ### Prepare Database
@@ -55,13 +55,13 @@ Start from a clean schema. This defers secondary evidence indexes until
 canonicalization, so ingest is faster:
 
 ```bash
-make db-setup MINIMAL_DROP_EXISTING=1
+make db-setup DROP_EXISTING=1
 ```
 
 Use another schema:
 
 ```bash
-make db-setup MINIMAL_SCHEMA=minimal_test MINIMAL_DROP_EXISTING=1
+make db-setup SCHEMA=omnipath_test DROP_EXISTING=1
 ```
 
 ### Ingest And Canonicalize
@@ -102,13 +102,13 @@ Build resolver files, recreate the database schema, load all sources,
 canonicalize, and derive query tables:
 
 ```bash
-make minimal-all MINIMAL_DROP_EXISTING=1
+make all DROP_EXISTING=1
 ```
 
 If resolver files already exist, run:
 
 ```bash
-make db-setup MINIMAL_DROP_EXISTING=1
+make db-setup DROP_EXISTING=1
 make load
 make derive
 ```
@@ -118,30 +118,30 @@ make derive
 Limit source rows per dataset:
 
 ```bash
-make load SOURCE=bindingdb MAX_RECORDS=200000 MINIMAL_SCHEMA=minimal_test
+make load SOURCE=bindingdb MAX_RECORDS=200000 SCHEMA=omnipath_test
 ```
 
 Ingest only, without canonicalization:
 
 ```bash
-make ingest SOURCE=bindingdb MAX_RECORDS=200000 MINIMAL_SCHEMA=minimal_test
+make ingest SOURCE=bindingdb MAX_RECORDS=200000 SCHEMA=omnipath_test
 ```
 
 Use one final bulk flush instead of 50k-row chunks:
 
 ```bash
-make ingest SOURCE=bindingdb MAX_RECORDS=200000 MINIMAL_BATCH_SIZE=0
+make ingest SOURCE=bindingdb MAX_RECORDS=200000 BATCH_SIZE=0
 ```
 
-The default chunk size is `MINIMAL_BATCH_SIZE=50000`, which is safer for full
+The default chunk size is `BATCH_SIZE=50000`, which is safer for full
 loads.
 
 ### Maintenance
 
-Reset minimal content tables without dropping resolver tables:
+Reset omnipath_build content tables without dropping resolver tables:
 
 ```bash
-make minimal-reset-content
+make reset-content
 ```
 
 Run the Python tests:
