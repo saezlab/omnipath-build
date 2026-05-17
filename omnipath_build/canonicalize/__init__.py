@@ -385,7 +385,8 @@ def _create_entity_groups(
               SELECT DISTINCT
                 vocab_entity_type,
                 taxonomy_id,
-                identifier_ids
+                identifier_ids,
+                md5(identifier_ids::text) AS identifier_ids_hash
               FROM scoped_evidence
             )
             SELECT
@@ -397,7 +398,8 @@ def _create_entity_groups(
               )::bigint AS entity_group_id,
               vocab_entity_type,
               taxonomy_id,
-              identifier_ids
+              identifier_ids,
+              identifier_ids_hash
             FROM grouped
             """
         ).format(sql.Identifier(schema), sql.Identifier(schema))
@@ -411,11 +413,11 @@ def _create_entity_groups(
     )
     cur.execute(
         """
-        CREATE UNIQUE INDEX ON _entity_group (
+        CREATE INDEX ON _entity_group (
           vocab_entity_type,
           taxonomy_id,
-          identifier_ids
-        ) NULLS NOT DISTINCT
+          identifier_ids_hash
+        )
         """
     )
     cur.execute(
@@ -434,7 +436,16 @@ def _create_entity_groups(
                     ORDER BY k.identifier_id
                   ) FILTER (WHERE k.identifier_id IS NOT NULL),
                   ARRAY[]::uuid[]
-                ) AS identifier_ids
+                ) AS identifier_ids,
+                md5(
+                  COALESCE(
+                    array_agg(
+                      DISTINCT k.identifier_id
+                      ORDER BY k.identifier_id
+                    ) FILTER (WHERE k.identifier_id IS NOT NULL),
+                    ARRAY[]::uuid[]
+                  )::text
+                ) AS identifier_ids_hash
               FROM _entity_scope s
               JOIN {}.entity_evidence ee
                 ON ee.source_id = s.source_id
@@ -458,6 +469,7 @@ def _create_entity_groups(
             JOIN _entity_group g
               ON g.vocab_entity_type IS NOT DISTINCT FROM se.vocab_entity_type
              AND g.taxonomy_id IS NOT DISTINCT FROM se.taxonomy_id
+             AND g.identifier_ids_hash = se.identifier_ids_hash
              AND g.identifier_ids = se.identifier_ids
             """
         ).format(sql.Identifier(schema), sql.Identifier(schema))
