@@ -142,6 +142,7 @@ def _refresh_entity_identifiers(
             WITH resolved_entities AS (
               SELECT DISTINCT
                 e.entity_id,
+                e.taxonomy_id,
                 e.canonical_identifier_type_id,
                 e.canonical_identifier
               FROM {}.entity e
@@ -153,6 +154,7 @@ def _refresh_entity_identifiers(
               WHERE e.canonical_identifier_type_id IS NOT NULL
                 AND e.canonical_identifier IS NOT NULL
                 AND e.canonical_identifier <> ''
+                AND e.identifiers = '[]'::jsonb
             ),
             resolver_identifiers AS (
               SELECT
@@ -170,8 +172,10 @@ def _refresh_entity_identifiers(
                 ON p.canonical_identifier_type_id =
                    re.canonical_identifier_type_id
                AND p.canonical_identifier = re.canonical_identifier
+               AND NULLIF(p.taxonomy_id, '')::bigint = re.taxonomy_id
               WHERE p.key_value IS NOT NULL
                 AND p.key_value <> ''
+                AND re.taxonomy_id IS NOT NULL
               UNION
               SELECT
                 re.entity_id,
@@ -230,6 +234,8 @@ def _refresh_entity_identifiers(
                 i.identifier_type_id,
                 i.value AS identifier
               FROM {}.entity_evidence_resolution er
+              JOIN {}.entity e
+                ON e.entity_id = er.entity_id
               JOIN {}.vocab_resolution_status rs
                 ON rs.resolution_status_id = er.status_id
                AND rs.name IN ('unresolved', 'ambiguous')
@@ -241,6 +247,7 @@ def _refresh_entity_identifiers(
               JOIN {}.vocab_identifier_type it
                 ON it.identifier_type_id = i.identifier_type_id
               WHERE er.entity_id IS NOT NULL
+                AND e.identifiers = '[]'::jsonb
                 AND i.value IS NOT NULL
                 AND i.value <> ''
             )
@@ -265,6 +272,7 @@ def _refresh_entity_identifiers(
             schema_id,
             schema_id,
             schema_id,
+            schema_id,
         )
     )
     cur.execute('ANALYZE _derived_entity_identifier')
@@ -275,6 +283,7 @@ def _refresh_entity_identifiers(
             SET identifiers = dei.identifiers
             FROM _derived_entity_identifier dei
             WHERE dei.entity_id = e.entity_id
+              AND e.identifiers = '[]'::jsonb
               AND e.identifiers IS DISTINCT FROM dei.identifiers
             """
         ).format(schema_id)
