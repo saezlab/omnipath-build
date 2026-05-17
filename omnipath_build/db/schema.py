@@ -17,7 +17,6 @@ from __future__ import annotations
 from psycopg2 import sql
 import psycopg2.extensions
 
-
 CONTENT_TABLES: tuple[str, ...] = (
     'annotation_term_entity_bitmap',
     'annotation_term_relation_bitmap',
@@ -41,6 +40,26 @@ CONTENT_TABLES: tuple[str, ...] = (
     'resources',
     'dataset',
     'data_source',
+)
+
+SOURCE_PARTITIONED_TABLES: tuple[str, ...] = (
+    'entity_evidence',
+    'entity_evidence_identifier',
+    'relation_evidence',
+    'entity_evidence_annotation',
+    'relation_evidence_annotation',
+    'entity_evidence_resolution',
+    'relation_evidence_relation',
+)
+
+SOURCE_PARTITION_DROP_ORDER: tuple[str, ...] = (
+    'relation_evidence_annotation',
+    'relation_evidence_relation',
+    'relation_evidence',
+    'entity_evidence_annotation',
+    'entity_evidence_resolution',
+    'entity_evidence_identifier',
+    'entity_evidence',
 )
 
 
@@ -315,15 +334,6 @@ def ensure_source_partitions(
     """Create source-specific partitions for partitioned evidence tables."""
 
     suffix = _source_partition_suffix(source)
-    partitioned_tables = (
-        'entity_evidence',
-        'entity_evidence_identifier',
-        'relation_evidence',
-        'entity_evidence_annotation',
-        'relation_evidence_annotation',
-        'entity_evidence_resolution',
-        'relation_evidence_relation',
-    )
     with conn.cursor() as cur:
         cur.execute(
             sql.SQL(
@@ -337,7 +347,7 @@ def ensure_source_partitions(
             [source],
         )
         source_id = int(cur.fetchone()[0])
-        for table in partitioned_tables:
+        for table in SOURCE_PARTITIONED_TABLES:
             cur.execute(
                 sql.SQL(
                     """
@@ -356,8 +366,8 @@ def ensure_source_partitions(
 
 
 def _source_partition_suffix(source: str) -> str:
-    import hashlib
     import re
+    import hashlib
 
     slug = re.sub(r'[^a-z0-9]+', '_', source.lower()).strip('_')
     slug = slug[:40] or 'source'
@@ -593,6 +603,9 @@ def reset_content_tables(
     """Truncate refresh-loaded content while keeping resolver tables intact."""
 
     with conn.cursor() as cur:
+        _drop_existing_source_partitions(cur, schema)
+        if _table_exists(cur, schema, 'annotation'):
+            _drop_obsolete_annotation_indexes(cur, schema)
         tables_to_truncate = _existing_content_tables(cur, schema)
         if tables_to_truncate:
             cur.execute(
@@ -608,6 +621,59 @@ def reset_content_tables(
             )
     conn.commit()
     return tables_to_truncate
+
+
+def _drop_existing_source_partitions(
+    cur: psycopg2.extensions.cursor,
+    schema: str,
+) -> list[str]:
+    """Drop source partitions so source IDs can be reused after reset."""
+
+    dropped: list[str] = []
+    for parent_table in SOURCE_PARTITION_DROP_ORDER:
+        cur.execute(
+            """
+            SELECT child.relname
+            FROM pg_inherits i
+            JOIN pg_class parent ON parent.oid = i.inhparent
+            JOIN pg_namespace parent_ns ON parent_ns.oid = parent.relnamespace
+            JOIN pg_class child ON child.oid = i.inhrelid
+            JOIN pg_namespace child_ns ON child_ns.oid = child.relnamespace
+            WHERE parent_ns.nspname = %s
+              AND parent.relname = %s
+              AND child_ns.nspname = %s
+              AND child.relname <> %s
+            ORDER BY child.relname
+            """,
+            [schema, parent_table, schema, f'{parent_table}_default'],
+        )
+        child_tables = [row[0] for row in cur.fetchall()]
+        for child_table in child_tables:
+            cur.execute(
+                sql.SQL('ALTER TABLE {}.{} DETACH PARTITION {}.{}').format(
+                    sql.Identifier(schema),
+                    sql.Identifier(parent_table),
+                    sql.Identifier(schema),
+                    sql.Identifier(child_table),
+                )
+            )
+            cur.execute(
+                sql.SQL('DROP TABLE {}.{}').format(
+                    sql.Identifier(schema),
+                    sql.Identifier(child_table),
+                )
+            )
+            dropped.append(child_table)
+    return dropped
+
+
+def _table_exists(
+    cur: psycopg2.extensions.cursor,
+    schema: str,
+    table: str,
+) -> bool:
+    cur.execute('SELECT to_regclass(%s) IS NOT NULL', [f'{schema}.{table}'])
+    return bool(cur.fetchone()[0])
 
 
 def _ensure_resolution_schema(
@@ -1310,9 +1376,8 @@ def _ensure_annotation_value_schema(
     cur.execute(
         sql.SQL(
             """
-            CREATE UNIQUE INDEX IF NOT EXISTS annotation_value_idx
-            ON {}.annotation (term, value, unit)
-            NULLS NOT DISTINCT
+            CREATE INDEX IF NOT EXISTS annotation_term_idx
+            ON {}.annotation (term)
             """
         ).format(schema_id)
     )
@@ -1855,6 +1920,11 @@ def _drop_obsolete_annotation_indexes(
     )
     cur.execute(
         sql.SQL('DROP INDEX IF EXISTS {}.annotation_dedupe_idx').format(
+            schema_id
+        )
+    )
+    cur.execute(
+        sql.SQL('DROP INDEX IF EXISTS {}.annotation_value_idx').format(
             schema_id
         )
     )

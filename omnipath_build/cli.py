@@ -10,43 +10,41 @@ execution order are defined.
 
 from __future__ import annotations
 
-import argparse
-from itertools import islice
 import os
 import sys
 import time
 from pathlib import Path
+import argparse
+from itertools import islice
 
 import psycopg2
 
-from pypath.internals.ontology_schema import OntologyTerm
-from pypath.inputs_v2.ontology_serializers import format_obo
-
 from omnipath_build.db import (
-    delete_source_content,
-    drop_deferred_content_indexes,
-    ensure_deferred_indexes,
     ensure_schema,
-    ensure_source_partitions,
-    rebuild_bitmap_tables,
-    rebuild_derived_tables,
-    create_secondary_indexes,
     reset_content_tables,
     sync_resources_table,
+    delete_source_content,
+    rebuild_bitmap_tables,
+    rebuild_derived_tables,
+    ensure_deferred_indexes,
+    create_secondary_indexes,
+    ensure_source_partitions,
+    drop_deferred_content_indexes,
 )
 from omnipath_build.ingest import BulkIngestor
 from omnipath_build.loaders import (
     load_ontology_terms,
-    load_resolver_sources,
     load_resolver_tables,
+    load_resolver_sources,
 )
+from omnipath_build.resources import discover_resources
 from omnipath_build.canonicalize import canonicalize
+from pypath.internals.ontology_schema import OntologyTerm
+from pypath.inputs_v2.ontology_serializers import format_obo
 from omnipath_build.resolver.mapping_tables import (
     SOURCE_NAMES as RESOLVER_SOURCE_NAMES,
     run_sources as build_resolver_sources,
 )
-from omnipath_build.resources import discover_resources
-
 
 def main(argv: list[str] | None = None) -> int:
     """Run the omnipath_build direct-to-Postgres command line interface."""
@@ -77,6 +75,14 @@ def main(argv: list[str] | None = None) -> int:
         '--drop-indexes',
         action='store_true',
         help='Drop secondary content indexes after truncating for faster reload.',
+    )
+
+    drop_source = subparsers.add_parser('drop-source')
+    drop_source.add_argument('--source', required=True)
+    drop_source.add_argument(
+        '--row-delete',
+        action='store_true',
+        help='Force row deletion instead of dropping source partitions.',
     )
 
     build_resolver = subparsers.add_parser('build-resolver')
@@ -194,6 +200,10 @@ def main(argv: list[str] | None = None) -> int:
         '--source',
         help='Optional source to run. Omit to discover all compatible sources.',
     )
+    ingest.add_argument(
+        '--dataset',
+        help='Optional dataset/function name within the selected source.',
+    )
     ingest.add_argument('--inputs-package', default='pypath.inputs_v2')
     ingest.add_argument('--database', default='omnipath')
     ingest.add_argument('--force-refresh', action='store_true')
@@ -282,6 +292,30 @@ def main(argv: list[str] | None = None) -> int:
                     f'[reset-content] dropped_indexes={len(dropped)}',
                     flush=True,
                 )
+            return 0
+        if args.command == 'drop-source':
+            stats = delete_source_content(
+                conn,
+                schema=args.schema,
+                source=args.source,
+                drop_partitions=not args.row_delete,
+            )
+            print(
+                '[drop-source] '
+                f'source={stats.source} '
+                f'source_id={stats.source_id} '
+                f'strategy={stats.strategy} '
+                f'partitions_dropped={stats.partitions_dropped} '
+                f'affected_relations={stats.affected_relations} '
+                f'affected_entities={stats.affected_entities} '
+                f'affected_identifiers={stats.affected_identifiers} '
+                f'deleted_relations={stats.deleted_relations} '
+                f'deleted_entities={stats.deleted_entities} '
+                f'deleted_identifiers={stats.deleted_identifiers} '
+                f'deleted_annotations={stats.deleted_annotations} '
+                f'refreshed_relation_counts={stats.refreshed_relation_counts}',
+                flush=True,
+            )
             return 0
         if args.command == 'load-resolver':
             if args.sources:
@@ -439,16 +473,14 @@ def _selected_resource_functions(
         print(f'Unknown source(s): {", ".join(unknown)}', file=sys.stderr)
         return None
 
+    dataset = args.dataset
     selected = [
         fn
         for source in source_names
         for fn in discovered[source]
         if fn.function_name != 'resource'
         and fn.output_kind in {'entity', 'ontology'}
-        and (
-            getattr(args, 'dataset', None) is None
-            or fn.function_name == getattr(args, 'dataset')
-        )
+        and (dataset is None or fn.function_name == dataset)
         and getattr(fn.call, '_raw_dataset', None) is not None
     ]
     if not selected:
@@ -456,7 +488,7 @@ def _selected_resource_functions(
         return None
     print(
         '[omnipath_build] refresh plan '
-        f'sources={len(set(fn.source for fn in selected))} '
+        f'sources={len({fn.source for fn in selected})} '
         f'datasets={len(selected)}',
         flush=True,
     )
@@ -591,8 +623,8 @@ def _write_ontology_obo(
     output_dir: Path,
 ) -> Path:
     extension = (getattr(fn, 'file_extension', None) or 'obo').lstrip('.')
-    file_stem = getattr(fn, 'file_stem', None) or getattr(fn, 'function_name')
-    document = getattr(fn, 'document')
+    file_stem = getattr(fn, 'file_stem', None) or fn.function_name
+    document = fn.document
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / f'{file_stem}.{extension}'
     output_path.write_text(format_obo(document, terms), encoding='utf-8')

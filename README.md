@@ -67,6 +67,12 @@ Use another schema:
 make db-setup SCHEMA=omnipath_test DROP_EXISTING=1
 ```
 
+Drop and recreate the target schema without loading resolver tables:
+
+```bash
+make db-reset
+```
+
 ### Ingest And Canonicalize
 
 Ingest all sources and canonicalize them:

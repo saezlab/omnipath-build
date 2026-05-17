@@ -44,6 +44,11 @@ make db-setup
 
 `db-setup` also creates the schema. With `DROP_EXISTING=1`, secondary evidence
 indexes are deferred so full scratch ingest does not maintain them row by row.
+To drop and recreate the target schema without loading resolver tables, run:
+
+```bash
+make db-reset
+```
 
 ### 2. Source Evidence Ingest
 
@@ -151,3 +156,11 @@ the selected source batch is complete when the database should be query-ready.
 - `DROP_EXISTING`: recreate schema during `db-setup`.
 - `DERIVE`: run `derive` after `make pipeline`.
 - `PUBCHEM_URL`: use one PubChem SDF `.gz` shard during resolver development.
+
+## Maintenance
+
+Drop and recreate the target schema:
+
+```bash
+make db-reset
+```

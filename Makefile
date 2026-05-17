@@ -1,4 +1,4 @@
-.PHONY: setup resolver db-setup reset-content ingest canonicalize derive load pipeline all test
+.PHONY: setup resolver db-setup db-reset reset-content drop-source ingest canonicalize derive load pipeline all test
 
 DATA_ROOT ?= data
 DATABASE ?= omnipath
@@ -7,6 +7,7 @@ SCHEMA ?= public
 INPUTS_PACKAGE ?= pypath.inputs_v2
 SOURCE ?=
 SOURCES ?=
+DATASET ?=
 source ?=
 sources ?=
 SELECTED_SOURCES = $(strip $(if $(SOURCES),$(SOURCES),$(if $(SOURCE),$(SOURCE),$(if $(sources),$(sources),$(source)))))
@@ -73,6 +74,18 @@ db-setup:
 		echo "[omnipath_build] deferring secondary indexes until after ingest"; \
 	fi
 
+db-reset:
+	@if [ -z "$(DATABASE_URL)" ]; then \
+		echo "DATABASE_URL is required, e.g. make db-reset DATABASE_URL=postgresql://user:pass@host:5432/dbname"; \
+		exit 1; \
+	fi
+	@echo "[omnipath_build] reset database schema=$(SCHEMA)"
+	@PYTHONUNBUFFERED=1 uv run python -m omnipath_build.cli \
+		--database-url "$(DATABASE_URL)" \
+		--schema "$(SCHEMA)" \
+		init-db \
+		--drop-existing
+
 reset-content:
 	@if [ -z "$(DATABASE_URL)" ]; then \
 		echo "DATABASE_URL is required, e.g. make reset-content DATABASE_URL=postgresql://user:pass@host:5432/dbname"; \
@@ -84,6 +97,26 @@ reset-content:
 		--schema "$(SCHEMA)" \
 		reset-content \
 		$(if $(RESET_DROP_INDEXES),--drop-indexes)
+
+drop-source:
+	@if [ -z "$(DATABASE_URL)" ]; then \
+		echo "DATABASE_URL is required, e.g. make drop-source SOURCE=uniprot DATABASE_URL=postgresql://user:pass@host:5432/dbname"; \
+		exit 1; \
+	fi
+	@if [ -z "$(SELECTED_SOURCES)" ]; then \
+		echo "SOURCE or SOURCES is required, e.g. make drop-source SOURCE=uniprot"; \
+		exit 1; \
+	fi
+	@set -e; \
+	SOURCE_LIST=$$(printf '%s' "$(SELECTED_SOURCES)" | tr ',' ' '); \
+	for source in $$SOURCE_LIST; do \
+		echo "[omnipath_build] drop-source source=$$source schema=$(SCHEMA)"; \
+		PYTHONUNBUFFERED=1 uv run python -m omnipath_build.cli \
+			--database-url "$(DATABASE_URL)" \
+			--schema "$(SCHEMA)" \
+			drop-source \
+			--source "$$source"; \
+	done
 
 ingest:
 	@if [ -z "$(DATABASE_URL)" ]; then \
@@ -99,6 +132,7 @@ ingest:
 			ingest \
 			--database "$(DATABASE)" \
 			--inputs-package "$(INPUTS_PACKAGE)" \
+			$(if $(DATASET),--dataset "$(DATASET)") \
 			--batch-size "$(BATCH_SIZE)" \
 			--progress-every "$(PROGRESS_EVERY)" \
 			--obo-output-dir "$(OBO_DIR)" \
@@ -117,6 +151,7 @@ ingest:
 				--source "$$source" \
 				--database "$(DATABASE)" \
 				--inputs-package "$(INPUTS_PACKAGE)" \
+				$(if $(DATASET),--dataset "$(DATASET)") \
 				--batch-size "$(BATCH_SIZE)" \
 				--progress-every "$(PROGRESS_EVERY)" \
 				--obo-output-dir "$(OBO_DIR)" \
