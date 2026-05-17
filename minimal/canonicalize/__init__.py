@@ -164,7 +164,6 @@ def canonicalize(
             _insert_scoped_entity_types(cur, schema)
             _insert_entities(cur, schema)
             _upsert_entity_resolution(cur, schema)
-            _insert_entity_annotations(cur, schema)
 
         entities = _count_schema_table(cur, schema, 'entity')
         entity_status = _status_counts(
@@ -185,7 +184,6 @@ def canonicalize(
                 _delete_scoped_relation_evidence(cur, schema)
                 _insert_relations(cur, schema)
                 _insert_relation_evidence_links(cur, schema)
-                _refresh_relation_annotations(cur, schema)
             relations = _count_schema_table(cur, schema, 'relation')
             relation_mapped, relation_unmapped = _relation_mapping_counts(
                 cur, schema
@@ -215,17 +213,19 @@ def _create_entity_scope(
     cur.execute(
         """
         CREATE TEMP TABLE _entity_scope (
-          entity_evidence_id uuid PRIMARY KEY
+          source_id bigint NOT NULL,
+          entity_evidence_id uuid NOT NULL,
+          PRIMARY KEY (source_id, entity_evidence_id)
         ) ON COMMIT DROP
         """
     )
     where = []
     params: list[Any] = []
     if source is not None:
-        where.append('ee.source = %s')
+        where.append('ds.name = %s')
         params.append(source)
     if dataset is not None:
-        where.append('ee.dataset = %s')
+        where.append('d.name = %s')
         params.append(dataset)
     if unresolved_only:
         where.append(
@@ -246,8 +246,9 @@ def _create_entity_scope(
         sql.SQL(
             """
             LEFT JOIN {}.entity_evidence_resolution r
-              ON r.entity_evidence_id = ee.entity_evidence_id
-            LEFT JOIN {}.resolution_status rs
+              ON r.source_id = ee.source_id
+             AND r.entity_evidence_id = ee.entity_evidence_id
+            LEFT JOIN {}.vocab_resolution_status rs
               ON rs.resolution_status_id = r.status_id
             """
         ).format(sql.Identifier(schema), sql.Identifier(schema))
@@ -257,14 +258,24 @@ def _create_entity_scope(
     cur.execute(
         sql.SQL(
             """
-            INSERT INTO _entity_scope (entity_evidence_id)
-            SELECT ee.entity_evidence_id
+            INSERT INTO _entity_scope (source_id, entity_evidence_id)
+            SELECT ee.source_id, ee.entity_evidence_id
             FROM {}.entity_evidence ee
+            JOIN {}.data_source ds
+              ON ds.source_id = ee.source_id
+            JOIN {}.dataset d
+              ON d.dataset_id = ee.dataset_id
             {}
             {}
             ON CONFLICT DO NOTHING
             """
-        ).format(sql.Identifier(schema), join_sql, where_sql),
+        ).format(
+            sql.Identifier(schema),
+            sql.Identifier(schema),
+            sql.Identifier(schema),
+            join_sql,
+            where_sql,
+        ),
         params,
     )
     cur.execute('ANALYZE _entity_scope')
@@ -277,9 +288,10 @@ def _create_entity_keys(cur: psycopg2.extensions.cursor, schema: str) -> None:
             """
             CREATE TEMP TABLE _entity_key ON COMMIT DROP AS
             SELECT
+              ee.source_id,
               ee.entity_evidence_id,
-              ee.entity_type,
-              NULLIF(ee.taxonomy_id, '') AS taxonomy_id,
+              et.name AS vocab_entity_type,
+              ee.taxonomy_id,
               i.identifier_id,
               i.identifier_type_id AS key_identifier_type_id,
               it.name AS key_type,
@@ -287,12 +299,16 @@ def _create_entity_keys(cur: psycopg2.extensions.cursor, schema: str) -> None:
               i.value AS key_value
             FROM _entity_scope s
             JOIN {}.entity_evidence ee
-              ON ee.entity_evidence_id = s.entity_evidence_id
+              ON ee.source_id = s.source_id
+             AND ee.entity_evidence_id = s.entity_evidence_id
+            LEFT JOIN {}.vocab_entity_type et
+              ON et.entity_type_id = ee.entity_type_id
             JOIN {}.entity_evidence_identifier eei
-              ON eei.entity_evidence_id = ee.entity_evidence_id
+              ON eei.source_id = ee.source_id
+             AND eei.entity_evidence_id = ee.entity_evidence_id
             JOIN {}.identifier_evidence i
               ON i.identifier_id = eei.identifier_id
-            JOIN {}.identifier_type it
+            JOIN {}.vocab_identifier_type it
               ON it.identifier_type_id = i.identifier_type_id
             WHERE i.value IS NOT NULL
               AND i.value <> ''
@@ -302,12 +318,13 @@ def _create_entity_keys(cur: psycopg2.extensions.cursor, schema: str) -> None:
             sql.Identifier(schema),
             sql.Identifier(schema),
             sql.Identifier(schema),
+            sql.Identifier(schema),
         )
     )
     cur.execute(
         """
         CREATE INDEX ON _entity_key (
-          entity_type,
+          vocab_entity_type,
           key_identifier_type_id,
           key_value
         )
@@ -338,9 +355,10 @@ def _create_entity_groups(
             CREATE TEMP TABLE _entity_group ON COMMIT DROP AS
             WITH scoped_evidence AS (
               SELECT
+                ee.source_id,
                 ee.entity_evidence_id,
-                ee.entity_type,
-                NULLIF(ee.taxonomy_id, '') AS taxonomy_id,
+                et.name AS vocab_entity_type,
+                ee.taxonomy_id,
                 COALESCE(
                   array_agg(
                     DISTINCT k.identifier_id
@@ -350,17 +368,22 @@ def _create_entity_groups(
                 ) AS identifier_ids
               FROM _entity_scope s
               JOIN {}.entity_evidence ee
-                ON ee.entity_evidence_id = s.entity_evidence_id
+                ON ee.source_id = s.source_id
+               AND ee.entity_evidence_id = s.entity_evidence_id
+              LEFT JOIN {}.vocab_entity_type et
+                ON et.entity_type_id = ee.entity_type_id
               LEFT JOIN _entity_key k
-                ON k.entity_evidence_id = ee.entity_evidence_id
+                ON k.source_id = ee.source_id
+               AND k.entity_evidence_id = ee.entity_evidence_id
               GROUP BY
+                ee.source_id,
                 ee.entity_evidence_id,
-                ee.entity_type,
-                NULLIF(ee.taxonomy_id, '')
+                et.name,
+                ee.taxonomy_id
             ),
             grouped AS (
               SELECT DISTINCT
-                entity_type,
+                vocab_entity_type,
                 taxonomy_id,
                 identifier_ids
               FROM scoped_evidence
@@ -368,16 +391,16 @@ def _create_entity_groups(
             SELECT
               row_number() OVER (
                 ORDER BY
-                  entity_type NULLS LAST,
+                  vocab_entity_type NULLS LAST,
                   taxonomy_id NULLS LAST,
                   identifier_ids
               )::bigint AS entity_group_id,
-              entity_type,
+              vocab_entity_type,
               taxonomy_id,
               identifier_ids
             FROM grouped
             """
-        ).format(sql.Identifier(schema))
+        ).format(sql.Identifier(schema), sql.Identifier(schema))
     )
     cur.execute(
         """
@@ -389,7 +412,7 @@ def _create_entity_groups(
     cur.execute(
         """
         CREATE UNIQUE INDEX ON _entity_group (
-          entity_type,
+          vocab_entity_type,
           taxonomy_id,
           identifier_ids
         ) NULLS NOT DISTINCT
@@ -401,9 +424,10 @@ def _create_entity_groups(
             CREATE TEMP TABLE _entity_group_member ON COMMIT DROP AS
             WITH scoped_evidence AS (
               SELECT
+                ee.source_id,
                 ee.entity_evidence_id,
-                ee.entity_type,
-                NULLIF(ee.taxonomy_id, '') AS taxonomy_id,
+                et.name AS vocab_entity_type,
+                ee.taxonomy_id,
                 COALESCE(
                   array_agg(
                     DISTINCT k.identifier_id
@@ -413,28 +437,35 @@ def _create_entity_groups(
                 ) AS identifier_ids
               FROM _entity_scope s
               JOIN {}.entity_evidence ee
-                ON ee.entity_evidence_id = s.entity_evidence_id
+                ON ee.source_id = s.source_id
+               AND ee.entity_evidence_id = s.entity_evidence_id
+              LEFT JOIN {}.vocab_entity_type et
+                ON et.entity_type_id = ee.entity_type_id
               LEFT JOIN _entity_key k
-                ON k.entity_evidence_id = ee.entity_evidence_id
+                ON k.source_id = ee.source_id
+               AND k.entity_evidence_id = ee.entity_evidence_id
               GROUP BY
+                ee.source_id,
                 ee.entity_evidence_id,
-                ee.entity_type,
-                NULLIF(ee.taxonomy_id, '')
+                et.name,
+                ee.taxonomy_id
             )
             SELECT
+              se.source_id,
               se.entity_evidence_id,
               g.entity_group_id
             FROM scoped_evidence se
             JOIN _entity_group g
-              ON g.entity_type IS NOT DISTINCT FROM se.entity_type
+              ON g.vocab_entity_type IS NOT DISTINCT FROM se.vocab_entity_type
              AND g.taxonomy_id IS NOT DISTINCT FROM se.taxonomy_id
              AND g.identifier_ids = se.identifier_ids
             """
-        ).format(sql.Identifier(schema))
+        ).format(sql.Identifier(schema), sql.Identifier(schema))
     )
     cur.execute(
         """
         CREATE UNIQUE INDEX ON _entity_group_member (
+          source_id,
           entity_evidence_id
         )
         """
@@ -451,8 +482,9 @@ def _create_entity_groups(
         CREATE TEMP TABLE _entity_group_key ON COMMIT DROP AS
         SELECT DISTINCT
           gm.entity_group_id,
+          k.source_id,
           k.identifier_id,
-          k.entity_type,
+          k.vocab_entity_type,
           k.taxonomy_id,
           k.key_identifier_type_id,
           k.key_type,
@@ -460,7 +492,8 @@ def _create_entity_groups(
           k.key_value
         FROM _entity_group_member gm
         JOIN _entity_key k
-          ON k.entity_evidence_id = gm.entity_evidence_id
+          ON k.source_id = gm.source_id
+         AND k.entity_evidence_id = gm.entity_evidence_id
         """
     )
     cur.execute(
@@ -490,10 +523,10 @@ def _create_raw_group_candidate_table(cur: psycopg2.extensions.cursor) -> None:
         """
         CREATE TEMP TABLE _raw_group_resolution_candidate (
           entity_group_id bigint NOT NULL,
-          entity_type text NOT NULL,
+          vocab_entity_type text NOT NULL,
           id_type text NOT NULL,
           id text NOT NULL,
-          taxonomy_id text,
+          taxonomy_id bigint,
           resolver_source text,
           key_type text,
           mapping_type text
@@ -515,21 +548,21 @@ def _create_entity_group_taxonomy_conflict_table(
               k.entity_group_id,
               p.canonical_identifier,
               k.taxonomy_id AS evidence_taxonomy_id,
-              NULLIF(p.taxonomy_id, '') AS resolver_taxonomy_id
+              NULLIF(p.taxonomy_id, '')::bigint AS resolver_taxonomy_id
             FROM _entity_group_key k
             JOIN {}.resolver_protein_identifier_lookup p
               ON p.key_identifier_type_id = k.key_identifier_type_id
              AND p.key_value = k.key_value
             LEFT JOIN _raw_group_resolution_candidate rc
               ON rc.entity_group_id = k.entity_group_id
-            WHERE k.entity_type = ANY(%s)
+            WHERE k.vocab_entity_type = ANY(%s)
               AND rc.entity_group_id IS NULL
               AND k.key_identifier_type_id IS NOT NULL
               AND p.canonical_identifier IS NOT NULL
               AND p.canonical_identifier <> ''
               AND k.taxonomy_id IS NOT NULL
               AND NULLIF(p.taxonomy_id, '') IS NOT NULL
-              AND NULLIF(p.taxonomy_id, '') <> k.taxonomy_id
+              AND NULLIF(p.taxonomy_id, '')::bigint <> k.taxonomy_id
             """
         ).format(
             sql.Identifier(schema),
@@ -555,7 +588,7 @@ def _insert_group_protein_candidates(
             """
             INSERT INTO _raw_group_resolution_candidate (
               entity_group_id,
-              entity_type,
+              vocab_entity_type,
               id_type,
               id,
               taxonomy_id,
@@ -565,10 +598,10 @@ def _insert_group_protein_candidates(
             )
             SELECT DISTINCT
               k.entity_group_id,
-              k.entity_type,
+              k.vocab_entity_type,
               canonical_type.name,
               p.canonical_identifier,
-              COALESCE(NULLIF(p.taxonomy_id, ''), k.taxonomy_id),
+              COALESCE(NULLIF(p.taxonomy_id, '')::bigint, k.taxonomy_id),
               NULL::text,
               k.key_type,
               NULL::text
@@ -576,15 +609,15 @@ def _insert_group_protein_candidates(
             JOIN {}.resolver_protein_identifier_lookup p
               ON p.key_identifier_type_id = k.key_identifier_type_id
              AND p.key_value = k.key_value
-            JOIN {}.identifier_type canonical_type
+            JOIN {}.vocab_identifier_type canonical_type
               ON canonical_type.identifier_type_id =
                  p.canonical_identifier_type_id
-            WHERE k.entity_type = ANY(%s)
+            WHERE k.vocab_entity_type = ANY(%s)
               AND k.key_identifier_type_id IS NOT NULL
               AND p.canonical_identifier IS NOT NULL
               AND p.canonical_identifier <> ''
               AND k.taxonomy_id IS NOT NULL
-              AND NULLIF(p.taxonomy_id, '') = k.taxonomy_id
+              AND NULLIF(p.taxonomy_id, '')::bigint = k.taxonomy_id
             """
         ).format(
             sql.Identifier(schema),
@@ -603,7 +636,7 @@ def _insert_group_chemical_candidates(
             """
             INSERT INTO _raw_group_resolution_candidate (
               entity_group_id,
-              entity_type,
+              vocab_entity_type,
               id_type,
               id,
               taxonomy_id,
@@ -613,7 +646,7 @@ def _insert_group_chemical_candidates(
             )
             SELECT DISTINCT
               k.entity_group_id,
-              k.entity_type,
+              k.vocab_entity_type,
               canonical_type.name,
               c.canonical_identifier,
               k.taxonomy_id,
@@ -624,10 +657,10 @@ def _insert_group_chemical_candidates(
             JOIN {}.resolver_chemical_identifier_lookup c
               ON c.key_identifier_type_id = k.key_identifier_type_id
              AND c.key_value = k.key_value
-            JOIN {}.identifier_type canonical_type
+            JOIN {}.vocab_identifier_type canonical_type
               ON canonical_type.identifier_type_id =
                  c.canonical_identifier_type_id
-            WHERE k.entity_type = ANY(%s)
+            WHERE k.vocab_entity_type = ANY(%s)
               AND k.key_identifier_type_id IS NOT NULL
               AND c.canonical_identifier IS NOT NULL
               AND c.canonical_identifier <> ''
@@ -644,7 +677,7 @@ def _insert_group_standard_inchi_key_identity_candidates(
         """
         INSERT INTO _raw_group_resolution_candidate (
           entity_group_id,
-          entity_type,
+          vocab_entity_type,
           id_type,
           id,
           taxonomy_id,
@@ -654,7 +687,7 @@ def _insert_group_standard_inchi_key_identity_candidates(
         )
         SELECT
           entity_group_id,
-          entity_type,
+          vocab_entity_type,
           %s,
           key_value,
           taxonomy_id,
@@ -662,7 +695,7 @@ def _insert_group_standard_inchi_key_identity_candidates(
           key_type,
           'standard_inchi_key_identity'
         FROM _entity_group_key
-        WHERE entity_type = ANY(%s)
+        WHERE vocab_entity_type = ANY(%s)
           AND resolver_key_type = %s
           AND key_value IS NOT NULL
           AND key_value <> ''
@@ -682,7 +715,7 @@ def _aggregate_group_candidates(cur: psycopg2.extensions.cursor) -> None:
         CREATE TEMP TABLE _entity_group_resolution_candidate ON COMMIT DROP AS
         SELECT
           entity_group_id,
-          entity_type,
+          vocab_entity_type,
           id_type,
           id,
           md5(id) AS id_hash,
@@ -703,7 +736,7 @@ def _aggregate_group_candidates(cur: psycopg2.extensions.cursor) -> None:
         FROM _raw_group_resolution_candidate
         GROUP BY
           entity_group_id,
-          entity_type,
+          vocab_entity_type,
           id_type,
           id
         """
@@ -712,7 +745,7 @@ def _aggregate_group_candidates(cur: psycopg2.extensions.cursor) -> None:
         """
         CREATE UNIQUE INDEX ON _entity_group_resolution_candidate (
           entity_group_id,
-          entity_type,
+          vocab_entity_type,
           id_type,
           id_hash
         )
@@ -768,7 +801,7 @@ def _create_entity_group_resolution_stage(
         singleton AS (
           SELECT
             c.entity_group_id,
-            MAX(c.entity_type) AS entity_type,
+            MAX(c.vocab_entity_type) AS vocab_entity_type,
             MAX(c.id_type) AS id_type,
             MAX(c.id) AS id,
             MAX(c.id_hash) AS id_hash,
@@ -784,8 +817,8 @@ def _create_entity_group_resolution_stage(
           SELECT
             g.entity_group_id,
             md5(
-              COALESCE(g.entity_type, '') || '|' ||
-              COALESCE(g.taxonomy_id, '') || '|' ||
+              COALESCE(g.vocab_entity_type, '') || '|' ||
+              COALESCE(g.taxonomy_id::text, '') || '|' ||
               COALESCE(
                 string_agg(
                   k.key_type || '=' || k.key_value,
@@ -798,7 +831,7 @@ def _create_entity_group_resolution_stage(
           FROM _entity_group g
           LEFT JOIN _entity_group_key k
             ON k.entity_group_id = g.entity_group_id
-          GROUP BY g.entity_group_id, g.entity_type, g.taxonomy_id
+          GROUP BY g.entity_group_id, g.vocab_entity_type, g.taxonomy_id
         ),
         taxonomy_conflicts AS (
           SELECT entity_group_id, COUNT(*) AS conflict_count
@@ -808,7 +841,7 @@ def _create_entity_group_resolution_stage(
         SELECT
           g.entity_group_id,
           CASE
-            WHEN g.entity_type IS NULL
+            WHEN g.vocab_entity_type IS NULL
               THEN 'unsupported'
             WHEN cp.entity_group_id IS NULL
               THEN 'unresolved'
@@ -818,16 +851,16 @@ def _create_entity_group_resolution_stage(
           END AS status,
           CASE
             WHEN si.entity_group_id IS NOT NULL
-              THEN si.entity_type
-            WHEN g.entity_type IS NOT NULL
-              THEN g.entity_type
+              THEN si.vocab_entity_type
+            WHEN g.vocab_entity_type IS NOT NULL
+              THEN g.vocab_entity_type
             ELSE NULL
-          END AS entity_type,
+          END AS vocab_entity_type,
           CASE
             WHEN si.entity_group_id IS NOT NULL
               THEN si.id_type
             WHEN si.entity_group_id IS NULL
-             AND g.entity_type IS NOT NULL
+             AND g.vocab_entity_type IS NOT NULL
               THEN %s
             ELSE NULL
           END AS id_type,
@@ -835,7 +868,7 @@ def _create_entity_group_resolution_stage(
             WHEN si.entity_group_id IS NOT NULL
               THEN si.id
             WHEN si.entity_group_id IS NULL
-             AND g.entity_type IS NOT NULL
+             AND g.vocab_entity_type IS NOT NULL
               THEN fb.id
             ELSE NULL
           END AS id,
@@ -843,12 +876,12 @@ def _create_entity_group_resolution_stage(
             WHEN si.entity_group_id IS NOT NULL
               THEN si.taxonomy_id
             WHEN si.entity_group_id IS NULL
-             AND g.entity_type IS NOT NULL
+             AND g.vocab_entity_type IS NOT NULL
               THEN g.taxonomy_id
             ELSE NULL
           END AS taxonomy_id,
           CASE
-            WHEN g.entity_type IS NULL
+            WHEN g.vocab_entity_type IS NULL
               THEN 'missing_entity_type'
             WHEN cp.entity_group_id IS NULL
              AND COALESCE(tc.conflict_count, 0) > 0
@@ -897,9 +930,10 @@ def _project_entity_group_resolution_stage(
         """
         CREATE TEMP TABLE _entity_resolution_stage ON COMMIT DROP AS
         SELECT
+          gm.source_id,
           gm.entity_evidence_id,
           gr.status,
-          gr.entity_type,
+          gr.vocab_entity_type,
           gr.id_type,
           gr.id,
           md5(gr.id) AS id_hash,
@@ -913,6 +947,7 @@ def _project_entity_group_resolution_stage(
     cur.execute(
         """
         CREATE UNIQUE INDEX ON _entity_resolution_stage (
+          source_id,
           entity_evidence_id
         )
         """
@@ -920,7 +955,7 @@ def _project_entity_group_resolution_stage(
     cur.execute(
         """
         CREATE INDEX ON _entity_resolution_stage (
-          entity_type,
+          vocab_entity_type,
           md5(id)
         )
         """
@@ -942,10 +977,10 @@ def _insert_entities(cur: psycopg2.extensions.cursor, schema: str) -> None:
                   ELSE 2::smallint
                 END AS entity_resolution_status_id
               FROM _entity_resolution_stage st
-              LEFT JOIN {}.identifier_type it
+              LEFT JOIN {}.vocab_identifier_type it
                 ON it.name = st.id_type
-              JOIN {}.entity_type et
-                ON et.name = st.entity_type
+              JOIN {}.vocab_entity_type et
+                ON et.name = st.vocab_entity_type
             )
             INSERT INTO {}.entity (
               entity_type_id,
@@ -1001,10 +1036,10 @@ def _insert_scoped_entity_types(
     cur.execute(
         sql.SQL(
             """
-            INSERT INTO {}.entity_type (name)
-            SELECT DISTINCT entity_type
+            INSERT INTO {}.vocab_entity_type (name)
+            SELECT DISTINCT vocab_entity_type
             FROM _entity_resolution_stage
-            WHERE entity_type IS NOT NULL
+            WHERE vocab_entity_type IS NOT NULL
             ON CONFLICT (name) DO NOTHING
             """
         ).format(sql.Identifier(schema))
@@ -1019,6 +1054,7 @@ def _upsert_entity_resolution(
         sql.SQL(
             """
             INSERT INTO {}.entity_evidence_resolution (
+              source_id,
               entity_evidence_id,
               status_id,
               entity_id,
@@ -1026,27 +1062,28 @@ def _upsert_entity_resolution(
               resolved_at
             )
             SELECT
+              st.source_id,
               st.entity_evidence_id,
               rs.resolution_status_id,
               e.entity_id,
               rr.resolution_reason_id,
               now()
             FROM _entity_resolution_stage st
-            LEFT JOIN {}.identifier_type it
+            LEFT JOIN {}.vocab_identifier_type it
               ON it.name = st.id_type
-            JOIN {}.resolution_status rs
+            JOIN {}.vocab_resolution_status rs
               ON rs.name = st.status
-            LEFT JOIN {}.resolution_reason rr
+            LEFT JOIN {}.vocab_resolution_reason rr
               ON rr.name = st.reason
-            LEFT JOIN {}.entity_type et
-              ON et.name = st.entity_type
+            LEFT JOIN {}.vocab_entity_type et
+              ON et.name = st.vocab_entity_type
             LEFT JOIN {}.entity e
               ON e.entity_type_id = et.entity_type_id
              AND e.taxonomy_id IS NOT DISTINCT FROM st.taxonomy_id
              AND e.canonical_identifier_type_id IS NOT DISTINCT FROM
                  it.identifier_type_id
              AND e.canonical_identifier = st.id
-            ON CONFLICT (entity_evidence_id)
+            ON CONFLICT (source_id, entity_evidence_id)
             DO UPDATE SET
               status_id = EXCLUDED.status_id,
               entity_id = EXCLUDED.entity_id,
@@ -1057,38 +1094,6 @@ def _upsert_entity_resolution(
             sql.Identifier(schema),
             sql.Identifier(schema),
             sql.Identifier(schema),
-            sql.Identifier(schema),
-            sql.Identifier(schema),
-            sql.Identifier(schema),
-        )
-    )
-
-
-def _insert_entity_annotations(
-    cur: psycopg2.extensions.cursor,
-    schema: str,
-) -> None:
-    cur.execute(
-        sql.SQL(
-            """
-            INSERT INTO {}.entity_annotation (
-              entity_id,
-              annotation_key,
-              scope
-            )
-            SELECT DISTINCT
-              er.entity_id,
-              eea.annotation_key,
-              eea.scope
-            FROM _entity_scope es
-            JOIN {}.entity_evidence_resolution er
-              ON er.entity_evidence_id = es.entity_evidence_id
-            JOIN {}.entity_evidence_annotation eea
-              ON eea.entity_evidence_id = es.entity_evidence_id
-            WHERE er.entity_id IS NOT NULL
-            ON CONFLICT DO NOTHING
-            """
-        ).format(
             sql.Identifier(schema),
             sql.Identifier(schema),
             sql.Identifier(schema),
@@ -1107,10 +1112,10 @@ def _create_relation_scope(
     where = []
     params: list[Any] = []
     if source is not None:
-        where.append('re.source = %s')
+        where.append('ds.name = %s')
         params.append(source)
     if dataset is not None:
-        where.append('re.dataset = %s')
+        where.append('d.name = %s')
         params.append(dataset)
     where_sql = (
         sql.SQL('WHERE ')
@@ -1122,14 +1127,25 @@ def _create_relation_scope(
         sql.SQL(
             """
             CREATE TEMP TABLE _relation_scope ON COMMIT DROP AS
-            SELECT re.relation_evidence_id
+            SELECT re.source_id, re.relation_evidence_id
             FROM {}.relation_evidence re
+            JOIN {}.data_source ds
+              ON ds.source_id = re.source_id
+            JOIN {}.dataset d
+              ON d.dataset_id = re.dataset_id
             {}
             """
-        ).format(sql.Identifier(schema), where_sql),
+        ).format(
+            sql.Identifier(schema),
+            sql.Identifier(schema),
+            sql.Identifier(schema),
+            where_sql,
+        ),
         params,
     )
-    cur.execute('CREATE UNIQUE INDEX ON _relation_scope (relation_evidence_id)')
+    cur.execute(
+        'CREATE UNIQUE INDEX ON _relation_scope (source_id, relation_evidence_id)'
+    )
     cur.execute('ANALYZE _relation_scope')
 
 
@@ -1143,13 +1159,14 @@ def _create_relation_endpoint(
             """
             CREATE TEMP TABLE _relation_endpoint ON COMMIT DROP AS
             SELECT
+              re.source_id,
               re.relation_evidence_id,
               re.subject_entity_evidence_id,
               re.subject_entity_id AS direct_subject_entity_id,
               re.object_entity_evidence_id,
               re.object_entity_id AS direct_object_entity_id,
-              re.predicate,
-              re.relation_category,
+              re.predicate_id,
+              re.relation_category_id,
               CASE
                 WHEN re.subject_entity_id IS NOT NULL THEN 'resolved'
                 ELSE srs.name
@@ -1162,14 +1179,17 @@ def _create_relation_endpoint(
               COALESCE(re.object_entity_id, orr.entity_id) AS object_entity_id
             FROM _relation_scope rs
             JOIN {}.relation_evidence re
-              ON re.relation_evidence_id = rs.relation_evidence_id
+              ON re.source_id = rs.source_id
+             AND re.relation_evidence_id = rs.relation_evidence_id
             LEFT JOIN {}.entity_evidence_resolution sr
-              ON sr.entity_evidence_id = re.subject_entity_evidence_id
-            LEFT JOIN {}.resolution_status srs
+              ON sr.source_id = re.source_id
+             AND sr.entity_evidence_id = re.subject_entity_evidence_id
+            LEFT JOIN {}.vocab_resolution_status srs
               ON srs.resolution_status_id = sr.status_id
             LEFT JOIN {}.entity_evidence_resolution orr
-              ON orr.entity_evidence_id = re.object_entity_evidence_id
-            LEFT JOIN {}.resolution_status ors
+              ON orr.source_id = re.source_id
+             AND orr.entity_evidence_id = re.object_entity_evidence_id
+            LEFT JOIN {}.vocab_resolution_status ors
               ON ors.resolution_status_id = orr.status_id
             """
         ).format(
@@ -1184,9 +1204,9 @@ def _create_relation_endpoint(
         """
         CREATE INDEX ON _relation_endpoint (
           subject_entity_id,
-          predicate,
+          predicate_id,
           object_entity_id,
-          relation_category
+          relation_category_id
         )
         """
     )
@@ -1205,7 +1225,8 @@ def _delete_scoped_relation_evidence(
             SELECT DISTINCT rer.relation_id
             FROM {}.relation_evidence_relation rer
             JOIN _relation_scope rs
-              ON rs.relation_evidence_id = rer.relation_evidence_id
+              ON rs.source_id = rer.source_id
+             AND rs.relation_evidence_id = rer.relation_evidence_id
             """
         ).format(sql.Identifier(schema))
     )
@@ -1221,7 +1242,8 @@ def _delete_scoped_relation_evidence(
             """
             DELETE FROM {}.relation_evidence_relation rer
             USING _relation_scope rs
-            WHERE rer.relation_evidence_id = rs.relation_evidence_id
+            WHERE rer.source_id = rs.source_id
+              AND rer.relation_evidence_id = rs.relation_evidence_id
             """
         ).format(sql.Identifier(schema))
     )
@@ -1236,23 +1258,23 @@ def _insert_relations(
             """
             INSERT INTO {}.relation (
               subject_entity_id,
-              predicate,
+              predicate_id,
               object_entity_id,
-              relation_category
+              relation_category_id
             )
             SELECT DISTINCT
               subject_entity_id,
-              predicate,
+              predicate_id,
               object_entity_id,
-              relation_category
+              relation_category_id
             FROM _relation_endpoint
             WHERE subject_entity_id IS NOT NULL
               AND object_entity_id IS NOT NULL
             ON CONFLICT (
               subject_entity_id,
-              predicate,
+              predicate_id,
               object_entity_id,
-              relation_category
+              relation_category_id
             )
             DO NOTHING
             """
@@ -1270,14 +1292,15 @@ def _insert_relation_evidence_links(
             """
             CREATE TEMP TABLE _relation_link ON COMMIT DROP AS
             SELECT
+              ep.source_id,
               r.relation_id,
               ep.relation_evidence_id
             FROM _relation_endpoint ep
             JOIN {}.relation r
               ON r.subject_entity_id = ep.subject_entity_id
-             AND r.predicate = ep.predicate
+             AND r.predicate_id = ep.predicate_id
              AND r.object_entity_id = ep.object_entity_id
-             AND r.relation_category IS NOT DISTINCT FROM ep.relation_category
+             AND r.relation_category_id IS NOT DISTINCT FROM ep.relation_category_id
             WHERE ep.subject_entity_id IS NOT NULL
               AND ep.object_entity_id IS NOT NULL
             """
@@ -1286,6 +1309,7 @@ def _insert_relation_evidence_links(
     cur.execute(
         """
         CREATE UNIQUE INDEX ON _relation_link (
+          source_id,
           relation_evidence_id
         )
         """
@@ -1295,64 +1319,18 @@ def _insert_relation_evidence_links(
         sql.SQL(
             """
             INSERT INTO {}.relation_evidence_relation (
+              source_id,
               relation_id,
               relation_evidence_id
             )
             SELECT
+              source_id,
               relation_id,
               relation_evidence_id
             FROM _relation_link
             ON CONFLICT DO NOTHING
             """
         ).format(sql.Identifier(schema))
-    )
-
-
-def _refresh_relation_annotations(
-    cur: psycopg2.extensions.cursor,
-    schema: str,
-) -> None:
-    cur.execute(
-        """
-        INSERT INTO _affected_relation (relation_id)
-        SELECT DISTINCT relation_id
-        FROM _relation_link
-        ON CONFLICT DO NOTHING
-        """
-    )
-    cur.execute(
-        sql.SQL(
-            """
-            DELETE FROM {}.relation_annotation ra
-            USING _affected_relation ar
-            WHERE ra.relation_id = ar.relation_id
-            """
-        ).format(sql.Identifier(schema))
-    )
-    cur.execute(
-        sql.SQL(
-            """
-            INSERT INTO {}.relation_annotation (
-              relation_id,
-              annotation_key,
-              scope
-            )
-            SELECT
-              rer.relation_id,
-              rea.annotation_key,
-              rea.scope
-            FROM {}.relation_evidence_relation rer
-            JOIN _affected_relation ar
-              ON ar.relation_id = rer.relation_id
-            JOIN {}.relation_evidence_annotation rea
-              ON rea.relation_evidence_id = rer.relation_evidence_id
-            ON CONFLICT DO NOTHING
-            """
-        ).format(
-            sql.Identifier(schema),
-            sql.Identifier(schema),
-            sql.Identifier(schema),
-        )
     )
 
 
@@ -1389,7 +1367,8 @@ def _relation_mapping_counts(
               COUNT(*) - COUNT(rer.relation_evidence_id) AS unmapped
             FROM _relation_scope rs
             LEFT JOIN {}.relation_evidence_relation rer
-              ON rer.relation_evidence_id = rs.relation_evidence_id
+              ON rer.source_id = rs.source_id
+             AND rer.relation_evidence_id = rs.relation_evidence_id
             """
         ).format(sql.Identifier(schema))
     )
@@ -1407,7 +1386,7 @@ def _status_counts(
             """
             SELECT rs.name, COUNT(*)
             FROM {}.{} t
-            JOIN {}.resolution_status rs
+            JOIN {}.vocab_resolution_status rs
               ON rs.resolution_status_id = t.status_id
             GROUP BY rs.name
             ORDER BY rs.name

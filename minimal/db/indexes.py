@@ -15,13 +15,13 @@ def create_secondary_indexes(
         sql.SQL(
             """
             CREATE INDEX IF NOT EXISTS entity_evidence_source_dataset_row_idx
-            ON {}.entity_evidence (source, dataset, row_id)
+            ON {}.entity_evidence (source_id, dataset_id, row_id)
             """
         ).format(schema_id),
         sql.SQL(
             """
             CREATE INDEX IF NOT EXISTS entity_evidence_type_taxonomy_idx
-            ON {}.entity_evidence (entity_type, taxonomy_id)
+            ON {}.entity_evidence (entity_type_id, taxonomy_id)
             """
         ).format(schema_id),
         sql.SQL(
@@ -45,31 +45,31 @@ def create_secondary_indexes(
         sql.SQL(
             """
             CREATE INDEX IF NOT EXISTS relation_predicate_category_idx
-            ON {}.relation (predicate, relation_category)
+            ON {}.relation (predicate_id, relation_category_id)
             """
         ).format(schema_id),
         sql.SQL(
             """
             CREATE INDEX IF NOT EXISTS relation_category_subject_idx
-            ON {}.relation (relation_category, subject_entity_id)
+            ON {}.relation (relation_category_id, subject_entity_id)
             """
         ).format(schema_id),
         sql.SQL(
             """
             CREATE INDEX IF NOT EXISTS relation_category_object_idx
-            ON {}.relation (relation_category, object_entity_id)
+            ON {}.relation (relation_category_id, object_entity_id)
             """
         ).format(schema_id),
         sql.SQL(
             """
             CREATE INDEX IF NOT EXISTS relation_evidence_predicate_category_idx
-            ON {}.relation_evidence (predicate, relation_category)
+            ON {}.relation_evidence (predicate_id, relation_category_id)
             """
         ).format(schema_id),
         sql.SQL(
             """
             CREATE INDEX IF NOT EXISTS relation_evidence_source_dataset_row_idx
-            ON {}.relation_evidence (source, dataset, row_id)
+            ON {}.relation_evidence (source_id, dataset_id, row_id)
             """
         ).format(schema_id),
         sql.SQL(
@@ -86,20 +86,8 @@ def create_secondary_indexes(
         ).format(schema_id),
         sql.SQL(
             """
-            CREATE INDEX IF NOT EXISTS relation_annotation_annotation_key_idx
-            ON {}.relation_annotation (annotation_key)
-            """
-        ).format(schema_id),
-        sql.SQL(
-            """
             CREATE INDEX IF NOT EXISTS entity_evidence_annotation_annotation_key_idx
             ON {}.entity_evidence_annotation (annotation_key)
-            """
-        ).format(schema_id),
-        sql.SQL(
-            """
-            CREATE INDEX IF NOT EXISTS entity_annotation_annotation_key_idx
-            ON {}.entity_annotation (annotation_key)
             """
         ).format(schema_id),
     ]

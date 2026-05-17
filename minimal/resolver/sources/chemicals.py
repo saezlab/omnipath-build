@@ -168,6 +168,7 @@ def _chemical_identifier_rows(
     sources: Iterable[str],
     max_records: int | None = None,
     pubchem_url: str | Path | None = None,
+    chemical_lookup_path: str | Path | None = None,
 ) -> Iterable[dict]:
     for source in _validate_chemical_sources(sources):
         if source == 'pubchem':
@@ -175,7 +176,12 @@ def _chemical_identifier_rows(
                 iter_pubchem_compound_rows,
             )
 
-            rows = iter_pubchem_compound_rows(pubchem_url)
+            rows = iter_pubchem_compound_rows(
+                pubchem_url,
+                filter_inchikeys=_chemical_filter_inchikeys(
+                    chemical_lookup_path,
+                ),
+            )
             emitted = 0
             for row in rows:
                 yield row
@@ -207,6 +213,8 @@ def build_chemical_identifier_lookup(
             sources,
             max_records=max_records,
             pubchem_url=pubchem_url,
+            chemical_lookup_path=Path('minimal/data/chemicals')
+            / CHEMICAL_IDENTIFIER_LOOKUP_OUTPUT_FILENAME,
         )
     )
     if not rows:
@@ -229,11 +237,13 @@ def materialize_chemical_sources(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     activate_raw_download_data_dir()
+    chemical_lookup_path = output_dir / CHEMICAL_IDENTIFIER_LOOKUP_OUTPUT_FILENAME
     lookup, identifier_types = _normalize_chemical_identifier_lookup(
         _chemical_identifier_rows(
             selected,
             max_records=max_records,
             pubchem_url=pubchem_url,
+            chemical_lookup_path=chemical_lookup_path,
         )
     )
     lookup.write_parquet(output_dir / CHEMICAL_IDENTIFIER_LOOKUP_OUTPUT_FILENAME)
@@ -243,6 +253,68 @@ def materialize_chemical_sources(
         'chemical_identifier_lookup_rows': lookup.height,
         'identifier_type_rows': identifier_types.height,
     }
+
+
+def _chemical_filter_inchikeys(
+    lookup_path: str | Path | None,
+) -> frozenset[str] | None:
+    path = Path(lookup_path) if lookup_path is not None else None
+    if path is None or not path.exists():
+        fallback = Path('minimal/data/chemicals') / (
+            CHEMICAL_IDENTIFIER_LOOKUP_OUTPUT_FILENAME
+        )
+        path = fallback if fallback.exists() else None
+    if path is None:
+        return None
+
+    scan = pl.scan_parquet(path)
+    columns = set(scan.collect_schema().names())
+    if {'source', 'standard_inchi_key'} <= columns:
+        values = (
+            scan.filter(
+                pl.col('source').str.to_lowercase().is_in(['chebi', 'hmdb'])
+                & pl.col('standard_inchi_key').is_not_null()
+                & (pl.col('standard_inchi_key') != '')
+            )
+            .select('standard_inchi_key')
+            .unique()
+            .collect()
+            .get_column('standard_inchi_key')
+            .to_list()
+        )
+        return frozenset(values)
+    if {'key_identifier_type_id', 'canonical_identifier'} <= columns:
+        identifier_type_path = path.with_name(IDENTIFIER_TYPE_OUTPUT_FILENAME)
+        if not identifier_type_path.exists():
+            return None
+        type_ids = (
+            pl.scan_parquet(identifier_type_path)
+            .filter(
+                pl.col('name')
+                .str.to_lowercase()
+                .str.split(':')
+                .list.first()
+                .is_in(['chebi', 'hmdb'])
+            )
+            .select('identifier_type_id')
+            .collect()
+            .get_column('identifier_type_id')
+            .to_list()
+        )
+        values = (
+            scan.filter(
+                pl.col('key_identifier_type_id').is_in(type_ids)
+                & pl.col('canonical_identifier').is_not_null()
+                & (pl.col('canonical_identifier') != '')
+            )
+            .select('canonical_identifier')
+            .unique()
+            .collect()
+            .get_column('canonical_identifier')
+            .to_list()
+        )
+        return frozenset(values)
+    return None
 
 
 def _normalize_chemical_identifier_lookup(

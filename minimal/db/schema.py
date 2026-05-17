@@ -25,6 +25,8 @@ CONTENT_TABLES: tuple[str, ...] = (
     'identifier_evidence',
     'entity',
     'resources',
+    'dataset',
+    'data_source',
 )
 
 
@@ -68,11 +70,13 @@ def ensure_schema(
             )
         )
 
+        log_step('rename legacy vocabulary tables')
+        _rename_legacy_vocab_tables(cur, schema)
         log_step('create identifier type table')
         cur.execute(
             sql.SQL(
                 """
-                CREATE TABLE IF NOT EXISTS {}.identifier_type (
+                CREATE TABLE IF NOT EXISTS {}.vocab_identifier_type (
                   identifier_type_id bigint PRIMARY KEY,
                   name text NOT NULL UNIQUE
                 )
@@ -108,7 +112,7 @@ def ensure_schema(
                 CREATE TABLE IF NOT EXISTS {}.identifier_evidence (
                   identifier_id uuid PRIMARY KEY,
                   identifier_type_id bigint NOT NULL
-                    REFERENCES {}.identifier_type(identifier_type_id),
+                    REFERENCES {}.vocab_identifier_type(identifier_type_id),
                   value text NOT NULL
                 )
                 """
@@ -116,24 +120,44 @@ def ensure_schema(
         )
         log_step('ensure identifier evidence shape')
         _ensure_identifier_evidence_key(cur, schema)
+        log_step('create normalized dimension tables')
+        _ensure_evidence_dimension_tables(cur, schema)
         log_step('create entity_evidence table')
         cur.execute(
             sql.SQL(
                 """
                 CREATE TABLE IF NOT EXISTS {}.entity_evidence (
-                  entity_evidence_id uuid PRIMARY KEY,
-                  source text NOT NULL,
-                  dataset text NOT NULL,
+                  source_id bigint NOT NULL
+                    REFERENCES {}.data_source(source_id),
+                  entity_evidence_id uuid NOT NULL,
+                  dataset_id bigint NOT NULL
+                    REFERENCES {}.dataset(dataset_id),
                   row_id bigint NOT NULL,
-                  snapshot_id text,
-                  occurrence_id text NOT NULL,
-                  parent_entity_evidence_id uuid
-                    REFERENCES {}.entity_evidence(entity_evidence_id),
-                  entity_role text NOT NULL,
-                  entity_type text,
-                  taxonomy_id text,
-                  UNIQUE (source, dataset, row_id, occurrence_id)
-                )
+                  parent_entity_evidence_id uuid,
+                  entity_role_id smallint NOT NULL
+                    REFERENCES {}.vocab_entity_role(entity_role_id),
+                  entity_type_id bigint
+                    REFERENCES {}.vocab_entity_type(entity_type_id),
+                  taxonomy_id bigint,
+                  PRIMARY KEY (source_id, entity_evidence_id),
+                  FOREIGN KEY (source_id, parent_entity_evidence_id)
+                    REFERENCES {}.entity_evidence(source_id, entity_evidence_id)
+                ) PARTITION BY LIST (source_id)
+                """
+            ).format(
+                sql.Identifier(schema),
+                sql.Identifier(schema),
+                sql.Identifier(schema),
+                sql.Identifier(schema),
+                sql.Identifier(schema),
+                sql.Identifier(schema),
+            )
+        )
+        cur.execute(
+            sql.SQL(
+                """
+                CREATE TABLE IF NOT EXISTS {}.entity_evidence_default
+                PARTITION OF {}.entity_evidence DEFAULT
                 """
             ).format(sql.Identifier(schema), sql.Identifier(schema))
         )
@@ -142,39 +166,52 @@ def ensure_schema(
             sql.SQL(
                 """
                 CREATE TABLE IF NOT EXISTS {}.entity_evidence_identifier (
-                  entity_evidence_id uuid NOT NULL
-                    REFERENCES {}.entity_evidence(entity_evidence_id),
+                  source_id bigint NOT NULL
+                    REFERENCES {}.data_source(source_id),
+                  entity_evidence_id uuid NOT NULL,
                   identifier_id uuid NOT NULL
                     REFERENCES {}.identifier_evidence(identifier_id),
-                  PRIMARY KEY (entity_evidence_id, identifier_id)
-                )
+                  PRIMARY KEY (source_id, entity_evidence_id, identifier_id),
+                  FOREIGN KEY (source_id, entity_evidence_id)
+                    REFERENCES {}.entity_evidence(source_id, entity_evidence_id)
+                    ON DELETE CASCADE
+                ) PARTITION BY LIST (source_id)
                 """
             ).format(
                 sql.Identifier(schema),
                 sql.Identifier(schema),
                 sql.Identifier(schema),
+                sql.Identifier(schema),
             )
+        )
+        cur.execute(
+            sql.SQL(
+                """
+                CREATE TABLE IF NOT EXISTS {}.entity_evidence_identifier_default
+                PARTITION OF {}.entity_evidence_identifier DEFAULT
+                """
+            ).format(sql.Identifier(schema), sql.Identifier(schema))
         )
         log_step('create relation_evidence table')
         cur.execute(
             sql.SQL(
                 """
                 CREATE TABLE IF NOT EXISTS {}.relation_evidence (
-                  relation_evidence_id uuid PRIMARY KEY,
-                  source text NOT NULL,
-                  dataset text NOT NULL,
+                  source_id bigint NOT NULL
+                    REFERENCES {}.data_source(source_id),
+                  relation_evidence_id uuid NOT NULL,
+                  dataset_id bigint NOT NULL
+                    REFERENCES {}.dataset(dataset_id),
                   row_id bigint NOT NULL,
-                  snapshot_id text,
-                  relation_occurrence_id text NOT NULL,
-                  subject_entity_evidence_id uuid
-                    REFERENCES {}.entity_evidence(entity_evidence_id),
+                  subject_entity_evidence_id uuid,
                   subject_entity_id bigint,
-                  predicate text NOT NULL,
-                  object_entity_evidence_id uuid
-                    REFERENCES {}.entity_evidence(entity_evidence_id),
+                  predicate_id bigint NOT NULL
+                    REFERENCES {}.vocab_relation_predicate(relation_predicate_id),
+                  object_entity_evidence_id uuid,
                   object_entity_id bigint,
-                  relation_category text NOT NULL,
-                  UNIQUE (source, dataset, row_id, relation_occurrence_id),
+                  relation_category_id bigint NOT NULL
+                    REFERENCES {}.vocab_relation_category(relation_category_id),
+                  PRIMARY KEY (source_id, relation_evidence_id),
                   CHECK (
                     (subject_entity_evidence_id IS NOT NULL)::int
                     + (subject_entity_id IS NOT NULL)::int
@@ -184,14 +221,31 @@ def ensure_schema(
                     (object_entity_evidence_id IS NOT NULL)::int
                     + (object_entity_id IS NOT NULL)::int
                     = 1
-                  )
-                )
+                  ),
+                  FOREIGN KEY (source_id, subject_entity_evidence_id)
+                    REFERENCES {}.entity_evidence(source_id, entity_evidence_id),
+                  FOREIGN KEY (source_id, object_entity_evidence_id)
+                    REFERENCES {}.entity_evidence(source_id, entity_evidence_id)
+                ) PARTITION BY LIST (source_id)
                 """
             ).format(
                 sql.Identifier(schema),
                 sql.Identifier(schema),
                 sql.Identifier(schema),
+                sql.Identifier(schema),
+                sql.Identifier(schema),
+                sql.Identifier(schema),
+                sql.Identifier(schema),
+                sql.Identifier(schema),
             )
+        )
+        cur.execute(
+            sql.SQL(
+                """
+                CREATE TABLE IF NOT EXISTS {}.relation_evidence_default
+                PARTITION OF {}.relation_evidence DEFAULT
+                """
+            ).format(sql.Identifier(schema), sql.Identifier(schema))
         )
         log_step('create annotation table')
         cur.execute(
@@ -238,6 +292,65 @@ def ensure_deferred_indexes(
     conn.commit()
 
 
+def ensure_source_partitions(
+    conn: psycopg2.extensions.connection,
+    *,
+    schema: str = 'public',
+    source: str,
+) -> None:
+    """Create source-list partitions for evidence-layer tables."""
+
+    suffix = _source_partition_suffix(source)
+    partitioned_tables = (
+        'entity_evidence',
+        'entity_evidence_identifier',
+        'relation_evidence',
+        'entity_evidence_annotation',
+        'relation_evidence_annotation',
+        'entity_evidence_resolution',
+        'relation_evidence_relation',
+    )
+    with conn.cursor() as cur:
+        cur.execute(
+            sql.SQL(
+                """
+                INSERT INTO {}.data_source (name)
+                VALUES (%s)
+                ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name
+                RETURNING source_id
+                """
+            ).format(sql.Identifier(schema)),
+            [source],
+        )
+        source_id = int(cur.fetchone()[0])
+        for table in partitioned_tables:
+            cur.execute(
+                sql.SQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS {}.{}
+                    PARTITION OF {}.{} FOR VALUES IN ({})
+                    """
+                ).format(
+                    sql.Identifier(schema),
+                    sql.Identifier(f'{table}_{suffix}'),
+                    sql.Identifier(schema),
+                    sql.Identifier(table),
+                    sql.Literal(source_id),
+                )
+            )
+    conn.commit()
+
+
+def _source_partition_suffix(source: str) -> str:
+    import hashlib
+    import re
+
+    slug = re.sub(r'[^a-z0-9]+', '_', source.lower()).strip('_')
+    slug = slug[:40] or 'source'
+    digest = hashlib.sha1(source.encode('utf-8')).hexdigest()[:8]
+    return f'{slug}_{digest}'
+
+
 def drop_deferred_content_indexes(
     conn: psycopg2.extensions.connection,
     *,
@@ -280,6 +393,40 @@ def drop_deferred_content_indexes(
     return names
 
 
+def _rename_legacy_vocab_tables(
+    cur: psycopg2.extensions.cursor,
+    schema: str,
+) -> None:
+    renames = (
+        ('identifier_type', 'vocab_identifier_type'),
+        ('entity_type', 'vocab_entity_type'),
+        ('entity_role', 'vocab_entity_role'),
+        ('relation_predicate', 'vocab_relation_predicate'),
+        ('relation_category', 'vocab_relation_category'),
+        ('annotation_scope', 'vocab_annotation_scope'),
+        ('resolution_status', 'vocab_resolution_status'),
+        ('resolution_reason', 'vocab_resolution_reason'),
+    )
+    for old_name, new_name in renames:
+        cur.execute(
+            """
+            SELECT
+              to_regclass(%s) IS NOT NULL AS old_exists,
+              to_regclass(%s) IS NOT NULL AS new_exists
+            """,
+            [f'{schema}.{old_name}', f'{schema}.{new_name}'],
+        )
+        old_exists, new_exists = cur.fetchone()
+        if old_exists and not new_exists:
+            cur.execute(
+                sql.SQL('ALTER TABLE {}.{} RENAME TO {}').format(
+                    sql.Identifier(schema),
+                    sql.Identifier(old_name),
+                    sql.Identifier(new_name),
+                )
+            )
+
+
 def _drop_legacy_content_tables_if_needed(
     cur: psycopg2.extensions.cursor,
     schema: str,
@@ -313,6 +460,68 @@ def _drop_legacy_content_tables_if_needed(
         for table, column in expected_uuid_columns.items()
         if column_types.get((table, column)) not in (None, 'uuid')
     ]
+    cur.execute(
+        """
+        SELECT table_name, column_name
+        FROM information_schema.columns
+        WHERE table_schema = %s
+          AND table_name IN (
+            'entity_evidence',
+            'relation_evidence',
+            'entity_evidence_identifier',
+            'entity_evidence_annotation',
+            'relation_evidence_annotation',
+            'entity_evidence_resolution',
+            'relation',
+            'relation_evidence_relation'
+          )
+        """,
+        [schema],
+    )
+    columns_by_table: dict[str, set[str]] = {}
+    for table_name, column_name in cur.fetchall():
+        columns_by_table.setdefault(table_name, set()).add(column_name)
+    incompatible_columns = {
+        'entity_evidence': {
+            'occurrence_id',
+            'snapshot_id',
+            'entity_role',
+            'entity_type',
+        },
+        'relation_evidence': {
+            'relation_occurrence_id',
+            'snapshot_id',
+            'predicate',
+            'relation_category',
+        },
+        'entity_evidence_identifier': set(),
+        'entity_evidence_annotation': {'scope'},
+        'relation_evidence_annotation': {'scope'},
+        'entity_evidence_resolution': set(),
+        'relation': {'predicate', 'relation_category'},
+        'relation_evidence_relation': set(),
+    }
+    source_partitioned_tables = {
+        'entity_evidence',
+        'relation_evidence',
+        'entity_evidence_identifier',
+        'entity_evidence_annotation',
+        'relation_evidence_annotation',
+        'entity_evidence_resolution',
+        'relation_evidence_relation',
+    }
+    for table, columns in incompatible_columns.items():
+        existing_columns = columns_by_table.get(table)
+        if not existing_columns:
+            continue
+        if columns & existing_columns:
+            legacy_tables.append(table)
+        elif (
+            table in source_partitioned_tables
+            and 'source_id' not in existing_columns
+        ):
+            legacy_tables.append(table)
+    legacy_tables = sorted(set(legacy_tables))
     if not legacy_tables:
         return
 
@@ -405,7 +614,7 @@ def _ensure_resolution_schema(
     cur.execute(
         sql.SQL(
             """
-            CREATE TABLE IF NOT EXISTS {}.identifier_type (
+            CREATE TABLE IF NOT EXISTS {}.vocab_identifier_type (
               identifier_type_id bigint PRIMARY KEY,
               name text NOT NULL UNIQUE
             )
@@ -416,7 +625,30 @@ def _ensure_resolution_schema(
     cur.execute(
         sql.SQL(
             """
-            CREATE TABLE IF NOT EXISTS {}.entity_type (
+            CREATE TABLE IF NOT EXISTS {}.data_source (
+              source_id bigserial PRIMARY KEY,
+              name text NOT NULL UNIQUE
+            )
+            """
+        ).format(schema_id)
+    )
+    cur.execute(
+        sql.SQL(
+            """
+            CREATE TABLE IF NOT EXISTS {}.dataset (
+              dataset_id bigserial PRIMARY KEY,
+              source_id bigint NOT NULL
+                REFERENCES {}.data_source(source_id),
+              name text NOT NULL,
+              UNIQUE (source_id, name)
+            )
+            """
+        ).format(schema_id, schema_id)
+    )
+    cur.execute(
+        sql.SQL(
+            """
+            CREATE TABLE IF NOT EXISTS {}.vocab_entity_type (
               entity_type_id bigserial PRIMARY KEY,
               name text NOT NULL UNIQUE
             )
@@ -427,7 +659,7 @@ def _ensure_resolution_schema(
     cur.execute(
         sql.SQL(
             """
-            CREATE TABLE IF NOT EXISTS {}.resolution_status (
+            CREATE TABLE IF NOT EXISTS {}.vocab_resolution_status (
               resolution_status_id smallint PRIMARY KEY,
               name text NOT NULL UNIQUE
             )
@@ -439,7 +671,7 @@ def _ensure_resolution_schema(
     cur.execute(
         sql.SQL(
             """
-            CREATE TABLE IF NOT EXISTS {}.resolution_reason (
+            CREATE TABLE IF NOT EXISTS {}.vocab_resolution_reason (
               resolution_reason_id smallint PRIMARY KEY,
               name text NOT NULL UNIQUE
             )
@@ -454,14 +686,14 @@ def _ensure_resolution_schema(
             CREATE TABLE IF NOT EXISTS {}.entity (
               entity_id bigserial PRIMARY KEY,
               entity_type_id bigint NOT NULL
-                REFERENCES {}.entity_type(entity_type_id),
-              taxonomy_id text,
+                REFERENCES {}.vocab_entity_type(entity_type_id),
+              taxonomy_id bigint,
               canonical_identifier_type_id bigint
-                REFERENCES {}.identifier_type(identifier_type_id),
+                REFERENCES {}.vocab_identifier_type(identifier_type_id),
               canonical_identifier text NOT NULL,
               identifiers jsonb NOT NULL DEFAULT '[]'::jsonb,
               resolution_status_id smallint NOT NULL
-                REFERENCES {}.resolution_status(resolution_status_id),
+                REFERENCES {}.vocab_resolution_status(resolution_status_id),
               created_at timestamptz NOT NULL DEFAULT now()
             )
             """
@@ -488,15 +720,15 @@ def _ensure_resolution_schema(
         sql.SQL(
             """
             CREATE TABLE IF NOT EXISTS {}.entity_evidence_resolution (
-              entity_evidence_id uuid PRIMARY KEY
-                REFERENCES {}.entity_evidence(entity_evidence_id)
-                ON DELETE CASCADE,
+              source_id bigint NOT NULL
+                REFERENCES {}.data_source(source_id),
+              entity_evidence_id uuid NOT NULL,
               status_id smallint NOT NULL
-                REFERENCES {}.resolution_status(resolution_status_id),
+                REFERENCES {}.vocab_resolution_status(resolution_status_id),
               entity_id bigint
                 REFERENCES {}.entity(entity_id),
               reason_id smallint
-                REFERENCES {}.resolution_reason(resolution_reason_id),
+                REFERENCES {}.vocab_resolution_reason(resolution_reason_id),
               resolved_at timestamptz NOT NULL DEFAULT now(),
               CHECK (
                 (
@@ -508,10 +740,29 @@ def _ensure_resolution_schema(
                   status_id = 4
                   AND entity_id IS NULL
                 )
-              )
-            )
+              ),
+              PRIMARY KEY (source_id, entity_evidence_id),
+              FOREIGN KEY (source_id, entity_evidence_id)
+                REFERENCES {}.entity_evidence(source_id, entity_evidence_id)
+                ON DELETE CASCADE
+            ) PARTITION BY LIST (source_id)
             """
-        ).format(schema_id, schema_id, schema_id, schema_id, schema_id)
+        ).format(
+            schema_id,
+            schema_id,
+            schema_id,
+            schema_id,
+            schema_id,
+            schema_id,
+        )
+    )
+    cur.execute(
+        sql.SQL(
+            """
+            CREATE TABLE IF NOT EXISTS {}.entity_evidence_resolution_default
+            PARTITION OF {}.entity_evidence_resolution DEFAULT
+            """
+        ).format(schema_id, schema_id)
     )
     log_step('ensure entity resolution reason')
     _ensure_entity_resolution_reason(cur, schema)
@@ -538,7 +789,7 @@ def _ensure_resolution_schema(
     cur.execute(
         sql.SQL(
             """
-            CREATE TABLE IF NOT EXISTS {}.identifier_type (
+            CREATE TABLE IF NOT EXISTS {}.vocab_identifier_type (
               identifier_type_id bigint PRIMARY KEY,
               name text NOT NULL UNIQUE
             )
@@ -551,11 +802,11 @@ def _ensure_resolution_schema(
             """
             CREATE TABLE IF NOT EXISTS {}.resolver_protein_identifier_lookup (
               key_identifier_type_id bigint NOT NULL
-                REFERENCES {}.identifier_type(identifier_type_id),
+                REFERENCES {}.vocab_identifier_type(identifier_type_id),
               key_value text NOT NULL,
               taxonomy_id text,
               canonical_identifier_type_id bigint NOT NULL
-                REFERENCES {}.identifier_type(identifier_type_id),
+                REFERENCES {}.vocab_identifier_type(identifier_type_id),
               canonical_identifier text NOT NULL
             )
             """
@@ -567,11 +818,11 @@ def _ensure_resolution_schema(
             """
             CREATE TABLE IF NOT EXISTS {}.resolver_protein_identifier_lookup_ambiguous (
               key_identifier_type_id bigint NOT NULL
-                REFERENCES {}.identifier_type(identifier_type_id),
+                REFERENCES {}.vocab_identifier_type(identifier_type_id),
               key_value text NOT NULL,
               taxonomy_id text,
               canonical_identifier_type_id bigint NOT NULL
-                REFERENCES {}.identifier_type(identifier_type_id),
+                REFERENCES {}.vocab_identifier_type(identifier_type_id),
               canonical_identifier text NOT NULL
             )
             """
@@ -583,10 +834,10 @@ def _ensure_resolution_schema(
             """
             CREATE TABLE IF NOT EXISTS {}.resolver_chemical_identifier_lookup (
               key_identifier_type_id bigint NOT NULL
-                REFERENCES {}.identifier_type(identifier_type_id),
+                REFERENCES {}.vocab_identifier_type(identifier_type_id),
               key_value text NOT NULL,
               canonical_identifier_type_id bigint NOT NULL
-                REFERENCES {}.identifier_type(identifier_type_id),
+                REFERENCES {}.vocab_identifier_type(identifier_type_id),
               canonical_identifier text NOT NULL
             )
             """
@@ -641,14 +892,16 @@ def _ensure_resolution_schema(
               relation_id bigserial PRIMARY KEY,
               subject_entity_id bigint NOT NULL
                 REFERENCES {}.entity(entity_id),
-              predicate text NOT NULL,
+              predicate_id bigint NOT NULL
+                REFERENCES {}.vocab_relation_predicate(relation_predicate_id),
               object_entity_id bigint NOT NULL
                 REFERENCES {}.entity(entity_id),
-              relation_category text,
+              relation_category_id bigint
+                REFERENCES {}.vocab_relation_category(relation_category_id),
               created_at timestamptz NOT NULL DEFAULT now()
             )
             """
-        ).format(schema_id, schema_id, schema_id)
+        ).format(schema_id, schema_id, schema_id, schema_id, schema_id)
     )
     log_step('create relation unique index')
     cur.execute(
@@ -657,9 +910,9 @@ def _ensure_resolution_schema(
             CREATE UNIQUE INDEX IF NOT EXISTS relation_unique_idx
             ON {}.relation (
               subject_entity_id,
-              predicate,
+              predicate_id,
               object_entity_id,
-              relation_category
+              relation_category_id
             )
             NULLS NOT DISTINCT
             """
@@ -670,17 +923,27 @@ def _ensure_resolution_schema(
         sql.SQL(
             """
             CREATE TABLE IF NOT EXISTS {}.relation_evidence_relation (
+              source_id bigint NOT NULL
+                REFERENCES {}.data_source(source_id),
               relation_id bigint NOT NULL
                 REFERENCES {}.relation(relation_id)
                 ON DELETE CASCADE,
-              relation_evidence_id uuid NOT NULL
-                REFERENCES {}.relation_evidence(relation_evidence_id)
-                ON DELETE CASCADE,
-              PRIMARY KEY (relation_id, relation_evidence_id),
-              UNIQUE (relation_evidence_id)
-            )
+              relation_evidence_id uuid NOT NULL,
+              PRIMARY KEY (source_id, relation_evidence_id),
+              FOREIGN KEY (source_id, relation_evidence_id)
+                REFERENCES {}.relation_evidence(source_id, relation_evidence_id)
+                ON DELETE CASCADE
+            ) PARTITION BY LIST (source_id)
             """
-        ).format(schema_id, schema_id, schema_id)
+        ).format(schema_id, schema_id, schema_id, schema_id)
+    )
+    cur.execute(
+        sql.SQL(
+            """
+            CREATE TABLE IF NOT EXISTS {}.relation_evidence_relation_default
+            PARTITION OF {}.relation_evidence_relation DEFAULT
+            """
+        ).format(schema_id, schema_id)
     )
     log_step('create canonical annotation tables')
     _ensure_canonical_annotation_tables(cur, schema)
@@ -735,16 +998,16 @@ def _ensure_identifier_evidence_key(
                 WITH missing AS (
                   SELECT DISTINCT i.type AS name
                   FROM {}.identifier_evidence i
-                  LEFT JOIN {}.identifier_type it
+                  LEFT JOIN {}.vocab_identifier_type it
                     ON it.name = i.type
                   WHERE i.type IS NOT NULL
                     AND it.identifier_type_id IS NULL
                 ),
                 base AS (
                   SELECT COALESCE(MAX(identifier_type_id), 0) AS max_id
-                  FROM {}.identifier_type
+                  FROM {}.vocab_identifier_type
                 )
-                INSERT INTO {}.identifier_type (identifier_type_id, name)
+                INSERT INTO {}.vocab_identifier_type (identifier_type_id, name)
                 SELECT
                   base.max_id + row_number() OVER (ORDER BY missing.name),
                   missing.name
@@ -759,7 +1022,7 @@ def _ensure_identifier_evidence_key(
                 """
                 UPDATE {}.identifier_evidence i
                 SET identifier_type_id = it.identifier_type_id
-                FROM {}.identifier_type it
+                FROM {}.vocab_identifier_type it
                 WHERE i.identifier_type_id IS NULL
                   AND it.name = i.type
                 """
@@ -795,7 +1058,7 @@ def _ensure_identifier_evidence_key(
         ).format(
             table_literal=sql.Literal(f'{schema}.identifier_evidence'),
             table_sql=sql.SQL('{}.identifier_evidence').format(schema_id),
-            type_table=sql.SQL('{}.identifier_type').format(schema_id),
+            type_table=sql.SQL('{}.vocab_identifier_type').format(schema_id),
         )
     )
     cur.execute(
@@ -857,6 +1120,128 @@ def _ensure_identifier_evidence_key(
     )
 
 
+def _ensure_evidence_dimension_tables(
+    cur: psycopg2.extensions.cursor,
+    schema: str,
+) -> None:
+    schema_id = sql.Identifier(schema)
+    cur.execute(
+        sql.SQL(
+            """
+            CREATE TABLE IF NOT EXISTS {}.data_source (
+              source_id bigserial PRIMARY KEY,
+              name text NOT NULL UNIQUE
+            )
+            """
+        ).format(schema_id)
+    )
+    cur.execute(
+        sql.SQL(
+            """
+            CREATE TABLE IF NOT EXISTS {}.dataset (
+              dataset_id bigserial PRIMARY KEY,
+              source_id bigint NOT NULL
+                REFERENCES {}.data_source(source_id),
+              name text NOT NULL,
+              UNIQUE (source_id, name)
+            )
+            """
+        ).format(schema_id, schema_id)
+    )
+    cur.execute(
+        sql.SQL(
+            """
+            CREATE TABLE IF NOT EXISTS {}.vocab_entity_type (
+              entity_type_id bigserial PRIMARY KEY,
+              name text NOT NULL UNIQUE
+            )
+            """
+        ).format(schema_id)
+    )
+    cur.execute(
+        sql.SQL(
+            """
+            CREATE TABLE IF NOT EXISTS {}.vocab_entity_role (
+              entity_role_id smallserial PRIMARY KEY,
+              name text NOT NULL UNIQUE
+            )
+            """
+        ).format(schema_id)
+    )
+    cur.execute(
+        sql.SQL(
+            """
+            CREATE TABLE IF NOT EXISTS {}.vocab_relation_predicate (
+              relation_predicate_id bigserial PRIMARY KEY,
+              name text NOT NULL UNIQUE
+            )
+            """
+        ).format(schema_id)
+    )
+    cur.execute(
+        sql.SQL(
+            """
+            CREATE TABLE IF NOT EXISTS {}.vocab_relation_category (
+              relation_category_id bigserial PRIMARY KEY,
+              name text NOT NULL UNIQUE
+            )
+            """
+        ).format(schema_id)
+    )
+    cur.execute(
+        sql.SQL(
+            """
+            CREATE TABLE IF NOT EXISTS {}.vocab_annotation_scope (
+              annotation_scope_id smallserial PRIMARY KEY,
+              name text NOT NULL UNIQUE
+            )
+            """
+        ).format(schema_id)
+    )
+    _ensure_static_entity_roles(cur, schema)
+    _ensure_static_annotation_scopes(cur, schema)
+
+
+def _ensure_static_entity_roles(
+    cur: psycopg2.extensions.cursor,
+    schema: str,
+) -> None:
+    rows = ((1, 'parent'), (2, 'member'))
+    cur.executemany(
+        sql.SQL(
+            """
+            INSERT INTO {}.vocab_entity_role (entity_role_id, name)
+            VALUES (%s, %s)
+            ON CONFLICT (entity_role_id) DO UPDATE
+            SET name = EXCLUDED.name
+            """
+        )
+        .format(sql.Identifier(schema))
+        .as_string(cur.connection),
+        rows,
+    )
+
+
+def _ensure_static_annotation_scopes(
+    cur: psycopg2.extensions.cursor,
+    schema: str,
+) -> None:
+    rows = ((1, 'relation'), (2, 'subject'), (3, 'object'))
+    cur.executemany(
+        sql.SQL(
+            """
+            INSERT INTO {}.vocab_annotation_scope (annotation_scope_id, name)
+            VALUES (%s, %s)
+            ON CONFLICT (annotation_scope_id) DO UPDATE
+            SET name = EXCLUDED.name
+            """
+        )
+        .format(sql.Identifier(schema))
+        .as_string(cur.connection),
+        rows,
+    )
+
+
 def _annotation_legacy_columns(
     cur: psycopg2.extensions.cursor,
     schema: str,
@@ -885,8 +1270,6 @@ def _ensure_annotation_value_schema(
         & {'scope', 'entity_evidence_id', 'relation_evidence_id', 'entity_id'}
     ):
         for table in (
-            'relation_annotation',
-            'entity_annotation',
             'relation_evidence_annotation',
             'entity_evidence_annotation',
         ):
@@ -946,33 +1329,60 @@ def _ensure_evidence_annotation_tables(
         sql.SQL(
             """
             CREATE TABLE IF NOT EXISTS {}.entity_evidence_annotation (
-              entity_evidence_id uuid NOT NULL
-                REFERENCES {}.entity_evidence(entity_evidence_id)
-                ON DELETE CASCADE,
+              source_id bigint NOT NULL
+                REFERENCES {}.data_source(source_id),
+              entity_evidence_id uuid NOT NULL,
               annotation_key uuid NOT NULL
                 REFERENCES {}.annotation(annotation_key)
                 ON DELETE CASCADE,
-              scope text NOT NULL,
-              PRIMARY KEY (entity_evidence_id, annotation_key, scope)
-            )
+              PRIMARY KEY (source_id, entity_evidence_id, annotation_key),
+              FOREIGN KEY (source_id, entity_evidence_id)
+                REFERENCES {}.entity_evidence(source_id, entity_evidence_id)
+                ON DELETE CASCADE
+            ) PARTITION BY LIST (source_id)
             """
-        ).format(schema_id, schema_id, schema_id)
+        ).format(schema_id, schema_id, schema_id, schema_id)
+    )
+    cur.execute(
+        sql.SQL(
+            """
+            CREATE TABLE IF NOT EXISTS {}.entity_evidence_annotation_default
+            PARTITION OF {}.entity_evidence_annotation DEFAULT
+            """
+        ).format(schema_id, schema_id)
     )
     cur.execute(
         sql.SQL(
             """
             CREATE TABLE IF NOT EXISTS {}.relation_evidence_annotation (
-              relation_evidence_id uuid NOT NULL
-                REFERENCES {}.relation_evidence(relation_evidence_id)
-                ON DELETE CASCADE,
+              source_id bigint NOT NULL
+                REFERENCES {}.data_source(source_id),
+              relation_evidence_id uuid NOT NULL,
               annotation_key uuid NOT NULL
                 REFERENCES {}.annotation(annotation_key)
                 ON DELETE CASCADE,
-              scope text NOT NULL,
-              PRIMARY KEY (relation_evidence_id, annotation_key, scope)
-            )
+              annotation_scope_id smallint NOT NULL
+                REFERENCES {}.vocab_annotation_scope(annotation_scope_id),
+              PRIMARY KEY (
+                source_id,
+                relation_evidence_id,
+                annotation_key,
+                annotation_scope_id
+              ),
+              FOREIGN KEY (source_id, relation_evidence_id)
+                REFERENCES {}.relation_evidence(source_id, relation_evidence_id)
+                ON DELETE CASCADE
+            ) PARTITION BY LIST (source_id)
             """
-        ).format(schema_id, schema_id, schema_id)
+        ).format(schema_id, schema_id, schema_id, schema_id, schema_id)
+    )
+    cur.execute(
+        sql.SQL(
+            """
+            CREATE TABLE IF NOT EXISTS {}.relation_evidence_annotation_default
+            PARTITION OF {}.relation_evidence_annotation DEFAULT
+            """
+        ).format(schema_id, schema_id)
     )
 
 
@@ -980,38 +1390,15 @@ def _ensure_canonical_annotation_tables(
     cur: psycopg2.extensions.cursor,
     schema: str,
 ) -> None:
-    schema_id = sql.Identifier(schema)
     cur.execute(
-        sql.SQL(
-            """
-            CREATE TABLE IF NOT EXISTS {}.entity_annotation (
-              entity_id bigint NOT NULL
-                REFERENCES {}.entity(entity_id)
-                ON DELETE CASCADE,
-              annotation_key uuid NOT NULL
-                REFERENCES {}.annotation(annotation_key)
-                ON DELETE CASCADE,
-              scope text NOT NULL,
-              PRIMARY KEY (entity_id, annotation_key, scope)
-            )
-            """
-        ).format(schema_id, schema_id, schema_id)
+        sql.SQL('DROP TABLE IF EXISTS {}.entity_annotation CASCADE').format(
+            sql.Identifier(schema)
+        )
     )
     cur.execute(
-        sql.SQL(
-            """
-            CREATE TABLE IF NOT EXISTS {}.relation_annotation (
-              relation_id bigint NOT NULL
-                REFERENCES {}.relation(relation_id)
-                ON DELETE CASCADE,
-              annotation_key uuid NOT NULL
-                REFERENCES {}.annotation(annotation_key)
-                ON DELETE CASCADE,
-              scope text NOT NULL,
-              PRIMARY KEY (relation_id, annotation_key, scope)
-            )
-            """
-        ).format(schema_id, schema_id, schema_id)
+        sql.SQL('DROP TABLE IF EXISTS {}.relation_annotation CASCADE').format(
+            sql.Identifier(schema)
+        )
     )
 
 
@@ -1024,7 +1411,7 @@ def _ensure_static_identifier_types(
     cur.executemany(
         sql.SQL(
             """
-            INSERT INTO {}.identifier_type (identifier_type_id, name)
+            INSERT INTO {}.vocab_identifier_type (identifier_type_id, name)
             VALUES (%s, %s)
             ON CONFLICT (identifier_type_id) DO UPDATE
             SET name = EXCLUDED.name
@@ -1052,7 +1439,7 @@ def _ensure_static_resolution_statuses(
     cur.executemany(
         sql.SQL(
             """
-            INSERT INTO {}.resolution_status (resolution_status_id, name)
+            INSERT INTO {}.vocab_resolution_status (resolution_status_id, name)
             VALUES (%s, %s)
             ON CONFLICT (resolution_status_id) DO UPDATE
             SET name = EXCLUDED.name
@@ -1078,7 +1465,7 @@ def _ensure_static_resolution_reasons(
     cur.executemany(
         sql.SQL(
             """
-            INSERT INTO {}.resolution_reason (resolution_reason_id, name)
+            INSERT INTO {}.vocab_resolution_reason (resolution_reason_id, name)
             VALUES (%s, %s)
             ON CONFLICT (resolution_reason_id) DO UPDATE
             SET name = EXCLUDED.name
@@ -1121,7 +1508,7 @@ def _ensure_entity_resolution_reason(
                 """
                 UPDATE {}.entity_evidence_resolution er
                 SET reason_id = rr.resolution_reason_id
-                FROM {}.resolution_reason rr
+                FROM {}.vocab_resolution_reason rr
                 WHERE er.reason_id IS NULL
                   AND rr.name = er.reason
                 """
@@ -1151,7 +1538,7 @@ def _ensure_entity_resolution_reason(
             table_sql=sql.SQL('{}.entity_evidence_resolution').format(
                 schema_id
             ),
-            reason_table=sql.SQL('{}.resolution_reason').format(schema_id),
+            reason_table=sql.SQL('{}.vocab_resolution_reason').format(schema_id),
         )
     )
     cur.execute(
@@ -1197,7 +1584,7 @@ def _ensure_entity_canonical_key(
         cur.execute(
             sql.SQL(
                 """
-                INSERT INTO {}.entity_type (name)
+                INSERT INTO {}.vocab_entity_type (name)
                 SELECT DISTINCT entity_type
                 FROM {}.entity
                 WHERE entity_type IS NOT NULL
@@ -1210,7 +1597,7 @@ def _ensure_entity_canonical_key(
                 """
                 UPDATE {}.entity e
                 SET entity_type_id = et.entity_type_id
-                FROM {}.entity_type et
+                FROM {}.vocab_entity_type et
                 WHERE et.name = e.entity_type
                   AND e.entity_type_id IS NULL
                 """
@@ -1222,7 +1609,7 @@ def _ensure_entity_canonical_key(
                 """
                 UPDATE {}.entity e
                 SET resolution_status_id = rs.resolution_status_id
-                FROM {}.resolution_status rs
+                FROM {}.vocab_resolution_status rs
                 WHERE rs.name = e.resolution_status
                   AND e.resolution_status_id IS NULL
                 """
@@ -1261,8 +1648,8 @@ def _ensure_entity_canonical_key(
                       'evidence_identifier_set', e.id
                     )
                   END
-                FROM {}.identifier_type it
-                LEFT JOIN {}.resolution_status rs
+                FROM {}.vocab_identifier_type it
+                LEFT JOIN {}.vocab_resolution_status rs
                   ON rs.resolution_status_id = e.resolution_status_id
                 WHERE e.canonical_identifier IS NULL
                   AND e.id IS NOT NULL
@@ -1318,7 +1705,7 @@ def _ensure_entity_canonical_key(
         ).format(
             entity_table_literal=sql.Literal(f'{schema}.entity'),
             entity_table_sql=sql.SQL('{}.entity').format(schema_id),
-            identifier_type_table=sql.SQL('{}.identifier_type').format(
+            identifier_type_table=sql.SQL('{}.vocab_identifier_type').format(
                 schema_id
             ),
         )
@@ -1326,13 +1713,13 @@ def _ensure_entity_canonical_key(
     for column, target_table, target_column, constraint_name in (
         (
             'entity_type_id',
-            'entity_type',
+            'vocab_entity_type',
             'entity_type_id',
             'entity_entity_type_id_fkey',
         ),
         (
             'resolution_status_id',
-            'resolution_status',
+            'vocab_resolution_status',
             'resolution_status_id',
             'entity_resolution_status_id_fkey',
         ),
@@ -1469,17 +1856,6 @@ def _ensure_relation_evidence_entity_endpoints(
     schema: str,
 ) -> None:
     schema_id = sql.Identifier(schema)
-    cur.execute(
-        sql.SQL(
-            """
-            ALTER TABLE {}.relation_evidence
-            ALTER COLUMN subject_entity_evidence_id DROP NOT NULL,
-            ALTER COLUMN object_entity_evidence_id DROP NOT NULL,
-            ADD COLUMN IF NOT EXISTS subject_entity_id bigint,
-            ADD COLUMN IF NOT EXISTS object_entity_id bigint
-            """
-        ).format(schema_id)
-    )
     for column in ('subject_entity_id', 'object_entity_id'):
         constraint_name = f'relation_evidence_{column}_fkey'
         cur.execute(
@@ -1569,7 +1945,7 @@ def _ensure_entity_resolution_entity_check(
                 """
                 UPDATE {}.entity_evidence_resolution er
                 SET status_id = rs.resolution_status_id
-                FROM {}.resolution_status rs
+                FROM {}.vocab_resolution_status rs
                 WHERE er.status_id IS NULL
                   AND rs.name = er.status
                 """
@@ -1607,7 +1983,7 @@ def _ensure_entity_resolution_entity_check(
             table_sql=sql.SQL('{}.entity_evidence_resolution').format(
                 schema_id
             ),
-            status_table=sql.SQL('{}.resolution_status').format(schema_id),
+            status_table=sql.SQL('{}.vocab_resolution_status').format(schema_id),
         )
     )
     cur.execute(
@@ -1764,7 +2140,12 @@ def _ensure_resolution_indexes(
         (
             'relation_source_dataset_idx',
             'relation_evidence',
-            ('source', 'dataset'),
+            ('source_id', 'dataset_id'),
+        ),
+        (
+            'relation_evidence_predicate_category_idx',
+            'relation_evidence',
+            ('predicate_id', 'relation_category_id'),
         ),
         (
             'entity_evidence_annotation_annotation_key_idx',
@@ -1779,12 +2160,6 @@ def _ensure_resolution_indexes(
         (
             'relation_evidence_annotation_annotation_key_idx',
             'relation_evidence_annotation',
-            ('annotation_key',),
-        ),
-        ('entity_annotation_annotation_key_idx', 'entity_annotation', ('annotation_key',)),
-        (
-            'relation_annotation_annotation_key_idx',
-            'relation_annotation',
             ('annotation_key',),
         ),
         (

@@ -169,10 +169,10 @@ def annotation_key(
     return content_uuid([term, value, unit])
 
 
-def identifier_key(identifier_type: str, value: str) -> str:
+def identifier_key(vocab_identifier_type: str, value: str) -> str:
     """Return a deterministic UUID key for an identifier evidence value."""
 
-    return content_uuid([identifier_type, value])
+    return content_uuid([vocab_identifier_type, value])
 
 
 def entity_evidence_key(
@@ -223,17 +223,17 @@ def text_or_none(value: object) -> str | None:
     return text or None
 
 
-def entity_type_accession(entity_type: str | None) -> str | None:
+def entity_type_accession(vocab_entity_type: str | None) -> str | None:
     """Return the accession part of an entity type."""
 
-    if entity_type is None:
+    if vocab_entity_type is None:
         return None
-    parts = entity_type.split(':', 2)
+    parts = vocab_entity_type.split(':', 2)
     if len(parts) >= 2 and parts[1].isdigit():
         return f'{parts[0]}:{parts[1]}'
     if len(parts) == 3 and parts[2].isdigit():
         return f'{parts[1]}:{parts[2]}'
-    return entity_type
+    return vocab_entity_type
 
 
 def copy_value(value: object) -> str:
@@ -276,7 +276,7 @@ def extract_taxonomy_id(row: dict[str, object]) -> str | None:
             text_or_none(ident.get('type')) == TAXONOMY_IDENTIFIER_TERM
             and text_or_none(ident.get('value'))
         ):
-            return text_or_none(ident.get('value'))
+            return _taxonomy_int_text(text_or_none(ident.get('value')))
     for annotation in row.get('annotations') or []:
         if not isinstance(annotation, dict):
             continue
@@ -284,7 +284,7 @@ def extract_taxonomy_id(row: dict[str, object]) -> str | None:
             text_or_none(annotation.get('term')) == TAXONOMY_IDENTIFIER_TERM
             and text_or_none(annotation.get('value'))
         ):
-            return text_or_none(annotation.get('value'))
+            return _taxonomy_int_text(text_or_none(annotation.get('value')))
 
     member_tax_ids: set[str] = set()
     for membership in row.get('membership') or []:
@@ -300,11 +300,21 @@ def extract_taxonomy_id(row: dict[str, object]) -> str | None:
                 text_or_none(annotation.get('term')) == TAXONOMY_IDENTIFIER_TERM
                 and text_or_none(annotation.get('value'))
             ):
-                member_tax_ids.add(text_or_none(annotation.get('value')) or '')
+                member_tax_ids.add(
+                    _taxonomy_int_text(text_or_none(annotation.get('value')))
+                    or ''
+                )
     member_tax_ids.discard('')
     if len(member_tax_ids) == 1:
         return next(iter(member_tax_ids))
     return None
+
+
+def _taxonomy_int_text(value: str | None) -> str | None:
+    if value is None:
+        return None
+    text = value.strip()
+    return text if text.isdigit() else None
 
 
 def ontology_annotation_relation(
@@ -337,10 +347,10 @@ def ontology_annotation_relation(
     )
 
 
-def is_interaction_like(entity_type: str | None) -> bool:
+def is_interaction_like(vocab_entity_type: str | None) -> bool:
     """Return whether an entity type should be handled as an interaction."""
 
-    return entity_type_accession(entity_type) in INTERACTION_LIKE_TYPES
+    return entity_type_accession(vocab_entity_type) in INTERACTION_LIKE_TYPES
 
 
 def interaction_relation_spec(

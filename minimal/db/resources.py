@@ -191,13 +191,19 @@ def _present_sources(
     cur.execute(
         sql.SQL(
             """
-            SELECT source
-            FROM {}.entity_evidence
+            SELECT ds.name
+            FROM {}.entity_evidence ee
+            JOIN {}.data_source ds
+              ON ds.source_id = ee.source_id
             UNION
-            SELECT source
-            FROM {}.relation_evidence
+            SELECT ds.name
+            FROM {}.relation_evidence re
+            JOIN {}.data_source ds
+              ON ds.source_id = re.source_id
             """
         ).format(
+            sql.Identifier(schema),
+            sql.Identifier(schema),
             sql.Identifier(schema),
             sql.Identifier(schema),
         )
@@ -246,13 +252,19 @@ def _source_counts(
     cur.execute(
         sql.SQL(
             """
+            WITH selected_source AS (
+              SELECT source_id
+              FROM {}.data_source
+              WHERE name = %s
+            )
             SELECT
               (
                 SELECT COUNT(DISTINCT r.entity_id)::bigint
                 FROM {}.entity_evidence_resolution r
                 JOIN {}.entity_evidence ee
-                  ON ee.entity_evidence_id = r.entity_evidence_id
-                WHERE ee.source = %s
+                  ON ee.source_id = r.source_id
+                 AND ee.entity_evidence_id = r.entity_evidence_id
+                WHERE ee.source_id = (SELECT source_id FROM selected_source)
                   AND r.entity_id IS NOT NULL
               ) AS entity_count,
               (
@@ -262,32 +274,39 @@ def _source_counts(
                 SELECT COUNT(DISTINCT rel.relation_id)::bigint
                 FROM {}.relation_evidence_relation rer
                 JOIN {}.relation_evidence re
-                  ON re.relation_evidence_id = rer.relation_evidence_id
+                  ON re.source_id = rer.source_id
+                 AND re.relation_evidence_id = rer.relation_evidence_id
                 JOIN {}.relation rel
                   ON rel.relation_id = rer.relation_id
-                WHERE re.source = %s
-                  AND rel.relation_category = 'interaction'
+                JOIN {}.vocab_relation_category rc
+                  ON rc.relation_category_id = rel.relation_category_id
+                WHERE re.source_id = (SELECT source_id FROM selected_source)
+                  AND rc.name = 'interaction'
               ) AS interaction_count,
               (
                 SELECT COUNT(DISTINCT rel.relation_id)::bigint
                 FROM {}.relation_evidence_relation rer
                 JOIN {}.relation_evidence re
-                  ON re.relation_evidence_id = rer.relation_evidence_id
+                  ON re.source_id = rer.source_id
+                 AND re.relation_evidence_id = rer.relation_evidence_id
                 JOIN {}.relation rel
                   ON rel.relation_id = rer.relation_id
-                WHERE re.source = %s
-                  AND rel.relation_category = 'association'
+                JOIN {}.vocab_relation_category rc
+                  ON rc.relation_category_id = rel.relation_category_id
+                WHERE re.source_id = (SELECT source_id FROM selected_source)
+                  AND rc.name = 'association'
               ) AS association_count,
               (
                 SELECT COUNT(DISTINCT r.entity_id)::bigint
                 FROM {}.entity_evidence_resolution r
                 JOIN {}.entity_evidence ee
-                  ON ee.entity_evidence_id = r.entity_evidence_id
+                  ON ee.source_id = r.source_id
+                 AND ee.entity_evidence_id = r.entity_evidence_id
                 JOIN {}.entity e
                   ON e.entity_id = r.entity_id
-                JOIN {}.entity_type et
+                JOIN {}.vocab_entity_type et
                   ON et.entity_type_id = e.entity_type_id
-                WHERE ee.source = %s
+                WHERE ee.source_id = (SELECT source_id FROM selected_source)
                   AND et.name = %s
               ) AS ontology_term_count,
               (
@@ -295,10 +314,12 @@ def _source_counts(
               ) AS last_built_at,
               (
                 SELECT EXISTS (
-                  SELECT 1
-                  FROM {}.entity_evidence
-                  WHERE source = %s
-                )
+	                  SELECT 1
+	                  FROM {}.entity_evidence
+	                  WHERE source_id = (
+	                    SELECT source_id FROM selected_source
+	                  )
+	                )
               ) AS has_rows
             """
         ).format(
@@ -315,14 +336,13 @@ def _source_counts(
             sql.Identifier(schema),
             sql.Identifier(schema),
             sql.Identifier(schema),
+            sql.Identifier(schema),
+            sql.Identifier(schema),
+            sql.Identifier(schema),
         ),
         [
             source,
-            source,
-            source,
-            source,
             CV_TERM_ENTITY_TYPE,
-            source,
         ],
     )
     row = cur.fetchone()

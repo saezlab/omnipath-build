@@ -140,10 +140,10 @@ def _populate_ontology_terms(
             WITH term_entities AS (
               SELECT e.entity_id, e.canonical_identifier AS term_id
               FROM {}.entity e
-              JOIN {}.entity_type et
+              JOIN {}.vocab_entity_type et
                 ON et.entity_type_id = e.entity_type_id
                AND et.name = {}
-              JOIN {}.identifier_type it
+              JOIN {}.vocab_identifier_type it
                 ON it.name = {}
                AND e.canonical_identifier_type_id = it.identifier_type_id
             ),
@@ -180,8 +180,11 @@ def _populate_ontology_terms(
                     AND COALESCE(a.value, '') <> ''
                   ) AS synonyms
               FROM term_entities te
-              LEFT JOIN {}.entity_annotation ea
-                ON ea.entity_id = te.entity_id
+              LEFT JOIN {}.entity_evidence_resolution er
+                ON er.entity_id = te.entity_id
+              LEFT JOIN {}.entity_evidence_annotation ea
+                ON ea.source_id = er.source_id
+               AND ea.entity_evidence_id = er.entity_evidence_id
               LEFT JOIN {}.annotation a
                 ON a.annotation_key = ea.annotation_key
               GROUP BY te.entity_id
@@ -221,6 +224,7 @@ def _populate_ontology_terms(
             sql.Literal(ONTOLOGY_ID_TERM),
             sql.Literal(SYNONYM_TERM),
             sql.Literal(CV_TERM_ACCESSION_TERM),
+            schema_id,
             schema_id,
             schema_id,
         )

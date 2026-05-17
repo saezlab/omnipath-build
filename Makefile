@@ -37,10 +37,8 @@ POSTGRES_FOREIGN_KEYS ?=
 MINIMAL_SCHEMA ?= public
 MINIMAL_MAPPING_DIR ?= $(DATA_ROOT)
 MINIMAL_RESOLVER_SOURCES ?= uniprot chebi hmdb lipidmaps swisslipids pubchem
-MINIMAL_BACKEND ?= bulk
 MINIMAL_BATCH_SIZE ?= 50000
 MINIMAL_RESOLVER_BATCH_SIZE ?= 100000
-MINIMAL_COMMIT_EVERY ?= 1000
 MINIMAL_PROGRESS_EVERY ?= 1000
 MINIMAL_DERIVE ?=
 MINIMAL_DROP_EXISTING ?=
@@ -231,9 +229,7 @@ ingest:
 			ingest \
 			--database "$(DATABASE)" \
 			--inputs-package "$(INPUTS_PACKAGE)" \
-			--backend "$(MINIMAL_BACKEND)" \
 			--batch-size "$(MINIMAL_BATCH_SIZE)" \
-			--commit-every "$(MINIMAL_COMMIT_EVERY)" \
 			--progress-every "$(MINIMAL_PROGRESS_EVERY)" \
 			--obo-output-dir "$(MINIMAL_OBO_DIR)" \
 			--no-ensure-schema \
@@ -251,9 +247,7 @@ ingest:
 				--source "$$source" \
 				--database "$(DATABASE)" \
 				--inputs-package "$(INPUTS_PACKAGE)" \
-				--backend "$(MINIMAL_BACKEND)" \
 				--batch-size "$(MINIMAL_BATCH_SIZE)" \
-				--commit-every "$(MINIMAL_COMMIT_EVERY)" \
 				--progress-every "$(MINIMAL_PROGRESS_EVERY)" \
 				--obo-output-dir "$(MINIMAL_OBO_DIR)" \
 				--no-ensure-schema \

@@ -14,7 +14,7 @@ import psycopg2.extensions
 PROTEIN_TABLE = 'resolver_protein_identifier_lookup'
 PROTEIN_AMBIGUOUS_TABLE = 'resolver_protein_identifier_lookup_ambiguous'
 CHEMICAL_TABLE = 'resolver_chemical_identifier_lookup'
-IDENTIFIER_TYPE_TABLE = 'identifier_type'
+IDENTIFIER_TYPE_TABLE = 'vocab_identifier_type'
 
 IDENTIFIER_TYPE_COLUMNS = (
     'identifier_type_id',

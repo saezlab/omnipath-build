@@ -77,7 +77,7 @@ def _flush(
             sql.SQL(
                 """
                 WITH entity_type_row AS (
-                  INSERT INTO {}.entity_type (name)
+                  INSERT INTO {}.vocab_entity_type (name)
                   VALUES (%s)
                   ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name
                   RETURNING entity_type_id
@@ -104,7 +104,7 @@ def _flush(
                   ),
                   1
                 FROM entity_type_row
-                CROSS JOIN {}.identifier_type it
+                CROSS JOIN {}.vocab_identifier_type it
                 WHERE it.name = %s
                 ON CONFLICT (
                   entity_type_id,
@@ -152,11 +152,11 @@ def _flush(
                 INSERT INTO _ontology_entity_map (term_id, entity_id)
                 SELECT t.term_id, e.entity_id
                 FROM _ontology_term_id t
-                JOIN {}.entity_type et
+                JOIN {}.vocab_entity_type et
                   ON et.name = %s
                 JOIN {}.entity e
                   ON e.entity_type_id = et.entity_type_id
-                JOIN {}.identifier_type it
+                JOIN {}.vocab_identifier_type it
                   ON it.name = %s
                  AND e.canonical_identifier_type_id = it.identifier_type_id
                  AND e.canonical_identifier = t.term_id

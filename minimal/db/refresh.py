@@ -14,6 +14,21 @@ def delete_source_content(
 
     schema_id = sql.Identifier(schema)
     with conn.cursor() as cur:
+        cur.execute(
+            sql.SQL(
+                """
+                SELECT source_id
+                FROM {}.data_source
+                WHERE name = %s
+                """
+            ).format(schema_id),
+            [source],
+        )
+        row = cur.fetchone()
+        if row is None:
+            conn.commit()
+            return
+        source_id = int(row[0])
         cur.execute('DROP TABLE IF EXISTS _refresh_removed_relation')
         cur.execute(
             sql.SQL(
@@ -22,11 +37,12 @@ def delete_source_content(
                 SELECT DISTINCT rer.relation_id
                 FROM {}.relation_evidence_relation rer
                 JOIN {}.relation_evidence re
-                  ON re.relation_evidence_id = rer.relation_evidence_id
-                WHERE re.source = %s
+                  ON re.source_id = rer.source_id
+                 AND re.relation_evidence_id = rer.relation_evidence_id
+                WHERE re.source_id = %s
                 """
             ).format(schema_id, schema_id),
-            [source],
+            [source_id],
         )
         cur.execute('DROP TABLE IF EXISTS _refresh_removed_entity')
         cur.execute(
@@ -36,22 +52,23 @@ def delete_source_content(
                 SELECT DISTINCT r.entity_id
                 FROM {}.entity_evidence_resolution r
                 JOIN {}.entity_evidence ee
-                  ON ee.entity_evidence_id = r.entity_evidence_id
-                WHERE ee.source = %s
+                  ON ee.source_id = r.source_id
+                 AND ee.entity_evidence_id = r.entity_evidence_id
+                WHERE ee.source_id = %s
                   AND r.entity_id IS NOT NULL
                 UNION
                 SELECT DISTINCT re.subject_entity_id AS entity_id
                 FROM {}.relation_evidence re
-                WHERE re.source = %s
+                WHERE re.source_id = %s
                   AND re.subject_entity_id IS NOT NULL
                 UNION
                 SELECT DISTINCT re.object_entity_id AS entity_id
                 FROM {}.relation_evidence re
-                WHERE re.source = %s
+                WHERE re.source_id = %s
                   AND re.object_entity_id IS NOT NULL
                 """
             ).format(schema_id, schema_id, schema_id, schema_id),
-            [source, source, source],
+            [source_id, source_id, source_id],
         )
         cur.execute('DROP TABLE IF EXISTS _refresh_removed_identifier')
         cur.execute(
@@ -61,53 +78,57 @@ def delete_source_content(
                 SELECT DISTINCT eei.identifier_id
                 FROM {}.entity_evidence_identifier eei
                 JOIN {}.entity_evidence ee
-                  ON ee.entity_evidence_id = eei.entity_evidence_id
-                WHERE ee.source = %s
+                  ON ee.source_id = eei.source_id
+                 AND ee.entity_evidence_id = eei.entity_evidence_id
+                WHERE ee.source_id = %s
                 """
             ).format(schema_id, schema_id),
-            [source],
+            [source_id],
         )
         cur.execute(
             sql.SQL(
                 """
                 DELETE FROM {}.relation_evidence_annotation rea
                 USING {}.relation_evidence re
-                WHERE rea.relation_evidence_id = re.relation_evidence_id
-                  AND re.source = %s
+                WHERE rea.source_id = re.source_id
+                  AND rea.relation_evidence_id = re.relation_evidence_id
+                  AND re.source_id = %s
                 """
             ).format(schema_id, schema_id),
-            [source],
+            [source_id],
         )
         cur.execute(
             sql.SQL(
                 """
                 DELETE FROM {}.entity_evidence_annotation eea
                 USING {}.entity_evidence ee
-                WHERE eea.entity_evidence_id = ee.entity_evidence_id
-                  AND ee.source = %s
+                WHERE eea.source_id = ee.source_id
+                  AND eea.entity_evidence_id = ee.entity_evidence_id
+                  AND ee.source_id = %s
                 """
             ).format(schema_id, schema_id),
-            [source],
+            [source_id],
         )
         cur.execute(
             sql.SQL(
                 """
                 DELETE FROM {}.relation_evidence
-                WHERE source = %s
+                WHERE source_id = %s
                 """
             ).format(schema_id),
-            [source],
+            [source_id],
         )
         cur.execute(
             sql.SQL(
                 """
                 DELETE FROM {}.entity_evidence_identifier eei
                 USING {}.entity_evidence ee
-                WHERE eei.entity_evidence_id = ee.entity_evidence_id
-                  AND ee.source = %s
+                WHERE eei.source_id = ee.source_id
+                  AND eei.entity_evidence_id = ee.entity_evidence_id
+                  AND ee.source_id = %s
                 """
             ).format(schema_id, schema_id),
-            [source],
+            [source_id],
         )
         cur.execute(
             sql.SQL(
@@ -127,10 +148,10 @@ def delete_source_content(
             sql.SQL(
                 """
                 DELETE FROM {}.entity_evidence
-                WHERE source = %s
+                WHERE source_id = %s
                 """
             ).format(schema_id),
-            [source],
+            [source_id],
         )
         cur.execute(
             sql.SQL(
@@ -163,13 +184,8 @@ def delete_source_content(
                     WHERE rel.subject_entity_id = e.entity_id
                        OR rel.object_entity_id = e.entity_id
                   )
-                  AND NOT EXISTS (
-                    SELECT 1
-                    FROM {}.entity_annotation ea
-                    WHERE ea.entity_id = e.entity_id
-                  )
                 """
-            ).format(schema_id, schema_id, schema_id, schema_id)
+            ).format(schema_id, schema_id, schema_id)
         )
         cur.execute(
             sql.SQL(
@@ -185,17 +201,7 @@ def delete_source_content(
                     FROM {}.relation_evidence_annotation rea
                     WHERE rea.annotation_key = a.annotation_key
                   )
-                  AND NOT EXISTS (
-                    SELECT 1
-                    FROM {}.entity_annotation ea
-                    WHERE ea.annotation_key = a.annotation_key
-                  )
-                  AND NOT EXISTS (
-                    SELECT 1
-                    FROM {}.relation_annotation ra
-                    WHERE ra.annotation_key = a.annotation_key
-                  )
                 """
-            ).format(schema_id, schema_id, schema_id, schema_id, schema_id)
+            ).format(schema_id, schema_id, schema_id)
         )
     conn.commit()

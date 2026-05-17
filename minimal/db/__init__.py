@@ -4,6 +4,7 @@ from minimal.db.schema import (
     drop_deferred_content_indexes,
     ensure_deferred_indexes,
     ensure_schema,
+    ensure_source_partitions,
     reset_content_tables,
 )
 from minimal.db.bitmaps import BitmapStats, rebuild_bitmap_tables
@@ -21,6 +22,7 @@ __all__ = [
     'drop_deferred_content_indexes',
     'ensure_deferred_indexes',
     'ensure_schema',
+    'ensure_source_partitions',
     'rebuild_bitmap_tables',
     'rebuild_derived_tables',
     'reset_content_tables',

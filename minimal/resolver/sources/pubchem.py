@@ -186,11 +186,26 @@ def iter_pubchem_sdf_gz_rows(path_or_url: str | Path) -> Iterable[dict]:
 
 def iter_pubchem_compound_rows(
     source: str | Path | None = None,
+    *,
+    filter_inchikeys: frozenset[str] | None = None,
 ) -> Iterable[dict]:
     """Stream PubChem resolver rows from all selected SDF gzip shards."""
 
     for location in iter_pubchem_sdf_gz_locations(source):
-        yield from iter_pubchem_sdf_gz_rows(location)
+        rows = iter_pubchem_sdf_gz_rows(location)
+        if filter_inchikeys is not None:
+            rows = _filter_pubchem_rows(rows, filter_inchikeys)
+        yield from rows
+
+
+def _filter_pubchem_rows(
+    rows: Iterable[dict],
+    filter_inchikeys: frozenset[str],
+) -> Iterable[dict]:
+    for row in rows:
+        if row.get('standard_inchi_key') not in filter_inchikeys:
+            continue
+        yield row
 
 
 def materialize_pubchem_compound_sdf(
@@ -198,6 +213,7 @@ def materialize_pubchem_compound_sdf(
     *,
     source: str | Path | None = None,
     max_records: int | None = None,
+    filter_inchikeys: frozenset[str] | None = None,
 ) -> dict[str, int]:
     output_dir = (
         Path(output_dir)
@@ -205,7 +221,10 @@ def materialize_pubchem_compound_sdf(
         else ensure_chemicals_data_dir()
     )
     output_dir.mkdir(parents=True, exist_ok=True)
-    rows = iter_pubchem_compound_rows(source)
+    rows = iter_pubchem_compound_rows(
+        source,
+        filter_inchikeys=filter_inchikeys,
+    )
     if max_records is not None:
         rows = _take(rows, max_records)
     rows = _normalized_pubchem_rows(rows)

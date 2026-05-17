@@ -17,16 +17,14 @@ from minimal.db import (
     drop_deferred_content_indexes,
     ensure_deferred_indexes,
     ensure_schema,
+    ensure_source_partitions,
     rebuild_bitmap_tables,
     rebuild_derived_tables,
     create_secondary_indexes,
     reset_content_tables,
     sync_resources_table,
 )
-from minimal.ingest import (
-    MinimalIngestor,
-    BulkMinimalIngestor,
-)
+from minimal.ingest import BulkMinimalIngestor
 from minimal.loaders import (
     load_ontology_terms,
     load_resolver_sources,
@@ -202,12 +200,6 @@ def main(argv: list[str] | None = None) -> int:
         help='Ensure minimal schema exists before ingest.',
     )
     ingest.add_argument(
-        '--backend',
-        choices=('bulk', 'simple'),
-        default='bulk',
-        help='Ingest backend. bulk uses COPY staging batches.',
-    )
-    ingest.add_argument(
         '--batch-size',
         type=int,
         default=50_000,
@@ -218,7 +210,6 @@ def main(argv: list[str] | None = None) -> int:
         action='store_true',
         help='Print fine-grained bulk ingest timings for each flush.',
     )
-    ingest.add_argument('--commit-every', type=int, default=1000)
     ingest.add_argument('--progress-every', type=int, default=1000)
     ingest.add_argument(
         '--obo-artifacts',
@@ -483,6 +474,7 @@ def _handle_ingest(
         delete_started = time.perf_counter()
         print(f'[{source}] refresh deleting existing source content', flush=True)
         delete_source_content(conn, schema=args.schema, source=source)
+        ensure_source_partitions(conn, schema=args.schema, source=source)
         print(
             f'[{source}] refresh delete done '
             f'elapsed={time.perf_counter() - delete_started:.1f}s',
@@ -537,31 +529,18 @@ def _handle_ingest(
                 )
                 continue
 
-            ingestor = (
-                BulkMinimalIngestor(
-                    conn,
-                    schema=args.schema,
-                    profile=args.profile,
-                )
-                if args.backend == 'bulk'
-                else MinimalIngestor(conn, schema=args.schema)
+            ingestor = BulkMinimalIngestor(
+                conn,
+                schema=args.schema,
+                profile=args.profile,
             )
-            if args.backend == 'bulk':
-                stats = ingestor.ingest_records(
-                    records,
-                    source=fn.source,
-                    dataset=fn.function_name,
-                    batch_size=args.batch_size,
-                    progress_every=args.progress_every,
-                )
-            else:
-                stats = ingestor.ingest_records(
-                    records,
-                    source=fn.source,
-                    dataset=fn.function_name,
-                    commit_every=args.commit_every,
-                    progress_every=args.progress_every,
-                )
+            stats = ingestor.ingest_records(
+                records,
+                source=fn.source,
+                dataset=fn.function_name,
+                batch_size=args.batch_size,
+                progress_every=args.progress_every,
+            )
             print(
                 f'[{fn.source}.{fn.function_name}] '
                 f'rows={stats.source_rows} '

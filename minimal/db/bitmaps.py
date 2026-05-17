@@ -135,13 +135,16 @@ def _populate_annotation_term_entity_bitmap(
             FROM {}.relation r
             JOIN {}.entity term
               ON term.entity_id = r.object_entity_id
-            JOIN {}.entity_type term_type
+            JOIN {}.vocab_entity_type term_type
               ON term_type.entity_type_id = term.entity_type_id
-            WHERE r.relation_category = 'association'
+            JOIN {}.vocab_relation_category rc
+              ON rc.relation_category_id = r.relation_category_id
+            WHERE rc.name = 'association'
               AND term_type.name = {}
             GROUP BY r.object_entity_id
             """
         ).format(
+            schema_id,
             schema_id,
             schema_id,
             schema_id,
@@ -170,9 +173,11 @@ def _populate_annotation_term_relation_bitmap(
               FROM {}.relation r
               JOIN {}.entity term
                 ON term.entity_id = r.object_entity_id
-              JOIN {}.entity_type term_type
+              JOIN {}.vocab_entity_type term_type
                 ON term_type.entity_type_id = term.entity_type_id
-              WHERE r.relation_category = 'association'
+              JOIN {}.vocab_relation_category rc
+                ON rc.relation_category_id = r.relation_category_id
+              WHERE rc.name = 'association'
                 AND term_type.name = {}
             ),
             relation_terms AS (
@@ -203,6 +208,7 @@ def _populate_annotation_term_relation_bitmap(
             GROUP BY term_entity_id
             """
         ).format(
+            schema_id,
             schema_id,
             schema_id,
             schema_id,
@@ -237,7 +243,7 @@ def _populate_facet_entity_bitmap(
               rb_build_agg(e.entity_id::integer),
               COUNT(*)::integer
             FROM {}.entity e
-            JOIN {}.entity_type et
+            JOIN {}.vocab_entity_type et
               ON et.entity_type_id = e.entity_type_id
             GROUP BY et.name
             """
@@ -257,7 +263,6 @@ def _populate_facet_entity_bitmap(
               COUNT(*)::integer
             FROM {}.entity
             WHERE taxonomy_id IS NOT NULL
-              AND taxonomy_id <> ''
             GROUP BY taxonomy_id
             """
         ).format(schema_id, schema_id),
@@ -270,18 +275,25 @@ def _populate_facet_entity_bitmap(
               entity_count
             )
             WITH entity_sources AS (
-              SELECT DISTINCT r.entity_id, ee.source
+              SELECT DISTINCT r.entity_id, ds.name AS source
               FROM {}.entity_evidence_resolution r
               JOIN {}.entity_evidence ee
-                ON ee.entity_evidence_id = r.entity_evidence_id
+                ON ee.source_id = r.source_id
+               AND ee.entity_evidence_id = r.entity_evidence_id
+              JOIN {}.data_source ds
+                ON ds.source_id = ee.source_id
               WHERE r.entity_id IS NOT NULL
               UNION
-              SELECT DISTINCT re.subject_entity_id AS entity_id, re.source
+              SELECT DISTINCT re.subject_entity_id AS entity_id, ds.name AS source
               FROM {}.relation_evidence re
+              JOIN {}.data_source ds
+                ON ds.source_id = re.source_id
               WHERE re.subject_entity_id IS NOT NULL
               UNION
-              SELECT DISTINCT re.object_entity_id AS entity_id, re.source
+              SELECT DISTINCT re.object_entity_id AS entity_id, ds.name AS source
               FROM {}.relation_evidence re
+              JOIN {}.data_source ds
+                ON ds.source_id = re.source_id
               WHERE re.object_entity_id IS NOT NULL
             )
             SELECT
@@ -295,6 +307,7 @@ def _populate_facet_entity_bitmap(
             GROUP BY source
             """
         ).format(
+            schema_id,
             schema_id,
             schema_id,
             schema_id,
@@ -317,10 +330,13 @@ def _populate_facet_entity_bitmap(
               rb_build_agg(DISTINCT e.entity_id::integer),
               COUNT(DISTINCT e.entity_id)::integer
             FROM {}.entity e
-            JOIN {}.entity_type et
+            JOIN {}.vocab_entity_type et
               ON et.entity_type_id = e.entity_type_id
-            JOIN {}.entity_annotation ea
-              ON ea.entity_id = e.entity_id
+            JOIN {}.entity_evidence_resolution er
+              ON er.entity_id = e.entity_id
+            JOIN {}.entity_evidence_annotation ea
+              ON ea.source_id = er.source_id
+             AND ea.entity_evidence_id = er.entity_evidence_id
             JOIN {}.annotation a
               ON a.annotation_key = ea.annotation_key
             WHERE et.name = {}
@@ -329,6 +345,7 @@ def _populate_facet_entity_bitmap(
             GROUP BY a.value
             """
         ).format(
+            schema_id,
             schema_id,
             schema_id,
             schema_id,
@@ -363,14 +380,18 @@ def _populate_facet_relation_bitmap(
             )
             SELECT
               'predicate',
-              predicate,
-              COALESCE(relation_category, ''),
+              rp.name,
+              COALESCE(rc.name, ''),
               rb_build_agg(relation_id::integer),
               COUNT(*)::integer
-            FROM {}.relation
-            GROUP BY predicate, relation_category
+            FROM {}.relation r
+            JOIN {}.vocab_relation_predicate rp
+              ON rp.relation_predicate_id = r.predicate_id
+            LEFT JOIN {}.vocab_relation_category rc
+              ON rc.relation_category_id = r.relation_category_id
+            GROUP BY rp.name, rc.name
             """
-        ).format(schema_id, schema_id),
+        ).format(schema_id, schema_id, schema_id, schema_id),
         sql.SQL(
             """
             INSERT INTO {}.facet_relation_bitmap (
@@ -380,10 +401,13 @@ def _populate_facet_relation_bitmap(
               relation_count
             )
             WITH relation_sources AS (
-              SELECT DISTINCT rer.relation_id, re.source
+              SELECT DISTINCT rer.relation_id, ds.name AS source
               FROM {}.relation_evidence_relation rer
               JOIN {}.relation_evidence re
-                ON re.relation_evidence_id = rer.relation_evidence_id
+                ON re.source_id = rer.source_id
+               AND re.relation_evidence_id = rer.relation_evidence_id
+              JOIN {}.data_source ds
+                ON ds.source_id = re.source_id
             )
             SELECT
               'source',
@@ -395,7 +419,7 @@ def _populate_facet_relation_bitmap(
               AND source <> ''
             GROUP BY source
             """
-        ).format(schema_id, schema_id, schema_id),
+        ).format(schema_id, schema_id, schema_id, schema_id),
         sql.SQL(
             """
             INSERT INTO {}.facet_relation_bitmap (
@@ -405,28 +429,28 @@ def _populate_facet_relation_bitmap(
               relation_count
             )
             WITH participant_types AS (
-              SELECT r.relation_id, subject_type.name AS entity_type
+              SELECT r.relation_id, subject_type.name AS vocab_entity_type
               FROM {}.relation r
               JOIN {}.entity subject
                 ON subject.entity_id = r.subject_entity_id
-              JOIN {}.entity_type subject_type
+              JOIN {}.vocab_entity_type subject_type
                 ON subject_type.entity_type_id = subject.entity_type_id
               UNION
-              SELECT r.relation_id, object_type.name AS entity_type
+              SELECT r.relation_id, object_type.name AS vocab_entity_type
               FROM {}.relation r
               JOIN {}.entity object
                 ON object.entity_id = r.object_entity_id
-              JOIN {}.entity_type object_type
+              JOIN {}.vocab_entity_type object_type
                 ON object_type.entity_type_id = object.entity_type_id
             )
             SELECT
               'participant_type',
-              entity_type,
+              vocab_entity_type,
               rb_build_agg(relation_id::integer),
               COUNT(DISTINCT relation_id)::integer
             FROM participant_types
-            WHERE entity_type IS NOT NULL
-            GROUP BY entity_type
+            WHERE vocab_entity_type IS NOT NULL
+            GROUP BY vocab_entity_type
             """
         ).format(
             schema_id,
@@ -451,14 +475,12 @@ def _populate_facet_relation_bitmap(
               JOIN {}.entity subject
                 ON subject.entity_id = r.subject_entity_id
               WHERE subject.taxonomy_id IS NOT NULL
-                AND subject.taxonomy_id <> ''
               UNION
               SELECT r.relation_id, object.taxonomy_id
               FROM {}.relation r
               JOIN {}.entity object
                 ON object.entity_id = r.object_entity_id
               WHERE object.taxonomy_id IS NOT NULL
-                AND object.taxonomy_id <> ''
             )
             SELECT
               'taxonomy_id',
