@@ -1,6 +1,7 @@
 """PostgreSQL schema, indexes, and derived structures for minimal."""
 
 from minimal.db.schema import (
+    drop_deferred_content_indexes,
     ensure_deferred_indexes,
     ensure_schema,
     reset_content_tables,
@@ -17,6 +18,7 @@ __all__ = [
     'ResourceTableStats',
     'create_secondary_indexes',
     'delete_source_content',
+    'drop_deferred_content_indexes',
     'ensure_deferred_indexes',
     'ensure_schema',
     'rebuild_bitmap_tables',

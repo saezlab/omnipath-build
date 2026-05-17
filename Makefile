@@ -44,6 +44,8 @@ MINIMAL_COMMIT_EVERY ?= 1000
 MINIMAL_PROGRESS_EVERY ?= 1000
 MINIMAL_DERIVE ?=
 MINIMAL_DROP_EXISTING ?=
+MINIMAL_RESET_DROP_INDEXES ?=
+MINIMAL_PROFILE ?=
 MINIMAL_OBO_DIR ?= $(DATA_ROOT)/obo
 COMBINE_RUN_DIR ?=
 LOAD_POSTGRES ?=
@@ -212,7 +214,8 @@ minimal-reset-content:
 	@PYTHONUNBUFFERED=1 uv run python -m minimal.cli \
 		--database-url "$(DATABASE_URL)" \
 		--schema "$(MINIMAL_SCHEMA)" \
-		reset-content
+		reset-content \
+		$(if $(MINIMAL_RESET_DROP_INDEXES),--drop-indexes)
 
 ingest:
 	@if [ -z "$(DATABASE_URL)" ]; then \
@@ -234,6 +237,7 @@ ingest:
 			--progress-every "$(MINIMAL_PROGRESS_EVERY)" \
 			--obo-output-dir "$(MINIMAL_OBO_DIR)" \
 			--no-ensure-schema \
+			$(if $(MINIMAL_PROFILE),--profile) \
 			$(if $(MAX_RECORDS),--max-records "$(MAX_RECORDS)") \
 			$(if $(FORCE_REFRESH),--force-refresh); \
 	else \
@@ -253,6 +257,7 @@ ingest:
 				--progress-every "$(MINIMAL_PROGRESS_EVERY)" \
 				--obo-output-dir "$(MINIMAL_OBO_DIR)" \
 				--no-ensure-schema \
+				$(if $(MINIMAL_PROFILE),--profile) \
 				$(if $(MAX_RECORDS),--max-records "$(MAX_RECORDS)") \
 				$(if $(FORCE_REFRESH),--force-refresh); \
 		done; \

@@ -17,9 +17,12 @@ from minimal.ingest.common import (
     unwrap_record as _unwrap,
     annotation_key as _annotation_key,
     annotation_to_row as _annotation_to_row,
+    entity_evidence_key as _entity_evidence_key,
+    identifier_key as _identifier_key,
     interaction_relation_annotations,
     is_interaction_like,
     membership_relation_spec,
+    relation_evidence_key as _relation_evidence_key,
     interaction_relation_spec,
     ontology_annotation_relation,
     extract_taxonomy_id,
@@ -45,9 +48,11 @@ class BulkMinimalIngestor:
         conn: psycopg2.extensions.connection,
         *,
         schema: str = 'public',
+        profile: bool = False,
     ) -> None:
         self.conn = conn
         self.schema = schema
+        self.profile = profile
 
     def ingest_records(
         self,
@@ -64,13 +69,26 @@ class BulkMinimalIngestor:
         buffers = _BulkBuffers()
         started_at = time.monotonic()
         rows_since_flush = 0
+        read_seconds = 0.0
+        flatten_seconds = 0.0
 
-        for index, item in enumerate(records, start=1):
+        record_iter = iter(records)
+        index = 0
+        while True:
+            read_started = time.perf_counter()
+            try:
+                item = next(record_iter)
+            except StopIteration:
+                read_seconds += time.perf_counter() - read_started
+                break
+            read_seconds += time.perf_counter() - read_started
+            index += 1
             entity, _ = _unwrap(item)
             if not isinstance(entity, Entity):
                 continue
             row_id = index
             snapshot_id = None
+            flatten_started = time.perf_counter()
             self._flatten_entity_tree(
                 entity,
                 source=source,
@@ -78,21 +96,38 @@ class BulkMinimalIngestor:
                 row_id=row_id,
                 snapshot_id=snapshot_id,
                 occurrence_id=f'{dataset}:{row_id}:parent',
-                parent_occurrence_id=None,
+                parent_entity_evidence_id=None,
                 entity_role='parent',
                 buffers=buffers,
                 stats=stats,
             )
+            flatten_seconds += time.perf_counter() - flatten_started
             stats.source_rows += 1
             rows_since_flush += 1
 
             if batch_size > 0 and rows_since_flush >= batch_size:
-                self._flush(buffers)
+                self._flush(
+                    buffers,
+                    source=source,
+                    dataset=dataset,
+                    source_rows=stats.source_rows,
+                    read_seconds=read_seconds,
+                    flatten_seconds=flatten_seconds,
+                )
+                read_seconds = 0.0
+                flatten_seconds = 0.0
                 rows_since_flush = 0
             if progress_every > 0 and stats.source_rows % progress_every == 0:
                 self._print_progress(source, dataset, stats, started_at)
 
-        self._flush(buffers)
+        self._flush(
+            buffers,
+            source=source,
+            dataset=dataset,
+            source_rows=stats.source_rows,
+            read_seconds=read_seconds,
+            flatten_seconds=flatten_seconds,
+        )
         self.conn.commit()
         return stats.freeze()
 
@@ -105,7 +140,7 @@ class BulkMinimalIngestor:
         row_id: int,
         snapshot_id: str | None,
         occurrence_id: str,
-        parent_occurrence_id: str | None,
+        parent_entity_evidence_id: str | None,
         entity_role: str,
         buffers: _BulkBuffers,
         stats: _MutableStats,
@@ -123,15 +158,23 @@ class BulkMinimalIngestor:
             == 2
         )
 
+        entity_evidence_id = None
         if not relation_only_interaction:
+            entity_evidence_id = _entity_evidence_key(
+                source,
+                dataset,
+                row_id,
+                occurrence_id,
+            )
             buffers.entities.append(
                 (
+                    entity_evidence_id,
                     source,
                     dataset,
                     row_id,
                     snapshot_id,
                     occurrence_id,
-                    parent_occurrence_id,
+                    parent_entity_evidence_id,
                     entity_role,
                     row.get('type'),
                     extract_taxonomy_id(row),
@@ -144,12 +187,19 @@ class BulkMinimalIngestor:
                 ident_value = string_or_none(identifier.get('value'))
                 if not include_identifier(ident_type, ident_value):
                     continue
+                identifier_cache_key = (ident_type, ident_value)
+                identifier_id = buffers.identifier_keys.get(
+                    identifier_cache_key
+                )
+                if identifier_id is None:
+                    identifier_id = _identifier_key(ident_type, ident_value)
+                    buffers.identifier_keys[identifier_cache_key] = (
+                        identifier_id
+                    )
                 buffers.identifiers.append(
                     (
-                        source,
-                        dataset,
-                        row_id,
-                        occurrence_id,
+                        entity_evidence_id,
+                        identifier_id,
                         ident_type,
                         ident_value,
                     )
@@ -166,6 +216,7 @@ class BulkMinimalIngestor:
                     snapshot_id=snapshot_id,
                     target_kind='entity',
                     target_occurrence_id=occurrence_id,
+                    target_evidence_id=entity_evidence_id,
                     scope='entity',
                     annotation=annotation,
                 ):
@@ -186,7 +237,11 @@ class BulkMinimalIngestor:
                 row_id=row_id,
                 snapshot_id=snapshot_id,
                 occurrence_id=member_occurrence_id,
-                parent_occurrence_id=occurrence_id,
+                parent_entity_evidence_id=(
+                    None
+                    if relation_only_interaction
+                    else entity_evidence_id
+                ),
                 entity_role='member',
                 buffers=buffers,
                 stats=stats,
@@ -200,16 +255,33 @@ class BulkMinimalIngestor:
                 occurrence_id=occurrence_id,
             )
             if spec is not None:
+                relation_evidence_id = _relation_evidence_key(
+                    source,
+                    dataset,
+                    row_id,
+                    spec.relation_occurrence_id,
+                )
                 buffers.relations.append(
                     (
+                        relation_evidence_id,
                         source,
                         dataset,
                         row_id,
                         snapshot_id,
                         spec.relation_occurrence_id,
-                        spec.subject_ref,
+                        _entity_evidence_key(
+                            source,
+                            dataset,
+                            row_id,
+                            str(spec.subject_ref),
+                        ),
                         spec.predicate_rule.predicate,
-                        spec.object_ref,
+                        _entity_evidence_key(
+                            source,
+                            dataset,
+                            row_id,
+                            str(spec.object_ref),
+                        ),
                         spec.predicate_rule.relation_category
                         or ASSOCIATION_CATEGORY,
                     )
@@ -222,6 +294,7 @@ class BulkMinimalIngestor:
                     row_id=row_id,
                     snapshot_id=snapshot_id,
                     relation_occurrence_id=spec.relation_occurrence_id,
+                    relation_evidence_id=relation_evidence_id,
                     annotations=interaction_relation_annotations(row),
                     scope='relation',
                 )
@@ -239,16 +312,33 @@ class BulkMinimalIngestor:
                     parent_type=entity_type,
                     relation_occurrence_id=relation_occurrence_id,
                 )
+                relation_evidence_id = _relation_evidence_key(
+                    source,
+                    dataset,
+                    row_id,
+                    spec.relation_occurrence_id,
+                )
                 buffers.relations.append(
                     (
+                        relation_evidence_id,
                         source,
                         dataset,
                         row_id,
                         snapshot_id,
                         spec.relation_occurrence_id,
-                        spec.subject_ref,
+                        _entity_evidence_key(
+                            source,
+                            dataset,
+                            row_id,
+                            str(spec.subject_ref),
+                        ),
                         spec.predicate_rule.predicate,
-                        spec.object_ref,
+                        _entity_evidence_key(
+                            source,
+                            dataset,
+                            row_id,
+                            str(spec.object_ref),
+                        ),
                         spec.predicate_rule.relation_category
                         or ASSOCIATION_CATEGORY,
                     )
@@ -261,6 +351,7 @@ class BulkMinimalIngestor:
                     row_id=row_id,
                     snapshot_id=snapshot_id,
                     relation_occurrence_id=relation_occurrence_id,
+                    relation_evidence_id=relation_evidence_id,
                     annotations=getattr(membership, 'annotations', None) or [],
                     scope='membership',
                 )
@@ -274,6 +365,7 @@ class BulkMinimalIngestor:
         row_id: int,
         snapshot_id: str | None,
         relation_occurrence_id: str,
+        relation_evidence_id: object,
         annotations: Iterable[object],
         scope: str,
     ) -> int:
@@ -287,6 +379,7 @@ class BulkMinimalIngestor:
                 snapshot_id=snapshot_id,
                 target_kind='relation',
                 target_occurrence_id=relation_occurrence_id,
+                target_evidence_id=relation_evidence_id,
                 scope=scope,
                 annotation=annotation,
             ):
@@ -303,6 +396,7 @@ class BulkMinimalIngestor:
         snapshot_id: str | None,
         target_kind: str,
         target_occurrence_id: str,
+        target_evidence_id: object,
         scope: str,
         annotation: object,
     ) -> bool:
@@ -325,20 +419,23 @@ class BulkMinimalIngestor:
             return False
         value = string_or_none(row.get('value'))
         unit = string_or_none(row.get('unit', row.get('units')))
+        annotation_cache_key = (term, value, unit)
+        annotation_key = buffers.annotation_keys.get(annotation_cache_key)
+        if annotation_key is None:
+            annotation_key = _annotation_key(term, value, unit)
+            buffers.annotation_keys[annotation_cache_key] = annotation_key
         buffers.annotations.append(
             (
-                source,
-                dataset,
-                row_id,
                 target_kind,
-                target_occurrence_id,
+                target_evidence_id,
                 scope,
-                _annotation_key(term, value, unit),
-                term,
-                value,
-                unit,
+                annotation_key,
             )
         )
+        annotation_value = (annotation_key, term, value, unit)
+        if annotation_value not in buffers.annotation_values_seen:
+            buffers.annotation_values_seen.add(annotation_value)
+            buffers.annotation_values.append(annotation_value)
         return True
 
     @staticmethod
@@ -360,12 +457,23 @@ class BulkMinimalIngestor:
             return False
         buffers.annotation_relations.append(
             (
+                _relation_evidence_key(
+                    source,
+                    dataset,
+                    row_id,
+                    spec.relation_occurrence_id,
+                ),
                 source,
                 dataset,
                 row_id,
                 snapshot_id,
                 spec.relation_occurrence_id,
-                spec.subject_occurrence_id,
+                _entity_evidence_key(
+                    source,
+                    dataset,
+                    row_id,
+                    spec.subject_occurrence_id,
+                ),
                 spec.predicate_rule.predicate,
                 spec.object_entity_type,
                 spec.object_id_type,
@@ -375,41 +483,94 @@ class BulkMinimalIngestor:
         )
         return True
 
-    def _flush(self, buffers: _BulkBuffers) -> None:
+    def _flush(
+        self,
+        buffers: _BulkBuffers,
+        *,
+        source: str,
+        dataset: str,
+        source_rows: int,
+        read_seconds: float,
+        flatten_seconds: float,
+    ) -> None:
         if not buffers:
             return
+        profile = _FlushProfile(
+            source=source,
+            dataset=dataset,
+            source_rows=source_rows,
+            read_seconds=read_seconds,
+            flatten_seconds=flatten_seconds,
+            entity_rows=len(buffers.entities),
+            identifier_rows=len(buffers.identifiers),
+            relation_rows=len(buffers.relations),
+            annotation_relation_rows=len(buffers.annotation_relations),
+            annotation_value_rows=len(buffers.annotation_values),
+            annotation_rows=len(buffers.annotations),
+        )
+        flush_started = time.perf_counter()
         with self.conn.cursor() as cur:
+            started = time.perf_counter()
             _create_staging_tables(cur)
-            _copy_rows(cur, 'stg_entity', _ENTITY_COLUMNS, buffers.entities)
-            _copy_rows(
+            profile.add('create_staging_tables', started)
+            _copy_profiled(
+                cur, 'stg_entity', _ENTITY_COLUMNS, buffers.entities, profile
+            )
+            _copy_profiled(
                 cur,
                 'stg_identifier_ref',
                 _IDENTIFIER_REF_COLUMNS,
                 buffers.identifiers,
+                profile,
             )
-            _copy_rows(
-                cur, 'stg_relation', _RELATION_COLUMNS, buffers.relations
+            _copy_profiled(
+                cur,
+                'stg_relation',
+                _RELATION_COLUMNS,
+                buffers.relations,
+                profile,
             )
-            _copy_rows(
+            _copy_profiled(
                 cur,
                 'stg_annotation_relation',
                 _ANNOTATION_RELATION_COLUMNS,
                 buffers.annotation_relations,
+                profile,
             )
-            _copy_rows(
+            _copy_profiled(
+                cur,
+                'stg_annotation_value',
+                _ANNOTATION_VALUE_COLUMNS,
+                buffers.annotation_values,
+                profile,
+            )
+            _copy_profiled(
                 cur,
                 'stg_annotation',
                 _ANNOTATION_COLUMNS,
                 buffers.annotations,
+                profile,
             )
+            started = time.perf_counter()
             _index_staging_tables(cur)
-            self._insert_from_staging(cur)
+            profile.add('index_staging_tables', started)
+            self._insert_from_staging(cur, profile=profile)
         self.conn.commit()
+        profile.total_seconds = time.perf_counter() - flush_started
+        if self.profile:
+            profile.print()
         buffers.clear()
 
-    def _insert_from_staging(self, cur: psycopg2.extensions.cursor) -> None:
+    def _insert_from_staging(
+        self,
+        cur: psycopg2.extensions.cursor,
+        *,
+        profile: _FlushProfile | None = None,
+    ) -> None:
         schema = sql.Identifier(self.schema)
-        cur.execute(
+        self._execute_step(
+            cur,
+            'sql_identifier_type',
             sql.SQL(
                 """
                 WITH missing AS (
@@ -432,81 +593,69 @@ class BulkMinimalIngestor:
                 CROSS JOIN base
                 ON CONFLICT (name) DO NOTHING
                 """
-            ).format(schema, schema, schema)
+            ).format(schema, schema, schema),
+            profile,
         )
-        cur.execute(
+        self._execute_step(
+            cur,
+            'sql_identifier_evidence',
             sql.SQL(
                 """
-                INSERT INTO {}.identifier_evidence (identifier_type_id, value)
-                SELECT DISTINCT it.identifier_type_id, s.value
+                INSERT INTO {}.identifier_evidence (
+                  identifier_id,
+                  identifier_type_id,
+                  value
+                )
+                SELECT DISTINCT s.identifier_id, it.identifier_type_id, s.value
                 FROM stg_identifier_ref s
                 JOIN {}.identifier_type it
                   ON it.name = s.type
                 WHERE s.type IS NOT NULL AND s.value IS NOT NULL
-                ON CONFLICT (identifier_type_id, value) DO NOTHING
+                ON CONFLICT DO NOTHING
                 """
-            ).format(schema, schema)
+            ).format(schema, schema),
+            profile,
         )
-        cur.execute(
+        self._execute_step(
+            cur,
+            'sql_entity_evidence',
             sql.SQL(
                 """
                 INSERT INTO {}.entity_evidence (
+                  entity_evidence_id,
                   source, dataset, row_id, snapshot_id, occurrence_id,
                   parent_entity_evidence_id, entity_role, entity_type,
                   taxonomy_id
                 )
                 SELECT DISTINCT
+                  entity_evidence_id,
                   source, dataset, row_id, snapshot_id, occurrence_id,
-                  NULL::bigint, entity_role, entity_type, taxonomy_id
+                  parent_entity_evidence_id, entity_role, entity_type,
+                  taxonomy_id
                 FROM stg_entity
-                ON CONFLICT (source, dataset, row_id, occurrence_id)
-                DO NOTHING
+                ON CONFLICT DO NOTHING
                 """
-            ).format(schema)
+            ).format(schema),
+            profile,
         )
-        cur.execute(
-            sql.SQL(
-                """
-                UPDATE {}.entity_evidence child
-                SET parent_entity_evidence_id = parent.entity_evidence_id
-                FROM stg_entity s
-                JOIN {}.entity_evidence parent
-                  ON parent.source = s.source
-                 AND parent.dataset = s.dataset
-                 AND parent.row_id = s.row_id
-                 AND parent.occurrence_id = s.parent_occurrence_id
-                WHERE child.source = s.source
-                  AND child.dataset = s.dataset
-                  AND child.row_id = s.row_id
-                  AND child.occurrence_id = s.occurrence_id
-                  AND s.parent_occurrence_id IS NOT NULL
-                  AND child.parent_entity_evidence_id IS DISTINCT FROM
-                      parent.entity_evidence_id
-                """
-            ).format(schema, schema)
-        )
-        cur.execute(
+        self._execute_step(
+            cur,
+            'sql_entity_identifier_links',
             sql.SQL(
                 """
                 INSERT INTO {}.entity_evidence_identifier
                   (entity_evidence_id, identifier_id)
-                SELECT DISTINCT e.entity_evidence_id, i.identifier_id
+                SELECT DISTINCT s.entity_evidence_id, s.identifier_id
                 FROM stg_identifier_ref s
-                JOIN {}.entity_evidence e
-                  ON e.source = s.source
-                 AND e.dataset = s.dataset
-                 AND e.row_id = s.row_id
-                 AND e.occurrence_id = s.occurrence_id
-                JOIN {}.identifier_type it
-                  ON it.name = s.type
-                JOIN {}.identifier_evidence i
-                  ON i.identifier_type_id = it.identifier_type_id
-                 AND i.value = s.value
+                WHERE s.identifier_id IS NOT NULL
                 ON CONFLICT DO NOTHING
                 """
-            ).format(schema, schema, schema, schema)
+            ).format(schema),
+            profile,
         )
-        cur.execute(
+        self._execute_step(
+            cur,
+            'sql_cv_term_entities',
             sql.SQL(
                 """
                 WITH entity_type_rows AS (
@@ -554,66 +703,60 @@ class BulkMinimalIngestor:
                   identifiers = EXCLUDED.identifiers,
                   resolution_status_id = 1
                 """
-            ).format(schema, schema, schema, schema)
+            ).format(schema, schema, schema, schema),
+            profile,
         )
-        cur.execute(
+        self._execute_step(
+            cur,
+            'sql_relation_evidence',
             sql.SQL(
                 """
                 INSERT INTO {}.relation_evidence (
+                  relation_evidence_id,
                   source, dataset, row_id, snapshot_id,
                   relation_occurrence_id, subject_entity_evidence_id,
                   subject_entity_id, predicate, object_entity_evidence_id,
                   object_entity_id, relation_category
                 )
                 SELECT DISTINCT
+                  s.relation_evidence_id,
                   s.source, s.dataset, s.row_id, s.snapshot_id,
                   s.relation_occurrence_id,
-                  subject.entity_evidence_id,
+                  s.subject_entity_evidence_id,
                   NULL::bigint,
                   s.predicate,
-                  object.entity_evidence_id,
+                  s.object_entity_evidence_id,
                   NULL::bigint,
                   s.relation_category
                 FROM stg_relation s
-                JOIN {}.entity_evidence subject
-                  ON subject.source = s.source
-                 AND subject.dataset = s.dataset
-                 AND subject.row_id = s.row_id
-                 AND subject.occurrence_id = s.subject_occurrence_id
-                JOIN {}.entity_evidence object
-                  ON object.source = s.source
-                 AND object.dataset = s.dataset
-                 AND object.row_id = s.row_id
-                 AND object.occurrence_id = s.object_occurrence_id
-                ON CONFLICT (source, dataset, row_id, relation_occurrence_id)
-                DO NOTHING
+                ON CONFLICT DO NOTHING
                 """
-            ).format(schema, schema, schema)
+            ).format(schema),
+            profile,
         )
-        cur.execute(
+        self._execute_step(
+            cur,
+            'sql_annotation_relation_evidence',
             sql.SQL(
                 """
                 INSERT INTO {}.relation_evidence (
+                  relation_evidence_id,
                   source, dataset, row_id, snapshot_id,
                   relation_occurrence_id, subject_entity_evidence_id,
                   subject_entity_id, predicate, object_entity_evidence_id,
                   object_entity_id, relation_category
                 )
                 SELECT DISTINCT
+                  s.relation_evidence_id,
                   s.source, s.dataset, s.row_id, s.snapshot_id,
                   s.relation_occurrence_id,
-                  subject.entity_evidence_id,
+                  s.subject_entity_evidence_id,
                   NULL::bigint,
                   s.predicate,
-                  NULL::bigint,
+                  NULL::uuid,
                   object.entity_id,
                   s.relation_category
                 FROM stg_annotation_relation s
-                JOIN {}.entity_evidence subject
-                  ON subject.source = s.source
-                 AND subject.dataset = s.dataset
-                 AND subject.row_id = s.row_id
-                 AND subject.occurrence_id = s.subject_occurrence_id
                 JOIN {}.entity_type et
                   ON et.name = s.object_entity_type
                 JOIN {}.entity object
@@ -623,12 +766,14 @@ class BulkMinimalIngestor:
                  AND object.canonical_identifier_type_id =
                      it.identifier_type_id
                  AND object.canonical_identifier = s.object_id
-                ON CONFLICT (source, dataset, row_id, relation_occurrence_id)
-                DO NOTHING
+                ON CONFLICT DO NOTHING
                 """
-            ).format(schema, schema, schema, schema, schema)
+            ).format(schema, schema, schema, schema),
+            profile,
         )
-        cur.execute(
+        self._execute_step(
+            cur,
+            'sql_annotation_values',
             sql.SQL(
                 """
                 INSERT INTO {}.annotation (
@@ -642,14 +787,16 @@ class BulkMinimalIngestor:
                   s.term,
                   s.value,
                   s.unit
-                FROM stg_annotation s
+                FROM stg_annotation_value s
                 WHERE s.term IS NOT NULL
                 ON CONFLICT DO NOTHING
                 """
-            ).format(schema)
+            ).format(schema),
+            profile,
         )
-        _create_evidence_id_maps(cur, self.schema)
-        cur.execute(
+        self._execute_step(
+            cur,
+            'sql_entity_annotation_links',
             sql.SQL(
                 """
                 INSERT INTO {}.entity_evidence_annotation (
@@ -658,22 +805,20 @@ class BulkMinimalIngestor:
                   scope
                 )
                 SELECT DISTINCT
-                  em.entity_evidence_id,
+                  s.target_evidence_id,
                   s.annotation_key,
                   s.scope
                 FROM stg_annotation s
-                JOIN stg_entity_id_map em
-                  ON em.source = s.source
-                 AND em.dataset = s.dataset
-                 AND em.row_id = s.row_id
-                 AND em.occurrence_id = s.target_occurrence_id
                 WHERE s.target_kind = 'entity'
                   AND s.scope IS NOT NULL
                 ON CONFLICT DO NOTHING
                 """
-            ).format(schema)
+            ).format(schema),
+            profile,
         )
-        cur.execute(
+        self._execute_step(
+            cur,
+            'sql_relation_annotation_links',
             sql.SQL(
                 """
                 INSERT INTO {}.relation_evidence_annotation (
@@ -682,21 +827,30 @@ class BulkMinimalIngestor:
                   scope
                 )
                 SELECT DISTINCT
-                  rm.relation_evidence_id,
+                  s.target_evidence_id,
                   s.annotation_key,
                   s.scope
                 FROM stg_annotation s
-                JOIN stg_relation_id_map rm
-                  ON rm.source = s.source
-                 AND rm.dataset = s.dataset
-                 AND rm.row_id = s.row_id
-                 AND rm.relation_occurrence_id = s.target_occurrence_id
                 WHERE s.target_kind = 'relation'
                   AND s.scope IS NOT NULL
                 ON CONFLICT DO NOTHING
                 """
-            ).format(schema)
+            ).format(schema),
+            profile,
         )
+
+    @staticmethod
+    def _execute_step(
+        cur: psycopg2.extensions.cursor,
+        name: str,
+        statement: sql.Composed,
+        profile: _FlushProfile | None,
+    ) -> None:
+        started = time.perf_counter()
+        cur.execute(statement)
+        if profile is not None:
+            profile.timings.append((name, time.perf_counter() - started))
+
     @staticmethod
     def _print_progress(
         source: str,
@@ -719,11 +873,77 @@ class BulkMinimalIngestor:
 
 
 @dataclass
+class _FlushProfile:
+    source: str
+    dataset: str
+    source_rows: int
+    read_seconds: float
+    flatten_seconds: float
+    entity_rows: int
+    identifier_rows: int
+    relation_rows: int
+    annotation_relation_rows: int
+    annotation_value_rows: int
+    annotation_rows: int
+    timings: list[tuple[str, float]] = field(default_factory=list)
+    total_seconds: float = 0.0
+
+    def add(self, name: str, started: float) -> None:
+        self.timings.append((name, time.perf_counter() - started))
+
+    def print(self) -> None:
+        rows = (
+            f'entities={self.entity_rows:,} '
+            f'identifiers={self.identifier_rows:,} '
+            f'relations={self.relation_rows:,} '
+            f'annotation_relations={self.annotation_relation_rows:,} '
+            f'annotation_values={self.annotation_value_rows:,} '
+            f'annotations={self.annotation_rows:,}'
+        )
+        print(
+            f'[{self.source}.{self.dataset}] profile flush '
+            f'source_rows={self.source_rows:,} {rows}',
+            flush=True,
+        )
+        print(
+            f'[{self.source}.{self.dataset}] profile '
+            f'read_records={self.read_seconds:.3f}s',
+            flush=True,
+        )
+        print(
+            f'[{self.source}.{self.dataset}] profile '
+            f'flatten={self.flatten_seconds:.3f}s',
+            flush=True,
+        )
+        for name, seconds in self.timings:
+            print(
+                f'[{self.source}.{self.dataset}] profile '
+                f'{name}={seconds:.3f}s',
+                flush=True,
+            )
+        print(
+            f'[{self.source}.{self.dataset}] profile '
+            f'flush_total={self.total_seconds:.3f}s',
+            flush=True,
+        )
+
+
+@dataclass
 class _BulkBuffers:
     entities: list[tuple[object, ...]] = field(default_factory=list)
     identifiers: list[tuple[object, ...]] = field(default_factory=list)
     relations: list[tuple[object, ...]] = field(default_factory=list)
     annotation_relations: list[tuple[object, ...]] = field(default_factory=list)
+    identifier_keys: dict[tuple[object, ...], object] = field(
+        default_factory=dict
+    )
+    annotation_values: list[tuple[object, ...]] = field(default_factory=list)
+    annotation_keys: dict[tuple[object, ...], object] = field(
+        default_factory=dict
+    )
+    annotation_values_seen: set[tuple[object, ...]] = field(
+        default_factory=set
+    )
     annotations: list[tuple[object, ...]] = field(default_factory=list)
 
     def __bool__(self) -> bool:
@@ -732,6 +952,7 @@ class _BulkBuffers:
             or self.identifiers
             or self.relations
             or self.annotation_relations
+            or self.annotation_values
             or self.annotations
         )
 
@@ -740,46 +961,51 @@ class _BulkBuffers:
         self.identifiers.clear()
         self.relations.clear()
         self.annotation_relations.clear()
+        self.identifier_keys.clear()
+        self.annotation_values.clear()
+        self.annotation_keys.clear()
+        self.annotation_values_seen.clear()
         self.annotations.clear()
 
 
 _ENTITY_COLUMNS = (
+    'entity_evidence_id',
     'source',
     'dataset',
     'row_id',
     'snapshot_id',
     'occurrence_id',
-    'parent_occurrence_id',
+    'parent_entity_evidence_id',
     'entity_role',
     'entity_type',
     'taxonomy_id',
 )
 _IDENTIFIER_REF_COLUMNS = (
-    'source',
-    'dataset',
-    'row_id',
-    'occurrence_id',
+    'entity_evidence_id',
+    'identifier_id',
     'type',
     'value',
 )
 _RELATION_COLUMNS = (
+    'relation_evidence_id',
     'source',
     'dataset',
     'row_id',
     'snapshot_id',
     'relation_occurrence_id',
-    'subject_occurrence_id',
+    'subject_entity_evidence_id',
     'predicate',
-    'object_occurrence_id',
+    'object_entity_evidence_id',
     'relation_category',
 )
 _ANNOTATION_RELATION_COLUMNS = (
+    'relation_evidence_id',
     'source',
     'dataset',
     'row_id',
     'snapshot_id',
     'relation_occurrence_id',
-    'subject_occurrence_id',
+    'subject_entity_evidence_id',
     'predicate',
     'object_entity_type',
     'object_id_type',
@@ -787,12 +1013,12 @@ _ANNOTATION_RELATION_COLUMNS = (
     'relation_category',
 )
 _ANNOTATION_COLUMNS = (
-    'source',
-    'dataset',
-    'row_id',
     'target_kind',
-    'target_occurrence_id',
+    'target_evidence_id',
     'scope',
+    'annotation_key',
+)
+_ANNOTATION_VALUE_COLUMNS = (
     'annotation_key',
     'term',
     'value',
@@ -805,16 +1031,18 @@ def _create_staging_tables(cur: psycopg2.extensions.cursor) -> None:
     cur.execute('DROP TABLE IF EXISTS stg_identifier_ref')
     cur.execute('DROP TABLE IF EXISTS stg_relation')
     cur.execute('DROP TABLE IF EXISTS stg_annotation_relation')
+    cur.execute('DROP TABLE IF EXISTS stg_annotation_value')
     cur.execute('DROP TABLE IF EXISTS stg_annotation')
     cur.execute(
         """
         CREATE TEMP TABLE stg_entity (
+          entity_evidence_id uuid,
           source text,
           dataset text,
           row_id bigint,
           snapshot_id text,
           occurrence_id text,
-          parent_occurrence_id text,
+          parent_entity_evidence_id uuid,
           entity_role text,
           entity_type text,
           taxonomy_id text
@@ -824,10 +1052,8 @@ def _create_staging_tables(cur: psycopg2.extensions.cursor) -> None:
     cur.execute(
         """
         CREATE TEMP TABLE stg_identifier_ref (
-          source text,
-          dataset text,
-          row_id bigint,
-          occurrence_id text,
+          entity_evidence_id uuid,
+          identifier_id uuid,
           type text,
           value text
         ) ON COMMIT DROP
@@ -836,14 +1062,15 @@ def _create_staging_tables(cur: psycopg2.extensions.cursor) -> None:
     cur.execute(
         """
         CREATE TEMP TABLE stg_relation (
+          relation_evidence_id uuid,
           source text,
           dataset text,
           row_id bigint,
           snapshot_id text,
           relation_occurrence_id text,
-          subject_occurrence_id text,
+          subject_entity_evidence_id uuid,
           predicate text,
-          object_occurrence_id text,
+          object_entity_evidence_id uuid,
           relation_category text
         ) ON COMMIT DROP
         """
@@ -851,12 +1078,13 @@ def _create_staging_tables(cur: psycopg2.extensions.cursor) -> None:
     cur.execute(
         """
         CREATE TEMP TABLE stg_annotation_relation (
+          relation_evidence_id uuid,
           source text,
           dataset text,
           row_id bigint,
           snapshot_id text,
           relation_occurrence_id text,
-          subject_occurrence_id text,
+          subject_entity_evidence_id uuid,
           predicate text,
           object_entity_type text,
           object_id_type text,
@@ -867,17 +1095,21 @@ def _create_staging_tables(cur: psycopg2.extensions.cursor) -> None:
     )
     cur.execute(
         """
-        CREATE TEMP TABLE stg_annotation (
-          source text,
-          dataset text,
-          row_id bigint,
-          target_kind text,
-          target_occurrence_id text,
-          scope text,
+        CREATE TEMP TABLE stg_annotation_value (
           annotation_key uuid,
           term text,
           value text,
           unit text
+        ) ON COMMIT DROP
+        """
+    )
+    cur.execute(
+        """
+        CREATE TEMP TABLE stg_annotation (
+          target_kind text,
+          target_evidence_id uuid,
+          scope text,
+          annotation_key uuid
         ) ON COMMIT DROP
         """
     )
@@ -889,27 +1121,21 @@ def _index_staging_tables(cur: psycopg2.extensions.cursor) -> None:
         CREATE INDEX stg_annotation_target_idx
         ON stg_annotation (
           target_kind,
-          source,
-          dataset,
-          row_id,
-          target_occurrence_id
+          target_evidence_id
         )
         """
     )
     cur.execute(
         """
         CREATE INDEX stg_annotation_value_idx
-        ON stg_annotation (term, value, unit)
+        ON stg_annotation_value (annotation_key)
         """
     )
     cur.execute(
         """
         CREATE INDEX stg_annotation_relation_key_idx
         ON stg_annotation_relation (
-          source,
-          dataset,
-          row_id,
-          relation_occurrence_id
+          relation_evidence_id
         )
         """
     )
@@ -918,95 +1144,9 @@ def _index_staging_tables(cur: psycopg2.extensions.cursor) -> None:
         'stg_identifier_ref',
         'stg_relation',
         'stg_annotation_relation',
+        'stg_annotation_value',
         'stg_annotation',
     ):
-        cur.execute(sql.SQL('ANALYZE {}').format(sql.Identifier(table)))
-
-
-def _create_evidence_id_maps(
-    cur: psycopg2.extensions.cursor,
-    schema: str,
-) -> None:
-    schema_id = sql.Identifier(schema)
-    cur.execute('DROP TABLE IF EXISTS stg_entity_id_map')
-    cur.execute(
-        sql.SQL(
-            """
-            CREATE TEMP TABLE stg_entity_id_map
-            ON COMMIT DROP AS
-            SELECT DISTINCT
-              s.source,
-              s.dataset,
-              s.row_id,
-              s.occurrence_id,
-              e.entity_evidence_id
-            FROM stg_entity s
-            JOIN {}.entity_evidence e
-              ON e.source = s.source
-             AND e.dataset = s.dataset
-             AND e.row_id = s.row_id
-             AND e.occurrence_id = s.occurrence_id
-            """
-        ).format(schema_id)
-    )
-    cur.execute(
-        """
-        CREATE UNIQUE INDEX stg_entity_id_map_key_idx
-        ON stg_entity_id_map (
-          source,
-          dataset,
-          row_id,
-          occurrence_id
-        )
-        """
-    )
-    cur.execute('DROP TABLE IF EXISTS stg_relation_id_map')
-    cur.execute(
-        sql.SQL(
-            """
-            CREATE TEMP TABLE stg_relation_id_map
-            ON COMMIT DROP AS
-            SELECT DISTINCT
-              s.source,
-              s.dataset,
-              s.row_id,
-              s.relation_occurrence_id,
-              r.relation_evidence_id
-            FROM (
-              SELECT
-                source,
-                dataset,
-                row_id,
-                relation_occurrence_id
-              FROM stg_relation
-              UNION
-              SELECT
-                source,
-                dataset,
-                row_id,
-                relation_occurrence_id
-              FROM stg_annotation_relation
-            ) s
-            JOIN {}.relation_evidence r
-              ON r.source = s.source
-             AND r.dataset = s.dataset
-             AND r.row_id = s.row_id
-             AND r.relation_occurrence_id = s.relation_occurrence_id
-            """
-        ).format(schema_id)
-    )
-    cur.execute(
-        """
-        CREATE UNIQUE INDEX stg_relation_id_map_key_idx
-        ON stg_relation_id_map (
-          source,
-          dataset,
-          row_id,
-          relation_occurrence_id
-        )
-        """
-    )
-    for table in ('stg_entity_id_map', 'stg_relation_id_map'):
         cur.execute(sql.SQL('ANALYZE {}').format(sql.Identifier(table)))
 
 
@@ -1030,3 +1170,15 @@ def _copy_rows(
         "COPY {} ({}) FROM STDIN WITH (FORMAT CSV, NULL '\\N')"
     ).format(sql.Identifier(table), column_sql)
     cur.copy_expert(copy_sql.as_string(cur.connection), buffer)
+
+
+def _copy_profiled(
+    cur: psycopg2.extensions.cursor,
+    table: str,
+    columns: tuple[str, ...],
+    rows: list[tuple[object, ...]],
+    profile: _FlushProfile,
+) -> None:
+    started = time.perf_counter()
+    _copy_rows(cur, table, columns, rows)
+    profile.timings.append((f'copy_{table}', time.perf_counter() - started))

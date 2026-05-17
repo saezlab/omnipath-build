@@ -101,11 +101,12 @@ def ensure_schema(
                 ),
             )
         )
+        _drop_legacy_content_tables_if_needed(cur, schema)
         cur.execute(
             sql.SQL(
                 """
                 CREATE TABLE IF NOT EXISTS {}.identifier_evidence (
-                  identifier_id bigserial PRIMARY KEY,
+                  identifier_id uuid PRIMARY KEY,
                   identifier_type_id bigint NOT NULL
                     REFERENCES {}.identifier_type(identifier_type_id),
                   value text NOT NULL
@@ -120,13 +121,13 @@ def ensure_schema(
             sql.SQL(
                 """
                 CREATE TABLE IF NOT EXISTS {}.entity_evidence (
-                  entity_evidence_id bigserial PRIMARY KEY,
+                  entity_evidence_id uuid PRIMARY KEY,
                   source text NOT NULL,
                   dataset text NOT NULL,
                   row_id bigint NOT NULL,
                   snapshot_id text,
                   occurrence_id text NOT NULL,
-                  parent_entity_evidence_id bigint
+                  parent_entity_evidence_id uuid
                     REFERENCES {}.entity_evidence(entity_evidence_id),
                   entity_role text NOT NULL,
                   entity_type text,
@@ -141,9 +142,9 @@ def ensure_schema(
             sql.SQL(
                 """
                 CREATE TABLE IF NOT EXISTS {}.entity_evidence_identifier (
-                  entity_evidence_id bigint NOT NULL
+                  entity_evidence_id uuid NOT NULL
                     REFERENCES {}.entity_evidence(entity_evidence_id),
-                  identifier_id bigint NOT NULL
+                  identifier_id uuid NOT NULL
                     REFERENCES {}.identifier_evidence(identifier_id),
                   PRIMARY KEY (entity_evidence_id, identifier_id)
                 )
@@ -159,17 +160,17 @@ def ensure_schema(
             sql.SQL(
                 """
                 CREATE TABLE IF NOT EXISTS {}.relation_evidence (
-                  relation_evidence_id bigserial PRIMARY KEY,
+                  relation_evidence_id uuid PRIMARY KEY,
                   source text NOT NULL,
                   dataset text NOT NULL,
                   row_id bigint NOT NULL,
                   snapshot_id text,
                   relation_occurrence_id text NOT NULL,
-                  subject_entity_evidence_id bigint
+                  subject_entity_evidence_id uuid
                     REFERENCES {}.entity_evidence(entity_evidence_id),
                   subject_entity_id bigint,
                   predicate text NOT NULL,
-                  object_entity_evidence_id bigint
+                  object_entity_evidence_id uuid
                     REFERENCES {}.entity_evidence(entity_evidence_id),
                   object_entity_id bigint,
                   relation_category text NOT NULL,
@@ -237,6 +238,130 @@ def ensure_deferred_indexes(
     conn.commit()
 
 
+def drop_deferred_content_indexes(
+    conn: psycopg2.extensions.connection,
+    *,
+    schema: str = 'public',
+    progress: bool = False,
+) -> list[str]:
+    """Drop secondary content indexes that are expensive during bulk ingest."""
+
+    names = [
+        'entity_evidence_identifier_identifier_idx',
+        'entity_resolution_status_idx',
+        'entity_resolution_reason_idx',
+        'entity_evidence_resolution_entity_idx',
+        'entity_canonical_lookup_idx',
+        'entity_status_idx',
+        'relation_subject_idx',
+        'relation_object_idx',
+        'relation_subject_entity_idx',
+        'relation_object_entity_idx',
+        'relation_source_dataset_idx',
+        'entity_evidence_annotation_annotation_key_idx',
+        'relation_evidence_annotation_relation_evidence_idx',
+        'relation_evidence_annotation_annotation_key_idx',
+        'entity_annotation_annotation_key_idx',
+        'relation_annotation_annotation_key_idx',
+        'resources_build_status_idx',
+    ]
+    schema_id = sql.Identifier(schema)
+    with conn.cursor() as cur:
+        for name in names:
+            if progress:
+                print(f'[schema] drop index {name}', flush=True)
+            cur.execute(
+                sql.SQL('DROP INDEX IF EXISTS {}.{}').format(
+                    schema_id,
+                    sql.Identifier(name),
+                )
+            )
+    conn.commit()
+    return names
+
+
+def _drop_legacy_content_tables_if_needed(
+    cur: psycopg2.extensions.cursor,
+    schema: str,
+) -> None:
+    """Drop empty generated-id content tables before recreating UUID keys."""
+
+    expected_uuid_columns = {
+        'identifier_evidence': 'identifier_id',
+        'entity_evidence': 'entity_evidence_id',
+        'relation_evidence': 'relation_evidence_id',
+    }
+    cur.execute(
+        """
+        SELECT table_name, column_name, data_type
+        FROM information_schema.columns
+        WHERE table_schema = %s
+          AND (table_name, column_name) IN (
+            ('identifier_evidence', 'identifier_id'),
+            ('entity_evidence', 'entity_evidence_id'),
+            ('relation_evidence', 'relation_evidence_id')
+          )
+        """,
+        [schema],
+    )
+    column_types = {
+        (table_name, column_name): data_type
+        for table_name, column_name, data_type in cur.fetchall()
+    }
+    legacy_tables = [
+        table
+        for table, column in expected_uuid_columns.items()
+        if column_types.get((table, column)) not in (None, 'uuid')
+    ]
+    if not legacy_tables:
+        return
+
+    existing_content_tables = _existing_content_tables(cur, schema)
+    non_empty_tables: list[str] = []
+    for table in existing_content_tables:
+        cur.execute(
+            sql.SQL('SELECT EXISTS (SELECT 1 FROM {}.{} LIMIT 1)').format(
+                sql.Identifier(schema),
+                sql.Identifier(table),
+            )
+        )
+        if bool(cur.fetchone()[0]):
+            non_empty_tables.append(table)
+
+    if non_empty_tables:
+        raise RuntimeError(
+            'Cannot migrate minimal content tables to deterministic UUID keys '
+            'while content rows exist. Run `make minimal-reset-content` first. '
+            f'Non-empty tables: {", ".join(non_empty_tables)}'
+        )
+
+    for table in existing_content_tables:
+        cur.execute(
+            sql.SQL('DROP TABLE IF EXISTS {}.{} CASCADE').format(
+                sql.Identifier(schema),
+                sql.Identifier(table),
+            )
+        )
+
+
+def _existing_content_tables(
+    cur: psycopg2.extensions.cursor,
+    schema: str,
+) -> list[str]:
+    cur.execute(
+        """
+        SELECT table_name
+        FROM information_schema.tables
+        WHERE table_schema = %s
+          AND table_type = 'BASE TABLE'
+          AND table_name = ANY(%s)
+        """,
+        [schema, list(CONTENT_TABLES)],
+    )
+    existing = {row[0] for row in cur.fetchall()}
+    return [table for table in CONTENT_TABLES if table in existing]
+
+
 def reset_content_tables(
     conn: psycopg2.extensions.connection,
     *,
@@ -245,20 +370,7 @@ def reset_content_tables(
     """Truncate minimal content tables without touching resolver tables."""
 
     with conn.cursor() as cur:
-        cur.execute(
-            """
-            SELECT table_name
-            FROM information_schema.tables
-            WHERE table_schema = %s
-              AND table_type = 'BASE TABLE'
-              AND table_name = ANY(%s)
-            """,
-            [schema, list(CONTENT_TABLES)],
-        )
-        existing_tables = {row[0] for row in cur.fetchall()}
-        tables_to_truncate = [
-            table for table in CONTENT_TABLES if table in existing_tables
-        ]
+        tables_to_truncate = _existing_content_tables(cur, schema)
         if tables_to_truncate:
             cur.execute(
                 sql.SQL('TRUNCATE {} RESTART IDENTITY').format(
@@ -376,7 +488,7 @@ def _ensure_resolution_schema(
         sql.SQL(
             """
             CREATE TABLE IF NOT EXISTS {}.entity_evidence_resolution (
-              entity_evidence_id bigint PRIMARY KEY
+              entity_evidence_id uuid PRIMARY KEY
                 REFERENCES {}.entity_evidence(entity_evidence_id)
                 ON DELETE CASCADE,
               status_id smallint NOT NULL
@@ -561,7 +673,7 @@ def _ensure_resolution_schema(
               relation_id bigint NOT NULL
                 REFERENCES {}.relation(relation_id)
                 ON DELETE CASCADE,
-              relation_evidence_id bigint NOT NULL
+              relation_evidence_id uuid NOT NULL
                 REFERENCES {}.relation_evidence(relation_evidence_id)
                 ON DELETE CASCADE,
               PRIMARY KEY (relation_id, relation_evidence_id),
@@ -834,7 +946,7 @@ def _ensure_evidence_annotation_tables(
         sql.SQL(
             """
             CREATE TABLE IF NOT EXISTS {}.entity_evidence_annotation (
-              entity_evidence_id bigint NOT NULL
+              entity_evidence_id uuid NOT NULL
                 REFERENCES {}.entity_evidence(entity_evidence_id)
                 ON DELETE CASCADE,
               annotation_key uuid NOT NULL
@@ -850,7 +962,7 @@ def _ensure_evidence_annotation_tables(
         sql.SQL(
             """
             CREATE TABLE IF NOT EXISTS {}.relation_evidence_annotation (
-              relation_evidence_id bigint NOT NULL
+              relation_evidence_id uuid NOT NULL
                 REFERENCES {}.relation_evidence(relation_evidence_id)
                 ON DELETE CASCADE,
               annotation_key uuid NOT NULL

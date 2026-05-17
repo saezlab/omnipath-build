@@ -215,7 +215,7 @@ def _create_entity_scope(
     cur.execute(
         """
         CREATE TEMP TABLE _entity_scope (
-          entity_evidence_id bigint PRIMARY KEY
+          entity_evidence_id uuid PRIMARY KEY
         ) ON COMMIT DROP
         """
     )
@@ -346,7 +346,7 @@ def _create_entity_groups(
                     DISTINCT k.identifier_id
                     ORDER BY k.identifier_id
                   ) FILTER (WHERE k.identifier_id IS NOT NULL),
-                  ARRAY[]::bigint[]
+                  ARRAY[]::uuid[]
                 ) AS identifier_ids
               FROM _entity_scope s
               JOIN {}.entity_evidence ee
@@ -409,7 +409,7 @@ def _create_entity_groups(
                     DISTINCT k.identifier_id
                     ORDER BY k.identifier_id
                   ) FILTER (WHERE k.identifier_id IS NOT NULL),
-                  ARRAY[]::bigint[]
+                  ARRAY[]::uuid[]
                 ) AS identifier_ids
               FROM _entity_scope s
               JOIN {}.entity_evidence ee

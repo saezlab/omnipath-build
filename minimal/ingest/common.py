@@ -166,8 +166,42 @@ def annotation_key(
 ) -> str:
     """Return a deterministic UUID key for an annotation value."""
 
+    return content_uuid([term, value, unit])
+
+
+def identifier_key(identifier_type: str, value: str) -> str:
+    """Return a deterministic UUID key for an identifier evidence value."""
+
+    return content_uuid([identifier_type, value])
+
+
+def entity_evidence_key(
+    source: str,
+    dataset: str,
+    row_id: int,
+    occurrence_id: str,
+) -> str:
+    """Return a deterministic UUID key for one entity evidence occurrence."""
+
+    return content_uuid([source, dataset, row_id, occurrence_id])
+
+
+def relation_evidence_key(
+    source: str,
+    dataset: str,
+    row_id: int,
+    relation_occurrence_id: str,
+) -> str:
+    """Return a deterministic UUID key for one relation evidence occurrence."""
+
+    return content_uuid([source, dataset, row_id, relation_occurrence_id])
+
+
+def content_uuid(parts: list[object]) -> str:
+    """Return a deterministic UUID from a canonical JSON payload."""
+
     payload = json.dumps(
-        [term, value, unit],
+        parts,
         ensure_ascii=False,
         separators=(',', ':'),
     )

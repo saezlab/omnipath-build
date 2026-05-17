@@ -14,6 +14,7 @@ from pypath.inputs_v2.ontology_serializers import format_obo
 
 from minimal.db import (
     delete_source_content,
+    drop_deferred_content_indexes,
     ensure_deferred_indexes,
     ensure_schema,
     rebuild_bitmap_tables,
@@ -37,6 +38,7 @@ from minimal.resolver.mapping_tables import (
     run_sources as build_resolver_sources,
 )
 from omnipath_build.silver.build import discover_resources
+
 
 def main(argv: list[str] | None = None) -> int:
     """Run the minimal direct-to-Postgres command line interface."""
@@ -62,7 +64,12 @@ def main(argv: list[str] | None = None) -> int:
         help='Create deferrable indexes during schema setup.',
     )
 
-    subparsers.add_parser('reset-content')
+    reset_content = subparsers.add_parser('reset-content')
+    reset_content.add_argument(
+        '--drop-indexes',
+        action='store_true',
+        help='Drop secondary content indexes after truncating for faster reload.',
+    )
 
     build_resolver = subparsers.add_parser('build-resolver')
     build_resolver.add_argument(
@@ -206,6 +213,11 @@ def main(argv: list[str] | None = None) -> int:
         default=50_000,
         help='Source rows per bulk staging flush.',
     )
+    ingest.add_argument(
+        '--profile',
+        action='store_true',
+        help='Print fine-grained bulk ingest timings for each flush.',
+    )
     ingest.add_argument('--commit-every', type=int, default=1000)
     ingest.add_argument('--progress-every', type=int, default=1000)
     ingest.add_argument(
@@ -257,6 +269,16 @@ def main(argv: list[str] | None = None) -> int:
             if tables:
                 print(
                     '[reset-content] truncated=' + ','.join(tables),
+                    flush=True,
+                )
+            if args.drop_indexes:
+                dropped = drop_deferred_content_indexes(
+                    conn,
+                    schema=args.schema,
+                    progress=True,
+                )
+                print(
+                    f'[reset-content] dropped_indexes={len(dropped)}',
                     flush=True,
                 )
             return 0
@@ -341,10 +363,17 @@ def main(argv: list[str] | None = None) -> int:
                     database_name=args.database,
                     inputs_package=args.inputs_package,
                 )
+                bitmap_stats = None
+                if args.bitmaps:
+                    bitmap_stats = rebuild_bitmap_tables(
+                        conn,
+                        schema=args.schema,
+                    )
                 resource_stats = sync_resources_table(
                     conn,
                     discovered,
                     schema=args.schema,
+                    prefer_bitmaps=args.bitmaps,
                 )
                 print(
                     '[derive] '
@@ -354,8 +383,11 @@ def main(argv: list[str] | None = None) -> int:
                     f'resources={resource_stats.resources}',
                     flush=True,
                 )
-            if args.bitmaps:
+            elif args.bitmaps:
                 bitmap_stats = rebuild_bitmap_tables(conn, schema=args.schema)
+            else:
+                bitmap_stats = None
+            if bitmap_stats is not None:
                 print(
                     '[derive] '
                     f'annotation_term_entities='
@@ -466,7 +498,10 @@ def _handle_ingest(
                 f'kind={fn.output_kind}',
                 flush=True,
             )
-            records = raw_dataset(force_refresh=args.force_refresh)
+            raw_kwargs = {'force_refresh': args.force_refresh}
+            if fn.source == 'chembl' and args.max_records is not None:
+                raw_kwargs['max_records'] = args.max_records
+            records = raw_dataset(**raw_kwargs)
             if args.max_records is not None:
                 records = islice(records, args.max_records)
             if fn.output_kind == 'ontology':
@@ -503,7 +538,11 @@ def _handle_ingest(
                 continue
 
             ingestor = (
-                BulkMinimalIngestor(conn, schema=args.schema)
+                BulkMinimalIngestor(
+                    conn,
+                    schema=args.schema,
+                    profile=args.profile,
+                )
                 if args.backend == 'bulk'
                 else MinimalIngestor(conn, schema=args.schema)
             )

@@ -12,6 +12,9 @@ from minimal.ingest.common import (
     IngestStats,
     MutableStats as _MutableStats,
     annotation_key as _annotation_key,
+    entity_evidence_key as _entity_evidence_key,
+    identifier_key as _identifier_key,
+    relation_evidence_key as _relation_evidence_key,
     entity_to_row as _entity_to_row,
     unwrap_record as _unwrap,
     annotation_to_row as _annotation_to_row,
@@ -43,7 +46,7 @@ class MinimalIngestor:
     ) -> None:
         self.conn = conn
         self.schema = schema
-        self._identifier_cache: dict[tuple[str, str], int] = {}
+        self._identifier_cache: dict[tuple[str, str], str] = {}
 
     def ingest_records(
         self,
@@ -103,10 +106,10 @@ class MinimalIngestor:
         row_id: int,
         snapshot_id: str | None,
         occurrence_id: str,
-        parent_entity_evidence_id: int | None,
+        parent_entity_evidence_id: str | None,
         entity_role: str,
         stats: _MutableStats,
-    ) -> int | None:
+    ) -> str | None:
         row = _entity_to_row(entity)
         entity_type = string_or_none(row.get('type'))
         memberships = list(getattr(entity, 'membership', None) or [])
@@ -120,7 +123,7 @@ class MinimalIngestor:
             == 2
         )
 
-        entity_evidence_id: int | None = None
+        entity_evidence_id: str | None = None
         if not relation_only_interaction:
             entity_evidence_id = self._insert_entity_evidence(
                 source=source,
@@ -165,7 +168,7 @@ class MinimalIngestor:
                 ):
                     stats.annotations += 1
 
-        member_ids: list[tuple[int, object]] = []
+        member_ids: list[tuple[str, object]] = []
         for member_index, membership in enumerate(memberships):
             member = getattr(membership, 'member', None)
             if member is None:
@@ -231,14 +234,14 @@ class MinimalIngestor:
     def _insert_interaction_relation(
         self,
         row: dict[str, object],
-        member_ids: list[tuple[int, object]],
+        member_ids: list[tuple[str, object]],
         *,
         source: str,
         dataset: str,
         row_id: int,
         snapshot_id: str | None,
         occurrence_id: str,
-    ) -> int | None:
+    ) -> str | None:
         spec = interaction_relation_spec(
             row,
             member_ids,
@@ -252,16 +255,16 @@ class MinimalIngestor:
             row_id=row_id,
             snapshot_id=snapshot_id,
             relation_occurrence_id=spec.relation_occurrence_id,
-            subject_entity_evidence_id=int(spec.subject_ref),
+            subject_entity_evidence_id=str(spec.subject_ref),
             predicate_rule=spec.predicate_rule,
-            object_entity_evidence_id=int(spec.object_ref),
+            object_entity_evidence_id=str(spec.object_ref),
         )
 
     def _insert_membership_relation(
         self,
         *,
-        parent_id: int,
-        member_id: int,
+        parent_id: str,
+        member_id: str,
         membership: object,
         parent_type: str | None,
         source: str,
@@ -269,7 +272,7 @@ class MinimalIngestor:
         row_id: int,
         snapshot_id: str | None,
         relation_occurrence_id: str,
-    ) -> int | None:
+    ) -> str | None:
         spec = membership_relation_spec(
             parent_ref=parent_id,
             member_ref=member_id,
@@ -283,9 +286,9 @@ class MinimalIngestor:
             row_id=row_id,
             snapshot_id=snapshot_id,
             relation_occurrence_id=spec.relation_occurrence_id,
-            subject_entity_evidence_id=int(spec.subject_ref),
+            subject_entity_evidence_id=str(spec.subject_ref),
             predicate_rule=spec.predicate_rule,
-            object_entity_evidence_id=int(spec.object_ref),
+            object_entity_evidence_id=str(spec.object_ref),
         )
 
     def _insert_entity_evidence(
@@ -296,27 +299,34 @@ class MinimalIngestor:
         row_id: int,
         snapshot_id: str | None,
         occurrence_id: str,
-        parent_entity_evidence_id: int | None,
+        parent_entity_evidence_id: str | None,
         entity_role: str,
         entity_type: str | None,
         taxonomy_id: str | None,
-    ) -> int:
+    ) -> str:
+        entity_evidence_id = _entity_evidence_key(
+            source,
+            dataset,
+            row_id,
+            occurrence_id,
+        )
         with self.conn.cursor() as cur:
             cur.execute(
                 sql.SQL(
                     """
                     INSERT INTO {}.entity_evidence (
+                      entity_evidence_id,
                       source, dataset, row_id, snapshot_id, occurrence_id,
                       parent_entity_evidence_id, entity_role, entity_type,
                       taxonomy_id
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    ON CONFLICT (source, dataset, row_id, occurrence_id)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT
                     DO NOTHING
-                    RETURNING entity_evidence_id
                     """
                 ).format(sql.Identifier(self.schema)),
                 [
+                    entity_evidence_id,
                     source,
                     dataset,
                     row_id,
@@ -328,29 +338,14 @@ class MinimalIngestor:
                     taxonomy_id,
                 ],
             )
-            row = cur.fetchone()
-            if row:
-                return int(row[0])
-            cur.execute(
-                sql.SQL(
-                    """
-                    SELECT entity_evidence_id
-                    FROM {}.entity_evidence
-                    WHERE source = %s
-                      AND dataset = %s
-                      AND row_id = %s
-                      AND occurrence_id = %s
-                    """
-                ).format(sql.Identifier(self.schema)),
-                [source, dataset, row_id, occurrence_id],
-            )
-            return int(cur.fetchone()[0])
+        return entity_evidence_id
 
-    def _identifier_id(self, ident_type: str, ident_value: str) -> int:
+    def _identifier_id(self, ident_type: str, ident_value: str) -> str:
         key = (ident_type, ident_value)
         cached = self._identifier_cache.get(key)
         if cached is not None:
             return cached
+        identifier_id = _identifier_key(ident_type, ident_value)
         with self.conn.cursor() as cur:
             cur.execute(
                 sql.SQL(
@@ -372,49 +367,28 @@ class MinimalIngestor:
                 sql.SQL(
                     """
                     INSERT INTO {}.identifier_evidence (
+                      identifier_id,
                       identifier_type_id,
                       value
                     )
-                    SELECT identifier_type_id, %s
+                    SELECT %s, identifier_type_id, %s
                     FROM {}.identifier_type
                     WHERE name = %s
-                    ON CONFLICT (identifier_type_id, value) DO NOTHING
-                    RETURNING identifier_id
+                    ON CONFLICT DO NOTHING
                     """
                 ).format(
                     sql.Identifier(self.schema),
                     sql.Identifier(self.schema),
                 ),
-                [ident_value, ident_type],
+                [identifier_id, ident_value, ident_type],
             )
-            row = cur.fetchone()
-            if row:
-                identifier_id = int(row[0])
-            else:
-                cur.execute(
-                    sql.SQL(
-                        """
-                        SELECT identifier_id
-                        FROM {}.identifier_evidence i
-                        JOIN {}.identifier_type it
-                          ON it.identifier_type_id = i.identifier_type_id
-                        WHERE it.name = %s
-                          AND i.value = %s
-                        """
-                    ).format(
-                        sql.Identifier(self.schema),
-                        sql.Identifier(self.schema),
-                    ),
-                    [ident_type, ident_value],
-                )
-                identifier_id = int(cur.fetchone()[0])
         self._identifier_cache[key] = identifier_id
         return identifier_id
 
     def _link_entity_identifier(
         self,
-        entity_evidence_id: int,
-        identifier_id: int,
+        entity_evidence_id: str,
+        identifier_id: str,
     ) -> None:
         with self.conn.cursor() as cur:
             cur.execute(
@@ -437,28 +411,35 @@ class MinimalIngestor:
         row_id: int,
         snapshot_id: str | None,
         relation_occurrence_id: str,
-        subject_entity_evidence_id: int | None,
+        subject_entity_evidence_id: str | None,
         predicate_rule: PredicateRule,
-        object_entity_evidence_id: int | None = None,
+        object_entity_evidence_id: str | None = None,
         object_entity_id: int | None = None,
-    ) -> int:
+    ) -> str:
+        relation_evidence_id = _relation_evidence_key(
+            source,
+            dataset,
+            row_id,
+            relation_occurrence_id,
+        )
         with self.conn.cursor() as cur:
             cur.execute(
                 sql.SQL(
                     """
                     INSERT INTO {}.relation_evidence (
+                      relation_evidence_id,
                       source, dataset, row_id, snapshot_id,
                       relation_occurrence_id, subject_entity_evidence_id,
                       subject_entity_id, predicate, object_entity_evidence_id,
                       object_entity_id, relation_category
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s, NULL, %s, %s, %s, %s)
-                    ON CONFLICT (source, dataset, row_id, relation_occurrence_id)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, NULL, %s, %s, %s, %s)
+                    ON CONFLICT
                     DO NOTHING
-                    RETURNING relation_evidence_id
                     """
                 ).format(sql.Identifier(self.schema)),
                 [
+                    relation_evidence_id,
                     source,
                     dataset,
                     row_id,
@@ -471,23 +452,7 @@ class MinimalIngestor:
                     predicate_rule.relation_category or ASSOCIATION_CATEGORY,
                 ],
             )
-            row = cur.fetchone()
-            if row:
-                return int(row[0])
-            cur.execute(
-                sql.SQL(
-                    """
-                    SELECT relation_evidence_id
-                    FROM {}.relation_evidence
-                    WHERE source = %s
-                      AND dataset = %s
-                      AND row_id = %s
-                      AND relation_occurrence_id = %s
-                    """
-                ).format(sql.Identifier(self.schema)),
-                [source, dataset, row_id, relation_occurrence_id],
-            )
-            return int(cur.fetchone()[0])
+        return relation_evidence_id
 
     def _insert_annotation_relation_evidence(
         self,
@@ -496,10 +461,10 @@ class MinimalIngestor:
         dataset: str,
         row_id: int,
         snapshot_id: str | None,
-        subject_entity_evidence_id: int,
+        subject_entity_evidence_id: str,
         subject_occurrence_id: str,
         annotation: object,
-    ) -> int | None:
+    ) -> str | None:
         spec = ontology_annotation_relation(
             _annotation_to_row(annotation),
             subject_occurrence_id=subject_occurrence_id,
@@ -573,7 +538,7 @@ class MinimalIngestor:
 
     def _insert_relation_annotations(
         self,
-        relation_evidence_id: int,
+        relation_evidence_id: str,
         annotations: Iterable[object],
         *,
         scope: str,
@@ -594,8 +559,8 @@ class MinimalIngestor:
         *,
         scope: str,
         annotation: object,
-        entity_evidence_id: int | None,
-        relation_evidence_id: int | None,
+        entity_evidence_id: str | None,
+        relation_evidence_id: str | None,
     ) -> bool:
         row = _annotation_to_row(annotation)
         term = string_or_none(row.get('term'))
