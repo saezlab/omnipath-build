@@ -1,3 +1,5 @@
+"""Parquet writing helpers for resolver lookup materialization."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -19,6 +21,8 @@ def _arrow_type(dtype: pl.DataType) -> pa.DataType:
 
 
 def arrow_schema(schema: dict[str, pl.DataType]) -> pa.Schema:
+    """Convert a small Polars schema mapping to a PyArrow schema."""
+
     return pa.schema([(name, _arrow_type(dtype)) for name, dtype in schema.items()])
 
 
@@ -28,6 +32,8 @@ def write_parquet_from_dict_rows(
     path: str | Path,
     chunk_size: int = 100_000,
 ) -> int:
+    """Write dictionary rows to parquet in bounded batches."""
+
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
 

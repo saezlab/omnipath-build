@@ -1,3 +1,10 @@
+"""Maintain the API-facing resource summary table.
+
+The resource table joins static pypath resource configuration with the content
+that is actually present in PostgreSQL. Counts can come either from direct
+evidence/graph tables or from bitmap tables when they have been refreshed.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

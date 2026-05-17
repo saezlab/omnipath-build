@@ -1,3 +1,5 @@
+"""Stable integer IDs for identifier namespaces used in resolver data."""
+
 from __future__ import annotations
 
 import polars as pl
@@ -38,6 +40,8 @@ IDENTIFIER_TYPE_IDS: dict[str, int] = {
 
 
 def identifier_type_id(name: str) -> int:
+    """Return the stable integer ID for an identifier namespace."""
+
     try:
         return IDENTIFIER_TYPE_IDS[name]
     except KeyError as error:
@@ -45,6 +49,8 @@ def identifier_type_id(name: str) -> int:
 
 
 def identifier_type_rows(names: set[str] | None = None) -> list[dict[str, object]]:
+    """Return resolver identifier type rows for all or selected namespaces."""
+
     selected = set(IDENTIFIER_TYPE_NAMES if names is None else names)
     return [
         {'identifier_type_id': identifier_type_id(name), 'name': name}

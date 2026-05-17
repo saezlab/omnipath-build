@@ -1,3 +1,13 @@
+"""Shared normalization helpers for evidence ingest.
+
+This module is intentionally backend-neutral. It converts pypath silver
+entities, identifiers, annotations, and memberships into plain dictionaries and
+deterministic content keys that can be consumed by COPY-based ingest or any
+future persistence backend. It also centralizes the rules that decide when an
+entity tree should produce interaction relation evidence, membership relation
+evidence, or ontology-annotation relation evidence.
+"""
+
 from __future__ import annotations
 
 import hashlib

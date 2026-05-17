@@ -1,3 +1,13 @@
+"""Command-line orchestration for the direct-to-Postgres build pipeline.
+
+The CLI keeps the build split into explicit phases. Resolver commands prepare
+identifier lookup tables, ingest refreshes source-scoped evidence, canonicalize
+resolves that evidence into the shared entity/relation graph, and derive
+refreshes query-oriented tables and bitmap indexes. The Makefile wraps these
+commands, but this module is the single place where phase options and their
+execution order are defined.
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -368,6 +378,8 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 print(
                     '[derive] '
+                    f'entity_identifiers='
+                    f'{table_stats.entity_identifiers} '
                     f'entity_relation_counts='
                     f'{table_stats.entity_relation_counts} '
                     f'ontology_terms={table_stats.ontology_terms} '

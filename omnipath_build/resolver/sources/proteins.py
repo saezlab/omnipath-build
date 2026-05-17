@@ -1,3 +1,13 @@
+"""Build protein identifier resolver mappings from UniProt inputs.
+
+The protein resolver emits rows from evidence identifier namespaces to canonical
+primary UniProt accessions. Reference mappings keep taxonomy so canonicalization
+can require species agreement; secondary UniProt accessions are accepted only
+when the primary accession has a single known taxonomy in the source snapshot.
+Ambiguous key/taxonomy pairs are split into a separate audit table instead of
+being used as resolver candidates.
+"""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -105,6 +115,8 @@ def _single_taxonomy_id(values: set[str] | None) -> str | None:
 def build_protein_identifier_lookup(
     taxonomy_ids: Iterable[int | str] | None = None,
 ) -> pl.DataFrame:
+    """Return the non-ambiguous protein identifier lookup as a dataframe."""
+
     activate_raw_download_data_dir()
     return _split_protein_identifier_lookup(
         _protein_identifier_rows(taxonomy_ids=taxonomy_ids)
@@ -115,6 +127,8 @@ def materialize_proteins(
     output_dir: str | Path | None = None,
     taxonomy_ids: Iterable[int | str] | None = None,
 ) -> dict[str, int]:
+    """Write protein resolver parquet files and return output row counts."""
+
     output_dir = (
         Path(output_dir)
         if output_dir is not None

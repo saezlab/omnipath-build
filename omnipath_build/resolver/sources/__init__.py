@@ -1,3 +1,5 @@
+"""Resolver source builders for protein and chemical identifier mappings."""
+
 from __future__ import annotations
 
 from omnipath_build.resolver.sources.chemicals import (

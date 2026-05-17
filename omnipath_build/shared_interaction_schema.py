@@ -1,3 +1,5 @@
+"""Shared CV term sets for interpreting interaction direction and roles."""
+
 from __future__ import annotations
 
 from pypath.internals.cv_terms import (

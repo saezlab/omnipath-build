@@ -1,3 +1,11 @@
+"""Canonical CV labels and accepted aliases used by the build pipeline.
+
+Source records can expose entity and identifier types as enum values,
+accessions, labelled accessions, or legacy strings. These constants normalize
+the small set of type families that the resolver and canonicalization phases
+need to recognize consistently.
+"""
+
 from __future__ import annotations
 
 from pypath.internals.cv_terms import (

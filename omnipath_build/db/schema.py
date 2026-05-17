@@ -1,3 +1,17 @@
+"""PostgreSQL DDL for source evidence, resolution, and graph tables.
+
+The schema separates refresh-loaded source evidence from canonical graph
+materialization. Evidence tables are source-partitioned and keep source row
+identity, participant occurrence identity, identifiers, annotations, and
+relation endpoints. Resolution tables map those evidence occurrences to
+canonical entities, while relation mapping tables connect source relation
+evidence to deduplicated graph relations.
+
+Several high-volume secondary indexes are treated as deferred content indexes.
+Scratch builds can create the schema without them, stream source evidence
+quickly, and then create the indexes once before canonicalization or derivation.
+"""
+
 from __future__ import annotations
 
 from psycopg2 import sql
@@ -280,7 +294,7 @@ def ensure_deferred_indexes(
     schema: str = 'public',
     progress: bool = False,
 ) -> None:
-    """Create indexes that can be deferred during a scratch content load."""
+    """Create high-volume evidence indexes used after bulk ingest."""
 
     def log_step(message: str) -> None:
         if progress:
@@ -298,7 +312,7 @@ def ensure_source_partitions(
     schema: str = 'public',
     source: str,
 ) -> None:
-    """Create source-list partitions for evidence-layer tables."""
+    """Create source-specific partitions for partitioned evidence tables."""
 
     suffix = _source_partition_suffix(source)
     partitioned_tables = (
@@ -357,7 +371,7 @@ def drop_deferred_content_indexes(
     schema: str = 'public',
     progress: bool = False,
 ) -> list[str]:
-    """Drop secondary content indexes that are expensive during bulk ingest."""
+    """Drop deferred evidence indexes to speed up a subsequent bulk reload."""
 
     names = [
         'entity_evidence_identifier_identifier_idx',
@@ -576,7 +590,7 @@ def reset_content_tables(
     *,
     schema: str = 'public',
 ) -> list[str]:
-    """Truncate omnipath_build content tables without touching resolver tables."""
+    """Truncate refresh-loaded content while keeping resolver tables intact."""
 
     with conn.cursor() as cur:
         tables_to_truncate = _existing_content_tables(cur, schema)
@@ -2181,6 +2195,11 @@ def _ensure_resolution_indexes(
             'resolver_chemical_lookup_key_idx',
             'resolver_chemical_identifier_lookup',
             ('key_identifier_type_id', 'key_value'),
+        ),
+        (
+            'resolver_chemical_lookup_canonical_idx',
+            'resolver_chemical_identifier_lookup',
+            ('canonical_identifier_type_id', 'canonical_identifier'),
         ),
         ('resources_build_status_idx', 'resources', ('build_status',)),
     ]

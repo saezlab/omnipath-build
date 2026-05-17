@@ -1,3 +1,13 @@
+"""Discover runnable pypath ``inputs_v2`` resources for the build pipeline.
+
+The direct-to-Postgres pipeline does not keep a hand-written list of datasets.
+Instead, it imports the configured inputs package, walks resource modules, and
+collects ``Resource``, ``Dataset``, ``OntologyDataset``, and
+``ArtifactDataset`` objects exposed by pypath. Only entity and ontology datasets
+with raw dataset access are selected for evidence ingest; id translation and
+artifact-only datasets are skipped.
+"""
+
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
@@ -31,6 +41,8 @@ class DiscoveryError(RuntimeError):
 
 
 def configure_pypath_download_dir() -> Path:
+    """Ensure pypath downloads use a project-local cache directory."""
+
     configured = os.environ.get('PYPATH_DOWNLOAD_DATADIR')
     if configured:
         data_dir = Path(configured)
@@ -47,6 +59,8 @@ def discover_resources(
     inputs_package: str = 'pypath.inputs_v2',
     progress: bool = False,
 ) -> tuple[dict[str, list[ResourceFunction]], None]:
+    """Return input dataset callables grouped by source module name."""
+
     del database_name
     started = time.perf_counter()
     scanned_modules = 0

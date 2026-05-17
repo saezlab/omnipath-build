@@ -1,3 +1,17 @@
+"""Rules for projecting silver entity structures into graph predicates.
+
+The ingest phase receives heterogeneous pypath entity records: protein
+complexes, pathways, reactions, causal interactions, associations, and
+ontology-like annotations all encode relationships in slightly different ways.
+This module converts those structures into a small relation vocabulary used by
+``relation_evidence`` and later by canonical graph relations.
+
+The rules are conservative. Explicit source/target participant annotations
+drive ordering when available. Positive and negative effect annotations drive
+regulation predicates. Records without enough semantic detail fall back to
+association or generic interaction predicates instead of inventing direction.
+"""
+
 from __future__ import annotations
 
 from collections.abc import Iterable
@@ -44,6 +58,8 @@ CV_LABELS = _build_cv_label_map()
 
 
 def format_cv_term(accession: str | None) -> str | None:
+    """Return a CV accession with its label when the label is known."""
+
     if accession is None:
         return None
     label = CV_LABELS.get(accession)
@@ -85,6 +101,8 @@ TAXONOMY_IDENTIFIER_TERM = str(IdentifierNamespaceCv.NCBI_TAX_ID)
 
 @dataclass(frozen=True)
 class PredicateRule:
+    """Chosen relation predicate and its high-level category."""
+
     predicate: str
     relation_category: str
 
@@ -93,6 +111,8 @@ def predicate_for_membership(
     parent_type: str | None,
     membership: dict[str, Any],
 ) -> PredicateRule:
+    """Return the relation predicate for parent/member structures."""
+
     del membership
     return PredicateRule(
         MEMBERSHIP_RULES.get(parent_type or '', 'has_member'),
@@ -104,6 +124,8 @@ def predicate_for_interaction(
     row: dict[str, Any],
     ordered_participants: list[dict[str, Any]],
 ) -> PredicateRule:
+    """Infer an interaction predicate from entity type, roles, and sign."""
+
     row_type = string_or_none(row.get('type'))
     row_type_accession = entity_type_accession(row_type)
     annotations = row.get('annotations') or []
@@ -146,6 +168,8 @@ def predicate_for_interaction(
 
 
 def annotation_predicate(annotation: dict[str, Any]) -> str:
+    """Return the predicate used for an ontology-valued annotation."""
+
     value = string_or_none(annotation.get('value')) or ''
     prefix = value.split(':', 1)[0].upper() if ':' in value else ''
     value_upper = value.upper()
@@ -158,6 +182,8 @@ def interaction_sign(
     record_annotations: list[dict[str, Any]],
     participant_annotations: list[dict[str, Any]] | None = None,
 ) -> int:
+    """Return ``1`` for activating, ``-1`` for inhibitory, or ``0`` unknown."""
+
     all_annotations = [*record_annotations, *(participant_annotations or [])]
     for annotation in all_annotations:
         term = string_or_none(annotation.get('term'))
@@ -177,6 +203,8 @@ def interaction_sign(
 def order_interaction_participants(
     participants: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
+    """Order two participants by source/target role annotations when present."""
+
     if len(participants) != 2:
         return participants
     first, second = participants
@@ -190,6 +218,8 @@ def order_interaction_participants(
 
 
 def has_role_ordering(participants: list[dict[str, Any]]) -> bool:
+    """Return whether two participants carry complementary source/target roles."""
+
     if len(participants) != 2:
         return False
     first_terms = annotation_terms(participants[0].get('membership_annotations') or [])
@@ -207,6 +237,8 @@ def has_role_ordering(participants: list[dict[str, Any]]) -> bool:
 
 
 def annotation_terms(annotations: list[dict[str, Any]]) -> set[str]:
+    """Return non-empty annotation term identifiers."""
+
     return {
         term
         for annotation in annotations
@@ -215,6 +247,8 @@ def annotation_terms(annotations: list[dict[str, Any]]) -> set[str]:
 
 
 def entity_type_accession(entity_type: str | None) -> str | None:
+    """Return the accession part of an entity type label."""
+
     if entity_type is None:
         return None
     parts = entity_type.split(':', 2)
@@ -226,6 +260,8 @@ def entity_type_accession(entity_type: str | None) -> str | None:
 
 
 def string_or_none(value: Any) -> str | None:
+    """Normalize blank values to ``None`` and non-blank values to text."""
+
     if value is None:
         return None
     text = str(value).strip()

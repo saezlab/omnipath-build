@@ -1,3 +1,11 @@
+"""Roaring bitmap indexes for fast entity and relation filtering.
+
+Bitmap tables encode ontology annotations, source facets, entity types, and
+relation categories as compressed sets of canonical entity or relation IDs.
+They are derived from canonical graph tables and refreshed in full by the
+derive phase.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

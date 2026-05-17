@@ -1,3 +1,11 @@
+"""Load ontology datasets as canonical CV-term entities.
+
+Ontology datasets bypass ordinary evidence ingest because every term already
+has a stable ontology accession. Terms are written directly as resolved
+``CV Term`` entities with name, synonym, definition, ontology ID, and
+relationship metadata attached as annotations and graph relations.
+"""
+
 from __future__ import annotations
 
 import time
@@ -321,6 +329,8 @@ class _MutableOntologyStats:
     annotations: int = 0
 
     def freeze(self) -> OntologyLoadStats:
+        """Return an immutable public stats snapshot."""
+
         return OntologyLoadStats(
             terms=self.terms,
             annotations=self.annotations,

@@ -1,3 +1,11 @@
+"""Stream PubChem SDF records into chemical resolver lookup rows.
+
+PubChem is too large to treat as an in-memory table. This module parses SDF
+records from gzip shards as text streams, keeps only CID, standard InChI key,
+and standard InChI fields, and writes normalized resolver rows in bounded
+parquet batches.
+"""
+
 from __future__ import annotations
 
 import gzip
@@ -215,6 +223,8 @@ def materialize_pubchem_compound_sdf(
     max_records: int | None = None,
     filter_inchikeys: frozenset[str] | None = None,
 ) -> dict[str, int]:
+    """Write resolver parquet rows from PubChem SDF shard URLs or paths."""
+
     output_dir = (
         Path(output_dir)
         if output_dir is not None
@@ -250,6 +260,8 @@ def materialize_pubchem_first_compound_sdf(
     url: str = PUBCHEM_FIRST_COMPOUND_SDF_URL,
     max_records: int | None = None,
 ) -> dict[str, int]:
+    """Write resolver rows from the first current PubChem compound shard."""
+
     return materialize_pubchem_compound_sdf(
         output_dir,
         source=url,

@@ -1,3 +1,5 @@
+"""Materialize resolver source lookup tables as parquet files."""
+
 from __future__ import annotations
 
 import argparse
@@ -14,6 +16,8 @@ SOURCE_NAMES: tuple[str, ...] = (
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
+    """Build the standalone resolver materialization argument parser."""
+
     parser = argparse.ArgumentParser(
         description='Materialize omnipath_build resolver lookup tables.'
     )
@@ -66,6 +70,8 @@ def run_sources(
     max_records: int | None = None,
     pubchem_url: str | Path | None = None,
 ) -> dict[str, int]:
+    """Materialize selected resolver sources and return row-count summaries."""
+
     base_dir = ensure_data_dir() if output_dir is None else Path(output_dir)
     base_dir.mkdir(parents=True, exist_ok=True)
     activate_raw_download_data_dir()
@@ -94,6 +100,8 @@ def run_sources(
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    """Run resolver materialization from command-line arguments."""
+
     parser = build_arg_parser()
     args = parser.parse_args(argv)
 

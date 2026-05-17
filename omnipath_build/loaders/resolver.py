@@ -1,3 +1,15 @@
+"""Load resolver lookup tables used by canonicalization.
+
+Resolver tables map source evidence identifiers to canonical identifiers. The
+protein lookup is taxonomy-scoped and resolves UniProt, secondary UniProt, and
+stable gene/protein cross-references to primary UniProt accessions. The
+chemical lookup resolves supported chemical identifiers to standard InChI keys.
+
+Tables can be loaded from materialized parquet files or streamed directly from
+resolver source parsers. Canonicalization uses these lookup tables to rank and
+choose entity resolution candidates.
+"""
+
 from __future__ import annotations
 
 from io import StringIO
@@ -330,6 +342,12 @@ def _create_indexes(cur: psycopg2.extensions.cursor, schema: str) -> None:
             'resolver_chemical_lookup_key_idx',
             CHEMICAL_TABLE,
             ('key_identifier_type_id', 'key_value'),
+            'btree',
+        ),
+        (
+            'resolver_chemical_lookup_canonical_idx',
+            CHEMICAL_TABLE,
+            ('canonical_identifier_type_id', 'canonical_identifier'),
             'btree',
         ),
     ]

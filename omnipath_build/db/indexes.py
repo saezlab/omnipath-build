@@ -1,3 +1,5 @@
+"""Secondary PostgreSQL indexes for query-ready pipeline outputs."""
+
 from __future__ import annotations
 
 from psycopg2 import sql
@@ -8,7 +10,7 @@ def create_secondary_indexes(
     *,
     schema: str = 'public',
 ) -> None:
-    """Create query-oriented indexes for the omnipath_build tables."""
+    """Create indexes for derived tables, annotations, and graph lookups."""
 
     schema_id = sql.Identifier(schema)
     statements = [

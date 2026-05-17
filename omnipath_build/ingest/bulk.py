@@ -1,3 +1,19 @@
+"""Bulk evidence ingest for pypath ``inputs_v2`` entity streams.
+
+Ingest deliberately stores source evidence before trying to resolve it. Each
+raw source row is flattened into deterministic entity and relation evidence
+UUIDs, while identifiers and annotation values are globally deduplicated by
+content UUID. Batches move through temporary COPY staging tables and are then
+merged into the real partitioned evidence tables with PostgreSQL constraints
+handling idempotency.
+
+Interaction-like entities with exactly two members become relation evidence
+instead of parent entity evidence. Other member trees keep parent/member entity
+evidence and emit membership relations. Ontology-valued entity annotations are
+also projected into relation evidence so later graph queries can treat ontology
+membership and ordinary interactions uniformly.
+"""
+
 from __future__ import annotations
 
 from io import StringIO
@@ -142,6 +158,15 @@ class BulkIngestor:
         buffers: _BulkBuffers,
         stats: _MutableStats,
     ) -> None:
+        """Flatten one entity tree into buffered evidence rows.
+
+        The method walks the silver entity recursively, assigning deterministic
+        occurrence IDs to the parent and every member. Depending on the entity
+        shape, it appends entity evidence, interaction relation evidence,
+        membership relation evidence, identifier links, and annotation links to
+        the current batch buffers.
+        """
+
         row = _entity_to_row(entity)
         vocab_entity_type = string_or_none(row.get('type'))
         memberships = list(getattr(entity, 'membership', None) or [])
@@ -356,6 +381,8 @@ class BulkIngestor:
         annotations: Iterable[object],
         scope: str,
     ) -> int:
+        """Append relation-scoped annotations and return how many were stored."""
+
         count = 0
         for annotation in annotations:
             if self._append_annotation(
@@ -475,6 +502,8 @@ class BulkIngestor:
         read_seconds: float,
         flatten_seconds: float,
     ) -> None:
+        """Persist the current staging buffers and clear them after commit."""
+
         if not buffers:
             return
         profile = _FlushProfile(

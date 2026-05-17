@@ -1,3 +1,12 @@
+"""Build chemical identifier resolver mappings from supported sources.
+
+Chemical resolver rows normalize source-specific identifiers such as ChEBI,
+ChEMBL, HMDB, LipidMaps, SwissLipids, and PubChem to standard InChI keys. A
+standard InChI value is retained when available, but canonicalization resolves
+chemical evidence by standard InChI key so equivalent source identifiers
+collapse to one canonical chemical entity.
+"""
+
 from __future__ import annotations
 
 import re
@@ -207,6 +216,8 @@ def build_chemical_identifier_lookup(
     max_records: int | None = None,
     pubchem_url: str | Path | None = None,
 ) -> pl.DataFrame:
+    """Return normalized chemical identifier lookup rows as a dataframe."""
+
     activate_raw_download_data_dir()
     rows = list(
         _chemical_identifier_rows(
@@ -228,6 +239,8 @@ def materialize_chemical_sources(
     max_records: int | None = None,
     pubchem_url: str | Path | None = None,
 ) -> dict[str, int]:
+    """Write chemical resolver parquet files and return output row counts."""
+
     selected = _validate_chemical_sources(sources)
     output_dir = (
         Path(output_dir)

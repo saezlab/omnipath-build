@@ -1,3 +1,12 @@
+"""Refresh deletion helpers for source-scoped evidence reloads.
+
+Source ingest is a refresh operation, not a row-level delta. Before a source is
+streamed again, its evidence rows and evidence annotations are removed. Graph
+entities and relations that were only reachable through that source are then
+garbage-collected, while shared canonical graph rows backed by other sources
+are preserved.
+"""
+
 from __future__ import annotations
 
 from psycopg2 import sql

@@ -15,6 +15,9 @@ This project uses `uv` for dependency management.
 The omnipath_build pipeline writes `inputs_v2` sources directly to PostgreSQL evidence
 tables, then canonicalizes them into entity and relation tables.
 
+For the data model, phase boundaries, refresh semantics, and common workflows,
+see [docs/pipeline.md](docs/pipeline.md).
+
 The default database URL is:
 
 ```bash
