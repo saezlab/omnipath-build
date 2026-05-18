@@ -40,7 +40,6 @@ from omnipath_build.ingest.common import (
     membership_relation_spec,
     relation_evidence_key as _relation_evidence_key,
     interaction_relation_spec,
-    ontology_annotation_relation,
     extract_taxonomy_id,
     include_identifier,
 )
@@ -413,18 +412,6 @@ class BulkIngestor:
         annotation: object,
     ) -> bool:
         row = _annotation_to_row(annotation)
-        if (
-            target_kind == 'entity'
-            and BulkIngestor._append_annotation_relation(
-                buffers,
-                source=source,
-                dataset=dataset,
-                row_id=row_id,
-                subject_occurrence_id=target_occurrence_id,
-                annotation=row,
-            )
-        ):
-            return False
         term = string_or_none(row.get('term'))
         if term is None:
             return False
@@ -448,48 +435,6 @@ class BulkIngestor:
         if annotation_value not in buffers.annotation_values_seen:
             buffers.annotation_values_seen.add(annotation_value)
             buffers.annotation_values.append(annotation_value)
-        return True
-
-    @staticmethod
-    def _append_annotation_relation(
-        buffers: _BulkBuffers,
-        *,
-        source: str,
-        dataset: str,
-        row_id: int,
-        subject_occurrence_id: str,
-        annotation: dict[str, str | None],
-    ) -> bool:
-        spec = ontology_annotation_relation(
-            annotation,
-            subject_occurrence_id=subject_occurrence_id,
-        )
-        if spec is None:
-            return False
-        buffers.annotation_relations.append(
-            (
-                _relation_evidence_key(
-                    source,
-                    dataset,
-                    row_id,
-                    spec.relation_occurrence_id,
-                ),
-                source,
-                dataset,
-                row_id,
-                _entity_evidence_key(
-                    source,
-                    dataset,
-                    row_id,
-                    spec.subject_occurrence_id,
-                ),
-                spec.predicate_rule.predicate,
-                spec.object_entity_type,
-                spec.object_id_type,
-                spec.object_id,
-                spec.predicate_rule.relation_category or ASSOCIATION_CATEGORY,
-            )
-        )
         return True
 
     def _flush(

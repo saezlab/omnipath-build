@@ -269,6 +269,18 @@ def _source_counts(
               SELECT source_id
               FROM {}.data_source
               WHERE name = %s
+            ),
+            source_relations AS (
+              SELECT DISTINCT rer.relation_id
+              FROM {}.relation_evidence_relation rer
+              JOIN {}.relation_evidence re
+                ON re.source_id = rer.source_id
+               AND re.relation_evidence_id = rer.relation_evidence_id
+              WHERE re.source_id = (SELECT source_id FROM selected_source)
+              UNION
+              SELECT DISTINCT ear.relation_id
+              FROM {}.entity_annotation_relation ear
+              WHERE ear.source_id = (SELECT source_id FROM selected_source)
             )
             SELECT
               (
@@ -285,29 +297,21 @@ def _source_counts(
               ) AS identifier_count,
               (
                 SELECT COUNT(DISTINCT rel.relation_id)::bigint
-                FROM {}.relation_evidence_relation rer
-                JOIN {}.relation_evidence re
-                  ON re.source_id = rer.source_id
-                 AND re.relation_evidence_id = rer.relation_evidence_id
+                FROM source_relations sr
                 JOIN {}.relation rel
-                  ON rel.relation_id = rer.relation_id
+                  ON rel.relation_id = sr.relation_id
                 JOIN {}.vocab_relation_category rc
                   ON rc.relation_category_id = rel.relation_category_id
-                WHERE re.source_id = (SELECT source_id FROM selected_source)
-                  AND rc.name = 'interaction'
+                WHERE rc.name = 'interaction'
               ) AS interaction_count,
               (
                 SELECT COUNT(DISTINCT rel.relation_id)::bigint
-                FROM {}.relation_evidence_relation rer
-                JOIN {}.relation_evidence re
-                  ON re.source_id = rer.source_id
-                 AND re.relation_evidence_id = rer.relation_evidence_id
+                FROM source_relations sr
                 JOIN {}.relation rel
-                  ON rel.relation_id = rer.relation_id
+                  ON rel.relation_id = sr.relation_id
                 JOIN {}.vocab_relation_category rc
                   ON rc.relation_category_id = rel.relation_category_id
-                WHERE re.source_id = (SELECT source_id FROM selected_source)
-                  AND rc.name = 'association'
+                WHERE rc.name = 'association'
               ) AS association_count,
               (
                 SELECT COUNT(*)::bigint
@@ -334,7 +338,6 @@ def _source_counts(
               ) AS has_rows
             """
         ).format(
-            sql.Identifier(schema),
             sql.Identifier(schema),
             sql.Identifier(schema),
             sql.Identifier(schema),

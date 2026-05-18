@@ -134,9 +134,13 @@ def _create_source_cleanup_scope(
             SELECT DISTINCT rer.relation_id
             FROM {}.relation_evidence_relation rer
             WHERE rer.source_id = %s
+            UNION
+            SELECT DISTINCT ear.relation_id
+            FROM {}.entity_annotation_relation ear
+            WHERE ear.source_id = %s
             """
-        ).format(schema_id),
-        [source_id],
+        ).format(schema_id, schema_id),
+        [source_id, source_id],
     )
     cur.execute(
         """
@@ -293,6 +297,7 @@ def _delete_source_evidence_rows(
         'ontology_terms',
         'relation_evidence_annotation',
         'relation_evidence_relation',
+        'entity_annotation_relation',
         'relation_evidence',
         'entity_evidence_annotation',
         'entity_evidence_resolution',
@@ -342,8 +347,13 @@ def _garbage_collect_source_cleanup(
                 FROM {}.relation_evidence_relation rer
                 WHERE rer.relation_id = r.relation_id
               )
+              AND NOT EXISTS (
+                SELECT 1
+                FROM {}.entity_annotation_relation ear
+                WHERE ear.relation_id = r.relation_id
+              )
             """
-        ).format(schema_id, schema_id)
+        ).format(schema_id, schema_id, schema_id)
     )
     deleted['relations'] = int(cur.rowcount)
     deleted['relation_counts'] = _refresh_dirty_relation_counts(cur, schema)

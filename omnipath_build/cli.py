@@ -192,6 +192,12 @@ def main(argv: list[str] | None = None) -> int:
         default=True,
         help='Create and populate bitmap tables.',
     )
+    derive.add_argument(
+        '--entity-identifiers',
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help='Enrich empty entity.identifiers from resolver/evidence identifiers.',
+    )
     derive.add_argument('--inputs-package', default='pypath.inputs_v2')
     derive.add_argument('--database', default='omnipath')
 
@@ -393,7 +399,11 @@ def main(argv: list[str] | None = None) -> int:
                 create_secondary_indexes(conn, schema=args.schema)
                 print('[derive] indexes=ready', flush=True)
             if args.tables:
-                table_stats = rebuild_derived_tables(conn, schema=args.schema)
+                table_stats = rebuild_derived_tables(
+                    conn,
+                    schema=args.schema,
+                    refresh_entity_identifiers=args.entity_identifiers,
+                )
                 discovered, _ = discover_resources(
                     database_name=args.database,
                     inputs_package=args.inputs_package,

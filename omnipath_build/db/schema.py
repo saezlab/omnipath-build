@@ -26,6 +26,7 @@ CONTENT_TABLES: tuple[str, ...] = (
     'ontology_terms',
     'relation_annotation',
     'relation_evidence_annotation',
+    'entity_annotation_relation',
     'entity_annotation',
     'entity_evidence_annotation',
     'relation_evidence_relation',
@@ -51,12 +52,14 @@ SOURCE_PARTITIONED_TABLES: tuple[str, ...] = (
     'relation_evidence_annotation',
     'entity_evidence_resolution',
     'relation_evidence_relation',
+    'entity_annotation_relation',
 )
 
 SOURCE_PARTITION_DROP_ORDER: tuple[str, ...] = (
     'ontology_terms',
     'relation_evidence_annotation',
     'relation_evidence_relation',
+    'entity_annotation_relation',
     'relation_evidence',
     'entity_evidence_annotation',
     'entity_evidence_resolution',
@@ -387,6 +390,8 @@ def drop_deferred_content_indexes(
 
     names = [
         'entity_evidence_identifier_identifier_idx',
+        'entity_evidence_source_dataset_row_idx',
+        'entity_evidence_type_taxonomy_idx',
         'entity_resolution_status_idx',
         'entity_resolution_reason_idx',
         'entity_evidence_resolution_entity_idx',
@@ -397,7 +402,10 @@ def drop_deferred_content_indexes(
         'relation_subject_entity_idx',
         'relation_object_entity_idx',
         'relation_source_dataset_idx',
+        'relation_evidence_predicate_category_idx',
+        'relation_evidence_source_dataset_row_idx',
         'entity_evidence_annotation_annotation_key_idx',
+        'entity_annotation_relation_relation_id_idx',
         'relation_evidence_annotation_relation_evidence_idx',
         'relation_evidence_annotation_annotation_key_idx',
         'entity_annotation_annotation_key_idx',
@@ -1045,6 +1053,47 @@ def _ensure_resolution_schema(
             """
             CREATE TABLE IF NOT EXISTS {}.relation_evidence_relation_default
             PARTITION OF {}.relation_evidence_relation DEFAULT
+            """
+        ).format(schema_id, schema_id)
+    )
+    log_step('create entity_annotation_relation table')
+    cur.execute(
+        sql.SQL(
+            """
+            CREATE TABLE IF NOT EXISTS {}.entity_annotation_relation (
+              source_id bigint NOT NULL
+                REFERENCES {}.data_source(source_id),
+              entity_evidence_id uuid NOT NULL,
+              annotation_key uuid NOT NULL,
+              relation_id bigint NOT NULL
+                REFERENCES {}.relation(relation_id)
+                ON DELETE CASCADE,
+              PRIMARY KEY (
+                source_id,
+                entity_evidence_id,
+                annotation_key,
+                relation_id
+              ),
+              FOREIGN KEY (
+                source_id,
+                entity_evidence_id,
+                annotation_key
+              )
+                REFERENCES {}.entity_evidence_annotation(
+                  source_id,
+                  entity_evidence_id,
+                  annotation_key
+                )
+                ON DELETE CASCADE
+            ) PARTITION BY LIST (source_id)
+            """
+        ).format(schema_id, schema_id, schema_id, schema_id)
+    )
+    cur.execute(
+        sql.SQL(
+            """
+            CREATE TABLE IF NOT EXISTS {}.entity_annotation_relation_default
+            PARTITION OF {}.entity_annotation_relation DEFAULT
             """
         ).format(schema_id, schema_id)
     )
@@ -2313,6 +2362,11 @@ def _ensure_resolution_indexes(
             'entity_evidence_annotation_annotation_key_idx',
             'entity_evidence_annotation',
             ('annotation_key',),
+        ),
+        (
+            'entity_annotation_relation_relation_id_idx',
+            'entity_annotation_relation',
+            ('relation_id',),
         ),
         (
             'relation_evidence_annotation_relation_evidence_idx',

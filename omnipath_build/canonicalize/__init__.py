@@ -175,6 +175,12 @@ def canonicalize(
         relation_mapped = 0
         relation_unmapped = 0
         if include_relations:
+            _project_entity_annotation_relations(
+                cur,
+                schema=schema,
+                source=source,
+                dataset=dataset,
+            )
             _create_relation_scope(
                 cur, schema=schema, source=source, dataset=dataset
             )
@@ -188,6 +194,15 @@ def canonicalize(
             relation_mapped, relation_unmapped = _relation_mapping_counts(
                 cur, schema
             )
+            annotation_relation_count = _annotation_relation_mapping_count(
+                cur,
+                schema=schema,
+                source=source,
+                dataset=dataset,
+            )
+            relation_scope += annotation_relation_count
+            relation_mapped += annotation_relation_count
+            entities = _count_schema_table(cur, schema, 'entity')
 
     conn.commit()
     return CanonicalizationStats(
@@ -200,6 +215,385 @@ def canonicalize(
         relation_mapped=relation_mapped,
         relation_unmapped=relation_unmapped,
     )
+
+
+def _project_entity_annotation_relations(
+    cur: psycopg2.extensions.cursor,
+    *,
+    schema: str,
+    source: str | None,
+    dataset: str | None,
+) -> None:
+    """Materialize ontology-valued entity annotations as canonical relations."""
+
+    schema_id = sql.Identifier(schema)
+    source_id: int | None = None
+    dataset_id: int | None = None
+    if source is not None:
+        cur.execute(
+            sql.SQL('SELECT source_id FROM {}.data_source WHERE name = %s').format(
+                schema_id
+            ),
+            [source],
+        )
+        row = cur.fetchone()
+        if row is None:
+            return
+        source_id = int(row[0])
+    if dataset is not None:
+        if source_id is not None:
+            cur.execute(
+                sql.SQL(
+                    """
+                    SELECT dataset_id
+                    FROM {}.dataset
+                    WHERE source_id = %s AND name = %s
+                    """
+                ).format(schema_id),
+                [source_id, dataset],
+            )
+        else:
+            cur.execute(
+                sql.SQL('SELECT dataset_id FROM {}.dataset WHERE name = %s').format(
+                    schema_id
+                ),
+                [dataset],
+            )
+        row = cur.fetchone()
+        if row is None:
+            return
+        dataset_id = int(row[0])
+    source_filter_sql = (
+        sql.SQL(' AND eea.source_id = {}').format(sql.Literal(source_id))
+        if source_id is not None
+        else sql.SQL('')
+    )
+    dataset_join_sql = (
+        sql.SQL(
+            """
+            JOIN {}.entity_evidence ee
+              ON ee.source_id = eea.source_id
+             AND ee.entity_evidence_id = eea.entity_evidence_id
+            """
+        ).format(schema_id)
+        if dataset_id is not None
+        else sql.SQL('')
+    )
+    dataset_filter_sql = (
+        sql.SQL(' AND ee.dataset_id = {}').format(sql.Literal(dataset_id))
+        if dataset_id is not None
+        else sql.SQL('')
+    )
+    ear_source_filter_sql = (
+        sql.SQL(' AND ear.source_id = {}').format(sql.Literal(source_id))
+        if source_id is not None
+        else sql.SQL('')
+    )
+    ear_dataset_join_sql = (
+        sql.SQL(
+            """
+            JOIN {}.entity_evidence ee
+              ON ee.source_id = ear.source_id
+             AND ee.entity_evidence_id = ear.entity_evidence_id
+            """
+        ).format(schema_id)
+        if dataset_id is not None
+        else sql.SQL('')
+    )
+    ear_dataset_filter_sql = (
+        sql.SQL(' AND ee.dataset_id = {}').format(sql.Literal(dataset_id))
+        if dataset_id is not None
+        else sql.SQL('')
+    )
+    cur.execute(
+        sql.SQL(
+            """
+            INSERT INTO {}.vocab_entity_type (name)
+            VALUES (%s)
+            ON CONFLICT (name) DO NOTHING
+            """
+        ).format(schema_id),
+        [CV_TERM_ENTITY_TYPE],
+    )
+    cur.execute(
+        sql.SQL(
+            """
+            INSERT INTO {}.vocab_relation_predicate (name)
+            VALUES (%s), (%s)
+            ON CONFLICT (name) DO NOTHING
+            """
+        ).format(schema_id),
+        ['associated_with', 'involved_in'],
+    )
+    cur.execute(
+        sql.SQL(
+            """
+            INSERT INTO {}.vocab_relation_category (name)
+            VALUES (%s)
+            ON CONFLICT (name) DO NOTHING
+            """
+        ).format(schema_id),
+        ['association'],
+    )
+    cur.execute('DROP TABLE IF EXISTS _annotation_relation_input')
+    cur.execute('DROP TABLE IF EXISTS _ontology_annotation')
+    cur.execute(
+        sql.SQL(
+            """
+            CREATE TEMP TABLE _ontology_annotation ON COMMIT DROP AS
+            SELECT
+              a.annotation_key,
+              a.value AS object_identifier,
+              CASE
+                WHEN upper(a.value) LIKE 'REACTOME:%%'
+                  OR upper(a.value) LIKE 'WP%%'
+                  OR upper(a.value) LIKE 'R-%%'
+                THEN 'involved_in'
+                ELSE 'associated_with'
+              END AS predicate_name
+            FROM {}.annotation a
+            WHERE a.term = %s
+              AND a.value IS NOT NULL
+              AND a.unit IS NULL
+            """
+        ).format(schema_id),
+        [CV_TERM_ID_TYPE],
+    )
+    cur.execute('CREATE UNIQUE INDEX ON _ontology_annotation (annotation_key)')
+    cur.execute('ANALYZE _ontology_annotation')
+    cur.execute(
+        sql.SQL(
+            """
+            CREATE TEMP TABLE _annotation_relation_input ON COMMIT DROP AS
+            SELECT
+              eea.source_id,
+              eea.entity_evidence_id,
+              eea.annotation_key,
+              eer.entity_id AS subject_entity_id,
+              oa.object_identifier,
+              oa.predicate_name
+            FROM _ontology_annotation oa
+            JOIN {}.entity_evidence_annotation eea
+              ON eea.annotation_key = oa.annotation_key
+            {}
+            JOIN {}.entity_evidence_resolution eer
+              ON eer.source_id = eea.source_id
+             AND eer.entity_evidence_id = eea.entity_evidence_id
+            WHERE eer.entity_id IS NOT NULL
+              {}
+              {}
+            """
+        ).format(
+            schema_id,
+            dataset_join_sql,
+            schema_id,
+            source_filter_sql,
+            dataset_filter_sql,
+        ),
+    )
+    cur.execute('CREATE INDEX ON _annotation_relation_input (object_identifier)')
+    cur.execute('ANALYZE _annotation_relation_input')
+    cur.execute(
+        sql.SQL(
+            """
+            INSERT INTO {}.entity (
+              entity_type_id,
+              taxonomy_id,
+              canonical_identifier_type_id,
+              canonical_identifier,
+              identifiers,
+              resolution_status_id
+            )
+            SELECT DISTINCT
+              et.entity_type_id,
+              NULL::bigint,
+              it.identifier_type_id,
+              ari.object_identifier,
+              jsonb_build_array(
+                jsonb_build_object(
+                  'identifier_type',
+                  it.name,
+                  'identifier',
+                  ari.object_identifier
+                )
+              ),
+              1
+            FROM _annotation_relation_input ari
+            JOIN {}.vocab_entity_type et
+              ON et.name = %s
+            JOIN {}.vocab_identifier_type it
+              ON it.name = %s
+            ON CONFLICT (
+              entity_type_id,
+              taxonomy_id,
+              canonical_identifier_type_id,
+              canonical_identifier
+            )
+            DO NOTHING
+            """
+        ).format(schema_id, schema_id, schema_id),
+        [CV_TERM_ENTITY_TYPE, CV_TERM_ID_TYPE],
+    )
+    cur.execute('DROP TABLE IF EXISTS _annotation_relation_projected')
+    cur.execute(
+        sql.SQL(
+            """
+            CREATE TEMP TABLE _annotation_relation_projected ON COMMIT DROP AS
+            SELECT
+              ari.source_id,
+              ari.entity_evidence_id,
+              ari.annotation_key,
+              ari.subject_entity_id,
+              rp.relation_predicate_id AS predicate_id,
+              object.entity_id AS object_entity_id,
+              rc.relation_category_id
+            FROM _annotation_relation_input ari
+            JOIN {}.vocab_relation_predicate rp
+              ON rp.name = ari.predicate_name
+            JOIN {}.vocab_relation_category rc
+              ON rc.name = 'association'
+            JOIN {}.vocab_entity_type et
+              ON et.name = %s
+            JOIN {}.vocab_identifier_type it
+              ON it.name = %s
+            JOIN {}.entity object
+              ON object.entity_type_id = et.entity_type_id
+             AND object.taxonomy_id IS NULL
+             AND object.canonical_identifier_type_id = it.identifier_type_id
+             AND object.canonical_identifier = ari.object_identifier
+            """
+        ).format(schema_id, schema_id, schema_id, schema_id, schema_id),
+        [CV_TERM_ENTITY_TYPE, CV_TERM_ID_TYPE],
+    )
+    cur.execute(
+        """
+        CREATE INDEX ON _annotation_relation_projected (
+          subject_entity_id,
+          predicate_id,
+          object_entity_id,
+          relation_category_id
+        )
+        """
+    )
+    cur.execute('ANALYZE _annotation_relation_projected')
+    cur.execute('DROP TABLE IF EXISTS _removed_annotation_relation')
+    cur.execute(
+        sql.SQL(
+            """
+            CREATE TEMP TABLE _removed_annotation_relation ON COMMIT DROP AS
+            SELECT DISTINCT ear.relation_id
+            FROM {}.entity_annotation_relation ear
+            {}
+            WHERE TRUE
+              {}
+              {}
+            """
+        ).format(
+            schema_id,
+            ear_dataset_join_sql,
+            ear_source_filter_sql,
+            ear_dataset_filter_sql,
+        ),
+    )
+    cur.execute(
+        sql.SQL(
+            """
+            DELETE FROM {}.entity_annotation_relation ear
+            {}
+            WHERE TRUE
+              {}
+              {}
+            """
+        ).format(
+            schema_id,
+            sql.SQL(
+                """
+                USING {}.entity_evidence ee
+                """
+            ).format(schema_id)
+            if dataset_id is not None
+            else sql.SQL(''),
+            ear_source_filter_sql,
+            sql.SQL(
+                """
+                AND ee.source_id = ear.source_id
+                AND ee.entity_evidence_id = ear.entity_evidence_id
+                AND ee.dataset_id = {}
+                """
+            ).format(sql.Literal(dataset_id))
+            if dataset_id is not None
+            else sql.SQL(''),
+        ),
+    )
+    cur.execute(
+        sql.SQL(
+            """
+            INSERT INTO {}.relation (
+              subject_entity_id,
+              predicate_id,
+              object_entity_id,
+              relation_category_id
+            )
+            SELECT DISTINCT
+              subject_entity_id,
+              predicate_id,
+              object_entity_id,
+              relation_category_id
+            FROM _annotation_relation_projected
+            ON CONFLICT (
+              subject_entity_id,
+              predicate_id,
+              object_entity_id,
+              relation_category_id
+            )
+            DO NOTHING
+            """
+        ).format(schema_id)
+    )
+    cur.execute(
+        sql.SQL(
+            """
+            INSERT INTO {}.entity_annotation_relation (
+              source_id,
+              entity_evidence_id,
+              annotation_key,
+              relation_id
+            )
+            SELECT
+              arp.source_id,
+              arp.entity_evidence_id,
+              arp.annotation_key,
+              r.relation_id
+            FROM _annotation_relation_projected arp
+            JOIN {}.relation r
+              ON r.subject_entity_id = arp.subject_entity_id
+             AND r.predicate_id = arp.predicate_id
+             AND r.object_entity_id = arp.object_entity_id
+             AND r.relation_category_id = arp.relation_category_id
+            ON CONFLICT DO NOTHING
+            """
+        ).format(schema_id, schema_id)
+    )
+    cur.execute(
+        sql.SQL(
+            """
+            DELETE FROM {}.relation r
+            USING _removed_annotation_relation removed
+            WHERE r.relation_id = removed.relation_id
+              AND NOT EXISTS (
+                SELECT 1
+                FROM {}.relation_evidence_relation rer
+                WHERE rer.relation_id = r.relation_id
+              )
+              AND NOT EXISTS (
+                SELECT 1
+                FROM {}.entity_annotation_relation ear
+                WHERE ear.relation_id = r.relation_id
+              )
+            """
+        ).format(schema_id, schema_id, schema_id)
+    )
+
 
 def _create_entity_scope(
     cur: psycopg2.extensions.cursor,
@@ -1312,7 +1706,7 @@ def _insert_relation_evidence_links(
               ON r.subject_entity_id = ep.subject_entity_id
              AND r.predicate_id = ep.predicate_id
              AND r.object_entity_id = ep.object_entity_id
-             AND r.relation_category_id IS NOT DISTINCT FROM ep.relation_category_id
+             AND r.relation_category_id = ep.relation_category_id
             WHERE ep.subject_entity_id IS NOT NULL
               AND ep.object_entity_id IS NOT NULL
             """
@@ -1386,6 +1780,53 @@ def _relation_mapping_counts(
     )
     mapped, unmapped = cur.fetchone()
     return int(mapped), int(unmapped)
+
+
+def _annotation_relation_mapping_count(
+    cur: psycopg2.extensions.cursor,
+    *,
+    schema: str,
+    source: str | None,
+    dataset: str | None,
+) -> int:
+    where = []
+    params: list[Any] = []
+    if source is not None:
+        where.append('ds.name = %s')
+        params.append(source)
+    if dataset is not None:
+        where.append('d.name = %s')
+        params.append(dataset)
+    where_sql = (
+        sql.SQL('WHERE ')
+        + sql.SQL(' AND ').join(sql.SQL(part) for part in where)
+        if where
+        else sql.SQL('')
+    )
+    cur.execute(
+        sql.SQL(
+            """
+            SELECT COUNT(*)
+            FROM {}.entity_annotation_relation ear
+            JOIN {}.entity_evidence ee
+              ON ee.source_id = ear.source_id
+             AND ee.entity_evidence_id = ear.entity_evidence_id
+            JOIN {}.data_source ds
+              ON ds.source_id = ear.source_id
+            JOIN {}.dataset d
+              ON d.dataset_id = ee.dataset_id
+            {}
+            """
+        ).format(
+            sql.Identifier(schema),
+            sql.Identifier(schema),
+            sql.Identifier(schema),
+            sql.Identifier(schema),
+            where_sql,
+        ),
+        params,
+    )
+    return int(cur.fetchone()[0])
 
 
 def _status_counts(

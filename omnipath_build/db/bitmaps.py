@@ -14,12 +14,6 @@ from psycopg2 import sql
 import psycopg2.extensions
 
 from omnipath_build.cv_terms import CV_TERM_ENTITY_TYPE
-from pypath.internals.cv_terms import (
-    OntologyAnnotationCv,
-    cv_term_label_accession,
-)
-
-ONTOLOGY_ID_TERM = cv_term_label_accession(OntologyAnnotationCv.ONTOLOGY_ID)
 
 
 @dataclass(frozen=True)
@@ -341,33 +335,16 @@ def _populate_facet_entity_bitmap(
             )
             SELECT
               'ontology_id',
-              a.value,
-              rb_build_agg(DISTINCT e.entity_id::integer),
-              COUNT(DISTINCT e.entity_id)::integer
-            FROM {}.entity e
-            JOIN {}.vocab_entity_type et
-              ON et.entity_type_id = e.entity_type_id
-            JOIN {}.entity_evidence_resolution er
-              ON er.entity_id = e.entity_id
-            JOIN {}.entity_evidence_annotation ea
-              ON ea.source_id = er.source_id
-             AND ea.entity_evidence_id = er.entity_evidence_id
-            JOIN {}.annotation a
-              ON a.annotation_key = ea.annotation_key
-            WHERE et.name = {}
-              AND a.term = {}
-              AND COALESCE(a.value, '') <> ''
-            GROUP BY a.value
+              ot.ontology_id,
+              rb_build_agg(DISTINCT ot.term_entity_id::integer),
+              COUNT(DISTINCT ot.term_entity_id)::integer
+            FROM {}.ontology_terms ot
+            WHERE COALESCE(ot.ontology_id, '') <> ''
+            GROUP BY ot.ontology_id
             """
         ).format(
             schema_id,
             schema_id,
-            schema_id,
-            schema_id,
-            schema_id,
-            schema_id,
-            sql.Literal(CV_TERM_ENTITY_TYPE),
-            sql.Literal(ONTOLOGY_ID_TERM),
         ),
     ]
     for statement in statements:
@@ -423,6 +400,11 @@ def _populate_facet_relation_bitmap(
                AND re.relation_evidence_id = rer.relation_evidence_id
               JOIN {}.data_source ds
                 ON ds.source_id = re.source_id
+              UNION
+              SELECT DISTINCT ear.relation_id, ds.name AS source
+              FROM {}.entity_annotation_relation ear
+              JOIN {}.data_source ds
+                ON ds.source_id = ear.source_id
             )
             SELECT
               'source',
@@ -434,7 +416,14 @@ def _populate_facet_relation_bitmap(
               AND source <> ''
             GROUP BY source
             """
-        ).format(schema_id, schema_id, schema_id, schema_id),
+        ).format(
+            schema_id,
+            schema_id,
+            schema_id,
+            schema_id,
+            schema_id,
+            schema_id,
+        ),
         sql.SQL(
             """
             INSERT INTO {}.facet_relation_bitmap (

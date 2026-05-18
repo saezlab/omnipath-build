@@ -28,12 +28,17 @@ def rebuild_derived_tables(
     conn: psycopg2.extensions.connection,
     *,
     schema: str = 'public',
+    refresh_entity_identifiers: bool = True,
 ) -> DerivedTableStats:
     """Create and fully rebuild derived search/count tables."""
 
     with conn.cursor() as cur:
         _create_derived_tables(cur, schema)
-        entity_identifiers = _refresh_entity_identifiers(cur, schema)
+        entity_identifiers = (
+            _refresh_entity_identifiers(cur, schema)
+            if refresh_entity_identifiers
+            else 0
+        )
         relation_counts = _populate_entity_relation_counts(cur, schema)
         ontology_terms = _count_ontology_terms(cur, schema)
         _create_derived_indexes(cur, schema)
