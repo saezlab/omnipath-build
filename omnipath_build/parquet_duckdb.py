@@ -1199,7 +1199,12 @@ def _bulk_load_canonical(
             AND existing.entity_id IS NULL
         )
         SELECT
-          content_uuid({_sql_literal(CV_TERM_ID_TYPE)} || '|' || missing.term_id),
+          canonical_entity_uuid(
+            {_sql_literal(CV_TERM_ENTITY_TYPE)},
+            NULL,
+            missing.identifier_type,
+            missing.term_id
+          ),
           missing.entity_type_id,
           NULL::BIGINT,
           missing.identifier_type_id,

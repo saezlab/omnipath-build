@@ -59,6 +59,44 @@ def _create_duckdb_content_uuid_macro(con: duckdb.DuckDBPyConnection) -> None:
         )
         """
     )
+    con.execute(
+        """
+        CREATE OR REPLACE MACRO canonical_entity_key(
+          entity_type,
+          taxonomy_id,
+          canonical_identifier_type,
+          canonical_identifier
+        ) AS (
+          to_json(
+            list_value(
+              entity_type::VARCHAR,
+              coalesce(taxonomy_id::VARCHAR, ''),
+              canonical_identifier_type::VARCHAR,
+              canonical_identifier::VARCHAR
+            )
+          )
+        )
+        """
+    )
+    con.execute(
+        """
+        CREATE OR REPLACE MACRO canonical_entity_uuid(
+          entity_type,
+          taxonomy_id,
+          canonical_identifier_type,
+          canonical_identifier
+        ) AS (
+          content_uuid(
+            canonical_entity_key(
+              entity_type,
+              taxonomy_id,
+              canonical_identifier_type,
+              canonical_identifier
+            )
+          )
+        )
+        """
+    )
 
 
 def _create_duckdb_resolver_views(
@@ -959,16 +997,18 @@ def _canonicalize_loaded_duckdb(
             er.canonical_identifier
         )
         SELECT
-          content_uuid(
-            all_entity.entity_type || '|' ||
-            coalesce(all_entity.taxonomy_id, '') || '|' ||
-            all_entity.canonical_identifier_type_id::VARCHAR || '|' ||
+          canonical_entity_uuid(
+            all_entity.entity_type,
+            all_entity.taxonomy_id,
+            it.name,
             all_entity.canonical_identifier
           ) AS entity_id,
-          all_entity.entity_type || '|' ||
-            coalesce(all_entity.taxonomy_id, '') || '|' ||
-            all_entity.canonical_identifier_type_id::VARCHAR || '|' ||
-            all_entity.canonical_identifier AS entity_key,
+          canonical_entity_key(
+            all_entity.entity_type,
+            all_entity.taxonomy_id,
+            it.name,
+            all_entity.canonical_identifier
+          ) AS entity_key,
           all_entity.entity_type,
           all_entity.taxonomy_id,
           all_entity.canonical_identifier_type_id,
@@ -2079,9 +2119,10 @@ def _bulk_copy_canonical(
               ON rs.name = e.resolution_status
             UNION ALL
             SELECT
-              content_uuid(
-                {cv_term_entity_type} || '||' ||
-                it.identifier_type_id::VARCHAR || '|' ||
+              canonical_entity_uuid(
+                {cv_term_entity_type},
+                NULL,
+                it.name,
                 ot.term_id
               ),
               et.entity_type_id,
@@ -2109,11 +2150,10 @@ def _bulk_copy_canonical(
               AND NOT EXISTS (
                 SELECT 1
                 FROM pq_entity e
-                WHERE e.entity_id = content_uuid(
-                  {cv_term_entity_type} || '||' ||
-                  it.identifier_type_id::VARCHAR || '|' ||
-                  ot.term_id
-                )
+                WHERE e.entity_type = {cv_term_entity_type}
+                  AND NULLIF(e.taxonomy_id, '') IS NULL
+                  AND e.canonical_identifier_type = it.name
+                  AND e.canonical_identifier = ot.term_id
               )
           ) candidate
           LEFT JOIN {existing_entity} existing
@@ -2145,9 +2185,10 @@ def _bulk_copy_canonical(
         query="""
           SELECT
             ds.source_id,
-            content_uuid(
-              {cv_term_entity_type} || '||' ||
-              it.identifier_type_id::VARCHAR || '|' ||
+            canonical_entity_uuid(
+              {cv_term_entity_type},
+              NULL,
+              it.name,
               ot.term_id
             ),
             ot.term_id,
