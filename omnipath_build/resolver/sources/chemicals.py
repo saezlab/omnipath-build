@@ -11,28 +11,28 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Callable, Iterable
+from collections.abc import Callable, Iterable
 
 import polars as pl
 
+from pypath.inputs_v2.hmdb import resource as hmdb_resource
+from pypath.inputs_v2.chebi import resource as chebi_resource
+from pypath.inputs_v2.chembl import resource as chembl_resource
+from pypath.internals.cv_terms import (
+    IdentifierNamespaceCv,
+    cv_term_label_accession,
+)
+from pypath.inputs_v2.lipidmaps import resource as lipidmaps_resource
+from pypath.inputs_v2.swisslipids import resource as swisslipids_resource
+from omnipath_build.resolver.paths import (
+    ensure_chemicals_data_dir,
+    activate_raw_download_data_dir,
+)
 from omnipath_build.resolver.identifier_types import (
     IDENTIFIER_TYPE_SCHEMA,
     identifier_type_id,
     identifier_type_rows,
 )
-from omnipath_build.resolver.paths import (
-    activate_raw_download_data_dir,
-    ensure_chemicals_data_dir,
-)
-from pypath.internals.cv_terms import (
-    IdentifierNamespaceCv,
-    cv_term_label_accession,
-)
-from pypath.inputs_v2.chebi import resource as chebi_resource
-from pypath.inputs_v2.chembl import resource as chembl_resource
-from pypath.inputs_v2.hmdb import resource as hmdb_resource
-from pypath.inputs_v2.lipidmaps import resource as lipidmaps_resource
-from pypath.inputs_v2.swisslipids import resource as swisslipids_resource
 
 CHEMICAL_IDENTIFIER_LOOKUP_SCHEMA: dict[str, pl.DataType] = {
     'key_identifier_type_id': pl.UInt32,
@@ -43,13 +43,16 @@ CHEMICAL_IDENTIFIER_LOOKUP_SCHEMA: dict[str, pl.DataType] = {
 
 CHEMICAL_SOURCES: tuple[str, ...] = (
     'chebi',
-    'chembl',
     'hmdb',
     'lipidmaps',
     'swisslipids',
+    'chembl',
     'pubchem',
 )
-CHEMICAL_IDENTIFIER_LOOKUP_OUTPUT_FILENAME = 'chemical_identifier_lookup.parquet'
+LOOKUP_DEPENDENT_CHEMICAL_SOURCES = frozenset({'chembl', 'pubchem'})
+CHEMICAL_IDENTIFIER_LOOKUP_OUTPUT_FILENAME = (
+    'chemical_identifier_lookup.parquet'
+)
 IDENTIFIER_TYPE_OUTPUT_FILENAME = 'identifier_type.parquet'
 CHEBI_TYPE = cv_term_label_accession(IdentifierNamespaceCv.CHEBI)
 CHEMBL_COMPOUND_TYPE = cv_term_label_accession(
@@ -61,6 +64,13 @@ SWISSLIPIDS_TYPE = cv_term_label_accession(IdentifierNamespaceCv.SWISSLIPIDS)
 STANDARD_INCHI_KEY_TYPE = cv_term_label_accession(
     IdentifierNamespaceCv.STANDARD_INCHI_KEY
 )
+CHEMICAL_SOURCE_IDENTIFIER_TYPES = {
+    'chebi': CHEBI_TYPE,
+    'chembl': CHEMBL_COMPOUND_TYPE,
+    'hmdb': HMDB_TYPE,
+    'lipidmaps': LIPIDMAPS_TYPE,
+    'swisslipids': SWISSLIPIDS_TYPE,
+}
 
 
 def _clean(value: object) -> str | None:
@@ -173,12 +183,20 @@ def _validate_chemical_sources(sources: Iterable[str]) -> tuple[str, ...]:
     return selected
 
 
+def _order_chemical_sources(sources: Iterable[str]) -> tuple[str, ...]:
+    """Return sources in dependency order, independent lookups before filters."""
+
+    selected = set(_validate_chemical_sources(sources))
+    return tuple(source for source in CHEMICAL_SOURCES if source in selected)
+
+
 def _chemical_identifier_rows(
     sources: Iterable[str],
     max_records: int | None = None,
     pubchem_url: str | Path | None = None,
     pubchem_shards: int | None = None,
     chemical_lookup_path: str | Path | None = None,
+    chemical_lookup_sources: Iterable[str] | None = None,
 ) -> Iterable[dict]:
     for source in _validate_chemical_sources(sources):
         if source == 'pubchem':
@@ -190,6 +208,7 @@ def _chemical_identifier_rows(
                 pubchem_url,
                 filter_inchikeys=_chemical_filter_inchikeys(
                     chemical_lookup_path,
+                    sources=chemical_lookup_sources,
                 ),
                 shard_count=pubchem_shards,
             )
@@ -202,8 +221,15 @@ def _chemical_identifier_rows(
             continue
 
         dataset, mapper = _CHEMICAL_DATASETS[source]
+        raw_kwargs = {}
+        if source == 'chembl' and chemical_lookup_path is not None:
+            raw_kwargs['chemical_resolver_lookup_path'] = chemical_lookup_path
+            if chemical_lookup_sources:
+                raw_kwargs['chemical_resolver_sources'] = tuple(
+                    chemical_lookup_sources
+                )
         emitted = 0
-        for raw_row in dataset.raw():
+        for raw_row in dataset.raw(**raw_kwargs):
             row = mapper(raw_row)
             if row is None:
                 continue
@@ -246,7 +272,7 @@ def materialize_chemical_sources(
 ) -> dict[str, int]:
     """Write chemical resolver parquet files and return output row counts."""
 
-    selected = _validate_chemical_sources(sources)
+    selected = _order_chemical_sources(sources)
     output_dir = (
         Path(output_dir)
         if output_dir is not None
@@ -255,18 +281,30 @@ def materialize_chemical_sources(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     activate_raw_download_data_dir()
-    chemical_lookup_path = output_dir / CHEMICAL_IDENTIFIER_LOOKUP_OUTPUT_FILENAME
-    lookup, identifier_types = _normalize_chemical_identifier_lookup(
-        _chemical_identifier_rows(
-            selected,
-            max_records=max_records,
-            pubchem_url=pubchem_url,
-            pubchem_shards=pubchem_shards,
-            chemical_lookup_path=chemical_lookup_path,
-        )
+    chemical_lookup_path = (
+        output_dir / CHEMICAL_IDENTIFIER_LOOKUP_OUTPUT_FILENAME
     )
-    lookup.write_parquet(output_dir / CHEMICAL_IDENTIFIER_LOOKUP_OUTPUT_FILENAME)
-    identifier_types.write_parquet(output_dir / IDENTIFIER_TYPE_OUTPUT_FILENAME)
+    rows: list[dict] = []
+    completed_sources: list[str] = []
+
+    for source in selected:
+        lookup_sources = tuple(completed_sources)
+        if source in LOOKUP_DEPENDENT_CHEMICAL_SOURCES and rows:
+            _write_chemical_lookup_files(rows, output_dir)
+
+        rows.extend(
+            _chemical_identifier_rows(
+                (source,),
+                max_records=max_records,
+                pubchem_url=pubchem_url,
+                pubchem_shards=pubchem_shards,
+                chemical_lookup_path=chemical_lookup_path,
+                chemical_lookup_sources=lookup_sources,
+            )
+        )
+        completed_sources.append(source)
+
+    lookup, identifier_types = _write_chemical_lookup_files(rows, output_dir)
 
     return {
         'chemical_identifier_lookup_rows': lookup.height,
@@ -274,9 +312,29 @@ def materialize_chemical_sources(
     }
 
 
+def _write_chemical_lookup_files(
+    rows: Iterable[dict],
+    output_dir: Path,
+) -> tuple[pl.DataFrame, pl.DataFrame]:
+    lookup, identifier_types = _normalize_chemical_identifier_lookup(rows)
+    lookup.write_parquet(
+        output_dir / CHEMICAL_IDENTIFIER_LOOKUP_OUTPUT_FILENAME
+    )
+    identifier_types.write_parquet(output_dir / IDENTIFIER_TYPE_OUTPUT_FILENAME)
+    return lookup, identifier_types
+
+
 def _chemical_filter_inchikeys(
     lookup_path: str | Path | None,
+    sources: Iterable[str] | None = None,
 ) -> frozenset[str] | None:
+    source_values = (
+        frozenset(str(source).strip().lower() for source in sources if source)
+        if sources is not None
+        else frozenset({'chebi', 'hmdb'})
+    )
+    if not source_values:
+        return None
     path = Path(lookup_path) if lookup_path is not None else None
     if path is None or not path.exists():
         fallback = Path('omnipath_build/data/chemicals') / (
@@ -291,7 +349,7 @@ def _chemical_filter_inchikeys(
     if {'source', 'standard_inchi_key'} <= columns:
         values = (
             scan.filter(
-                pl.col('source').str.to_lowercase().is_in(['chebi', 'hmdb'])
+                pl.col('source').str.to_lowercase().is_in(sorted(source_values))
                 & pl.col('standard_inchi_key').is_not_null()
                 & (pl.col('standard_inchi_key') != '')
             )
@@ -306,15 +364,16 @@ def _chemical_filter_inchikeys(
         identifier_type_path = path.with_name(IDENTIFIER_TYPE_OUTPUT_FILENAME)
         if not identifier_type_path.exists():
             return None
+        source_type_names = sorted(
+            CHEMICAL_SOURCE_IDENTIFIER_TYPES[source]
+            for source in source_values
+            if source in CHEMICAL_SOURCE_IDENTIFIER_TYPES
+        )
+        if not source_type_names:
+            return None
         type_ids = (
             pl.scan_parquet(identifier_type_path)
-            .filter(
-                pl.col('name')
-                .str.to_lowercase()
-                .str.split(':')
-                .list.first()
-                .is_in(['chebi', 'hmdb'])
-            )
+            .filter(pl.col('name').is_in(source_type_names))
             .select('identifier_type_id')
             .collect()
             .get_column('identifier_type_id')
