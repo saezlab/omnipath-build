@@ -1,4 +1,4 @@
-.PHONY: setup resolver db-setup db-reset reset-content drop-source ingest canonicalize derive load pipeline all test
+.PHONY: setup resolver ontology-artifacts db-setup db-reset reset-content drop-source ingest canonicalize derive load pipeline all test
 
 DATA_ROOT ?= data
 DATABASE ?= omnipath
@@ -28,6 +28,7 @@ MAX_RECORDS ?=
 FORCE_REFRESH ?=
 PUBCHEM_URL ?=
 PUBCHEM_SHARDS ?=
+OBO_ARTIFACTS ?= 1
 DUCKDB_MAX_RECORDS_ARG = $(if $(MAX_RECORDS),--max-records "$(MAX_RECORDS)",--max-records 0)
 
 setup:
@@ -46,6 +47,16 @@ resolver:
 		$(if $(PUBCHEM_URL),--pubchem-url "$(PUBCHEM_URL)") \
 		$(if $(PUBCHEM_SHARDS),--pubchem-shards $(PUBCHEM_SHARDS)) \
 		$(RESOLVER_SOURCES)
+
+ontology-artifacts:
+	@echo "[omnipath_build] ontology-artifacts output_dir=$(OBO_DIR) sources=$(if $(LOAD_SOURCES),$(LOAD_SOURCES),ALL)"
+	@PYTHONUNBUFFERED=1 uv run python -m omnipath_build.ontology_artifacts \
+		--output-dir "$(OBO_DIR)" \
+		--database "$(DATABASE)" \
+		--inputs-package "$(INPUTS_PACKAGE)" \
+		$(if $(LOAD_SOURCES),--sources "$(LOAD_SOURCES)") \
+		$(if $(DATASET),--dataset "$(DATASET)") \
+		$(if $(FORCE_REFRESH),--force-refresh)
 
 db-setup:
 	@if [ -z "$(DATABASE_URL)" ]; then \
@@ -150,6 +161,8 @@ load:
 		$(if $(DATASET),--dataset "$(DATASET)") \
 		$(DUCKDB_MAX_RECORDS_ARG) \
 		--batch-size "$(BATCH_SIZE)" \
+		$(if $(filter 0 false no,$(OBO_ARTIFACTS)),--no-obo-artifacts,--obo-artifacts) \
+		--obo-output-dir "$(OBO_DIR)" \
 		$(if $(FORCE_REFRESH),--force-refresh) \
 		--append
 

@@ -30,6 +30,10 @@ import psycopg2
 
 from omnipath_build import duckdb_load
 from omnipath_build.db.refresh import delete_source_content
+from omnipath_build.ontology_artifacts import (
+    collect_ontology_terms,
+    write_ontology_obo,
+)
 from omnipath_build.resources import ResourceFunction, discover_resources
 
 
@@ -318,6 +322,8 @@ def run_discovered_direct_load(
     max_records: int | None = None,
     state_path: str | Path | None = None,
     force_refresh: bool = False,
+    obo_artifacts: bool = True,
+    obo_output_dir: str | Path = 'data/obo',
     threads: int = 4,
     drop_load_constraints: bool = True,
     require_empty: bool = True,
@@ -377,9 +383,20 @@ def run_discovered_direct_load(
             )
             state = _dataset_state_path(state_path, fn)
             if fn.output_kind == 'ontology':
+                terms = collect_ontology_terms(records)
+                if obo_artifacts:
+                    obo_path = write_ontology_obo(
+                        fn,
+                        terms,
+                        output_dir=Path(obo_output_dir),
+                    )
+                    print(
+                        f'[{fn.source}.{fn.function_name}] obo={obo_path}',
+                        flush=True,
+                    )
                 stats = run_direct_copy_pipeline(
                     (),
-                    ontology_records=records,
+                    ontology_records=terms,
                     ontology_dataset=fn.function_name,
                     ontology_id=fn.ontology_id or fn.function_name,
                     source=fn.source,
@@ -618,6 +635,17 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument('--threads', type=int, default=4)
     parser.add_argument('--force-refresh', action='store_true')
     parser.add_argument(
+        '--obo-artifacts',
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help='Write ontology datasets as OBO artifacts for the API service.',
+    )
+    parser.add_argument(
+        '--obo-output-dir',
+        default='data/obo',
+        help='Directory for OBO artifacts written from ontology datasets.',
+    )
+    parser.add_argument(
         '--keep-load-constraints',
         action='store_true',
         help='Do not drop high-volume load constraints/indexes before COPY.',
@@ -656,6 +684,8 @@ def main(argv: list[str] | None = None) -> int:
             max_records=max_records,
             state_path=args.state_path,
             force_refresh=args.force_refresh,
+            obo_artifacts=args.obo_artifacts,
+            obo_output_dir=args.obo_output_dir,
             threads=args.threads,
             drop_load_constraints=not args.keep_load_constraints,
             require_empty=not args.append,
