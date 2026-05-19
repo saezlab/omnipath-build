@@ -565,43 +565,72 @@ def _handle_ingest(
             raw_dataset = getattr(fn.call, '_raw_dataset', None)
             if raw_dataset is None:
                 continue
-            dataset_started = time.perf_counter()
-            print(
-                f'[{fn.source}.{fn.function_name}] stream start '
-                f'kind={fn.output_kind}',
-                flush=True,
-            )
-            raw_kwargs = {'force_refresh': args.force_refresh}
-            if fn.source == 'chembl' and args.max_records is not None:
-                raw_kwargs['max_records'] = args.max_records
-            records = raw_dataset(**raw_kwargs)
-            if args.max_records is not None:
-                records = islice(records, args.max_records)
-            if fn.output_kind == 'ontology':
-                terms = _collect_ontology_terms(records)
-                if args.obo_artifacts:
-                    obo_path = _write_ontology_obo(
-                        fn,
+            try:
+                dataset_started = time.perf_counter()
+                print(
+                    f'[{fn.source}.{fn.function_name}] stream start '
+                    f'kind={fn.output_kind}',
+                    flush=True,
+                )
+                raw_kwargs = {'force_refresh': args.force_refresh}
+                if fn.source == 'chembl' and args.max_records is not None:
+                    raw_kwargs['max_records'] = args.max_records
+                records = raw_dataset(**raw_kwargs)
+                if args.max_records is not None:
+                    records = islice(records, args.max_records)
+                if fn.output_kind == 'ontology':
+                    terms = _collect_ontology_terms(records)
+                    if args.obo_artifacts:
+                        obo_path = _write_ontology_obo(
+                            fn,
+                            terms,
+                            output_dir=Path(args.obo_output_dir),
+                        )
+                        print(
+                            f'[{fn.source}.{fn.function_name}] obo={obo_path}',
+                            flush=True,
+                        )
+                    stats = load_ontology_terms(
+                        conn,
                         terms,
-                        output_dir=Path(args.obo_output_dir),
+                        schema=args.schema,
+                        source=fn.source,
+                        dataset=fn.function_name,
+                        ontology_id=fn.ontology_id or fn.function_name,
+                        batch_size=args.batch_size,
+                        progress_every=args.progress_every,
                     )
                     print(
-                        f'[{fn.source}.{fn.function_name}] obo={obo_path}',
+                        f'[{fn.source}.{fn.function_name}] '
+                        f'ontology_terms={stats.terms} '
+                        f'annotations={stats.annotations}',
                         flush=True,
                     )
-                stats = load_ontology_terms(
+                    print(
+                        f'[{fn.source}.{fn.function_name}] stream done '
+                        f'elapsed={time.perf_counter() - dataset_started:.1f}s',
+                        flush=True,
+                    )
+                    continue
+
+                ingestor = BulkIngestor(
                     conn,
-                    terms,
                     schema=args.schema,
+                    profile=args.profile,
+                )
+                stats = ingestor.ingest_records(
+                    records,
                     source=fn.source,
                     dataset=fn.function_name,
-                    ontology_id=fn.ontology_id or fn.function_name,
                     batch_size=args.batch_size,
                     progress_every=args.progress_every,
                 )
                 print(
                     f'[{fn.source}.{fn.function_name}] '
-                    f'ontology_terms={stats.terms} '
+                    f'rows={stats.source_rows} '
+                    f'entities={stats.entity_evidence} '
+                    f'relations={stats.relation_evidence} '
+                    f'identifiers={stats.identifiers} '
                     f'annotations={stats.annotations}',
                     flush=True,
                 )
@@ -610,40 +639,26 @@ def _handle_ingest(
                     f'elapsed={time.perf_counter() - dataset_started:.1f}s',
                     flush=True,
                 )
+            except Exception as exc:
+                conn.rollback()
+                _warn_dataset_failed(fn, exc)
                 continue
-
-            ingestor = BulkIngestor(
-                conn,
-                schema=args.schema,
-                profile=args.profile,
-            )
-            stats = ingestor.ingest_records(
-                records,
-                source=fn.source,
-                dataset=fn.function_name,
-                batch_size=args.batch_size,
-                progress_every=args.progress_every,
-            )
-            print(
-                f'[{fn.source}.{fn.function_name}] '
-                f'rows={stats.source_rows} '
-                f'entities={stats.entity_evidence} '
-                f'relations={stats.relation_evidence} '
-                f'identifiers={stats.identifiers} '
-                f'annotations={stats.annotations}',
-                flush=True,
-            )
-            print(
-                f'[{fn.source}.{fn.function_name}] stream done '
-                f'elapsed={time.perf_counter() - dataset_started:.1f}s',
-                flush=True,
-            )
         print(
             f'[{source}] refresh done '
             f'elapsed={time.perf_counter() - source_started:.1f}s',
             flush=True,
         )
     return 0
+
+
+def _warn_dataset_failed(fn: object, exc: Exception) -> None:
+    print(
+        '[warning] '
+        f'[{fn.source}.{fn.function_name}] ingest failed; continuing: '
+        f'{exc.__class__.__name__}: {exc}',
+        file=sys.stderr,
+        flush=True,
+    )
 
 
 def _collect_ontology_terms(records: object) -> list[OntologyTerm]:

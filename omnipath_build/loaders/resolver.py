@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from io import StringIO
 import csv
+import sys
 import time
 from pathlib import Path
 from dataclasses import dataclass
@@ -159,24 +160,33 @@ def load_resolver_sources(
     chemical_rows = 0
 
     if 'uniprot' in selected:
-        protein_rows, protein_ambiguous_rows = _load_protein_sources(
-            conn,
-            schema=schema,
-            batch_size=batch_size,
-            taxonomy_ids=taxonomy_ids,
-        )
+        try:
+            protein_rows, protein_ambiguous_rows = _load_protein_sources(
+                conn,
+                schema=schema,
+                batch_size=batch_size,
+                taxonomy_ids=taxonomy_ids,
+            )
+        except Exception as exc:
+            conn.rollback()
+            _warn_resolver_source_failed('uniprot', exc)
 
     chemical_sources = [source for source in sources if source != 'uniprot']
     if chemical_sources:
-        chemical_rows = _load_chemical_sources(
-            conn,
-            schema=schema,
-            sources=chemical_sources,
-            batch_size=batch_size,
-            max_records=max_records,
-            pubchem_url=pubchem_url,
-            pubchem_shards=pubchem_shards,
-        )
+        for source in chemical_sources:
+            try:
+                chemical_rows += _load_chemical_sources(
+                    conn,
+                    schema=schema,
+                    sources=[source],
+                    batch_size=batch_size,
+                    max_records=max_records,
+                    pubchem_url=pubchem_url,
+                    pubchem_shards=pubchem_shards,
+                )
+            except Exception as exc:
+                conn.rollback()
+                _warn_resolver_source_failed(source, exc)
 
     if indexes:
         started = time.monotonic()
@@ -193,6 +203,16 @@ def load_resolver_sources(
         protein_rows=protein_rows,
         protein_ambiguous_rows=protein_ambiguous_rows,
         chemical_rows=chemical_rows,
+    )
+
+
+def _warn_resolver_source_failed(source: str, exc: Exception) -> None:
+    print(
+        '[warning] '
+        f'[resolver.{source}] load failed; continuing: '
+        f'{exc.__class__.__name__}: {exc}',
+        file=sys.stderr,
+        flush=True,
     )
 
 
@@ -415,7 +435,9 @@ def _load_protein_sources(
     batch_size: int,
     taxonomy_ids: list[int | str] | None,
 ) -> tuple[int, int]:
-    from omnipath_build.resolver.sources.proteins import _protein_identifier_rows
+    from omnipath_build.resolver.sources.proteins import (
+        _protein_identifier_rows,
+    )
 
     started = time.monotonic()
     with conn.cursor() as cur:
@@ -446,7 +468,9 @@ def _load_chemical_sources(
     pubchem_url: str | Path | None,
     pubchem_shards: int | None,
 ) -> int:
-    from omnipath_build.resolver.sources.chemicals import _chemical_identifier_rows
+    from omnipath_build.resolver.sources.chemicals import (
+        _chemical_identifier_rows,
+    )
 
     started = time.monotonic()
     with conn.cursor() as cur:
@@ -518,7 +542,9 @@ def _normalized_protein_rows(rows: object) -> object:
 
 def _normalized_chemical_rows(rows: object) -> object:
     from omnipath_build.resolver.identifier_types import identifier_type_id
-    from omnipath_build.resolver.sources.chemicals import STANDARD_INCHI_KEY_TYPE
+    from omnipath_build.resolver.sources.chemicals import (
+        STANDARD_INCHI_KEY_TYPE,
+    )
 
     canonical_identifier_type_id = identifier_type_id(STANDARD_INCHI_KEY_TYPE)
     for row in rows:

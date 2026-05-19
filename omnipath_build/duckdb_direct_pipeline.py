@@ -17,25 +17,25 @@ read without disturbing the older Parquet-first experiments.
 
 from __future__ import annotations
 
-import argparse
 import os
+import sys
 import time
-from collections.abc import Iterable
-from dataclasses import dataclass
-from itertools import islice
 from pathlib import Path
+import argparse
+from itertools import islice
+from dataclasses import dataclass
+from collections.abc import Iterable
 
 import duckdb
 import psycopg2
 
 from omnipath_build import duckdb_load
-from omnipath_build.db.refresh import delete_source_content, source_has_content
-from omnipath_build.ontology_artifacts import (
-    collect_ontology_terms,
-    write_ontology_obo,
-)
 from omnipath_build.resources import ResourceFunction, discover_resources
-
+from omnipath_build.db.refresh import source_has_content, delete_source_content
+from omnipath_build.ontology_artifacts import (
+    write_ontology_obo,
+    collect_ontology_terms,
+)
 
 @dataclass(frozen=True)
 class DirectCopyStats:
@@ -70,6 +70,8 @@ class DiscoveredLoadStats:
     sources: int
     skipped_sources: int
     datasets: int
+    failed_sources: int
+    failed_datasets: int
     source_rows: int
     identifiers: int
     annotations: int
@@ -370,6 +372,8 @@ def run_discovered_direct_load(
             sources=0,
             skipped_sources=skipped_sources,
             datasets=0,
+            failed_sources=0,
+            failed_datasets=0,
             source_rows=0,
             identifiers=0,
             annotations=0,
@@ -391,9 +395,13 @@ def run_discovered_direct_load(
     }
     first_dataset = True
     dataset_count = 0
+    failed_datasets = 0
+    failed_sources = 0
     resolver_dir = Path(resolver_dir)
 
     for source, functions in selected_by_source.items():
+        source_succeeded = False
+        source_failed = False
         dataset_names = ','.join(fn.function_name for fn in functions)
         print(
             f'[{source}] duckdb load start datasets={len(functions)} '
@@ -404,74 +412,83 @@ def run_discovered_direct_load(
             raw_dataset = getattr(fn.call, '_raw_dataset', None)
             if raw_dataset is None:
                 continue
-            dataset_count += 1
-            records = raw_dataset(
-                **_raw_dataset_kwargs(
-                    fn,
-                    resolver_dir=resolver_dir,
-                    force_refresh=force_refresh,
-                )
-            )
-            state = _dataset_state_path(state_path, fn)
-            if fn.output_kind == 'ontology':
-                terms = collect_ontology_terms(records)
-                if obo_artifacts:
-                    obo_path = write_ontology_obo(
+            try:
+                records = raw_dataset(
+                    **_raw_dataset_kwargs(
                         fn,
-                        terms,
-                        output_dir=Path(obo_output_dir),
+                        resolver_dir=resolver_dir,
+                        force_refresh=force_refresh,
                     )
+                )
+                state = _dataset_state_path(state_path, fn)
+                if fn.output_kind == 'ontology':
+                    terms = collect_ontology_terms(records)
+                    if obo_artifacts:
+                        obo_path = write_ontology_obo(
+                            fn,
+                            terms,
+                            output_dir=Path(obo_output_dir),
+                        )
+                        print(
+                            f'[{fn.source}.{fn.function_name}] obo={obo_path}',
+                            flush=True,
+                        )
+                    stats = run_direct_copy_pipeline(
+                        (),
+                        ontology_records=terms,
+                        ontology_dataset=fn.function_name,
+                        ontology_id=fn.ontology_id or fn.function_name,
+                        source=fn.source,
+                        dataset=fn.function_name,
+                        database_url=database_url,
+                        schema=schema,
+                        resolver_dir=resolver_dir,
+                        max_records=None,
+                        state_path=state,
+                        threads=threads,
+                        drop_load_constraints=False,
+                        require_empty=require_empty and first_dataset,
+                    )
+                    totals['source_rows'] += stats.source_rows
+                    totals['identifiers'] += stats.identifiers
+                    totals['annotations'] += stats.annotations
+                    totals['ontology_terms'] += stats.ontology_terms
                     print(
-                        f'[{fn.source}.{fn.function_name}] obo={obo_path}',
+                        f'[{fn.source}.{fn.function_name}] '
+                        f'ontology_terms={stats.ontology_terms} '
+                        f'copy={stats.copy_seconds:.3f}s '
+                        f'total={stats.total_seconds:.3f}s',
                         flush=True,
                     )
-                stats = run_direct_copy_pipeline(
-                    (),
-                    ontology_records=terms,
-                    ontology_dataset=fn.function_name,
-                    ontology_id=fn.ontology_id or fn.function_name,
-                    source=fn.source,
-                    dataset=fn.function_name,
-                    database_url=database_url,
-                    schema=schema,
-                    resolver_dir=resolver_dir,
-                    max_records=None,
-                    state_path=state,
-                    threads=threads,
-                    drop_load_constraints=False,
-                    require_empty=require_empty and first_dataset,
-                )
-                totals['source_rows'] += stats.source_rows
-                totals['identifiers'] += stats.identifiers
-                totals['annotations'] += stats.annotations
-                totals['ontology_terms'] += stats.ontology_terms
-                print(
-                    f'[{fn.source}.{fn.function_name}] '
-                    f'ontology_terms={stats.ontology_terms} '
-                    f'copy={stats.copy_seconds:.3f}s '
-                    f'total={stats.total_seconds:.3f}s',
-                    flush=True,
-                )
-            else:
-                stats = run_direct_copy_pipeline_batches(
-                    records,
-                    source=fn.source,
-                    dataset=fn.function_name,
-                    database_url=database_url,
-                    schema=schema,
-                    resolver_dir=resolver_dir,
-                    batch_size=batch_size,
-                    max_records=max_records,
-                    state_path=state,
-                    threads=threads,
-                    drop_load_constraints=False,
-                    require_empty=require_empty and first_dataset,
-                )
-                totals['source_rows'] += stats.source_rows
-                totals['identifiers'] += stats.identifiers
-                totals['annotations'] += stats.annotations
-                totals['ontology_terms'] += stats.ontology_terms
-            first_dataset = False
+                else:
+                    stats = run_direct_copy_pipeline_batches(
+                        records,
+                        source=fn.source,
+                        dataset=fn.function_name,
+                        database_url=database_url,
+                        schema=schema,
+                        resolver_dir=resolver_dir,
+                        batch_size=batch_size,
+                        max_records=max_records,
+                        state_path=state,
+                        threads=threads,
+                        drop_load_constraints=False,
+                        require_empty=require_empty and first_dataset,
+                    )
+                    totals['source_rows'] += stats.source_rows
+                    totals['identifiers'] += stats.identifiers
+                    totals['annotations'] += stats.annotations
+                    totals['ontology_terms'] += stats.ontology_terms
+                dataset_count += 1
+                source_succeeded = True
+                first_dataset = False
+            except Exception as exc:
+                failed_datasets += 1
+                source_failed = True
+                _warn_dataset_failed(fn, exc)
+                continue
+        if source_failed and not source_succeeded:
+            failed_sources += 1
         print(f'[{source}] duckdb load done', flush=True)
 
     duckdb_load._reset_postgres_sequences(database_url=database_url, schema=schema)
@@ -479,6 +496,8 @@ def run_discovered_direct_load(
         sources=len(selected_by_source),
         skipped_sources=skipped_sources,
         datasets=dataset_count,
+        failed_sources=failed_sources,
+        failed_datasets=failed_datasets,
         source_rows=totals['source_rows'],
         identifiers=totals['identifiers'],
         annotations=totals['annotations'],
@@ -536,6 +555,16 @@ def _raw_dataset_kwargs(
             }
         )
     return kwargs
+
+
+def _warn_dataset_failed(fn: ResourceFunction, exc: Exception) -> None:
+    print(
+        '[warning] '
+        f'[{fn.source}.{fn.function_name}] load failed; continuing: '
+        f'{exc.__class__.__name__}: {exc}',
+        file=sys.stderr,
+        flush=True,
+    )
 
 
 def run_uniprot_direct_copy_pipeline(
@@ -733,6 +762,8 @@ def main(argv: list[str] | None = None) -> int:
             f'sources={stats.sources} '
             f'skipped_sources={stats.skipped_sources} '
             f'datasets={stats.datasets} '
+            f'failed_sources={stats.failed_sources} '
+            f'failed_datasets={stats.failed_datasets} '
             f'source_rows={stats.source_rows} '
             f'identifiers={stats.identifiers} '
             f'annotations={stats.annotations} '

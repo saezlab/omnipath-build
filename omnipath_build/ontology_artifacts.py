@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
 import argparse
 from collections.abc import Iterable, Sequence
-from pathlib import Path
 
 from omnipath_build.resources import ResourceFunction, discover_resources
-from pypath.inputs_v2.ontology_serializers import format_obo
 from pypath.internals.ontology_schema import OntologyTerm
-
+from pypath.inputs_v2.ontology_serializers import format_obo
 
 def write_discovered_ontology_artifacts(
     *,
@@ -34,14 +34,25 @@ def write_discovered_ontology_artifacts(
         raw_dataset = getattr(fn.call, '_raw_dataset', None)
         if raw_dataset is None:
             continue
-        terms = collect_ontology_terms(raw_dataset(force_refresh=force_refresh))
-        path = write_ontology_obo(fn, terms, output_dir=output)
-        print(
-            f'[{fn.source}.{fn.function_name}] '
-            f'obo={path} terms={len(terms)}',
-            flush=True,
-        )
-        paths.append(path)
+        try:
+            terms = collect_ontology_terms(
+                raw_dataset(force_refresh=force_refresh)
+            )
+            path = write_ontology_obo(fn, terms, output_dir=output)
+            print(
+                f'[{fn.source}.{fn.function_name}] '
+                f'obo={path} terms={len(terms)}',
+                flush=True,
+            )
+            paths.append(path)
+        except Exception as exc:
+            print(
+                '[warning] '
+                f'[{fn.source}.{fn.function_name}] ontology artifact failed; '
+                f'continuing: {exc.__class__.__name__}: {exc}',
+                file=sys.stderr,
+                flush=True,
+            )
     return paths
 
 

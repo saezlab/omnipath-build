@@ -10,6 +10,7 @@ collapse to one canonical chemical entity.
 from __future__ import annotations
 
 import re
+import sys
 from pathlib import Path
 from collections.abc import Callable, Iterable
 
@@ -274,6 +275,7 @@ def materialize_chemical_sources(
     pubchem_url: str | Path | None = None,
     pubchem_shards: int | None = None,
     skip_existing: bool = True,
+    continue_on_error: bool = False,
 ) -> dict[str, int]:
     """Write chemical resolver parquet files and return output row counts."""
 
@@ -322,17 +324,30 @@ def materialize_chemical_sources(
                 existing_identifier_types=existing_identifier_types,
             )
 
-        rows.extend(
-            _chemical_identifier_rows(
-                (source,),
-                max_records=max_records,
-                pubchem_url=pubchem_url,
-                pubchem_shards=pubchem_shards,
-                chemical_lookup_path=chemical_lookup_path,
-                chemical_lookup_sources=lookup_sources,
+        try:
+            rows.extend(
+                _chemical_identifier_rows(
+                    (source,),
+                    max_records=max_records,
+                    pubchem_url=pubchem_url,
+                    pubchem_shards=pubchem_shards,
+                    chemical_lookup_path=chemical_lookup_path,
+                    chemical_lookup_sources=lookup_sources,
+                )
             )
-        )
-        completed_sources.append(source)
+        except Exception as exc:
+            if not continue_on_error:
+                raise
+            print(
+                '[warning] '
+                f'[resolver.{source}] materialize failed; continuing: '
+                f'{exc.__class__.__name__}: {exc}',
+                file=sys.stderr,
+                flush=True,
+            )
+            continue
+        else:
+            completed_sources.append(source)
 
     if (
         not rows

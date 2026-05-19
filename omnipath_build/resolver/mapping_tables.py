@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 import argparse
 from collections.abc import Sequence
@@ -98,17 +99,22 @@ def run_sources(
     activate_raw_download_data_dir()
 
     summary: dict[str, int] = {}
+    failed_sources = 0
     selected = list(sources) if sources else list(SOURCE_NAMES)
 
     if 'uniprot' in selected:
-        result = materialize_proteins(
-            output_dir=_output_subdir(base_dir, 'proteins'),
-            taxonomy_ids=taxonomy_ids,
-            skip_existing=skip_existing,
-        )
-        summary.update(
-            {f'uniprot_{key}': value for key, value in result.items()}
-        )
+        try:
+            result = materialize_proteins(
+                output_dir=_output_subdir(base_dir, 'proteins'),
+                taxonomy_ids=taxonomy_ids,
+                skip_existing=skip_existing,
+            )
+            summary.update(
+                {f'uniprot_{key}': value for key, value in result.items()}
+            )
+        except Exception as exc:
+            failed_sources += 1
+            _warn_resolver_source_failed('uniprot', exc)
 
     chemical_sources = [
         source for source in selected if source in CHEMICAL_SOURCES
@@ -121,12 +127,26 @@ def run_sources(
             pubchem_url=pubchem_url,
             pubchem_shards=pubchem_shards,
             skip_existing=skip_existing,
+            continue_on_error=True,
         )
         summary.update(
             {f'chemicals_{key}': value for key, value in result.items()}
         )
 
+    if failed_sources:
+        summary['failed_sources'] = failed_sources
+
     return summary
+
+
+def _warn_resolver_source_failed(source: str, exc: Exception) -> None:
+    print(
+        '[warning] '
+        f'[resolver.{source}] materialize failed; continuing: '
+        f'{exc.__class__.__name__}: {exc}',
+        file=sys.stderr,
+        flush=True,
+    )
 
 
 def main(argv: Sequence[str] | None = None) -> int:
