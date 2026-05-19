@@ -34,6 +34,7 @@ class DirectCopyStats:
     source_rows: int
     identifiers: int
     annotations: int
+    ontology_terms: int
     resolver_seconds: float
     projection_seconds: float
     canonicalize_seconds: float
@@ -51,6 +52,9 @@ def run_direct_copy_pipeline(
     *,
     source: str,
     dataset: str,
+    ontology_records: Iterable[object] | None = None,
+    ontology_dataset: str = 'ontology',
+    ontology_id: str | None = None,
     database_url: str,
     schema: str,
     resolver_dir: str | Path = 'data',
@@ -58,6 +62,7 @@ def run_direct_copy_pipeline(
     state_path: str | Path | None = None,
     threads: int = 4,
     drop_load_constraints: bool = True,
+    require_empty: bool = True,
 ) -> DirectCopyStats:
     """Run the measured DuckDB canonicalization and direct PostgreSQL COPY load."""
 
@@ -82,6 +87,15 @@ def run_direct_copy_pipeline(
             dataset=dataset,
             max_records=max_records,
         )
+        ontology_terms = 0
+        if ontology_records is not None:
+            ontology_terms = duckdb_load.project_ontology_terms(
+                con,
+                ontology_records,
+                source=source,
+                dataset=ontology_dataset,
+                ontology_id=ontology_id or ontology_dataset,
+            )
         projection_seconds = time.perf_counter() - projection_started
 
         canonicalize_started = time.perf_counter()
@@ -89,7 +103,12 @@ def run_direct_copy_pipeline(
         canonicalize_seconds = time.perf_counter() - canonicalize_started
 
         prepare_started = time.perf_counter()
-        _prepare_postgres_load(con, database_url=database_url, schema=schema)
+        _prepare_postgres_load(
+            con,
+            database_url=database_url,
+            schema=schema,
+            require_empty=require_empty,
+        )
         postgres_prepare_seconds = time.perf_counter() - prepare_started
 
         copy_started = time.perf_counter()
@@ -98,6 +117,9 @@ def run_direct_copy_pipeline(
                 database_url=database_url,
                 schema=schema,
             )
+        con.execute(
+            f"ATTACH {duckdb_load._sql_literal(database_url)} AS pg (TYPE postgres)"
+        )
         duckdb_load._bulk_copy_evidence(
             con,
             schema=schema,
@@ -108,6 +130,7 @@ def run_direct_copy_pipeline(
             schema=schema,
             database_url=database_url,
         )
+        con.execute('DETACH pg')
         copy_seconds = time.perf_counter() - copy_started
     finally:
         con.close()
@@ -120,6 +143,7 @@ def run_direct_copy_pipeline(
         source_rows=projection.source_rows,
         identifiers=projection.identifiers,
         annotations=projection.annotations,
+        ontology_terms=ontology_terms,
         resolver_seconds=resolver_seconds,
         projection_seconds=projection_seconds,
         canonicalize_seconds=canonicalize_seconds,
@@ -143,6 +167,7 @@ def run_uniprot_direct_copy_pipeline(
     force_refresh: bool = False,
     threads: int = 4,
     drop_load_constraints: bool = True,
+    require_empty: bool = True,
 ) -> DirectCopyStats:
     """Run the focused direct COPY pipeline for UniProt proteins."""
 
@@ -153,10 +178,14 @@ def run_uniprot_direct_copy_pipeline(
         source='uniprot',
         dataset='proteins',
     )
+    ontology_records = uniprot_resource.ontology(force_refresh=force_refresh)
     return run_direct_copy_pipeline(
         records,
         source='uniprot',
         dataset='proteins',
+        ontology_records=ontology_records,
+        ontology_dataset='ontology',
+        ontology_id='uniprot_keywords',
         database_url=database_url,
         schema=schema,
         resolver_dir=resolver_dir,
@@ -164,6 +193,7 @@ def run_uniprot_direct_copy_pipeline(
         state_path=state_path,
         threads=threads,
         drop_load_constraints=drop_load_constraints,
+        require_empty=require_empty,
     )
 
 
@@ -172,13 +202,15 @@ def _prepare_postgres_load(
     *,
     database_url: str,
     schema: str,
+    require_empty: bool = True,
 ) -> None:
     con.execute('LOAD postgres')
     con.execute(
         f"ATTACH {duckdb_load._sql_literal(database_url)} AS pg (TYPE postgres)"
     )
     duckdb_load._bulk_load_create_views_from_loaded_tables(con)
-    duckdb_load._bulk_load_assert_empty(con, schema)
+    if require_empty:
+        duckdb_load._bulk_load_assert_empty(con, schema)
     duckdb_load._bulk_load_small_dimensions(con, schema)
     duckdb_load._bulk_load_materialize_dimensions(con, schema)
     con.execute('DETACH pg')
@@ -214,6 +246,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         action='store_true',
         help='Do not drop high-volume load constraints/indexes before COPY.',
     )
+    parser.add_argument(
+        '--append',
+        action='store_true',
+        help='Append into a non-empty schema instead of requiring empty content tables.',
+    )
     return parser
 
 
@@ -231,12 +268,14 @@ def main(argv: list[str] | None = None) -> int:
         force_refresh=args.force_refresh,
         threads=args.threads,
         drop_load_constraints=not args.keep_load_constraints,
+        require_empty=not args.append,
     )
     print(
         '[duckdb-direct-copy] '
         f'source_rows={stats.source_rows} '
         f'identifiers={stats.identifiers} '
         f'annotations={stats.annotations} '
+        f'ontology_terms={stats.ontology_terms} '
         f'resolver={stats.resolver_seconds:.3f}s '
         f'projection={stats.projection_seconds:.3f}s '
         f'canonicalize={stats.canonicalize_seconds:.3f}s '

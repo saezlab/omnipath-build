@@ -238,7 +238,6 @@ def run_uniprot_duckdb_direct_build(
     _bulk_load_small_dimensions(con, schema)
     _bulk_load_materialize_dimensions(con, schema)
     if copy_load:
-        con.execute('DETACH pg')
         if drop_load_constraints:
             _drop_bulk_load_constraints_and_indexes(
                 database_url=database_url,
@@ -246,6 +245,7 @@ def run_uniprot_duckdb_direct_build(
             )
         _bulk_copy_evidence(con, schema=schema, database_url=database_url)
         _bulk_copy_canonical(con, schema=schema, database_url=database_url)
+        con.execute('DETACH pg')
     else:
         _bulk_load_evidence(con, schema)
         _bulk_load_canonical(con, schema, database_url=database_url)

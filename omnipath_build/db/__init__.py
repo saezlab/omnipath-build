@@ -2,6 +2,7 @@
 
 from omnipath_build.db.schema import (
     ensure_schema,
+    ensure_content_primary_keys,
     reset_content_tables,
     ensure_deferred_indexes,
     ensure_source_partitions,
@@ -28,6 +29,7 @@ __all__ = [
     'delete_source_content',
     'drop_deferred_content_indexes',
     'ensure_deferred_indexes',
+    'ensure_content_primary_keys',
     'ensure_schema',
     'ensure_source_partitions',
     'rebuild_bitmap_tables',

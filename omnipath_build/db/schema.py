@@ -22,6 +22,8 @@ CONTENT_TABLES: tuple[str, ...] = (
     'annotation_term_relation_bitmap',
     'facet_entity_bitmap',
     'facet_relation_bitmap',
+    'entity_bitmap_id',
+    'relation_bitmap_id',
     'entity_relation_counts',
     'ontology_terms',
     'relation_annotation',
@@ -65,6 +67,38 @@ SOURCE_PARTITION_DROP_ORDER: tuple[str, ...] = (
     'entity_evidence_resolution',
     'entity_evidence_identifier',
     'entity_evidence',
+)
+
+CONTENT_PRIMARY_KEYS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ('identifier_evidence', ('identifier_id',)),
+    ('annotation', ('annotation_key',)),
+    ('entity', ('entity_id',)),
+    ('entity_evidence', ('source_id', 'entity_evidence_id')),
+    (
+        'entity_evidence_identifier',
+        ('source_id', 'entity_evidence_id', 'identifier_id'),
+    ),
+    (
+        'entity_evidence_annotation',
+        ('source_id', 'entity_evidence_id', 'annotation_key'),
+    ),
+    ('relation_evidence', ('source_id', 'relation_evidence_id')),
+    (
+        'relation_evidence_annotation',
+        (
+            'source_id',
+            'relation_evidence_id',
+            'annotation_key',
+            'annotation_scope_id',
+        ),
+    ),
+    ('entity_evidence_resolution', ('source_id', 'entity_evidence_id')),
+    ('relation', ('relation_id',)),
+    (
+        'relation_evidence_relation',
+        ('source_id', 'relation_evidence_id'),
+    ),
+    ('ontology_terms', ('source_id', 'term_entity_id')),
 )
 
 
@@ -310,6 +344,53 @@ def ensure_schema(
         import time
 
         log_step(f'ensure done elapsed={time.perf_counter() - started:.1f}s')
+
+
+def ensure_content_primary_keys(
+    conn: psycopg2.extensions.connection,
+    *,
+    schema: str = 'public',
+    progress: bool = False,
+) -> None:
+    """Restore content-table primary keys after constraint-free bulk loads."""
+
+    def log_step(message: str) -> None:
+        if progress:
+            print(f'[schema] {message}', flush=True)
+
+    log_step('ensure content primary keys')
+    with conn.cursor() as cur:
+        for table, columns in CONTENT_PRIMARY_KEYS:
+            cur.execute(
+                """
+                SELECT to_regclass(%s) IS NOT NULL
+                """,
+                [f'{schema}.{table}'],
+            )
+            if not cur.fetchone()[0]:
+                continue
+            cur.execute(
+                """
+                SELECT 1
+                FROM pg_constraint
+                WHERE conrelid = %s::regclass
+                  AND contype = 'p'
+                """,
+                [f'{schema}.{table}'],
+            )
+            if cur.fetchone() is not None:
+                continue
+            log_step(f'add primary key {table}')
+            column_sql = sql.SQL(', ').join(sql.Identifier(column) for column in columns)
+            cur.execute(
+                sql.SQL('ALTER TABLE {}.{} ADD CONSTRAINT {} PRIMARY KEY ({})').format(
+                    sql.Identifier(schema),
+                    sql.Identifier(table),
+                    sql.Identifier(f'{table}_pkey'),
+                    column_sql,
+                )
+            )
+    conn.commit()
 
 
 def ensure_deferred_indexes(

@@ -57,10 +57,25 @@ def _create_derived_tables(
     schema_id = sql.Identifier(schema)
     cur.execute('CREATE EXTENSION IF NOT EXISTS pg_trgm')
     cur.execute(
+        """
+        SELECT data_type
+        FROM information_schema.columns
+        WHERE table_schema = %s
+          AND table_name = 'entity_relation_counts'
+          AND column_name = 'entity_id'
+        """,
+        [schema],
+    )
+    row = cur.fetchone()
+    if row is not None and row[0] != 'uuid':
+        cur.execute(
+            sql.SQL('DROP TABLE {}.entity_relation_counts').format(schema_id)
+        )
+    cur.execute(
         sql.SQL(
             """
             CREATE TABLE IF NOT EXISTS {}.entity_relation_counts (
-              entity_id bigint PRIMARY KEY
+              entity_id uuid PRIMARY KEY
                 REFERENCES {}.entity(entity_id)
                 ON DELETE CASCADE,
               relation_count bigint NOT NULL
@@ -102,7 +117,7 @@ def _refresh_entity_identifiers(
         sql.SQL(
             """
             CREATE TEMP TABLE _derived_entity_identifier (
-              entity_id bigint PRIMARY KEY,
+              entity_id uuid PRIMARY KEY,
               identifiers jsonb NOT NULL
             ) ON COMMIT DROP
             """

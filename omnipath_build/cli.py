@@ -27,6 +27,7 @@ from omnipath_build.db import (
     rebuild_bitmap_tables,
     rebuild_derived_tables,
     ensure_deferred_indexes,
+    ensure_content_primary_keys,
     create_secondary_indexes,
     ensure_source_partitions,
     drop_deferred_content_indexes,
@@ -389,6 +390,7 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 0
         if args.command == 'derive':
+            ensure_content_primary_keys(conn, schema=args.schema, progress=True)
             ensure_schema(conn, schema=args.schema, indexes=False)
             if args.indexes:
                 ensure_deferred_indexes(

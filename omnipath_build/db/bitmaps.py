@@ -35,6 +35,7 @@ def rebuild_bitmap_tables(
 
     with conn.cursor() as cur:
         _create_bitmap_tables(cur, schema)
+        _refresh_bitmap_id_tables(cur, schema)
         annotation_term_entities = _populate_annotation_term_entity_bitmap(
             cur, schema
         )
@@ -59,11 +60,57 @@ def _create_bitmap_tables(
 ) -> None:
     schema_id = sql.Identifier(schema)
     cur.execute('CREATE EXTENSION IF NOT EXISTS roaringbitmap')
+    for table in (
+        'annotation_term_entity_bitmap',
+        'annotation_term_relation_bitmap',
+    ):
+        cur.execute(
+            """
+            SELECT data_type
+            FROM information_schema.columns
+            WHERE table_schema = %s
+              AND table_name = %s
+              AND column_name = 'term_entity_id'
+            """,
+            [schema, table],
+        )
+        row = cur.fetchone()
+        if row is not None and row[0] != 'uuid':
+            cur.execute(
+                sql.SQL('DROP TABLE {}.{}').format(
+                    schema_id,
+                    sql.Identifier(table),
+                )
+            )
+    cur.execute(
+        sql.SQL(
+            """
+            CREATE TABLE IF NOT EXISTS {}.entity_bitmap_id (
+              entity_id uuid PRIMARY KEY
+                REFERENCES {}.entity(entity_id)
+                ON DELETE CASCADE,
+              bitmap_id integer NOT NULL UNIQUE
+            )
+            """
+        ).format(schema_id, schema_id)
+    )
+    cur.execute(
+        sql.SQL(
+            """
+            CREATE TABLE IF NOT EXISTS {}.relation_bitmap_id (
+              relation_id uuid PRIMARY KEY
+                REFERENCES {}.relation(relation_id)
+                ON DELETE CASCADE,
+              bitmap_id integer NOT NULL UNIQUE
+            )
+            """
+        ).format(schema_id, schema_id)
+    )
     cur.execute(
         sql.SQL(
             """
             CREATE TABLE IF NOT EXISTS {}.annotation_term_entity_bitmap (
-              term_entity_id bigint PRIMARY KEY
+              term_entity_id uuid PRIMARY KEY
                 REFERENCES {}.entity(entity_id)
                 ON DELETE CASCADE,
               entity_bitmap roaringbitmap NOT NULL,
@@ -76,7 +123,7 @@ def _create_bitmap_tables(
         sql.SQL(
             """
             CREATE TABLE IF NOT EXISTS {}.annotation_term_relation_bitmap (
-              term_entity_id bigint PRIMARY KEY
+              term_entity_id uuid PRIMARY KEY
                 REFERENCES {}.entity(entity_id)
                 ON DELETE CASCADE,
               relation_bitmap roaringbitmap NOT NULL,
@@ -114,6 +161,37 @@ def _create_bitmap_tables(
     )
 
 
+def _refresh_bitmap_id_tables(
+    cur: psycopg2.extensions.cursor,
+    schema: str,
+) -> None:
+    schema_id = sql.Identifier(schema)
+    cur.execute(sql.SQL('TRUNCATE {}.entity_bitmap_id').format(schema_id))
+    cur.execute(
+        sql.SQL(
+            """
+            INSERT INTO {}.entity_bitmap_id (entity_id, bitmap_id)
+            SELECT
+              entity_id,
+              row_number() OVER (ORDER BY entity_id)::integer
+            FROM {}.entity
+            """
+        ).format(schema_id, schema_id)
+    )
+    cur.execute(sql.SQL('TRUNCATE {}.relation_bitmap_id').format(schema_id))
+    cur.execute(
+        sql.SQL(
+            """
+            INSERT INTO {}.relation_bitmap_id (relation_id, bitmap_id)
+            SELECT
+              relation_id,
+              row_number() OVER (ORDER BY relation_id)::integer
+            FROM {}.relation
+            """
+        ).format(schema_id, schema_id)
+    )
+
+
 def _populate_annotation_term_entity_bitmap(
     cur: psycopg2.extensions.cursor,
     schema: str,
@@ -132,9 +210,11 @@ def _populate_annotation_term_entity_bitmap(
             )
             SELECT
               r.object_entity_id AS term_entity_id,
-              rb_build_agg(r.subject_entity_id::integer),
+              rb_build_agg(subject_bitmap.bitmap_id),
               COUNT(DISTINCT r.subject_entity_id)::integer
             FROM {}.relation r
+            JOIN {}.entity_bitmap_id subject_bitmap
+              ON subject_bitmap.entity_id = r.subject_entity_id
             JOIN {}.entity term
               ON term.entity_id = r.object_entity_id
             JOIN {}.vocab_entity_type term_type
@@ -146,6 +226,7 @@ def _populate_annotation_term_entity_bitmap(
             GROUP BY r.object_entity_id
             """
         ).format(
+            schema_id,
             schema_id,
             schema_id,
             schema_id,
@@ -204,9 +285,11 @@ def _populate_annotation_term_relation_bitmap(
             )
             SELECT
               term_entity_id,
-              rb_build_agg(DISTINCT relation_id::integer),
-              COUNT(DISTINCT relation_id)::integer
+              rb_build_agg(DISTINCT relation_bitmap.bitmap_id),
+              COUNT(DISTINCT relation_terms.relation_id)::integer
             FROM relation_terms
+            JOIN {}.relation_bitmap_id relation_bitmap
+              ON relation_bitmap.relation_id = relation_terms.relation_id
             GROUP BY term_entity_id
             """
         ).format(
@@ -215,6 +298,7 @@ def _populate_annotation_term_relation_bitmap(
             schema_id,
             schema_id,
             sql.Literal(CV_TERM_ENTITY_TYPE),
+            schema_id,
             schema_id,
             schema_id,
             schema_id,
@@ -242,14 +326,16 @@ def _populate_facet_entity_bitmap(
             SELECT
               'entity_type',
               et.name,
-              rb_build_agg(e.entity_id::integer),
+              rb_build_agg(bitmap.bitmap_id),
               COUNT(*)::integer
             FROM {}.entity e
+            JOIN {}.entity_bitmap_id bitmap
+              ON bitmap.entity_id = e.entity_id
             JOIN {}.vocab_entity_type et
               ON et.entity_type_id = e.entity_type_id
             GROUP BY et.name
             """
-        ).format(schema_id, schema_id, schema_id),
+        ).format(schema_id, schema_id, schema_id, schema_id),
         sql.SQL(
             """
             INSERT INTO {}.facet_entity_bitmap (
@@ -261,13 +347,15 @@ def _populate_facet_entity_bitmap(
             SELECT
               'taxonomy_id',
               taxonomy_id,
-              rb_build_agg(entity_id::integer),
+              rb_build_agg(bitmap.bitmap_id),
               COUNT(*)::integer
             FROM {}.entity
+            JOIN {}.entity_bitmap_id bitmap
+              ON bitmap.entity_id = entity.entity_id
             WHERE taxonomy_id IS NOT NULL
             GROUP BY taxonomy_id
             """
-        ).format(schema_id, schema_id),
+        ).format(schema_id, schema_id, schema_id),
         sql.SQL(
             """
             INSERT INTO {}.facet_entity_bitmap (
@@ -306,14 +394,17 @@ def _populate_facet_entity_bitmap(
             SELECT
               'source',
               source,
-              rb_build_agg(entity_id::integer),
+              rb_build_agg(bitmap.bitmap_id),
               COUNT(*)::integer
             FROM entity_sources
+            JOIN {}.entity_bitmap_id bitmap
+              ON bitmap.entity_id = entity_sources.entity_id
             WHERE source IS NOT NULL
               AND source <> ''
             GROUP BY source
             """
         ).format(
+            schema_id,
             schema_id,
             schema_id,
             schema_id,
@@ -336,13 +427,16 @@ def _populate_facet_entity_bitmap(
             SELECT
               'ontology_id',
               ot.ontology_id,
-              rb_build_agg(DISTINCT ot.term_entity_id::integer),
+              rb_build_agg(DISTINCT bitmap.bitmap_id),
               COUNT(DISTINCT ot.term_entity_id)::integer
             FROM {}.ontology_terms ot
+            JOIN {}.entity_bitmap_id bitmap
+              ON bitmap.entity_id = ot.term_entity_id
             WHERE COALESCE(ot.ontology_id, '') <> ''
             GROUP BY ot.ontology_id
             """
         ).format(
+            schema_id,
             schema_id,
             schema_id,
         ),
@@ -374,16 +468,18 @@ def _populate_facet_relation_bitmap(
               'predicate',
               rp.name,
               COALESCE(rc.name, ''),
-              rb_build_agg(relation_id::integer),
+              rb_build_agg(bitmap.bitmap_id),
               COUNT(*)::integer
             FROM {}.relation r
+            JOIN {}.relation_bitmap_id bitmap
+              ON bitmap.relation_id = r.relation_id
             JOIN {}.vocab_relation_predicate rp
               ON rp.relation_predicate_id = r.predicate_id
             LEFT JOIN {}.vocab_relation_category rc
               ON rc.relation_category_id = r.relation_category_id
             GROUP BY rp.name, rc.name
             """
-        ).format(schema_id, schema_id, schema_id, schema_id),
+        ).format(schema_id, schema_id, schema_id, schema_id, schema_id),
         sql.SQL(
             """
             INSERT INTO {}.facet_relation_bitmap (
@@ -409,14 +505,17 @@ def _populate_facet_relation_bitmap(
             SELECT
               'source',
               source,
-              rb_build_agg(relation_id::integer),
+              rb_build_agg(bitmap.bitmap_id),
               COUNT(*)::integer
             FROM relation_sources
+            JOIN {}.relation_bitmap_id bitmap
+              ON bitmap.relation_id = relation_sources.relation_id
             WHERE source IS NOT NULL
               AND source <> ''
             GROUP BY source
             """
         ).format(
+            schema_id,
             schema_id,
             schema_id,
             schema_id,
@@ -450,13 +549,16 @@ def _populate_facet_relation_bitmap(
             SELECT
               'participant_type',
               vocab_entity_type,
-              rb_build_agg(relation_id::integer),
-              COUNT(DISTINCT relation_id)::integer
+              rb_build_agg(bitmap.bitmap_id),
+              COUNT(DISTINCT participant_types.relation_id)::integer
             FROM participant_types
+            JOIN {}.relation_bitmap_id bitmap
+              ON bitmap.relation_id = participant_types.relation_id
             WHERE vocab_entity_type IS NOT NULL
             GROUP BY vocab_entity_type
             """
         ).format(
+            schema_id,
             schema_id,
             schema_id,
             schema_id,
@@ -489,12 +591,15 @@ def _populate_facet_relation_bitmap(
             SELECT
               'taxonomy_id',
               taxonomy_id,
-              rb_build_agg(relation_id::integer),
+              rb_build_agg(bitmap.bitmap_id),
               COUNT(*)::integer
             FROM relation_taxonomy
+            JOIN {}.relation_bitmap_id bitmap
+              ON bitmap.relation_id = relation_taxonomy.relation_id
             GROUP BY taxonomy_id
             """
         ).format(
+            schema_id,
             schema_id,
             schema_id,
             schema_id,

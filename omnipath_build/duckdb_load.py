@@ -21,7 +21,12 @@ from omnipath_build.parquet_projector import (
     ParquetEvidenceProjector,
     _MutableProjectionStats,
 )
+from omnipath_build.resolver.identifier_types import (
+    IDENTIFIER_TYPE_NAMES,
+    identifier_type_id,
+)
 from pypath.internals.silver_schema import Entity
+from pypath.internals.ontology_schema import OntologyTerm
 
 
 PROTEIN_ENTITY_TYPE = 'Protein:MI:0326'
@@ -30,6 +35,14 @@ UNRESOLVED_ID_TYPE = 'omnipath:unresolved_entity_key'
 
 def _sql_literal(value: str | Path) -> str:
     return "'" + str(value).replace("'", "''") + "'"
+
+
+def _duckdb_identifier(value: str) -> str:
+    return '"' + value.replace('"', '""') + '"'
+
+
+def _duckdb_pg_table(schema: str, table: str) -> str:
+    return f'pg.{_duckdb_identifier(schema)}.{_duckdb_identifier(table)}'
 
 
 def _create_duckdb_content_uuid_macro(con: duckdb.DuckDBPyConnection) -> None:
@@ -173,25 +186,60 @@ def _create_duckdb_identifier_type_all_view(
 ) -> None:
     """Expose resolver identifier types plus local synthetic namespaces."""
 
+    static_rows_sql = ',\n'.join(
+        f'({identifier_type_id(name)}, {_sql_literal(name)})'
+        for name in IDENTIFIER_TYPE_NAMES
+    )
+    has_entity_identifier_raw = bool(
+        con.execute(
+            """
+            SELECT COUNT(*)
+            FROM information_schema.tables
+            WHERE table_name = 'entity_identifier_raw'
+            """
+        ).fetchone()[0]
+    )
+    evidence_identifier_type_sql = (
+        """
+          UNION
+          SELECT DISTINCT identifier_type AS name
+          FROM entity_identifier_raw
+          WHERE identifier_type IS NOT NULL
+            AND identifier_type <> ''
+        """
+        if has_entity_identifier_raw
+        else ''
+    )
     con.execute(
         f"""
         CREATE OR REPLACE VIEW identifier_type_all AS
-        WITH base AS (
-          SELECT coalesce(max(identifier_type_id), 0) AS max_id
-          FROM identifier_type
+        WITH static_identifier_type(identifier_type_id, name) AS (
+          VALUES
+          {static_rows_sql}
         ),
-        missing AS (
+        base_identifier_type AS (
+          SELECT * FROM identifier_type
+          UNION
+          SELECT * FROM static_identifier_type
+        ),
+        base AS (
+          SELECT coalesce(max(identifier_type_id), 0) AS max_id
+          FROM base_identifier_type
+        ),
+        required_name AS (
           SELECT {_sql_literal(CV_TERM_ID_TYPE)} AS name
-          WHERE NOT EXISTS (
-            SELECT 1 FROM identifier_type WHERE name = {_sql_literal(CV_TERM_ID_TYPE)}
-          )
           UNION ALL
           SELECT {_sql_literal(UNRESOLVED_ID_TYPE)} AS name
-          WHERE NOT EXISTS (
-            SELECT 1 FROM identifier_type WHERE name = {_sql_literal(UNRESOLVED_ID_TYPE)}
-          )
+          {evidence_identifier_type_sql}
+        ),
+        missing AS (
+          SELECT DISTINCT required_name.name
+          FROM required_name
+          LEFT JOIN base_identifier_type base_type
+            ON base_type.name = required_name.name
+          WHERE base_type.identifier_type_id IS NULL
         )
-        SELECT * FROM identifier_type
+        SELECT * FROM base_identifier_type
         UNION ALL
         SELECT
           base.max_id + row_number() OVER (ORDER BY missing.name)
@@ -250,6 +298,49 @@ class DuckDBEvidenceProjector(ParquetEvidenceProjector):
         finally:
             writers.close()
         return stats.freeze()
+
+
+def project_ontology_terms(
+    con: duckdb.DuckDBPyConnection,
+    records: Iterable[OntologyTerm],
+    *,
+    source: str,
+    dataset: str,
+    ontology_id: str,
+    chunk_size: int = 100_000,
+) -> int:
+    """Load ontology terms into DuckDB for direct PostgreSQL COPY."""
+
+    writer = _DuckDBRowWriter(
+        con,
+        'ontology_terms_raw',
+        _ONTOLOGY_TERMS_SCHEMA,
+        chunk_size=chunk_size,
+    )
+    count = 0
+    try:
+        for term in records:
+            if not isinstance(term, OntologyTerm) or not term.id:
+                continue
+            synonyms = _ontology_term_synonyms(term)
+            writer.write(
+                {
+                    'source': source,
+                    'dataset': dataset,
+                    'term_id': term.id,
+                    'ontology_prefix': _ontology_prefix(term.id),
+                    'label': term.name or term.id,
+                    'definition': term.definition,
+                    'ontology_id': ontology_id,
+                    'synonyms': synonyms,
+                    'synonyms_text': ' '.join(synonyms),
+                    'sources': [ontology_id],
+                }
+            )
+            count += 1
+    finally:
+        writer.close()
+    return count
 
 
 class _DuckDBEvidenceWriters:
@@ -425,6 +516,41 @@ _ANNOTATION_RELATION_EVIDENCE_SCHEMA = pa.schema(
 )
 
 
+_ONTOLOGY_TERMS_SCHEMA = pa.schema(
+    [
+        ('source', pa.string()),
+        ('dataset', pa.string()),
+        ('term_id', pa.string()),
+        ('ontology_prefix', pa.string()),
+        ('label', pa.string()),
+        ('definition', pa.string()),
+        ('ontology_id', pa.string()),
+        ('synonyms', pa.list_(pa.string())),
+        ('synonyms_text', pa.string()),
+        ('sources', pa.list_(pa.string())),
+    ]
+)
+
+
+def _ontology_prefix(term_id: str) -> str | None:
+    if term_id.upper().startswith('KW-'):
+        return 'kw'
+    if ':' in term_id:
+        return term_id.split(':', 1)[0].lower()
+    return None
+
+
+def _ontology_term_synonyms(term: OntologyTerm) -> list[str]:
+    return [
+        *(term.synonyms or []),
+        *(
+            alt_id
+            for alt_id in term.alt_ids or []
+            if alt_id and alt_id != term.id
+        ),
+    ]
+
+
 def _create_duckdb_evidence_tables(con: duckdb.DuckDBPyConnection) -> None:
     con.execute(
         """
@@ -437,6 +563,22 @@ def _create_duckdb_evidence_tables(con: duckdb.DuckDBPyConnection) -> None:
           entity_role VARCHAR,
           entity_type VARCHAR,
           taxonomy_id VARCHAR
+        )
+        """
+    )
+    con.execute(
+        """
+        CREATE OR REPLACE TABLE ontology_terms_raw (
+          source VARCHAR,
+          dataset VARCHAR,
+          term_id VARCHAR,
+          ontology_prefix VARCHAR,
+          label VARCHAR,
+          definition VARCHAR,
+          ontology_id VARCHAR,
+          synonyms VARCHAR[],
+          synonyms_text VARCHAR,
+          sources VARCHAR[]
         )
         """
     )
@@ -575,6 +717,7 @@ def _canonicalize_loaded_duckdb(
 ) -> tuple[int, int, int]:
     """Canonicalize already-loaded DuckDB evidence and resolver tables."""
 
+    _create_duckdb_identifier_type_all_view(con)
     _ensure_duckdb_canonical_caches(con)
     _drop_duckdb_batch_tables(con)
     con.execute(
@@ -729,7 +872,7 @@ def _canonicalize_loaded_duckdb(
             rl.key_identifier_type_id AS identifier_type_id,
             rl.key_value AS identifier
           FROM needed_protein_key np
-          JOIN needed_resolver_lookup rl
+          JOIN resolver_lookup rl
             ON rl.entity_type = np.entity_type
            AND rl.canonical_identifier_type_id = np.canonical_identifier_type_id
            AND rl.canonical_identifier = np.canonical_identifier
@@ -769,13 +912,13 @@ def _canonicalize_loaded_duckdb(
             pir.canonical_identifier
         ),
         cv_term_entity AS (
-          SELECT DISTINCT
+          SELECT
             ? AS entity_type,
             NULL::VARCHAR AS taxonomy_id,
             cv_type.identifier_type_id AS canonical_identifier_type_id,
             object_id AS canonical_identifier,
             to_json(
-              list(
+              list_value(
                 struct_pack(
                   identifier_type := ?,
                   identifier_type_id := cv_type.identifier_type_id,
@@ -1194,26 +1337,10 @@ def _bulk_load_create_views_from_loaded_tables(
         'pq_entity_evidence_resolution': 'entity_evidence_resolution',
         'pq_relation': 'relation',
         'pq_relation_evidence_relation': 'relation_evidence_relation',
+        'pq_ontology_terms': 'ontology_terms_raw',
     }
     for view, table in views.items():
         con.execute(f'CREATE VIEW {view} AS SELECT * FROM {table}')
-    con.execute(
-        """
-        CREATE VIEW pq_ontology_terms AS
-        SELECT
-          NULL::VARCHAR AS source,
-          NULL::VARCHAR AS dataset,
-          NULL::VARCHAR AS term_id,
-          NULL::VARCHAR AS ontology_prefix,
-          NULL::VARCHAR AS label,
-          NULL::VARCHAR AS definition,
-          NULL::VARCHAR AS ontology_id,
-          []::VARCHAR[] AS synonyms,
-          NULL::VARCHAR AS synonyms_text,
-          []::VARCHAR[] AS sources
-        WHERE false
-        """
-    )
     con.execute(
         """
         CREATE VIEW pq_annotation_relation_evidence_resolved AS
@@ -1380,15 +1507,22 @@ def _bulk_load_small_dimensions(
     con.execute(
         f"""
         INSERT INTO pg.{schema}.data_source (name)
-        SELECT DISTINCT source
+        SELECT candidate.source
         FROM (
           SELECT source FROM pq_entity_evidence
           UNION
           SELECT source FROM pq_entity_evidence_resolution
           UNION
+          SELECT source FROM pq_relation_evidence
+          UNION
+          SELECT source FROM pq_annotation_relation_evidence
+          UNION
           SELECT source FROM pq_ontology_terms
-        ) s
-        WHERE source IS NOT NULL
+        ) candidate
+        LEFT JOIN pg.{schema}.data_source existing
+          ON existing.name = candidate.source
+        WHERE candidate.source IS NOT NULL
+          AND existing.source_id IS NULL
         """
     )
     con.execute(
@@ -1398,11 +1532,19 @@ def _bulk_load_small_dimensions(
         FROM (
           SELECT source, dataset FROM pq_entity_evidence
           UNION
+          SELECT source, dataset FROM pq_relation_evidence
+          UNION
+          SELECT source, dataset FROM pq_annotation_relation_evidence
+          UNION
           SELECT source, dataset FROM pq_ontology_terms
         ) candidate
         JOIN pg.{schema}.data_source ds
           ON ds.name = candidate.source
+        LEFT JOIN pg.{schema}.dataset existing
+          ON existing.source_id = ds.source_id
+         AND existing.name = candidate.dataset
         WHERE candidate.dataset IS NOT NULL
+          AND existing.dataset_id IS NULL
         """
     )
 
@@ -1535,24 +1677,35 @@ def _drop_bulk_load_constraints_and_indexes(
                 )
             cur.execute(
                 """
-                SELECT indexname
-                FROM pg_indexes
-                WHERE schemaname = %s
-                  AND (
-                    tablename = ANY(%s)
-                    OR tablename = ANY(
-                      SELECT child.relname
-                      FROM pg_inherits i
-                      JOIN pg_class parent ON parent.oid = i.inhparent
-                      JOIN pg_namespace parent_ns
-                        ON parent_ns.oid = parent.relnamespace
-                      JOIN pg_class child ON child.oid = i.inhrelid
-                      JOIN pg_namespace child_ns
-                        ON child_ns.oid = child.relnamespace
-                      WHERE parent_ns.nspname = %s
-                        AND child_ns.nspname = %s
-                        AND parent.relname = ANY(%s)
-                    )
+                WITH target_tables AS (
+                  SELECT c.oid
+                  FROM pg_class c
+                  JOIN pg_namespace n ON n.oid = c.relnamespace
+                  WHERE n.nspname = %s
+                    AND c.relname = ANY(%s)
+                  UNION
+                  SELECT child.oid
+                  FROM pg_inherits i
+                  JOIN pg_class parent ON parent.oid = i.inhparent
+                  JOIN pg_namespace parent_ns
+                    ON parent_ns.oid = parent.relnamespace
+                  JOIN pg_class child ON child.oid = i.inhrelid
+                  JOIN pg_namespace child_ns
+                    ON child_ns.oid = child.relnamespace
+                  WHERE parent_ns.nspname = %s
+                    AND child_ns.nspname = %s
+                    AND parent.relname = ANY(%s)
+                )
+                SELECT index_class.relname
+                FROM pg_index idx
+                JOIN pg_class index_class ON index_class.oid = idx.indexrelid
+                JOIN pg_namespace index_ns ON index_ns.oid = index_class.relnamespace
+                JOIN target_tables target ON target.oid = idx.indrelid
+                WHERE index_ns.nspname = %s
+                  AND NOT EXISTS (
+                    SELECT 1
+                    FROM pg_inherits index_inherits
+                    WHERE index_inherits.inhrelid = idx.indexrelid
                   )
                 """,
                 [
@@ -1561,6 +1714,7 @@ def _drop_bulk_load_constraints_and_indexes(
                     schema,
                     schema,
                     list(_BULK_COPY_CONTENT_TABLES),
+                    schema,
                 ],
             )
             indexes = [row[0] for row in cur.fetchall()]
@@ -1696,12 +1850,29 @@ def _duckdb_source_id(
 ) -> int:
     if source is None:
         rows = con.execute(
-            'SELECT source_id, name FROM load_data_source ORDER BY source_id'
+            """
+            WITH current_source AS (
+              SELECT source FROM pq_entity_evidence WHERE source IS NOT NULL
+              UNION
+              SELECT source FROM pq_entity_evidence_resolution WHERE source IS NOT NULL
+              UNION
+              SELECT source FROM pq_relation_evidence WHERE source IS NOT NULL
+              UNION
+              SELECT source FROM pq_annotation_relation_evidence WHERE source IS NOT NULL
+              UNION
+              SELECT source FROM pq_ontology_terms WHERE source IS NOT NULL
+            )
+            SELECT ds.source_id, ds.name
+            FROM current_source s
+            JOIN load_data_source ds
+              ON ds.name = s.source
+            ORDER BY ds.source_id
+            """
         ).fetchall()
         if len(rows) != 1:
             raise ValueError(
                 'Expected exactly one source for source-partition COPY load; '
-                f'found {len(rows)}'
+                f'found {len(rows)}: {rows!r}'
             )
         return int(rows[0][0])
     row = con.execute(
@@ -1728,15 +1899,23 @@ def _bulk_copy_evidence(
         columns=('identifier_id', 'identifier_type_id', 'value'),
         query="""
           SELECT DISTINCT
-            identifier_id::UUID,
+            i.identifier_id::UUID,
             it.identifier_type_id,
-            identifier
+            i.identifier
           FROM pq_entity_identifier i
           JOIN load_vocab_identifier_type it
             ON it.name = i.identifier_type
+          LEFT JOIN {existing_identifier_evidence} existing
+            ON existing.identifier_id = i.identifier_id::UUID
           WHERE i.identifier_id IS NOT NULL
             AND i.identifier IS NOT NULL
-        """,
+            AND existing.identifier_id IS NULL
+        """.format(
+            existing_identifier_evidence=_duckdb_pg_table(
+                schema,
+                'identifier_evidence',
+            )
+        ),
     )
     _copy_duckdb_query_to_postgres(
         con,
@@ -1746,13 +1925,16 @@ def _bulk_copy_evidence(
         columns=('annotation_key', 'term', 'value', 'unit'),
         query="""
           SELECT DISTINCT
-            annotation_key::UUID,
-            term,
-            value,
-            unit
+            pq_annotation.annotation_key::UUID,
+            pq_annotation.term,
+            pq_annotation.value,
+            pq_annotation.unit
           FROM pq_annotation
-          WHERE term IS NOT NULL
-        """,
+          LEFT JOIN {existing_annotation} existing
+            ON existing.annotation_key = pq_annotation.annotation_key::UUID
+          WHERE pq_annotation.term IS NOT NULL
+            AND existing.annotation_key IS NULL
+        """.format(existing_annotation=_duckdb_pg_table(schema, 'annotation')),
     )
     _copy_duckdb_query_to_postgres(
         con,
@@ -1875,54 +2057,69 @@ def _bulk_copy_canonical(
             'resolution_status_id',
         ),
         query="""
-          SELECT
-            e.entity_id,
-            et.entity_type_id,
-            NULLIF(e.taxonomy_id, '')::BIGINT,
-            it.identifier_type_id,
-            e.canonical_identifier,
-            e.identifiers_json::JSON,
-            rs.resolution_status_id
-          FROM pq_entity e
-          JOIN load_vocab_entity_type et
-            ON et.name = e.entity_type
-          JOIN load_vocab_identifier_type it
-            ON it.name = e.canonical_identifier_type
-          JOIN load_vocab_resolution_status rs
-            ON rs.name = e.resolution_status
-          UNION ALL
-          SELECT
-            content_uuid({cv_term_id_type} || '|' || ot.term_id),
-            et.entity_type_id,
-            NULL::BIGINT,
-            it.identifier_type_id,
-            ot.term_id,
-            to_json(
-              list_value(
-                struct_pack(
-                  identifier_type := it.name,
-                  identifier_type_id := it.identifier_type_id,
-                  identifier := ot.term_id
+          SELECT candidate.*
+          FROM (
+            SELECT
+              e.entity_id,
+              et.entity_type_id,
+              NULLIF(e.taxonomy_id, '')::BIGINT,
+              it.identifier_type_id,
+              e.canonical_identifier,
+              e.identifiers_json::JSON,
+              rs.resolution_status_id
+            FROM pq_entity e
+            JOIN load_vocab_entity_type et
+              ON et.name = e.entity_type
+            JOIN load_vocab_identifier_type it
+              ON it.name = e.canonical_identifier_type
+            JOIN load_vocab_resolution_status rs
+              ON rs.name = e.resolution_status
+            UNION ALL
+            SELECT
+              content_uuid(
+                {cv_term_entity_type} || '||' ||
+                it.identifier_type_id::VARCHAR || '|' ||
+                ot.term_id
+              ),
+              et.entity_type_id,
+              NULL::BIGINT,
+              it.identifier_type_id,
+              ot.term_id,
+              to_json(
+                list_value(
+                  struct_pack(
+                    identifier_type := it.name,
+                    identifier_type_id := it.identifier_type_id,
+                    identifier := ot.term_id
+                  )
+                )
+              )::JSON,
+              rs.resolution_status_id
+            FROM pq_ontology_terms ot
+            JOIN load_vocab_entity_type et
+              ON et.name = {cv_term_entity_type}
+            JOIN load_vocab_identifier_type it
+              ON it.name = {cv_term_id_type}
+            JOIN load_vocab_resolution_status rs
+              ON rs.name = 'resolved'
+            WHERE ot.term_id IS NOT NULL
+              AND NOT EXISTS (
+                SELECT 1
+                FROM pq_entity e
+                WHERE e.entity_id = content_uuid(
+                  {cv_term_entity_type} || '||' ||
+                  it.identifier_type_id::VARCHAR || '|' ||
+                  ot.term_id
                 )
               )
-            )::JSON,
-            rs.resolution_status_id
-          FROM pq_ontology_terms ot
-          JOIN load_vocab_entity_type et
-            ON et.name = {cv_term_entity_type}
-          JOIN load_vocab_identifier_type it
-            ON it.name = {cv_term_id_type}
-          JOIN load_vocab_resolution_status rs
-            ON rs.name = 'resolved'
-          WHERE ot.term_id IS NOT NULL
-            AND NOT EXISTS (
-              SELECT 1
-              FROM pq_entity e
-              WHERE e.entity_id = content_uuid({cv_term_id_type} || '|' || ot.term_id)
-            )
+          ) candidate
+          LEFT JOIN {existing_entity} existing
+            ON existing.entity_id = candidate.entity_id
+          WHERE existing.entity_id IS NULL
         """.format(
             cv_term_id_type=_sql_literal(CV_TERM_ID_TYPE),
             cv_term_entity_type=_sql_literal(CV_TERM_ENTITY_TYPE),
+            existing_entity=_duckdb_pg_table(schema, 'entity'),
         ),
     )
     _copy_source_partition(
@@ -1945,20 +2142,59 @@ def _bulk_copy_canonical(
         query="""
           SELECT
             ds.source_id,
-            content_uuid({cv_term_id_type} || '|' || ot.term_id),
+            content_uuid(
+              {cv_term_entity_type} || '||' ||
+              it.identifier_type_id::VARCHAR || '|' ||
+              ot.term_id
+            ),
             ot.term_id,
             ot.ontology_prefix,
             ot.label,
             ot.definition,
             ot.ontology_id,
-            ot.synonyms,
+            COALESCE(
+              '{{' || array_to_string(
+                list_transform(
+                  ot.synonyms,
+                  x -> chr(34)
+                    || replace(
+                         replace(x, chr(92), chr(92) || chr(92)),
+                         chr(34),
+                         chr(92) || chr(34)
+                       )
+                    || chr(34)
+                ),
+                ','
+              ) || '}}',
+              '{{}}'
+            ),
             COALESCE(ot.synonyms_text, ''),
-            ot.sources
+            COALESCE(
+              '{{' || array_to_string(
+                list_transform(
+                  ot.sources,
+                  x -> chr(34)
+                    || replace(
+                         replace(x, chr(92), chr(92) || chr(92)),
+                         chr(34),
+                         chr(92) || chr(34)
+                       )
+                    || chr(34)
+                ),
+                ','
+              ) || '}}',
+              '{{}}'
+            )
           FROM pq_ontology_terms ot
+          JOIN load_vocab_identifier_type it
+            ON it.name = {cv_term_id_type}
           JOIN load_data_source ds
             ON ds.name = ot.source
           WHERE ot.term_id IS NOT NULL
-        """.format(cv_term_id_type=_sql_literal(CV_TERM_ID_TYPE)),
+        """.format(
+            cv_term_id_type=_sql_literal(CV_TERM_ID_TYPE),
+            cv_term_entity_type=_sql_literal(CV_TERM_ENTITY_TYPE),
+        ),
         source_id=source_id,
     )
     _copy_source_partition(
@@ -2082,7 +2318,10 @@ def _bulk_copy_canonical(
             ON rp.name = r.predicate
           LEFT JOIN load_vocab_relation_category rc
             ON rc.name = r.relation_category
-        """,
+          LEFT JOIN {existing_relation} existing
+            ON existing.relation_id = r.relation_id
+          WHERE existing.relation_id IS NULL
+        """.format(existing_relation=_duckdb_pg_table(schema, 'relation')),
     )
     _copy_source_partition(
         con,
