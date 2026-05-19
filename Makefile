@@ -46,6 +46,7 @@ resolver:
 		$(if $(MAX_RECORDS),--max-records $(MAX_RECORDS)) \
 		$(if $(PUBCHEM_URL),--pubchem-url "$(PUBCHEM_URL)") \
 		$(if $(PUBCHEM_SHARDS),--pubchem-shards $(PUBCHEM_SHARDS)) \
+		$(if $(FORCE_REFRESH),--no-skip-existing) \
 		$(RESOLVER_SOURCES)
 
 ontology-artifacts:

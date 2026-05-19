@@ -2,12 +2,19 @@
 
 from __future__ import annotations
 
-import argparse
 from pathlib import Path
-from typing import Sequence
+import argparse
+from collections.abc import Sequence
 
-from omnipath_build.resolver.paths import activate_raw_download_data_dir, ensure_data_dir
-from omnipath_build.resolver.sources import CHEMICAL_SOURCES, materialize_chemical_sources, materialize_proteins
+from omnipath_build.resolver.paths import (
+    ensure_data_dir,
+    activate_raw_download_data_dir,
+)
+from omnipath_build.resolver.sources import (
+    CHEMICAL_SOURCES,
+    materialize_proteins,
+    materialize_chemical_sources,
+)
 
 SOURCE_NAMES: tuple[str, ...] = (
     'uniprot',
@@ -60,6 +67,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         help='Optional number of discovered PubChem SDF shards to stream.',
     )
+    parser.add_argument(
+        '--skip-existing',
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help='Skip resolver sources already present in the output directory.',
+    )
     return parser
 
 
@@ -76,6 +89,7 @@ def run_sources(
     max_records: int | None = None,
     pubchem_url: str | Path | None = None,
     pubchem_shards: int | None = None,
+    skip_existing: bool = True,
 ) -> dict[str, int]:
     """Materialize selected resolver sources and return row-count summaries."""
 
@@ -90,10 +104,15 @@ def run_sources(
         result = materialize_proteins(
             output_dir=_output_subdir(base_dir, 'proteins'),
             taxonomy_ids=taxonomy_ids,
+            skip_existing=skip_existing,
         )
-        summary.update({f'uniprot_{key}': value for key, value in result.items()})
+        summary.update(
+            {f'uniprot_{key}': value for key, value in result.items()}
+        )
 
-    chemical_sources = [source for source in selected if source in CHEMICAL_SOURCES]
+    chemical_sources = [
+        source for source in selected if source in CHEMICAL_SOURCES
+    ]
     if chemical_sources:
         result = materialize_chemical_sources(
             sources=chemical_sources,
@@ -101,8 +120,11 @@ def run_sources(
             max_records=max_records,
             pubchem_url=pubchem_url,
             pubchem_shards=pubchem_shards,
+            skip_existing=skip_existing,
         )
-        summary.update({f'chemicals_{key}': value for key, value in result.items()})
+        summary.update(
+            {f'chemicals_{key}': value for key, value in result.items()}
+        )
 
     return summary
 
@@ -120,6 +142,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         max_records=args.max_records,
         pubchem_url=args.pubchem_url,
         pubchem_shards=args.pubchem_shards,
+        skip_existing=args.skip_existing,
     )
 
     for key, value in summary.items():

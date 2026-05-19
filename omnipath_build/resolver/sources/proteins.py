@@ -11,23 +11,24 @@ being used as resolver candidates.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Iterable
+from collections.abc import Iterable
 
 import polars as pl
+
+from pypath.inputs_v2.uniprot import resource as uniprot_resource
+from pypath.internals.cv_terms import (
+    IdentifierNamespaceCv,
+    cv_term_label_accession,
+)
+from omnipath_build.resolver.paths import (
+    ensure_proteins_data_dir,
+    activate_raw_download_data_dir,
+)
 from omnipath_build.resolver.identifier_types import (
     IDENTIFIER_TYPE_SCHEMA,
     identifier_type_id,
     identifier_type_rows,
 )
-from omnipath_build.resolver.paths import (
-    activate_raw_download_data_dir,
-    ensure_proteins_data_dir,
-)
-from pypath.internals.cv_terms import (
-    IdentifierNamespaceCv,
-    cv_term_label_accession,
-)
-from pypath.inputs_v2.uniprot import resource as uniprot_resource
 
 PROTEIN_IDENTIFIER_LOOKUP_SCHEMA: dict[str, pl.DataType] = {
     'key_identifier_type_id': pl.UInt32,
@@ -76,7 +77,9 @@ def _protein_identifier_rows(
                 primary_taxonomy.setdefault(primary_uniprot, set()).add(
                     str(taxonomy_id)
                 )
-        key_type = KEY_TYPE_ALIASES.get(row.get('key_type'), row.get('key_type'))
+        key_type = KEY_TYPE_ALIASES.get(
+            row.get('key_type'), row.get('key_type')
+        )
         yield {
             'key_type': key_type,
             'key_value': row.get('key_value'),
@@ -120,6 +123,7 @@ def build_protein_identifier_lookup(
 def materialize_proteins(
     output_dir: str | Path | None = None,
     taxonomy_ids: Iterable[int | str] | None = None,
+    skip_existing: bool = True,
 ) -> dict[str, int]:
     """Write protein resolver parquet files and return output row counts."""
 
@@ -130,21 +134,47 @@ def materialize_proteins(
     )
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    lookup_path = output_dir / PROTEIN_IDENTIFIER_LOOKUP_OUTPUT_FILENAME
+    ambiguous_path = (
+        output_dir / PROTEIN_IDENTIFIER_LOOKUP_AMBIGUOUS_OUTPUT_FILENAME
+    )
+    identifier_type_path = output_dir / IDENTIFIER_TYPE_OUTPUT_FILENAME
+    if (
+        skip_existing
+        and taxonomy_ids is None
+        and lookup_path.exists()
+        and ambiguous_path.exists()
+        and identifier_type_path.exists()
+    ):
+        print(
+            f'[resolver] skip source=uniprot existing_dir={output_dir}',
+            flush=True,
+        )
+        return {
+            'protein_identifier_lookup_rows': _parquet_row_count(lookup_path),
+            'protein_identifier_lookup_ambiguous_rows': _parquet_row_count(
+                ambiguous_path
+            ),
+            'identifier_type_rows': _parquet_row_count(identifier_type_path),
+        }
+
     activate_raw_download_data_dir()
     lookup, ambiguous, identifier_types = _split_protein_identifier_lookup(
         _protein_identifier_rows(taxonomy_ids=taxonomy_ids)
     )
-    lookup.write_parquet(output_dir / PROTEIN_IDENTIFIER_LOOKUP_OUTPUT_FILENAME)
-    ambiguous.write_parquet(
-        output_dir / PROTEIN_IDENTIFIER_LOOKUP_AMBIGUOUS_OUTPUT_FILENAME
-    )
-    identifier_types.write_parquet(output_dir / IDENTIFIER_TYPE_OUTPUT_FILENAME)
+    lookup.write_parquet(lookup_path)
+    ambiguous.write_parquet(ambiguous_path)
+    identifier_types.write_parquet(identifier_type_path)
 
     return {
         'protein_identifier_lookup_rows': lookup.height,
         'protein_identifier_lookup_ambiguous_rows': ambiguous.height,
         'identifier_type_rows': identifier_types.height,
     }
+
+
+def _parquet_row_count(path: Path) -> int:
+    return pl.scan_parquet(path).select(pl.len()).collect().item()
 
 
 def _split_protein_identifier_lookup(
@@ -163,7 +193,9 @@ def _split_protein_identifier_lookup(
                 'key_identifier_type_id': identifier_type_id(key_type),
                 'key_value': row.get('key_value'),
                 'taxonomy_id': row.get('taxonomy_id'),
-                'canonical_identifier_type_id': identifier_type_id(UNIPROT_TYPE),
+                'canonical_identifier_type_id': identifier_type_id(
+                    UNIPROT_TYPE
+                ),
                 'canonical_identifier': row.get('primary_uniprot'),
             }
         )

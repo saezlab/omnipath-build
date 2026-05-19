@@ -8,33 +8,34 @@ parquet batches.
 
 from __future__ import annotations
 
-import gzip
 import re
-import urllib.request
+import gzip
+import time
+from typing import BinaryIO
 from pathlib import Path
-from typing import BinaryIO, Iterable
 from urllib.parse import urljoin
+import urllib.request
+from collections.abc import Iterable
 
 import polars as pl
 
+from pypath.internals.cv_terms import (
+    IdentifierNamespaceCv,
+    cv_term_label_accession,
+)
+from omnipath_build.resolver.paths import ensure_chemicals_data_dir
 from omnipath_build.resolver.parquet import write_parquet_from_dict_rows
 from omnipath_build.resolver.identifier_types import (
     IDENTIFIER_TYPE_SCHEMA,
     identifier_type_id,
     identifier_type_rows,
 )
-from omnipath_build.resolver.paths import ensure_chemicals_data_dir
-from pypath.internals.cv_terms import (
-    IdentifierNamespaceCv,
-    cv_term_label_accession,
-)
 
 PUBCHEM_CURRENT_SDF_BASE_URL = (
     'https://ftp.ncbi.nlm.nih.gov/pubchem/Compound/CURRENT-Full/SDF/'
 )
 PUBCHEM_FIRST_COMPOUND_SDF_URL = (
-    PUBCHEM_CURRENT_SDF_BASE_URL +
-    'Compound_000000001_000500000.sdf.gz'
+    PUBCHEM_CURRENT_SDF_BASE_URL + 'Compound_000000001_000500000.sdf.gz'
 )
 PUBCHEM_COMPOUND_TYPE = cv_term_label_accession(
     IdentifierNamespaceCv.PUBCHEM_COMPOUND
@@ -52,9 +53,7 @@ PUBCHEM_IDENTIFIER_LOOKUP_OUTPUT_FILENAME = 'chemical_identifier_lookup.parquet'
 IDENTIFIER_TYPE_OUTPUT_FILENAME = 'identifier_type.parquet'
 
 _FIELD_RE = re.compile(r'^>\s*<([^>]+)>')
-_PUBCHEM_SDF_FILENAME_RE = re.compile(
-    r'Compound_\d{9}_\d{9}\.sdf\.gz'
-)
+_PUBCHEM_SDF_FILENAME_RE = re.compile(r'Compound_\d{9}_\d{9}\.sdf\.gz')
 _TARGET_FIELDS = {
     'PUBCHEM_COMPOUND_CID': 'pubchem_cid',
     'PUBCHEM_IUPAC_INCHIKEY': 'standard_inchi_key',
@@ -132,7 +131,9 @@ def iter_pubchem_sdf_rows(lines: Iterable[str]) -> Iterable[dict]:
 
 
 def _iter_text_from_gzip_fileobj(fileobj: BinaryIO) -> Iterable[str]:
-    with gzip.open(fileobj, mode='rt', encoding='utf-8', errors='replace') as handle:
+    with gzip.open(
+        fileobj, mode='rt', encoding='utf-8', errors='replace'
+    ) as handle:
         yield from handle
 
 
@@ -185,6 +186,11 @@ def _iter_current_pubchem_sdf_urls() -> Iterable[str]:
         raise ValueError(
             f'No PubChem SDF shards found at {PUBCHEM_CURRENT_SDF_BASE_URL}'
         )
+    print(
+        f'[pubchem] discovered_shards={len(filenames)} '
+        f'base={PUBCHEM_CURRENT_SDF_BASE_URL}',
+        flush=True,
+    )
     for filename in filenames:
         yield urljoin(PUBCHEM_CURRENT_SDF_BASE_URL, filename)
 
@@ -202,7 +208,9 @@ def iter_pubchem_sdf_gz_rows(path_or_url: str | Path) -> Iterable[dict]:
     location = str(path_or_url)
     if location.startswith(('http://', 'https://', 'ftp://')):
         with urllib.request.urlopen(location) as response:
-            yield from iter_pubchem_sdf_rows(_iter_text_from_gzip_fileobj(response))
+            yield from iter_pubchem_sdf_rows(
+                _iter_text_from_gzip_fileobj(response)
+            )
         return
 
     with Path(location).open('rb') as handle:
@@ -214,27 +222,79 @@ def iter_pubchem_compound_rows(
     *,
     filter_inchikeys: frozenset[str] | None = None,
     shard_count: int | None = None,
+    progress_every: int = 100_000,
 ) -> Iterable[dict]:
     """Stream PubChem resolver rows from all selected SDF gzip shards."""
 
-    for location in iter_pubchem_sdf_gz_locations(
-        source,
-        shard_count=shard_count,
+    filter_label = 'enabled' if filter_inchikeys is not None else 'disabled'
+    filter_key_count = (
+        len(filter_inchikeys) if filter_inchikeys is not None else 0
+    )
+    for shard_index, location in enumerate(
+        iter_pubchem_sdf_gz_locations(
+            source,
+            shard_count=shard_count,
+        ),
+        start=1,
     ):
-        rows = iter_pubchem_sdf_gz_rows(location)
-        if filter_inchikeys is not None:
-            rows = _filter_pubchem_rows(rows, filter_inchikeys)
-        yield from rows
+        started = time.monotonic()
+        rows_seen = 0
+        matched_rows = 0
+        completed = False
+        print(
+            f'[pubchem] shard={shard_index} start '
+            f'location={location} filter={filter_label} '
+            f'filter_keys={filter_key_count}',
+            flush=True,
+        )
+        try:
+            for row in iter_pubchem_sdf_gz_rows(location):
+                rows_seen += 1
+                if (
+                    filter_inchikeys is not None
+                    and row.get('standard_inchi_key') not in filter_inchikeys
+                ):
+                    if progress_every > 0 and rows_seen % progress_every == 0:
+                        _log_pubchem_shard_progress(
+                            shard_index,
+                            rows_seen,
+                            matched_rows,
+                            started,
+                        )
+                    continue
+                matched_rows += 1
+                if progress_every > 0 and rows_seen % progress_every == 0:
+                    _log_pubchem_shard_progress(
+                        shard_index,
+                        rows_seen,
+                        matched_rows,
+                        started,
+                    )
+                yield row
+            completed = True
+        finally:
+            status = 'done' if completed else 'stopped'
+            print(
+                f'[pubchem] shard={shard_index} {status} '
+                f'rows_seen={rows_seen} matched_rows={matched_rows} '
+                f'elapsed={time.monotonic() - started:.1f}s '
+                f'location={location}',
+                flush=True,
+            )
 
 
-def _filter_pubchem_rows(
-    rows: Iterable[dict],
-    filter_inchikeys: frozenset[str],
-) -> Iterable[dict]:
-    for row in rows:
-        if row.get('standard_inchi_key') not in filter_inchikeys:
-            continue
-        yield row
+def _log_pubchem_shard_progress(
+    shard_index: int,
+    rows_seen: int,
+    matched_rows: int,
+    started: float,
+) -> None:
+    print(
+        f'[pubchem] shard={shard_index} progress '
+        f'rows_seen={rows_seen} matched_rows={matched_rows} '
+        f'elapsed={time.monotonic() - started:.1f}s',
+        flush=True,
+    )
 
 
 def materialize_pubchem_compound_sdf(

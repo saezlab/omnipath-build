@@ -27,9 +27,9 @@ from omnipath_build.db import (
     rebuild_bitmap_tables,
     rebuild_derived_tables,
     ensure_deferred_indexes,
-    ensure_content_primary_keys,
     create_secondary_indexes,
     ensure_source_partitions,
+    ensure_content_primary_keys,
     drop_deferred_content_indexes,
 )
 from omnipath_build.ingest import BulkIngestor
@@ -120,6 +120,12 @@ def main(argv: list[str] | None = None) -> int:
         type=int,
         default=None,
         help='Optional number of discovered PubChem SDF shards to stream.',
+    )
+    build_resolver.add_argument(
+        '--skip-existing',
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help='Skip resolver sources already present in the output directory.',
     )
 
     resolver = subparsers.add_parser('load-resolver')
@@ -271,6 +277,7 @@ def main(argv: list[str] | None = None) -> int:
             max_records=args.max_records,
             pubchem_url=args.pubchem_url,
             pubchem_shards=args.pubchem_shards,
+            skip_existing=args.skip_existing,
         )
         for key, value in summary.items():
             print(f'{key}: {value}', flush=True)
@@ -280,7 +287,9 @@ def main(argv: list[str] | None = None) -> int:
         print('DATABASE_URL is required.', file=sys.stderr)
         return 2
 
-    print(f'[omnipath_build] connecting database schema={args.schema}', flush=True)
+    print(
+        f'[omnipath_build] connecting database schema={args.schema}', flush=True
+    )
     with psycopg2.connect(args.database_url) as conn:
         print('[omnipath_build] database connected', flush=True)
         if args.command == 'init-db':
@@ -542,7 +551,9 @@ def _handle_ingest(
             flush=True,
         )
         delete_started = time.perf_counter()
-        print(f'[{source}] refresh deleting existing source content', flush=True)
+        print(
+            f'[{source}] refresh deleting existing source content', flush=True
+        )
         delete_source_content(conn, schema=args.schema, source=source)
         ensure_source_partitions(conn, schema=args.schema, source=source)
         print(

@@ -64,11 +64,15 @@ SWISSLIPIDS_TYPE = cv_term_label_accession(IdentifierNamespaceCv.SWISSLIPIDS)
 STANDARD_INCHI_KEY_TYPE = cv_term_label_accession(
     IdentifierNamespaceCv.STANDARD_INCHI_KEY
 )
+PUBCHEM_COMPOUND_TYPE = cv_term_label_accession(
+    IdentifierNamespaceCv.PUBCHEM_COMPOUND
+)
 CHEMICAL_SOURCE_IDENTIFIER_TYPES = {
     'chebi': CHEBI_TYPE,
     'chembl': CHEMBL_COMPOUND_TYPE,
     'hmdb': HMDB_TYPE,
     'lipidmaps': LIPIDMAPS_TYPE,
+    'pubchem': PUBCHEM_COMPOUND_TYPE,
     'swisslipids': SWISSLIPIDS_TYPE,
 }
 
@@ -269,6 +273,7 @@ def materialize_chemical_sources(
     max_records: int | None = None,
     pubchem_url: str | Path | None = None,
     pubchem_shards: int | None = None,
+    skip_existing: bool = True,
 ) -> dict[str, int]:
     """Write chemical resolver parquet files and return output row counts."""
 
@@ -284,13 +289,38 @@ def materialize_chemical_sources(
     chemical_lookup_path = (
         output_dir / CHEMICAL_IDENTIFIER_LOOKUP_OUTPUT_FILENAME
     )
+    identifier_type_path = output_dir / IDENTIFIER_TYPE_OUTPUT_FILENAME
+    existing_lookup, existing_identifier_types = _read_existing_chemical_lookup(
+        chemical_lookup_path,
+        identifier_type_path,
+    )
+    loaded_sources = (
+        _loaded_chemical_sources(existing_lookup, existing_identifier_types)
+        if skip_existing
+        else set()
+    )
     rows: list[dict] = []
-    completed_sources: list[str] = []
+    completed_sources: list[str] = [
+        source for source in CHEMICAL_SOURCES if source in loaded_sources
+    ]
 
     for source in selected:
+        if source in loaded_sources:
+            print(
+                f'[resolver] skip source={source} existing_dir={output_dir}',
+                flush=True,
+            )
+            continue
         lookup_sources = tuple(completed_sources)
-        if source in LOOKUP_DEPENDENT_CHEMICAL_SOURCES and rows:
-            _write_chemical_lookup_files(rows, output_dir)
+        if source in LOOKUP_DEPENDENT_CHEMICAL_SOURCES and (
+            rows or existing_lookup is not None
+        ):
+            _write_chemical_lookup_files(
+                rows,
+                output_dir,
+                existing_lookup=existing_lookup,
+                existing_identifier_types=existing_identifier_types,
+            )
 
         rows.extend(
             _chemical_identifier_rows(
@@ -304,7 +334,22 @@ def materialize_chemical_sources(
         )
         completed_sources.append(source)
 
-    lookup, identifier_types = _write_chemical_lookup_files(rows, output_dir)
+    if (
+        not rows
+        and existing_lookup is not None
+        and existing_identifier_types is not None
+    ):
+        return {
+            'chemical_identifier_lookup_rows': existing_lookup.height,
+            'identifier_type_rows': existing_identifier_types.height,
+        }
+
+    lookup, identifier_types = _write_chemical_lookup_files(
+        rows,
+        output_dir,
+        existing_lookup=existing_lookup,
+        existing_identifier_types=existing_identifier_types,
+    )
 
     return {
         'chemical_identifier_lookup_rows': lookup.height,
@@ -315,13 +360,65 @@ def materialize_chemical_sources(
 def _write_chemical_lookup_files(
     rows: Iterable[dict],
     output_dir: Path,
+    *,
+    existing_lookup: pl.DataFrame | None = None,
+    existing_identifier_types: pl.DataFrame | None = None,
 ) -> tuple[pl.DataFrame, pl.DataFrame]:
     lookup, identifier_types = _normalize_chemical_identifier_lookup(rows)
+    if existing_lookup is not None:
+        lookup = pl.concat(
+            [existing_lookup, lookup], how='vertical_relaxed'
+        ).unique()
+    if existing_identifier_types is not None:
+        identifier_types = (
+            pl.concat(
+                [existing_identifier_types, identifier_types],
+                how='vertical_relaxed',
+            )
+            .unique(subset=['identifier_type_id'])
+            .sort('identifier_type_id')
+        )
     lookup.write_parquet(
         output_dir / CHEMICAL_IDENTIFIER_LOOKUP_OUTPUT_FILENAME
     )
     identifier_types.write_parquet(output_dir / IDENTIFIER_TYPE_OUTPUT_FILENAME)
     return lookup, identifier_types
+
+
+def _read_existing_chemical_lookup(
+    lookup_path: Path,
+    identifier_type_path: Path,
+) -> tuple[pl.DataFrame | None, pl.DataFrame | None]:
+    if not lookup_path.exists() or not identifier_type_path.exists():
+        return None, None
+    return pl.read_parquet(lookup_path), pl.read_parquet(identifier_type_path)
+
+
+def _loaded_chemical_sources(
+    lookup: pl.DataFrame | None,
+    identifier_types: pl.DataFrame | None,
+) -> set[str]:
+    if lookup is None or identifier_types is None or lookup.is_empty():
+        return set()
+
+    loaded: set[str] = set()
+    type_rows = identifier_types.select(
+        'identifier_type_id',
+        'name',
+    ).iter_rows(named=True)
+    type_ids = {
+        str(row['name']): row['identifier_type_id'] for row in type_rows
+    }
+    for source, type_name in CHEMICAL_SOURCE_IDENTIFIER_TYPES.items():
+        type_id = type_ids.get(type_name)
+        if type_id is None:
+            continue
+        count = lookup.filter(
+            pl.col('key_identifier_type_id') == type_id
+        ).height
+        if count > 0:
+            loaded.add(source)
+    return loaded
 
 
 def _chemical_filter_inchikeys(
