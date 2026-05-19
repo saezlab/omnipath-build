@@ -966,7 +966,6 @@ def _ensure_resolution_schema(
               entity_family text NOT NULL,
               resolver_source text,
               key_type text NOT NULL,
-              mapping_type text,
               action text NOT NULL CHECK (
                 action IN ('accept', 'candidate_only', 'ignore')
               ),
@@ -1070,7 +1069,6 @@ def _ensure_resolution_schema(
             ON {}.resolver_mapping_policy (
               entity_family,
               key_type,
-              COALESCE(mapping_type, ''),
               COALESCE(resolver_source, '')
             )
             """

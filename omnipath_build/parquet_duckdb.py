@@ -437,8 +437,7 @@ def _materialize_resolver_tables(
             key_value,
             taxonomy_id,
             canonical_identifier_type_id,
-            canonical_identifier,
-            mapping_type
+            canonical_identifier
           FROM read_parquet({_sql_literal(resolver_dir / 'protein_identifier_lookup.parquet')})
           WHERE key_value IS NOT NULL
             AND canonical_identifier IS NOT NULL

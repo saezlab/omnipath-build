@@ -82,11 +82,6 @@ def _protein_identifier_rows(
             'key_value': row.get('key_value'),
             'taxonomy_id': row.get('taxonomy_id'),
             'primary_uniprot': primary_uniprot,
-            'mapping_type': (
-                'uniprot_primary'
-                if key_type == UNIPROT_TYPE
-                else 'uniprot_reference'
-            ),
         }
 
     for row in uniprot_resource.secondary_to_primary.raw():
@@ -102,7 +97,6 @@ def _protein_identifier_rows(
             'key_value': row.get('secondary_uniprot'),
             'taxonomy_id': taxonomy_id,
             'primary_uniprot': primary_uniprot,
-            'mapping_type': 'uniprot_secondary',
         }
 
 

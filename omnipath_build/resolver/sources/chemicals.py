@@ -177,6 +177,7 @@ def _chemical_identifier_rows(
     sources: Iterable[str],
     max_records: int | None = None,
     pubchem_url: str | Path | None = None,
+    pubchem_shards: int | None = None,
     chemical_lookup_path: str | Path | None = None,
 ) -> Iterable[dict]:
     for source in _validate_chemical_sources(sources):
@@ -190,6 +191,7 @@ def _chemical_identifier_rows(
                 filter_inchikeys=_chemical_filter_inchikeys(
                     chemical_lookup_path,
                 ),
+                shard_count=pubchem_shards,
             )
             emitted = 0
             for row in rows:
@@ -215,6 +217,7 @@ def build_chemical_identifier_lookup(
     sources: Iterable[str] = CHEMICAL_SOURCES,
     max_records: int | None = None,
     pubchem_url: str | Path | None = None,
+    pubchem_shards: int | None = None,
 ) -> pl.DataFrame:
     """Return normalized chemical identifier lookup rows as a dataframe."""
 
@@ -224,6 +227,7 @@ def build_chemical_identifier_lookup(
             sources,
             max_records=max_records,
             pubchem_url=pubchem_url,
+            pubchem_shards=pubchem_shards,
             chemical_lookup_path=Path('omnipath_build/data/chemicals')
             / CHEMICAL_IDENTIFIER_LOOKUP_OUTPUT_FILENAME,
         )
@@ -238,6 +242,7 @@ def materialize_chemical_sources(
     output_dir: str | Path | None = None,
     max_records: int | None = None,
     pubchem_url: str | Path | None = None,
+    pubchem_shards: int | None = None,
 ) -> dict[str, int]:
     """Write chemical resolver parquet files and return output row counts."""
 
@@ -256,6 +261,7 @@ def materialize_chemical_sources(
             selected,
             max_records=max_records,
             pubchem_url=pubchem_url,
+            pubchem_shards=pubchem_shards,
             chemical_lookup_path=chemical_lookup_path,
         )
     )

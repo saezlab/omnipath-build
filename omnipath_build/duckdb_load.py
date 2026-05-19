@@ -84,6 +84,7 @@ def _create_duckdb_resolver_views(
         chemical_lookup_path.exists()
         and chemical_type_path.exists()
     )
+    protein_lookup_path = protein_dir / 'protein_identifier_lookup.parquet'
     chemical_identifier_type_sql = (
         f"""
         UNION
@@ -102,8 +103,7 @@ def _create_duckdb_resolver_views(
           key_value,
           NULL::VARCHAR AS taxonomy_id,
           canonical_identifier_type_id,
-          canonical_identifier,
-          'exact' AS mapping_type
+          canonical_identifier
         FROM read_parquet({_sql_literal(chemical_lookup_path)})
         WHERE key_value IS NOT NULL
           AND canonical_identifier IS NOT NULL
@@ -129,9 +129,8 @@ def _create_duckdb_resolver_views(
           key_value,
           taxonomy_id,
           canonical_identifier_type_id,
-          canonical_identifier,
-          mapping_type
-        FROM read_parquet({_sql_literal(protein_dir / 'protein_identifier_lookup.parquet')})
+          canonical_identifier
+        FROM read_parquet({_sql_literal(protein_lookup_path)})
         WHERE key_value IS NOT NULL
           AND canonical_identifier IS NOT NULL
         {chemical_lookup_sql}
@@ -153,7 +152,7 @@ def _create_duckdb_resolver_views(
           canonical_identifier,
           list_distinct(list(key_identifier_type_id)) AS key_identifier_type_ids,
           count(*)::BIGINT AS lookup_rows
-        FROM read_parquet({_sql_literal(protein_dir / 'protein_identifier_lookup.parquet')})
+        FROM read_parquet({_sql_literal(protein_lookup_path)})
         WHERE canonical_identifier IS NOT NULL
         GROUP BY
           taxonomy_id,
@@ -270,6 +269,7 @@ class DuckDBEvidenceProjector(ParquetEvidenceProjector):
         source: str,
         dataset: str,
         max_records: int | None = None,
+        row_offset: int = 0,
     ):
         if max_records is not None:
             records = islice(records, max_records)
@@ -278,7 +278,7 @@ class DuckDBEvidenceProjector(ParquetEvidenceProjector):
         seen_annotations: set[tuple[str, str, str | None, str | None]] = set()
         stats = _MutableProjectionStats()
         try:
-            for index, item in enumerate(records, start=1):
+            for index, item in enumerate(records, start=row_offset + 1):
                 entity, _ = unwrap_record(item)
                 if not isinstance(entity, Entity):
                     continue
@@ -1767,26 +1767,55 @@ def _copy_duckdb_query_to_postgres(
                         )
                     staging_table = f'{table}_source_{source_id}_staging'
                     cur.execute(
-                        sql.SQL('DROP TABLE IF EXISTS {}.{} CASCADE').format(
-                            sql.Identifier(schema),
-                            sql.Identifier(staging_table),
+                        """
+                        SELECT EXISTS (
+                          SELECT 1
+                          FROM pg_inherits i
+                          JOIN pg_class parent ON parent.oid = i.inhparent
+                          JOIN pg_namespace parent_ns
+                            ON parent_ns.oid = parent.relnamespace
+                          JOIN pg_class child ON child.oid = i.inhrelid
+                          JOIN pg_namespace child_ns
+                            ON child_ns.oid = child.relnamespace
+                          WHERE parent_ns.nspname = %s
+                            AND parent.relname = %s
+                            AND child_ns.nspname = %s
+                            AND child.relname = %s
                         )
+                        """,
+                        [schema, table, schema, staging_table],
                     )
-                    cur.execute(
-                        sql.SQL(
-                            """
-                            CREATE TABLE {}.{} (
-                              LIKE {}.{} INCLUDING DEFAULTS INCLUDING GENERATED
+                    partition_attached = bool(cur.fetchone()[0])
+                    should_attach = not partition_attached
+                    if partition_attached:
+                        target_table = sql.Identifier(staging_table)
+                    else:
+                        cur.execute(
+                            sql.SQL('DROP TABLE IF EXISTS {}.{} CASCADE').format(
+                                sql.Identifier(schema),
+                                sql.Identifier(staging_table),
                             )
-                            """
-                        ).format(
-                            sql.Identifier(schema),
-                            sql.Identifier(staging_table),
-                            sql.Identifier(schema),
-                            sql.Identifier(table),
                         )
-                    )
-                    target_table = sql.Identifier(staging_table)
+                        cur.execute(
+                            sql.SQL(
+                                """
+                                CREATE TABLE {}.{} (
+                                  LIKE {}.{}
+                                    INCLUDING DEFAULTS
+                                    INCLUDING GENERATED
+                                    INCLUDING CONSTRAINTS
+                                )
+                                """
+                            ).format(
+                                sql.Identifier(schema),
+                                sql.Identifier(staging_table),
+                                sql.Identifier(schema),
+                                sql.Identifier(table),
+                            )
+                        )
+                        target_table = sql.Identifier(staging_table)
+                else:
+                    should_attach = False
                 with csv_path.open('r', encoding='utf-8') as csv_file:
                     cur.copy_expert(
                         sql.SQL(
@@ -1804,7 +1833,7 @@ def _copy_duckdb_query_to_postgres(
                         ),
                         csv_file,
                     )
-                if attach_source_partition:
+                if attach_source_partition and should_attach:
                     cur.execute(
                         sql.SQL(
                             """
@@ -2008,32 +2037,6 @@ def _bulk_copy_evidence(
         """,
         source_id=source_id,
     )
-    _copy_source_partition(
-        con,
-        database_url=database_url,
-        schema=schema,
-        table='relation_evidence_annotation',
-        columns=(
-            'source_id',
-            'relation_evidence_id',
-            'annotation_key',
-            'annotation_scope_id',
-        ),
-        query="""
-          SELECT DISTINCT
-            ds.source_id,
-            a.evidence_id::UUID,
-            a.annotation_key::UUID,
-            sc.annotation_scope_id
-          FROM pq_relation_annotation a
-          JOIN load_data_source ds
-            ON ds.name = a.source
-          JOIN load_vocab_annotation_scope sc
-            ON sc.name = 'relation'
-        """,
-        source_id=source_id,
-    )
-
 
 def _bulk_copy_canonical(
     con: duckdb.DuckDBPyConnection,
@@ -2261,6 +2264,31 @@ def _bulk_copy_canonical(
             JOIN load_vocab_relation_category rc
               ON rc.name = ar.relation_category
           )
+        """,
+        source_id=source_id,
+    )
+    _copy_source_partition(
+        con,
+        database_url=database_url,
+        schema=schema,
+        table='relation_evidence_annotation',
+        columns=(
+            'source_id',
+            'relation_evidence_id',
+            'annotation_key',
+            'annotation_scope_id',
+        ),
+        query="""
+          SELECT DISTINCT
+            ds.source_id,
+            a.evidence_id::UUID,
+            a.annotation_key::UUID,
+            sc.annotation_scope_id
+          FROM pq_relation_annotation a
+          JOIN load_data_source ds
+            ON ds.name = a.source
+          JOIN load_vocab_annotation_scope sc
+            ON sc.name = 'relation'
         """,
         source_id=source_id,
     )

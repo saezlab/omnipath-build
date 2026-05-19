@@ -89,9 +89,9 @@ def main(argv: list[str] | None = None) -> int:
     build_resolver = subparsers.add_parser('build-resolver')
     build_resolver.add_argument(
         'sources',
-        nargs='+',
+        nargs='*',
         choices=RESOLVER_SOURCE_NAMES,
-        help='One or more resolver sources to materialize.',
+        help='Resolver sources to materialize. Defaults to all sources.',
     )
     build_resolver.add_argument('--output-dir', default='data')
     build_resolver.add_argument(
@@ -114,6 +114,12 @@ def main(argv: list[str] | None = None) -> int:
             'Optional single PubChem SDF .gz URL/path. '
             'Defaults to all current PubChem full-SDF shards.'
         ),
+    )
+    build_resolver.add_argument(
+        '--pubchem-shards',
+        type=int,
+        default=None,
+        help='Optional number of discovered PubChem SDF shards to stream.',
     )
 
     resolver = subparsers.add_parser('load-resolver')
@@ -146,6 +152,12 @@ def main(argv: list[str] | None = None) -> int:
         '--pubchem-url',
         default=None,
         help='Optional single PubChem SDF .gz URL/path for direct PubChem load.',
+    )
+    resolver.add_argument(
+        '--pubchem-shards',
+        type=int,
+        default=None,
+        help='Optional number of discovered PubChem SDF shards for direct load.',
     )
     resolver.add_argument(
         '--drop-existing',
@@ -253,11 +265,12 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.command == 'build-resolver':
         summary = build_resolver_sources(
-            sources=args.sources,
+            sources=args.sources or RESOLVER_SOURCE_NAMES,
             output_dir=args.output_dir,
             taxonomy_ids=args.taxonomy_ids,
             max_records=args.max_records,
             pubchem_url=args.pubchem_url,
+            pubchem_shards=args.pubchem_shards,
         )
         for key, value in summary.items():
             print(f'{key}: {value}', flush=True)
@@ -336,6 +349,7 @@ def main(argv: list[str] | None = None) -> int:
                     taxonomy_ids=args.taxonomy_ids,
                     max_records=args.max_records,
                     pubchem_url=args.pubchem_url,
+                    pubchem_shards=args.pubchem_shards,
                 )
             else:
                 stats = load_resolver_tables(

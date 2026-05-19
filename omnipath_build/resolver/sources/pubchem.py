@@ -138,16 +138,33 @@ def _iter_text_from_gzip_fileobj(fileobj: BinaryIO) -> Iterable[str]:
 
 def iter_pubchem_sdf_gz_locations(
     source: str | Path | None = None,
+    *,
+    shard_count: int | None = None,
 ) -> Iterable[str | Path]:
     """Yield PubChem SDF gzip file locations.
 
     With no source, discover every current PubChem full-SDF shard from the NCBI
-    listing. A source can be a single local/remote `.sdf.gz` file.
+    listing. A source can be a single local/remote `.sdf.gz` file. A shard
+    count limits the discovered PubChem list before any shard is streamed.
     """
 
+    if shard_count is not None and shard_count < 1:
+        raise ValueError('PubChem shard count must be at least 1.')
+
     if source is None:
-        yield from _iter_current_pubchem_sdf_urls()
+        emitted = 0
+        for location in _iter_current_pubchem_sdf_urls():
+            yield location
+            emitted += 1
+            if shard_count is not None and emitted >= shard_count:
+                break
         return
+
+    if shard_count not in (None, 1):
+        raise ValueError(
+            'PubChem shard count only applies to discovered PubChem shards. '
+            'Use pubchem_url for an explicit single shard.'
+        )
 
     location = str(source)
     if location.startswith(('http://', 'https://', 'ftp://')):
@@ -196,10 +213,14 @@ def iter_pubchem_compound_rows(
     source: str | Path | None = None,
     *,
     filter_inchikeys: frozenset[str] | None = None,
+    shard_count: int | None = None,
 ) -> Iterable[dict]:
     """Stream PubChem resolver rows from all selected SDF gzip shards."""
 
-    for location in iter_pubchem_sdf_gz_locations(source):
+    for location in iter_pubchem_sdf_gz_locations(
+        source,
+        shard_count=shard_count,
+    ):
         rows = iter_pubchem_sdf_gz_rows(location)
         if filter_inchikeys is not None:
             rows = _filter_pubchem_rows(rows, filter_inchikeys)
@@ -222,6 +243,7 @@ def materialize_pubchem_compound_sdf(
     source: str | Path | None = None,
     max_records: int | None = None,
     filter_inchikeys: frozenset[str] | None = None,
+    pubchem_shards: int | None = None,
 ) -> dict[str, int]:
     """Write resolver parquet rows from PubChem SDF shard URLs or paths."""
 
@@ -234,6 +256,7 @@ def materialize_pubchem_compound_sdf(
     rows = iter_pubchem_compound_rows(
         source,
         filter_inchikeys=filter_inchikeys,
+        shard_count=pubchem_shards,
     )
     if max_records is not None:
         rows = _take(rows, max_records)

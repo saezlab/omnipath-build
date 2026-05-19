@@ -11,9 +11,10 @@ DATASET ?=
 source ?=
 sources ?=
 SELECTED_SOURCES = $(strip $(if $(SOURCES),$(SOURCES),$(if $(SOURCE),$(SOURCE),$(if $(sources),$(sources),$(source)))))
+LOAD_SOURCES = $(strip $(SELECTED_SOURCES))
 
 MAPPING_DIR ?= $(DATA_ROOT)
-RESOLVER_SOURCES ?= uniprot chebi hmdb lipidmaps swisslipids pubchem
+RESOLVER_SOURCES ?=
 BATCH_SIZE ?= 50000
 RESOLVER_BATCH_SIZE ?= 100000
 PROGRESS_EVERY ?= 1000
@@ -26,6 +27,8 @@ PROFILE ?=
 MAX_RECORDS ?=
 FORCE_REFRESH ?=
 PUBCHEM_URL ?=
+PUBCHEM_SHARDS ?=
+DUCKDB_MAX_RECORDS_ARG = $(if $(MAX_RECORDS),--max-records "$(MAX_RECORDS)",--max-records 0)
 
 setup:
 	git submodule add -b main https://github.com/saezlab/pypath.git pypath || true
@@ -36,11 +39,12 @@ setup:
 	uv pip install -e ./cache-manager -e ./download-manager -e ./pypath
 
 resolver:
-	@echo "[omnipath_build] build-resolver output_dir=$(MAPPING_DIR) sources=$(RESOLVER_SOURCES)"
+	@echo "[omnipath_build] build-resolver output_dir=$(MAPPING_DIR) sources=$(if $(RESOLVER_SOURCES),$(RESOLVER_SOURCES),ALL)"
 	@PYTHONUNBUFFERED=1 uv run python -m omnipath_build.cli build-resolver \
 		--output-dir "$(MAPPING_DIR)" \
 		$(if $(MAX_RECORDS),--max-records $(MAX_RECORDS)) \
 		$(if $(PUBCHEM_URL),--pubchem-url "$(PUBCHEM_URL)") \
+		$(if $(PUBCHEM_SHARDS),--pubchem-shards $(PUBCHEM_SHARDS)) \
 		$(RESOLVER_SOURCES)
 
 db-setup:
@@ -55,13 +59,6 @@ db-setup:
 		--schema "$(SCHEMA)" \
 		init-db \
 		$(if $(DROP_EXISTING),--drop-existing --no-indexes); \
-	echo "[omnipath_build] load-resolver mapping_dir=$(MAPPING_DIR)"; \
-	PYTHONUNBUFFERED=1 uv run python -m omnipath_build.cli \
-		--database-url "$(DATABASE_URL)" \
-		--schema "$(SCHEMA)" \
-		load-resolver \
-		--mapping-dir "$(MAPPING_DIR)" \
-		--batch-size "$(RESOLVER_BATCH_SIZE)"; \
 	if [ -z "$(DROP_EXISTING)" ]; then \
 		echo "[omnipath_build] create secondary indexes schema=$(SCHEMA)"; \
 		PYTHONUNBUFFERED=1 uv run python -m omnipath_build.cli \
@@ -71,7 +68,7 @@ db-setup:
 			--no-tables \
 			--no-bitmaps; \
 	else \
-		echo "[omnipath_build] deferring secondary indexes until after ingest"; \
+		echo "[omnipath_build] deferring secondary indexes until after load"; \
 	fi
 
 db-reset:
@@ -119,74 +116,12 @@ drop-source:
 	done
 
 ingest:
-	@if [ -z "$(DATABASE_URL)" ]; then \
-		echo "DATABASE_URL is required, e.g. make ingest SOURCES=uniprot DATABASE_URL=postgresql://user:pass@host:5432/dbname"; \
-		exit 1; \
-	fi
-	@set -e; \
-	if [ -z "$(SELECTED_SOURCES)" ]; then \
-		echo "[omnipath_build] ingest source=ALL"; \
-		PYTHONUNBUFFERED=1 uv run python -m omnipath_build.cli \
-			--database-url "$(DATABASE_URL)" \
-			--schema "$(SCHEMA)" \
-			ingest \
-			--database "$(DATABASE)" \
-			--inputs-package "$(INPUTS_PACKAGE)" \
-			$(if $(DATASET),--dataset "$(DATASET)") \
-			--batch-size "$(BATCH_SIZE)" \
-			--progress-every "$(PROGRESS_EVERY)" \
-			--obo-output-dir "$(OBO_DIR)" \
-			--no-ensure-schema \
-			$(if $(PROFILE),--profile) \
-			$(if $(MAX_RECORDS),--max-records "$(MAX_RECORDS)") \
-			$(if $(FORCE_REFRESH),--force-refresh); \
-	else \
-		SOURCE_LIST=$$(printf '%s' "$(SELECTED_SOURCES)" | tr ',' ' '); \
-		for source in $$SOURCE_LIST; do \
-			echo "[omnipath_build] ingest source=$$source"; \
-			PYTHONUNBUFFERED=1 uv run python -m omnipath_build.cli \
-				--database-url "$(DATABASE_URL)" \
-				--schema "$(SCHEMA)" \
-				ingest \
-				--source "$$source" \
-				--database "$(DATABASE)" \
-				--inputs-package "$(INPUTS_PACKAGE)" \
-				$(if $(DATASET),--dataset "$(DATASET)") \
-				--batch-size "$(BATCH_SIZE)" \
-				--progress-every "$(PROGRESS_EVERY)" \
-				--obo-output-dir "$(OBO_DIR)" \
-				--no-ensure-schema \
-				$(if $(PROFILE),--profile) \
-				$(if $(MAX_RECORDS),--max-records "$(MAX_RECORDS)") \
-				$(if $(FORCE_REFRESH),--force-refresh); \
-		done; \
-	fi
+	@echo "[omnipath_build] the Makefile supports only the DuckDB direct load path; use 'make load'"
+	@exit 1
 
 canonicalize:
-	@if [ -z "$(DATABASE_URL)" ]; then \
-		echo "DATABASE_URL is required, e.g. make canonicalize SOURCES=uniprot DATABASE_URL=postgresql://user:pass@host:5432/dbname"; \
-		exit 1; \
-	fi
-	@set -e; \
-	if [ -z "$(SELECTED_SOURCES)" ]; then \
-		echo "[omnipath_build] canonicalize source=ALL"; \
-		PYTHONUNBUFFERED=1 uv run python -m omnipath_build.cli \
-			--database-url "$(DATABASE_URL)" \
-			--schema "$(SCHEMA)" \
-			canonicalize \
-			--no-ensure-schema; \
-	else \
-		SOURCE_LIST=$$(printf '%s' "$(SELECTED_SOURCES)" | tr ',' ' '); \
-		for source in $$SOURCE_LIST; do \
-			echo "[omnipath_build] canonicalize source=$$source"; \
-			PYTHONUNBUFFERED=1 uv run python -m omnipath_build.cli \
-				--database-url "$(DATABASE_URL)" \
-				--schema "$(SCHEMA)" \
-				canonicalize \
-				--source "$$source" \
-				--no-ensure-schema; \
-		done; \
-	fi
+	@echo "[omnipath_build] canonicalization is part of DuckDB direct load; use 'make load'"
+	@exit 1
 
 derive:
 	@if [ -z "$(DATABASE_URL)" ]; then \
@@ -199,7 +134,24 @@ derive:
 		--schema "$(SCHEMA)" \
 		derive
 
-load: ingest canonicalize
+load:
+	@if [ -z "$(DATABASE_URL)" ]; then \
+		echo "DATABASE_URL is required, e.g. make load SOURCE=uniprot DATABASE_URL=postgresql://user:pass@host:5432/dbname"; \
+		exit 1; \
+	fi
+	@echo "[omnipath_build] duckdb-load sources=$(LOAD_SOURCES) schema=$(SCHEMA) batch_size=$(BATCH_SIZE)"
+	@PYTHONUNBUFFERED=1 uv run python -m omnipath_build.duckdb_direct_pipeline \
+		--database-url "$(DATABASE_URL)" \
+		--schema "$(SCHEMA)" \
+		--database "$(DATABASE)" \
+		--inputs-package "$(INPUTS_PACKAGE)" \
+		--sources "$(LOAD_SOURCES)" \
+		--resolver-dir "$(MAPPING_DIR)" \
+		$(if $(DATASET),--dataset "$(DATASET)") \
+		$(DUCKDB_MAX_RECORDS_ARG) \
+		--batch-size "$(BATCH_SIZE)" \
+		$(if $(FORCE_REFRESH),--force-refresh) \
+		--append
 
 pipeline: load
 	@if [ "$(DERIVE)" != "" ]; then \
@@ -209,7 +161,7 @@ pipeline: load
 all:
 	@$(MAKE) resolver
 	@$(MAKE) db-setup
-	@$(MAKE) pipeline DERIVE=1
+	@$(MAKE) pipeline
 
 test:
 	@uv run python -m compileall -q omnipath_build

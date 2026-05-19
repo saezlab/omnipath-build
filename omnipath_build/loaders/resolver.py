@@ -143,6 +143,7 @@ def load_resolver_sources(
     taxonomy_ids: list[int | str] | None = None,
     max_records: int | None = None,
     pubchem_url: str | Path | None = None,
+    pubchem_shards: int | None = None,
 ) -> ResolverLoadStats:
     """Stream resolver source rows directly into PostgreSQL."""
 
@@ -174,6 +175,7 @@ def load_resolver_sources(
             batch_size=batch_size,
             max_records=max_records,
             pubchem_url=pubchem_url,
+            pubchem_shards=pubchem_shards,
         )
 
     if indexes:
@@ -442,6 +444,7 @@ def _load_chemical_sources(
     batch_size: int,
     max_records: int | None,
     pubchem_url: str | Path | None,
+    pubchem_shards: int | None,
 ) -> int:
     from omnipath_build.resolver.sources.chemicals import _chemical_identifier_rows
 
@@ -455,6 +458,7 @@ def _load_chemical_sources(
                     sources,
                     max_records=max_records,
                     pubchem_url=pubchem_url,
+                    pubchem_shards=pubchem_shards,
                 )
             ),
             table='stg_resolver_chemical',

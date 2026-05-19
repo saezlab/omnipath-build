@@ -107,9 +107,6 @@ WEAK_IDENTIFIER_TYPES = (
     GENE_NAME_SYNONYM_TYPE,
     UNIPROT_ENTRY_NAME_TYPE,
 )
-DIRECT_MAPPING_TYPES = (
-    'standard_inchi_key_identity',
-)
 ASSOCIATION_CATEGORY = 'association'
 ASSOCIATION_PREDICATE = 'associated_with'
 PATHWAY_PREDICATE = 'involved_in'
@@ -934,8 +931,7 @@ def _create_raw_group_candidate_table(cur: psycopg2.extensions.cursor) -> None:
           id text NOT NULL,
           taxonomy_id bigint,
           resolver_source text,
-          key_type text,
-          mapping_type text
+          key_type text
         ) ON COMMIT DROP
         """
     )
@@ -999,8 +995,7 @@ def _insert_group_protein_candidates(
               id,
               taxonomy_id,
               resolver_source,
-              key_type,
-              mapping_type
+              key_type
             )
             SELECT DISTINCT
               k.entity_group_id,
@@ -1009,8 +1004,7 @@ def _insert_group_protein_candidates(
               p.canonical_identifier,
               COALESCE(NULLIF(p.taxonomy_id, '')::bigint, k.taxonomy_id),
               NULL::text,
-              k.key_type,
-              NULL::text
+              k.key_type
             FROM _entity_group_key k
             JOIN {}.resolver_protein_identifier_lookup p
               ON p.key_identifier_type_id = k.key_identifier_type_id
@@ -1047,8 +1041,7 @@ def _insert_group_chemical_candidates(
               id,
               taxonomy_id,
               resolver_source,
-              key_type,
-              mapping_type
+              key_type
             )
             SELECT DISTINCT
               k.entity_group_id,
@@ -1057,8 +1050,7 @@ def _insert_group_chemical_candidates(
               c.canonical_identifier,
               k.taxonomy_id,
               NULL::text,
-              k.key_type,
-              NULL::text
+              k.key_type
             FROM _entity_group_key k
             JOIN {}.resolver_chemical_identifier_lookup c
               ON c.key_identifier_type_id = k.key_identifier_type_id
@@ -1088,8 +1080,7 @@ def _insert_group_standard_inchi_key_identity_candidates(
           id,
           taxonomy_id,
           resolver_source,
-          key_type,
-          mapping_type
+          key_type
         )
         SELECT
           entity_group_id,
@@ -1098,8 +1089,7 @@ def _insert_group_standard_inchi_key_identity_candidates(
           key_value,
           taxonomy_id,
           'identity',
-          key_type,
-          'standard_inchi_key_identity'
+          key_type
         FROM _entity_group_key
         WHERE vocab_entity_type = ANY(%s)
           AND resolver_key_type = %s
@@ -1136,9 +1126,7 @@ def _aggregate_group_candidates(cur: psycopg2.extensions.cursor) -> None:
               FILTER (WHERE resolver_source IS NOT NULL),
             ARRAY[]::text[]
           ) AS resolver_sources,
-          ARRAY_AGG(DISTINCT key_type ORDER BY key_type) AS key_types,
-          ARRAY_AGG(DISTINCT mapping_type ORDER BY mapping_type)
-            FILTER (WHERE mapping_type IS NOT NULL) AS mapping_types
+          ARRAY_AGG(DISTINCT key_type ORDER BY key_type) AS key_types
         FROM _raw_group_resolution_candidate
         GROUP BY
           entity_group_id,
@@ -1176,8 +1164,6 @@ def _create_entity_group_resolution_stage(
             c.*,
             CASE
               WHEN c.key_types && %s::text[]
-                OR COALESCE(c.mapping_types, ARRAY[]::text[])
-                   && %s::text[]
                 THEN 100
               WHEN c.key_types && %s::text[]
                 THEN 80
@@ -1312,7 +1298,6 @@ def _create_entity_group_resolution_stage(
         """,
         [
             list(DIRECT_IDENTIFIER_TYPES),
-            list(DIRECT_MAPPING_TYPES),
             list(STABLE_REFERENCE_IDENTIFIER_TYPES),
             list(WEAK_IDENTIFIER_TYPES),
             FALLBACK_IDENTIFIER_TYPE,

@@ -23,9 +23,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         'sources',
-        nargs='+',
+        nargs='*',
         choices=SOURCE_NAMES,
-        help='One or more sources to materialize.',
+        help='Resolver sources to materialize. Defaults to all sources.',
     )
     parser.add_argument(
         '--output-dir',
@@ -54,6 +54,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
             'Defaults to all current PubChem full-SDF shards.'
         ),
     )
+    parser.add_argument(
+        '--pubchem-shards',
+        type=int,
+        default=None,
+        help='Optional number of discovered PubChem SDF shards to stream.',
+    )
     return parser
 
 
@@ -69,6 +75,7 @@ def run_sources(
     taxonomy_ids: Sequence[int | str] | None = None,
     max_records: int | None = None,
     pubchem_url: str | Path | None = None,
+    pubchem_shards: int | None = None,
 ) -> dict[str, int]:
     """Materialize selected resolver sources and return row-count summaries."""
 
@@ -77,7 +84,7 @@ def run_sources(
     activate_raw_download_data_dir()
 
     summary: dict[str, int] = {}
-    selected = list(sources)
+    selected = list(sources) if sources else list(SOURCE_NAMES)
 
     if 'uniprot' in selected:
         result = materialize_proteins(
@@ -93,6 +100,7 @@ def run_sources(
             output_dir=_output_subdir(base_dir, 'chemicals'),
             max_records=max_records,
             pubchem_url=pubchem_url,
+            pubchem_shards=pubchem_shards,
         )
         summary.update({f'chemicals_{key}': value for key, value in result.items()})
 
@@ -106,11 +114,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     summary = run_sources(
-        sources=args.sources,
+        sources=args.sources or SOURCE_NAMES,
         output_dir=args.output_dir,
         taxonomy_ids=args.taxonomy_ids,
         max_records=args.max_records,
         pubchem_url=args.pubchem_url,
+        pubchem_shards=args.pubchem_shards,
     )
 
     for key, value in summary.items():
