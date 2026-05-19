@@ -114,7 +114,7 @@ derive query tables:
 make all DROP_EXISTING=1
 ```
 
-Use existing resolver files and reload all content:
+Use existing resolver files and load all missing content:
 
 ```bash
 make db-setup DROP_EXISTING=1
@@ -125,7 +125,7 @@ make derive
 Refresh one source and leave derived tables for a later batch refresh:
 
 ```bash
-make load SOURCE=bindingdb
+make reload SOURCE=bindingdb
 ```
 
 Run a bounded smoke test in a separate schema:
@@ -136,13 +136,17 @@ make load SOURCE=bindingdb MAX_RECORDS=200000 SCHEMA=omnipath_test
 
 ## Refresh Semantics
 
-Source ingest is refresh-based. When a source is selected, existing evidence for
-that source is deleted before current parser output is streamed again. Canonical
-relations and entities that become unreachable after deleting that source are
-garbage-collected; graph rows still supported by other sources are preserved.
+`make load` is additive by default. When a selected source already has
+source-scoped content in the target schema, it is skipped and left untouched.
+Use `make reload` when current parser output should replace existing content.
+Reload deletes existing evidence for that source first, then streams the source
+again. Canonical relations and entities that become unreachable after deleting
+that source are garbage-collected; graph rows still supported by other sources
+are preserved.
 
-`make load` runs ingest and canonicalization only. Run `make derive` once after
-the selected source batch is complete when the database should be query-ready.
+`make load` and `make reload` run ingest and canonicalization only. Run
+`make derive` once after the selected source batch is complete when the database
+should be query-ready.
 
 ## Main Options
 

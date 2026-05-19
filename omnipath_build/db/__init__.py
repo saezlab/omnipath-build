@@ -13,6 +13,7 @@ from omnipath_build.db.indexes import create_secondary_indexes
 from omnipath_build.db.refresh import (
     SourceContentDropStats,
     delete_source_content,
+    source_has_content,
 )
 from omnipath_build.db.resources import ResourceTableStats, sync_resources_table
 from omnipath_build.db.derived_tables import (
@@ -35,5 +36,6 @@ __all__ = [
     'rebuild_bitmap_tables',
     'rebuild_derived_tables',
     'reset_content_tables',
+    'source_has_content',
     'sync_resources_table',
 ]

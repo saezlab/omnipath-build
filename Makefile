@@ -1,4 +1,4 @@
-.PHONY: setup resolver ontology-artifacts db-setup db-reset reset-content drop-source ingest canonicalize derive load pipeline all test
+.PHONY: setup resolver ontology-artifacts db-setup db-reset reset-content drop-source ingest canonicalize derive load reload pipeline all test
 
 DATA_ROOT ?= data
 DATABASE ?= omnipath
@@ -26,6 +26,7 @@ DERIVE ?=
 PROFILE ?=
 MAX_RECORDS ?=
 FORCE_REFRESH ?=
+RELOAD_EXISTING ?=
 PUBCHEM_URL ?=
 PUBCHEM_SHARDS ?=
 OBO_ARTIFACTS ?= 1
@@ -165,7 +166,11 @@ load:
 		$(if $(filter 0 false no,$(OBO_ARTIFACTS)),--no-obo-artifacts,--obo-artifacts) \
 		--obo-output-dir "$(OBO_DIR)" \
 		$(if $(FORCE_REFRESH),--force-refresh) \
+		$(if $(RELOAD_EXISTING),--reload-existing) \
 		--append
+
+reload: RELOAD_EXISTING=1
+reload: load
 
 pipeline: load
 	@if [ "$(DERIVE)" != "" ]; then \

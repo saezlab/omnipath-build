@@ -29,7 +29,7 @@ import duckdb
 import psycopg2
 
 from omnipath_build import duckdb_load
-from omnipath_build.db.refresh import delete_source_content
+from omnipath_build.db.refresh import delete_source_content, source_has_content
 from omnipath_build.ontology_artifacts import (
     collect_ontology_terms,
     write_ontology_obo,
@@ -68,6 +68,7 @@ class DirectCopyBatchStats:
 @dataclass(frozen=True)
 class DiscoveredLoadStats:
     sources: int
+    skipped_sources: int
     datasets: int
     source_rows: int
     identifiers: int
@@ -327,6 +328,7 @@ def run_discovered_direct_load(
     threads: int = 4,
     drop_load_constraints: bool = True,
     require_empty: bool = True,
+    reload_existing: bool = False,
 ) -> DiscoveredLoadStats:
     """Discover and load source datasets through the DuckDB direct pipeline."""
 
@@ -341,10 +343,39 @@ def run_discovered_direct_load(
     for fn in selected:
         selected_by_source.setdefault(fn.source, []).append(fn)
 
+    skipped_sources = 0
     with psycopg2.connect(database_url) as conn:
-        for source in selected_by_source:
-            print(f'[{source}] refresh deleting existing source content', flush=True)
-            delete_source_content(conn, schema=schema, source=source)
+        if reload_existing:
+            for source in selected_by_source:
+                print(
+                    f'[{source}] reload deleting existing source content',
+                    flush=True,
+                )
+                delete_source_content(conn, schema=schema, source=source)
+        else:
+            load_selected_by_source: dict[str, list[ResourceFunction]] = {}
+            for source, functions in selected_by_source.items():
+                if source_has_content(conn, schema=schema, source=source):
+                    skipped_sources += 1
+                    print(
+                        f'[{source}] load skip existing source content',
+                        flush=True,
+                    )
+                    continue
+                load_selected_by_source[source] = functions
+            selected_by_source = load_selected_by_source
+
+    if not selected_by_source:
+        return DiscoveredLoadStats(
+            sources=0,
+            skipped_sources=skipped_sources,
+            datasets=0,
+            source_rows=0,
+            identifiers=0,
+            annotations=0,
+            ontology_terms=0,
+            total_seconds=time.perf_counter() - started,
+        )
 
     if drop_load_constraints:
         duckdb_load._drop_bulk_load_constraints_and_indexes(
@@ -365,7 +396,7 @@ def run_discovered_direct_load(
     for source, functions in selected_by_source.items():
         dataset_names = ','.join(fn.function_name for fn in functions)
         print(
-            f'[{source}] duckdb refresh start datasets={len(functions)} '
+            f'[{source}] duckdb load start datasets={len(functions)} '
             f'names={dataset_names}',
             flush=True,
         )
@@ -441,11 +472,12 @@ def run_discovered_direct_load(
                 totals['annotations'] += stats.annotations
                 totals['ontology_terms'] += stats.ontology_terms
             first_dataset = False
-        print(f'[{source}] duckdb refresh done', flush=True)
+        print(f'[{source}] duckdb load done', flush=True)
 
     duckdb_load._reset_postgres_sequences(database_url=database_url, schema=schema)
     return DiscoveredLoadStats(
         sources=len(selected_by_source),
+        skipped_sources=skipped_sources,
         datasets=dataset_count,
         source_rows=totals['source_rows'],
         identifiers=totals['identifiers'],
@@ -635,6 +667,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument('--threads', type=int, default=4)
     parser.add_argument('--force-refresh', action='store_true')
     parser.add_argument(
+        '--reload-existing',
+        action='store_true',
+        help='Delete and refresh selected sources instead of skipping them.',
+    )
+    parser.add_argument(
         '--obo-artifacts',
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -689,10 +726,12 @@ def main(argv: list[str] | None = None) -> int:
             threads=args.threads,
             drop_load_constraints=not args.keep_load_constraints,
             require_empty=not args.append,
+            reload_existing=args.reload_existing,
         )
         print(
             '[duckdb-direct-load] '
             f'sources={stats.sources} '
+            f'skipped_sources={stats.skipped_sources} '
             f'datasets={stats.datasets} '
             f'source_rows={stats.source_rows} '
             f'identifiers={stats.identifiers} '

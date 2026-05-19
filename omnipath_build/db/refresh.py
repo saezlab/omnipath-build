@@ -1,10 +1,10 @@
-"""Refresh deletion helpers for source-scoped evidence reloads.
+"""Source-scoped content detection and deletion helpers.
 
-Source ingest is a refresh operation, not a row-level delta. Before a source is
-streamed again, its evidence rows and evidence annotations are removed. Graph
-entities and relations that were only reachable through that source are then
-garbage-collected, while shared canonical graph rows backed by other sources
-are preserved.
+Plain source loads can skip already-loaded content. Reloads remove evidence rows
+and evidence annotations before a source is streamed again. Graph entities and
+relations that were only reachable through that source are then
+garbage-collected, while shared canonical graph rows backed by other sources are
+preserved.
 """
 
 from __future__ import annotations
@@ -115,6 +115,47 @@ def delete_source_content(
         deleted_annotations=deleted['annotations'],
         refreshed_relation_counts=deleted['relation_counts'],
     )
+
+
+def source_has_content(
+    conn: psycopg2.extensions.connection,
+    *,
+    schema: str = 'public',
+    source: str,
+) -> bool:
+    """Return whether a source already has source-scoped content loaded."""
+
+    schema_id = sql.Identifier(schema)
+    with conn.cursor() as cur:
+        cur.execute(
+            sql.SQL(
+                """
+                SELECT source_id
+                FROM {}.data_source
+                WHERE name = %s
+                """
+            ).format(schema_id),
+            [source],
+        )
+        row = cur.fetchone()
+        if row is None:
+            return False
+        source_id = int(row[0])
+        for table in SOURCE_PARTITIONED_TABLES:
+            cur.execute(
+                sql.SQL(
+                    """
+                    SELECT 1
+                    FROM {}.{}
+                    WHERE source_id = %s
+                    LIMIT 1
+                    """
+                ).format(schema_id, sql.Identifier(table)),
+                [source_id],
+            )
+            if cur.fetchone() is not None:
+                return True
+    return False
 
 
 def _create_source_cleanup_scope(

@@ -75,22 +75,29 @@ make db-reset
 
 ### Ingest And Canonicalize
 
-Ingest all sources and canonicalize them:
+Load any sources that are not already present and canonicalize them:
 
 ```bash
 make load
 ```
 
-Ingest and canonicalize one source:
+Load one source if it is not already present:
 
 ```bash
 make load SOURCE=bindingdb
 ```
 
-Ingest and canonicalize multiple sources:
+Load multiple missing sources:
 
 ```bash
 make load SOURCES=uniprot,bindingdb,intact
+```
+
+Refresh existing source content by deleting it first, then loading current
+parser output:
+
+```bash
+make reload SOURCE=bindingdb
 ```
 
 Run phases separately:
