@@ -242,11 +242,11 @@ def ensure_schema(
                     REFERENCES {}.dataset(dataset_id),
                   row_id bigint NOT NULL,
                   subject_entity_evidence_id uuid,
-                  subject_entity_id bigint,
+                  subject_entity_id uuid,
                   predicate_id bigint NOT NULL
                     REFERENCES {}.vocab_relation_predicate(relation_predicate_id),
                   object_entity_evidence_id uuid,
-                  object_entity_id bigint,
+                  object_entity_id uuid,
                   relation_category_id bigint NOT NULL
                     REFERENCES {}.vocab_relation_category(relation_category_id),
                   PRIMARY KEY (source_id, relation_evidence_id),
@@ -793,7 +793,7 @@ def _ensure_resolution_schema(
         sql.SQL(
             """
             CREATE TABLE IF NOT EXISTS {}.entity (
-              entity_id bigserial PRIMARY KEY,
+              entity_id uuid PRIMARY KEY,
               entity_type_id bigint NOT NULL
                 REFERENCES {}.vocab_entity_type(entity_type_id),
               taxonomy_id bigint,
@@ -834,7 +834,7 @@ def _ensure_resolution_schema(
               entity_evidence_id uuid NOT NULL,
               status_id smallint NOT NULL
                 REFERENCES {}.vocab_resolution_status(resolution_status_id),
-              entity_id bigint
+              entity_id uuid
                 REFERENCES {}.entity(entity_id),
               reason_id smallint
                 REFERENCES {}.vocab_resolution_reason(resolution_reason_id),
@@ -1000,12 +1000,12 @@ def _ensure_resolution_schema(
         sql.SQL(
             """
             CREATE TABLE IF NOT EXISTS {}.relation (
-              relation_id bigserial PRIMARY KEY,
-              subject_entity_id bigint NOT NULL
+              relation_id uuid PRIMARY KEY,
+              subject_entity_id uuid NOT NULL
                 REFERENCES {}.entity(entity_id),
               predicate_id bigint NOT NULL
                 REFERENCES {}.vocab_relation_predicate(relation_predicate_id),
-              object_entity_id bigint NOT NULL
+              object_entity_id uuid NOT NULL
                 REFERENCES {}.entity(entity_id),
               relation_category_id bigint
                 REFERENCES {}.vocab_relation_category(relation_category_id),
@@ -1022,10 +1022,8 @@ def _ensure_resolution_schema(
             ON {}.relation (
               subject_entity_id,
               predicate_id,
-              object_entity_id,
-              relation_category_id
+              object_entity_id
             )
-            NULLS NOT DISTINCT
             """
         ).format(schema_id)
     )
@@ -1036,7 +1034,7 @@ def _ensure_resolution_schema(
             CREATE TABLE IF NOT EXISTS {}.relation_evidence_relation (
               source_id bigint NOT NULL
                 REFERENCES {}.data_source(source_id),
-              relation_id bigint NOT NULL
+              relation_id uuid NOT NULL
                 REFERENCES {}.relation(relation_id)
                 ON DELETE CASCADE,
               relation_evidence_id uuid NOT NULL,
@@ -1065,7 +1063,7 @@ def _ensure_resolution_schema(
                 REFERENCES {}.data_source(source_id),
               entity_evidence_id uuid NOT NULL,
               annotation_key uuid NOT NULL,
-              relation_id bigint NOT NULL
+              relation_id uuid NOT NULL
                 REFERENCES {}.relation(relation_id)
                 ON DELETE CASCADE,
               PRIMARY KEY (
@@ -1582,7 +1580,7 @@ def _ensure_ontology_terms_table(
             CREATE TABLE IF NOT EXISTS {}.ontology_terms (
               source_id bigint NOT NULL
                 REFERENCES {}.data_source(source_id),
-              term_entity_id bigint NOT NULL
+              term_entity_id uuid NOT NULL
                 REFERENCES {}.entity(entity_id)
                 ON DELETE CASCADE,
               term_id text NOT NULL,

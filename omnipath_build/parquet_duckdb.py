@@ -3,39 +3,59 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
-from dataclasses import dataclass
-from itertools import islice
-from pathlib import Path
 from io import StringIO
-import argparse
-import csv
 import os
+import csv
 import time
+from pathlib import Path
+import argparse
+import tempfile
+from itertools import islice
+from dataclasses import dataclass
+from collections.abc import Iterable
 
 import duckdb
 import pyarrow as pa
-import pyarrow.parquet as pq
 import psycopg2
-import psycopg2.extensions
 from psycopg2 import sql
+import pyarrow.parquet as pq
+import psycopg2.extensions
 
-from omnipath_build.cv_terms import CV_TERM_ENTITY_TYPE, CV_TERM_ID_TYPE
+from omnipath_build.cv_terms import (
+    CV_TERM_ID_TYPE,
+    CV_TERM_ENTITY_TYPE,
+    SMALL_MOLECULE_ENTITY_TYPE,
+)
+from pypath.inputs_v2.uniprot import resource as uniprot_resource
+from omnipath_build.duckdb_load import (
+    DuckDBEvidenceProjector,
+    _bulk_copy_canonical,
+    _bulk_copy_evidence,
+    _bulk_load_assert_empty,
+    _bulk_load_create_views_from_loaded_tables,
+    _bulk_load_materialize_dimensions,
+    _bulk_load_small_dimensions,
+    _canonicalize_loaded_duckdb,
+    _create_duckdb_content_uuid_macro,
+    _create_duckdb_evidence_tables,
+    _create_duckdb_identifier_type_all_view,
+    _create_duckdb_resolver_views,
+    _drop_bulk_load_constraints_and_indexes,
+    _reset_postgres_sequences,
+    _sql_literal,
+)
 from omnipath_build.ingest.bulk import (
     BulkIngestor,
-    _create_staging_tables,
     _index_staging_tables,
+    _create_staging_tables,
 )
 from omnipath_build.ingest.common import unwrap_record
+from pypath.internals.silver_schema import Entity
 from omnipath_build.parquet_projector import (
     ParquetEvidenceProjector,
     _MutableProjectionStats,
 )
-from omnipath_build.relation_rules import ASSOCIATION_CATEGORY
-from pypath.internals.silver_schema import Entity
 from pypath.internals.ontology_schema import OntologyTerm
-from pypath.inputs_v2.uniprot import resource as uniprot_resource
-
 
 SOURCE = 'uniprot'
 DATASET = 'proteins'
@@ -43,6 +63,7 @@ ONTOLOGY_DATASET = 'ontology'
 ONTOLOGY_ID = 'uniprot_keywords'
 PROTEIN_ENTITY_TYPE = 'Protein:MI:0326'
 UNIPROT_ID_TYPE = 'Uniprot:MI:1097'
+UNRESOLVED_ID_TYPE = 'omnipath:unresolved_entity_key'
 
 
 @dataclass(frozen=True)
@@ -180,12 +201,19 @@ def run_uniprot_duckdb_direct_build(
     force_refresh: bool = False,
     schema: str = 'public',
     state_path: str | Path | None = None,
+    copy_load: bool = False,
+    drop_load_constraints: bool = False,
 ) -> ParquetDuckDBStats:
     """Project and canonicalize UniProt in DuckDB, then load Postgres directly."""
 
     resolver_dir = Path(resolver_dir)
+    if state_path is not None:
+        state_path = Path(state_path)
+        if state_path.exists():
+            state_path.unlink()
     con = duckdb.connect(str(state_path) if state_path is not None else ':memory:')
     con.execute("SET threads TO 4")
+    _create_duckdb_content_uuid_macro(con)
 
     resolver_started = time.perf_counter()
     _create_duckdb_resolver_views(con, resolver_dir=resolver_dir)
@@ -208,8 +236,19 @@ def run_uniprot_duckdb_direct_build(
     _bulk_load_create_views_from_loaded_tables(con)
     _bulk_load_assert_empty(con, schema)
     _bulk_load_small_dimensions(con, schema)
-    _bulk_load_evidence(con, schema)
-    _bulk_load_canonical(con, schema)
+    _bulk_load_materialize_dimensions(con, schema)
+    if copy_load:
+        con.execute('DETACH pg')
+        if drop_load_constraints:
+            _drop_bulk_load_constraints_and_indexes(
+                database_url=database_url,
+                schema=schema,
+            )
+        _bulk_copy_evidence(con, schema=schema, database_url=database_url)
+        _bulk_copy_canonical(con, schema=schema, database_url=database_url)
+    else:
+        _bulk_load_evidence(con, schema)
+        _bulk_load_canonical(con, schema, database_url=database_url)
     con.close()
     _reset_postgres_sequences(database_url=database_url, schema=schema)
 
@@ -393,6 +432,7 @@ def _materialize_resolver_tables(
         f"""
         COPY (
           SELECT
+            {_sql_literal(PROTEIN_ENTITY_TYPE)} AS entity_type,
             key_identifier_type_id,
             key_value,
             taxonomy_id,
@@ -435,379 +475,20 @@ def _materialize_resolver_tables(
     con.close()
 
 
-def _create_duckdb_resolver_views(
-    con: duckdb.DuckDBPyConnection,
-    *,
-    resolver_dir: Path,
-) -> None:
-    """Expose resolver parquet inputs in the DuckDB shape used by canonicalize."""
-
-    con.execute(
-        f"""
-        CREATE VIEW identifier_type AS
-        SELECT *
-        FROM read_parquet({_sql_literal(resolver_dir / 'identifier_type.parquet')})
-        """
-    )
-    con.execute(
-        f"""
-        CREATE VIEW identifier_type_all AS
-        SELECT * FROM identifier_type
-        UNION ALL
-        SELECT
-          (SELECT coalesce(max(identifier_type_id), 0) + 1 FROM identifier_type)
-            AS identifier_type_id,
-          {_sql_literal(CV_TERM_ID_TYPE)} AS name
-        WHERE NOT EXISTS (
-          SELECT 1
-          FROM identifier_type
-          WHERE name = {_sql_literal(CV_TERM_ID_TYPE)}
-        )
-        """
-    )
-    con.execute(
-        f"""
-        CREATE VIEW resolver_lookup AS
-        SELECT
-          key_identifier_type_id,
-          key_value,
-          taxonomy_id,
-          canonical_identifier_type_id,
-          canonical_identifier,
-          mapping_type
-        FROM read_parquet({_sql_literal(resolver_dir / 'protein_identifier_lookup.parquet')})
-        WHERE key_value IS NOT NULL
-          AND canonical_identifier IS NOT NULL
-        """
-    )
-    con.execute(
-        f"""
-        CREATE VIEW resolver_canonical_entity AS
-        SELECT
-          row_number() OVER (
-            ORDER BY
-              taxonomy_id NULLS FIRST,
-              canonical_identifier_type_id,
-              canonical_identifier
-          )::BIGINT AS resolver_entity_id,
-          {_sql_literal(PROTEIN_ENTITY_TYPE)} AS entity_type,
-          taxonomy_id,
-          canonical_identifier_type_id,
-          canonical_identifier,
-          list_distinct(list(key_identifier_type_id)) AS key_identifier_type_ids,
-          count(*)::BIGINT AS lookup_rows
-        FROM read_parquet({_sql_literal(resolver_dir / 'protein_identifier_lookup.parquet')})
-        WHERE canonical_identifier IS NOT NULL
-        GROUP BY
-          taxonomy_id,
-          canonical_identifier_type_id,
-          canonical_identifier
-        """
-    )
 
 
-class DuckDBEvidenceProjector(ParquetEvidenceProjector):
-    """Flatten silver entity streams into DuckDB evidence tables."""
-
-    def __init__(
-        self,
-        con: duckdb.DuckDBPyConnection,
-        *,
-        chunk_size: int = 100_000,
-    ) -> None:
-        super().__init__(':duckdb:', chunk_size=chunk_size)
-        self.con = con
-
-    def project_records(
-        self,
-        records: Iterable[object],
-        *,
-        source: str,
-        dataset: str,
-        max_records: int | None = None,
-    ):
-        if max_records is not None:
-            records = islice(records, max_records)
-
-        writers = _DuckDBEvidenceWriters(self.con, chunk_size=self.chunk_size)
-        seen_annotations: set[tuple[str, str, str | None, str | None]] = set()
-        stats = _MutableProjectionStats()
-        try:
-            for index, item in enumerate(records, start=1):
-                entity, _ = unwrap_record(item)
-                if not isinstance(entity, Entity):
-                    continue
-                self._flatten_entity_tree(
-                    entity,
-                    source=source,
-                    dataset=dataset,
-                    row_id=index,
-                    occurrence_id=f'{dataset}:{index}:parent',
-                    parent_entity_evidence_id=None,
-                    entity_role='parent',
-                    writers=writers,
-                    seen_annotations=seen_annotations,
-                    stats=stats,
-                )
-                stats.source_rows += 1
-        finally:
-            writers.close()
-        return stats.freeze()
 
 
-class _DuckDBEvidenceWriters:
-    def __init__(
-        self,
-        con: duckdb.DuckDBPyConnection,
-        *,
-        chunk_size: int,
-    ) -> None:
-        self.entity = _DuckDBRowWriter(
-            con,
-            'entity_evidence_raw',
-            _ENTITY_EVIDENCE_SCHEMA,
-            chunk_size=chunk_size,
-        )
-        self.identifier = _DuckDBRowWriter(
-            con,
-            'entity_identifier_raw',
-            _ENTITY_IDENTIFIER_SCHEMA,
-            chunk_size=chunk_size,
-        )
-        self.entity_annotation = _DuckDBRowWriter(
-            con,
-            'entity_annotation_raw',
-            _ANNOTATION_REF_SCHEMA,
-            chunk_size=chunk_size,
-        )
-        self.relation_annotation = _DuckDBRowWriter(
-            con,
-            'relation_annotation_raw',
-            _ANNOTATION_REF_SCHEMA,
-            chunk_size=chunk_size,
-        )
-        self.annotation = _DuckDBRowWriter(
-            con,
-            'annotation_value',
-            _ANNOTATION_VALUE_SCHEMA,
-            chunk_size=chunk_size,
-        )
-        self.relation = _DuckDBRowWriter(
-            con,
-            'relation_evidence_raw',
-            _RELATION_EVIDENCE_SCHEMA,
-            chunk_size=chunk_size,
-        )
-        self.annotation_relation = _DuckDBRowWriter(
-            con,
-            'annotation_relation_evidence_raw',
-            _ANNOTATION_RELATION_EVIDENCE_SCHEMA,
-            chunk_size=chunk_size,
-        )
-
-    def close(self) -> None:
-        self.entity.close()
-        self.identifier.close()
-        self.entity_annotation.close()
-        self.relation_annotation.close()
-        self.annotation.close()
-        self.relation.close()
-        self.annotation_relation.close()
 
 
-class _DuckDBRowWriter:
-    def __init__(
-        self,
-        con: duckdb.DuckDBPyConnection,
-        table: str,
-        schema: pa.Schema,
-        *,
-        chunk_size: int,
-    ) -> None:
-        self.con = con
-        self.table = table
-        self.schema = schema
-        self.chunk_size = chunk_size
-        self.rows: list[dict[str, object]] = []
-
-    def write(self, row: dict[str, object]) -> None:
-        self.rows.append(row)
-        if len(self.rows) >= self.chunk_size:
-            self.flush()
-
-    def flush(self) -> None:
-        if not self.rows:
-            return
-        batch = f'_batch_{self.table}'
-        table = pa.Table.from_pylist(self.rows, schema=self.schema)
-        self.con.register(batch, table)
-        try:
-            self.con.execute(f'INSERT INTO {self.table} SELECT * FROM {batch}')
-        finally:
-            self.con.unregister(batch)
-        self.rows.clear()
-
-    def close(self) -> None:
-        self.flush()
 
 
-_ENTITY_EVIDENCE_SCHEMA = pa.schema(
-    [
-        ('source', pa.string()),
-        ('dataset', pa.string()),
-        ('row_id', pa.int64()),
-        ('entity_evidence_id', pa.string()),
-        ('parent_entity_evidence_id', pa.string()),
-        ('entity_role', pa.string()),
-        ('entity_type', pa.string()),
-        ('taxonomy_id', pa.string()),
-    ]
-)
-_ENTITY_IDENTIFIER_SCHEMA = pa.schema(
-    [
-        ('source', pa.string()),
-        ('entity_evidence_id', pa.string()),
-        ('identifier_id', pa.string()),
-        ('identifier_type', pa.string()),
-        ('identifier', pa.string()),
-    ]
-)
-_ANNOTATION_REF_SCHEMA = pa.schema(
-    [
-        ('source', pa.string()),
-        ('evidence_id', pa.string()),
-        ('annotation_key', pa.string()),
-        ('term', pa.string()),
-        ('value', pa.string()),
-        ('unit', pa.string()),
-    ]
-)
-_ANNOTATION_VALUE_SCHEMA = pa.schema(
-    [
-        ('annotation_key', pa.string()),
-        ('term', pa.string()),
-        ('value', pa.string()),
-        ('unit', pa.string()),
-    ]
-)
-_RELATION_EVIDENCE_SCHEMA = pa.schema(
-    [
-        ('source', pa.string()),
-        ('dataset', pa.string()),
-        ('row_id', pa.int64()),
-        ('relation_evidence_id', pa.string()),
-        ('subject_entity_evidence_id', pa.string()),
-        ('predicate', pa.string()),
-        ('object_entity_evidence_id', pa.string()),
-        ('relation_category', pa.string()),
-    ]
-)
-_ANNOTATION_RELATION_EVIDENCE_SCHEMA = pa.schema(
-    [
-        ('relation_evidence_id', pa.string()),
-        ('source', pa.string()),
-        ('dataset', pa.string()),
-        ('row_id', pa.int64()),
-        ('subject_entity_evidence_id', pa.string()),
-        ('predicate', pa.string()),
-        ('object_entity_type', pa.string()),
-        ('object_id_type', pa.string()),
-        ('object_id', pa.string()),
-        ('relation_category', pa.string()),
-    ]
-)
 
 
-def _create_duckdb_evidence_tables(con: duckdb.DuckDBPyConnection) -> None:
-    con.execute(
-        """
-        CREATE TABLE entity_evidence_raw (
-          source VARCHAR,
-          dataset VARCHAR,
-          row_id BIGINT,
-          entity_evidence_id VARCHAR,
-          parent_entity_evidence_id VARCHAR,
-          entity_role VARCHAR,
-          entity_type VARCHAR,
-          taxonomy_id VARCHAR
-        )
-        """
-    )
-    con.execute(
-        """
-        CREATE TABLE entity_identifier_raw (
-          source VARCHAR,
-          entity_evidence_id VARCHAR,
-          identifier_id VARCHAR,
-          identifier_type VARCHAR,
-          identifier VARCHAR
-        )
-        """
-    )
-    con.execute(
-        """
-        CREATE TABLE entity_annotation_raw (
-          source VARCHAR,
-          evidence_id VARCHAR,
-          annotation_key VARCHAR,
-          term VARCHAR,
-          value VARCHAR,
-          unit VARCHAR
-        )
-        """
-    )
-    con.execute(
-        """
-        CREATE TABLE relation_annotation_raw (
-          source VARCHAR,
-          evidence_id VARCHAR,
-          annotation_key VARCHAR,
-          term VARCHAR,
-          value VARCHAR,
-          unit VARCHAR
-        )
-        """
-    )
-    con.execute(
-        """
-        CREATE TABLE annotation_value (
-          annotation_key VARCHAR,
-          term VARCHAR,
-          value VARCHAR,
-          unit VARCHAR
-        )
-        """
-    )
-    con.execute(
-        """
-        CREATE TABLE relation_evidence_raw (
-          source VARCHAR,
-          dataset VARCHAR,
-          row_id BIGINT,
-          relation_evidence_id VARCHAR,
-          subject_entity_evidence_id VARCHAR,
-          predicate VARCHAR,
-          object_entity_evidence_id VARCHAR,
-          relation_category VARCHAR
-        )
-        """
-    )
-    con.execute(
-        """
-        CREATE TABLE annotation_relation_evidence_raw (
-          relation_evidence_id VARCHAR,
-          source VARCHAR,
-          dataset VARCHAR,
-          row_id BIGINT,
-          subject_entity_evidence_id VARCHAR,
-          predicate VARCHAR,
-          object_entity_type VARCHAR,
-          object_id_type VARCHAR,
-          object_id VARCHAR,
-          relation_category VARCHAR
-        )
-        """
-    )
+
+
+
+
 
 
 def _canonicalize_duckdb(
@@ -821,6 +502,7 @@ def _canonicalize_duckdb(
         state_path.unlink()
     con = duckdb.connect(str(state_path))
     con.execute("SET threads TO 4")
+    _create_duckdb_content_uuid_macro(con)
     con.execute(
         f"""
         CREATE VIEW identifier_type AS
@@ -828,22 +510,7 @@ def _canonicalize_duckdb(
         FROM read_parquet({_sql_literal(resolver_dir / 'identifier_type.parquet')})
         """
     )
-    con.execute(
-        f"""
-        CREATE VIEW identifier_type_all AS
-        SELECT * FROM identifier_type
-        UNION ALL
-        SELECT
-          (SELECT coalesce(max(identifier_type_id), 0) + 1 FROM identifier_type)
-            AS identifier_type_id,
-          {_sql_literal(CV_TERM_ID_TYPE)} AS name
-        WHERE NOT EXISTS (
-          SELECT 1
-          FROM identifier_type
-          WHERE name = {_sql_literal(CV_TERM_ID_TYPE)}
-        )
-        """
-    )
+    _create_duckdb_identifier_type_all_view(con)
     con.execute(
         f"""
         CREATE VIEW resolver_lookup AS
@@ -894,234 +561,32 @@ def _canonicalize_duckdb(
     )
     con.execute(
         f"""
+        CREATE VIEW relation_evidence_raw AS
+        SELECT *
+        FROM read_parquet({_sql_literal(evidence_dir / 'relation_evidence.parquet')})
+        """
+    )
+    con.execute(
+        f"""
+        CREATE VIEW relation_annotation_raw AS
+        SELECT
+          source,
+          evidence_id AS relation_evidence_id,
+          annotation_key,
+          term,
+          value,
+          unit
+        FROM read_parquet({_sql_literal(evidence_dir / 'relation_annotation.parquet')})
+        """
+    )
+    con.execute(
+        f"""
         CREATE VIEW annotation_relation_evidence_raw AS
         SELECT *
         FROM read_parquet({_sql_literal(evidence_dir / 'annotation_relation_evidence.parquet')})
         """
     )
-    con.execute(
-        """
-        CREATE TABLE entity_resolution AS
-        SELECT
-          ee.source,
-          ee.dataset,
-          ee.row_id,
-          ee.entity_evidence_id,
-          ee.entity_type,
-          ee.taxonomy_id,
-          rl.canonical_identifier_type_id,
-          rl.canonical_identifier,
-          CASE
-            WHEN rl.canonical_identifier IS NULL THEN 'unresolved'
-            ELSE 'resolved'
-          END AS status
-        FROM entity_evidence_raw ee
-        LEFT JOIN entity_identifier_raw ei
-          ON ei.source = ee.source
-         AND ei.entity_evidence_id = ee.entity_evidence_id
-        LEFT JOIN identifier_type_all kit
-          ON kit.name = ei.identifier_type
-        LEFT JOIN resolver_lookup rl
-          ON rl.key_identifier_type_id = kit.identifier_type_id
-         AND rl.key_value = ei.identifier
-         AND rl.taxonomy_id = ee.taxonomy_id
-        QUALIFY row_number() OVER (
-          PARTITION BY ee.source, ee.entity_evidence_id
-          ORDER BY rl.canonical_identifier IS NULL, rl.canonical_identifier
-        ) = 1
-        """
-    )
-    con.execute(
-        """
-        CREATE TABLE canonical_entity AS
-        WITH needed_protein_key AS (
-          SELECT DISTINCT
-            rce.entity_type,
-            rce.taxonomy_id,
-            rce.canonical_identifier_type_id,
-            rce.canonical_identifier
-          FROM entity_resolution er
-          JOIN resolver_canonical_entity rce
-            ON rce.entity_type = er.entity_type
-           AND rce.taxonomy_id = er.taxonomy_id
-           AND rce.canonical_identifier_type_id = er.canonical_identifier_type_id
-           AND rce.canonical_identifier = er.canonical_identifier
-          WHERE er.status = 'resolved'
-        ),
-        protein_identifier_rows AS (
-          SELECT
-            np.entity_type,
-            np.taxonomy_id,
-            np.canonical_identifier_type_id,
-            np.canonical_identifier,
-            np.canonical_identifier_type_id AS identifier_type_id,
-            np.canonical_identifier AS identifier
-          FROM needed_protein_key np
-          UNION
-          SELECT
-            np.entity_type,
-            np.taxonomy_id,
-            np.canonical_identifier_type_id,
-            np.canonical_identifier,
-            rl.key_identifier_type_id AS identifier_type_id,
-            rl.key_value AS identifier
-          FROM needed_protein_key np
-          JOIN resolver_lookup rl
-            ON rl.canonical_identifier_type_id = np.canonical_identifier_type_id
-           AND rl.canonical_identifier = np.canonical_identifier
-           AND rl.taxonomy_id = np.taxonomy_id
-          WHERE rl.key_value IS NOT NULL
-            AND rl.key_value <> ''
-        ),
-        needed_protein_entity AS (
-          SELECT
-            pir.entity_type,
-            pir.taxonomy_id,
-            pir.canonical_identifier_type_id,
-            pir.canonical_identifier,
-            to_json(
-              list(
-                struct_pack(
-                  identifier_type := it.name,
-                  identifier_type_id := pir.identifier_type_id,
-                  identifier := pir.identifier
-                )
-                ORDER BY it.name, pir.identifier
-              )
-            ) AS identifiers_json
-          FROM (
-            SELECT DISTINCT *
-            FROM protein_identifier_rows
-          ) pir
-          JOIN identifier_type_all it
-            ON it.identifier_type_id = pir.identifier_type_id
-          GROUP BY
-            pir.entity_type,
-            pir.taxonomy_id,
-            pir.canonical_identifier_type_id,
-            pir.canonical_identifier
-        ),
-        cv_term_entity AS (
-          SELECT DISTINCT
-            ? AS entity_type,
-            NULL::VARCHAR AS taxonomy_id,
-            cv_type.identifier_type_id AS canonical_identifier_type_id,
-            object_id AS canonical_identifier,
-            to_json(
-              list(
-                struct_pack(
-                  identifier_type := ?,
-                  identifier_type_id := cv_type.identifier_type_id,
-                  identifier := object_id
-                )
-              )
-            ) AS identifiers_json
-          FROM annotation_relation_evidence_raw
-          CROSS JOIN (
-            SELECT identifier_type_id
-            FROM identifier_type_all
-            WHERE name = ?
-          ) cv_type
-          WHERE object_id_type = ?
-            AND object_id IS NOT NULL
-          GROUP BY cv_type.identifier_type_id, object_id
-        ),
-        all_entity AS (
-          SELECT * FROM needed_protein_entity
-          UNION ALL
-          SELECT * FROM cv_term_entity
-        )
-        SELECT
-          row_number() OVER (
-            ORDER BY
-              entity_type,
-              taxonomy_id NULLS FIRST,
-              canonical_identifier_type_id,
-              canonical_identifier
-          )::BIGINT AS entity_id,
-          entity_type,
-          taxonomy_id,
-          canonical_identifier_type_id,
-          it.name AS canonical_identifier_type,
-          canonical_identifier,
-          identifiers_json,
-          'resolved' AS resolution_status
-        FROM all_entity
-        JOIN identifier_type_all it
-          ON it.identifier_type_id = all_entity.canonical_identifier_type_id
-        """,
-        [CV_TERM_ENTITY_TYPE, CV_TERM_ID_TYPE, CV_TERM_ID_TYPE, CV_TERM_ID_TYPE],
-    )
-    con.execute(
-        """
-        CREATE TABLE entity_evidence_resolution AS
-        SELECT
-          er.source,
-          er.entity_evidence_id,
-          er.status,
-          ce.entity_id
-        FROM entity_resolution er
-        LEFT JOIN canonical_entity ce
-          ON ce.entity_type = er.entity_type
-         AND ce.taxonomy_id = er.taxonomy_id
-         AND ce.canonical_identifier_type_id = er.canonical_identifier_type_id
-         AND ce.canonical_identifier = er.canonical_identifier
-        """
-    )
-    con.execute(
-        """
-        CREATE TABLE relation AS
-        WITH projected AS (
-          SELECT DISTINCT
-            subject.entity_id AS subject_entity_id,
-            ar.predicate,
-            object.entity_id AS object_entity_id,
-            ar.relation_category
-          FROM annotation_relation_evidence_raw ar
-          JOIN entity_evidence_resolution subject
-            ON subject.source = ar.source
-           AND subject.entity_evidence_id = ar.subject_entity_evidence_id
-          JOIN canonical_entity object
-            ON object.entity_type = ar.object_entity_type
-           AND object.canonical_identifier_type = ar.object_id_type
-           AND object.canonical_identifier = ar.object_id
-          WHERE subject.entity_id IS NOT NULL
-        )
-        SELECT
-          row_number() OVER (
-            ORDER BY
-              subject_entity_id,
-              predicate,
-              object_entity_id,
-              relation_category
-          )::BIGINT AS relation_id,
-          *
-        FROM projected
-        """
-    )
-    con.execute(
-        """
-        CREATE TABLE relation_evidence_relation AS
-        SELECT
-          ar.source,
-          ar.relation_evidence_id,
-          r.relation_id
-        FROM annotation_relation_evidence_raw ar
-        JOIN entity_evidence_resolution subject
-          ON subject.source = ar.source
-         AND subject.entity_evidence_id = ar.subject_entity_evidence_id
-        JOIN canonical_entity object
-          ON object.entity_type = ar.object_entity_type
-         AND object.canonical_identifier_type = ar.object_id_type
-         AND object.canonical_identifier = ar.object_id
-        JOIN relation r
-          ON r.subject_entity_id = subject.entity_id
-         AND r.predicate = ar.predicate
-         AND r.object_entity_id = object.entity_id
-         AND r.relation_category = ar.relation_category
-        WHERE subject.entity_id IS NOT NULL
-        """
-    )
+    _canonicalize_loaded_duckdb(con)
     _copy_to_parquet(con, 'canonical_entity', final_dir / 'entity.parquet')
     _copy_to_parquet(
         con,
@@ -1146,243 +611,14 @@ def _copy_to_parquet(con: duckdb.DuckDBPyConnection, table: str, path: Path) -> 
     con.execute(f"COPY {table} TO {_sql_literal(path)} (FORMAT PARQUET)")
 
 
-def _canonicalize_loaded_duckdb(
-    con: duckdb.DuckDBPyConnection,
-) -> tuple[int, int, int]:
-    """Canonicalize already-loaded DuckDB evidence and resolver tables."""
-
-    con.execute(
-        """
-        CREATE TABLE entity_resolution AS
-        SELECT
-          ee.source,
-          ee.dataset,
-          ee.row_id,
-          ee.entity_evidence_id,
-          ee.entity_type,
-          ee.taxonomy_id,
-          rl.canonical_identifier_type_id,
-          rl.canonical_identifier,
-          CASE
-            WHEN rl.canonical_identifier IS NULL THEN 'unresolved'
-            ELSE 'resolved'
-          END AS status
-        FROM entity_evidence_raw ee
-        LEFT JOIN entity_identifier_raw ei
-          ON ei.source = ee.source
-         AND ei.entity_evidence_id = ee.entity_evidence_id
-        LEFT JOIN identifier_type_all kit
-          ON kit.name = ei.identifier_type
-        LEFT JOIN resolver_lookup rl
-          ON rl.key_identifier_type_id = kit.identifier_type_id
-         AND rl.key_value = ei.identifier
-         AND rl.taxonomy_id = ee.taxonomy_id
-        QUALIFY row_number() OVER (
-          PARTITION BY ee.source, ee.entity_evidence_id
-          ORDER BY rl.canonical_identifier IS NULL, rl.canonical_identifier
-        ) = 1
-        """
-    )
-    con.execute(
-        """
-        CREATE TABLE canonical_entity AS
-        WITH needed_protein_key AS (
-          SELECT DISTINCT
-            rce.entity_type,
-            rce.taxonomy_id,
-            rce.canonical_identifier_type_id,
-            rce.canonical_identifier
-          FROM entity_resolution er
-          JOIN resolver_canonical_entity rce
-            ON rce.entity_type = er.entity_type
-           AND rce.taxonomy_id = er.taxonomy_id
-           AND rce.canonical_identifier_type_id = er.canonical_identifier_type_id
-           AND rce.canonical_identifier = er.canonical_identifier
-          WHERE er.status = 'resolved'
-        ),
-        protein_identifier_rows AS (
-          SELECT
-            np.entity_type,
-            np.taxonomy_id,
-            np.canonical_identifier_type_id,
-            np.canonical_identifier,
-            np.canonical_identifier_type_id AS identifier_type_id,
-            np.canonical_identifier AS identifier
-          FROM needed_protein_key np
-          UNION
-          SELECT
-            np.entity_type,
-            np.taxonomy_id,
-            np.canonical_identifier_type_id,
-            np.canonical_identifier,
-            rl.key_identifier_type_id AS identifier_type_id,
-            rl.key_value AS identifier
-          FROM needed_protein_key np
-          JOIN resolver_lookup rl
-            ON rl.canonical_identifier_type_id = np.canonical_identifier_type_id
-           AND rl.canonical_identifier = np.canonical_identifier
-           AND rl.taxonomy_id = np.taxonomy_id
-          WHERE rl.key_value IS NOT NULL
-            AND rl.key_value <> ''
-        ),
-        needed_protein_entity AS (
-          SELECT
-            pir.entity_type,
-            pir.taxonomy_id,
-            pir.canonical_identifier_type_id,
-            pir.canonical_identifier,
-            to_json(
-              list(
-                struct_pack(
-                  identifier_type := it.name,
-                  identifier_type_id := pir.identifier_type_id,
-                  identifier := pir.identifier
-                )
-                ORDER BY it.name, pir.identifier
-              )
-            ) AS identifiers_json
-          FROM (
-            SELECT DISTINCT *
-            FROM protein_identifier_rows
-          ) pir
-          JOIN identifier_type_all it
-            ON it.identifier_type_id = pir.identifier_type_id
-          GROUP BY
-            pir.entity_type,
-            pir.taxonomy_id,
-            pir.canonical_identifier_type_id,
-            pir.canonical_identifier
-        ),
-        cv_term_entity AS (
-          SELECT DISTINCT
-            ? AS entity_type,
-            NULL::VARCHAR AS taxonomy_id,
-            cv_type.identifier_type_id AS canonical_identifier_type_id,
-            object_id AS canonical_identifier,
-            to_json(
-              list(
-                struct_pack(
-                  identifier_type := ?,
-                  identifier_type_id := cv_type.identifier_type_id,
-                  identifier := object_id
-                )
-              )
-            ) AS identifiers_json
-          FROM annotation_relation_evidence_raw
-          CROSS JOIN (
-            SELECT identifier_type_id
-            FROM identifier_type_all
-            WHERE name = ?
-          ) cv_type
-          WHERE object_id_type = ?
-            AND object_id IS NOT NULL
-          GROUP BY cv_type.identifier_type_id, object_id
-        ),
-        all_entity AS (
-          SELECT * FROM needed_protein_entity
-          UNION ALL
-          SELECT * FROM cv_term_entity
-        )
-        SELECT
-          row_number() OVER (
-            ORDER BY
-              entity_type,
-              taxonomy_id NULLS FIRST,
-              canonical_identifier_type_id,
-              canonical_identifier
-          )::BIGINT AS entity_id,
-          entity_type,
-          taxonomy_id,
-          canonical_identifier_type_id,
-          it.name AS canonical_identifier_type,
-          canonical_identifier,
-          identifiers_json,
-          'resolved' AS resolution_status
-        FROM all_entity
-        JOIN identifier_type_all it
-          ON it.identifier_type_id = all_entity.canonical_identifier_type_id
-        """,
-        [CV_TERM_ENTITY_TYPE, CV_TERM_ID_TYPE, CV_TERM_ID_TYPE, CV_TERM_ID_TYPE],
-    )
-    con.execute(
-        """
-        CREATE TABLE entity_evidence_resolution AS
-        SELECT
-          er.source,
-          er.entity_evidence_id,
-          er.status,
-          ce.entity_id
-        FROM entity_resolution er
-        LEFT JOIN canonical_entity ce
-          ON ce.entity_type = er.entity_type
-         AND ce.taxonomy_id = er.taxonomy_id
-         AND ce.canonical_identifier_type_id = er.canonical_identifier_type_id
-         AND ce.canonical_identifier = er.canonical_identifier
-        """
-    )
-    con.execute(
-        """
-        CREATE TABLE relation AS
-        WITH projected AS (
-          SELECT DISTINCT
-            subject.entity_id AS subject_entity_id,
-            ar.predicate,
-            object.entity_id AS object_entity_id,
-            ar.relation_category
-          FROM annotation_relation_evidence_raw ar
-          JOIN entity_evidence_resolution subject
-            ON subject.source = ar.source
-           AND subject.entity_evidence_id = ar.subject_entity_evidence_id
-          JOIN canonical_entity object
-            ON object.entity_type = ar.object_entity_type
-           AND object.canonical_identifier_type = ar.object_id_type
-           AND object.canonical_identifier = ar.object_id
-          WHERE subject.entity_id IS NOT NULL
-        )
-        SELECT
-          row_number() OVER (
-            ORDER BY
-              subject_entity_id,
-              predicate,
-              object_entity_id,
-              relation_category
-          )::BIGINT AS relation_id,
-          *
-        FROM projected
-        """
-    )
-    con.execute(
-        """
-        CREATE TABLE relation_evidence_relation AS
-        SELECT
-          ar.source,
-          ar.relation_evidence_id,
-          r.relation_id
-        FROM annotation_relation_evidence_raw ar
-        JOIN entity_evidence_resolution subject
-          ON subject.source = ar.source
-         AND subject.entity_evidence_id = ar.subject_entity_evidence_id
-        JOIN canonical_entity object
-          ON object.entity_type = ar.object_entity_type
-         AND object.canonical_identifier_type = ar.object_id_type
-         AND object.canonical_identifier = ar.object_id
-        JOIN relation r
-          ON r.subject_entity_id = subject.entity_id
-         AND r.predicate = ar.predicate
-         AND r.object_entity_id = object.entity_id
-         AND r.relation_category = ar.relation_category
-        WHERE subject.entity_id IS NOT NULL
-        """
-    )
-
-    entities = int(con.sql('SELECT COUNT(*) FROM canonical_entity').fetchone()[0])
-    relations = int(con.sql('SELECT COUNT(*) FROM relation').fetchone()[0])
-    links = int(con.sql('SELECT COUNT(*) FROM relation_evidence_relation').fetchone()[0])
-    return entities, relations, links
 
 
-def _sql_literal(value: str | Path) -> str:
-    return "'" + str(value).replace("'", "''") + "'"
+
+
+
+
+
+
 
 
 def copy_final_parquet_to_postgres(
@@ -1610,6 +846,7 @@ def bulk_load_parquet_to_postgres(
     if state_path.exists():
         state_path.unlink()
     con = duckdb.connect(str(state_path))
+    _create_duckdb_content_uuid_macro(con)
     con.execute('LOAD postgres')
     con.execute(
         f"ATTACH {_sql_literal(database_url)} AS pg (TYPE postgres)"
@@ -1622,8 +859,9 @@ def bulk_load_parquet_to_postgres(
     )
     _bulk_load_assert_empty(con, schema)
     _bulk_load_small_dimensions(con, schema)
+    _bulk_load_materialize_dimensions(con, schema)
     _bulk_load_evidence(con, schema)
-    _bulk_load_canonical(con, schema)
+    _bulk_load_canonical(con, schema, database_url=database_url)
     con.close()
     _reset_postgres_sequences(database_url=database_url, schema=schema)
 
@@ -1693,221 +931,41 @@ def _bulk_load_create_views(
             WHERE false
             """
         )
-
-
-def _bulk_load_create_views_from_loaded_tables(
-    con: duckdb.DuckDBPyConnection,
-) -> None:
-    views = {
-        'pq_entity_evidence': 'entity_evidence_raw',
-        'pq_entity_identifier': 'entity_identifier_raw',
-        'pq_entity_annotation': 'entity_annotation_raw',
-        'pq_relation_evidence': 'relation_evidence_raw',
-        'pq_annotation_relation_evidence': 'annotation_relation_evidence_raw',
-        'pq_relation_annotation': 'relation_annotation_raw',
-        'pq_annotation': 'annotation_value',
-        'pq_entity': 'canonical_entity',
-        'pq_entity_evidence_resolution': 'entity_evidence_resolution',
-        'pq_relation': 'relation',
-        'pq_relation_evidence_relation': 'relation_evidence_relation',
-    }
-    for view, table in views.items():
-        con.execute(f'CREATE VIEW {view} AS SELECT * FROM {table}')
     con.execute(
         """
-        CREATE VIEW pq_ontology_terms AS
+        CREATE VIEW pq_annotation_relation_evidence_resolved AS
         SELECT
-          NULL::VARCHAR AS source,
-          NULL::VARCHAR AS dataset,
-          NULL::VARCHAR AS term_id,
-          NULL::VARCHAR AS ontology_prefix,
-          NULL::VARCHAR AS label,
-          NULL::VARCHAR AS definition,
-          NULL::VARCHAR AS ontology_id,
-          []::VARCHAR[] AS synonyms,
-          NULL::VARCHAR AS synonyms_text,
-          []::VARCHAR[] AS sources
-        WHERE false
+          ar.*,
+          object.entity_id AS object_entity_id
+        FROM pq_annotation_relation_evidence ar
+        JOIN pq_entity object
+          ON object.entity_type = ar.object_entity_type
+         AND object.canonical_identifier_type = ar.object_id_type
+         AND object.canonical_identifier = ar.object_id
         """
     )
 
 
-def _bulk_load_assert_empty(
-    con: duckdb.DuckDBPyConnection,
-    schema: str,
-) -> None:
-    content_tables = (
-        'data_source',
-        'dataset',
-        'identifier_evidence',
-        'annotation',
-        'entity',
-        'entity_evidence',
-        'entity_evidence_identifier',
-        'entity_evidence_annotation',
-        'relation',
-        'relation_evidence',
-        'relation_evidence_annotation',
-        'entity_evidence_resolution',
-        'relation_evidence_relation',
-        'entity_annotation_relation',
-        'ontology_terms',
-    )
-    non_empty = []
-    for table in content_tables:
-        count = int(
-            con.sql(f'SELECT COUNT(*) FROM pg.{schema}.{table}').fetchone()[0]
-        )
-        if count:
-            non_empty.append(f'{table}={count}')
-    if non_empty:
-        raise RuntimeError(
-            'bulk_load_parquet_to_postgres requires empty content tables: '
-            + ', '.join(non_empty)
-        )
 
 
-def _bulk_load_small_dimensions(
-    con: duckdb.DuckDBPyConnection,
-    schema: str,
-) -> None:
-    con.execute(
-        f"""
-        INSERT INTO pg.{schema}.vocab_entity_type (name)
-        SELECT candidate.name
-        FROM (
-          SELECT DISTINCT entity_type AS name FROM pq_entity_evidence WHERE entity_type IS NOT NULL
-          UNION
-          SELECT DISTINCT entity_type AS name FROM pq_entity WHERE entity_type IS NOT NULL
-          UNION
-          SELECT DISTINCT object_entity_type AS name
-          FROM pq_annotation_relation_evidence
-          WHERE object_entity_type IS NOT NULL
-          UNION
-          SELECT {_sql_literal(CV_TERM_ENTITY_TYPE)} AS name
-          FROM pq_ontology_terms
-          WHERE term_id IS NOT NULL
-        ) candidate
-        LEFT JOIN pg.{schema}.vocab_entity_type existing
-          ON existing.name = candidate.name
-        WHERE existing.entity_type_id IS NULL
-        """
-    )
-    con.execute(
-        f"""
-        INSERT INTO pg.{schema}.vocab_entity_role (name)
-        SELECT candidate.name
-        FROM (
-          SELECT DISTINCT entity_role AS name
-          FROM pq_entity_evidence
-          WHERE entity_role IS NOT NULL
-        ) candidate
-        LEFT JOIN pg.{schema}.vocab_entity_role existing
-          ON existing.name = candidate.name
-        WHERE existing.entity_role_id IS NULL
-        """
-    )
-    con.execute(
-        f"""
-        INSERT INTO pg.{schema}.vocab_relation_predicate (name)
-        SELECT candidate.name
-        FROM (
-          SELECT DISTINCT predicate AS name FROM pq_relation WHERE predicate IS NOT NULL
-          UNION
-          SELECT DISTINCT predicate AS name FROM pq_relation_evidence WHERE predicate IS NOT NULL
-          UNION
-          SELECT DISTINCT predicate AS name
-          FROM pq_annotation_relation_evidence
-          WHERE predicate IS NOT NULL
-        ) candidate
-        LEFT JOIN pg.{schema}.vocab_relation_predicate existing
-          ON existing.name = candidate.name
-        WHERE existing.relation_predicate_id IS NULL
-        """
-    )
-    con.execute(
-        f"""
-        INSERT INTO pg.{schema}.vocab_relation_category (name)
-        SELECT candidate.name
-        FROM (
-          SELECT DISTINCT relation_category AS name FROM pq_relation
-          UNION
-          SELECT DISTINCT relation_category AS name FROM pq_relation_evidence
-          UNION
-          SELECT DISTINCT relation_category AS name
-          FROM pq_annotation_relation_evidence
-        ) candidate
-        LEFT JOIN pg.{schema}.vocab_relation_category existing
-          ON existing.name = candidate.name
-        WHERE candidate.name IS NOT NULL
-          AND existing.relation_category_id IS NULL
-        """
-    )
-    con.execute(
-        f"""
-        WITH missing AS (
-          SELECT DISTINCT identifier_type AS name
-          FROM pq_entity_identifier
-          WHERE identifier_type IS NOT NULL
-          UNION
-          SELECT DISTINCT canonical_identifier_type AS name
-          FROM pq_entity
-          WHERE canonical_identifier_type IS NOT NULL
-          UNION
-          SELECT DISTINCT object_id_type AS name
-          FROM pq_annotation_relation_evidence
-          WHERE object_id_type IS NOT NULL
-          UNION
-          SELECT {_sql_literal(CV_TERM_ID_TYPE)} AS name
-          FROM pq_ontology_terms
-          WHERE term_id IS NOT NULL
-        ),
-        missing_new AS (
-          SELECT missing.name
-          FROM missing
-          LEFT JOIN pg.{schema}.vocab_identifier_type it
-            ON it.name = missing.name
-          WHERE it.identifier_type_id IS NULL
-        ),
-        base AS (
-          SELECT coalesce(max(identifier_type_id), 0) AS max_id
-          FROM pg.{schema}.vocab_identifier_type
-        )
-        INSERT INTO pg.{schema}.vocab_identifier_type (identifier_type_id, name)
-        SELECT base.max_id + row_number() OVER (ORDER BY missing_new.name),
-               missing_new.name
-        FROM missing_new
-        CROSS JOIN base
-        """
-    )
-    con.execute(
-        f"""
-        INSERT INTO pg.{schema}.data_source (name)
-        SELECT DISTINCT source
-        FROM (
-          SELECT source FROM pq_entity_evidence
-          UNION
-          SELECT source FROM pq_entity_evidence_resolution
-          UNION
-          SELECT source FROM pq_ontology_terms
-        ) s
-        WHERE source IS NOT NULL
-        """
-    )
-    con.execute(
-        f"""
-        INSERT INTO pg.{schema}.dataset (source_id, name)
-        SELECT DISTINCT ds.source_id, candidate.dataset
-        FROM (
-          SELECT source, dataset FROM pq_entity_evidence
-          UNION
-          SELECT source, dataset FROM pq_ontology_terms
-        ) candidate
-        JOIN pg.{schema}.data_source ds
-          ON ds.name = candidate.source
-        WHERE candidate.dataset IS NOT NULL
-        """
-    )
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 def _bulk_load_evidence(
@@ -2035,10 +1093,10 @@ def _bulk_load_evidence(
           d.dataset_id,
           r.row_id,
           r.subject_entity_evidence_id::UUID,
-          NULL::BIGINT,
+          NULL::UUID,
           rp.relation_predicate_id,
           r.object_entity_evidence_id::UUID,
-          NULL::BIGINT,
+          NULL::UUID,
           rc.relation_category_id
         FROM pq_relation_evidence r
         JOIN pg.{schema}.data_source ds
@@ -2077,6 +1135,8 @@ def _bulk_load_evidence(
 def _bulk_load_canonical(
     con: duckdb.DuckDBPyConnection,
     schema: str,
+    *,
+    database_url: str,
 ) -> None:
     con.execute(
         f"""
@@ -2138,13 +1198,9 @@ def _bulk_load_canonical(
            AND existing.canonical_identifier = ot.term_id
           WHERE ot.term_id IS NOT NULL
             AND existing.entity_id IS NULL
-        ),
-        base AS (
-          SELECT coalesce(max(entity_id), 0) AS max_entity_id
-          FROM pg.{schema}.entity
         )
         SELECT
-          base.max_entity_id + row_number() OVER (ORDER BY missing.term_id),
+          content_uuid({_sql_literal(CV_TERM_ID_TYPE)} || '|' || missing.term_id),
           missing.entity_type_id,
           NULL::BIGINT,
           missing.identifier_type_id,
@@ -2160,7 +1216,6 @@ def _bulk_load_canonical(
           )::JSON,
           missing.resolution_status_id
         FROM missing
-        CROSS JOIN base
         """
     )
     con.execute(
@@ -2223,26 +1278,17 @@ def _bulk_load_canonical(
           d.dataset_id,
           ar.row_id,
           ar.subject_entity_evidence_id::UUID,
-          NULL::BIGINT,
+          NULL::UUID,
           rp.relation_predicate_id,
           NULL::UUID,
-          object.entity_id,
+          ar.object_entity_id,
           rc.relation_category_id
-        FROM pq_annotation_relation_evidence ar
+        FROM pq_annotation_relation_evidence_resolved ar
         JOIN pg.{schema}.data_source ds
           ON ds.name = ar.source
         JOIN pg.{schema}.dataset d
           ON d.source_id = ds.source_id
          AND d.name = ar.dataset
-        JOIN pg.{schema}.vocab_entity_type et
-          ON et.name = ar.object_entity_type
-        JOIN pg.{schema}.vocab_identifier_type it
-          ON it.name = ar.object_id_type
-        JOIN pg.{schema}.entity object
-          ON object.entity_type_id = et.entity_type_id
-         AND object.taxonomy_id IS NULL
-         AND object.canonical_identifier_type_id = it.identifier_type_id
-         AND object.canonical_identifier = ar.object_id
         JOIN pg.{schema}.vocab_relation_predicate rp
           ON rp.name = ar.predicate
         JOIN pg.{schema}.vocab_relation_category rc
@@ -2296,56 +1342,63 @@ def _bulk_load_canonical(
           ON rc.name = r.relation_category
         """
     )
-    con.execute(
-        f"""
-        INSERT INTO pg.{schema}.relation_evidence_relation (
-          source_id,
-          relation_id,
-          relation_evidence_id
-        )
-        SELECT
-          ds.source_id,
-          rer.relation_id,
-          rer.relation_evidence_id::UUID
-        FROM pq_relation_evidence_relation rer
-        JOIN pg.{schema}.data_source ds
-          ON ds.name = rer.source
-        """
+    _copy_relation_evidence_relation(
+        con,
+        schema=schema,
+        database_url=database_url,
     )
 
-def _reset_postgres_sequences(
+
+def _copy_relation_evidence_relation(
+    con: duckdb.DuckDBPyConnection,
     *,
-    database_url: str,
     schema: str,
+    database_url: str,
 ) -> None:
-    sequence_tables = (
-        ('data_source', 'source_id'),
-        ('dataset', 'dataset_id'),
-        ('entity', 'entity_id'),
-        ('relation', 'relation_id'),
-    )
-    with psycopg2.connect(database_url) as conn:
-        with conn.cursor() as cur:
-            for table, column in sequence_tables:
-                cur.execute(
-                    sql.SQL(
-                        """
-                        SELECT setval(
-                          pg_get_serial_sequence(%s, %s),
-                          COALESCE((SELECT MAX({column}) FROM {table}), 1),
-                          COALESCE((SELECT MAX({column}) FROM {table}), 0) > 0
-                        )
-                        """
-                    ).format(
-                        column=sql.Identifier(column),
-                        table=sql.SQL('{}.{}').format(
-                            sql.Identifier(schema),
-                            sql.Identifier(table),
-                        ),
-                    ),
-                    [f'{schema}.{table}', column],
-                )
-        conn.commit()
+    with tempfile.TemporaryDirectory() as tmpdir:
+        csv_path = Path(tmpdir) / 'relation_evidence_relation.csv'
+        con.execute(
+            f"""
+            CREATE OR REPLACE TEMP TABLE load_relation_evidence_relation AS
+            SELECT
+              ds.source_id,
+              rer.relation_id,
+              rer.relation_evidence_id::UUID AS relation_evidence_id
+            FROM pq_relation_evidence_relation rer
+            JOIN load_data_source ds
+              ON ds.name = rer.source
+            """
+        )
+        con.execute(
+            f"""
+            COPY (
+              SELECT
+                source_id,
+                relation_id,
+                relation_evidence_id
+              FROM load_relation_evidence_relation
+            )
+            TO {_sql_literal(csv_path)}
+            (FORMAT CSV, HEADER false, DELIMITER ',', QUOTE '"', ESCAPE '"')
+            """
+        )
+        with psycopg2.connect(database_url) as conn:
+            with conn.cursor() as cur:
+                with csv_path.open('r', encoding='utf-8') as csv_file:
+                    cur.copy_expert(
+                        sql.SQL(
+                            """
+                            COPY {}.relation_evidence_relation (
+                              source_id,
+                              relation_id,
+                              relation_evidence_id
+                            )
+                            FROM STDIN WITH (FORMAT CSV)
+                            """
+                        ).format(sql.Identifier(schema)),
+                        csv_file,
+                    )
+
 
 
 def _create_postgres_staging(cur: psycopg2.extensions.cursor) -> None:
@@ -2356,7 +1409,7 @@ def _create_postgres_staging(cur: psycopg2.extensions.cursor) -> None:
     cur.execute(
         """
         CREATE TEMP TABLE _pq_entity (
-          entity_id bigint PRIMARY KEY,
+          entity_id uuid PRIMARY KEY,
           entity_type text NOT NULL,
           taxonomy_id text,
           canonical_identifier_type text NOT NULL,
@@ -2372,17 +1425,17 @@ def _create_postgres_staging(cur: psycopg2.extensions.cursor) -> None:
           source text NOT NULL,
           entity_evidence_id uuid NOT NULL,
           status text NOT NULL,
-          entity_id bigint
+          entity_id uuid
         ) ON COMMIT DROP
         """
     )
     cur.execute(
         """
         CREATE TEMP TABLE _pq_relation (
-          relation_id bigint PRIMARY KEY,
-          subject_entity_id bigint NOT NULL,
+          relation_id uuid PRIMARY KEY,
+          subject_entity_id uuid NOT NULL,
           predicate text NOT NULL,
-          object_entity_id bigint NOT NULL,
+          object_entity_id uuid NOT NULL,
           relation_category text
         ) ON COMMIT DROP
         """
@@ -2392,7 +1445,7 @@ def _create_postgres_staging(cur: psycopg2.extensions.cursor) -> None:
         CREATE TEMP TABLE _pq_relation_evidence_relation (
           source text NOT NULL,
           relation_evidence_id uuid NOT NULL,
-          relation_id bigint NOT NULL
+          relation_id uuid NOT NULL
         ) ON COMMIT DROP
         """
     )
@@ -2849,6 +1902,16 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         help='Optional DuckDB state path for --direct-to-db. Defaults to memory.',
     )
+    parser.add_argument(
+        '--copy-load',
+        action='store_true',
+        help='Experimental: load high-volume tables by Postgres COPY.',
+    )
+    parser.add_argument(
+        '--drop-load-constraints',
+        action='store_true',
+        help='Experimental: drop content table constraints/indexes before COPY load.',
+    )
     return parser
 
 
@@ -2864,6 +1927,8 @@ def main(argv: list[str] | None = None) -> int:
             force_refresh=args.force_refresh,
             schema=args.schema,
             state_path=args.state_path,
+            copy_load=args.copy_load,
+            drop_load_constraints=args.drop_load_constraints,
         )
         print(
             '[duckdb-direct] '
