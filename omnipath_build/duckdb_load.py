@@ -22,7 +22,9 @@ from omnipath_build.parquet_projector import (
     _MutableProjectionStats,
 )
 from omnipath_build.resolver.identifier_types import (
+    COMPLEX_MEMBER_HASH_ID_TYPE,
     IDENTIFIER_TYPE_NAMES,
+    UNRESOLVED_ID_TYPE,
     identifier_type_id,
 )
 from pypath.internals.silver_schema import Entity
@@ -30,7 +32,7 @@ from pypath.internals.ontology_schema import OntologyTerm
 
 
 PROTEIN_ENTITY_TYPE = 'Protein:MI:0326'
-UNRESOLVED_ID_TYPE = 'omnipath:unresolved_entity_key'
+COMPLEX_ENTITY_TYPE = 'Complex:MI:0314'
 
 
 def _sql_literal(value: str | Path) -> str:
@@ -736,6 +738,9 @@ def _drop_duckdb_batch_tables(con: duckdb.DuckDBPyConnection) -> None:
         'evidence_identifier_key',
         'needed_resolver_lookup',
         'entity_identifier_group',
+        'entity_resolution_base',
+        'complex_member_signature_base',
+        'complex_member_signature',
         'entity_resolution',
         'batch_entity_candidate',
         'new_entity',
@@ -831,7 +836,7 @@ def _canonicalize_loaded_duckdb(
     )
     con.execute(
         """
-        CREATE TABLE entity_resolution AS
+        CREATE TABLE entity_resolution_base AS
         SELECT
           ee.source,
           ee.dataset,
@@ -882,8 +887,165 @@ def _canonicalize_loaded_duckdb(
     )
     con.execute(
         """
+        CREATE TABLE complex_member_signature_base AS
+        WITH complex_member AS (
+          SELECT DISTINCT
+            parent.source,
+            parent.entity_evidence_id,
+            child_resolution.entity_type,
+            child_resolution.taxonomy_id,
+            child_resolution.canonical_identifier_type_id,
+            child_resolution.canonical_identifier,
+            child_resolution.status
+          FROM entity_evidence_raw parent
+          JOIN entity_evidence_raw child
+            ON child.source = parent.source
+           AND child.parent_entity_evidence_id = parent.entity_evidence_id
+          JOIN entity_resolution_base child_resolution
+            ON child_resolution.source = child.source
+           AND child_resolution.entity_evidence_id = child.entity_evidence_id
+          WHERE parent.entity_type = ?
+        )
+        SELECT
+          complex_member.source,
+          complex_member.entity_evidence_id,
+          complex_hash_type.identifier_type_id AS canonical_identifier_type_id,
+          sha256(
+            to_json(
+              list(
+                struct_pack(
+                  entity_type := complex_member.entity_type,
+                  taxonomy_id := complex_member.taxonomy_id,
+                  canonical_identifier_type_id := complex_member.canonical_identifier_type_id,
+                  canonical_identifier := complex_member.canonical_identifier
+                )
+                ORDER BY
+                  complex_member.entity_type,
+                  complex_member.taxonomy_id,
+                  complex_member.canonical_identifier_type_id,
+                  complex_member.canonical_identifier
+              )
+            )
+          ) AS canonical_identifier,
+          CASE
+            WHEN bool_and(complex_member.status = 'resolved') THEN 'resolved'
+            ELSE 'unresolved'
+          END AS status
+        FROM complex_member
+        CROSS JOIN (
+          SELECT identifier_type_id
+          FROM identifier_type_all
+          WHERE name = ?
+        ) complex_hash_type
+        GROUP BY
+          complex_member.source,
+          complex_member.entity_evidence_id,
+          complex_hash_type.identifier_type_id
+        """,
+        [COMPLEX_ENTITY_TYPE, COMPLEX_MEMBER_HASH_ID_TYPE],
+    )
+    con.execute(
+        """
+        CREATE TABLE complex_member_signature AS
+        WITH complex_member AS (
+          SELECT DISTINCT
+            parent.source,
+            parent.entity_evidence_id,
+            child_resolution.entity_type,
+            child_resolution.taxonomy_id,
+            coalesce(
+              child_complex.canonical_identifier_type_id,
+              child_resolution.canonical_identifier_type_id
+            ) AS canonical_identifier_type_id,
+            coalesce(
+              child_complex.canonical_identifier,
+              child_resolution.canonical_identifier
+            ) AS canonical_identifier,
+            coalesce(child_complex.status, child_resolution.status) AS status
+          FROM entity_evidence_raw parent
+          JOIN entity_evidence_raw child
+            ON child.source = parent.source
+           AND child.parent_entity_evidence_id = parent.entity_evidence_id
+          JOIN entity_resolution_base child_resolution
+            ON child_resolution.source = child.source
+           AND child_resolution.entity_evidence_id = child.entity_evidence_id
+          LEFT JOIN complex_member_signature_base child_complex
+            ON child_complex.source = child.source
+           AND child_complex.entity_evidence_id = child.entity_evidence_id
+          WHERE parent.entity_type = ?
+        )
+        SELECT
+          complex_member.source,
+          complex_member.entity_evidence_id,
+          complex_hash_type.identifier_type_id AS canonical_identifier_type_id,
+          sha256(
+            to_json(
+              list(
+                struct_pack(
+                  entity_type := complex_member.entity_type,
+                  taxonomy_id := complex_member.taxonomy_id,
+                  canonical_identifier_type_id := complex_member.canonical_identifier_type_id,
+                  canonical_identifier := complex_member.canonical_identifier
+                )
+                ORDER BY
+                  complex_member.entity_type,
+                  complex_member.taxonomy_id,
+                  complex_member.canonical_identifier_type_id,
+                  complex_member.canonical_identifier
+              )
+            )
+          ) AS canonical_identifier,
+          CASE
+            WHEN bool_and(complex_member.status = 'resolved') THEN 'resolved'
+            ELSE 'unresolved'
+          END AS status
+        FROM complex_member
+        CROSS JOIN (
+          SELECT identifier_type_id
+          FROM identifier_type_all
+          WHERE name = ?
+        ) complex_hash_type
+        GROUP BY
+          complex_member.source,
+          complex_member.entity_evidence_id,
+          complex_hash_type.identifier_type_id
+        """,
+        [COMPLEX_ENTITY_TYPE, COMPLEX_MEMBER_HASH_ID_TYPE],
+    )
+    con.execute(
+        """
+        CREATE TABLE entity_resolution AS
+        SELECT
+          base.source,
+          base.dataset,
+          base.row_id,
+          base.entity_evidence_id,
+          base.entity_type,
+          base.taxonomy_id,
+          coalesce(
+            complex_member.canonical_identifier_type_id,
+            base.canonical_identifier_type_id
+          ) AS canonical_identifier_type_id,
+          coalesce(
+            complex_member.canonical_identifier,
+            base.canonical_identifier
+          ) AS canonical_identifier,
+          coalesce(complex_member.status, base.status) AS status
+        FROM entity_resolution_base base
+        LEFT JOIN complex_member_signature complex_member
+          ON complex_member.source = base.source
+         AND complex_member.entity_evidence_id = base.entity_evidence_id
+        """
+    )
+    con.execute(
+        """
         CREATE TABLE batch_entity_candidate AS
-        WITH needed_protein_key AS (
+        WITH complex_hash_type AS (
+          SELECT identifier_type_id
+          FROM identifier_type_all
+          WHERE name = ?
+        ),
+        needed_protein_key AS (
           SELECT DISTINCT
             er.entity_type,
             er.taxonomy_id,
@@ -891,6 +1053,10 @@ def _canonicalize_loaded_duckdb(
             er.canonical_identifier
           FROM entity_resolution er
           WHERE er.status = 'resolved'
+            AND er.canonical_identifier_type_id NOT IN (
+              SELECT identifier_type_id
+              FROM complex_hash_type
+            )
         ),
         protein_identifier_rows AS (
           SELECT
@@ -949,6 +1115,29 @@ def _canonicalize_loaded_duckdb(
             pir.canonical_identifier_type_id,
             pir.canonical_identifier
         ),
+        complex_member_entity AS (
+          SELECT
+            er.entity_type,
+            er.taxonomy_id,
+            er.canonical_identifier_type_id,
+            er.canonical_identifier,
+            any_value(eig.identifiers_json) AS identifiers_json,
+            er.status AS resolution_status
+          FROM entity_resolution er
+          JOIN entity_identifier_group eig
+            ON eig.source = er.source
+           AND eig.entity_evidence_id = er.entity_evidence_id
+          WHERE er.canonical_identifier_type_id IN (
+            SELECT identifier_type_id
+            FROM complex_hash_type
+          )
+          GROUP BY
+            er.entity_type,
+            er.taxonomy_id,
+            er.canonical_identifier_type_id,
+            er.canonical_identifier,
+            er.status
+        ),
         cv_term_entity AS (
           SELECT
             ? AS entity_type,
@@ -975,26 +1164,48 @@ def _canonicalize_loaded_duckdb(
           GROUP BY cv_type.identifier_type_id, object_id
         ),
         all_entity AS (
-          SELECT * FROM needed_protein_entity
+          SELECT
+            entity_type,
+            taxonomy_id,
+            canonical_identifier_type_id,
+            canonical_identifier,
+            identifiers_json,
+            'resolved' AS resolution_status
+          FROM needed_protein_entity
           UNION ALL
-          SELECT * FROM cv_term_entity
+          SELECT
+            entity_type,
+            taxonomy_id,
+            canonical_identifier_type_id,
+            canonical_identifier,
+            identifiers_json,
+            'resolved' AS resolution_status
+          FROM cv_term_entity
+          UNION ALL
+          SELECT * FROM complex_member_entity
           UNION ALL
           SELECT
             er.entity_type,
             er.taxonomy_id,
             er.canonical_identifier_type_id,
             er.canonical_identifier,
-            any_value(eig.identifiers_json) AS identifiers_json
+            any_value(eig.identifiers_json) AS identifiers_json,
+            er.status AS resolution_status
           FROM entity_resolution er
           JOIN entity_identifier_group eig
             ON eig.source = er.source
            AND eig.entity_evidence_id = er.entity_evidence_id
           WHERE er.status = 'unresolved'
+            AND er.canonical_identifier_type_id NOT IN (
+              SELECT identifier_type_id
+              FROM complex_hash_type
+            )
           GROUP BY
             er.entity_type,
             er.taxonomy_id,
             er.canonical_identifier_type_id,
-            er.canonical_identifier
+            er.canonical_identifier,
+            er.status
         )
         SELECT
           canonical_entity_uuid(
@@ -1015,10 +1226,7 @@ def _canonicalize_loaded_duckdb(
           it.name AS canonical_identifier_type,
           all_entity.canonical_identifier,
           all_entity.identifiers_json,
-          CASE
-            WHEN it.name = ? THEN 'unresolved'
-            ELSE 'resolved'
-          END AS resolution_status,
+          all_entity.resolution_status,
           string_agg(DISTINCT source_rows.source, ',' ORDER BY source_rows.source)
             AS sources
         FROM all_entity
@@ -1061,14 +1269,15 @@ def _canonicalize_loaded_duckdb(
           all_entity.canonical_identifier_type_id,
           it.name,
           all_entity.canonical_identifier,
-          all_entity.identifiers_json
+          all_entity.identifiers_json,
+          all_entity.resolution_status
         """,
         [
+            COMPLEX_MEMBER_HASH_ID_TYPE,
             CV_TERM_ENTITY_TYPE,
             CV_TERM_ID_TYPE,
             CV_TERM_ID_TYPE,
             CV_TERM_ID_TYPE,
-            UNRESOLVED_ID_TYPE,
             CV_TERM_ID_TYPE,
             CV_TERM_ID_TYPE,
         ],

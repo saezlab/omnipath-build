@@ -13,6 +13,8 @@ IDENTIFIER_TYPE_SCHEMA: dict[str, pl.DataType] = {
 }
 
 FALLBACK_IDENTIFIER_TYPE = 'Fallback'
+UNRESOLVED_ID_TYPE = 'omnipath:unresolved_entity_key'
+COMPLEX_MEMBER_HASH_ID_TYPE = 'omnipath:complex_member_hash'
 
 IDENTIFIER_TYPE_NAMES: tuple[str, ...] = (
     cv_term_label_accession(IdentifierNamespaceCv.UNIPROT),
@@ -32,6 +34,8 @@ IDENTIFIER_TYPE_NAMES: tuple[str, ...] = (
     FALLBACK_IDENTIFIER_TYPE,
     cv_term_label_accession(IdentifierNamespaceCv.NAME),
     cv_term_label_accession(IdentifierNamespaceCv.CHEMBL_COMPOUND),
+    UNRESOLVED_ID_TYPE,
+    COMPLEX_MEMBER_HASH_ID_TYPE,
 )
 
 IDENTIFIER_TYPE_IDS: dict[str, int] = {
