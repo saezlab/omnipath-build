@@ -1044,6 +1044,9 @@ def _ensure_resolution_schema(
               license text,
               pubmed_id text,
               resource_kind text,
+              input_module text,
+              input_module_commit text,
+              input_module_dirty boolean NOT NULL DEFAULT false,
               categories jsonb,
               annotation_ontologies jsonb,
               entity_count bigint NOT NULL DEFAULT 0,
@@ -1059,6 +1062,7 @@ def _ensure_resolution_schema(
             """
         ).format(schema_id)
     )
+    _ensure_resources_table_schema(cur, schema)
     log_step('create ontology terms table')
     _ensure_ontology_terms_table(cur, schema)
     log_step('create resolver policy index')
@@ -1429,6 +1433,24 @@ def _ensure_evidence_dimension_tables(
     )
     _ensure_static_entity_roles(cur, schema)
     _ensure_static_annotation_scopes(cur, schema)
+
+
+def _ensure_resources_table_schema(
+    cur: psycopg2.extensions.cursor,
+    schema: str,
+) -> None:
+    schema_id = sql.Identifier(schema)
+    cur.execute(
+        sql.SQL(
+            """
+            ALTER TABLE {}.resources
+            ADD COLUMN IF NOT EXISTS input_module text,
+            ADD COLUMN IF NOT EXISTS input_module_commit text,
+            ADD COLUMN IF NOT EXISTS input_module_dirty boolean
+              NOT NULL DEFAULT false
+            """
+        ).format(schema_id)
+    )
 
 
 def _ensure_static_entity_roles(

@@ -7,8 +7,16 @@ evidence/graph tables or from bitmap tables when they have been refreshed.
 
 from __future__ import annotations
 
+import os
+import json
 from typing import Any
+from pathlib import Path
+from datetime import UTC, datetime
+from functools import lru_cache
+import subprocess
 from dataclasses import dataclass
+import importlib.util
+from collections.abc import Iterable
 
 from psycopg2 import sql
 from psycopg2.extras import Json
@@ -34,6 +42,7 @@ def sync_resources_table(
 
     with conn.cursor() as cur:
         cur.execute('SET LOCAL max_parallel_workers_per_gather = 0')
+        _ensure_resources_metadata_columns(cur, schema)
         present_sources = _present_sources(
             cur,
             schema=schema,
@@ -61,6 +70,9 @@ def sync_resources_table(
                   license,
                   pubmed_id,
                   resource_kind,
+                  input_module,
+                  input_module_commit,
+                  input_module_dirty,
                   categories,
                   annotation_ontologies,
                   entity_count,
@@ -81,6 +93,9 @@ def sync_resources_table(
                   %(license)s,
                   %(pubmed_id)s,
                   %(resource_kind)s,
+                  %(input_module)s,
+                  %(input_module_commit)s,
+                  %(input_module_dirty)s,
                   %(categories)s,
                   %(annotation_ontologies)s,
                   %(entity_count)s,
@@ -100,6 +115,9 @@ def sync_resources_table(
                   license = EXCLUDED.license,
                   pubmed_id = EXCLUDED.pubmed_id,
                   resource_kind = EXCLUDED.resource_kind,
+                  input_module = EXCLUDED.input_module,
+                  input_module_commit = EXCLUDED.input_module_commit,
+                  input_module_dirty = EXCLUDED.input_module_dirty,
                   categories = EXCLUDED.categories,
                   annotation_ontologies = EXCLUDED.annotation_ontologies,
                   entity_count = EXCLUDED.entity_count,
@@ -121,6 +139,23 @@ def sync_resources_table(
     return ResourceTableStats(resources=len(rows))
 
 
+def _ensure_resources_metadata_columns(
+    cur: psycopg2.extensions.cursor,
+    schema: str,
+) -> None:
+    cur.execute(
+        sql.SQL(
+            """
+            ALTER TABLE {}.resources
+            ADD COLUMN IF NOT EXISTS input_module text,
+            ADD COLUMN IF NOT EXISTS input_module_commit text,
+            ADD COLUMN IF NOT EXISTS input_module_dirty boolean
+              NOT NULL DEFAULT false
+            """
+        ).format(sql.Identifier(schema))
+    )
+
+
 def _resource_row(
     cur: psycopg2.extensions.cursor,
     *,
@@ -131,6 +166,8 @@ def _resource_row(
     prefer_bitmaps: bool,
 ) -> dict[str, Any]:
     config = _resource_config(functions)
+    module_metadata = _input_module_metadata(functions)
+    snapshot_metadata = _resource_snapshot_metadata(source, functions)
     counts = (
         _source_counts(
             cur,
@@ -140,6 +177,11 @@ def _resource_row(
         )
         if source in present_sources
         else _empty_source_counts()
+    )
+    last_built_at = (
+        counts['last_built_at'] or snapshot_metadata['last_built_at']
+        if counts['has_rows']
+        else None
     )
     categories = _resource_categories(
         primary_category=getattr(config, 'primary_category', None),
@@ -155,6 +197,9 @@ def _resource_row(
         'license': _text_or_none(getattr(config, 'license', None)),
         'pubmed_id': getattr(config, 'pubmed', None),
         'resource_kind': getattr(config, 'resource_kind', 'data_resource'),
+        'input_module': module_metadata['module'],
+        'input_module_commit': module_metadata['commit'],
+        'input_module_dirty': module_metadata['dirty'],
         'categories': Json(categories),
         'annotation_ontologies': Json(_ontology_labels(config)),
         'entity_count': counts['entity_count'],
@@ -162,9 +207,9 @@ def _resource_row(
         'association_count': counts['association_count'],
         'identifier_count': counts['identifier_count'],
         'ontology_term_count': counts['ontology_term_count'],
-        'total_size_bytes': 0,
-        'last_downloaded_at': None,
-        'last_built_at': counts['last_built_at'],
+        'total_size_bytes': snapshot_metadata['total_size_bytes'],
+        'last_downloaded_at': snapshot_metadata['last_downloaded_at'],
+        'last_built_at': last_built_at,
         'build_status': 'success' if counts['has_rows'] else 'not_built',
     }
 
@@ -244,6 +289,173 @@ def _resource_config(functions: list[object]) -> object | None:
         if config is not None:
             return config
     return None
+
+
+def _input_module_metadata(functions: list[object]) -> dict[str, Any]:
+    fn = next(
+        (
+            fn
+            for fn in functions
+            if getattr(fn, 'function_name', None) == 'resource'
+        ),
+        functions[0] if functions else None,
+    )
+    module = getattr(fn, 'qualified_module', None) if fn is not None else None
+    metadata = _module_git_metadata(module) if module else {}
+    return {
+        'module': module,
+        'commit': metadata.get('commit'),
+        'dirty': bool(metadata.get('dirty', False)),
+    }
+
+
+@lru_cache(maxsize=512)
+def _module_git_metadata(module: str) -> dict[str, Any]:
+    spec = importlib.util.find_spec(module)
+    origin = getattr(spec, 'origin', None)
+    if not origin or origin == 'built-in':
+        return {}
+    path = Path(origin)
+    try:
+        commit = subprocess.check_output(
+            ['git', '-C', str(path.parent), 'rev-parse', 'HEAD'],
+            stderr=subprocess.DEVNULL,
+            text=True,
+        ).strip()
+        status = subprocess.check_output(
+            [
+                'git',
+                '-C',
+                str(path.parent),
+                'status',
+                '--porcelain',
+                '--',
+                str(path),
+            ],
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return {}
+    return {
+        'commit': commit or None,
+        'dirty': bool(status.strip()),
+    }
+
+
+def _resource_snapshot_metadata(
+    source: str,
+    functions: list[object],
+) -> dict[str, Any]:
+    latest_paths = [
+        (_raw_records_root() / source / str(fn.function_name) / 'latest.json')
+        for fn in functions
+        if getattr(fn, 'function_name', None) != 'resource'
+        and getattr(fn, 'output_kind', None) in {'entity', 'ontology'}
+    ]
+    manifests = [
+        manifest
+        for latest_path in latest_paths
+        if (manifest := _read_latest_manifest(latest_path)) is not None
+    ]
+    total_size = sum(
+        _manifest_snapshot_size(manifest) for manifest in manifests
+    )
+    last_downloaded_at = _max_datetime(
+        _manifest_downloaded_at(manifest) for manifest in manifests
+    )
+    last_built_at = _max_datetime(
+        _parse_datetime(
+            manifest.get('accepted_at')
+            or manifest.get('completed_at')
+            or manifest.get('created_at')
+        )
+        for manifest in manifests
+    )
+    return {
+        'total_size_bytes': total_size,
+        'last_downloaded_at': last_downloaded_at,
+        'last_built_at': last_built_at,
+    }
+
+
+def _raw_records_root() -> Path:
+    return Path(
+        os.environ.get(
+            'OMNIPATH_BRONZE_ROOT',
+            os.environ.get('OMNIPATH_RAW_RECORDS_ROOT', 'data/bronze'),
+        )
+    )
+
+
+def _read_latest_manifest(latest_path: Path) -> dict[str, Any] | None:
+    if not latest_path.exists():
+        return None
+    try:
+        latest = json.loads(latest_path.read_text())
+        manifest_path = Path(latest['manifest_path'])
+        if not manifest_path.exists():
+            return None
+        manifest = json.loads(manifest_path.read_text())
+        manifest['_manifest_path'] = str(manifest_path)
+        return manifest
+    except (OSError, KeyError, json.JSONDecodeError, TypeError):
+        return None
+
+
+def _manifest_snapshot_size(manifest: dict[str, Any]) -> int:
+    paths = [
+        manifest.get('accepted_records_path') or manifest.get('records_path'),
+        manifest.get('delta_path'),
+        manifest.get('_manifest_path'),
+    ]
+    return sum(_path_size_bytes(Path(path)) for path in paths if path)
+
+
+def _path_size_bytes(path: Path) -> int:
+    try:
+        if path.is_file():
+            return path.stat().st_size
+        if path.is_dir():
+            return sum(
+                child.stat().st_size
+                for child in path.rglob('*')
+                if child.is_file()
+            )
+    except OSError:
+        return 0
+    return 0
+
+
+def _manifest_downloaded_at(manifest: dict[str, Any]) -> datetime | None:
+    fingerprint = manifest.get('download_fingerprint') or {}
+    mtime_ns = fingerprint.get('mtime_ns')
+    if mtime_ns is not None:
+        try:
+            return datetime.fromtimestamp(int(mtime_ns) / 1_000_000_000, UTC)
+        except (TypeError, ValueError, OSError, OverflowError):
+            return None
+    return None
+
+
+def _parse_datetime(value: object) -> datetime | None:
+    if not value:
+        return None
+    text = str(value)
+    if text.endswith('Z'):
+        text = f'{text[:-1]}+00:00'
+    try:
+        dt = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=UTC)
+    return dt
+
+
+def _max_datetime(values: Iterable[datetime | None]) -> datetime | None:
+    datetimes = [value for value in values if value is not None]
+    return max(datetimes) if datetimes else None
 
 
 def _source_counts(
