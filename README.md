@@ -76,7 +76,7 @@ make db-reset
 
 ### Load And Canonicalize
 
-Load any sources that are not already present. The DuckDB direct loader
+Load any sources that are not already present. The DuckDB/PostgreSQL loader
 projects evidence, canonicalizes it, and copies the result into PostgreSQL:
 
 ```bash
@@ -108,7 +108,7 @@ derived count/search tables, and bitmaps.
 ### Full Scratch Build
 
 Build resolver files, recreate the database schema, load all sources through
-the DuckDB direct pipeline, and derive query tables:
+the DuckDB/PostgreSQL pipeline, and derive query tables:
 
 ```bash
 make all DROP_EXISTING=1
@@ -130,7 +130,7 @@ Limit source rows per dataset:
 make load SOURCE=bindingdb MAX_RECORDS=200000 SCHEMA=omnipath_test
 ```
 
-The default DuckDB direct load batch size is `BATCH_SIZE=50000`, which is safer
+The default load batch size is `BATCH_SIZE=50000`, which is safer
 for full loads.
 
 ### Maintenance

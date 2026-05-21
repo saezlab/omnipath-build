@@ -1,1 +1,1 @@
-"""DuckDB direct OmniPath build pipeline."""
+"""DuckDB/PostgreSQL OmniPath build pipeline."""

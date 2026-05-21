@@ -16,6 +16,9 @@ LOAD_SOURCES = $(strip $(SELECTED_SOURCES))
 MAPPING_DIR ?= $(DATA_ROOT)
 RESOLVER_SOURCES ?=
 BATCH_SIZE ?= 50000
+THREADS ?= 4
+LOAD_JOBS ?= 1
+STAGING_DIR ?=
 RESOLVER_BATCH_SIZE ?= 100000
 OBO_DIR ?= $(DATA_ROOT)/obo
 
@@ -143,7 +146,7 @@ load:
 		echo "DATABASE_URL is required, e.g. make load SOURCE=uniprot DATABASE_URL=postgresql://user:pass@host:5432/dbname"; \
 		exit 1; \
 	fi
-	@echo "[omnipath_build] duckdb-load sources=$(LOAD_SOURCES) schema=$(SCHEMA) batch_size=$(BATCH_SIZE)"
+	@echo "[omnipath_build] load sources=$(LOAD_SOURCES) schema=$(SCHEMA) batch_size=$(BATCH_SIZE) threads=$(THREADS) load_jobs=$(LOAD_JOBS)"
 	@PYTHONUNBUFFERED=1 uv run python -m omnipath_build.duckdb_direct_pipeline \
 		--database-url "$(DATABASE_URL)" \
 		--schema "$(SCHEMA)" \
@@ -154,6 +157,9 @@ load:
 		$(if $(DATASET),--dataset "$(DATASET)") \
 		$(DUCKDB_MAX_RECORDS_ARG) \
 		--batch-size "$(BATCH_SIZE)" \
+		--threads "$(THREADS)" \
+		--stage-jobs "$(LOAD_JOBS)" \
+		$(if $(STAGING_DIR),--staging-dir "$(STAGING_DIR)") \
 		$(if $(filter 0 false no,$(OBO_ARTIFACTS)),--no-obo-artifacts,--obo-artifacts) \
 		--obo-output-dir "$(OBO_DIR)" \
 		$(if $(FORCE_REFRESH),--force-refresh) \

@@ -1,6 +1,6 @@
 """Discover runnable pypath ``inputs_v2`` resources for the build pipeline.
 
-The DuckDB direct pipeline does not keep a hand-written list of datasets.
+The build pipeline does not keep a hand-written list of datasets.
 Instead, it imports the configured inputs package, walks resource modules, and
 collects ``Resource``, ``Dataset``, ``OntologyDataset``, and
 ``ArtifactDataset`` objects exposed by pypath. Only entity and ontology datasets

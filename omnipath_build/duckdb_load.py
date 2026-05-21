@@ -1,4 +1,4 @@
-"""Low-level DuckDB/PostgreSQL load helpers for the direct COPY pipeline."""
+"""Low-level DuckDB/PostgreSQL load helpers for the COPY pipeline."""
 
 from __future__ import annotations
 

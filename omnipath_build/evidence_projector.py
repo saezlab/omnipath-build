@@ -1,4 +1,4 @@
-"""Shared evidence projection rules for the DuckDB direct load pipeline."""
+"""Shared evidence projection rules for the DuckDB/PostgreSQL load pipeline."""
 
 from __future__ import annotations
 

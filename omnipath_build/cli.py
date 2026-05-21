@@ -1,4 +1,4 @@
-"""Administrative CLI for the DuckDB direct build pipeline.
+"""Administrative CLI for the DuckDB/PostgreSQL build pipeline.
 
 Source loading is handled by ``omnipath_build.duckdb_direct_pipeline``. This
 module keeps the supporting database, resolver-materialization, source-deletion,
@@ -36,7 +36,7 @@ def main(argv: list[str] | None = None) -> int:
 
     parser = argparse.ArgumentParser(
         prog='omnipath_build',
-        description='DuckDB direct pipeline administration.',
+        description='DuckDB/PostgreSQL pipeline administration.',
     )
     parser.add_argument(
         '--database-url',
