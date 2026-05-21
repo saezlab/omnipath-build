@@ -26,13 +26,14 @@ from omnipath_build.relation_rules import (
     annotation_predicate,
     predicate_for_membership,
     predicate_for_interaction,
-    order_interaction_participants,
+    order_relation_participants,
 )
 from pypath.internals.cv_terms import cv_term_label_accession
 from pypath.internals.cv_terms import IdentifierNamespaceCv
 from omnipath_build.cv_terms import (
-    CV_TERM_ENTITY_TYPE,
     CV_TERM_ID_TYPE,
+    CV_TERM_ENTITY_TYPE,
+    normalize_entity_type,
 )
 
 
@@ -101,7 +102,7 @@ def entity_to_row(entity: Entity) -> dict[str, object]:
     """Convert a silver entity object into the row shape used by ingest."""
 
     return {
-        'type': text_or_none(getattr(entity, 'type', None)),
+        'type': normalize_entity_type(getattr(entity, 'type', None)),
         'identifiers': [
             identifier_to_row(identifier)
             for identifier in getattr(entity, 'identifiers', None) or []
@@ -374,13 +375,16 @@ def interaction_relation_spec(
     participants = [
         {
             'ref': member_ref,
+            'entity_type': text_or_none(
+                getattr(getattr(membership, 'member', None), 'type', None)
+            ),
             'membership_annotations': annotations_to_rows(
                 getattr(membership, 'annotations', None) or []
             ),
         }
         for member_ref, membership in member_refs
     ]
-    ordered = order_interaction_participants(participants)
+    ordered = order_relation_participants(row, participants)
     if len(ordered) != 2:
         return None
     return RelationSpec(

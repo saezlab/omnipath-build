@@ -14,27 +14,25 @@ association or generic interaction predicates instead of inventing direction.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
-from dataclasses import dataclass
 from typing import Any
+from dataclasses import dataclass
+from collections.abc import Iterable
 
 from pypath.internals.cv_terms import (
-    BiologicalRoleCv,
     CvEnum,
+    BiologicalRoleCv,
     ExperimentalRoleCv,
     IdentifierNamespaceCv,
     InteractionMetadataCv,
     ParticipantMetadataCv,
 )
 from pypath.internals.cv_terms.entity_types import EntityTypeCv
-
 from omnipath_build.shared_interaction_schema import (
-    NEGATIVE_SIGN_ACCESSIONS,
-    POSITIVE_SIGN_ACCESSIONS,
     SOURCE_ROLE_ACCESSIONS,
     TARGET_ROLE_ACCESSIONS,
+    NEGATIVE_SIGN_ACCESSIONS,
+    POSITIVE_SIGN_ACCESSIONS,
 )
-
 
 def _iter_cv_subclasses(base: type) -> Iterable[type]:
     for subcls in base.__subclasses__():
@@ -75,10 +73,19 @@ INTERACTION_LIKE_TYPES = {
     str(EntityTypeCv.CATALYSIS),
     str(EntityTypeCv.CONTROL),
     str(EntityTypeCv.DEGRADATION),
+    str(EntityTypeCv.TRANSPORT),
 }
 
 ASSOCIATION_PREDICATE = 'associated_with'
 ASSOCIATION_CATEGORY = 'association'
+INTERACTION_CATEGORY = 'interaction'
+TRANSPORT_PREDICATE = 'transports'
+TRANSPORTER_ENTITY_TYPES = {
+    str(EntityTypeCv.PROTEIN),
+    str(EntityTypeCv.GENE),
+    str(EntityTypeCv.COMPLEX),
+    str(EntityTypeCv.PROTEIN_FAMILY),
+}
 
 MEMBERSHIP_RULES: dict[str, str] = {
     str(EntityTypeCv.COMPLEX): 'has_member',
@@ -140,10 +147,10 @@ def predicate_for_interaction(
 
     if row_type_accession == str(EntityTypeCv.INTERACTION):
         if sign > 0:
-            return PredicateRule('positively_regulates', 'interaction')
+            return PredicateRule('positively_regulates', INTERACTION_CATEGORY)
         if sign < 0:
-            return PredicateRule('negatively_regulates', 'interaction')
-        return PredicateRule('interacts_with', 'interaction')
+            return PredicateRule('negatively_regulates', INTERACTION_CATEGORY)
+        return PredicateRule('interacts_with', INTERACTION_CATEGORY)
     if row_type_accession == str(EntityTypeCv.ASSOCIATION):
         return PredicateRule(ASSOCIATION_PREDICATE, ASSOCIATION_CATEGORY)
     if row_type_accession in {
@@ -152,19 +159,54 @@ def predicate_for_interaction(
         str(EntityTypeCv.DEGRADATION),
     }:
         if sign > 0:
-            return PredicateRule('positively_regulates', 'interaction')
+            return PredicateRule('positively_regulates', INTERACTION_CATEGORY)
         if sign < 0:
-            return PredicateRule('negatively_regulates', 'interaction')
-        return PredicateRule('regulates', 'interaction')
+            return PredicateRule('negatively_regulates', INTERACTION_CATEGORY)
+        return PredicateRule('regulates', INTERACTION_CATEGORY)
     if row_type_accession == str(EntityTypeCv.REACTION):
         if has_role_ordering(ordered_participants):
-            return PredicateRule('transforms_to', 'interaction')
-        return PredicateRule('interacts_with', 'interaction')
+            return PredicateRule('transforms_to', INTERACTION_CATEGORY)
+        return PredicateRule('interacts_with', INTERACTION_CATEGORY)
+    if row_type_accession == str(EntityTypeCv.TRANSPORT):
+        return PredicateRule(TRANSPORT_PREDICATE, INTERACTION_CATEGORY)
     if sign > 0:
-        return PredicateRule('positively_regulates', 'interaction')
+        return PredicateRule('positively_regulates', INTERACTION_CATEGORY)
     if sign < 0:
-        return PredicateRule('negatively_regulates', 'interaction')
-    return PredicateRule('related_to', 'interaction')
+        return PredicateRule('negatively_regulates', INTERACTION_CATEGORY)
+    return PredicateRule('related_to', INTERACTION_CATEGORY)
+
+
+def order_relation_participants(
+    row: dict[str, Any],
+    participants: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Order participants for relation projection."""
+
+    row_type = entity_type_accession(string_or_none(row.get('type')))
+    if row_type == str(EntityTypeCv.TRANSPORT):
+        return order_transport_participants(participants)
+    return order_interaction_participants(participants)
+
+
+def order_transport_participants(
+    participants: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Put the transporter-like participant before the transported substrate."""
+
+    if len(participants) != 2:
+        return participants
+    transporter_indexes = [
+        index
+        for index, participant in enumerate(participants)
+        if entity_type_accession(string_or_none(participant.get('entity_type')))
+        in TRANSPORTER_ENTITY_TYPES
+    ]
+    if len(transporter_indexes) != 1:
+        return order_interaction_participants(participants)
+    transporter_index = transporter_indexes[0]
+    if transporter_index == 0:
+        return participants
+    return [participants[1], participants[0]]
 
 
 def annotation_predicate(annotation: dict[str, Any]) -> str:
@@ -210,9 +252,15 @@ def order_interaction_participants(
     first, second = participants
     first_terms = annotation_terms(first.get('membership_annotations') or [])
     second_terms = annotation_terms(second.get('membership_annotations') or [])
-    if first_terms & SOURCE_ROLE_ACCESSIONS and second_terms & TARGET_ROLE_ACCESSIONS:
+    if (
+        first_terms & SOURCE_ROLE_ACCESSIONS
+        and second_terms & TARGET_ROLE_ACCESSIONS
+    ):
         return [first, second]
-    if second_terms & SOURCE_ROLE_ACCESSIONS and first_terms & TARGET_ROLE_ACCESSIONS:
+    if (
+        second_terms & SOURCE_ROLE_ACCESSIONS
+        and first_terms & TARGET_ROLE_ACCESSIONS
+    ):
         return [second, first]
     return participants
 
@@ -222,8 +270,12 @@ def has_role_ordering(participants: list[dict[str, Any]]) -> bool:
 
     if len(participants) != 2:
         return False
-    first_terms = annotation_terms(participants[0].get('membership_annotations') or [])
-    second_terms = annotation_terms(participants[1].get('membership_annotations') or [])
+    first_terms = annotation_terms(
+        participants[0].get('membership_annotations') or []
+    )
+    second_terms = annotation_terms(
+        participants[1].get('membership_annotations') or []
+    )
     return bool(
         (
             first_terms & SOURCE_ROLE_ACCESSIONS
@@ -259,7 +311,7 @@ def entity_type_accession(entity_type: str | None) -> str | None:
     return entity_type
 
 
-def string_or_none(value: Any) -> str | None:
+def string_or_none(value: object) -> str | None:
     """Normalize blank values to ``None`` and non-blank values to text."""
 
     if value is None:
