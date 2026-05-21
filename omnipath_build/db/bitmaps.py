@@ -251,7 +251,22 @@ def _populate_annotation_term_relation_bitmap(
     cur.execute(
         sql.SQL(
             """
-            WITH ontology_associations AS (
+            WITH relation_endpoint_bitmap AS (
+              SELECT
+                endpoint.entity_id,
+                rb_build_agg(relation_bitmap.bitmap_id) AS relation_bitmap
+              FROM (
+                SELECT subject_entity_id AS entity_id, relation_id
+                FROM {}.relation
+                UNION ALL
+                SELECT object_entity_id AS entity_id, relation_id
+                FROM {}.relation
+              ) endpoint
+              JOIN {}.relation_bitmap_id relation_bitmap
+                ON relation_bitmap.relation_id = endpoint.relation_id
+              GROUP BY endpoint.entity_id
+            ),
+            ontology_associations AS (
               SELECT r.subject_entity_id, r.object_entity_id
               FROM {}.relation r
               JOIN {}.entity term
@@ -263,20 +278,14 @@ def _populate_annotation_term_relation_bitmap(
               WHERE rc.name = 'association'
                 AND term_type.name = {}
             ),
-            relation_terms AS (
+            term_relation_bitmap AS (
               SELECT
                 ann.object_entity_id AS term_entity_id,
-                r.relation_id
+                rb_or_agg(endpoint.relation_bitmap) AS relation_bitmap
               FROM ontology_associations ann
-              JOIN {}.relation r
-                ON r.subject_entity_id = ann.subject_entity_id
-              UNION
-              SELECT
-                ann.object_entity_id AS term_entity_id,
-                r.relation_id
-              FROM ontology_associations ann
-              JOIN {}.relation r
-                ON r.object_entity_id = ann.subject_entity_id
+              JOIN relation_endpoint_bitmap endpoint
+                ON endpoint.entity_id = ann.subject_entity_id
+              GROUP BY ann.object_entity_id
             )
             INSERT INTO {}.annotation_term_relation_bitmap (
               term_entity_id,
@@ -285,22 +294,19 @@ def _populate_annotation_term_relation_bitmap(
             )
             SELECT
               term_entity_id,
-              rb_build_agg(DISTINCT relation_bitmap.bitmap_id),
-              COUNT(DISTINCT relation_terms.relation_id)::integer
-            FROM relation_terms
-            JOIN {}.relation_bitmap_id relation_bitmap
-              ON relation_bitmap.relation_id = relation_terms.relation_id
-            GROUP BY term_entity_id
+              relation_bitmap,
+              rb_cardinality(relation_bitmap)::integer
+            FROM term_relation_bitmap
             """
         ).format(
             schema_id,
             schema_id,
             schema_id,
             schema_id,
+            schema_id,
+            schema_id,
+            schema_id,
             sql.Literal(CV_TERM_ENTITY_TYPE),
-            schema_id,
-            schema_id,
-            schema_id,
             schema_id,
         )
     )
