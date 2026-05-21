@@ -14,6 +14,7 @@ from psycopg2 import sql
 
 from omnipath_build.cv_terms import (
     CV_TERM_ID_TYPE,
+    GENE_ENTITY_TYPE,
     CV_TERM_ENTITY_TYPE,
     SMALL_MOLECULE_ENTITY_TYPE,
 )
@@ -739,6 +740,7 @@ def _ensure_duckdb_canonical_caches(con: duckdb.DuckDBPyConnection) -> None:
 def _drop_duckdb_batch_tables(con: duckdb.DuckDBPyConnection) -> None:
     for table in (
         'evidence_identifier_key',
+        'resolver_entity_type_match',
         'needed_resolver_lookup',
         'entity_identifier_group',
         'entity_resolution_base',
@@ -786,11 +788,33 @@ def _canonicalize_loaded_duckdb(
     )
     con.execute(
         """
+        CREATE TABLE resolver_entity_type_match AS
+        SELECT ? AS evidence_entity_type, ? AS resolver_entity_type
+        UNION ALL
+        SELECT ?, ?
+        UNION ALL
+        SELECT ?, ?
+        """,
+        [
+            PROTEIN_ENTITY_TYPE,
+            PROTEIN_ENTITY_TYPE,
+            GENE_ENTITY_TYPE,
+            PROTEIN_ENTITY_TYPE,
+            SMALL_MOLECULE_ENTITY_TYPE,
+            SMALL_MOLECULE_ENTITY_TYPE,
+        ],
+    )
+    con.execute(
+        """
         CREATE TABLE needed_resolver_lookup AS
-        SELECT DISTINCT rl.*
+        SELECT DISTINCT
+          etm.evidence_entity_type,
+          rl.*
         FROM resolver_lookup rl
+        JOIN resolver_entity_type_match etm
+          ON etm.resolver_entity_type = rl.entity_type
         JOIN evidence_identifier_key k
-          ON k.entity_type = rl.entity_type
+          ON k.entity_type = etm.evidence_entity_type
          AND k.key_identifier_type_id = rl.key_identifier_type_id
          AND k.key_value = rl.key_value
          AND (
@@ -876,7 +900,7 @@ def _canonicalize_loaded_duckdb(
         LEFT JOIN needed_resolver_lookup rl
           ON rl.key_identifier_type_id = kit.identifier_type_id
          AND rl.key_value = ei.identifier
-         AND rl.entity_type = ee.entity_type
+         AND rl.evidence_entity_type = ee.entity_type
          AND (
            rl.taxonomy_id = ee.taxonomy_id
            OR rl.taxonomy_id IS NULL
@@ -1079,8 +1103,10 @@ def _canonicalize_loaded_duckdb(
             rl.key_identifier_type_id AS identifier_type_id,
             rl.key_value AS identifier
           FROM needed_protein_key np
+          JOIN resolver_entity_type_match etm
+            ON etm.evidence_entity_type = np.entity_type
           JOIN resolver_lookup rl
-            ON rl.entity_type = np.entity_type
+            ON rl.entity_type = etm.resolver_entity_type
            AND rl.canonical_identifier_type_id = np.canonical_identifier_type_id
            AND rl.canonical_identifier = np.canonical_identifier
            AND (

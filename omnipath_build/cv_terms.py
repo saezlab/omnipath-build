@@ -52,3 +52,17 @@ SUPPORTED_ENTITY_TYPE_ALIASES = (
 )
 
 CV_TERM_ID_TYPE = cv_term_label_accession(IdentifierNamespaceCv.CV_TERM_ACCESSION)
+
+
+def normalize_entity_type(value: object) -> str | None:
+    """Normalize enum-like entity type values to nullable text."""
+
+    if value is None:
+        return None
+    text = cv_term_label_accession(value)
+    if text:
+        return text
+    if hasattr(value, 'value'):
+        value = value.value
+    text = str(value).strip()
+    return text or None
