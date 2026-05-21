@@ -10,10 +10,11 @@ make setup
 
 This project uses `uv` for dependency management.
 
-## PostgreSQL Pipeline
+## DuckDB Direct Pipeline
 
-The omnipath_build pipeline writes `inputs_v2` sources directly to PostgreSQL evidence
-tables, then canonicalizes them into entity and relation tables.
+The `omnipath_build` pipeline streams `inputs_v2` sources into DuckDB evidence
+tables, canonicalizes them in DuckDB, and copies the projected evidence and
+canonical rows into PostgreSQL.
 
 For the data model, phase boundaries, refresh semantics, and common workflows,
 see [docs/pipeline.md](docs/pipeline.md).
@@ -48,7 +49,7 @@ make resolver PUBCHEM_URL=https://example.org/pubchem.sdf.gz
 
 ### Prepare Database
 
-Create schema, load resolver tables, and create indexes:
+Create schema and supporting indexes:
 
 ```bash
 make db-setup
@@ -73,9 +74,10 @@ Drop and recreate the target schema without loading resolver tables:
 make db-reset
 ```
 
-### Ingest And Canonicalize
+### Load And Canonicalize
 
-Load any sources that are not already present and canonicalize them:
+Load any sources that are not already present. The DuckDB direct loader
+projects evidence, canonicalizes it, and copies the result into PostgreSQL:
 
 ```bash
 make load
@@ -100,22 +102,13 @@ parser output:
 make reload SOURCE=bindingdb
 ```
 
-Run phases separately:
-
-```bash
-make ingest SOURCE=bindingdb
-make canonicalize SOURCE=bindingdb
-make derive
-```
-
-`canonicalize` creates any deferred evidence indexes first if they are missing.
 Run `make derive` after loading the selected sources to refresh query indexes,
 derived count/search tables, and bitmaps.
 
 ### Full Scratch Build
 
-Build resolver files, recreate the database schema, load all sources,
-canonicalize, and derive query tables:
+Build resolver files, recreate the database schema, load all sources through
+the DuckDB direct pipeline, and derive query tables:
 
 ```bash
 make all DROP_EXISTING=1
@@ -137,20 +130,8 @@ Limit source rows per dataset:
 make load SOURCE=bindingdb MAX_RECORDS=200000 SCHEMA=omnipath_test
 ```
 
-Ingest only, without canonicalization:
-
-```bash
-make ingest SOURCE=bindingdb MAX_RECORDS=200000 SCHEMA=omnipath_test
-```
-
-Use one final bulk flush instead of 50k-row chunks:
-
-```bash
-make ingest SOURCE=bindingdb MAX_RECORDS=200000 BATCH_SIZE=0
-```
-
-The default chunk size is `BATCH_SIZE=50000`, which is safer for full
-loads.
+The default DuckDB direct load batch size is `BATCH_SIZE=50000`, which is safer
+for full loads.
 
 ### Maintenance
 

@@ -1,4 +1,4 @@
-.PHONY: setup resolver ontology-artifacts db-setup db-reset reset-content drop-source ingest canonicalize derive load reload pipeline all test
+.PHONY: setup resolver ontology-artifacts db-setup db-reset reset-content drop-source derive load reload pipeline all test
 
 DATA_ROOT ?= data
 DATABASE ?= omnipath
@@ -17,7 +17,6 @@ MAPPING_DIR ?= $(DATA_ROOT)
 RESOLVER_SOURCES ?=
 BATCH_SIZE ?= 50000
 RESOLVER_BATCH_SIZE ?= 100000
-PROGRESS_EVERY ?= 1000
 OBO_DIR ?= $(DATA_ROOT)/obo
 
 DROP_EXISTING ?=
@@ -127,14 +126,6 @@ drop-source:
 			drop-source \
 			--source "$$source"; \
 	done
-
-ingest:
-	@echo "[omnipath_build] the Makefile supports only the DuckDB direct load path; use 'make load'"
-	@exit 1
-
-canonicalize:
-	@echo "[omnipath_build] canonicalization is part of DuckDB direct load; use 'make load'"
-	@exit 1
 
 derive:
 	@if [ -z "$(DATABASE_URL)" ]; then \

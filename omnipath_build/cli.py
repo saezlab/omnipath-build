@@ -1,21 +1,15 @@
-"""Command-line orchestration for the direct-to-Postgres build pipeline.
+"""Administrative CLI for the DuckDB direct build pipeline.
 
-The CLI keeps the build split into explicit phases. Resolver commands prepare
-identifier lookup tables, ingest refreshes source-scoped evidence, canonicalize
-resolves that evidence into the shared entity/relation graph, and derive
-refreshes query-oriented tables and bitmap indexes. The Makefile wraps these
-commands, but this module is the single place where phase options and their
-execution order are defined.
+Source loading is handled by ``omnipath_build.duckdb_direct_pipeline``. This
+module keeps the supporting database, resolver-materialization, source-deletion,
+and derived-table maintenance commands.
 """
 
 from __future__ import annotations
 
 import os
 import sys
-import time
-from pathlib import Path
 import argparse
-from itertools import islice
 
 import psycopg2
 
@@ -28,31 +22,21 @@ from omnipath_build.db import (
     rebuild_derived_tables,
     ensure_deferred_indexes,
     create_secondary_indexes,
-    ensure_source_partitions,
     ensure_content_primary_keys,
     drop_deferred_content_indexes,
 )
-from omnipath_build.ingest import BulkIngestor
-from omnipath_build.loaders import (
-    load_ontology_terms,
-    load_resolver_tables,
-    load_resolver_sources,
-)
 from omnipath_build.resources import discover_resources
-from omnipath_build.canonicalize import canonicalize
-from pypath.internals.ontology_schema import OntologyTerm
-from pypath.inputs_v2.ontology_serializers import format_obo
 from omnipath_build.resolver.mapping_tables import (
     SOURCE_NAMES as RESOLVER_SOURCE_NAMES,
     run_sources as build_resolver_sources,
 )
 
 def main(argv: list[str] | None = None) -> int:
-    """Run the omnipath_build direct-to-Postgres command line interface."""
+    """Run the omnipath_build administrative command line interface."""
 
     parser = argparse.ArgumentParser(
         prog='omnipath_build',
-        description='Direct-to-Postgres evidence ingest pipeline.',
+        description='DuckDB direct pipeline administration.',
     )
     parser.add_argument(
         '--database-url',
@@ -128,70 +112,6 @@ def main(argv: list[str] | None = None) -> int:
         help='Skip resolver sources already present in the output directory.',
     )
 
-    resolver = subparsers.add_parser('load-resolver')
-    resolver.add_argument(
-        '--sources',
-        nargs='+',
-        choices=RESOLVER_SOURCE_NAMES,
-        default=None,
-        help=(
-            'Stream resolver sources directly into PostgreSQL. '
-            'If omitted, load parquet files from --mapping-dir.'
-        ),
-    )
-    resolver.add_argument('--mapping-dir', default='data')
-    resolver.add_argument('--batch-size', type=int, default=100_000)
-    resolver.add_argument(
-        '--taxonomy-id',
-        dest='taxonomy_ids',
-        action='append',
-        default=None,
-        help='Optional UniProt taxonomy filter for direct source loading.',
-    )
-    resolver.add_argument(
-        '--max-records',
-        type=int,
-        default=None,
-        help='Optional cap for direct chemical source rows in smoke tests.',
-    )
-    resolver.add_argument(
-        '--pubchem-url',
-        default=None,
-        help='Optional single PubChem SDF .gz URL/path for direct PubChem load.',
-    )
-    resolver.add_argument(
-        '--pubchem-shards',
-        type=int,
-        default=None,
-        help='Optional number of discovered PubChem SDF shards for direct load.',
-    )
-    resolver.add_argument(
-        '--drop-existing',
-        action=argparse.BooleanOptionalAction,
-        default=True,
-    )
-    resolver.add_argument('--no-indexes', action='store_true')
-
-    canon = subparsers.add_parser('canonicalize')
-    canon.add_argument('--source')
-    canon.add_argument('--dataset')
-    canon.add_argument(
-        '--unresolved-only',
-        action='store_true',
-        help='Reprocess only entities that are missing resolution or not resolved.',
-    )
-    canon.add_argument(
-        '--skip-relations',
-        action='store_true',
-        help='Resolve entities only and leave relation resolution unchanged.',
-    )
-    canon.add_argument(
-        '--ensure-schema',
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help='Ensure omnipath_build schema exists before canonicalization.',
-    )
-
     derive = subparsers.add_parser('derive')
     derive.add_argument(
         '--indexes',
@@ -219,54 +139,6 @@ def main(argv: list[str] | None = None) -> int:
     )
     derive.add_argument('--inputs-package', default='pypath.inputs_v2')
     derive.add_argument('--database', default='omnipath')
-
-    ingest = subparsers.add_parser('ingest')
-    ingest.add_argument(
-        '--source',
-        help='Optional source to run. Omit to discover all compatible sources.',
-    )
-    ingest.add_argument(
-        '--dataset',
-        help='Optional dataset/function name within the selected source.',
-    )
-    ingest.add_argument('--inputs-package', default='pypath.inputs_v2')
-    ingest.add_argument('--database', default='omnipath')
-    ingest.add_argument('--force-refresh', action='store_true')
-    ingest.add_argument(
-        '--max-records',
-        type=int,
-        default=None,
-        help='Optional cap on source rows per dataset for smoke tests.',
-    )
-    ingest.add_argument(
-        '--ensure-schema',
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help='Ensure omnipath_build schema exists before ingest.',
-    )
-    ingest.add_argument(
-        '--batch-size',
-        type=int,
-        default=50_000,
-        help='Source rows per bulk staging flush.',
-    )
-    ingest.add_argument(
-        '--profile',
-        action='store_true',
-        help='Print fine-grained bulk ingest timings for each flush.',
-    )
-    ingest.add_argument('--progress-every', type=int, default=1000)
-    ingest.add_argument(
-        '--obo-artifacts',
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help='Write ontology datasets as OBO artifacts for the API service.',
-    )
-    ingest.add_argument(
-        '--obo-output-dir',
-        default='data/obo',
-        help='Directory for OBO artifacts written from ontology datasets.',
-    )
 
     args = parser.parse_args(argv)
     if args.command == 'build-resolver':
@@ -346,72 +218,6 @@ def main(argv: list[str] | None = None) -> int:
                 flush=True,
             )
             return 0
-        if args.command == 'load-resolver':
-            if args.sources:
-                stats = load_resolver_sources(
-                    conn,
-                    sources=args.sources,
-                    schema=args.schema,
-                    batch_size=args.batch_size,
-                    drop_existing=args.drop_existing,
-                    indexes=not args.no_indexes,
-                    taxonomy_ids=args.taxonomy_ids,
-                    max_records=args.max_records,
-                    pubchem_url=args.pubchem_url,
-                    pubchem_shards=args.pubchem_shards,
-                )
-            else:
-                stats = load_resolver_tables(
-                    conn,
-                    schema=args.schema,
-                    mapping_dir=args.mapping_dir,
-                    batch_size=args.batch_size,
-                    drop_existing=args.drop_existing,
-                    indexes=not args.no_indexes,
-                )
-            print(
-                f'[resolver] proteins={stats.protein_rows} '
-                f'protein_ambiguous={stats.protein_ambiguous_rows} '
-                f'chemicals={stats.chemical_rows}',
-                flush=True,
-            )
-            return 0
-        if args.command == 'canonicalize':
-            if args.ensure_schema:
-                ensure_schema(
-                    conn,
-                    schema=args.schema,
-                    progress=True,
-                    indexes=False,
-                )
-            else:
-                print('[omnipath_build] schema check skipped', flush=True)
-            ensure_deferred_indexes(
-                conn,
-                schema=args.schema,
-                progress=True,
-            )
-            stats = canonicalize(
-                conn,
-                schema=args.schema,
-                source=args.source,
-                dataset=args.dataset,
-                unresolved_only=args.unresolved_only,
-                include_relations=not args.skip_relations,
-            )
-            print(
-                '[canonicalize] '
-                f'entity_scope={stats.entity_scope} '
-                f'candidate_rows={stats.candidate_rows} '
-                f'entities={stats.entities} '
-                f'entity_status={stats.entity_status} '
-                f'relation_scope={stats.relation_scope} '
-                f'relations={stats.relations} '
-                f'relation_mapped={stats.relation_mapped} '
-                f'relation_unmapped={stats.relation_unmapped}',
-                flush=True,
-            )
-            return 0
         if args.command == 'derive':
             ensure_content_primary_keys(conn, schema=args.schema, progress=True)
             ensure_schema(conn, schema=args.schema, indexes=False)
@@ -471,218 +277,8 @@ def main(argv: list[str] | None = None) -> int:
                     flush=True,
                 )
             return 0
-        if args.command == 'ingest':
-            if args.ensure_schema:
-                ensure_schema(conn, schema=args.schema, progress=True)
-            else:
-                print('[omnipath_build] schema check skipped', flush=True)
-            return _handle_ingest(conn, args)
 
     return 0
-
-
-def _selected_resource_functions(
-    args: argparse.Namespace,
-) -> list[object] | None:
-    started = time.perf_counter()
-    print(
-        '[omnipath_build] discovering input resources '
-        f'package={args.inputs_package} database={args.database}',
-        flush=True,
-    )
-    discovered, _ = discover_resources(
-        database_name=args.database,
-        inputs_package=args.inputs_package,
-        progress=True,
-    )
-    dataset_count = sum(len(functions) for functions in discovered.values())
-    print(
-        '[omnipath_build] discovery ready '
-        f'sources={len(discovered)} resource_functions={dataset_count} '
-        f'elapsed={time.perf_counter() - started:.1f}s',
-        flush=True,
-    )
-    source_names = [args.source] if args.source else sorted(discovered)
-    unknown = [source for source in source_names if source not in discovered]
-    if unknown:
-        print(f'Unknown source(s): {", ".join(unknown)}', file=sys.stderr)
-        return None
-
-    dataset = args.dataset
-    selected = [
-        fn
-        for source in source_names
-        for fn in discovered[source]
-        if fn.function_name != 'resource'
-        and fn.output_kind in {'entity', 'ontology'}
-        and (dataset is None or fn.function_name == dataset)
-        and getattr(fn.call, '_raw_dataset', None) is not None
-    ]
-    if not selected:
-        print('No matching entity/ontology datasets found.', file=sys.stderr)
-        return None
-    print(
-        '[omnipath_build] refresh plan '
-        f'sources={len({fn.source for fn in selected})} '
-        f'datasets={len(selected)}',
-        flush=True,
-    )
-    return selected
-
-
-def _handle_ingest(
-    conn: psycopg2.extensions.connection,
-    args: argparse.Namespace,
-) -> int:
-    selected = _selected_resource_functions(args)
-    if selected is None:
-        return 2
-
-    selected_by_source: dict[str, list[object]] = {}
-    for fn in selected:
-        selected_by_source.setdefault(fn.source, []).append(fn)
-
-    for source, functions in selected_by_source.items():
-        source_started = time.perf_counter()
-        dataset_names = ','.join(fn.function_name for fn in functions)
-        print(
-            f'[{source}] refresh start datasets={len(functions)} '
-            f'names={dataset_names}',
-            flush=True,
-        )
-        delete_started = time.perf_counter()
-        print(
-            f'[{source}] refresh deleting existing source content', flush=True
-        )
-        delete_source_content(conn, schema=args.schema, source=source)
-        ensure_source_partitions(conn, schema=args.schema, source=source)
-        print(
-            f'[{source}] refresh delete done '
-            f'elapsed={time.perf_counter() - delete_started:.1f}s',
-            flush=True,
-        )
-        for fn in functions:
-            raw_dataset = getattr(fn.call, '_raw_dataset', None)
-            if raw_dataset is None:
-                continue
-            try:
-                dataset_started = time.perf_counter()
-                print(
-                    f'[{fn.source}.{fn.function_name}] stream start '
-                    f'kind={fn.output_kind}',
-                    flush=True,
-                )
-                raw_kwargs = {'force_refresh': args.force_refresh}
-                if fn.source == 'chembl' and args.max_records is not None:
-                    raw_kwargs['max_records'] = args.max_records
-                records = raw_dataset(**raw_kwargs)
-                if args.max_records is not None:
-                    records = islice(records, args.max_records)
-                if fn.output_kind == 'ontology':
-                    terms = _collect_ontology_terms(records)
-                    if args.obo_artifacts:
-                        obo_path = _write_ontology_obo(
-                            fn,
-                            terms,
-                            output_dir=Path(args.obo_output_dir),
-                        )
-                        print(
-                            f'[{fn.source}.{fn.function_name}] obo={obo_path}',
-                            flush=True,
-                        )
-                    stats = load_ontology_terms(
-                        conn,
-                        terms,
-                        schema=args.schema,
-                        source=fn.source,
-                        dataset=fn.function_name,
-                        ontology_id=fn.ontology_id or fn.function_name,
-                        batch_size=args.batch_size,
-                        progress_every=args.progress_every,
-                    )
-                    print(
-                        f'[{fn.source}.{fn.function_name}] '
-                        f'ontology_terms={stats.terms} '
-                        f'annotations={stats.annotations}',
-                        flush=True,
-                    )
-                    print(
-                        f'[{fn.source}.{fn.function_name}] stream done '
-                        f'elapsed={time.perf_counter() - dataset_started:.1f}s',
-                        flush=True,
-                    )
-                    continue
-
-                ingestor = BulkIngestor(
-                    conn,
-                    schema=args.schema,
-                    profile=args.profile,
-                )
-                stats = ingestor.ingest_records(
-                    records,
-                    source=fn.source,
-                    dataset=fn.function_name,
-                    batch_size=args.batch_size,
-                    progress_every=args.progress_every,
-                )
-                print(
-                    f'[{fn.source}.{fn.function_name}] '
-                    f'rows={stats.source_rows} '
-                    f'entities={stats.entity_evidence} '
-                    f'relations={stats.relation_evidence} '
-                    f'identifiers={stats.identifiers} '
-                    f'annotations={stats.annotations}',
-                    flush=True,
-                )
-                print(
-                    f'[{fn.source}.{fn.function_name}] stream done '
-                    f'elapsed={time.perf_counter() - dataset_started:.1f}s',
-                    flush=True,
-                )
-            except Exception as exc:
-                conn.rollback()
-                _warn_dataset_failed(fn, exc)
-                continue
-        print(
-            f'[{source}] refresh done '
-            f'elapsed={time.perf_counter() - source_started:.1f}s',
-            flush=True,
-        )
-    return 0
-
-
-def _warn_dataset_failed(fn: object, exc: Exception) -> None:
-    print(
-        '[warning] '
-        f'[{fn.source}.{fn.function_name}] ingest failed; continuing: '
-        f'{exc.__class__.__name__}: {exc}',
-        file=sys.stderr,
-        flush=True,
-    )
-
-
-def _collect_ontology_terms(records: object) -> list[OntologyTerm]:
-    terms: list[OntologyTerm] = []
-    for record in records:
-        value = getattr(record, 'record', record)
-        if isinstance(value, OntologyTerm) and value.id:
-            terms.append(value)
-    return terms
-
-
-def _write_ontology_obo(
-    fn: object,
-    terms: list[OntologyTerm],
-    *,
-    output_dir: Path,
-) -> Path:
-    extension = (getattr(fn, 'file_extension', None) or 'obo').lstrip('.')
-    file_stem = getattr(fn, 'file_stem', None) or fn.function_name
-    document = fn.document
-    output_dir.mkdir(parents=True, exist_ok=True)
-    output_path = output_dir / f'{file_stem}.{extension}'
-    output_path.write_text(format_obo(document, terms), encoding='utf-8')
-    return output_path
 
 
 if __name__ == '__main__':

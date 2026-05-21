@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from itertools import islice
 from pathlib import Path
 import tempfile
+from itertools import islice
+from collections.abc import Iterable
 
 import duckdb
 import pyarrow as pa
@@ -12,24 +13,24 @@ import psycopg2
 from psycopg2 import sql
 
 from omnipath_build.cv_terms import (
-    CV_TERM_ENTITY_TYPE,
     CV_TERM_ID_TYPE,
+    CV_TERM_ENTITY_TYPE,
     SMALL_MOLECULE_ENTITY_TYPE,
 )
 from omnipath_build.ingest.common import unwrap_record
-from omnipath_build.parquet_projector import (
-    ParquetEvidenceProjector,
+from pypath.internals.silver_schema import Entity
+from pypath.internals.ontology_schema import OntologyTerm
+from omnipath_build.evidence_projector import (
+    ProjectionStats,
+    EvidenceProjectorBase,
     _MutableProjectionStats,
 )
 from omnipath_build.resolver.identifier_types import (
-    COMPLEX_MEMBER_HASH_ID_TYPE,
-    IDENTIFIER_TYPE_NAMES,
     UNRESOLVED_ID_TYPE,
+    IDENTIFIER_TYPE_NAMES,
+    COMPLEX_MEMBER_HASH_ID_TYPE,
     identifier_type_id,
 )
-from pypath.internals.silver_schema import Entity
-from pypath.internals.ontology_schema import OntologyTerm
-
 
 PROTEIN_ENTITY_TYPE = 'Protein:MI:0326'
 COMPLEX_ENTITY_TYPE = 'Complex:MI:0314'
@@ -290,7 +291,7 @@ def _create_duckdb_identifier_type_all_view(
     )
 
 
-class DuckDBEvidenceProjector(ParquetEvidenceProjector):
+class DuckDBEvidenceProjector(EvidenceProjectorBase):
     """Flatten silver entity streams into DuckDB evidence tables."""
 
     def __init__(
@@ -299,7 +300,7 @@ class DuckDBEvidenceProjector(ParquetEvidenceProjector):
         *,
         chunk_size: int = 100_000,
     ) -> None:
-        super().__init__(':duckdb:', chunk_size=chunk_size)
+        super().__init__(chunk_size=chunk_size)
         self.con = con
 
     def project_records(
@@ -310,7 +311,9 @@ class DuckDBEvidenceProjector(ParquetEvidenceProjector):
         dataset: str,
         max_records: int | None = None,
         row_offset: int = 0,
-    ):
+    ) -> ProjectionStats:
+        """Project source records into loaded DuckDB evidence tables."""
+
         if max_records is not None:
             records = islice(records, max_records)
 
@@ -2169,13 +2172,17 @@ def _bulk_copy_evidence(
     database_url: str,
 ) -> None:
     source_id = _duckdb_source_id(con)
+    existing_identifier_evidence = _duckdb_pg_table(
+        schema,
+        'identifier_evidence',
+    )
     _copy_duckdb_query_to_postgres(
         con,
         database_url=database_url,
         schema=schema,
         table='identifier_evidence',
         columns=('identifier_id', 'identifier_type_id', 'value'),
-        query="""
+        query=f"""
           SELECT DISTINCT
             i.identifier_id::UUID,
             it.identifier_type_id,
@@ -2188,20 +2195,16 @@ def _bulk_copy_evidence(
           WHERE i.identifier_id IS NOT NULL
             AND i.identifier IS NOT NULL
             AND existing.identifier_id IS NULL
-        """.format(
-            existing_identifier_evidence=_duckdb_pg_table(
-                schema,
-                'identifier_evidence',
-            )
-        ),
+        """,
     )
+    existing_annotation = _duckdb_pg_table(schema, 'annotation')
     _copy_duckdb_query_to_postgres(
         con,
         database_url=database_url,
         schema=schema,
         table='annotation',
         columns=('annotation_key', 'term', 'value', 'unit'),
-        query="""
+        query=f"""
           SELECT DISTINCT
             pq_annotation.annotation_key::UUID,
             pq_annotation.term,
@@ -2212,7 +2215,7 @@ def _bulk_copy_evidence(
             ON existing.annotation_key = pq_annotation.annotation_key::UUID
           WHERE pq_annotation.term IS NOT NULL
             AND existing.annotation_key IS NULL
-        """.format(existing_annotation=_duckdb_pg_table(schema, 'annotation')),
+        """,
     )
     _copy_duckdb_query_to_postgres(
         con,
@@ -2374,6 +2377,8 @@ def _bulk_copy_canonical(
             existing_entity=_duckdb_pg_table(schema, 'entity'),
         ),
     )
+    cv_term_id_type = _sql_literal(CV_TERM_ID_TYPE)
+    cv_term_entity_type = _sql_literal(CV_TERM_ENTITY_TYPE)
     _copy_source_partition(
         con,
         database_url=database_url,
@@ -2391,7 +2396,7 @@ def _bulk_copy_canonical(
             'synonyms_text',
             'sources',
         ),
-        query="""
+        query=f"""
           SELECT
             ds.source_id,
             canonical_entity_uuid(
@@ -2444,10 +2449,7 @@ def _bulk_copy_canonical(
           JOIN load_data_source ds
             ON ds.name = ot.source
           WHERE ot.term_id IS NOT NULL
-        """.format(
-            cv_term_id_type=_sql_literal(CV_TERM_ID_TYPE),
-            cv_term_entity_type=_sql_literal(CV_TERM_ENTITY_TYPE),
-        ),
+        """,
         source_id=source_id,
     )
     _copy_source_partition(

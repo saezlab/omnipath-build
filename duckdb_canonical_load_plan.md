@@ -2,15 +2,17 @@
 
 ## Current Situation
 
-- The current experimental DuckDB path lives mostly in `omnipath_build/parquet_duckdb.py`.
+- The current DuckDB direct path lives in `omnipath_build/duckdb_direct_pipeline.py`
+  and `omnipath_build/duckdb_load.py`.
   - Projects source records into DuckDB evidence tables.
   - Canonicalizes entities and annotation-derived relations in DuckDB.
   - Loads Postgres through either DuckDB's Postgres extension or experimental `COPY` payloads.
   - Contains the current source-partition staging + `ATTACH PARTITION` experiment.
 
-- `omnipath_build/parquet_projector.py` contains the source-to-evidence flattening logic.
-  - `ParquetEvidenceProjector` writes intermediate Parquet evidence files.
-  - `DuckDBEvidenceProjector` in `parquet_duckdb.py` reuses the same flattening logic but writes directly into DuckDB tables.
+- `omnipath_build/evidence_projector.py` contains the shared source-to-evidence
+  flattening logic.
+  - `DuckDBEvidenceProjector` writes those projected rows directly into DuckDB
+    evidence tables.
 
 - `omnipath_build/db/schema.py` defines the Postgres schema.
   - Canonical `entity` and `relation` IDs have been changed experimentally to deterministic UUIDs.

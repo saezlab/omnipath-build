@@ -10,9 +10,9 @@ been benchmarking:
 5. COPY projected rows into PostgreSQL, attaching source partitions where
    supported by the lower-level loader.
 
-The low-level projection SQL still lives in ``parquet_duckdb`` while this path
-stabilizes. Keeping this file small makes the active benchmark pipeline easy to
-read without disturbing the older Parquet-first experiments.
+The low-level projection SQL lives in ``duckdb_load``. Keeping this file small
+makes the active benchmark pipeline easy to read while the direct loader
+stabilizes.
 """
 
 from __future__ import annotations
@@ -39,6 +39,8 @@ from omnipath_build.ontology_artifacts import (
 
 @dataclass(frozen=True)
 class DirectCopyStats:
+    """Timing and row counts for one direct COPY load."""
+
     source_rows: int
     identifiers: int
     annotations: int
@@ -57,6 +59,8 @@ class DirectCopyStats:
 
 @dataclass(frozen=True)
 class DirectCopyBatchStats:
+    """Aggregated counts for a batched direct COPY load."""
+
     batches: tuple[DirectCopyStats, ...]
     source_rows: int
     identifiers: int
@@ -67,6 +71,8 @@ class DirectCopyBatchStats:
 
 @dataclass(frozen=True)
 class DiscoveredLoadStats:
+    """Aggregated counts for discovered source loading."""
+
     sources: int
     skipped_sources: int
     datasets: int
@@ -152,7 +158,7 @@ def run_direct_copy_pipeline(
                 schema=schema,
             )
         con.execute(
-            f"ATTACH {duckdb_load._sql_literal(database_url)} AS pg (TYPE postgres)"
+            f'ATTACH {duckdb_load._sql_literal(database_url)} AS pg (TYPE postgres)'
         )
         duckdb_load._bulk_copy_evidence(
             con,
@@ -482,7 +488,7 @@ def run_discovered_direct_load(
                 dataset_count += 1
                 source_succeeded = True
                 first_dataset = False
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 failed_datasets += 1
                 source_failed = True
                 _warn_dataset_failed(fn, exc)
@@ -616,7 +622,7 @@ def _prepare_postgres_load(
 ) -> None:
     con.execute('LOAD postgres')
     con.execute(
-        f"ATTACH {duckdb_load._sql_literal(database_url)} AS pg (TYPE postgres)"
+        f'ATTACH {duckdb_load._sql_literal(database_url)} AS pg (TYPE postgres)'
     )
     duckdb_load._bulk_load_create_views_from_loaded_tables(con)
     if require_empty:
@@ -655,6 +661,8 @@ def _dataset_state_path(
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
+    """Build the DuckDB direct pipeline argument parser."""
+
     parser = argparse.ArgumentParser(
         description='Focused DuckDB direct COPY pipeline benchmark.'
     )
@@ -725,6 +733,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Run the DuckDB direct pipeline command line interface."""
+
     args = build_arg_parser().parse_args(argv)
     if not args.database_url:
         raise SystemExit('--database-url or DATABASE_URL is required')

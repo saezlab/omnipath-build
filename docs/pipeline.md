@@ -1,9 +1,9 @@
-# Direct-to-Postgres Pipeline
+# DuckDB Direct Pipeline
 
-The `omnipath_build` pipeline builds PostgreSQL tables directly from
-`pypath.inputs_v2` datasets. It keeps source evidence separate from the
-canonical graph so sources can be refreshed independently, then resolved and
-summarized in later phases.
+The `omnipath_build` pipeline builds PostgreSQL tables from `pypath.inputs_v2`
+datasets through DuckDB. Source records are projected into DuckDB evidence
+tables, resolved into canonical entities and relations there, then copied into
+PostgreSQL for serving and derived query artifacts.
 
 ## Data Model
 
@@ -36,49 +36,47 @@ Build parquet resolver files:
 make resolver
 ```
 
-Load resolver tables into PostgreSQL:
+Create the PostgreSQL schema:
 
 ```bash
 make db-setup
 ```
 
-`db-setup` also creates the schema. With `DROP_EXISTING=1`, secondary evidence
-indexes are deferred so full scratch ingest does not maintain them row by row.
-To drop and recreate the target schema without loading resolver tables, run:
+With `DROP_EXISTING=1`, secondary evidence indexes are deferred so full scratch
+loads do not maintain them row by row. To drop and recreate the target schema,
+run:
 
 ```bash
 make db-reset
 ```
 
-### 2. Source Evidence Ingest
+### 2. DuckDB Direct Load
 
-Ingest discovers compatible `inputs_v2` entity and ontology datasets, deletes
-existing content for each selected source, creates source partitions, and
-streams current raw records into PostgreSQL.
+Load discovers compatible `inputs_v2` entity and ontology datasets, skips
+sources already present by default, and streams selected records through DuckDB.
+DuckDB projection produces source-scoped evidence tables, canonicalizes entity
+and relation rows, then copies the projected rows into PostgreSQL.
 
 ```bash
-make ingest SOURCE=bindingdb
-make ingest SOURCES=uniprot,bindingdb,intact
-make ingest
+make load SOURCE=bindingdb
+make load SOURCES=uniprot,bindingdb,intact
+make load
 ```
 
-Entity datasets are flattened through `BulkIngestor`. Interaction-like records
-with exactly two members become relation evidence. Other member trees produce
-parent/member entity evidence and membership relation evidence. Ontology-valued
-entity annotations are also projected as relation evidence to CV-term entities.
+Entity datasets are flattened by the shared evidence projector and written to
+DuckDB by `DuckDBEvidenceProjector`. Interaction-like records with exactly two
+members become relation evidence. Other member trees produce parent/member
+entity evidence and membership relation evidence. Ontology-valued entity
+annotations are also projected as relation evidence to CV-term entities.
 
 Ontology datasets bypass ordinary evidence ingest because each term already has
-a stable accession. They are loaded directly as resolved CV-term entities with
+a stable accession. They are projected as resolved CV-term entities with
 annotation metadata and ontology relationship relations.
 
 ### 3. Canonicalization
 
-Canonicalization resolves scoped evidence into graph entities and relations:
-
-```bash
-make canonicalize SOURCE=bindingdb
-make canonicalize
-```
+Canonicalization is part of `make load`; it no longer runs through a separate
+PostgreSQL implementation.
 
 For each evidence entity, canonicalization groups equivalent occurrences by
 entity type, taxonomy, and identifier set. Resolver candidates are ranked by
@@ -107,8 +105,8 @@ database content.
 
 ## Common Workflows
 
-Build resolver files, recreate the schema, load all sources, canonicalize, and
-derive query tables:
+Build resolver files, recreate the schema, load all sources through the DuckDB
+direct pipeline, and derive query tables:
 
 ```bash
 make all DROP_EXISTING=1
@@ -144,7 +142,7 @@ again. Canonical relations and entities that become unreachable after deleting
 that source are garbage-collected; graph rows still supported by other sources
 are preserved.
 
-`make load` and `make reload` run ingest and canonicalization only. Run
+`make load` and `make reload` run projection and canonicalization only. Run
 `make derive` once after the selected source batch is complete when the database
 should be query-ready.
 
@@ -155,8 +153,7 @@ should be query-ready.
 - `SOURCE`: one source module name.
 - `SOURCES`: comma-separated source module names.
 - `MAX_RECORDS`: per-dataset cap for smoke tests.
-- `BATCH_SIZE`: source rows per COPY staging flush.
-- `PROGRESS_EVERY`: progress print interval during ingest.
+- `BATCH_SIZE`: source rows per DuckDB direct load batch.
 - `DROP_EXISTING`: recreate schema during `db-setup`.
 - `DERIVE`: run `derive` after `make pipeline`.
 - `PUBCHEM_URL`: use one PubChem SDF `.gz` shard during resolver development.

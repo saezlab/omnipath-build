@@ -1,37 +1,32 @@
-"""Project pypath silver entities into source evidence Parquet files."""
+"""Shared evidence projection rules for the DuckDB direct load pipeline."""
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from typing import Protocol
 from dataclasses import dataclass
-from itertools import islice
-from pathlib import Path
-
-import pyarrow as pa
-import pyarrow.parquet as pq
+from collections.abc import Iterable
 
 from omnipath_build.ingest.common import (
-    annotation_key,
-    annotation_to_row,
-    entity_evidence_key,
     entity_to_row,
-    extract_taxonomy_id,
+    annotation_key,
     identifier_key,
+    annotation_to_row,
     include_identifier,
-    interaction_relation_annotations,
-    interaction_relation_spec,
+    entity_evidence_key,
+    extract_taxonomy_id,
     is_interaction_like,
-    membership_relation_spec,
-    ontology_annotation_relation,
     relation_evidence_key,
-    unwrap_record,
+    membership_relation_spec,
+    interaction_relation_spec,
+    ontology_annotation_relation,
+    interaction_relation_annotations,
 )
 from omnipath_build.relation_rules import ASSOCIATION_CATEGORY, string_or_none
-from pypath.internals.silver_schema import Entity
-
 
 @dataclass(frozen=True)
-class ParquetProjectionStats:
+class ProjectionStats:
+    """Counts produced while projecting source records into evidence rows."""
+
     source_rows: int
     entity_evidence: int
     relation_evidence: int
@@ -39,57 +34,33 @@ class ParquetProjectionStats:
     annotations: int
 
 
-class ParquetEvidenceProjector:
-    """Flatten silver entity streams into source-shaped Parquet evidence."""
+class _RowWriter(Protocol):
+    def write(self, row: dict[str, object]) -> None: ...
+
+
+class _EvidenceWriters(Protocol):
+    entity: _RowWriter
+    identifier: _RowWriter
+    entity_annotation: _RowWriter
+    relation_annotation: _RowWriter
+    annotation: _RowWriter
+    relation: _RowWriter
+    annotation_relation: _RowWriter
+
+
+class EvidenceProjectorBase:
+    """Flatten silver entity trees into source-shaped evidence rows."""
 
     def __init__(
         self,
-        output_dir: str | Path,
         *,
         chunk_size: int = 100_000,
     ) -> None:
-        self.output_dir = Path(output_dir)
         self.chunk_size = chunk_size
-
-    def project_records(
-        self,
-        records: Iterable[object],
-        *,
-        source: str,
-        dataset: str,
-        max_records: int | None = None,
-    ) -> ParquetProjectionStats:
-        if max_records is not None:
-            records = islice(records, max_records)
-
-        writers = _EvidenceWriters(self.output_dir, chunk_size=self.chunk_size)
-        seen_annotations: set[tuple[str, str, str | None, str | None]] = set()
-        stats = _MutableProjectionStats()
-        try:
-            for index, item in enumerate(records, start=1):
-                entity, _ = unwrap_record(item)
-                if not isinstance(entity, Entity):
-                    continue
-                self._flatten_entity_tree(
-                    entity,
-                    source=source,
-                    dataset=dataset,
-                    row_id=index,
-                    occurrence_id=f'{dataset}:{index}:parent',
-                    parent_entity_evidence_id=None,
-                    entity_role='parent',
-                    writers=writers,
-                    seen_annotations=seen_annotations,
-                    stats=stats,
-                )
-                stats.source_rows += 1
-        finally:
-            writers.close()
-        return stats.freeze()
 
     def _flatten_entity_tree(
         self,
-        entity: Entity,
+        entity: object,
         *,
         source: str,
         dataset: str,
@@ -97,9 +68,9 @@ class ParquetEvidenceProjector:
         occurrence_id: str,
         parent_entity_evidence_id: str | None,
         entity_role: str,
-        writers: '_EvidenceWriters',
+        writers: _EvidenceWriters,
         seen_annotations: set[tuple[str, str, str | None, str | None]],
-        stats: '_MutableProjectionStats',
+        stats: _MutableProjectionStats,
     ) -> None:
         row = entity_to_row(entity)
         entity_type = string_or_none(row.get('type'))
@@ -292,7 +263,7 @@ class ParquetEvidenceProjector:
 
     @staticmethod
     def _write_relation(
-        writers: '_EvidenceWriters',
+        writers: _EvidenceWriters,
         *,
         source: str,
         dataset: str,
@@ -328,7 +299,7 @@ class ParquetEvidenceProjector:
 
     @staticmethod
     def _write_relation_annotations(
-        writers: '_EvidenceWriters',
+        writers: _EvidenceWriters,
         seen_annotations: set[tuple[str, str, str | None, str | None]],
         *,
         source: str,
@@ -350,8 +321,8 @@ class ParquetEvidenceProjector:
 
 
 def _write_annotation(
-    target_writer: '_ParquetRowWriter',
-    value_writer: '_ParquetRowWriter',
+    target_writer: _RowWriter,
+    value_writer: _RowWriter,
     seen_annotations: set[tuple[str, str, str | None, str | None]],
     *,
     source: str,
@@ -389,151 +360,6 @@ def _write_annotation(
     return True
 
 
-class _EvidenceWriters:
-    def __init__(self, output_dir: Path, *, chunk_size: int) -> None:
-        self.entity = _ParquetRowWriter(
-            output_dir / 'entity_evidence.parquet',
-            pa.schema(
-                [
-                    ('source', pa.string()),
-                    ('dataset', pa.string()),
-                    ('row_id', pa.int64()),
-                    ('entity_evidence_id', pa.string()),
-                    ('parent_entity_evidence_id', pa.string()),
-                    ('entity_role', pa.string()),
-                    ('entity_type', pa.string()),
-                    ('taxonomy_id', pa.string()),
-                ]
-            ),
-            chunk_size=chunk_size,
-        )
-        self.identifier = _ParquetRowWriter(
-            output_dir / 'entity_identifier.parquet',
-            pa.schema(
-                [
-                    ('source', pa.string()),
-                    ('entity_evidence_id', pa.string()),
-                    ('identifier_id', pa.string()),
-                    ('identifier_type', pa.string()),
-                    ('identifier', pa.string()),
-                ]
-            ),
-            chunk_size=chunk_size,
-        )
-        annotation_ref_schema = pa.schema(
-            [
-                ('source', pa.string()),
-                ('evidence_id', pa.string()),
-                ('annotation_key', pa.string()),
-                ('term', pa.string()),
-                ('value', pa.string()),
-                ('unit', pa.string()),
-            ]
-        )
-        self.entity_annotation = _ParquetRowWriter(
-            output_dir / 'entity_annotation.parquet',
-            annotation_ref_schema,
-            chunk_size=chunk_size,
-        )
-        self.relation_annotation = _ParquetRowWriter(
-            output_dir / 'relation_annotation.parquet',
-            annotation_ref_schema,
-            chunk_size=chunk_size,
-        )
-        self.annotation = _ParquetRowWriter(
-            output_dir / 'annotation.parquet',
-            pa.schema(
-                [
-                    ('annotation_key', pa.string()),
-                    ('term', pa.string()),
-                    ('value', pa.string()),
-                    ('unit', pa.string()),
-                ]
-            ),
-            chunk_size=chunk_size,
-        )
-        self.relation = _ParquetRowWriter(
-            output_dir / 'relation_evidence.parquet',
-            pa.schema(
-                [
-                    ('source', pa.string()),
-                    ('dataset', pa.string()),
-                    ('row_id', pa.int64()),
-                    ('relation_evidence_id', pa.string()),
-                    ('subject_entity_evidence_id', pa.string()),
-                    ('predicate', pa.string()),
-                    ('object_entity_evidence_id', pa.string()),
-                    ('relation_category', pa.string()),
-                ]
-            ),
-            chunk_size=chunk_size,
-        )
-        self.annotation_relation = _ParquetRowWriter(
-            output_dir / 'annotation_relation_evidence.parquet',
-            pa.schema(
-                [
-                    ('relation_evidence_id', pa.string()),
-                    ('source', pa.string()),
-                    ('dataset', pa.string()),
-                    ('row_id', pa.int64()),
-                    ('subject_entity_evidence_id', pa.string()),
-                    ('predicate', pa.string()),
-                    ('object_entity_type', pa.string()),
-                    ('object_id_type', pa.string()),
-                    ('object_id', pa.string()),
-                    ('relation_category', pa.string()),
-                ]
-            ),
-            chunk_size=chunk_size,
-        )
-
-    def close(self) -> None:
-        self.entity.close()
-        self.identifier.close()
-        self.entity_annotation.close()
-        self.relation_annotation.close()
-        self.annotation.close()
-        self.relation.close()
-        self.annotation_relation.close()
-
-
-class _ParquetRowWriter:
-    def __init__(
-        self,
-        path: Path,
-        schema: pa.Schema,
-        *,
-        chunk_size: int,
-    ) -> None:
-        self.path = path
-        self.schema = schema
-        self.chunk_size = chunk_size
-        self.writer: pq.ParquetWriter | None = None
-        self.rows: list[dict[str, object]] = []
-
-    def write(self, row: dict[str, object]) -> None:
-        self.rows.append(row)
-        if len(self.rows) >= self.chunk_size:
-            self.flush()
-
-    def flush(self) -> None:
-        if not self.rows:
-            return
-        if self.writer is None:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            self.writer = pq.ParquetWriter(self.path, self.schema)
-        self.writer.write_table(pa.Table.from_pylist(self.rows, schema=self.schema))
-        self.rows.clear()
-
-    def close(self) -> None:
-        self.flush()
-        if self.writer is not None:
-            self.writer.close()
-            return
-        empty = {field.name: pa.array([], type=field.type) for field in self.schema}
-        pq.write_table(pa.Table.from_pydict(empty, schema=self.schema), self.path)
-
-
 @dataclass
 class _MutableProjectionStats:
     source_rows: int = 0
@@ -542,8 +368,8 @@ class _MutableProjectionStats:
     identifiers: int = 0
     annotations: int = 0
 
-    def freeze(self) -> ParquetProjectionStats:
-        return ParquetProjectionStats(
+    def freeze(self) -> ProjectionStats:
+        return ProjectionStats(
             source_rows=self.source_rows,
             entity_evidence=self.entity_evidence,
             relation_evidence=self.relation_evidence,

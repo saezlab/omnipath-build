@@ -1,7 +1,3 @@
-"""Evidence ingest backends."""
+"""Shared evidence ingest helpers."""
 
-from omnipath_build.ingest.bulk import BulkIngestor
-
-__all__ = [
-    'BulkIngestor',
-]
+__all__: list[str] = []
