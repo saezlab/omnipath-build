@@ -222,7 +222,8 @@ def run_direct_copy_pipeline_batches(
     if max_records is not None:
         iterator = islice(iterator, max_records)
 
-    offset = 0
+    row_offset = 0
+    projected_rows = 0
     batch_no = 0
     batch_stats: list[DirectCopyStats] = []
     if drop_load_constraints:
@@ -248,16 +249,18 @@ def run_direct_copy_pipeline_batches(
             threads=threads,
             drop_load_constraints=False,
             require_empty=require_empty and batch_no == 1,
-            row_offset=offset,
+            row_offset=row_offset,
         )
-        offset += stats.source_rows
+        row_offset += len(batch)
+        projected_rows += stats.source_rows
         batch_stats.append(stats)
         if progress:
             print(
                 '[duckdb-direct-copy-batch] '
                 f'batch={batch_no} '
                 f'batch_rows={stats.source_rows} '
-                f'cumulative_rows={offset} '
+                f'cumulative_rows={projected_rows} '
+                f'row_offset={row_offset} '
                 f'identifiers={stats.identifiers} '
                 f'annotations={stats.annotations} '
                 f'projection={stats.projection_seconds:.3f}s '

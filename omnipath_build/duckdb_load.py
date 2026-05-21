@@ -2243,7 +2243,7 @@ def _bulk_copy_evidence(
             AND existing.annotation_key IS NULL
         """,
     )
-    _copy_duckdb_query_to_postgres(
+    _copy_source_partition(
         con,
         database_url=database_url,
         schema=schema,
@@ -2279,8 +2279,9 @@ def _bulk_copy_evidence(
           LEFT JOIN load_vocab_entity_type et
             ON et.name = e.entity_type
         """,
+        source_id=source_id,
     )
-    _copy_duckdb_query_to_postgres(
+    _copy_source_partition(
         con,
         database_url=database_url,
         schema=schema,
