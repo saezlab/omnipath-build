@@ -14,11 +14,11 @@ import time
 from typing import BinaryIO
 from pathlib import Path
 from urllib.parse import urljoin
-import urllib.request
 from collections.abc import Iterable
 
 import polars as pl
 
+from pypath.share.downloads import download_and_open
 from pypath.internals.cv_terms import (
     IdentifierNamespaceCv,
     cv_term_label_accession,
@@ -54,6 +54,8 @@ IDENTIFIER_TYPE_OUTPUT_FILENAME = 'identifier_type.parquet'
 
 _FIELD_RE = re.compile(r'^>\s*<([^>]+)>')
 _PUBCHEM_SDF_FILENAME_RE = re.compile(r'Compound_\d{9}_\d{9}\.sdf\.gz')
+_PUBCHEM_SUBFOLDER = 'pubchem'
+_PUBCHEM_CURRENT_INDEX_FILENAME = 'current-full-sdf-index.html'
 _TARGET_FIELDS = {
     'PUBCHEM_COMPOUND_CID': 'pubchem_cid',
     'PUBCHEM_IUPAC_INCHIKEY': 'standard_inchi_key',
@@ -179,8 +181,21 @@ def iter_pubchem_sdf_gz_locations(
 
 
 def _iter_current_pubchem_sdf_urls() -> Iterable[str]:
-    with urllib.request.urlopen(PUBCHEM_CURRENT_SDF_BASE_URL) as response:
-        html = response.read().decode('utf-8', errors='replace')
+    opener = download_and_open(
+        url=PUBCHEM_CURRENT_SDF_BASE_URL,
+        filename=_PUBCHEM_CURRENT_INDEX_FILENAME,
+        subfolder=_PUBCHEM_SUBFOLDER,
+        large=False,
+        encoding='utf-8',
+        default_mode='r',
+        force_download=True,
+    )
+
+    try:
+        html = opener.result
+    finally:
+        opener.close()
+
     filenames = sorted(set(_PUBCHEM_SDF_FILENAME_RE.findall(html)))
     if not filenames:
         raise ValueError(
@@ -207,10 +222,21 @@ def iter_pubchem_sdf_gz_rows(path_or_url: str | Path) -> Iterable[dict]:
 
     location = str(path_or_url)
     if location.startswith(('http://', 'https://', 'ftp://')):
-        with urllib.request.urlopen(location) as response:
-            yield from iter_pubchem_sdf_rows(
-                _iter_text_from_gzip_fileobj(response)
-            )
+        opener = download_and_open(
+            url=location,
+            filename=Path(location).name,
+            subfolder=_PUBCHEM_SUBFOLDER,
+            large=True,
+            encoding='utf-8',
+            default_mode='r',
+            ext='gz',
+        )
+
+        try:
+            yield from iter_pubchem_sdf_rows(opener.result)
+        finally:
+            opener.close()
+
         return
 
     with Path(location).open('rb') as handle:
