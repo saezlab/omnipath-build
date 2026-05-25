@@ -139,6 +139,22 @@ def _iter_text_from_gzip_fileobj(fileobj: BinaryIO) -> Iterable[str]:
         yield from handle
 
 
+def _close_opener(opener: object) -> None:
+    close = getattr(opener, 'close', None)
+    if close is not None:
+        close()
+
+
+def _remove_bad_pubchem_cache(cache_path: Path, error: Exception) -> None:
+    if cache_path.exists():
+        cache_path.unlink()
+        print(
+            f'[pubchem] removed invalid cached gzip path={cache_path} '
+            f'error={type(error).__name__}: {error}',
+            flush=True,
+        )
+
+
 def iter_pubchem_sdf_gz_locations(
     source: str | Path | None = None,
     *,
@@ -222,25 +238,46 @@ def iter_pubchem_sdf_gz_rows(path_or_url: str | Path) -> Iterable[dict]:
 
     location = str(path_or_url)
     if location.startswith(('http://', 'https://', 'ftp://')):
-        opener = download_and_open(
-            url=location,
-            filename=Path(location).name,
-            subfolder=_PUBCHEM_SUBFOLDER,
-            large=True,
-            encoding='utf-8',
-            default_mode='r',
-            ext='gz',
-        )
-
-        try:
-            yield from iter_pubchem_sdf_rows(opener.result)
-        finally:
-            opener.close()
+        yield from _iter_downloaded_pubchem_sdf_gz_rows(location)
 
         return
 
     with Path(location).open('rb') as handle:
         yield from iter_pubchem_sdf_rows(_iter_text_from_gzip_fileobj(handle))
+
+
+def _iter_downloaded_pubchem_sdf_gz_rows(
+    location: str,
+    *,
+    retry_bad_cache: bool = True,
+) -> Iterable[dict]:
+    opener = download_and_open(
+        url=location,
+        filename=Path(location).name,
+        subfolder=_PUBCHEM_SUBFOLDER,
+        large=True,
+        encoding='utf-8',
+        default_mode='r',
+        ext='gz',
+    )
+    cache_path = Path(opener.path)
+
+    try:
+        yield from iter_pubchem_sdf_rows(opener.result)
+    except (gzip.BadGzipFile, EOFError) as error:
+        _close_opener(opener)
+        opener = None
+        _remove_bad_pubchem_cache(cache_path, error)
+        if retry_bad_cache:
+            yield from _iter_downloaded_pubchem_sdf_gz_rows(
+                location,
+                retry_bad_cache=False,
+            )
+            return
+        raise
+    finally:
+        if opener is not None:
+            _close_opener(opener)
 
 
 def iter_pubchem_compound_rows(
