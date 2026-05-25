@@ -69,6 +69,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help='Optional number of discovered PubChem SDF shards to stream.',
     )
     parser.add_argument(
+        '--jobs',
+        type=int,
+        default=1,
+        help='Number of parallel jobs for resolver sources that support it.',
+    )
+    parser.add_argument(
         '--skip-existing',
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -90,6 +96,7 @@ def run_sources(
     max_records: int | None = None,
     pubchem_url: str | Path | None = None,
     pubchem_shards: int | None = None,
+    jobs: int = 1,
     skip_existing: bool = True,
 ) -> dict[str, int]:
     """Materialize selected resolver sources and return row-count summaries."""
@@ -126,6 +133,7 @@ def run_sources(
             max_records=max_records,
             pubchem_url=pubchem_url,
             pubchem_shards=pubchem_shards,
+            jobs=jobs,
             skip_existing=skip_existing,
             continue_on_error=True,
         )
@@ -162,6 +170,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         max_records=args.max_records,
         pubchem_url=args.pubchem_url,
         pubchem_shards=args.pubchem_shards,
+        jobs=args.jobs,
         skip_existing=args.skip_existing,
     )
 

@@ -9,13 +9,17 @@ from __future__ import annotations
 
 import re
 import gzip
+import os
 import time
+import multiprocessing
 from typing import BinaryIO
 from pathlib import Path
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 from collections.abc import Iterable
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 import polars as pl
+import pyarrow.parquet as pq
 
 from pypath.share.downloads import download_and_open
 from pypath.internals.cv_terms import (
@@ -55,6 +59,7 @@ _FIELD_RE = re.compile(r'^>\s*<([^>]+)>')
 _PUBCHEM_SDF_FILENAME_RE = re.compile(r'Compound_\d{9}_\d{9}\.sdf\.gz')
 _PUBCHEM_SUBFOLDER = 'pubchem'
 _PUBCHEM_CURRENT_INDEX_FILENAME = 'current-full-sdf-index.html'
+_PUBCHEM_SHARD_DIR = '_pubchem_shards'
 _TARGET_FIELDS = {
     'PUBCHEM_COMPOUND_CID': 'pubchem_cid',
     'PUBCHEM_IUPAC_INCHIKEY': 'standard_inchi_key',
@@ -247,43 +252,49 @@ def iter_pubchem_compound_rows(
 ) -> Iterable[dict]:
     """Stream PubChem resolver rows from all selected SDF gzip shards."""
 
+    locations = iter_pubchem_sdf_gz_locations(
+        source,
+        shard_count=shard_count,
+    )
+    for shard_index, location in enumerate(locations, start=1):
+        yield from iter_pubchem_location_rows(
+            location,
+            shard_index=shard_index,
+            filter_inchikeys=filter_inchikeys,
+            progress_every=progress_every,
+        )
+
+
+def iter_pubchem_location_rows(
+    location: str | Path,
+    *,
+    shard_index: int,
+    filter_inchikeys: frozenset[str] | None = None,
+    progress_every: int = 100_000,
+) -> Iterable[dict]:
+    """Stream PubChem resolver rows from one SDF gzip shard."""
+
     filter_label = 'enabled' if filter_inchikeys is not None else 'disabled'
     filter_key_count = (
         len(filter_inchikeys) if filter_inchikeys is not None else 0
     )
-    for shard_index, location in enumerate(
-        iter_pubchem_sdf_gz_locations(
-            source,
-            shard_count=shard_count,
-        ),
-        start=1,
-    ):
-        started = time.monotonic()
-        rows_seen = 0
-        matched_rows = 0
-        completed = False
-        print(
-            f'[pubchem] shard={shard_index} start '
-            f'location={location} filter={filter_label} '
-            f'filter_keys={filter_key_count}',
-            flush=True,
-        )
-        try:
-            for row in iter_pubchem_sdf_gz_rows(location):
-                rows_seen += 1
-                if (
-                    filter_inchikeys is not None
-                    and row.get('standard_inchi_key') not in filter_inchikeys
-                ):
-                    if progress_every > 0 and rows_seen % progress_every == 0:
-                        _log_pubchem_shard_progress(
-                            shard_index,
-                            rows_seen,
-                            matched_rows,
-                            started,
-                        )
-                    continue
-                matched_rows += 1
+    started = time.monotonic()
+    rows_seen = 0
+    matched_rows = 0
+    completed = False
+    print(
+        f'[pubchem] shard={shard_index} start '
+        f'location={location} filter={filter_label} '
+        f'filter_keys={filter_key_count}',
+        flush=True,
+    )
+    try:
+        for row in iter_pubchem_sdf_gz_rows(location):
+            rows_seen += 1
+            if (
+                filter_inchikeys is not None
+                and row.get('standard_inchi_key') not in filter_inchikeys
+            ):
                 if progress_every > 0 and rows_seen % progress_every == 0:
                     _log_pubchem_shard_progress(
                         shard_index,
@@ -291,17 +302,26 @@ def iter_pubchem_compound_rows(
                         matched_rows,
                         started,
                     )
-                yield row
-            completed = True
-        finally:
-            status = 'done' if completed else 'stopped'
-            print(
-                f'[pubchem] shard={shard_index} {status} '
-                f'rows_seen={rows_seen} matched_rows={matched_rows} '
-                f'elapsed={time.monotonic() - started:.1f}s '
-                f'location={location}',
-                flush=True,
-            )
+                continue
+            matched_rows += 1
+            if progress_every > 0 and rows_seen % progress_every == 0:
+                _log_pubchem_shard_progress(
+                    shard_index,
+                    rows_seen,
+                    matched_rows,
+                    started,
+                )
+            yield row
+        completed = True
+    finally:
+        status = 'done' if completed else 'stopped'
+        print(
+            f'[pubchem] shard={shard_index} {status} '
+            f'rows_seen={rows_seen} matched_rows={matched_rows} '
+            f'elapsed={time.monotonic() - started:.1f}s '
+            f'location={location}',
+            flush=True,
+        )
 
 
 def _log_pubchem_shard_progress(
@@ -358,6 +378,83 @@ def materialize_pubchem_compound_sdf(
     }
 
 
+def materialize_pubchem_compound_shards(
+    output_dir: str | Path,
+    *,
+    source: str | Path | None = None,
+    filter_inchikeys: frozenset[str] | None = None,
+    pubchem_shards: int | None = None,
+    jobs: int = 1,
+) -> list[tuple[Path, int]]:
+    """Write one normalized lookup parquet per PubChem shard.
+
+    Completed shard files are reused on reruns. A shard is considered complete
+    only if both the parquet file and its ``.done`` sidecar exist.
+    """
+
+    if jobs < 1:
+        raise ValueError('PubChem jobs must be at least 1.')
+
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    shard_dir = output_dir / _PUBCHEM_SHARD_DIR
+    shard_dir.mkdir(parents=True, exist_ok=True)
+
+    locations = list(
+        iter_pubchem_sdf_gz_locations(
+            source,
+            shard_count=pubchem_shards,
+        )
+    )
+    tasks = [
+        _pubchem_shard_task(
+            shard_dir,
+            shard_index,
+            location,
+            filter_inchikeys=filter_inchikeys,
+        )
+        for shard_index, location in enumerate(locations, start=1)
+    ]
+    if not tasks:
+        return []
+
+    workers = min(jobs, len(tasks))
+    print(
+        f'[pubchem] shard_jobs={workers} shard_count={len(tasks)} '
+        f'shard_dir={shard_dir}',
+        flush=True,
+    )
+    if workers == 1:
+        results = [_write_pubchem_shard_parquet(task) for task in tasks]
+    else:
+        results = []
+        with ProcessPoolExecutor(
+            max_workers=workers,
+            mp_context=_process_context(),
+        ) as executor:
+            futures = {
+                executor.submit(_write_pubchem_shard_parquet, task): task
+                for task in tasks
+            }
+            for future in as_completed(futures):
+                results.append(future.result())
+
+    results.sort(key=lambda item: item[0])
+    return [(path, row_count) for _, path, row_count in results]
+
+
+def iter_pubchem_lookup_parquet_rows(
+    paths: Iterable[str | Path],
+) -> Iterable[dict]:
+    """Yield normalized PubChem lookup rows from shard parquet files."""
+
+    for path in paths:
+        parquet_file = pq.ParquetFile(path)
+        for batch in parquet_file.iter_batches():
+            for row in batch.to_pylist():
+                yield row
+
+
 def materialize_pubchem_first_compound_sdf(
     output_dir: str | Path | None = None,
     *,
@@ -393,3 +490,102 @@ def _normalized_pubchem_rows(rows: Iterable[dict]) -> Iterable[dict]:
             'canonical_identifier_type_id': canonical_identifier_type_id,
             'canonical_identifier': standard_inchi_key,
         }
+
+
+def _pubchem_shard_task(
+    shard_dir: Path,
+    shard_index: int,
+    location: str | Path,
+    *,
+    filter_inchikeys: frozenset[str] | None,
+) -> dict:
+    return {
+        'shard_dir': str(shard_dir),
+        'shard_index': shard_index,
+        'location': str(location),
+        'filter_inchikeys': filter_inchikeys,
+    }
+
+
+def _process_context() -> multiprocessing.context.BaseContext | None:
+    methods = multiprocessing.get_all_start_methods()
+    if 'fork' in methods:
+        return multiprocessing.get_context('fork')
+    return None
+
+
+def _write_pubchem_shard_parquet(task: dict) -> tuple[int, Path, int]:
+    shard_dir = Path(task['shard_dir'])
+    shard_index = int(task['shard_index'])
+    location = task['location']
+    filter_inchikeys = task.get('filter_inchikeys')
+    output_path = _pubchem_shard_path(shard_dir, shard_index, location)
+    done_path = output_path.with_suffix(output_path.suffix + '.done')
+    existing_count = _read_done_count(done_path)
+
+    if output_path.exists() and existing_count is not None:
+        print(
+            f'[pubchem] shard={shard_index} skip existing '
+            f'rows={existing_count} path={output_path}',
+            flush=True,
+        )
+        return shard_index, output_path, existing_count
+
+    tmp_path = output_path.with_suffix(
+        output_path.suffix + f'.tmp.{os.getpid()}'
+    )
+    done_tmp_path = done_path.with_suffix(
+        done_path.suffix + f'.tmp.{os.getpid()}'
+    )
+    tmp_path.unlink(missing_ok=True)
+    done_tmp_path.unlink(missing_ok=True)
+
+    try:
+        rows = _normalized_pubchem_rows(
+            iter_pubchem_location_rows(
+                location,
+                shard_index=shard_index,
+                filter_inchikeys=filter_inchikeys,
+            )
+        )
+        row_count = write_parquet_from_dict_rows(
+            rows,
+            PUBCHEM_IDENTIFIER_LOOKUP_SCHEMA,
+            tmp_path,
+        )
+        done_tmp_path.write_text(
+            f'{row_count}\nlocation={location}\n',
+            encoding='utf-8',
+        )
+        tmp_path.replace(output_path)
+        done_tmp_path.replace(done_path)
+    except Exception:
+        tmp_path.unlink(missing_ok=True)
+        done_tmp_path.unlink(missing_ok=True)
+        raise
+
+    return shard_index, output_path, row_count
+
+
+def _pubchem_shard_path(
+    shard_dir: Path,
+    shard_index: int,
+    location: str | Path,
+) -> Path:
+    location_text = str(location)
+    parsed_path = urlparse(location_text).path
+    name = Path(parsed_path or location_text).name
+    safe_name = re.sub(r'[^A-Za-z0-9_.-]+', '_', name)
+    if safe_name.endswith('.sdf.gz'):
+        safe_name = safe_name[:-7]
+    return shard_dir / f'{shard_index:05d}_{safe_name}.parquet'
+
+
+def _read_done_count(path: Path) -> int | None:
+    if not path.exists():
+        return None
+    try:
+        first_line = path.read_text(encoding='utf-8').splitlines()[0]
+        return int(first_line)
+    except (IndexError, OSError, ValueError):
+        return None

@@ -18,6 +18,7 @@ RESOLVER_SOURCES ?=
 BATCH_SIZE ?= 50000
 THREADS ?= 4
 LOAD_JOBS ?= 1
+JOBS ?= 1
 STAGING_DIR ?=
 RESOLVER_BATCH_SIZE ?= 100000
 OBO_DIR ?= $(DATA_ROOT)/obo
@@ -49,6 +50,7 @@ resolver:
 		$(if $(MAX_RECORDS),--max-records $(MAX_RECORDS)) \
 		$(if $(PUBCHEM_URL),--pubchem-url "$(PUBCHEM_URL)") \
 		$(if $(PUBCHEM_SHARDS),--pubchem-shards $(PUBCHEM_SHARDS)) \
+		$(if $(JOBS),--jobs $(JOBS)) \
 		$(if $(FORCE_REFRESH),--no-skip-existing) \
 		$(RESOLVER_SOURCES)
 

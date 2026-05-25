@@ -320,6 +320,7 @@ def materialize_chemical_sources(
     max_records: int | None = None,
     pubchem_url: str | Path | None = None,
     pubchem_shards: int | None = None,
+    jobs: int = 1,
     skip_existing: bool = True,
     continue_on_error: bool = False,
 ) -> dict[str, int]:
@@ -398,6 +399,7 @@ def materialize_chemical_sources(
                     source=pubchem_url,
                     max_records=max_records,
                     pubchem_shards=pubchem_shards,
+                    jobs=jobs,
                     existing_lookup=existing_lookup,
                     existing_ambiguous=existing_ambiguous,
                     existing_identifier_types=existing_identifier_types,
@@ -522,12 +524,15 @@ def _write_streaming_pubchem_lookup_files(
     source: str | Path | None,
     max_records: int | None,
     pubchem_shards: int | None,
+    jobs: int,
     existing_lookup: pl.DataFrame | None,
     existing_ambiguous: pl.DataFrame | None,
     existing_identifier_types: pl.DataFrame | None,
 ) -> dict[str, int]:
     from omnipath_build.resolver.sources.pubchem import (
         iter_pubchem_compound_rows,
+        iter_pubchem_lookup_parquet_rows,
+        materialize_pubchem_compound_shards,
     )
 
     lookup_path = output_dir / CHEMICAL_IDENTIFIER_LOOKUP_OUTPUT_FILENAME
@@ -536,10 +541,22 @@ def _write_streaming_pubchem_lookup_files(
     )
     identifier_type_path = output_dir / IDENTIFIER_TYPE_OUTPUT_FILENAME
 
-    pubchem_rows = iter_pubchem_compound_rows(
-        source,
-        shard_count=pubchem_shards,
-    )
+    if max_records is not None or jobs <= 1:
+        pubchem_rows = iter_pubchem_compound_rows(
+            source,
+            shard_count=pubchem_shards,
+        )
+    else:
+        shard_paths = materialize_pubchem_compound_shards(
+            output_dir,
+            source=source,
+            pubchem_shards=pubchem_shards,
+            jobs=jobs,
+        )
+        pubchem_rows = iter_pubchem_lookup_parquet_rows(
+            path for path, _ in shard_paths
+        )
+
     if max_records is not None:
         pubchem_rows = _take(pubchem_rows, max_records)
 
@@ -551,7 +568,11 @@ def _write_streaming_pubchem_lookup_files(
     lookup_row_count = write_parquet_from_dict_rows(
         chain(
             _frame_dict_rows(existing_lookup),
-            _normalized_chemical_lookup_rows(pubchem_rows),
+            (
+                pubchem_rows
+                if max_records is None and jobs > 1
+                else _normalized_chemical_lookup_rows(pubchem_rows)
+            ),
         ),
         CHEMICAL_IDENTIFIER_LOOKUP_SCHEMA,
         lookup_path,

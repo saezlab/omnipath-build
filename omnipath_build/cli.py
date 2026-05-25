@@ -106,6 +106,12 @@ def main(argv: list[str] | None = None) -> int:
         help='Optional number of discovered PubChem SDF shards to stream.',
     )
     build_resolver.add_argument(
+        '--jobs',
+        type=int,
+        default=1,
+        help='Number of parallel jobs for resolver sources that support it.',
+    )
+    build_resolver.add_argument(
         '--skip-existing',
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -149,6 +155,7 @@ def main(argv: list[str] | None = None) -> int:
             max_records=args.max_records,
             pubchem_url=args.pubchem_url,
             pubchem_shards=args.pubchem_shards,
+            jobs=args.jobs,
             skip_existing=args.skip_existing,
         )
         for key, value in summary.items():
