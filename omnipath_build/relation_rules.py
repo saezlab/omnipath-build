@@ -121,6 +121,9 @@ def predicate_for_membership(
     """Return the relation predicate for parent/member structures."""
 
     del membership
+    if entity_type_accession(parent_type) == str(EntityTypeCv.CV_TERM):
+        return PredicateRule(ASSOCIATION_PREDICATE, ASSOCIATION_CATEGORY)
+
     return PredicateRule(
         MEMBERSHIP_RULES.get(parent_type or '', 'has_member'),
         ASSOCIATION_CATEGORY,

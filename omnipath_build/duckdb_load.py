@@ -877,6 +877,34 @@ def _canonicalize_loaded_duckdb(
     )
     con.execute(
         """
+        CREATE TABLE cv_term_evidence_resolution AS
+        SELECT
+          ee.source,
+          ee.entity_evidence_id,
+          cv_type.identifier_type_id AS canonical_identifier_type_id,
+          min(ei.identifier) AS canonical_identifier
+        FROM entity_evidence_raw ee
+        JOIN entity_identifier_raw ei
+          ON ei.source = ee.source
+         AND ei.entity_evidence_id = ee.entity_evidence_id
+        CROSS JOIN (
+          SELECT identifier_type_id
+          FROM identifier_type_all
+          WHERE name = ?
+        ) cv_type
+        WHERE ee.entity_type = ?
+          AND ei.identifier_type = ?
+          AND ei.identifier IS NOT NULL
+          AND ei.identifier <> ''
+        GROUP BY
+          ee.source,
+          ee.entity_evidence_id,
+          cv_type.identifier_type_id
+        """,
+        [CV_TERM_ID_TYPE, CV_TERM_ENTITY_TYPE, CV_TERM_ID_TYPE],
+    )
+    con.execute(
+        """
         CREATE TABLE entity_resolution_base AS
         SELECT
           ee.source,
@@ -884,16 +912,22 @@ def _canonicalize_loaded_duckdb(
           ee.row_id,
           ee.entity_evidence_id,
           ee.entity_type,
-          ee.taxonomy_id,
+          CASE
+            WHEN cv_term.canonical_identifier IS NOT NULL THEN NULL
+            ELSE ee.taxonomy_id
+          END AS taxonomy_id,
           coalesce(
+            cv_term.canonical_identifier_type_id,
             rl.canonical_identifier_type_id,
             unresolved_type.identifier_type_id
           ) AS canonical_identifier_type_id,
           coalesce(
+            cv_term.canonical_identifier,
             rl.canonical_identifier,
             md5(eig.unresolved_identifier_key)
           ) AS canonical_identifier,
           CASE
+            WHEN cv_term.canonical_identifier IS NOT NULL THEN 'resolved'
             WHEN rl.canonical_identifier IS NULL THEN 'unresolved'
             ELSE 'resolved'
           END AS status
@@ -919,9 +953,15 @@ def _canonicalize_loaded_duckdb(
            rl.taxonomy_id = ee.taxonomy_id
            OR rl.taxonomy_id IS NULL
          )
+        LEFT JOIN cv_term_evidence_resolution cv_term
+          ON cv_term.source = ee.source
+         AND cv_term.entity_evidence_id = ee.entity_evidence_id
         QUALIFY row_number() OVER (
           PARTITION BY ee.source, ee.entity_evidence_id
-          ORDER BY rl.canonical_identifier IS NULL, rl.canonical_identifier
+          ORDER BY cv_term.canonical_identifier IS NULL,
+                   rl.canonical_identifier IS NULL,
+                   cv_term.canonical_identifier,
+                   rl.canonical_identifier
         ) = 1
         """,
         [UNRESOLVED_ID_TYPE],
@@ -1326,6 +1366,15 @@ def _canonicalize_loaded_duckdb(
           ) cv_type
           WHERE object_id_type = ?
             AND object_id IS NOT NULL
+            AND NOT EXISTS (
+              SELECT 1
+              FROM needed_resolved_entity existing_term
+              WHERE existing_term.entity_type = ?
+                AND existing_term.taxonomy_id IS NULL
+                AND existing_term.canonical_identifier_type_id =
+                    cv_type.identifier_type_id
+                AND existing_term.canonical_identifier = object_id
+            )
           GROUP BY cv_type.identifier_type_id, object_id
         ),
         all_entity AS (
@@ -1444,6 +1493,7 @@ def _canonicalize_loaded_duckdb(
             CV_TERM_ID_TYPE,
             CV_TERM_ID_TYPE,
             CV_TERM_ID_TYPE,
+            CV_TERM_ENTITY_TYPE,
             CV_TERM_ID_TYPE,
             CV_TERM_ID_TYPE,
         ],

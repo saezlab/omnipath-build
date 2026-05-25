@@ -405,7 +405,12 @@ def membership_relation_spec(
 ) -> RelationSpec:
     """Build a membership relation spec from parent/member references."""
 
-    member_is_subject = bool(getattr(membership, 'is_parent', False))
+    parent_is_cv_term = entity_type_accession(
+        parent_type
+    ) == entity_type_accession(CV_TERM_ENTITY_TYPE)
+    member_is_subject = parent_is_cv_term or bool(
+        getattr(membership, 'is_parent', False)
+    )
     return RelationSpec(
         relation_occurrence_id=relation_occurrence_id,
         subject_ref=member_ref if member_is_subject else parent_ref,
