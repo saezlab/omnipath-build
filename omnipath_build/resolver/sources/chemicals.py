@@ -1,10 +1,10 @@
 """Build chemical identifier resolver mappings from supported sources.
 
 Chemical resolver rows normalize source-specific identifiers such as ChEBI,
-ChEMBL, HMDB, LipidMaps, SwissLipids, and PubChem to standard InChI keys. A
-standard InChI value is retained when available, but canonicalization resolves
-chemical evidence by standard InChI key so equivalent source identifiers
-collapse to one canonical chemical entity.
+ChEMBL, HMDB, LipidMaps, RaMP, RefMet, SwissLipids, and PubChem to standard
+InChI keys. A standard InChI value is retained when available, but
+canonicalization resolves chemical evidence by standard InChI key so
+equivalent source identifiers collapse to one canonical chemical entity.
 """
 
 from __future__ import annotations
@@ -19,6 +19,7 @@ import polars as pl
 from pypath.inputs_v2.hmdb import resource as hmdb_resource
 from pypath.inputs_v2.chebi import resource as chebi_resource
 from pypath.inputs_v2.chembl import resource as chembl_resource
+from pypath.inputs_v2.refmet import resource as refmet_resource
 from pypath.internals.cv_terms import (
     IdentifierNamespaceCv,
     cv_term_label_accession,
@@ -48,11 +49,16 @@ CHEMICAL_SOURCES: tuple[str, ...] = (
     'lipidmaps',
     'swisslipids',
     'chembl',
+    'refmet',
+    'ramp',
     'pubchem',
 )
 LOOKUP_DEPENDENT_CHEMICAL_SOURCES = frozenset({'chembl', 'pubchem'})
 CHEMICAL_IDENTIFIER_LOOKUP_OUTPUT_FILENAME = (
     'chemical_identifier_lookup.parquet'
+)
+CHEMICAL_IDENTIFIER_LOOKUP_AMBIGUOUS_OUTPUT_FILENAME = (
+    'chemical_identifier_lookup_ambiguous.parquet'
 )
 IDENTIFIER_TYPE_OUTPUT_FILENAME = 'identifier_type.parquet'
 CHEBI_TYPE = cv_term_label_accession(IdentifierNamespaceCv.CHEBI)
@@ -61,6 +67,8 @@ CHEMBL_COMPOUND_TYPE = cv_term_label_accession(
 )
 HMDB_TYPE = cv_term_label_accession(IdentifierNamespaceCv.HMDB)
 LIPIDMAPS_TYPE = cv_term_label_accession(IdentifierNamespaceCv.LIPIDMAPS)
+RAMP_ID_TYPE = cv_term_label_accession(IdentifierNamespaceCv.RAMP_ID)
+REFMET_TYPE = cv_term_label_accession(IdentifierNamespaceCv.REFMET)
 SWISSLIPIDS_TYPE = cv_term_label_accession(IdentifierNamespaceCv.SWISSLIPIDS)
 STANDARD_INCHI_KEY_TYPE = cv_term_label_accession(
     IdentifierNamespaceCv.STANDARD_INCHI_KEY
@@ -74,6 +82,8 @@ CHEMICAL_SOURCE_IDENTIFIER_TYPES = {
     'hmdb': HMDB_TYPE,
     'lipidmaps': LIPIDMAPS_TYPE,
     'pubchem': PUBCHEM_COMPOUND_TYPE,
+    'ramp': RAMP_ID_TYPE,
+    'refmet': REFMET_TYPE,
     'swisslipids': SWISSLIPIDS_TYPE,
 }
 
@@ -157,6 +167,30 @@ def _lipidmaps_row(row: dict) -> dict | None:
     }
 
 
+def _ramp_row(row: dict) -> dict | None:
+    key_value = _clean(row.get('ramp_id'))
+    standard_inchi_key = _clean_inchikey(row.get('inchi_key'))
+    if not key_value or not standard_inchi_key:
+        return None
+    return {
+        'key_type': RAMP_ID_TYPE,
+        'key_value': key_value,
+        'standard_inchi_key': standard_inchi_key,
+    }
+
+
+def _refmet_row(row: dict) -> dict | None:
+    key_value = _clean(row.get('refmet_id') or row.get(' refmet_id'))
+    standard_inchi_key = _clean_inchikey(row.get('inchi_key'))
+    if not key_value or not standard_inchi_key:
+        return None
+    return {
+        'key_type': REFMET_TYPE,
+        'key_value': key_value,
+        'standard_inchi_key': standard_inchi_key,
+    }
+
+
 def _swisslipids_row(row: dict) -> dict | None:
     key_value = _clean(row.get('Lipid ID'))
     standard_inchi = _clean_inchi(row.get('InChI (pH7.3)'))
@@ -176,6 +210,7 @@ _CHEMICAL_DATASETS: dict[str, tuple[object, Callable[[dict], dict | None]]] = {
     'chembl': (chembl_resource.molecules, _chembl_row),
     'hmdb': (hmdb_resource.metabolites, _hmdb_row),
     'lipidmaps': (lipidmaps_resource.lipids, _lipidmaps_row),
+    'refmet': (refmet_resource.metabolites, _refmet_row),
     'swisslipids': (swisslipids_resource.lipids, _swisslipids_row),
 }
 
@@ -224,6 +259,19 @@ def _chemical_identifier_rows(
                 if max_records is not None and emitted >= max_records:
                     break
             continue
+        if source == 'ramp':
+            from pypath.inputs_v2.rampdb import resource as ramp_resource
+
+            emitted = 0
+            for raw_row in ramp_resource.chem_props.raw():
+                row = _ramp_row(raw_row)
+                if row is None:
+                    continue
+                yield row
+                emitted += 1
+                if max_records is not None and emitted >= max_records:
+                    break
+            continue
 
         dataset, mapper = _CHEMICAL_DATASETS[source]
         raw_kwargs = {}
@@ -265,7 +313,7 @@ def build_chemical_identifier_lookup(
     )
     if not rows:
         return pl.DataFrame(schema=CHEMICAL_IDENTIFIER_LOOKUP_SCHEMA)
-    return _normalize_chemical_identifier_lookup(rows)[0]
+    return _split_chemical_identifier_lookup(rows)[0]
 
 
 def materialize_chemical_sources(
@@ -291,13 +339,27 @@ def materialize_chemical_sources(
     chemical_lookup_path = (
         output_dir / CHEMICAL_IDENTIFIER_LOOKUP_OUTPUT_FILENAME
     )
+    ambiguous_path = (
+        output_dir / CHEMICAL_IDENTIFIER_LOOKUP_AMBIGUOUS_OUTPUT_FILENAME
+    )
     identifier_type_path = output_dir / IDENTIFIER_TYPE_OUTPUT_FILENAME
-    existing_lookup, existing_identifier_types = _read_existing_chemical_lookup(
+    (
+        existing_lookup,
+        existing_ambiguous,
+        existing_identifier_types,
+    ) = _read_existing_chemical_lookup(
         chemical_lookup_path,
+        ambiguous_path,
         identifier_type_path,
     )
     loaded_sources = (
-        _loaded_chemical_sources(existing_lookup, existing_identifier_types)
+        _loaded_chemical_sources(
+            _combine_existing_chemical_lookup(
+                existing_lookup,
+                existing_ambiguous,
+            ),
+            existing_identifier_types,
+        )
         if skip_existing
         else set()
     )
@@ -321,6 +383,7 @@ def materialize_chemical_sources(
                 rows,
                 output_dir,
                 existing_lookup=existing_lookup,
+                existing_ambiguous=existing_ambiguous,
                 existing_identifier_types=existing_identifier_types,
             )
 
@@ -356,18 +419,25 @@ def materialize_chemical_sources(
     ):
         return {
             'chemical_identifier_lookup_rows': existing_lookup.height,
+            'chemical_identifier_lookup_ambiguous_rows': (
+                existing_ambiguous.height
+                if existing_ambiguous is not None
+                else _empty_chemical_lookup().height
+            ),
             'identifier_type_rows': existing_identifier_types.height,
         }
 
-    lookup, identifier_types = _write_chemical_lookup_files(
+    lookup, ambiguous, identifier_types = _write_chemical_lookup_files(
         rows,
         output_dir,
         existing_lookup=existing_lookup,
+        existing_ambiguous=existing_ambiguous,
         existing_identifier_types=existing_identifier_types,
     )
 
     return {
         'chemical_identifier_lookup_rows': lookup.height,
+        'chemical_identifier_lookup_ambiguous_rows': ambiguous.height,
         'identifier_type_rows': identifier_types.height,
     }
 
@@ -377,13 +447,23 @@ def _write_chemical_lookup_files(
     output_dir: Path,
     *,
     existing_lookup: pl.DataFrame | None = None,
+    existing_ambiguous: pl.DataFrame | None = None,
     existing_identifier_types: pl.DataFrame | None = None,
-) -> tuple[pl.DataFrame, pl.DataFrame]:
-    lookup, identifier_types = _normalize_chemical_identifier_lookup(rows)
-    if existing_lookup is not None:
-        lookup = pl.concat(
-            [existing_lookup, lookup], how='vertical_relaxed'
+) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]:
+    lookup, ambiguous, identifier_types = _split_chemical_identifier_lookup(
+        rows
+    )
+    existing_frames = [
+        frame
+        for frame in (existing_lookup, existing_ambiguous)
+        if frame is not None and not frame.is_empty()
+    ]
+    if existing_frames:
+        all_lookup = pl.concat(
+            [*existing_frames, lookup, ambiguous],
+            how='vertical_relaxed',
         ).unique()
+        lookup, ambiguous = _split_chemical_lookup_frame(all_lookup)
     if existing_identifier_types is not None:
         identifier_types = (
             pl.concat(
@@ -396,17 +476,30 @@ def _write_chemical_lookup_files(
     lookup.write_parquet(
         output_dir / CHEMICAL_IDENTIFIER_LOOKUP_OUTPUT_FILENAME
     )
+    ambiguous.write_parquet(
+        output_dir / CHEMICAL_IDENTIFIER_LOOKUP_AMBIGUOUS_OUTPUT_FILENAME
+    )
     identifier_types.write_parquet(output_dir / IDENTIFIER_TYPE_OUTPUT_FILENAME)
-    return lookup, identifier_types
+    return lookup, ambiguous, identifier_types
 
 
 def _read_existing_chemical_lookup(
     lookup_path: Path,
+    ambiguous_path: Path,
     identifier_type_path: Path,
-) -> tuple[pl.DataFrame | None, pl.DataFrame | None]:
+) -> tuple[pl.DataFrame | None, pl.DataFrame | None, pl.DataFrame | None]:
     if not lookup_path.exists() or not identifier_type_path.exists():
-        return None, None
-    return pl.read_parquet(lookup_path), pl.read_parquet(identifier_type_path)
+        return None, None, None
+    ambiguous = (
+        pl.read_parquet(ambiguous_path)
+        if ambiguous_path.exists()
+        else _empty_chemical_lookup()
+    )
+    return (
+        pl.read_parquet(lookup_path),
+        ambiguous,
+        pl.read_parquet(identifier_type_path),
+    )
 
 
 def _loaded_chemical_sources(
@@ -434,6 +527,20 @@ def _loaded_chemical_sources(
         if count > 0:
             loaded.add(source)
     return loaded
+
+
+def _combine_existing_chemical_lookup(
+    lookup: pl.DataFrame | None,
+    ambiguous: pl.DataFrame | None,
+) -> pl.DataFrame | None:
+    frames = [
+        frame
+        for frame in (lookup, ambiguous)
+        if frame is not None and not frame.is_empty()
+    ]
+    if not frames:
+        return lookup
+    return pl.concat(frames, how='vertical_relaxed').unique()
 
 
 def _chemical_filter_inchikeys(
@@ -507,9 +614,9 @@ def _chemical_filter_inchikeys(
     return None
 
 
-def _normalize_chemical_identifier_lookup(
+def _split_chemical_identifier_lookup(
     rows: Iterable[dict],
-) -> tuple[pl.DataFrame, pl.DataFrame]:
+) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]:
     normalized_rows: list[dict[str, object]] = []
     type_names = {STANDARD_INCHI_KEY_TYPE}
     for row in rows:
@@ -536,7 +643,8 @@ def _normalize_chemical_identifier_lookup(
     )
     if not normalized_rows:
         return (
-            pl.DataFrame(schema=CHEMICAL_IDENTIFIER_LOOKUP_SCHEMA),
+            _empty_chemical_lookup(),
+            _empty_chemical_lookup(),
             identifier_types,
         )
 
@@ -550,4 +658,39 @@ def _normalize_chemical_identifier_lookup(
         )
         .unique()
     )
-    return lookup, identifier_types
+    unambiguous, ambiguous = _split_chemical_lookup_frame(lookup)
+    return unambiguous, ambiguous, identifier_types
+
+
+def _empty_chemical_lookup() -> pl.DataFrame:
+    return pl.DataFrame(schema=CHEMICAL_IDENTIFIER_LOOKUP_SCHEMA)
+
+
+def _split_chemical_lookup_frame(
+    lookup: pl.DataFrame,
+) -> tuple[pl.DataFrame, pl.DataFrame]:
+    if lookup.is_empty():
+        empty = _empty_chemical_lookup()
+        return empty, empty
+
+    join_keys = [
+        'key_identifier_type_id',
+        'key_value',
+        'canonical_identifier_type_id',
+    ]
+    ambiguous_keys = (
+        lookup.group_by(join_keys)
+        .agg(
+            pl.col('canonical_identifier')
+            .n_unique()
+            .alias('canonical_identifier_count')
+        )
+        .filter(pl.col('canonical_identifier_count') > 1)
+        .select(join_keys)
+    )
+    if ambiguous_keys.is_empty():
+        return lookup, _empty_chemical_lookup()
+
+    ambiguous = lookup.join(ambiguous_keys, on=join_keys, how='semi')
+    unambiguous = lookup.join(ambiguous_keys, on=join_keys, how='anti')
+    return unambiguous, ambiguous

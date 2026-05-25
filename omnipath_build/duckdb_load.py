@@ -18,6 +18,7 @@ from omnipath_build.cv_terms import (
     CV_TERM_ENTITY_TYPE,
     SMALL_MOLECULE_ENTITY_TYPE,
 )
+from pypath.internals.cv_terms import BiologicalRoleCv, cv_term_label_accession
 from omnipath_build.ingest.common import unwrap_record
 from pypath.internals.silver_schema import Entity
 from pypath.internals.ontology_schema import OntologyTerm
@@ -30,11 +31,23 @@ from omnipath_build.resolver.identifier_types import (
     UNRESOLVED_ID_TYPE,
     IDENTIFIER_TYPE_NAMES,
     COMPLEX_MEMBER_HASH_ID_TYPE,
+    REACTION_MEMBER_HASH_ID_TYPE,
     identifier_type_id,
 )
 
 PROTEIN_ENTITY_TYPE = 'Protein:MI:0326'
 COMPLEX_ENTITY_TYPE = 'Complex:MI:0314'
+REACTION_ENTITY_TYPE = 'Reaction:OM:0015'
+REACTANT_ROLE_TERMS = (
+    cv_term_label_accession(BiologicalRoleCv.REACTANT),
+    str(BiologicalRoleCv.REACTANT),
+    cv_term_label_accession(BiologicalRoleCv.SUBSTRATE),
+    str(BiologicalRoleCv.SUBSTRATE),
+)
+PRODUCT_ROLE_TERMS = (
+    cv_term_label_accession(BiologicalRoleCv.PRODUCT),
+    str(BiologicalRoleCv.PRODUCT),
+)
 
 
 def _sql_literal(value: str | Path) -> str:
@@ -746,6 +759,7 @@ def _drop_duckdb_batch_tables(con: duckdb.DuckDBPyConnection) -> None:
         'entity_resolution_base',
         'complex_member_signature_base',
         'complex_member_signature',
+        'reaction_member_signature',
         'entity_resolution',
         'batch_entity_candidate',
         'new_entity',
@@ -1041,6 +1055,97 @@ def _canonicalize_loaded_duckdb(
     )
     con.execute(
         """
+        CREATE TABLE reaction_member_signature AS
+        WITH reaction_member AS (
+          SELECT DISTINCT
+            parent.source,
+            parent.entity_evidence_id,
+            CASE
+              WHEN role_annotation.term IN (?, ?, ?, ?) THEN 'reactant'
+              WHEN role_annotation.term IN (?, ?) THEN 'product'
+            END AS participant_role,
+            child_resolution.entity_type,
+            child_resolution.taxonomy_id,
+            coalesce(
+              child_complex.canonical_identifier_type_id,
+              child_resolution.canonical_identifier_type_id
+            ) AS canonical_identifier_type_id,
+            coalesce(
+              child_complex.canonical_identifier,
+              child_resolution.canonical_identifier
+            ) AS canonical_identifier,
+            coalesce(child_complex.status, child_resolution.status) AS status
+          FROM entity_evidence_raw parent
+          JOIN relation_evidence_raw relation
+            ON relation.source = parent.source
+           AND relation.subject_entity_evidence_id = parent.entity_evidence_id
+           AND relation.predicate = 'has_participant'
+          JOIN relation_annotation_raw role_annotation
+            ON role_annotation.source = relation.source
+           AND role_annotation.evidence_id = relation.relation_evidence_id
+          JOIN entity_resolution_base child_resolution
+            ON child_resolution.source = relation.source
+           AND child_resolution.entity_evidence_id =
+               relation.object_entity_evidence_id
+          LEFT JOIN complex_member_signature child_complex
+            ON child_complex.source = child_resolution.source
+           AND child_complex.entity_evidence_id =
+               child_resolution.entity_evidence_id
+          WHERE parent.entity_type = ?
+            AND role_annotation.term IN (?, ?, ?, ?, ?, ?)
+        )
+        SELECT
+          reaction_member.source,
+          reaction_member.entity_evidence_id,
+          reaction_hash_type.identifier_type_id AS canonical_identifier_type_id,
+          sha256(
+            to_json(
+              list(
+                struct_pack(
+                  participant_role := reaction_member.participant_role,
+                  entity_type := reaction_member.entity_type,
+                  taxonomy_id := reaction_member.taxonomy_id,
+                  canonical_identifier_type_id :=
+                    reaction_member.canonical_identifier_type_id,
+                  canonical_identifier := reaction_member.canonical_identifier
+                )
+                ORDER BY
+                  reaction_member.participant_role,
+                  reaction_member.entity_type,
+                  reaction_member.taxonomy_id,
+                  reaction_member.canonical_identifier_type_id,
+                  reaction_member.canonical_identifier
+              )
+            )
+          ) AS canonical_identifier,
+          CASE
+            WHEN bool_and(reaction_member.status = 'resolved') THEN 'resolved'
+            ELSE 'unresolved'
+          END AS status
+        FROM reaction_member
+        CROSS JOIN (
+          SELECT identifier_type_id
+          FROM identifier_type_all
+          WHERE name = ?
+        ) reaction_hash_type
+        GROUP BY
+          reaction_member.source,
+          reaction_member.entity_evidence_id,
+          reaction_hash_type.identifier_type_id
+        HAVING bool_or(reaction_member.participant_role = 'reactant')
+           AND bool_or(reaction_member.participant_role = 'product')
+        """,
+        [
+            *REACTANT_ROLE_TERMS,
+            *PRODUCT_ROLE_TERMS,
+            REACTION_ENTITY_TYPE,
+            *REACTANT_ROLE_TERMS,
+            *PRODUCT_ROLE_TERMS,
+            REACTION_MEMBER_HASH_ID_TYPE,
+        ],
+    )
+    con.execute(
+        """
         CREATE TABLE entity_resolution AS
         SELECT
           base.source,
@@ -1050,18 +1155,27 @@ def _canonicalize_loaded_duckdb(
           base.entity_type,
           base.taxonomy_id,
           coalesce(
+            reaction_member.canonical_identifier_type_id,
             complex_member.canonical_identifier_type_id,
             base.canonical_identifier_type_id
           ) AS canonical_identifier_type_id,
           coalesce(
+            reaction_member.canonical_identifier,
             complex_member.canonical_identifier,
             base.canonical_identifier
           ) AS canonical_identifier,
-          coalesce(complex_member.status, base.status) AS status
+          coalesce(
+            reaction_member.status,
+            complex_member.status,
+            base.status
+          ) AS status
         FROM entity_resolution_base base
         LEFT JOIN complex_member_signature complex_member
           ON complex_member.source = base.source
          AND complex_member.entity_evidence_id = base.entity_evidence_id
+        LEFT JOIN reaction_member_signature reaction_member
+          ON reaction_member.source = base.source
+         AND reaction_member.entity_evidence_id = base.entity_evidence_id
         """
     )
     con.execute(
@@ -1070,7 +1184,7 @@ def _canonicalize_loaded_duckdb(
         WITH complex_hash_type AS (
           SELECT identifier_type_id
           FROM identifier_type_all
-          WHERE name = ?
+          WHERE name IN (?, ?)
         ),
         needed_protein_key AS (
           SELECT DISTINCT
@@ -1303,6 +1417,7 @@ def _canonicalize_loaded_duckdb(
         """,
         [
             COMPLEX_MEMBER_HASH_ID_TYPE,
+            REACTION_MEMBER_HASH_ID_TYPE,
             CV_TERM_ENTITY_TYPE,
             CV_TERM_ID_TYPE,
             CV_TERM_ID_TYPE,

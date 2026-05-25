@@ -19,9 +19,9 @@ from __future__ import annotations
 import os
 import sys
 import time
-import tempfile
 from pathlib import Path
 import argparse
+import tempfile
 from itertools import islice
 from dataclasses import dataclass
 from collections.abc import Iterable
@@ -37,6 +37,9 @@ from omnipath_build.ontology_artifacts import (
     write_ontology_obo,
     collect_ontology_terms,
 )
+
+DEFAULT_LOAD_EXCLUDED_SOURCES = frozenset({'rampdb'})
+
 
 @dataclass(frozen=True)
 class DirectCopyStats:
@@ -1118,7 +1121,11 @@ def _discover_entity_datasets(
         inputs_package=inputs_package,
         progress=True,
     )
-    source_names = sources or tuple(sorted(discovered))
+    source_names = sources or tuple(
+        source
+        for source in sorted(discovered)
+        if source not in DEFAULT_LOAD_EXCLUDED_SOURCES
+    )
     unknown = [source for source in source_names if source not in discovered]
     if unknown:
         raise ValueError(f'Unknown source(s): {", ".join(unknown)}')

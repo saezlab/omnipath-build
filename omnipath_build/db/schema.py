@@ -336,7 +336,9 @@ def ensure_schema(
         _ensure_annotation_value_schema(cur, schema)
         log_step('create evidence annotation tables')
         _ensure_evidence_annotation_tables(cur, schema)
-        _ensure_resolution_schema(cur, schema, progress=progress, indexes=indexes)
+        _ensure_resolution_schema(
+            cur, schema, progress=progress, indexes=indexes
+        )
 
     log_step('commit')
     conn.commit()
@@ -381,9 +383,13 @@ def ensure_content_primary_keys(
             if cur.fetchone() is not None:
                 continue
             log_step(f'add primary key {table}')
-            column_sql = sql.SQL(', ').join(sql.Identifier(column) for column in columns)
+            column_sql = sql.SQL(', ').join(
+                sql.Identifier(column) for column in columns
+            )
             cur.execute(
-                sql.SQL('ALTER TABLE {}.{} ADD CONSTRAINT {} PRIMARY KEY ({})').format(
+                sql.SQL(
+                    'ALTER TABLE {}.{} ADD CONSTRAINT {} PRIMARY KEY ({})'
+                ).format(
                     sql.Identifier(schema),
                     sql.Identifier(table),
                     sql.Identifier(f'{table}_pkey'),
@@ -901,9 +907,9 @@ def _ensure_resolution_schema(
     _ensure_relation_evidence_entity_endpoints(cur, schema)
     log_step('drop obsolete entity_resolution_candidate table')
     cur.execute(
-        sql.SQL('DROP TABLE IF EXISTS {}.entity_resolution_candidate CASCADE').format(
-            schema_id
-        )
+        sql.SQL(
+            'DROP TABLE IF EXISTS {}.entity_resolution_candidate CASCADE'
+        ).format(schema_id)
     )
     log_step('create entity_evidence_resolution table')
     cur.execute(
@@ -1022,6 +1028,21 @@ def _ensure_resolution_schema(
         sql.SQL(
             """
             CREATE TABLE IF NOT EXISTS {}.resolver_chemical_identifier_lookup (
+              key_identifier_type_id bigint NOT NULL
+                REFERENCES {}.vocab_identifier_type(identifier_type_id),
+              key_value text NOT NULL,
+              canonical_identifier_type_id bigint NOT NULL
+                REFERENCES {}.vocab_identifier_type(identifier_type_id),
+              canonical_identifier text NOT NULL
+            )
+            """
+        ).format(schema_id, schema_id, schema_id)
+    )
+    log_step('create ambiguous resolver chemical lookup table')
+    cur.execute(
+        sql.SQL(
+            """
+            CREATE TABLE IF NOT EXISTS {}.resolver_chemical_identifier_lookup_ambiguous (
               key_identifier_type_id bigint NOT NULL
                 REFERENCES {}.vocab_identifier_type(identifier_type_id),
               key_value text NOT NULL,
@@ -1530,7 +1551,9 @@ def _ensure_annotation_value_schema(
                     sql.Identifier(table),
                 )
             )
-        cur.execute(sql.SQL('DROP TABLE {}.annotation CASCADE').format(schema_id))
+        cur.execute(
+            sql.SQL('DROP TABLE {}.annotation CASCADE').format(schema_id)
+        )
     cur.execute(
         sql.SQL(
             """
@@ -1843,7 +1866,9 @@ def _ensure_entity_resolution_reason(
             table_sql=sql.SQL('{}.entity_evidence_resolution').format(
                 schema_id
             ),
-            reason_table=sql.SQL('{}.vocab_resolution_reason').format(schema_id),
+            reason_table=sql.SQL('{}.vocab_resolution_reason').format(
+                schema_id
+            ),
         )
     )
     cur.execute(
@@ -2081,7 +2106,9 @@ def _ensure_entity_canonical_key(
                 sql.Identifier(constraint_name),
             )
         )
-    cur.execute(sql.SQL('DROP INDEX IF EXISTS {}.entity_id_idx').format(schema_id))
+    cur.execute(
+        sql.SQL('DROP INDEX IF EXISTS {}.entity_id_idx').format(schema_id)
+    )
     cur.execute(
         sql.SQL('DROP INDEX IF EXISTS {}.entity_type_id_hash_idx').format(
             schema_id
@@ -2155,9 +2182,9 @@ def _drop_obsolete_annotation_indexes(
         )
     )
     cur.execute(
-        sql.SQL('ALTER TABLE {}.annotation DROP COLUMN IF EXISTS value_hash').format(
-            schema_id
-        )
+        sql.SQL(
+            'ALTER TABLE {}.annotation DROP COLUMN IF EXISTS value_hash'
+        ).format(schema_id)
     )
 
 
@@ -2293,7 +2320,9 @@ def _ensure_entity_resolution_entity_check(
             table_sql=sql.SQL('{}.entity_evidence_resolution').format(
                 schema_id
             ),
-            status_table=sql.SQL('{}.vocab_resolution_status').format(schema_id),
+            status_table=sql.SQL('{}.vocab_resolution_status').format(
+                schema_id
+            ),
         )
     )
     cur.execute(
@@ -2495,6 +2524,11 @@ def _ensure_resolution_indexes(
         (
             'resolver_chemical_lookup_key_idx',
             'resolver_chemical_identifier_lookup',
+            ('key_identifier_type_id', 'key_value'),
+        ),
+        (
+            'resolver_chemical_ambiguous_key_idx',
+            'resolver_chemical_identifier_lookup_ambiguous',
             ('key_identifier_type_id', 'key_value'),
         ),
         (

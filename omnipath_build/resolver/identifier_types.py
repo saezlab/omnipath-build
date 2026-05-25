@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import polars as pl
 
-from pypath.internals.cv_terms import IdentifierNamespaceCv, cv_term_label_accession
-
+from pypath.internals.cv_terms import (
+    IdentifierNamespaceCv,
+    cv_term_label_accession,
+)
 
 IDENTIFIER_TYPE_SCHEMA: dict[str, pl.DataType] = {
     'identifier_type_id': pl.UInt32,
@@ -15,6 +17,7 @@ IDENTIFIER_TYPE_SCHEMA: dict[str, pl.DataType] = {
 FALLBACK_IDENTIFIER_TYPE = 'Fallback'
 UNRESOLVED_ID_TYPE = 'omnipath:unresolved_entity_key'
 COMPLEX_MEMBER_HASH_ID_TYPE = 'omnipath:complex_member_hash'
+REACTION_MEMBER_HASH_ID_TYPE = 'omnipath:reaction_member_hash'
 
 IDENTIFIER_TYPE_NAMES: tuple[str, ...] = (
     cv_term_label_accession(IdentifierNamespaceCv.UNIPROT),
@@ -36,6 +39,9 @@ IDENTIFIER_TYPE_NAMES: tuple[str, ...] = (
     cv_term_label_accession(IdentifierNamespaceCv.CHEMBL_COMPOUND),
     UNRESOLVED_ID_TYPE,
     COMPLEX_MEMBER_HASH_ID_TYPE,
+    REACTION_MEMBER_HASH_ID_TYPE,
+    cv_term_label_accession(IdentifierNamespaceCv.RAMP_ID),
+    cv_term_label_accession(IdentifierNamespaceCv.REFMET),
 )
 
 IDENTIFIER_TYPE_IDS: dict[str, int] = {
@@ -49,10 +55,14 @@ def identifier_type_id(name: str) -> int:
     try:
         return IDENTIFIER_TYPE_IDS[name]
     except KeyError as error:
-        raise ValueError(f'Unknown resolver identifier type: {name!r}') from error
+        raise ValueError(
+            f'Unknown resolver identifier type: {name!r}'
+        ) from error
 
 
-def identifier_type_rows(names: set[str] | None = None) -> list[dict[str, object]]:
+def identifier_type_rows(
+    names: set[str] | None = None,
+) -> list[dict[str, object]]:
     """Return resolver identifier type rows for all or selected namespaces."""
 
     selected = set(IDENTIFIER_TYPE_NAMES if names is None else names)
