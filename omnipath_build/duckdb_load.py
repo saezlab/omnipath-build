@@ -2476,6 +2476,29 @@ def _bulk_copy_canonical(
             'resolution_status_id',
         ),
         query="""
+          WITH entity_identifier_json AS (
+            SELECT
+              e.entity_id,
+              to_json(
+                list(
+                  struct_pack(
+                    identifier_type := json_extract_string(j.value, '$.identifier_type'),
+                    identifier_type_id := json_identifier_type.identifier_type_id,
+                    identifier := json_extract_string(j.value, '$.identifier')
+                  )
+                  ORDER BY
+                    json_extract_string(j.value, '$.identifier_type'),
+                    json_extract_string(j.value, '$.identifier')
+                )
+              )::JSON AS identifiers_json
+            FROM pq_entity e
+            CROSS JOIN json_each(e.identifiers_json::JSON) AS j
+            JOIN load_vocab_identifier_type json_identifier_type
+              ON json_identifier_type.name = json_extract_string(j.value, '$.identifier_type')
+            WHERE json_extract_string(j.value, '$.identifier') IS NOT NULL
+              AND json_extract_string(j.value, '$.identifier') <> ''
+            GROUP BY e.entity_id
+          )
           SELECT candidate.*
           FROM (
             SELECT
@@ -2484,9 +2507,11 @@ def _bulk_copy_canonical(
               NULLIF(e.taxonomy_id, '')::BIGINT,
               it.identifier_type_id,
               e.canonical_identifier,
-              e.identifiers_json::JSON,
+              COALESCE(identifier_json.identifiers_json, '[]'::JSON),
               rs.resolution_status_id
             FROM pq_entity e
+            LEFT JOIN entity_identifier_json identifier_json
+              ON identifier_json.entity_id = e.entity_id
             JOIN load_vocab_entity_type et
               ON et.name = e.entity_type
             JOIN load_vocab_identifier_type it
@@ -2832,7 +2857,7 @@ def _merge_source_entity_identifiers(
                       SELECT
                         affected.entity_id,
                         existing.identifier_type,
-                        existing.identifier_type_id,
+                        existing_type.identifier_type_id,
                         existing.identifier
                       FROM affected_entity affected
                       JOIN {}.entity e
@@ -2842,6 +2867,8 @@ def _merge_source_entity_identifiers(
                         identifier_type_id bigint,
                         identifier text
                       )
+                      JOIN {}.vocab_identifier_type existing_type
+                        ON existing_type.name = existing.identifier_type
                       WHERE existing.identifier IS NOT NULL
                         AND existing.identifier <> ''
                     ),
@@ -2871,6 +2898,7 @@ def _merge_source_entity_identifiers(
                       AND e.identifiers IS DISTINCT FROM merged.identifiers
                     """
                 ).format(
+                    schema_id,
                     schema_id,
                     schema_id,
                     schema_id,
