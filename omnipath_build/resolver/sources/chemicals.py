@@ -12,6 +12,7 @@ from __future__ import annotations
 import re
 import sys
 from pathlib import Path
+from itertools import chain
 from collections.abc import Callable, Iterable
 
 import polars as pl
@@ -30,6 +31,7 @@ from omnipath_build.resolver.paths import (
     ensure_chemicals_data_dir,
     activate_raw_download_data_dir,
 )
+from omnipath_build.resolver.parquet import write_parquet_from_dict_rows
 from omnipath_build.resolver.identifier_types import (
     IDENTIFIER_TYPE_SCHEMA,
     identifier_type_id,
@@ -246,10 +248,6 @@ def _chemical_identifier_rows(
 
             rows = iter_pubchem_compound_rows(
                 pubchem_url,
-                filter_inchikeys=_chemical_filter_inchikeys(
-                    chemical_lookup_path,
-                    sources=chemical_lookup_sources,
-                ),
                 shard_count=pubchem_shards,
             )
             emitted = 0
@@ -367,6 +365,7 @@ def materialize_chemical_sources(
     completed_sources: list[str] = [
         source for source in CHEMICAL_SOURCES if source in loaded_sources
     ]
+    streamed_counts: dict[str, int] | None = None
 
     for source in selected:
         if source in loaded_sources:
@@ -379,13 +378,44 @@ def materialize_chemical_sources(
         if source in LOOKUP_DEPENDENT_CHEMICAL_SOURCES and (
             rows or existing_lookup is not None
         ):
-            _write_chemical_lookup_files(
+            (
+                existing_lookup,
+                existing_ambiguous,
+                existing_identifier_types,
+            ) = _write_chemical_lookup_files(
                 rows,
                 output_dir,
                 existing_lookup=existing_lookup,
                 existing_ambiguous=existing_ambiguous,
                 existing_identifier_types=existing_identifier_types,
             )
+            rows = []
+
+        if source == 'pubchem':
+            try:
+                streamed_counts = _write_streaming_pubchem_lookup_files(
+                    output_dir,
+                    source=pubchem_url,
+                    max_records=max_records,
+                    pubchem_shards=pubchem_shards,
+                    existing_lookup=existing_lookup,
+                    existing_ambiguous=existing_ambiguous,
+                    existing_identifier_types=existing_identifier_types,
+                )
+            except Exception as exc:
+                if not continue_on_error:
+                    raise
+                print(
+                    '[warning] '
+                    f'[resolver.{source}] materialize failed; continuing: '
+                    f'{exc.__class__.__name__}: {exc}',
+                    file=sys.stderr,
+                    flush=True,
+                )
+                continue
+            else:
+                completed_sources.append(source)
+            continue
 
         try:
             rows.extend(
@@ -411,6 +441,9 @@ def materialize_chemical_sources(
             continue
         else:
             completed_sources.append(source)
+
+    if streamed_counts is not None and not rows:
+        return streamed_counts
 
     if (
         not rows
@@ -483,6 +516,70 @@ def _write_chemical_lookup_files(
     return lookup, ambiguous, identifier_types
 
 
+def _write_streaming_pubchem_lookup_files(
+    output_dir: Path,
+    *,
+    source: str | Path | None,
+    max_records: int | None,
+    pubchem_shards: int | None,
+    existing_lookup: pl.DataFrame | None,
+    existing_ambiguous: pl.DataFrame | None,
+    existing_identifier_types: pl.DataFrame | None,
+) -> dict[str, int]:
+    from omnipath_build.resolver.sources.pubchem import (
+        iter_pubchem_compound_rows,
+    )
+
+    lookup_path = output_dir / CHEMICAL_IDENTIFIER_LOOKUP_OUTPUT_FILENAME
+    ambiguous_path = (
+        output_dir / CHEMICAL_IDENTIFIER_LOOKUP_AMBIGUOUS_OUTPUT_FILENAME
+    )
+    identifier_type_path = output_dir / IDENTIFIER_TYPE_OUTPUT_FILENAME
+
+    pubchem_rows = iter_pubchem_compound_rows(
+        source,
+        shard_count=pubchem_shards,
+    )
+    if max_records is not None:
+        pubchem_rows = _take(pubchem_rows, max_records)
+
+    existing_lookup = _drop_lookup_source(existing_lookup, PUBCHEM_COMPOUND_TYPE)
+    existing_ambiguous = _drop_lookup_source(
+        existing_ambiguous,
+        PUBCHEM_COMPOUND_TYPE,
+    )
+    lookup_row_count = write_parquet_from_dict_rows(
+        chain(
+            _frame_dict_rows(existing_lookup),
+            _normalized_chemical_lookup_rows(pubchem_rows),
+        ),
+        CHEMICAL_IDENTIFIER_LOOKUP_SCHEMA,
+        lookup_path,
+    )
+
+    ambiguous = (
+        existing_ambiguous
+        if existing_ambiguous is not None
+        else _empty_chemical_lookup()
+    )
+    ambiguous.write_parquet(ambiguous_path)
+
+    type_names = {STANDARD_INCHI_KEY_TYPE, PUBCHEM_COMPOUND_TYPE}
+    if existing_identifier_types is not None:
+        type_names.update(existing_identifier_types.get_column('name'))
+    identifier_types = pl.DataFrame(
+        identifier_type_rows(type_names),
+        schema=IDENTIFIER_TYPE_SCHEMA,
+    )
+    identifier_types.write_parquet(identifier_type_path)
+
+    return {
+        'chemical_identifier_lookup_rows': lookup_row_count,
+        'chemical_identifier_lookup_ambiguous_rows': ambiguous.height,
+        'identifier_type_rows': identifier_types.height,
+    }
+
+
 def _read_existing_chemical_lookup(
     lookup_path: Path,
     ambiguous_path: Path,
@@ -543,75 +640,45 @@ def _combine_existing_chemical_lookup(
     return pl.concat(frames, how='vertical_relaxed').unique()
 
 
-def _chemical_filter_inchikeys(
-    lookup_path: str | Path | None,
-    sources: Iterable[str] | None = None,
-) -> frozenset[str] | None:
-    source_values = (
-        frozenset(str(source).strip().lower() for source in sources if source)
-        if sources is not None
-        else frozenset({'chebi', 'hmdb'})
-    )
-    if not source_values:
-        return None
-    path = Path(lookup_path) if lookup_path is not None else None
-    if path is None or not path.exists():
-        fallback = Path('omnipath_build/data/chemicals') / (
-            CHEMICAL_IDENTIFIER_LOOKUP_OUTPUT_FILENAME
-        )
-        path = fallback if fallback.exists() else None
-    if path is None:
-        return None
+def _take(rows: Iterable[dict], max_records: int) -> Iterable[dict]:
+    emitted = 0
+    for row in rows:
+        if emitted >= max_records:
+            break
+        yield row
+        emitted += 1
 
-    scan = pl.scan_parquet(path)
-    columns = set(scan.collect_schema().names())
-    if {'source', 'standard_inchi_key'} <= columns:
-        values = (
-            scan.filter(
-                pl.col('source').str.to_lowercase().is_in(sorted(source_values))
-                & pl.col('standard_inchi_key').is_not_null()
-                & (pl.col('standard_inchi_key') != '')
-            )
-            .select('standard_inchi_key')
-            .unique()
-            .collect()
-            .get_column('standard_inchi_key')
-            .to_list()
-        )
-        return frozenset(values)
-    if {'key_identifier_type_id', 'canonical_identifier'} <= columns:
-        identifier_type_path = path.with_name(IDENTIFIER_TYPE_OUTPUT_FILENAME)
-        if not identifier_type_path.exists():
-            return None
-        source_type_names = sorted(
-            CHEMICAL_SOURCE_IDENTIFIER_TYPES[source]
-            for source in source_values
-            if source in CHEMICAL_SOURCE_IDENTIFIER_TYPES
-        )
-        if not source_type_names:
-            return None
-        type_ids = (
-            pl.scan_parquet(identifier_type_path)
-            .filter(pl.col('name').is_in(source_type_names))
-            .select('identifier_type_id')
-            .collect()
-            .get_column('identifier_type_id')
-            .to_list()
-        )
-        values = (
-            scan.filter(
-                pl.col('key_identifier_type_id').is_in(type_ids)
-                & pl.col('canonical_identifier').is_not_null()
-                & (pl.col('canonical_identifier') != '')
-            )
-            .select('canonical_identifier')
-            .unique()
-            .collect()
-            .get_column('canonical_identifier')
-            .to_list()
-        )
-        return frozenset(values)
-    return None
+
+def _drop_lookup_source(
+    lookup: pl.DataFrame | None,
+    source_type: str,
+) -> pl.DataFrame | None:
+    if lookup is None or lookup.is_empty():
+        return lookup
+    source_type_id = identifier_type_id(source_type)
+    return lookup.filter(pl.col('key_identifier_type_id') != source_type_id)
+
+
+def _frame_dict_rows(frame: pl.DataFrame | None) -> Iterable[dict]:
+    if frame is None or frame.is_empty():
+        return iter(())
+    return frame.iter_rows(named=True)
+
+
+def _normalized_chemical_lookup_rows(rows: Iterable[dict]) -> Iterable[dict]:
+    for row in rows:
+        key_type = row.get('key_type')
+        if key_type is None:
+            continue
+        key_type = str(key_type)
+        yield {
+            'key_identifier_type_id': identifier_type_id(key_type),
+            'key_value': row.get('key_value'),
+            'canonical_identifier_type_id': identifier_type_id(
+                STANDARD_INCHI_KEY_TYPE
+            ),
+            'canonical_identifier': row.get('standard_inchi_key'),
+        }
 
 
 def _split_chemical_identifier_lookup(
@@ -625,17 +692,7 @@ def _split_chemical_identifier_lookup(
             continue
         key_type = str(key_type)
         type_names.add(key_type)
-        standard_inchi_key = row.get('standard_inchi_key')
-        normalized_rows.append(
-            {
-                'key_identifier_type_id': identifier_type_id(key_type),
-                'key_value': row.get('key_value'),
-                'canonical_identifier_type_id': identifier_type_id(
-                    STANDARD_INCHI_KEY_TYPE
-                ),
-                'canonical_identifier': standard_inchi_key,
-            }
-        )
+        normalized_rows.extend(_normalized_chemical_lookup_rows((row,)))
 
     identifier_types = pl.DataFrame(
         identifier_type_rows(type_names),

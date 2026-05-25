@@ -1,9 +1,8 @@
 """Stream PubChem SDF records into chemical resolver lookup rows.
 
 PubChem is too large to treat as an in-memory table. This module parses SDF
-records from gzip shards as text streams, keeps only CID, standard InChI key,
-and standard InChI fields, and writes normalized resolver rows in bounded
-parquet batches.
+records from gzip shards as text streams, keeps only CID and standard InChI key
+fields, and writes normalized resolver rows in bounded parquet batches.
 """
 
 from __future__ import annotations
@@ -59,9 +58,7 @@ _PUBCHEM_CURRENT_INDEX_FILENAME = 'current-full-sdf-index.html'
 _TARGET_FIELDS = {
     'PUBCHEM_COMPOUND_CID': 'pubchem_cid',
     'PUBCHEM_IUPAC_INCHIKEY': 'standard_inchi_key',
-    'PUBCHEM_IUPAC_INCHI': 'standard_inchi',
     'PUBCHEM_OPENEYE_INCHIKEY': 'standard_inchi_key',
-    'PUBCHEM_OPENEYE_INCHI': 'standard_inchi',
 }
 
 
@@ -75,14 +72,12 @@ def _clean(value: str | None) -> str | None:
 def _row_from_record(record: dict[str, str]) -> dict | None:
     pubchem_cid = _clean(record.get('pubchem_cid'))
     standard_inchi_key = _clean(record.get('standard_inchi_key'))
-    standard_inchi = _clean(record.get('standard_inchi'))
-    if not pubchem_cid or not standard_inchi_key or not standard_inchi:
+    if not pubchem_cid or not standard_inchi_key:
         return None
     return {
         'key_type': PUBCHEM_COMPOUND_TYPE,
         'key_value': pubchem_cid,
         'standard_inchi_key': standard_inchi_key,
-        'standard_inchi': standard_inchi,
     }
 
 

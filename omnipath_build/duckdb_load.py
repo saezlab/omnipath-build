@@ -1186,7 +1186,7 @@ def _canonicalize_loaded_duckdb(
           FROM identifier_type_all
           WHERE name IN (?, ?)
         ),
-        needed_protein_key AS (
+        needed_resolved_key AS (
           SELECT DISTINCT
             er.entity_type,
             er.taxonomy_id,
@@ -1199,64 +1199,86 @@ def _canonicalize_loaded_duckdb(
               FROM complex_hash_type
             )
         ),
-        protein_identifier_rows AS (
+        resolved_identifier_rows AS (
           SELECT
-            np.entity_type,
-            np.taxonomy_id,
-            np.canonical_identifier_type_id,
-            np.canonical_identifier,
-            np.canonical_identifier_type_id AS identifier_type_id,
-            np.canonical_identifier AS identifier
-          FROM needed_protein_key np
+            nr.entity_type,
+            nr.taxonomy_id,
+            nr.canonical_identifier_type_id,
+            nr.canonical_identifier,
+            nr.canonical_identifier_type_id AS identifier_type_id,
+            nr.canonical_identifier AS identifier
+          FROM needed_resolved_key nr
           UNION
           SELECT
-            np.entity_type,
-            np.taxonomy_id,
-            np.canonical_identifier_type_id,
-            np.canonical_identifier,
+            nr.entity_type,
+            nr.taxonomy_id,
+            nr.canonical_identifier_type_id,
+            nr.canonical_identifier,
             rl.key_identifier_type_id AS identifier_type_id,
             rl.key_value AS identifier
-          FROM needed_protein_key np
+          FROM needed_resolved_key nr
           JOIN resolver_entity_type_match etm
-            ON etm.evidence_entity_type = np.entity_type
+            ON etm.evidence_entity_type = nr.entity_type
           JOIN resolver_lookup rl
             ON rl.entity_type = etm.resolver_entity_type
-           AND rl.canonical_identifier_type_id = np.canonical_identifier_type_id
-           AND rl.canonical_identifier = np.canonical_identifier
+           AND rl.canonical_identifier_type_id = nr.canonical_identifier_type_id
+           AND rl.canonical_identifier = nr.canonical_identifier
            AND (
-             rl.taxonomy_id = np.taxonomy_id
+             rl.taxonomy_id = nr.taxonomy_id
              OR rl.taxonomy_id IS NULL
            )
           WHERE rl.key_value IS NOT NULL
             AND rl.key_value <> ''
-        ),
-        needed_protein_entity AS (
+          UNION
           SELECT
-            pir.entity_type,
-            pir.taxonomy_id,
-            pir.canonical_identifier_type_id,
-            pir.canonical_identifier,
+            nr.entity_type,
+            nr.taxonomy_id,
+            nr.canonical_identifier_type_id,
+            nr.canonical_identifier,
+            kit.identifier_type_id,
+            ei.identifier
+          FROM needed_resolved_key nr
+          JOIN entity_resolution er
+            ON er.entity_type = nr.entity_type
+           AND er.taxonomy_id IS NOT DISTINCT FROM nr.taxonomy_id
+           AND er.canonical_identifier_type_id =
+               nr.canonical_identifier_type_id
+           AND er.canonical_identifier = nr.canonical_identifier
+          JOIN entity_identifier_raw ei
+            ON ei.source = er.source
+           AND ei.entity_evidence_id = er.entity_evidence_id
+          JOIN identifier_type_all kit
+            ON kit.name = ei.identifier_type
+          WHERE ei.identifier IS NOT NULL
+            AND ei.identifier <> ''
+        ),
+        needed_resolved_entity AS (
+          SELECT
+            rir.entity_type,
+            rir.taxonomy_id,
+            rir.canonical_identifier_type_id,
+            rir.canonical_identifier,
             to_json(
               list(
                 struct_pack(
                   identifier_type := it.name,
-                  identifier_type_id := pir.identifier_type_id,
-                  identifier := pir.identifier
+                  identifier_type_id := rir.identifier_type_id,
+                  identifier := rir.identifier
                 )
-                ORDER BY it.name, pir.identifier
+                ORDER BY it.name, rir.identifier
               )
             ) AS identifiers_json
           FROM (
             SELECT DISTINCT *
-            FROM protein_identifier_rows
-          ) pir
+            FROM resolved_identifier_rows
+          ) rir
           JOIN identifier_type_all it
-            ON it.identifier_type_id = pir.identifier_type_id
+            ON it.identifier_type_id = rir.identifier_type_id
           GROUP BY
-            pir.entity_type,
-            pir.taxonomy_id,
-            pir.canonical_identifier_type_id,
-            pir.canonical_identifier
+            rir.entity_type,
+            rir.taxonomy_id,
+            rir.canonical_identifier_type_id,
+            rir.canonical_identifier
         ),
         complex_member_entity AS (
           SELECT
@@ -1314,7 +1336,7 @@ def _canonicalize_loaded_duckdb(
             canonical_identifier,
             identifiers_json,
             'resolved' AS resolution_status
-          FROM needed_protein_entity
+          FROM needed_resolved_entity
           UNION ALL
           SELECT
             entity_type,
@@ -2716,6 +2738,11 @@ def _bulk_copy_canonical(
         """,
         source_id=source_id,
     )
+    _merge_source_entity_identifiers(
+        database_url=database_url,
+        schema=schema,
+        source_id=source_id,
+    )
     _copy_duckdb_query_to_postgres(
         con,
         database_url=database_url,
@@ -2762,6 +2789,98 @@ def _bulk_copy_canonical(
         """,
         source_id=source_id,
     )
+
+
+def _merge_source_entity_identifiers(
+    *,
+    database_url: str,
+    schema: str,
+    source_id: int,
+) -> int:
+    """Merge source evidence identifiers into touched canonical entities."""
+
+    schema_id = sql.Identifier(schema)
+    with psycopg2.connect(database_url) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                sql.SQL(
+                    """
+                    WITH source_identifier_row AS (
+                      SELECT DISTINCT
+                        er.entity_id,
+                        it.name AS identifier_type,
+                        i.identifier_type_id,
+                        i.value AS identifier
+                      FROM {}.entity_evidence_resolution er
+                      JOIN {}.entity_evidence_identifier eei
+                        ON eei.source_id = er.source_id
+                       AND eei.entity_evidence_id = er.entity_evidence_id
+                      JOIN {}.identifier_evidence i
+                        ON i.identifier_id = eei.identifier_id
+                      JOIN {}.vocab_identifier_type it
+                        ON it.identifier_type_id = i.identifier_type_id
+                      WHERE er.source_id = %s
+                        AND er.entity_id IS NOT NULL
+                        AND i.value IS NOT NULL
+                        AND i.value <> ''
+                    ),
+                    affected_entity AS (
+                      SELECT DISTINCT entity_id
+                      FROM source_identifier_row
+                    ),
+                    existing_identifier_row AS (
+                      SELECT
+                        affected.entity_id,
+                        existing.identifier_type,
+                        existing.identifier_type_id,
+                        existing.identifier
+                      FROM affected_entity affected
+                      JOIN {}.entity e
+                        ON e.entity_id = affected.entity_id
+                      CROSS JOIN LATERAL jsonb_to_recordset(e.identifiers) AS existing(
+                        identifier_type text,
+                        identifier_type_id bigint,
+                        identifier text
+                      )
+                      WHERE existing.identifier IS NOT NULL
+                        AND existing.identifier <> ''
+                    ),
+                    merged_identifier_row AS (
+                      SELECT * FROM existing_identifier_row
+                      UNION
+                      SELECT * FROM source_identifier_row
+                    ),
+                    merged_identifier AS (
+                      SELECT
+                        entity_id,
+                        jsonb_agg(
+                          jsonb_build_object(
+                            'identifier_type', identifier_type,
+                            'identifier_type_id', identifier_type_id,
+                            'identifier', identifier
+                          )
+                          ORDER BY identifier_type, identifier
+                        ) AS identifiers
+                      FROM merged_identifier_row
+                      GROUP BY entity_id
+                    )
+                    UPDATE {}.entity e
+                    SET identifiers = merged.identifiers
+                    FROM merged_identifier merged
+                    WHERE merged.entity_id = e.entity_id
+                      AND e.identifiers IS DISTINCT FROM merged.identifiers
+                    """
+                ).format(
+                    schema_id,
+                    schema_id,
+                    schema_id,
+                    schema_id,
+                    schema_id,
+                    schema_id,
+                ),
+                [source_id],
+            )
+            return int(cur.rowcount)
 
 
 def _reset_postgres_sequences(
