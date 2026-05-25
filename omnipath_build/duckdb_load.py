@@ -2813,11 +2813,6 @@ def _bulk_copy_canonical(
         """,
         source_id=source_id,
     )
-    _merge_source_entity_identifiers(
-        database_url=database_url,
-        schema=schema,
-        source_id=source_id,
-    )
     _copy_duckdb_query_to_postgres(
         con,
         database_url=database_url,
@@ -2866,99 +2861,190 @@ def _bulk_copy_canonical(
     )
 
 
-def _merge_source_entity_identifiers(
+def merge_staged_source_entity_identifiers(
+    stage_paths: Iterable[str | Path],
     *,
     database_url: str,
     schema: str,
-    source_id: int,
 ) -> int:
-    """Merge source evidence identifiers into touched canonical entities."""
+    """Merge staged source identifiers into entity JSON with DuckDB aggregation."""
 
-    schema_id = sql.Identifier(schema)
-    with psycopg2.connect(database_url) as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                sql.SQL(
-                    """
-                    WITH source_identifier_row AS (
-                      SELECT DISTINCT
-                        er.entity_id,
-                        it.name AS identifier_type,
-                        i.identifier_type_id,
-                        i.value AS identifier
-                      FROM {}.entity_evidence_resolution er
-                      JOIN {}.entity_evidence_identifier eei
-                        ON eei.source_id = er.source_id
-                       AND eei.entity_evidence_id = er.entity_evidence_id
-                      JOIN {}.identifier_evidence i
-                        ON i.identifier_id = eei.identifier_id
-                      JOIN {}.vocab_identifier_type it
-                        ON it.identifier_type_id = i.identifier_type_id
-                      WHERE er.source_id = %s
-                        AND er.entity_id IS NOT NULL
-                        AND i.value IS NOT NULL
-                        AND i.value <> ''
-                    ),
-                    affected_entity AS (
-                      SELECT DISTINCT entity_id
-                      FROM source_identifier_row
-                    ),
-                    existing_identifier_row AS (
-                      SELECT
-                        affected.entity_id,
-                        existing.identifier_type,
-                        existing_type.identifier_type_id,
-                        existing.identifier
-                      FROM affected_entity affected
-                      JOIN {}.entity e
-                        ON e.entity_id = affected.entity_id
-                      CROSS JOIN LATERAL jsonb_to_recordset(e.identifiers) AS existing(
-                        identifier_type text,
-                        identifier_type_id bigint,
-                        identifier text
-                      )
-                      JOIN {}.vocab_identifier_type existing_type
-                        ON existing_type.name = existing.identifier_type
-                      WHERE existing.identifier IS NOT NULL
-                        AND existing.identifier <> ''
-                    ),
-                    merged_identifier_row AS (
-                      SELECT * FROM existing_identifier_row
-                      UNION
-                      SELECT * FROM source_identifier_row
-                    ),
-                    merged_identifier AS (
-                      SELECT
-                        entity_id,
-                        jsonb_agg(
-                          jsonb_build_object(
-                            'identifier_type', identifier_type,
-                            'identifier_type_id', identifier_type_id,
-                            'identifier', identifier
-                          )
-                          ORDER BY identifier_type, identifier
-                        ) AS identifiers
-                      FROM merged_identifier_row
-                      GROUP BY entity_id
-                    )
-                    UPDATE {}.entity e
-                    SET identifiers = merged.identifiers
-                    FROM merged_identifier merged
-                    WHERE merged.entity_id = e.entity_id
-                      AND e.identifiers IS DISTINCT FROM merged.identifiers
-                    """
-                ).format(
-                    schema_id,
-                    schema_id,
-                    schema_id,
-                    schema_id,
-                    schema_id,
-                    schema_id,
-                    schema_id,
-                ),
-                [source_id],
+    paths = tuple(Path(path) for path in stage_paths)
+    if not paths:
+        return 0
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        csv_path = Path(tmpdir) / 'entity_identifier_merge.csv'
+        con = duckdb.connect(':memory:')
+
+        try:
+            con.execute('LOAD postgres')
+            con.execute(
+                f'ATTACH {_sql_literal(database_url)} AS pg (TYPE postgres)'
             )
-            return int(cur.rowcount)
+
+            stage_aliases = []
+            for index, path in enumerate(paths):
+                alias = f'stage_{index}'
+                con.execute(
+                    f'ATTACH {_sql_literal(path)} AS {_duckdb_identifier(alias)} '
+                    '(READ_ONLY)'
+                )
+                stage_aliases.append(alias)
+
+            staged_parts = [
+                f"""
+                SELECT
+                  e.entity_id::VARCHAR AS entity_id,
+                  json_extract_string(j.value, '$.identifier_type')
+                    AS identifier_type,
+                  CAST(
+                    json_extract_string(j.value, '$.identifier_type_id')
+                    AS BIGINT
+                  ) AS identifier_type_id,
+                  json_extract_string(j.value, '$.identifier') AS identifier
+                FROM {_duckdb_identifier(alias)}.canonical_entity e
+                CROSS JOIN json_each(e.identifiers_json::JSON) AS j
+                """
+                for alias in stage_aliases
+            ]
+            staged_union = '\nUNION ALL\n'.join(staged_parts)
+            pg_entity = _duckdb_pg_table(schema, 'entity')
+            con.execute(
+                f"""
+                CREATE TEMP TABLE staged_identifier_row AS
+                SELECT DISTINCT *
+                FROM (
+                  {staged_union}
+                ) staged
+                WHERE identifier_type IS NOT NULL
+                  AND identifier_type <> ''
+                  AND identifier_type_id IS NOT NULL
+                  AND identifier IS NOT NULL
+                  AND identifier <> ''
+                """
+            )
+            con.execute(
+                """
+                CREATE TEMP TABLE affected_entity AS
+                SELECT DISTINCT entity_id
+                FROM staged_identifier_row
+                """
+            )
+            con.execute(
+                f"""
+                CREATE TEMP TABLE existing_identifier_row AS
+                SELECT
+                  e.entity_id::VARCHAR AS entity_id,
+                  json_extract_string(j.value, '$.identifier_type')
+                    AS identifier_type,
+                  CAST(
+                    json_extract_string(j.value, '$.identifier_type_id')
+                    AS BIGINT
+                  ) AS identifier_type_id,
+                  json_extract_string(j.value, '$.identifier') AS identifier
+                FROM {pg_entity} e
+                JOIN affected_entity affected
+                  ON affected.entity_id = e.entity_id::VARCHAR
+                CROSS JOIN json_each(CAST(e.identifiers AS JSON)) AS j
+                WHERE json_extract_string(j.value, '$.identifier_type')
+                    IS NOT NULL
+                  AND json_extract_string(j.value, '$.identifier_type') <> ''
+                  AND json_extract_string(j.value, '$.identifier_type_id')
+                    IS NOT NULL
+                  AND json_extract_string(j.value, '$.identifier') IS NOT NULL
+                  AND json_extract_string(j.value, '$.identifier') <> ''
+                """
+            )
+            con.execute(
+                """
+                CREATE TEMP TABLE merged_identifier_json AS
+                SELECT
+                  entity_id,
+                  to_json(
+                    list(
+                      struct_pack(
+                        identifier_type := identifier_type,
+                        identifier_type_id := identifier_type_id,
+                        identifier := identifier
+                      )
+                      ORDER BY identifier_type, identifier
+                    )
+                  )::VARCHAR AS identifiers
+                FROM (
+                  SELECT DISTINCT *
+                  FROM existing_identifier_row
+                  UNION
+                  SELECT DISTINCT *
+                  FROM staged_identifier_row
+                ) rows
+                GROUP BY entity_id
+                """
+            )
+            merge_count = int(
+                con.sql(
+                    'SELECT COUNT(*) FROM merged_identifier_json'
+                ).fetchone()[0]
+            )
+            con.execute(
+                f"""
+                COPY (
+                  SELECT entity_id, identifiers
+                  FROM merged_identifier_json
+                )
+                TO {_sql_literal(csv_path)}
+                (
+                  FORMAT CSV,
+                  HEADER false,
+                  DELIMITER ',',
+                  QUOTE '"',
+                  ESCAPE '"',
+                  NULL '\\N'
+                )
+                """
+            )
+        finally:
+            con.close()
+
+        if merge_count == 0:
+            return 0
+
+        with psycopg2.connect(database_url) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    CREATE TEMP TABLE staged_entity_identifier_merge (
+                      entity_id uuid PRIMARY KEY,
+                      identifiers jsonb NOT NULL
+                    ) ON COMMIT DROP
+                    """
+                )
+                with csv_path.open('r', encoding='utf-8') as csv_file:
+                    cur.copy_expert(
+                        """
+                        COPY staged_entity_identifier_merge (
+                          entity_id,
+                          identifiers
+                        )
+                        FROM STDIN WITH (
+                          FORMAT CSV,
+                          NULL '\\N'
+                        )
+                        """,
+                        csv_file,
+                    )
+                cur.execute(
+                    sql.SQL(
+                        """
+                        UPDATE {}.entity e
+                        SET identifiers = staged.identifiers
+                        FROM staged_entity_identifier_merge staged
+                        WHERE staged.entity_id = e.entity_id
+                          AND e.identifiers IS DISTINCT FROM staged.identifiers
+                        """
+                    ).format(sql.Identifier(schema))
+                )
+                return int(cur.rowcount)
 
 
 def _reset_postgres_sequences(
@@ -3020,5 +3106,6 @@ __all__ = [
     '_duckdb_source_id',
     '_bulk_copy_evidence',
     '_bulk_copy_canonical',
+    'merge_staged_source_entity_identifiers',
     '_reset_postgres_sequences',
 ]
