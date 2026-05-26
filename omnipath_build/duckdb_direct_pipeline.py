@@ -649,6 +649,7 @@ def run_discovered_direct_load(
                         fn,
                         resolver_dir=resolver_dir,
                         force_refresh=force_refresh,
+                        max_records=max_records,
                     )
                 )
                 state = _dataset_state_path(state_path, fn)
@@ -1147,8 +1148,11 @@ def _raw_dataset_kwargs(
     *,
     resolver_dir: Path,
     force_refresh: bool,
+    max_records: int | None,
 ) -> dict[str, object]:
     kwargs: dict[str, object] = {'force_refresh': force_refresh}
+    if max_records is not None:
+        kwargs['max_records'] = max_records
     if fn.source == 'chembl':
         kwargs.update(
             {

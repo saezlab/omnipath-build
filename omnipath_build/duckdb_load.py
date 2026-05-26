@@ -59,6 +59,9 @@ PROTEIN_TAXONOMY_OPTIONAL_IDENTIFIER_TYPES = (
     cv_term_label_accession(IdentifierNamespaceCv.HGNC),
     cv_term_label_accession(IdentifierNamespaceCv.UNIPROT_ENTRY_NAME),
 )
+STANDARD_INCHI_KEY_TYPE = cv_term_label_accession(
+    IdentifierNamespaceCv.STANDARD_INCHI_KEY
+)
 
 
 def _sql_literal(value: str | Path) -> str:
@@ -173,6 +176,19 @@ def _create_duckdb_resolver_views(
         FROM read_parquet({_sql_literal(chemical_lookup_path)})
         WHERE key_value IS NOT NULL
           AND canonical_identifier IS NOT NULL
+        UNION ALL
+        SELECT DISTINCT
+          {_sql_literal(SMALL_MOLECULE_ENTITY_TYPE)} AS entity_type,
+          {identifier_type_id(STANDARD_INCHI_KEY_TYPE)} AS key_identifier_type_id,
+          canonical_identifier AS key_value,
+          NULL::VARCHAR AS taxonomy_id,
+          canonical_identifier_type_id,
+          canonical_identifier
+        FROM read_parquet({_sql_literal(chemical_lookup_path)})
+        WHERE canonical_identifier_type_id =
+              {identifier_type_id(STANDARD_INCHI_KEY_TYPE)}
+          AND canonical_identifier IS NOT NULL
+          AND canonical_identifier <> ''
         """
         if has_chemical_resolver
         else ''
@@ -955,6 +971,41 @@ def _canonicalize_loaded_duckdb(
     )
     con.execute(
         """
+        CREATE TABLE standard_inchi_key_evidence_resolution AS
+        SELECT
+          ee.source,
+          ee.entity_evidence_id,
+          std_type.identifier_type_id AS canonical_identifier_type_id,
+          min(ei.identifier) AS canonical_identifier
+        FROM entity_evidence_raw ee
+        JOIN entity_identifier_raw ei
+          ON ei.source = ee.source
+         AND ei.entity_evidence_id = ee.entity_evidence_id
+        CROSS JOIN (
+          SELECT identifier_type_id
+          FROM identifier_type_all
+          WHERE name = ?
+        ) std_type
+        WHERE ee.entity_type = ?
+          AND ei.identifier_type = ?
+          AND regexp_matches(
+            ei.identifier,
+            '^[A-Z]{14}-[A-Z]{10}-[A-Z]$'
+          )
+        GROUP BY
+          ee.source,
+          ee.entity_evidence_id,
+          std_type.identifier_type_id
+        HAVING count(DISTINCT ei.identifier) = 1
+        """,
+        [
+            STANDARD_INCHI_KEY_TYPE,
+            SMALL_MOLECULE_ENTITY_TYPE,
+            STANDARD_INCHI_KEY_TYPE,
+        ],
+    )
+    con.execute(
+        """
         CREATE TABLE entity_resolution_base AS
         SELECT
           ee.source,
@@ -969,16 +1020,21 @@ def _canonicalize_loaded_duckdb(
           coalesce(
             cv_term.canonical_identifier_type_id,
             rl.canonical_identifier_type_id,
+            std_inchi_key.canonical_identifier_type_id,
             unresolved_type.identifier_type_id
           ) AS canonical_identifier_type_id,
           coalesce(
             cv_term.canonical_identifier,
             rl.canonical_identifier,
+            std_inchi_key.canonical_identifier,
             md5(eig.unresolved_identifier_key)
           ) AS canonical_identifier,
           CASE
             WHEN cv_term.canonical_identifier IS NOT NULL THEN 'resolved'
-            WHEN rl.canonical_identifier IS NULL THEN 'unresolved'
+            WHEN coalesce(
+              rl.canonical_identifier,
+              std_inchi_key.canonical_identifier
+            ) IS NULL THEN 'unresolved'
             ELSE 'resolved'
           END AS status
         FROM entity_evidence_raw ee
@@ -1007,12 +1063,17 @@ def _canonicalize_loaded_duckdb(
         LEFT JOIN cv_term_evidence_resolution cv_term
           ON cv_term.source = ee.source
          AND cv_term.entity_evidence_id = ee.entity_evidence_id
+        LEFT JOIN standard_inchi_key_evidence_resolution std_inchi_key
+          ON std_inchi_key.source = ee.source
+         AND std_inchi_key.entity_evidence_id = ee.entity_evidence_id
         QUALIFY row_number() OVER (
           PARTITION BY ee.source, ee.entity_evidence_id
           ORDER BY cv_term.canonical_identifier IS NULL,
                    rl.canonical_identifier IS NULL,
+                   std_inchi_key.canonical_identifier IS NULL,
                    cv_term.canonical_identifier,
-                   rl.canonical_identifier
+                   rl.canonical_identifier,
+                   std_inchi_key.canonical_identifier
         ) = 1
         """,
         [UNRESOLVED_ID_TYPE],
