@@ -18,7 +18,11 @@ from omnipath_build.cv_terms import (
     CV_TERM_ENTITY_TYPE,
     SMALL_MOLECULE_ENTITY_TYPE,
 )
-from pypath.internals.cv_terms import BiologicalRoleCv, cv_term_label_accession
+from pypath.internals.cv_terms import (
+    BiologicalRoleCv,
+    IdentifierNamespaceCv,
+    cv_term_label_accession,
+)
 from omnipath_build.ingest.common import unwrap_record
 from pypath.internals.silver_schema import Entity
 from pypath.internals.ontology_schema import OntologyTerm
@@ -47,6 +51,13 @@ REACTANT_ROLE_TERMS = (
 PRODUCT_ROLE_TERMS = (
     cv_term_label_accession(BiologicalRoleCv.PRODUCT),
     str(BiologicalRoleCv.PRODUCT),
+)
+PROTEIN_TAXONOMY_OPTIONAL_IDENTIFIER_TYPES = (
+    cv_term_label_accession(IdentifierNamespaceCv.UNIPROT),
+    cv_term_label_accession(IdentifierNamespaceCv.ENSEMBL),
+    cv_term_label_accession(IdentifierNamespaceCv.ENTREZ),
+    cv_term_label_accession(IdentifierNamespaceCv.HGNC),
+    cv_term_label_accession(IdentifierNamespaceCv.UNIPROT_ENTRY_NAME),
 )
 
 
@@ -820,13 +831,51 @@ def _canonicalize_loaded_duckdb(
     )
     con.execute(
         """
+        CREATE TABLE taxonomy_optional_resolver_key_type AS
+        SELECT identifier_type_id
+        FROM identifier_type_all
+        WHERE name IN ({})
+        """.format(
+            ', '.join(
+                '?' for _ in PROTEIN_TAXONOMY_OPTIONAL_IDENTIFIER_TYPES
+            )
+        ),
+        list(PROTEIN_TAXONOMY_OPTIONAL_IDENTIFIER_TYPES),
+    )
+    con.execute(
+        """
+        CREATE TABLE taxonomy_optional_unambiguous_key AS
+        SELECT
+          rl.key_identifier_type_id,
+          rl.key_value,
+          rl.canonical_identifier_type_id
+        FROM resolver_lookup rl
+        JOIN taxonomy_optional_resolver_key_type opt
+          ON opt.identifier_type_id = rl.key_identifier_type_id
+        WHERE rl.entity_type = ?
+        GROUP BY
+          rl.key_identifier_type_id,
+          rl.key_value,
+          rl.canonical_identifier_type_id
+        HAVING count(DISTINCT rl.canonical_identifier) = 1
+        """,
+        [PROTEIN_ENTITY_TYPE],
+    )
+    con.execute(
+        """
         CREATE TABLE needed_resolver_lookup AS
         SELECT DISTINCT
           etm.evidence_entity_type,
-          rl.*
+          rl.*,
+          opt.key_identifier_type_id IS NOT NULL AS taxonomy_optional_match
         FROM resolver_lookup rl
         JOIN resolver_entity_type_match etm
           ON etm.resolver_entity_type = rl.entity_type
+        LEFT JOIN taxonomy_optional_unambiguous_key opt
+          ON opt.key_identifier_type_id = rl.key_identifier_type_id
+         AND opt.key_value = rl.key_value
+         AND opt.canonical_identifier_type_id =
+             rl.canonical_identifier_type_id
         JOIN evidence_identifier_key k
           ON k.entity_type = etm.evidence_entity_type
          AND k.key_identifier_type_id = rl.key_identifier_type_id
@@ -834,6 +883,7 @@ def _canonicalize_loaded_duckdb(
          AND (
            rl.taxonomy_id = k.taxonomy_id
            OR rl.taxonomy_id IS NULL
+           OR opt.key_identifier_type_id IS NOT NULL
          )
         """
     )
@@ -914,7 +964,7 @@ def _canonicalize_loaded_duckdb(
           ee.entity_type,
           CASE
             WHEN cv_term.canonical_identifier IS NOT NULL THEN NULL
-            ELSE ee.taxonomy_id
+            ELSE coalesce(rl.taxonomy_id, ee.taxonomy_id)
           END AS taxonomy_id,
           coalesce(
             cv_term.canonical_identifier_type_id,
@@ -952,6 +1002,7 @@ def _canonicalize_loaded_duckdb(
          AND (
            rl.taxonomy_id = ee.taxonomy_id
            OR rl.taxonomy_id IS NULL
+           OR rl.taxonomy_optional_match
          )
         LEFT JOIN cv_term_evidence_resolution cv_term
           ON cv_term.source = ee.source
