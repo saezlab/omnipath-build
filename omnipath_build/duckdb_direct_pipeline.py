@@ -920,22 +920,6 @@ def _run_discovered_direct_load_staged_in_dir(
                 f'copy={copy_seconds:.3f}s',
                 flush=True,
             )
-        if result.stages:
-            merge_started = time.perf_counter()
-            updated_entities = duckdb_load.merge_staged_source_entity_identifiers(
-                tuple(stage.state_path for stage in result.stages),
-                database_url=database_url,
-                schema=schema,
-            )
-            print(
-                '[load-source-identifier-merge] '
-                f'source={job.source} '
-                f'stages={len(result.stages)} '
-                f'updated_entities={updated_entities} '
-                f'total={time.perf_counter() - merge_started:.3f}s',
-                flush=True,
-            )
-
     duckdb_load._reset_postgres_sequences(database_url=database_url, schema=schema)
     results = tuple(results_by_source[source] for source in selected_by_source)
     return DiscoveredLoadStats(

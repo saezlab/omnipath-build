@@ -42,13 +42,15 @@ identifier_label(identifier_type, label) AS (
 ),
 entity_identifier_raw AS (
   SELECT
-    e.entity_id,
-    item->>'identifier_type' AS identifier_type,
-    item->>'identifier' AS identifier
-  FROM public.entity e
-  CROSS JOIN LATERAL jsonb_array_elements(e.identifiers) AS item
-  WHERE item->>'identifier' IS NOT NULL
-    AND item->>'identifier' <> ''
+    eil.entity_id,
+    it.name AS identifier_type,
+    i.value AS identifier
+  FROM public.entity_identifier_lookup eil
+  JOIN public.identifier_evidence i
+    ON i.identifier_id = eil.identifier_id
+  JOIN public.vocab_identifier_type it
+    ON it.identifier_type_id = i.identifier_type_id
+  WHERE i.value <> ''
 
   UNION ALL
 

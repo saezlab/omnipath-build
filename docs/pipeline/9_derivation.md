@@ -17,12 +17,10 @@ The `derive` command:
 2. Ensures the base schema exists.
 3. Creates deferred and secondary indexes when enabled.
 4. Rebuilds derived search/count tables.
-5. Optionally enriches empty `entity.identifiers` from resolver or evidence
-   identifiers.
-6. Rebuilds the entity identifier lookup used by app search.
-7. Rebuilds roaring bitmap tables.
-8. Discovers pypath resources again.
-9. Syncs the `resources` summary table.
+5. Rebuilds the entity identifier lookup used by app search.
+6. Rebuilds roaring bitmap tables.
+7. Discovers pypath resources again.
+8. Syncs the `resources` summary table.
 
 ## Derived Tables
 

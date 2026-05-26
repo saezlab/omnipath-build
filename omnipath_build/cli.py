@@ -137,12 +137,6 @@ def main(argv: list[str] | None = None) -> int:
         default=True,
         help='Create and populate bitmap tables.',
     )
-    derive.add_argument(
-        '--entity-identifiers',
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help='Enrich empty entity.identifiers from resolver/evidence identifiers.',
-    )
     derive.add_argument('--inputs-package', default='pypath.inputs_v2')
     derive.add_argument('--database', default='omnipath')
 
@@ -240,7 +234,6 @@ def main(argv: list[str] | None = None) -> int:
                 table_stats = rebuild_derived_tables(
                     conn,
                     schema=args.schema,
-                    refresh_entity_identifiers=args.entity_identifiers,
                 )
                 discovered, _ = discover_resources(
                     database_name=args.database,
@@ -260,8 +253,6 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 print(
                     '[derive] '
-                    f'entity_identifiers='
-                    f'{table_stats.entity_identifiers} '
                     f'entity_identifier_lookup='
                     f'{table_stats.entity_identifier_lookup} '
                     f'entity_relation_counts='

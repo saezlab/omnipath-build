@@ -894,7 +894,6 @@ def _ensure_resolution_schema(
               canonical_identifier_type_id bigint
                 REFERENCES {}.vocab_identifier_type(identifier_type_id),
               canonical_identifier text NOT NULL,
-              identifiers jsonb NOT NULL DEFAULT '[]'::jsonb,
               resolution_status_id smallint NOT NULL
                 REFERENCES {}.vocab_resolution_status(resolution_status_id),
               created_at timestamptz NOT NULL DEFAULT now()
@@ -1902,8 +1901,7 @@ def _ensure_entity_canonical_key(
             ADD COLUMN IF NOT EXISTS entity_type_id bigint,
             ADD COLUMN IF NOT EXISTS resolution_status_id smallint,
             ADD COLUMN IF NOT EXISTS canonical_identifier_type_id bigint,
-            ADD COLUMN IF NOT EXISTS canonical_identifier text,
-            ADD COLUMN IF NOT EXISTS identifiers jsonb NOT NULL DEFAULT '[]'::jsonb
+            ADD COLUMN IF NOT EXISTS canonical_identifier text
             """
         ).format(schema_id)
     )
@@ -1971,40 +1969,19 @@ def _ensure_entity_canonical_key(
                 UPDATE {}.entity e
                 SET
                   canonical_identifier_type_id = it.identifier_type_id,
-                  canonical_identifier = e.id,
-                  identifiers = CASE
-                    WHEN COALESCE(rs.name, e.resolution_status) = 'resolved'
-                    THEN jsonb_build_array(
-                      jsonb_build_object(
-                        'identifier_type', e.id_type,
-                        'identifier_type_id', it.identifier_type_id,
-                        'identifier', e.id
-                      )
-                    )
-                    ELSE jsonb_build_object(
-                      'reason', 'legacy_unresolved',
-                      'evidence_identifier_set', e.id
-                    )
-                  END
+                  canonical_identifier = e.id
                 FROM {}.vocab_identifier_type it
-                LEFT JOIN {}.vocab_resolution_status rs
-                  ON rs.resolution_status_id = e.resolution_status_id
                 WHERE e.canonical_identifier IS NULL
                   AND e.id IS NOT NULL
                   AND it.name = e.id_type
                 """
-            ).format(schema_id, schema_id, schema_id)
+            ).format(schema_id, schema_id)
         )
         cur.execute(
             sql.SQL(
                 """
                 UPDATE {}.entity e
-                SET
-                  canonical_identifier = e.id,
-                  identifiers = jsonb_build_object(
-                    'reason', 'legacy_unresolved',
-                    'evidence_identifier_set', e.id
-                  )
+                SET canonical_identifier = e.id
                 WHERE e.canonical_identifier IS NULL
                   AND e.id IS NOT NULL
                 """
@@ -2017,7 +1994,7 @@ def _ensure_entity_canonical_key(
             ALTER COLUMN entity_type_id SET NOT NULL,
             ALTER COLUMN resolution_status_id SET NOT NULL,
             ALTER COLUMN canonical_identifier SET NOT NULL,
-            ALTER COLUMN identifiers SET NOT NULL
+            DROP COLUMN IF EXISTS identifiers
             """
         ).format(schema_id)
     )
