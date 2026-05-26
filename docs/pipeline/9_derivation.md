@@ -19,15 +19,18 @@ The `derive` command:
 4. Rebuilds derived search/count tables.
 5. Optionally enriches empty `entity.identifiers` from resolver or evidence
    identifiers.
-6. Rebuilds roaring bitmap tables.
-7. Discovers pypath resources again.
-8. Syncs the `resources` summary table.
+6. Rebuilds the entity identifier lookup used by app search.
+7. Rebuilds roaring bitmap tables.
+8. Discovers pypath resources again.
+9. Syncs the `resources` summary table.
 
 ## Derived Tables
 
-Derived tables summarize canonical graph content for search and counts. The
-current core derived table is `entity_relation_counts`; ontology-term summary
-data is also maintained in this phase.
+Derived tables summarize canonical graph content for search and counts. Core
+derived tables include `entity_identifier_lookup`, which joins canonical
+entities to deduplicated rows in `identifier_evidence`, and
+`entity_relation_counts`; ontology-term summary data is also maintained in this
+phase.
 
 ## Bitmap Tables
 
@@ -47,4 +50,3 @@ IDs.
 
 `make load` and `make reload` do not make the database fully query-ready on
 their own. Run `make derive` once after a source batch is complete.
-

@@ -262,6 +262,8 @@ def main(argv: list[str] | None = None) -> int:
                     '[derive] '
                     f'entity_identifiers='
                     f'{table_stats.entity_identifiers} '
+                    f'entity_identifier_lookup='
+                    f'{table_stats.entity_identifier_lookup} '
                     f'entity_relation_counts='
                     f'{table_stats.entity_relation_counts} '
                     f'ontology_terms={table_stats.ontology_terms} '

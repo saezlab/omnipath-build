@@ -68,6 +68,7 @@ def sync_resources_table(
                   description,
                   homepage_url,
                   license,
+                  license_label,
                   pubmed_id,
                   resource_kind,
                   input_module,
@@ -91,6 +92,7 @@ def sync_resources_table(
                   %(description)s,
                   %(homepage_url)s,
                   %(license)s,
+                  %(license_label)s,
                   %(pubmed_id)s,
                   %(resource_kind)s,
                   %(input_module)s,
@@ -113,6 +115,7 @@ def sync_resources_table(
                   description = EXCLUDED.description,
                   homepage_url = EXCLUDED.homepage_url,
                   license = EXCLUDED.license,
+                  license_label = EXCLUDED.license_label,
                   pubmed_id = EXCLUDED.pubmed_id,
                   resource_kind = EXCLUDED.resource_kind,
                   input_module = EXCLUDED.input_module,
@@ -150,7 +153,8 @@ def _ensure_resources_metadata_columns(
             ADD COLUMN IF NOT EXISTS input_module text,
             ADD COLUMN IF NOT EXISTS input_module_commit text,
             ADD COLUMN IF NOT EXISTS input_module_dirty boolean
-              NOT NULL DEFAULT false
+              NOT NULL DEFAULT false,
+            ADD COLUMN IF NOT EXISTS license_label text
             """
         ).format(sql.Identifier(schema))
     )
@@ -195,6 +199,7 @@ def _resource_row(
         'description': getattr(config, 'description', None),
         'homepage_url': getattr(config, 'url', None),
         'license': _text_or_none(getattr(config, 'license', None)),
+        'license_label': _cv_label(getattr(config, 'license', None)),
         'pubmed_id': getattr(config, 'pubmed', None),
         'resource_kind': getattr(config, 'resource_kind', 'data_resource'),
         'input_module': module_metadata['module'],
@@ -723,3 +728,10 @@ def _text_or_none(value: object) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _cv_label(value: object) -> str | None:
+    label = getattr(value, 'definition', None) or getattr(value, 'label', None)
+    if label:
+        return str(label)
+    return _text_or_none(value)

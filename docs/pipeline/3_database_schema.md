@@ -31,7 +31,8 @@ The schema contains:
   `entity_evidence_identifier`, `relation_evidence`, evidence annotations, and
   evidence-to-canonical mapping tables.
 - Canonical graph tables such as `entity` and `relation`.
-- Derived tables and bitmap tables, created or refreshed later by `make derive`.
+- Derived tables and bitmap tables, created or refreshed later by `make derive`,
+  including `entity_identifier_lookup` for indexed app search.
 
 ## Deferred Indexes
 
@@ -50,4 +51,3 @@ which avoids maintaining those indexes row by row during ingest.
 
 Schema setup prepares empty structures. It does not discover pypath sources,
 load source evidence, canonicalize records, or build query-ready derived data.
-

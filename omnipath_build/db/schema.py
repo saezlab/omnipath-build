@@ -24,6 +24,7 @@ CONTENT_TABLES: tuple[str, ...] = (
     'facet_relation_bitmap',
     'entity_bitmap_id',
     'relation_bitmap_id',
+    'entity_identifier_lookup',
     'entity_relation_counts',
     'ontology_terms',
     'relation_annotation',
@@ -498,6 +499,12 @@ def drop_deferred_content_indexes(
         'entity_annotation_annotation_key_idx',
         'relation_annotation_annotation_key_idx',
         'resources_build_status_idx',
+        'identifier_evidence_value_lower_idx',
+        'entity_identifier_lookup_entity_idx',
+        'entity_identifier_lookup_identifier_id_idx',
+        'entity_identifier_lookup_value_idx',
+        'entity_identifier_lookup_value_lower_idx',
+        'entity_identifier_lookup_type_value_lower_idx',
     ]
     schema_id = sql.Identifier(schema)
     with conn.cursor() as cur:
@@ -1063,6 +1070,7 @@ def _ensure_resolution_schema(
               description text,
               homepage_url text,
               license text,
+              license_label text,
               pubmed_id text,
               resource_kind text,
               input_module text,
@@ -2549,3 +2557,12 @@ def _ensure_resolution_indexes(
                 ),
             )
         )
+    cur.execute(
+        sql.SQL(
+            """
+            CREATE INDEX IF NOT EXISTS identifier_evidence_value_lower_idx
+            ON {}.identifier_evidence (lower(value), identifier_type_id)
+            INCLUDE (identifier_id)
+            """
+        ).format(schema_id)
+    )

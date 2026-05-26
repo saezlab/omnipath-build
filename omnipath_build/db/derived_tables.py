@@ -20,6 +20,7 @@ class DerivedTableStats:
     """Summary counts from derived table population."""
 
     entity_identifiers: int = 0
+    entity_identifier_lookup: int = 0
     entity_relation_counts: int = 0
     ontology_terms: int = 0
 
@@ -39,12 +40,17 @@ def rebuild_derived_tables(
             if refresh_entity_identifiers
             else 0
         )
+        entity_identifier_lookup = _populate_entity_identifier_lookup(
+            cur,
+            schema,
+        )
         relation_counts = _populate_entity_relation_counts(cur, schema)
         ontology_terms = _count_ontology_terms(cur, schema)
         _create_derived_indexes(cur, schema)
     conn.commit()
     return DerivedTableStats(
         entity_identifiers=entity_identifiers,
+        entity_identifier_lookup=entity_identifier_lookup,
         entity_relation_counts=relation_counts,
         ontology_terms=ontology_terms,
     )
@@ -71,6 +77,35 @@ def _create_derived_tables(
         cur.execute(
             sql.SQL('DROP TABLE {}.entity_relation_counts').format(schema_id)
         )
+    cur.execute(
+        """
+        SELECT EXISTS (
+          SELECT 1
+          FROM information_schema.columns
+          WHERE table_schema = %s
+            AND table_name = 'entity_identifier_lookup'
+            AND column_name IN ('identifier', 'identifier_type_id')
+        )
+        """,
+        [schema],
+    )
+    if bool(cur.fetchone()[0]):
+        cur.execute(
+            sql.SQL('DROP TABLE {}.entity_identifier_lookup').format(
+                schema_id
+            )
+        )
+    cur.execute(
+        sql.SQL(
+            """
+            CREATE TABLE IF NOT EXISTS {}.entity_identifier_lookup (
+              entity_id uuid NOT NULL,
+              identifier_id uuid NOT NULL,
+              PRIMARY KEY (entity_id, identifier_id)
+            )
+            """
+        ).format(schema_id)
+    )
     cur.execute(
         sql.SQL(
             """
@@ -279,6 +314,61 @@ def _refresh_entity_identifiers(
     return int(cur.rowcount)
 
 
+def _populate_entity_identifier_lookup(
+    cur: psycopg2.extensions.cursor,
+    schema: str,
+) -> int:
+    schema_id = sql.Identifier(schema)
+    cur.execute(
+        sql.SQL('TRUNCATE {}.entity_identifier_lookup').format(schema_id)
+    )
+    cur.execute(
+        sql.SQL(
+            """
+            INSERT INTO {}.entity_identifier_lookup (
+              entity_id,
+              identifier_id
+            )
+            WITH identifier_rows AS (
+              SELECT
+                er.entity_id,
+                eei.identifier_id
+              FROM {}.entity_evidence_resolution er
+              JOIN {}.entity_evidence_identifier eei
+                ON eei.source_id = er.source_id
+               AND eei.entity_evidence_id = er.entity_evidence_id
+              JOIN {}.identifier_evidence i
+                ON i.identifier_id = eei.identifier_id
+              WHERE er.entity_id IS NOT NULL
+                AND i.value IS NOT NULL
+                AND i.value <> ''
+              UNION ALL
+              SELECT
+                e.entity_id,
+                i.identifier_id
+              FROM {}.entity e
+              JOIN {}.identifier_evidence i
+                ON i.identifier_type_id = e.canonical_identifier_type_id
+               AND i.value = e.canonical_identifier
+              WHERE e.canonical_identifier_type_id IS NOT NULL
+                AND e.canonical_identifier IS NOT NULL
+                AND e.canonical_identifier <> ''
+            )
+            SELECT DISTINCT entity_id, identifier_id
+            FROM identifier_rows
+            """
+        ).format(
+            schema_id,
+            schema_id,
+            schema_id,
+            schema_id,
+            schema_id,
+            schema_id,
+        )
+    )
+    return int(cur.rowcount)
+
+
 def _populate_entity_relation_counts(
     cur: psycopg2.extensions.cursor,
     schema: str,
@@ -327,6 +417,12 @@ def _create_derived_indexes(
 ) -> None:
     schema_id = sql.Identifier(schema)
     statements = [
+        sql.SQL(
+            """
+            CREATE INDEX IF NOT EXISTS entity_identifier_lookup_identifier_id_idx
+            ON {}.entity_identifier_lookup (identifier_id, entity_id)
+            """
+        ).format(schema_id),
         sql.SQL(
             """
             CREATE INDEX IF NOT EXISTS entity_relation_counts_count_idx
