@@ -76,6 +76,28 @@ def _duckdb_pg_table(schema: str, table: str) -> str:
     return f'pg.{_duckdb_identifier(schema)}.{_duckdb_identifier(table)}'
 
 
+def _resolver_component_dir(
+    resolver_dir: Path,
+    *,
+    component: str,
+    lookup_filename: str,
+) -> Path:
+    """Resolve the directory that contains one resolver component's parquet outputs."""
+
+    candidates = (
+        resolver_dir / component,
+        resolver_dir,
+        resolver_dir.parent / component,
+    )
+    for candidate in candidates:
+        if (candidate / lookup_filename).exists():
+            return candidate
+    raise FileNotFoundError(
+        f'Could not find {lookup_filename!r} for resolver component {component!r} '
+        f'under {resolver_dir}.'
+    )
+
+
 def _create_duckdb_content_uuid_macro(con: duckdb.DuckDBPyConnection) -> None:
     con.execute(
         """
@@ -137,23 +159,24 @@ def _create_duckdb_resolver_views(
 ) -> None:
     """Expose resolver parquet inputs in the DuckDB shape used by canonicalize."""
 
-    protein_dir = (
-        resolver_dir / 'proteins'
-        if (resolver_dir / 'proteins' / 'protein_identifier_lookup.parquet').exists()
-        else resolver_dir
+    protein_dir = _resolver_component_dir(
+        resolver_dir,
+        component='proteins',
+        lookup_filename='protein_identifier_lookup.parquet',
     )
-    chemical_dir = (
-        resolver_dir / 'chemicals'
-        if (resolver_dir / 'chemicals' / 'chemical_identifier_lookup.parquet').exists()
-        else resolver_dir.parent / 'chemicals'
+    chemical_dir = _resolver_component_dir(
+        resolver_dir,
+        component='chemicals',
+        lookup_filename='chemical_identifier_lookup.parquet',
     )
+    protein_lookup_path = protein_dir / 'protein_identifier_lookup.parquet'
+    protein_type_path = protein_dir / 'identifier_type.parquet'
     chemical_lookup_path = chemical_dir / 'chemical_identifier_lookup.parquet'
     chemical_type_path = chemical_dir / 'identifier_type.parquet'
     has_chemical_resolver = (
         chemical_lookup_path.exists()
         and chemical_type_path.exists()
     )
-    protein_lookup_path = protein_dir / 'protein_identifier_lookup.parquet'
     chemical_identifier_type_sql = (
         f"""
         UNION
@@ -197,7 +220,7 @@ def _create_duckdb_resolver_views(
         f"""
         CREATE VIEW identifier_type AS
         SELECT *
-        FROM read_parquet({_sql_literal(protein_dir / 'identifier_type.parquet')})
+        FROM read_parquet({_sql_literal(protein_type_path)})
         {chemical_identifier_type_sql}
         """
     )
