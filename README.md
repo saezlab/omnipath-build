@@ -95,6 +95,21 @@ Load multiple missing sources:
 make load SOURCES=uniprot,bindingdb,intact
 ```
 
+Use a shared staging worker pool:
+
+```bash
+make load LOAD_JOBS=5
+```
+
+`LOAD_JOBS` is used by the staged loader as one shared pool. Workers are
+assigned across sources first; when preparse shards are available, idle workers
+can stage shards from the same source while PostgreSQL COPY continues to run
+serially.
+
+Large staged loads keep simple preparse parquet shards under
+`pypath-data/<source>/preparse/`. These shards are reused by default and are
+rebuilt when `FORCE_REFRESH=1` is set.
+
 Refresh existing source content by deleting it first, then loading current
 parser output:
 

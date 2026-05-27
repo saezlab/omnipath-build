@@ -8,15 +8,12 @@ evidence/graph tables or from bitmap tables when they have been refreshed.
 from __future__ import annotations
 
 import os
-import json
 from typing import Any
 from pathlib import Path
-from datetime import UTC, datetime
 from functools import lru_cache
 import subprocess
 from dataclasses import dataclass
 import importlib.util
-from collections.abc import Iterable
 
 from psycopg2 import sql
 from psycopg2.extras import Json
@@ -352,115 +349,8 @@ def _resource_snapshot_metadata(
     source: str,
     functions: list[object],
 ) -> dict[str, Any]:
-    latest_paths = [
-        (_raw_records_root() / source / str(fn.function_name) / 'latest.json')
-        for fn in functions
-        if getattr(fn, 'function_name', None) != 'resource'
-        and getattr(fn, 'output_kind', None) in {'entity', 'ontology'}
-    ]
-    manifests = [
-        manifest
-        for latest_path in latest_paths
-        if (manifest := _read_latest_manifest(latest_path)) is not None
-    ]
-    total_size = sum(
-        _manifest_snapshot_size(manifest) for manifest in manifests
-    )
-    last_downloaded_at = _max_datetime(
-        _manifest_downloaded_at(manifest) for manifest in manifests
-    )
-    last_built_at = _max_datetime(
-        _parse_datetime(
-            manifest.get('accepted_at')
-            or manifest.get('completed_at')
-            or manifest.get('created_at')
-        )
-        for manifest in manifests
-    )
-    return {
-        'total_size_bytes': total_size,
-        'last_downloaded_at': last_downloaded_at,
-        'last_built_at': last_built_at,
-    }
-
-
-def _raw_records_root() -> Path:
-    return Path(
-        os.environ.get(
-            'OMNIPATH_BRONZE_ROOT',
-            os.environ.get('OMNIPATH_RAW_RECORDS_ROOT', 'data/bronze'),
-        )
-    )
-
-
-def _read_latest_manifest(latest_path: Path) -> dict[str, Any] | None:
-    if not latest_path.exists():
-        return None
-    try:
-        latest = json.loads(latest_path.read_text())
-        manifest_path = Path(latest['manifest_path'])
-        if not manifest_path.exists():
-            return None
-        manifest = json.loads(manifest_path.read_text())
-        manifest['_manifest_path'] = str(manifest_path)
-        return manifest
-    except (OSError, KeyError, json.JSONDecodeError, TypeError):
-        return None
-
-
-def _manifest_snapshot_size(manifest: dict[str, Any]) -> int:
-    paths = [
-        manifest.get('accepted_records_path') or manifest.get('records_path'),
-        manifest.get('delta_path'),
-        manifest.get('_manifest_path'),
-    ]
-    return sum(_path_size_bytes(Path(path)) for path in paths if path)
-
-
-def _path_size_bytes(path: Path) -> int:
-    try:
-        if path.is_file():
-            return path.stat().st_size
-        if path.is_dir():
-            return sum(
-                child.stat().st_size
-                for child in path.rglob('*')
-                if child.is_file()
-            )
-    except OSError:
-        return 0
-    return 0
-
-
-def _manifest_downloaded_at(manifest: dict[str, Any]) -> datetime | None:
-    fingerprint = manifest.get('download_fingerprint') or {}
-    mtime_ns = fingerprint.get('mtime_ns')
-    if mtime_ns is not None:
-        try:
-            return datetime.fromtimestamp(int(mtime_ns) / 1_000_000_000, UTC)
-        except (TypeError, ValueError, OSError, OverflowError):
-            return None
-    return None
-
-
-def _parse_datetime(value: object) -> datetime | None:
-    if not value:
-        return None
-    text = str(value)
-    if text.endswith('Z'):
-        text = f'{text[:-1]}+00:00'
-    try:
-        dt = datetime.fromisoformat(text)
-    except ValueError:
-        return None
-    if dt.tzinfo is None:
-        return dt.replace(tzinfo=UTC)
-    return dt
-
-
-def _max_datetime(values: Iterable[datetime | None]) -> datetime | None:
-    datetimes = [value for value in values if value is not None]
-    return max(datetimes) if datetimes else None
+    del source, functions
+    return {}
 
 
 def _source_counts(

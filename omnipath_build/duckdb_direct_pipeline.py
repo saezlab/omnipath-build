@@ -19,6 +19,8 @@ from __future__ import annotations
 import os
 import sys
 import time
+import shutil
+import json
 from pathlib import Path
 import argparse
 import tempfile
@@ -39,6 +41,7 @@ from omnipath_build.ontology_artifacts import (
 )
 
 DEFAULT_LOAD_EXCLUDED_SOURCES = frozenset({'rampdb'})
+PREPARSE_SHARD_CACHE_VERSION = 'raw_shards_v1'
 
 
 @dataclass(frozen=True)
@@ -94,32 +97,71 @@ class DirectCopyBatchStats:
 
 
 @dataclass(frozen=True)
-class StagedSourceJob:
-    """A source-level unit of parallel staging work."""
+class StagedDatasetTask:
+    """A dataset or temporary raw-record shard unit of parallel staging work."""
 
     source: str
-    datasets: tuple[str, ...]
+    dataset: str
+    output_kind: str
     database: str
     inputs_package: str
     resolver_dir: str
     batch_size: int
     max_records: int | None
-    state_dir: str
+    state_path: str
     force_refresh: bool
     obo_artifacts: bool
     obo_output_dir: str
     threads: int
+    raw_shard_path: str | None = None
+    row_offset: int = 0
+    shard_rows: int = 0
+    shard_index: int | None = None
 
 
 @dataclass(frozen=True)
-class StagedSourceResult:
-    """Aggregated staging output for one source worker."""
+class StagedDatasetPrepareTask:
+    """A dataset unit that prepares cached preparse shards."""
 
     source: str
-    datasets: int
-    failed_datasets: int
-    source_succeeded: bool
-    source_failed: bool
+    dataset: str
+    database: str
+    inputs_package: str
+    resolver_dir: str
+    batch_size: int
+    max_records: int | None
+    force_refresh: bool
+    preparse_dir: str
+
+
+@dataclass(frozen=True)
+class StagedRawShard:
+    """A temporary raw-record shard ready for worker staging."""
+
+    path: str
+    row_offset: int
+    rows: int
+    shard_index: int
+
+
+@dataclass(frozen=True)
+class StagedDatasetPrepareResult:
+    """Prepared preparse shards for one dataset."""
+
+    source: str
+    dataset: str
+    shards: tuple[StagedRawShard, ...]
+    preparse_dir: str
+    reused: bool
+
+
+@dataclass(frozen=True)
+class StagedDatasetTaskResult:
+    """Staging output for one dataset task."""
+
+    source: str
+    dataset: str
+    failed: bool
     source_rows: int
     identifiers: int
     annotations: int
@@ -829,54 +871,67 @@ def _run_discovered_direct_load_staged_in_dir(
     staging_dir: Path,
 ) -> DiscoveredLoadStats:
     staging_dir.mkdir(parents=True, exist_ok=True)
-    print(
-        '[load] '
-        f'staging_dir={staging_dir} '
-        f'stage_jobs={stage_jobs}',
-        flush=True,
+    _scheduler_log(
+        'start',
+        staging_dir=str(staging_dir),
+        workers=stage_jobs,
     )
 
-    jobs = [
-        StagedSourceJob(
-            source=source,
-            datasets=tuple(fn.function_name for fn in functions),
-            database=database,
-            inputs_package=inputs_package,
-            resolver_dir=str(resolver_dir),
-            batch_size=batch_size,
-            max_records=max_records,
-            state_dir=str(staging_dir / _path_slug(source)),
-            force_refresh=force_refresh,
-            obo_artifacts=obo_artifacts,
-            obo_output_dir=str(obo_output_dir),
-            threads=threads,
-        )
-        for source, functions in selected_by_source.items()
-    ]
+    tasks, prepared_shards, failed_dataset_keys = _prepare_staged_dataset_tasks(
+        selected_by_source=selected_by_source,
+        database=database,
+        inputs_package=inputs_package,
+        resolver_dir=resolver_dir,
+        batch_size=batch_size,
+        max_records=max_records,
+        force_refresh=force_refresh,
+        obo_artifacts=obo_artifacts,
+        obo_output_dir=obo_output_dir,
+        threads=threads,
+        staging_dir=staging_dir,
+        stage_jobs=stage_jobs,
+    )
+    _scheduler_log(
+        'queue_ready',
+        datasets=len(prepared_shards),
+        tasks=len(tasks),
+        failed_datasets=len(failed_dataset_keys),
+    )
 
-    results_by_source: dict[str, StagedSourceResult] = {}
+    results_by_index: dict[int, StagedDatasetTaskResult] = {}
     with ProcessPoolExecutor(max_workers=stage_jobs) as executor:
-        future_by_source = {
-            executor.submit(_stage_source_worker, job): job.source for job in jobs
+        for index, task in enumerate(tasks):
+            _scheduler_log(
+                'task_submit',
+                task=index,
+                source=task.source,
+                dataset=task.dataset,
+                kind=task.output_kind,
+                shard='-' if task.shard_index is None else task.shard_index,
+                rows=task.shard_rows or '-',
+            )
+        future_by_index = {
+            executor.submit(_stage_dataset_task_worker, task): index
+            for index, task in enumerate(tasks)
         }
-        for future in as_completed(future_by_source):
-            source = future_by_source[future]
+        for future in as_completed(future_by_index):
+            index = future_by_index[future]
+            task = tasks[index]
             try:
                 result = future.result()
             except Exception as exc:  # noqa: BLE001
                 print(
                     '[warning] '
-                    f'[{source}] staging failed; continuing: '
+                    f'[{task.source}.{task.dataset}] staging failed; '
+                    'continuing: '
                     f'{exc.__class__.__name__}: {exc}',
                     file=sys.stderr,
                     flush=True,
                 )
-                result = StagedSourceResult(
-                    source=source,
-                    datasets=0,
-                    failed_datasets=len(selected_by_source[source]),
-                    source_succeeded=False,
-                    source_failed=True,
+                result = StagedDatasetTaskResult(
+                    source=task.source,
+                    dataset=task.dataset,
+                    failed=True,
                     source_rows=0,
                     identifiers=0,
                     annotations=0,
@@ -884,16 +939,19 @@ def _run_discovered_direct_load_staged_in_dir(
                     total_seconds=0,
                     stages=(),
                 )
-            results_by_source[source] = result
-            print(
-                '[load-stage] '
-                f'source={source} '
-                f'datasets={result.datasets} '
-                f'failed_datasets={result.failed_datasets} '
-                f'stages={len(result.stages)} '
-                f'source_rows={result.source_rows} '
-                f'total={result.total_seconds:.3f}s',
-                flush=True,
+            results_by_index[index] = result
+            if result.failed:
+                failed_dataset_keys.add((result.source, result.dataset))
+            _scheduler_log(
+                'task_done',
+                task=index,
+                source=task.source,
+                dataset=task.dataset,
+                shard=_task_part_label(task),
+                failed=int(result.failed),
+                stages=len(result.stages),
+                rows=result.source_rows,
+                seconds=f'{result.total_seconds:.3f}',
             )
 
     if drop_load_constraints:
@@ -903,9 +961,20 @@ def _run_discovered_direct_load_staged_in_dir(
         )
 
     first_stage = True
-    for job in jobs:
-        result = results_by_source[job.source]
+    successful_dataset_keys: set[tuple[str, str]] = set()
+    for index, _task in enumerate(tasks):
+        result = results_by_index[index]
+        dataset_key = (result.source, result.dataset)
+        if result.failed or dataset_key in failed_dataset_keys:
+            continue
+        successful_dataset_keys.add(dataset_key)
         for stage in result.stages:
+            _scheduler_log(
+                'copy_start',
+                source=stage.source,
+                dataset=stage.dataset,
+                rows=stage.source_rows,
+            )
             copy_seconds = copy_staged_direct_load(
                 stage,
                 database_url=database_url,
@@ -913,32 +982,237 @@ def _run_discovered_direct_load_staged_in_dir(
                 require_empty=require_empty and first_stage,
             )
             first_stage = False
-            print(
-                '[load-stage-copy] '
-                f'source={stage.source} '
-                f'dataset={stage.dataset} '
-                f'source_rows={stage.source_rows} '
-                f'copy={copy_seconds:.3f}s',
-                flush=True,
+            _scheduler_log(
+                'copy_done',
+                source=stage.source,
+                dataset=stage.dataset,
+                rows=stage.source_rows,
+                seconds=f'{copy_seconds:.3f}',
             )
     duckdb_load._reset_postgres_sequences(database_url=database_url, schema=schema)
-    results = tuple(results_by_source[source] for source in selected_by_source)
+
+    all_dataset_keys = {
+        (source, fn.function_name)
+        for source, functions in selected_by_source.items()
+        for fn in functions
+        if getattr(fn.call, '_raw_dataset', None) is not None
+    }
+    successful_dataset_keys = successful_dataset_keys - failed_dataset_keys
+    results = tuple(results_by_index.values())
     return DiscoveredLoadStats(
         sources=len(selected_by_source),
         skipped_sources=skipped_sources,
-        datasets=sum(result.datasets for result in results),
+        datasets=len(successful_dataset_keys),
         failed_sources=sum(
             1
-            for result in results
-            if result.source_failed and not result.source_succeeded
+            for source in selected_by_source
+            if not any(key[0] == source for key in successful_dataset_keys)
+            and any(key[0] == source for key in failed_dataset_keys)
         ),
-        failed_datasets=sum(result.failed_datasets for result in results),
+        failed_datasets=len(failed_dataset_keys & all_dataset_keys),
         source_rows=sum(result.source_rows for result in results),
         identifiers=sum(result.identifiers for result in results),
         annotations=sum(result.annotations for result in results),
         ontology_terms=sum(result.ontology_terms for result in results),
         total_seconds=time.perf_counter() - started,
     )
+
+
+def _prepare_staged_dataset_tasks(
+    *,
+    selected_by_source: dict[str, list[ResourceFunction]],
+    database: str,
+    inputs_package: str,
+    resolver_dir: str | Path,
+    batch_size: int,
+    max_records: int | None,
+    force_refresh: bool,
+    obo_artifacts: bool,
+    obo_output_dir: str | Path,
+    threads: int,
+    staging_dir: Path,
+    stage_jobs: int,
+) -> tuple[
+    list[StagedDatasetTask],
+    dict[tuple[str, str], StagedDatasetPrepareResult],
+    set[tuple[str, str]],
+]:
+    """Create round-robin dataset tasks for the shared LOAD_JOBS pool."""
+
+    resolver_dir = Path(resolver_dir)
+    task_groups: list[list[StagedDatasetTask]] = []
+    prepared_shards: dict[tuple[str, str], StagedDatasetPrepareResult] = {}
+    failed_dataset_keys: set[tuple[str, str]] = set()
+    prepare_tasks: list[StagedDatasetPrepareTask] = []
+    source_functions: dict[tuple[str, str], ResourceFunction] = {}
+
+    for source, functions in selected_by_source.items():
+        state_dir = staging_dir / _path_slug(source)
+        state_dir.mkdir(parents=True, exist_ok=True)
+        for fn in functions:
+            dataset_key = (fn.source, fn.function_name)
+            source_functions[dataset_key] = fn
+            raw_dataset = getattr(fn.call, '_raw_dataset', None)
+            if raw_dataset is None:
+                continue
+            base_state = state_dir / (
+                f'{_path_slug(fn.source)}_{_path_slug(fn.function_name)}.duckdb'
+            )
+            if fn.output_kind == 'ontology':
+                task_groups.append(
+                    [
+                        StagedDatasetTask(
+                            source=fn.source,
+                            dataset=fn.function_name,
+                            output_kind=fn.output_kind,
+                            database=database,
+                            inputs_package=inputs_package,
+                            resolver_dir=str(resolver_dir),
+                            batch_size=batch_size,
+                            max_records=max_records,
+                            state_path=str(base_state),
+                            force_refresh=force_refresh,
+                            obo_artifacts=obo_artifacts,
+                            obo_output_dir=str(obo_output_dir),
+                            threads=threads,
+                        )
+                    ]
+                )
+                continue
+
+            prepare_tasks.append(
+                StagedDatasetPrepareTask(
+                    source=fn.source,
+                    dataset=fn.function_name,
+                    database=database,
+                    inputs_package=inputs_package,
+                    resolver_dir=str(resolver_dir),
+                    batch_size=batch_size,
+                    max_records=max_records,
+                    force_refresh=force_refresh,
+                    preparse_dir=str(
+                        _preparse_cache_dir(
+                            fn,
+                            batch_size=batch_size,
+                            max_records=max_records,
+                        )
+                    ),
+                )
+            )
+
+    prepared_by_key: dict[tuple[str, str], StagedDatasetPrepareResult] = {}
+    if prepare_tasks:
+        _scheduler_log('preparse_start', datasets=len(prepare_tasks))
+        with ProcessPoolExecutor(max_workers=stage_jobs) as executor:
+            future_by_task = {
+                executor.submit(_prepare_preparse_shards_worker, task): task
+                for task in prepare_tasks
+            }
+            for future in as_completed(future_by_task):
+                task = future_by_task[future]
+                dataset_key = (task.source, task.dataset)
+                fn = source_functions[dataset_key]
+                try:
+                    prepared = future.result()
+                except Exception as exc:  # noqa: BLE001
+                    failed_dataset_keys.add(dataset_key)
+                    _warn_dataset_failed(fn, exc)
+                    continue
+                prepared_by_key[dataset_key] = prepared
+                _scheduler_log(
+                    'preparse_done',
+                    source=prepared.source,
+                    dataset=prepared.dataset,
+                    shards=len(prepared.shards),
+                    rows=sum(shard.rows for shard in prepared.shards),
+                    reused=int(prepared.reused),
+                    path=prepared.preparse_dir,
+                )
+
+    for prepare_task in prepare_tasks:
+        dataset_key = (prepare_task.source, prepare_task.dataset)
+        prepared = prepared_by_key.get(dataset_key)
+        if prepared is None:
+            continue
+        fn = source_functions[dataset_key]
+        prepared_shards[dataset_key] = prepared
+        base_state = staging_dir / _path_slug(fn.source) / (
+            f'{_path_slug(fn.source)}_{_path_slug(fn.function_name)}.duckdb'
+        )
+        task_groups.append(
+            [
+                StagedDatasetTask(
+                    source=fn.source,
+                    dataset=fn.function_name,
+                    output_kind=fn.output_kind,
+                    database=database,
+                    inputs_package=inputs_package,
+                    resolver_dir=str(resolver_dir),
+                    batch_size=batch_size,
+                    max_records=None,
+                    state_path=str(
+                        base_state.with_name(
+                            f'{base_state.stem}_shard_{shard.shard_index:05d}'
+                            f'{base_state.suffix}'
+                        )
+                    ),
+                    force_refresh=force_refresh,
+                    obo_artifacts=obo_artifacts,
+                    obo_output_dir=str(obo_output_dir),
+                    threads=threads,
+                    raw_shard_path=shard.path,
+                    row_offset=shard.row_offset,
+                    shard_rows=shard.rows,
+                    shard_index=shard.shard_index,
+                )
+                for shard in prepared.shards
+            ]
+        )
+
+    tasks: list[StagedDatasetTask] = []
+    max_group_len = max((len(group) for group in task_groups), default=0)
+    for index in range(max_group_len):
+        for group in task_groups:
+            if index < len(group):
+                tasks.append(group[index])
+    return tasks, prepared_shards, failed_dataset_keys
+
+
+def _scheduler_log(event: str, **fields: object) -> None:
+    details = ' '.join(f'{key}={value}' for key, value in fields.items())
+    print(
+        f'[load-scheduler] event={event}' + (f' {details}' if details else ''),
+        flush=True,
+    )
+
+
+def _task_part_label(task: StagedDatasetTask) -> str:
+    if task.shard_index is None:
+        return '-'
+    return str(task.shard_index)
+
+
+def _preparse_cache_dir(
+    fn: ResourceFunction,
+    *,
+    batch_size: int,
+    max_records: int | None,
+) -> Path:
+    max_part = 'all' if max_records is None else f'max_{max_records}'
+    return (
+        _pypath_data_dir()
+        / _path_slug(fn.source)
+        / 'preparse'
+        / _path_slug(fn.function_name)
+        / f'batch_{batch_size}_{max_part}'
+    )
+
+
+def _pypath_data_dir() -> Path:
+    configured = os.environ.get('PYPATH_DOWNLOAD_DATADIR')
+    if configured:
+        return Path(configured)
+    return Path(__file__).resolve().parents[1] / 'pypath-data'
 
 
 def copy_staged_direct_load(
@@ -978,126 +1252,347 @@ def copy_staged_direct_load(
     return time.perf_counter() - started
 
 
-def _stage_source_worker(job: StagedSourceJob) -> StagedSourceResult:
+def _prepare_preparse_shards_worker(
+    task: StagedDatasetPrepareTask,
+) -> StagedDatasetPrepareResult:
     started = time.perf_counter()
-    selected = _discover_entity_datasets(
-        database=job.database,
-        inputs_package=job.inputs_package,
-        sources=(job.source,),
-        dataset=None,
-    )
-    functions_by_name = {fn.function_name: fn for fn in selected}
-    state_dir = Path(job.state_dir)
-    state_dir.mkdir(parents=True, exist_ok=True)
-
-    totals = {
-        'source_rows': 0,
-        'identifiers': 0,
-        'annotations': 0,
-        'ontology_terms': 0,
-    }
-    stages: list[DirectStageStats] = []
-    dataset_count = 0
-    failed_datasets = 0
-    source_succeeded = False
-    source_failed = False
-    resolver_dir = Path(job.resolver_dir)
-
-    print(
-        f'[{job.source}] duckdb stage start datasets={len(job.datasets)} '
-        f'names={",".join(job.datasets)}',
-        flush=True,
-    )
-    for dataset_name in job.datasets:
-        fn = functions_by_name.get(dataset_name)
-        if fn is None:
-            failed_datasets += 1
-            source_failed = True
+    preparse_dir = Path(task.preparse_dir)
+    if not task.force_refresh:
+        cached = _read_preparse_shards(task, preparse_dir)
+        if cached is not None:
             print(
-                '[warning] '
-                f'[{job.source}.{dataset_name}] staging failed; continuing: '
-                'ValueError: dataset no longer discovered',
-                file=sys.stderr,
+                '[load-preparse] '
+                f'source={task.source} dataset={task.dataset} '
+                f'cache=hit shards={len(cached.shards)} '
+                f'rows={sum(shard.rows for shard in cached.shards)} '
+                f'path={preparse_dir}',
                 flush=True,
             )
-            continue
-        raw_dataset = getattr(fn.call, '_raw_dataset', None)
-        if raw_dataset is None:
-            continue
+            return cached
+
+    selected = _discover_entity_datasets(
+        database=task.database,
+        inputs_package=task.inputs_package,
+        sources=(task.source,),
+        dataset=task.dataset,
+    )
+    if len(selected) != 1:
+        raise ValueError(
+            f'Expected one dataset for {task.source}.{task.dataset}; '
+            f'found {len(selected)}'
+        )
+    fn = selected[0]
+    raw_dataset = getattr(fn.call, '_raw_dataset', None)
+    if raw_dataset is None:
+        raise ValueError(f'{task.source}.{task.dataset} has no raw dataset')
+
+    tmp_dir = preparse_dir.with_name(f'.{preparse_dir.name}.tmp.{os.getpid()}')
+    if tmp_dir.exists():
+        shutil.rmtree(tmp_dir)
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    raw_rows = raw_dataset.raw(
+        **_raw_dataset_kwargs(
+            fn,
+            resolver_dir=Path(task.resolver_dir),
+            force_refresh=task.force_refresh,
+            max_records=task.max_records,
+        )
+    )
+    if task.max_records is not None:
+        raw_rows = islice(raw_rows, task.max_records)
+
+    shards: list[StagedRawShard] = []
+    row_offset = 0
+    try:
+        for shard_index, batch in enumerate(
+            _iter_sized_batches(raw_rows, task.batch_size)
+        ):
+            shard_path = tmp_dir / f'shard_{shard_index:05d}.parquet'
+            _write_raw_shard(batch, shard_path)
+            shards.append(
+                StagedRawShard(
+                    path=str(preparse_dir / shard_path.name),
+                    row_offset=row_offset,
+                    rows=len(batch),
+                    shard_index=shard_index,
+                )
+            )
+            row_offset += len(batch)
+            print(
+                '[load-preparse] '
+                f'source={fn.source} dataset={fn.function_name} '
+                f'cache=build shard={shard_index} shard_rows={len(batch)} '
+                f'total_rows={row_offset} '
+                f'seconds={time.perf_counter() - started:.1f}',
+                flush=True,
+            )
+        _write_preparse_manifest(
+            tmp_dir,
+            task=task,
+            shards=shards,
+        )
+        if preparse_dir.exists():
+            shutil.rmtree(preparse_dir)
+        tmp_dir.replace(preparse_dir)
+        print(
+            '[load-preparse] '
+            f'source={fn.source} dataset={fn.function_name} '
+            f'cache=published shards={len(shards)} rows={row_offset} '
+            f'path={preparse_dir} '
+            f'seconds={time.perf_counter() - started:.1f}',
+            flush=True,
+        )
+    except Exception:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        raise
+
+    return StagedDatasetPrepareResult(
+        source=fn.source,
+        dataset=fn.function_name,
+        shards=tuple(shards),
+        preparse_dir=str(preparse_dir),
+        reused=False,
+    )
+
+
+def _read_preparse_shards(
+    task: StagedDatasetPrepareTask,
+    preparse_dir: Path,
+) -> StagedDatasetPrepareResult | None:
+    manifest_path = preparse_dir / 'manifest.json'
+    if not manifest_path.exists():
+        return None
+    try:
+        manifest = json.loads(manifest_path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not _preparse_manifest_matches(task, manifest):
+        return None
+
+    shards: list[StagedRawShard] = []
+    for item in manifest.get('shards') or []:
         try:
+            shard_index = int(item['shard_index'])
+            filename = str(item['filename'])
+            shard_path = preparse_dir / filename
+            rows = int(item['rows'])
+            row_offset = int(item['row_offset'])
+        except (KeyError, TypeError, ValueError):
+            return None
+        if not shard_path.exists():
+            return None
+        shards.append(
+            StagedRawShard(
+                path=str(shard_path),
+                row_offset=row_offset,
+                rows=rows,
+                shard_index=shard_index,
+            )
+        )
+    if not shards:
+        return None
+    return StagedDatasetPrepareResult(
+        source=task.source,
+        dataset=task.dataset,
+        shards=tuple(shards),
+        preparse_dir=str(preparse_dir),
+        reused=True,
+    )
+
+
+def _preparse_manifest_matches(
+    task: StagedDatasetPrepareTask,
+    manifest: dict[str, object],
+) -> bool:
+    return (
+        manifest.get('version') == PREPARSE_SHARD_CACHE_VERSION
+        and manifest.get('source') == task.source
+        and manifest.get('dataset') == task.dataset
+        and manifest.get('batch_size') == task.batch_size
+        and manifest.get('max_records') == task.max_records
+    )
+
+
+def _write_preparse_manifest(
+    preparse_dir: Path,
+    *,
+    task: StagedDatasetPrepareTask,
+    shards: list[StagedRawShard],
+) -> None:
+    payload = {
+        'version': PREPARSE_SHARD_CACHE_VERSION,
+        'source': task.source,
+        'dataset': task.dataset,
+        'batch_size': task.batch_size,
+        'max_records': task.max_records,
+        'rows': sum(shard.rows for shard in shards),
+        'shards': [
+            {
+                'filename': Path(shard.path).name,
+                'row_offset': shard.row_offset,
+                'rows': shard.rows,
+                'shard_index': shard.shard_index,
+            }
+            for shard in shards
+        ],
+    }
+    (preparse_dir / 'manifest.json').write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + '\n'
+    )
+
+
+def _iter_sized_batches(
+    rows: Iterable[dict[str, object]],
+    batch_size: int,
+) -> Iterable[list[dict[str, object]]]:
+    iterator = iter(rows)
+    while True:
+        batch = list(islice(iterator, batch_size))
+        if not batch:
+            break
+        yield batch
+
+
+def _write_raw_shard(rows: list[dict[str, object]], path: Path) -> None:
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    names: list[str] = []
+    seen: set[str] = set()
+    for row in rows:
+        for name in row:
+            if name not in seen:
+                names.append(name)
+                seen.add(name)
+    normalized = [
+        {name: _stringify_if_unsupported(row.get(name)) for name in names}
+        for row in rows
+    ]
+    table = pa.Table.from_pylist(normalized)
+    table = table.cast(_schema_with_storable_nulls(table.schema), safe=False)
+    pq.write_table(table, path, compression='zstd', use_dictionary=True)
+
+
+def _stringify_if_unsupported(value: object) -> object:
+    if value is None or isinstance(value, str | int | float | bool):
+        return value
+    if isinstance(value, bytes):
+        return value.decode('utf-8', errors='replace')
+    if isinstance(value, list | tuple):
+        return [_stringify_if_unsupported(item) for item in value]
+    if isinstance(value, dict):
+        return {str(k): _stringify_if_unsupported(v) for k, v in value.items()}
+    return str(value)
+
+
+def _schema_with_storable_nulls(schema: object) -> object:
+    import pyarrow as pa
+
+    fields = [
+        pa.field(
+            field.name,
+            pa.string() if pa.types.is_null(field.type) else field.type,
+        )
+        for field in schema
+    ]
+    return pa.schema(fields)
+
+
+def _iter_raw_shard_records(raw_dataset: object, shard_path: str) -> Iterable[object]:
+    import pyarrow.parquet as pq
+
+    parquet_file = pq.ParquetFile(shard_path)
+    for batch in parquet_file.iter_batches(batch_size=10_000):
+        for row in batch.to_pylist():
+            yield raw_dataset.mapper(row)
+
+
+def _stage_dataset_task_worker(task: StagedDatasetTask) -> StagedDatasetTaskResult:
+    started = time.perf_counter()
+    selected = _discover_entity_datasets(
+        database=task.database,
+        inputs_package=task.inputs_package,
+        sources=(task.source,),
+        dataset=task.dataset,
+    )
+    if len(selected) != 1:
+        raise ValueError(
+            f'Expected one dataset for {task.source}.{task.dataset}; '
+            f'found {len(selected)}'
+        )
+    fn = selected[0]
+    raw_dataset = getattr(fn.call, '_raw_dataset', None)
+    if raw_dataset is None:
+        raise ValueError(f'{task.source}.{task.dataset} has no raw dataset')
+
+    resolver_dir = Path(task.resolver_dir)
+    if fn.output_kind == 'ontology':
+        records = raw_dataset(
+            **_raw_dataset_kwargs(
+                fn,
+                resolver_dir=resolver_dir,
+                force_refresh=task.force_refresh,
+                max_records=task.max_records,
+            )
+        )
+        terms = collect_ontology_terms(records)
+        if task.obo_artifacts:
+            obo_path = write_ontology_obo(
+                fn,
+                terms,
+                output_dir=Path(task.obo_output_dir),
+            )
+            print(
+                f'[{fn.source}.{fn.function_name}] obo={obo_path}',
+                flush=True,
+            )
+        stages = (
+            stage_direct_copy_pipeline(
+                (),
+                ontology_records=terms,
+                ontology_dataset=fn.function_name,
+                ontology_id=fn.ontology_id or fn.function_name,
+                source=fn.source,
+                dataset=fn.function_name,
+                state_path=task.state_path,
+                resolver_dir=resolver_dir,
+                max_records=None,
+                threads=task.threads,
+            ),
+        )
+    else:
+        if task.raw_shard_path is None:
             records = raw_dataset(
                 **_raw_dataset_kwargs(
                     fn,
                     resolver_dir=resolver_dir,
-                    force_refresh=job.force_refresh,
-                    max_records=job.max_records,
+                    force_refresh=task.force_refresh,
+                    max_records=task.max_records,
                 )
             )
-            state = state_dir / f'{_path_slug(fn.source)}_{_path_slug(fn.function_name)}.duckdb'
-            if fn.output_kind == 'ontology':
-                terms = collect_ontology_terms(records)
-                if job.obo_artifacts:
-                    obo_path = write_ontology_obo(
-                        fn,
-                        terms,
-                        output_dir=Path(job.obo_output_dir),
-                    )
-                    print(
-                        f'[{fn.source}.{fn.function_name}] obo={obo_path}',
-                        flush=True,
-                    )
-                dataset_stages = (
-                    stage_direct_copy_pipeline(
-                        (),
-                        ontology_records=terms,
-                        ontology_dataset=fn.function_name,
-                        ontology_id=fn.ontology_id or fn.function_name,
-                        source=fn.source,
-                        dataset=fn.function_name,
-                        state_path=state,
-                        resolver_dir=resolver_dir,
-                        max_records=None,
-                        threads=job.threads,
-                    ),
-                )
-            else:
-                dataset_stages = stage_direct_copy_pipeline_batches(
-                    records,
-                    source=fn.source,
-                    dataset=fn.function_name,
-                    state_path=state,
-                    resolver_dir=resolver_dir,
-                    batch_size=job.batch_size,
-                    max_records=job.max_records,
-                    threads=job.threads,
-                    progress=True,
-                )
-            stages.extend(dataset_stages)
-            totals['source_rows'] += sum(stage.source_rows for stage in dataset_stages)
-            totals['identifiers'] += sum(stage.identifiers for stage in dataset_stages)
-            totals['annotations'] += sum(stage.annotations for stage in dataset_stages)
-            totals['ontology_terms'] += sum(
-                stage.ontology_terms for stage in dataset_stages
-            )
-            dataset_count += 1
-            source_succeeded = True
-        except Exception as exc:  # noqa: BLE001
-            failed_datasets += 1
-            source_failed = True
-            _warn_dataset_failed(fn, exc)
-            continue
+        else:
+            records = _iter_raw_shard_records(raw_dataset, task.raw_shard_path)
+        stages = (
+            stage_direct_copy_pipeline(
+                records,
+                source=fn.source,
+                dataset=fn.function_name,
+                state_path=task.state_path,
+                resolver_dir=resolver_dir,
+                max_records=None,
+                threads=task.threads,
+                row_offset=task.row_offset,
+            ),
+        )
 
-    print(f'[{job.source}] duckdb stage done', flush=True)
-    return StagedSourceResult(
-        source=job.source,
-        datasets=dataset_count,
-        failed_datasets=failed_datasets,
-        source_succeeded=source_succeeded,
-        source_failed=source_failed,
-        source_rows=totals['source_rows'],
-        identifiers=totals['identifiers'],
-        annotations=totals['annotations'],
-        ontology_terms=totals['ontology_terms'],
+    return StagedDatasetTaskResult(
+        source=fn.source,
+        dataset=fn.function_name,
+        failed=False,
+        source_rows=sum(stage.source_rows for stage in stages),
+        identifiers=sum(stage.identifiers for stage in stages),
+        annotations=sum(stage.annotations for stage in stages),
+        ontology_terms=sum(stage.ontology_terms for stage in stages),
         total_seconds=time.perf_counter() - started,
         stages=tuple(stages),
     )
@@ -1312,9 +1807,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
         type=int,
         default=1,
         help=(
-            'Stage sources in parallel DuckDB worker processes, then COPY '
-            'staged files into PostgreSQL serially. Values <= 1 use the '
-            'legacy single-process COPY path.'
+            'Use one shared worker pool for staged DuckDB work. Workers are '
+            'assigned across sources first, then across temporary raw-record '
+            'shards within a source when sharded work is available. PostgreSQL '
+            'COPY remains serial.'
         ),
     )
     parser.add_argument(
