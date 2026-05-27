@@ -1,8 +1,25 @@
 .PHONY: setup resolver ontology-artifacts db-setup db-reset reset-content drop-source derive load reload pipeline all test
 
-DATA_ROOT ?= data
+INSTANCE_ENV_FILE ?= ../.env
+ifneq ($(wildcard $(INSTANCE_ENV_FILE)),)
+include $(INSTANCE_ENV_FILE)
+endif
+
+DATA_ROOT ?= $(if $(DATA_DIR),$(DATA_DIR),data)
 DATABASE ?= omnipath
-DATABASE_URL ?= postgresql://omnipath:omnipath@localhost:55432/omnipath
+DEFAULT_DATABASE_URL ?= postgresql://omnipath:omnipath@localhost:55432/omnipath
+ifneq ($(POSTGRES_PORT),)
+DEFAULT_DATABASE_URL := postgresql://omnipath:omnipath@localhost:$(POSTGRES_PORT)/omnipath
+else ifneq ($(DATABASE_URL),)
+DEFAULT_DATABASE_URL := $(DATABASE_URL)
+endif
+
+ifeq ($(origin DATABASE_URL),command line)
+BUILD_DATABASE_URL ?= $(DATABASE_URL)
+else
+BUILD_DATABASE_URL ?= $(DEFAULT_DATABASE_URL)
+DATABASE_URL := $(BUILD_DATABASE_URL)
+endif
 SCHEMA ?= public
 INPUTS_PACKAGE ?= pypath.inputs_v2
 SOURCE ?=
