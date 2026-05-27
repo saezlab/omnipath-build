@@ -1030,6 +1030,7 @@ def _stage_source_worker(job: StagedSourceJob) -> StagedSourceResult:
                     fn,
                     resolver_dir=resolver_dir,
                     force_refresh=job.force_refresh,
+                    max_records=job.max_records,
                 )
             )
             state = state_dir / f'{_path_slug(fn.source)}_{_path_slug(fn.function_name)}.duckdb'
@@ -1148,7 +1149,7 @@ def _raw_dataset_kwargs(
     *,
     resolver_dir: Path,
     force_refresh: bool,
-    max_records: int | None,
+    max_records: int | None = None,
 ) -> dict[str, object]:
     kwargs: dict[str, object] = {'force_refresh': force_refresh}
     if max_records is not None:
@@ -1405,6 +1406,8 @@ def main(argv: list[str] | None = None) -> int:
             f'total={stats.total_seconds:.3f}s',
             flush=True,
         )
+        if stats.failed_sources or stats.failed_datasets:
+            return 1
         return 0
 
     if args.resource == 'chembl-activities':
