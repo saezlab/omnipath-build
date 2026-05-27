@@ -75,15 +75,15 @@ class EvidenceProjectorBase:
         row = entity_to_row(entity)
         entity_type = string_or_none(row.get('type'))
         memberships = list(getattr(entity, 'membership', None) or [])
-        relation_only_interaction = (
-            is_interaction_like(entity_type)
-            and sum(
-                1
-                for membership in memberships
-                if getattr(membership, 'member', None) is not None
-            )
-            == 2
+        interaction_member_count = sum(
+            1
+            for membership in memberships
+            if getattr(membership, 'member', None) is not None
         )
+        interaction_like = is_interaction_like(entity_type)
+        if interaction_like and interaction_member_count < 2:
+            return
+        relation_only_interaction = interaction_like and interaction_member_count == 2
 
         entity_evidence_id = None
         if not relation_only_interaction:
