@@ -274,11 +274,7 @@ def _chemical_identifier_rows(
         dataset, mapper = _CHEMICAL_DATASETS[source]
         raw_kwargs = {}
         if source == 'chembl' and chemical_lookup_path is not None:
-            raw_kwargs['chemical_resolver_lookup_path'] = chemical_lookup_path
-            if chemical_lookup_sources:
-                raw_kwargs['chemical_resolver_sources'] = tuple(
-                    chemical_lookup_sources
-                )
+            raw_kwargs['filter_chemical_resolver_inchikeys'] = False
         emitted = 0
         for raw_row in dataset.raw(**raw_kwargs):
             row = mapper(raw_row)
