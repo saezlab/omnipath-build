@@ -7,7 +7,6 @@ evidence/graph tables or from bitmap tables when they have been refreshed.
 
 from __future__ import annotations
 
-import os
 from typing import Any
 from pathlib import Path
 from functools import lru_cache
@@ -180,7 +179,7 @@ def _resource_row(
         else _empty_source_counts()
     )
     last_built_at = (
-        counts['last_built_at'] or snapshot_metadata['last_built_at']
+        counts['last_built_at'] or snapshot_metadata.get('last_built_at')
         if counts['has_rows']
         else None
     )
@@ -209,8 +208,8 @@ def _resource_row(
         'association_count': counts['association_count'],
         'identifier_count': counts['identifier_count'],
         'ontology_term_count': counts['ontology_term_count'],
-        'total_size_bytes': snapshot_metadata['total_size_bytes'],
-        'last_downloaded_at': snapshot_metadata['last_downloaded_at'],
+        'total_size_bytes': snapshot_metadata.get('total_size_bytes', 0),
+        'last_downloaded_at': snapshot_metadata.get('last_downloaded_at'),
         'last_built_at': last_built_at,
         'build_status': 'success' if counts['has_rows'] else 'not_built',
     }

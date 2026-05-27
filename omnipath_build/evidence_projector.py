@@ -219,7 +219,37 @@ class EvidenceProjectorBase:
                 source=source,
                 relation_evidence_id=relation_evidence_id,
                 annotations=interaction_relation_annotations(row),
+                annotation_scope='relation',
             )
+            membership_by_occurrence_id = dict(member_refs)
+            subject_membership = membership_by_occurrence_id.get(
+                str(spec.subject_ref)
+            )
+            if subject_membership is not None:
+                stats.annotations += self._write_relation_annotations(
+                    writers,
+                    seen_annotations,
+                    source=source,
+                    relation_evidence_id=relation_evidence_id,
+                    annotations=(
+                        getattr(subject_membership, 'annotations', None) or []
+                    ),
+                    annotation_scope='subject',
+                )
+            object_membership = membership_by_occurrence_id.get(
+                str(spec.object_ref)
+            )
+            if object_membership is not None:
+                stats.annotations += self._write_relation_annotations(
+                    writers,
+                    seen_annotations,
+                    source=source,
+                    relation_evidence_id=relation_evidence_id,
+                    annotations=(
+                        getattr(object_membership, 'annotations', None) or []
+                    ),
+                    annotation_scope='object',
+                )
         elif member_refs:
             for member_index, (member_occurrence_id, membership) in enumerate(
                 member_refs
@@ -259,6 +289,7 @@ class EvidenceProjectorBase:
                     source=source,
                     relation_evidence_id=relation_evidence_id,
                     annotations=getattr(membership, 'annotations', None) or [],
+                    annotation_scope='object',
                 )
 
     @staticmethod
@@ -305,6 +336,7 @@ class EvidenceProjectorBase:
         source: str,
         relation_evidence_id: str,
         annotations: Iterable[object],
+        annotation_scope: str = 'relation',
     ) -> int:
         count = 0
         for annotation in annotations:
@@ -315,6 +347,7 @@ class EvidenceProjectorBase:
                 source=source,
                 evidence_id=relation_evidence_id,
                 annotation=annotation,
+                annotation_scope=annotation_scope,
             ):
                 count += 1
         return count
@@ -328,6 +361,7 @@ def _write_annotation(
     source: str,
     evidence_id: str,
     annotation: object,
+    annotation_scope: str | None = None,
 ) -> bool:
     row = annotation_to_row(annotation)
     term = string_or_none(row.get('term'))
@@ -336,16 +370,17 @@ def _write_annotation(
     value = string_or_none(row.get('value'))
     unit = string_or_none(row.get('unit', row.get('units')))
     key = annotation_key(term, value, unit)
-    target_writer.write(
-        {
-            'source': source,
-            'evidence_id': evidence_id,
-            'annotation_key': key,
-            'term': term,
-            'value': value,
-            'unit': unit,
-        }
-    )
+    target_row: dict[str, object] = {
+        'source': source,
+        'evidence_id': evidence_id,
+        'annotation_key': key,
+        'term': term,
+        'value': value,
+        'unit': unit,
+    }
+    if annotation_scope is not None:
+        target_row['annotation_scope'] = annotation_scope
+    target_writer.write(target_row)
     value_tuple = (key, term, value, unit)
     if value_tuple not in seen_annotations:
         seen_annotations.add(value_tuple)

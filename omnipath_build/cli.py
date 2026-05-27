@@ -270,8 +270,9 @@ def main(argv: list[str] | None = None) -> int:
                     '[derive] '
                     f'annotation_term_entities='
                     f'{bitmap_stats.annotation_term_entities} '
-                    f'annotation_term_relations='
-                    f'{bitmap_stats.annotation_term_relations} '
+                    f'annotation_term_direct_relations='
+                    f'{bitmap_stats.annotation_term_direct_relations} '
+                    f'entity_relations={bitmap_stats.entity_relations} '
                     f'entity_facets={bitmap_stats.entity_facets} '
                     f'relation_facets={bitmap_stats.relation_facets}',
                     flush=True,

@@ -215,11 +215,6 @@ def order_transport_participants(
 def annotation_predicate(annotation: dict[str, Any]) -> str:
     """Return the predicate used for an ontology-valued annotation."""
 
-    value = string_or_none(annotation.get('value')) or ''
-    prefix = value.split(':', 1)[0].upper() if ':' in value else ''
-    value_upper = value.upper()
-    if prefix in {'REACTOME', 'WP'} or value_upper.startswith(('WP', 'R-')):
-        return 'involved_in'
     return ASSOCIATION_PREDICATE
 
 

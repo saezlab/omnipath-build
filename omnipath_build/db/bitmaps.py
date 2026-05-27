@@ -15,13 +15,13 @@ import psycopg2.extensions
 
 from omnipath_build.cv_terms import CV_TERM_ENTITY_TYPE
 
-
 @dataclass(frozen=True)
 class BitmapStats:
     """Summary counts from bitmap table population."""
 
     annotation_term_entities: int = 0
-    annotation_term_relations: int = 0
+    annotation_term_direct_relations: int = 0
+    entity_relations: int = 0
     entity_facets: int = 0
     relation_facets: int = 0
 
@@ -39,8 +39,9 @@ def rebuild_bitmap_tables(
         annotation_term_entities = _populate_annotation_term_entity_bitmap(
             cur, schema
         )
-        annotation_term_relations = _populate_annotation_term_relation_bitmap(
-            cur, schema
+        entity_relations = _populate_entity_relation_bitmap(cur, schema)
+        annotation_term_direct_relations = (
+            _populate_annotation_term_direct_relation_bitmap(cur, schema)
         )
         entity_facets = _populate_facet_entity_bitmap(cur, schema)
         relation_facets = _populate_facet_relation_bitmap(cur, schema)
@@ -48,7 +49,8 @@ def rebuild_bitmap_tables(
     conn.commit()
     return BitmapStats(
         annotation_term_entities=annotation_term_entities,
-        annotation_term_relations=annotation_term_relations,
+        annotation_term_direct_relations=annotation_term_direct_relations,
+        entity_relations=entity_relations,
         entity_facets=entity_facets,
         relation_facets=relation_facets,
     )
@@ -60,9 +62,15 @@ def _create_bitmap_tables(
 ) -> None:
     schema_id = sql.Identifier(schema)
     cur.execute('CREATE EXTENSION IF NOT EXISTS roaringbitmap')
+    cur.execute(
+        sql.SQL('DROP TABLE IF EXISTS {}.annotation_term_relation_bitmap').format(
+            schema_id
+        )
+    )
     for table in (
         'annotation_term_entity_bitmap',
-        'annotation_term_relation_bitmap',
+        'annotation_term_direct_relation_bitmap',
+        'entity_relation_bitmap',
     ):
         cur.execute(
             """
@@ -122,8 +130,21 @@ def _create_bitmap_tables(
     cur.execute(
         sql.SQL(
             """
-            CREATE TABLE IF NOT EXISTS {}.annotation_term_relation_bitmap (
+            CREATE TABLE IF NOT EXISTS {}.annotation_term_direct_relation_bitmap (
               term_entity_id uuid PRIMARY KEY
+                REFERENCES {}.entity(entity_id)
+                ON DELETE CASCADE,
+              relation_bitmap roaringbitmap NOT NULL,
+              global_count integer NOT NULL
+            )
+            """
+        ).format(schema_id, schema_id)
+    )
+    cur.execute(
+        sql.SQL(
+            """
+            CREATE TABLE IF NOT EXISTS {}.entity_relation_bitmap (
+              entity_id uuid PRIMARY KEY
                 REFERENCES {}.entity(entity_id)
                 ON DELETE CASCADE,
               relation_bitmap roaringbitmap NOT NULL,
@@ -209,21 +230,21 @@ def _populate_annotation_term_entity_bitmap(
               global_count
             )
             SELECT
-              r.object_entity_id AS term_entity_id,
-              rb_build_agg(subject_bitmap.bitmap_id),
-              COUNT(DISTINCT r.subject_entity_id)::integer
+              r.subject_entity_id AS term_entity_id,
+              rb_build_agg(object_bitmap.bitmap_id),
+              COUNT(DISTINCT r.object_entity_id)::integer
             FROM {}.relation r
-            JOIN {}.entity_bitmap_id subject_bitmap
-              ON subject_bitmap.entity_id = r.subject_entity_id
+            JOIN {}.entity_bitmap_id object_bitmap
+              ON object_bitmap.entity_id = r.object_entity_id
             JOIN {}.entity term
-              ON term.entity_id = r.object_entity_id
+              ON term.entity_id = r.subject_entity_id
             JOIN {}.vocab_entity_type term_type
               ON term_type.entity_type_id = term.entity_type_id
             JOIN {}.vocab_relation_category rc
               ON rc.relation_category_id = r.relation_category_id
             WHERE rc.name = 'association'
               AND term_type.name = {}
-            GROUP BY r.object_entity_id
+            GROUP BY r.subject_entity_id
             """
         ).format(
             schema_id,
@@ -238,56 +259,93 @@ def _populate_annotation_term_entity_bitmap(
     return int(cur.rowcount)
 
 
-def _populate_annotation_term_relation_bitmap(
+def _populate_entity_relation_bitmap(
+    cur: psycopg2.extensions.cursor,
+    schema: str,
+) -> int:
+    schema_id = sql.Identifier(schema)
+    cur.execute(sql.SQL('TRUNCATE {}.entity_relation_bitmap').format(schema_id))
+    cur.execute(
+        sql.SQL(
+            """
+            WITH subject_relation_bitmap AS (
+              SELECT
+                r.subject_entity_id AS entity_id,
+                rb_build_agg(relation_bitmap.bitmap_id) AS relation_bitmap
+              FROM {}.relation r
+              JOIN {}.relation_bitmap_id relation_bitmap
+                ON relation_bitmap.relation_id = r.relation_id
+              GROUP BY r.subject_entity_id
+            ),
+            object_relation_bitmap AS (
+              SELECT
+                r.object_entity_id AS entity_id,
+                rb_build_agg(relation_bitmap.bitmap_id) AS relation_bitmap
+              FROM {}.relation r
+              JOIN {}.relation_bitmap_id relation_bitmap
+                ON relation_bitmap.relation_id = r.relation_id
+              GROUP BY r.object_entity_id
+            ),
+            endpoint_relation_bitmap AS (
+              SELECT
+                entity_id,
+                rb_or_agg(relation_bitmap) AS relation_bitmap
+              FROM (
+                SELECT entity_id, relation_bitmap
+                FROM subject_relation_bitmap
+                UNION ALL
+                SELECT entity_id, relation_bitmap
+                FROM object_relation_bitmap
+              ) endpoint
+              GROUP BY entity_id
+            )
+            INSERT INTO {}.entity_relation_bitmap (
+              entity_id,
+              relation_bitmap,
+              global_count
+            )
+            SELECT
+              entity_id,
+              relation_bitmap,
+              rb_cardinality(relation_bitmap)::integer
+            FROM endpoint_relation_bitmap
+            """
+        ).format(schema_id, schema_id, schema_id, schema_id, schema_id)
+    )
+    return int(cur.rowcount)
+
+
+def _populate_annotation_term_direct_relation_bitmap(
     cur: psycopg2.extensions.cursor,
     schema: str,
 ) -> int:
     schema_id = sql.Identifier(schema)
     cur.execute(
-        sql.SQL('TRUNCATE {}.annotation_term_relation_bitmap').format(
+        sql.SQL('TRUNCATE {}.annotation_term_direct_relation_bitmap').format(
             schema_id
         )
     )
     cur.execute(
         sql.SQL(
             """
-            WITH relation_endpoint_bitmap AS (
+            WITH direct_relation_annotations AS (
               SELECT
-                endpoint.entity_id,
+                terms.term_entity_id,
                 rb_build_agg(relation_bitmap.bitmap_id) AS relation_bitmap
-              FROM (
-                SELECT subject_entity_id AS entity_id, relation_id
-                FROM {}.relation
-                UNION ALL
-                SELECT object_entity_id AS entity_id, relation_id
-                FROM {}.relation
-              ) endpoint
+              FROM {}.relation_evidence_annotation annotation_link
+              JOIN {}.annotation annotation
+                ON annotation.annotation_key = annotation_link.annotation_key
+              JOIN {}.ontology_terms terms
+                ON terms.term_id = annotation.term
+              JOIN {}.relation_evidence_relation relation_link
+                ON relation_link.source_id = annotation_link.source_id
+               AND relation_link.relation_evidence_id =
+                   annotation_link.relation_evidence_id
               JOIN {}.relation_bitmap_id relation_bitmap
-                ON relation_bitmap.relation_id = endpoint.relation_id
-              GROUP BY endpoint.entity_id
-            ),
-            ontology_associations AS (
-              SELECT r.subject_entity_id, r.object_entity_id
-              FROM {}.relation r
-              JOIN {}.entity term
-                ON term.entity_id = r.object_entity_id
-              JOIN {}.vocab_entity_type term_type
-                ON term_type.entity_type_id = term.entity_type_id
-              JOIN {}.vocab_relation_category rc
-                ON rc.relation_category_id = r.relation_category_id
-              WHERE rc.name = 'association'
-                AND term_type.name = {}
-            ),
-            term_relation_bitmap AS (
-              SELECT
-                ann.object_entity_id AS term_entity_id,
-                rb_or_agg(endpoint.relation_bitmap) AS relation_bitmap
-              FROM ontology_associations ann
-              JOIN relation_endpoint_bitmap endpoint
-                ON endpoint.entity_id = ann.subject_entity_id
-              GROUP BY ann.object_entity_id
+                ON relation_bitmap.relation_id = relation_link.relation_id
+              GROUP BY terms.term_entity_id
             )
-            INSERT INTO {}.annotation_term_relation_bitmap (
+            INSERT INTO {}.annotation_term_direct_relation_bitmap (
               term_entity_id,
               relation_bitmap,
               global_count
@@ -296,7 +354,7 @@ def _populate_annotation_term_relation_bitmap(
               term_entity_id,
               relation_bitmap,
               rb_cardinality(relation_bitmap)::integer
-            FROM term_relation_bitmap
+            FROM direct_relation_annotations
             """
         ).format(
             schema_id,
@@ -304,9 +362,6 @@ def _populate_annotation_term_relation_bitmap(
             schema_id,
             schema_id,
             schema_id,
-            schema_id,
-            schema_id,
-            sql.Literal(CV_TERM_ENTITY_TYPE),
             schema_id,
         )
     )
@@ -633,8 +688,14 @@ def _create_bitmap_indexes(
         ).format(schema_id),
         sql.SQL(
             """
-            CREATE INDEX IF NOT EXISTS annotation_term_relation_count_idx
-            ON {}.annotation_term_relation_bitmap (global_count DESC)
+            CREATE INDEX IF NOT EXISTS annotation_term_direct_relation_count_idx
+            ON {}.annotation_term_direct_relation_bitmap (global_count DESC)
+            """
+        ).format(schema_id),
+        sql.SQL(
+            """
+            CREATE INDEX IF NOT EXISTS entity_relation_count_idx
+            ON {}.entity_relation_bitmap (global_count DESC)
             """
         ).format(schema_id),
         sql.SQL(

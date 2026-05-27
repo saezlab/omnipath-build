@@ -455,7 +455,7 @@ class _DuckDBEvidenceWriters:
         self.relation_annotation = _DuckDBRowWriter(
             con,
             'relation_annotation_raw',
-            _ANNOTATION_REF_SCHEMA,
+            _RELATION_ANNOTATION_REF_SCHEMA,
             chunk_size=chunk_size,
         )
         self.annotation = _DuckDBRowWriter(
@@ -553,6 +553,19 @@ _ANNOTATION_REF_SCHEMA = pa.schema(
         ('source', pa.string()),
         ('evidence_id', pa.string()),
         ('annotation_key', pa.string()),
+        ('term', pa.string()),
+        ('value', pa.string()),
+        ('unit', pa.string()),
+    ]
+)
+
+
+_RELATION_ANNOTATION_REF_SCHEMA = pa.schema(
+    [
+        ('source', pa.string()),
+        ('evidence_id', pa.string()),
+        ('annotation_key', pa.string()),
+        ('annotation_scope', pa.string()),
         ('term', pa.string()),
         ('value', pa.string()),
         ('unit', pa.string()),
@@ -695,6 +708,7 @@ def _create_duckdb_evidence_tables(con: duckdb.DuckDBPyConnection) -> None:
           source VARCHAR,
           evidence_id VARCHAR,
           annotation_key VARCHAR,
+          annotation_scope VARCHAR,
           term VARCHAR,
           value VARCHAR,
           unit VARCHAR
@@ -1667,9 +1681,9 @@ def _canonicalize_loaded_duckdb(
           SELECT
             ar.source,
             ar.relation_evidence_id,
-            subject.entity_id AS subject_entity_id,
+            object.entity_id AS subject_entity_id,
             ar.predicate,
-            object.entity_id AS object_entity_id,
+            subject.entity_id AS object_entity_id,
             ar.relation_category
           FROM annotation_relation_evidence_raw ar
           JOIN entity_evidence_resolution subject
@@ -2814,11 +2828,11 @@ def _bulk_copy_canonical(
               ar.relation_evidence_id::UUID,
               d.dataset_id,
               ar.row_id,
-              ar.subject_entity_evidence_id::UUID,
-              NULL::UUID AS subject_entity_id,
+              NULL::UUID AS subject_entity_evidence_id,
+              ar.object_entity_id AS subject_entity_id,
               rp.relation_predicate_id,
-              NULL::UUID AS object_entity_evidence_id,
-              ar.object_entity_id,
+              ar.subject_entity_evidence_id::UUID AS object_entity_evidence_id,
+              NULL::UUID AS object_entity_id,
               rc.relation_category_id
             FROM pq_annotation_relation_evidence_resolved ar
             JOIN load_data_source ds
@@ -2855,7 +2869,7 @@ def _bulk_copy_canonical(
           JOIN load_data_source ds
             ON ds.name = a.source
           JOIN load_vocab_annotation_scope sc
-            ON sc.name = 'relation'
+            ON sc.name = coalesce(a.annotation_scope, 'relation')
         """,
         source_id=source_id,
     )

@@ -10,13 +10,21 @@ evidence, or ontology-annotation relation evidence.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import uuid
+import hashlib
 from dataclasses import dataclass
 from collections.abc import Iterable
 
-from pypath.internals.silver_schema import Entity
+from omnipath_build.cv_terms import (
+    CV_TERM_ID_TYPE,
+    CV_TERM_ENTITY_TYPE,
+    normalize_entity_type,
+)
+from pypath.internals.cv_terms import (
+    IdentifierNamespaceCv,
+    cv_term_label_accession,
+)
 from omnipath_build.relation_rules import (
     ASSOCIATION_CATEGORY,
     INTERACTION_LIKE_TYPES,
@@ -28,14 +36,7 @@ from omnipath_build.relation_rules import (
     predicate_for_interaction,
     order_relation_participants,
 )
-from pypath.internals.cv_terms import cv_term_label_accession
-from pypath.internals.cv_terms import IdentifierNamespaceCv
-from omnipath_build.cv_terms import (
-    CV_TERM_ID_TYPE,
-    CV_TERM_ENTITY_TYPE,
-    normalize_entity_type,
-)
-
+from pypath.internals.silver_schema import Entity
 
 @dataclass(frozen=True)
 class IngestStats:
@@ -254,7 +255,7 @@ def copy_value(value: object) -> str:
         return '\\N'
     if isinstance(value, bool):
         return 'true' if value else 'false'
-    if isinstance(value, (bytes, bytearray, memoryview)):
+    if isinstance(value, bytes | bytearray | memoryview):
         return '\\x' + bytes(value).hex()
     return str(value)
 
@@ -405,15 +406,17 @@ def membership_relation_spec(
 ) -> RelationSpec:
     """Build a membership relation spec from parent/member references."""
 
-    parent_is_cv_term = entity_type_accession(
-        parent_type
-    ) == entity_type_accession(CV_TERM_ENTITY_TYPE)
-    member_is_subject = parent_is_cv_term or bool(
-        getattr(membership, 'is_parent', False)
-    )
+    member_is_parent = bool(getattr(membership, 'is_parent', False))
+    semantic_parent_ref = member_ref if member_is_parent else parent_ref
+    semantic_child_ref = parent_ref if member_is_parent else member_ref
+    semantic_parent_type = parent_type
+    if member_is_parent:
+        semantic_parent_type = normalize_entity_type(
+            getattr(getattr(membership, 'member', None), 'type', None)
+        )
     return RelationSpec(
         relation_occurrence_id=relation_occurrence_id,
-        subject_ref=member_ref if member_is_subject else parent_ref,
-        predicate_rule=predicate_for_membership(parent_type, {}),
-        object_ref=parent_ref if member_is_subject else member_ref,
+        subject_ref=semantic_parent_ref,
+        predicate_rule=predicate_for_membership(semantic_parent_type, {}),
+        object_ref=semantic_child_ref,
     )

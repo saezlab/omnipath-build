@@ -19,7 +19,8 @@ import psycopg2.extensions
 
 CONTENT_TABLES: tuple[str, ...] = (
     'annotation_term_entity_bitmap',
-    'annotation_term_relation_bitmap',
+    'annotation_term_direct_relation_bitmap',
+    'entity_relation_bitmap',
     'facet_entity_bitmap',
     'facet_relation_bitmap',
     'entity_bitmap_id',
