@@ -747,8 +747,12 @@ CREATE INDEX ON metalinksdb_mrclinksdb_relations (protein_uniprot);
 
 -- ────────────────────────────────────────────────────────────────────────────
 -- STITCH  (source_id = 39)
--- Parallelism disabled — parallel hash joins exhaust shared memory on this host.
--- human_re pre-filters 820k rows to ~312k human SM→Protein rows.
+-- Human filter uses entity_evidence_identifier (identifier_type_id=34, Ncbi Tax Id:OM:0205)
+-- rather than entity resolution — mirrors ChEMBL index-scan approach.
+-- All 819,666 STITCH protein entities have this identifier (338,521 human, 481,145 mouse).
+-- Parallelism disabled: rel_annotations parallel hash join against the 7.78M-row annotation
+-- table requests 256MB/worker × 4 workers = 1GB, exceeding Docker default /dev/shm of 64MB.
+-- Fix: set shm_size: 1gb in docker-compose.deploy.yaml, then remove these SET lines.
 -- ────────────────────────────────────────────────────────────────────────────
 
 SET max_parallel_workers_per_gather = 0;
@@ -758,10 +762,9 @@ DROP MATERIALIZED VIEW IF EXISTS metalinksdb_stitch_relations;
 CREATE MATERIALIZED VIEW metalinksdb_stitch_relations AS
 WITH
 
--- Pre-filter to human SM→Protein rows; reduces STITCH from 820k to ~312k rows.
--- Compound entity_type_id=2 checked; parallelism disabled above to avoid shared memory OOM.
+-- Pre-filter to human SM→Protein rows via taxon identifier stored per protein entity.
 human_re AS (
-    SELECT
+    SELECT DISTINCT
         re.relation_evidence_id,
         re.subject_entity_evidence_id,
         re.object_entity_evidence_id,
@@ -776,11 +779,13 @@ human_re AS (
         ON  ee_protein.source_id          = re.source_id
         AND ee_protein.entity_evidence_id = re.object_entity_evidence_id
         AND ee_protein.entity_type_id     = 3
-    JOIN entity_evidence_resolution eer
-        ON  eer.source_id          = re.source_id
-        AND eer.entity_evidence_id = re.object_entity_evidence_id
-        AND eer.status_id          = 1
-    JOIN entity e ON e.entity_id = eer.entity_id AND e.taxonomy_id = 9606
+    JOIN entity_evidence_identifier eei
+        ON  eei.source_id          = ee_protein.source_id
+        AND eei.entity_evidence_id = ee_protein.entity_evidence_id
+    JOIN identifier_evidence ie
+        ON  ie.identifier_id      = eei.identifier_id
+        AND ie.identifier_type_id = 34
+        AND ie.value              = '9606'
     WHERE re.source_id = 39
 ),
 
