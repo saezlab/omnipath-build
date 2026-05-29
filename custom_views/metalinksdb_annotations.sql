@@ -6,9 +6,11 @@ SET max_parallel_workers = 0;
 -- One row per canonical human protein.
 -- Sources: UniProt (10), GuideToPharma (21), TCDB (41)
 -- ============================================================
+-- One row per canonical human protein with functional annotations aggregated from UniProt, GuideToPharma, and TCDB.
 DROP MATERIALIZED VIEW IF EXISTS metalinksdb_protein_annotations;
 CREATE MATERIALIZED VIEW metalinksdb_protein_annotations AS
 WITH
+-- Aggregate UniProt subcellular location, function, disease involvement, EC numbers, and protein family annotations per canonical protein entity.
 uniprot_ann AS (
     SELECT eer.entity_id,
         array_agg(DISTINCT a.value) FILTER (WHERE a.term = 'Subcellular Location:OM:0604') AS uniprot_subcellular_locations,
@@ -30,6 +32,7 @@ uniprot_ann AS (
       )
     GROUP BY eer.entity_id
 ),
+-- Aggregate GuideToPharma functional class (GPCR, Transporter, Enzyme, etc.) and protein subfamily annotations per canonical protein entity.
 gtp_ann AS (
     SELECT eer.entity_id,
         array_agg(DISTINCT a.value) FILTER (WHERE a.term = 'Protein Functional Class:OM:0637') AS gtp_functional_classes,
@@ -42,6 +45,7 @@ gtp_ann AS (
       AND a.term IN ('Protein Functional Class:OM:0637', 'Protein Family:OM:0610')
     GROUP BY eer.entity_id
 ),
+-- Aggregate TCDB transporter family classifications per canonical protein entity.
 tcdb_ann AS (
     SELECT eer.entity_id,
         array_agg(DISTINCT a.value) FILTER (WHERE a.term = 'Protein Family:OM:0610') AS tcdb_transporter_families
@@ -85,9 +89,11 @@ CREATE INDEX ON metalinksdb_protein_annotations USING gin (uniprot_ec_numbers);
 -- One row per canonical compound.
 -- Sources: HMDB (22), LipidMaps (25)
 -- ============================================================
+-- One row per canonical compound with HMDB location/biospecimen data, LipidMaps lipid classification, and an is_lipid flag.
 DROP MATERIALIZED VIEW IF EXISTS metalinksdb_compound_annotations;
 CREATE MATERIALIZED VIEW metalinksdb_compound_annotations AS
 WITH
+-- Aggregate HMDB subcellular location, biospecimen, and tissue annotations per canonical compound entity.
 hmdb_ann AS (
     SELECT eer.entity_id,
         array_agg(DISTINCT a.value) FILTER (WHERE a.term = 'Subcellular Location:OM:0604') AS hmdb_subcellular_locations,
@@ -105,6 +111,7 @@ hmdb_ann AS (
       )
     GROUP BY eer.entity_id
 ),
+-- Collect LipidMaps lipid category, main class, and sub class per canonical compound entity.
 lipidmaps_ann AS (
     SELECT eer.entity_id,
         MAX(a.value) FILTER (WHERE a.term = 'Lipid Category:OM:0614')   AS lipid_category,
