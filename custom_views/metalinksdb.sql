@@ -4,9 +4,11 @@
 -- Refresh after each:  make load SOURCE=<source> && make derive
 --   then: REFRESH MATERIALIZED VIEW CONCURRENTLY metalinksdb_<source>_relations;
 --
--- Human-only filter: all views restrict to ncbi_tax_id = '9606' (Homo sapiens).
--- For ChEMBL this comes from annotation term 'Ncbi Tax Id:OM:0205'.
--- When adding a new source, confirm where organism info lives before adding the filter.
+-- Human-only filter: all views use a human_re CTE to pre-filter to human rows
+-- before building identifier and annotation CTEs. This avoids processing the
+-- full source dataset through expensive aggregations before discarding non-human rows.
+-- For ChEMBL the human filter comes from annotation term 'Ncbi Tax Id:OM:0205'.
+-- For all other sources it comes from entity_evidence_resolution -> entity.taxonomy_id = 9606.
 --
 -- Source IDs (as of omnipath-build c39dd5a rebuild 2026-05-28):
 --   chembl=16  bindingdb=12  cellinker=14  guidetopharma=21
@@ -16,34 +18,41 @@
 
 -- ────────────────────────────────────────────────────────────────────────────
 -- ChEMBL  (source_id = 16)
--- Human-only (ncbi_tax_id = 9606). Expected row count TBD after first full run.
+-- Human-only via ncbi_tax_id annotation. human_re pre-filters ~3.4M rows to
+-- ~300k human rows before all subsequent CTEs run.
 -- ────────────────────────────────────────────────────────────────────────────
 
-SET max_parallel_workers_per_gather = 0;
-SET max_parallel_workers = 0;
-SET work_mem = '8MB';
+SET max_parallel_workers_per_gather = 4;
+SET max_parallel_workers = 8;
+SET work_mem = '256MB';
+
+-- Drop combined view first so individual source views can be dropped without CASCADE
+DROP MATERIALIZED VIEW IF EXISTS metalinksdb_relations;
 
 DROP MATERIALIZED VIEW IF EXISTS metalinksdb_chembl_relations;
 CREATE MATERIALIZED VIEW metalinksdb_chembl_relations AS
 WITH
 
--- !! TESTING ONLY — remove sampled_re and revert the three CTEs below
--- !! (swap IN (SELECT ... FROM sampled_re) back to WHERE source_id = 16)
--- !! before the full production build. LIMIT is 10000 so the human filter
--- !! below is likely to match some rows (~10% of ChEMBL is human).
-sampled_re AS (
-    SELECT relation_evidence_id,
-           source_id,
-           subject_entity_evidence_id,
-           object_entity_evidence_id,
-           predicate_id,
-           relation_category_id
-    FROM relation_evidence
-    WHERE source_id = 16
-    LIMIT 10000
+-- Pre-filter to human-only relation_evidence rows using the ncbi_tax_id annotation;
+-- all subsequent CTEs process only these rows instead of the full 3.4M ChEMBL dataset.
+human_re AS (
+    SELECT DISTINCT
+        re.relation_evidence_id,
+        re.subject_entity_evidence_id,
+        re.object_entity_evidence_id,
+        re.predicate_id,
+        re.relation_category_id
+    FROM relation_evidence re
+    JOIN relation_evidence_annotation rea
+        ON  rea.relation_evidence_id = re.relation_evidence_id
+        AND rea.source_id            = re.source_id
+    JOIN annotation a ON a.annotation_key = rea.annotation_key
+        AND a.term  = 'Ncbi Tax Id:OM:0205'
+        AND a.value = '9606'
+    WHERE re.source_id = 16
 ),
 
--- Aggregate raw compound identifiers per entity_evidence
+-- Collect raw ChEMBL compound identifiers (ChEMBL ID, InChIKey, SMILES, name) per entity_evidence row.
 compound_ids AS (
     SELECT
         eei.entity_evidence_id,
@@ -53,11 +62,12 @@ compound_ids AS (
         MAX(CASE WHEN ie.identifier_type_id = 16 THEN ie.value END) AS compound_name
     FROM entity_evidence_identifier eei
     JOIN identifier_evidence ie ON ie.identifier_id = eei.identifier_id
-    WHERE eei.entity_evidence_id IN (SELECT subject_entity_evidence_id FROM sampled_re)
+    WHERE eei.source_id = 16
+      AND eei.entity_evidence_id IN (SELECT subject_entity_evidence_id FROM human_re)
     GROUP BY eei.entity_evidence_id
 ),
 
--- Aggregate raw protein identifiers per entity_evidence
+-- Collect raw ChEMBL protein identifiers (UniProt, ChEMBL target ID) per entity_evidence row.
 protein_ids AS (
     SELECT
         eei.entity_evidence_id,
@@ -65,11 +75,12 @@ protein_ids AS (
         MAX(CASE WHEN ie.identifier_type_id = 33 THEN ie.value END) AS chembl_target_id
     FROM entity_evidence_identifier eei
     JOIN identifier_evidence ie ON ie.identifier_id = eei.identifier_id
-    WHERE eei.entity_evidence_id IN (SELECT object_entity_evidence_id FROM sampled_re)
+    WHERE eei.source_id = 16
+      AND eei.entity_evidence_id IN (SELECT object_entity_evidence_id FROM human_re)
     GROUP BY eei.entity_evidence_id
 ),
 
--- Pivot annotation terms into columns per relation_evidence
+-- Pivot ChEMBL activity annotations (pChEMBL, IC50, assay type, literature) into columns per relation_evidence row.
 rel_annotations AS (
     SELECT
         rea.relation_evidence_id,
@@ -101,48 +112,41 @@ rel_annotations AS (
         BOOL_OR(a.term = 'Antagonist:OM:0920')                               AS is_antagonist
     FROM relation_evidence_annotation rea
     JOIN annotation a ON a.annotation_key = rea.annotation_key
-    WHERE rea.relation_evidence_id IN (SELECT relation_evidence_id FROM sampled_re)
+    WHERE rea.source_id = 16
+      AND rea.relation_evidence_id IN (SELECT relation_evidence_id FROM human_re)
     GROUP BY rea.relation_evidence_id
 )
 
 SELECT
-    -- Source tracking (needed when UNIONing across resources later)
     'chembl'::text                              AS source,
     re.relation_evidence_id,
 
-    -- Canonical compound (cross-resource join key)
     e_compound.entity_id                        AS compound_entity_id,
     e_compound.canonical_identifier             AS compound_canonical_id,
     vit_c.name                                  AS compound_canonical_id_type,
     eer_compound.status_id                      AS compound_resolution_status,
 
-    -- Raw ChEMBL compound identifiers (traceability + fallback for unresolved)
     ci.chembl_compound_id,
     ci.inchikey                                 AS compound_inchikey,
     ci.smiles                                   AS compound_smiles,
     ci.compound_name,
 
-    -- Canonical protein (cross-resource join key)
     e_protein.entity_id                         AS protein_entity_id,
     e_protein.canonical_identifier              AS protein_canonical_id,
     vit_p.name                                  AS protein_canonical_id_type,
     eer_protein.status_id                       AS protein_resolution_status,
 
-    -- Raw protein identifiers
     pi.uniprot_id                               AS protein_uniprot,
     pi.chembl_target_id                         AS protein_chembl_target,
 
-    -- Relation type
     vrp.name                                    AS predicate,
     vrc.name                                    AS relation_category,
 
-    -- ChEMBL record IDs
     ann.chembl_activity_id,
     ann.chembl_assay_id,
     ann.chembl_document_id,
     ann.chembl_target_ann,
 
-    -- Quantitative affinity (stored as text in annotation; cast at query time)
     ann.pchembl_value::numeric                  AS pchembl_value,
     ann.confidence_score::numeric               AS confidence_score,
     ann.ic50::numeric                           AS ic50,
@@ -150,7 +154,6 @@ SELECT
     ann.kd::numeric                             AS kd,
     ann.ec50::numeric                           AS ec50,
 
-    -- Assay classification
     ann.assay_category,
     ann.is_binding_assay,
     ann.is_functional_assay,
@@ -161,70 +164,55 @@ SELECT
     ann.is_agonist,
     ann.is_antagonist,
 
-    -- Context
     ann.cell_type,
     ann.tissue,
     ann.ncbi_tax_id,
     ann.description,
     ann.chembl_mechanism,
 
-    -- Literature
     ann.pubmed_id,
     ann.doi
 
-FROM sampled_re re  -- !! TESTING ONLY: replace with `relation_evidence re` for production
+FROM human_re re
 
--- Subject entity_evidence (compound)
 JOIN entity_evidence ee_compound
-    ON  ee_compound.source_id          = re.source_id
+    ON  ee_compound.source_id          = 16
     AND ee_compound.entity_evidence_id = re.subject_entity_evidence_id
 
--- Object entity_evidence (protein)
 JOIN entity_evidence ee_protein
-    ON  ee_protein.source_id          = re.source_id
+    ON  ee_protein.source_id          = 16
     AND ee_protein.entity_evidence_id = re.object_entity_evidence_id
 
--- Raw compound identifiers
 LEFT JOIN compound_ids ci
     ON ci.entity_evidence_id = re.subject_entity_evidence_id
 
--- Raw protein identifiers
 LEFT JOIN protein_ids pi
     ON pi.entity_evidence_id = re.object_entity_evidence_id
 
--- Compound canonical resolution
 LEFT JOIN entity_evidence_resolution eer_compound
-    ON  eer_compound.source_id          = re.source_id
+    ON  eer_compound.source_id          = 16
     AND eer_compound.entity_evidence_id = re.subject_entity_evidence_id
 LEFT JOIN entity e_compound
     ON e_compound.entity_id = eer_compound.entity_id
 LEFT JOIN vocab_identifier_type vit_c
     ON vit_c.identifier_type_id = e_compound.canonical_identifier_type_id
 
--- Protein canonical resolution
 LEFT JOIN entity_evidence_resolution eer_protein
-    ON  eer_protein.source_id          = re.source_id
+    ON  eer_protein.source_id          = 16
     AND eer_protein.entity_evidence_id = re.object_entity_evidence_id
 LEFT JOIN entity e_protein
     ON e_protein.entity_id = eer_protein.entity_id
 LEFT JOIN vocab_identifier_type vit_p
     ON vit_p.identifier_type_id = e_protein.canonical_identifier_type_id
 
--- Relation annotations
 LEFT JOIN rel_annotations ann
     ON ann.relation_evidence_id = re.relation_evidence_id
 
--- Relation type vocab
 JOIN vocab_relation_predicate vrp
     ON vrp.relation_predicate_id = re.predicate_id
 JOIN vocab_relation_category vrc
-    ON vrc.relation_category_id = re.relation_category_id
+    ON vrc.relation_category_id = re.relation_category_id;
 
--- Human-only filter: restrict to Homo sapiens (taxon 9606)
--- !! For production: also add `re.source_id = 16` here when sampled_re is removed
-WHERE ann.ncbi_tax_id = '9606';
-
--- Index for fast lookups and CONCURRENT refresh
 CREATE UNIQUE INDEX ON metalinksdb_chembl_relations (relation_evidence_id);
 CREATE INDEX ON metalinksdb_chembl_relations (compound_entity_id);
 CREATE INDEX ON metalinksdb_chembl_relations (protein_entity_id);
@@ -233,23 +221,37 @@ CREATE INDEX ON metalinksdb_chembl_relations (protein_uniprot);
 
 -- ────────────────────────────────────────────────────────────────────────────
 -- BindingDB  (source_id = 12)
--- Human-only via e_protein.taxonomy_id = 9606. Expected human rows: TBD.
--- !! TESTING ONLY — sampled_re limits to 10000 rows; remove before full build.
+-- Human-only via entity resolution. human_re pre-filters ~2.4M rows
+-- (BindingDB is mostly human, so the win here is smaller than ChEMBL).
 -- ────────────────────────────────────────────────────────────────────────────
 
 DROP MATERIALIZED VIEW IF EXISTS metalinksdb_bindingdb_relations;
 CREATE MATERIALIZED VIEW metalinksdb_bindingdb_relations AS
 WITH
 
-sampled_re AS (
-    SELECT relation_evidence_id, source_id,
-           subject_entity_evidence_id, object_entity_evidence_id,
-           predicate_id, relation_category_id
-    FROM relation_evidence
-    WHERE source_id = 12
-    LIMIT 10000
+-- Pre-filter to human-only relation_evidence rows by resolving the protein entity
+-- and checking taxonomy_id = 9606 before building identifier and annotation CTEs.
+human_re AS (
+    SELECT
+        re.relation_evidence_id,
+        re.subject_entity_evidence_id,
+        re.object_entity_evidence_id,
+        re.predicate_id,
+        re.relation_category_id
+    FROM relation_evidence re
+    JOIN entity_evidence ee_protein
+        ON  ee_protein.source_id          = re.source_id
+        AND ee_protein.entity_evidence_id = re.object_entity_evidence_id
+        AND ee_protein.entity_type_id     = 3
+    JOIN entity_evidence_resolution eer
+        ON  eer.source_id          = re.source_id
+        AND eer.entity_evidence_id = re.object_entity_evidence_id
+        AND eer.status_id          = 1
+    JOIN entity e ON e.entity_id = eer.entity_id AND e.taxonomy_id = 9606
+    WHERE re.source_id = 12
 ),
 
+-- Collect raw BindingDB compound identifiers (BindingDB ID, InChIKey, SMILES, PubChem CID, ChEMBL ID) per entity_evidence row.
 compound_ids AS (
     SELECT eei.entity_evidence_id,
         MAX(CASE WHEN ie.identifier_type_id = 23 THEN ie.value END) AS bindingdb_compound_id,
@@ -259,19 +261,23 @@ compound_ids AS (
         MAX(CASE WHEN ie.identifier_type_id = 17 THEN ie.value END) AS chembl_compound_id
     FROM entity_evidence_identifier eei
     JOIN identifier_evidence ie ON ie.identifier_id = eei.identifier_id
-    WHERE eei.entity_evidence_id IN (SELECT subject_entity_evidence_id FROM sampled_re)
+    WHERE eei.source_id = 12
+      AND eei.entity_evidence_id IN (SELECT subject_entity_evidence_id FROM human_re)
     GROUP BY eei.entity_evidence_id
 ),
 
+-- Collect raw BindingDB protein identifier (UniProt) per entity_evidence row.
 protein_ids AS (
     SELECT eei.entity_evidence_id,
         MAX(CASE WHEN ie.identifier_type_id = 1 THEN ie.value END) AS uniprot_id
     FROM entity_evidence_identifier eei
     JOIN identifier_evidence ie ON ie.identifier_id = eei.identifier_id
-    WHERE eei.entity_evidence_id IN (SELECT object_entity_evidence_id FROM sampled_re)
+    WHERE eei.source_id = 12
+      AND eei.entity_evidence_id IN (SELECT object_entity_evidence_id FROM human_re)
     GROUP BY eei.entity_evidence_id
 ),
 
+-- Pivot BindingDB affinity measurements (pChEMBL, IC50, Ki, Kd, EC50) and experimental conditions into columns per relation_evidence row.
 rel_annotations AS (
     SELECT rea.relation_evidence_id,
         MAX(CASE WHEN a.term = 'Pchembl Value:OM:0708'        THEN a.value END) AS pchembl_value,
@@ -287,7 +293,8 @@ rel_annotations AS (
         MAX(CASE WHEN a.term = 'Temperature Celsius:OM:0701'  THEN a.value END) AS temperature_celsius
     FROM relation_evidence_annotation rea
     JOIN annotation a ON a.annotation_key = rea.annotation_key
-    WHERE rea.relation_evidence_id IN (SELECT relation_evidence_id FROM sampled_re)
+    WHERE rea.source_id = 12
+      AND rea.relation_evidence_id IN (SELECT relation_evidence_id FROM human_re)
     GROUP BY rea.relation_evidence_id
 )
 
@@ -322,34 +329,25 @@ SELECT
     NULLIF(regexp_replace(ann.ph,            '[^0-9.eE+-]', '', 'g'), '')::numeric AS ph,
     NULLIF(split_part(ann.temperature_celsius, ' ', 1), '')::numeric AS temperature_celsius
 
-FROM sampled_re re  -- !! TESTING ONLY: replace with `relation_evidence re` for production
+FROM human_re re
 
-JOIN entity_evidence ee_compound
-    ON  ee_compound.source_id          = re.source_id
-    AND ee_compound.entity_evidence_id = re.subject_entity_evidence_id
-    AND ee_compound.entity_type_id     = 2
-JOIN entity_evidence ee_protein
-    ON  ee_protein.source_id          = re.source_id
-    AND ee_protein.entity_evidence_id = re.object_entity_evidence_id
-    AND ee_protein.entity_type_id     = 3
 LEFT JOIN compound_ids ci ON ci.entity_evidence_id = re.subject_entity_evidence_id
 LEFT JOIN protein_ids  pi ON pi.entity_evidence_id = re.object_entity_evidence_id
 LEFT JOIN entity_evidence_resolution eer_compound
-    ON  eer_compound.source_id          = re.source_id
+    ON  eer_compound.source_id          = 12
     AND eer_compound.entity_evidence_id = re.subject_entity_evidence_id
 LEFT JOIN entity e_compound ON e_compound.entity_id = eer_compound.entity_id
 LEFT JOIN vocab_identifier_type vit_c
     ON vit_c.identifier_type_id = e_compound.canonical_identifier_type_id
 LEFT JOIN entity_evidence_resolution eer_protein
-    ON  eer_protein.source_id          = re.source_id
+    ON  eer_protein.source_id          = 12
     AND eer_protein.entity_evidence_id = re.object_entity_evidence_id
 LEFT JOIN entity e_protein ON e_protein.entity_id = eer_protein.entity_id
 LEFT JOIN vocab_identifier_type vit_p
     ON vit_p.identifier_type_id = e_protein.canonical_identifier_type_id
 LEFT JOIN rel_annotations ann ON ann.relation_evidence_id = re.relation_evidence_id
 JOIN vocab_relation_predicate vrp ON vrp.relation_predicate_id = re.predicate_id
-JOIN vocab_relation_category  vrc ON vrc.relation_category_id  = re.relation_category_id
-WHERE e_protein.taxonomy_id = 9606;
+JOIN vocab_relation_category  vrc ON vrc.relation_category_id  = re.relation_category_id;
 
 CREATE UNIQUE INDEX ON metalinksdb_bindingdb_relations (relation_evidence_id);
 CREATE INDEX ON metalinksdb_bindingdb_relations (compound_entity_id);
@@ -359,14 +357,40 @@ CREATE INDEX ON metalinksdb_bindingdb_relations (protein_uniprot);
 
 -- ────────────────────────────────────────────────────────────────────────────
 -- CellLinker  (source_id = 14)  — metabolite-protein pairs only (SM=2→Prot=3)
--- Human-only via e_protein.taxonomy_id = 9606. Expected human rows: ~5884.
--- No sampling needed — only 5884 metabolite-protein rows total.
+-- Small source (~5884 human rows); human_re applied for consistency.
 -- ────────────────────────────────────────────────────────────────────────────
 
 DROP MATERIALIZED VIEW IF EXISTS metalinksdb_cellinker_relations;
 CREATE MATERIALIZED VIEW metalinksdb_cellinker_relations AS
 WITH
 
+-- Pre-filter to human SM→Protein rows: compound entity_type_id=2 checked to
+-- exclude protein-protein rows; protein resolves to a human entity.
+human_re AS (
+    SELECT
+        re.relation_evidence_id,
+        re.subject_entity_evidence_id,
+        re.object_entity_evidence_id,
+        re.predicate_id,
+        re.relation_category_id
+    FROM relation_evidence re
+    JOIN entity_evidence ee_compound
+        ON  ee_compound.source_id          = re.source_id
+        AND ee_compound.entity_evidence_id = re.subject_entity_evidence_id
+        AND ee_compound.entity_type_id     = 2
+    JOIN entity_evidence ee_protein
+        ON  ee_protein.source_id          = re.source_id
+        AND ee_protein.entity_evidence_id = re.object_entity_evidence_id
+        AND ee_protein.entity_type_id     = 3
+    JOIN entity_evidence_resolution eer
+        ON  eer.source_id          = re.source_id
+        AND eer.entity_evidence_id = re.object_entity_evidence_id
+        AND eer.status_id          = 1
+    JOIN entity e ON e.entity_id = eer.entity_id AND e.taxonomy_id = 9606
+    WHERE re.source_id = 14
+),
+
+-- Collect raw CellLinker compound identifiers (HMDB ID, PubChem CID, SMILES) per entity_evidence row.
 compound_ids AS (
     SELECT eei.entity_evidence_id,
         MAX(CASE WHEN ie.identifier_type_id = 9  THEN ie.value END) AS hmdb_id,
@@ -375,9 +399,11 @@ compound_ids AS (
     FROM entity_evidence_identifier eei
     JOIN identifier_evidence ie ON ie.identifier_id = eei.identifier_id
     WHERE eei.source_id = 14
+      AND eei.entity_evidence_id IN (SELECT subject_entity_evidence_id FROM human_re)
     GROUP BY eei.entity_evidence_id
 ),
 
+-- Collect raw CellLinker protein identifiers (UniProt, Entrez, gene name) per entity_evidence row.
 protein_ids AS (
     SELECT eei.entity_evidence_id,
         MAX(CASE WHEN ie.identifier_type_id = 1 THEN ie.value END) AS uniprot_id,
@@ -386,9 +412,11 @@ protein_ids AS (
     FROM entity_evidence_identifier eei
     JOIN identifier_evidence ie ON ie.identifier_id = eei.identifier_id
     WHERE eei.source_id = 14
+      AND eei.entity_evidence_id IN (SELECT object_entity_evidence_id FROM human_re)
     GROUP BY eei.entity_evidence_id
 ),
 
+-- Collect CellLinker literature references and interaction annotations per relation_evidence row.
 rel_annotations AS (
     SELECT rea.relation_evidence_id,
         MAX(CASE WHEN a.term = 'Pubmed:MI:0446'                  THEN a.value END) AS pubmed_id,
@@ -397,6 +425,7 @@ rel_annotations AS (
     FROM relation_evidence_annotation rea
     JOIN annotation a ON a.annotation_key = rea.annotation_key
     WHERE rea.source_id = 14
+      AND rea.relation_evidence_id IN (SELECT relation_evidence_id FROM human_re)
     GROUP BY rea.relation_evidence_id
 )
 
@@ -423,34 +452,24 @@ SELECT
     ann.interaction_xref,
     ann.interaction_annotation
 
-FROM relation_evidence re
-JOIN entity_evidence ee_compound
-    ON  ee_compound.source_id          = re.source_id
-    AND ee_compound.entity_evidence_id = re.subject_entity_evidence_id
-    AND ee_compound.entity_type_id     = 2
-JOIN entity_evidence ee_protein
-    ON  ee_protein.source_id          = re.source_id
-    AND ee_protein.entity_evidence_id = re.object_entity_evidence_id
-    AND ee_protein.entity_type_id     = 3
+FROM human_re re
 LEFT JOIN compound_ids ci ON ci.entity_evidence_id = re.subject_entity_evidence_id
 LEFT JOIN protein_ids  pi ON pi.entity_evidence_id = re.object_entity_evidence_id
 LEFT JOIN entity_evidence_resolution eer_compound
-    ON  eer_compound.source_id          = re.source_id
+    ON  eer_compound.source_id          = 14
     AND eer_compound.entity_evidence_id = re.subject_entity_evidence_id
 LEFT JOIN entity e_compound ON e_compound.entity_id = eer_compound.entity_id
 LEFT JOIN vocab_identifier_type vit_c
     ON vit_c.identifier_type_id = e_compound.canonical_identifier_type_id
 LEFT JOIN entity_evidence_resolution eer_protein
-    ON  eer_protein.source_id          = re.source_id
+    ON  eer_protein.source_id          = 14
     AND eer_protein.entity_evidence_id = re.object_entity_evidence_id
 LEFT JOIN entity e_protein ON e_protein.entity_id = eer_protein.entity_id
 LEFT JOIN vocab_identifier_type vit_p
     ON vit_p.identifier_type_id = e_protein.canonical_identifier_type_id
 LEFT JOIN rel_annotations ann ON ann.relation_evidence_id = re.relation_evidence_id
 JOIN vocab_relation_predicate vrp ON vrp.relation_predicate_id = re.predicate_id
-JOIN vocab_relation_category  vrc ON vrc.relation_category_id  = re.relation_category_id
-WHERE re.source_id = 14
-  AND e_protein.taxonomy_id = 9606;
+JOIN vocab_relation_category  vrc ON vrc.relation_category_id  = re.relation_category_id;
 
 CREATE UNIQUE INDEX ON metalinksdb_cellinker_relations (relation_evidence_id);
 CREATE INDEX ON metalinksdb_cellinker_relations (compound_entity_id);
@@ -459,15 +478,36 @@ CREATE INDEX ON metalinksdb_cellinker_relations (compound_canonical_id);
 CREATE INDEX ON metalinksdb_cellinker_relations (protein_uniprot);
 
 -- ────────────────────────────────────────────────────────────────────────────
--- Guide to Pharmacology  (source_id = 21)  — metabolite-protein pairs (SM=2→Prot=3)
--- Human-only via e_protein.taxonomy_id = 9606. Expected human rows: ~23904.
--- No sampling needed — 23904 metabolite-protein rows total.
+-- Guide to Pharmacology  (source_id = 21)
+-- Small source (~23904 rows); human_re applied for consistency.
 -- ────────────────────────────────────────────────────────────────────────────
 
 DROP MATERIALIZED VIEW IF EXISTS metalinksdb_guidetopharma_relations;
 CREATE MATERIALIZED VIEW metalinksdb_guidetopharma_relations AS
 WITH
 
+-- Pre-filter to human-only relation_evidence rows via protein entity resolution.
+human_re AS (
+    SELECT
+        re.relation_evidence_id,
+        re.subject_entity_evidence_id,
+        re.object_entity_evidence_id,
+        re.predicate_id,
+        re.relation_category_id
+    FROM relation_evidence re
+    JOIN entity_evidence ee_protein
+        ON  ee_protein.source_id          = re.source_id
+        AND ee_protein.entity_evidence_id = re.object_entity_evidence_id
+        AND ee_protein.entity_type_id     = 3
+    JOIN entity_evidence_resolution eer
+        ON  eer.source_id          = re.source_id
+        AND eer.entity_evidence_id = re.object_entity_evidence_id
+        AND eer.status_id          = 1
+    JOIN entity e ON e.entity_id = eer.entity_id AND e.taxonomy_id = 9606
+    WHERE re.source_id = 21
+),
+
+-- Collect raw GuideToPharma compound identifiers (GtP ligand ID, InChIKey, SMILES, PubChem CID, ChEMBL ID) per entity_evidence row.
 compound_ids AS (
     SELECT eei.entity_evidence_id,
         MAX(CASE WHEN ie.identifier_type_id = 41 THEN ie.value END) AS guidetopharma_id,
@@ -478,9 +518,11 @@ compound_ids AS (
     FROM entity_evidence_identifier eei
     JOIN identifier_evidence ie ON ie.identifier_id = eei.identifier_id
     WHERE eei.source_id = 21
+      AND eei.entity_evidence_id IN (SELECT subject_entity_evidence_id FROM human_re)
     GROUP BY eei.entity_evidence_id
 ),
 
+-- Collect raw GuideToPharma protein identifiers (UniProt, HGNC, gene name) per entity_evidence row.
 protein_ids AS (
     SELECT eei.entity_evidence_id,
         MAX(CASE WHEN ie.identifier_type_id = 1 THEN ie.value END) AS uniprot_id,
@@ -489,9 +531,11 @@ protein_ids AS (
     FROM entity_evidence_identifier eei
     JOIN identifier_evidence ie ON ie.identifier_id = eei.identifier_id
     WHERE eei.source_id = 21
+      AND eei.entity_evidence_id IN (SELECT object_entity_evidence_id FROM human_re)
     GROUP BY eei.entity_evidence_id
 ),
 
+-- Pivot GuideToPharma pharmacological annotations (affinity values, endogenous flag, agonist/antagonist/modulator flags) into columns per relation_evidence row.
 rel_annotations AS (
     SELECT rea.relation_evidence_id,
         MAX(CASE WHEN a.term = 'Pubmed:MI:0446'                THEN a.value END) AS pubmed_id,
@@ -514,6 +558,7 @@ rel_annotations AS (
     FROM relation_evidence_annotation rea
     JOIN annotation a ON a.annotation_key = rea.annotation_key
     WHERE rea.source_id = 21
+      AND rea.relation_evidence_id IN (SELECT relation_evidence_id FROM human_re)
     GROUP BY rea.relation_evidence_id
 )
 
@@ -556,34 +601,24 @@ SELECT
     ann.is_allosteric_modulator,
     ann.is_channel_blocker
 
-FROM relation_evidence re
-JOIN entity_evidence ee_compound
-    ON  ee_compound.source_id          = re.source_id
-    AND ee_compound.entity_evidence_id = re.subject_entity_evidence_id
-    AND ee_compound.entity_type_id     = 2
-JOIN entity_evidence ee_protein
-    ON  ee_protein.source_id          = re.source_id
-    AND ee_protein.entity_evidence_id = re.object_entity_evidence_id
-    AND ee_protein.entity_type_id     = 3
+FROM human_re re
 LEFT JOIN compound_ids ci ON ci.entity_evidence_id = re.subject_entity_evidence_id
 LEFT JOIN protein_ids  pi ON pi.entity_evidence_id = re.object_entity_evidence_id
 LEFT JOIN entity_evidence_resolution eer_compound
-    ON  eer_compound.source_id          = re.source_id
+    ON  eer_compound.source_id          = 21
     AND eer_compound.entity_evidence_id = re.subject_entity_evidence_id
 LEFT JOIN entity e_compound ON e_compound.entity_id = eer_compound.entity_id
 LEFT JOIN vocab_identifier_type vit_c
     ON vit_c.identifier_type_id = e_compound.canonical_identifier_type_id
 LEFT JOIN entity_evidence_resolution eer_protein
-    ON  eer_protein.source_id          = re.source_id
+    ON  eer_protein.source_id          = 21
     AND eer_protein.entity_evidence_id = re.object_entity_evidence_id
 LEFT JOIN entity e_protein ON e_protein.entity_id = eer_protein.entity_id
 LEFT JOIN vocab_identifier_type vit_p
     ON vit_p.identifier_type_id = e_protein.canonical_identifier_type_id
 LEFT JOIN rel_annotations ann ON ann.relation_evidence_id = re.relation_evidence_id
 JOIN vocab_relation_predicate vrp ON vrp.relation_predicate_id = re.predicate_id
-JOIN vocab_relation_category  vrc ON vrc.relation_category_id  = re.relation_category_id
-WHERE re.source_id = 21
-  AND e_protein.taxonomy_id = 9606;
+JOIN vocab_relation_category  vrc ON vrc.relation_category_id  = re.relation_category_id;
 
 CREATE UNIQUE INDEX ON metalinksdb_guidetopharma_relations (relation_evidence_id);
 CREATE INDEX ON metalinksdb_guidetopharma_relations (compound_entity_id);
@@ -592,15 +627,40 @@ CREATE INDEX ON metalinksdb_guidetopharma_relations (compound_canonical_id);
 CREATE INDEX ON metalinksdb_guidetopharma_relations (protein_uniprot);
 
 -- ────────────────────────────────────────────────────────────────────────────
--- MRCLinksDB  (source_id = 28)  — metabolite-protein pairs only (SM=2→Prot=3)
--- Inherently human; e_protein.taxonomy_id = 9606 still applied for consistency.
--- Expected human rows: ~1468. No sampling needed.
+-- MRCLinksDB  (source_id = 28)  — inherently human, small source (~1468 rows).
 -- ────────────────────────────────────────────────────────────────────────────
 
 DROP MATERIALIZED VIEW IF EXISTS metalinksdb_mrclinksdb_relations;
 CREATE MATERIALIZED VIEW metalinksdb_mrclinksdb_relations AS
 WITH
 
+-- Pre-filter to human SM→Protein rows: compound entity_type_id=2 checked to
+-- exclude any non-metabolite rows.
+human_re AS (
+    SELECT
+        re.relation_evidence_id,
+        re.subject_entity_evidence_id,
+        re.object_entity_evidence_id,
+        re.predicate_id,
+        re.relation_category_id
+    FROM relation_evidence re
+    JOIN entity_evidence ee_compound
+        ON  ee_compound.source_id          = re.source_id
+        AND ee_compound.entity_evidence_id = re.subject_entity_evidence_id
+        AND ee_compound.entity_type_id     = 2
+    JOIN entity_evidence ee_protein
+        ON  ee_protein.source_id          = re.source_id
+        AND ee_protein.entity_evidence_id = re.object_entity_evidence_id
+        AND ee_protein.entity_type_id     = 3
+    JOIN entity_evidence_resolution eer
+        ON  eer.source_id          = re.source_id
+        AND eer.entity_evidence_id = re.object_entity_evidence_id
+        AND eer.status_id          = 1
+    JOIN entity e ON e.entity_id = eer.entity_id AND e.taxonomy_id = 9606
+    WHERE re.source_id = 28
+),
+
+-- Collect raw MRCLinksDB compound identifiers (HMDB ID, PubChem CID, SMILES) per entity_evidence row.
 compound_ids AS (
     SELECT eei.entity_evidence_id,
         MAX(CASE WHEN ie.identifier_type_id = 9  THEN ie.value END) AS hmdb_id,
@@ -609,9 +669,11 @@ compound_ids AS (
     FROM entity_evidence_identifier eei
     JOIN identifier_evidence ie ON ie.identifier_id = eei.identifier_id
     WHERE eei.source_id = 28
+      AND eei.entity_evidence_id IN (SELECT subject_entity_evidence_id FROM human_re)
     GROUP BY eei.entity_evidence_id
 ),
 
+-- Collect raw MRCLinksDB protein identifiers (UniProt, Entrez, gene name) per entity_evidence row.
 protein_ids AS (
     SELECT eei.entity_evidence_id,
         MAX(CASE WHEN ie.identifier_type_id = 1 THEN ie.value END) AS uniprot_id,
@@ -620,9 +682,11 @@ protein_ids AS (
     FROM entity_evidence_identifier eei
     JOIN identifier_evidence ie ON ie.identifier_id = eei.identifier_id
     WHERE eei.source_id = 28
+      AND eei.entity_evidence_id IN (SELECT object_entity_evidence_id FROM human_re)
     GROUP BY eei.entity_evidence_id
 ),
 
+-- Collect MRCLinksDB literature references and curator comments per relation_evidence row.
 rel_annotations AS (
     SELECT rea.relation_evidence_id,
         MAX(CASE WHEN a.term = 'Pubmed:MI:0446'   THEN a.value END) AS pubmed_id,
@@ -630,6 +694,7 @@ rel_annotations AS (
     FROM relation_evidence_annotation rea
     JOIN annotation a ON a.annotation_key = rea.annotation_key
     WHERE rea.source_id = 28
+      AND rea.relation_evidence_id IN (SELECT relation_evidence_id FROM human_re)
     GROUP BY rea.relation_evidence_id
 )
 
@@ -655,34 +720,24 @@ SELECT
     ann.pubmed_id,
     ann.comment
 
-FROM relation_evidence re
-JOIN entity_evidence ee_compound
-    ON  ee_compound.source_id          = re.source_id
-    AND ee_compound.entity_evidence_id = re.subject_entity_evidence_id
-    AND ee_compound.entity_type_id     = 2
-JOIN entity_evidence ee_protein
-    ON  ee_protein.source_id          = re.source_id
-    AND ee_protein.entity_evidence_id = re.object_entity_evidence_id
-    AND ee_protein.entity_type_id     = 3
+FROM human_re re
 LEFT JOIN compound_ids ci ON ci.entity_evidence_id = re.subject_entity_evidence_id
 LEFT JOIN protein_ids  pi ON pi.entity_evidence_id = re.object_entity_evidence_id
 LEFT JOIN entity_evidence_resolution eer_compound
-    ON  eer_compound.source_id          = re.source_id
+    ON  eer_compound.source_id          = 28
     AND eer_compound.entity_evidence_id = re.subject_entity_evidence_id
 LEFT JOIN entity e_compound ON e_compound.entity_id = eer_compound.entity_id
 LEFT JOIN vocab_identifier_type vit_c
     ON vit_c.identifier_type_id = e_compound.canonical_identifier_type_id
 LEFT JOIN entity_evidence_resolution eer_protein
-    ON  eer_protein.source_id          = re.source_id
+    ON  eer_protein.source_id          = 28
     AND eer_protein.entity_evidence_id = re.object_entity_evidence_id
 LEFT JOIN entity e_protein ON e_protein.entity_id = eer_protein.entity_id
 LEFT JOIN vocab_identifier_type vit_p
     ON vit_p.identifier_type_id = e_protein.canonical_identifier_type_id
 LEFT JOIN rel_annotations ann ON ann.relation_evidence_id = re.relation_evidence_id
 JOIN vocab_relation_predicate vrp ON vrp.relation_predicate_id = re.predicate_id
-JOIN vocab_relation_category  vrc ON vrc.relation_category_id  = re.relation_category_id
-WHERE re.source_id = 28
-  AND e_protein.taxonomy_id = 9606;
+JOIN vocab_relation_category  vrc ON vrc.relation_category_id  = re.relation_category_id;
 
 CREATE UNIQUE INDEX ON metalinksdb_mrclinksdb_relations (relation_evidence_id);
 CREATE INDEX ON metalinksdb_mrclinksdb_relations (compound_entity_id);
@@ -692,41 +747,66 @@ CREATE INDEX ON metalinksdb_mrclinksdb_relations (protein_uniprot);
 
 -- ────────────────────────────────────────────────────────────────────────────
 -- STITCH  (source_id = 39)
--- Human-only via e_protein.taxonomy_id = 9606. Expected human rows: ~338k.
--- !! TESTING ONLY — sampled_re limits to 10000 rows; remove before full build.
+-- Parallelism disabled — parallel hash joins exhaust shared memory on this host.
+-- human_re pre-filters 820k rows to ~312k human SM→Protein rows.
 -- ────────────────────────────────────────────────────────────────────────────
+
+SET max_parallel_workers_per_gather = 0;
+SET work_mem = '128MB';
 
 DROP MATERIALIZED VIEW IF EXISTS metalinksdb_stitch_relations;
 CREATE MATERIALIZED VIEW metalinksdb_stitch_relations AS
 WITH
 
-sampled_re AS (
-    SELECT relation_evidence_id, source_id,
-           subject_entity_evidence_id, object_entity_evidence_id,
-           predicate_id, relation_category_id
-    FROM relation_evidence
-    WHERE source_id = 39
-    LIMIT 10000
+-- Pre-filter to human SM→Protein rows; reduces STITCH from 820k to ~312k rows.
+-- Compound entity_type_id=2 checked; parallelism disabled above to avoid shared memory OOM.
+human_re AS (
+    SELECT
+        re.relation_evidence_id,
+        re.subject_entity_evidence_id,
+        re.object_entity_evidence_id,
+        re.predicate_id,
+        re.relation_category_id
+    FROM relation_evidence re
+    JOIN entity_evidence ee_compound
+        ON  ee_compound.source_id          = re.source_id
+        AND ee_compound.entity_evidence_id = re.subject_entity_evidence_id
+        AND ee_compound.entity_type_id     = 2
+    JOIN entity_evidence ee_protein
+        ON  ee_protein.source_id          = re.source_id
+        AND ee_protein.entity_evidence_id = re.object_entity_evidence_id
+        AND ee_protein.entity_type_id     = 3
+    JOIN entity_evidence_resolution eer
+        ON  eer.source_id          = re.source_id
+        AND eer.entity_evidence_id = re.object_entity_evidence_id
+        AND eer.status_id          = 1
+    JOIN entity e ON e.entity_id = eer.entity_id AND e.taxonomy_id = 9606
+    WHERE re.source_id = 39
 ),
 
+-- Collect raw STITCH compound identifier (PubChem CID) per entity_evidence row.
 compound_ids AS (
     SELECT eei.entity_evidence_id,
         MAX(CASE WHEN ie.identifier_type_id = 12 THEN ie.value END) AS pubchem_cid
     FROM entity_evidence_identifier eei
     JOIN identifier_evidence ie ON ie.identifier_id = eei.identifier_id
-    WHERE eei.entity_evidence_id IN (SELECT subject_entity_evidence_id FROM sampled_re)
+    WHERE eei.source_id = 39
+      AND eei.entity_evidence_id IN (SELECT subject_entity_evidence_id FROM human_re)
     GROUP BY eei.entity_evidence_id
 ),
 
+-- Collect raw STITCH protein identifier (Ensembl ID) per entity_evidence row; UniProt comes from canonical resolution.
 protein_ids AS (
     SELECT eei.entity_evidence_id,
         MAX(CASE WHEN ie.identifier_type_id = 2 THEN ie.value END) AS ensembl_id
     FROM entity_evidence_identifier eei
     JOIN identifier_evidence ie ON ie.identifier_id = eei.identifier_id
-    WHERE eei.entity_evidence_id IN (SELECT object_entity_evidence_id FROM sampled_re)
+    WHERE eei.source_id = 39
+      AND eei.entity_evidence_id IN (SELECT object_entity_evidence_id FROM human_re)
     GROUP BY eei.entity_evidence_id
 ),
 
+-- Pivot STITCH interaction scores and action type flags (binding, inhibition, activation, enzymatic) into columns per relation_evidence row.
 rel_annotations AS (
     SELECT rea.relation_evidence_id,
         MAX(CASE WHEN a.term = 'Stitch Action Score:OM:1213'    THEN a.value END) AS stitch_action_score,
@@ -739,7 +819,8 @@ rel_annotations AS (
         BOOL_OR(a.term = 'Activation:OM:0930')                                    AS is_activation
     FROM relation_evidence_annotation rea
     JOIN annotation a ON a.annotation_key = rea.annotation_key
-    WHERE rea.relation_evidence_id IN (SELECT relation_evidence_id FROM sampled_re)
+    WHERE rea.source_id = 39
+      AND rea.relation_evidence_id IN (SELECT relation_evidence_id FROM human_re)
     GROUP BY rea.relation_evidence_id
 )
 
@@ -756,7 +837,6 @@ SELECT
     vit_p.name                      AS protein_canonical_id_type,
     eer_protein.status_id           AS protein_resolution_status,
     pi.ensembl_id                   AS protein_ensembl,
-    -- protein_uniprot comes from canonical resolution, not raw STITCH identifiers
     e_protein.canonical_identifier  AS protein_uniprot,
     vrp.name                        AS predicate,
     vrc.name                        AS relation_category,
@@ -769,34 +849,25 @@ SELECT
     ann.is_inhibition,
     ann.is_activation
 
-FROM sampled_re re  -- !! TESTING ONLY: replace with `relation_evidence re` for production
+FROM human_re re
 
-JOIN entity_evidence ee_compound
-    ON  ee_compound.source_id          = re.source_id
-    AND ee_compound.entity_evidence_id = re.subject_entity_evidence_id
-    AND ee_compound.entity_type_id     = 2
-JOIN entity_evidence ee_protein
-    ON  ee_protein.source_id          = re.source_id
-    AND ee_protein.entity_evidence_id = re.object_entity_evidence_id
-    AND ee_protein.entity_type_id     = 3
 LEFT JOIN compound_ids ci ON ci.entity_evidence_id = re.subject_entity_evidence_id
 LEFT JOIN protein_ids  pi ON pi.entity_evidence_id = re.object_entity_evidence_id
 LEFT JOIN entity_evidence_resolution eer_compound
-    ON  eer_compound.source_id          = re.source_id
+    ON  eer_compound.source_id          = 39
     AND eer_compound.entity_evidence_id = re.subject_entity_evidence_id
 LEFT JOIN entity e_compound ON e_compound.entity_id = eer_compound.entity_id
 LEFT JOIN vocab_identifier_type vit_c
     ON vit_c.identifier_type_id = e_compound.canonical_identifier_type_id
 LEFT JOIN entity_evidence_resolution eer_protein
-    ON  eer_protein.source_id          = re.source_id
+    ON  eer_protein.source_id          = 39
     AND eer_protein.entity_evidence_id = re.object_entity_evidence_id
 LEFT JOIN entity e_protein ON e_protein.entity_id = eer_protein.entity_id
 LEFT JOIN vocab_identifier_type vit_p
     ON vit_p.identifier_type_id = e_protein.canonical_identifier_type_id
 LEFT JOIN rel_annotations ann ON ann.relation_evidence_id = re.relation_evidence_id
 JOIN vocab_relation_predicate vrp ON vrp.relation_predicate_id = re.predicate_id
-JOIN vocab_relation_category  vrc ON vrc.relation_category_id  = re.relation_category_id
-WHERE e_protein.taxonomy_id = 9606;
+JOIN vocab_relation_category  vrc ON vrc.relation_category_id  = re.relation_category_id;
 
 CREATE UNIQUE INDEX ON metalinksdb_stitch_relations (relation_evidence_id);
 CREATE INDEX ON metalinksdb_stitch_relations (compound_entity_id);
@@ -804,18 +875,45 @@ CREATE INDEX ON metalinksdb_stitch_relations (protein_entity_id);
 CREATE INDEX ON metalinksdb_stitch_relations (compound_canonical_id);
 CREATE INDEX ON metalinksdb_stitch_relations (protein_uniprot);
 
+SET max_parallel_workers_per_gather = 4;
+SET work_mem = '256MB';
+
 -- ────────────────────────────────────────────────────────────────────────────
 -- TCDB  (source_id = 41)  — transporter-substrate pairs
--- Direction REVERSED vs other sources: Protein(3, subject) → SmallMolecule(2, object)
--- Human-only via e_protein.taxonomy_id = 9606.
--- Note: SmallMolecule resolution is ~14% (ChEBI IDs mostly unmatched in canonical entity table).
--- No sampling needed — only 20039 rows total.
+-- Direction REVERSED: Protein(3, subject) → SmallMolecule(2, object)
+-- Small source (20k rows); human_re applied for consistency.
 -- ────────────────────────────────────────────────────────────────────────────
 
 DROP MATERIALIZED VIEW IF EXISTS metalinksdb_tcdb_relations;
 CREATE MATERIALIZED VIEW metalinksdb_tcdb_relations AS
 WITH
 
+-- Pre-filter to human-only rows; TCDB direction is reversed — protein is the subject.
+human_re AS (
+    SELECT
+        re.relation_evidence_id,
+        re.subject_entity_evidence_id,
+        re.object_entity_evidence_id,
+        re.predicate_id,
+        re.relation_category_id
+    FROM relation_evidence re
+    JOIN entity_evidence ee_compound
+        ON  ee_compound.source_id          = re.source_id
+        AND ee_compound.entity_evidence_id = re.object_entity_evidence_id   -- compound is OBJECT for TCDB
+        AND ee_compound.entity_type_id     = 2
+    JOIN entity_evidence ee_protein
+        ON  ee_protein.source_id          = re.source_id
+        AND ee_protein.entity_evidence_id = re.subject_entity_evidence_id   -- protein is SUBJECT for TCDB
+        AND ee_protein.entity_type_id     = 3
+    JOIN entity_evidence_resolution eer
+        ON  eer.source_id          = re.source_id
+        AND eer.entity_evidence_id = re.subject_entity_evidence_id
+        AND eer.status_id          = 1
+    JOIN entity e ON e.entity_id = eer.entity_id AND e.taxonomy_id = 9606
+    WHERE re.source_id = 41
+),
+
+-- Collect raw TCDB compound identifiers (ChEBI ID, compound name) per entity_evidence row.
 compound_ids AS (
     SELECT eei.entity_evidence_id,
         MAX(CASE WHEN ie.identifier_type_id = 8  THEN ie.value END) AS chebi_id,
@@ -823,9 +921,11 @@ compound_ids AS (
     FROM entity_evidence_identifier eei
     JOIN identifier_evidence ie ON ie.identifier_id = eei.identifier_id
     WHERE eei.source_id = 41
+      AND eei.entity_evidence_id IN (SELECT object_entity_evidence_id FROM human_re)
     GROUP BY eei.entity_evidence_id
 ),
 
+-- Collect raw TCDB protein identifiers (UniProt, TCDB family ID) per entity_evidence row.
 protein_ids AS (
     SELECT eei.entity_evidence_id,
         MAX(CASE WHEN ie.identifier_type_id = 1  THEN ie.value END) AS uniprot_id,
@@ -833,6 +933,7 @@ protein_ids AS (
     FROM entity_evidence_identifier eei
     JOIN identifier_evidence ie ON ie.identifier_id = eei.identifier_id
     WHERE eei.source_id = 41
+      AND eei.entity_evidence_id IN (SELECT subject_entity_evidence_id FROM human_re)
     GROUP BY eei.entity_evidence_id
 )
 
@@ -855,25 +956,16 @@ SELECT
     vrp.name                            AS predicate,
     vrc.name                            AS relation_category
 
-FROM relation_evidence re
--- REVERSED: protein is subject (entity_type=3), compound is object (entity_type=2)
-JOIN entity_evidence ee_protein
-    ON  ee_protein.source_id           = re.source_id
-    AND ee_protein.entity_evidence_id  = re.subject_entity_evidence_id
-    AND ee_protein.entity_type_id      = 3
-JOIN entity_evidence ee_compound
-    ON  ee_compound.source_id          = re.source_id
-    AND ee_compound.entity_evidence_id = re.object_entity_evidence_id
-    AND ee_compound.entity_type_id     = 2
+FROM human_re re
 LEFT JOIN entity_evidence_resolution eer_protein
-    ON  eer_protein.source_id          = re.source_id
+    ON  eer_protein.source_id          = 41
     AND eer_protein.entity_evidence_id = re.subject_entity_evidence_id
 LEFT JOIN entity e_protein
     ON  e_protein.entity_id            = eer_protein.entity_id
 LEFT JOIN vocab_identifier_type vit_p
     ON  vit_p.identifier_type_id       = e_protein.canonical_identifier_type_id
 LEFT JOIN entity_evidence_resolution eer_compound
-    ON  eer_compound.source_id         = re.source_id
+    ON  eer_compound.source_id         = 41
     AND eer_compound.entity_evidence_id = re.object_entity_evidence_id
 LEFT JOIN entity e_compound
     ON  e_compound.entity_id           = eer_compound.entity_id
@@ -882,9 +974,7 @@ LEFT JOIN vocab_identifier_type vit_c
 LEFT JOIN compound_ids ci ON ci.entity_evidence_id = re.object_entity_evidence_id
 LEFT JOIN protein_ids  pi ON pi.entity_evidence_id = re.subject_entity_evidence_id
 JOIN vocab_relation_predicate vrp ON vrp.relation_predicate_id = re.predicate_id
-JOIN vocab_relation_category  vrc ON vrc.relation_category_id  = re.relation_category_id
-WHERE re.source_id = 41
-  AND e_protein.taxonomy_id = 9606;
+JOIN vocab_relation_category  vrc ON vrc.relation_category_id  = re.relation_category_id;
 
 CREATE UNIQUE INDEX ON metalinksdb_tcdb_relations (relation_evidence_id);
 CREATE INDEX ON metalinksdb_tcdb_relations (compound_entity_id);
@@ -898,6 +988,8 @@ CREATE INDEX ON metalinksdb_tcdb_relations (protein_uniprot);
 -- relation_types: array of distinct relationship categories ('interaction', 'transport')
 -- ────────────────────────────────────────────────────────────────────────────
 
+-- Aggregates all resolved protein–metabolite pairs across sources into one row per canonical (compound, protein) pair,
+-- collecting source names, relation types (interaction/transport), best pChEMBL value, and literature references.
 DROP MATERIALIZED VIEW IF EXISTS metalinksdb_relations;
 CREATE MATERIALIZED VIEW metalinksdb_relations AS
 SELECT
