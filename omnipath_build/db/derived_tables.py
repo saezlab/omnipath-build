@@ -598,6 +598,24 @@ def _create_derived_indexes(
         ).format(schema_id),
         sql.SQL(
             """
+            CREATE INDEX IF NOT EXISTS entity_canonical_identifier_lower_idx
+            ON {}.entity (lower(canonical_identifier))
+            """
+        ).format(schema_id),
+        sql.SQL(
+            """
+            CREATE INDEX IF NOT EXISTS entity_canonical_identifier_lower_trgm_idx
+            ON {}.entity USING GIN (lower(canonical_identifier) gin_trgm_ops)
+            """
+        ).format(schema_id),
+        sql.SQL(
+            """
+            CREATE INDEX IF NOT EXISTS identifier_evidence_value_lower_trgm_idx
+            ON {}.identifier_evidence USING GIN (lower(value) gin_trgm_ops)
+            """
+        ).format(schema_id),
+        sql.SQL(
+            """
             CREATE INDEX IF NOT EXISTS entity_relation_counts_search_count_idx
             ON {}.entity_relation_counts (search_count DESC, entity_id ASC)
             """
