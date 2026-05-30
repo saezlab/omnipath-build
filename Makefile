@@ -1,4 +1,4 @@
-.PHONY: setup resolver ontology-artifacts db-setup db-reset reset-content drop-source derive load reload pipeline all test
+.PHONY: setup resolver db-setup db-reset reset-content drop-source derive load reload pipeline all test
 
 INSTANCE_ENV_FILE ?= ../.env
 ifneq ($(wildcard $(INSTANCE_ENV_FILE)),)
@@ -38,8 +38,6 @@ LOAD_JOBS ?= 1
 JOBS ?= 1
 STAGING_DIR ?=
 RESOLVER_BATCH_SIZE ?= 100000
-OBO_DIR ?= $(DATA_ROOT)/obo
-
 DROP_EXISTING ?=
 RESET_DROP_INDEXES ?=
 DERIVE ?=
@@ -49,7 +47,6 @@ FORCE_REFRESH ?=
 RELOAD_EXISTING ?=
 PUBCHEM_URL ?=
 PUBCHEM_SHARDS ?=
-OBO_ARTIFACTS ?= 1
 DUCKDB_MAX_RECORDS_ARG = $(if $(MAX_RECORDS),--max-records "$(MAX_RECORDS)",--max-records 0)
 
 setup:
@@ -70,16 +67,6 @@ resolver:
 		$(if $(JOBS),--jobs $(JOBS)) \
 		$(if $(FORCE_REFRESH),--no-skip-existing) \
 		$(RESOLVER_SOURCES)
-
-ontology-artifacts:
-	@echo "[omnipath_build] ontology-artifacts output_dir=$(OBO_DIR) sources=$(if $(LOAD_SOURCES),$(LOAD_SOURCES),ALL)"
-	@PYTHONUNBUFFERED=1 uv run python -m omnipath_build.ontology_artifacts \
-		--output-dir "$(OBO_DIR)" \
-		--database "$(DATABASE)" \
-		--inputs-package "$(INPUTS_PACKAGE)" \
-		$(if $(LOAD_SOURCES),--sources "$(LOAD_SOURCES)") \
-		$(if $(DATASET),--dataset "$(DATASET)") \
-		$(if $(FORCE_REFRESH),--force-refresh)
 
 db-setup:
 	@if [ -z "$(DATABASE_URL)" ]; then \
@@ -179,8 +166,6 @@ load:
 		--threads "$(THREADS)" \
 		--stage-jobs "$(LOAD_JOBS)" \
 		$(if $(STAGING_DIR),--staging-dir "$(STAGING_DIR)") \
-		$(if $(filter 0 false no,$(OBO_ARTIFACTS)),--no-obo-artifacts,--obo-artifacts) \
-		--obo-output-dir "$(OBO_DIR)" \
 		$(if $(FORCE_REFRESH),--force-refresh) \
 		$(if $(RELOAD_EXISTING),--reload-existing) \
 		--append

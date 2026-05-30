@@ -17,21 +17,15 @@ from dataclasses import dataclass
 from collections.abc import Iterable
 
 from omnipath_build.cv_terms import (
-    CV_TERM_ID_TYPE,
-    CV_TERM_ENTITY_TYPE,
     normalize_entity_type,
 )
-from pypath.internals.cv_terms import (
-    IdentifierNamespaceCv,
-    cv_term_label_accession,
-)
+from pypath.internals.cv_terms import IdentifierNamespaceCv, cv_term_label_accession
 from omnipath_build.relation_rules import (
     ASSOCIATION_CATEGORY,
+    ASSOCIATION_PREDICATE,
     INTERACTION_LIKE_TYPES,
-    ONTOLOGY_IDENTIFIER_TERM,
     PredicateRule,
     string_or_none,
-    annotation_predicate,
     predicate_for_membership,
     predicate_for_interaction,
     order_relation_participants,
@@ -111,6 +105,9 @@ def entity_to_row(entity: Entity) -> dict[str, object]:
         'annotations': annotations_to_rows(
             getattr(entity, 'annotations', None) or []
         ),
+        'associations': associations_to_rows(
+            getattr(entity, 'associations', None) or []
+        ),
         'membership': [
             {
                 'member': entity_to_row(membership.member),
@@ -118,10 +115,73 @@ def entity_to_row(entity: Entity) -> dict[str, object]:
                 'annotations': annotations_to_rows(
                     getattr(membership, 'annotations', None) or []
                 ),
+                'associations': associations_to_rows(
+                    getattr(membership, 'associations', None) or []
+                ),
             }
             for membership in getattr(entity, 'membership', None) or []
             if getattr(membership, 'member', None) is not None
         ],
+        'ontology_relations': [
+            ontology_relation_to_row(relation)
+            for relation in getattr(entity, 'ontology_relations', None) or []
+        ],
+    }
+
+
+def ontology_relation_to_row(relation: object) -> dict[str, object]:
+    """Convert a silver ontology relation into serializable fields."""
+
+    if isinstance(relation, dict):
+        object_ref = relation.get('object') or {}
+        return {
+            'predicate': text_or_none(relation.get('predicate')),
+            'ontology_id': text_or_none(relation.get('ontology_id')),
+            'object': entity_ref_to_row(object_ref),
+        }
+    return {
+        'predicate': text_or_none(getattr(relation, 'predicate', None)),
+        'ontology_id': text_or_none(getattr(relation, 'ontology_id', None)),
+        'object': entity_ref_to_row(getattr(relation, 'object', None)),
+    }
+
+
+def association_to_row(association: object) -> dict[str, object]:
+    """Convert a silver association into serializable fields."""
+
+    if isinstance(association, dict):
+        object_ref = association.get('object') or {}
+        return {
+            'predicate': text_or_none(association.get('predicate')),
+            'object': entity_ref_to_row(object_ref),
+        }
+    return {
+        'predicate': text_or_none(getattr(association, 'predicate', None)),
+        'object': entity_ref_to_row(getattr(association, 'object', None)),
+    }
+
+
+def associations_to_rows(
+    associations: Iterable[object],
+) -> list[dict[str, object]]:
+    """Convert association objects into serializable fields."""
+
+    return [association_to_row(association) for association in associations]
+
+
+def entity_ref_to_row(ref: object) -> dict[str, str | None]:
+    """Convert an entity reference endpoint into serializable fields."""
+
+    if isinstance(ref, dict):
+        return {
+            'type': text_or_none(ref.get('type')),
+            'identifier_type': text_or_none(ref.get('identifier_type')),
+            'identifier': text_or_none(ref.get('identifier')),
+        }
+    return {
+        'type': text_or_none(getattr(ref, 'type', None)),
+        'identifier_type': text_or_none(getattr(ref, 'identifier_type', None)),
+        'identifier': text_or_none(getattr(ref, 'identifier', None)),
     }
 
 
@@ -329,33 +389,40 @@ def _taxonomy_int_text(value: str | None) -> str | None:
     return text if text.isdigit() else None
 
 
-def ontology_annotation_relation(
-    annotation: dict[str, str | None],
+def association_relation(
+    association: dict[str, object],
     *,
     subject_occurrence_id: str,
 ) -> AnnotationRelationSpec | None:
-    """Build relation evidence for ontology-backed entity annotations."""
+    """Build relation evidence for an explicit association."""
 
-    term = string_or_none(annotation.get('term'))
-    value = string_or_none(annotation.get('value'))
-    unit = string_or_none(annotation.get('unit', annotation.get('units')))
+    object_ref = association.get('object') or {}
+    if not isinstance(object_ref, dict):
+        return None
+    predicate = string_or_none(association.get('predicate')) or ASSOCIATION_PREDICATE
+    object_entity_type = string_or_none(object_ref.get('type'))
+    object_id_type = string_or_none(object_ref.get('identifier_type'))
+    object_id = string_or_none(object_ref.get('identifier'))
     if (
-        entity_type_accession(term) != entity_type_accession(ONTOLOGY_IDENTIFIER_TERM)
-        or value is None
-        or unit is not None
+        object_entity_type is None
+        or object_id_type is None
+        or object_id is None
     ):
         return None
-    digest = hashlib.md5(f'{term}\0{value}'.encode()).hexdigest()
+
+    digest = hashlib.md5(
+        f'{predicate}\0{object_entity_type}\0{object_id_type}\0{object_id}'.encode()
+    ).hexdigest()
     return AnnotationRelationSpec(
-        relation_occurrence_id=f'{subject_occurrence_id}:annotation:{digest}',
+        relation_occurrence_id=f'{subject_occurrence_id}:association:{digest}',
         subject_occurrence_id=subject_occurrence_id,
         predicate_rule=PredicateRule(
-            annotation_predicate(annotation),
+            predicate,
             ASSOCIATION_CATEGORY,
         ),
-        object_entity_type=CV_TERM_ENTITY_TYPE,
-        object_id_type=CV_TERM_ID_TYPE,
-        object_id=value,
+        object_entity_type=object_entity_type,
+        object_id_type=object_id_type,
+        object_id=object_id,
     )
 
 

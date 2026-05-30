@@ -16,16 +16,16 @@ from omnipath_build.cv_terms import (
     CV_TERM_ID_TYPE,
     GENE_ENTITY_TYPE,
     CV_TERM_ENTITY_TYPE,
-    SMALL_MOLECULE_ENTITY_TYPE,
+    CHEMICAL_ENTITY_TYPE,
 )
 from pypath.internals.cv_terms import (
     BiologicalRoleCv,
+    EntityTypeCv,
     IdentifierNamespaceCv,
     cv_term_label_accession,
 )
 from omnipath_build.ingest.common import unwrap_record
 from pypath.internals.silver_schema import Entity
-from pypath.internals.ontology_schema import OntologyTerm
 from omnipath_build.evidence_projector import (
     ProjectionStats,
     EvidenceProjectorBase,
@@ -42,6 +42,7 @@ from omnipath_build.resolver.identifier_types import (
 PROTEIN_ENTITY_TYPE = 'Protein:MI:0326'
 COMPLEX_ENTITY_TYPE = 'Complex:MI:0314'
 REACTION_ENTITY_TYPE = 'Reaction:OM:0015'
+PATHWAY_ENTITY_TYPE = cv_term_label_accession(EntityTypeCv.PATHWAY)
 REACTANT_ROLE_TERMS = (
     cv_term_label_accession(BiologicalRoleCv.REACTANT),
     str(BiologicalRoleCv.REACTANT),
@@ -62,6 +63,10 @@ PROTEIN_TAXONOMY_OPTIONAL_IDENTIFIER_TYPES = (
 STANDARD_INCHI_KEY_TYPE = cv_term_label_accession(
     IdentifierNamespaceCv.STANDARD_INCHI_KEY
 )
+REACTOME_STABLE_ID_TYPE = cv_term_label_accession(
+    IdentifierNamespaceCv.REACTOME_STABLE_ID
+)
+WIKIPATHWAYS_ID_TYPE = cv_term_label_accession(IdentifierNamespaceCv.WIKIPATHWAYS)
 
 
 def _sql_literal(value: str | Path) -> str:
@@ -190,7 +195,7 @@ def _create_duckdb_resolver_views(
         f"""
         UNION ALL
         SELECT
-          {_sql_literal(SMALL_MOLECULE_ENTITY_TYPE)} AS entity_type,
+          {_sql_literal(CHEMICAL_ENTITY_TYPE)} AS entity_type,
           key_identifier_type_id,
           key_value,
           NULL::VARCHAR AS taxonomy_id,
@@ -201,7 +206,7 @@ def _create_duckdb_resolver_views(
           AND canonical_identifier IS NOT NULL
         UNION ALL
         SELECT DISTINCT
-          {_sql_literal(SMALL_MOLECULE_ENTITY_TYPE)} AS entity_type,
+          {_sql_literal(CHEMICAL_ENTITY_TYPE)} AS entity_type,
           {identifier_type_id(STANDARD_INCHI_KEY_TYPE)} AS key_identifier_type_id,
           canonical_identifier AS key_value,
           NULL::VARCHAR AS taxonomy_id,
@@ -269,7 +274,7 @@ def _create_duckdb_resolver_views(
           row_number() OVER (
             ORDER BY canonical_identifier_type_id, canonical_identifier
           )::BIGINT AS resolver_entity_id,
-          {_sql_literal(SMALL_MOLECULE_ENTITY_TYPE)} AS entity_type,
+          {_sql_literal(CHEMICAL_ENTITY_TYPE)} AS entity_type,
           NULL::VARCHAR AS taxonomy_id,
           canonical_identifier_type_id,
           canonical_identifier,
@@ -303,6 +308,24 @@ def _create_duckdb_identifier_type_all_view(
             """
         ).fetchone()[0]
     )
+    has_annotation_relation_evidence_raw = bool(
+        con.execute(
+            """
+            SELECT COUNT(*)
+            FROM information_schema.tables
+            WHERE table_name = 'annotation_relation_evidence_raw'
+            """
+        ).fetchone()[0]
+    )
+    has_ontology_relation_raw = bool(
+        con.execute(
+            """
+            SELECT COUNT(*)
+            FROM information_schema.tables
+            WHERE table_name = 'ontology_relation_raw'
+            """
+        ).fetchone()[0]
+    )
     evidence_identifier_type_sql = (
         """
           UNION
@@ -312,6 +335,33 @@ def _create_duckdb_identifier_type_all_view(
             AND identifier_type <> ''
         """
         if has_entity_identifier_raw
+        else ''
+    )
+    annotation_relation_identifier_type_sql = (
+        """
+          UNION
+          SELECT DISTINCT object_id_type AS name
+          FROM annotation_relation_evidence_raw
+          WHERE object_id_type IS NOT NULL
+            AND object_id_type <> ''
+        """
+        if has_annotation_relation_evidence_raw
+        else ''
+    )
+    ontology_relation_identifier_type_sql = (
+        """
+          UNION
+          SELECT DISTINCT subject_identifier_type AS name
+          FROM ontology_relation_raw
+          WHERE subject_identifier_type IS NOT NULL
+            AND subject_identifier_type <> ''
+          UNION
+          SELECT DISTINCT object_identifier_type AS name
+          FROM ontology_relation_raw
+          WHERE object_identifier_type IS NOT NULL
+            AND object_identifier_type <> ''
+        """
+        if has_ontology_relation_raw
         else ''
     )
     con.execute(
@@ -335,6 +385,8 @@ def _create_duckdb_identifier_type_all_view(
           UNION ALL
           SELECT {_sql_literal(UNRESOLVED_ID_TYPE)} AS name
           {evidence_identifier_type_sql}
+          {annotation_relation_identifier_type_sql}
+          {ontology_relation_identifier_type_sql}
         ),
         missing AS (
           SELECT DISTINCT required_name.name
@@ -407,49 +459,6 @@ class DuckDBEvidenceProjector(EvidenceProjectorBase):
         return stats.freeze()
 
 
-def project_ontology_terms(
-    con: duckdb.DuckDBPyConnection,
-    records: Iterable[OntologyTerm],
-    *,
-    source: str,
-    dataset: str,
-    ontology_id: str,
-    chunk_size: int = 100_000,
-) -> int:
-    """Load ontology terms into DuckDB for direct PostgreSQL COPY."""
-
-    writer = _DuckDBRowWriter(
-        con,
-        'ontology_terms_raw',
-        _ONTOLOGY_TERMS_SCHEMA,
-        chunk_size=chunk_size,
-    )
-    count = 0
-    try:
-        for term in records:
-            if not isinstance(term, OntologyTerm) or not term.id:
-                continue
-            synonyms = _ontology_term_synonyms(term)
-            writer.write(
-                {
-                    'source': source,
-                    'dataset': dataset,
-                    'term_id': term.id,
-                    'ontology_prefix': _ontology_prefix(term.id),
-                    'label': term.name or term.id,
-                    'definition': term.definition,
-                    'ontology_id': ontology_id,
-                    'synonyms': synonyms,
-                    'synonyms_text': ' '.join(synonyms),
-                    'sources': [ontology_id],
-                }
-            )
-            count += 1
-    finally:
-        writer.close()
-    return count
-
-
 class _DuckDBEvidenceWriters:
     def __init__(
         self,
@@ -499,6 +508,12 @@ class _DuckDBEvidenceWriters:
             _ANNOTATION_RELATION_EVIDENCE_SCHEMA,
             chunk_size=chunk_size,
         )
+        self.ontology_relation = _DuckDBRowWriter(
+            con,
+            'ontology_relation_raw',
+            _ONTOLOGY_RELATION_SCHEMA,
+            chunk_size=chunk_size,
+        )
 
     def close(self) -> None:
         self.entity.close()
@@ -508,6 +523,7 @@ class _DuckDBEvidenceWriters:
         self.annotation.close()
         self.relation.close()
         self.annotation_relation.close()
+        self.ontology_relation.close()
 
 
 class _DuckDBRowWriter:
@@ -636,39 +652,21 @@ _ANNOTATION_RELATION_EVIDENCE_SCHEMA = pa.schema(
 )
 
 
-_ONTOLOGY_TERMS_SCHEMA = pa.schema(
+_ONTOLOGY_RELATION_SCHEMA = pa.schema(
     [
         ('source', pa.string()),
         ('dataset', pa.string()),
-        ('term_id', pa.string()),
-        ('ontology_prefix', pa.string()),
-        ('label', pa.string()),
-        ('definition', pa.string()),
+        ('subject_entity_evidence_id', pa.string()),
         ('ontology_id', pa.string()),
-        ('synonyms', pa.list_(pa.string())),
-        ('synonyms_text', pa.string()),
-        ('sources', pa.list_(pa.string())),
+        ('subject_entity_type', pa.string()),
+        ('subject_identifier_type', pa.string()),
+        ('subject_identifier', pa.string()),
+        ('predicate', pa.string()),
+        ('object_entity_type', pa.string()),
+        ('object_identifier_type', pa.string()),
+        ('object_identifier', pa.string()),
     ]
 )
-
-
-def _ontology_prefix(term_id: str) -> str | None:
-    if term_id.upper().startswith('KW-'):
-        return 'kw'
-    if ':' in term_id:
-        return term_id.split(':', 1)[0].lower()
-    return None
-
-
-def _ontology_term_synonyms(term: OntologyTerm) -> list[str]:
-    return [
-        *(term.synonyms or []),
-        *(
-            alt_id
-            for alt_id in term.alt_ids or []
-            if alt_id and alt_id != term.id
-        ),
-    ]
 
 
 def _create_duckdb_evidence_tables(con: duckdb.DuckDBPyConnection) -> None:
@@ -692,6 +690,9 @@ def _create_duckdb_evidence_tables(con: duckdb.DuckDBPyConnection) -> None:
           source VARCHAR,
           dataset VARCHAR,
           term_id VARCHAR,
+          term_entity_type VARCHAR,
+          term_identifier_type VARCHAR,
+          term_identifier VARCHAR,
           ontology_prefix VARCHAR,
           label VARCHAR,
           definition VARCHAR,
@@ -699,6 +700,23 @@ def _create_duckdb_evidence_tables(con: duckdb.DuckDBPyConnection) -> None:
           synonyms VARCHAR[],
           synonyms_text VARCHAR,
           sources VARCHAR[]
+        )
+        """
+    )
+    con.execute(
+        """
+        CREATE OR REPLACE TABLE ontology_relation_raw (
+          source VARCHAR,
+          dataset VARCHAR,
+          subject_entity_evidence_id VARCHAR,
+          ontology_id VARCHAR,
+          subject_entity_type VARCHAR,
+          subject_identifier_type VARCHAR,
+          subject_identifier VARCHAR,
+          predicate VARCHAR,
+          object_entity_type VARCHAR,
+          object_identifier_type VARCHAR,
+          object_identifier VARCHAR
         )
         """
     )
@@ -820,15 +838,21 @@ def _drop_duckdb_batch_tables(con: duckdb.DuckDBPyConnection) -> None:
         'resolver_entity_type_match',
         'needed_resolver_lookup',
         'entity_identifier_group',
+        'cv_term_evidence_resolution',
+        'pathway_identifier_evidence_resolution',
+        'pathway_stable_id_evidence_resolution',
+        'standard_inchi_key_evidence_resolution',
         'entity_resolution_base',
         'complex_member_signature_base',
         'complex_member_signature',
         'reaction_member_signature',
         'entity_resolution',
+        'ontology_term_resolution',
         'batch_entity_candidate',
         'new_entity',
         'canonical_entity',
         'entity_evidence_resolution',
+        'entity_ontology_relation',
         'relation_candidate_evidence',
         'batch_relation_candidate',
         'new_relation',
@@ -878,8 +902,8 @@ def _canonicalize_loaded_duckdb(
             PROTEIN_ENTITY_TYPE,
             GENE_ENTITY_TYPE,
             PROTEIN_ENTITY_TYPE,
-            SMALL_MOLECULE_ENTITY_TYPE,
-            SMALL_MOLECULE_ENTITY_TYPE,
+            CHEMICAL_ENTITY_TYPE,
+            CHEMICAL_ENTITY_TYPE,
         ],
     )
     con.execute(
@@ -1008,6 +1032,56 @@ def _canonicalize_loaded_duckdb(
     )
     con.execute(
         """
+        CREATE TABLE pathway_identifier_evidence_resolution AS
+        WITH candidate AS (
+          SELECT
+            ee.source,
+            ee.entity_evidence_id,
+            kit.identifier_type_id AS canonical_identifier_type_id,
+            min(ei.identifier) AS canonical_identifier,
+            CASE
+              WHEN ei.identifier_type = ? THEN 1
+              WHEN ei.identifier_type = ? THEN 2
+              ELSE 100
+            END AS priority
+          FROM entity_evidence_raw ee
+          JOIN entity_identifier_raw ei
+            ON ei.source = ee.source
+           AND ei.entity_evidence_id = ee.entity_evidence_id
+          JOIN identifier_type_all kit
+            ON kit.name = ei.identifier_type
+          WHERE ee.entity_type = ?
+            AND ei.identifier_type IN (?, ?)
+            AND ei.identifier IS NOT NULL
+            AND ei.identifier <> ''
+          GROUP BY
+            ee.source,
+            ee.entity_evidence_id,
+            kit.identifier_type_id,
+            ei.identifier_type
+          HAVING count(DISTINCT ei.identifier) = 1
+        )
+        SELECT
+          source,
+          entity_evidence_id,
+          canonical_identifier_type_id,
+          canonical_identifier
+        FROM candidate
+        QUALIFY row_number() OVER (
+          PARTITION BY source, entity_evidence_id
+          ORDER BY priority, canonical_identifier
+        ) = 1
+        """,
+        [
+            REACTOME_STABLE_ID_TYPE,
+            WIKIPATHWAYS_ID_TYPE,
+            PATHWAY_ENTITY_TYPE,
+            REACTOME_STABLE_ID_TYPE,
+            WIKIPATHWAYS_ID_TYPE,
+        ],
+    )
+    con.execute(
+        """
         CREATE TABLE standard_inchi_key_evidence_resolution AS
         SELECT
           ee.source,
@@ -1037,7 +1111,7 @@ def _canonicalize_loaded_duckdb(
         """,
         [
             STANDARD_INCHI_KEY_TYPE,
-            SMALL_MOLECULE_ENTITY_TYPE,
+            CHEMICAL_ENTITY_TYPE,
             STANDARD_INCHI_KEY_TYPE,
         ],
     )
@@ -1052,22 +1126,26 @@ def _canonicalize_loaded_duckdb(
           ee.entity_type,
           CASE
             WHEN cv_term.canonical_identifier IS NOT NULL THEN NULL
+            WHEN pathway_identifier.canonical_identifier IS NOT NULL THEN NULL
             ELSE coalesce(rl.taxonomy_id, ee.taxonomy_id)
           END AS taxonomy_id,
           coalesce(
             cv_term.canonical_identifier_type_id,
+            pathway_identifier.canonical_identifier_type_id,
             rl.canonical_identifier_type_id,
             std_inchi_key.canonical_identifier_type_id,
             unresolved_type.identifier_type_id
           ) AS canonical_identifier_type_id,
           coalesce(
             cv_term.canonical_identifier,
+            pathway_identifier.canonical_identifier,
             rl.canonical_identifier,
             std_inchi_key.canonical_identifier,
             md5(eig.unresolved_identifier_key)
           ) AS canonical_identifier,
           CASE
             WHEN cv_term.canonical_identifier IS NOT NULL THEN 'resolved'
+            WHEN pathway_identifier.canonical_identifier IS NOT NULL THEN 'resolved'
             WHEN coalesce(
               rl.canonical_identifier,
               std_inchi_key.canonical_identifier
@@ -1100,15 +1178,20 @@ def _canonicalize_loaded_duckdb(
         LEFT JOIN cv_term_evidence_resolution cv_term
           ON cv_term.source = ee.source
          AND cv_term.entity_evidence_id = ee.entity_evidence_id
+        LEFT JOIN pathway_identifier_evidence_resolution pathway_identifier
+          ON pathway_identifier.source = ee.source
+         AND pathway_identifier.entity_evidence_id = ee.entity_evidence_id
         LEFT JOIN standard_inchi_key_evidence_resolution std_inchi_key
           ON std_inchi_key.source = ee.source
          AND std_inchi_key.entity_evidence_id = ee.entity_evidence_id
         QUALIFY row_number() OVER (
           PARTITION BY ee.source, ee.entity_evidence_id
           ORDER BY cv_term.canonical_identifier IS NULL,
+                   pathway_identifier.canonical_identifier IS NULL,
                    rl.canonical_identifier IS NULL,
                    std_inchi_key.canonical_identifier IS NULL,
                    cv_term.canonical_identifier,
+                   pathway_identifier.canonical_identifier,
                    rl.canonical_identifier,
                    std_inchi_key.canonical_identifier
         ) = 1
@@ -1369,6 +1452,63 @@ def _canonicalize_loaded_duckdb(
     )
     con.execute(
         """
+        CREATE TABLE ontology_term_resolution AS
+        WITH term_key AS (
+          SELECT DISTINCT
+            ot.source,
+            ot.ontology_id,
+            ot.term_id,
+            ot.term_entity_type AS entity_type,
+            NULL::VARCHAR AS taxonomy_id,
+            kit.identifier_type_id AS term_identifier_type_id,
+            ot.term_identifier
+          FROM ontology_terms_raw ot
+          JOIN identifier_type_all kit
+            ON kit.name = ot.term_identifier_type
+          WHERE ot.term_identifier IS NOT NULL
+            AND ot.term_identifier <> ''
+            AND ot.term_entity_type IS NOT NULL
+        )
+        SELECT
+          tk.source,
+          tk.ontology_id,
+          tk.term_id,
+          tk.entity_type,
+          coalesce(rl.taxonomy_id, tk.taxonomy_id) AS taxonomy_id,
+          tk.term_identifier_type_id,
+          tk.term_identifier,
+          coalesce(
+            rl.canonical_identifier_type_id,
+            tk.term_identifier_type_id
+          ) AS canonical_identifier_type_id,
+          coalesce(
+            rl.canonical_identifier,
+            tk.term_identifier
+          ) AS canonical_identifier
+        FROM term_key tk
+        LEFT JOIN resolver_entity_type_match etm
+          ON etm.evidence_entity_type = tk.entity_type
+        LEFT JOIN resolver_lookup rl
+          ON rl.entity_type = etm.resolver_entity_type
+         AND rl.key_identifier_type_id = tk.term_identifier_type_id
+         AND rl.key_value = tk.term_identifier
+         AND (rl.taxonomy_id = tk.taxonomy_id OR rl.taxonomy_id IS NULL)
+        QUALIFY row_number() OVER (
+          PARTITION BY
+            tk.source,
+            tk.ontology_id,
+            tk.entity_type,
+            tk.term_identifier_type_id,
+            tk.term_identifier
+          ORDER BY
+            rl.canonical_identifier IS NULL,
+            rl.canonical_identifier_type_id,
+            rl.canonical_identifier
+        ) = 1
+        """
+    )
+    con.execute(
+        """
         CREATE TABLE batch_entity_candidate AS
         WITH complex_hash_type AS (
           SELECT identifier_type_id
@@ -1513,7 +1653,8 @@ def _canonicalize_loaded_duckdb(
             FROM identifier_type_all
             WHERE name = ?
           ) cv_type
-          WHERE object_id_type = ?
+          WHERE object_entity_type = ?
+            AND object_id_type = ?
             AND object_id IS NOT NULL
             AND NOT EXISTS (
               SELECT 1
@@ -1525,6 +1666,215 @@ def _canonicalize_loaded_duckdb(
                 AND existing_term.canonical_identifier = object_id
             )
           GROUP BY cv_type.identifier_type_id, object_id
+        ),
+        annotation_object_entity AS (
+          SELECT
+            ar.object_entity_type AS entity_type,
+            NULL::VARCHAR AS taxonomy_id,
+            object_type.identifier_type_id AS canonical_identifier_type_id,
+            ar.object_id AS canonical_identifier,
+            to_json(
+              list_value(
+                struct_pack(
+                  identifier_type := ar.object_id_type,
+                  identifier_type_id := object_type.identifier_type_id,
+                  identifier := ar.object_id
+                )
+              )
+            ) AS identifiers_json
+          FROM annotation_relation_evidence_raw ar
+          JOIN identifier_type_all object_type
+            ON object_type.name = ar.object_id_type
+          WHERE ar.object_entity_type <> ?
+            AND ar.object_id IS NOT NULL
+            AND ar.object_id <> ''
+            AND NOT EXISTS (
+              SELECT 1
+              FROM needed_resolved_entity existing_entity
+              WHERE existing_entity.entity_type = ar.object_entity_type
+                AND existing_entity.taxonomy_id IS NULL
+                AND existing_entity.canonical_identifier_type_id =
+                    object_type.identifier_type_id
+                AND existing_entity.canonical_identifier = ar.object_id
+            )
+          GROUP BY
+            ar.object_entity_type,
+            object_type.identifier_type_id,
+            ar.object_id,
+            ar.object_id_type
+        ),
+        ontology_term_identifier_row AS (
+          SELECT DISTINCT
+            otr.entity_type,
+            otr.taxonomy_id,
+            otr.canonical_identifier_type_id,
+            otr.canonical_identifier,
+            otr.term_identifier_type_id AS identifier_type_id,
+            otr.term_identifier AS identifier
+          FROM ontology_term_resolution otr
+          WHERE otr.canonical_identifier IS NOT NULL
+            AND otr.canonical_identifier <> ''
+          UNION
+          SELECT DISTINCT
+            otr.entity_type,
+            otr.taxonomy_id,
+            otr.canonical_identifier_type_id,
+            otr.canonical_identifier,
+            otr.canonical_identifier_type_id AS identifier_type_id,
+            otr.canonical_identifier AS identifier
+          FROM ontology_term_resolution otr
+          WHERE otr.canonical_identifier IS NOT NULL
+            AND otr.canonical_identifier <> ''
+        ),
+        ontology_term_entity AS (
+          SELECT
+            otir.entity_type,
+            otir.taxonomy_id,
+            otir.canonical_identifier_type_id,
+            otir.canonical_identifier,
+            to_json(
+              list(
+                struct_pack(
+                  identifier_type := it.name,
+                  identifier_type_id := otir.identifier_type_id,
+                  identifier := otir.identifier
+                )
+                ORDER BY it.name, otir.identifier
+              )
+            ) AS identifiers_json
+          FROM ontology_term_identifier_row otir
+          JOIN identifier_type_all it
+            ON it.identifier_type_id = otir.identifier_type_id
+          WHERE NOT EXISTS (
+            SELECT 1
+            FROM needed_resolved_entity existing_entity
+            WHERE existing_entity.entity_type = otir.entity_type
+              AND existing_entity.taxonomy_id IS NOT DISTINCT FROM otir.taxonomy_id
+              AND existing_entity.canonical_identifier_type_id =
+                  otir.canonical_identifier_type_id
+              AND existing_entity.canonical_identifier =
+                  otir.canonical_identifier
+          )
+          GROUP BY
+            otir.entity_type,
+            otir.taxonomy_id,
+            otir.canonical_identifier_type_id,
+            otir.canonical_identifier
+        ),
+        ontology_relation_endpoint_key AS (
+          SELECT DISTINCT
+            endpoint.source,
+            endpoint.entity_type,
+            NULL::VARCHAR AS taxonomy_id,
+            kit.identifier_type_id AS endpoint_identifier_type_id,
+            endpoint.identifier AS endpoint_identifier,
+            coalesce(rl.taxonomy_id, NULL::VARCHAR) AS resolved_taxonomy_id,
+            coalesce(
+              rl.canonical_identifier_type_id,
+              kit.identifier_type_id
+            ) AS canonical_identifier_type_id,
+            coalesce(
+              rl.canonical_identifier,
+              endpoint.identifier
+            ) AS canonical_identifier
+          FROM (
+            SELECT
+              source,
+              subject_entity_type AS entity_type,
+              subject_identifier_type AS identifier_type,
+              subject_identifier AS identifier
+            FROM ontology_relation_raw
+            WHERE subject_entity_evidence_id IS NULL
+              AND subject_identifier IS NOT NULL
+              AND subject_identifier <> ''
+            UNION
+            SELECT
+              source,
+              object_entity_type AS entity_type,
+              object_identifier_type AS identifier_type,
+              object_identifier AS identifier
+            FROM ontology_relation_raw
+            WHERE object_identifier IS NOT NULL
+              AND object_identifier <> ''
+          ) endpoint
+          JOIN identifier_type_all kit
+            ON kit.name = endpoint.identifier_type
+          LEFT JOIN resolver_entity_type_match etm
+            ON etm.evidence_entity_type = endpoint.entity_type
+          LEFT JOIN resolver_lookup rl
+            ON rl.entity_type = etm.resolver_entity_type
+           AND rl.key_identifier_type_id = kit.identifier_type_id
+           AND rl.key_value = endpoint.identifier
+           AND rl.taxonomy_id IS NULL
+          WHERE endpoint.entity_type IS NOT NULL
+          QUALIFY row_number() OVER (
+            PARTITION BY
+              endpoint.entity_type,
+              kit.identifier_type_id,
+              endpoint.identifier
+            ORDER BY
+              rl.canonical_identifier IS NULL,
+              rl.canonical_identifier_type_id,
+              rl.canonical_identifier
+          ) = 1
+        ),
+        ontology_relation_identifier_row AS (
+          SELECT DISTINCT
+            entity_type,
+            resolved_taxonomy_id AS taxonomy_id,
+            canonical_identifier_type_id,
+            canonical_identifier,
+            endpoint_identifier_type_id AS identifier_type_id,
+            endpoint_identifier AS identifier
+          FROM ontology_relation_endpoint_key
+          WHERE canonical_identifier IS NOT NULL
+            AND canonical_identifier <> ''
+          UNION
+          SELECT DISTINCT
+            entity_type,
+            resolved_taxonomy_id AS taxonomy_id,
+            canonical_identifier_type_id,
+            canonical_identifier,
+            canonical_identifier_type_id AS identifier_type_id,
+            canonical_identifier AS identifier
+          FROM ontology_relation_endpoint_key
+          WHERE canonical_identifier IS NOT NULL
+            AND canonical_identifier <> ''
+        ),
+        ontology_relation_endpoint_entity AS (
+          SELECT
+            orir.entity_type,
+            orir.taxonomy_id,
+            orir.canonical_identifier_type_id,
+            orir.canonical_identifier,
+            to_json(
+              list(
+                struct_pack(
+                  identifier_type := it.name,
+                  identifier_type_id := orir.identifier_type_id,
+                  identifier := orir.identifier
+                )
+                ORDER BY it.name, orir.identifier
+              )
+            ) AS identifiers_json
+          FROM ontology_relation_identifier_row orir
+          JOIN identifier_type_all it
+            ON it.identifier_type_id = orir.identifier_type_id
+          WHERE NOT EXISTS (
+            SELECT 1
+            FROM needed_resolved_entity existing_entity
+            WHERE existing_entity.entity_type = orir.entity_type
+              AND existing_entity.taxonomy_id IS NOT DISTINCT FROM orir.taxonomy_id
+              AND existing_entity.canonical_identifier_type_id =
+                  orir.canonical_identifier_type_id
+              AND existing_entity.canonical_identifier =
+                  orir.canonical_identifier
+          )
+          GROUP BY
+            orir.entity_type,
+            orir.taxonomy_id,
+            orir.canonical_identifier_type_id,
+            orir.canonical_identifier
         ),
         all_entity AS (
           SELECT
@@ -1544,6 +1894,33 @@ def _canonicalize_loaded_duckdb(
             identifiers_json,
             'resolved' AS resolution_status
           FROM cv_term_entity
+          UNION ALL
+          SELECT
+            entity_type,
+            taxonomy_id,
+            canonical_identifier_type_id,
+            canonical_identifier,
+            identifiers_json,
+            'resolved' AS resolution_status
+          FROM annotation_object_entity
+          UNION ALL
+          SELECT
+            entity_type,
+            taxonomy_id,
+            canonical_identifier_type_id,
+            canonical_identifier,
+            identifiers_json,
+            'resolved' AS resolution_status
+          FROM ontology_term_entity
+          UNION ALL
+          SELECT
+            entity_type,
+            taxonomy_id,
+            canonical_identifier_type_id,
+            canonical_identifier,
+            identifiers_json,
+            'resolved' AS resolution_status
+          FROM ontology_relation_endpoint_entity
           UNION ALL
           SELECT * FROM complex_member_entity
           UNION ALL
@@ -1608,16 +1985,28 @@ def _canonicalize_loaded_duckdb(
             source,
             object_entity_type AS entity_type,
             NULL::VARCHAR AS taxonomy_id,
-            cv_type.identifier_type_id AS canonical_identifier_type_id,
+            object_type.identifier_type_id AS canonical_identifier_type_id,
             object_id AS canonical_identifier
-          FROM annotation_relation_evidence_raw
-          CROSS JOIN (
-            SELECT identifier_type_id
-            FROM identifier_type_all
-            WHERE name = ?
-          ) cv_type
-          WHERE object_id_type = ?
-            AND object_id IS NOT NULL
+          FROM annotation_relation_evidence_raw ar
+          JOIN identifier_type_all object_type
+            ON object_type.name = ar.object_id_type
+          WHERE object_id IS NOT NULL
+          UNION
+          SELECT DISTINCT
+            source,
+            entity_type,
+            taxonomy_id,
+            canonical_identifier_type_id,
+            canonical_identifier
+          FROM ontology_term_resolution
+          UNION
+          SELECT DISTINCT
+            source,
+            entity_type,
+            resolved_taxonomy_id AS taxonomy_id,
+            canonical_identifier_type_id,
+            canonical_identifier
+          FROM ontology_relation_endpoint_key
         ) source_rows
           ON source_rows.entity_type = all_entity.entity_type
          AND source_rows.taxonomy_id IS NOT DISTINCT FROM all_entity.taxonomy_id
@@ -1641,10 +2030,10 @@ def _canonicalize_loaded_duckdb(
             CV_TERM_ENTITY_TYPE,
             CV_TERM_ID_TYPE,
             CV_TERM_ID_TYPE,
-            CV_TERM_ID_TYPE,
             CV_TERM_ENTITY_TYPE,
             CV_TERM_ID_TYPE,
-            CV_TERM_ID_TYPE,
+            CV_TERM_ENTITY_TYPE,
+            CV_TERM_ENTITY_TYPE,
         ],
     )
     con.execute(
@@ -1661,6 +2050,143 @@ def _canonicalize_loaded_duckdb(
         """
         CREATE TABLE canonical_entity AS
         SELECT * FROM batch_entity_candidate
+        """
+    )
+    con.execute(
+        """
+        CREATE TABLE entity_ontology_relation AS
+        WITH raw_edge AS (
+          SELECT
+            *,
+            source || chr(31) || coalesce(ontology_id, '') || chr(31) ||
+              coalesce(
+                subject_entity_evidence_id,
+                subject_entity_type || chr(30) ||
+                  subject_identifier_type || chr(30) ||
+                  subject_identifier,
+                ''
+              ) || chr(31) || predicate || chr(31) ||
+              object_entity_type || chr(30) ||
+                object_identifier_type || chr(30) ||
+                object_identifier AS edge_key
+          FROM ontology_relation_raw
+          WHERE predicate IS NOT NULL
+            AND predicate <> ''
+            AND object_identifier IS NOT NULL
+            AND object_identifier <> ''
+        ),
+        endpoint_resolution AS (
+          SELECT
+            raw.source,
+            raw.dataset,
+            raw.ontology_id,
+            raw.edge_key,
+            'subject' AS endpoint_role,
+            er.entity_type,
+            er.taxonomy_id,
+            er.canonical_identifier_type_id,
+            er.canonical_identifier
+          FROM raw_edge raw
+          JOIN entity_resolution er
+            ON er.source = raw.source
+           AND er.entity_evidence_id = raw.subject_entity_evidence_id
+          WHERE raw.subject_entity_evidence_id IS NOT NULL
+          UNION ALL
+          SELECT
+            endpoint.source,
+            endpoint.dataset,
+            endpoint.ontology_id,
+            endpoint.edge_key,
+            endpoint.endpoint_role,
+            endpoint.entity_type,
+            coalesce(rl.taxonomy_id, NULL::VARCHAR) AS taxonomy_id,
+            coalesce(
+              rl.canonical_identifier_type_id,
+              kit.identifier_type_id
+            ) AS canonical_identifier_type_id,
+            coalesce(
+              rl.canonical_identifier,
+              endpoint.identifier
+            ) AS canonical_identifier
+          FROM (
+            SELECT
+              source,
+              dataset,
+              ontology_id,
+              edge_key,
+              subject_entity_type AS entity_type,
+              subject_identifier_type AS identifier_type,
+              subject_identifier AS identifier,
+              'subject' AS endpoint_role
+            FROM raw_edge
+            WHERE subject_entity_evidence_id IS NULL
+              AND subject_identifier IS NOT NULL
+              AND subject_identifier <> ''
+            UNION ALL
+            SELECT
+              source,
+              dataset,
+              ontology_id,
+              edge_key,
+              object_entity_type AS entity_type,
+              object_identifier_type AS identifier_type,
+              object_identifier AS identifier,
+              'object' AS endpoint_role
+            FROM raw_edge
+          ) endpoint
+          JOIN identifier_type_all kit
+            ON kit.name = endpoint.identifier_type
+          LEFT JOIN resolver_entity_type_match etm
+            ON etm.evidence_entity_type = endpoint.entity_type
+          LEFT JOIN resolver_lookup rl
+            ON rl.entity_type = etm.resolver_entity_type
+           AND rl.key_identifier_type_id = kit.identifier_type_id
+           AND rl.key_value = endpoint.identifier
+           AND rl.taxonomy_id IS NULL
+          QUALIFY row_number() OVER (
+            PARTITION BY
+              endpoint.edge_key,
+              endpoint.endpoint_role
+            ORDER BY
+              rl.canonical_identifier IS NULL,
+              rl.canonical_identifier_type_id,
+              rl.canonical_identifier
+          ) = 1
+        ),
+        edge_endpoint AS (
+          SELECT
+            er.source,
+            er.dataset,
+            er.ontology_id,
+            er.edge_key,
+            er.endpoint_role,
+            ce.entity_id
+          FROM endpoint_resolution er
+          JOIN canonical_entity ce
+            ON ce.entity_type = er.entity_type
+           AND ce.taxonomy_id IS NOT DISTINCT FROM er.taxonomy_id
+           AND ce.canonical_identifier_type_id =
+               er.canonical_identifier_type_id
+           AND ce.canonical_identifier = er.canonical_identifier
+        )
+        SELECT DISTINCT
+          raw.source,
+          raw.dataset,
+          raw.ontology_id,
+          subject.entity_id AS subject_entity_id,
+          raw.predicate,
+          object.entity_id AS object_entity_id
+        FROM raw_edge raw
+        JOIN edge_endpoint subject
+          ON subject.source = raw.source
+         AND subject.ontology_id IS NOT DISTINCT FROM raw.ontology_id
+         AND subject.endpoint_role = 'subject'
+         AND subject.edge_key = raw.edge_key
+        JOIN edge_endpoint object
+          ON object.source = raw.source
+         AND object.ontology_id IS NOT DISTINCT FROM raw.ontology_id
+         AND object.endpoint_role = 'object'
+         AND object.edge_key = subject.edge_key
         """
     )
     con.execute(
@@ -1930,6 +2456,7 @@ _BULK_COPY_CONTENT_TABLES = (
     'relation_evidence_annotation',
     'entity',
     'ontology_terms',
+    'entity_ontology_relation',
     'entity_evidence_resolution',
     'relation',
     'relation_evidence_relation',
@@ -1952,6 +2479,7 @@ def _bulk_load_create_views_from_loaded_tables(
         'pq_relation': 'relation',
         'pq_relation_evidence_relation': 'relation_evidence_relation',
         'pq_ontology_terms': 'ontology_terms_raw',
+        'pq_entity_ontology_relation': 'entity_ontology_relation',
     }
     for view, table in views.items():
         con.execute(f'CREATE VIEW {view} AS SELECT * FROM {table}')
@@ -1990,6 +2518,7 @@ def _bulk_load_assert_empty(
         'relation_evidence_relation',
         'entity_annotation_relation',
         'ontology_terms',
+        'entity_ontology_relation',
     )
     non_empty = []
     for table in content_tables:
@@ -2022,9 +2551,17 @@ def _bulk_load_small_dimensions(
           FROM pq_annotation_relation_evidence
           WHERE object_entity_type IS NOT NULL
           UNION
-          SELECT {_sql_literal(CV_TERM_ENTITY_TYPE)} AS name
+          SELECT DISTINCT term_entity_type AS name
           FROM pq_ontology_terms
           WHERE term_id IS NOT NULL
+          UNION
+          SELECT DISTINCT subject_entity_type AS name
+          FROM ontology_relation_raw
+          WHERE subject_entity_type IS NOT NULL
+          UNION
+          SELECT DISTINCT object_entity_type AS name
+          FROM ontology_relation_raw
+          WHERE object_entity_type IS NOT NULL
         ) candidate
         LEFT JOIN pg.{schema}.vocab_entity_type existing
           ON existing.name = candidate.name
@@ -2056,6 +2593,10 @@ def _bulk_load_small_dimensions(
           UNION
           SELECT DISTINCT predicate AS name
           FROM pq_annotation_relation_evidence
+          WHERE predicate IS NOT NULL
+          UNION
+          SELECT DISTINCT predicate AS name
+          FROM pq_entity_ontology_relation
           WHERE predicate IS NOT NULL
         ) candidate
         LEFT JOIN pg.{schema}.vocab_relation_predicate existing
@@ -2096,9 +2637,17 @@ def _bulk_load_small_dimensions(
           FROM pq_annotation_relation_evidence
           WHERE object_id_type IS NOT NULL
           UNION
-          SELECT {_sql_literal(CV_TERM_ID_TYPE)} AS name
+          SELECT DISTINCT term_identifier_type AS name
           FROM pq_ontology_terms
           WHERE term_id IS NOT NULL
+          UNION
+          SELECT DISTINCT subject_identifier_type AS name
+          FROM ontology_relation_raw
+          WHERE subject_identifier_type IS NOT NULL
+          UNION
+          SELECT DISTINCT object_identifier_type AS name
+          FROM ontology_relation_raw
+          WHERE object_identifier_type IS NOT NULL
         ),
         missing_new AS (
           SELECT missing.name
@@ -2132,6 +2681,8 @@ def _bulk_load_small_dimensions(
           SELECT source FROM pq_annotation_relation_evidence
           UNION
           SELECT source FROM pq_ontology_terms
+          UNION
+          SELECT source FROM pq_entity_ontology_relation
         ) candidate
         LEFT JOIN pg.{schema}.data_source existing
           ON existing.name = candidate.source
@@ -2151,6 +2702,8 @@ def _bulk_load_small_dimensions(
           SELECT source, dataset FROM pq_annotation_relation_evidence
           UNION
           SELECT source, dataset FROM pq_ontology_terms
+          UNION
+          SELECT source, dataset FROM pq_entity_ontology_relation
         ) candidate
         JOIN pg.{schema}.data_source ds
           ON ds.name = candidate.source
@@ -2504,6 +3057,8 @@ def _duckdb_source_id(
               SELECT source FROM pq_annotation_relation_evidence WHERE source IS NOT NULL
               UNION
               SELECT source FROM pq_ontology_terms WHERE source IS NOT NULL
+              UNION
+              SELECT source FROM pq_entity_ontology_relation WHERE source IS NOT NULL
             )
             SELECT ds.source_id, ds.name
             FROM current_source s
@@ -2674,63 +3229,25 @@ def _bulk_copy_canonical(
             'resolution_status_id',
         ),
         query="""
-          SELECT candidate.*
-          FROM (
-            SELECT
-              e.entity_id,
-              et.entity_type_id,
-              NULLIF(e.taxonomy_id, '')::BIGINT,
-              it.identifier_type_id,
-              e.canonical_identifier,
-              rs.resolution_status_id
-            FROM pq_entity e
-            JOIN load_vocab_entity_type et
-              ON et.name = e.entity_type
-            JOIN load_vocab_identifier_type it
-              ON it.name = e.canonical_identifier_type
-            JOIN load_vocab_resolution_status rs
-              ON rs.name = e.resolution_status
-            UNION ALL
-            SELECT
-              canonical_entity_uuid(
-                {cv_term_entity_type},
-                NULL,
-                it.name,
-                ot.term_id
-              ),
-              et.entity_type_id,
-              NULL::BIGINT,
-              it.identifier_type_id,
-              ot.term_id,
-              rs.resolution_status_id
-            FROM pq_ontology_terms ot
-            JOIN load_vocab_entity_type et
-              ON et.name = {cv_term_entity_type}
-            JOIN load_vocab_identifier_type it
-              ON it.name = {cv_term_id_type}
-            JOIN load_vocab_resolution_status rs
-              ON rs.name = 'resolved'
-            WHERE ot.term_id IS NOT NULL
-              AND NOT EXISTS (
-                SELECT 1
-                FROM pq_entity e
-                WHERE e.entity_type = {cv_term_entity_type}
-                  AND NULLIF(e.taxonomy_id, '') IS NULL
-                  AND e.canonical_identifier_type = it.name
-                  AND e.canonical_identifier = ot.term_id
-              )
-          ) candidate
+          SELECT
+            e.entity_id,
+            et.entity_type_id,
+            NULLIF(e.taxonomy_id, '')::BIGINT,
+            it.identifier_type_id,
+            e.canonical_identifier,
+            rs.resolution_status_id
+          FROM pq_entity e
+          JOIN load_vocab_entity_type et
+            ON et.name = e.entity_type
+          JOIN load_vocab_identifier_type it
+            ON it.name = e.canonical_identifier_type
+          JOIN load_vocab_resolution_status rs
+            ON rs.name = e.resolution_status
           LEFT JOIN {existing_entity} existing
-            ON existing.entity_id = candidate.entity_id
+            ON existing.entity_id = e.entity_id
           WHERE existing.entity_id IS NULL
-        """.format(
-            cv_term_id_type=_sql_literal(CV_TERM_ID_TYPE),
-            cv_term_entity_type=_sql_literal(CV_TERM_ENTITY_TYPE),
-            existing_entity=_duckdb_pg_table(schema, 'entity'),
-        ),
+        """.format(existing_entity=_duckdb_pg_table(schema, 'entity')),
     )
-    cv_term_id_type = _sql_literal(CV_TERM_ID_TYPE)
-    cv_term_entity_type = _sql_literal(CV_TERM_ENTITY_TYPE)
     _copy_source_partition(
         con,
         database_url=database_url,
@@ -2751,12 +3268,7 @@ def _bulk_copy_canonical(
         query=f"""
           SELECT
             ds.source_id,
-            canonical_entity_uuid(
-              {cv_term_entity_type},
-              NULL,
-              it.name,
-              ot.term_id
-            ),
+            ce.entity_id,
             ot.term_id,
             ot.ontology_prefix,
             ot.label,
@@ -2796,12 +3308,62 @@ def _bulk_copy_canonical(
               '{{}}'
             )
           FROM pq_ontology_terms ot
-          JOIN load_vocab_identifier_type it
-            ON it.name = {cv_term_id_type}
           JOIN load_data_source ds
             ON ds.name = ot.source
+          JOIN ontology_term_resolution otr
+            ON otr.source = ot.source
+           AND otr.ontology_id = ot.ontology_id
+           AND otr.term_id = ot.term_id
+          JOIN canonical_entity ce
+            ON ce.entity_type = otr.entity_type
+           AND ce.taxonomy_id IS NOT DISTINCT FROM otr.taxonomy_id
+           AND ce.canonical_identifier_type_id =
+               otr.canonical_identifier_type_id
+           AND ce.canonical_identifier = otr.canonical_identifier
           WHERE ot.term_id IS NOT NULL
         """,
+        source_id=source_id,
+    )
+    _copy_source_partition(
+        con,
+        database_url=database_url,
+        schema=schema,
+        table='entity_ontology_relation',
+        columns=(
+            'source_id',
+            'subject_entity_id',
+            'predicate_id',
+            'object_entity_id',
+            'ontology_id',
+        ),
+        query="""
+          SELECT candidate.*
+          FROM (
+            SELECT DISTINCT
+              ds.source_id,
+              eor.subject_entity_id,
+              rp.relation_predicate_id,
+              eor.object_entity_id,
+              eor.ontology_id
+            FROM pq_entity_ontology_relation eor
+            JOIN load_data_source ds
+              ON ds.name = eor.source
+            JOIN load_vocab_relation_predicate rp
+              ON rp.name = eor.predicate
+          ) candidate
+          LEFT JOIN {existing_entity_ontology_relation} existing
+            ON existing.source_id = candidate.source_id
+           AND existing.subject_entity_id = candidate.subject_entity_id
+           AND existing.predicate_id = candidate.relation_predicate_id
+           AND existing.object_entity_id = candidate.object_entity_id
+           AND existing.ontology_id = candidate.ontology_id
+          WHERE existing.source_id IS NULL
+        """.format(
+            existing_entity_ontology_relation=_duckdb_pg_table(
+                schema,
+                'entity_ontology_relation',
+            ),
+        ),
         source_id=source_id,
     )
     _copy_source_partition(

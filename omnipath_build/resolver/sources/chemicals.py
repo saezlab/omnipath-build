@@ -1,10 +1,10 @@
 """Build chemical identifier resolver mappings from supported sources.
 
 Chemical resolver rows normalize source-specific identifiers such as ChEBI,
-ChEMBL, HMDB, LipidMaps, RaMP, RefMet, SwissLipids, and PubChem to standard
-InChI keys. A standard InChI value is retained when available, but
-canonicalization resolves chemical evidence by standard InChI key so
-equivalent source identifiers collapse to one canonical chemical entity.
+ChEMBL, HMDB, LipidMaps, RaMP, RefMet, SwissLipids, and PubChem. Structural
+chemicals canonicalize to standard InChIKey; ontology-only ChEBI chemicals
+canonicalize to their ChEBI accession so residues, fragments, and classes still
+resolve as chemical-domain entities.
 """
 
 from __future__ import annotations
@@ -114,19 +114,51 @@ def _clean_inchi(value: object) -> str | None:
 def _chebi_row(row: dict) -> dict | None:
     match = re.fullmatch(
         r'(?:CHEBI:)?(\d+)',
-        str(row.get('chebi_id') or '').strip(),
+        str(row.get('chebi_id') or row.get('id') or '').strip(),
     )
     key_value = match.group(1) if match else None
     standard_inchi = _clean_inchi(row.get('inchi'))
     standard_inchi_key = _clean_inchikey(row.get('inchikey'))
-    if not key_value or not standard_inchi or not standard_inchi_key:
+    if not key_value:
         return None
+    if standard_inchi_key:
+        return {
+            'key_type': CHEBI_TYPE,
+            'key_value': key_value,
+            'canonical_type': STANDARD_INCHI_KEY_TYPE,
+            'canonical_identifier': standard_inchi_key,
+            'standard_inchi_key': standard_inchi_key,
+            'standard_inchi': standard_inchi,
+        }
     return {
         'key_type': CHEBI_TYPE,
         'key_value': key_value,
-        'standard_inchi_key': standard_inchi_key,
-        'standard_inchi': standard_inchi,
+        'canonical_type': CHEBI_TYPE,
+        'canonical_identifier': key_value,
     }
+
+
+def _chebi_rows(row: dict) -> Iterable[dict]:
+    base = _chebi_row(row)
+    if base is None:
+        return
+
+    seen = set()
+    for raw_id in (
+        row.get('chebi_id') or row.get('id'),
+        *(row.get('alt_ids') or []),
+    ):
+        match = re.fullmatch(
+            r'(?:CHEBI:)?(\d+)',
+            str(raw_id or '').strip(),
+        )
+        if not match:
+            continue
+        key_value = match.group(1)
+        if key_value in seen:
+            continue
+        seen.add(key_value)
+        yield {**base, 'key_value': key_value}
 
 
 def _chembl_row(row: dict) -> dict | None:
@@ -241,6 +273,27 @@ def _chemical_identifier_rows(
     chemical_lookup_sources: Iterable[str] | None = None,
 ) -> Iterable[dict]:
     for source in _validate_chemical_sources(sources):
+        if source == 'chebi':
+            emitted = 0
+            seen: set[tuple[object, object, object, object]] = set()
+            for raw_row in chebi_resource.molecules.raw():
+                for row in _chebi_rows(raw_row):
+                    key = (
+                        row.get('key_type'),
+                        row.get('key_value'),
+                        row.get('canonical_type'),
+                        row.get('canonical_identifier'),
+                    )
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    yield row
+                    emitted += 1
+                    if max_records is not None and emitted >= max_records:
+                        break
+                if max_records is not None and emitted >= max_records:
+                    break
+            continue
         if source == 'pubchem':
             from omnipath_build.resolver.sources.pubchem import (
                 iter_pubchem_compound_rows,
@@ -277,11 +330,16 @@ def _chemical_identifier_rows(
             raw_kwargs['filter_chemical_resolver_inchikeys'] = False
         emitted = 0
         for raw_row in dataset.raw(**raw_kwargs):
-            row = mapper(raw_row)
-            if row is None:
-                continue
-            yield row
-            emitted += 1
+            rows = (
+                _chebi_rows(raw_row)
+                if source == 'chebi'
+                else (row for row in (mapper(raw_row),) if row is not None)
+            )
+            for row in rows:
+                yield row
+                emitted += 1
+                if max_records is not None and emitted >= max_records:
+                    break
             if max_records is not None and emitted >= max_records:
                 break
 
@@ -688,13 +746,20 @@ def _normalized_chemical_lookup_rows(rows: Iterable[dict]) -> Iterable[dict]:
         if key_type is None:
             continue
         key_type = str(key_type)
+        canonical_type = str(
+            row.get('canonical_type')
+            or row.get('canonical_identifier_type')
+            or STANDARD_INCHI_KEY_TYPE
+        )
+        canonical_identifier = (
+            row.get('canonical_identifier')
+            or row.get('standard_inchi_key')
+        )
         yield {
             'key_identifier_type_id': identifier_type_id(key_type),
             'key_value': row.get('key_value'),
-            'canonical_identifier_type_id': identifier_type_id(
-                STANDARD_INCHI_KEY_TYPE
-            ),
-            'canonical_identifier': row.get('standard_inchi_key'),
+            'canonical_identifier_type_id': identifier_type_id(canonical_type),
+            'canonical_identifier': canonical_identifier,
         }
 
 
@@ -709,6 +774,13 @@ def _split_chemical_identifier_lookup(
             continue
         key_type = str(key_type)
         type_names.add(key_type)
+        type_names.add(
+            str(
+                row.get('canonical_type')
+                or row.get('canonical_identifier_type')
+                or STANDARD_INCHI_KEY_TYPE
+            )
+        )
         normalized_rows.extend(_normalized_chemical_lookup_rows((row,)))
 
     identifier_types = pl.DataFrame(

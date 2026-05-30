@@ -50,17 +50,9 @@ The shared projector flattens pypath silver entity trees:
 - Two-member interaction-like records become relation evidence.
 - Other member trees produce membership relation evidence.
 
-## Ontology Datasets
-
-Ontology datasets are handled separately. Their terms are collected and loaded
-as resolved CV-term entities. If OBO artifacts are enabled, OBO files are
-written under `data/obo/`.
-
 ## Main Files
 
 - `omnipath_build/duckdb_direct_pipeline.py`: dataset loop, batching, and
-  ontology handling.
+  direct load orchestration.
 - `omnipath_build/evidence_projector.py`: shared projection rules.
 - `omnipath_build/duckdb_load.py`: DuckDB table creation and row writers.
-- `omnipath_build/ontology_artifacts.py`: OBO artifact writing.
-

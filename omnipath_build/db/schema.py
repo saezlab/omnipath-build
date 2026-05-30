@@ -27,6 +27,8 @@ CONTENT_TABLES: tuple[str, ...] = (
     'relation_bitmap_id',
     'entity_identifier_lookup',
     'entity_relation_counts',
+    'entity_ontology_term',
+    'entity_ontology_relation',
     'ontology_terms',
     'relation_annotation',
     'relation_evidence_annotation',
@@ -49,6 +51,7 @@ CONTENT_TABLES: tuple[str, ...] = (
 
 SOURCE_PARTITIONED_TABLES: tuple[str, ...] = (
     'ontology_terms',
+    'entity_ontology_relation',
     'entity_evidence',
     'entity_evidence_identifier',
     'relation_evidence',
@@ -61,6 +64,7 @@ SOURCE_PARTITIONED_TABLES: tuple[str, ...] = (
 
 SOURCE_PARTITION_DROP_ORDER: tuple[str, ...] = (
     'ontology_terms',
+    'entity_ontology_relation',
     'relation_evidence_annotation',
     'relation_evidence_relation',
     'entity_annotation_relation',
@@ -101,6 +105,16 @@ CONTENT_PRIMARY_KEYS: tuple[tuple[str, tuple[str, ...]], ...] = (
         ('source_id', 'relation_evidence_id'),
     ),
     ('ontology_terms', ('source_id', 'term_entity_id')),
+    (
+        'entity_ontology_relation',
+        (
+            'source_id',
+            'subject_entity_id',
+            'predicate_id',
+            'object_entity_id',
+            'ontology_id',
+        ),
+    ),
 )
 
 
@@ -493,6 +507,8 @@ def drop_deferred_content_indexes(
         'relation_source_dataset_idx',
         'relation_evidence_predicate_category_idx',
         'relation_evidence_source_dataset_row_idx',
+        'relation_canonical_subject_idx',
+        'relation_canonical_object_idx',
         'entity_evidence_annotation_annotation_key_idx',
         'entity_annotation_relation_relation_id_idx',
         'relation_evidence_annotation_relation_evidence_idx',
@@ -1094,6 +1110,8 @@ def _ensure_resolution_schema(
     _ensure_resources_table_schema(cur, schema)
     log_step('create ontology terms table')
     _ensure_ontology_terms_table(cur, schema)
+    log_step('create entity ontology relation table')
+    _ensure_entity_ontology_relation_table(cur, schema)
     log_step('create resolver policy index')
     cur.execute(
         sql.SQL(
@@ -1733,6 +1751,57 @@ def _ensure_ontology_terms_table(
             """
             CREATE TABLE IF NOT EXISTS {}.ontology_terms_default
             PARTITION OF {}.ontology_terms DEFAULT
+            """
+        ).format(schema_id, schema_id)
+    )
+
+
+def _ensure_entity_ontology_relation_table(
+    cur: psycopg2.extensions.cursor,
+    schema: str,
+) -> None:
+    schema_id = sql.Identifier(schema)
+    if _table_exists(cur, schema, 'entity_ontology_relation') and (
+        not _is_partitioned_table(cur, schema, 'entity_ontology_relation')
+    ):
+        cur.execute(
+            sql.SQL('DROP TABLE {}.entity_ontology_relation CASCADE').format(
+                schema_id
+            )
+        )
+    cur.execute(
+        sql.SQL(
+            """
+            CREATE TABLE IF NOT EXISTS {}.entity_ontology_relation (
+              source_id bigint NOT NULL
+                REFERENCES {}.data_source(source_id),
+              subject_entity_id uuid NOT NULL
+                REFERENCES {}.entity(entity_id)
+                ON DELETE CASCADE,
+              predicate_id bigint NOT NULL
+                REFERENCES {}.vocab_relation_predicate(
+                  relation_predicate_id
+                ),
+              object_entity_id uuid NOT NULL
+                REFERENCES {}.entity(entity_id)
+                ON DELETE CASCADE,
+              ontology_id text NOT NULL,
+              PRIMARY KEY (
+                source_id,
+                subject_entity_id,
+                predicate_id,
+                object_entity_id,
+                ontology_id
+              )
+            ) PARTITION BY LIST (source_id)
+            """
+        ).format(schema_id, schema_id, schema_id, schema_id, schema_id)
+    )
+    cur.execute(
+        sql.SQL(
+            """
+            CREATE TABLE IF NOT EXISTS {}.entity_ontology_relation_default
+            PARTITION OF {}.entity_ontology_relation DEFAULT
             """
         ).format(schema_id, schema_id)
     )
@@ -2471,6 +2540,16 @@ def _ensure_resolution_indexes(
             'relation_evidence_predicate_category_idx',
             'relation_evidence',
             ('predicate_id', 'relation_category_id'),
+        ),
+        (
+            'relation_canonical_subject_idx',
+            'relation',
+            ('subject_entity_id',),
+        ),
+        (
+            'relation_canonical_object_idx',
+            'relation',
+            ('object_entity_id',),
         ),
         (
             'entity_evidence_annotation_annotation_key_idx',

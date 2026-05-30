@@ -35,10 +35,6 @@ import psycopg2
 from omnipath_build import duckdb_load
 from omnipath_build.resources import ResourceFunction, discover_resources
 from omnipath_build.db.refresh import source_has_content, delete_source_content
-from omnipath_build.ontology_artifacts import (
-    write_ontology_obo,
-    collect_ontology_terms,
-)
 
 DEFAULT_LOAD_EXCLUDED_SOURCES = frozenset({'rampdb'})
 PREPARSE_SHARD_CACHE_VERSION = 'raw_shards_v1'
@@ -110,8 +106,6 @@ class StagedDatasetTask:
     max_records: int | None
     state_path: str
     force_refresh: bool
-    obo_artifacts: bool
-    obo_output_dir: str
     threads: int
     raw_shard_path: str | None = None
     row_offset: int = 0
@@ -191,9 +185,6 @@ def run_direct_copy_pipeline(
     *,
     source: str,
     dataset: str,
-    ontology_records: Iterable[object] | None = None,
-    ontology_dataset: str = 'ontology',
-    ontology_id: str | None = None,
     database_url: str,
     schema: str,
     resolver_dir: str | Path = 'data',
@@ -229,14 +220,6 @@ def run_direct_copy_pipeline(
             row_offset=row_offset,
         )
         ontology_terms = 0
-        if ontology_records is not None:
-            ontology_terms = duckdb_load.project_ontology_terms(
-                con,
-                ontology_records,
-                source=source,
-                dataset=ontology_dataset,
-                ontology_id=ontology_id or ontology_dataset,
-            )
         projection_seconds = time.perf_counter() - projection_started
 
         canonicalize_started = time.perf_counter()
@@ -304,9 +287,6 @@ def stage_direct_copy_pipeline(
     source: str,
     dataset: str,
     state_path: str | Path,
-    ontology_records: Iterable[object] | None = None,
-    ontology_dataset: str = 'ontology',
-    ontology_id: str | None = None,
     resolver_dir: str | Path = 'data',
     max_records: int | None = None,
     threads: int = 4,
@@ -340,14 +320,6 @@ def stage_direct_copy_pipeline(
             row_offset=row_offset,
         )
         ontology_terms = 0
-        if ontology_records is not None:
-            ontology_terms = duckdb_load.project_ontology_terms(
-                con,
-                ontology_records,
-                source=source,
-                dataset=ontology_dataset,
-                ontology_id=ontology_id or ontology_dataset,
-            )
         projection_seconds = time.perf_counter() - projection_started
 
         canonicalize_started = time.perf_counter()
@@ -574,8 +546,6 @@ def run_discovered_direct_load(
     max_records: int | None = None,
     state_path: str | Path | None = None,
     force_refresh: bool = False,
-    obo_artifacts: bool = True,
-    obo_output_dir: str | Path = 'data/obo',
     threads: int = 4,
     drop_load_constraints: bool = True,
     require_empty: bool = True,
@@ -645,8 +615,6 @@ def run_discovered_direct_load(
             batch_size=batch_size,
             max_records=max_records,
             force_refresh=force_refresh,
-            obo_artifacts=obo_artifacts,
-            obo_output_dir=obo_output_dir,
             threads=threads,
             drop_load_constraints=drop_load_constraints,
             require_empty=require_empty,
@@ -695,64 +663,24 @@ def run_discovered_direct_load(
                     )
                 )
                 state = _dataset_state_path(state_path, fn)
-                if fn.output_kind == 'ontology':
-                    terms = collect_ontology_terms(records)
-                    if obo_artifacts:
-                        obo_path = write_ontology_obo(
-                            fn,
-                            terms,
-                            output_dir=Path(obo_output_dir),
-                        )
-                        print(
-                            f'[{fn.source}.{fn.function_name}] obo={obo_path}',
-                            flush=True,
-                        )
-                    stats = run_direct_copy_pipeline(
-                        (),
-                        ontology_records=terms,
-                        ontology_dataset=fn.function_name,
-                        ontology_id=fn.ontology_id or fn.function_name,
-                        source=fn.source,
-                        dataset=fn.function_name,
-                        database_url=database_url,
-                        schema=schema,
-                        resolver_dir=resolver_dir,
-                        max_records=None,
-                        state_path=state,
-                        threads=threads,
-                        drop_load_constraints=False,
-                        require_empty=require_empty and first_dataset,
-                    )
-                    totals['source_rows'] += stats.source_rows
-                    totals['identifiers'] += stats.identifiers
-                    totals['annotations'] += stats.annotations
-                    totals['ontology_terms'] += stats.ontology_terms
-                    print(
-                        f'[{fn.source}.{fn.function_name}] '
-                        f'ontology_terms={stats.ontology_terms} '
-                        f'copy={stats.copy_seconds:.3f}s '
-                        f'total={stats.total_seconds:.3f}s',
-                        flush=True,
-                    )
-                else:
-                    stats = run_direct_copy_pipeline_batches(
-                        records,
-                        source=fn.source,
-                        dataset=fn.function_name,
-                        database_url=database_url,
-                        schema=schema,
-                        resolver_dir=resolver_dir,
-                        batch_size=batch_size,
-                        max_records=max_records,
-                        state_path=state,
-                        threads=threads,
-                        drop_load_constraints=False,
-                        require_empty=require_empty and first_dataset,
-                    )
-                    totals['source_rows'] += stats.source_rows
-                    totals['identifiers'] += stats.identifiers
-                    totals['annotations'] += stats.annotations
-                    totals['ontology_terms'] += stats.ontology_terms
+                stats = run_direct_copy_pipeline_batches(
+                    records,
+                    source=fn.source,
+                    dataset=fn.function_name,
+                    database_url=database_url,
+                    schema=schema,
+                    resolver_dir=resolver_dir,
+                    batch_size=batch_size,
+                    max_records=max_records,
+                    state_path=state,
+                    threads=threads,
+                    drop_load_constraints=False,
+                    require_empty=require_empty and first_dataset,
+                )
+                totals['source_rows'] += stats.source_rows
+                totals['identifiers'] += stats.identifiers
+                totals['annotations'] += stats.annotations
+                totals['ontology_terms'] += stats.ontology_terms
                 dataset_count += 1
                 source_succeeded = True
                 first_dataset = False
@@ -793,8 +721,6 @@ def _run_discovered_direct_load_staged(
     batch_size: int,
     max_records: int | None,
     force_refresh: bool,
-    obo_artifacts: bool,
-    obo_output_dir: str | Path,
     threads: int,
     drop_load_constraints: bool,
     require_empty: bool,
@@ -817,8 +743,6 @@ def _run_discovered_direct_load_staged(
                 batch_size=batch_size,
                 max_records=max_records,
                 force_refresh=force_refresh,
-                obo_artifacts=obo_artifacts,
-                obo_output_dir=obo_output_dir,
                 threads=threads,
                 drop_load_constraints=drop_load_constraints,
                 require_empty=require_empty,
@@ -839,8 +763,6 @@ def _run_discovered_direct_load_staged(
         batch_size=batch_size,
         max_records=max_records,
         force_refresh=force_refresh,
-        obo_artifacts=obo_artifacts,
-        obo_output_dir=obo_output_dir,
         threads=threads,
         drop_load_constraints=drop_load_constraints,
         require_empty=require_empty,
@@ -862,8 +784,6 @@ def _run_discovered_direct_load_staged_in_dir(
     batch_size: int,
     max_records: int | None,
     force_refresh: bool,
-    obo_artifacts: bool,
-    obo_output_dir: str | Path,
     threads: int,
     drop_load_constraints: bool,
     require_empty: bool,
@@ -885,8 +805,6 @@ def _run_discovered_direct_load_staged_in_dir(
         batch_size=batch_size,
         max_records=max_records,
         force_refresh=force_refresh,
-        obo_artifacts=obo_artifacts,
-        obo_output_dir=obo_output_dir,
         threads=threads,
         staging_dir=staging_dir,
         stage_jobs=stage_jobs,
@@ -1027,8 +945,6 @@ def _prepare_staged_dataset_tasks(
     batch_size: int,
     max_records: int | None,
     force_refresh: bool,
-    obo_artifacts: bool,
-    obo_output_dir: str | Path,
     threads: int,
     staging_dir: Path,
     stage_jobs: int,
@@ -1055,31 +971,6 @@ def _prepare_staged_dataset_tasks(
             raw_dataset = getattr(fn.call, '_raw_dataset', None)
             if raw_dataset is None:
                 continue
-            base_state = state_dir / (
-                f'{_path_slug(fn.source)}_{_path_slug(fn.function_name)}.duckdb'
-            )
-            if fn.output_kind == 'ontology':
-                task_groups.append(
-                    [
-                        StagedDatasetTask(
-                            source=fn.source,
-                            dataset=fn.function_name,
-                            output_kind=fn.output_kind,
-                            database=database,
-                            inputs_package=inputs_package,
-                            resolver_dir=str(resolver_dir),
-                            batch_size=batch_size,
-                            max_records=max_records,
-                            state_path=str(base_state),
-                            force_refresh=force_refresh,
-                            obo_artifacts=obo_artifacts,
-                            obo_output_dir=str(obo_output_dir),
-                            threads=threads,
-                        )
-                    ]
-                )
-                continue
-
             prepare_tasks.append(
                 StagedDatasetPrepareTask(
                     source=fn.source,
@@ -1157,8 +1048,6 @@ def _prepare_staged_dataset_tasks(
                         )
                     ),
                     force_refresh=force_refresh,
-                    obo_artifacts=obo_artifacts,
-                    obo_output_dir=str(obo_output_dir),
                     threads=threads,
                     raw_shard_path=shard.path,
                     row_offset=shard.row_offset,
@@ -1526,7 +1415,7 @@ def _stage_dataset_task_worker(task: StagedDatasetTask) -> StagedDatasetTaskResu
         raise ValueError(f'{task.source}.{task.dataset} has no raw dataset')
 
     resolver_dir = Path(task.resolver_dir)
-    if fn.output_kind == 'ontology':
+    if task.raw_shard_path is None:
         records = raw_dataset(
             **_raw_dataset_kwargs(
                 fn,
@@ -1535,55 +1424,20 @@ def _stage_dataset_task_worker(task: StagedDatasetTask) -> StagedDatasetTaskResu
                 max_records=task.max_records,
             )
         )
-        terms = collect_ontology_terms(records)
-        if task.obo_artifacts:
-            obo_path = write_ontology_obo(
-                fn,
-                terms,
-                output_dir=Path(task.obo_output_dir),
-            )
-            print(
-                f'[{fn.source}.{fn.function_name}] obo={obo_path}',
-                flush=True,
-            )
-        stages = (
-            stage_direct_copy_pipeline(
-                (),
-                ontology_records=terms,
-                ontology_dataset=fn.function_name,
-                ontology_id=fn.ontology_id or fn.function_name,
-                source=fn.source,
-                dataset=fn.function_name,
-                state_path=task.state_path,
-                resolver_dir=resolver_dir,
-                max_records=None,
-                threads=task.threads,
-            ),
-        )
     else:
-        if task.raw_shard_path is None:
-            records = raw_dataset(
-                **_raw_dataset_kwargs(
-                    fn,
-                    resolver_dir=resolver_dir,
-                    force_refresh=task.force_refresh,
-                    max_records=task.max_records,
-                )
-            )
-        else:
-            records = _iter_raw_shard_records(raw_dataset, task.raw_shard_path)
-        stages = (
-            stage_direct_copy_pipeline(
-                records,
-                source=fn.source,
-                dataset=fn.function_name,
-                state_path=task.state_path,
-                resolver_dir=resolver_dir,
-                max_records=None,
-                threads=task.threads,
-                row_offset=task.row_offset,
-            ),
-        )
+        records = _iter_raw_shard_records(raw_dataset, task.raw_shard_path)
+    stages = (
+        stage_direct_copy_pipeline(
+            records,
+            source=fn.source,
+            dataset=fn.function_name,
+            state_path=task.state_path,
+            resolver_dir=resolver_dir,
+            max_records=None,
+            threads=task.threads,
+            row_offset=task.row_offset,
+        ),
+    )
 
     return StagedDatasetTaskResult(
         source=fn.source,
@@ -1630,12 +1484,12 @@ def _discover_entity_datasets(
         for source in source_names
         for fn in discovered[source]
         if fn.function_name != 'resource'
-        and fn.output_kind in {'entity', 'ontology'}
+        and fn.output_kind == 'entity'
         and (dataset is None or fn.function_name == dataset)
         and getattr(fn.call, '_raw_dataset', None) is not None
     ]
     if not selected:
-        raise ValueError('No matching entity/ontology datasets found.')
+        raise ValueError('No matching entity datasets found.')
     return selected
 
 
@@ -1685,7 +1539,7 @@ def run_uniprot_direct_copy_pipeline(
     drop_load_constraints: bool = True,
     require_empty: bool = True,
 ) -> DirectCopyStats:
-    """Run the focused COPY pipeline for UniProt proteins."""
+    """Run the focused COPY pipeline for UniProt protein annotations."""
 
     from pypath.inputs_v2.uniprot import resource as uniprot_resource
 
@@ -1694,14 +1548,10 @@ def run_uniprot_direct_copy_pipeline(
         source='uniprot',
         dataset='proteins',
     )
-    ontology_records = uniprot_resource.ontology(force_refresh=force_refresh)
     return run_direct_copy_pipeline(
         records,
         source='uniprot',
         dataset='proteins',
-        ontology_records=ontology_records,
-        ontology_dataset='ontology',
-        ontology_id='uniprot_keywords',
         database_url=database_url,
         schema=schema,
         resolver_dir=resolver_dir,
@@ -1828,17 +1678,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help='Delete and refresh selected sources instead of skipping them.',
     )
     parser.add_argument(
-        '--obo-artifacts',
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help='Write ontology datasets as OBO artifacts for the API service.',
-    )
-    parser.add_argument(
-        '--obo-output-dir',
-        default='data/obo',
-        help='Directory for OBO artifacts written from ontology datasets.',
-    )
-    parser.add_argument(
         '--keep-load-constraints',
         action='store_true',
         help='Do not drop high-volume load constraints/indexes before COPY.',
@@ -1879,8 +1718,6 @@ def main(argv: list[str] | None = None) -> int:
             max_records=max_records,
             state_path=args.state_path,
             force_refresh=args.force_refresh,
-            obo_artifacts=args.obo_artifacts,
-            obo_output_dir=args.obo_output_dir,
             threads=args.threads,
             drop_load_constraints=not args.keep_load_constraints,
             require_empty=not args.append,

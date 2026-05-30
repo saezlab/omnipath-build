@@ -2,10 +2,9 @@
 
 The build pipeline does not keep a hand-written list of datasets.
 Instead, it imports the configured inputs package, walks resource modules, and
-collects ``Resource``, ``Dataset``, ``OntologyDataset``, and
-``ArtifactDataset`` objects exposed by pypath. Only entity and ontology datasets
-with raw dataset access are selected for evidence ingest; id translation and
-artifact-only datasets are skipped.
+collects ``Resource``, ``Dataset``, and ``ArtifactDataset`` objects exposed by
+pypath. Only entity datasets with raw dataset access are selected for evidence
+ingest; id translation and artifact-only datasets are skipped.
 """
 
 from __future__ import annotations
@@ -30,10 +29,6 @@ class ResourceFunction:
     call: Callable[[], Iterable] | Callable[[], object]
     resource_id: str
     output_kind: str = 'entity'
-    file_extension: str | None = None
-    file_stem: str | None = None
-    document: object | None = None
-    ontology_id: str | None = None
 
 
 class DiscoveryError(RuntimeError):
@@ -74,7 +69,6 @@ def discover_resources(
     from pypath.inputs_v2.base import (  # noqa: PLC0415
         ArtifactDataset,
         Dataset,
-        OntologyDataset,
         Resource,
     )
 
@@ -93,7 +87,7 @@ def discover_resources(
 
     prefix = f'{inputs_package}.'
     discovered: dict[str, list[ResourceFunction]] = {}
-    dataset_types = (Dataset, OntologyDataset, ArtifactDataset)
+    dataset_types = (Dataset, ArtifactDataset)
 
     for module_info in pkgutil.walk_packages(package_paths, prefix):
         scanned_modules += 1
@@ -153,22 +147,10 @@ def discover_resources(
 
         for dataset_name, dataset_obj in dataset_members:
             output_kind = 'entity'
-            file_extension = None
-            file_stem = None
-            document = None
-            ontology_id = None
-            if isinstance(dataset_obj, OntologyDataset):
-                output_kind = 'ontology'
-                file_extension = dataset_obj.extension
-                file_stem = dataset_obj.file_stem
-                document = dataset_obj.document
-                ontology_id = dataset_obj.ontology_id
-            elif isinstance(dataset_obj, ArtifactDataset):
+            if isinstance(dataset_obj, ArtifactDataset):
                 output_kind = 'artifact'
-                file_extension = dataset_obj.extension
-                file_stem = dataset_obj.file_stem
 
-            if output_kind in {'entity', 'ontology'}:
+            if output_kind == 'entity':
 
                 def dataset_call(
                     dataset_obj=dataset_obj,
@@ -192,10 +174,6 @@ def discover_resources(
                     call=dataset_call,
                     resource_id=relative_name,
                     output_kind=output_kind,
-                    file_extension=file_extension,
-                    file_stem=file_stem,
-                    document=document,
-                    ontology_id=ontology_id,
                 ),
             )
 

@@ -257,6 +257,8 @@ def main(argv: list[str] | None = None) -> int:
                     f'{table_stats.entity_identifier_lookup} '
                     f'entity_relation_counts='
                     f'{table_stats.entity_relation_counts} '
+                    f'entity_ontology_terms='
+                    f'{table_stats.entity_ontology_terms} '
                     f'ontology_terms={table_stats.ontology_terms} '
                     f'resources={resource_stats.resources}',
                     flush=True,

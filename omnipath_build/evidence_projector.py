@@ -11,6 +11,8 @@ from omnipath_build.ingest.common import (
     annotation_key,
     identifier_key,
     annotation_to_row,
+    association_to_row,
+    association_relation,
     include_identifier,
     entity_evidence_key,
     extract_taxonomy_id,
@@ -18,7 +20,6 @@ from omnipath_build.ingest.common import (
     relation_evidence_key,
     membership_relation_spec,
     interaction_relation_spec,
-    ontology_annotation_relation,
     interaction_relation_annotations,
 )
 from omnipath_build.relation_rules import ASSOCIATION_CATEGORY, string_or_none
@@ -46,6 +47,7 @@ class _EvidenceWriters(Protocol):
     annotation: _RowWriter
     relation: _RowWriter
     annotation_relation: _RowWriter
+    ontology_relation: _RowWriter
 
 
 class EvidenceProjectorBase:
@@ -124,35 +126,6 @@ class EvidenceProjectorBase:
                 stats.identifiers += 1
 
             for annotation in row.get('annotations') or []:
-                relation_spec = ontology_annotation_relation(
-                    annotation,
-                    subject_occurrence_id=occurrence_id,
-                )
-                if relation_spec is not None:
-                    writers.annotation_relation.write(
-                        {
-                            'relation_evidence_id': relation_evidence_key(
-                                source,
-                                dataset,
-                                row_id,
-                                relation_spec.relation_occurrence_id,
-                            ),
-                            'source': source,
-                            'dataset': dataset,
-                            'row_id': row_id,
-                            'subject_entity_evidence_id': entity_evidence_id,
-                            'predicate': relation_spec.predicate_rule.predicate,
-                            'object_entity_type': relation_spec.object_entity_type,
-                            'object_id_type': relation_spec.object_id_type,
-                            'object_id': relation_spec.object_id,
-                            'relation_category': (
-                                relation_spec.predicate_rule.relation_category
-                                or ASSOCIATION_CATEGORY
-                            ),
-                        }
-                    )
-                    stats.relation_evidence += 1
-                    continue
                 if _write_annotation(
                     writers.entity_annotation,
                     writers.annotation,
@@ -162,6 +135,48 @@ class EvidenceProjectorBase:
                     annotation=annotation,
                 ):
                     stats.annotations += 1
+
+            for relation in row.get('ontology_relations') or []:
+                object_ref = relation.get('object') or {}
+                predicate = string_or_none(relation.get('predicate'))
+                object_entity_type = string_or_none(object_ref.get('type'))
+                object_identifier_type = string_or_none(
+                    object_ref.get('identifier_type')
+                )
+                object_identifier = string_or_none(object_ref.get('identifier'))
+                if (
+                    predicate is None
+                    or object_entity_type is None
+                    or object_identifier_type is None
+                    or object_identifier is None
+                ):
+                    continue
+                writers.ontology_relation.write(
+                    {
+                        'source': source,
+                        'dataset': dataset,
+                        'subject_entity_evidence_id': entity_evidence_id,
+                        'ontology_id': string_or_none(
+                            relation.get('ontology_id')
+                        ),
+                        'subject_entity_type': None,
+                        'subject_identifier_type': None,
+                        'subject_identifier': None,
+                        'predicate': predicate,
+                        'object_entity_type': object_entity_type,
+                        'object_identifier_type': object_identifier_type,
+                        'object_identifier': object_identifier,
+                    }
+                )
+            stats.relation_evidence += self._write_association_relations(
+                writers,
+                source=source,
+                dataset=dataset,
+                row_id=row_id,
+                occurrence_prefix=occurrence_id,
+                associations=row.get('associations') or [],
+                subject_occurrence_ids=(occurrence_id,),
+            )
 
         member_refs: list[tuple[str, object]] = []
         for member_index, membership in enumerate(memberships):
@@ -213,42 +228,75 @@ class EvidenceProjectorBase:
                 ),
             )
             stats.relation_evidence += 1
+            relation_annotations = interaction_relation_annotations(row)
             stats.annotations += self._write_relation_annotations(
                 writers,
                 seen_annotations,
                 source=source,
                 relation_evidence_id=relation_evidence_id,
-                annotations=interaction_relation_annotations(row),
+                annotations=relation_annotations,
                 annotation_scope='relation',
+            )
+            stats.relation_evidence += self._write_association_relations(
+                writers,
+                source=source,
+                dataset=dataset,
+                row_id=row_id,
+                occurrence_prefix=f'{spec.relation_occurrence_id}:relation',
+                associations=row.get('associations') or [],
+                subject_occurrence_ids=(
+                    str(spec.subject_ref),
+                    str(spec.object_ref),
+                ),
             )
             membership_by_occurrence_id = dict(member_refs)
             subject_membership = membership_by_occurrence_id.get(
                 str(spec.subject_ref)
             )
             if subject_membership is not None:
+                subject_annotations = (
+                    getattr(subject_membership, 'annotations', None) or []
+                )
                 stats.annotations += self._write_relation_annotations(
                     writers,
                     seen_annotations,
                     source=source,
                     relation_evidence_id=relation_evidence_id,
-                    annotations=(
-                        getattr(subject_membership, 'annotations', None) or []
-                    ),
+                    annotations=subject_annotations,
                     annotation_scope='subject',
+                )
+                stats.relation_evidence += self._write_association_relations(
+                    writers,
+                    source=source,
+                    dataset=dataset,
+                    row_id=row_id,
+                    occurrence_prefix=f'{spec.relation_occurrence_id}:subject',
+                    associations=getattr(subject_membership, 'associations', None) or [],
+                    subject_occurrence_ids=(str(spec.subject_ref),),
                 )
             object_membership = membership_by_occurrence_id.get(
                 str(spec.object_ref)
             )
             if object_membership is not None:
+                object_annotations = (
+                    getattr(object_membership, 'annotations', None) or []
+                )
                 stats.annotations += self._write_relation_annotations(
                     writers,
                     seen_annotations,
                     source=source,
                     relation_evidence_id=relation_evidence_id,
-                    annotations=(
-                        getattr(object_membership, 'annotations', None) or []
-                    ),
+                    annotations=object_annotations,
                     annotation_scope='object',
+                )
+                stats.relation_evidence += self._write_association_relations(
+                    writers,
+                    source=source,
+                    dataset=dataset,
+                    row_id=row_id,
+                    occurrence_prefix=f'{spec.relation_occurrence_id}:object',
+                    associations=getattr(object_membership, 'associations', None) or [],
+                    subject_occurrence_ids=(str(spec.object_ref),),
                 )
         elif member_refs:
             for member_index, (member_occurrence_id, membership) in enumerate(
@@ -283,13 +331,23 @@ class EvidenceProjectorBase:
                     ),
                 )
                 stats.relation_evidence += 1
+                member_annotations = getattr(membership, 'annotations', None) or []
                 stats.annotations += self._write_relation_annotations(
                     writers,
                     seen_annotations,
                     source=source,
                     relation_evidence_id=relation_evidence_id,
-                    annotations=getattr(membership, 'annotations', None) or [],
+                    annotations=member_annotations,
                     annotation_scope='object',
+                )
+                stats.relation_evidence += self._write_association_relations(
+                    writers,
+                    source=source,
+                    dataset=dataset,
+                    row_id=row_id,
+                    occurrence_prefix=f'{relation_occurrence_id}:object',
+                    associations=getattr(membership, 'associations', None) or [],
+                    subject_occurrence_ids=(member_occurrence_id,),
                 )
 
     @staticmethod
@@ -349,6 +407,64 @@ class EvidenceProjectorBase:
                 annotation=annotation,
                 annotation_scope=annotation_scope,
             ):
+                count += 1
+        return count
+
+    @staticmethod
+    def _write_association_relations(
+        writers: _EvidenceWriters,
+        *,
+        source: str,
+        dataset: str,
+        row_id: int,
+        occurrence_prefix: str,
+        associations: Iterable[object],
+        subject_occurrence_ids: Iterable[str],
+    ) -> int:
+        count = 0
+        seen_relation_occurrences: set[str] = set()
+        for subject_occurrence_id in subject_occurrence_ids:
+            for association in associations:
+                association_row = association_to_row(association)
+                relation_spec = association_relation(
+                    association_row,
+                    subject_occurrence_id=subject_occurrence_id,
+                )
+                if relation_spec is None:
+                    continue
+                if relation_spec.relation_occurrence_id in seen_relation_occurrences:
+                    continue
+                seen_relation_occurrences.add(relation_spec.relation_occurrence_id)
+                writers.annotation_relation.write(
+                    {
+                        'relation_evidence_id': relation_evidence_key(
+                            source,
+                            dataset,
+                            row_id,
+                            (
+                                f'{occurrence_prefix}:'
+                                f'{relation_spec.relation_occurrence_id}'
+                            ),
+                        ),
+                        'source': source,
+                        'dataset': dataset,
+                        'row_id': row_id,
+                        'subject_entity_evidence_id': entity_evidence_key(
+                            source,
+                            dataset,
+                            row_id,
+                            relation_spec.subject_occurrence_id,
+                        ),
+                        'predicate': relation_spec.predicate_rule.predicate,
+                        'object_entity_type': relation_spec.object_entity_type,
+                        'object_id_type': relation_spec.object_id_type,
+                        'object_id': relation_spec.object_id,
+                        'relation_category': (
+                            relation_spec.predicate_rule.relation_category
+                            or ASSOCIATION_CATEGORY
+                        ),
+                    }
+                )
                 count += 1
         return count
 

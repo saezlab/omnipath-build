@@ -18,12 +18,11 @@ pypath dataset objects:
 
 - `Resource`
 - `Dataset`
-- `OntologyDataset`
 - `ArtifactDataset`
 
-The load pipeline selects only entity and ontology datasets with raw dataset
-access. Id-translation datasets and artifact-only datasets are skipped for
-evidence ingest.
+The load pipeline selects only entity datasets with raw dataset access.
+Id-translation datasets and artifact-only datasets are skipped for evidence
+ingest.
 
 ## Selection Rules
 
@@ -48,4 +47,3 @@ make load SOURCE=bindingdb DATASET=interactions
 
 If `PYPATH_DOWNLOAD_DATADIR` is not set, discovery points pypath downloads at
 the project-local `pypath-data/` directory.
-

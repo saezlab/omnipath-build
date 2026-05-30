@@ -198,6 +198,14 @@ def _create_source_cleanup_scope(
             FROM {}.ontology_terms ot
             WHERE ot.source_id = %s
             UNION
+            SELECT DISTINCT eor.subject_entity_id AS entity_id
+            FROM {}.entity_ontology_relation eor
+            WHERE eor.source_id = %s
+            UNION
+            SELECT DISTINCT eor.object_entity_id AS entity_id
+            FROM {}.entity_ontology_relation eor
+            WHERE eor.source_id = %s
+            UNION
             SELECT DISTINCT r.entity_id
             FROM {}.entity_evidence_resolution r
             WHERE r.source_id = %s
@@ -213,8 +221,15 @@ def _create_source_cleanup_scope(
             WHERE re.source_id = %s
               AND re.object_entity_id IS NOT NULL
             """
-        ).format(schema_id, schema_id, schema_id, schema_id),
-        [source_id, source_id, source_id, source_id],
+        ).format(
+            schema_id,
+            schema_id,
+            schema_id,
+            schema_id,
+            schema_id,
+            schema_id,
+        ),
+        [source_id, source_id, source_id, source_id, source_id, source_id],
     )
     cur.execute(
         """
@@ -336,6 +351,7 @@ def _delete_source_evidence_rows(
     schema_id = sql.Identifier(schema)
     for table in (
         'ontology_terms',
+        'entity_ontology_relation',
         'relation_evidence_annotation',
         'relation_evidence_relation',
         'entity_annotation_relation',
@@ -413,10 +429,14 @@ def _garbage_collect_source_cleanup(
                 SELECT 1
                 FROM {}.relation rel
                 WHERE rel.subject_entity_id = e.entity_id
-                   OR rel.object_entity_id = e.entity_id
+              )
+              AND NOT EXISTS (
+                SELECT 1
+                FROM {}.relation rel
+                WHERE rel.object_entity_id = e.entity_id
               )
             """
-        ).format(schema_id, schema_id, schema_id)
+        ).format(schema_id, schema_id, schema_id, schema_id)
     )
     deleted['entities'] = int(cur.rowcount)
     cur.execute(
