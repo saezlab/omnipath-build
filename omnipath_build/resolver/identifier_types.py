@@ -42,6 +42,8 @@ IDENTIFIER_TYPE_NAMES: tuple[str, ...] = (
     REACTION_MEMBER_HASH_ID_TYPE,
     cv_term_label_accession(IdentifierNamespaceCv.RAMP_ID),
     cv_term_label_accession(IdentifierNamespaceCv.REFMET),
+    cv_term_label_accession(IdentifierNamespaceCv.KEGG_COMPOUND),
+    cv_term_label_accession(IdentifierNamespaceCv.CAS),
 )
 
 IDENTIFIER_TYPE_IDS: dict[str, int] = {

@@ -2,9 +2,10 @@
 
 Chemical resolver rows normalize source-specific identifiers such as ChEBI,
 ChEMBL, HMDB, LipidMaps, RaMP, RefMet, SwissLipids, and PubChem. Structural
-chemicals canonicalize to standard InChIKey; ontology-only ChEBI chemicals
-canonicalize to their ChEBI accession so residues, fragments, and classes still
-resolve as chemical-domain entities.
+chemicals canonicalize to standard InChIKey; remaining ChEBI and RefMet
+identifiers can canonicalize through conservative non-structural cross-reference
+clusters so residues, fragments, and classes still resolve as chemical-domain
+entities.
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ import re
 import sys
 from pathlib import Path
 from itertools import chain
+from dataclasses import dataclass
 from collections.abc import Callable, Iterable
 
 import polars as pl
@@ -45,17 +47,30 @@ CHEMICAL_IDENTIFIER_LOOKUP_SCHEMA: dict[str, pl.DataType] = {
     'canonical_identifier': pl.Utf8,
 }
 
+CHEBI_SOURCE = 'chebi'
+HMDB_SOURCE = 'hmdb'
+LIPIDMAPS_SOURCE = 'lipidmaps'
+SWISSLIPIDS_SOURCE = 'swisslipids'
+CHEMBL_SOURCE = 'chembl'
+REFMET_SOURCE = 'refmet'
+RAMP_SOURCE = 'ramp'
+PUBCHEM_SOURCE = 'pubchem'
 CHEMICAL_SOURCES: tuple[str, ...] = (
-    'chebi',
-    'hmdb',
-    'lipidmaps',
-    'swisslipids',
-    'chembl',
-    'refmet',
-    'ramp',
-    'pubchem',
+    CHEBI_SOURCE,
+    HMDB_SOURCE,
+    LIPIDMAPS_SOURCE,
+    SWISSLIPIDS_SOURCE,
+    CHEMBL_SOURCE,
+    REFMET_SOURCE,
+    RAMP_SOURCE,
+    PUBCHEM_SOURCE,
 )
-LOOKUP_DEPENDENT_CHEMICAL_SOURCES = frozenset({'chembl', 'pubchem'})
+LOOKUP_DEPENDENT_CHEMICAL_SOURCES = frozenset(
+    {CHEMBL_SOURCE, PUBCHEM_SOURCE}
+)
+NONSTRUCTURAL_CROSS_REFERENCE_SOURCE_NAMES = frozenset(
+    {CHEBI_SOURCE, REFMET_SOURCE}
+)
 CHEMICAL_IDENTIFIER_LOOKUP_OUTPUT_FILENAME = (
     'chemical_identifier_lookup.parquet'
 )
@@ -78,16 +93,27 @@ STANDARD_INCHI_KEY_TYPE = cv_term_label_accession(
 PUBCHEM_COMPOUND_TYPE = cv_term_label_accession(
     IdentifierNamespaceCv.PUBCHEM_COMPOUND
 )
+KEGG_COMPOUND_TYPE = cv_term_label_accession(
+    IdentifierNamespaceCv.KEGG_COMPOUND
+)
+CAS_TYPE = cv_term_label_accession(IdentifierNamespaceCv.CAS)
 CHEMICAL_SOURCE_IDENTIFIER_TYPES = {
-    'chebi': CHEBI_TYPE,
-    'chembl': CHEMBL_COMPOUND_TYPE,
-    'hmdb': HMDB_TYPE,
-    'lipidmaps': LIPIDMAPS_TYPE,
-    'pubchem': PUBCHEM_COMPOUND_TYPE,
-    'ramp': RAMP_ID_TYPE,
-    'refmet': REFMET_TYPE,
-    'swisslipids': SWISSLIPIDS_TYPE,
+    CHEBI_SOURCE: CHEBI_TYPE,
+    CHEMBL_SOURCE: CHEMBL_COMPOUND_TYPE,
+    HMDB_SOURCE: HMDB_TYPE,
+    LIPIDMAPS_SOURCE: LIPIDMAPS_TYPE,
+    PUBCHEM_SOURCE: PUBCHEM_COMPOUND_TYPE,
+    RAMP_SOURCE: RAMP_ID_TYPE,
+    REFMET_SOURCE: REFMET_TYPE,
+    SWISSLIPIDS_SOURCE: SWISSLIPIDS_TYPE,
 }
+
+
+@dataclass(frozen=True)
+class _NonstructuralCrossReferencePolicy:
+    raw_rows: Callable[[], Iterable[dict]]
+    rows: Callable[[Iterable[dict], set[str]], Iterable[dict]]
+    structural_hit_sources: frozenset[str] = frozenset()
 
 
 def _clean(value: object) -> str | None:
@@ -109,6 +135,129 @@ def _clean_inchi(value: object) -> str | None:
     if text is None or text.lower() in {'none', 'inchi=none'}:
         return None
     return text
+
+
+def _clean_sequence(value: object, *, upper: bool = False) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    values = value if isinstance(value, list | tuple | set) else (value,)
+    result = []
+    for item in values:
+        text = _clean(item)
+        if text is None:
+            continue
+        result.append(text.upper() if upper else text)
+    return tuple(dict.fromkeys(result))
+
+
+def _chebi_identifier_values(row: dict) -> tuple[str, ...]:
+    values = []
+    for raw_id in (
+        row.get('chebi_id') or row.get('id'),
+        *(row.get('alt_ids') or []),
+    ):
+        match = re.fullmatch(
+            r'(?:CHEBI:)?(\d+)',
+            str(raw_id or '').strip(),
+        )
+        if match:
+            values.append(match.group(1))
+    return tuple(dict.fromkeys(values))
+
+
+def _structural_hits_by_node(
+    rows: Iterable[tuple[set[tuple[str, str]], str | None]],
+) -> dict[tuple[str, str], set[str]]:
+    hits: dict[tuple[str, str], set[str]] = {}
+    for nodes, standard_inchi_key in rows:
+        if not standard_inchi_key:
+            continue
+        for node in nodes:
+            hits.setdefault(node, set()).add(standard_inchi_key)
+    return hits
+
+
+def _cluster_lookup_rows(
+    candidate_rows: Iterable[tuple[int, dict, set[tuple[str, str]]]],
+    structural_hits: dict[tuple[str, str], set[str]],
+    *,
+    emit_key_types: set[str] | None = None,
+) -> tuple[list[dict], set[int], set[tuple[str, str]]]:
+    row_sets = list(candidate_rows)
+    if not row_sets:
+        return [], set(), set()
+
+    node_rows: dict[tuple[str, str], set[int]] = {}
+    row_nodes: dict[int, set[tuple[str, str]]] = {}
+    for index, _row, nodes in row_sets:
+        row_nodes[index] = nodes
+        for node in nodes:
+            node_rows.setdefault(node, set()).add(index)
+
+    emitted_rows: list[dict] = []
+    clustered_row_indices: set[int] = set()
+    clustered_nodes: set[tuple[str, str]] = set()
+    seen_nodes: set[tuple[str, str]] = set()
+    for start_node in sorted(node_rows):
+        if start_node in seen_nodes:
+            continue
+        component_nodes: set[tuple[str, str]] = set()
+        component_rows: set[int] = set()
+        stack = [start_node]
+        seen_nodes.add(start_node)
+        while stack:
+            node = stack.pop()
+            component_nodes.add(node)
+            for row_index in node_rows.get(node, ()):
+                component_rows.add(row_index)
+                for next_node in row_nodes.get(row_index, ()):
+                    if next_node in seen_nodes:
+                        continue
+                    seen_nodes.add(next_node)
+                    stack.append(next_node)
+
+        reachable_structures = {
+            structure
+            for node in component_nodes
+            for structure in structural_hits.get(node, ())
+        }
+        if len(reachable_structures) == 1:
+            canonical_type = STANDARD_INCHI_KEY_TYPE
+            canonical_identifier = next(iter(reachable_structures))
+        else:
+            canonical_type, canonical_identifier = (
+                _cluster_canonical_identifier(component_nodes)
+            )
+        emitted_rows.extend(
+            {
+                'key_type': key_type,
+                'key_value': key_value,
+                'canonical_type': canonical_type,
+                'canonical_identifier': canonical_identifier,
+            }
+            for key_type, key_value in sorted(component_nodes)
+            if emit_key_types is None or key_type in emit_key_types
+        )
+        clustered_row_indices.update(component_rows)
+        clustered_nodes.update(component_nodes)
+
+    return emitted_rows, clustered_row_indices, clustered_nodes
+
+
+def _cluster_canonical_identifier(
+    nodes: set[tuple[str, str]],
+) -> tuple[str, str]:
+    for preferred_type in (CHEBI_TYPE, REFMET_TYPE):
+        values = [
+            value for node_type, value in nodes if node_type == preferred_type
+        ]
+        if values:
+            return preferred_type, min(values, key=_identifier_sort_key)
+    return min(nodes)
+
+
+def _identifier_sort_key(value: str) -> tuple[int, int | str]:
+    return (0, int(value)) if value.isdigit() else (1, value)
 
 
 def _chebi_row(row: dict) -> dict | None:
@@ -159,6 +308,74 @@ def _chebi_rows(row: dict) -> Iterable[dict]:
             continue
         seen.add(key_value)
         yield {**base, 'key_value': key_value}
+
+
+def _chebi_cross_reference_nodes(row: dict) -> set[tuple[str, str]]:
+    nodes = {
+        (CHEBI_TYPE, key_value)
+        for key_value in _chebi_identifier_values(row)
+    }
+    nodes.update(
+        (KEGG_COMPOUND_TYPE, value)
+        for value in _clean_sequence(row.get('kegg_compound'), upper=True)
+    )
+    nodes.update(
+        (CAS_TYPE, value)
+        for value in _clean_sequence(row.get('cas'))
+    )
+    return nodes
+
+
+def _chebi_has_structural_namespace_xref(row: dict) -> bool:
+    return any(
+        _clean_sequence(row.get(field), upper=field != 'pubchem_compound')
+        for field in ('pubchem_compound', 'hmdb', 'lipidmaps')
+    )
+
+
+def _chebi_rows_with_nonstructural_clusters(
+    raw_rows: Iterable[dict],
+    _structural_hit_sources: set[str] | None = None,
+) -> Iterable[dict]:
+    rows = list(raw_rows)
+    nonstructural_rows: list[tuple[int, dict, set[tuple[str, str]]]] = []
+    structural_hits = _structural_hits_by_node(
+        (
+            _chebi_cross_reference_nodes(row),
+            _clean_inchikey(row.get('inchikey')),
+        )
+        for row in rows
+    )
+
+    for index, row in enumerate(rows):
+        if _clean_inchikey(row.get('inchikey')):
+            yield from _chebi_rows(row)
+            continue
+
+        nodes = _chebi_cross_reference_nodes(row)
+        if (
+            any(node_type != CHEBI_TYPE for node_type, _ in nodes)
+            and not _chebi_has_structural_namespace_xref(row)
+        ):
+            nonstructural_rows.append((index, row, nodes))
+
+    (
+        cluster_rows,
+        clustered_row_indices,
+        clustered_nodes,
+    ) = _cluster_lookup_rows(
+        nonstructural_rows,
+        structural_hits,
+    )
+    yield from cluster_rows
+    for index, row in enumerate(rows):
+        if _clean_inchikey(row.get('inchikey')):
+            continue
+        if (
+            index not in clustered_row_indices
+            and not (_chebi_cross_reference_nodes(row) & clustered_nodes)
+        ):
+            yield from _chebi_rows(row)
 
 
 def _chembl_row(row: dict) -> dict | None:
@@ -225,6 +442,94 @@ def _refmet_row(row: dict) -> dict | None:
     }
 
 
+def _refmet_cross_reference_nodes(row: dict) -> set[tuple[str, str]]:
+    nodes: set[tuple[str, str]] = set()
+    key_value = _clean(row.get('refmet_id') or row.get(' refmet_id'))
+    if key_value:
+        nodes.add((REFMET_TYPE, key_value))
+    nodes.update(
+        (CHEBI_TYPE, key_value)
+        for key_value in _clean_sequence(row.get('chebi_id'))
+    )
+    return nodes
+
+
+def _refmet_rows_with_nonstructural_clusters(
+    raw_rows: Iterable[dict],
+    structural_hit_sources: set[str] | None = None,
+) -> Iterable[dict]:
+    rows = list(raw_rows)
+    nonstructural_rows: list[tuple[int, dict, set[tuple[str, str]]]] = []
+    structural_hits = _structural_hits_by_node(
+        (
+            _refmet_cross_reference_nodes(row),
+            _clean_inchikey(row.get('inchi_key')),
+        )
+        for row in rows
+    )
+    _merge_structural_hits(
+        structural_hits,
+        _structural_hits_for_sources(structural_hit_sources or set()),
+    )
+
+    for index, row in enumerate(rows):
+        if _clean_inchikey(row.get('inchi_key')):
+            mapped = _refmet_row(row)
+            if mapped is not None:
+                yield mapped
+            continue
+
+        nodes = _refmet_cross_reference_nodes(row)
+        refmet_id = _clean(row.get('refmet_id') or row.get(' refmet_id'))
+        if (REFMET_TYPE, refmet_id) in nodes:
+            nonstructural_rows.append((index, row, nodes))
+
+    cluster_rows, _clustered_row_indices, _clustered_nodes = (
+        _cluster_lookup_rows(
+            nonstructural_rows,
+            structural_hits,
+            emit_key_types={REFMET_TYPE},
+        )
+    )
+    yield from cluster_rows
+
+
+def _chebi_structural_hits_by_node() -> dict[tuple[str, str], set[str]]:
+    return _structural_hits_by_node(
+        (
+            _chebi_cross_reference_nodes(row),
+            _clean_inchikey(row.get('inchikey')),
+        )
+        for row in chebi_resource.molecules.raw()
+    )
+
+
+STRUCTURAL_HIT_SOURCE_BUILDERS: dict[
+    str,
+    Callable[[], dict[tuple[str, str], set[str]]],
+] = {
+    CHEBI_SOURCE: _chebi_structural_hits_by_node,
+}
+
+
+def _structural_hits_for_sources(
+    sources: Iterable[str],
+) -> dict[tuple[str, str], set[str]]:
+    structural_hits: dict[tuple[str, str], set[str]] = {}
+    for source in sources:
+        builder = STRUCTURAL_HIT_SOURCE_BUILDERS[source]
+        _merge_structural_hits(structural_hits, builder())
+    return structural_hits
+
+
+def _merge_structural_hits(
+    target: dict[tuple[str, str], set[str]],
+    source: dict[tuple[str, str], set[str]],
+) -> None:
+    for node, structures in source.items():
+        target.setdefault(node, set()).update(structures)
+
+
 def _swisslipids_row(row: dict) -> dict | None:
     key_value = _clean(row.get('Lipid ID'))
     standard_inchi = _clean_inchi(row.get('InChI (pH7.3)'))
@@ -239,13 +544,29 @@ def _swisslipids_row(row: dict) -> dict | None:
     }
 
 
+NONSTRUCTURAL_CROSS_REFERENCE_POLICIES: dict[
+    str,
+    _NonstructuralCrossReferencePolicy,
+] = {
+    CHEBI_SOURCE: _NonstructuralCrossReferencePolicy(
+        raw_rows=chebi_resource.molecules.raw,
+        rows=_chebi_rows_with_nonstructural_clusters,
+    ),
+    REFMET_SOURCE: _NonstructuralCrossReferencePolicy(
+        raw_rows=refmet_resource.metabolites.raw,
+        rows=_refmet_rows_with_nonstructural_clusters,
+        structural_hit_sources=frozenset({CHEBI_SOURCE}),
+    ),
+}
+
+
 _CHEMICAL_DATASETS: dict[str, tuple[object, Callable[[dict], dict | None]]] = {
-    'chebi': (chebi_resource.molecules, _chebi_row),
-    'chembl': (chembl_resource.molecules, _chembl_row),
-    'hmdb': (hmdb_resource.metabolites, _hmdb_row),
-    'lipidmaps': (lipidmaps_resource.lipids, _lipidmaps_row),
-    'refmet': (refmet_resource.metabolites, _refmet_row),
-    'swisslipids': (swisslipids_resource.lipids, _swisslipids_row),
+    CHEBI_SOURCE: (chebi_resource.molecules, _chebi_row),
+    CHEMBL_SOURCE: (chembl_resource.molecules, _chembl_row),
+    HMDB_SOURCE: (hmdb_resource.metabolites, _hmdb_row),
+    LIPIDMAPS_SOURCE: (lipidmaps_resource.lipids, _lipidmaps_row),
+    REFMET_SOURCE: (refmet_resource.metabolites, _refmet_row),
+    SWISSLIPIDS_SOURCE: (swisslipids_resource.lipids, _swisslipids_row),
 }
 
 
@@ -272,29 +593,28 @@ def _chemical_identifier_rows(
     chemical_lookup_path: str | Path | None = None,
     chemical_lookup_sources: Iterable[str] | None = None,
 ) -> Iterable[dict]:
-    for source in _validate_chemical_sources(sources):
-        if source == 'chebi':
+    selected_sources = _validate_chemical_sources(sources)
+    completed_sources = set(chemical_lookup_sources or ())
+    available_cluster_sources = (
+        set(selected_sources) | completed_sources
+    ) & NONSTRUCTURAL_CROSS_REFERENCE_SOURCE_NAMES
+    for source in selected_sources:
+        cluster_policy = NONSTRUCTURAL_CROSS_REFERENCE_POLICIES.get(source)
+        if cluster_policy is not None:
             emitted = 0
-            seen: set[tuple[object, object, object, object]] = set()
-            for raw_row in chebi_resource.molecules.raw():
-                for row in _chebi_rows(raw_row):
-                    key = (
-                        row.get('key_type'),
-                        row.get('key_value'),
-                        row.get('canonical_type'),
-                        row.get('canonical_identifier'),
-                    )
-                    if key in seen:
-                        continue
-                    seen.add(key)
-                    yield row
-                    emitted += 1
-                    if max_records is not None and emitted >= max_records:
-                        break
+            structural_hit_sources = (
+                available_cluster_sources & cluster_policy.structural_hit_sources
+            )
+            for row in cluster_policy.rows(
+                cluster_policy.raw_rows(),
+                structural_hit_sources,
+            ):
+                yield row
+                emitted += 1
                 if max_records is not None and emitted >= max_records:
                     break
             continue
-        if source == 'pubchem':
+        if source == PUBCHEM_SOURCE:
             from omnipath_build.resolver.sources.pubchem import (
                 iter_pubchem_compound_rows,
             )
@@ -310,7 +630,7 @@ def _chemical_identifier_rows(
                 if max_records is not None and emitted >= max_records:
                     break
             continue
-        if source == 'ramp':
+        if source == RAMP_SOURCE:
             from pypath.inputs_v2.rampdb import resource as ramp_resource
 
             emitted = 0
@@ -326,15 +646,11 @@ def _chemical_identifier_rows(
 
         dataset, mapper = _CHEMICAL_DATASETS[source]
         raw_kwargs = {}
-        if source == 'chembl' and chemical_lookup_path is not None:
+        if source == CHEMBL_SOURCE and chemical_lookup_path is not None:
             raw_kwargs['filter_chemical_resolver_inchikeys'] = False
         emitted = 0
         for raw_row in dataset.raw(**raw_kwargs):
-            rows = (
-                _chebi_rows(raw_row)
-                if source == 'chebi'
-                else (row for row in (mapper(raw_row),) if row is not None)
-            )
+            rows = (row for row in (mapper(raw_row),) if row is not None)
             for row in rows:
                 yield row
                 emitted += 1

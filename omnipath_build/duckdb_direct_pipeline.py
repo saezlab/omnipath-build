@@ -38,6 +38,33 @@ from omnipath_build.db.refresh import source_has_content, delete_source_content
 
 DEFAULT_LOAD_EXCLUDED_SOURCES = frozenset({'rampdb'})
 PREPARSE_SHARD_CACHE_VERSION = 'raw_shards_v1'
+STAGED_LOAD_TABLES: tuple[str, ...] = (
+    'entity_evidence_raw',
+    'entity_identifier_raw',
+    'entity_annotation_raw',
+    'relation_evidence_raw',
+    'annotation_relation_evidence_raw',
+    'relation_annotation_raw',
+    'annotation_value',
+    'ontology_relation_raw',
+    'canonical_entity',
+    'canonical_entity_identifier',
+    'entity_evidence_resolution',
+    'ontology_term_resolution',
+    'relation',
+    'relation_evidence_relation',
+    'ontology_terms_raw',
+    'entity_ontology_relation',
+)
+STAGED_LOAD_DISTINCT_TABLES: frozenset[str] = frozenset(
+    {
+        'annotation_value',
+        'canonical_entity',
+        'canonical_entity_identifier',
+        'relation',
+        'entity_ontology_relation',
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -367,66 +394,127 @@ def run_direct_copy_pipeline_batches(
     started = time.perf_counter()
     if batch_size <= 0:
         raise ValueError('batch_size must be positive')
-    iterator = iter(records)
-    if max_records is not None:
-        iterator = islice(iterator, max_records)
-
-    row_offset = 0
-    projected_rows = 0
-    batch_no = 0
-    batch_stats: list[DirectCopyStats] = []
     if drop_load_constraints:
         duckdb_load._drop_bulk_load_constraints_and_indexes(
             database_url=database_url,
             schema=schema,
         )
-    while True:
-        batch = list(islice(iterator, batch_size))
-        if not batch:
-            break
-        batch_no += 1
-        batch_state_path = _batch_state_path(state_path, batch_no)
-        stats = run_direct_copy_pipeline(
-            batch,
+
+    def run_with_base_state(base_state: Path) -> DirectCopyBatchStats:
+        stages = stage_direct_copy_pipeline_batches(
+            records,
             source=source,
             dataset=dataset,
-            database_url=database_url,
-            schema=schema,
+            state_path=base_state,
             resolver_dir=resolver_dir,
-            max_records=None,
-            state_path=batch_state_path,
+            batch_size=batch_size,
+            max_records=max_records,
             threads=threads,
-            drop_load_constraints=False,
-            require_empty=require_empty and batch_no == 1,
-            row_offset=row_offset,
+            progress=progress,
         )
-        row_offset += len(batch)
-        projected_rows += stats.source_rows
-        batch_stats.append(stats)
-        if progress:
-            print(
-                '[load-batch] '
-                f'batch={batch_no} '
-                f'batch_rows={stats.source_rows} '
-                f'cumulative_rows={projected_rows} '
-                f'row_offset={row_offset} '
-                f'identifiers={stats.identifiers} '
-                f'annotations={stats.annotations} '
-                f'projection={stats.projection_seconds:.3f}s '
-                f'canonicalize={stats.canonicalize_seconds:.3f}s '
-                f'copy={stats.copy_seconds:.3f}s '
-                f'total={stats.total_seconds:.3f}s',
-                flush=True,
+        if not stages:
+            return DirectCopyBatchStats(
+                batches=(),
+                source_rows=0,
+                identifiers=0,
+                annotations=0,
+                ontology_terms=0,
+                total_seconds=time.perf_counter() - started,
             )
 
-    return DirectCopyBatchStats(
-        batches=tuple(batch_stats),
-        source_rows=sum(stats.source_rows for stats in batch_stats),
-        identifiers=sum(stats.identifiers for stats in batch_stats),
-        annotations=sum(stats.annotations for stats in batch_stats),
-        ontology_terms=sum(stats.ontology_terms for stats in batch_stats),
-        total_seconds=time.perf_counter() - started,
-    )
+        copy_stats: list[DirectCopyStats] = []
+        first_copy = True
+        for index, stage in enumerate(stages, start=1):
+            copy_started = time.perf_counter()
+            copy_seconds = copy_staged_direct_load(
+                stage,
+                database_url=database_url,
+                schema=schema,
+                require_empty=require_empty and first_copy,
+            )
+            first_copy = False
+            if progress:
+                print(
+                    '[load-copy-batch] '
+                    f'batch={index} '
+                    f'rows={stage.source_rows} '
+                    f'identifiers={stage.identifiers} '
+                    f'annotations={stage.annotations} '
+                    f'copy={copy_seconds:.3f}s',
+                    flush=True,
+                )
+            copy_stats.append(
+                DirectCopyStats(
+                    source_rows=stage.source_rows,
+                    identifiers=stage.identifiers,
+                    annotations=stage.annotations,
+                    ontology_terms=stage.ontology_terms,
+                    resolver_seconds=stage.resolver_seconds,
+                    projection_seconds=stage.projection_seconds,
+                    canonicalize_seconds=stage.canonicalize_seconds,
+                    postgres_prepare_seconds=0.0,
+                    copy_seconds=copy_seconds,
+                    reset_seconds=0.0,
+                    total_seconds=(
+                        stage.total_seconds
+                        + (time.perf_counter() - copy_started)
+                    ),
+                    entities=stage.entities,
+                    relations=stage.relations,
+                    annotation_relation_links=(
+                        stage.annotation_relation_links
+                    ),
+                )
+            )
+        reset_started = time.perf_counter()
+        duckdb_load._reset_postgres_sequences(
+            database_url=database_url,
+            schema=schema,
+        )
+        reset_seconds = time.perf_counter() - reset_started
+        if copy_stats:
+            last_stats = copy_stats[-1]
+            copy_stats[-1] = DirectCopyStats(
+                source_rows=last_stats.source_rows,
+                identifiers=last_stats.identifiers,
+                annotations=last_stats.annotations,
+                ontology_terms=last_stats.ontology_terms,
+                resolver_seconds=last_stats.resolver_seconds,
+                projection_seconds=last_stats.projection_seconds,
+                canonicalize_seconds=last_stats.canonicalize_seconds,
+                postgres_prepare_seconds=last_stats.postgres_prepare_seconds,
+                copy_seconds=last_stats.copy_seconds,
+                reset_seconds=reset_seconds,
+                total_seconds=last_stats.total_seconds + reset_seconds,
+                entities=last_stats.entities,
+                relations=last_stats.relations,
+                annotation_relation_links=(
+                    last_stats.annotation_relation_links
+                ),
+            )
+        if progress:
+            print(
+                '[load-copy] '
+                f'batches={len(stages)} '
+                f'rows={sum(stage.source_rows for stage in stages)} '
+                f'identifiers={sum(stage.identifiers for stage in stages)} '
+                f'annotations={sum(stage.annotations for stage in stages)} '
+                f'copy={sum(stat.copy_seconds for stat in copy_stats):.3f}s',
+                flush=True,
+            )
+        return DirectCopyBatchStats(
+            batches=tuple(copy_stats),
+            source_rows=sum(stat.source_rows for stat in copy_stats),
+            identifiers=sum(stat.identifiers for stat in copy_stats),
+            annotations=sum(stat.annotations for stat in copy_stats),
+            ontology_terms=sum(stat.ontology_terms for stat in copy_stats),
+            total_seconds=time.perf_counter() - started,
+        )
+
+    if state_path is not None:
+        return run_with_base_state(Path(state_path))
+    with tempfile.TemporaryDirectory(prefix='omnipath-build-stage-') as tmpdir:
+        return run_with_base_state(Path(tmpdir) / 'direct_load.duckdb')
 
 
 def stage_direct_copy_pipeline_batches(
@@ -490,6 +578,104 @@ def stage_direct_copy_pipeline_batches(
             )
 
     return tuple(stage_stats)
+
+
+def _duckdb_table_exists(
+    con: duckdb.DuckDBPyConnection,
+    *,
+    database: str,
+    table: str,
+) -> bool:
+    return bool(
+        con.execute(
+            """
+            SELECT count(*) > 0
+            FROM information_schema.tables
+            WHERE table_catalog = ?
+              AND table_schema = 'main'
+              AND table_name = ?
+            """,
+            [database, table],
+        ).fetchone()[0]
+    )
+
+
+def _merge_staged_direct_loads(
+    stages: tuple[DirectStageStats, ...],
+    *,
+    state_path: str | Path,
+    threads: int,
+) -> DirectStageStats:
+    """Merge batch state files into one deduplicated DuckDB load state."""
+
+    merged_path = _prepare_state_path(state_path)
+    if merged_path is None:
+        raise ValueError('state_path is required for merged staged load')
+
+    con = duckdb.connect(str(merged_path))
+    con.execute(f'SET threads TO {int(threads)}')
+    duckdb_load._create_duckdb_content_uuid_macro(con)
+    loaded_tables: set[str] = set()
+    try:
+        for index, stage in enumerate(stages, start=1):
+            alias = f'stage_{index}'
+            con.execute(
+                f'ATTACH {duckdb_load._sql_literal(stage.state_path)} AS '
+                f'{duckdb_load._duckdb_identifier(alias)}'
+            )
+            try:
+                for table in STAGED_LOAD_TABLES:
+                    if not _duckdb_table_exists(
+                        con,
+                        database=alias,
+                        table=table,
+                    ):
+                        continue
+                    table_sql = duckdb_load._duckdb_identifier(table)
+                    source_sql = (
+                        f'{duckdb_load._duckdb_identifier(alias)}.main.'
+                        f'{table_sql}'
+                    )
+                    if table not in loaded_tables:
+                        con.execute(
+                            f'CREATE TABLE {table_sql} AS '
+                            f'SELECT * FROM {source_sql}'
+                        )
+                        loaded_tables.add(table)
+                    else:
+                        con.execute(
+                            f'INSERT INTO {table_sql} SELECT * FROM {source_sql}'
+                        )
+            finally:
+                con.execute(f'DETACH {duckdb_load._duckdb_identifier(alias)}')
+
+        for table in sorted(loaded_tables & STAGED_LOAD_DISTINCT_TABLES):
+            table_sql = duckdb_load._duckdb_identifier(table)
+            con.execute(
+                f'CREATE OR REPLACE TABLE {table_sql} AS '
+                f'SELECT DISTINCT * FROM {table_sql}'
+            )
+    finally:
+        con.close()
+
+    return DirectStageStats(
+        source=stages[0].source,
+        dataset=','.join(dict.fromkeys(stage.dataset for stage in stages)),
+        state_path=str(merged_path),
+        source_rows=sum(stage.source_rows for stage in stages),
+        identifiers=sum(stage.identifiers for stage in stages),
+        annotations=sum(stage.annotations for stage in stages),
+        ontology_terms=sum(stage.ontology_terms for stage in stages),
+        resolver_seconds=sum(stage.resolver_seconds for stage in stages),
+        projection_seconds=sum(stage.projection_seconds for stage in stages),
+        canonicalize_seconds=sum(stage.canonicalize_seconds for stage in stages),
+        total_seconds=sum(stage.total_seconds for stage in stages),
+        entities=sum(stage.entities for stage in stages),
+        relations=sum(stage.relations for stage in stages),
+        annotation_relation_links=sum(
+            stage.annotation_relation_links for stage in stages
+        ),
+    )
 
 
 def run_chembl_direct_copy_batches(
@@ -602,109 +788,23 @@ def run_discovered_direct_load(
             total_seconds=time.perf_counter() - started,
         )
 
-    if stage_jobs > 1:
-        return _run_discovered_direct_load_staged(
-            selected_by_source=selected_by_source,
-            skipped_sources=skipped_sources,
-            started=started,
-            database_url=database_url,
-            schema=schema,
-            database=database,
-            inputs_package=inputs_package,
-            resolver_dir=resolver_dir,
-            batch_size=batch_size,
-            max_records=max_records,
-            force_refresh=force_refresh,
-            threads=threads,
-            drop_load_constraints=drop_load_constraints,
-            require_empty=require_empty,
-            stage_jobs=stage_jobs,
-            staging_dir=staging_dir,
-        )
-
-    if drop_load_constraints:
-        duckdb_load._drop_bulk_load_constraints_and_indexes(
-            database_url=database_url,
-            schema=schema,
-        )
-
-    totals = {
-        'source_rows': 0,
-        'identifiers': 0,
-        'annotations': 0,
-        'ontology_terms': 0,
-    }
-    first_dataset = True
-    dataset_count = 0
-    failed_datasets = 0
-    failed_sources = 0
-    resolver_dir = Path(resolver_dir)
-
-    for source, functions in selected_by_source.items():
-        source_succeeded = False
-        source_failed = False
-        dataset_names = ','.join(fn.function_name for fn in functions)
-        print(
-            f'[{source}] duckdb load start datasets={len(functions)} '
-            f'names={dataset_names}',
-            flush=True,
-        )
-        for fn in functions:
-            raw_dataset = getattr(fn.call, '_raw_dataset', None)
-            if raw_dataset is None:
-                continue
-            try:
-                records = raw_dataset(
-                    **_raw_dataset_kwargs(
-                        fn,
-                        resolver_dir=resolver_dir,
-                        force_refresh=force_refresh,
-                        max_records=max_records,
-                    )
-                )
-                state = _dataset_state_path(state_path, fn)
-                stats = run_direct_copy_pipeline_batches(
-                    records,
-                    source=fn.source,
-                    dataset=fn.function_name,
-                    database_url=database_url,
-                    schema=schema,
-                    resolver_dir=resolver_dir,
-                    batch_size=batch_size,
-                    max_records=max_records,
-                    state_path=state,
-                    threads=threads,
-                    drop_load_constraints=False,
-                    require_empty=require_empty and first_dataset,
-                )
-                totals['source_rows'] += stats.source_rows
-                totals['identifiers'] += stats.identifiers
-                totals['annotations'] += stats.annotations
-                totals['ontology_terms'] += stats.ontology_terms
-                dataset_count += 1
-                source_succeeded = True
-                first_dataset = False
-            except Exception as exc:  # noqa: BLE001
-                failed_datasets += 1
-                source_failed = True
-                _warn_dataset_failed(fn, exc)
-                continue
-        if source_failed and not source_succeeded:
-            failed_sources += 1
-        print(f'[{source}] duckdb load done', flush=True)
-
-    duckdb_load._reset_postgres_sequences(database_url=database_url, schema=schema)
-    return DiscoveredLoadStats(
-        sources=len(selected_by_source),
+    return _run_discovered_direct_load_staged(
+        selected_by_source=selected_by_source,
         skipped_sources=skipped_sources,
-        datasets=dataset_count,
-        failed_sources=failed_sources,
-        failed_datasets=failed_datasets,
-        source_rows=totals['source_rows'],
-        identifiers=totals['identifiers'],
-        annotations=totals['annotations'],
-        ontology_terms=totals['ontology_terms'],
-        total_seconds=time.perf_counter() - started,
+        started=started,
+        database_url=database_url,
+        schema=schema,
+        database=database,
+        inputs_package=inputs_package,
+        resolver_dir=resolver_dir,
+        batch_size=batch_size,
+        max_records=max_records,
+        force_refresh=force_refresh,
+        threads=threads,
+        drop_load_constraints=drop_load_constraints,
+        require_empty=require_empty,
+        stage_jobs=max(1, stage_jobs),
+        staging_dir=staging_dir,
     )
 
 
@@ -727,7 +827,7 @@ def _run_discovered_direct_load_staged(
     stage_jobs: int,
     staging_dir: str | Path | None,
 ) -> DiscoveredLoadStats:
-    """Stage sources in parallel, then COPY each staged file serially."""
+    """Stage sources in DuckDB files, then COPY stages serially."""
 
     if staging_dir is None:
         with tempfile.TemporaryDirectory(prefix='omnipath-build-stage-') as tmpdir:
@@ -869,6 +969,9 @@ def _run_discovered_direct_load_staged_in_dir(
                 failed=int(result.failed),
                 stages=len(result.stages),
                 rows=result.source_rows,
+                resolver=f'{sum(stage.resolver_seconds for stage in result.stages):.3f}',
+                projection=f'{sum(stage.projection_seconds for stage in result.stages):.3f}',
+                canonicalize=f'{sum(stage.canonicalize_seconds for stage in result.stages):.3f}',
                 seconds=f'{result.total_seconds:.3f}',
             )
 
@@ -878,35 +981,39 @@ def _run_discovered_direct_load_staged_in_dir(
             schema=schema,
         )
 
-    first_stage = True
     successful_dataset_keys: set[tuple[str, str]] = set()
+    successful_stages: list[DirectStageStats] = []
     for index, _task in enumerate(tasks):
         result = results_by_index[index]
         dataset_key = (result.source, result.dataset)
         if result.failed or dataset_key in failed_dataset_keys:
             continue
         successful_dataset_keys.add(dataset_key)
-        for stage in result.stages:
-            _scheduler_log(
-                'copy_start',
-                source=stage.source,
-                dataset=stage.dataset,
-                rows=stage.source_rows,
-            )
-            copy_seconds = copy_staged_direct_load(
-                stage,
-                database_url=database_url,
-                schema=schema,
-                require_empty=require_empty and first_stage,
-            )
-            first_stage = False
-            _scheduler_log(
-                'copy_done',
-                source=stage.source,
-                dataset=stage.dataset,
-                rows=stage.source_rows,
-                seconds=f'{copy_seconds:.3f}',
-            )
+        successful_stages.extend(result.stages)
+    first_copy = True
+    for stage_index, stage in enumerate(successful_stages, start=1):
+        _scheduler_log(
+            'copy_start',
+            stage=stage_index,
+            source=stage.source,
+            dataset=stage.dataset,
+            rows=stage.source_rows,
+        )
+        copy_seconds = copy_staged_direct_load(
+            stage,
+            database_url=database_url,
+            schema=schema,
+            require_empty=require_empty and first_copy,
+        )
+        first_copy = False
+        _scheduler_log(
+            'copy_done',
+            stage=stage_index,
+            source=stage.source,
+            dataset=stage.dataset,
+            rows=stage.source_rows,
+            seconds=f'{copy_seconds:.3f}',
+        )
     duckdb_load._reset_postgres_sequences(database_url=database_url, schema=schema)
 
     all_dataset_keys = {

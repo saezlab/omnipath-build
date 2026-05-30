@@ -26,6 +26,7 @@ CONTENT_TABLES: tuple[str, ...] = (
     'entity_bitmap_id',
     'relation_bitmap_id',
     'entity_identifier_lookup',
+    'entity_identifier',
     'entity_relation_counts',
     'entity_ontology_term',
     'entity_ontology_relation',
@@ -54,6 +55,7 @@ SOURCE_PARTITIONED_TABLES: tuple[str, ...] = (
     'entity_ontology_relation',
     'entity_evidence',
     'entity_evidence_identifier',
+    'entity_identifier',
     'relation_evidence',
     'entity_evidence_annotation',
     'relation_evidence_annotation',
@@ -71,6 +73,7 @@ SOURCE_PARTITION_DROP_ORDER: tuple[str, ...] = (
     'relation_evidence',
     'entity_evidence_annotation',
     'entity_evidence_resolution',
+    'entity_identifier',
     'entity_evidence_identifier',
     'entity_evidence',
 )
@@ -84,6 +87,7 @@ CONTENT_PRIMARY_KEYS: tuple[tuple[str, tuple[str, ...]], ...] = (
         'entity_evidence_identifier',
         ('source_id', 'entity_evidence_id', 'identifier_id'),
     ),
+    ('entity_identifier', ('source_id', 'entity_id', 'identifier_id')),
     (
         'entity_evidence_annotation',
         ('source_id', 'entity_evidence_id', 'annotation_key'),
@@ -517,6 +521,8 @@ def drop_deferred_content_indexes(
         'relation_annotation_annotation_key_idx',
         'resources_build_status_idx',
         'identifier_evidence_value_lower_idx',
+        'entity_identifier_entity_idx',
+        'entity_identifier_identifier_idx',
         'entity_identifier_lookup_entity_idx',
         'entity_identifier_lookup_identifier_id_idx',
         'entity_identifier_lookup_value_idx',
@@ -922,6 +928,31 @@ def _ensure_resolution_schema(
     _ensure_static_identifier_types(cur, schema)
     log_step('ensure entity indexes')
     _ensure_entity_canonical_key(cur, schema)
+    log_step('create entity identifier table')
+    cur.execute(
+        sql.SQL(
+            """
+            CREATE TABLE IF NOT EXISTS {}.entity_identifier (
+              source_id bigint NOT NULL
+                REFERENCES {}.data_source(source_id),
+              entity_id uuid NOT NULL
+                REFERENCES {}.entity(entity_id)
+                ON DELETE CASCADE,
+              identifier_id uuid NOT NULL
+                REFERENCES {}.identifier_evidence(identifier_id),
+              PRIMARY KEY (source_id, entity_id, identifier_id)
+            ) PARTITION BY LIST (source_id)
+            """
+        ).format(schema_id, schema_id, schema_id, schema_id)
+    )
+    cur.execute(
+        sql.SQL(
+            """
+            CREATE TABLE IF NOT EXISTS {}.entity_identifier_default
+            PARTITION OF {}.entity_identifier DEFAULT
+            """
+        ).format(schema_id, schema_id)
+    )
     log_step('ensure annotation value schema')
     _ensure_annotation_value_schema(cur, schema)
     log_step('create evidence annotation tables')
@@ -2488,6 +2519,16 @@ def _ensure_resolution_indexes(
             ('identifier_id', 'entity_evidence_id'),
         ),
         (
+            'entity_identifier_entity_idx',
+            'entity_identifier',
+            ('entity_id', 'identifier_id'),
+        ),
+        (
+            'entity_identifier_identifier_idx',
+            'entity_identifier',
+            ('identifier_id', 'entity_id'),
+        ),
+        (
             'entity_resolution_status_idx',
             'entity_evidence_resolution',
             ('status_id',),
@@ -2570,6 +2611,16 @@ def _ensure_resolution_indexes(
             'relation_evidence_annotation_annotation_key_idx',
             'relation_evidence_annotation',
             ('annotation_key',),
+        ),
+        (
+            'entity_ontology_relation_object_idx',
+            'entity_ontology_relation',
+            ('object_entity_id',),
+        ),
+        (
+            'entity_ontology_relation_subject_idx',
+            'entity_ontology_relation',
+            ('subject_entity_id',),
         ),
         (
             'resolver_protein_lookup_key_tax_idx',

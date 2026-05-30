@@ -245,9 +245,13 @@ def _create_source_cleanup_scope(
             SELECT DISTINCT eei.identifier_id
             FROM {}.entity_evidence_identifier eei
             WHERE eei.source_id = %s
+            UNION
+            SELECT DISTINCT ei.identifier_id
+            FROM {}.entity_identifier ei
+            WHERE ei.source_id = %s
             """
-        ).format(schema_id),
-        [source_id],
+        ).format(schema_id, schema_id),
+        [source_id, source_id],
     )
     cur.execute(
         """
@@ -358,6 +362,7 @@ def _delete_source_evidence_rows(
         'relation_evidence',
         'entity_evidence_annotation',
         'entity_evidence_resolution',
+        'entity_identifier',
         'entity_evidence_identifier',
         'entity_evidence',
     ):
@@ -389,8 +394,13 @@ def _garbage_collect_source_cleanup(
                 FROM {}.entity_evidence_identifier eei
                 WHERE eei.identifier_id = i.identifier_id
               )
+              AND NOT EXISTS (
+                SELECT 1
+                FROM {}.entity_identifier ei
+                WHERE ei.identifier_id = i.identifier_id
+              )
             """
-        ).format(schema_id, schema_id)
+        ).format(schema_id, schema_id, schema_id)
     )
     deleted['identifiers'] = int(cur.rowcount)
     cur.execute(
@@ -481,8 +491,19 @@ def _refresh_dirty_relation_counts(
     cur.execute(
         sql.SQL(
             """
-            INSERT INTO {}.entity_relation_counts (entity_id, relation_count)
-            SELECT d.entity_id, COUNT(DISTINCT endpoints.relation_id)::bigint
+            INSERT INTO {}.entity_relation_counts (
+              entity_id,
+              relation_count,
+              ontology_annotated_entity_count,
+              ontology_annotated_relation_count,
+              search_count
+            )
+            SELECT
+              d.entity_id,
+              COUNT(DISTINCT endpoints.relation_id)::bigint,
+              0::bigint,
+              0::bigint,
+              COUNT(DISTINCT endpoints.relation_id)::bigint
             FROM _refresh_dirty_entity d
             JOIN (
               SELECT subject_entity_id AS entity_id, relation_id

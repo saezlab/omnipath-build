@@ -172,39 +172,10 @@ def _populate_entity_identifier_lookup(
               entity_id,
               identifier_id
             )
-            WITH identifier_rows AS (
-              SELECT
-                er.entity_id,
-                eei.identifier_id
-              FROM {}.entity_evidence_resolution er
-              JOIN {}.entity_evidence_identifier eei
-                ON eei.source_id = er.source_id
-               AND eei.entity_evidence_id = er.entity_evidence_id
-              JOIN {}.identifier_evidence i
-                ON i.identifier_id = eei.identifier_id
-              WHERE er.entity_id IS NOT NULL
-                AND i.value IS NOT NULL
-                AND i.value <> ''
-              UNION ALL
-              SELECT
-                e.entity_id,
-                i.identifier_id
-              FROM {}.entity e
-              JOIN {}.identifier_evidence i
-                ON i.identifier_type_id = e.canonical_identifier_type_id
-               AND i.value = e.canonical_identifier
-              WHERE e.canonical_identifier_type_id IS NOT NULL
-                AND e.canonical_identifier IS NOT NULL
-                AND e.canonical_identifier <> ''
-            )
             SELECT DISTINCT entity_id, identifier_id
-            FROM identifier_rows
+            FROM {}.entity_identifier
             """
         ).format(
-            schema_id,
-            schema_id,
-            schema_id,
-            schema_id,
             schema_id,
             schema_id,
         )
@@ -653,6 +624,18 @@ def _create_derived_indexes(
             """
             CREATE INDEX IF NOT EXISTS entity_ontology_term_label_trgm_idx
             ON {}.entity_ontology_term USING GIN (label gin_trgm_ops)
+            """
+        ).format(schema_id),
+        sql.SQL(
+            """
+            CREATE INDEX IF NOT EXISTS entity_ontology_term_definition_trgm_idx
+            ON {}.entity_ontology_term USING GIN (definition gin_trgm_ops)
+            """
+        ).format(schema_id),
+        sql.SQL(
+            """
+            CREATE INDEX IF NOT EXISTS entity_ontology_term_ontology_prefix_trgm_idx
+            ON {}.entity_ontology_term USING GIN (ontology_prefix gin_trgm_ops)
             """
         ).format(schema_id),
         sql.SQL(
