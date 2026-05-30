@@ -9,6 +9,7 @@ and canonicalized.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import time
 
 from psycopg2 import sql
 import psycopg2.extensions
@@ -33,25 +34,96 @@ def rebuild_derived_tables(
     conn: psycopg2.extensions.connection,
     *,
     schema: str = 'public',
+    progress: bool = False,
 ) -> DerivedTableStats:
     """Create and fully rebuild derived search/count tables."""
 
+    started = time.perf_counter()
     with conn.cursor() as cur:
+        _log(progress, 'create_tables', 'start', schema=schema)
+        step_started = time.perf_counter()
         _create_derived_tables(cur, schema)
+        _log(
+            progress,
+            'create_tables',
+            'done',
+            seconds=f'{time.perf_counter() - step_started:.3f}',
+        )
+
+        _log(progress, 'entity_identifier_lookup', 'start')
+        step_started = time.perf_counter()
         entity_identifier_lookup = _populate_entity_identifier_lookup(
             cur,
             schema,
         )
+        _log(
+            progress,
+            'entity_identifier_lookup',
+            'done',
+            rows=entity_identifier_lookup,
+            seconds=f'{time.perf_counter() - step_started:.3f}',
+        )
+
+        _log(progress, 'entity_relation_counts', 'start')
+        step_started = time.perf_counter()
         relation_counts = _populate_entity_relation_counts(cur, schema)
+        _log(
+            progress,
+            'entity_relation_counts',
+            'done',
+            rows=relation_counts,
+            seconds=f'{time.perf_counter() - step_started:.3f}',
+        )
+
+        _log(progress, 'entity_ontology_term', 'start')
+        step_started = time.perf_counter()
         entity_ontology_terms = _populate_entity_ontology_terms(cur, schema)
+        _log(
+            progress,
+            'entity_ontology_term',
+            'done',
+            rows=entity_ontology_terms,
+            seconds=f'{time.perf_counter() - step_started:.3f}',
+        )
+
+        _log(progress, 'ontology_terms', 'count_start')
+        step_started = time.perf_counter()
         ontology_terms = _count_ontology_terms(cur, schema)
+        _log(
+            progress,
+            'ontology_terms',
+            'count_done',
+            rows=ontology_terms,
+            seconds=f'{time.perf_counter() - step_started:.3f}',
+        )
+
+        _log(progress, 'indexes', 'start')
+        step_started = time.perf_counter()
         _create_derived_indexes(cur, schema)
+        _log(
+            progress,
+            'indexes',
+            'done',
+            seconds=f'{time.perf_counter() - step_started:.3f}',
+        )
     conn.commit()
+    _log(progress, 'all', 'done', seconds=f'{time.perf_counter() - started:.3f}')
     return DerivedTableStats(
         entity_identifier_lookup=entity_identifier_lookup,
         entity_relation_counts=relation_counts,
         ontology_terms=ontology_terms,
         entity_ontology_terms=entity_ontology_terms,
+    )
+
+
+def _log(progress: bool, step: str, event: str, **fields: object) -> None:
+    if not progress:
+        return
+    details = ' '.join(f'{key}={value}' for key, value in fields.items())
+    print(
+        f'[derive-tables] step={step} event={event}'
+        + (f' {details}' if details else ''),
+        flush=True,
     )
 
 

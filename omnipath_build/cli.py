@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import sys
 import argparse
+import time
 
 import psycopg2
 
@@ -220,36 +221,104 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 0
         if args.command == 'derive':
+            derive_started = time.perf_counter()
+            _derive_log('start', schema=args.schema)
+            step_started = time.perf_counter()
+            _derive_log('primary_keys_start')
             ensure_content_primary_keys(conn, schema=args.schema, progress=True)
+            _derive_log(
+                'primary_keys_done',
+                seconds=f'{time.perf_counter() - step_started:.3f}',
+            )
+            step_started = time.perf_counter()
+            _derive_log('schema_start')
             ensure_schema(conn, schema=args.schema, indexes=False)
+            _derive_log(
+                'schema_done',
+                seconds=f'{time.perf_counter() - step_started:.3f}',
+            )
             if args.indexes:
+                step_started = time.perf_counter()
+                _derive_log('deferred_indexes_start')
                 ensure_deferred_indexes(
                     conn,
                     schema=args.schema,
                     progress=True,
                 )
                 create_secondary_indexes(conn, schema=args.schema)
-                print('[derive] indexes=ready', flush=True)
+                _derive_log(
+                    'deferred_indexes_done',
+                    seconds=f'{time.perf_counter() - step_started:.3f}',
+                )
             if args.tables:
+                step_started = time.perf_counter()
+                _derive_log('tables_start')
                 table_stats = rebuild_derived_tables(
                     conn,
                     schema=args.schema,
+                    progress=True,
                 )
+                _derive_log(
+                    'tables_done',
+                    entity_identifier_lookup=(
+                        table_stats.entity_identifier_lookup
+                    ),
+                    entity_relation_counts=(
+                        table_stats.entity_relation_counts
+                    ),
+                    entity_ontology_terms=table_stats.entity_ontology_terms,
+                    ontology_terms=table_stats.ontology_terms,
+                    seconds=f'{time.perf_counter() - step_started:.3f}',
+                )
+                step_started = time.perf_counter()
+                _derive_log('discover_resources_start')
                 discovered, _ = discover_resources(
                     database_name=args.database,
                     inputs_package=args.inputs_package,
+                    progress=True,
+                )
+                _derive_log(
+                    'discover_resources_done',
+                    sources=len(discovered),
+                    functions=sum(
+                        len(functions) for functions in discovered.values()
+                    ),
+                    seconds=f'{time.perf_counter() - step_started:.3f}',
                 )
                 bitmap_stats = None
                 if args.bitmaps:
+                    step_started = time.perf_counter()
+                    _derive_log('bitmaps_start')
                     bitmap_stats = rebuild_bitmap_tables(
                         conn,
                         schema=args.schema,
+                        progress=True,
                     )
+                    _derive_log(
+                        'bitmaps_done',
+                        annotation_term_entities=(
+                            bitmap_stats.annotation_term_entities
+                        ),
+                        annotation_term_direct_relations=(
+                            bitmap_stats.annotation_term_direct_relations
+                        ),
+                        entity_relations=bitmap_stats.entity_relations,
+                        entity_facets=bitmap_stats.entity_facets,
+                        relation_facets=bitmap_stats.relation_facets,
+                        seconds=f'{time.perf_counter() - step_started:.3f}',
+                    )
+                step_started = time.perf_counter()
+                _derive_log('resources_start')
                 resource_stats = sync_resources_table(
                     conn,
                     discovered,
                     schema=args.schema,
                     prefer_bitmaps=args.bitmaps,
+                )
+                _derive_log(
+                    'resources_done',
+                    resources=resource_stats.resources,
+                    seconds=f'{time.perf_counter() - step_started:.3f}',
                 )
                 print(
                     '[derive] '
@@ -264,7 +333,26 @@ def main(argv: list[str] | None = None) -> int:
                     flush=True,
                 )
             elif args.bitmaps:
-                bitmap_stats = rebuild_bitmap_tables(conn, schema=args.schema)
+                step_started = time.perf_counter()
+                _derive_log('bitmaps_start')
+                bitmap_stats = rebuild_bitmap_tables(
+                    conn,
+                    schema=args.schema,
+                    progress=True,
+                )
+                _derive_log(
+                    'bitmaps_done',
+                    annotation_term_entities=(
+                        bitmap_stats.annotation_term_entities
+                    ),
+                    annotation_term_direct_relations=(
+                        bitmap_stats.annotation_term_direct_relations
+                    ),
+                    entity_relations=bitmap_stats.entity_relations,
+                    entity_facets=bitmap_stats.entity_facets,
+                    relation_facets=bitmap_stats.relation_facets,
+                    seconds=f'{time.perf_counter() - step_started:.3f}',
+                )
             else:
                 bitmap_stats = None
             if bitmap_stats is not None:
@@ -279,9 +367,21 @@ def main(argv: list[str] | None = None) -> int:
                     f'relation_facets={bitmap_stats.relation_facets}',
                     flush=True,
                 )
+            _derive_log(
+                'done',
+                seconds=f'{time.perf_counter() - derive_started:.3f}',
+            )
             return 0
 
     return 0
+
+
+def _derive_log(event: str, **fields: object) -> None:
+    details = ' '.join(f'{key}={value}' for key, value in fields.items())
+    print(
+        f'[derive] event={event}' + (f' {details}' if details else ''),
+        flush=True,
+    )
 
 
 if __name__ == '__main__':

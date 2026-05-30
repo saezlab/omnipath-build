@@ -46,6 +46,17 @@ def configure_pypath_download_dir() -> Path:
         data_dir = project_root / 'pypath-data'
         os.environ['PYPATH_DOWNLOAD_DATADIR'] = str(data_dir)
     data_dir.mkdir(parents=True, exist_ok=True)
+    if os.environ.get('OMNIPATH_BUILD_PYPATH_PROGRESS', '').lower() not in {
+        '1',
+        'true',
+        'yes',
+    }:
+        try:
+            from pypath.share import settings  # noqa: PLC0415
+
+            settings.setup(progressbars=False)
+        except Exception:  # noqa: BLE001
+            pass
     return data_dir
 
 

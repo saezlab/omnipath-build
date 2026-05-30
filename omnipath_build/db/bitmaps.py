@@ -9,6 +9,7 @@ derive phase.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import time
 
 import psycopg2.extensions
 from psycopg2 import sql
@@ -29,30 +30,129 @@ def rebuild_bitmap_tables(
     conn: psycopg2.extensions.connection,
     *,
     schema: str = 'public',
+    progress: bool = False,
 ) -> BitmapStats:
     """Create and fully rebuild bitmap index tables."""
 
+    started = time.perf_counter()
     with conn.cursor() as cur:
+        _log(progress, 'create_tables', 'start', schema=schema)
+        step_started = time.perf_counter()
         _create_bitmap_tables(cur, schema)
+        _log(
+            progress,
+            'create_tables',
+            'done',
+            seconds=f'{time.perf_counter() - step_started:.3f}',
+        )
+
+        _log(progress, 'bitmap_ids', 'start')
+        step_started = time.perf_counter()
         _refresh_bitmap_id_tables(cur, schema)
+        _log(
+            progress,
+            'bitmap_ids',
+            'done',
+            seconds=f'{time.perf_counter() - step_started:.3f}',
+        )
+
+        _log(progress, 'annotation_term_entity_bitmap', 'start')
+        step_started = time.perf_counter()
         annotation_term_entities = _populate_annotation_term_entity_bitmap(
             cur, schema
         )
+        _log(
+            progress,
+            'annotation_term_entity_bitmap',
+            'done',
+            rows=annotation_term_entities,
+            seconds=f'{time.perf_counter() - step_started:.3f}',
+        )
+
+        _log(progress, 'entity_relation_bitmap', 'start')
+        step_started = time.perf_counter()
         entity_relations = _populate_entity_relation_bitmap(cur, schema)
+        _log(
+            progress,
+            'entity_relation_bitmap',
+            'done',
+            rows=entity_relations,
+            seconds=f'{time.perf_counter() - step_started:.3f}',
+        )
+
+        _log(progress, 'annotation_term_direct_relation_bitmap', 'start')
+        step_started = time.perf_counter()
         annotation_term_direct_relations = (
             _populate_annotation_term_direct_relation_bitmap(cur, schema)
         )
+        _log(
+            progress,
+            'annotation_term_direct_relation_bitmap',
+            'done',
+            rows=annotation_term_direct_relations,
+            seconds=f'{time.perf_counter() - step_started:.3f}',
+        )
+
+        _log(progress, 'entity_search_counts', 'start')
+        step_started = time.perf_counter()
         _populate_entity_search_counts(cur, schema)
+        _log(
+            progress,
+            'entity_search_counts',
+            'done',
+            seconds=f'{time.perf_counter() - step_started:.3f}',
+        )
+
+        _log(progress, 'facet_entity_bitmap', 'start')
+        step_started = time.perf_counter()
         entity_facets = _populate_facet_entity_bitmap(cur, schema)
+        _log(
+            progress,
+            'facet_entity_bitmap',
+            'done',
+            rows=entity_facets,
+            seconds=f'{time.perf_counter() - step_started:.3f}',
+        )
+
+        _log(progress, 'facet_relation_bitmap', 'start')
+        step_started = time.perf_counter()
         relation_facets = _populate_facet_relation_bitmap(cur, schema)
+        _log(
+            progress,
+            'facet_relation_bitmap',
+            'done',
+            rows=relation_facets,
+            seconds=f'{time.perf_counter() - step_started:.3f}',
+        )
+
+        _log(progress, 'indexes', 'start')
+        step_started = time.perf_counter()
         _create_bitmap_indexes(cur, schema)
+        _log(
+            progress,
+            'indexes',
+            'done',
+            seconds=f'{time.perf_counter() - step_started:.3f}',
+        )
     conn.commit()
+    _log(progress, 'all', 'done', seconds=f'{time.perf_counter() - started:.3f}')
     return BitmapStats(
         annotation_term_entities=annotation_term_entities,
         annotation_term_direct_relations=annotation_term_direct_relations,
         entity_relations=entity_relations,
         entity_facets=entity_facets,
         relation_facets=relation_facets,
+    )
+
+
+def _log(progress: bool, step: str, event: str, **fields: object) -> None:
+    if not progress:
+        return
+    details = ' '.join(f'{key}={value}' for key, value in fields.items())
+    print(
+        f'[derive-bitmaps] step={step} event={event}'
+        + (f' {details}' if details else ''),
+        flush=True,
     )
 
 
@@ -94,80 +194,69 @@ def _create_bitmap_tables(
         sql.SQL(
             """
             CREATE TABLE IF NOT EXISTS {}.entity_bitmap_id (
-              entity_id uuid PRIMARY KEY
-                REFERENCES {}.entity(entity_id)
-                ON DELETE CASCADE,
-              bitmap_id integer NOT NULL UNIQUE
+              entity_id uuid PRIMARY KEY,
+              bitmap_id integer NOT NULL
             )
             """
-        ).format(schema_id, schema_id)
+        ).format(schema_id)
     )
     cur.execute(
         sql.SQL(
             """
             CREATE TABLE IF NOT EXISTS {}.relation_bitmap_id (
-              relation_id uuid PRIMARY KEY
-                REFERENCES {}.relation(relation_id)
-                ON DELETE CASCADE,
-              bitmap_id integer NOT NULL UNIQUE
+              relation_id uuid PRIMARY KEY,
+              bitmap_id integer NOT NULL
             )
             """
-        ).format(schema_id, schema_id)
+        ).format(schema_id)
     )
     cur.execute(
         sql.SQL(
             """
             CREATE TABLE IF NOT EXISTS {}.annotation_term_entity_bitmap (
-              term_entity_id uuid PRIMARY KEY
-                REFERENCES {}.entity(entity_id)
-                ON DELETE CASCADE,
+              term_entity_id uuid PRIMARY KEY,
               entity_bitmap roaringbitmap NOT NULL,
               global_count integer NOT NULL
             )
             """
-        ).format(schema_id, schema_id)
+        ).format(schema_id)
     )
     cur.execute(
         sql.SQL(
             """
             CREATE TABLE IF NOT EXISTS {}.annotation_term_direct_relation_bitmap (
-              term_entity_id uuid PRIMARY KEY
-                REFERENCES {}.entity(entity_id)
-                ON DELETE CASCADE,
+              term_entity_id uuid PRIMARY KEY,
               relation_bitmap roaringbitmap NOT NULL,
               global_count integer NOT NULL
             )
             """
-        ).format(schema_id, schema_id)
+        ).format(schema_id)
     )
     cur.execute(
         sql.SQL(
             """
             CREATE TABLE IF NOT EXISTS {}.entity_relation_bitmap (
-              entity_id uuid PRIMARY KEY
-                REFERENCES {}.entity(entity_id)
-                ON DELETE CASCADE,
+              entity_id uuid PRIMARY KEY,
               relation_bitmap roaringbitmap NOT NULL,
               global_count integer NOT NULL
             )
             """
-        ).format(schema_id, schema_id)
+        ).format(schema_id)
     )
     cur.execute(
         sql.SQL(
             """
             CREATE TABLE IF NOT EXISTS {}.entity_relation_counts (
-              entity_id uuid PRIMARY KEY
-                REFERENCES {}.entity(entity_id)
-                ON DELETE CASCADE,
+              entity_id uuid PRIMARY KEY,
               relation_count bigint NOT NULL,
               ontology_annotated_entity_count bigint NOT NULL,
               ontology_annotated_relation_count bigint NOT NULL,
               search_count bigint NOT NULL
             )
             """
-        ).format(schema_id, schema_id)
+        ).format(schema_id)
     )
+    _drop_legacy_bitmap_constraints(cur, schema)
     for column_name in (
         'ontology_annotated_entity_count',
         'ontology_annotated_relation_count',
@@ -206,6 +295,38 @@ def _create_bitmap_tables(
             """
         ).format(schema_id)
     )
+
+
+def _drop_legacy_bitmap_constraints(
+    cur: psycopg2.extensions.cursor,
+    schema: str,
+) -> None:
+    """Remove old defensive constraints that slow full bitmap rebuilds."""
+
+    schema_id = sql.Identifier(schema)
+    for table, constraint in (
+        ('entity_bitmap_id', 'entity_bitmap_id_entity_id_fkey'),
+        ('entity_bitmap_id', 'entity_bitmap_id_bitmap_id_key'),
+        ('relation_bitmap_id', 'relation_bitmap_id_relation_id_fkey'),
+        ('relation_bitmap_id', 'relation_bitmap_id_bitmap_id_key'),
+        (
+            'annotation_term_entity_bitmap',
+            'annotation_term_entity_bitmap_term_entity_id_fkey',
+        ),
+        (
+            'annotation_term_direct_relation_bitmap',
+            'annotation_term_direct_relation_bitmap_term_entity_id_fkey',
+        ),
+        ('entity_relation_bitmap', 'entity_relation_bitmap_entity_id_fkey'),
+        ('entity_relation_counts', 'entity_relation_counts_entity_id_fkey'),
+    ):
+        cur.execute(
+            sql.SQL('ALTER TABLE {}.{} DROP CONSTRAINT IF EXISTS {}').format(
+                schema_id,
+                sql.Identifier(table),
+                sql.Identifier(constraint),
+            )
+        )
 
 
 def _refresh_bitmap_id_tables(
@@ -681,11 +802,8 @@ def _populate_facet_relation_bitmap(
             WITH relation_sources AS (
               SELECT DISTINCT rer.relation_id, ds.name AS source
               FROM {}.relation_evidence_relation rer
-              JOIN {}.relation_evidence re
-                ON re.source_id = rer.source_id
-               AND re.relation_evidence_id = rer.relation_evidence_id
               JOIN {}.data_source ds
-                ON ds.source_id = re.source_id
+                ON ds.source_id = rer.source_id
               UNION
               SELECT DISTINCT ear.relation_id, ds.name AS source
               FROM {}.entity_annotation_relation ear
@@ -705,7 +823,6 @@ def _populate_facet_relation_bitmap(
             GROUP BY source
             """
         ).format(
-            schema_id,
             schema_id,
             schema_id,
             schema_id,

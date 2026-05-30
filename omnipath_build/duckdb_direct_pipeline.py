@@ -21,6 +21,8 @@ import sys
 import time
 import shutil
 import json
+import importlib
+import inspect
 from pathlib import Path
 import argparse
 import tempfile
@@ -33,7 +35,11 @@ import duckdb
 import psycopg2
 
 from omnipath_build import duckdb_load
-from omnipath_build.resources import ResourceFunction, discover_resources
+from omnipath_build.resources import (
+    ResourceFunction,
+    configure_pypath_download_dir,
+    discover_resources,
+)
 from omnipath_build.db.refresh import source_has_content, delete_source_content
 
 DEFAULT_LOAD_EXCLUDED_SOURCES = frozenset({'rampdb'})
@@ -126,6 +132,7 @@ class StagedDatasetTask:
     source: str
     dataset: str
     output_kind: str
+    qualified_module: str
     database: str
     inputs_package: str
     resolver_dir: str
@@ -146,6 +153,7 @@ class StagedDatasetPrepareTask:
 
     source: str
     dataset: str
+    qualified_module: str
     database: str
     inputs_package: str
     resolver_dir: str
@@ -329,14 +337,31 @@ def stage_direct_copy_pipeline(
 
     con = duckdb.connect(str(prepared_state_path))
     con.execute(f'SET threads TO {int(threads)}')
+    _load_log(
+        'stage',
+        'start',
+        source=source,
+        dataset=dataset,
+        row_offset=row_offset,
+        state=prepared_state_path,
+    )
 
     try:
         duckdb_load._create_duckdb_content_uuid_macro(con)
 
+        _load_log('stage', 'resolver_start', source=source, dataset=dataset)
         resolver_started = time.perf_counter()
         duckdb_load._create_duckdb_resolver_views(con, resolver_dir=resolver_dir)
         resolver_seconds = time.perf_counter() - resolver_started
+        _load_log(
+            'stage',
+            'resolver_done',
+            source=source,
+            dataset=dataset,
+            seconds=f'{resolver_seconds:.3f}',
+        )
 
+        _load_log('stage', 'project_start', source=source, dataset=dataset)
         projection_started = time.perf_counter()
         duckdb_load._create_duckdb_evidence_tables(con)
         projection = duckdb_load.DuckDBEvidenceProjector(con).project_records(
@@ -348,13 +373,41 @@ def stage_direct_copy_pipeline(
         )
         ontology_terms = 0
         projection_seconds = time.perf_counter() - projection_started
+        _load_log(
+            'stage',
+            'project_done',
+            source=source,
+            dataset=dataset,
+            rows=projection.source_rows,
+            identifiers=projection.identifiers,
+            annotations=projection.annotations,
+            seconds=f'{projection_seconds:.3f}',
+        )
 
+        _load_log('stage', 'canonicalize_start', source=source, dataset=dataset)
         canonicalize_started = time.perf_counter()
         entities, relations, links = duckdb_load._canonicalize_loaded_duckdb(con)
         canonicalize_seconds = time.perf_counter() - canonicalize_started
+        _load_log(
+            'stage',
+            'canonicalize_done',
+            source=source,
+            dataset=dataset,
+            entities=entities,
+            relations=relations,
+            annotation_relation_links=links,
+            seconds=f'{canonicalize_seconds:.3f}',
+        )
     finally:
         con.close()
 
+    _load_log(
+        'stage',
+        'done',
+        source=source,
+        dataset=dataset,
+        seconds=f'{time.perf_counter() - total_started:.3f}',
+    )
     return DirectStageStats(
         source=source,
         dataset=dataset,
@@ -1082,6 +1135,7 @@ def _prepare_staged_dataset_tasks(
                 StagedDatasetPrepareTask(
                     source=fn.source,
                     dataset=fn.function_name,
+                    qualified_module=fn.qualified_module,
                     database=database,
                     inputs_package=inputs_package,
                     resolver_dir=str(resolver_dir),
@@ -1143,6 +1197,7 @@ def _prepare_staged_dataset_tasks(
                     source=fn.source,
                     dataset=fn.function_name,
                     output_kind=fn.output_kind,
+                    qualified_module=fn.qualified_module,
                     database=database,
                     inputs_package=inputs_package,
                     resolver_dir=str(resolver_dir),
@@ -1175,9 +1230,14 @@ def _prepare_staged_dataset_tasks(
 
 
 def _scheduler_log(event: str, **fields: object) -> None:
+    _load_log('scheduler', event, **fields)
+
+
+def _load_log(component: str, event: str, **fields: object) -> None:
     details = ' '.join(f'{key}={value}' for key, value in fields.items())
     print(
-        f'[load-scheduler] event={event}' + (f' {details}' if details else ''),
+        f'[load-{component}] event={event}'
+        + (f' {details}' if details else ''),
         flush=True,
     )
 
@@ -1253,31 +1313,33 @@ def _prepare_preparse_shards_worker(
 ) -> StagedDatasetPrepareResult:
     started = time.perf_counter()
     preparse_dir = Path(task.preparse_dir)
+    _load_log(
+        'preparse',
+        'start',
+        source=task.source,
+        dataset=task.dataset,
+        batch_size=task.batch_size,
+        max_records='all' if task.max_records is None else task.max_records,
+        path=preparse_dir,
+    )
     if not task.force_refresh:
         cached = _read_preparse_shards(task, preparse_dir)
         if cached is not None:
             print(
                 '[load-preparse] '
-                f'source={task.source} dataset={task.dataset} '
-                f'cache=hit shards={len(cached.shards)} '
+                f'event=cache_hit source={task.source} dataset={task.dataset} '
+                f'shards={len(cached.shards)} '
                 f'rows={sum(shard.rows for shard in cached.shards)} '
                 f'path={preparse_dir}',
                 flush=True,
             )
             return cached
 
-    selected = _discover_entity_datasets(
-        database=task.database,
-        inputs_package=task.inputs_package,
-        sources=(task.source,),
+    fn = _load_discovered_dataset_ref(
+        source=task.source,
         dataset=task.dataset,
+        qualified_module=task.qualified_module,
     )
-    if len(selected) != 1:
-        raise ValueError(
-            f'Expected one dataset for {task.source}.{task.dataset}; '
-            f'found {len(selected)}'
-        )
-    fn = selected[0]
     raw_dataset = getattr(fn.call, '_raw_dataset', None)
     if raw_dataset is None:
         raise ValueError(f'{task.source}.{task.dataset} has no raw dataset')
@@ -1300,6 +1362,13 @@ def _prepare_preparse_shards_worker(
     shards: list[StagedRawShard] = []
     row_offset = 0
     try:
+        _load_log(
+            'preparse',
+            'build_start',
+            source=fn.source,
+            dataset=fn.function_name,
+            path=preparse_dir,
+        )
         for shard_index, batch in enumerate(
             _iter_sized_batches(raw_rows, task.batch_size)
         ):
@@ -1316,8 +1385,9 @@ def _prepare_preparse_shards_worker(
             row_offset += len(batch)
             print(
                 '[load-preparse] '
-                f'source={fn.source} dataset={fn.function_name} '
-                f'cache=build shard={shard_index} shard_rows={len(batch)} '
+                f'event=build_shard source={fn.source} '
+                f'dataset={fn.function_name} '
+                f'shard={shard_index} shard_rows={len(batch)} '
                 f'total_rows={row_offset} '
                 f'seconds={time.perf_counter() - started:.1f}',
                 flush=True,
@@ -1332,8 +1402,8 @@ def _prepare_preparse_shards_worker(
         tmp_dir.replace(preparse_dir)
         print(
             '[load-preparse] '
-            f'source={fn.source} dataset={fn.function_name} '
-            f'cache=published shards={len(shards)} rows={row_offset} '
+            f'event=published source={fn.source} dataset={fn.function_name} '
+            f'shards={len(shards)} rows={row_offset} '
             f'path={preparse_dir} '
             f'seconds={time.perf_counter() - started:.1f}',
             flush=True,
@@ -1505,18 +1575,19 @@ def _iter_raw_shard_records(raw_dataset: object, shard_path: str) -> Iterable[ob
 
 def _stage_dataset_task_worker(task: StagedDatasetTask) -> StagedDatasetTaskResult:
     started = time.perf_counter()
-    selected = _discover_entity_datasets(
-        database=task.database,
-        inputs_package=task.inputs_package,
-        sources=(task.source,),
+    _load_log(
+        'stage',
+        'task_start',
+        source=task.source,
         dataset=task.dataset,
+        shard=_task_part_label(task),
+        rows=task.shard_rows or '-',
     )
-    if len(selected) != 1:
-        raise ValueError(
-            f'Expected one dataset for {task.source}.{task.dataset}; '
-            f'found {len(selected)}'
-        )
-    fn = selected[0]
+    fn = _load_discovered_dataset_ref(
+        source=task.source,
+        dataset=task.dataset,
+        qualified_module=task.qualified_module,
+    )
     raw_dataset = getattr(fn.call, '_raw_dataset', None)
     if raw_dataset is None:
         raise ValueError(f'{task.source}.{task.dataset} has no raw dataset')
@@ -1598,6 +1669,70 @@ def _discover_entity_datasets(
     if not selected:
         raise ValueError('No matching entity datasets found.')
     return selected
+
+
+def _load_discovered_dataset_ref(
+    *,
+    source: str,
+    dataset: str,
+    qualified_module: str,
+) -> ResourceFunction:
+    """Load one already-discovered dataset without walking every resource."""
+
+    configure_pypath_download_dir()
+    from pypath.inputs_v2.base import (  # noqa: PLC0415
+        ArtifactDataset,
+        Dataset,
+        Resource,
+    )
+
+    module = importlib.import_module(qualified_module)
+    dataset_types = (Dataset, ArtifactDataset)
+    dataset_members = [
+        (name, obj)
+        for name, obj in inspect.getmembers(module)
+        if isinstance(obj, dataset_types)
+        and getattr(obj, 'kind', None) != 'id_translation'
+    ]
+    seen_dataset_names = {name for name, _ in dataset_members}
+    for _, resource_obj in inspect.getmembers(module):
+        if not isinstance(resource_obj, Resource):
+            continue
+        for dataset_name, dataset_obj in resource_obj.datasets().items():
+            if (
+                getattr(dataset_obj, 'kind', None) != 'id_translation'
+                and dataset_name not in seen_dataset_names
+            ):
+                dataset_members.append((dataset_name, dataset_obj))
+                seen_dataset_names.add(dataset_name)
+
+    for dataset_name, dataset_obj in dataset_members:
+        if dataset_name != dataset:
+            continue
+        output_kind = 'artifact' if isinstance(dataset_obj, ArtifactDataset) else 'entity'
+        if output_kind != 'entity':
+            break
+
+        def dataset_call(
+            dataset_obj=dataset_obj,
+            source_name=source,
+            dataset_name=dataset_name,
+        ):
+            return dataset_obj(source=source_name, dataset=dataset_name)
+
+        dataset_call._raw_dataset = dataset_obj
+        return ResourceFunction(
+            source=source,
+            function_name=dataset_name,
+            qualified_module=qualified_module,
+            call=dataset_call,
+            resource_id=source,
+            output_kind=output_kind,
+        )
+
+    raise ValueError(
+        f'No entity dataset {source}.{dataset} in module {qualified_module}'
+    )
 
 
 def _raw_dataset_kwargs(

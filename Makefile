@@ -5,6 +5,8 @@ ifneq ($(wildcard $(INSTANCE_ENV_FILE)),)
 include $(INSTANCE_ENV_FILE)
 endif
 
+export PKG_INFRA_CONFIG ?= $(CURDIR)/config/pkg_infra_quiet.yaml
+
 DATA_ROOT ?= $(if $(DATA_DIR),$(DATA_DIR),data)
 DATABASE ?= omnipath
 DEFAULT_DATABASE_URL ?= postgresql://omnipath:omnipath@localhost:55432/omnipath
