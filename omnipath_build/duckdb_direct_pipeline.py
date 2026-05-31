@@ -963,8 +963,12 @@ def _run_discovered_direct_load_staged_in_dir(
     failed_dataset_keys: set[tuple[str, str]] = set()
     results_by_index: dict[int, StagedDatasetTaskResult] = {}
     tasks_by_index: dict[int, StagedDatasetTask] = {}
+    successful_dataset_keys: set[tuple[str, str]] = set()
     next_prepare_index = 0
     next_stage_index = 0
+    next_copy_index = 0
+    first_copy = True
+    constraints_dropped = False
     ready_stage_tasks: deque[StagedDatasetTask] = deque()
     future_info: dict[object, tuple[str, object]] = {}
 
@@ -1043,19 +1047,18 @@ def _run_discovered_direct_load_staged_in_dir(
                         reused=int(prepared.reused),
                         path=prepared.preparse_dir,
                     )
-                    ready_stage_tasks.extend(
-                        _staged_dataset_tasks_for_prepared(
-                            prepared=prepared,
-                            fn=fn,
-                            database=database,
-                            inputs_package=inputs_package,
-                            resolver_dir=resolver_dir,
-                            batch_size=batch_size,
-                            force_refresh=force_refresh,
-                            threads=threads,
-                            staging_dir=staging_dir,
-                        )
+                    stage_tasks = _staged_dataset_tasks_for_prepared(
+                        prepared=prepared,
+                        fn=fn,
+                        database=database,
+                        inputs_package=inputs_package,
+                        resolver_dir=resolver_dir,
+                        batch_size=batch_size,
+                        force_refresh=force_refresh,
+                        threads=threads,
+                        staging_dir=staging_dir,
                     )
+                    ready_stage_tasks.extend(stage_tasks)
                     continue
 
                 index = payload
@@ -1084,8 +1087,9 @@ def _run_discovered_direct_load_staged_in_dir(
                         stages=(),
                     )
                 results_by_index[index] = result
+                dataset_key = (result.source, result.dataset)
                 if result.failed:
-                    failed_dataset_keys.add((result.source, result.dataset))
+                    failed_dataset_keys.add(dataset_key)
                 _scheduler_log(
                     'task_done',
                     task=index,
@@ -1101,6 +1105,42 @@ def _run_discovered_direct_load_staged_in_dir(
                     seconds=f'{result.total_seconds:.3f}',
                 )
 
+                if result.failed:
+                    continue
+
+                if drop_load_constraints and not constraints_dropped:
+                    duckdb_load._drop_bulk_load_constraints_and_indexes(
+                        database_url=database_url,
+                        schema=schema,
+                    )
+                    constraints_dropped = True
+
+                for stage in result.stages:
+                    next_copy_index += 1
+                    _scheduler_log(
+                        'copy_start',
+                        stage=next_copy_index,
+                        source=stage.source,
+                        dataset=stage.dataset,
+                        rows=stage.source_rows,
+                    )
+                    copy_seconds = copy_staged_direct_load(
+                        stage,
+                        database_url=database_url,
+                        schema=schema,
+                        require_empty=require_empty and first_copy,
+                    )
+                    first_copy = False
+                    _scheduler_log(
+                        'copy_done',
+                        stage=next_copy_index,
+                        source=stage.source,
+                        dataset=stage.dataset,
+                        rows=stage.source_rows,
+                        seconds=f'{copy_seconds:.3f}',
+                    )
+                successful_dataset_keys.add(dataset_key)
+
             fill_workers()
 
     _scheduler_log(
@@ -1110,45 +1150,12 @@ def _run_discovered_direct_load_staged_in_dir(
         failed_datasets=len(failed_dataset_keys),
     )
 
-    if drop_load_constraints:
+    if drop_load_constraints and next_copy_index == 0:
         duckdb_load._drop_bulk_load_constraints_and_indexes(
             database_url=database_url,
             schema=schema,
         )
 
-    successful_dataset_keys: set[tuple[str, str]] = set()
-    successful_stages: list[DirectStageStats] = []
-    for index in range(next_stage_index):
-        result = results_by_index[index]
-        dataset_key = (result.source, result.dataset)
-        if result.failed or dataset_key in failed_dataset_keys:
-            continue
-        successful_dataset_keys.add(dataset_key)
-        successful_stages.extend(result.stages)
-    first_copy = True
-    for stage_index, stage in enumerate(successful_stages, start=1):
-        _scheduler_log(
-            'copy_start',
-            stage=stage_index,
-            source=stage.source,
-            dataset=stage.dataset,
-            rows=stage.source_rows,
-        )
-        copy_seconds = copy_staged_direct_load(
-            stage,
-            database_url=database_url,
-            schema=schema,
-            require_empty=require_empty and first_copy,
-        )
-        first_copy = False
-        _scheduler_log(
-            'copy_done',
-            stage=stage_index,
-            source=stage.source,
-            dataset=stage.dataset,
-            rows=stage.source_rows,
-            seconds=f'{copy_seconds:.3f}',
-        )
     duckdb_load._reset_postgres_sequences(database_url=database_url, schema=schema)
 
     all_dataset_keys = {
