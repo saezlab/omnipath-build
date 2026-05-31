@@ -3132,8 +3132,11 @@ def _bulk_copy_evidence(
           WHERE i.identifier_id IS NOT NULL
             AND i.identifier IS NOT NULL
             AND existing.identifier_id IS NULL
-        """,
+        """.format(
+            existing_identifier_evidence=existing_identifier_evidence,
+        ),
     )
+    existing_annotation = _duckdb_pg_table(schema, 'annotation')
     _copy_duckdb_query_to_postgres(
         con,
         database_url=database_url,
@@ -3151,7 +3154,7 @@ def _bulk_copy_evidence(
             ON existing.annotation_key = pq_annotation.annotation_key::UUID
           WHERE pq_annotation.term IS NOT NULL
             AND existing.annotation_key IS NULL
-        """,
+        """.format(existing_annotation=existing_annotation),
     )
     _copy_source_partition(
         con,
