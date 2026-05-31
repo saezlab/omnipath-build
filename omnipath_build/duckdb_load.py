@@ -106,6 +106,36 @@ def _resolver_component_dir(
     )
 
 
+def _chemical_resolver_component_dir(resolver_dir: Path) -> Path:
+    """Resolve the directory that contains partitioned chemical lookup files."""
+
+    candidates = (
+        resolver_dir / 'chemicals',
+        resolver_dir,
+        resolver_dir.parent / 'chemicals',
+    )
+    for candidate in candidates:
+        if (
+            (candidate / 'lookup').is_dir()
+            and _has_parquet_files(candidate / 'lookup')
+            and (candidate / 'identifier_type.parquet').exists()
+        ):
+            return candidate
+    raise FileNotFoundError(
+        'Could not find partitioned chemical resolver outputs under '
+        f'{resolver_dir}. Expected chemicals/lookup/*.parquet and '
+        'chemicals/identifier_type.parquet.'
+    )
+
+
+def _parquet_glob(path: Path) -> str:
+    return str(path).replace("'", "''")
+
+
+def _has_parquet_files(path: Path) -> bool:
+    return path.is_dir() and any(path.glob('*.parquet'))
+
+
 def _create_duckdb_content_uuid_macro(con: duckdb.DuckDBPyConnection) -> None:
     con.execute(
         """
@@ -172,30 +202,18 @@ def _create_duckdb_resolver_views(
         component='proteins',
         lookup_filename='protein_identifier_lookup.parquet',
     )
-    chemical_dir = _resolver_component_dir(
-        resolver_dir,
-        component='chemicals',
-        lookup_filename='chemical_identifier_lookup.parquet',
-    )
+    chemical_dir = _chemical_resolver_component_dir(resolver_dir)
     protein_lookup_path = protein_dir / 'protein_identifier_lookup.parquet'
     protein_type_path = protein_dir / 'identifier_type.parquet'
-    chemical_lookup_path = chemical_dir / 'chemical_identifier_lookup.parquet'
+    chemical_lookup_dir = chemical_dir / 'lookup'
+    chemical_lookup_glob = chemical_lookup_dir / '*.parquet'
     chemical_type_path = chemical_dir / 'identifier_type.parquet'
-    has_chemical_resolver = (
-        chemical_lookup_path.exists()
-        and chemical_type_path.exists()
-    )
-    chemical_identifier_type_sql = (
-        f"""
+    chemical_identifier_type_sql = f"""
         UNION
         SELECT *
         FROM read_parquet({_sql_literal(chemical_type_path)})
         """
-        if has_chemical_resolver
-        else ''
-    )
-    chemical_lookup_sql = (
-        f"""
+    chemical_lookup_sql = f"""
         UNION ALL
         SELECT
           {_sql_literal(CHEMICAL_ENTITY_TYPE)} AS entity_type,
@@ -204,7 +222,7 @@ def _create_duckdb_resolver_views(
           NULL::VARCHAR AS taxonomy_id,
           canonical_identifier_type_id,
           canonical_identifier
-        FROM read_parquet({_sql_literal(chemical_lookup_path)})
+        FROM read_parquet('{_parquet_glob(chemical_lookup_glob)}')
         WHERE key_value IS NOT NULL
           AND canonical_identifier IS NOT NULL
         UNION ALL
@@ -215,15 +233,12 @@ def _create_duckdb_resolver_views(
           NULL::VARCHAR AS taxonomy_id,
           canonical_identifier_type_id,
           canonical_identifier
-        FROM read_parquet({_sql_literal(chemical_lookup_path)})
+        FROM read_parquet('{_parquet_glob(chemical_lookup_glob)}')
         WHERE canonical_identifier_type_id =
               {identifier_type_id(STANDARD_INCHI_KEY_TYPE)}
           AND canonical_identifier IS NOT NULL
           AND canonical_identifier <> ''
         """
-        if has_chemical_resolver
-        else ''
-    )
     con.execute(
         f"""
         CREATE VIEW identifier_type AS
@@ -271,7 +286,6 @@ def _create_duckdb_resolver_views(
           taxonomy_id,
           canonical_identifier_type_id,
           canonical_identifier
-        {f'''
         UNION ALL
         SELECT
           row_number() OVER (
@@ -283,12 +297,11 @@ def _create_duckdb_resolver_views(
           canonical_identifier,
           list_distinct(list(key_identifier_type_id)) AS key_identifier_type_ids,
           count(*)::BIGINT AS lookup_rows
-        FROM read_parquet({_sql_literal(chemical_lookup_path)})
+        FROM read_parquet('{_parquet_glob(chemical_lookup_glob)}')
         WHERE canonical_identifier IS NOT NULL
         GROUP BY
           canonical_identifier_type_id,
           canonical_identifier
-        ''' if has_chemical_resolver else ''}
         """
     )
 
@@ -3105,7 +3118,7 @@ def _bulk_copy_evidence(
         schema=schema,
         table='identifier_evidence',
         columns=('identifier_id', 'identifier_type_id', 'value'),
-        query=f"""
+        query="""
           SELECT DISTINCT
             i.identifier_id::UUID,
             it.identifier_type_id,
@@ -3121,14 +3134,13 @@ def _bulk_copy_evidence(
             AND existing.identifier_id IS NULL
         """,
     )
-    existing_annotation = _duckdb_pg_table(schema, 'annotation')
     _copy_duckdb_query_to_postgres(
         con,
         database_url=database_url,
         schema=schema,
         table='annotation',
         columns=('annotation_key', 'term', 'value', 'unit'),
-        query=f"""
+        query="""
           SELECT DISTINCT
             pq_annotation.annotation_key::UUID,
             pq_annotation.term,
@@ -3351,7 +3363,7 @@ def _bulk_copy_canonical(
             'synonyms_text',
             'sources',
         ),
-        query=f"""
+        query="""
           SELECT
             ds.source_id,
             ce.entity_id,

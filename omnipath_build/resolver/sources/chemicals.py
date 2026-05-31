@@ -13,7 +13,6 @@ from __future__ import annotations
 import re
 import sys
 from pathlib import Path
-from itertools import chain
 from dataclasses import dataclass
 from collections.abc import Callable, Iterable
 
@@ -65,19 +64,12 @@ CHEMICAL_SOURCES: tuple[str, ...] = (
     RAMP_SOURCE,
     PUBCHEM_SOURCE,
 )
-LOOKUP_DEPENDENT_CHEMICAL_SOURCES = frozenset(
-    {CHEMBL_SOURCE, PUBCHEM_SOURCE}
-)
 NONSTRUCTURAL_CROSS_REFERENCE_SOURCE_NAMES = frozenset(
     {CHEBI_SOURCE, REFMET_SOURCE}
 )
-CHEMICAL_IDENTIFIER_LOOKUP_OUTPUT_FILENAME = (
-    'chemical_identifier_lookup.parquet'
-)
-CHEMICAL_IDENTIFIER_LOOKUP_AMBIGUOUS_OUTPUT_FILENAME = (
-    'chemical_identifier_lookup_ambiguous.parquet'
-)
 IDENTIFIER_TYPE_OUTPUT_FILENAME = 'identifier_type.parquet'
+CHEMICAL_IDENTIFIER_LOOKUP_PARTITION_DIRNAME = 'lookup'
+CHEMICAL_IDENTIFIER_LOOKUP_AMBIGUOUS_PARTITION_DIRNAME = 'ambiguous'
 CHEBI_TYPE = cv_term_label_accession(IdentifierNamespaceCv.CHEBI)
 CHEMBL_COMPOUND_TYPE = cv_term_label_accession(
     IdentifierNamespaceCv.CHEMBL_COMPOUND
@@ -590,7 +582,6 @@ def _chemical_identifier_rows(
     max_records: int | None = None,
     pubchem_url: str | Path | None = None,
     pubchem_shards: int | None = None,
-    chemical_lookup_path: str | Path | None = None,
     chemical_lookup_sources: Iterable[str] | None = None,
 ) -> Iterable[dict]:
     selected_sources = _validate_chemical_sources(sources)
@@ -645,11 +636,8 @@ def _chemical_identifier_rows(
             continue
 
         dataset, mapper = _CHEMICAL_DATASETS[source]
-        raw_kwargs = {}
-        if source == CHEMBL_SOURCE and chemical_lookup_path is not None:
-            raw_kwargs['filter_chemical_resolver_inchikeys'] = False
         emitted = 0
-        for raw_row in dataset.raw(**raw_kwargs):
+        for raw_row in dataset.raw():
             rows = (row for row in (mapper(raw_row),) if row is not None)
             for row in rows:
                 yield row
@@ -675,8 +663,6 @@ def build_chemical_identifier_lookup(
             max_records=max_records,
             pubchem_url=pubchem_url,
             pubchem_shards=pubchem_shards,
-            chemical_lookup_path=Path('omnipath_build/data/chemicals')
-            / CHEMICAL_IDENTIFIER_LOOKUP_OUTPUT_FILENAME,
         )
     )
     if not rows:
@@ -705,62 +691,33 @@ def materialize_chemical_sources(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     activate_raw_download_data_dir()
-    chemical_lookup_path = (
-        output_dir / CHEMICAL_IDENTIFIER_LOOKUP_OUTPUT_FILENAME
-    )
-    ambiguous_path = (
-        output_dir / CHEMICAL_IDENTIFIER_LOOKUP_AMBIGUOUS_OUTPUT_FILENAME
-    )
     identifier_type_path = output_dir / IDENTIFIER_TYPE_OUTPUT_FILENAME
-    (
-        existing_lookup,
-        existing_ambiguous,
-        existing_identifier_types,
-    ) = _read_existing_chemical_lookup(
-        chemical_lookup_path,
-        ambiguous_path,
-        identifier_type_path,
+    existing_identifier_types = _read_existing_identifier_types(
+        identifier_type_path
     )
-    loaded_sources = (
-        _loaded_chemical_sources(
-            _combine_existing_chemical_lookup(
-                existing_lookup,
-                existing_ambiguous,
-            ),
-            existing_identifier_types,
-        )
-        if skip_existing
-        else set()
-    )
+    existing_sources = _loaded_partitioned_chemical_sources(output_dir)
+    sources_to_skip = existing_sources if skip_existing else set()
+
     rows: list[dict] = []
     completed_sources: list[str] = [
-        source for source in CHEMICAL_SOURCES if source in loaded_sources
+        source for source in CHEMICAL_SOURCES if source in existing_sources
     ]
-    streamed_counts: dict[str, int] | None = None
+    written_lookup_rows = 0
+    written_ambiguous_rows = 0
 
     for source in selected:
-        if source in loaded_sources:
+        if source in sources_to_skip:
             print(
                 f'[resolver] skip source={source} existing_dir={output_dir}',
                 flush=True,
             )
+            if existing_identifier_types is None:
+                existing_identifier_types = _merge_identifier_types(
+                    existing_identifier_types,
+                    _identifier_types_for_source(source),
+                )
             continue
         lookup_sources = tuple(completed_sources)
-        if source in LOOKUP_DEPENDENT_CHEMICAL_SOURCES and (
-            rows or existing_lookup is not None
-        ):
-            (
-                existing_lookup,
-                existing_ambiguous,
-                existing_identifier_types,
-            ) = _write_chemical_lookup_files(
-                rows,
-                output_dir,
-                existing_lookup=existing_lookup,
-                existing_ambiguous=existing_ambiguous,
-                existing_identifier_types=existing_identifier_types,
-            )
-            rows = []
 
         if source == 'pubchem':
             try:
@@ -770,9 +727,6 @@ def materialize_chemical_sources(
                     max_records=max_records,
                     pubchem_shards=pubchem_shards,
                     jobs=jobs,
-                    existing_lookup=existing_lookup,
-                    existing_ambiguous=existing_ambiguous,
-                    existing_identifier_types=existing_identifier_types,
                 )
             except Exception as exc:
                 if not continue_on_error:
@@ -786,17 +740,26 @@ def materialize_chemical_sources(
                 )
                 continue
             else:
+                written_lookup_rows += streamed_counts[
+                    'chemical_identifier_lookup_rows'
+                ]
+                written_ambiguous_rows += streamed_counts[
+                    'chemical_identifier_lookup_ambiguous_rows'
+                ]
+                existing_identifier_types = _merge_identifier_types(
+                    existing_identifier_types,
+                    _identifier_types_for_source(source),
+                )
                 completed_sources.append(source)
             continue
 
         try:
-            rows.extend(
+            rows = list(
                 _chemical_identifier_rows(
                     (source,),
                     max_records=max_records,
                     pubchem_url=pubchem_url,
                     pubchem_shards=pubchem_shards,
-                    chemical_lookup_path=chemical_lookup_path,
                     chemical_lookup_sources=lookup_sources,
                 )
             )
@@ -812,79 +775,56 @@ def materialize_chemical_sources(
             )
             continue
         else:
+            lookup, ambiguous, identifier_types = (
+                _write_chemical_source_partition_files(
+                    source,
+                    rows,
+                    output_dir,
+                )
+            )
+            written_lookup_rows += lookup.height
+            written_ambiguous_rows += ambiguous.height
+            existing_identifier_types = _merge_identifier_types(
+                existing_identifier_types,
+                identifier_types,
+            )
             completed_sources.append(source)
+            rows = []
 
-    if streamed_counts is not None and not rows:
-        return streamed_counts
-
-    if (
-        not rows
-        and existing_lookup is not None
-        and existing_identifier_types is not None
-    ):
-        return {
-            'chemical_identifier_lookup_rows': existing_lookup.height,
-            'chemical_identifier_lookup_ambiguous_rows': (
-                existing_ambiguous.height
-                if existing_ambiguous is not None
-                else _empty_chemical_lookup().height
-            ),
-            'identifier_type_rows': existing_identifier_types.height,
-        }
-
-    lookup, ambiguous, identifier_types = _write_chemical_lookup_files(
-        rows,
-        output_dir,
-        existing_lookup=existing_lookup,
-        existing_ambiguous=existing_ambiguous,
-        existing_identifier_types=existing_identifier_types,
-    )
+    if existing_identifier_types is None:
+        existing_identifier_types = pl.DataFrame(
+            identifier_type_rows({STANDARD_INCHI_KEY_TYPE}),
+            schema=IDENTIFIER_TYPE_SCHEMA,
+        )
+    _write_parquet_atomic(existing_identifier_types, identifier_type_path)
 
     return {
-        'chemical_identifier_lookup_rows': lookup.height,
-        'chemical_identifier_lookup_ambiguous_rows': ambiguous.height,
-        'identifier_type_rows': identifier_types.height,
+        'chemical_identifier_lookup_rows': written_lookup_rows,
+        'chemical_identifier_lookup_ambiguous_rows': written_ambiguous_rows,
+        'identifier_type_rows': existing_identifier_types.height,
     }
 
 
-def _write_chemical_lookup_files(
+def _write_chemical_source_partition_files(
+    source: str,
     rows: Iterable[dict],
     output_dir: Path,
-    *,
-    existing_lookup: pl.DataFrame | None = None,
-    existing_ambiguous: pl.DataFrame | None = None,
-    existing_identifier_types: pl.DataFrame | None = None,
 ) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]:
+    """Write one source partition, replacing any earlier partition atomically."""
+
     lookup, ambiguous, identifier_types = _split_chemical_identifier_lookup(
         rows
     )
-    existing_frames = [
-        frame
-        for frame in (existing_lookup, existing_ambiguous)
-        if frame is not None and not frame.is_empty()
-    ]
-    if existing_frames:
-        all_lookup = pl.concat(
-            [*existing_frames, lookup, ambiguous],
-            how='vertical_relaxed',
-        ).unique()
-        lookup, ambiguous = _split_chemical_lookup_frame(all_lookup)
-    if existing_identifier_types is not None:
-        identifier_types = (
-            pl.concat(
-                [existing_identifier_types, identifier_types],
-                how='vertical_relaxed',
-            )
-            .unique(subset=['identifier_type_id'])
-            .sort('identifier_type_id')
-        )
-    lookup.write_parquet(
-        output_dir / CHEMICAL_IDENTIFIER_LOOKUP_OUTPUT_FILENAME
+
+    _write_parquet_atomic(
+        lookup,
+        _chemical_lookup_partition_path(output_dir, source),
     )
-    ambiguous.write_parquet(
-        output_dir / CHEMICAL_IDENTIFIER_LOOKUP_AMBIGUOUS_OUTPUT_FILENAME
+    _write_parquet_atomic(
+        ambiguous,
+        _chemical_ambiguous_partition_path(output_dir, source),
     )
-    identifier_types.write_parquet(output_dir / IDENTIFIER_TYPE_OUTPUT_FILENAME)
+
     return lookup, ambiguous, identifier_types
 
 
@@ -895,9 +835,6 @@ def _write_streaming_pubchem_lookup_files(
     max_records: int | None,
     pubchem_shards: int | None,
     jobs: int,
-    existing_lookup: pl.DataFrame | None,
-    existing_ambiguous: pl.DataFrame | None,
-    existing_identifier_types: pl.DataFrame | None,
 ) -> dict[str, int]:
     from omnipath_build.resolver.sources.pubchem import (
         iter_pubchem_compound_rows,
@@ -905,11 +842,11 @@ def _write_streaming_pubchem_lookup_files(
         materialize_pubchem_compound_shards,
     )
 
-    lookup_path = output_dir / CHEMICAL_IDENTIFIER_LOOKUP_OUTPUT_FILENAME
-    ambiguous_path = (
-        output_dir / CHEMICAL_IDENTIFIER_LOOKUP_AMBIGUOUS_OUTPUT_FILENAME
+    lookup_path = _chemical_lookup_partition_path(output_dir, PUBCHEM_SOURCE)
+    ambiguous_path = _chemical_ambiguous_partition_path(
+        output_dir,
+        PUBCHEM_SOURCE,
     )
-    identifier_type_path = output_dir / IDENTIFIER_TYPE_OUTPUT_FILENAME
 
     if max_records is not None or jobs <= 1:
         pubchem_rows = iter_pubchem_compound_rows(
@@ -930,105 +867,93 @@ def _write_streaming_pubchem_lookup_files(
     if max_records is not None:
         pubchem_rows = _take(pubchem_rows, max_records)
 
-    existing_lookup = _drop_lookup_source(existing_lookup, PUBCHEM_COMPOUND_TYPE)
-    existing_ambiguous = _drop_lookup_source(
-        existing_ambiguous,
-        PUBCHEM_COMPOUND_TYPE,
-    )
+    tmp_lookup_path = _temporary_parquet_path(lookup_path)
     lookup_row_count = write_parquet_from_dict_rows(
-        chain(
-            _frame_dict_rows(existing_lookup),
-            (
-                pubchem_rows
-                if max_records is None and jobs > 1
-                else _normalized_chemical_lookup_rows(pubchem_rows)
-            ),
+        (
+            pubchem_rows
+            if max_records is None and jobs > 1
+            else _normalized_chemical_lookup_rows(pubchem_rows)
         ),
         CHEMICAL_IDENTIFIER_LOOKUP_SCHEMA,
-        lookup_path,
+        tmp_lookup_path,
     )
+    tmp_lookup_path.replace(lookup_path)
 
-    ambiguous = (
-        existing_ambiguous
-        if existing_ambiguous is not None
-        else _empty_chemical_lookup()
-    )
-    ambiguous.write_parquet(ambiguous_path)
-
-    type_names = {STANDARD_INCHI_KEY_TYPE, PUBCHEM_COMPOUND_TYPE}
-    if existing_identifier_types is not None:
-        type_names.update(existing_identifier_types.get_column('name'))
-    identifier_types = pl.DataFrame(
-        identifier_type_rows(type_names),
-        schema=IDENTIFIER_TYPE_SCHEMA,
-    )
-    identifier_types.write_parquet(identifier_type_path)
+    ambiguous = _empty_chemical_lookup()
+    _write_parquet_atomic(ambiguous, ambiguous_path)
 
     return {
         'chemical_identifier_lookup_rows': lookup_row_count,
         'chemical_identifier_lookup_ambiguous_rows': ambiguous.height,
-        'identifier_type_rows': identifier_types.height,
+        'identifier_type_rows': _identifier_types_for_source(
+            PUBCHEM_SOURCE
+        ).height,
     }
 
 
-def _read_existing_chemical_lookup(
-    lookup_path: Path,
-    ambiguous_path: Path,
-    identifier_type_path: Path,
-) -> tuple[pl.DataFrame | None, pl.DataFrame | None, pl.DataFrame | None]:
-    if not lookup_path.exists() or not identifier_type_path.exists():
-        return None, None, None
-    ambiguous = (
-        pl.read_parquet(ambiguous_path)
-        if ambiguous_path.exists()
-        else _empty_chemical_lookup()
-    )
+def _chemical_lookup_partition_path(output_dir: Path, source: str) -> Path:
     return (
-        pl.read_parquet(lookup_path),
-        ambiguous,
-        pl.read_parquet(identifier_type_path),
+        output_dir
+        / CHEMICAL_IDENTIFIER_LOOKUP_PARTITION_DIRNAME
+        / f'{source}.parquet'
     )
 
 
-def _loaded_chemical_sources(
-    lookup: pl.DataFrame | None,
-    identifier_types: pl.DataFrame | None,
-) -> set[str]:
-    if lookup is None or identifier_types is None or lookup.is_empty():
-        return set()
+def _chemical_ambiguous_partition_path(output_dir: Path, source: str) -> Path:
+    return (
+        output_dir
+        / CHEMICAL_IDENTIFIER_LOOKUP_AMBIGUOUS_PARTITION_DIRNAME
+        / f'{source}.parquet'
+    )
 
-    loaded: set[str] = set()
-    type_rows = identifier_types.select(
-        'identifier_type_id',
-        'name',
-    ).iter_rows(named=True)
-    type_ids = {
-        str(row['name']): row['identifier_type_id'] for row in type_rows
+
+def _temporary_parquet_path(path: Path) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path.with_name(f'.{path.name}.tmp')
+
+
+def _write_parquet_atomic(frame: pl.DataFrame, path: Path) -> None:
+    tmp_path = _temporary_parquet_path(path)
+    frame.write_parquet(tmp_path)
+    tmp_path.replace(path)
+
+
+def _read_existing_identifier_types(path: Path) -> pl.DataFrame | None:
+    return pl.read_parquet(path) if path.exists() else None
+
+
+def _identifier_types_for_source(source: str) -> pl.DataFrame:
+    type_names = {
+        STANDARD_INCHI_KEY_TYPE,
+        CHEMICAL_SOURCE_IDENTIFIER_TYPES[source],
     }
-    for source, type_name in CHEMICAL_SOURCE_IDENTIFIER_TYPES.items():
-        type_id = type_ids.get(type_name)
-        if type_id is None:
-            continue
-        count = lookup.filter(
-            pl.col('key_identifier_type_id') == type_id
-        ).height
-        if count > 0:
-            loaded.add(source)
-    return loaded
+    return pl.DataFrame(
+        identifier_type_rows(type_names),
+        schema=IDENTIFIER_TYPE_SCHEMA,
+    )
 
 
-def _combine_existing_chemical_lookup(
-    lookup: pl.DataFrame | None,
-    ambiguous: pl.DataFrame | None,
-) -> pl.DataFrame | None:
-    frames = [
-        frame
-        for frame in (lookup, ambiguous)
-        if frame is not None and not frame.is_empty()
-    ]
-    if not frames:
-        return lookup
-    return pl.concat(frames, how='vertical_relaxed').unique()
+def _merge_identifier_types(
+    existing: pl.DataFrame | None,
+    update: pl.DataFrame,
+) -> pl.DataFrame:
+    frames = [frame for frame in (existing, update) if frame is not None]
+    return (
+        pl.concat(frames, how='vertical_relaxed')
+        .unique(subset=['identifier_type_id'])
+        .sort('identifier_type_id')
+    )
+
+
+def _loaded_partitioned_chemical_sources(output_dir: Path) -> set[str]:
+    lookup_dir = output_dir / CHEMICAL_IDENTIFIER_LOOKUP_PARTITION_DIRNAME
+    if not lookup_dir.exists():
+        return set()
+    return {
+        path.stem
+        for path in lookup_dir.glob('*.parquet')
+        if path.stem in CHEMICAL_SOURCES
+    }
 
 
 def _take(rows: Iterable[dict], max_records: int) -> Iterable[dict]:
@@ -1038,22 +963,6 @@ def _take(rows: Iterable[dict], max_records: int) -> Iterable[dict]:
             break
         yield row
         emitted += 1
-
-
-def _drop_lookup_source(
-    lookup: pl.DataFrame | None,
-    source_type: str,
-) -> pl.DataFrame | None:
-    if lookup is None or lookup.is_empty():
-        return lookup
-    source_type_id = identifier_type_id(source_type)
-    return lookup.filter(pl.col('key_identifier_type_id') != source_type_id)
-
-
-def _frame_dict_rows(frame: pl.DataFrame | None) -> Iterable[dict]:
-    if frame is None or frame.is_empty():
-        return iter(())
-    return frame.iter_rows(named=True)
 
 
 def _normalized_chemical_lookup_rows(rows: Iterable[dict]) -> Iterable[dict]:

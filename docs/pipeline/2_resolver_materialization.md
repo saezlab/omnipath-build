@@ -23,7 +23,8 @@ By default, resolver files are written under `data/`:
 
 - `data/proteins/protein_identifier_lookup.parquet`
 - `data/proteins/identifier_type.parquet`
-- `data/chemicals/chemical_identifier_lookup.parquet`
+- `data/chemicals/lookup/<source>.parquet`
+- `data/chemicals/ambiguous/<source>.parquet`
 - `data/chemicals/identifier_type.parquet`
 
 Protein mappings resolve to primary UniProt accessions and preserve taxonomy for
@@ -43,4 +44,3 @@ ChEMBL, HMDB, LipidMaps, SwissLipids, and PubChem toward standard InChI keys.
 
 This phase does not write PostgreSQL content tables. It only prepares parquet
 inputs consumed by the DuckDB load phase.
-

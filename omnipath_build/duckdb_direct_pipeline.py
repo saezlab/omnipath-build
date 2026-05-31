@@ -748,13 +748,7 @@ def run_chembl_direct_copy_batches(
 
     from pypath.inputs_v2.chembl import resource as chembl_resource
 
-    resolver_dir = Path(resolver_dir)
-    records = chembl_resource.activities(
-        chemical_resolver_lookup_path=(
-            resolver_dir / 'chemicals' / 'chemical_identifier_lookup.parquet'
-        ),
-        chemical_resolver_sources=('chebi', 'hmdb', 'chembl'),
-    )
+    records = chembl_resource.activities()
     return run_direct_copy_pipeline_batches(
         records,
         source='chembl',
@@ -1745,17 +1739,6 @@ def _raw_dataset_kwargs(
     kwargs: dict[str, object] = {'force_refresh': force_refresh}
     if max_records is not None:
         kwargs['max_records'] = max_records
-    if fn.source == 'chembl':
-        kwargs.update(
-            {
-                'chemical_resolver_lookup_path': (
-                    resolver_dir
-                    / 'chemicals'
-                    / 'chemical_identifier_lookup.parquet'
-                ),
-                'chemical_resolver_sources': ('chebi', 'hmdb', 'chembl'),
-            }
-        )
     return kwargs
 
 
@@ -2014,14 +1997,7 @@ def main(argv: list[str] | None = None) -> int:
         from pypath.inputs_v2.chembl import resource as chembl_resource
 
         stats = run_direct_copy_pipeline(
-            chembl_resource.activities(
-                chemical_resolver_lookup_path=(
-                    Path(args.resolver_dir)
-                    / 'chemicals'
-                    / 'chemical_identifier_lookup.parquet'
-                ),
-                chemical_resolver_sources=('chebi', 'hmdb', 'chembl'),
-            ),
+            chembl_resource.activities(),
             source='chembl',
             dataset='activities',
             database_url=args.database_url,
