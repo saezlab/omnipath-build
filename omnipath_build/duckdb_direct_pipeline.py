@@ -18,18 +18,23 @@ from __future__ import annotations
 
 import os
 import sys
+import json
 import time
 import shutil
-import json
-import importlib
 import inspect
 from pathlib import Path
 import argparse
 import tempfile
+import importlib
 from itertools import islice
+from collections import deque
 from dataclasses import dataclass
 from collections.abc import Iterable
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import (
+    FIRST_COMPLETED,
+    ProcessPoolExecutor,
+    wait,
+)
 
 import duckdb
 import psycopg2
@@ -37,8 +42,8 @@ import psycopg2
 from omnipath_build import duckdb_load
 from omnipath_build.resources import (
     ResourceFunction,
-    configure_pypath_download_dir,
     discover_resources,
+    configure_pypath_download_dir,
 )
 from omnipath_build.db.refresh import source_has_content, delete_source_content
 
@@ -944,7 +949,7 @@ def _run_discovered_direct_load_staged_in_dir(
         workers=stage_jobs,
     )
 
-    tasks, prepared_shards, failed_dataset_keys = _prepare_staged_dataset_tasks(
+    prepare_tasks, source_functions = _build_staged_dataset_prepare_tasks(
         selected_by_source=selected_by_source,
         database=database,
         inputs_package=inputs_package,
@@ -952,20 +957,39 @@ def _run_discovered_direct_load_staged_in_dir(
         batch_size=batch_size,
         max_records=max_records,
         force_refresh=force_refresh,
-        threads=threads,
-        staging_dir=staging_dir,
-        stage_jobs=stage_jobs,
-    )
-    _scheduler_log(
-        'queue_ready',
-        datasets=len(prepared_shards),
-        tasks=len(tasks),
-        failed_datasets=len(failed_dataset_keys),
     )
 
+    prepared_shards: dict[tuple[str, str], StagedDatasetPrepareResult] = {}
+    failed_dataset_keys: set[tuple[str, str]] = set()
     results_by_index: dict[int, StagedDatasetTaskResult] = {}
+    tasks_by_index: dict[int, StagedDatasetTask] = {}
+    next_prepare_index = 0
+    next_stage_index = 0
+    ready_stage_tasks: deque[StagedDatasetTask] = deque()
+    future_info: dict[object, tuple[str, object]] = {}
+
     with ProcessPoolExecutor(max_workers=stage_jobs) as executor:
-        for index, task in enumerate(tasks):
+        if prepare_tasks:
+            _scheduler_log('preparse_start', datasets=len(prepare_tasks))
+
+        def submit_prepare() -> bool:
+            nonlocal next_prepare_index
+
+            if next_prepare_index >= len(prepare_tasks):
+                return False
+
+            task = prepare_tasks[next_prepare_index]
+            next_prepare_index += 1
+            future = executor.submit(_prepare_preparse_shards_worker, task)
+            future_info[future] = ('prepare', task)
+            return True
+
+        def submit_stage(task: StagedDatasetTask) -> None:
+            nonlocal next_stage_index
+
+            index = next_stage_index
+            next_stage_index += 1
+            tasks_by_index[index] = task
             _scheduler_log(
                 'task_submit',
                 task=index,
@@ -975,52 +999,116 @@ def _run_discovered_direct_load_staged_in_dir(
                 shard='-' if task.shard_index is None else task.shard_index,
                 rows=task.shard_rows or '-',
             )
-        future_by_index = {
-            executor.submit(_stage_dataset_task_worker, task): index
-            for index, task in enumerate(tasks)
-        }
-        for future in as_completed(future_by_index):
-            index = future_by_index[future]
-            task = tasks[index]
-            try:
-                result = future.result()
-            except Exception as exc:  # noqa: BLE001
-                print(
-                    '[warning] '
-                    f'[{task.source}.{task.dataset}] staging failed; '
-                    'continuing: '
-                    f'{exc.__class__.__name__}: {exc}',
-                    file=sys.stderr,
-                    flush=True,
-                )
-                result = StagedDatasetTaskResult(
+            future = executor.submit(_stage_dataset_task_worker, task)
+            future_info[future] = ('stage', index)
+
+        def fill_workers() -> None:
+            while len(future_info) < stage_jobs:
+                can_prepare = next_prepare_index < len(prepare_tasks)
+                can_stage = bool(ready_stage_tasks)
+                if can_prepare:
+                    submit_prepare()
+                elif can_stage:
+                    submit_stage(ready_stage_tasks.popleft())
+                else:
+                    break
+
+        fill_workers()
+        while future_info:
+            done, _pending = wait(
+                future_info,
+                return_when=FIRST_COMPLETED,
+            )
+            for future in done:
+                kind, payload = future_info.pop(future)
+                if kind == 'prepare':
+                    task = payload
+                    assert isinstance(task, StagedDatasetPrepareTask)
+                    dataset_key = (task.source, task.dataset)
+                    fn = source_functions[dataset_key]
+                    try:
+                        prepared = future.result()
+                    except Exception as exc:  # noqa: BLE001
+                        failed_dataset_keys.add(dataset_key)
+                        _warn_dataset_failed(fn, exc)
+                        continue
+
+                    prepared_shards[dataset_key] = prepared
+                    _scheduler_log(
+                        'preparse_done',
+                        source=prepared.source,
+                        dataset=prepared.dataset,
+                        shards=len(prepared.shards),
+                        rows=sum(shard.rows for shard in prepared.shards),
+                        reused=int(prepared.reused),
+                        path=prepared.preparse_dir,
+                    )
+                    ready_stage_tasks.extend(
+                        _staged_dataset_tasks_for_prepared(
+                            prepared=prepared,
+                            fn=fn,
+                            database=database,
+                            inputs_package=inputs_package,
+                            resolver_dir=resolver_dir,
+                            batch_size=batch_size,
+                            force_refresh=force_refresh,
+                            threads=threads,
+                            staging_dir=staging_dir,
+                        )
+                    )
+                    continue
+
+                index = payload
+                assert isinstance(index, int)
+                task = tasks_by_index[index]
+                try:
+                    result = future.result()
+                except Exception as exc:  # noqa: BLE001
+                    print(
+                        '[warning] '
+                        f'[{task.source}.{task.dataset}] staging failed; '
+                        'continuing: '
+                        f'{exc.__class__.__name__}: {exc}',
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    result = StagedDatasetTaskResult(
+                        source=task.source,
+                        dataset=task.dataset,
+                        failed=True,
+                        source_rows=0,
+                        identifiers=0,
+                        annotations=0,
+                        ontology_terms=0,
+                        total_seconds=0,
+                        stages=(),
+                    )
+                results_by_index[index] = result
+                if result.failed:
+                    failed_dataset_keys.add((result.source, result.dataset))
+                _scheduler_log(
+                    'task_done',
+                    task=index,
                     source=task.source,
                     dataset=task.dataset,
-                    failed=True,
-                    source_rows=0,
-                    identifiers=0,
-                    annotations=0,
-                    ontology_terms=0,
-                    total_seconds=0,
-                    stages=(),
+                    shard=_task_part_label(task),
+                    failed=int(result.failed),
+                    stages=len(result.stages),
+                    rows=result.source_rows,
+                    resolver=f'{sum(stage.resolver_seconds for stage in result.stages):.3f}',
+                    projection=f'{sum(stage.projection_seconds for stage in result.stages):.3f}',
+                    canonicalize=f'{sum(stage.canonicalize_seconds for stage in result.stages):.3f}',
+                    seconds=f'{result.total_seconds:.3f}',
                 )
-            results_by_index[index] = result
-            if result.failed:
-                failed_dataset_keys.add((result.source, result.dataset))
-            _scheduler_log(
-                'task_done',
-                task=index,
-                source=task.source,
-                dataset=task.dataset,
-                shard=_task_part_label(task),
-                failed=int(result.failed),
-                stages=len(result.stages),
-                rows=result.source_rows,
-                resolver=f'{sum(stage.resolver_seconds for stage in result.stages):.3f}',
-                projection=f'{sum(stage.projection_seconds for stage in result.stages):.3f}',
-                canonicalize=f'{sum(stage.canonicalize_seconds for stage in result.stages):.3f}',
-                seconds=f'{result.total_seconds:.3f}',
-            )
+
+            fill_workers()
+
+    _scheduler_log(
+        'queue_done',
+        datasets=len(prepared_shards),
+        tasks=len(tasks_by_index),
+        failed_datasets=len(failed_dataset_keys),
+    )
 
     if drop_load_constraints:
         duckdb_load._drop_bulk_load_constraints_and_indexes(
@@ -1030,7 +1118,7 @@ def _run_discovered_direct_load_staged_in_dir(
 
     successful_dataset_keys: set[tuple[str, str]] = set()
     successful_stages: list[DirectStageStats] = []
-    for index, _task in enumerate(tasks):
+    for index in range(next_stage_index):
         result = results_by_index[index]
         dataset_key = (result.source, result.dataset)
         if result.failed or dataset_key in failed_dataset_keys:
@@ -1090,7 +1178,7 @@ def _run_discovered_direct_load_staged_in_dir(
     )
 
 
-def _prepare_staged_dataset_tasks(
+def _build_staged_dataset_prepare_tasks(
     *,
     selected_by_source: dict[str, list[ResourceFunction]],
     database: str,
@@ -1099,26 +1187,14 @@ def _prepare_staged_dataset_tasks(
     batch_size: int,
     max_records: int | None,
     force_refresh: bool,
-    threads: int,
-    staging_dir: Path,
-    stage_jobs: int,
-) -> tuple[
-    list[StagedDatasetTask],
-    dict[tuple[str, str], StagedDatasetPrepareResult],
-    set[tuple[str, str]],
-]:
-    """Create round-robin dataset tasks for the shared LOAD_JOBS pool."""
+) -> tuple[list[StagedDatasetPrepareTask], dict[tuple[str, str], ResourceFunction]]:
+    """Build the preparse work queue for staged discovered loads."""
 
     resolver_dir = Path(resolver_dir)
-    task_groups: list[list[StagedDatasetTask]] = []
-    prepared_shards: dict[tuple[str, str], StagedDatasetPrepareResult] = {}
-    failed_dataset_keys: set[tuple[str, str]] = set()
     prepare_tasks: list[StagedDatasetPrepareTask] = []
     source_functions: dict[tuple[str, str], ResourceFunction] = {}
 
-    for source, functions in selected_by_source.items():
-        state_dir = staging_dir / _path_slug(source)
-        state_dir.mkdir(parents=True, exist_ok=True)
+    for _source, functions in selected_by_source.items():
         for fn in functions:
             dataset_key = (fn.source, fn.function_name)
             source_functions[dataset_key] = fn
@@ -1146,81 +1222,54 @@ def _prepare_staged_dataset_tasks(
                 )
             )
 
-    prepared_by_key: dict[tuple[str, str], StagedDatasetPrepareResult] = {}
-    if prepare_tasks:
-        _scheduler_log('preparse_start', datasets=len(prepare_tasks))
-        with ProcessPoolExecutor(max_workers=stage_jobs) as executor:
-            future_by_task = {
-                executor.submit(_prepare_preparse_shards_worker, task): task
-                for task in prepare_tasks
-            }
-            for future in as_completed(future_by_task):
-                task = future_by_task[future]
-                dataset_key = (task.source, task.dataset)
-                fn = source_functions[dataset_key]
-                try:
-                    prepared = future.result()
-                except Exception as exc:  # noqa: BLE001
-                    failed_dataset_keys.add(dataset_key)
-                    _warn_dataset_failed(fn, exc)
-                    continue
-                prepared_by_key[dataset_key] = prepared
-                _scheduler_log(
-                    'preparse_done',
-                    source=prepared.source,
-                    dataset=prepared.dataset,
-                    shards=len(prepared.shards),
-                    rows=sum(shard.rows for shard in prepared.shards),
-                    reused=int(prepared.reused),
-                    path=prepared.preparse_dir,
-                )
+    return prepare_tasks, source_functions
 
-    for prepare_task in prepare_tasks:
-        dataset_key = (prepare_task.source, prepare_task.dataset)
-        prepared = prepared_by_key.get(dataset_key)
-        if prepared is None:
-            continue
-        fn = source_functions[dataset_key]
-        prepared_shards[dataset_key] = prepared
-        base_state = staging_dir / _path_slug(fn.source) / (
-            f'{_path_slug(fn.source)}_{_path_slug(fn.function_name)}.duckdb'
-        )
-        task_groups.append(
-            [
-                StagedDatasetTask(
-                    source=fn.source,
-                    dataset=fn.function_name,
-                    output_kind=fn.output_kind,
-                    qualified_module=fn.qualified_module,
-                    database=database,
-                    inputs_package=inputs_package,
-                    resolver_dir=str(resolver_dir),
-                    batch_size=batch_size,
-                    max_records=None,
-                    state_path=str(
-                        base_state.with_name(
-                            f'{base_state.stem}_shard_{shard.shard_index:05d}'
-                            f'{base_state.suffix}'
-                        )
-                    ),
-                    force_refresh=force_refresh,
-                    threads=threads,
-                    raw_shard_path=shard.path,
-                    row_offset=shard.row_offset,
-                    shard_rows=shard.rows,
-                    shard_index=shard.shard_index,
-                )
-                for shard in prepared.shards
-            ]
-        )
 
-    tasks: list[StagedDatasetTask] = []
-    max_group_len = max((len(group) for group in task_groups), default=0)
-    for index in range(max_group_len):
-        for group in task_groups:
-            if index < len(group):
-                tasks.append(group[index])
-    return tasks, prepared_shards, failed_dataset_keys
+def _staged_dataset_tasks_for_prepared(
+    *,
+    prepared: StagedDatasetPrepareResult,
+    fn: ResourceFunction,
+    database: str,
+    inputs_package: str,
+    resolver_dir: str | Path,
+    batch_size: int,
+    force_refresh: bool,
+    threads: int,
+    staging_dir: Path,
+) -> list[StagedDatasetTask]:
+    """Build staging tasks for one completed preparse result."""
+
+    state_dir = staging_dir / _path_slug(fn.source)
+    state_dir.mkdir(parents=True, exist_ok=True)
+    base_state = state_dir / (
+        f'{_path_slug(fn.source)}_{_path_slug(fn.function_name)}.duckdb'
+    )
+    return [
+        StagedDatasetTask(
+            source=fn.source,
+            dataset=fn.function_name,
+            output_kind=fn.output_kind,
+            qualified_module=fn.qualified_module,
+            database=database,
+            inputs_package=inputs_package,
+            resolver_dir=str(resolver_dir),
+            batch_size=batch_size,
+            max_records=None,
+            state_path=str(
+                base_state.with_name(
+                    f'{base_state.stem}_shard_{shard.shard_index:05d}'
+                    f'{base_state.suffix}'
+                )
+            ),
+            force_refresh=force_refresh,
+            threads=threads,
+            raw_shard_path=shard.path,
+            row_offset=shard.row_offset,
+            shard_rows=shard.rows,
+            shard_index=shard.shard_index,
+        )
+        for shard in prepared.shards
+    ]
 
 
 def _scheduler_log(event: str, **fields: object) -> None:
@@ -1675,9 +1724,9 @@ def _load_discovered_dataset_ref(
 
     configure_pypath_download_dir()
     from pypath.inputs_v2.base import (  # noqa: PLC0415
-        ArtifactDataset,
         Dataset,
         Resource,
+        ArtifactDataset,
     )
 
     module = importlib.import_module(qualified_module)
