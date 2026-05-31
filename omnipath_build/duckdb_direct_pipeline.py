@@ -20,6 +20,7 @@ import os
 import sys
 import json
 import time
+from queue import Empty, Queue
 import shutil
 import inspect
 from pathlib import Path
@@ -27,6 +28,7 @@ import argparse
 import tempfile
 import importlib
 from itertools import islice
+from threading import Event, Thread
 from collections import deque
 from dataclasses import dataclass
 from collections.abc import Iterable
@@ -202,6 +204,25 @@ class StagedDatasetTaskResult:
     ontology_terms: int
     total_seconds: float
     stages: tuple[DirectStageStats, ...]
+
+
+@dataclass(frozen=True)
+class StagedCopyTask:
+    """A staged DuckDB state queued for serial PostgreSQL COPY."""
+
+    index: int
+    dataset_key: tuple[str, str]
+    stage: DirectStageStats
+    require_empty: bool
+
+
+@dataclass(frozen=True)
+class StagedCopyResult:
+    """Result emitted by the serial copy worker."""
+
+    task: StagedCopyTask
+    copy_seconds: float
+    error: BaseException | None = None
 
 
 @dataclass(frozen=True)
@@ -968,9 +989,123 @@ def _run_discovered_direct_load_staged_in_dir(
     next_stage_index = 0
     next_copy_index = 0
     first_copy = True
-    constraints_dropped = False
     ready_stage_tasks: deque[StagedDatasetTask] = deque()
     future_info: dict[object, tuple[str, object]] = {}
+    copy_queue: Queue[StagedCopyTask | None] = Queue()
+    copy_results: Queue[StagedCopyResult] = Queue()
+    copy_stop = Event()
+    copy_error: BaseException | None = None
+
+    def copy_worker() -> None:
+        constraints_dropped = False
+
+        while True:
+            item = copy_queue.get()
+
+            if item is None:
+                return
+
+            if copy_stop.is_set():
+                return
+
+            stage = item.stage
+            _scheduler_log(
+                'copy_start',
+                stage=item.index,
+                source=stage.source,
+                dataset=stage.dataset,
+                rows=stage.source_rows,
+            )
+            try:
+
+                if drop_load_constraints and not constraints_dropped:
+                    duckdb_load._drop_bulk_load_constraints_and_indexes(
+                        database_url=database_url,
+                        schema=schema,
+                    )
+                    constraints_dropped = True
+
+                copy_seconds = copy_staged_direct_load(
+                    stage,
+                    database_url=database_url,
+                    schema=schema,
+                    require_empty=item.require_empty,
+                )
+
+            except BaseException as exc:  # noqa: BLE001
+                copy_stop.set()
+                _scheduler_log(
+                    'copy_failed',
+                    stage=item.index,
+                    source=stage.source,
+                    dataset=stage.dataset,
+                    rows=stage.source_rows,
+                    error=f'{exc.__class__.__name__}: {exc}',
+                )
+                copy_results.put(
+                    StagedCopyResult(
+                        task=item,
+                        copy_seconds=0.0,
+                        error=exc,
+                    )
+                )
+                return
+
+            _scheduler_log(
+                'copy_done',
+                stage=item.index,
+                source=stage.source,
+                dataset=stage.dataset,
+                rows=stage.source_rows,
+                seconds=f'{copy_seconds:.3f}',
+            )
+            copy_results.put(
+                StagedCopyResult(
+                    task=item,
+                    copy_seconds=copy_seconds,
+                )
+            )
+
+    def drain_copy_results() -> None:
+        nonlocal copy_error
+
+        while True:
+            try:
+                result = copy_results.get_nowait()
+            except Empty:
+                return
+
+            if result.error is not None:
+                failed_dataset_keys.add(result.task.dataset_key)
+                copy_error = result.error
+                continue
+
+            successful_dataset_keys.add(result.task.dataset_key)
+
+    def enqueue_copy(
+        stage: DirectStageStats,
+        dataset_key: tuple[str, str],
+    ) -> None:
+        nonlocal first_copy
+        nonlocal next_copy_index
+
+        next_copy_index += 1
+        copy_queue.put(
+            StagedCopyTask(
+                index=next_copy_index,
+                dataset_key=dataset_key,
+                stage=stage,
+                require_empty=require_empty and first_copy,
+            )
+        )
+        first_copy = False
+
+    copy_thread = Thread(
+        target=copy_worker,
+        name='omnipath-build-copy',
+        daemon=True,
+    )
+    copy_thread.start()
 
     with ProcessPoolExecutor(max_workers=stage_jobs) as executor:
         if prepare_tasks:
@@ -1007,7 +1142,7 @@ def _run_discovered_direct_load_staged_in_dir(
             future_info[future] = ('stage', index)
 
         def fill_workers() -> None:
-            while len(future_info) < stage_jobs:
+            while len(future_info) < stage_jobs and not copy_stop.is_set():
                 can_prepare = next_prepare_index < len(prepare_tasks)
                 can_stage = bool(ready_stage_tasks)
                 if can_prepare:
@@ -1021,8 +1156,18 @@ def _run_discovered_direct_load_staged_in_dir(
         while future_info:
             done, _pending = wait(
                 future_info,
+                timeout=1.0,
                 return_when=FIRST_COMPLETED,
             )
+            drain_copy_results()
+
+            if copy_error is not None:
+
+                for future in future_info:
+                    future.cancel()
+
+                break
+
             for future in done:
                 kind, payload = future_info.pop(future)
                 if kind == 'prepare':
@@ -1108,40 +1253,20 @@ def _run_discovered_direct_load_staged_in_dir(
                 if result.failed:
                     continue
 
-                if drop_load_constraints and not constraints_dropped:
-                    duckdb_load._drop_bulk_load_constraints_and_indexes(
-                        database_url=database_url,
-                        schema=schema,
-                    )
-                    constraints_dropped = True
-
                 for stage in result.stages:
-                    next_copy_index += 1
-                    _scheduler_log(
-                        'copy_start',
-                        stage=next_copy_index,
-                        source=stage.source,
-                        dataset=stage.dataset,
-                        rows=stage.source_rows,
-                    )
-                    copy_seconds = copy_staged_direct_load(
-                        stage,
-                        database_url=database_url,
-                        schema=schema,
-                        require_empty=require_empty and first_copy,
-                    )
-                    first_copy = False
-                    _scheduler_log(
-                        'copy_done',
-                        stage=next_copy_index,
-                        source=stage.source,
-                        dataset=stage.dataset,
-                        rows=stage.source_rows,
-                        seconds=f'{copy_seconds:.3f}',
-                    )
-                successful_dataset_keys.add(dataset_key)
+                    enqueue_copy(stage, dataset_key)
 
             fill_workers()
+
+    copy_queue.put(None)
+    while copy_thread.is_alive():
+        copy_thread.join(timeout=1.0)
+        drain_copy_results()
+
+    drain_copy_results()
+
+    if copy_error is not None:
+        raise copy_error
 
     _scheduler_log(
         'queue_done',
