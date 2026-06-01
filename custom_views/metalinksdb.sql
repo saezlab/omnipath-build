@@ -817,7 +817,6 @@ rel_annotations AS (
     FROM relation_evidence_annotation rea
     JOIN annotation a ON a.annotation_key = rea.annotation_key
     WHERE rea.source_id = 39
-      AND rea.relation_evidence_id IN (SELECT relation_evidence_id FROM human_re)
     GROUP BY rea.relation_evidence_id
 )
 
