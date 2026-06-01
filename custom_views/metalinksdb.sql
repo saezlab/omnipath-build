@@ -804,7 +804,7 @@ protein_ids AS (
 ),
 
 -- Pivot STITCH interaction scores and action type flags (binding, inhibition, activation, enzymatic) into columns per relation_evidence row.
-rel_annotations AS (
+rel_annotations AS NOT MATERIALIZED (
     SELECT rea.relation_evidence_id,
         MAX(CASE WHEN a.term = 'Stitch Action Score:OM:1213'    THEN a.value END) AS stitch_action_score,
         MAX(CASE WHEN a.term = 'Confidence Value:OM:1201'       THEN a.value END) AS confidence_value,
