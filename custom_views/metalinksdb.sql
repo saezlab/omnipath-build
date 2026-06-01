@@ -81,7 +81,7 @@ protein_ids AS (
 ),
 
 -- Pivot ChEMBL activity annotations (pChEMBL, IC50, assay type, literature) into columns per relation_evidence row.
-rel_annotations AS (
+rel_annotations AS NOT MATERIALIZED (
     SELECT
         rea.relation_evidence_id,
         MAX(CASE WHEN a.term = 'Chembl Activity:OM:0228'   THEN a.value END) AS chembl_activity_id,
@@ -278,7 +278,7 @@ protein_ids AS (
 ),
 
 -- Pivot BindingDB affinity measurements (pChEMBL, IC50, Ki, Kd, EC50) and experimental conditions into columns per relation_evidence row.
-rel_annotations AS (
+rel_annotations AS NOT MATERIALIZED (
     SELECT rea.relation_evidence_id,
         MAX(CASE WHEN a.term = 'Pchembl Value:OM:0708'        THEN a.value END) AS pchembl_value,
         MAX(CASE WHEN a.term = 'Ic50:MI:0641'                 THEN a.value END) AS ic50,
@@ -782,7 +782,7 @@ human_re AS (
 ),
 
 -- Collect raw STITCH compound identifier (PubChem CID) per entity_evidence row.
-compound_ids AS (
+compound_ids AS NOT MATERIALIZED (
     SELECT eei.entity_evidence_id,
         MAX(CASE WHEN ie.identifier_type_id = 12 THEN ie.value END) AS pubchem_cid
     FROM entity_evidence_identifier eei
@@ -793,7 +793,7 @@ compound_ids AS (
 ),
 
 -- Collect raw STITCH protein identifier (Ensembl ID) per entity_evidence row; UniProt comes from canonical resolution.
-protein_ids AS (
+protein_ids AS NOT MATERIALIZED (
     SELECT eei.entity_evidence_id,
         MAX(CASE WHEN ie.identifier_type_id = 2 THEN ie.value END) AS ensembl_id
     FROM entity_evidence_identifier eei
