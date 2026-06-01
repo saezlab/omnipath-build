@@ -750,14 +750,6 @@ CREATE INDEX ON metalinksdb_mrclinksdb_relations (protein_uniprot);
 -- Human filter uses entity_evidence_identifier (identifier_type_id=34, Ncbi Tax Id:OM:0205)
 -- rather than entity resolution — mirrors ChEMBL index-scan approach.
 -- All 819,666 STITCH protein entities have this identifier (338,521 human, 481,145 mouse).
--- Parallelism disabled: rel_annotations parallel hash join against the 7.78M-row annotation
--- table requests 256MB/worker × 4 workers = 1GB, exceeding Docker default /dev/shm of 64MB.
--- Fix: set shm_size: 1gb in docker-compose.deploy.yaml, then remove these SET lines.
--- ────────────────────────────────────────────────────────────────────────────
-
-SET max_parallel_workers_per_gather = 0;
-SET work_mem = '128MB';
-
 DROP MATERIALIZED VIEW IF EXISTS metalinksdb_stitch_relations;
 CREATE MATERIALIZED VIEW metalinksdb_stitch_relations AS
 WITH
@@ -880,8 +872,6 @@ CREATE INDEX ON metalinksdb_stitch_relations (protein_entity_id);
 CREATE INDEX ON metalinksdb_stitch_relations (compound_canonical_id);
 CREATE INDEX ON metalinksdb_stitch_relations (protein_uniprot);
 
-SET max_parallel_workers_per_gather = 4;
-SET work_mem = '256MB';
 
 -- ────────────────────────────────────────────────────────────────────────────
 -- TCDB  (source_id = 41)  — transporter-substrate pairs
