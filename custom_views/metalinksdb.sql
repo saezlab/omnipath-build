@@ -811,7 +811,7 @@ protein_ids AS (
 
 -- Pivot STITCH interaction scores and action type flags (binding, inhibition, activation, enzymatic) into columns per relation_evidence row.
 rel_annotations AS (
-    SELECT hr.relation_evidence_id,
+    SELECT rea.relation_evidence_id,
         MAX(CASE WHEN a.term = 'Stitch Action Score:OM:1213'    THEN a.value END) AS stitch_action_score,
         MAX(CASE WHEN a.term = 'Confidence Value:OM:1201'       THEN a.value END) AS confidence_value,
         MAX(CASE WHEN a.term = 'Control Type:OM:1212'           THEN a.value END) AS control_type,
@@ -820,11 +820,11 @@ rel_annotations AS (
         BOOL_OR(a.term = 'Enzymatic Reaction:MI:0414')                            AS is_enzymatic,
         BOOL_OR(a.term = 'Inhibition:OM:0931')                                    AS is_inhibition,
         BOOL_OR(a.term = 'Activation:OM:0930')                                    AS is_activation
-    FROM human_re hr
-    JOIN relation_evidence_annotation rea
-        ON rea.relation_evidence_id = hr.relation_evidence_id AND rea.source_id = 39
+    FROM relation_evidence_annotation rea
     JOIN annotation a ON a.annotation_key = rea.annotation_key
-    GROUP BY hr.relation_evidence_id
+    WHERE rea.source_id = 39
+      AND rea.relation_evidence_id IN (SELECT relation_evidence_id FROM human_re)
+    GROUP BY rea.relation_evidence_id
 )
 
 SELECT
