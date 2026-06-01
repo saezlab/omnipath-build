@@ -747,14 +747,13 @@ CREATE INDEX ON metalinksdb_mrclinksdb_relations (protein_uniprot);
 
 -- ────────────────────────────────────────────────────────────────────────────
 -- STITCH  (source_id = 39)
--- Human filter uses entity_evidence_identifier (identifier_type_id=34, Ncbi Tax Id:OM:0205)
--- rather than entity resolution — mirrors ChEMBL index-scan approach.
--- All 819,666 STITCH protein entities have this identifier (338,521 human, 481,145 mouse).
+-- Human filter uses entity_evidence.taxonomy_id = 9606 directly — simpler than
+-- identifier-based approach and gives the planner correct cardinality estimates.
 DROP MATERIALIZED VIEW IF EXISTS metalinksdb_stitch_relations;
 CREATE MATERIALIZED VIEW metalinksdb_stitch_relations AS
 WITH
 
--- Pre-filter to human SM→Protein rows via taxon identifier stored per protein entity.
+-- Pre-filter to human SM→Protein rows using taxonomy_id directly on entity_evidence.
 human_re AS (
     SELECT DISTINCT
         re.relation_evidence_id,
@@ -771,13 +770,7 @@ human_re AS (
         ON  ee_protein.source_id          = re.source_id
         AND ee_protein.entity_evidence_id = re.object_entity_evidence_id
         AND ee_protein.entity_type_id     = 3
-    JOIN entity_evidence_identifier eei
-        ON  eei.source_id          = ee_protein.source_id
-        AND eei.entity_evidence_id = ee_protein.entity_evidence_id
-    JOIN identifier_evidence ie
-        ON  ie.identifier_id      = eei.identifier_id
-        AND ie.identifier_type_id = 34
-        AND ie.value              = '9606'
+        AND ee_protein.taxonomy_id        = 9606
     WHERE re.source_id = 39
 ),
 
