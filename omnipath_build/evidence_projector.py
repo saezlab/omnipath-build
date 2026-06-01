@@ -12,17 +12,21 @@ from omnipath_build.ingest.common import (
     identifier_key,
     annotation_to_row,
     association_to_row,
-    association_relation,
     include_identifier,
     entity_evidence_key,
     extract_taxonomy_id,
     is_interaction_like,
+    association_relation,
     relation_evidence_key,
     membership_relation_spec,
     interaction_relation_spec,
     interaction_relation_annotations,
 )
-from omnipath_build.relation_rules import ASSOCIATION_CATEGORY, string_or_none
+from omnipath_build.relation_rules import (
+    ASSOCIATION_CATEGORY,
+    string_or_none,
+    is_unprojectable_transport,
+)
 
 @dataclass(frozen=True)
 class ProjectionStats:
@@ -84,6 +88,19 @@ class EvidenceProjectorBase:
         )
         interaction_like = is_interaction_like(entity_type)
         if interaction_like and interaction_member_count < 2:
+            return
+        if interaction_like and is_unprojectable_transport(
+            row,
+            [
+                {
+                    'entity_type': string_or_none(
+                        getattr(getattr(membership, 'member', None), 'type', None)
+                    )
+                }
+                for membership in memberships
+                if getattr(membership, 'member', None) is not None
+            ],
+        ):
             return
         relation_only_interaction = interaction_like and interaction_member_count == 2
 

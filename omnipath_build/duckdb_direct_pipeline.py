@@ -49,7 +49,7 @@ from omnipath_build.resources import (
 )
 from omnipath_build.db.refresh import source_has_content, delete_source_content
 
-DEFAULT_LOAD_EXCLUDED_SOURCES = frozenset({'rampdb'})
+DEFAULT_LOAD_EXCLUDED_SOURCES = frozenset({'imm1415', 'rampdb'})
 PREPARSE_SHARD_CACHE_VERSION = 'raw_shards_v1'
 STAGED_LOAD_TABLES: tuple[str, ...] = (
     'entity_evidence_raw',

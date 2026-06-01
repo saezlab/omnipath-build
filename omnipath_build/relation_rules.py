@@ -191,6 +191,43 @@ def order_relation_participants(
     return order_interaction_participants(participants)
 
 
+def count_transporter_participants(participants: list[dict[str, Any]]) -> int:
+    """Return the number of transporter-like participants."""
+
+    return sum(
+        1
+        for participant in participants
+        if entity_type_accession(string_or_none(participant.get('entity_type')))
+        in TRANSPORTER_ENTITY_TYPES
+    )
+
+
+def is_projectable_transport(
+    row: dict[str, Any],
+    participants: list[dict[str, Any]],
+) -> bool:
+    """Return whether a transport record can become a direct relation."""
+
+    row_type = entity_type_accession(string_or_none(row.get('type')))
+    return (
+        row_type == str(EntityTypeCv.TRANSPORT)
+        and len(participants) == 2
+        and count_transporter_participants(participants) == 1
+    )
+
+
+def is_unprojectable_transport(
+    row: dict[str, Any],
+    participants: list[dict[str, Any]],
+) -> bool:
+    """Return whether a transport record has no direct relation shape."""
+
+    row_type = entity_type_accession(string_or_none(row.get('type')))
+    return row_type == str(EntityTypeCv.TRANSPORT) and not (
+        is_projectable_transport(row, participants)
+    )
+
+
 def order_transport_participants(
     participants: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:

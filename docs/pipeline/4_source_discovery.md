@@ -27,7 +27,7 @@ ingest.
 ## Selection Rules
 
 By default, all discovered sources are eligible except sources in the loader's
-default exclusion set, currently `rampdb`.
+default exclusion set, currently `imm1415` and `rampdb`.
 
 Selection can be narrowed with:
 

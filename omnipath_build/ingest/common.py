@@ -19,7 +19,10 @@ from collections.abc import Iterable
 from omnipath_build.cv_terms import (
     normalize_entity_type,
 )
-from pypath.internals.cv_terms import IdentifierNamespaceCv, cv_term_label_accession
+from pypath.internals.cv_terms import (
+    IdentifierNamespaceCv,
+    cv_term_label_accession,
+)
 from omnipath_build.relation_rules import (
     ASSOCIATION_CATEGORY,
     ASSOCIATION_PREDICATE,
@@ -28,6 +31,7 @@ from omnipath_build.relation_rules import (
     string_or_none,
     predicate_for_membership,
     predicate_for_interaction,
+    is_unprojectable_transport,
     order_relation_participants,
 )
 from pypath.internals.silver_schema import Entity
@@ -452,6 +456,8 @@ def interaction_relation_spec(
         }
         for member_ref, membership in member_refs
     ]
+    if is_unprojectable_transport(row, participants):
+        return None
     ordered = order_relation_participants(row, participants)
     if len(ordered) != 2:
         return None
