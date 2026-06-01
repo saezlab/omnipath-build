@@ -750,12 +750,6 @@ CREATE INDEX ON metalinksdb_mrclinksdb_relations (protein_uniprot);
 -- Human filter uses entity_evidence_identifier (identifier_type_id=34, Ncbi Tax Id:OM:0205)
 -- rather than entity resolution — mirrors ChEMBL index-scan approach.
 -- All 819,666 STITCH protein entities have this identifier (338,521 human, 481,145 mouse).
--- Workaround: parallel_setup_cost=1000 makes the planner choose sequential for STITCH
--- (3.4M annotation rows, below the cost threshold). Setting to 0 forces the planner
--- to use parallel workers. Proper fix: tune parallel_setup_cost server-wide or
--- restructure rel_annotations to increase estimated row count.
-SET parallel_setup_cost = 0;
-
 DROP MATERIALIZED VIEW IF EXISTS metalinksdb_stitch_relations;
 CREATE MATERIALIZED VIEW metalinksdb_stitch_relations AS
 WITH
@@ -880,8 +874,6 @@ CREATE INDEX ON metalinksdb_stitch_relations (protein_uniprot);
 
 
 -- ────────────────────────────────────────────────────────────────────────────
-
-SET parallel_setup_cost = 1000;
 -- TCDB  (source_id = 41)  — transporter-substrate pairs
 -- Direction REVERSED: Protein(3, subject) → SmallMolecule(2, object)
 -- Small source (20k rows); human_re applied for consistency.
