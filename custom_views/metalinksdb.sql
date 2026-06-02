@@ -34,7 +34,7 @@ SET work_mem = '256MB';
 CREATE OR REPLACE FUNCTION get_source_id(source_name text)
 RETURNS bigint LANGUAGE plpgsql STABLE AS $$
 BEGIN
-    RETURN (SELECT source_id FROM data_source WHERE name = source_name);
+    RETURN (SELECT source_id FROM public.data_source WHERE name = source_name);
 END;
 $$;
 
