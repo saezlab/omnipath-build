@@ -66,6 +66,7 @@ MEMBERSHIP_RULES: dict[str, str] = {
     str(EntityTypeCv.PROTEIN_FAMILY): 'has_member',
     str(EntityTypeCv.PATHWAY): 'has_participant',
     str(EntityTypeCv.REACTION): 'has_participant',
+    str(EntityTypeCv.TRANSPORT): 'has_participant',
 }
 
 ROLE_TERMS = (
@@ -202,11 +203,13 @@ def is_unprojectable_transport(
     row: dict[str, Any],
     participants: list[dict[str, Any]],
 ) -> bool:
-    """Return whether a transport record has no direct relation shape."""
+    """Return whether a transport direct-relation attempt is invalid."""
 
     row_type = entity_type_accession(string_or_none(row.get('type')))
-    return row_type == str(EntityTypeCv.TRANSPORT) and not (
-        is_projectable_transport(row, participants)
+    return (
+        row_type == str(EntityTypeCv.TRANSPORT)
+        and len(participants) == 2
+        and not is_projectable_transport(row, participants)
     )
 
 

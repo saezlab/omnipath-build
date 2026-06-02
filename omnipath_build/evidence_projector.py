@@ -26,11 +26,13 @@ from omnipath_build.relation_rules import (
     ASSOCIATION_CATEGORY,
     CONTROL_PREDICATE,
     string_or_none,
-    is_unprojectable_transport,
+    entity_type_accession,
+    is_projectable_transport,
 )
 from pypath.internals.cv_terms import (
     BiologicalRoleCv,
     ControlEffectCv,
+    EntityTypeCv,
     cv_term_label_accession,
     InteractionMetadataCv,
 )
@@ -109,20 +111,23 @@ class EvidenceProjectorBase:
         interaction_like = is_interaction_like(entity_type)
         if interaction_like and interaction_member_count < 2:
             return
-        if interaction_like and is_unprojectable_transport(
-            row,
-            [
-                {
-                    'entity_type': string_or_none(
-                        getattr(getattr(membership, 'member', None), 'type', None)
-                    )
-                }
-                for membership in memberships
-                if getattr(membership, 'member', None) is not None
-            ],
-        ):
-            return
-        relation_only_interaction = interaction_like and interaction_member_count == 2
+        participants = [
+            {
+                'entity_type': string_or_none(
+                    getattr(getattr(membership, 'member', None), 'type', None)
+                )
+            }
+            for membership in memberships
+            if getattr(membership, 'member', None) is not None
+        ]
+        relation_only_interaction = (
+            interaction_like
+            and interaction_member_count == 2
+            and (
+                entity_type_accession(entity_type) != str(EntityTypeCv.TRANSPORT)
+                or is_projectable_transport(row, participants)
+            )
+        )
 
         entity_evidence_id = None
         if not relation_only_interaction:
