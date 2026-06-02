@@ -150,8 +150,6 @@ def predicate_for_interaction(
     }:
         return PredicateRule(CONTROL_PREDICATE, INTERACTION_CATEGORY)
     if row_type_accession == str(EntityTypeCv.REACTION):
-        if has_role_ordering(ordered_participants):
-            return PredicateRule('transforms_to', INTERACTION_CATEGORY)
         return PredicateRule('interacts_with', INTERACTION_CATEGORY)
     if row_type_accession == str(EntityTypeCv.TRANSPORT):
         return PredicateRule(TRANSPORT_PREDICATE, INTERACTION_CATEGORY)
@@ -283,29 +281,6 @@ def order_interaction_participants(
     ):
         return [second, first]
     return participants
-
-
-def has_role_ordering(participants: list[dict[str, Any]]) -> bool:
-    """Return whether two participants carry complementary source/target roles."""
-
-    if len(participants) != 2:
-        return False
-    first_terms = annotation_terms(
-        participants[0].get('membership_annotations') or []
-    )
-    second_terms = annotation_terms(
-        participants[1].get('membership_annotations') or []
-    )
-    return bool(
-        (
-            first_terms & SOURCE_ROLE_ACCESSIONS
-            and second_terms & TARGET_ROLE_ACCESSIONS
-        )
-        or (
-            second_terms & SOURCE_ROLE_ACCESSIONS
-            and first_terms & TARGET_ROLE_ACCESSIONS
-        )
-    )
 
 
 def annotation_terms(annotations: list[dict[str, Any]]) -> set[str]:

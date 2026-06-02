@@ -120,11 +120,13 @@ class EvidenceProjectorBase:
             for membership in memberships
             if getattr(membership, 'member', None) is not None
         ]
+        entity_type_accession_value = entity_type_accession(entity_type)
         relation_only_interaction = (
             interaction_like
             and interaction_member_count == 2
+            and entity_type_accession_value != str(EntityTypeCv.REACTION)
             and (
-                entity_type_accession(entity_type) != str(EntityTypeCv.TRANSPORT)
+                entity_type_accession_value != str(EntityTypeCv.TRANSPORT)
                 or is_projectable_transport(row, participants)
             )
         )
