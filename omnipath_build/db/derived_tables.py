@@ -28,6 +28,7 @@ class DerivedTableStats:
     entity_relation_counts: int = 0
     ontology_terms: int = 0
     entity_ontology_terms: int = 0
+    entity_source_count: int = 0
 
 
 def rebuild_derived_tables(
@@ -75,6 +76,17 @@ def rebuild_derived_tables(
             seconds=f'{time.perf_counter() - step_started:.3f}',
         )
 
+        _log(progress, 'entity_source_count', 'start')
+        step_started = time.perf_counter()
+        entity_source_count = _populate_entity_source_count(cur, schema)
+        _log(
+            progress,
+            'entity_source_count',
+            'done',
+            rows=entity_source_count,
+            seconds=f'{time.perf_counter() - step_started:.3f}',
+        )
+
         _log(progress, 'entity_ontology_term', 'start')
         step_started = time.perf_counter()
         entity_ontology_terms = _populate_entity_ontology_terms(cur, schema)
@@ -113,6 +125,7 @@ def rebuild_derived_tables(
         entity_relation_counts=relation_counts,
         ontology_terms=ontology_terms,
         entity_ontology_terms=entity_ontology_terms,
+        entity_source_count=entity_source_count,
     )
 
 
@@ -226,6 +239,19 @@ def _create_derived_tables(
             """
         ).format(schema_id, schema_id)
     )
+    cur.execute(
+        sql.SQL(
+            """
+            CREATE TABLE IF NOT EXISTS {}.entity_source_count (
+              entity_id uuid PRIMARY KEY
+                REFERENCES {}.entity(entity_id)
+                ON DELETE CASCADE,
+              source_count integer NOT NULL,
+              source_list bigint[] NOT NULL
+            )
+            """
+        ).format(schema_id, schema_id)
+    )
     _ensure_ontology_terms_table(cur, schema)
 
 
@@ -293,6 +319,49 @@ def _populate_entity_relation_counts(
             FROM {}.entity e
             LEFT JOIN endpoint_counts
               ON endpoint_counts.entity_id = e.entity_id
+            """
+        ).format(schema_id, schema_id, schema_id, schema_id)
+    )
+    return int(cur.rowcount)
+
+
+def _populate_entity_source_count(
+    cur: psycopg2.extensions.cursor,
+    schema: str,
+) -> int:
+    """Per real entity, the number and sorted set of contributing sources.
+
+    Powers "items present in >= N resources" (coverage profile) and
+    shared/unique splits without a full evidence scan. Excludes CV-term
+    entities and unresolved resolutions (status 2).
+    """
+    schema_id = sql.Identifier(schema)
+    cur.execute(
+        sql.SQL('TRUNCATE {}.entity_source_count').format(schema_id)
+    )
+    cur.execute(
+        sql.SQL(
+            """
+            INSERT INTO {}.entity_source_count (
+              entity_id,
+              source_count,
+              source_list
+            )
+            SELECT
+              er.entity_id,
+              COUNT(DISTINCT er.source_id)::integer,
+              array_agg(DISTINCT er.source_id ORDER BY er.source_id)
+            FROM {}.entity_evidence_resolution er
+            JOIN {}.entity e
+              ON e.entity_id = er.entity_id
+            WHERE er.entity_id IS NOT NULL
+              AND er.status_id <> 2
+              AND e.entity_type_id IS DISTINCT FROM (
+                SELECT entity_type_id
+                FROM {}.vocab_entity_type
+                WHERE name = 'Cv Term:OM:0012'
+              )
+            GROUP BY er.entity_id
             """
         ).format(schema_id, schema_id, schema_id, schema_id)
     )
@@ -740,6 +809,161 @@ def _create_derived_indexes(
             ON {}.entity_ontology_term USING GIN (identifiers_text gin_trgm_ops)
             """
         ).format(schema_id),
+        sql.SQL(
+            """
+            CREATE INDEX IF NOT EXISTS entity_source_count_source_count_idx
+            ON {}.entity_source_count (source_count DESC, entity_id ASC)
+            """
+        ).format(schema_id),
+        sql.SQL(
+            """
+            CREATE INDEX IF NOT EXISTS entity_source_count_source_list_gin_idx
+            ON {}.entity_source_count USING GIN (source_list)
+            """
+        ).format(schema_id),
     ]
     for statement in statements:
         cur.execute(statement)
+
+
+def rebuild_resource_overlap_summary(
+    conn: psycopg2.extensions.connection,
+    *,
+    schema: str = 'public',
+    progress: bool = False,
+) -> int:
+    """Per (source_a, source_b, content_kind), the number of shared items.
+
+    Computed from the precomputed ``source`` facet bitmaps (pg_roaringbitmap),
+    so it is bounded (<= N*N per content kind, N = number of sources) and fast,
+    replacing a quadratic evidence self-join. Each unordered source pair is
+    stored once (source_a_id < source_b_id). content_kind is 'entity' or
+    'relation'. MUST run AFTER the facet bitmaps are rebuilt.
+    """
+    schema_id = sql.Identifier(schema)
+    started = time.perf_counter()
+    with conn.cursor() as cur:
+        cur.execute(
+            sql.SQL(
+                """
+                CREATE TABLE IF NOT EXISTS {}.resource_overlap_summary (
+                  source_a_id bigint NOT NULL
+                    REFERENCES {}.data_source(source_id) ON DELETE CASCADE,
+                  source_b_id bigint NOT NULL
+                    REFERENCES {}.data_source(source_id) ON DELETE CASCADE,
+                  content_kind text NOT NULL,
+                  overlap bigint NOT NULL,
+                  PRIMARY KEY (source_a_id, source_b_id, content_kind)
+                )
+                """
+            ).format(schema_id, schema_id, schema_id)
+        )
+        cur.execute(
+            sql.SQL('TRUNCATE {}.resource_overlap_summary').format(schema_id)
+        )
+        cur.execute(
+            sql.SQL(
+                """
+                INSERT INTO {}.resource_overlap_summary (
+                  source_a_id, source_b_id, content_kind, overlap
+                )
+                WITH src AS (
+                  SELECT facet_value, rb_or_agg(entity_bitmap) AS bm
+                  FROM {}.facet_entity_bitmap
+                  WHERE facet_name = 'source'
+                  GROUP BY facet_value
+                )
+                SELECT da.source_id, db.source_id, 'entity',
+                       rb_cardinality(rb_and(a.bm, b.bm))::bigint
+                FROM src a
+                JOIN src b ON a.facet_value < b.facet_value
+                JOIN {}.data_source da ON da.name = a.facet_value
+                JOIN {}.data_source db ON db.name = b.facet_value
+                WHERE rb_cardinality(rb_and(a.bm, b.bm)) > 0
+                """
+            ).format(schema_id, schema_id, schema_id, schema_id)
+        )
+        entity_pairs = int(cur.rowcount)
+        cur.execute(
+            sql.SQL(
+                """
+                INSERT INTO {}.resource_overlap_summary (
+                  source_a_id, source_b_id, content_kind, overlap
+                )
+                WITH src AS (
+                  SELECT facet_value, rb_or_agg(relation_bitmap) AS bm
+                  FROM {}.facet_relation_bitmap
+                  WHERE facet_name = 'source'
+                  GROUP BY facet_value
+                )
+                SELECT da.source_id, db.source_id, 'relation',
+                       rb_cardinality(rb_and(a.bm, b.bm))::bigint
+                FROM src a
+                JOIN src b ON a.facet_value < b.facet_value
+                JOIN {}.data_source da ON da.name = a.facet_value
+                JOIN {}.data_source db ON db.name = b.facet_value
+                WHERE rb_cardinality(rb_and(a.bm, b.bm)) > 0
+                """
+            ).format(schema_id, schema_id, schema_id, schema_id)
+        )
+        relation_pairs = int(cur.rowcount)
+        cur.execute(
+            sql.SQL(
+                """
+                CREATE INDEX IF NOT EXISTS resource_overlap_summary_kind_overlap_idx
+                ON {}.resource_overlap_summary (content_kind, overlap DESC)
+                """
+            ).format(schema_id)
+        )
+    conn.commit()
+    _log(
+        progress,
+        'resource_overlap_summary',
+        'done',
+        entity_pairs=entity_pairs,
+        relation_pairs=relation_pairs,
+        seconds=f'{time.perf_counter() - started:.3f}',
+    )
+    return entity_pairs + relation_pairs
+
+
+def sweep_staging_tables(
+    conn: psycopg2.extensions.connection,
+    *,
+    schema: str = 'public',
+    progress: bool = False,
+) -> int:
+    """Drop leftover ``*_source_<N>_staging`` tables from completed loads.
+
+    Run at the END of derive, after the derived tables that depend on the
+    staged data have succeeded, so a half-built database keeps its staging
+    tables for retry. Only drops staging tables that are NOT currently attached
+    as a partition (``pg_inherits``), so a live partition is never dropped.
+    """
+    schema_id = sql.Identifier(schema)
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT c.relname
+            FROM pg_class c
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE n.nspname = %s
+              AND c.relkind = 'r'
+              AND c.relname ~ '_source_[0-9]+_staging$'
+              AND NOT EXISTS (
+                SELECT 1 FROM pg_inherits i WHERE i.inhrelid = c.oid
+              )
+            ORDER BY c.relname
+            """,
+            [schema],
+        )
+        names = [row[0] for row in cur.fetchall()]
+        for name in names:
+            cur.execute(
+                sql.SQL('DROP TABLE IF EXISTS {}.{}').format(
+                    schema_id, sql.Identifier(name)
+                )
+            )
+    conn.commit()
+    _log(progress, 'sweep_staging', 'done', dropped=len(names))
+    return len(names)

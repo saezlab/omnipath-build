@@ -21,6 +21,8 @@ from omnipath_build.db import (
     delete_source_content,
     rebuild_bitmap_tables,
     rebuild_derived_tables,
+    rebuild_resource_overlap_summary,
+    sweep_staging_tables,
     ensure_deferred_indexes,
     create_secondary_indexes,
     ensure_content_primary_keys,
@@ -268,6 +270,7 @@ def main(argv: list[str] | None = None) -> int:
                     ),
                     entity_ontology_terms=table_stats.entity_ontology_terms,
                     ontology_terms=table_stats.ontology_terms,
+                    entity_source_count=table_stats.entity_source_count,
                     seconds=f'{time.perf_counter() - step_started:.3f}',
                 )
                 step_started = time.perf_counter()
@@ -307,6 +310,18 @@ def main(argv: list[str] | None = None) -> int:
                         relation_facets=bitmap_stats.relation_facets,
                         seconds=f'{time.perf_counter() - step_started:.3f}',
                     )
+                    step_started = time.perf_counter()
+                    _derive_log('resource_overlap_start')
+                    overlap_pairs = rebuild_resource_overlap_summary(
+                        conn,
+                        schema=args.schema,
+                        progress=True,
+                    )
+                    _derive_log(
+                        'resource_overlap_done',
+                        pairs=overlap_pairs,
+                        seconds=f'{time.perf_counter() - step_started:.3f}',
+                    )
                 step_started = time.perf_counter()
                 _derive_log('resources_start')
                 resource_stats = sync_resources_table(
@@ -329,6 +344,7 @@ def main(argv: list[str] | None = None) -> int:
                     f'entity_ontology_terms='
                     f'{table_stats.entity_ontology_terms} '
                     f'ontology_terms={table_stats.ontology_terms} '
+                    f'entity_source_count={table_stats.entity_source_count} '
                     f'resources={resource_stats.resources}',
                     flush=True,
                 )
@@ -367,6 +383,14 @@ def main(argv: list[str] | None = None) -> int:
                     f'relation_facets={bitmap_stats.relation_facets}',
                     flush=True,
                 )
+            sweep_started = time.perf_counter()
+            _derive_log('sweep_staging_start')
+            swept = sweep_staging_tables(conn, schema=args.schema, progress=True)
+            _derive_log(
+                'sweep_staging_done',
+                dropped=swept,
+                seconds=f'{time.perf_counter() - sweep_started:.3f}',
+            )
             _derive_log(
                 'done',
                 seconds=f'{time.perf_counter() - derive_started:.3f}',

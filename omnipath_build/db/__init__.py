@@ -19,6 +19,8 @@ from omnipath_build.db.resources import ResourceTableStats, sync_resources_table
 from omnipath_build.db.derived_tables import (
     DerivedTableStats,
     rebuild_derived_tables,
+    rebuild_resource_overlap_summary,
+    sweep_staging_tables,
 )
 
 __all__ = [
@@ -35,7 +37,9 @@ __all__ = [
     'ensure_source_partitions',
     'rebuild_bitmap_tables',
     'rebuild_derived_tables',
+    'rebuild_resource_overlap_summary',
     'reset_content_tables',
+    'sweep_staging_tables',
     'source_has_content',
     'sync_resources_table',
 ]
