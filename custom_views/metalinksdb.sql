@@ -27,6 +27,16 @@ SET max_parallel_workers = 8;
 SET work_mem = '256MB';
 
 -- Drop combined view first so individual source views can be dropped without CASCADE
+
+-- Helper function: resolves a source name to its source_id.
+-- Declared STABLE so PostgreSQL evaluates it at plan time,
+-- preserving partition pruning for all partitioned tables.
+CREATE OR REPLACE FUNCTION get_source_id(source_name text)
+RETURNS bigint LANGUAGE sql STABLE AS $$
+    SELECT source_id FROM data_source WHERE name = source_name
+$$;
+
+
 DROP MATERIALIZED VIEW IF EXISTS metalinksdb_relations;
 
 DROP MATERIALIZED VIEW IF EXISTS metalinksdb_chembl_relations;
@@ -49,7 +59,7 @@ human_re AS (
     JOIN annotation a ON a.annotation_key = rea.annotation_key
         AND a.term  = 'Ncbi Tax Id:OM:0205'
         AND a.value = '9606'
-    WHERE re.source_id = (SELECT source_id FROM data_source WHERE name = 'chembl')
+    WHERE re.source_id = get_source_id('chembl')
 ),
 
 -- Collect raw ChEMBL compound identifiers (ChEMBL ID, InChIKey, SMILES, name) per entity_evidence row.
@@ -62,7 +72,7 @@ compound_ids AS (
         MAX(CASE WHEN ie.identifier_type_id = 16 THEN ie.value END) AS compound_name
     FROM entity_evidence_identifier eei
     JOIN identifier_evidence ie ON ie.identifier_id = eei.identifier_id
-    WHERE eei.source_id = (SELECT source_id FROM data_source WHERE name = 'chembl')
+    WHERE eei.source_id = get_source_id('chembl')
       AND eei.entity_evidence_id IN (SELECT subject_entity_evidence_id FROM human_re)
     GROUP BY eei.entity_evidence_id
 ),
@@ -75,7 +85,7 @@ protein_ids AS (
         MAX(CASE WHEN ie.identifier_type_id = 33 THEN ie.value END) AS chembl_target_id
     FROM entity_evidence_identifier eei
     JOIN identifier_evidence ie ON ie.identifier_id = eei.identifier_id
-    WHERE eei.source_id = (SELECT source_id FROM data_source WHERE name = 'chembl')
+    WHERE eei.source_id = get_source_id('chembl')
       AND eei.entity_evidence_id IN (SELECT object_entity_evidence_id FROM human_re)
     GROUP BY eei.entity_evidence_id
 ),
@@ -112,7 +122,7 @@ rel_annotations AS NOT MATERIALIZED (
         BOOL_OR(a.term = 'Antagonist:OM:0920')                               AS is_antagonist
     FROM relation_evidence_annotation rea
     JOIN annotation a ON a.annotation_key = rea.annotation_key
-    WHERE rea.source_id = (SELECT source_id FROM data_source WHERE name = 'chembl')
+    WHERE rea.source_id = get_source_id('chembl')
       AND rea.relation_evidence_id IN (SELECT relation_evidence_id FROM human_re)
     GROUP BY rea.relation_evidence_id
 )
@@ -176,11 +186,11 @@ SELECT
 FROM human_re re
 
 JOIN entity_evidence ee_compound
-    ON  ee_compound.source_id = (SELECT source_id FROM data_source WHERE name = 'chembl')
+    ON  ee_compound.source_id = get_source_id('chembl')
     AND ee_compound.entity_evidence_id = re.subject_entity_evidence_id
 
 JOIN entity_evidence ee_protein
-    ON  ee_protein.source_id = (SELECT source_id FROM data_source WHERE name = 'chembl')
+    ON  ee_protein.source_id = get_source_id('chembl')
     AND ee_protein.entity_evidence_id = re.object_entity_evidence_id
 
 LEFT JOIN compound_ids ci
@@ -190,7 +200,7 @@ LEFT JOIN protein_ids pi
     ON pi.entity_evidence_id = re.object_entity_evidence_id
 
 LEFT JOIN entity_evidence_resolution eer_compound
-    ON  eer_compound.source_id = (SELECT source_id FROM data_source WHERE name = 'chembl')
+    ON  eer_compound.source_id = get_source_id('chembl')
     AND eer_compound.entity_evidence_id = re.subject_entity_evidence_id
 LEFT JOIN entity e_compound
     ON e_compound.entity_id = eer_compound.entity_id
@@ -198,7 +208,7 @@ LEFT JOIN vocab_identifier_type vit_c
     ON vit_c.identifier_type_id = e_compound.canonical_identifier_type_id
 
 LEFT JOIN entity_evidence_resolution eer_protein
-    ON  eer_protein.source_id = (SELECT source_id FROM data_source WHERE name = 'chembl')
+    ON  eer_protein.source_id = get_source_id('chembl')
     AND eer_protein.entity_evidence_id = re.object_entity_evidence_id
 LEFT JOIN entity e_protein
     ON e_protein.entity_id = eer_protein.entity_id
@@ -248,7 +258,7 @@ human_re AS (
         AND eer.entity_evidence_id = re.object_entity_evidence_id
         AND eer.status_id          = 1
     JOIN entity e ON e.entity_id = eer.entity_id AND e.taxonomy_id = 9606
-    WHERE re.source_id = (SELECT source_id FROM data_source WHERE name = 'bindingdb')
+    WHERE re.source_id = get_source_id('bindingdb')
 ),
 
 -- Collect raw BindingDB compound identifiers (BindingDB ID, InChIKey, SMILES, PubChem CID, ChEMBL ID) per entity_evidence row.
@@ -261,7 +271,7 @@ compound_ids AS (
         MAX(CASE WHEN ie.identifier_type_id = 17 THEN ie.value END) AS chembl_compound_id
     FROM entity_evidence_identifier eei
     JOIN identifier_evidence ie ON ie.identifier_id = eei.identifier_id
-    WHERE eei.source_id = (SELECT source_id FROM data_source WHERE name = 'bindingdb')
+    WHERE eei.source_id = get_source_id('bindingdb')
       AND eei.entity_evidence_id IN (SELECT subject_entity_evidence_id FROM human_re)
     GROUP BY eei.entity_evidence_id
 ),
@@ -272,7 +282,7 @@ protein_ids AS (
         MAX(CASE WHEN ie.identifier_type_id = 1 THEN ie.value END) AS uniprot_id
     FROM entity_evidence_identifier eei
     JOIN identifier_evidence ie ON ie.identifier_id = eei.identifier_id
-    WHERE eei.source_id = (SELECT source_id FROM data_source WHERE name = 'bindingdb')
+    WHERE eei.source_id = get_source_id('bindingdb')
       AND eei.entity_evidence_id IN (SELECT object_entity_evidence_id FROM human_re)
     GROUP BY eei.entity_evidence_id
 ),
@@ -293,7 +303,7 @@ rel_annotations AS NOT MATERIALIZED (
         MAX(CASE WHEN a.term = 'Temperature Celsius:OM:0701'  THEN a.value END) AS temperature_celsius
     FROM relation_evidence_annotation rea
     JOIN annotation a ON a.annotation_key = rea.annotation_key
-    WHERE rea.source_id = (SELECT source_id FROM data_source WHERE name = 'bindingdb')
+    WHERE rea.source_id = get_source_id('bindingdb')
       AND rea.relation_evidence_id IN (SELECT relation_evidence_id FROM human_re)
     GROUP BY rea.relation_evidence_id
 )
@@ -334,13 +344,13 @@ FROM human_re re
 LEFT JOIN compound_ids ci ON ci.entity_evidence_id = re.subject_entity_evidence_id
 LEFT JOIN protein_ids  pi ON pi.entity_evidence_id = re.object_entity_evidence_id
 LEFT JOIN entity_evidence_resolution eer_compound
-    ON  eer_compound.source_id = (SELECT source_id FROM data_source WHERE name = 'bindingdb')
+    ON  eer_compound.source_id = get_source_id('bindingdb')
     AND eer_compound.entity_evidence_id = re.subject_entity_evidence_id
 LEFT JOIN entity e_compound ON e_compound.entity_id = eer_compound.entity_id
 LEFT JOIN vocab_identifier_type vit_c
     ON vit_c.identifier_type_id = e_compound.canonical_identifier_type_id
 LEFT JOIN entity_evidence_resolution eer_protein
-    ON  eer_protein.source_id = (SELECT source_id FROM data_source WHERE name = 'bindingdb')
+    ON  eer_protein.source_id = get_source_id('bindingdb')
     AND eer_protein.entity_evidence_id = re.object_entity_evidence_id
 LEFT JOIN entity e_protein ON e_protein.entity_id = eer_protein.entity_id
 LEFT JOIN vocab_identifier_type vit_p
@@ -387,7 +397,7 @@ human_re AS (
         AND eer.entity_evidence_id = re.object_entity_evidence_id
         AND eer.status_id          = 1
     JOIN entity e ON e.entity_id = eer.entity_id AND e.taxonomy_id = 9606
-    WHERE re.source_id = (SELECT source_id FROM data_source WHERE name = 'cellinker')
+    WHERE re.source_id = get_source_id('cellinker')
 ),
 
 -- Collect raw CellLinker compound identifiers (HMDB ID, PubChem CID, SMILES) per entity_evidence row.
@@ -398,7 +408,7 @@ compound_ids AS (
         MAX(CASE WHEN ie.identifier_type_id = 27 THEN ie.value END) AS smiles
     FROM entity_evidence_identifier eei
     JOIN identifier_evidence ie ON ie.identifier_id = eei.identifier_id
-    WHERE eei.source_id = (SELECT source_id FROM data_source WHERE name = 'cellinker')
+    WHERE eei.source_id = get_source_id('cellinker')
       AND eei.entity_evidence_id IN (SELECT subject_entity_evidence_id FROM human_re)
     GROUP BY eei.entity_evidence_id
 ),
@@ -411,7 +421,7 @@ protein_ids AS (
         MAX(CASE WHEN ie.identifier_type_id = 5 THEN ie.value END) AS gene_name
     FROM entity_evidence_identifier eei
     JOIN identifier_evidence ie ON ie.identifier_id = eei.identifier_id
-    WHERE eei.source_id = (SELECT source_id FROM data_source WHERE name = 'cellinker')
+    WHERE eei.source_id = get_source_id('cellinker')
       AND eei.entity_evidence_id IN (SELECT object_entity_evidence_id FROM human_re)
     GROUP BY eei.entity_evidence_id
 ),
@@ -424,7 +434,7 @@ rel_annotations AS (
         MAX(CASE WHEN a.term = 'Interaction Annotation:OM:1207'  THEN a.value END) AS interaction_annotation
     FROM relation_evidence_annotation rea
     JOIN annotation a ON a.annotation_key = rea.annotation_key
-    WHERE rea.source_id = (SELECT source_id FROM data_source WHERE name = 'cellinker')
+    WHERE rea.source_id = get_source_id('cellinker')
       AND rea.relation_evidence_id IN (SELECT relation_evidence_id FROM human_re)
     GROUP BY rea.relation_evidence_id
 )
@@ -456,13 +466,13 @@ FROM human_re re
 LEFT JOIN compound_ids ci ON ci.entity_evidence_id = re.subject_entity_evidence_id
 LEFT JOIN protein_ids  pi ON pi.entity_evidence_id = re.object_entity_evidence_id
 LEFT JOIN entity_evidence_resolution eer_compound
-    ON  eer_compound.source_id = (SELECT source_id FROM data_source WHERE name = 'cellinker')
+    ON  eer_compound.source_id = get_source_id('cellinker')
     AND eer_compound.entity_evidence_id = re.subject_entity_evidence_id
 LEFT JOIN entity e_compound ON e_compound.entity_id = eer_compound.entity_id
 LEFT JOIN vocab_identifier_type vit_c
     ON vit_c.identifier_type_id = e_compound.canonical_identifier_type_id
 LEFT JOIN entity_evidence_resolution eer_protein
-    ON  eer_protein.source_id = (SELECT source_id FROM data_source WHERE name = 'cellinker')
+    ON  eer_protein.source_id = get_source_id('cellinker')
     AND eer_protein.entity_evidence_id = re.object_entity_evidence_id
 LEFT JOIN entity e_protein ON e_protein.entity_id = eer_protein.entity_id
 LEFT JOIN vocab_identifier_type vit_p
@@ -504,7 +514,7 @@ human_re AS (
         AND eer.entity_evidence_id = re.object_entity_evidence_id
         AND eer.status_id          = 1
     JOIN entity e ON e.entity_id = eer.entity_id AND e.taxonomy_id = 9606
-    WHERE re.source_id = (SELECT source_id FROM data_source WHERE name = 'guidetopharma')
+    WHERE re.source_id = get_source_id('guidetopharma')
 ),
 
 -- Collect raw GuideToPharma compound identifiers (GtP ligand ID, InChIKey, SMILES, PubChem CID, ChEMBL ID) per entity_evidence row.
@@ -517,7 +527,7 @@ compound_ids AS (
         MAX(CASE WHEN ie.identifier_type_id = 17 THEN ie.value END) AS chembl_compound_id
     FROM entity_evidence_identifier eei
     JOIN identifier_evidence ie ON ie.identifier_id = eei.identifier_id
-    WHERE eei.source_id = (SELECT source_id FROM data_source WHERE name = 'guidetopharma')
+    WHERE eei.source_id = get_source_id('guidetopharma')
       AND eei.entity_evidence_id IN (SELECT subject_entity_evidence_id FROM human_re)
     GROUP BY eei.entity_evidence_id
 ),
@@ -530,7 +540,7 @@ protein_ids AS (
         MAX(CASE WHEN ie.identifier_type_id = 5 THEN ie.value END) AS gene_name
     FROM entity_evidence_identifier eei
     JOIN identifier_evidence ie ON ie.identifier_id = eei.identifier_id
-    WHERE eei.source_id = (SELECT source_id FROM data_source WHERE name = 'guidetopharma')
+    WHERE eei.source_id = get_source_id('guidetopharma')
       AND eei.entity_evidence_id IN (SELECT object_entity_evidence_id FROM human_re)
     GROUP BY eei.entity_evidence_id
 ),
@@ -557,7 +567,7 @@ rel_annotations AS (
         BOOL_OR(a.term = 'Channel Blocker:OM:1020')                              AS is_channel_blocker
     FROM relation_evidence_annotation rea
     JOIN annotation a ON a.annotation_key = rea.annotation_key
-    WHERE rea.source_id = (SELECT source_id FROM data_source WHERE name = 'guidetopharma')
+    WHERE rea.source_id = get_source_id('guidetopharma')
       AND rea.relation_evidence_id IN (SELECT relation_evidence_id FROM human_re)
     GROUP BY rea.relation_evidence_id
 )
@@ -605,13 +615,13 @@ FROM human_re re
 LEFT JOIN compound_ids ci ON ci.entity_evidence_id = re.subject_entity_evidence_id
 LEFT JOIN protein_ids  pi ON pi.entity_evidence_id = re.object_entity_evidence_id
 LEFT JOIN entity_evidence_resolution eer_compound
-    ON  eer_compound.source_id = (SELECT source_id FROM data_source WHERE name = 'guidetopharma')
+    ON  eer_compound.source_id = get_source_id('guidetopharma')
     AND eer_compound.entity_evidence_id = re.subject_entity_evidence_id
 LEFT JOIN entity e_compound ON e_compound.entity_id = eer_compound.entity_id
 LEFT JOIN vocab_identifier_type vit_c
     ON vit_c.identifier_type_id = e_compound.canonical_identifier_type_id
 LEFT JOIN entity_evidence_resolution eer_protein
-    ON  eer_protein.source_id = (SELECT source_id FROM data_source WHERE name = 'guidetopharma')
+    ON  eer_protein.source_id = get_source_id('guidetopharma')
     AND eer_protein.entity_evidence_id = re.object_entity_evidence_id
 LEFT JOIN entity e_protein ON e_protein.entity_id = eer_protein.entity_id
 LEFT JOIN vocab_identifier_type vit_p
@@ -657,7 +667,7 @@ human_re AS (
         AND eer.entity_evidence_id = re.object_entity_evidence_id
         AND eer.status_id          = 1
     JOIN entity e ON e.entity_id = eer.entity_id AND e.taxonomy_id = 9606
-    WHERE re.source_id = (SELECT source_id FROM data_source WHERE name = 'mrclinksdb')
+    WHERE re.source_id = get_source_id('mrclinksdb')
 ),
 
 -- Collect raw MRCLinksDB compound identifiers (HMDB ID, PubChem CID, SMILES) per entity_evidence row.
@@ -668,7 +678,7 @@ compound_ids AS (
         MAX(CASE WHEN ie.identifier_type_id = 27 THEN ie.value END) AS smiles
     FROM entity_evidence_identifier eei
     JOIN identifier_evidence ie ON ie.identifier_id = eei.identifier_id
-    WHERE eei.source_id = (SELECT source_id FROM data_source WHERE name = 'mrclinksdb')
+    WHERE eei.source_id = get_source_id('mrclinksdb')
       AND eei.entity_evidence_id IN (SELECT subject_entity_evidence_id FROM human_re)
     GROUP BY eei.entity_evidence_id
 ),
@@ -681,7 +691,7 @@ protein_ids AS (
         MAX(CASE WHEN ie.identifier_type_id = 5 THEN ie.value END) AS gene_name
     FROM entity_evidence_identifier eei
     JOIN identifier_evidence ie ON ie.identifier_id = eei.identifier_id
-    WHERE eei.source_id = (SELECT source_id FROM data_source WHERE name = 'mrclinksdb')
+    WHERE eei.source_id = get_source_id('mrclinksdb')
       AND eei.entity_evidence_id IN (SELECT object_entity_evidence_id FROM human_re)
     GROUP BY eei.entity_evidence_id
 ),
@@ -693,7 +703,7 @@ rel_annotations AS (
         MAX(CASE WHEN a.term = 'Comment:MI:0612'  THEN a.value END) AS comment
     FROM relation_evidence_annotation rea
     JOIN annotation a ON a.annotation_key = rea.annotation_key
-    WHERE rea.source_id = (SELECT source_id FROM data_source WHERE name = 'mrclinksdb')
+    WHERE rea.source_id = get_source_id('mrclinksdb')
       AND rea.relation_evidence_id IN (SELECT relation_evidence_id FROM human_re)
     GROUP BY rea.relation_evidence_id
 )
@@ -724,13 +734,13 @@ FROM human_re re
 LEFT JOIN compound_ids ci ON ci.entity_evidence_id = re.subject_entity_evidence_id
 LEFT JOIN protein_ids  pi ON pi.entity_evidence_id = re.object_entity_evidence_id
 LEFT JOIN entity_evidence_resolution eer_compound
-    ON  eer_compound.source_id = (SELECT source_id FROM data_source WHERE name = 'mrclinksdb')
+    ON  eer_compound.source_id = get_source_id('mrclinksdb')
     AND eer_compound.entity_evidence_id = re.subject_entity_evidence_id
 LEFT JOIN entity e_compound ON e_compound.entity_id = eer_compound.entity_id
 LEFT JOIN vocab_identifier_type vit_c
     ON vit_c.identifier_type_id = e_compound.canonical_identifier_type_id
 LEFT JOIN entity_evidence_resolution eer_protein
-    ON  eer_protein.source_id = (SELECT source_id FROM data_source WHERE name = 'mrclinksdb')
+    ON  eer_protein.source_id = get_source_id('mrclinksdb')
     AND eer_protein.entity_evidence_id = re.object_entity_evidence_id
 LEFT JOIN entity e_protein ON e_protein.entity_id = eer_protein.entity_id
 LEFT JOIN vocab_identifier_type vit_p
@@ -771,7 +781,7 @@ human_re AS (
         AND ee_protein.entity_evidence_id = re.object_entity_evidence_id
         AND ee_protein.entity_type_id     = 3
         AND ee_protein.taxonomy_id        = 9606
-    WHERE re.source_id = (SELECT source_id FROM data_source WHERE name = 'stitch')
+    WHERE re.source_id = get_source_id('stitch')
 ),
 
 -- Collect raw STITCH compound identifier (PubChem CID) per entity_evidence row.
@@ -780,7 +790,7 @@ compound_ids AS NOT MATERIALIZED (
         MAX(CASE WHEN ie.identifier_type_id = 12 THEN ie.value END) AS pubchem_cid
     FROM entity_evidence_identifier eei
     JOIN identifier_evidence ie ON ie.identifier_id = eei.identifier_id
-    WHERE eei.source_id = (SELECT source_id FROM data_source WHERE name = 'stitch')
+    WHERE eei.source_id = get_source_id('stitch')
       AND eei.entity_evidence_id IN (SELECT subject_entity_evidence_id FROM human_re)
     GROUP BY eei.entity_evidence_id
 ),
@@ -791,7 +801,7 @@ protein_ids AS NOT MATERIALIZED (
         MAX(CASE WHEN ie.identifier_type_id = 2 THEN ie.value END) AS ensembl_id
     FROM entity_evidence_identifier eei
     JOIN identifier_evidence ie ON ie.identifier_id = eei.identifier_id
-    WHERE eei.source_id = (SELECT source_id FROM data_source WHERE name = 'stitch')
+    WHERE eei.source_id = get_source_id('stitch')
       AND eei.entity_evidence_id IN (SELECT object_entity_evidence_id FROM human_re)
     GROUP BY eei.entity_evidence_id
 ),
@@ -809,7 +819,7 @@ rel_annotations AS NOT MATERIALIZED (
         BOOL_OR(a.term = 'Activation:OM:0930')                                    AS is_activation
     FROM relation_evidence_annotation rea
     JOIN annotation a ON a.annotation_key = rea.annotation_key
-    WHERE rea.source_id = (SELECT source_id FROM data_source WHERE name = 'stitch')
+    WHERE rea.source_id = get_source_id('stitch')
       AND rea.relation_evidence_id IN (SELECT relation_evidence_id FROM human_re)
     GROUP BY rea.relation_evidence_id
 )
@@ -844,13 +854,13 @@ FROM human_re re
 LEFT JOIN compound_ids ci ON ci.entity_evidence_id = re.subject_entity_evidence_id
 LEFT JOIN protein_ids  pi ON pi.entity_evidence_id = re.object_entity_evidence_id
 LEFT JOIN entity_evidence_resolution eer_compound
-    ON  eer_compound.source_id = (SELECT source_id FROM data_source WHERE name = 'stitch')
+    ON  eer_compound.source_id = get_source_id('stitch')
     AND eer_compound.entity_evidence_id = re.subject_entity_evidence_id
 LEFT JOIN entity e_compound ON e_compound.entity_id = eer_compound.entity_id
 LEFT JOIN vocab_identifier_type vit_c
     ON vit_c.identifier_type_id = e_compound.canonical_identifier_type_id
 LEFT JOIN entity_evidence_resolution eer_protein
-    ON  eer_protein.source_id = (SELECT source_id FROM data_source WHERE name = 'stitch')
+    ON  eer_protein.source_id = get_source_id('stitch')
     AND eer_protein.entity_evidence_id = re.object_entity_evidence_id
 LEFT JOIN entity e_protein ON e_protein.entity_id = eer_protein.entity_id
 LEFT JOIN vocab_identifier_type vit_p
@@ -898,7 +908,7 @@ human_re AS (
         AND eer.entity_evidence_id = re.subject_entity_evidence_id
         AND eer.status_id          = 1
     JOIN entity e ON e.entity_id = eer.entity_id AND e.taxonomy_id = 9606
-    WHERE re.source_id = (SELECT source_id FROM data_source WHERE name = 'tcdb')
+    WHERE re.source_id = get_source_id('tcdb')
 ),
 
 -- Collect raw TCDB compound identifiers (ChEBI ID, compound name) per entity_evidence row.
@@ -908,7 +918,7 @@ compound_ids AS (
         MAX(CASE WHEN ie.identifier_type_id = 16 THEN ie.value END) AS compound_name
     FROM entity_evidence_identifier eei
     JOIN identifier_evidence ie ON ie.identifier_id = eei.identifier_id
-    WHERE eei.source_id = (SELECT source_id FROM data_source WHERE name = 'tcdb')
+    WHERE eei.source_id = get_source_id('tcdb')
       AND eei.entity_evidence_id IN (SELECT object_entity_evidence_id FROM human_re)
     GROUP BY eei.entity_evidence_id
 ),
@@ -920,7 +930,7 @@ protein_ids AS (
         MAX(CASE WHEN ie.identifier_type_id = 77 THEN ie.value END) AS tcdb_id
     FROM entity_evidence_identifier eei
     JOIN identifier_evidence ie ON ie.identifier_id = eei.identifier_id
-    WHERE eei.source_id = (SELECT source_id FROM data_source WHERE name = 'tcdb')
+    WHERE eei.source_id = get_source_id('tcdb')
       AND eei.entity_evidence_id IN (SELECT subject_entity_evidence_id FROM human_re)
     GROUP BY eei.entity_evidence_id
 )
@@ -946,14 +956,14 @@ SELECT
 
 FROM human_re re
 LEFT JOIN entity_evidence_resolution eer_protein
-    ON  eer_protein.source_id = (SELECT source_id FROM data_source WHERE name = 'tcdb')
+    ON  eer_protein.source_id = get_source_id('tcdb')
     AND eer_protein.entity_evidence_id = re.subject_entity_evidence_id
 LEFT JOIN entity e_protein
     ON  e_protein.entity_id            = eer_protein.entity_id
 LEFT JOIN vocab_identifier_type vit_p
     ON  vit_p.identifier_type_id       = e_protein.canonical_identifier_type_id
 LEFT JOIN entity_evidence_resolution eer_compound
-    ON  eer_compound.source_id = (SELECT source_id FROM data_source WHERE name = 'tcdb')
+    ON  eer_compound.source_id = get_source_id('tcdb')
     AND eer_compound.entity_evidence_id = re.object_entity_evidence_id
 LEFT JOIN entity e_compound
     ON  e_compound.entity_id           = eer_compound.entity_id
