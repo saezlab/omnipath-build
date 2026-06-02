@@ -679,6 +679,27 @@ def _populate_facet_entity_bitmap(
               entity_count
             )
             SELECT
+              'metabolic_domain',
+              vmd.name,
+              rb_build_agg(bitmap.bitmap_id),
+              COUNT(*)::integer
+            FROM {}.entity e
+            JOIN {}.entity_bitmap_id bitmap
+              ON bitmap.entity_id = e.entity_id
+            JOIN {}.vocab_metabolic_domain vmd
+              ON vmd.metabolic_domain_id = e.metabolic_domain_id
+            GROUP BY vmd.name
+            """
+        ).format(schema_id, schema_id, schema_id, schema_id),
+        sql.SQL(
+            """
+            INSERT INTO {}.facet_entity_bitmap (
+              facet_name,
+              facet_value,
+              entity_bitmap,
+              entity_count
+            )
+            SELECT
               'taxonomy_id',
               taxonomy_id,
               rb_build_agg(bitmap.bitmap_id),

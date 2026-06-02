@@ -91,6 +91,88 @@ def test_chemical_class_facet_present(conn):
     )
 
 
+# --- Milestone C: metabolic-domain + interaction-class --------------------
+
+
+def test_vocab_metabolic_domain_seeded(conn):
+    """The metabolic-domain CV is seeded with the coarse buckets."""
+    names = {
+        row
+        for (row,) in _rows(
+            conn, f'SELECT name FROM {SCHEMA}.vocab_metabolic_domain'
+        )
+    }
+    assert {
+        'lipid',
+        'nucleotide',
+        'amino_acid',
+        'carbohydrate',
+        'cofactor_vitamin',
+        'other',
+    } <= names
+
+
+def test_every_chemical_has_a_metabolic_domain(conn):
+    """Every Chemical:OM:0037 entity carries a metabolic_domain_id."""
+    unclassified = _scalar(
+        conn,
+        f"""
+        SELECT count(*) FROM {SCHEMA}.entity e
+        JOIN {SCHEMA}.vocab_entity_type v ON v.entity_type_id = e.entity_type_id
+        WHERE v.name = %s AND e.metabolic_domain_id IS NULL
+        """,
+        [CHEMICAL_ENTITY_TYPE],
+    )
+    assert unclassified == 0
+
+
+def test_multiple_metabolic_domains_present(conn):
+    """Chemicals resolve into several metabolic domains, not just `other`."""
+    n_domains = _scalar(
+        conn,
+        f"""
+        SELECT count(DISTINCT e.metabolic_domain_id) FROM {SCHEMA}.entity e
+        JOIN {SCHEMA}.vocab_entity_type v ON v.entity_type_id = e.entity_type_id
+        WHERE v.name = %s
+        """,
+        [CHEMICAL_ENTITY_TYPE],
+    )
+    assert n_domains >= 2
+
+
+def test_metabolic_domain_facet_present(conn):
+    """The metabolic_domain facet is built into facet_entity_bitmap."""
+    assert (
+        _scalar(
+            conn,
+            f"SELECT count(*) FROM {SCHEMA}.facet_entity_bitmap "
+            f"WHERE facet_name = 'metabolic_domain'",
+        )
+        > 0
+    )
+
+
+def test_vocab_interaction_class_seeded(conn):
+    """The interaction-class CV is seeded with the coarse 7 classes."""
+    names = {
+        row
+        for (row,) in _rows(
+            conn, f'SELECT name FROM {SCHEMA}.vocab_interaction_class'
+        )
+    }
+    assert {'Signaling', 'Transport', 'Other'} <= names
+
+
+def test_every_predicate_has_an_interaction_class(conn):
+    """No vocab_relation_predicate row is left with a NULL interaction_class_id."""
+    null_predicates = _scalar(
+        conn,
+        f'SELECT count(*) FROM {SCHEMA}.vocab_relation_predicate '
+        f'WHERE interaction_class_id IS NULL',
+    )
+    assert null_predicates == 0
+
+
 def _rows(conn, query, params=None):
     with conn.cursor() as cur:
         cur.execute(query, params)

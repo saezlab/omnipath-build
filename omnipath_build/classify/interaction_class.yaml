@@ -1,0 +1,36 @@
+# Curated interaction-class rules for vocab_relation_predicate (Milestone C).
+#
+# Maps every relation predicate (a row in the dynamically-populated
+# vocab_relation_predicate) to exactly one coarse interaction class. Applied
+# during `derive` (after load, since predicates are data-driven) to populate
+# vocab_relation_predicate.interaction_class_id. See
+# omnipath_build/classify/interaction_class.py.
+#
+# Reviewable: one predicate per line under `predicates`; a predicate not listed
+# resolves to `default` (Other) and is logged at derive time, so a resource that
+# introduces a new predicate surfaces it for curation rather than failing.
+
+# The controlled vocabulary (seeded into vocab_interaction_class); id = order.
+classes:
+  - Signaling
+  - TF-target
+  - Allosteric
+  - Orthosteric
+  - Transport
+  - Ligand-receptor
+  - Other
+
+# Any predicate not listed here -> Other (100% coverage, no NULLs).
+default: Other
+
+# predicate name (verbatim vocab_relation_predicate.name) -> interaction class.
+# The build's predicates are coarse RO/BFO-style terms; only causal-regulation
+# and transport map to a specific class today. Membership/participation/generic
+# association and the structural ontology predicates (is_a, part_of, ...) fall to
+# Other by default.
+predicates:
+  controls: Signaling
+  regulates: Signaling
+  negatively_regulates: Signaling
+  positively_regulates: Signaling
+  transports: Transport

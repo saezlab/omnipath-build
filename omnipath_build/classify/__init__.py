@@ -9,8 +9,20 @@ from omnipath_build.classify.chemical_class import (
     ChemicalClassStats,
     classify_chemical_class,
 )
+from omnipath_build.classify.metabolic_domain import (
+    MetabolicDomainStats,
+    classify_metabolic_domain,
+)
+from omnipath_build.classify.interaction_class import (
+    InteractionClassStats,
+    classify_interaction_class,
+)
 
 __all__ = [
     'ChemicalClassStats',
     'classify_chemical_class',
+    'MetabolicDomainStats',
+    'classify_metabolic_domain',
+    'InteractionClassStats',
+    'classify_interaction_class',
 ]

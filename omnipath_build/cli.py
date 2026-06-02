@@ -28,7 +28,11 @@ from omnipath_build.db import (
     ensure_content_primary_keys,
     drop_deferred_content_indexes,
 )
-from omnipath_build.classify import classify_chemical_class
+from omnipath_build.classify import (
+    classify_chemical_class,
+    classify_metabolic_domain,
+    classify_interaction_class,
+)
 from omnipath_build.resources import discover_resources
 from omnipath_build.resolver.mapping_tables import (
     SOURCE_NAMES as RESOLVER_SOURCE_NAMES,
@@ -284,6 +288,33 @@ def main(argv: list[str] | None = None) -> int:
                     'classify_chemical_class_done',
                     classified=chemical_class_stats.classified,
                     by_default=chemical_class_stats.by_default,
+                    seconds=f'{time.perf_counter() - step_started:.3f}',
+                )
+                step_started = time.perf_counter()
+                _derive_log('classify_metabolic_domain_start')
+                metabolic_domain_stats = classify_metabolic_domain(
+                    conn,
+                    schema=args.schema,
+                )
+                _derive_log(
+                    'classify_metabolic_domain_done',
+                    classified=metabolic_domain_stats.classified,
+                    by_default=metabolic_domain_stats.by_default,
+                    seconds=f'{time.perf_counter() - step_started:.3f}',
+                )
+                step_started = time.perf_counter()
+                _derive_log('classify_interaction_class_start')
+                interaction_class_stats = classify_interaction_class(
+                    conn,
+                    schema=args.schema,
+                )
+                _derive_log(
+                    'classify_interaction_class_done',
+                    mapped=interaction_class_stats.mapped,
+                    by_default=interaction_class_stats.by_default,
+                    default_predicates=','.join(
+                        interaction_class_stats.default_predicates
+                    ),
                     seconds=f'{time.perf_counter() - step_started:.3f}',
                 )
                 step_started = time.perf_counter()

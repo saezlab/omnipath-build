@@ -2001,6 +2001,7 @@ def _ensure_classification_vocab(
     Rows are seeded by the classifiers in ``omnipath_build.classify`` from their
     curated rule files; here we only ensure the tables exist.
     """
+    schema_id = sql.Identifier(schema)
     cur.execute(
         sql.SQL(
             """
@@ -2010,7 +2011,38 @@ def _ensure_classification_vocab(
               precedence smallint NOT NULL
             )
             """
-        ).format(sql.Identifier(schema))
+        ).format(schema_id)
+    )
+    cur.execute(
+        sql.SQL(
+            """
+            CREATE TABLE IF NOT EXISTS {}.vocab_metabolic_domain (
+              metabolic_domain_id smallint PRIMARY KEY,
+              name text NOT NULL UNIQUE,
+              precedence smallint NOT NULL
+            )
+            """
+        ).format(schema_id)
+    )
+    cur.execute(
+        sql.SQL(
+            """
+            CREATE TABLE IF NOT EXISTS {}.vocab_interaction_class (
+              interaction_class_id smallint PRIMARY KEY,
+              name text NOT NULL UNIQUE
+            )
+            """
+        ).format(schema_id)
+    )
+    # The predicate vocabulary is created elsewhere (populated dynamically from
+    # loaded data); attach the classification FK column here.
+    cur.execute(
+        sql.SQL(
+            """
+            ALTER TABLE {}.vocab_relation_predicate
+            ADD COLUMN IF NOT EXISTS interaction_class_id smallint
+            """
+        ).format(schema_id)
     )
 
 
@@ -2027,7 +2059,8 @@ def _ensure_entity_canonical_key(
             ADD COLUMN IF NOT EXISTS resolution_status_id smallint,
             ADD COLUMN IF NOT EXISTS canonical_identifier_type_id bigint,
             ADD COLUMN IF NOT EXISTS canonical_identifier text,
-            ADD COLUMN IF NOT EXISTS chemical_class_id smallint
+            ADD COLUMN IF NOT EXISTS chemical_class_id smallint,
+            ADD COLUMN IF NOT EXISTS metabolic_domain_id smallint
             """
         ).format(schema_id)
     )
