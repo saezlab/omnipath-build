@@ -22,7 +22,7 @@ uniprot_ann AS (
     JOIN annotation a ON a.annotation_key = eea.annotation_key
     JOIN entity_evidence_resolution eer ON eer.source_id = eea.source_id
         AND eer.entity_evidence_id = eea.entity_evidence_id AND eer.status_id = 1
-    WHERE eea.source_id = 10
+    WHERE eea.source_id = (SELECT source_id FROM data_source WHERE name = 'uniprot')
       AND a.term IN (
           'Subcellular Location:OM:0604',
           'Function:OM:0603',
@@ -41,7 +41,7 @@ gtp_ann AS (
     JOIN annotation a ON a.annotation_key = eea.annotation_key
     JOIN entity_evidence_resolution eer ON eer.source_id = eea.source_id
         AND eer.entity_evidence_id = eea.entity_evidence_id AND eer.status_id = 1
-    WHERE eea.source_id = 21
+    WHERE eea.source_id = (SELECT source_id FROM data_source WHERE name = 'guidetopharma')
       AND a.term IN ('Protein Functional Class:OM:0637', 'Protein Family:OM:0610')
     GROUP BY eer.entity_id
 ),
@@ -53,7 +53,7 @@ tcdb_ann AS (
     JOIN annotation a ON a.annotation_key = eea.annotation_key
     JOIN entity_evidence_resolution eer ON eer.source_id = eea.source_id
         AND eer.entity_evidence_id = eea.entity_evidence_id AND eer.status_id = 1
-    WHERE eea.source_id = 41
+    WHERE eea.source_id = (SELECT source_id FROM data_source WHERE name = 'tcdb')
     GROUP BY eer.entity_id
 )
 SELECT
@@ -103,7 +103,7 @@ hmdb_ann AS (
     JOIN annotation a ON a.annotation_key = eea.annotation_key
     JOIN entity_evidence_resolution eer ON eer.source_id = eea.source_id
         AND eer.entity_evidence_id = eea.entity_evidence_id AND eer.status_id = 1
-    WHERE eea.source_id = 22
+    WHERE eea.source_id = (SELECT source_id FROM data_source WHERE name = 'hmdb')
       AND a.term IN (
           'Subcellular Location:OM:0604',
           'Biospecimen:OM:0779',
@@ -121,7 +121,7 @@ lipidmaps_ann AS (
     JOIN annotation a ON a.annotation_key = eea.annotation_key
     JOIN entity_evidence_resolution eer ON eer.source_id = eea.source_id
         AND eer.entity_evidence_id = eea.entity_evidence_id AND eer.status_id = 1
-    WHERE eea.source_id = 25
+    WHERE eea.source_id = (SELECT source_id FROM data_source WHERE name = 'lipidmaps')
       AND a.term IN (
           'Lipid Category:OM:0614',
           'Lipid Main Class:OM:0615',
