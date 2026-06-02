@@ -928,6 +928,8 @@ def _ensure_resolution_schema(
     _ensure_static_identifier_types(cur, schema)
     log_step('ensure entity indexes')
     _ensure_entity_canonical_key(cur, schema)
+    log_step('ensure classification vocab')
+    _ensure_classification_vocab(cur, schema)
     log_step('create entity identifier table')
     cur.execute(
         sql.SQL(
@@ -1990,6 +1992,28 @@ def _ensure_entity_resolution_reason(
     )
 
 
+def _ensure_classification_vocab(
+    cur: psycopg2.extensions.cursor,
+    schema: str,
+) -> None:
+    """Controlled vocabularies for build-time entity/predicate classification.
+
+    Rows are seeded by the classifiers in ``omnipath_build.classify`` from their
+    curated rule files; here we only ensure the tables exist.
+    """
+    cur.execute(
+        sql.SQL(
+            """
+            CREATE TABLE IF NOT EXISTS {}.vocab_chemical_class (
+              chemical_class_id smallint PRIMARY KEY,
+              name text NOT NULL UNIQUE,
+              precedence smallint NOT NULL
+            )
+            """
+        ).format(sql.Identifier(schema))
+    )
+
+
 def _ensure_entity_canonical_key(
     cur: psycopg2.extensions.cursor,
     schema: str,
@@ -2002,7 +2026,8 @@ def _ensure_entity_canonical_key(
             ADD COLUMN IF NOT EXISTS entity_type_id bigint,
             ADD COLUMN IF NOT EXISTS resolution_status_id smallint,
             ADD COLUMN IF NOT EXISTS canonical_identifier_type_id bigint,
-            ADD COLUMN IF NOT EXISTS canonical_identifier text
+            ADD COLUMN IF NOT EXISTS canonical_identifier text,
+            ADD COLUMN IF NOT EXISTS chemical_class_id smallint
             """
         ).format(schema_id)
     )

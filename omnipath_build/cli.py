@@ -28,6 +28,7 @@ from omnipath_build.db import (
     ensure_content_primary_keys,
     drop_deferred_content_indexes,
 )
+from omnipath_build.classify import classify_chemical_class
 from omnipath_build.resources import discover_resources
 from omnipath_build.resolver.mapping_tables import (
     SOURCE_NAMES as RESOLVER_SOURCE_NAMES,
@@ -271,6 +272,18 @@ def main(argv: list[str] | None = None) -> int:
                     entity_ontology_terms=table_stats.entity_ontology_terms,
                     ontology_terms=table_stats.ontology_terms,
                     entity_source_count=table_stats.entity_source_count,
+                    seconds=f'{time.perf_counter() - step_started:.3f}',
+                )
+                step_started = time.perf_counter()
+                _derive_log('classify_chemical_class_start')
+                chemical_class_stats = classify_chemical_class(
+                    conn,
+                    schema=args.schema,
+                )
+                _derive_log(
+                    'classify_chemical_class_done',
+                    classified=chemical_class_stats.classified,
+                    by_default=chemical_class_stats.by_default,
                     seconds=f'{time.perf_counter() - step_started:.3f}',
                 )
                 step_started = time.perf_counter()
