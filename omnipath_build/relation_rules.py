@@ -16,15 +16,14 @@ from __future__ import annotations
 
 from typing import Any
 from dataclasses import dataclass
-from collections.abc import Iterable
 
 from pypath.internals.cv_terms import (
-    CvEnum,
     BiologicalRoleCv,
     ExperimentalRoleCv,
     IdentifierNamespaceCv,
     InteractionMetadataCv,
     ParticipantMetadataCv,
+    cv_term_label_accession,
 )
 from pypath.internals.cv_terms.entity_types import EntityTypeCv
 from omnipath_build.shared_interaction_schema import (
@@ -34,36 +33,10 @@ from omnipath_build.shared_interaction_schema import (
     POSITIVE_SIGN_ACCESSIONS,
 )
 
-def _iter_cv_subclasses(base: type) -> Iterable[type]:
-    for subcls in base.__subclasses__():
-        yield subcls
-        yield from _iter_cv_subclasses(subcls)
-
-
-def _humanize_enum_name(name: str) -> str:
-    return name.replace('_', ' ').title()
-
-
-def _build_cv_label_map() -> dict[str, str]:
-    labels: dict[str, str] = {}
-    for enum_cls in _iter_cv_subclasses(CvEnum):
-        for member in enum_cls:
-            labels.setdefault(str(member), _humanize_enum_name(member.name))
-    return labels
-
-
-CV_LABELS = _build_cv_label_map()
-
-
-def format_cv_term(accession: str | None) -> str | None:
-    """Return a CV accession with its label when the label is known."""
-
-    if accession is None:
-        return None
-    label = CV_LABELS.get(accession)
-    if label is None:
-        return accession
-    return f'{accession}:{label}'
+def _term_forms(term: object) -> set[str]:
+    label_accession = cv_term_label_accession(term)
+    raw = str(term)
+    return {raw} if label_accession == raw else {raw, label_accession}
 
 
 INTERACTION_LIKE_TYPES = {
@@ -79,6 +52,7 @@ INTERACTION_LIKE_TYPES = {
 ASSOCIATION_PREDICATE = 'associated_with'
 ASSOCIATION_CATEGORY = 'association'
 INTERACTION_CATEGORY = 'interaction'
+CONTROL_PREDICATE = 'controls'
 TRANSPORT_PREDICATE = 'transports'
 TRANSPORTER_ENTITY_TYPES = {
     str(EntityTypeCv.PROTEIN),
@@ -120,12 +94,24 @@ def predicate_for_membership(
 ) -> PredicateRule:
     """Return the relation predicate for parent/member structures."""
 
-    del membership
-    if entity_type_accession(parent_type) == str(EntityTypeCv.CV_TERM):
+    parent_accession = entity_type_accession(parent_type)
+    membership_terms = annotation_terms(membership.get('annotations') or [])
+    catalytic_terms = (
+        _term_forms(BiologicalRoleCv.CATALYST)
+        | _term_forms(BiologicalRoleCv.ENZYME)
+        | _term_forms(BiologicalRoleCv.CONTROLLER)
+    )
+    if (
+        parent_accession in {str(EntityTypeCv.REACTION), str(EntityTypeCv.TRANSPORT)}
+        and membership_terms & catalytic_terms
+    ):
+        return PredicateRule(CONTROL_PREDICATE, INTERACTION_CATEGORY)
+
+    if parent_accession == str(EntityTypeCv.CV_TERM):
         return PredicateRule(ASSOCIATION_PREDICATE, ASSOCIATION_CATEGORY)
 
     return PredicateRule(
-        MEMBERSHIP_RULES.get(parent_type or '', 'has_member'),
+        MEMBERSHIP_RULES.get(parent_accession or parent_type or '', 'has_member'),
         ASSOCIATION_CATEGORY,
     )
 
@@ -161,11 +147,7 @@ def predicate_for_interaction(
         str(EntityTypeCv.CATALYSIS),
         str(EntityTypeCv.DEGRADATION),
     }:
-        if sign > 0:
-            return PredicateRule('positively_regulates', INTERACTION_CATEGORY)
-        if sign < 0:
-            return PredicateRule('negatively_regulates', INTERACTION_CATEGORY)
-        return PredicateRule('regulates', INTERACTION_CATEGORY)
+        return PredicateRule(CONTROL_PREDICATE, INTERACTION_CATEGORY)
     if row_type_accession == str(EntityTypeCv.REACTION):
         if has_role_ordering(ordered_participants):
             return PredicateRule('transforms_to', INTERACTION_CATEGORY)

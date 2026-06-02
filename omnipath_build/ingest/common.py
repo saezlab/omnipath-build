@@ -26,6 +26,7 @@ from pypath.internals.cv_terms import (
 from omnipath_build.relation_rules import (
     ASSOCIATION_CATEGORY,
     ASSOCIATION_PREDICATE,
+    CONTROL_PREDICATE,
     INTERACTION_LIKE_TYPES,
     PredicateRule,
     string_or_none,
@@ -487,9 +488,17 @@ def membership_relation_spec(
         semantic_parent_type = normalize_entity_type(
             getattr(getattr(membership, 'member', None), 'type', None)
         )
+    membership_row = {
+        'annotations': annotations_to_rows(
+            getattr(membership, 'annotations', None) or []
+        ),
+    }
+    predicate_rule = predicate_for_membership(semantic_parent_type, membership_row)
+    if predicate_rule.predicate == CONTROL_PREDICATE and not member_is_parent:
+        semantic_parent_ref, semantic_child_ref = member_ref, parent_ref
     return RelationSpec(
         relation_occurrence_id=relation_occurrence_id,
         subject_ref=semantic_parent_ref,
-        predicate_rule=predicate_for_membership(semantic_parent_type, {}),
+        predicate_rule=predicate_rule,
         object_ref=semantic_child_ref,
     )

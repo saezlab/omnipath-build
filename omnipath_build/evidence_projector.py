@@ -24,8 +24,28 @@ from omnipath_build.ingest.common import (
 )
 from omnipath_build.relation_rules import (
     ASSOCIATION_CATEGORY,
+    CONTROL_PREDICATE,
     string_or_none,
     is_unprojectable_transport,
+)
+from pypath.internals.cv_terms import (
+    BiologicalRoleCv,
+    ControlEffectCv,
+    cv_term_label_accession,
+    InteractionMetadataCv,
+)
+
+
+def _term_forms(term: object) -> set[str]:
+    label_accession = cv_term_label_accession(term)
+    raw = str(term)
+    return {raw} if label_accession == raw else {raw, label_accession}
+
+
+CATALYTIC_CONTROL_ROLE_TERMS = (
+    _term_forms(BiologicalRoleCv.CATALYST)
+    | _term_forms(BiologicalRoleCv.ENZYME)
+    | _term_forms(BiologicalRoleCv.CONTROLLER)
 )
 
 @dataclass(frozen=True)
@@ -348,6 +368,17 @@ class EvidenceProjectorBase:
                     ),
                 )
                 stats.relation_evidence += 1
+                stats.annotations += self._write_relation_annotations(
+                    writers,
+                    seen_annotations,
+                    source=source,
+                    relation_evidence_id=relation_evidence_id,
+                    annotations=_control_effect_annotations(
+                        spec.predicate_rule.predicate,
+                        membership,
+                    ),
+                    annotation_scope='relation',
+                )
                 member_annotations = getattr(membership, 'annotations', None) or []
                 stats.annotations += self._write_relation_annotations(
                     writers,
@@ -526,6 +557,26 @@ def _write_annotation(
             }
         )
     return True
+
+
+def _control_effect_annotations(
+    predicate: str,
+    membership: object,
+) -> list[dict[str, object]]:
+    if predicate != CONTROL_PREDICATE:
+        return []
+    terms = {
+        string_or_none(annotation_to_row(annotation).get('term'))
+        for annotation in getattr(membership, 'annotations', None) or []
+    }
+    if terms & CATALYTIC_CONTROL_ROLE_TERMS:
+        return [
+            {
+                'term': InteractionMetadataCv.CONTROL_EFFECT,
+                'value': ControlEffectCv.CATALYSIS,
+            }
+        ]
+    return []
 
 
 @dataclass
