@@ -32,8 +32,10 @@ SET work_mem = '256MB';
 -- Declared STABLE so PostgreSQL evaluates it at plan time,
 -- preserving partition pruning for all partitioned tables.
 CREATE OR REPLACE FUNCTION get_source_id(source_name text)
-RETURNS bigint LANGUAGE sql STABLE AS $$
-    SELECT source_id FROM data_source WHERE name = source_name
+RETURNS bigint LANGUAGE plpgsql STABLE AS $$
+BEGIN
+    RETURN (SELECT source_id FROM data_source WHERE name = source_name);
+END;
 $$;
 
 
