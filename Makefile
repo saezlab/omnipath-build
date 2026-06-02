@@ -147,7 +147,8 @@ derive:
 	@PYTHONUNBUFFERED=1 uv run python -m omnipath_build.cli \
 		--database-url "$(DATABASE_URL)" \
 		--schema "$(SCHEMA)" \
-		derive
+		derive \
+		$(if $(MAX_RECORDS),--max-records "$(MAX_RECORDS)")
 
 load:
 	@if [ -z "$(DATABASE_URL)" ]; then \

@@ -10,6 +10,8 @@ from __future__ import annotations
 from typing import Any
 from pathlib import Path
 from functools import lru_cache
+import json
+import hashlib
 import subprocess
 from dataclasses import dataclass
 import importlib.util
@@ -25,6 +27,126 @@ class ResourceTableStats:
     """Summary counts from resource metadata sync."""
 
     resources: int = 0
+
+
+@dataclass(frozen=True)
+class BuildManifestStats:
+    """Identity of the manifest written at the end of a build."""
+
+    build_id: str = ''
+    partial_build: bool = False
+    resources: int = 0
+
+
+def emit_build_manifest(
+    conn: psycopg2.extensions.connection,
+    *,
+    schema: str = 'public',
+    inputs_package: str = 'pypath.inputs_v2',
+    partial_build: bool = False,
+) -> BuildManifestStats:
+    """Write the single self-describing ``build_manifest`` row (Milestone D).
+
+    ``build_id`` is the SHA-256 of the canonical sorted-key JSON of
+    ``{package_commits, resources}`` (12 hex chars) — reproducible for identical
+    content, independent of ``built_at``. One current row per build (TRUNCATE +
+    INSERT). Projects per-resource provenance from the ``resources`` table, so it
+    runs in ``derive`` right after ``sync_resources_table``.
+    """
+
+    schema_id = sql.Identifier(schema)
+    with conn.cursor() as cur:
+        cur.execute(
+            sql.SQL(
+                """
+                CREATE TABLE IF NOT EXISTS {}.build_manifest (
+                  build_id text PRIMARY KEY,
+                  built_at timestamptz NOT NULL DEFAULT now(),
+                  package_commits jsonb NOT NULL,
+                  resources jsonb NOT NULL,
+                  partial_build boolean NOT NULL
+                )
+                """
+            ).format(schema_id)
+        )
+        cur.execute(
+            sql.SQL(
+                """
+                SELECT
+                  resource_id,
+                  (entity_count + interaction_count + association_count
+                   + identifier_count + ontology_term_count) AS record_count,
+                  input_module_commit,
+                  input_module_dirty
+                FROM {}.resources
+                ORDER BY resource_id
+                """
+            ).format(schema_id)
+        )
+        resources = [
+            {
+                'name': name,
+                'record_count': int(record_count),
+                'version': None,
+                'input_module_commit': commit,
+                'input_module_dirty': bool(dirty),
+            }
+            for name, record_count, commit, dirty in cur.fetchall()
+        ]
+        package_commits = {
+            'omnipath_build': _package_commit('omnipath_build'),
+            'omnipath_resources': _package_commit(inputs_package.split('.')[0]),
+        }
+        payload = {'package_commits': package_commits, 'resources': resources}
+        build_id = hashlib.sha256(
+            json.dumps(payload, sort_keys=True, separators=(',', ':')).encode()
+        ).hexdigest()[:12]
+        cur.execute(sql.SQL('TRUNCATE {}.build_manifest').format(schema_id))
+        cur.execute(
+            sql.SQL(
+                """
+                INSERT INTO {}.build_manifest
+                  (build_id, package_commits, resources, partial_build)
+                VALUES (%s, %s, %s, %s)
+                """
+            ).format(schema_id),
+            [build_id, Json(package_commits), Json(resources), partial_build],
+        )
+    conn.commit()
+    return BuildManifestStats(
+        build_id=build_id,
+        partial_build=partial_build,
+        resources=len(resources),
+    )
+
+
+@lru_cache(maxsize=32)
+def _package_commit(module: str) -> dict[str, Any]:
+    """``{commit, dirty}`` for a package's git checkout (contract-shaped, never empty).
+
+    Unlike :func:`_module_git_metadata` (whose dirty check is scoped to a single
+    input-module file), this reports the HEAD and the dirty state of the whole
+    package subtree — the right granularity for a per-package manifest entry.
+    """
+    spec = importlib.util.find_spec(module)
+    origin = getattr(spec, 'origin', None)
+    if not origin or origin == 'built-in':
+        return {'commit': None, 'dirty': False}
+    package_dir = Path(origin).parent
+    try:
+        commit = subprocess.check_output(
+            ['git', '-C', str(package_dir), 'rev-parse', 'HEAD'],
+            stderr=subprocess.DEVNULL,
+            text=True,
+        ).strip()
+        status = subprocess.check_output(
+            ['git', '-C', str(package_dir), 'status', '--porcelain', '--', '.'],
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return {'commit': None, 'dirty': False}
+    return {'commit': commit or None, 'dirty': bool(status.strip())}
 
 
 def sync_resources_table(

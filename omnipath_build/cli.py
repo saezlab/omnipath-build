@@ -18,6 +18,7 @@ from omnipath_build.db import (
     ensure_schema,
     reset_content_tables,
     sync_resources_table,
+    emit_build_manifest,
     delete_source_content,
     rebuild_bitmap_tables,
     rebuild_derived_tables,
@@ -147,6 +148,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     derive.add_argument('--inputs-package', default='pypath.inputs_v2')
     derive.add_argument('--database', default='omnipath')
+    derive.add_argument(
+        '--max-records',
+        default=os.environ.get('MAX_RECORDS'),
+        help=(
+            'Per-source record cap the load ran with; a non-zero value flags '
+            'build_manifest.partial_build. Defaults to the MAX_RECORDS env var.'
+        ),
+    )
 
     args = parser.parse_args(argv)
     if args.command == 'build-resolver':
@@ -379,6 +388,21 @@ def main(argv: list[str] | None = None) -> int:
                     resources=resource_stats.resources,
                     seconds=f'{time.perf_counter() - step_started:.3f}',
                 )
+                step_started = time.perf_counter()
+                _derive_log('build_manifest_start')
+                manifest_stats = emit_build_manifest(
+                    conn,
+                    schema=args.schema,
+                    inputs_package=args.inputs_package,
+                    partial_build=_is_partial_build(args.max_records),
+                )
+                _derive_log(
+                    'build_manifest_done',
+                    build_id=manifest_stats.build_id,
+                    partial_build=manifest_stats.partial_build,
+                    resources=manifest_stats.resources,
+                    seconds=f'{time.perf_counter() - step_started:.3f}',
+                )
                 print(
                     '[derive] '
                     f'entity_identifier_lookup='
@@ -442,6 +466,16 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
     return 0
+
+
+def _is_partial_build(max_records: object) -> bool:
+    """A non-zero MAX_RECORDS cap means the load was truncated (not authoritative)."""
+    if max_records in (None, ''):
+        return False
+    try:
+        return int(max_records) > 0
+    except (TypeError, ValueError):
+        return False
 
 
 def _derive_log(event: str, **fields: object) -> None:

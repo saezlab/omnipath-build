@@ -15,7 +15,12 @@ from omnipath_build.db.refresh import (
     delete_source_content,
     source_has_content,
 )
-from omnipath_build.db.resources import ResourceTableStats, sync_resources_table
+from omnipath_build.db.resources import (
+    BuildManifestStats,
+    ResourceTableStats,
+    emit_build_manifest,
+    sync_resources_table,
+)
 from omnipath_build.db.derived_tables import (
     DerivedTableStats,
     rebuild_derived_tables,
@@ -25,6 +30,7 @@ from omnipath_build.db.derived_tables import (
 
 __all__ = [
     'BitmapStats',
+    'BuildManifestStats',
     'DerivedTableStats',
     'ResourceTableStats',
     'SourceContentDropStats',
@@ -33,6 +39,7 @@ __all__ = [
     'drop_deferred_content_indexes',
     'ensure_deferred_indexes',
     'ensure_content_primary_keys',
+    'emit_build_manifest',
     'ensure_schema',
     'ensure_source_partitions',
     'rebuild_bitmap_tables',
