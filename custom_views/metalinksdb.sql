@@ -39,6 +39,21 @@ END;
 $$;
 
 
+
+CREATE OR REPLACE FUNCTION get_entity_type_id(type_name text)
+RETURNS bigint LANGUAGE plpgsql STABLE AS $$
+BEGIN
+    RETURN (SELECT entity_type_id FROM public.vocab_entity_type WHERE name = type_name);
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION get_identifier_type_id(type_name text)
+RETURNS bigint LANGUAGE plpgsql STABLE AS $$
+BEGIN
+    RETURN (SELECT identifier_type_id FROM public.vocab_identifier_type WHERE name = type_name);
+END;
+$$;
+
 DROP MATERIALIZED VIEW IF EXISTS metalinksdb_relations;
 
 DROP MATERIALIZED VIEW IF EXISTS metalinksdb_chembl_relations;
@@ -68,10 +83,10 @@ human_re AS (
 compound_ids AS (
     SELECT
         eei.entity_evidence_id,
-        MAX(CASE WHEN ie.identifier_type_id = 17 THEN ie.value END) AS chembl_compound_id,
-        MAX(CASE WHEN ie.identifier_type_id = 13 THEN ie.value END) AS inchikey,
-        MAX(CASE WHEN ie.identifier_type_id = 27 THEN ie.value END) AS smiles,
-        MAX(CASE WHEN ie.identifier_type_id = 16 THEN ie.value END) AS compound_name
+        MAX(CASE WHEN ie.identifier_type_id = get_identifier_type_id('Chembl Compound:MI:0967') THEN ie.value END) AS chembl_compound_id,
+        MAX(CASE WHEN ie.identifier_type_id = get_identifier_type_id('Standard Inchi Key:MI:1101') THEN ie.value END) AS inchikey,
+        MAX(CASE WHEN ie.identifier_type_id = get_identifier_type_id('Smiles:MI:0239') THEN ie.value END) AS smiles,
+        MAX(CASE WHEN ie.identifier_type_id = get_identifier_type_id('Name:OM:0202') THEN ie.value END) AS compound_name
     FROM entity_evidence_identifier eei
     JOIN identifier_evidence ie ON ie.identifier_id = eei.identifier_id
     WHERE eei.source_id = get_source_id('chembl')
@@ -83,8 +98,8 @@ compound_ids AS (
 protein_ids AS (
     SELECT
         eei.entity_evidence_id,
-        MAX(CASE WHEN ie.identifier_type_id = 1  THEN ie.value END) AS uniprot_id,
-        MAX(CASE WHEN ie.identifier_type_id = 33 THEN ie.value END) AS chembl_target_id
+        MAX(CASE WHEN ie.identifier_type_id = get_identifier_type_id('Uniprot:MI:1097')  THEN ie.value END) AS uniprot_id,
+        MAX(CASE WHEN ie.identifier_type_id = get_identifier_type_id('Chembl Target:MI:1348') THEN ie.value END) AS chembl_target_id
     FROM entity_evidence_identifier eei
     JOIN identifier_evidence ie ON ie.identifier_id = eei.identifier_id
     WHERE eei.source_id = get_source_id('chembl')
@@ -254,7 +269,7 @@ human_re AS (
     JOIN entity_evidence ee_protein
         ON  ee_protein.source_id          = re.source_id
         AND ee_protein.entity_evidence_id = re.object_entity_evidence_id
-        AND ee_protein.entity_type_id     = 3
+        AND ee_protein.entity_type_id = get_entity_type_id('Protein:MI:0326')
     JOIN entity_evidence_resolution eer
         ON  eer.source_id          = re.source_id
         AND eer.entity_evidence_id = re.object_entity_evidence_id
@@ -266,11 +281,11 @@ human_re AS (
 -- Collect raw BindingDB compound identifiers (BindingDB ID, InChIKey, SMILES, PubChem CID, ChEMBL ID) per entity_evidence row.
 compound_ids AS (
     SELECT eei.entity_evidence_id,
-        MAX(CASE WHEN ie.identifier_type_id = 23 THEN ie.value END) AS bindingdb_compound_id,
-        MAX(CASE WHEN ie.identifier_type_id = 13 THEN ie.value END) AS inchikey,
-        MAX(CASE WHEN ie.identifier_type_id = 27 THEN ie.value END) AS smiles,
-        MAX(CASE WHEN ie.identifier_type_id = 12 THEN ie.value END) AS pubchem_cid,
-        MAX(CASE WHEN ie.identifier_type_id = 17 THEN ie.value END) AS chembl_compound_id
+        MAX(CASE WHEN ie.identifier_type_id = get_identifier_type_id('Bindingdb:OM:0006') THEN ie.value END) AS bindingdb_compound_id,
+        MAX(CASE WHEN ie.identifier_type_id = get_identifier_type_id('Standard Inchi Key:MI:1101') THEN ie.value END) AS inchikey,
+        MAX(CASE WHEN ie.identifier_type_id = get_identifier_type_id('Smiles:MI:0239') THEN ie.value END) AS smiles,
+        MAX(CASE WHEN ie.identifier_type_id = get_identifier_type_id('Pubchem Compound:OM:0002') THEN ie.value END) AS pubchem_cid,
+        MAX(CASE WHEN ie.identifier_type_id = get_identifier_type_id('Chembl Compound:MI:0967') THEN ie.value END) AS chembl_compound_id
     FROM entity_evidence_identifier eei
     JOIN identifier_evidence ie ON ie.identifier_id = eei.identifier_id
     WHERE eei.source_id = get_source_id('bindingdb')
@@ -281,7 +296,7 @@ compound_ids AS (
 -- Collect raw BindingDB protein identifier (UniProt) per entity_evidence row.
 protein_ids AS (
     SELECT eei.entity_evidence_id,
-        MAX(CASE WHEN ie.identifier_type_id = 1 THEN ie.value END) AS uniprot_id
+        MAX(CASE WHEN ie.identifier_type_id = get_identifier_type_id('Uniprot:MI:1097') THEN ie.value END) AS uniprot_id
     FROM entity_evidence_identifier eei
     JOIN identifier_evidence ie ON ie.identifier_id = eei.identifier_id
     WHERE eei.source_id = get_source_id('bindingdb')
@@ -389,11 +404,11 @@ human_re AS (
     JOIN entity_evidence ee_compound
         ON  ee_compound.source_id          = re.source_id
         AND ee_compound.entity_evidence_id = re.subject_entity_evidence_id
-        AND ee_compound.entity_type_id     = 2
+        AND ee_compound.entity_type_id = get_entity_type_id('Chemical:OM:0037')
     JOIN entity_evidence ee_protein
         ON  ee_protein.source_id          = re.source_id
         AND ee_protein.entity_evidence_id = re.object_entity_evidence_id
-        AND ee_protein.entity_type_id     = 3
+        AND ee_protein.entity_type_id = get_entity_type_id('Protein:MI:0326')
     JOIN entity_evidence_resolution eer
         ON  eer.source_id          = re.source_id
         AND eer.entity_evidence_id = re.object_entity_evidence_id
@@ -405,9 +420,9 @@ human_re AS (
 -- Collect raw CellLinker compound identifiers (HMDB ID, PubChem CID, SMILES) per entity_evidence row.
 compound_ids AS (
     SELECT eei.entity_evidence_id,
-        MAX(CASE WHEN ie.identifier_type_id = 9  THEN ie.value END) AS hmdb_id,
-        MAX(CASE WHEN ie.identifier_type_id = 12 THEN ie.value END) AS pubchem_cid,
-        MAX(CASE WHEN ie.identifier_type_id = 27 THEN ie.value END) AS smiles
+        MAX(CASE WHEN ie.identifier_type_id = get_identifier_type_id('Hmdb:OM:0004')  THEN ie.value END) AS hmdb_id,
+        MAX(CASE WHEN ie.identifier_type_id = get_identifier_type_id('Pubchem Compound:OM:0002') THEN ie.value END) AS pubchem_cid,
+        MAX(CASE WHEN ie.identifier_type_id = get_identifier_type_id('Smiles:MI:0239') THEN ie.value END) AS smiles
     FROM entity_evidence_identifier eei
     JOIN identifier_evidence ie ON ie.identifier_id = eei.identifier_id
     WHERE eei.source_id = get_source_id('cellinker')
@@ -418,9 +433,9 @@ compound_ids AS (
 -- Collect raw CellLinker protein identifiers (UniProt, Entrez, gene name) per entity_evidence row.
 protein_ids AS (
     SELECT eei.entity_evidence_id,
-        MAX(CASE WHEN ie.identifier_type_id = 1 THEN ie.value END) AS uniprot_id,
-        MAX(CASE WHEN ie.identifier_type_id = 3 THEN ie.value END) AS entrez_id,
-        MAX(CASE WHEN ie.identifier_type_id = 5 THEN ie.value END) AS gene_name
+        MAX(CASE WHEN ie.identifier_type_id = get_identifier_type_id('Uniprot:MI:1097') THEN ie.value END) AS uniprot_id,
+        MAX(CASE WHEN ie.identifier_type_id = get_identifier_type_id('Entrez:MI:0477') THEN ie.value END) AS entrez_id,
+        MAX(CASE WHEN ie.identifier_type_id = get_identifier_type_id('Gene Name Primary:OM:0200') THEN ie.value END) AS gene_name
     FROM entity_evidence_identifier eei
     JOIN identifier_evidence ie ON ie.identifier_id = eei.identifier_id
     WHERE eei.source_id = get_source_id('cellinker')
@@ -510,7 +525,7 @@ human_re AS (
     JOIN entity_evidence ee_protein
         ON  ee_protein.source_id          = re.source_id
         AND ee_protein.entity_evidence_id = re.object_entity_evidence_id
-        AND ee_protein.entity_type_id     = 3
+        AND ee_protein.entity_type_id = get_entity_type_id('Protein:MI:0326')
     JOIN entity_evidence_resolution eer
         ON  eer.source_id          = re.source_id
         AND eer.entity_evidence_id = re.object_entity_evidence_id
@@ -522,11 +537,11 @@ human_re AS (
 -- Collect raw GuideToPharma compound identifiers (GtP ligand ID, InChIKey, SMILES, PubChem CID, ChEMBL ID) per entity_evidence row.
 compound_ids AS (
     SELECT eei.entity_evidence_id,
-        MAX(CASE WHEN ie.identifier_type_id = 41 THEN ie.value END) AS guidetopharma_id,
-        MAX(CASE WHEN ie.identifier_type_id = 13 THEN ie.value END) AS inchikey,
-        MAX(CASE WHEN ie.identifier_type_id = 27 THEN ie.value END) AS smiles,
-        MAX(CASE WHEN ie.identifier_type_id = 12 THEN ie.value END) AS pubchem_cid,
-        MAX(CASE WHEN ie.identifier_type_id = 17 THEN ie.value END) AS chembl_compound_id
+        MAX(CASE WHEN ie.identifier_type_id = get_identifier_type_id('Guidetopharma:OM:0008') THEN ie.value END) AS guidetopharma_id,
+        MAX(CASE WHEN ie.identifier_type_id = get_identifier_type_id('Standard Inchi Key:MI:1101') THEN ie.value END) AS inchikey,
+        MAX(CASE WHEN ie.identifier_type_id = get_identifier_type_id('Smiles:MI:0239') THEN ie.value END) AS smiles,
+        MAX(CASE WHEN ie.identifier_type_id = get_identifier_type_id('Pubchem Compound:OM:0002') THEN ie.value END) AS pubchem_cid,
+        MAX(CASE WHEN ie.identifier_type_id = get_identifier_type_id('Chembl Compound:MI:0967') THEN ie.value END) AS chembl_compound_id
     FROM entity_evidence_identifier eei
     JOIN identifier_evidence ie ON ie.identifier_id = eei.identifier_id
     WHERE eei.source_id = get_source_id('guidetopharma')
@@ -537,9 +552,9 @@ compound_ids AS (
 -- Collect raw GuideToPharma protein identifiers (UniProt, HGNC, gene name) per entity_evidence row.
 protein_ids AS (
     SELECT eei.entity_evidence_id,
-        MAX(CASE WHEN ie.identifier_type_id = 1 THEN ie.value END) AS uniprot_id,
-        MAX(CASE WHEN ie.identifier_type_id = 4 THEN ie.value END) AS hgnc_id,
-        MAX(CASE WHEN ie.identifier_type_id = 5 THEN ie.value END) AS gene_name
+        MAX(CASE WHEN ie.identifier_type_id = get_identifier_type_id('Uniprot:MI:1097') THEN ie.value END) AS uniprot_id,
+        MAX(CASE WHEN ie.identifier_type_id = get_identifier_type_id('Hgnc:MI:1095') THEN ie.value END) AS hgnc_id,
+        MAX(CASE WHEN ie.identifier_type_id = get_identifier_type_id('Gene Name Primary:OM:0200') THEN ie.value END) AS gene_name
     FROM entity_evidence_identifier eei
     JOIN identifier_evidence ie ON ie.identifier_id = eei.identifier_id
     WHERE eei.source_id = get_source_id('guidetopharma')
@@ -659,11 +674,11 @@ human_re AS (
     JOIN entity_evidence ee_compound
         ON  ee_compound.source_id          = re.source_id
         AND ee_compound.entity_evidence_id = re.subject_entity_evidence_id
-        AND ee_compound.entity_type_id     = 2
+        AND ee_compound.entity_type_id = get_entity_type_id('Chemical:OM:0037')
     JOIN entity_evidence ee_protein
         ON  ee_protein.source_id          = re.source_id
         AND ee_protein.entity_evidence_id = re.object_entity_evidence_id
-        AND ee_protein.entity_type_id     = 3
+        AND ee_protein.entity_type_id = get_entity_type_id('Protein:MI:0326')
     JOIN entity_evidence_resolution eer
         ON  eer.source_id          = re.source_id
         AND eer.entity_evidence_id = re.object_entity_evidence_id
@@ -675,9 +690,9 @@ human_re AS (
 -- Collect raw MRCLinksDB compound identifiers (HMDB ID, PubChem CID, SMILES) per entity_evidence row.
 compound_ids AS (
     SELECT eei.entity_evidence_id,
-        MAX(CASE WHEN ie.identifier_type_id = 9  THEN ie.value END) AS hmdb_id,
-        MAX(CASE WHEN ie.identifier_type_id = 12 THEN ie.value END) AS pubchem_cid,
-        MAX(CASE WHEN ie.identifier_type_id = 27 THEN ie.value END) AS smiles
+        MAX(CASE WHEN ie.identifier_type_id = get_identifier_type_id('Hmdb:OM:0004')  THEN ie.value END) AS hmdb_id,
+        MAX(CASE WHEN ie.identifier_type_id = get_identifier_type_id('Pubchem Compound:OM:0002') THEN ie.value END) AS pubchem_cid,
+        MAX(CASE WHEN ie.identifier_type_id = get_identifier_type_id('Smiles:MI:0239') THEN ie.value END) AS smiles
     FROM entity_evidence_identifier eei
     JOIN identifier_evidence ie ON ie.identifier_id = eei.identifier_id
     WHERE eei.source_id = get_source_id('mrclinksdb')
@@ -688,9 +703,9 @@ compound_ids AS (
 -- Collect raw MRCLinksDB protein identifiers (UniProt, Entrez, gene name) per entity_evidence row.
 protein_ids AS (
     SELECT eei.entity_evidence_id,
-        MAX(CASE WHEN ie.identifier_type_id = 1 THEN ie.value END) AS uniprot_id,
-        MAX(CASE WHEN ie.identifier_type_id = 3 THEN ie.value END) AS entrez_id,
-        MAX(CASE WHEN ie.identifier_type_id = 5 THEN ie.value END) AS gene_name
+        MAX(CASE WHEN ie.identifier_type_id = get_identifier_type_id('Uniprot:MI:1097') THEN ie.value END) AS uniprot_id,
+        MAX(CASE WHEN ie.identifier_type_id = get_identifier_type_id('Entrez:MI:0477') THEN ie.value END) AS entrez_id,
+        MAX(CASE WHEN ie.identifier_type_id = get_identifier_type_id('Gene Name Primary:OM:0200') THEN ie.value END) AS gene_name
     FROM entity_evidence_identifier eei
     JOIN identifier_evidence ie ON ie.identifier_id = eei.identifier_id
     WHERE eei.source_id = get_source_id('mrclinksdb')
@@ -777,11 +792,11 @@ human_re AS (
     JOIN entity_evidence ee_compound
         ON  ee_compound.source_id          = re.source_id
         AND ee_compound.entity_evidence_id = re.subject_entity_evidence_id
-        AND ee_compound.entity_type_id     = 2
+        AND ee_compound.entity_type_id = get_entity_type_id('Chemical:OM:0037')
     JOIN entity_evidence ee_protein
         ON  ee_protein.source_id          = re.source_id
         AND ee_protein.entity_evidence_id = re.object_entity_evidence_id
-        AND ee_protein.entity_type_id     = 3
+        AND ee_protein.entity_type_id = get_entity_type_id('Protein:MI:0326')
         AND ee_protein.taxonomy_id        = 9606
     WHERE re.source_id = get_source_id('stitch')
 ),
@@ -789,7 +804,7 @@ human_re AS (
 -- Collect raw STITCH compound identifier (PubChem CID) per entity_evidence row.
 compound_ids AS NOT MATERIALIZED (
     SELECT eei.entity_evidence_id,
-        MAX(CASE WHEN ie.identifier_type_id = 12 THEN ie.value END) AS pubchem_cid
+        MAX(CASE WHEN ie.identifier_type_id = get_identifier_type_id('Pubchem Compound:OM:0002') THEN ie.value END) AS pubchem_cid
     FROM entity_evidence_identifier eei
     JOIN identifier_evidence ie ON ie.identifier_id = eei.identifier_id
     WHERE eei.source_id = get_source_id('stitch')
@@ -800,7 +815,7 @@ compound_ids AS NOT MATERIALIZED (
 -- Collect raw STITCH protein identifier (Ensembl ID) per entity_evidence row; UniProt comes from canonical resolution.
 protein_ids AS NOT MATERIALIZED (
     SELECT eei.entity_evidence_id,
-        MAX(CASE WHEN ie.identifier_type_id = 2 THEN ie.value END) AS ensembl_id
+        MAX(CASE WHEN ie.identifier_type_id = get_identifier_type_id('Ensembl:MI:0476') THEN ie.value END) AS ensembl_id
     FROM entity_evidence_identifier eei
     JOIN identifier_evidence ie ON ie.identifier_id = eei.identifier_id
     WHERE eei.source_id = get_source_id('stitch')
@@ -900,11 +915,11 @@ human_re AS (
     JOIN entity_evidence ee_compound
         ON  ee_compound.source_id          = re.source_id
         AND ee_compound.entity_evidence_id = re.object_entity_evidence_id   -- compound is OBJECT for TCDB
-        AND ee_compound.entity_type_id     = 2
+        AND ee_compound.entity_type_id = get_entity_type_id('Chemical:OM:0037')
     JOIN entity_evidence ee_protein
         ON  ee_protein.source_id          = re.source_id
         AND ee_protein.entity_evidence_id = re.subject_entity_evidence_id   -- protein is SUBJECT for TCDB
-        AND ee_protein.entity_type_id     = 3
+        AND ee_protein.entity_type_id = get_entity_type_id('Protein:MI:0326')
     JOIN entity_evidence_resolution eer
         ON  eer.source_id          = re.source_id
         AND eer.entity_evidence_id = re.subject_entity_evidence_id
@@ -916,8 +931,8 @@ human_re AS (
 -- Collect raw TCDB compound identifiers (ChEBI ID, compound name) per entity_evidence row.
 compound_ids AS (
     SELECT eei.entity_evidence_id,
-        MAX(CASE WHEN ie.identifier_type_id = 8  THEN ie.value END) AS chebi_id,
-        MAX(CASE WHEN ie.identifier_type_id = 16 THEN ie.value END) AS compound_name
+        MAX(CASE WHEN ie.identifier_type_id = get_identifier_type_id('Chebi:MI:0474')  THEN ie.value END) AS chebi_id,
+        MAX(CASE WHEN ie.identifier_type_id = get_identifier_type_id('Name:OM:0202') THEN ie.value END) AS compound_name
     FROM entity_evidence_identifier eei
     JOIN identifier_evidence ie ON ie.identifier_id = eei.identifier_id
     WHERE eei.source_id = get_source_id('tcdb')
@@ -928,8 +943,8 @@ compound_ids AS (
 -- Collect raw TCDB protein identifiers (UniProt, TCDB family ID) per entity_evidence row.
 protein_ids AS (
     SELECT eei.entity_evidence_id,
-        MAX(CASE WHEN ie.identifier_type_id = 1  THEN ie.value END) AS uniprot_id,
-        MAX(CASE WHEN ie.identifier_type_id = 77 THEN ie.value END) AS tcdb_id
+        MAX(CASE WHEN ie.identifier_type_id = get_identifier_type_id('Uniprot:MI:1097')  THEN ie.value END) AS uniprot_id,
+        MAX(CASE WHEN ie.identifier_type_id = get_identifier_type_id('Tcdb:OM:0238') THEN ie.value END) AS tcdb_id
     FROM entity_evidence_identifier eei
     JOIN identifier_evidence ie ON ie.identifier_id = eei.identifier_id
     WHERE eei.source_id = get_source_id('tcdb')
@@ -990,6 +1005,21 @@ CREATE INDEX ON metalinksdb_tcdb_relations (protein_uniprot);
 
 -- Aggregates all resolved protein–metabolite pairs across sources into one row per canonical (compound, protein) pair,
 -- collecting source names, relation types (interaction/transport), best pChEMBL value, and literature references.
+
+CREATE OR REPLACE FUNCTION get_entity_type_id(type_name text)
+RETURNS bigint LANGUAGE plpgsql STABLE AS $$
+BEGIN
+    RETURN (SELECT entity_type_id FROM public.vocab_entity_type WHERE name = type_name);
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION get_identifier_type_id(type_name text)
+RETURNS bigint LANGUAGE plpgsql STABLE AS $$
+BEGIN
+    RETURN (SELECT identifier_type_id FROM public.vocab_identifier_type WHERE name = type_name);
+END;
+$$;
+
 DROP MATERIALIZED VIEW IF EXISTS metalinksdb_relations;
 CREATE MATERIALIZED VIEW metalinksdb_relations AS
 SELECT
