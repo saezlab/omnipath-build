@@ -7,7 +7,7 @@ evidence/graph tables or from bitmap tables when they have been refreshed.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, NamedTuple
 from pathlib import Path
 from functools import lru_cache
 import json
@@ -177,12 +177,16 @@ def sync_resources_table(
             )
             for source, functions in sorted(discovered.items())
         ]
+        _validate_resource_names(rows)
         cur.executemany(
             sql.SQL(
                 """
                 INSERT INTO {}.resources (
                   resource_id,
                   resource_name,
+                  resource_short,
+                  resource_full,
+                  synonyms,
                   description,
                   homepage_url,
                   license,
@@ -207,6 +211,9 @@ def sync_resources_table(
                 VALUES (
                   %(resource_id)s,
                   %(resource_name)s,
+                  %(resource_short)s,
+                  %(resource_full)s,
+                  %(synonyms)s,
                   %(description)s,
                   %(homepage_url)s,
                   %(license)s,
@@ -230,6 +237,9 @@ def sync_resources_table(
                 )
                 ON CONFLICT (resource_id) DO UPDATE SET
                   resource_name = EXCLUDED.resource_name,
+                  resource_short = EXCLUDED.resource_short,
+                  resource_full = EXCLUDED.resource_full,
+                  synonyms = EXCLUDED.synonyms,
                   description = EXCLUDED.description,
                   homepage_url = EXCLUDED.homepage_url,
                   license = EXCLUDED.license,
@@ -272,7 +282,11 @@ def _ensure_resources_metadata_columns(
             ADD COLUMN IF NOT EXISTS input_module_commit text,
             ADD COLUMN IF NOT EXISTS input_module_dirty boolean
               NOT NULL DEFAULT false,
-            ADD COLUMN IF NOT EXISTS license_label text
+            ADD COLUMN IF NOT EXISTS license_label text,
+            ADD COLUMN IF NOT EXISTS resource_short text,
+            ADD COLUMN IF NOT EXISTS resource_full text,
+            ADD COLUMN IF NOT EXISTS synonyms text[] NOT NULL
+              DEFAULT ARRAY[]::text[]
             """
         ).format(sql.Identifier(schema))
     )
@@ -311,9 +325,13 @@ def _resource_row(
         association_count=counts['association_count'],
         ontology_term_count=counts['ontology_term_count'],
     )
+    names = _resource_names(config, source)
     return {
         'resource_id': source,
         'resource_name': getattr(config, 'name', source),
+        'resource_short': names.short,
+        'resource_full': names.full,
+        'synonyms': list(names.synonyms),
         'description': getattr(config, 'description', None),
         'homepage_url': getattr(config, 'url', None),
         'license': _text_or_none(getattr(config, 'license', None)),
@@ -335,6 +353,71 @@ def _resource_row(
         'last_built_at': last_built_at,
         'build_status': 'success' if counts['has_rows'] else 'not_built',
     }
+
+
+def _validate_resource_names(rows: list[dict[str, Any]]) -> None:
+    """Flag resource-name rule violations at build time (Milestone M, FR-045)."""
+    try:
+        from pypath.inputs_v2.resource_names import validate_resource_name
+    except ImportError:
+        return  # pypath without the 3-name model (older pin); skip validation
+
+    violations: list[tuple[str, list[str]]] = []
+    for row in rows:
+        errors = validate_resource_name(
+            row['resource_id'],
+            row.get('resource_short') or '',
+            row.get('resource_full') or '',
+        )
+        if errors:
+            violations.append((row['resource_id'], errors))
+    if violations:
+        print(
+            f'[resources] resource-name rule violations: {len(violations)}',
+            flush=True,
+        )
+        for resource_id, errors in violations[:30]:
+            print(f'[resources]   {resource_id}: {"; ".join(errors)}', flush=True)
+
+
+class _FallbackNames(NamedTuple):
+    short: str
+    full: str
+    synonyms: tuple[str, ...]
+
+
+def _resource_names(config: object, source: str):
+    """Resolve the resource 3-name model (Milestone M).
+
+    The build's ``resource_id`` (``source``) is the canonical-ish key, so it is
+    the slug basis — and it is resolved through the filter index so a
+    module-basename (e.g. ``rampdb``) maps to its clean-break slug (``ramp``).
+    Explicit ``ResourceConfig`` slug/short/full override; otherwise derive.
+    """
+    try:
+        from pypath.inputs_v2.resource_names import (
+            RESOURCE_NAMES,
+            resolve_filter,
+            resolve_names,
+        )
+    except ImportError:
+        # pypath without the 3-name model (older pin): short/full fall back to
+        # the resource's existing name, no synonyms.
+        name = getattr(config, 'name', None) or source
+        return _FallbackNames(short=name, full=name, synonyms=())
+
+    canonical = resolve_filter(source)
+    if canonical:
+        return RESOURCE_NAMES[canonical]
+    slug = getattr(config, 'slug', None)
+    short = getattr(config, 'short', None)
+    full = getattr(config, 'full', None)
+    synonyms = tuple(getattr(config, 'synonyms', ()) or ())
+    if slug or short or full:
+        return resolve_names(
+            name=source, slug=slug, short=short, full=full, synonyms=synonyms
+        )
+    return resolve_names(name=source)
 
 
 def _present_sources(

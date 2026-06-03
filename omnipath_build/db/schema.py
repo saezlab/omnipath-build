@@ -1116,6 +1116,9 @@ def _ensure_resolution_schema(
             CREATE TABLE IF NOT EXISTS {}.resources (
               resource_id text PRIMARY KEY,
               resource_name text,
+              resource_short text,
+              resource_full text,
+              synonyms text[] NOT NULL DEFAULT ARRAY[]::text[],
               description text,
               homepage_url text,
               license text,
