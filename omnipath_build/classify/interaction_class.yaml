@@ -18,6 +18,7 @@ classes:
   - Orthosteric
   - Transport
   - Ligand-receptor
+  - Maturation
   - Other
 
 # Any predicate not listed here -> Other (100% coverage, no NULLs).
@@ -34,3 +35,7 @@ predicates:
   negatively_regulates: Signaling
   positively_regulates: Signaling
   transports: Transport
+  # Milestone L: pre-miRNA → mature-miRNA processing (appears once the miRBase
+  # resource emits maturation relations; until then it simply has no rows).
+  miRNA maturation: Maturation
+  miRNA_maturation: Maturation
