@@ -15,11 +15,13 @@ from omnipath_build.resolver.sources import (
     CHEMICAL_SOURCES,
     materialize_proteins,
     materialize_chemical_sources,
+    materialize_mirna,
 )
 
 SOURCE_NAMES: tuple[str, ...] = (
     'uniprot',
     *CHEMICAL_SOURCES,
+    'mirbase',
 )
 
 
@@ -140,6 +142,19 @@ def run_sources(
         summary.update(
             {f'chemicals_{key}': value for key, value in result.items()}
         )
+
+    if 'mirbase' in selected:
+        try:
+            result = materialize_mirna(
+                output_dir=_output_subdir(base_dir, 'mirna'),
+                skip_existing=skip_existing,
+            )
+            summary.update(
+                {f'mirbase_{key}': value for key, value in result.items()}
+            )
+        except Exception as exc:
+            failed_sources += 1
+            _warn_resolver_source_failed('mirbase', exc)
 
     if failed_sources:
         summary['failed_sources'] = failed_sources

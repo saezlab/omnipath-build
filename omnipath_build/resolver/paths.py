@@ -12,6 +12,7 @@ DATA_DIR = PROJECT_ROOT / 'data'
 RAW_DATA_DIR = PROJECT_ROOT / 'pypath-data'
 PROTEINS_DATA_DIR = DATA_DIR / 'proteins'
 CHEMICALS_DATA_DIR = DATA_DIR / 'chemicals'
+MIRNA_DATA_DIR = DATA_DIR / 'mirna'
 
 
 def ensure_data_dir() -> Path:
@@ -51,3 +52,11 @@ def ensure_chemicals_data_dir() -> Path:
     ensure_data_dir()
     CHEMICALS_DATA_DIR.mkdir(parents=True, exist_ok=True)
     return CHEMICALS_DATA_DIR
+
+
+def ensure_mirna_data_dir() -> Path:
+    """Return the resolver miRNA output directory."""
+
+    ensure_data_dir()
+    MIRNA_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    return MIRNA_DATA_DIR

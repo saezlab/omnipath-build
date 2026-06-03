@@ -44,6 +44,9 @@ IDENTIFIER_TYPE_NAMES: tuple[str, ...] = (
     cv_term_label_accession(IdentifierNamespaceCv.REFMET),
     cv_term_label_accession(IdentifierNamespaceCv.KEGG_COMPOUND),
     cv_term_label_accession(IdentifierNamespaceCv.CAS),
+    # miRNA accessions (Milestone L) — appended to keep existing IDs stable
+    cv_term_label_accession(IdentifierNamespaceCv.MIRBASE_PRECURSOR),
+    cv_term_label_accession(IdentifierNamespaceCv.MIRBASE_MATURE),
 )
 
 IDENTIFIER_TYPE_IDS: dict[str, int] = {
