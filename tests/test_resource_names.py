@@ -52,8 +52,8 @@ def test_resources_have_short_and_full(conn):
     assert missing == []
 
 
-def test_curated_resources_use_canonical_names(conn):
-    """Module-basename sources map to their clean-break short/full names."""
+def test_json_backed_resources_use_authoritative_names(conn):
+    """Resources present in resources.json resolve to their authoritative names."""
     names = dict(
         (rid, (short, full))
         for rid, short, full in _rows(
@@ -62,15 +62,21 @@ def test_curated_resources_use_canonical_names(conn):
             f'FROM {SCHEMA}.resources',
         )
     )
-    # rampdb (module) → RaMP (clean-break canonical short), via synonym mapping.
-    if 'rampdb' in names:
-        assert names['rampdb'][0] == 'RaMP'
-    if 'hmdb' in names:
-        assert names['hmdb'] == ('HMDB', 'Human Metabolome Database')
+    if 'signor' in names:
+        assert names['signor'] == ('SIGNOR', 'Signaling Network Open Resource')
+    if 'chembl' in names:
+        assert names['chembl'][0] == 'ChEMBL'
+    if 'cellphonedb' in names:
+        assert names['cellphonedb'][0] == 'CellPhoneDB'
 
 
-def test_short_full_obey_rules(conn):
-    """short / full contain no underscore (the reserved primary_secondary char)."""
+def test_no_underscore_in_names(conn):
+    """short / full contain no underscore (the reserved primary_secondary char).
+
+    Spaces in inputs_v2-only resources' short names (not in the legacy
+    resources.json) are flagged by the build validator and curated per-module in
+    the FR-049 audit; here we only assert the underscore invariant holds.
+    """
     for rid, short, full in _rows(
         conn,
         f'SELECT resource_id, resource_short, resource_full FROM {SCHEMA}.resources '

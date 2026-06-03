@@ -389,35 +389,28 @@ class _FallbackNames(NamedTuple):
 def _resource_names(config: object, source: str):
     """Resolve the resource 3-name model (Milestone M).
 
-    The build's ``resource_id`` (``source``) is the canonical-ish key, so it is
-    the slug basis — and it is resolved through the filter index so a
-    module-basename (e.g. ``rampdb``) maps to its clean-break slug (``ramp``).
-    Explicit ``ResourceConfig`` slug/short/full override; otherwise derive.
+    Prefers the resource's own ``ResourceConfig.names()`` — which resolves via the
+    canonical ``ResourceCv`` slug against the authoritative ``resources.json`` —
+    and otherwise resolves the build's ``resource_id`` (``source``) through the
+    same registry / filter index.
     """
     try:
-        from pypath.inputs_v2.resource_names import (
-            RESOURCE_NAMES,
-            resolve_filter,
-            resolve_names,
-        )
+        from pypath.inputs_v2.resource_names import resolve_filter, resolve_names
     except ImportError:
         # pypath without the 3-name model (older pin): short/full fall back to
         # the resource's existing name, no synonyms.
         name = getattr(config, 'name', None) or source
         return _FallbackNames(short=name, full=name, synonyms=())
 
+    if config is not None and hasattr(config, 'names'):
+        try:
+            return config.names()
+        except Exception:  # pragma: no cover - defensive
+            pass
+
+    # No usable config: resolve the source key via the registry/filter index.
     canonical = resolve_filter(source)
-    if canonical:
-        return RESOURCE_NAMES[canonical]
-    slug = getattr(config, 'slug', None)
-    short = getattr(config, 'short', None)
-    full = getattr(config, 'full', None)
-    synonyms = tuple(getattr(config, 'synonyms', ()) or ())
-    if slug or short or full:
-        return resolve_names(
-            name=source, slug=slug, short=short, full=full, synonyms=synonyms
-        )
-    return resolve_names(name=source)
+    return resolve_names(name=source, slug=canonical)
 
 
 def _present_sources(
