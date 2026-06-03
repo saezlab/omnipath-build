@@ -1710,6 +1710,18 @@ def _write_raw_shard(rows: list[dict[str, object]], path: Path) -> None:
         for row in rows
     ]
     table = pa.Table.from_pylist(normalized)
+    # Drop childless struct columns: a nested field that is empty/absent for
+    # EVERY row in this shard (e.g. under MAX_RECORDS, or a sparse optional
+    # nested field) infers as `struct<>`, which Arrow cannot write to Parquet.
+    # The column carries no data; downstream projection reads via row.get(), so
+    # dropping it is safe and keeps capped builds robust.
+    empty_structs = [
+        field.name
+        for field in table.schema
+        if pa.types.is_struct(field.type) and field.type.num_fields == 0
+    ]
+    if empty_structs:
+        table = table.drop(empty_structs)
     table = table.cast(_schema_with_storable_nulls(table.schema), safe=False)
     pq.write_table(table, path, compression='zstd', use_dictionary=True)
 
