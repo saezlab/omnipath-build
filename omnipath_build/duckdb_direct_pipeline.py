@@ -239,6 +239,7 @@ class DiscoveredLoadStats:
     annotations: int
     ontology_terms: int
     total_seconds: float
+    failed_dataset_keys: tuple[str, ...] = ()
 
 
 def run_direct_copy_pipeline(
@@ -1307,6 +1308,12 @@ def _run_discovered_direct_load_staged_in_dir(
         annotations=sum(result.annotations for result in results),
         ontology_terms=sum(result.ontology_terms for result in results),
         total_seconds=time.perf_counter() - started,
+        failed_dataset_keys=tuple(
+            sorted(
+                f'{source}.{dataset}'
+                for source, dataset in (failed_dataset_keys & all_dataset_keys)
+            )
+        ),
     )
 
 
@@ -2158,7 +2165,16 @@ def main(argv: list[str] | None = None) -> int:
             flush=True,
         )
         if stats.failed_sources or stats.failed_datasets:
-            return 1
+            # A failed source/dataset is logged + skipped, NOT fatal: the build
+            # completes (derive still runs) so one bad resource can't block the
+            # whole pipeline. The per-dataset reasons were logged inline above.
+            print(
+                '[load] WARNING: completed with '
+                f'{stats.failed_datasets} failed dataset(s) across '
+                f'{stats.failed_sources} source(s) — skipped: '
+                f'{", ".join(stats.failed_dataset_keys) or "(see warnings above)"}',
+                flush=True,
+            )
         return 0
 
     if args.resource == 'chembl-activities':
