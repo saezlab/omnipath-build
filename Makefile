@@ -150,6 +150,18 @@ derive:
 		derive \
 		$(if $(MAX_RECORDS),--max-records "$(MAX_RECORDS)")
 
+network-views:
+	@if [ -z "$(DATABASE_URL)" ]; then \
+		echo "DATABASE_URL is required, e.g. make network-views DATABASE_URL=postgresql://user:pass@host:5432/dbname"; \
+		exit 1; \
+	fi
+	@echo "[omnipath_build] apply specialized network views schema=$(SCHEMA)"
+	@PYTHONUNBUFFERED=1 uv run python -m omnipath_build.cli \
+		--database-url "$(DATABASE_URL)" \
+		--schema "$(SCHEMA)" \
+		network-views \
+		$(if $(REFRESH),--refresh)
+
 load:
 	@if [ -z "$(DATABASE_URL)" ]; then \
 		echo "DATABASE_URL is required, e.g. make load SOURCE=uniprot DATABASE_URL=postgresql://user:pass@host:5432/dbname"; \

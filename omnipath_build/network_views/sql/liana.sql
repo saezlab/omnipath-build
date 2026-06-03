@@ -21,7 +21,7 @@ BEGIN
   END IF;
 END $$;
 
-CREATE TABLE custom_views.liana_ligand_receptor_pairs AS
+CREATE MATERIALIZED VIEW custom_views.liana_ligand_receptor_pairs AS
 WITH included_source(source_name) AS (
   VALUES
     ('cellchat'),

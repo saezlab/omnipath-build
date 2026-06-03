@@ -34,6 +34,7 @@ from omnipath_build.classify import (
     classify_metabolic_domain,
     classify_interaction_class,
 )
+from omnipath_build.network_views import NETWORKS, apply_all as apply_network_views
 from omnipath_build.resources import discover_resources
 from omnipath_build.resolver.mapping_tables import (
     SOURCE_NAMES as RESOLVER_SOURCE_NAMES,
@@ -146,6 +147,12 @@ def main(argv: list[str] | None = None) -> int:
         default=True,
         help='Create and populate bitmap tables.',
     )
+    derive.add_argument(
+        '--network-views',
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help='Apply + register the specialized network views (MetalinksDB, LIANA).',
+    )
     derive.add_argument('--inputs-package', default='pypath.inputs_v2')
     derive.add_argument('--database', default='omnipath')
     derive.add_argument(
@@ -155,6 +162,14 @@ def main(argv: list[str] | None = None) -> int:
             'Per-source record cap the load ran with; a non-zero value flags '
             'build_manifest.partial_build. Defaults to the MAX_RECORDS env var.'
         ),
+    )
+
+    network_views = subparsers.add_parser('network-views')
+    network_views.add_argument('--schema', default='public')
+    network_views.add_argument(
+        '--refresh',
+        action='store_true',
+        help='Refresh existing matviews instead of a full apply (faster).',
     )
 
     args = parser.parse_args(argv)
@@ -182,6 +197,21 @@ def main(argv: list[str] | None = None) -> int:
     )
     with psycopg2.connect(args.database_url) as conn:
         print('[omnipath_build] database connected', flush=True)
+        if args.command == 'network-views':
+            from omnipath_build.network_views import refresh_all
+            runner = refresh_all if args.refresh else apply_network_views
+            stats = runner(
+                conn,
+                NETWORKS,
+                registry_schema=args.schema,
+                log=lambda message: print(message, flush=True),
+            )
+            print(
+                f'[network-views] {"refreshed" if args.refresh else "applied"}: '
+                f'{", ".join(stats.applied)}',
+                flush=True,
+            )
+            return 0
         if args.command == 'init-db':
             ensure_schema(
                 conn,
@@ -403,6 +433,30 @@ def main(argv: list[str] | None = None) -> int:
                     resources=manifest_stats.resources,
                     seconds=f'{time.perf_counter() - step_started:.3f}',
                 )
+                if args.network_views:
+                    step_started = time.perf_counter()
+                    _derive_log('network_views_start')
+                    try:
+                        network_stats = apply_network_views(
+                            conn,
+                            NETWORKS,
+                            registry_schema=args.schema,
+                            log=lambda message: print(message, flush=True),
+                        )
+                        _derive_log(
+                            'network_views_done',
+                            networks=','.join(network_stats.applied),
+                            seconds=f'{time.perf_counter() - step_started:.3f}',
+                        )
+                    except Exception as exc:
+                        # Network views are a supplementary layer; a failure here
+                        # (e.g. a missing source) must not abort the core build.
+                        conn.rollback()
+                        _derive_log(
+                            'network_views_failed',
+                            error=repr(exc),
+                            seconds=f'{time.perf_counter() - step_started:.3f}',
+                        )
                 print(
                     '[derive] '
                     f'entity_identifier_lookup='
