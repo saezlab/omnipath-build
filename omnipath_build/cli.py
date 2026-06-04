@@ -197,6 +197,21 @@ def main(argv: list[str] | None = None) -> int:
     )
     with psycopg2.connect(args.database_url) as conn:
         print('[omnipath_build] database connected', flush=True)
+        # Build-phase session tuning. This connection runs a few heavy one-off
+        # statements (large sorts/aggregations for derived tables and network
+        # views, plus bulk index builds), so give it generous memory and
+        # parallelism for its lifetime only. These are session-level GUCs, not
+        # global config — the modest global settings still apply to the web
+        # API/app that shares this Postgres instance.
+        with conn.cursor() as _tune:
+            for _stmt in (
+                "SET work_mem = '512MB'",
+                "SET maintenance_work_mem = '2GB'",
+                'SET max_parallel_workers_per_gather = 6',
+                'SET max_parallel_maintenance_workers = 4',
+            ):
+                _tune.execute(_stmt)
+        conn.commit()
         if args.command == 'network-views':
             from omnipath_build.network_views import refresh_all
             runner = refresh_all if args.refresh else apply_network_views
