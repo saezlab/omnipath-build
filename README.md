@@ -19,6 +19,10 @@ canonical rows into PostgreSQL.
 For the data model, phase boundaries, refresh semantics, and common workflows,
 see [docs/pipeline.md](docs/pipeline.md).
 
+For tuning the build's Postgres memory and parallelism (and how to size it for
+your deployment, including the lab's docker memory cap), see
+[docs/build-tuning.md](docs/build-tuning.md).
+
 The default database URL is:
 
 ```bash

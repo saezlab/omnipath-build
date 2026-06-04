@@ -41,6 +41,54 @@ from omnipath_build.resolver.mapping_tables import (
     run_sources as build_resolver_sources,
 )
 
+
+# Build-phase Postgres session tuning. The build connection runs a few heavy
+# one-off statements (large sorts/aggregations for derived tables and network
+# views, plus bulk index builds), so it is given generous memory + parallelism
+# for its lifetime only — these are SESSION GUCs, never global config, so the
+# modest global settings of a Postgres instance shared with the web API/app are
+# untouched.
+#
+# Deployment tuning: each value is overridable via the matching environment
+# variable below; set one to an empty string to leave that GUC at the server
+# default. Defaults assume the build's Postgres has ~10 GB of headroom (e.g.
+# the lab's docker.service hard cap is 200 GB shared across all containers, so
+# a single build at ~8-10 GB peak is comfortable). Lower them on smaller hosts.
+_BUILD_SESSION_TUNING: tuple[tuple[str, str, str], ...] = (
+    ('work_mem', 'OMNIPATH_BUILD_WORK_MEM', '512MB'),
+    ('maintenance_work_mem', 'OMNIPATH_BUILD_MAINTENANCE_WORK_MEM', '2GB'),
+    (
+        'max_parallel_workers_per_gather',
+        'OMNIPATH_BUILD_MAX_PARALLEL_WORKERS_PER_GATHER',
+        '6',
+    ),
+    (
+        'max_parallel_maintenance_workers',
+        'OMNIPATH_BUILD_MAX_PARALLEL_MAINTENANCE_WORKERS',
+        '4',
+    ),
+)
+
+
+def _apply_build_session_tuning(conn) -> None:
+    """Apply session-level memory/parallelism GUCs to the build connection."""
+    applied = []
+    with conn.cursor() as cur:
+        for guc, env_var, default in _BUILD_SESSION_TUNING:
+            value = os.environ.get(env_var, default)
+            if not value:
+                continue
+            # GUC names are a fixed allow-list above; the value is parameterised.
+            cur.execute(f'SET {guc} = %s', (value,))
+            applied.append(f'{guc}={value}')
+    conn.commit()
+    if applied:
+        print(
+            '[omnipath_build] build-session tuning: ' + ', '.join(applied),
+            flush=True,
+        )
+
+
 def main(argv: list[str] | None = None) -> int:
     """Run the omnipath_build administrative command line interface."""
 
@@ -197,21 +245,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     with psycopg2.connect(args.database_url) as conn:
         print('[omnipath_build] database connected', flush=True)
-        # Build-phase session tuning. This connection runs a few heavy one-off
-        # statements (large sorts/aggregations for derived tables and network
-        # views, plus bulk index builds), so give it generous memory and
-        # parallelism for its lifetime only. These are session-level GUCs, not
-        # global config — the modest global settings still apply to the web
-        # API/app that shares this Postgres instance.
-        with conn.cursor() as _tune:
-            for _stmt in (
-                "SET work_mem = '512MB'",
-                "SET maintenance_work_mem = '2GB'",
-                'SET max_parallel_workers_per_gather = 6',
-                'SET max_parallel_maintenance_workers = 4',
-            ):
-                _tune.execute(_stmt)
-        conn.commit()
+        _apply_build_session_tuning(conn)
         if args.command == 'network-views':
             from omnipath_build.network_views import refresh_all
             runner = refresh_all if args.refresh else apply_network_views
