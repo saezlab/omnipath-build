@@ -21,6 +21,13 @@ BEGIN
   END IF;
 END $$;
 
+-- Performance note: this view's result is the small set of ligand<->receptor
+-- pairs from a handful of curated resources. The expensive parts are therefore
+-- scoped down up front: `evidence_side` is restricted to the included sources
+-- (the final SELECT requires them anyway), and the per-entity identifier
+-- aggregation (`entity_identifier_summary`) runs only for the entities that
+-- actually appear in a pair or as a member of one (`relevant_entity`), instead
+-- of string-aggregating identifiers for every entity in the database.
 CREATE MATERIALIZED VIEW custom_views.liana_ligand_receptor_pairs AS
 WITH included_source(source_name) AS (
   VALUES
@@ -39,73 +46,6 @@ identifier_label(identifier_type, label) AS (
     ('Entrez:MI:0477', 'Entrez'),
     ('Name:OM:0202', 'Name'),
     ('Uniprot Entry Name:OM:0221', 'UniProtEntry')
-),
-entity_identifier_raw AS (
-  SELECT
-    eil.entity_id,
-    it.name AS identifier_type,
-    i.value AS identifier
-  FROM public.entity_identifier_lookup eil
-  JOIN public.identifier_evidence i
-    ON i.identifier_id = eil.identifier_id
-  JOIN public.vocab_identifier_type it
-    ON it.identifier_type_id = i.identifier_type_id
-  WHERE i.value <> ''
-
-  UNION ALL
-
-  SELECT
-    e.entity_id,
-    it.name AS identifier_type,
-    e.canonical_identifier AS identifier
-  FROM public.entity e
-  JOIN public.vocab_identifier_type it
-    ON it.identifier_type_id = e.canonical_identifier_type_id
-  WHERE e.canonical_identifier IS NOT NULL
-    AND e.canonical_identifier <> ''
-    AND it.name NOT IN (
-      'Fallback',
-      'Ensembl:MI:0476',
-      'Name:OM:0202',
-      'omnipath:unresolved_entity_key',
-      'omnipath:complex_member_hash'
-    )
-    AND it.name !~ '^omnipath:'
-),
-entity_identifier AS (
-  SELECT
-    raw.entity_id,
-    coalesce(label.label, split_part(raw.identifier_type, ':', 1))
-      AS identifier_type,
-    raw.identifier
-  FROM entity_identifier_raw raw
-  LEFT JOIN identifier_label label
-    ON label.identifier_type = raw.identifier_type
-  WHERE raw.identifier_type <> 'omnipath:unresolved_entity_key'
-    AND raw.identifier_type <> 'omnipath:complex_member_hash'
-    AND raw.identifier_type <> 'Ensembl:MI:0476'
-),
-entity_identifier_summary AS (
-  SELECT
-    entity_id,
-    string_agg(
-      DISTINCT identifier_type || ':' || identifier,
-      '|' ORDER BY identifier_type || ':' || identifier
-    ) AS identifiers
-  FROM entity_identifier
-  GROUP BY entity_id
-),
-entity_summary AS (
-  SELECT
-    e.entity_id,
-    split_part(et.name, ':', 1) AS entity_type,
-    e.taxonomy_id,
-    coalesce(identifier_summary.identifiers, '') AS identifiers
-  FROM public.entity e
-  JOIN public.vocab_entity_type et
-    ON et.entity_type_id = e.entity_type_id
-  LEFT JOIN entity_identifier_summary identifier_summary
-    ON identifier_summary.entity_id = e.entity_id
 ),
 evidence_side AS (
   SELECT
@@ -148,6 +88,10 @@ evidence_side AS (
   JOIN public.vocab_relation_predicate rp
     ON rp.relation_predicate_id = re.predicate_id
    AND rp.name = 'interacts_with'
+  JOIN public.data_source ds
+    ON ds.source_id = re.source_id
+  JOIN included_source inc
+    ON inc.source_name = ds.name
   JOIN public.relation_evidence_relation rer
     ON rer.source_id = re.source_id
    AND rer.relation_evidence_id = re.relation_evidence_id
@@ -188,6 +132,94 @@ oriented_evidence AS (
    AND receptor.side_name <> ligand.side_name
   WHERE ligand.is_ligand
     AND receptor.is_receptor
+),
+-- Entities for which we actually need an identifier summary: the ligands and
+-- receptors themselves, plus the members of any ligand/receptor complex.
+relevant_entity AS (
+  SELECT ligand_entity_id AS entity_id FROM oriented_evidence
+  UNION
+  SELECT receptor_entity_id AS entity_id FROM oriented_evidence
+  UNION
+  SELECT r.object_entity_id AS entity_id
+  FROM public.relation r
+  JOIN public.vocab_relation_predicate rp
+    ON rp.relation_predicate_id = r.predicate_id
+   AND rp.name = 'has_member'
+  WHERE r.subject_entity_id IN (
+    SELECT ligand_entity_id FROM oriented_evidence
+    UNION
+    SELECT receptor_entity_id FROM oriented_evidence
+  )
+),
+entity_identifier_raw AS (
+  SELECT
+    eil.entity_id,
+    it.name AS identifier_type,
+    i.value AS identifier
+  FROM public.entity_identifier_lookup eil
+  JOIN public.identifier_evidence i
+    ON i.identifier_id = eil.identifier_id
+  JOIN public.vocab_identifier_type it
+    ON it.identifier_type_id = i.identifier_type_id
+  WHERE i.value <> ''
+    AND eil.entity_id IN (SELECT entity_id FROM relevant_entity)
+
+  UNION ALL
+
+  SELECT
+    e.entity_id,
+    it.name AS identifier_type,
+    e.canonical_identifier AS identifier
+  FROM public.entity e
+  JOIN public.vocab_identifier_type it
+    ON it.identifier_type_id = e.canonical_identifier_type_id
+  WHERE e.canonical_identifier IS NOT NULL
+    AND e.canonical_identifier <> ''
+    AND it.name NOT IN (
+      'Fallback',
+      'Ensembl:MI:0476',
+      'Name:OM:0202',
+      'omnipath:unresolved_entity_key',
+      'omnipath:complex_member_hash'
+    )
+    AND it.name !~ '^omnipath:'
+    AND e.entity_id IN (SELECT entity_id FROM relevant_entity)
+),
+entity_identifier AS (
+  SELECT
+    raw.entity_id,
+    coalesce(label.label, split_part(raw.identifier_type, ':', 1))
+      AS identifier_type,
+    raw.identifier
+  FROM entity_identifier_raw raw
+  LEFT JOIN identifier_label label
+    ON label.identifier_type = raw.identifier_type
+  WHERE raw.identifier_type <> 'omnipath:unresolved_entity_key'
+    AND raw.identifier_type <> 'omnipath:complex_member_hash'
+    AND raw.identifier_type <> 'Ensembl:MI:0476'
+),
+entity_identifier_summary AS (
+  SELECT
+    entity_id,
+    string_agg(
+      DISTINCT identifier_type || ':' || identifier,
+      '|' ORDER BY identifier_type || ':' || identifier
+    ) AS identifiers
+  FROM entity_identifier
+  GROUP BY entity_id
+),
+entity_summary AS (
+  SELECT
+    e.entity_id,
+    split_part(et.name, ':', 1) AS entity_type,
+    e.taxonomy_id,
+    coalesce(identifier_summary.identifiers, '') AS identifiers
+  FROM public.entity e
+  JOIN public.vocab_entity_type et
+    ON et.entity_type_id = e.entity_type_id
+  LEFT JOIN entity_identifier_summary identifier_summary
+    ON identifier_summary.entity_id = e.entity_id
+  WHERE e.entity_id IN (SELECT entity_id FROM relevant_entity)
 ),
 relation_annotation AS (
   WITH annotation_value AS (
