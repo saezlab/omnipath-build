@@ -42,6 +42,7 @@ from omnipath_build.resolver.identifier_types import (
 PROTEIN_ENTITY_TYPE = 'Protein:MI:0326'
 COMPLEX_ENTITY_TYPE = 'Complex:MI:0314'
 REACTION_ENTITY_TYPE = 'Reaction:OM:0015'
+MIRNA_ENTITY_TYPE = cv_term_label_accession(EntityTypeCv.MIRNA)
 PATHWAY_ENTITY_TYPE = cv_term_label_accession(EntityTypeCv.PATHWAY)
 REACTANT_ROLE_TERMS = (
     cv_term_label_accession(BiologicalRoleCv.REACTANT),
@@ -208,6 +209,63 @@ def _create_duckdb_resolver_views(
     chemical_lookup_dir = chemical_dir / 'lookup'
     chemical_lookup_glob = chemical_lookup_dir / '*.parquet'
     chemical_type_path = chemical_dir / 'identifier_type.parquet'
+
+    # miRNA (Milestone L): organism-agnostic name/accession -> MI#/MIMAT#. The
+    # lookup already carries the identity rows (MI#->MI#, MIMAT#->MIMAT#), so it
+    # both resolves precursor/mature names and collapses the maturation-stub
+    # matures onto their MIMAT#. Guarded so resolver snapshots predating the
+    # mirbase source still load.
+    try:
+        mirna_dir = _resolver_component_dir(
+            resolver_dir,
+            component='mirna',
+            lookup_filename='mirna_identifier_lookup.parquet',
+        )
+    except FileNotFoundError:
+        mirna_dir = None
+    if mirna_dir is not None:
+        mirna_lookup_path = mirna_dir / 'mirna_identifier_lookup.parquet'
+        mirna_type_path = mirna_dir / 'identifier_type.parquet'
+        mirna_identifier_type_sql = f"""
+        UNION
+        SELECT *
+        FROM read_parquet({_sql_literal(mirna_type_path)})
+        """
+        mirna_lookup_sql = f"""
+        UNION ALL
+        SELECT
+          {_sql_literal(MIRNA_ENTITY_TYPE)} AS entity_type,
+          key_identifier_type_id,
+          key_value,
+          NULL::VARCHAR AS taxonomy_id,
+          canonical_identifier_type_id,
+          canonical_identifier
+        FROM read_parquet({_sql_literal(mirna_lookup_path)})
+        WHERE key_value IS NOT NULL
+          AND canonical_identifier IS NOT NULL
+        """
+        mirna_canonical_sql = f"""
+        UNION ALL
+        SELECT
+          row_number() OVER (
+            ORDER BY canonical_identifier_type_id, canonical_identifier
+          )::BIGINT AS resolver_entity_id,
+          {_sql_literal(MIRNA_ENTITY_TYPE)} AS entity_type,
+          NULL::VARCHAR AS taxonomy_id,
+          canonical_identifier_type_id,
+          canonical_identifier,
+          list_distinct(list(key_identifier_type_id)) AS key_identifier_type_ids,
+          count(*)::BIGINT AS lookup_rows
+        FROM read_parquet({_sql_literal(mirna_lookup_path)})
+        WHERE canonical_identifier IS NOT NULL
+        GROUP BY
+          canonical_identifier_type_id,
+          canonical_identifier
+        """
+    else:
+        mirna_identifier_type_sql = ''
+        mirna_lookup_sql = ''
+        mirna_canonical_sql = ''
     chemical_identifier_type_sql = f"""
         UNION
         SELECT *
@@ -245,6 +303,7 @@ def _create_duckdb_resolver_views(
         SELECT *
         FROM read_parquet({_sql_literal(protein_type_path)})
         {chemical_identifier_type_sql}
+        {mirna_identifier_type_sql}
         """
     )
     _create_duckdb_identifier_type_all_view(con)
@@ -262,6 +321,7 @@ def _create_duckdb_resolver_views(
         WHERE key_value IS NOT NULL
           AND canonical_identifier IS NOT NULL
         {chemical_lookup_sql}
+        {mirna_lookup_sql}
         """
     )
     con.execute(
@@ -302,6 +362,7 @@ def _create_duckdb_resolver_views(
         GROUP BY
           canonical_identifier_type_id,
           canonical_identifier
+        {mirna_canonical_sql}
         """
     )
 
