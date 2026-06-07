@@ -77,6 +77,16 @@ PROTEIN_IDENTIFIER_LOOKUP_AMBIGUOUS_OUTPUT_FILENAME = (
     'protein_identifier_lookup_ambiguous.parquet'
 )
 IDENTIFIER_TYPE_OUTPUT_FILENAME = 'identifier_type.parquet'
+GENE_PROTEIN_REPRESENTATIVE_OUTPUT_FILENAME = (
+    'gene_protein_representative.parquet'
+)
+GENE_PROTEIN_REPRESENTATIVE_SCHEMA: dict[str, pl.DataType] = {
+    'taxonomy_id': pl.Utf8,
+    'canonical_identifier': pl.Utf8,  # the gene's Entrez id (gene-entity key)
+    'representative_uniprot': pl.Utf8,
+    'is_reviewed': pl.Boolean,
+    'uniprot_all': pl.List(pl.Utf8),
+}
 
 
 def _utils_pg_url() -> str:
@@ -137,6 +147,62 @@ def _single_taxonomy_id(values: set[str] | None) -> str | None:
     return next(iter(values))
 
 
+def _gene_protein_representative_rows(
+    taxonomy_ids: Iterable[int | str] | None = None,
+) -> Iterable[dict]:
+    """Yield per-gene representative UniProt rows (FR-033, T059).
+
+    From ``omnipath_utils.resolver_protein`` (Entrez → UniProt, already
+    SwissProt-preferred), grouped per gene: ``representative_uniprot`` = a reviewed
+    (SwissProt) AC if any, else the chosen (sorted) AC; ``uniprot_all`` = every AC;
+    ``is_reviewed`` = whether the representative is SwissProt. omnipath-build joins
+    this to the gene entities (by Entrez) to fill ``gene_protein_representative`` —
+    the no-state-join gene+UniProt output column.
+    """
+    import psycopg2
+
+    taxa = [int(t) for t in (taxonomy_ids or DEFAULT_ORGANISMS)]
+    conn = psycopg2.connect(_utils_pg_url())
+    try:
+        for tax in taxa:
+            with conn.cursor() as cur:
+                cur.execute(
+                    'SELECT rp.source_id, rp.uniprot, '
+                    '(sw.identifier IS NOT NULL) '
+                    'FROM omnipath_utils.resolver_protein rp '
+                    "LEFT JOIN omnipath_utils.reflist sw "
+                    "  ON sw.list_name = 'swissprot' "
+                    '  AND sw.identifier = rp.uniprot '
+                    "WHERE rp.source_type = 'entrez' AND rp.ncbi_tax_id = %s",
+                    (tax,),
+                )
+                rows = cur.fetchall()
+            per_gene: dict[str, dict[str, set]] = {}
+            for entrez, uniprot, is_reviewed in rows:
+                if not entrez or not uniprot:
+                    continue
+                g = per_gene.setdefault(
+                    str(entrez), {'all': set(), 'reviewed': set()}
+                )
+                g['all'].add(str(uniprot))
+                if is_reviewed:
+                    g['reviewed'].add(str(uniprot))
+            for entrez, g in per_gene.items():
+                uniprot_all = sorted(g['all'])
+                reviewed = sorted(g['reviewed'])
+                yield {
+                    'taxonomy_id': str(tax),
+                    'canonical_identifier': entrez,
+                    'representative_uniprot': (
+                        reviewed[0] if reviewed else uniprot_all[0]
+                    ),
+                    'is_reviewed': bool(reviewed),
+                    'uniprot_all': uniprot_all,
+                }
+    finally:
+        conn.close()
+
+
 def build_protein_identifier_lookup(
     taxonomy_ids: Iterable[int | str] | None = None,
 ) -> pl.DataFrame:
@@ -194,10 +260,18 @@ def materialize_proteins(
     ambiguous.write_parquet(ambiguous_path)
     identifier_types.write_parquet(identifier_type_path)
 
+    gpr_path = output_dir / GENE_PROTEIN_REPRESENTATIVE_OUTPUT_FILENAME
+    gpr = pl.DataFrame(
+        list(_gene_protein_representative_rows(taxonomy_ids=taxonomy_ids)),
+        schema=GENE_PROTEIN_REPRESENTATIVE_SCHEMA,
+    )
+    gpr.write_parquet(gpr_path)
+
     return {
         'protein_identifier_lookup_rows': lookup.height,
         'protein_identifier_lookup_ambiguous_rows': ambiguous.height,
         'identifier_type_rows': identifier_types.height,
+        'gene_protein_representative_rows': gpr.height,
     }
 
 
