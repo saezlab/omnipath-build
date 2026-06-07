@@ -7,8 +7,7 @@ Asserts the post-``derive`` label state (FR-031):
 - the producing rule is recorded in ``label_rule``.
 
 The chemical brevity-first cascade (a chemical shows a short name, not a raw
-InChIKey/id where a name exists) lands with **T064** — that assertion is xfail
-here until then.
+InChIKey/id where a name exists) lands with **T064**.
 
 Run against a built instance, e.g. on beauty::
 
@@ -141,25 +140,66 @@ def test_egfr_labelled_egfr(conn):
     assert label == 'EGFR', f'EGFR labelled {label!r} (expected EGFR)'
 
 
-@pytest.mark.xfail(
-    reason='chemical brevity-first label cascade lands with T064; until then '
-    'chemicals fall back to the identifier label',
-    strict=False,
-)
 def test_chemical_has_a_name_not_a_raw_identifier(conn):
-    """A chemical with a known name shows a short name, not a raw InChIKey/id."""
+    """T064: no chemical is labelled by a raw InChIKey or an opaque hash."""
     chemical_type_id = _type_id(conn, CHEMICAL_ENTITY_TYPE)
     if chemical_type_id is None:
         pytest.skip('no Chemical entity type')
-    # An InChIKey-shaped label (e.g. ``XXXXXXXXXXXXXX-YYYYYYYYYY-Z``) means no
-    # human-readable name was selected — the cascade (T064) should avoid this.
+    # An InChIKey-shaped label (e.g. ``XXXXXXXXXXXXXX-YYYYYYYYYY-Z``) or the
+    # 32-hex ``unresolved_entity_key`` hash means no human-readable name/id was
+    # selected — the cascade (T064) must avoid both.
     raw_like = _scalar(
         conn,
         f"""
         SELECT count(*) FROM {SCHEMA}.entity
         WHERE entity_type_id = %s
-          AND label ~ '^[A-Z]{{14}}-[A-Z]{{10}}-[A-Z]$'
+          AND (label ~ '^[A-Z]{{14}}-[A-Z]{{10}}-[A-Z]$'
+               OR label ~ '^[0-9a-f]{{32}}$')
         """,
         [chemical_type_id],
     )
-    assert raw_like == 0, f'{raw_like} chemicals labelled by a raw InChIKey'
+    assert raw_like == 0, (
+        f'{raw_like} chemicals labelled by a raw InChIKey or hash'
+    )
+
+
+def test_chemicals_labelled_by_cascade_rules(conn):
+    """T064: chemicals carry one of the cascade rules, mostly real names."""
+    chemical_type_id = _type_id(conn, CHEMICAL_ENTITY_TYPE)
+    if chemical_type_id is None:
+        pytest.skip('no Chemical entity type')
+    total = _scalar(
+        conn,
+        f'SELECT count(*) FROM {SCHEMA}.entity WHERE entity_type_id = %s',
+        [chemical_type_id],
+    )
+    if not total:
+        pytest.skip('no chemical entities in this build')
+    by_cascade = _scalar(
+        conn,
+        f"""
+        SELECT count(*) FROM {SCHEMA}.entity
+        WHERE entity_type_id = %s
+          AND label_rule IN
+            ('chemical_name', 'chemical_iupac_name', 'chemical_identifier')
+        """,
+        [chemical_type_id],
+    )
+    # Every chemical is (re)labelled by the cascade — none left on the universal
+    # identifier fallback.
+    assert by_cascade == total, (
+        f'{total - by_cascade}/{total} chemicals not labelled by the cascade'
+    )
+    by_name = _scalar(
+        conn,
+        f"""
+        SELECT count(*) FROM {SCHEMA}.entity
+        WHERE entity_type_id = %s
+          AND label_rule IN ('chemical_name', 'chemical_iupac_name')
+        """,
+        [chemical_type_id],
+    )
+    # A real human-readable name is found for the majority of chemicals.
+    assert by_name >= 0.5 * total, (
+        f'only {by_name}/{total} chemicals have a name-based label'
+    )

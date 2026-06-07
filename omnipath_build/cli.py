@@ -34,7 +34,7 @@ from omnipath_build.classify import (
     classify_metabolic_domain,
     classify_interaction_class,
 )
-from omnipath_build.labels import populate_entity_labels
+from omnipath_build.labels import populate_chemical_labels, populate_entity_labels
 from omnipath_build.network_views import NETWORKS, apply_all as apply_network_views
 from omnipath_build.resources import discover_resources
 from omnipath_build.resolver.mapping_tables import (
@@ -414,6 +414,22 @@ def main(argv: list[str] | None = None) -> int:
                     gene_symbol=label_stats.gene_symbol,
                     identifier_fallback=label_stats.identifier_fallback,
                     without_label=label_stats.without_label,
+                    seconds=f'{time.perf_counter() - step_started:.3f}',
+                )
+                step_started = time.perf_counter()
+                _derive_log('chemical_labels_start')
+                chem_label_stats = populate_chemical_labels(
+                    conn,
+                    schema=args.schema,
+                )
+                _derive_log(
+                    'chemical_labels_done',
+                    chemical_name=chem_label_stats.chemical_name,
+                    chemical_iupac_name=chem_label_stats.chemical_iupac_name,
+                    chemical_identifier=chem_label_stats.chemical_identifier,
+                    without_real_label=(
+                        chem_label_stats.chemical_without_real_label
+                    ),
                     seconds=f'{time.perf_counter() - step_started:.3f}',
                 )
                 step_started = time.perf_counter()

@@ -15,12 +15,18 @@ A universal identifier fallback guarantees a non-empty label for every entity
 
 from __future__ import annotations
 
+from omnipath_build.labels.chemical_labels import (
+    ChemicalLabelStats,
+    populate_chemical_labels,
+)
 from omnipath_build.labels.entity_labels import (
     EntityLabelStats,
     populate_entity_labels,
 )
 
 __all__ = [
+    'ChemicalLabelStats',
     'EntityLabelStats',
+    'populate_chemical_labels',
     'populate_entity_labels',
 ]
