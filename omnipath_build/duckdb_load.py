@@ -1025,7 +1025,7 @@ def _canonicalize_loaded_duckdb(
           rl.canonical_identifier_type_id
         HAVING count(DISTINCT rl.canonical_identifier) = 1
         """,
-        [PROTEIN_ENTITY_TYPE],
+        [GENE_ENTITY_TYPE],
     )
     con.execute(
         """
@@ -1201,6 +1201,7 @@ def _canonicalize_loaded_duckdb(
             ee.row_id,
             ee.entity_evidence_id,
             ee.entity_type,
+            ee.entity_type AS molecular_entity_type,
             CASE
               WHEN cv_term.canonical_identifier IS NOT NULL THEN NULL
               WHEN pathway_identifier.canonical_identifier IS NOT NULL THEN NULL
@@ -1286,7 +1287,12 @@ def _canonicalize_loaded_duckdb(
           ee.dataset,
           ee.row_id,
           ee.entity_evidence_id,
-          ee.entity_type,
+          CASE
+            WHEN rcs.candidate_count = 1
+            THEN coalesce(etm.resolver_entity_type, ee.entity_type)
+            ELSE ee.entity_type
+          END AS entity_type,
+          ee.entity_type AS molecular_entity_type,
           CASE
             WHEN rcs.candidate_count = 1 THEN rcs.taxonomy_id
             ELSE ee.taxonomy_id
@@ -1315,6 +1321,8 @@ def _canonicalize_loaded_duckdb(
         LEFT JOIN resolver_candidate_summary rcs
           ON rcs.source = ee.source
          AND rcs.entity_evidence_id = ee.entity_evidence_id
+        LEFT JOIN resolver_entity_type_match etm
+          ON etm.evidence_entity_type = ee.entity_type
         """,
         [UNRESOLVED_ID_TYPE],
     )
@@ -1545,6 +1553,7 @@ def _canonicalize_loaded_duckdb(
           base.row_id,
           base.entity_evidence_id,
           base.entity_type,
+          base.molecular_entity_type,
           base.taxonomy_id,
           coalesce(
             reaction_member.canonical_identifier_type_id,
@@ -2263,13 +2272,19 @@ def _canonicalize_loaded_duckdb(
         """
     )
     con.execute(
-        """
+        f"""
         CREATE TABLE entity_evidence_resolution AS
         SELECT
           er.source,
           er.entity_evidence_id,
           er.status,
-          ce.entity_id
+          ce.entity_id,
+          CASE er.molecular_entity_type
+            WHEN {_sql_literal(GENE_ENTITY_TYPE)} THEN 1
+            WHEN {_sql_literal(PROTEIN_ENTITY_TYPE)} THEN 2
+            WHEN {_sql_literal(MIRNA_ENTITY_TYPE)} THEN 4
+            ELSE NULL
+          END AS molecular_type_id
         FROM entity_resolution er
         LEFT JOIN canonical_entity ce
           ON ce.entity_type = er.entity_type
@@ -3635,6 +3650,7 @@ def _bulk_copy_canonical(
             'entity_id',
             'reason_id',
             'resolved_at',
+            'molecular_type_id',
         ),
         query="""
           SELECT
@@ -3643,7 +3659,8 @@ def _bulk_copy_canonical(
             rs.resolution_status_id,
             er.entity_id,
             NULL::SMALLINT,
-            now()
+            now(),
+            er.molecular_type_id::SMALLINT
           FROM pq_entity_evidence_resolution er
           JOIN load_data_source ds
             ON ds.name = er.source

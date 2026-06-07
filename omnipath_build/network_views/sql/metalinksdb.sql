@@ -269,7 +269,7 @@ human_re AS (
     JOIN entity_evidence ee_protein
         ON  ee_protein.source_id          = re.source_id
         AND ee_protein.entity_evidence_id = re.object_entity_evidence_id
-        AND ee_protein.entity_type_id = get_entity_type_id('Protein:MI:0326')
+        AND ee_protein.entity_type_id = get_entity_type_id('Gene:MI:0250')
     JOIN entity_evidence_resolution eer
         ON  eer.source_id          = re.source_id
         AND eer.entity_evidence_id = re.object_entity_evidence_id
@@ -408,7 +408,7 @@ human_re AS (
     JOIN entity_evidence ee_protein
         ON  ee_protein.source_id          = re.source_id
         AND ee_protein.entity_evidence_id = re.object_entity_evidence_id
-        AND ee_protein.entity_type_id = get_entity_type_id('Protein:MI:0326')
+        AND ee_protein.entity_type_id = get_entity_type_id('Gene:MI:0250')
     JOIN entity_evidence_resolution eer
         ON  eer.source_id          = re.source_id
         AND eer.entity_evidence_id = re.object_entity_evidence_id
@@ -525,7 +525,7 @@ human_re AS (
     JOIN entity_evidence ee_protein
         ON  ee_protein.source_id          = re.source_id
         AND ee_protein.entity_evidence_id = re.object_entity_evidence_id
-        AND ee_protein.entity_type_id = get_entity_type_id('Protein:MI:0326')
+        AND ee_protein.entity_type_id = get_entity_type_id('Gene:MI:0250')
     JOIN entity_evidence_resolution eer
         ON  eer.source_id          = re.source_id
         AND eer.entity_evidence_id = re.object_entity_evidence_id
@@ -678,7 +678,7 @@ human_re AS (
     JOIN entity_evidence ee_protein
         ON  ee_protein.source_id          = re.source_id
         AND ee_protein.entity_evidence_id = re.object_entity_evidence_id
-        AND ee_protein.entity_type_id = get_entity_type_id('Protein:MI:0326')
+        AND ee_protein.entity_type_id = get_entity_type_id('Gene:MI:0250')
     JOIN entity_evidence_resolution eer
         ON  eer.source_id          = re.source_id
         AND eer.entity_evidence_id = re.object_entity_evidence_id
@@ -796,7 +796,7 @@ human_re AS (
     JOIN entity_evidence ee_protein
         ON  ee_protein.source_id          = re.source_id
         AND ee_protein.entity_evidence_id = re.object_entity_evidence_id
-        AND ee_protein.entity_type_id = get_entity_type_id('Protein:MI:0326')
+        AND ee_protein.entity_type_id = get_entity_type_id('Gene:MI:0250')
         AND ee_protein.taxonomy_id        = 9606
     WHERE re.source_id = get_source_id('stitch')
 ),
@@ -919,7 +919,7 @@ human_re AS (
     JOIN entity_evidence ee_protein
         ON  ee_protein.source_id          = re.source_id
         AND ee_protein.entity_evidence_id = re.subject_entity_evidence_id   -- protein is SUBJECT for TCDB
-        AND ee_protein.entity_type_id = get_entity_type_id('Protein:MI:0326')
+        AND ee_protein.entity_type_id = get_entity_type_id('Gene:MI:0250')
     JOIN entity_evidence_resolution eer
         ON  eer.source_id          = re.source_id
         AND eer.entity_evidence_id = re.subject_entity_evidence_id
