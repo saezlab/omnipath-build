@@ -34,6 +34,7 @@ from omnipath_build.classify import (
     classify_metabolic_domain,
     classify_interaction_class,
 )
+from omnipath_build.labels import populate_entity_labels
 from omnipath_build.network_views import NETWORKS, apply_all as apply_network_views
 from omnipath_build.resources import discover_resources
 from omnipath_build.resolver.mapping_tables import (
@@ -403,6 +404,16 @@ def main(argv: list[str] | None = None) -> int:
                     default_predicates=','.join(
                         interaction_class_stats.default_predicates
                     ),
+                    seconds=f'{time.perf_counter() - step_started:.3f}',
+                )
+                step_started = time.perf_counter()
+                _derive_log('entity_labels_start')
+                label_stats = populate_entity_labels(conn, schema=args.schema)
+                _derive_log(
+                    'entity_labels_done',
+                    gene_symbol=label_stats.gene_symbol,
+                    identifier_fallback=label_stats.identifier_fallback,
+                    without_label=label_stats.without_label,
                     seconds=f'{time.perf_counter() - step_started:.3f}',
                 )
                 step_started = time.perf_counter()
