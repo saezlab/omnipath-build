@@ -1,6 +1,12 @@
 services:
   postgres:
-    image: postgres:18
+    # Custom postgres:18 with pg_roaringbitmap (+ rdkit) — REQUIRED: the build's
+    # `derive` step creates the roaringbitmap extension (omnipath_build/db/bitmaps.py).
+    # The stock postgres:18 image lacks it. See postgres/Dockerfile.
+    build:
+      context: ./postgres
+      dockerfile: Dockerfile
+    image: omnipath-build-postgres:18
     environment:
       POSTGRES_DB: omnipath
       POSTGRES_USER: omnipath
