@@ -62,6 +62,7 @@ SOURCE_PARTITIONED_TABLES: tuple[str, ...] = (
     'entity_evidence_resolution',
     'relation_evidence_relation',
     'entity_annotation_relation',
+    'evidence_state',
 )
 
 SOURCE_PARTITION_DROP_ORDER: tuple[str, ...] = (
@@ -822,6 +823,139 @@ def _is_partitioned_table(
     return bool(row and row[0])
 
 
+def _ensure_gene_anchored_schema(
+    cur: psycopg2.extensions.cursor,
+    schema: str,
+) -> None:
+    """Gene-anchored entity model (spec 002 US7/US8; data-model.md §C2).
+
+    Additive + idempotent. The base ``entity`` gains the stored label +
+    resolution-mechanism columns; ``entity_evidence_resolution`` gains the cheap
+    ``molecular_type_id`` (set even when only a symbol is known). The gene form
+    lives in two tiers: a precomputed ``gene_protein_representative`` (1:1, the
+    no-state-join representative UniProt) and the heavy opt-in ``state`` /
+    ``state_component`` / ``evidence_state``. The base graph keeps referencing
+    gene-level entities (FR-026/027/030/031/033).
+    """
+    schema_id = sql.Identifier(schema)
+
+    # vocab: molecular type
+    cur.execute(
+        sql.SQL(
+            """
+            CREATE TABLE IF NOT EXISTS {0}.vocab_molecular_type (
+              molecular_type_id smallint PRIMARY KEY,
+              name text NOT NULL UNIQUE
+            )
+            """
+        ).format(schema_id)
+    )
+    cur.execute(
+        sql.SQL(
+            """
+            INSERT INTO {0}.vocab_molecular_type (molecular_type_id, name)
+            VALUES (1,'gene'),(2,'protein'),(3,'mrna'),(4,'mirna'),
+                   (5,'lncrna'),(6,'ncrna')
+            ON CONFLICT (molecular_type_id) DO NOTHING
+            """
+        ).format(schema_id)
+    )
+
+    # entity: stored label + resolution mechanism (FR-031/FR-004/FR-026)
+    for ddl in (
+        'ALTER TABLE {0}.entity ADD COLUMN IF NOT EXISTS label text',
+        'ALTER TABLE {0}.entity ADD COLUMN IF NOT EXISTS label_rule text',
+        'ALTER TABLE {0}.entity ADD COLUMN IF NOT EXISTS '
+        'resolution_mechanism text',
+        'ALTER TABLE {0}.entity ADD COLUMN IF NOT EXISTS '
+        'resolution_detail jsonb',
+    ):
+        cur.execute(sql.SQL(ddl).format(schema_id))
+
+    # cheap-tier molecular type on the resolved evidence slot (FR-027a/030)
+    cur.execute(
+        sql.SQL(
+            'ALTER TABLE {0}.entity_evidence_resolution '
+            'ADD COLUMN IF NOT EXISTS molecular_type_id smallint'
+        ).format(schema_id)
+    )
+    cur.execute(
+        sql.SQL(
+            'CREATE INDEX IF NOT EXISTS '
+            'entity_evidence_resolution_molecular_type_idx '
+            'ON {0}.entity_evidence_resolution (molecular_type_id)'
+        ).format(schema_id)
+    )
+
+    # precomputed representative UniProt (cheap tier, no state join; FR-033)
+    cur.execute(
+        sql.SQL(
+            """
+            CREATE TABLE IF NOT EXISTS {0}.gene_protein_representative (
+              entity_id uuid PRIMARY KEY
+                REFERENCES {0}.entity(entity_id) ON DELETE CASCADE,
+              representative_uniprot text,
+              is_reviewed boolean,
+              uniprot_all text[]
+            )
+            """
+        ).format(schema_id)
+    )
+
+    # heavy opt-in: full molecular state (FR-027b)
+    cur.execute(
+        sql.SQL(
+            """
+            CREATE TABLE IF NOT EXISTS {0}.state (
+              state_id uuid PRIMARY KEY,
+              gene_entity_id uuid NOT NULL
+                REFERENCES {0}.entity(entity_id) ON DELETE CASCADE,
+              molecular_type_id smallint
+                REFERENCES {0}.vocab_molecular_type(molecular_type_id)
+            )
+            """
+        ).format(schema_id)
+    )
+    cur.execute(
+        sql.SQL(
+            """
+            CREATE TABLE IF NOT EXISTS {0}.state_component (
+              state_id uuid NOT NULL
+                REFERENCES {0}.state(state_id) ON DELETE CASCADE,
+              component_type text NOT NULL,
+              value text NOT NULL,
+              PRIMARY KEY (state_id, component_type, value)
+            )
+            """
+        ).format(schema_id)
+    )
+    cur.execute(
+        sql.SQL(
+            """
+            CREATE TABLE IF NOT EXISTS {0}.evidence_state (
+              source_id bigint NOT NULL
+                REFERENCES {0}.data_source(source_id),
+              entity_evidence_id uuid NOT NULL,
+              state_id uuid NOT NULL
+                REFERENCES {0}.state(state_id) ON DELETE CASCADE,
+              PRIMARY KEY (source_id, entity_evidence_id, state_id),
+              FOREIGN KEY (source_id, entity_evidence_id)
+                REFERENCES {0}.entity_evidence(source_id, entity_evidence_id)
+                ON DELETE CASCADE
+            ) PARTITION BY LIST (source_id)
+            """
+        ).format(schema_id)
+    )
+    cur.execute(
+        sql.SQL(
+            """
+            CREATE TABLE IF NOT EXISTS {0}.evidence_state_default
+            PARTITION OF {0}.evidence_state DEFAULT
+            """
+        ).format(schema_id)
+    )
+
+
 def _ensure_resolution_schema(
     cur: psycopg2.extensions.cursor,
     schema: str,
@@ -1036,6 +1170,8 @@ def _ensure_resolution_schema(
             """
         ).format(schema_id)
     )
+    log_step('ensure gene-anchored schema (spec 002 US7/US8)')
+    _ensure_gene_anchored_schema(cur, schema)
     log_step('create identifier type table')
     cur.execute(
         sql.SQL(
