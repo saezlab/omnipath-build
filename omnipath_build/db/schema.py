@@ -120,6 +120,10 @@ CONTENT_PRIMARY_KEYS: tuple[tuple[str, tuple[str, ...]], ...] = (
             'ontology_id',
         ),
     ),
+    ('gene_protein_representative', ('entity_id',)),
+    ('state', ('state_id',)),
+    ('state_component', ('state_id', 'component_type', 'value')),
+    ('evidence_state', ('source_id', 'entity_evidence_id', 'state_id')),
 )
 
 
@@ -951,6 +955,36 @@ def _ensure_gene_anchored_schema(
             """
             CREATE TABLE IF NOT EXISTS {0}.evidence_state_default
             PARTITION OF {0}.evidence_state DEFAULT
+            """
+        ).format(schema_id)
+    )
+
+    # gene-centric output (FR-034/T062, contracts §4): the primary deliverable
+    # layout — one row per gene entity with the human-readable `gene` (symbol,
+    # NCBI Gene id fallback), the pure `ncbi_gene_id`, and the representative
+    # UniProt on demand from gene_protein_representative. Reads only gene-level
+    # columns — NO state/evidence_state join (SC-012/SC-013). A view (not a
+    # materialised table) so it stays continuous with `entity` at zero cost.
+    cur.execute(
+        sql.SQL(
+            """
+            CREATE OR REPLACE VIEW {0}.gene_output AS
+            SELECT
+              e.entity_id,
+              e.taxonomy_id,
+              e.canonical_identifier AS ncbi_gene_id,
+              coalesce(e.label, e.canonical_identifier) AS gene,
+              gpr.representative_uniprot AS uniprot,
+              gpr.is_reviewed AS uniprot_is_reviewed,
+              gpr.uniprot_all
+            FROM {0}.entity e
+            LEFT JOIN {0}.gene_protein_representative gpr
+              ON gpr.entity_id = e.entity_id
+            WHERE e.entity_type_id = (
+              SELECT entity_type_id
+              FROM {0}.vocab_entity_type
+              WHERE name = 'Gene:MI:0250'
+            )
             """
         ).format(schema_id)
     )

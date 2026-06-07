@@ -64,6 +64,10 @@ PROTEIN_TAXONOMY_OPTIONAL_IDENTIFIER_TYPES = (
 RESOLVER_ALIAS_EXPANSION_EXCLUDED_IDENTIFIER_TYPES = (
     cv_term_label_accession(IdentifierNamespaceCv.ENSEMBL),
 )
+UNIPROT_TYPE = cv_term_label_accession(IdentifierNamespaceCv.UNIPROT)
+# protein molecular_type_id (matches the entity_evidence_resolution CASE seed);
+# the per-record asserted UniProt form is a protein state (FR-027b, T060).
+PROTEIN_MOLECULAR_TYPE_ID = 2
 STANDARD_INCHI_KEY_TYPE = cv_term_label_accession(
     IdentifierNamespaceCv.STANDARD_INCHI_KEY
 )
@@ -206,6 +210,9 @@ def _create_duckdb_resolver_views(
     chemical_dir = _chemical_resolver_component_dir(resolver_dir)
     protein_lookup_path = protein_dir / 'protein_identifier_lookup.parquet'
     protein_type_path = protein_dir / 'identifier_type.parquet'
+    gene_protein_representative_path = (
+        protein_dir / 'gene_protein_representative.parquet'
+    )
     chemical_lookup_dir = chemical_dir / 'lookup'
     chemical_lookup_glob = chemical_lookup_dir / '*.parquet'
     chemical_type_path = chemical_dir / 'identifier_type.parquet'
@@ -365,6 +372,23 @@ def _create_duckdb_resolver_views(
         {mirna_canonical_sql}
         """
     )
+    # Per-gene representative UniProt (FR-033, T059). Guarded so resolver
+    # snapshots predating the gene_protein_representative output still load; the
+    # canonicalize step skips the table when the view is absent.
+    if gene_protein_representative_path.exists():
+        con.execute(
+            f"""
+            CREATE VIEW gene_protein_representative_src AS
+            SELECT
+              taxonomy_id,
+              canonical_identifier,
+              representative_uniprot,
+              is_reviewed,
+              uniprot_all
+            FROM read_parquet({_sql_literal(gene_protein_representative_path)})
+            WHERE canonical_identifier IS NOT NULL
+            """
+        )
 
 
 def _create_duckdb_identifier_type_all_view(
@@ -2034,6 +2058,46 @@ def _canonicalize_loaded_duckdb(
         SELECT * FROM batch_entity_candidate
         """
     )
+    # gene_protein_representative (FR-033, T059): 1:1 gene entity -> chosen
+    # representative UniProt, joined by Entrez anchor. Guarded on the resolver
+    # source view (older resolver snapshots omit it) — empty table otherwise so
+    # the bulk-copy path stays uniform.
+    gene_protein_representative_src_exists = bool(
+        con.execute(
+            """
+            SELECT COUNT(*)
+            FROM information_schema.tables
+            WHERE table_name = 'gene_protein_representative_src'
+            """
+        ).fetchone()[0]
+    )
+    if gene_protein_representative_src_exists:
+        con.execute(
+            f"""
+            CREATE TABLE gene_protein_representative AS
+            SELECT
+              ce.entity_id,
+              src.representative_uniprot,
+              src.is_reviewed,
+              src.uniprot_all
+            FROM gene_protein_representative_src src
+            JOIN canonical_entity ce
+              ON ce.entity_type = {_sql_literal(GENE_ENTITY_TYPE)}
+             AND ce.canonical_identifier = src.canonical_identifier
+             AND ce.taxonomy_id IS NOT DISTINCT FROM src.taxonomy_id
+            """
+        )
+    else:
+        con.execute(
+            """
+            CREATE TABLE gene_protein_representative (
+              entity_id UUID,
+              representative_uniprot VARCHAR,
+              is_reviewed BOOLEAN,
+              uniprot_all VARCHAR[]
+            )
+            """
+        )
     con.execute(
         f"""
         CREATE TABLE canonical_entity_identifier AS
@@ -2293,6 +2357,90 @@ def _canonicalize_loaded_duckdb(
          AND ce.canonical_identifier = er.canonical_identifier
         """
     )
+    # --- molecular state (heavy opt-in tier, FR-027b/T060) ----------------
+    # The per-record asserted UniProt AC/isoform a source gave for a
+    # gene-resolved protein mention, captured as a `state` (a bag of components)
+    # linked to the evidence via `evidence_state` (one-to-many). Only protein
+    # records that carry a specific UniProt AC get a state — bare-symbol mentions
+    # already have molecular_type=protein on entity_evidence_resolution (the
+    # cheap tier, FR-027a) and need no state row. Isoforms (``P12345-2``) split
+    # into a ``uniprot`` base-AC component plus an ``isoform`` component.
+    con.execute(
+        f"""
+        CREATE TABLE evidence_state_link AS
+        WITH asserted AS (
+          SELECT DISTINCT
+            eer.source,
+            eer.entity_evidence_id,
+            eer.entity_id AS gene_entity_id,
+            ei.identifier AS uniprot_value
+          FROM entity_evidence_resolution eer
+          JOIN entity_identifier_raw ei
+            ON ei.source = eer.source
+           AND ei.entity_evidence_id = eer.entity_evidence_id
+          WHERE eer.entity_id IS NOT NULL
+            AND eer.molecular_type_id = {PROTEIN_MOLECULAR_TYPE_ID}
+            AND ei.identifier_type = {_sql_literal(UNIPROT_TYPE)}
+            AND ei.identifier IS NOT NULL
+            AND ei.identifier <> ''
+        ),
+        components AS (
+          SELECT
+            source,
+            entity_evidence_id,
+            gene_entity_id,
+            regexp_replace(uniprot_value, '-[0-9]+$', '') AS uniprot_ac,
+            CASE
+              WHEN regexp_matches(uniprot_value, '-[0-9]+$')
+              THEN uniprot_value
+              ELSE NULL
+            END AS isoform
+          FROM asserted
+        )
+        SELECT
+          source,
+          entity_evidence_id,
+          gene_entity_id,
+          uniprot_ac,
+          isoform,
+          content_uuid(
+            'state' || chr(31) ||
+            gene_entity_id::VARCHAR || chr(31) ||
+            '{PROTEIN_MOLECULAR_TYPE_ID}' || chr(31) ||
+            uniprot_ac || chr(31) ||
+            coalesce(isoform, '')
+          ) AS state_id
+        FROM components
+        """
+    )
+    con.execute(
+        f"""
+        CREATE TABLE state AS
+        SELECT DISTINCT
+          state_id,
+          gene_entity_id,
+          {PROTEIN_MOLECULAR_TYPE_ID}::SMALLINT AS molecular_type_id
+        FROM evidence_state_link
+        """
+    )
+    con.execute(
+        """
+        CREATE TABLE state_component AS
+        SELECT DISTINCT state_id, 'uniprot' AS component_type, uniprot_ac AS value
+        FROM evidence_state_link
+        UNION
+        SELECT DISTINCT state_id, 'isoform' AS component_type, isoform AS value
+        FROM evidence_state_link
+        WHERE isoform IS NOT NULL
+        """
+    )
+    con.execute(
+        """
+        CREATE TABLE evidence_state AS
+        SELECT DISTINCT source, entity_evidence_id, state_id
+        FROM evidence_state_link
+        """
+    )
     con.execute(
         """
         CREATE TABLE relation_candidate_evidence AS
@@ -2550,6 +2698,10 @@ _BULK_COPY_CONTENT_TABLES = (
     'entity_evidence_resolution',
     'relation',
     'relation_evidence_relation',
+    'gene_protein_representative',
+    'state',
+    'state_component',
+    'evidence_state',
 )
 
 
@@ -2571,6 +2723,10 @@ def _bulk_load_create_views_from_loaded_tables(
         'pq_relation_evidence_relation': 'relation_evidence_relation',
         'pq_ontology_terms': 'ontology_terms_raw',
         'pq_entity_ontology_relation': 'entity_ontology_relation',
+        'pq_gene_protein_representative': 'gene_protein_representative',
+        'pq_state': 'state',
+        'pq_state_component': 'state_component',
+        'pq_evidence_state': 'evidence_state',
     }
     for view, table in views.items():
         con.execute(f'CREATE VIEW {view} AS SELECT * FROM {table}')
@@ -2611,6 +2767,10 @@ def _bulk_load_assert_empty(
         'entity_annotation_relation',
         'ontology_terms',
         'entity_ontology_relation',
+        'gene_protein_representative',
+        'state',
+        'state_component',
+        'evidence_state',
     )
     non_empty = []
     for table in content_tables:
@@ -3713,6 +3873,102 @@ def _bulk_copy_canonical(
           FROM pq_relation_evidence_relation rer
           JOIN load_data_source ds
             ON ds.name = rer.source
+        """,
+        source_id=source_id,
+    )
+    # gene_protein_representative (FR-033, T059): global 1:1 table, copied like
+    # `entity`. The staged pipeline canonicalises per source-shard, so a gene
+    # entity recurs across shards — dedup against the rows already in Postgres
+    # (mirrors the `entity` copy). uniprot_all is rendered as a Postgres array
+    # literal so the CSV round-trip parses back into text[] (UniProt ACs need no
+    # element quoting).
+    existing_gene_protein_representative = _duckdb_pg_table(
+        schema,
+        'gene_protein_representative',
+    )
+    _copy_duckdb_query_to_postgres(
+        con,
+        database_url=database_url,
+        schema=schema,
+        table='gene_protein_representative',
+        columns=(
+            'entity_id',
+            'representative_uniprot',
+            'is_reviewed',
+            'uniprot_all',
+        ),
+        query=f"""
+          SELECT
+            gpr.entity_id,
+            gpr.representative_uniprot,
+            gpr.is_reviewed,
+            CASE
+              WHEN gpr.uniprot_all IS NULL THEN NULL
+              ELSE '{{' || array_to_string(gpr.uniprot_all, ',') || '}}'
+            END AS uniprot_all
+          FROM pq_gene_protein_representative gpr
+          LEFT JOIN {existing_gene_protein_representative} existing
+            ON existing.entity_id = gpr.entity_id
+          WHERE existing.entity_id IS NULL
+        """,
+    )
+    # state / state_component (FR-027b, T060): content-hashed global tables —
+    # identical (gene, uniprot, isoform) forms across shards/sources collapse to
+    # one state. Dedup against the rows already in Postgres (like `entity`).
+    existing_state = _duckdb_pg_table(schema, 'state')
+    _copy_duckdb_query_to_postgres(
+        con,
+        database_url=database_url,
+        schema=schema,
+        table='state',
+        columns=('state_id', 'gene_entity_id', 'molecular_type_id'),
+        query=f"""
+          SELECT
+            s.state_id,
+            s.gene_entity_id,
+            s.molecular_type_id::SMALLINT
+          FROM pq_state s
+          LEFT JOIN {existing_state} existing
+            ON existing.state_id = s.state_id
+          WHERE existing.state_id IS NULL
+        """,
+    )
+    existing_state_component = _duckdb_pg_table(schema, 'state_component')
+    _copy_duckdb_query_to_postgres(
+        con,
+        database_url=database_url,
+        schema=schema,
+        table='state_component',
+        columns=('state_id', 'component_type', 'value'),
+        query=f"""
+          SELECT
+            sc.state_id,
+            sc.component_type,
+            sc.value
+          FROM pq_state_component sc
+          LEFT JOIN {existing_state_component} existing
+            ON existing.state_id = sc.state_id
+           AND existing.component_type = sc.component_type
+           AND existing.value = sc.value
+          WHERE existing.state_id IS NULL
+        """,
+    )
+    # evidence_state (FR-027b, T060): one-to-many assignment of states to source
+    # records — partitioned by source_id like entity_evidence_resolution.
+    _copy_source_partition(
+        con,
+        database_url=database_url,
+        schema=schema,
+        table='evidence_state',
+        columns=('source_id', 'entity_evidence_id', 'state_id'),
+        query="""
+          SELECT
+            ds.source_id,
+            es.entity_evidence_id::UUID,
+            es.state_id
+          FROM pq_evidence_state es
+          JOIN load_data_source ds
+            ON ds.name = es.source
         """,
         source_id=source_id,
     )
