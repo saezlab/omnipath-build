@@ -75,7 +75,8 @@ security = [
     "bandit"
 ]
 tests = [
-    "ruff"
+    "ruff",
+    "pytest>=8"
 ]
 
 [project.urls]
