@@ -311,7 +311,7 @@ def _create_duckdb_resolver_views(
         f"""
         CREATE VIEW resolver_lookup AS
         SELECT
-          {_sql_literal(PROTEIN_ENTITY_TYPE)} AS entity_type,
+          {_sql_literal(GENE_ENTITY_TYPE)} AS entity_type,
           key_identifier_type_id,
           key_value,
           taxonomy_id,
@@ -334,7 +334,7 @@ def _create_duckdb_resolver_views(
               canonical_identifier_type_id,
               canonical_identifier
           )::BIGINT AS resolver_entity_id,
-          {_sql_literal(PROTEIN_ENTITY_TYPE)} AS entity_type,
+          {_sql_literal(GENE_ENTITY_TYPE)} AS entity_type,
           taxonomy_id,
           canonical_identifier_type_id,
           canonical_identifier,
@@ -983,11 +983,14 @@ def _canonicalize_loaded_duckdb(
         UNION ALL
         SELECT ?, ?
         """,
+        # Gene-anchored (spec 002 US7): protein AND gene evidence both resolve to
+        # the GENE-typed canonical entity (the resolver lookup is gene-anchored,
+        # canonical_identifier = Entrez gene). Was: both -> PROTEIN.
         [
             PROTEIN_ENTITY_TYPE,
-            PROTEIN_ENTITY_TYPE,
             GENE_ENTITY_TYPE,
-            PROTEIN_ENTITY_TYPE,
+            GENE_ENTITY_TYPE,
+            GENE_ENTITY_TYPE,
             CHEMICAL_ENTITY_TYPE,
             CHEMICAL_ENTITY_TYPE,
         ],

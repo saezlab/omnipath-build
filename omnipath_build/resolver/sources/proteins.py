@@ -10,12 +10,12 @@ being used as resolver candidates.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from collections.abc import Iterable
 
 import polars as pl
 
-from pypath.inputs_v2.uniprot import resource as uniprot_resource
 from pypath.internals.cv_terms import (
     IdentifierNamespaceCv,
     cv_term_label_accession,
@@ -39,6 +39,24 @@ PROTEIN_IDENTIFIER_LOOKUP_SCHEMA: dict[str, pl.DataType] = {
 }
 
 UNIPROT_TYPE = cv_term_label_accession(IdentifierNamespaceCv.UNIPROT)
+# Gene-anchored model (spec 002 US7): the canonical identifier is the gene anchor
+# = NCBI Gene (Entrez); the protein/isoform is record-level state, not identity.
+ENTREZ_TYPE = cv_term_label_accession(IdentifierNamespaceCv.ENTREZ)
+# omnipath_utils.resolver_gene source_type slug -> build CV id-type.
+RESOLVER_GENE_SLUG_TO_KEY = {
+    'genesymbol': cv_term_label_accession(IdentifierNamespaceCv.GENE_NAME_PRIMARY),
+    'entrez': ENTREZ_TYPE,
+    'ensg': cv_term_label_accession(IdentifierNamespaceCv.ENSEMBL),
+    'ensp': cv_term_label_accession(IdentifierNamespaceCv.ENSEMBL),
+    'uniprot': UNIPROT_TYPE,
+}
+# Default in-scope organisms when no --taxonomy-id is given (full long-tail
+# coverage = a follow-up materialisation of resolver_gene). Covers the EGFR
+# ortholog benchmark + the main model/agricultural organisms.
+DEFAULT_ORGANISMS = (
+    9606, 10090, 10116, 7955, 7227, 6239, 3702, 4932, 559292, 83333,
+    9913, 9823, 9615, 9031, 9598, 9544, 8364, 9796, 9940, 9986,
+)
 KEY_TYPE_ALIASES = {
     'MI:1097:Uniprot': UNIPROT_TYPE,
     'MI:0476:Ensembl': cv_term_label_accession(IdentifierNamespaceCv.ENSEMBL),
@@ -61,46 +79,56 @@ PROTEIN_IDENTIFIER_LOOKUP_AMBIGUOUS_OUTPUT_FILENAME = (
 IDENTIFIER_TYPE_OUTPUT_FILENAME = 'identifier_type.parquet'
 
 
+def _utils_pg_url() -> str:
+    url = os.environ.get('OMNIPATH_BUILD_UTILS_PG_URL')
+    if not url:
+        raise RuntimeError(
+            'OMNIPATH_BUILD_UTILS_PG_URL is not set; the gene-anchored protein '
+            'resolver reads omnipath_utils.resolver_gene from the omnipath-utils '
+            'Postgres (spec 002 US7, FR-005).'
+        )
+    return url
+
+
 def _protein_identifier_rows(
     taxonomy_ids: Iterable[int | str] | None = None,
 ) -> Iterable[dict]:
-    primary_taxonomy: dict[str, set[str]] = {}
+    """Yield gene-anchored resolver rows from ``omnipath_utils.resolver_gene``.
 
-    for row in uniprot_resource.reference_id_translation.raw(
-        taxonomy_ids=taxonomy_ids
-    ):
-        primary_uniprot = row.get('primary_uniprot')
-        if primary_uniprot:
-            primary_uniprot = str(primary_uniprot)
-            taxonomy_id = row.get('taxonomy_id')
-            if taxonomy_id:
-                primary_taxonomy.setdefault(primary_uniprot, set()).add(
-                    str(taxonomy_id)
+    Each row maps a source identifier (gene symbol / Entrez / Ensembl / UniProt)
+    to its **NCBI Gene (Entrez) anchor** for its organism (US7) — the canonical
+    collapsing identity. The asserted protein/isoform becomes record-level state
+    downstream, not here. Read directly from the utils Postgres (FR-005/R21),
+    per-taxon so the ``resolver_gene`` taxon filter pushes into the covering index.
+    ``primary_uniprot`` carries the Entrez gene id (kept name = downstream
+    contract; it is the canonical anchor, not a UniProt).
+    """
+    import psycopg2
+
+    taxa = [int(t) for t in (taxonomy_ids or DEFAULT_ORGANISMS)]
+    conn = psycopg2.connect(_utils_pg_url())
+    try:
+        for tax in taxa:
+            with conn.cursor() as cur:
+                cur.execute(
+                    'SELECT source_type, source_id, entrez '
+                    'FROM omnipath_utils.resolver_gene '
+                    'WHERE ncbi_tax_id = %s',
+                    (tax,),
                 )
-        key_type = KEY_TYPE_ALIASES.get(
-            row.get('key_type'), row.get('key_type')
-        )
-        yield {
-            'key_type': key_type,
-            'key_value': row.get('key_value'),
-            'taxonomy_id': row.get('taxonomy_id'),
-            'primary_uniprot': primary_uniprot,
-        }
-
-    for row in uniprot_resource.secondary_to_primary.raw():
-        primary_uniprot = row.get('primary_uniprot')
-        if primary_uniprot is None:
-            continue
-        primary_uniprot = str(primary_uniprot)
-        taxonomy_id = _single_taxonomy_id(primary_taxonomy.get(primary_uniprot))
-        if taxonomy_id is None:
-            continue
-        yield {
-            'key_type': UNIPROT_TYPE,
-            'key_value': row.get('secondary_uniprot'),
-            'taxonomy_id': taxonomy_id,
-            'primary_uniprot': primary_uniprot,
-        }
+                rows = cur.fetchall()
+            for source_type, source_id, entrez in rows:
+                key_type = RESOLVER_GENE_SLUG_TO_KEY.get(source_type)
+                if not (key_type and source_id and entrez):
+                    continue
+                yield {
+                    'key_type': key_type,
+                    'key_value': str(source_id),
+                    'taxonomy_id': str(tax),
+                    'primary_uniprot': str(entrez),
+                }
+    finally:
+        conn.close()
 
 
 def _single_taxonomy_id(values: set[str] | None) -> str | None:
@@ -181,7 +209,7 @@ def _split_protein_identifier_lookup(
     rows: Iterable[dict],
 ) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]:
     normalized_rows: list[dict[str, object]] = []
-    type_names = {UNIPROT_TYPE}
+    type_names = {ENTREZ_TYPE}
     for row in rows:
         key_type = row.get('key_type')
         if key_type is None:
@@ -194,7 +222,7 @@ def _split_protein_identifier_lookup(
                 'key_value': row.get('key_value'),
                 'taxonomy_id': row.get('taxonomy_id'),
                 'canonical_identifier_type_id': identifier_type_id(
-                    UNIPROT_TYPE
+                    ENTREZ_TYPE
                 ),
                 'canonical_identifier': row.get('primary_uniprot'),
             }
