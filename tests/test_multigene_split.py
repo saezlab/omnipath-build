@@ -13,9 +13,17 @@ Needs ``duckdb`` only (no Postgres). Skipped when duckdb is absent.
 
 from __future__ import annotations
 
+import hashlib
+
 import pytest
 
 duckdb = pytest.importorskip('duckdb')
+
+
+def cu(payload: str) -> str:
+    """Mirror of the build's content_uuid (md5 → 8-4-4-4-12 text)."""
+    h = hashlib.md5(payload.encode()).hexdigest()
+    return f'{h[0:8]}-{h[8:12]}-{h[12:16]}-{h[16:20]}-{h[20:32]}'
 
 from omnipath_build.multigene_split import (  # noqa: E402
     ENTREZ_TYPE,
@@ -167,73 +175,73 @@ def test_multi_gene_mention_splits_one_record_per_gene():
     con = _con()
     copies = explode_multi_gene_protein_mentions(con)
     assert copies == 2  # M → 2 genes
+    m100, m200 = cu('M#mg=100'), cu('M#mg=200')
 
-    # The mention M is replaced by one copy per gene; controls untouched.
+    # The mention M is replaced by one copy per gene (UUID ids); controls kept.
     ids = {r[0] for r in _vals(con, 'SELECT entity_evidence_id FROM entity_evidence_raw')}
-    assert ids == {'M#mg=100', 'M#mg=200', 'P2ev', 'X'}
+    assert ids == {m100, m200, 'P2ev', 'X'}
 
     # Identifiers + entity annotation fan out, keeping the UniProt on each copy.
-    uni = _vals(
+    uni = {tuple(r) for r in _vals(
         con,
         "SELECT entity_evidence_id, identifier FROM entity_identifier_raw "
-        "WHERE identifier = 'P1' ORDER BY 1",
-    )
-    assert uni == [('M#mg=100', 'P1'), ('M#mg=200', 'P1')]
+        "WHERE identifier = 'P1'",
+    )}
+    assert uni == {(m100, 'P1'), (m200, 'P1')}
     ann = {r[0] for r in _vals(con, 'SELECT evidence_id FROM entity_annotation_raw')}
-    assert ann == {'M#mg=100', 'M#mg=200'}
+    assert ann == {m100, m200}
 
 
 def test_relation_fans_out_with_fresh_ids():
     con = _con()
     explode_multi_gene_protein_mentions(con)
 
-    rels = _vals(
+    rels = {tuple(r) for r in _vals(
         con,
         'SELECT relation_evidence_id, subject_entity_evidence_id, '
-        'object_entity_evidence_id FROM relation_evidence_raw ORDER BY 1',
-    )
+        'object_entity_evidence_id FROM relation_evidence_raw',
+    )}
+    m100, m200 = cu('M#mg=100'), cu('M#mg=200')
+    r100, r200 = cu('r1#mgs=#mgo=100'), cu('r1#mgs=#mgo=200')
     # r1 (X–M) → two distinct relations to each gene copy; r2 control untouched.
     assert ('r2', 'X', 'P2ev') in rels
-    fanned = sorted(r for r in rels if r[0].startswith('r1'))
-    assert fanned == [
-        ('r1#mgs=#mgo=100', 'X', 'M#mg=100'),
-        ('r1#mgs=#mgo=200', 'X', 'M#mg=200'),
-    ]
+    assert (r100, 'X', m100) in rels
+    assert (r200, 'X', m200) in rels
     # relation ids are unique (no collision after regeneration).
     all_ids = [r[0] for r in rels]
     assert len(all_ids) == len(set(all_ids))
 
     # The relation annotation on r1 follows both new relation ids.
     ra = {r[0] for r in _vals(con, 'SELECT evidence_id FROM relation_annotation_raw')}
-    assert ra == {'r1#mgs=#mgo=100', 'r1#mgs=#mgo=200'}
+    assert ra == {r100, r200}
 
 
 def test_annotation_relation_subject_fans_out():
     con = _con()
     explode_multi_gene_protein_mentions(con)
-    rows = _vals(
+    rows = {tuple(r) for r in _vals(
         con,
         'SELECT relation_evidence_id, subject_entity_evidence_id '
-        'FROM annotation_relation_evidence_raw ORDER BY 1',
-    )
-    assert rows == [
-        ('a1#mgs=100', 'M#mg=100'),
-        ('a1#mgs=200', 'M#mg=200'),
-    ]
+        'FROM annotation_relation_evidence_raw',
+    )}
+    assert rows == {
+        (cu('a1#mgs=100'), cu('M#mg=100')),
+        (cu('a1#mgs=200'), cu('M#mg=200')),
+    }
 
 
 def test_direct_gene_resolution_emitted():
     con = _con()
     explode_multi_gene_protein_mentions(con)
-    res = _vals(
+    res = {tuple(r) for r in _vals(
         con,
         'SELECT entity_evidence_id, entity_type, canonical_identifier '
-        'FROM multigene_resolution ORDER BY 3',
-    )
-    assert res == [
-        ('M#mg=100', GENE, '100'),
-        ('M#mg=200', GENE, '200'),
-    ]
+        'FROM multigene_resolution',
+    )}
+    assert res == {
+        (cu('M#mg=100'), GENE, '100'),
+        (cu('M#mg=200'), GENE, '200'),
+    }
 
 
 def test_no_multi_gene_is_a_noop():

@@ -44,12 +44,25 @@ from omnipath_build.cv_terms import GENE_ENTITY_TYPE
 UNIPROT_TYPE = cv_term_label_accession(IdentifierNamespaceCv.UNIPROT)
 ENTREZ_TYPE = cv_term_label_accession(IdentifierNamespaceCv.ENTREZ)
 
-#: suffix that makes a per-gene copy's id deterministic + recognisable.
-_MG = '#mg='
-
-
 def _lit(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
+
+
+def _content_uuid(expr: str) -> str:
+    """SQL for a deterministic UUID from a string ``expr`` — mirrors the build's
+    ``content_uuid`` macro (md5 → 8-4-4-4-12). Every evidence id is cast
+    ``::UUID`` on the Postgres copy, so a split id MUST be a valid UUID, not a
+    suffixed string. Kept inline (not the macro) so the module is self-contained
+    and unit-testable on a bare DuckDB."""
+    # Returns TEXT (raw evidence-id columns are VARCHAR; the ::UUID cast happens
+    # only at the Postgres copy — the md5-hyphenated text is a valid UUID there).
+    m = f'md5({expr})'
+    h = chr(39) + '-' + chr(39)  # SQL literal '-'
+    return (
+        f'(substr({m},1,8)||{h}||substr({m},9,4)||{h}'
+        f'||substr({m},13,4)||{h}||substr({m},17,4)||{h}'
+        f'||substr({m},21,12))'
+    )
 
 
 def explode_multi_gene_protein_mentions(con, *, log=lambda *_: None) -> int:
@@ -106,7 +119,8 @@ def explode_multi_gene_protein_mentions(con, *, log=lambda *_: None) -> int:
           mg.taxonomy_id,
           mg.entrez_type_id,
           mg.entrez,
-          mg.entity_evidence_id || '{_MG}' || mg.entrez AS new_entity_evidence_id
+          {_content_uuid("mg.entity_evidence_id || '#mg=' || mg.entrez")}
+            AS new_entity_evidence_id
         FROM mention_gene mg
         JOIN multi USING (source, entity_evidence_id)
         """
@@ -161,16 +175,14 @@ def explode_multi_gene_protein_mentions(con, *, log=lambda *_: None) -> int:
     # 3) Explode relations. Both endpoints may be multi-gene → cross-product;
     #    regenerate relation_evidence_id from the (possibly) new endpoints.
     con.execute(
-        """
+        f"""
         CREATE OR REPLACE TABLE relation_evidence_raw_mg AS
         SELECT
           r.source, r.dataset, r.row_id,
           CASE WHEN sm.new_entity_evidence_id IS NULL
                 AND om.new_entity_evidence_id IS NULL
                THEN r.relation_evidence_id
-               ELSE r.relation_evidence_id
-                    || '#mgs=' || coalesce(sm.entrez, '')
-                    || '#mgo=' || coalesce(om.entrez, '')
+               ELSE {_content_uuid("r.relation_evidence_id || '#mgs=' || coalesce(sm.entrez,'') || '#mgo=' || coalesce(om.entrez,'')")}
           END AS relation_evidence_id,
           r.relation_evidence_id AS orig_relation_evidence_id,
           coalesce(sm.new_entity_evidence_id, r.subject_entity_evidence_id)
@@ -233,12 +245,12 @@ def explode_multi_gene_protein_mentions(con, *, log=lambda *_: None) -> int:
     # annotation_relation_evidence_raw: subject may be multi-gene; object is by
     # id (not an evidence id). Regenerate its relation id from the subject only.
     con.execute(
-        """
+        f"""
         CREATE OR REPLACE TABLE annotation_relation_evidence_raw AS
         SELECT
           CASE WHEN sm.new_entity_evidence_id IS NULL
                THEN ar.relation_evidence_id
-               ELSE ar.relation_evidence_id || '#mgs=' || sm.entrez
+               ELSE {_content_uuid("ar.relation_evidence_id || '#mgs=' || sm.entrez")}
           END AS relation_evidence_id,
           ar.source, ar.dataset, ar.row_id,
           coalesce(sm.new_entity_evidence_id, ar.subject_entity_evidence_id)
