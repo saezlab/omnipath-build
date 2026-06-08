@@ -31,6 +31,7 @@ from omnipath_build.evidence_projector import (
     EvidenceProjectorBase,
     _MutableProjectionStats,
 )
+from omnipath_build.multigene_split import explode_multi_gene_protein_mentions
 from omnipath_build.resolver.identifier_types import (
     UNRESOLVED_ID_TYPE,
     IDENTIFIER_TYPE_NAMES,
@@ -1077,6 +1078,11 @@ def _canonicalize_loaded_duckdb(
          )
         """
     )
+    # Multi-gene protein split (FR-027, T061): a UniProt mapping to >1 gene is
+    # duplicated 1:1 per gene *before* resolution, so the existing 1:1 machinery
+    # resolves each copy to its gene. Rewrites the raw tables in place + leaves
+    # `multigene_resolution` for entity_resolution_base's direct-resolution arm.
+    explode_multi_gene_protein_mentions(con)
     con.execute(
         """
         CREATE TABLE entity_identifier_group AS
@@ -1265,6 +1271,13 @@ def _canonicalize_loaded_duckdb(
             ON direct.source = ee.source
            AND direct.entity_evidence_id = ee.entity_evidence_id
           WHERE direct.entity_evidence_id IS NULL
+            -- multi-gene protein copies (T061) resolve directly to their
+            -- assigned gene below, not through the candidate/unresolved path.
+            AND NOT EXISTS (
+              SELECT 1 FROM multigene_resolution mr
+              WHERE mr.source = ee.source
+                AND mr.entity_evidence_id = ee.entity_evidence_id
+            )
         ),
         resolver_candidate AS (
           SELECT DISTINCT
@@ -1347,6 +1360,26 @@ def _canonicalize_loaded_duckdb(
          AND rcs.entity_evidence_id = ee.entity_evidence_id
         LEFT JOIN resolver_entity_type_match etm
           ON etm.evidence_entity_type = ee.entity_type
+        UNION ALL
+        -- Multi-gene protein copies (T061): resolve each duplicated mention
+        -- directly to its assigned gene (entity_type already GENE in
+        -- multigene_resolution); molecular_entity_type stays the protein
+        -- evidence type so the state layer records the UniProt per gene.
+        SELECT
+          ee.source,
+          ee.dataset,
+          ee.row_id,
+          ee.entity_evidence_id,
+          mr.entity_type AS entity_type,
+          ee.entity_type AS molecular_entity_type,
+          mr.taxonomy_id,
+          mr.canonical_identifier_type_id,
+          mr.canonical_identifier,
+          'resolved' AS status
+        FROM entity_evidence_raw ee
+        JOIN multigene_resolution mr
+          ON mr.source = ee.source
+         AND mr.entity_evidence_id = ee.entity_evidence_id
         """,
         [UNRESOLVED_ID_TYPE],
     )
