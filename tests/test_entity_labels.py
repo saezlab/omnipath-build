@@ -164,7 +164,13 @@ def test_chemical_has_a_name_not_a_raw_identifier(conn):
 
 
 def test_chemicals_labelled_by_cascade_rules(conn):
-    """T064: chemicals carry one of the cascade rules, mostly real names."""
+    """T064: every chemical leaves the universal fallback for a cascade rule.
+
+    Robust to the metabo Goslin lipid layer (T066), which may overwrite some
+    chemical labels with ``goslin_lipid`` after the build's derive — the
+    invariant is that **no** chemical is left on the universal
+    ``identifier_fallback`` (the opaque hash/InChIKey last resort).
+    """
     chemical_type_id = _type_id(conn, CHEMICAL_ENTITY_TYPE)
     if chemical_type_id is None:
         pytest.skip('no Chemical entity type')
@@ -175,31 +181,30 @@ def test_chemicals_labelled_by_cascade_rules(conn):
     )
     if not total:
         pytest.skip('no chemical entities in this build')
-    by_cascade = _scalar(
+    on_universal_fallback = _scalar(
         conn,
         f"""
         SELECT count(*) FROM {SCHEMA}.entity
-        WHERE entity_type_id = %s
-          AND label_rule IN
-            ('chemical_name', 'chemical_iupac_name', 'chemical_identifier')
+        WHERE entity_type_id = %s AND label_rule = 'identifier_fallback'
         """,
         [chemical_type_id],
     )
-    # Every chemical is (re)labelled by the cascade — none left on the universal
-    # identifier fallback.
-    assert by_cascade == total, (
-        f'{total - by_cascade}/{total} chemicals not labelled by the cascade'
+    assert on_universal_fallback == 0, (
+        f'{on_universal_fallback}/{total} chemicals still on the universal '
+        'identifier fallback (cascade did not relabel them)'
     )
     by_name = _scalar(
         conn,
         f"""
         SELECT count(*) FROM {SCHEMA}.entity
         WHERE entity_type_id = %s
-          AND label_rule IN ('chemical_name', 'chemical_iupac_name')
+          AND label_rule IN
+            ('chemical_name', 'chemical_iupac_name', 'goslin_lipid')
         """,
         [chemical_type_id],
     )
-    # A real human-readable name is found for the majority of chemicals.
+    # A real human-readable name (chemical cascade or Goslin lipid) is found for
+    # the majority of chemicals.
     assert by_name >= 0.5 * total, (
         f'only {by_name}/{total} chemicals have a name-based label'
     )
