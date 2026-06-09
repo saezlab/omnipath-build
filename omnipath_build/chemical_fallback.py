@@ -159,8 +159,37 @@ def build_chemical_anchor_map(con, *, log=lambda *_: None) -> int:
         WHERE n_ik = 1 OR (n_ik = 0 AND n_chebi = 1)   -- 1:1 only
         """
     )
+    # Collision guard (R22 step 6): a chemical name is ambiguous if, on
+    # structure-bearing mentions, it appears with >1 distinct InChIKey (e.g. a
+    # trivial name shared by L-/D-/racemic forms). Such names must NOT be used as
+    # a canonical identity (they would false-merge distinct molecules).
+    con.execute(
+        f"""
+        CREATE OR REPLACE TABLE chemical_ambiguous_name AS
+        SELECT name_val FROM (
+          SELECT trim(nm.identifier) AS name_val,
+                 count(DISTINCT trim(ik.identifier)) AS n_ik
+          FROM entity_evidence_raw ee
+          JOIN entity_identifier_raw nm
+            ON nm.source = ee.source
+           AND nm.entity_evidence_id = ee.entity_evidence_id
+           AND nm.identifier_type IN ('Name:OM:0202', 'Synonym:OM:0203')
+          JOIN entity_identifier_raw ik
+            ON ik.source = ee.source
+           AND ik.entity_evidence_id = ee.entity_evidence_id
+           AND ik.identifier_type = 'Standard Inchi Key:MI:1101'
+           AND trim(ik.identifier) ~ {inchikey_re}
+          WHERE ee.entity_type = '{chem}'
+            AND nm.identifier IS NOT NULL AND trim(nm.identifier) <> ''
+          GROUP BY trim(nm.identifier)
+        ) WHERE n_ik > 1
+        """
+    )
     rows = con.execute('SELECT count(*) FROM chemical_anchor_map').fetchone()[0]
-    log(f'chemical anchor map: {rows} 1:1 id->structure/ChEBI translations')
+    amb = con.execute(
+        'SELECT count(*) FROM chemical_ambiguous_name'
+    ).fetchone()[0]
+    log(f'chemical anchor map: {rows} 1:1 translations; {amb} ambiguous names')
     return int(rows)
 
 
@@ -204,6 +233,9 @@ def build_chemical_fallback_resolution(con, *, log=lambda *_: None) -> int:
                 trim(ei.identifier) ~ {name_re}
                 OR trim(ei.identifier) ~ '^[0-9]+$'
                 OR length(trim(ei.identifier)) < 2
+                -- collision guard (R22 step 6): drop names that map to >1
+                -- distinct structure (ambiguous → never a canonical identity).
+                OR trim(ei.identifier) IN (SELECT name_val FROM chemical_ambiguous_name)
               )
             )
           UNION ALL

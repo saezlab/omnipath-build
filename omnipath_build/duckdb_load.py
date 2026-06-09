@@ -1257,7 +1257,13 @@ def _canonicalize_loaded_duckdb(
               pathway_identifier.canonical_identifier,
               std_inchi_key.canonical_identifier
             ) AS canonical_identifier,
-            'resolved' AS status
+            'resolved' AS status,
+            CASE
+              WHEN cv_term.canonical_identifier IS NOT NULL THEN 'cv_term'
+              WHEN pathway_identifier.canonical_identifier IS NOT NULL
+                THEN 'pathway'
+              ELSE 'inchikey'
+            END AS resolution_mechanism
           FROM entity_evidence_raw ee
           LEFT JOIN cv_term_evidence_resolution cv_term
             ON cv_term.source = ee.source
@@ -1362,7 +1368,12 @@ def _canonicalize_loaded_duckdb(
             WHEN rcs.candidate_count = 1 THEN 'resolved'
             WHEN cf.canonical_identifier IS NOT NULL THEN 'resolved'
             ELSE 'unresolved'
-          END AS status
+          END AS status,
+          CASE
+            WHEN rcs.candidate_count = 1 THEN 'resolver'
+            WHEN cf.canonical_identifier IS NOT NULL THEN cf.mechanism
+            ELSE 'unresolved'
+          END AS resolution_mechanism
         FROM remaining_entity ee
         JOIN entity_identifier_group eig
           ON eig.source = ee.source
@@ -1395,7 +1406,8 @@ def _canonicalize_loaded_duckdb(
           mr.taxonomy_id,
           mr.canonical_identifier_type_id,
           mr.canonical_identifier,
-          'resolved' AS status
+          'resolved' AS status,
+          'gene_anchor' AS resolution_mechanism
         FROM entity_evidence_raw ee
         JOIN multigene_resolution mr
           ON mr.source = ee.source
@@ -1646,7 +1658,14 @@ def _canonicalize_loaded_duckdb(
             reaction_member.status,
             complex_member.status,
             base.status
-          ) AS status
+          ) AS status,
+          CASE
+            WHEN reaction_member.canonical_identifier IS NOT NULL
+              THEN 'reaction'
+            WHEN complex_member.canonical_identifier IS NOT NULL
+              THEN 'complex'
+            ELSE base.resolution_mechanism
+          END AS resolution_mechanism
         FROM entity_resolution_base base
         LEFT JOIN complex_member_signature complex_member
           ON complex_member.source = base.source
@@ -2028,6 +2047,7 @@ def _canonicalize_loaded_duckdb(
                   it.name AS canonical_identifier_type,
                   all_entity.canonical_identifier,
                   all_entity.resolution_status,
+          erm.resolution_mechanism,
           string_agg(DISTINCT source_rows.source, ',' ORDER BY source_rows.source)
             AS sources
         FROM all_entity
@@ -2074,6 +2094,53 @@ def _canonicalize_loaded_duckdb(
          AND source_rows.canonical_identifier_type_id =
              all_entity.canonical_identifier_type_id
          AND source_rows.canonical_identifier = all_entity.canonical_identifier
+        LEFT JOIN (
+          -- representative resolution_mechanism per canonical entity (FR-026):
+          -- when several mentions resolve to the same entity by different
+          -- mechanisms, keep the most authoritative one (lower priority wins).
+          SELECT
+            entity_type,
+            taxonomy_id,
+            canonical_identifier_type_id,
+            canonical_identifier,
+            min_by(
+              resolution_mechanism,
+              CASE resolution_mechanism
+                WHEN 'inchikey' THEN 1
+                WHEN 'anchored_structure' THEN 2
+                WHEN 'smiles' THEN 3
+                WHEN 'chebi' THEN 4
+                WHEN 'anchored_chebi' THEN 5
+                WHEN 'resolver' THEN 6
+                WHEN 'cv_term' THEN 7
+                WHEN 'pathway' THEN 8
+                WHEN 'gene_anchor' THEN 9
+                WHEN 'complex' THEN 10
+                WHEN 'reaction' THEN 11
+                WHEN 'chembl' THEN 12
+                WHEN 'pubchem' THEN 13
+                WHEN 'swisslipids' THEN 14
+                WHEN 'hmdb' THEN 15
+                WHEN 'lipidmaps' THEN 16
+                WHEN 'original_id' THEN 17
+                WHEN 'name' THEN 18
+                WHEN 'unresolved' THEN 19
+                ELSE 99
+              END
+            ) AS resolution_mechanism
+          FROM entity_resolution
+          WHERE resolution_mechanism IS NOT NULL
+          GROUP BY
+            entity_type,
+            taxonomy_id,
+            canonical_identifier_type_id,
+            canonical_identifier
+        ) erm
+          ON erm.entity_type = all_entity.entity_type
+         AND erm.taxonomy_id IS NOT DISTINCT FROM all_entity.taxonomy_id
+         AND erm.canonical_identifier_type_id =
+             all_entity.canonical_identifier_type_id
+         AND erm.canonical_identifier = all_entity.canonical_identifier
         GROUP BY
           entity_id,
                   entity_key,
@@ -2082,7 +2149,8 @@ def _canonicalize_loaded_duckdb(
                   all_entity.canonical_identifier_type_id,
                   it.name,
                   all_entity.canonical_identifier,
-                  all_entity.resolution_status
+                  all_entity.resolution_status,
+                  erm.resolution_mechanism
         """,
         [
             COMPLEX_MEMBER_HASH_ID_TYPE,
@@ -3547,6 +3615,7 @@ def _bulk_copy_canonical(
             'canonical_identifier_type_id',
             'canonical_identifier',
             'resolution_status_id',
+            'resolution_mechanism',
         ),
         query="""
           SELECT
@@ -3555,7 +3624,8 @@ def _bulk_copy_canonical(
             NULLIF(e.taxonomy_id, '')::BIGINT,
             it.identifier_type_id,
             e.canonical_identifier,
-            rs.resolution_status_id
+            rs.resolution_status_id,
+            e.resolution_mechanism
           FROM pq_entity e
           JOIN load_vocab_entity_type et
             ON et.name = e.entity_type

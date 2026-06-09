@@ -138,3 +138,18 @@ def test_anchor_translation_stage2():
     assert _pick(con, 'keggonly') == (TYPES['Chebi:MI:0474'], '100', 'anchored_chebi')
     # ambiguous FooDB id (2 distinct structures) -> NOT translated, keep-original.
     assert _pick(con, 'ambmemb') == (TYPES['Foodb:OM:0213'], 'FDBX', 'original_id')
+
+
+def test_ambiguous_name_guard():
+    con = _con([
+        # 'alanine' appears on two distinct structures -> ambiguous name
+        ('al1', CHEM, [('Name:OM:0202', 'alanine'), ('Standard Inchi Key:MI:1101', IK1)]),
+        ('al2', CHEM, [('Name:OM:0202', 'alanine'), ('Standard Inchi Key:MI:1101', IK2)]),
+        # name-only 'alanine' -> guard drops it (no canonical-by-name) -> no row
+        ('alname', CHEM, [('Name:OM:0202', 'alanine')]),
+        # an unambiguous name (never on a conflicting structure) -> kept
+        ('uniq', CHEM, [('Name:OM:0202', 'uniquechem')]),
+    ])
+    _resolve(con)
+    assert _pick(con, 'alname') is None, 'ambiguous name must not be canonical'
+    assert _pick(con, 'uniq') == (TYPES['Name:OM:0202'], 'uniquechem', 'name')
