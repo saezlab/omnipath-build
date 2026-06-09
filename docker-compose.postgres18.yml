@@ -7,6 +7,9 @@ services:
       context: ./postgres
       dockerfile: Dockerfile
     image: omnipath-build-postgres:18
+    # Auto-start on host/daemon restart so the build DB survives reboots
+    # without a manual `compose up`.
+    restart: unless-stopped
     environment:
       POSTGRES_DB: omnipath
       POSTGRES_USER: omnipath
