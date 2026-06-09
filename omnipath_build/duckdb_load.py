@@ -31,6 +31,7 @@ from omnipath_build.evidence_projector import (
     EvidenceProjectorBase,
     _MutableProjectionStats,
 )
+from omnipath_build.chemical_fallback import build_chemical_fallback_resolution
 from omnipath_build.multigene_split import explode_multi_gene_protein_mentions
 from omnipath_build.resolver.identifier_types import (
     UNRESOLVED_ID_TYPE,
@@ -1083,6 +1084,9 @@ def _canonicalize_loaded_duckdb(
     # resolves each copy to its gene. Rewrites the raw tables in place + leaves
     # `multigene_resolution` for entity_resolution_base's direct-resolution arm.
     explode_multi_gene_protein_mentions(con)
+    # Non-lipid chemical fallback (T020/R22): best non-structure id per chemical
+    # mention, consumed by entity_resolution_base's unresolved branch below.
+    build_chemical_fallback_resolution(con)
     con.execute(
         """
         CREATE TABLE entity_identifier_group AS
@@ -1334,16 +1338,23 @@ def _canonicalize_loaded_duckdb(
             WHEN rcs.candidate_count = 1 THEN rcs.taxonomy_id
             ELSE ee.taxonomy_id
           END AS taxonomy_id,
+          -- Chemical fallback (T020/R22): when the structure + resolver-
+          -- candidate paths leave a chemical unresolved, take its best
+          -- non-structure id by priority (cf) instead of the md5 hash.
           CASE
             WHEN rcs.candidate_count = 1 THEN rcs.canonical_identifier_type_id
+            WHEN cf.canonical_identifier IS NOT NULL
+              THEN cf.canonical_identifier_type_id
             ELSE unresolved_type.identifier_type_id
           END AS canonical_identifier_type_id,
           CASE
             WHEN rcs.candidate_count = 1 THEN rcs.canonical_identifier
+            WHEN cf.canonical_identifier IS NOT NULL THEN cf.canonical_identifier
             ELSE md5(eig.unresolved_identifier_key)
           END AS canonical_identifier,
           CASE
             WHEN rcs.candidate_count = 1 THEN 'resolved'
+            WHEN cf.canonical_identifier IS NOT NULL THEN 'resolved'
             ELSE 'unresolved'
           END AS status
         FROM remaining_entity ee
@@ -1358,6 +1369,9 @@ def _canonicalize_loaded_duckdb(
         LEFT JOIN resolver_candidate_summary rcs
           ON rcs.source = ee.source
          AND rcs.entity_evidence_id = ee.entity_evidence_id
+        LEFT JOIN chemical_fallback_resolution cf
+          ON cf.source = ee.source
+         AND cf.entity_evidence_id = ee.entity_evidence_id
         LEFT JOIN resolver_entity_type_match etm
           ON etm.evidence_entity_type = ee.entity_type
         UNION ALL
