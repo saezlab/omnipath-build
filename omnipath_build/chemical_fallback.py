@@ -87,9 +87,91 @@ def _values(rows: tuple) -> str:
     return ', '.join(parts)
 
 
+def build_chemical_anchor_map(con, *, log=lambda *_: None) -> int:
+    """Build ``chemical_anchor_map`` — 1:1 translations of a non-structural id to
+    a structure/ChEBI **anchor** (US1 T020 stage 2, R22 steps 4–5).
+
+    For every chemical mention that carries an InChIKey or ChEBI, map its *other*
+    ids (FooDB/KEGG/PubChem/CAS/…) to that mention's anchor (InChIKey preferred,
+    else ChEBI). This is the resource's own per-record assertion (e.g. FooDB's
+    compound row links its `public_id` to the compound's InChIKey; a ChEBI row
+    links ChEBI to its KEGG/CAS xref) — **one hop, not transitive**. Keep only
+    ids that map to exactly **one** distinct anchor (abort on 1→many).
+
+    Consumed by ``build_chemical_fallback_resolution``: a structure-less mention
+    whose id translates this way resolves to the structure/ChEBI (merging it onto
+    the structured entity) instead of keeping its own id.
+    """
+    chem = CHEMICAL_ENTITY_TYPE.replace("'", "''")
+    inchikey_re = "'^[A-Z]{14}-[A-Z]{10}-[A-Z]$'"
+    # id types that are NOT translation *sources* (structures, names, formula, hash).
+    non_src = (
+        "'Standard Inchi Key:MI:1101','Smiles:MI:0239','Name:OM:0202',"
+        "'Synonym:OM:0203','Iupac Name:OM:0210','Iupac Traditional Name:OM:0211',"
+        "'Abbreviated Name:OM:0208','Inn:OM:0120','Molecular Formula:OM:0212',"
+        "'omnipath:unresolved_entity_key'"
+    )
+    con.execute(
+        f"""
+        CREATE OR REPLACE TABLE chemical_anchor_map AS
+        WITH ids AS (
+          SELECT ee.source, ee.entity_evidence_id,
+                 ei.identifier_type AS type_name, trim(ei.identifier) AS val
+          FROM entity_evidence_raw ee
+          JOIN entity_identifier_raw ei
+            ON ei.source = ee.source
+           AND ei.entity_evidence_id = ee.entity_evidence_id
+          WHERE ee.entity_type = '{chem}'
+            AND ei.identifier IS NOT NULL AND trim(ei.identifier) <> ''
+        ),
+        mention_anchor AS (   -- per mention: best anchor (InChIKey > ChEBI)
+          SELECT source, entity_evidence_id,
+            max(val) FILTER (
+              WHERE type_name = 'Standard Inchi Key:MI:1101'
+                AND val ~ {inchikey_re}
+            ) AS inchikey,
+            max(val) FILTER (WHERE type_name = 'Chebi:MI:0474') AS chebi
+          FROM ids GROUP BY source, entity_evidence_id
+        ),
+        pair AS (             -- (non-anchor id) -> (anchor) on the same mention
+          SELECT i.type_name AS src_type, i.val AS src_value,
+                 ma.inchikey, ma.chebi
+          FROM ids i
+          JOIN mention_anchor ma
+            ON ma.source = i.source AND ma.entity_evidence_id = i.entity_evidence_id
+          WHERE (ma.inchikey IS NOT NULL OR ma.chebi IS NOT NULL)
+            AND i.type_name NOT IN ({non_src})
+        ),
+        agg AS (
+          SELECT src_type, src_value,
+            count(DISTINCT inchikey) AS n_ik, max(inchikey) AS ik,
+            count(DISTINCT chebi)    AS n_chebi, max(chebi) AS chebi
+          FROM pair GROUP BY src_type, src_value
+        )
+        SELECT src_type, src_value,
+          CASE WHEN n_ik = 1 THEN 'Standard Inchi Key:MI:1101' ELSE 'Chebi:MI:0474' END
+            AS anchor_type,
+          CASE WHEN n_ik = 1 THEN ik ELSE chebi END AS anchor_value,
+          CASE WHEN n_ik = 1 THEN 0 ELSE 2 END AS anchor_tier,
+          CASE WHEN n_ik = 1 THEN 'anchored_structure' ELSE 'anchored_chebi' END
+            AS mechanism
+        FROM agg
+        WHERE n_ik = 1 OR (n_ik = 0 AND n_chebi = 1)   -- 1:1 only
+        """
+    )
+    rows = con.execute('SELECT count(*) FROM chemical_anchor_map').fetchone()[0]
+    log(f'chemical anchor map: {rows} 1:1 id->structure/ChEBI translations')
+    return int(rows)
+
+
 def build_chemical_fallback_resolution(con, *, log=lambda *_: None) -> int:
     """Build ``chemical_fallback_resolution`` (one best-id row per chemical
-    mention with a usable non-structure identifier). Returns the row count."""
+    mention with a usable non-structure identifier). Returns the row count.
+
+    Requires ``chemical_anchor_map`` (``build_chemical_anchor_map``) to exist —
+    its translations enter the candidate set so a structure-less mention prefers
+    a structure/ChEBI anchor over keeping its own id.
+    """
 
     chem = CHEMICAL_ENTITY_TYPE.replace("'", "''")
     name_re = "'^[A-Z]{14}-[A-Z]{10}-[A-Z]$'"  # InChIKey-shaped guard for names
@@ -102,6 +184,7 @@ def build_chemical_fallback_resolution(con, *, log=lambda *_: None) -> int:
             ee.source,
             ee.entity_evidence_id,
             t.tier,
+            0 AS is_anchored,
             t.mechanism,
             it.identifier_type_id AS canonical_identifier_type_id,
             trim(ei.identifier) AS canonical_identifier
@@ -123,6 +206,26 @@ def build_chemical_fallback_resolution(con, *, log=lambda *_: None) -> int:
                 OR length(trim(ei.identifier)) < 2
               )
             )
+          UNION ALL
+          -- stage 2 (R22 steps 4-5): translate a mention's id to its 1:1
+          -- structure/ChEBI anchor; enters at the anchor's tier (InChIKey 0,
+          -- ChEBI 2) so it beats keep-original and merges the mention onto the
+          -- structured / ChEBI-keyed entity.
+          SELECT
+            ee.source, ee.entity_evidence_id, am.anchor_tier AS tier,
+            1 AS is_anchored,
+            am.mechanism,
+            ait.identifier_type_id AS canonical_identifier_type_id,
+            am.anchor_value AS canonical_identifier
+          FROM entity_evidence_raw ee
+          JOIN entity_identifier_raw ei
+            ON ei.source = ee.source
+           AND ei.entity_evidence_id = ee.entity_evidence_id
+          JOIN chemical_anchor_map am
+            ON am.src_type = ei.identifier_type
+           AND am.src_value = trim(ei.identifier)
+          JOIN identifier_type_all ait ON ait.name = am.anchor_type
+          WHERE ee.entity_type = '{chem}'
         ),
         ranked AS (
           SELECT
@@ -130,7 +233,7 @@ def build_chemical_fallback_resolution(con, *, log=lambda *_: None) -> int:
             canonical_identifier_type_id, canonical_identifier,
             row_number() OVER (
               PARTITION BY source, entity_evidence_id
-              ORDER BY tier, canonical_identifier
+              ORDER BY tier, is_anchored, canonical_identifier
             ) AS rk
           FROM candidate
         )

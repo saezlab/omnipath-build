@@ -31,7 +31,10 @@ from omnipath_build.evidence_projector import (
     EvidenceProjectorBase,
     _MutableProjectionStats,
 )
-from omnipath_build.chemical_fallback import build_chemical_fallback_resolution
+from omnipath_build.chemical_fallback import (
+    build_chemical_anchor_map,
+    build_chemical_fallback_resolution,
+)
 from omnipath_build.multigene_split import explode_multi_gene_protein_mentions
 from omnipath_build.resolver.identifier_types import (
     UNRESOLVED_ID_TYPE,
@@ -1086,6 +1089,9 @@ def _canonicalize_loaded_duckdb(
     explode_multi_gene_protein_mentions(con)
     # Non-lipid chemical fallback (T020/R22): best non-structure id per chemical
     # mention, consumed by entity_resolution_base's unresolved branch below.
+    # Stage 2 anchor map (1:1 id->structure/ChEBI) feeds the fallback's
+    # translated candidates, so it must be built first.
+    build_chemical_anchor_map(con)
     build_chemical_fallback_resolution(con)
     con.execute(
         """

@@ -13,8 +13,15 @@ import pytest
 duckdb = pytest.importorskip('duckdb')
 
 from omnipath_build.chemical_fallback import (  # noqa: E402
+    build_chemical_anchor_map,
     build_chemical_fallback_resolution,
 )
+
+
+def _resolve(con):
+    """Stage-2 anchor map + the fallback pick (the real pipeline order)."""
+    build_chemical_anchor_map(con)
+    build_chemical_fallback_resolution(con)
 
 CHEM = 'Chemical:OM:0037'
 PROTEIN = 'Protein:MI:0326'
@@ -28,7 +35,10 @@ TYPES = {
     'Foodb:OM:0213': 6,
     'Name:OM:0202': 7,
     'Standard Inchi Key:MI:1101': 8,
+    'Kegg Compound:MI:2012': 9,
 }
+IK1 = 'AAAAAAAAAAAAAA-BBBBBBBBBB-N'
+IK2 = 'CCCCCCCCCCCCCC-DDDDDDDDDD-N'
 
 
 def _con(rows):
@@ -69,7 +79,7 @@ def test_priority_pick_and_mechanisms():
         ('m_smiles_chebi', CHEM, [('Smiles:MI:0239', 'CCO'), ('Chebi:MI:0474', '16236')]),
         ('m_name', CHEM, [('Name:OM:0202', 'aspirin')]),
     ])
-    build_chemical_fallback_resolution(con)
+    _resolve(con)
     # ChEBI beats PubChem (higher priority), not both → no clustering.
     assert _pick(con, 'm_chebi_pubchem') == (TYPES['Chebi:MI:0474'], '15365', 'chebi')
     assert _pick(con, 'm_pubchem') == (TYPES['Pubchem Compound:OM:0002'], '999', 'pubchem')
@@ -92,7 +102,7 @@ def test_inchikey_and_junk_excluded():
         # non-chemical → ignored entirely.
         ('p_protein', PROTEIN, [('Chebi:MI:0474', '1')]),
     ])
-    build_chemical_fallback_resolution(con)
+    _resolve(con)
     for ev in ('m_inchikey_only', 'm_junk_name', 'm_numeric_name', 'p_protein'):
         assert _pick(con, ev) is None, f'{ev} should have no fallback row'
 
@@ -101,6 +111,30 @@ def test_name_falls_below_real_ids():
     con = _con([
         ('m_id_and_name', CHEM, [('Foodb:OM:0213', 'FDB1'), ('Name:OM:0202', 'foo')]),
     ])
-    build_chemical_fallback_resolution(con)
+    _resolve(con)
     # a real id (even keep-original FooDB) beats a name.
     assert _pick(con, 'm_id_and_name') == (TYPES['Foodb:OM:0213'], 'FDB1', 'original_id')
+
+
+def test_anchor_translation_stage2():
+    con = _con([
+        # anchor mention: FooDB FDB9 co-occurs with a structure -> FDB9 -> IK1
+        ('cmpd', CHEM, [('Foodb:OM:0213', 'FDB9'), ('Standard Inchi Key:MI:1101', IK1)]),
+        # structure-less membership of the SAME FooDB id -> lifts onto the structure
+        ('memb', CHEM, [('Foodb:OM:0213', 'FDB9')]),
+        # ChEBI-anchor mention (no InChIKey): KEGG C1 co-occurs with ChEBI 100
+        ('keggchebi', CHEM, [('Kegg Compound:MI:2012', 'C1'), ('Chebi:MI:0474', '100')]),
+        # KEGG-only mention -> translates up to ChEBI 100 (anchored_chebi)
+        ('keggonly', CHEM, [('Kegg Compound:MI:2012', 'C1')]),
+        # ambiguous: FDBX maps to two different structures -> NOT translated
+        ('ambA', CHEM, [('Foodb:OM:0213', 'FDBX'), ('Standard Inchi Key:MI:1101', IK1)]),
+        ('ambB', CHEM, [('Foodb:OM:0213', 'FDBX'), ('Standard Inchi Key:MI:1101', IK2)]),
+        ('ambmemb', CHEM, [('Foodb:OM:0213', 'FDBX')]),
+    ])
+    _resolve(con)
+    # FooDB membership lifted onto the structure (merges with the compound).
+    assert _pick(con, 'memb') == (TYPES['Standard Inchi Key:MI:1101'], IK1, 'anchored_structure')
+    # KEGG-only lifted to ChEBI via the resource's own xref.
+    assert _pick(con, 'keggonly') == (TYPES['Chebi:MI:0474'], '100', 'anchored_chebi')
+    # ambiguous FooDB id (2 distinct structures) -> NOT translated, keep-original.
+    assert _pick(con, 'ambmemb') == (TYPES['Foodb:OM:0213'], 'FDBX', 'original_id')
