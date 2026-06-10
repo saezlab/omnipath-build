@@ -141,6 +141,69 @@ def _protein_identifier_rows(
         conn.close()
 
 
+def _global_uniprot_resolver_enabled(flag: bool | None) -> bool:
+    """Whether to fold in the taxon-agnostic UniProt/Entrez slice (T069/R25).
+
+    Off by default (the ~24M-row global map would slow capped dev loops); enabled
+    explicitly for full/showcase builds via ``OMNIPATH_BUILD_GLOBAL_UNIPROT_RESOLVER``
+    or the ``materialize_proteins`` argument.
+    """
+    if flag is not None:
+        return flag
+    return os.environ.get('OMNIPATH_BUILD_GLOBAL_UNIPROT_RESOLVER', '') not in (
+        '',
+        '0',
+        'false',
+        'False',
+    )
+
+
+def _global_protein_lookup_df() -> pl.DataFrame:
+    """Taxon-agnostic UniProt/Entrez -> Entrez gene rows (T069/R25/US7).
+
+    Reads ``omnipath_utils.resolver_gene_protein_global`` (the global UniProt->Entrez
+    map, ~24M rows over ~50k taxa) so UniProt-referenced proteins that arrive with
+    no taxonomy (Rhea/Brenda/TCDB/ChEMBL participants) still gene-anchor — the
+    resolved entity inherits the organism derived from the AC. Read via DuckDB
+    ATTACH so the 24M rows never materialise as Python objects; the result feeds the
+    same ambiguity split as the per-taxon rows (an AC->>1 gene falls to the
+    ambiguous lookup / multi-gene split, never a force-merge).
+    """
+    import duckdb
+
+    url = _utils_pg_url()
+    literal = "'" + url.replace("'", "''") + "'"
+    con = duckdb.connect()
+    try:
+        con.execute('INSTALL postgres; LOAD postgres;')
+        con.execute(f'ATTACH {literal} AS up (TYPE postgres, READ_ONLY)')
+        df = con.execute(
+            'SELECT source_type, source_id, '
+            'CAST(ncbi_tax_id AS VARCHAR) AS taxonomy_id, '
+            'CAST(entrez AS VARCHAR) AS entrez '
+            'FROM up.omnipath_utils.resolver_gene_protein_global '
+            'WHERE source_id IS NOT NULL AND entrez IS NOT NULL'
+        ).pl()
+    finally:
+        con.close()
+
+    uniprot_type_id = identifier_type_id(UNIPROT_TYPE)
+    entrez_type_id = identifier_type_id(ENTREZ_TYPE)
+    return df.select(
+        pl.when(pl.col('source_type') == 'uniprot')
+        .then(pl.lit(uniprot_type_id))
+        .otherwise(pl.lit(entrez_type_id))
+        .cast(pl.UInt32)
+        .alias('key_identifier_type_id'),
+        pl.col('source_id').cast(pl.Utf8).alias('key_value'),
+        pl.col('taxonomy_id').cast(pl.Utf8).alias('taxonomy_id'),
+        pl.lit(entrez_type_id)
+        .cast(pl.UInt32)
+        .alias('canonical_identifier_type_id'),
+        pl.col('entrez').cast(pl.Utf8).alias('canonical_identifier'),
+    )
+
+
 def _single_taxonomy_id(values: set[str] | None) -> str | None:
     if not values or len(values) != 1:
         return None
@@ -218,8 +281,15 @@ def materialize_proteins(
     output_dir: str | Path | None = None,
     taxonomy_ids: Iterable[int | str] | None = None,
     skip_existing: bool = True,
+    include_global_uniprot: bool | None = None,
 ) -> dict[str, int]:
-    """Write protein resolver parquet files and return output row counts."""
+    """Write protein resolver parquet files and return output row counts.
+
+    When ``include_global_uniprot`` (env ``OMNIPATH_BUILD_GLOBAL_UNIPROT_RESOLVER``)
+    is on, the per-taxon ``DEFAULT_ORGANISMS`` rows are augmented with the
+    taxon-agnostic global UniProt/Entrez slice (T069/R25) so UniProt-referenced
+    proteins with no taxonomy still gene-anchor.
+    """
 
     output_dir = (
         Path(output_dir)
@@ -253,8 +323,17 @@ def materialize_proteins(
         }
 
     activate_raw_download_data_dir()
+    extra_lookup_df = None
+    if _global_uniprot_resolver_enabled(include_global_uniprot):
+        print('[resolver] uniprot global taxon-agnostic slice ON (T069)', flush=True)
+        extra_lookup_df = _global_protein_lookup_df()
+        print(
+            f'[resolver] uniprot global slice rows={extra_lookup_df.height}',
+            flush=True,
+        )
     lookup, ambiguous, identifier_types = _split_protein_identifier_lookup(
-        _protein_identifier_rows(taxonomy_ids=taxonomy_ids)
+        _protein_identifier_rows(taxonomy_ids=taxonomy_ids),
+        extra_lookup_df=extra_lookup_df,
     )
     lookup.write_parquet(lookup_path)
     ambiguous.write_parquet(ambiguous_path)
@@ -281,6 +360,7 @@ def _parquet_row_count(path: Path) -> int:
 
 def _split_protein_identifier_lookup(
     rows: Iterable[dict],
+    extra_lookup_df: pl.DataFrame | None = None,
 ) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]:
     normalized_rows: list[dict[str, object]] = []
     type_names = {ENTREZ_TYPE}
@@ -302,16 +382,29 @@ def _split_protein_identifier_lookup(
             }
         )
 
+    if extra_lookup_df is not None and extra_lookup_df.height:
+        # the global slice keys on UniProt + Entrez (T069); make sure both id
+        # types reach the identifier_type parquet even if no per-taxon rows did.
+        type_names.update({UNIPROT_TYPE, ENTREZ_TYPE})
+
     identifier_types = pl.DataFrame(
         identifier_type_rows(type_names),
         schema=IDENTIFIER_TYPE_SCHEMA,
     )
-    if not normalized_rows:
+    base_lookup = pl.DataFrame(
+        normalized_rows, schema=PROTEIN_IDENTIFIER_LOOKUP_SCHEMA
+    )
+    if extra_lookup_df is not None and extra_lookup_df.height:
+        base_lookup = pl.concat(
+            [base_lookup, extra_lookup_df.select(base_lookup.columns)],
+            how='vertical',
+        )
+    if base_lookup.is_empty():
         empty = pl.DataFrame(schema=PROTEIN_IDENTIFIER_LOOKUP_SCHEMA)
         return empty, empty, identifier_types
 
     lookup = (
-        pl.DataFrame(normalized_rows, schema=PROTEIN_IDENTIFIER_LOOKUP_SCHEMA)
+        base_lookup
         .filter(
             pl.col('key_value').is_not_null()
             & (pl.col('key_value') != '')
