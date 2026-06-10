@@ -16,6 +16,13 @@ services:
       POSTGRES_PASSWORD: omnipath
     ports:
       - "55432:5432"
+    # Docker defaults /dev/shm to 64MB, which is too small for the parallel-query
+    # dynamic-shared-memory segments the metabo post-build (e.g. the Goslin lipid
+    # labelling query) allocates — it failed with "could not resize shared memory
+    # segment: No space left on device". The present deploy compose already sets
+    # this; the build compose was missing it. (derive itself is serial INSERT…SELECT
+    # so it never hit the limit.)
+    shm_size: ${POSTGRES_SHM_SIZE:-1gb}
     command:
       - postgres
       - -c
@@ -24,6 +31,12 @@ services:
       - min_wal_size=1GB
       - -c
       - checkpoint_timeout=15min
+      - -c
+      - shared_buffers=${POSTGRES_SHARED_BUFFERS:-512MB}
+      - -c
+      - effective_cache_size=${POSTGRES_EFFECTIVE_CACHE_SIZE:-2GB}
+      - -c
+      - work_mem=${POSTGRES_WORK_MEM:-128MB}
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U omnipath -d omnipath"]
       interval: 5s
