@@ -15,6 +15,14 @@
 --   mrclinksdb=28  stitch=39  tcdb=41
 --
 -- Entity type IDs: SmallMolecule=2  Protein=3  Complex=4  Reaction=11  Transport=12
+--
+-- IMPORTANT (gene-anchored model, fixed 2026-06-15): the protein-side filter on
+-- entity_evidence is `Protein:MI:0326` — entity_evidence carries the ORIGINAL
+-- mention type; only the *resolved/canonical* entity becomes `Gene:MI:0250`. The
+-- gene anchoring + human filter are enforced by the entity_evidence_resolution →
+-- entity (taxonomy_id=9606) join, not by the evidence type. A previous version
+-- filtered evidence on Gene:MI:0250, which matched 0 rows → every non-ChEMBL
+-- per-source view was empty and the combined view was ChEMBL-only.
 
 -- ────────────────────────────────────────────────────────────────────────────
 -- ChEMBL  (source_id = 16)
