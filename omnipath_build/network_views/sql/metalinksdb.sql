@@ -68,8 +68,13 @@ DROP MATERIALIZED VIEW IF EXISTS metalinksdb_chembl_relations;
 CREATE MATERIALIZED VIEW metalinksdb_chembl_relations AS
 WITH
 
--- Pre-filter to human-only relation_evidence rows using the ncbi_tax_id annotation;
--- all subsequent CTEs process only these rows instead of the full 3.4M ChEMBL dataset.
+-- CURATION (003 US1, FR-001/002, decided 2026-06-15): keep only the CANONICAL
+-- drug-target set = ChEMBL **mechanism-of-action** pairs (`Chembl Mechanism:OM:0227`
+-- annotation), ~6,940 pairs. NON-HUMAN INCLUDED (no ncbi_tax_id gate).
+-- Rationale: pChEMBL affinity thresholds flood the view (>6 = 1.6M, even >9 = 127k),
+-- and MoA + pChEMBL sit in different ChEMBL tables (their AND = 0) — so the curated
+-- contribution is the MoA mechanism set, not affinity-filtered assays. (CTE name
+-- kept `human_re` for minimal-diff — it is now the curated MoA set, not human-only.)
 human_re AS (
     SELECT DISTINCT
         re.relation_evidence_id,
@@ -78,12 +83,11 @@ human_re AS (
         re.predicate_id,
         re.relation_category_id
     FROM relation_evidence re
-    JOIN relation_evidence_annotation rea
-        ON  rea.relation_evidence_id = re.relation_evidence_id
-        AND rea.source_id            = re.source_id
-    JOIN annotation a ON a.annotation_key = rea.annotation_key
-        AND a.term  = 'Ncbi Tax Id:OM:0205'
-        AND a.value = '9606'
+    JOIN relation_evidence_annotation rea_m
+        ON  rea_m.relation_evidence_id = re.relation_evidence_id
+        AND rea_m.source_id            = re.source_id
+    JOIN annotation am ON am.annotation_key = rea_m.annotation_key
+        AND am.term = 'Chembl Mechanism:OM:0227'
     WHERE re.source_id = get_source_id('chembl')
 ),
 
@@ -264,25 +268,31 @@ DROP MATERIALIZED VIEW IF EXISTS metalinksdb_bindingdb_relations;
 CREATE MATERIALIZED VIEW metalinksdb_bindingdb_relations AS
 WITH
 
--- Pre-filter to human-only relation_evidence rows by resolving the protein entity
--- and checking taxonomy_id = 9606 before building identifier and annotation CTEs.
+-- CURATION (003 US1, FR-002): keep only high-affinity BindingDB pairs
+-- (pChEMBL >= 6) whose protein resolves to a gene. NON-HUMAN INCLUDED (no
+-- taxonomy_id gate). Uses the Pchembl Value annotation (present on ~707k rows);
+-- TODO(FR-009): also admit rows that lack pChEMBL but carry Ic50/Ki/Kd/Ec50 in
+-- nM via the derived pChEMBL = 9 - log10(nM) (censored/non-positive excluded).
+-- (CTE name kept `human_re` for minimal-diff — now the curated set.)
 human_re AS (
-    SELECT
+    SELECT DISTINCT
         re.relation_evidence_id,
         re.subject_entity_evidence_id,
         re.object_entity_evidence_id,
         re.predicate_id,
         re.relation_category_id
     FROM relation_evidence re
-    JOIN entity_evidence ee_protein
-        ON  ee_protein.source_id          = re.source_id
-        AND ee_protein.entity_evidence_id = re.object_entity_evidence_id
-        AND ee_protein.entity_type_id = get_entity_type_id('Protein:MI:0326')
     JOIN entity_evidence_resolution eer
         ON  eer.source_id          = re.source_id
         AND eer.entity_evidence_id = re.object_entity_evidence_id
         AND eer.status_id          = 1
-    JOIN entity e ON e.entity_id = eer.entity_id AND e.taxonomy_id = 9606
+    JOIN relation_evidence_annotation rea_p
+        ON  rea_p.relation_evidence_id = re.relation_evidence_id
+        AND rea_p.source_id            = re.source_id
+    JOIN annotation ap ON ap.annotation_key = rea_p.annotation_key
+        AND ap.term  = 'Pchembl Value:OM:0708'
+        AND ap.value ~ '^[0-9]+(\.[0-9]+)?$'
+        AND ap.value::numeric >= 6
     WHERE re.source_id = get_source_id('bindingdb')
 ),
 
@@ -1051,13 +1061,10 @@ FROM (
     FROM metalinksdb_chembl_relations
     WHERE compound_resolution_status = 1 AND protein_resolution_status = 1
 
-    UNION ALL
-
-    SELECT source, compound_entity_id, compound_canonical_id, compound_canonical_id_type,
-           protein_entity_id, protein_canonical_id, protein_canonical_id_type,
-           protein_uniprot, 'interaction'::text AS relation_type, pchembl_value, pubmed_id, doi
-    FROM metalinksdb_bindingdb_relations
-    WHERE compound_resolution_status = 1 AND protein_resolution_status = 1
+    -- BindingDB DROPPED from the curated combined view (003 US1, decided
+    -- 2026-06-15): it carries no mechanism-of-action canonical set and its
+    -- affinity-thresholded volume (pChEMBL>=6 = 435k, even >=9 = 47k) floods the
+    -- tens-of-thousands target. The per-source matview is left unbuilt/unused.
 
     UNION ALL
 
