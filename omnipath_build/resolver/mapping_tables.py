@@ -143,6 +143,27 @@ def run_sources(
             {f'chemicals_{key}': value for key, value in result.items()}
         )
 
+    # utils-backed chemical export (R7): full PubChem cid→InChIKey + UniChem
+    # cross-refs from the omnipath-utils Postgres, written into the same
+    # chemicals/lookup partition. Skipped (warn, not fail) when the utils URL is
+    # unset — the native sources above still provide a capped fallback.
+    if chemical_sources:
+        try:
+            from omnipath_build.resolver.sources.chemicals_utils import (
+                materialize_utils_chemicals,
+            )
+
+            result = materialize_utils_chemicals(
+                output_dir=_output_subdir(base_dir, 'chemicals'),
+                skip_existing=skip_existing,
+            )
+            summary.update(
+                {f'chemicals_{key}': value for key, value in result.items()}
+            )
+        except Exception as exc:
+            failed_sources += 1
+            _warn_resolver_source_failed('chemicals_utils', exc)
+
     if 'mirbase' in selected:
         try:
             result = materialize_mirna(
