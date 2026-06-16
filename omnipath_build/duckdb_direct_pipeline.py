@@ -80,6 +80,22 @@ STAGED_LOAD_DISTINCT_TABLES: frozenset[str] = frozenset(
 )
 
 
+def _apply_duckdb_runtime(con, threads: int) -> None:
+    """Set per-worker DuckDB ``threads`` + an optional hard ``memory_limit``.
+
+    A memory_limit (env ``OMNIPATH_BUILD_DUCKDB_MEMORY_LIMIT``, e.g. ``'20GB'``)
+    bounds each parallel canonicalize worker so it **spills to disk instead of
+    over-committing RAM**. Without it DuckDB defaults each process to ~80% of
+    *total* RAM, so N concurrent workers (LOAD_JOBS) collectively over-commit and
+    OOM the host (observed: LOAD_JOBS=16 crashed a 503GB box). Keep
+    ``LOAD_JOBS × memory_limit`` under the RAM budget.
+    """
+    con.execute(f'SET threads TO {int(threads)}')
+    memory_limit = os.environ.get('OMNIPATH_BUILD_DUCKDB_MEMORY_LIMIT')
+    if memory_limit:
+        con.execute(f"SET memory_limit TO '{memory_limit}'")
+
+
 @dataclass(frozen=True)
 class DirectCopyStats:
     """Timing and row counts for one COPY load."""
@@ -263,7 +279,7 @@ def run_direct_copy_pipeline(
     resolver_dir = Path(resolver_dir)
     state_path = _prepare_state_path(state_path)
     con = duckdb.connect(str(state_path) if state_path is not None else ':memory:')
-    con.execute(f'SET threads TO {int(threads)}')
+    _apply_duckdb_runtime(con, threads)
 
     try:
         duckdb_load._create_duckdb_content_uuid_macro(con)
@@ -363,7 +379,7 @@ def stage_direct_copy_pipeline(
         raise ValueError('state_path is required for staged load')
 
     con = duckdb.connect(str(prepared_state_path))
-    con.execute(f'SET threads TO {int(threads)}')
+    _apply_duckdb_runtime(con, threads)
     _load_log(
         'stage',
         'start',
@@ -693,7 +709,7 @@ def _merge_staged_direct_loads(
         raise ValueError('state_path is required for merged staged load')
 
     con = duckdb.connect(str(merged_path))
-    con.execute(f'SET threads TO {int(threads)}')
+    _apply_duckdb_runtime(con, threads)
     duckdb_load._create_duckdb_content_uuid_macro(con)
     loaded_tables: set[str] = set()
     try:
