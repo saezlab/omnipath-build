@@ -41,7 +41,7 @@ from concurrent.futures import (
 import duckdb
 import psycopg2
 
-from omnipath_build import duckdb_load
+from omnipath_build import configure_build_tmpdir, duckdb_load
 from omnipath_build.resources import (
     ResourceFunction,
     discover_resources,
@@ -2112,6 +2112,17 @@ def build_arg_parser() -> argparse.ArgumentParser:
             'than 1. Defaults to a temporary directory.'
         ),
     )
+    parser.add_argument(
+        '--tmpdir',
+        default=None,
+        help=(
+            'Base directory for ALL builder temporary files (DuckDB spill, '
+            'staging, intermediate extracts). Defaults to the '
+            'OMNIPATH_BUILD_TMPDIR environment variable, else the system temp '
+            'dir. Point this at large scratch storage so multi-hundred-GB '
+            'DuckDB spill stays off the root filesystem.'
+        ),
+    )
     parser.add_argument('--force-refresh', action='store_true')
     parser.add_argument(
         '--reload-existing',
@@ -2135,6 +2146,7 @@ def main(argv: list[str] | None = None) -> int:
     """Run the DuckDB/PostgreSQL load command line interface."""
 
     args = build_arg_parser().parse_args(argv)
+    configure_build_tmpdir(args.tmpdir)
     if not args.database_url:
         raise SystemExit('--database-url or DATABASE_URL is required')
     max_records = (

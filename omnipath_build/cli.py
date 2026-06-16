@@ -14,6 +14,8 @@ import time
 
 import psycopg2
 
+from omnipath_build import configure_build_tmpdir
+
 from omnipath_build.db import (
     ensure_schema,
     reset_content_tables,
@@ -107,6 +109,15 @@ def main(argv: list[str] | None = None) -> int:
         help='PostgreSQL connection URL. Defaults to DATABASE_URL.',
     )
     parser.add_argument('--schema', default='public')
+    parser.add_argument(
+        '--tmpdir',
+        default=None,
+        help=(
+            'Base directory for all builder temporary files (DuckDB spill, '
+            'staging). Defaults to the OMNIPATH_BUILD_TMPDIR environment '
+            'variable, else the system temp dir.'
+        ),
+    )
 
     subparsers = parser.add_subparsers(dest='command', required=True)
     init_db = subparsers.add_parser('init-db')
@@ -226,6 +237,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     args = parser.parse_args(argv)
+    configure_build_tmpdir(args.tmpdir)
     if args.command == 'build-resolver':
         summary = build_resolver_sources(
             sources=args.sources or RESOLVER_SOURCE_NAMES,
