@@ -113,15 +113,17 @@ CHEM_TYPE_ID = 1
 GENE_TYPE_ID = 2
 INCHIKEY_TYPE_ID = 10
 UNIPROT_TYPE_ID = 11
+NAME_TYPE_ID = 16
 PREDICATE_ID = 7
 SRC_A, SRC_B, SRC_C = 101, 102, 103
 
+# (struct, trivial name) — L/D/DL share the ambiguous name 'Alanine'.
 _CHEMS = {
-    E_L: L_ALANINE,
-    E_D: D_ALANINE,
-    E_DL: DL_ALANINE,
-    E_B: BETA_ALANINE,
-    E_N: N_ACETYL_L_ALANINE,
+    E_L: (L_ALANINE, 'Alanine'),
+    E_D: (D_ALANINE, 'Alanine'),
+    E_DL: (DL_ALANINE, 'Alanine'),
+    E_B: (BETA_ALANINE, 'beta-Alanine'),
+    E_N: (N_ACETYL_L_ALANINE, 'N-acetyl-L-alanine'),
 }
 
 
@@ -165,16 +167,32 @@ def synthetic_schema():
             (CHEM_TYPE_ID, 'Chemical:OM:0037', GENE_TYPE_ID, 'Gene:MI:0250'),
         )
         cur.execute(
-            f'INSERT INTO {schema}.vocab_identifier_type VALUES (%s,%s),(%s,%s)',
+            f'INSERT INTO {schema}.vocab_identifier_type '
+            f'VALUES (%s,%s),(%s,%s),(%s,%s)',
             (
                 INCHIKEY_TYPE_ID, 'Standard Inchi Key:MI:1101',
                 UNIPROT_TYPE_ID, 'Uniprot:MI:1097',
+                NAME_TYPE_ID, 'Name:OM:0202',
             ),
         )
-        for eid, struct in _CHEMS.items():
+        for n, (eid, (struct, name)) in enumerate(_CHEMS.items()):
             cur.execute(
                 f'INSERT INTO {schema}.entity VALUES (%s,%s,%s,%s,%s)',
                 (eid, CHEM_TYPE_ID, None, INCHIKEY_TYPE_ID, struct.inchikey),
+            )
+            # attach the InChIKey and the trivial name as identifiers.
+            ik_id = f'cccccccc-0000-0000-0000-0000000000{n:02d}'
+            nm_id = f'dddddddd-0000-0000-0000-0000000000{n:02d}'
+            cur.execute(
+                f'INSERT INTO {schema}.identifier_evidence VALUES '
+                f'(%s,%s,%s),(%s,%s,%s)',
+                (ik_id, INCHIKEY_TYPE_ID, struct.inchikey,
+                 nm_id, NAME_TYPE_ID, name),
+            )
+            cur.execute(
+                f'INSERT INTO {schema}.entity_identifier_lookup VALUES '
+                f'(%s,%s),(%s,%s)',
+                (eid, ik_id, eid, nm_id),
             )
         # the protein target — a non-chemical endpoint, never grouped.
         cur.execute(
@@ -349,3 +367,53 @@ def test_relation_collapses_with_union_provenance(synthetic_schema):
         """,
     )[0][0]
     assert full_alanine_edges == 3
+
+
+@pg
+def test_ambiguous_name_attaches_to_candidates(synthetic_schema):
+    # T030: the trivial name 'alanine' is borne by L/D/DL (3 distinct
+    # structures) → it attaches to all three candidates; an unambiguous name
+    # (one structure) produces no candidate links.
+    from omnipath_build.chemical_resolution_level import (
+        rebuild_chemical_ambiguous_name_candidates,
+        rebuild_chemical_resolution_levels,
+    )
+
+    conn, schema = synthetic_schema
+    # the candidate build reads the full-level groups for structure InChIKeys.
+    rebuild_chemical_resolution_levels(conn, schema=schema)
+    rebuild_chemical_ambiguous_name_candidates(conn, schema=schema)
+
+    candidates = {
+        eid
+        for (eid,) in _rows(
+            conn,
+            f"""
+            SELECT candidate_entity_id
+            FROM {schema}.chemical_ambiguous_name_candidate
+            WHERE ambiguous_name = 'alanine'
+            """,
+        )
+    }
+    assert candidates == {E_L, E_D, E_DL}
+
+    mechanisms = {
+        m
+        for (m,) in _rows(
+            conn,
+            f'SELECT DISTINCT resolution_mechanism '
+            f'FROM {schema}.chemical_ambiguous_name_candidate',
+        )
+    }
+    assert mechanisms == {'ambiguous_name_class'}
+
+    # beta-alanine / N-acetyl names map to a single structure → not ambiguous.
+    unambiguous = _rows(
+        conn,
+        f"""
+        SELECT count(*)
+        FROM {schema}.chemical_ambiguous_name_candidate
+        WHERE ambiguous_name IN ('beta-alanine', 'n-acetyl-l-alanine')
+        """,
+    )[0][0]
+    assert unambiguous == 0

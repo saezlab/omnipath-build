@@ -30,6 +30,7 @@ from omnipath_build.db import (
     drop_deferred_content_indexes,
 )
 from omnipath_build.chemical_resolution_level import (
+    rebuild_chemical_ambiguous_name_candidates,
     rebuild_chemical_resolution_levels,
 )
 from omnipath_build.classify import (
@@ -385,6 +386,21 @@ def main(argv: list[str] | None = None) -> int:
                     groups=resolution_level_stats.groups,
                     members=resolution_level_stats.group_members,
                     relations=resolution_level_stats.relations,
+                    seconds=f'{time.perf_counter() - step_started:.3f}',
+                )
+                step_started = time.perf_counter()
+                _derive_log('chemical_ambiguous_name_candidates_start')
+                ambiguous_name_stats = (
+                    rebuild_chemical_ambiguous_name_candidates(
+                        conn,
+                        schema=args.schema,
+                        progress=True,
+                    )
+                )
+                _derive_log(
+                    'chemical_ambiguous_name_candidates_done',
+                    ambiguous_names=ambiguous_name_stats.ambiguous_names,
+                    candidate_links=ambiguous_name_stats.candidate_links,
                     seconds=f'{time.perf_counter() - step_started:.3f}',
                 )
                 step_started = time.perf_counter()

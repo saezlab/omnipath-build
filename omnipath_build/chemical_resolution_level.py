@@ -58,6 +58,9 @@ from omnipath_build.cv_terms import CHEMICAL_ENTITY_TYPE
 #: Identifier type name of a standard InChIKey (matches ``chemical_fallback``).
 STANDARD_INCHI_KEY_TYPE = 'Standard Inchi Key:MI:1101'
 
+#: Trivial-name identifier types (a name borne by >1 structure is ambiguous).
+CHEMICAL_NAME_TYPES = ('Name:OM:0202', 'Synonym:OM:0203')
+
 #: A well-formed standard InChIKey (14-10-1, all upper-case A-Z).
 INCHIKEY_REGEX = r'^[A-Z]{14}-[A-Z]{10}-[A-Z]$'
 _INCHIKEY_RE = re.compile(INCHIKEY_REGEX)
@@ -203,6 +206,20 @@ def ensure_chemical_resolution_schema(
               entity_id uuid NOT NULL,
               inchikey text NOT NULL,
               PRIMARY KEY (level_id, entity_id)
+            )
+            """
+        ).format(schema_id)
+    )
+    cur.execute(
+        sql.SQL(
+            """
+            CREATE TABLE IF NOT EXISTS {0}.chemical_ambiguous_name_candidate (
+              ambiguous_name text NOT NULL,
+              candidate_entity_id uuid NOT NULL,
+              candidate_inchikey text NOT NULL,
+              resolution_mechanism text NOT NULL
+                DEFAULT 'ambiguous_name_class',
+              PRIMARY KEY (ambiguous_name, candidate_entity_id)
             )
             """
         ).format(schema_id)
@@ -467,6 +484,139 @@ def rebuild_chemical_resolution_levels(
         group_members=n_members,
         groups=n_groups,
         relations=n_relations,
+    )
+
+
+@dataclass(frozen=True)
+class ChemicalAmbiguousNameStats:
+    """Summary counts from the ambiguous-name→candidate build (T030)."""
+
+    ambiguous_names: int = 0
+    candidate_links: int = 0
+
+
+def rebuild_chemical_ambiguous_name_candidates(
+    conn: psycopg2.extensions.connection,
+    *,
+    schema: str = 'public',
+    progress: bool = False,
+) -> ChemicalAmbiguousNameStats:
+    """Attach ambiguous trivial names to their candidate structures (T030).
+
+    A trivial Name/Synonym borne by **>1 distinct chemical structure** (full
+    InChIKey) is ambiguous (e.g. ``alanine`` → L-/D-/racemic). Rather than
+    collapsing distinct compounds under the name or dropping it, link the name to
+    **each** candidate structure entity (``resolution_mechanism =
+    'ambiguous_name_class'``) — the destination for ambiguous/variable chemicals
+    now that the SMILES tier is gone (R9) and the fallback abstains on ambiguity
+    (R10). Broad ChEBI **class** nodes are retained separately as ontology nodes
+    (``entity_ontology_relation``, class → member edges) — this builds only the
+    name→candidate attachment. Folds 002-T021.
+
+    Reads ``chemical_resolution_group_member`` (full level) for the structure
+    entities + their InChIKeys, so it must run AFTER
+    :func:`rebuild_chemical_resolution_levels`. The name scan is restricted to
+    those structure entities (a candidate must be a resolved structure).
+    """
+
+    schema_id = sql.Identifier(schema)
+    chem_type = sql.Literal(CHEMICAL_ENTITY_TYPE)
+    ik_type = sql.Literal(STANDARD_INCHI_KEY_TYPE)
+    ik_regex = sql.Literal(INCHIKEY_REGEX)
+    name_types = sql.SQL(', ').join(
+        sql.Literal(name) for name in CHEMICAL_NAME_TYPES
+    )
+    started = time.perf_counter()
+
+    with conn.cursor() as cur:
+        ensure_chemical_resolution_schema(cur, schema)
+        cur.execute(
+            sql.SQL(
+                'TRUNCATE {0}.chemical_ambiguous_name_candidate'
+            ).format(schema_id)
+        )
+        cur.execute(
+            sql.SQL(
+                """
+                INSERT INTO {0}.chemical_ambiguous_name_candidate
+                  (ambiguous_name, candidate_entity_id, candidate_inchikey,
+                   resolution_mechanism)
+                WITH name_type AS (
+                  SELECT identifier_type_id FROM {0}.vocab_identifier_type
+                  WHERE name IN ({4})
+                ),
+                -- structure entities + their InChIKey from the already-built
+                -- full-level groups (one row per chemical structure entity).
+                struct AS (
+                  SELECT m.entity_id, m.inchikey
+                  FROM {0}.chemical_resolution_group_member m
+                  JOIN {0}.chemical_resolution_level l
+                    ON l.level_id = m.level_id AND l.name = 'full'
+                ),
+                -- (structure entity, trivial name, inchikey), junk-guarded.
+                struct_name AS (
+                  SELECT DISTINCT
+                    s.entity_id,
+                    s.inchikey,
+                    lower(trim(nm.value)) AS ambiguous_name
+                  FROM struct s
+                  JOIN {0}.entity_identifier_lookup eil
+                    ON eil.entity_id = s.entity_id
+                  JOIN {0}.identifier_evidence nm
+                    ON nm.identifier_id = eil.identifier_id
+                   AND nm.identifier_type_id IN (SELECT identifier_type_id FROM name_type)
+                  WHERE length(trim(nm.value)) >= 2
+                    AND trim(nm.value) !~ '^[0-9]+$'
+                    AND trim(nm.value) !~ {3}
+                ),
+                -- ambiguous = a name spanning >1 distinct structure (InChIKey).
+                ambiguous AS (
+                  SELECT ambiguous_name
+                  FROM struct_name
+                  GROUP BY ambiguous_name
+                  HAVING count(DISTINCT inchikey) > 1
+                )
+                SELECT
+                  sn.ambiguous_name,
+                  sn.entity_id,
+                  min(sn.inchikey) AS candidate_inchikey,
+                  'ambiguous_name_class' AS resolution_mechanism
+                FROM struct_name sn
+                JOIN ambiguous a USING (ambiguous_name)
+                GROUP BY sn.ambiguous_name, sn.entity_id
+                """
+            ).format(schema_id, chem_type, ik_type, ik_regex, name_types)
+        )
+        links = int(cur.rowcount)
+        cur.execute(
+            sql.SQL(
+                'SELECT count(DISTINCT ambiguous_name) '
+                'FROM {0}.chemical_ambiguous_name_candidate'
+            ).format(schema_id)
+        )
+        names = int(cur.fetchone()[0])
+        cur.execute(
+            sql.SQL(
+                """
+                CREATE INDEX IF NOT EXISTS
+                  chemical_ambiguous_name_candidate_entity_idx
+                ON {0}.chemical_ambiguous_name_candidate (candidate_entity_id)
+                """
+            ).format(schema_id)
+        )
+
+    conn.commit()
+    _log(
+        progress,
+        'ambiguous_name_candidates',
+        'done',
+        ambiguous_names=names,
+        candidate_links=links,
+        seconds=f'{time.perf_counter() - started:.3f}',
+    )
+    return ChemicalAmbiguousNameStats(
+        ambiguous_names=names,
+        candidate_links=links,
     )
 
 
