@@ -29,6 +29,9 @@ from omnipath_build.db import (
     ensure_content_primary_keys,
     drop_deferred_content_indexes,
 )
+from omnipath_build.chemical_resolution_level import (
+    rebuild_chemical_resolution_levels,
+)
 from omnipath_build.classify import (
     classify_chemical_class,
     classify_metabolic_domain,
@@ -365,6 +368,23 @@ def main(argv: list[str] | None = None) -> int:
                     entity_ontology_terms=table_stats.entity_ontology_terms,
                     ontology_terms=table_stats.ontology_terms,
                     entity_source_count=table_stats.entity_source_count,
+                    seconds=f'{time.perf_counter() - step_started:.3f}',
+                )
+                step_started = time.perf_counter()
+                _derive_log('chemical_resolution_levels_start')
+                resolution_level_stats = rebuild_chemical_resolution_levels(
+                    conn,
+                    schema=args.schema,
+                    progress=True,
+                )
+                _derive_log(
+                    'chemical_resolution_levels_done',
+                    chemical_entities=(
+                        resolution_level_stats.chemical_entities_with_inchikey
+                    ),
+                    groups=resolution_level_stats.groups,
+                    members=resolution_level_stats.group_members,
+                    relations=resolution_level_stats.relations,
                     seconds=f'{time.perf_counter() - step_started:.3f}',
                 )
                 step_started = time.perf_counter()

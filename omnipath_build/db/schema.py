@@ -1445,6 +1445,12 @@ def _ensure_resolution_schema(
             schema_id
         )
     )
+    log_step('ensure chemical resolution-level schema (spec 003 Phase 6)')
+    from omnipath_build.chemical_resolution_level import (
+        ensure_chemical_resolution_schema,
+    )
+
+    ensure_chemical_resolution_schema(cur, schema)
     if indexes:
         log_step('ensure resolution indexes')
         _ensure_resolution_indexes(cur, schema)

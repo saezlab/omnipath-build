@@ -180,6 +180,77 @@ CORE_CHEMICAL_BENCHMARKS: tuple[ChemicalBenchmark, ...] = tuple(
 
 
 # ---------------------------------------------------------------------------
+# Chemical resolution-level (structural-specificity) benchmarks (spec-003 T003)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ChemicalStructure:
+    """A chemical with a verified standard InChIKey (RDKit-derived ground truth).
+
+    InChIKeys were generated with ``rdkit.Chem.inchi.MolToInchiKey`` from the
+    SMILES below — used *only* in the test fixture; the build itself derives the
+    level keys with pure string prefixes and never imports RDKit (Constitution
+    II). ``block1`` is the InChIKey connectivity prefix (first 14 chars).
+    """
+
+    name: str
+    inchikey: str
+    smiles: str
+
+    @property
+    def block1(self) -> str:
+        return self.inchikey[:14]
+
+
+#: The three alanine stereo/charge variants share InChIKey block 1
+#: (``QNAYBMKLOCPYGJ``) — they collapse at the ``connectivity`` level only; at
+#: ``stereo_isotope_tautomer`` their block-2 hashes (``UWTATZPHSA`` /
+#: ``REOHCLBHSA`` / ``UHFFFAOYSA``) differ, so they stay distinct.
+L_ALANINE = ChemicalStructure(
+    'L-Alanine', 'QNAYBMKLOCPYGJ-UWTATZPHSA-N', 'C[C@@H](N)C(=O)O',
+)
+D_ALANINE = ChemicalStructure(
+    'D-Alanine', 'QNAYBMKLOCPYGJ-REOHCLBHSA-N', 'C[C@H](N)C(=O)O',
+)
+DL_ALANINE = ChemicalStructure(
+    'DL-Alanine', 'QNAYBMKLOCPYGJ-UHFFFAOYSA-N', 'CC(N)C(=O)O',
+)
+
+#: Same trivial-name family but a *different* skeleton (block 1) → must NEVER
+#: collapse with the alanine connectivity group at any level. beta-Alanine is
+#: the positional isomer; N-acetyl-L-alanine is the peptide-bond-bearing
+#: (residue-context) form — both verified distinct.
+BETA_ALANINE = ChemicalStructure(
+    'beta-Alanine', 'UCMIRNVEIXFBKS-UHFFFAOYSA-N', 'NCCC(=O)O',
+)
+N_ACETYL_L_ALANINE = ChemicalStructure(
+    'N-acetyl-L-alanine', 'KTHDTJVBEPMMGL-GSVOUGTGSA-N', 'C[C@@H](NC(C)=O)C(=O)O',
+)
+
+#: InChIKey block 1 shared by the alanine stereo/charge variants.
+ALANINE_CONNECTIVITY_BLOCK1 = 'QNAYBMKLOCPYGJ'
+
+#: Variants that collapse to one group at the ``connectivity`` level.
+ALANINE_CONNECTIVITY_GROUP: tuple[ChemicalStructure, ...] = (
+    L_ALANINE,
+    D_ALANINE,
+    DL_ALANINE,
+)
+
+#: Alanine-named structures that must stay distinct from the group at all levels.
+ALANINE_DISTINCT_STRUCTURES: tuple[ChemicalStructure, ...] = (
+    BETA_ALANINE,
+    N_ACETYL_L_ALANINE,
+)
+
+#: All resolution-level benchmark structures.
+RESOLUTION_LEVEL_STRUCTURES: tuple[ChemicalStructure, ...] = (
+    ALANINE_CONNECTIVITY_GROUP + ALANINE_DISTINCT_STRUCTURES
+)
+
+
+# ---------------------------------------------------------------------------
 # Helpers (pure, no DB)
 # ---------------------------------------------------------------------------
 
