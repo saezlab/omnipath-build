@@ -9,14 +9,18 @@ fixed priority, recording the producing ``resolution_mechanism``.
 
 Priority (this module — STAGE 1):
 
-  SMILES → ChEBI → ChEMBL → PubChem → SwissLipids → HMDB → LIPID MAPS
+  ChEBI → ChEMBL → PubChem → SwissLipids → HMDB → LIPID MAPS
   → keep-original (any other real external id, e.g. KEGG/FooDB/MetaNetX/CAS…)
   → name (exact, basic collision handling)
 
 A mention's primary id is therefore never a lower-priority id when a higher one
 is present (a ChEBI+PubChem record anchors on ChEBI). Same id across resources
-merges; different ids stay distinct. InChIKey is intentionally absent — those
-mentions resolve through the existing direct InChIKey path and never reach here.
+merges; different ids stay distinct. **InChIKey** is intentionally absent —
+those mentions resolve through the existing direct InChIKey path and never reach
+here. **SMILES** is also intentionally absent (R9/T046): a structure-less lipid
+like ``PC(18:1_16:0)`` yields a placeholder SMILES that would collapse distinct
+species, so SMILES is never a canonical merge key — it stays an attached
+identifier only.
 
 Deferred to a follow-up (R22 steps 4–5, the ~3.4% non-priority bulk): the
 **within-resource id merge** (FooDB membership→compound, lifting structure-less
@@ -44,7 +48,7 @@ NAME_TYPE = cv_term_label_accession(IdentifierNamespaceCv.NAME)
 # (identifier_type label, tier [lower=preferred], resolution_mechanism).
 # Tiers are distinct so the per-mention pick is fully deterministic.
 _TIERS: tuple[tuple[str, int, str], ...] = (
-    ('Smiles:MI:0239', 1, 'smiles'),
+    # SMILES intentionally omitted (R9/T046) — never a canonical merge key.
     ('Chebi:MI:0474', 2, 'chebi'),
     ('Chembl Compound:MI:0967', 3, 'chembl'),
     ('Pubchem Compound:OM:0002', 4, 'pubchem'),
@@ -85,6 +89,26 @@ def _values(rows: tuple) -> str:
         m = mech.replace("'", "''")
         parts.append(f"('{n}', {tier}, '{m}')")
     return ', '.join(parts)
+
+
+def chemical_fallback_fires_sql(
+    rcs_alias: str = 'rcs',
+    cf_alias: str = 'cf',
+) -> str:
+    """SQL predicate: may the per-record chemical fallback supply the identity?
+
+    R10/T047 (folds 002-T070): the resolver wins at ``candidate_count = 1``; the
+    fallback (``cf``) fires **only when the resolver produced no candidates**
+    (``candidate_count`` 0 or NULL). When the resolver is genuinely ambiguous
+    (``candidate_count > 1``) the entity stays **unresolved** — the fallback must
+    not pick one of several distinct structures. This is the single source of
+    truth for the gate, consumed by ``entity_resolution_base`` and unit-tested.
+    """
+
+    return (
+        f'{cf_alias}.canonical_identifier IS NOT NULL '
+        f'AND coalesce({rcs_alias}.candidate_count, 0) = 0'
+    )
 
 
 def build_chemical_anchor_map(con, *, log=lambda *_: None) -> int:

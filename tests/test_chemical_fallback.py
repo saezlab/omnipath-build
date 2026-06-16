@@ -85,10 +85,60 @@ def test_priority_pick_and_mechanisms():
     assert _pick(con, 'm_pubchem') == (TYPES['Pubchem Compound:OM:0002'], '999', 'pubchem')
     # FooDB-only → keep-original (stable id, not a hash).
     assert _pick(con, 'm_foodb') == (TYPES['Foodb:OM:0213'], 'FDB000123', 'original_id')
-    # SMILES (structure-ish) beats ChEBI.
-    assert _pick(con, 'm_smiles_chebi') == (TYPES['Smiles:MI:0239'], 'CCO', 'smiles')
+    # SMILES is no longer a fallback tier (R9/T046) → ChEBI wins.
+    assert _pick(con, 'm_smiles_chebi') == (TYPES['Chebi:MI:0474'], '16236', 'chebi')
     # name-only → name.
     assert _pick(con, 'm_name') == (TYPES['Name:OM:0202'], 'aspirin', 'name')
+
+
+def test_smiles_is_not_a_fallback_tier():
+    # R9/T046: a placeholder SMILES of a structure-less lipid (e.g. unknown
+    # sn-position) would false-merge distinct species, so SMILES is NOT a
+    # canonical merge key — it stays an attached identifier only.
+    from omnipath_build.chemical_fallback import _TIERS
+
+    assert all(name != 'Smiles:MI:0239' for name, _, _ in _TIERS)
+
+
+def test_smiles_only_chemical_has_no_fallback_pick():
+    con = _con([
+        # SMILES alone → no fallback row (SMILES is not a tier).
+        ('m_smiles_only', CHEM, [('Smiles:MI:0239', 'CCO')]),
+        # SMILES + ChEBI → ChEBI wins, SMILES ignored.
+        ('m_smiles_chebi2', CHEM, [
+            ('Smiles:MI:0239', 'CCO'), ('Chebi:MI:0474', '16236'),
+        ]),
+    ])
+    _resolve(con)
+    assert _pick(con, 'm_smiles_only') is None
+    assert _pick(con, 'm_smiles_chebi2') == (
+        TYPES['Chebi:MI:0474'], '16236', 'chebi',
+    )
+
+
+def test_chemical_fallback_gate_predicate():
+    # R10/T047: the per-record fallback may supply the canonical identity ONLY
+    # when the resolver produced NO candidates. An ambiguous chemical
+    # (candidate_count > 1) must stay unresolved — never a fallback pick.
+    from omnipath_build.chemical_fallback import chemical_fallback_fires_sql
+
+    pred = chemical_fallback_fires_sql()
+    con = duckdb.connect(':memory:')
+    con.execute('CREATE TABLE rcs (candidate_count BIGINT)')
+    con.execute('CREATE TABLE cf (canonical_identifier VARCHAR)')
+
+    def fires(count, cf_val):
+        con.execute('DELETE FROM rcs')
+        con.execute('DELETE FROM cf')
+        con.execute('INSERT INTO rcs VALUES (?)', [count])
+        con.execute('INSERT INTO cf VALUES (?)', [cf_val])
+        return con.execute(f'SELECT {pred} FROM rcs, cf').fetchone()[0]
+
+    assert fires(0, 'CHEBI:1') is True       # no resolver candidates → fires
+    assert fires(None, 'CHEBI:1') is True    # NULL (no candidates) → fires
+    assert fires(2, 'CHEBI:1') is False      # ambiguous → stays unresolved
+    assert fires(1, 'CHEBI:1') is False      # resolver handles =1 upstream
+    assert fires(0, None) is False           # no fallback id → nothing to pick
 
 
 def test_inchikey_and_junk_excluded():

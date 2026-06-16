@@ -34,6 +34,7 @@ from omnipath_build.evidence_projector import (
 from omnipath_build.chemical_fallback import (
     build_chemical_anchor_map,
     build_chemical_fallback_resolution,
+    chemical_fallback_fires_sql,
 )
 from omnipath_build.multigene_split import explode_multi_gene_protein_mentions
 from omnipath_build.resolver.identifier_types import (
@@ -1231,8 +1232,9 @@ def _canonicalize_loaded_duckdb(
             STANDARD_INCHI_KEY_TYPE,
         ],
     )
+    cf_fires = chemical_fallback_fires_sql()
     con.execute(
-        """
+        f"""
         CREATE TABLE entity_resolution_base AS
         WITH direct_resolution AS (
           SELECT
@@ -1353,25 +1355,28 @@ def _canonicalize_loaded_duckdb(
           -- Chemical fallback (T020/R22): when the structure + resolver-
           -- candidate paths leave a chemical unresolved, take its best
           -- non-structure id by priority (cf) instead of the md5 hash.
+          -- Gated (R10/T047): cf fires ONLY when the resolver produced no
+          -- candidates ({cf_fires}); candidate_count > 1 (ambiguous) stays
+          -- unresolved — never a fallback pick over several distinct structures.
           CASE
             WHEN rcs.candidate_count = 1 THEN rcs.canonical_identifier_type_id
-            WHEN cf.canonical_identifier IS NOT NULL
+            WHEN {cf_fires}
               THEN cf.canonical_identifier_type_id
             ELSE unresolved_type.identifier_type_id
           END AS canonical_identifier_type_id,
           CASE
             WHEN rcs.candidate_count = 1 THEN rcs.canonical_identifier
-            WHEN cf.canonical_identifier IS NOT NULL THEN cf.canonical_identifier
+            WHEN {cf_fires} THEN cf.canonical_identifier
             ELSE md5(eig.unresolved_identifier_key)
           END AS canonical_identifier,
           CASE
             WHEN rcs.candidate_count = 1 THEN 'resolved'
-            WHEN cf.canonical_identifier IS NOT NULL THEN 'resolved'
+            WHEN {cf_fires} THEN 'resolved'
             ELSE 'unresolved'
           END AS status,
           CASE
             WHEN rcs.candidate_count = 1 THEN 'resolver'
-            WHEN cf.canonical_identifier IS NOT NULL THEN cf.mechanism
+            WHEN {cf_fires} THEN cf.mechanism
             ELSE 'unresolved'
           END AS resolution_mechanism
         FROM remaining_entity ee
