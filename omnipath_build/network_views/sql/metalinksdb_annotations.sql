@@ -5,6 +5,9 @@ SET max_parallel_workers = 0;
 -- metalinksdb_protein_annotations
 -- One row per canonical human protein.
 -- Sources: UniProt (10), GuideToPharma (21), TCDB (41)
+-- 004-metalinksdb-view: added uniprot_pathway_participations (UniProt
+-- 'Pathway Participation:OM:0607' -- closes the protein-pathway gap named in
+-- FR-002; see research.md R5).
 -- ============================================================
 -- One row per canonical human protein with functional annotations aggregated from UniProt, GuideToPharma, and TCDB.
 DROP MATERIALIZED VIEW IF EXISTS metalinksdb_protein_annotations;
@@ -17,7 +20,8 @@ uniprot_ann AS (
         array_agg(DISTINCT a.value) FILTER (WHERE a.term = 'Function:OM:0603')             AS uniprot_functions,
         array_agg(DISTINCT a.value) FILTER (WHERE a.term = 'Disease Involvement:OM:0606')  AS uniprot_disease_involvements,
         array_agg(DISTINCT a.value) FILTER (WHERE a.term = 'Ec Number:OM:0611')            AS uniprot_ec_numbers,
-        array_agg(DISTINCT a.value) FILTER (WHERE a.term = 'Protein Family:OM:0610')       AS uniprot_protein_families
+        array_agg(DISTINCT a.value) FILTER (WHERE a.term = 'Protein Family:OM:0610')       AS uniprot_protein_families,
+        array_agg(DISTINCT a.value) FILTER (WHERE a.term = 'Pathway Participation:OM:0607') AS uniprot_pathway_participations
     FROM entity_evidence_annotation eea
     JOIN annotation a ON a.annotation_key = eea.annotation_key
     JOIN entity_evidence_resolution eer ON eer.source_id = eea.source_id
@@ -28,7 +32,8 @@ uniprot_ann AS (
           'Function:OM:0603',
           'Disease Involvement:OM:0606',
           'Ec Number:OM:0611',
-          'Protein Family:OM:0610'
+          'Protein Family:OM:0610',
+          'Pathway Participation:OM:0607'
       )
     GROUP BY eer.entity_id
 ),
@@ -66,6 +71,7 @@ SELECT
     u.uniprot_disease_involvements,
     u.uniprot_ec_numbers,
     u.uniprot_protein_families,
+    u.uniprot_pathway_participations,
     g.gtp_functional_classes,
     g.gtp_families,
     t.tcdb_transporter_families
@@ -88,6 +94,19 @@ CREATE INDEX ON metalinksdb_protein_annotations USING gin (uniprot_ec_numbers);
 -- metalinksdb_compound_annotations
 -- One row per canonical compound.
 -- Sources: HMDB (22), LipidMaps (25)
+-- 004-metalinksdb-view (research.md R5): metabolite PATHWAY, DISEASE,
+-- STITCH SCORE, and ENDOGENOUS/EXOGENOUS were checked against the live build
+-- and found NOT addable at this entity level:
+--   - pathway: only source is KEGG's 'Pathway:OM:0874'/'Pathway Component:OM:0315',
+--     both attached to Reaction entities (a multi-hop, non-MetaLinksDB-source
+--     traversal) -- documented gap, not implemented.
+--   - disease: 'Disease Involvement:OM:0606' only resolves to Gene/protein
+--     entities (already surfaced on the protein side above) -- no compound-level
+--     source exists -- documented gap.
+--   - STITCH score and endogenous/exogenous are RELATION-level (per-interaction)
+--     annotations, not per-compound ones -- they are surfaced as
+--     `best_stitch_score` / `is_endogenous` columns on the combined
+--     `metalinksdb_relations` view instead (see metalinksdb.sql), not here.
 -- ============================================================
 -- One row per canonical compound with HMDB location/biospecimen data, LipidMaps lipid classification, and an is_lipid flag.
 DROP MATERIALIZED VIEW IF EXISTS metalinksdb_compound_annotations;

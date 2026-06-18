@@ -1016,101 +1016,555 @@ CREATE INDEX ON metalinksdb_tcdb_relations (compound_canonical_id);
 CREATE INDEX ON metalinksdb_tcdb_relations (protein_uniprot);
 
 -- ────────────────────────────────────────────────────────────────────────────
--- Combined aggregated view — one row per unique resolved (compound, protein) pair
--- Aggregates across all per-source views. Requires all per-source views above.
--- relation_types: array of distinct relationship categories ('interaction', 'transport')
+-- New sources added by 004-metalinksdb-view: RECON3D, Rhea, Human-GEM (transport),
+-- CellPhoneDB, NeuronChat (signaling). See research.md for the data-shape findings
+-- (Transport:OM:0035 entity type, Human-GEM loaded as 'metatlas', etc).
 -- ────────────────────────────────────────────────────────────────────────────
 
--- Aggregates all resolved protein–metabolite pairs across sources into one row per canonical (compound, protein) pair,
--- collecting source names, relation types (interaction/transport), best pChEMBL value, and literature references.
+-- ────────────────────────────────────────────────────────────────────────────
+-- RECON3D transport  (source_id varies; metabolite-transporter pairs)
+-- Two-hop model: protein --controls--> Transport entity --has_participant--> Chemical.
+-- compartment_from/compartment_to come from the participant's 'Subcellular Location'
+-- annotation, split by its 'Reactant'/'Product' role within the same Transport event
+-- (both are presence-only flags with NULL value -- detect via BOOL_OR, not MAX(value)).
+-- No raw UniProt is carried by RECON3D itself (Entrez/gene-name only) -- protein_uniprot
+-- is left NULL here and resolved at the combined-view level via gene_protein_representative.
+-- ────────────────────────────────────────────────────────────────────────────
 
-CREATE OR REPLACE FUNCTION get_entity_type_id(type_name text)
-RETURNS bigint LANGUAGE plpgsql STABLE AS $$
-BEGIN
-    RETURN (SELECT entity_type_id FROM public.vocab_entity_type WHERE name = type_name);
-END;
-$$;
+DROP MATERIALIZED VIEW IF EXISTS metalinksdb_recon3d_relations;
+CREATE MATERIALIZED VIEW metalinksdb_recon3d_relations AS
+WITH
+transport_control AS (
+    SELECT re.relation_evidence_id AS control_re_id,
+           re.subject_entity_evidence_id AS protein_entity_evidence_id,
+           re.object_entity_evidence_id AS transport_entity_evidence_id
+    FROM relation_evidence re
+    WHERE re.source_id = get_source_id('recon3d')
+      AND re.predicate_id = (SELECT relation_predicate_id FROM vocab_relation_predicate WHERE name = 'controls')
+      AND re.object_entity_evidence_id IN (
+          SELECT entity_evidence_id FROM entity_evidence
+          WHERE source_id = get_source_id('recon3d') AND entity_type_id = get_entity_type_id('Transport:OM:0035')
+      )
+),
+participant_raw AS (
+    SELECT re.relation_evidence_id AS participant_re_id,
+           re.subject_entity_evidence_id AS transport_entity_evidence_id,
+           re.object_entity_evidence_id AS compound_entity_evidence_id,
+           BOOL_OR(a.term = 'Reactant:OM:0310') AS is_reactant,
+           BOOL_OR(a.term = 'Product:OM:0311') AS is_product,
+           MAX(CASE WHEN a.term = 'Subcellular Location:OM:0604' THEN a.value END) AS compartment
+    FROM relation_evidence re
+    LEFT JOIN relation_evidence_annotation rea ON rea.source_id = re.source_id AND rea.relation_evidence_id = re.relation_evidence_id
+    LEFT JOIN annotation a ON a.annotation_key = rea.annotation_key
+    WHERE re.source_id = get_source_id('recon3d')
+      AND re.predicate_id = (SELECT relation_predicate_id FROM vocab_relation_predicate WHERE name = 'has_participant')
+      AND re.subject_entity_evidence_id IN (
+          SELECT entity_evidence_id FROM entity_evidence
+          WHERE source_id = get_source_id('recon3d') AND entity_type_id = get_entity_type_id('Transport:OM:0035')
+      )
+    GROUP BY 1,2,3
+),
+participant_resolved AS (
+    SELECT pr.transport_entity_evidence_id,
+           eer.entity_id AS compound_entity_id,
+           MAX(CASE WHEN pr.is_reactant THEN pr.compartment END) AS compartment_from,
+           MAX(CASE WHEN pr.is_product  THEN pr.compartment END) AS compartment_to
+    FROM participant_raw pr
+    JOIN entity_evidence_resolution eer
+        ON eer.source_id = get_source_id('recon3d')
+       AND eer.entity_evidence_id = pr.compound_entity_evidence_id
+       AND eer.status_id = 1
+    GROUP BY 1,2
+)
+SELECT
+    'recon3d'::text AS source,
+    tc.control_re_id AS relation_evidence_id,
+    e_compound.entity_id AS compound_entity_id,
+    e_compound.canonical_identifier AS compound_canonical_id,
+    vit_c.name AS compound_canonical_id_type,
+    1 AS compound_resolution_status,
+    e_protein.entity_id AS protein_entity_id,
+    e_protein.canonical_identifier AS protein_canonical_id,
+    vit_p.name AS protein_canonical_id_type,
+    1 AS protein_resolution_status,
+    NULL::text AS protein_uniprot,
+    pr.compartment_from,
+    pr.compartment_to,
+    CASE WHEN pr.compartment_from IS NOT NULL AND pr.compartment_to IS NOT NULL THEN 'reactant_to_product'
+         WHEN pr.compartment_from IS NOT NULL THEN 'reactant'
+         WHEN pr.compartment_to IS NOT NULL THEN 'product' END AS reaction_direction,
+    NULL::text AS interaction_type
+FROM transport_control tc
+JOIN participant_resolved pr ON pr.transport_entity_evidence_id = tc.transport_entity_evidence_id
+JOIN entity_evidence_resolution eer_protein
+    ON eer_protein.source_id = get_source_id('recon3d')
+   AND eer_protein.entity_evidence_id = tc.protein_entity_evidence_id
+   AND eer_protein.status_id = 1
+JOIN entity e_protein ON e_protein.entity_id = eer_protein.entity_id
+LEFT JOIN vocab_identifier_type vit_p ON vit_p.identifier_type_id = e_protein.canonical_identifier_type_id
+JOIN entity e_compound ON e_compound.entity_id = pr.compound_entity_id
+LEFT JOIN vocab_identifier_type vit_c ON vit_c.identifier_type_id = e_compound.canonical_identifier_type_id;
 
-CREATE OR REPLACE FUNCTION get_identifier_type_id(type_name text)
-RETURNS bigint LANGUAGE plpgsql STABLE AS $$
-BEGIN
-    RETURN (SELECT identifier_type_id FROM public.vocab_identifier_type WHERE name = type_name);
-END;
-$$;
+CREATE INDEX ON metalinksdb_recon3d_relations (compound_entity_id);
+CREATE INDEX ON metalinksdb_recon3d_relations (protein_entity_id);
+CREATE INDEX ON metalinksdb_recon3d_relations (compound_canonical_id);
+
+-- ────────────────────────────────────────────────────────────────────────────
+-- Rhea transport  -- same two-hop model as RECON3D, but compartment comes from
+-- 'Membrane Side' (in/out), which is sparser than RECON3D's Subcellular Location
+-- (only present on a subset of participant rows) -- compartment_from/to will be
+-- NULL more often here; that is expected, not a bug.
+-- ────────────────────────────────────────────────────────────────────────────
+
+DROP MATERIALIZED VIEW IF EXISTS metalinksdb_rhea_relations;
+CREATE MATERIALIZED VIEW metalinksdb_rhea_relations AS
+WITH
+transport_control AS (
+    SELECT re.relation_evidence_id AS control_re_id,
+           re.subject_entity_evidence_id AS protein_entity_evidence_id,
+           re.object_entity_evidence_id AS transport_entity_evidence_id
+    FROM relation_evidence re
+    WHERE re.source_id = get_source_id('rhea')
+      AND re.predicate_id = (SELECT relation_predicate_id FROM vocab_relation_predicate WHERE name = 'controls')
+      AND re.object_entity_evidence_id IN (
+          SELECT entity_evidence_id FROM entity_evidence
+          WHERE source_id = get_source_id('rhea') AND entity_type_id = get_entity_type_id('Transport:OM:0035')
+      )
+),
+participant_raw AS (
+    SELECT re.relation_evidence_id AS participant_re_id,
+           re.subject_entity_evidence_id AS transport_entity_evidence_id,
+           re.object_entity_evidence_id AS compound_entity_evidence_id,
+           BOOL_OR(a.term = 'Reactant:OM:0310') AS is_reactant,
+           BOOL_OR(a.term = 'Product:OM:0311') AS is_product,
+           MAX(CASE WHEN a.term = 'Membrane Side:OM:1231' THEN a.value END) AS compartment
+    FROM relation_evidence re
+    LEFT JOIN relation_evidence_annotation rea ON rea.source_id = re.source_id AND rea.relation_evidence_id = re.relation_evidence_id
+    LEFT JOIN annotation a ON a.annotation_key = rea.annotation_key
+    WHERE re.source_id = get_source_id('rhea')
+      AND re.predicate_id = (SELECT relation_predicate_id FROM vocab_relation_predicate WHERE name = 'has_participant')
+      AND re.subject_entity_evidence_id IN (
+          SELECT entity_evidence_id FROM entity_evidence
+          WHERE source_id = get_source_id('rhea') AND entity_type_id = get_entity_type_id('Transport:OM:0035')
+      )
+    GROUP BY 1,2,3
+),
+participant_resolved AS (
+    SELECT pr.transport_entity_evidence_id,
+           eer.entity_id AS compound_entity_id,
+           MAX(CASE WHEN pr.is_reactant THEN pr.compartment END) AS compartment_from,
+           MAX(CASE WHEN pr.is_product  THEN pr.compartment END) AS compartment_to
+    FROM participant_raw pr
+    JOIN entity_evidence_resolution eer
+        ON eer.source_id = get_source_id('rhea')
+       AND eer.entity_evidence_id = pr.compound_entity_evidence_id
+       AND eer.status_id = 1
+    GROUP BY 1,2
+)
+SELECT
+    'rhea'::text AS source,
+    tc.control_re_id AS relation_evidence_id,
+    e_compound.entity_id AS compound_entity_id,
+    e_compound.canonical_identifier AS compound_canonical_id,
+    vit_c.name AS compound_canonical_id_type,
+    1 AS compound_resolution_status,
+    e_protein.entity_id AS protein_entity_id,
+    e_protein.canonical_identifier AS protein_canonical_id,
+    vit_p.name AS protein_canonical_id_type,
+    1 AS protein_resolution_status,
+    NULL::text AS protein_uniprot,
+    pr.compartment_from,
+    pr.compartment_to,
+    CASE WHEN pr.compartment_from IS NOT NULL AND pr.compartment_to IS NOT NULL THEN 'reactant_to_product'
+         WHEN pr.compartment_from IS NOT NULL THEN 'reactant'
+         WHEN pr.compartment_to IS NOT NULL THEN 'product' END AS reaction_direction,
+    NULL::text AS interaction_type
+FROM transport_control tc
+JOIN participant_resolved pr ON pr.transport_entity_evidence_id = tc.transport_entity_evidence_id
+JOIN entity_evidence_resolution eer_protein
+    ON eer_protein.source_id = get_source_id('rhea')
+   AND eer_protein.entity_evidence_id = tc.protein_entity_evidence_id
+   AND eer_protein.status_id = 1
+JOIN entity e_protein ON e_protein.entity_id = eer_protein.entity_id
+LEFT JOIN vocab_identifier_type vit_p ON vit_p.identifier_type_id = e_protein.canonical_identifier_type_id
+JOIN entity e_compound ON e_compound.entity_id = pr.compound_entity_id
+LEFT JOIN vocab_identifier_type vit_c ON vit_c.identifier_type_id = e_compound.canonical_identifier_type_id;
+
+CREATE INDEX ON metalinksdb_rhea_relations (compound_entity_id);
+CREATE INDEX ON metalinksdb_rhea_relations (protein_entity_id);
+CREATE INDEX ON metalinksdb_rhea_relations (compound_canonical_id);
+
+-- ────────────────────────────────────────────────────────────────────────────
+-- Human-GEM transport. NOTE: Human-GEM is loaded in pypath/this build under the
+-- data_source name 'metatlas' (Metabolic Atlas' unified MAR/MAM namespace; confirmed
+-- Human-GEM-shaped -- same Transport/Reaction entity-type split as RECON3D,
+-- taxonomy_id NULL throughout, single-organism model). All get_source_id() lookups
+-- below read from 'metatlas'; the view itself is named/labelled 'humangem' to match
+-- FR-010's source name and the 12-source list. Same two-hop model + Subcellular
+-- Location compartment as RECON3D. Protein-side resolution is currently poor
+-- (Ensembl-keyed identifiers mostly unresolved -- a resolver-layer gap, out of this
+-- view-layer-only spec's scope) so this view is mechanically correct but near-empty
+-- today; FR-013 applies (empty/near-empty + logged, not a failure).
+-- ────────────────────────────────────────────────────────────────────────────
+
+DROP MATERIALIZED VIEW IF EXISTS metalinksdb_humangem_relations;
+CREATE MATERIALIZED VIEW metalinksdb_humangem_relations AS
+WITH
+transport_control AS (
+    SELECT re.relation_evidence_id AS control_re_id,
+           re.subject_entity_evidence_id AS protein_entity_evidence_id,
+           re.object_entity_evidence_id AS transport_entity_evidence_id
+    FROM relation_evidence re
+    WHERE re.source_id = get_source_id('metatlas')
+      AND re.predicate_id = (SELECT relation_predicate_id FROM vocab_relation_predicate WHERE name = 'controls')
+      AND re.object_entity_evidence_id IN (
+          SELECT entity_evidence_id FROM entity_evidence
+          WHERE source_id = get_source_id('metatlas') AND entity_type_id = get_entity_type_id('Transport:OM:0035')
+      )
+),
+participant_raw AS (
+    SELECT re.relation_evidence_id AS participant_re_id,
+           re.subject_entity_evidence_id AS transport_entity_evidence_id,
+           re.object_entity_evidence_id AS compound_entity_evidence_id,
+           BOOL_OR(a.term = 'Reactant:OM:0310') AS is_reactant,
+           BOOL_OR(a.term = 'Product:OM:0311') AS is_product,
+           MAX(CASE WHEN a.term = 'Subcellular Location:OM:0604' THEN a.value END) AS compartment
+    FROM relation_evidence re
+    LEFT JOIN relation_evidence_annotation rea ON rea.source_id = re.source_id AND rea.relation_evidence_id = re.relation_evidence_id
+    LEFT JOIN annotation a ON a.annotation_key = rea.annotation_key
+    WHERE re.source_id = get_source_id('metatlas')
+      AND re.predicate_id = (SELECT relation_predicate_id FROM vocab_relation_predicate WHERE name = 'has_participant')
+      AND re.subject_entity_evidence_id IN (
+          SELECT entity_evidence_id FROM entity_evidence
+          WHERE source_id = get_source_id('metatlas') AND entity_type_id = get_entity_type_id('Transport:OM:0035')
+      )
+    GROUP BY 1,2,3
+),
+participant_resolved AS (
+    SELECT pr.transport_entity_evidence_id,
+           eer.entity_id AS compound_entity_id,
+           MAX(CASE WHEN pr.is_reactant THEN pr.compartment END) AS compartment_from,
+           MAX(CASE WHEN pr.is_product  THEN pr.compartment END) AS compartment_to
+    FROM participant_raw pr
+    JOIN entity_evidence_resolution eer
+        ON eer.source_id = get_source_id('metatlas')
+       AND eer.entity_evidence_id = pr.compound_entity_evidence_id
+       AND eer.status_id = 1
+    GROUP BY 1,2
+)
+SELECT
+    'humangem'::text AS source,
+    tc.control_re_id AS relation_evidence_id,
+    e_compound.entity_id AS compound_entity_id,
+    e_compound.canonical_identifier AS compound_canonical_id,
+    vit_c.name AS compound_canonical_id_type,
+    1 AS compound_resolution_status,
+    e_protein.entity_id AS protein_entity_id,
+    e_protein.canonical_identifier AS protein_canonical_id,
+    vit_p.name AS protein_canonical_id_type,
+    1 AS protein_resolution_status,
+    NULL::text AS protein_uniprot,
+    pr.compartment_from,
+    pr.compartment_to,
+    CASE WHEN pr.compartment_from IS NOT NULL AND pr.compartment_to IS NOT NULL THEN 'reactant_to_product'
+         WHEN pr.compartment_from IS NOT NULL THEN 'reactant'
+         WHEN pr.compartment_to IS NOT NULL THEN 'product' END AS reaction_direction,
+    NULL::text AS interaction_type
+FROM transport_control tc
+JOIN participant_resolved pr ON pr.transport_entity_evidence_id = tc.transport_entity_evidence_id
+JOIN entity_evidence_resolution eer_protein
+    ON eer_protein.source_id = get_source_id('metatlas')
+   AND eer_protein.entity_evidence_id = tc.protein_entity_evidence_id
+   AND eer_protein.status_id = 1
+JOIN entity e_protein ON e_protein.entity_id = eer_protein.entity_id
+LEFT JOIN vocab_identifier_type vit_p ON vit_p.identifier_type_id = e_protein.canonical_identifier_type_id
+JOIN entity e_compound ON e_compound.entity_id = pr.compound_entity_id
+LEFT JOIN vocab_identifier_type vit_c ON vit_c.identifier_type_id = e_compound.canonical_identifier_type_id;
+
+CREATE INDEX ON metalinksdb_humangem_relations (compound_entity_id);
+CREATE INDEX ON metalinksdb_humangem_relations (protein_entity_id);
+CREATE INDEX ON metalinksdb_humangem_relations (compound_canonical_id);
+
+-- ────────────────────────────────────────────────────────────────────────────
+-- ────────────────────────────────────────────────────────────────────────────
+-- CellPhoneDB signaling  -- direct Chemical --interacts_with--> Protein edges.
+-- No distinct 'interaction type' term exists in the data (only Ligand/Receptor
+-- presence flags); 'ligand_receptor' is used as a fixed label since that role
+-- pairing is exactly what this predicate represents.
+-- ────────────────────────────────────────────────────────────────────────────
+
+DROP MATERIALIZED VIEW IF EXISTS metalinksdb_cellphonedb_relations;
+CREATE MATERIALIZED VIEW metalinksdb_cellphonedb_relations AS
+WITH
+signaling_re AS (
+    SELECT re.relation_evidence_id, re.subject_entity_evidence_id AS compound_entity_evidence_id,
+           re.object_entity_evidence_id AS protein_entity_evidence_id
+    FROM relation_evidence re
+    JOIN entity_evidence ee_c ON ee_c.source_id = re.source_id AND ee_c.entity_evidence_id = re.subject_entity_evidence_id
+        AND ee_c.entity_type_id = get_entity_type_id('Chemical:OM:0037')
+    JOIN entity_evidence ee_p ON ee_p.source_id = re.source_id AND ee_p.entity_evidence_id = re.object_entity_evidence_id
+        AND ee_p.entity_type_id = get_entity_type_id('Protein:MI:0326')
+    WHERE re.source_id = get_source_id('cellphonedb')
+      AND re.predicate_id = (SELECT relation_predicate_id FROM vocab_relation_predicate WHERE name = 'interacts_with')
+)
+SELECT
+    'cellphonedb'::text AS source,
+    sr.relation_evidence_id,
+    e_compound.entity_id AS compound_entity_id,
+    e_compound.canonical_identifier AS compound_canonical_id,
+    vit_c.name AS compound_canonical_id_type,
+    eer_compound.status_id AS compound_resolution_status,
+    e_protein.entity_id AS protein_entity_id,
+    e_protein.canonical_identifier AS protein_canonical_id,
+    vit_p.name AS protein_canonical_id_type,
+    eer_protein.status_id AS protein_resolution_status,
+    NULL::text AS protein_uniprot,
+    NULL::text AS compartment_from,
+    NULL::text AS compartment_to,
+    NULL::text AS reaction_direction,
+    'ligand_receptor'::text AS interaction_type
+FROM signaling_re sr
+LEFT JOIN entity_evidence_resolution eer_compound
+    ON eer_compound.source_id = get_source_id('cellphonedb') AND eer_compound.entity_evidence_id = sr.compound_entity_evidence_id AND eer_compound.status_id = 1
+LEFT JOIN entity e_compound ON e_compound.entity_id = eer_compound.entity_id
+LEFT JOIN vocab_identifier_type vit_c ON vit_c.identifier_type_id = e_compound.canonical_identifier_type_id
+LEFT JOIN entity_evidence_resolution eer_protein
+    ON eer_protein.source_id = get_source_id('cellphonedb') AND eer_protein.entity_evidence_id = sr.protein_entity_evidence_id AND eer_protein.status_id = 1
+LEFT JOIN entity e_protein ON e_protein.entity_id = eer_protein.entity_id
+LEFT JOIN vocab_identifier_type vit_p ON vit_p.identifier_type_id = e_protein.canonical_identifier_type_id
+WHERE eer_compound.entity_id IS NOT NULL AND eer_protein.entity_id IS NOT NULL;
+
+CREATE INDEX ON metalinksdb_cellphonedb_relations (compound_entity_id);
+CREATE INDEX ON metalinksdb_cellphonedb_relations (protein_entity_id);
+CREATE INDEX ON metalinksdb_cellphonedb_relations (compound_canonical_id);
+
+-- ────────────────────────────────────────────────────────────────────────────
+-- NeuronChat signaling -- direct Chemical --interacts_with--> Protein edges,
+-- with a real-valued 'Interaction Type' annotation per row (ligand-receptor,
+-- gas-effector, ligand degradation, ligand uptake).
+-- ────────────────────────────────────────────────────────────────────────────
+
+DROP MATERIALIZED VIEW IF EXISTS metalinksdb_neuronchat_relations;
+CREATE MATERIALIZED VIEW metalinksdb_neuronchat_relations AS
+WITH
+signaling_re AS (
+    SELECT re.relation_evidence_id, re.subject_entity_evidence_id AS compound_entity_evidence_id,
+           re.object_entity_evidence_id AS protein_entity_evidence_id
+    FROM relation_evidence re
+    JOIN entity_evidence ee_c ON ee_c.source_id = re.source_id AND ee_c.entity_evidence_id = re.subject_entity_evidence_id
+        AND ee_c.entity_type_id = get_entity_type_id('Chemical:OM:0037')
+    JOIN entity_evidence ee_p ON ee_p.source_id = re.source_id AND ee_p.entity_evidence_id = re.object_entity_evidence_id
+        AND ee_p.entity_type_id = get_entity_type_id('Protein:MI:0326')
+    WHERE re.source_id = get_source_id('neuronchat')
+      AND re.predicate_id = (SELECT relation_predicate_id FROM vocab_relation_predicate WHERE name = 'interacts_with')
+),
+rel_annotations AS (
+    SELECT rea.relation_evidence_id,
+        MAX(CASE WHEN a.term = 'Interaction Type:OM:1237' THEN a.value END) AS interaction_type
+    FROM relation_evidence_annotation rea
+    JOIN annotation a ON a.annotation_key = rea.annotation_key
+    WHERE rea.source_id = get_source_id('neuronchat')
+    GROUP BY 1
+)
+SELECT
+    'neuronchat'::text AS source,
+    sr.relation_evidence_id,
+    e_compound.entity_id AS compound_entity_id,
+    e_compound.canonical_identifier AS compound_canonical_id,
+    vit_c.name AS compound_canonical_id_type,
+    eer_compound.status_id AS compound_resolution_status,
+    e_protein.entity_id AS protein_entity_id,
+    e_protein.canonical_identifier AS protein_canonical_id,
+    vit_p.name AS protein_canonical_id_type,
+    eer_protein.status_id AS protein_resolution_status,
+    NULL::text AS protein_uniprot,
+    NULL::text AS compartment_from,
+    NULL::text AS compartment_to,
+    NULL::text AS reaction_direction,
+    ann.interaction_type
+FROM signaling_re sr
+LEFT JOIN rel_annotations ann ON ann.relation_evidence_id = sr.relation_evidence_id
+LEFT JOIN entity_evidence_resolution eer_compound
+    ON eer_compound.source_id = get_source_id('neuronchat') AND eer_compound.entity_evidence_id = sr.compound_entity_evidence_id AND eer_compound.status_id = 1
+LEFT JOIN entity e_compound ON e_compound.entity_id = eer_compound.entity_id
+LEFT JOIN vocab_identifier_type vit_c ON vit_c.identifier_type_id = e_compound.canonical_identifier_type_id
+LEFT JOIN entity_evidence_resolution eer_protein
+    ON eer_protein.source_id = get_source_id('neuronchat') AND eer_protein.entity_evidence_id = sr.protein_entity_evidence_id AND eer_protein.status_id = 1
+LEFT JOIN entity e_protein ON e_protein.entity_id = eer_protein.entity_id
+LEFT JOIN vocab_identifier_type vit_p ON vit_p.identifier_type_id = e_protein.canonical_identifier_type_id
+WHERE eer_compound.entity_id IS NOT NULL AND eer_protein.entity_id IS NOT NULL;
+
+CREATE INDEX ON metalinksdb_neuronchat_relations (compound_entity_id);
+CREATE INDEX ON metalinksdb_neuronchat_relations (protein_entity_id);
+CREATE INDEX ON metalinksdb_neuronchat_relations (compound_canonical_id);
 
 DROP MATERIALIZED VIEW IF EXISTS metalinksdb_relations;
 CREATE MATERIALIZED VIEW metalinksdb_relations AS
 SELECT
-    compound_entity_id,
-    MAX(compound_canonical_id)                                          AS compound_canonical_id,
-    MAX(compound_canonical_id_type)                                     AS compound_canonical_id_type,
-    protein_entity_id,
-    MAX(protein_canonical_id)                                           AS protein_canonical_id,
-    MAX(protein_canonical_id_type)                                      AS protein_canonical_id_type,
-    MAX(protein_uniprot)                                                AS protein_uniprot,
-    array_agg(DISTINCT source ORDER BY source)                          AS sources,
-    COUNT(DISTINCT source)                                              AS source_count,
-    array_agg(DISTINCT relation_type ORDER BY relation_type)            AS relation_types,
-    MAX(pchembl_value)                                                  AS best_pchembl_value,
-    array_agg(DISTINCT pubmed_id) FILTER (WHERE pubmed_id IS NOT NULL)  AS pubmed_ids,
-    array_agg(DISTINCT doi)       FILTER (WHERE doi       IS NOT NULL)  AS dois
+    base.compound_entity_id,
+    base.compound_canonical_id,
+    base.compound_canonical_id_type,
+    base.protein_entity_id,
+    base.protein_canonical_id,
+    base.protein_canonical_id_type,
+    base.protein_uniprot,
+    base.sources,
+    base.source_count,
+    base.relation_types,
+    base.best_pchembl_value,
+    base.pubmed_ids,
+    base.dois,
+    base.compartment_from,
+    base.compartment_to,
+    base.reaction_direction,
+    base.interaction_type,
+    base.best_stitch_score,
+    base.is_endogenous,
+    mca.hmdb_subcellular_locations,
+    mca.hmdb_biospecimens,
+    mca.hmdb_tissues,
+    mca.lipid_category,
+    mca.lipid_main_class,
+    mca.lipid_sub_class,
+    mca.is_lipid,
+    mpa.uniprot_subcellular_locations,
+    mpa.uniprot_functions,
+    mpa.uniprot_disease_involvements,
+    mpa.uniprot_ec_numbers,
+    mpa.uniprot_protein_families,
+    mpa.uniprot_pathway_participations,
+    mpa.gtp_functional_classes,
+    mpa.gtp_families,
+    mpa.tcdb_transporter_families
 FROM (
-    SELECT source, compound_entity_id, compound_canonical_id, compound_canonical_id_type,
-           protein_entity_id, protein_canonical_id, protein_canonical_id_type,
-           protein_uniprot, 'interaction'::text AS relation_type, pchembl_value, pubmed_id, doi
-    FROM metalinksdb_chembl_relations
-    WHERE compound_resolution_status = 1 AND protein_resolution_status = 1
+    SELECT
+        combined.compound_entity_id,
+        MAX(combined.compound_canonical_id)                                 AS compound_canonical_id,
+        MAX(combined.compound_canonical_id_type)                            AS compound_canonical_id_type,
+        combined.protein_entity_id,
+        MAX(combined.protein_canonical_id)                                  AS protein_canonical_id,
+        MAX(combined.protein_canonical_id_type)                             AS protein_canonical_id_type,
+        COALESCE(MAX(combined.protein_uniprot), MAX(gpr.representative_uniprot)) AS protein_uniprot,
+        array_agg(DISTINCT combined.source ORDER BY combined.source)        AS sources,
+        COUNT(DISTINCT combined.source)                                     AS source_count,
+        array_agg(DISTINCT combined.relation_type ORDER BY combined.relation_type) AS relation_types,
+        MAX(combined.pchembl_value)                                         AS best_pchembl_value,
+        array_agg(DISTINCT combined.pubmed_id) FILTER (WHERE combined.pubmed_id IS NOT NULL) AS pubmed_ids,
+        array_agg(DISTINCT combined.doi)       FILTER (WHERE combined.doi       IS NOT NULL) AS dois,
+        MAX(combined.compartment_from)                                      AS compartment_from,
+        MAX(combined.compartment_to)                                        AS compartment_to,
+        MAX(combined.reaction_direction)                                    AS reaction_direction,
+        MAX(combined.interaction_type)                                      AS interaction_type,
+        MAX(combined.stitch_action_score)                                   AS best_stitch_score,
+        BOOL_OR(combined.is_endogenous)                                     AS is_endogenous
+    FROM (
+        SELECT source, compound_entity_id, compound_canonical_id, compound_canonical_id_type,
+               protein_entity_id, protein_canonical_id, protein_canonical_id_type,
+               protein_uniprot, 'interaction'::text AS relation_type, pchembl_value, pubmed_id, doi,
+               NULL::text AS compartment_from, NULL::text AS compartment_to, NULL::text AS reaction_direction, NULL::text AS interaction_type,
+               NULL::numeric AS stitch_action_score, NULL::boolean AS is_endogenous
+        FROM metalinksdb_chembl_relations
+        WHERE compound_resolution_status = 1 AND protein_resolution_status = 1
 
-    -- BindingDB DROPPED from the curated combined view (003 US1, decided
-    -- 2026-06-15): it carries no mechanism-of-action canonical set and its
-    -- affinity-thresholded volume (pChEMBL>=6 = 435k, even >=9 = 47k) floods the
-    -- tens-of-thousands target. The per-source matview is left unbuilt/unused.
+        -- BindingDB DROPPED from the curated combined view (003 US1, decided 2026-06-15)
+        -- -- preserved as-is by 004 (research.md R3): per-source matview kept for
+        -- provenance, never unioned into the combined contract.
 
-    UNION ALL
+        UNION ALL
+        SELECT source, compound_entity_id, compound_canonical_id, compound_canonical_id_type,
+               protein_entity_id, protein_canonical_id, protein_canonical_id_type,
+               protein_uniprot, 'interaction'::text, NULL::numeric, pubmed_id, NULL::text,
+               NULL, NULL, NULL, NULL, NULL::numeric, NULL::boolean
+        FROM metalinksdb_cellinker_relations
+        WHERE compound_resolution_status = 1 AND protein_resolution_status = 1
 
-    SELECT source, compound_entity_id, compound_canonical_id, compound_canonical_id_type,
-           protein_entity_id, protein_canonical_id, protein_canonical_id_type,
-           protein_uniprot, 'interaction'::text AS relation_type, NULL AS pchembl_value, pubmed_id, NULL AS doi
-    FROM metalinksdb_cellinker_relations
-    WHERE compound_resolution_status = 1 AND protein_resolution_status = 1
+        UNION ALL
+        SELECT source, compound_entity_id, compound_canonical_id, compound_canonical_id_type,
+               protein_entity_id, protein_canonical_id, protein_canonical_id_type,
+               protein_uniprot, 'interaction'::text, NULL::numeric, pubmed_id, NULL::text,
+               NULL, NULL, NULL, NULL, NULL::numeric, is_endogenous
+        FROM metalinksdb_guidetopharma_relations
+        WHERE compound_resolution_status = 1 AND protein_resolution_status = 1
 
-    UNION ALL
+        UNION ALL
+        SELECT source, compound_entity_id, compound_canonical_id, compound_canonical_id_type,
+               protein_entity_id, protein_canonical_id, protein_canonical_id_type,
+               protein_uniprot, 'interaction'::text, NULL::numeric, pubmed_id, NULL::text,
+               NULL, NULL, NULL, NULL, NULL::numeric, NULL::boolean
+        FROM metalinksdb_mrclinksdb_relations
+        WHERE compound_resolution_status = 1 AND protein_resolution_status = 1
 
-    SELECT source, compound_entity_id, compound_canonical_id, compound_canonical_id_type,
-           protein_entity_id, protein_canonical_id, protein_canonical_id_type,
-           protein_uniprot, 'interaction'::text AS relation_type, NULL AS pchembl_value, pubmed_id, NULL AS doi
-    FROM metalinksdb_guidetopharma_relations
-    WHERE compound_resolution_status = 1 AND protein_resolution_status = 1
+        UNION ALL
+        SELECT source, compound_entity_id, compound_canonical_id, compound_canonical_id_type,
+               protein_entity_id, protein_canonical_id, protein_canonical_id_type,
+               protein_uniprot, 'interaction'::text, NULL::numeric, NULL::text, NULL::text,
+               NULL, NULL, NULL, NULL, stitch_action_score, NULL::boolean
+        FROM metalinksdb_stitch_relations
+        WHERE compound_resolution_status = 1 AND protein_resolution_status = 1
 
-    UNION ALL
+        UNION ALL
+        SELECT source, compound_entity_id, compound_canonical_id, compound_canonical_id_type,
+               protein_entity_id, protein_canonical_id, protein_canonical_id_type,
+               protein_uniprot, 'transport'::text,
+               NULL::numeric, NULL::text, NULL::text,
+               NULL, NULL, NULL, NULL, NULL::numeric, NULL::boolean
+        FROM metalinksdb_tcdb_relations
+        WHERE compound_resolution_status = 1 AND protein_resolution_status = 1
 
-    SELECT source, compound_entity_id, compound_canonical_id, compound_canonical_id_type,
-           protein_entity_id, protein_canonical_id, protein_canonical_id_type,
-           protein_uniprot, 'interaction'::text AS relation_type, NULL AS pchembl_value, NULL AS pubmed_id, NULL AS doi
-    FROM metalinksdb_mrclinksdb_relations
-    WHERE compound_resolution_status = 1 AND protein_resolution_status = 1
+        UNION ALL
+        SELECT source, compound_entity_id, compound_canonical_id, compound_canonical_id_type,
+               protein_entity_id, protein_canonical_id, protein_canonical_id_type,
+               protein_uniprot, 'transport'::text, NULL::numeric, NULL::text, NULL::text,
+               compartment_from, compartment_to, reaction_direction, interaction_type, NULL::numeric, NULL::boolean
+        FROM metalinksdb_recon3d_relations
+        WHERE compound_resolution_status = 1 AND protein_resolution_status = 1
 
-    UNION ALL
+        UNION ALL
+        SELECT source, compound_entity_id, compound_canonical_id, compound_canonical_id_type,
+               protein_entity_id, protein_canonical_id, protein_canonical_id_type,
+               protein_uniprot, 'transport'::text, NULL::numeric, NULL::text, NULL::text,
+               compartment_from, compartment_to, reaction_direction, interaction_type, NULL::numeric, NULL::boolean
+        FROM metalinksdb_rhea_relations
+        WHERE compound_resolution_status = 1 AND protein_resolution_status = 1
 
-    SELECT source, compound_entity_id, compound_canonical_id, compound_canonical_id_type,
-           protein_entity_id, protein_canonical_id, protein_canonical_id_type,
-           protein_uniprot, 'interaction'::text AS relation_type, NULL AS pchembl_value, NULL AS pubmed_id, NULL AS doi
-    FROM metalinksdb_stitch_relations
-    WHERE compound_resolution_status = 1 AND protein_resolution_status = 1
+        UNION ALL
+        SELECT source, compound_entity_id, compound_canonical_id, compound_canonical_id_type,
+               protein_entity_id, protein_canonical_id, protein_canonical_id_type,
+               protein_uniprot, 'transport'::text, NULL::numeric, NULL::text, NULL::text,
+               compartment_from, compartment_to, reaction_direction, interaction_type, NULL::numeric, NULL::boolean
+        FROM metalinksdb_humangem_relations
+        WHERE compound_resolution_status = 1 AND protein_resolution_status = 1
 
-    UNION ALL
+        UNION ALL
+        SELECT source, compound_entity_id, compound_canonical_id, compound_canonical_id_type,
+               protein_entity_id, protein_canonical_id, protein_canonical_id_type,
+               protein_uniprot, 'signaling'::text, NULL::numeric, NULL::text, NULL::text,
+               compartment_from, compartment_to, reaction_direction, interaction_type, NULL::numeric, NULL::boolean
+        FROM metalinksdb_cellphonedb_relations
+        WHERE compound_resolution_status = 1 AND protein_resolution_status = 1
 
-    SELECT source, compound_entity_id, compound_canonical_id, compound_canonical_id_type,
-           protein_entity_id, protein_canonical_id, protein_canonical_id_type,
-           protein_uniprot, 'transport'::text AS relation_type,
-           NULL::numeric AS pchembl_value, NULL::text AS pubmed_id, NULL::text AS doi
-    FROM metalinksdb_tcdb_relations
-    WHERE compound_resolution_status = 1 AND protein_resolution_status = 1
-) combined
-GROUP BY compound_entity_id, protein_entity_id;
+        UNION ALL
+        SELECT source, compound_entity_id, compound_canonical_id, compound_canonical_id_type,
+               protein_entity_id, protein_canonical_id, protein_canonical_id_type,
+               protein_uniprot, 'signaling'::text, NULL::numeric, NULL::text, NULL::text,
+               compartment_from, compartment_to, reaction_direction, interaction_type, NULL::numeric, NULL::boolean
+        FROM metalinksdb_neuronchat_relations
+        WHERE compound_resolution_status = 1 AND protein_resolution_status = 1
+    ) combined
+    LEFT JOIN gene_protein_representative gpr ON gpr.entity_id = combined.protein_entity_id
+    -- metabolite-class filter (FR-014/research.md R2 -- net-new, applied to all 12 sources)
+    WHERE combined.compound_entity_id IN (
+        SELECT entity_id FROM entity
+        WHERE chemical_class_id = (SELECT chemical_class_id FROM vocab_chemical_class WHERE name = 'metabolite')
+    )
+    GROUP BY combined.compound_entity_id, combined.protein_entity_id
+) base
+LEFT JOIN metalinksdb_compound_annotations mca ON mca.compound_entity_id = base.compound_entity_id
+LEFT JOIN metalinksdb_protein_annotations mpa ON mpa.protein_entity_id = base.protein_entity_id;
 
 CREATE UNIQUE INDEX ON metalinksdb_relations (compound_entity_id, protein_entity_id);
 CREATE INDEX ON metalinksdb_relations (compound_canonical_id);
 CREATE INDEX ON metalinksdb_relations (protein_uniprot);
 CREATE INDEX ON metalinksdb_relations (source_count);
 CREATE INDEX ON metalinksdb_relations USING gin (relation_types);
+
