@@ -303,12 +303,14 @@ def materialize_proteins(
         output_dir / PROTEIN_IDENTIFIER_LOOKUP_AMBIGUOUS_OUTPUT_FILENAME
     )
     identifier_type_path = output_dir / IDENTIFIER_TYPE_OUTPUT_FILENAME
+    gpr_path = output_dir / GENE_PROTEIN_REPRESENTATIVE_OUTPUT_FILENAME
     if (
         skip_existing
         and taxonomy_ids is None
         and lookup_path.exists()
         and ambiguous_path.exists()
         and identifier_type_path.exists()
+        and gpr_path.exists()
     ):
         print(
             f'[resolver] skip source=uniprot existing_dir={output_dir}',
@@ -320,6 +322,7 @@ def materialize_proteins(
                 ambiguous_path
             ),
             'identifier_type_rows': _parquet_row_count(identifier_type_path),
+            'gene_protein_representative_rows': _parquet_row_count(gpr_path),
         }
 
     activate_raw_download_data_dir()
@@ -339,7 +342,6 @@ def materialize_proteins(
     ambiguous.write_parquet(ambiguous_path)
     identifier_types.write_parquet(identifier_type_path)
 
-    gpr_path = output_dir / GENE_PROTEIN_REPRESENTATIVE_OUTPUT_FILENAME
     gpr = pl.DataFrame(
         list(_gene_protein_representative_rows(taxonomy_ids=taxonomy_ids)),
         schema=GENE_PROTEIN_REPRESENTATIVE_SCHEMA,
@@ -399,6 +401,21 @@ def _split_protein_identifier_lookup(
             [base_lookup, extra_lookup_df.select(base_lookup.columns)],
             how='vertical',
         )
+    if base_lookup.is_empty():
+        empty = pl.DataFrame(schema=PROTEIN_IDENTIFIER_LOOKUP_SCHEMA)
+        return empty, empty, identifier_types
+
+    return _split_lookup_frame(base_lookup, type_names)
+
+
+def _split_lookup_frame(
+    base_lookup: pl.DataFrame,
+    type_names: set[str],
+) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]:
+    identifier_types = pl.DataFrame(
+        identifier_type_rows(type_names),
+        schema=IDENTIFIER_TYPE_SCHEMA,
+    )
     if base_lookup.is_empty():
         empty = pl.DataFrame(schema=PROTEIN_IDENTIFIER_LOOKUP_SCHEMA)
         return empty, empty, identifier_types

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import tempfile
 from itertools import islice
@@ -43,6 +44,7 @@ from omnipath_build.resolver.identifier_types import (
     COMPLEX_MEMBER_HASH_ID_TYPE,
     REACTION_MEMBER_HASH_ID_TYPE,
     identifier_type_id,
+    identifier_type_rows,
 )
 
 PROTEIN_ENTITY_TYPE = 'Protein:MI:0326'
@@ -71,12 +73,44 @@ RESOLVER_ALIAS_EXPANSION_EXCLUDED_IDENTIFIER_TYPES = (
     cv_term_label_accession(IdentifierNamespaceCv.ENSEMBL),
 )
 UNIPROT_TYPE = cv_term_label_accession(IdentifierNamespaceCv.UNIPROT)
+GENE_NAME_PRIMARY_TYPE = cv_term_label_accession(
+    IdentifierNamespaceCv.GENE_NAME_PRIMARY
+)
+ENSEMBL_TYPE = cv_term_label_accession(IdentifierNamespaceCv.ENSEMBL)
+ENTREZ_TYPE = cv_term_label_accession(IdentifierNamespaceCv.ENTREZ)
+RESOLVER_PROTEIN_SLUG_TO_IDENTIFIER_TYPE = {
+    'genesymbol': GENE_NAME_PRIMARY_TYPE,
+    'entrez': ENTREZ_TYPE,
+    'ensg': ENSEMBL_TYPE,
+    'ensp': ENSEMBL_TYPE,
+    'uniprot': UNIPROT_TYPE,
+}
 # protein molecular_type_id (matches the entity_evidence_resolution CASE seed);
 # the per-record asserted UniProt form is a protein state (FR-027b, T060).
 PROTEIN_MOLECULAR_TYPE_ID = 2
 STANDARD_INCHI_KEY_TYPE = cv_term_label_accession(
     IdentifierNamespaceCv.STANDARD_INCHI_KEY
 )
+CHEBI_TYPE = cv_term_label_accession(IdentifierNamespaceCv.CHEBI)
+CHEMBL_COMPOUND_TYPE = cv_term_label_accession(
+    IdentifierNamespaceCv.CHEMBL_COMPOUND
+)
+HMDB_TYPE = cv_term_label_accession(IdentifierNamespaceCv.HMDB)
+LIPIDMAPS_TYPE = cv_term_label_accession(IdentifierNamespaceCv.LIPIDMAPS)
+PUBCHEM_COMPOUND_TYPE = cv_term_label_accession(
+    IdentifierNamespaceCv.PUBCHEM_COMPOUND
+)
+SWISSLIPIDS_TYPE = cv_term_label_accession(IdentifierNamespaceCv.SWISSLIPIDS)
+KEGG_COMPOUND_TYPE = cv_term_label_accession(IdentifierNamespaceCv.KEGG_COMPOUND)
+RESOLVER_CHEMICAL_SLUG_TO_IDENTIFIER_TYPE = {
+    'pubchem': PUBCHEM_COMPOUND_TYPE,
+    'chembl': CHEMBL_COMPOUND_TYPE,
+    'chebi': CHEBI_TYPE,
+    'hmdb': HMDB_TYPE,
+    'lipidmaps': LIPIDMAPS_TYPE,
+    'swisslipids': SWISSLIPIDS_TYPE,
+    'kegg': KEGG_COMPOUND_TYPE,
+}
 REACTOME_STABLE_ID_TYPE = cv_term_label_accession(
     IdentifierNamespaceCv.REACTOME_STABLE_ID
 )
@@ -147,6 +181,341 @@ def _has_parquet_files(path: Path) -> bool:
     return path.is_dir() and any(path.glob('*.parquet'))
 
 
+def _duckdb_load_postgres_extension(con: duckdb.DuckDBPyConnection) -> None:
+    con.execute('INSTALL postgres; LOAD postgres;')
+
+
+def _duckdb_attach_utils_postgres(
+    con: duckdb.DuckDBPyConnection,
+    *,
+    alias: str = 'utils_pg',
+) -> bool:
+    url = os.environ.get('OMNIPATH_BUILD_UTILS_PG_URL')
+    if not url:
+        return False
+    attached = any(
+        row[1] == alias for row in con.execute('PRAGMA database_list').fetchall()
+    )
+    if not attached:
+        _duckdb_load_postgres_extension(con)
+        con.execute(
+            f'ATTACH {_sql_literal(url)} AS {_duckdb_identifier(alias)} '
+            '(TYPE postgres, READ_ONLY)'
+        )
+    return True
+
+
+def _create_protein_uniprot_fallback_view(
+    con: duckdb.DuckDBPyConnection,
+) -> None:
+    """Expose utils ``resolver_protein`` as the protein-only fallback lookup."""
+
+    if not _duckdb_attach_utils_postgres(con):
+        con.execute(
+            f"""
+            CREATE VIEW protein_uniprot_fallback_lookup AS
+            SELECT
+              {_sql_literal(PROTEIN_ENTITY_TYPE)} AS entity_type,
+              NULL::BIGINT AS key_identifier_type_id,
+              NULL::VARCHAR AS key_value,
+              NULL::VARCHAR AS taxonomy_id,
+              NULL::BIGINT AS canonical_identifier_type_id,
+              NULL::VARCHAR AS canonical_identifier
+            WHERE false
+            """
+        )
+        return
+
+    key_type_case = '\n'.join(
+        f"              WHEN '{source_type}' THEN "
+        f'{identifier_type_id(identifier_type)}'
+        for source_type, identifier_type
+        in RESOLVER_PROTEIN_SLUG_TO_IDENTIFIER_TYPE.items()
+    )
+    source_types_sql = ', '.join(
+        _sql_literal(source_type)
+        for source_type in RESOLVER_PROTEIN_SLUG_TO_IDENTIFIER_TYPE
+    )
+    con.execute(
+        f"""
+        CREATE VIEW protein_uniprot_fallback_lookup AS
+        SELECT
+          {_sql_literal(PROTEIN_ENTITY_TYPE)} AS entity_type,
+          CASE rp.source_type
+{key_type_case}
+          END::BIGINT AS key_identifier_type_id,
+          rp.source_id::VARCHAR AS key_value,
+          rp.ncbi_tax_id::VARCHAR AS taxonomy_id,
+          {identifier_type_id(UNIPROT_TYPE)}::BIGINT
+            AS canonical_identifier_type_id,
+          rp.uniprot::VARCHAR AS canonical_identifier
+        FROM utils_pg.omnipath_utils.resolver_protein rp
+        WHERE rp.source_type IN ({source_types_sql})
+          AND rp.source_id IS NOT NULL
+          AND rp.uniprot IS NOT NULL
+        UNION ALL
+        SELECT
+          {_sql_literal(PROTEIN_ENTITY_TYPE)} AS entity_type,
+          {identifier_type_id(UNIPROT_TYPE)}::BIGINT AS key_identifier_type_id,
+          m.source_id::VARCHAR AS key_value,
+          NULLIF(m.ncbi_tax_id, 0)::VARCHAR AS taxonomy_id,
+          {identifier_type_id(UNIPROT_TYPE)}::BIGINT
+            AS canonical_identifier_type_id,
+          m.target_id::VARCHAR AS canonical_identifier
+        FROM utils_pg.omnipath_utils.id_mapping m
+        JOIN utils_pg.omnipath_utils.id_type st
+          ON m.source_type_id = st.id
+         AND st.name = 'uniprot-sec'
+        JOIN utils_pg.omnipath_utils.id_type tt
+          ON m.target_type_id = tt.id
+         AND tt.name = 'uniprot-pri'
+        WHERE m.source_id IS NOT NULL
+          AND m.target_id IS NOT NULL
+        """
+    )
+
+
+def _source_type_case_sql(
+    mapping: dict[str, str],
+    *,
+    expression: str,
+    indent: str = '          ',
+) -> str:
+    lines = [f'CASE {expression}']
+    lines.extend(
+        f"{indent}WHEN {_sql_literal(source_type)} THEN "
+        f'{identifier_type_id(identifier_type)}'
+        for source_type, identifier_type in mapping.items()
+    )
+    lines.append(f'{indent}END')
+    return '\n'.join(lines)
+
+
+def _source_type_in_sql(mapping: dict[str, str]) -> str:
+    return ', '.join(_sql_literal(source_type) for source_type in mapping)
+
+
+def _static_identifier_type_select_sql(
+    names: set[str] | None = None,
+) -> str:
+    rows = ',\n'.join(
+        f'({row["identifier_type_id"]}, {_sql_literal(row["name"])})'
+        for row in identifier_type_rows(names)
+    )
+    return f"""
+        SELECT *
+        FROM (VALUES
+        {rows}
+        ) AS t(identifier_type_id, name)
+        """
+
+
+def _mirna_resolver_sql_parts(
+    resolver_dir: Path,
+) -> tuple[str, str, str]:
+    try:
+        mirna_dir = _resolver_component_dir(
+            resolver_dir,
+            component='mirna',
+            lookup_filename='mirna_identifier_lookup.parquet',
+        )
+    except FileNotFoundError:
+        return '', '', ''
+
+    mirna_lookup_path = mirna_dir / 'mirna_identifier_lookup.parquet'
+    mirna_type_path = mirna_dir / 'identifier_type.parquet'
+    mirna_identifier_type_sql = f"""
+        UNION
+        SELECT *
+        FROM read_parquet({_sql_literal(mirna_type_path)})
+        """
+    mirna_lookup_sql = f"""
+        UNION ALL
+        SELECT
+          {_sql_literal(MIRNA_ENTITY_TYPE)} AS entity_type,
+          key_identifier_type_id,
+          key_value,
+          NULL::VARCHAR AS taxonomy_id,
+          canonical_identifier_type_id,
+          canonical_identifier
+        FROM read_parquet({_sql_literal(mirna_lookup_path)})
+        WHERE key_value IS NOT NULL
+          AND canonical_identifier IS NOT NULL
+        """
+    mirna_canonical_sql = f"""
+        UNION ALL
+        SELECT
+          row_number() OVER (
+            ORDER BY canonical_identifier_type_id, canonical_identifier
+          )::BIGINT AS resolver_entity_id,
+          {_sql_literal(MIRNA_ENTITY_TYPE)} AS entity_type,
+          NULL::VARCHAR AS taxonomy_id,
+          canonical_identifier_type_id,
+          canonical_identifier,
+          list_distinct(list(key_identifier_type_id)) AS key_identifier_type_ids,
+          count(*)::BIGINT AS lookup_rows
+        FROM read_parquet({_sql_literal(mirna_lookup_path)})
+        WHERE canonical_identifier IS NOT NULL
+        GROUP BY
+          canonical_identifier_type_id,
+          canonical_identifier
+        """
+    return mirna_identifier_type_sql, mirna_lookup_sql, mirna_canonical_sql
+
+
+def _create_live_utils_resolver_views(
+    con: duckdb.DuckDBPyConnection,
+    *,
+    resolver_dir: Path,
+) -> None:
+    """Expose resolver inputs directly from attached omnipath-utils Postgres."""
+
+    mirna_identifier_type_sql, mirna_lookup_sql, mirna_canonical_sql = (
+        _mirna_resolver_sql_parts(resolver_dir)
+    )
+    gene_key_case = _source_type_case_sql(
+        RESOLVER_PROTEIN_SLUG_TO_IDENTIFIER_TYPE,
+        expression='rg.source_type',
+    )
+    gene_source_types = _source_type_in_sql(
+        RESOLVER_PROTEIN_SLUG_TO_IDENTIFIER_TYPE
+    )
+    chemical_key_case = _source_type_case_sql(
+        RESOLVER_CHEMICAL_SLUG_TO_IDENTIFIER_TYPE,
+        expression='rc.source_type',
+    )
+    chemical_source_types = _source_type_in_sql(
+        RESOLVER_CHEMICAL_SLUG_TO_IDENTIFIER_TYPE
+    )
+    con.execute(
+        f"""
+        CREATE VIEW identifier_type AS
+        {_static_identifier_type_select_sql()}
+        {mirna_identifier_type_sql}
+        """
+    )
+    _create_duckdb_identifier_type_all_view(con)
+    con.execute(
+        f"""
+        CREATE VIEW resolver_lookup AS
+        SELECT
+          {_sql_literal(GENE_ENTITY_TYPE)} AS entity_type,
+          ({gene_key_case})::BIGINT AS key_identifier_type_id,
+          rg.source_id::VARCHAR AS key_value,
+          rg.ncbi_tax_id::VARCHAR AS taxonomy_id,
+          {identifier_type_id(ENTREZ_TYPE)}::BIGINT
+            AS canonical_identifier_type_id,
+          rg.entrez::VARCHAR AS canonical_identifier
+        FROM utils_pg.omnipath_utils.resolver_gene rg
+        WHERE rg.source_type IN ({gene_source_types})
+          AND rg.source_id IS NOT NULL
+          AND rg.entrez IS NOT NULL
+        UNION ALL
+        SELECT
+          {_sql_literal(CHEMICAL_ENTITY_TYPE)} AS entity_type,
+          ({chemical_key_case})::BIGINT AS key_identifier_type_id,
+          rc.source_id::VARCHAR AS key_value,
+          NULL::VARCHAR AS taxonomy_id,
+          {identifier_type_id(STANDARD_INCHI_KEY_TYPE)}::BIGINT
+            AS canonical_identifier_type_id,
+          rc.inchikey::VARCHAR AS canonical_identifier
+        FROM utils_pg.omnipath_utils.resolver_chemical rc
+        WHERE rc.source_type IN ({chemical_source_types})
+          AND rc.source_id IS NOT NULL
+          AND rc.inchikey IS NOT NULL
+        UNION ALL
+        SELECT DISTINCT
+          {_sql_literal(CHEMICAL_ENTITY_TYPE)} AS entity_type,
+          {identifier_type_id(STANDARD_INCHI_KEY_TYPE)}::BIGINT
+            AS key_identifier_type_id,
+          rc.inchikey::VARCHAR AS key_value,
+          NULL::VARCHAR AS taxonomy_id,
+          {identifier_type_id(STANDARD_INCHI_KEY_TYPE)}::BIGINT
+            AS canonical_identifier_type_id,
+          rc.inchikey::VARCHAR AS canonical_identifier
+        FROM utils_pg.omnipath_utils.resolver_chemical rc
+        WHERE rc.inchikey IS NOT NULL
+          AND rc.inchikey <> ''
+        {mirna_lookup_sql}
+        """
+    )
+    _create_protein_uniprot_fallback_view(con)
+    con.execute(
+        f"""
+        CREATE VIEW resolver_canonical_entity AS
+        SELECT
+          row_number() OVER (
+            ORDER BY
+              rg.ncbi_tax_id NULLS FIRST,
+              {identifier_type_id(ENTREZ_TYPE)},
+              rg.entrez
+          )::BIGINT AS resolver_entity_id,
+          {_sql_literal(GENE_ENTITY_TYPE)} AS entity_type,
+          rg.ncbi_tax_id::VARCHAR AS taxonomy_id,
+          {identifier_type_id(ENTREZ_TYPE)}::BIGINT
+            AS canonical_identifier_type_id,
+          rg.entrez::VARCHAR AS canonical_identifier,
+          list_distinct(list(({gene_key_case})::BIGINT))
+            AS key_identifier_type_ids,
+          count(*)::BIGINT AS lookup_rows
+        FROM utils_pg.omnipath_utils.resolver_gene rg
+        WHERE rg.source_type IN ({gene_source_types})
+          AND rg.entrez IS NOT NULL
+        GROUP BY
+          rg.ncbi_tax_id,
+          rg.entrez
+        UNION ALL
+        SELECT
+          row_number() OVER (
+            ORDER BY {identifier_type_id(STANDARD_INCHI_KEY_TYPE)}, rc.inchikey
+          )::BIGINT AS resolver_entity_id,
+          {_sql_literal(CHEMICAL_ENTITY_TYPE)} AS entity_type,
+          NULL::VARCHAR AS taxonomy_id,
+          {identifier_type_id(STANDARD_INCHI_KEY_TYPE)}::BIGINT
+            AS canonical_identifier_type_id,
+          rc.inchikey::VARCHAR AS canonical_identifier,
+          list_distinct(list(({chemical_key_case})::BIGINT))
+            AS key_identifier_type_ids,
+          count(*)::BIGINT AS lookup_rows
+        FROM utils_pg.omnipath_utils.resolver_chemical rc
+        WHERE rc.source_type IN ({chemical_source_types})
+          AND rc.inchikey IS NOT NULL
+        GROUP BY rc.inchikey
+        {mirna_canonical_sql}
+        """
+    )
+    con.execute(
+        """
+        CREATE VIEW gene_protein_representative_src AS
+        WITH protein AS (
+          SELECT
+            rp.ncbi_tax_id::VARCHAR AS taxonomy_id,
+            rp.source_id::VARCHAR AS canonical_identifier,
+            rp.uniprot::VARCHAR AS uniprot,
+            (sw.identifier IS NOT NULL) AS is_reviewed
+          FROM utils_pg.omnipath_utils.resolver_protein rp
+          LEFT JOIN utils_pg.omnipath_utils.reflist sw
+            ON sw.list_name = 'swissprot'
+           AND sw.identifier = rp.uniprot
+          WHERE rp.source_type = 'entrez'
+            AND rp.source_id IS NOT NULL
+            AND rp.uniprot IS NOT NULL
+        )
+        SELECT
+          taxonomy_id,
+          canonical_identifier,
+          coalesce(
+            min(uniprot) FILTER (WHERE is_reviewed),
+            min(uniprot)
+          ) AS representative_uniprot,
+          bool_or(is_reviewed) AS is_reviewed,
+          list_sort(list_distinct(list(uniprot))) AS uniprot_all
+        FROM protein
+        GROUP BY taxonomy_id, canonical_identifier
+        """
+    )
+
+
 def _create_duckdb_content_uuid_macro(con: duckdb.DuckDBPyConnection) -> None:
     con.execute(
         """
@@ -207,6 +576,10 @@ def _create_duckdb_resolver_views(
     resolver_dir: Path,
 ) -> None:
     """Expose resolver parquet inputs in the DuckDB shape used by canonicalize."""
+
+    if _duckdb_attach_utils_postgres(con):
+        _create_live_utils_resolver_views(con, resolver_dir=resolver_dir)
+        return
 
     protein_dir = _resolver_component_dir(
         resolver_dir,
@@ -337,6 +710,7 @@ def _create_duckdb_resolver_views(
         {mirna_lookup_sql}
         """
     )
+    _create_protein_uniprot_fallback_view(con)
     con.execute(
         f"""
         CREATE VIEW resolver_canonical_entity AS
@@ -948,6 +1322,8 @@ def _drop_duckdb_batch_tables(con: duckdb.DuckDBPyConnection) -> None:
         'taxonomy_optional_resolver_key_type',
         'taxonomy_optional_unambiguous_key',
         'needed_resolver_lookup',
+        'protein_uniprot_fallback_taxonomy_optional_unambiguous_key',
+        'needed_protein_uniprot_fallback_lookup',
         'entity_identifier_group',
         'cv_term_evidence_resolution',
         'pathway_identifier_evidence_resolution',
@@ -1082,6 +1458,55 @@ def _canonicalize_loaded_duckdb(
            OR opt.key_identifier_type_id IS NOT NULL
          )
         """
+    )
+    con.execute(
+        """
+        CREATE TABLE protein_uniprot_fallback_taxonomy_optional_unambiguous_key AS
+        SELECT
+          puf.key_identifier_type_id,
+          puf.key_value,
+          puf.canonical_identifier_type_id
+        FROM protein_uniprot_fallback_lookup puf
+        JOIN taxonomy_optional_resolver_key_type opt
+          ON opt.identifier_type_id = puf.key_identifier_type_id
+        JOIN evidence_identifier_key k
+          ON k.entity_type = ?
+         AND k.key_identifier_type_id = puf.key_identifier_type_id
+         AND k.key_value = puf.key_value
+        GROUP BY
+          puf.key_identifier_type_id,
+          puf.key_value,
+          puf.canonical_identifier_type_id
+        HAVING count(
+          DISTINCT coalesce(puf.taxonomy_id, '') || chr(31) ||
+          puf.canonical_identifier
+        ) = 1
+        """,
+        [PROTEIN_ENTITY_TYPE],
+    )
+    con.execute(
+        """
+        CREATE TABLE needed_protein_uniprot_fallback_lookup AS
+        SELECT DISTINCT
+          puf.*,
+          opt.key_identifier_type_id IS NOT NULL AS taxonomy_optional_match
+        FROM protein_uniprot_fallback_lookup puf
+        LEFT JOIN protein_uniprot_fallback_taxonomy_optional_unambiguous_key opt
+          ON opt.key_identifier_type_id = puf.key_identifier_type_id
+         AND opt.key_value = puf.key_value
+         AND opt.canonical_identifier_type_id =
+             puf.canonical_identifier_type_id
+        JOIN evidence_identifier_key k
+          ON k.entity_type = ?
+         AND k.key_identifier_type_id = puf.key_identifier_type_id
+         AND k.key_value = puf.key_value
+         AND (
+           puf.taxonomy_id = k.taxonomy_id
+           OR puf.taxonomy_id IS NULL
+           OR opt.key_identifier_type_id IS NOT NULL
+         )
+        """,
+        [PROTEIN_ENTITY_TYPE],
     )
     # Multi-gene protein split (FR-027, T061): a UniProt mapping to >1 gene is
     # duplicated 1:1 per gene *before* resolution, so the existing 1:1 machinery
@@ -1233,6 +1658,11 @@ def _canonicalize_loaded_duckdb(
         ],
     )
     cf_fires = chemical_fallback_fires_sql()
+    protein_fallback_fires = (
+        f"ee.entity_type = {_sql_literal(PROTEIN_ENTITY_TYPE)} "
+        "AND (rcs.candidate_count IS NULL OR rcs.candidate_count = 0) "
+        "AND puf.candidate_count = 1"
+    )
     con.execute(
         f"""
         CREATE TABLE entity_resolution_base AS
@@ -1334,6 +1764,44 @@ def _canonicalize_loaded_duckdb(
             min(canonical_identifier) AS canonical_identifier
           FROM resolver_candidate
           GROUP BY source, entity_evidence_id
+        ),
+        protein_uniprot_fallback_candidate AS (
+          SELECT DISTINCT
+            ee.source,
+            ee.entity_evidence_id,
+            coalesce(puf.taxonomy_id, ee.taxonomy_id) AS taxonomy_id,
+            puf.canonical_identifier_type_id,
+            puf.canonical_identifier
+          FROM remaining_entity ee
+          JOIN entity_identifier_raw ei
+            ON ei.source = ee.source
+           AND ei.entity_evidence_id = ee.entity_evidence_id
+          JOIN identifier_type_all kit
+            ON kit.name = ei.identifier_type
+          JOIN needed_protein_uniprot_fallback_lookup puf
+            ON puf.key_identifier_type_id = kit.identifier_type_id
+           AND puf.key_value = ei.identifier
+           AND (
+             puf.taxonomy_id = ee.taxonomy_id
+             OR puf.taxonomy_id IS NULL
+             OR puf.taxonomy_optional_match
+           )
+          WHERE ee.entity_type = {_sql_literal(PROTEIN_ENTITY_TYPE)}
+        ),
+        protein_uniprot_fallback_summary AS (
+          SELECT
+            source,
+            entity_evidence_id,
+            count(
+              DISTINCT coalesce(taxonomy_id, '') || chr(31) ||
+              canonical_identifier_type_id::VARCHAR || chr(31) ||
+              canonical_identifier
+            ) AS candidate_count,
+            min(taxonomy_id) AS taxonomy_id,
+            min(canonical_identifier_type_id) AS canonical_identifier_type_id,
+            min(canonical_identifier) AS canonical_identifier
+          FROM protein_uniprot_fallback_candidate
+          GROUP BY source, entity_evidence_id
         )
         SELECT * FROM direct_resolution
         UNION ALL
@@ -1345,11 +1813,14 @@ def _canonicalize_loaded_duckdb(
           CASE
             WHEN rcs.candidate_count = 1
             THEN coalesce(etm.resolver_entity_type, ee.entity_type)
+            WHEN {protein_fallback_fires}
+            THEN ee.entity_type
             ELSE ee.entity_type
           END AS entity_type,
           ee.entity_type AS molecular_entity_type,
           CASE
             WHEN rcs.candidate_count = 1 THEN rcs.taxonomy_id
+            WHEN {protein_fallback_fires} THEN puf.taxonomy_id
             ELSE ee.taxonomy_id
           END AS taxonomy_id,
           -- Chemical fallback (T020/R22): when the structure + resolver-
@@ -1360,22 +1831,27 @@ def _canonicalize_loaded_duckdb(
           -- unresolved — never a fallback pick over several distinct structures.
           CASE
             WHEN rcs.candidate_count = 1 THEN rcs.canonical_identifier_type_id
+            WHEN {protein_fallback_fires}
+              THEN puf.canonical_identifier_type_id
             WHEN {cf_fires}
               THEN cf.canonical_identifier_type_id
             ELSE unresolved_type.identifier_type_id
           END AS canonical_identifier_type_id,
           CASE
             WHEN rcs.candidate_count = 1 THEN rcs.canonical_identifier
+            WHEN {protein_fallback_fires} THEN puf.canonical_identifier
             WHEN {cf_fires} THEN cf.canonical_identifier
             ELSE md5(eig.unresolved_identifier_key)
           END AS canonical_identifier,
           CASE
             WHEN rcs.candidate_count = 1 THEN 'resolved'
+            WHEN {protein_fallback_fires} THEN 'resolved'
             WHEN {cf_fires} THEN 'resolved'
             ELSE 'unresolved'
           END AS status,
           CASE
             WHEN rcs.candidate_count = 1 THEN 'resolver'
+            WHEN {protein_fallback_fires} THEN 'protein_uniprot_fallback'
             WHEN {cf_fires} THEN cf.mechanism
             ELSE 'unresolved'
           END AS resolution_mechanism
@@ -1391,6 +1867,9 @@ def _canonicalize_loaded_duckdb(
         LEFT JOIN resolver_candidate_summary rcs
           ON rcs.source = ee.source
          AND rcs.entity_evidence_id = ee.entity_evidence_id
+        LEFT JOIN protein_uniprot_fallback_summary puf
+          ON puf.source = ee.source
+         AND puf.entity_evidence_id = ee.entity_evidence_id
         LEFT JOIN chemical_fallback_resolution cf
           ON cf.source = ee.source
          AND cf.entity_evidence_id = ee.entity_evidence_id

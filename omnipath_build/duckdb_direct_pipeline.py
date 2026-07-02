@@ -1487,6 +1487,16 @@ def copy_staged_direct_load(
             schema=schema,
             require_empty=require_empty,
         )
+        if (
+            stage.source_rows == 0
+            and stage.identifiers == 0
+            and stage.annotations == 0
+            and stage.ontology_terms == 0
+            and stage.entities == 0
+            and stage.relations == 0
+            and stage.annotation_relation_links == 0
+        ):
+            return time.perf_counter() - started
         con.execute(
             f'ATTACH {duckdb_load._sql_literal(database_url)} AS pg (TYPE postgres)'
         )
