@@ -43,6 +43,46 @@ max_worker_processes = 16     # must be >= the parallel worker counts you want
 max_parallel_workers = 12
 ```
 
+## The utils / resolver-source Postgres (READ side) — tune it too
+
+There are **two** Postgres containers in a build, and this doc historically only
+covered the one the build *writes* to. The build also **reads** its identifier
+resolution from a **separate `omnipath-utils` Postgres** over DuckDB `ATTACH`
+(`OMNIPATH_BUILD_UTILS_PG_URL`, e.g. `utils2` on `:5102`). The heavy resolver
+work — the `resolver_gene` (~52M rows), `resolver_protein` (~300M), and
+`resolver_chemical` (~133M) **materialized views**, their rebuilds, and the
+full-scan COPYs the build pulls from them — all execute on **that** instance,
+using **its** config. The build cannot session-tune it (it doesn't own those
+connections), so this PG must be tuned at the **container level**.
+
+Left at the Postgres default (`shared_buffers=128MB`, `work_mem=4MB`), matview
+rebuilds crawl single-core and STITCH canonicalization stalls on the chemical
+COPY. **Tune it in its compose `command:`, not by ad-hoc `ALTER SYSTEM`** (which
+is lost on recreate). The `utils2` compose
+(`~/instances/utils2/docker-compose.yml`) now carries the canonical values below.
+
+## Canonical values on the beauty host (503 GB RAM, 64 cores)
+
+Both containers set these via their compose `command:` (build PG:
+`docker-compose.postgres18.yml`, env-overridable; utils PG: its own compose):
+
+| GUC | Build PG (writes) | Utils/resolver PG (reads) | Why |
+|---|---|---|---|
+| `shared_buffers` | 4 GB | **32 GB** | utils holds the multi-hundred-M-row resolver matviews; 128MB default missed the pool entirely |
+| `effective_cache_size` | 128 GB | 300 GB | planner hint (no allocation); ~340 GB is in OS page cache |
+| `work_mem` | 128 MB (session ↑) | 64 MB | build raises its own per session; utils rebuilds spill less |
+| `maintenance_work_mem` | 2 GB | 2 GB | faster index builds on the matviews |
+| `max_worker_processes` | 24 | 24 | **the real parallel cap** — restart-only, so must be container-level |
+| `max_parallel_workers` | 16 | 24 | |
+| `max_parallel_workers_per_gather` | 6 (session) | 8 | |
+| `effective_io_concurrency` | 200 | 200 | NVMe |
+| `wal_level` | (WAL tuned) | `minimal` | utils build DB is rebuildable → skip WAL |
+
+`shared_buffers` and `max_worker_processes` are **restart-only** — after changing
+them, recreate the container (`docker compose up -d`), don't just `ALTER SYSTEM`.
+On beauty, all instances share one docker cgroup (`MemoryMax=200GB`), so keep the
+sum of `shared_buffers` across concurrently-running build+utils PGs well under that.
+
 ## Memory budget / sizing
 
 A single build connection peaks at roughly **`work_mem` × (a few parallel
