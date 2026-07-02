@@ -97,13 +97,17 @@ def test_protein_without_gene_candidate_falls_back_to_primary_uniprot():
 
     _canonicalize_loaded_duckdb(con)
 
+    # T061b (open-decision #9): an unresolved gene-product known only by a primary
+    # UniProt resolves to a synthetic "unknown gene" (Gene, keyed by that UniProt),
+    # NOT a Protein — so the base graph stays uniformly gene-typed. The AC is still
+    # carried as a `protein` state (molecular_entity_type stays Protein).
     assert _resolution(con, 'secondary_only') == (
-        PROTEIN_ENTITY_TYPE,
+        GENE_ENTITY_TYPE,
         '9606',
         UNIPROT_TID,
         'P04637',
         'resolved',
-        'protein_uniprot_fallback',
+        'unknown_gene',
     )
 
 

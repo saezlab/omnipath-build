@@ -1814,7 +1814,13 @@ def _canonicalize_loaded_duckdb(
             WHEN rcs.candidate_count = 1
             THEN coalesce(etm.resolver_entity_type, ee.entity_type)
             WHEN {protein_fallback_fires}
-            THEN ee.entity_type
+            -- T061b (open-decision #9): an unresolved gene-product known only by a
+            -- primary UniProt is a GENE we cannot name, not a Protein. Type it Gene
+            -- (a synthetic "unknown gene" keyed by that primary UniProt, deduped by
+            -- it) so the base graph is uniformly gene-typed; molecular_entity_type
+            -- below stays Protein, so the AC still becomes a `protein` state (T060),
+            -- and a later real resolution can merge this into the known gene.
+            THEN {_sql_literal(GENE_ENTITY_TYPE)}
             ELSE ee.entity_type
           END AS entity_type,
           ee.entity_type AS molecular_entity_type,
@@ -1851,7 +1857,7 @@ def _canonicalize_loaded_duckdb(
           END AS status,
           CASE
             WHEN rcs.candidate_count = 1 THEN 'resolver'
-            WHEN {protein_fallback_fires} THEN 'protein_uniprot_fallback'
+            WHEN {protein_fallback_fires} THEN 'unknown_gene'
             WHEN {cf_fires} THEN cf.mechanism
             ELSE 'unresolved'
           END AS resolution_mechanism
