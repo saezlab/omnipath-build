@@ -11,6 +11,7 @@ from collections.abc import Iterable
 import duckdb
 import pyarrow as pa
 import psycopg2
+from psycopg2.extras import execute_values
 from psycopg2 import sql
 
 from omnipath_build.cv_terms import (
@@ -514,6 +515,326 @@ def _create_live_utils_resolver_views(
         GROUP BY taxonomy_id, canonical_identifier
         """
     )
+
+
+def _live_utils_attached(con: duckdb.DuckDBPyConnection) -> bool:
+    return any(
+        row[1] == 'utils_pg' for row in con.execute('PRAGMA database_list').fetchall()
+    )
+
+
+def _fetch_live_utils_rows_for_keys(
+    *,
+    url: str,
+    table: str,
+    mapping: dict[str, str],
+    entity_type: str,
+    canonical_identifier_type_id: int,
+    canonical_column: str,
+    key_rows: list[tuple[str, str, int | None]],
+) -> list[tuple[str, int, str, str | None, int, str]]:
+    """Fetch resolver rows for the current shard's keys from utils Postgres."""
+
+    if not key_rows:
+        return []
+
+    key_type_case = ' '.join(
+        f"WHEN {source_type!r} THEN {identifier_type_id(identifier_type)}"
+        for source_type, identifier_type in mapping.items()
+    )
+    query = f"""
+        SELECT
+          %s AS entity_type,
+          (CASE r.source_type {key_type_case} END)::bigint
+            AS key_identifier_type_id,
+          r.source_id::text AS key_value,
+          NULLIF(r.ncbi_tax_id, 0)::text AS taxonomy_id,
+          %s::bigint AS canonical_identifier_type_id,
+          r.{canonical_column}::text AS canonical_identifier
+        FROM omnipath_utils.{table} r
+        JOIN tmp_resolver_key k
+          ON k.source_type = r.source_type
+         AND k.source_id = r.source_id
+         AND (k.ncbi_tax_id IS NULL OR k.ncbi_tax_id = r.ncbi_tax_id)
+        WHERE r.{canonical_column} IS NOT NULL
+    """
+    if table == 'resolver_gene':
+        query = f"""
+            WITH uniprot_type AS (
+              SELECT id FROM omnipath_utils.id_type WHERE name = 'uniprot'
+            ),
+            entrez_type AS (
+              SELECT id FROM omnipath_utils.id_type WHERE name = 'entrez'
+            ),
+            source_map AS (
+              SELECT DISTINCT
+                m.ncbi_tax_id,
+                k.source_type,
+                k.source_id,
+                m.source_id AS uniprot
+              FROM tmp_resolver_key k
+              JOIN omnipath_utils.id_type tt
+                ON tt.name = k.source_type
+              JOIN omnipath_utils.id_mapping_ftp m
+                ON m.source_type_id = (SELECT id FROM uniprot_type)
+               AND m.target_type_id = tt.id
+               AND m.ncbi_tax_id = k.ncbi_tax_id
+               AND m.target_id = k.source_id
+              WHERE k.source_type NOT IN ('uniprot', 'entrez')
+                AND k.ncbi_tax_id IS NOT NULL
+              UNION ALL
+              SELECT
+                k.ncbi_tax_id,
+                k.source_type,
+                k.source_id,
+                k.source_id AS uniprot
+              FROM tmp_resolver_key k
+              WHERE k.source_type = 'uniprot'
+                AND k.ncbi_tax_id IS NOT NULL
+            ),
+            uniprot_entrez AS (
+              SELECT
+                m.ncbi_tax_id,
+                m.source_id AS uniprot,
+                m.target_id AS entrez
+              FROM omnipath_utils.id_mapping_ftp m
+              WHERE m.source_type_id = (SELECT id FROM uniprot_type)
+                AND m.target_type_id = (SELECT id FROM entrez_type)
+            )
+            SELECT DISTINCT
+              %s AS entity_type,
+              (CASE sm.source_type {key_type_case} END)::bigint
+                AS key_identifier_type_id,
+              sm.source_id::text AS key_value,
+              sm.ncbi_tax_id::text AS taxonomy_id,
+              %s::bigint AS canonical_identifier_type_id,
+              ue.entrez::text AS canonical_identifier
+            FROM source_map sm
+            JOIN uniprot_entrez ue
+              ON ue.ncbi_tax_id = sm.ncbi_tax_id
+             AND ue.uniprot = sm.uniprot
+            UNION
+            SELECT DISTINCT
+              %s AS entity_type,
+              {identifier_type_id(ENTREZ_TYPE)}::bigint
+                AS key_identifier_type_id,
+              k.source_id::text AS key_value,
+              k.ncbi_tax_id::text AS taxonomy_id,
+              %s::bigint AS canonical_identifier_type_id,
+              k.source_id::text AS canonical_identifier
+            FROM tmp_resolver_key k
+            WHERE k.source_type = 'entrez'
+              AND k.ncbi_tax_id IS NOT NULL
+        """
+    if table == 'resolver_chemical':
+        query = f"""
+            WITH inchikey_type AS (
+              SELECT id FROM omnipath_utils.id_type WHERE name = 'inchikey'
+            )
+            SELECT DISTINCT
+              %s AS entity_type,
+              (CASE k.source_type {key_type_case} END)::bigint
+                AS key_identifier_type_id,
+              k.source_id::text AS key_value,
+              NULL::text AS taxonomy_id,
+              %s::bigint AS canonical_identifier_type_id,
+              m.target_id::text AS canonical_identifier
+            FROM tmp_resolver_key k
+            JOIN omnipath_utils.id_type st
+              ON st.name = k.source_type
+            JOIN omnipath_utils.id_mapping m
+              ON m.source_type_id = st.id
+             AND m.target_type_id = (SELECT id FROM inchikey_type)
+             AND m.ncbi_tax_id = 0
+             AND m.source_id = k.source_id
+        """
+    if table == 'resolver_protein':
+        query = f"""
+            WITH uniprot_type AS (
+              SELECT id FROM omnipath_utils.id_type WHERE name = 'uniprot'
+            ),
+            mapped AS (
+              SELECT DISTINCT
+                m.ncbi_tax_id,
+                k.source_type,
+                k.source_id,
+                m.source_id AS uniprot
+              FROM tmp_resolver_key k
+              JOIN omnipath_utils.id_type tt
+                ON tt.name = k.source_type
+              JOIN omnipath_utils.id_mapping_ftp m
+                ON m.source_type_id = (SELECT id FROM uniprot_type)
+               AND m.target_type_id = tt.id
+               AND m.ncbi_tax_id = k.ncbi_tax_id
+               AND m.target_id = k.source_id
+              WHERE k.source_type <> 'uniprot'
+                AND k.ncbi_tax_id IS NOT NULL
+              UNION
+              SELECT DISTINCT
+                k.ncbi_tax_id,
+                k.source_type,
+                k.source_id,
+                k.source_id AS uniprot
+              FROM tmp_resolver_key k
+              WHERE k.source_type = 'uniprot'
+                AND k.ncbi_tax_id IS NOT NULL
+            )
+            SELECT DISTINCT
+              %s AS entity_type,
+              (CASE mapped.source_type {key_type_case} END)::bigint
+                AS key_identifier_type_id,
+              mapped.source_id::text AS key_value,
+              mapped.ncbi_tax_id::text AS taxonomy_id,
+              %s::bigint AS canonical_identifier_type_id,
+              mapped.uniprot::text AS canonical_identifier
+            FROM mapped
+            WHERE mapped.uniprot ~
+              '^([OPQ][0-9][A-Z0-9]{{3}}[0-9]|[A-NR-Z][0-9]([A-Z][A-Z0-9]{{2}}[0-9]){{1,2}})$'
+        """
+
+    with psycopg2.connect(url) as pg:
+        with pg.cursor() as cur:
+            cur.execute(
+                'CREATE TEMP TABLE tmp_resolver_key '
+                '(source_type text, source_id varchar(64), ncbi_tax_id integer) '
+                'ON COMMIT DROP'
+            )
+            execute_values(
+                cur,
+                'INSERT INTO tmp_resolver_key '
+                '(source_type, source_id, ncbi_tax_id) VALUES %s',
+                sorted(set(key_rows)),
+                page_size=10000,
+            )
+            params = (entity_type, canonical_identifier_type_id)
+            if table == 'resolver_gene':
+                params = (
+                    entity_type,
+                    canonical_identifier_type_id,
+                    entity_type,
+                    canonical_identifier_type_id,
+                )
+            cur.execute(query, params)
+            return cur.fetchall()
+
+
+def _live_utils_key_rows(
+    con: duckdb.DuckDBPyConnection,
+    *,
+    mapping: dict[str, str],
+    evidence_entity_types: tuple[str, ...],
+) -> list[tuple[str, str, int | None]]:
+    id_to_source_types: dict[int, list[str]] = {}
+    for source_type, identifier_type in mapping.items():
+        id_to_source_types.setdefault(identifier_type_id(identifier_type), []).append(
+            source_type
+        )
+
+    entity_placeholders = ', '.join('?' for _ in evidence_entity_types)
+    id_placeholders = ', '.join('?' for _ in id_to_source_types)
+    rows = con.execute(
+        f"""
+        SELECT DISTINCT
+          key_identifier_type_id,
+          key_value,
+          try_cast(taxonomy_id AS INTEGER) AS ncbi_tax_id
+        FROM evidence_identifier_key
+        WHERE entity_type IN ({entity_placeholders})
+          AND key_identifier_type_id IN ({id_placeholders})
+          AND key_value IS NOT NULL
+          AND key_value <> ''
+        """,
+        [*evidence_entity_types, *id_to_source_types.keys()],
+    ).fetchall()
+
+    keys: list[tuple[str, str, int | None]] = []
+    for key_identifier_type_id, key_value, ncbi_tax_id in rows:
+        for source_type in id_to_source_types[int(key_identifier_type_id)]:
+            keys.append((source_type, str(key_value), ncbi_tax_id))
+    return keys
+
+
+def _materialize_live_utils_needed_resolver_tables(
+    con: duckdb.DuckDBPyConnection,
+) -> None:
+    """Replace full live resolver views with current-shard resolver tables."""
+
+    url = os.environ.get('OMNIPATH_BUILD_UTILS_PG_URL')
+    if not url or not _live_utils_attached(con):
+        return
+
+    resolver_rows: list[tuple[str, int, str, str | None, int, str]] = []
+    resolver_rows.extend(
+        _fetch_live_utils_rows_for_keys(
+            url=url,
+            table='resolver_gene',
+            mapping=RESOLVER_PROTEIN_SLUG_TO_IDENTIFIER_TYPE,
+            entity_type=GENE_ENTITY_TYPE,
+            canonical_identifier_type_id=identifier_type_id(ENTREZ_TYPE),
+            canonical_column='entrez',
+            key_rows=_live_utils_key_rows(
+                con,
+                mapping=RESOLVER_PROTEIN_SLUG_TO_IDENTIFIER_TYPE,
+                evidence_entity_types=(PROTEIN_ENTITY_TYPE, GENE_ENTITY_TYPE),
+            ),
+        )
+    )
+    resolver_rows.extend(
+        _fetch_live_utils_rows_for_keys(
+            url=url,
+            table='resolver_chemical',
+            mapping=RESOLVER_CHEMICAL_SLUG_TO_IDENTIFIER_TYPE,
+            entity_type=CHEMICAL_ENTITY_TYPE,
+            canonical_identifier_type_id=identifier_type_id(
+                STANDARD_INCHI_KEY_TYPE
+            ),
+            canonical_column='inchikey',
+            key_rows=_live_utils_key_rows(
+                con,
+                mapping=RESOLVER_CHEMICAL_SLUG_TO_IDENTIFIER_TYPE,
+                evidence_entity_types=(CHEMICAL_ENTITY_TYPE,),
+            ),
+        )
+    )
+    fallback_rows = _fetch_live_utils_rows_for_keys(
+        url=url,
+        table='resolver_protein',
+        mapping=RESOLVER_PROTEIN_SLUG_TO_IDENTIFIER_TYPE,
+        entity_type=PROTEIN_ENTITY_TYPE,
+        canonical_identifier_type_id=identifier_type_id(UNIPROT_TYPE),
+        canonical_column='uniprot',
+        key_rows=_live_utils_key_rows(
+            con,
+            mapping=RESOLVER_PROTEIN_SLUG_TO_IDENTIFIER_TYPE,
+            evidence_entity_types=(PROTEIN_ENTITY_TYPE,),
+        ),
+    )
+
+    for name in ('resolver_lookup', 'protein_uniprot_fallback_lookup'):
+        con.execute(f'DROP VIEW IF EXISTS {name}')
+        con.execute(f'DROP TABLE IF EXISTS {name}')
+    schema_sql = """
+        (
+          entity_type VARCHAR,
+          key_identifier_type_id BIGINT,
+          key_value VARCHAR,
+          taxonomy_id VARCHAR,
+          canonical_identifier_type_id BIGINT,
+          canonical_identifier VARCHAR
+        )
+    """
+    con.execute(f'CREATE TABLE resolver_lookup {schema_sql}')
+    con.execute(f'CREATE TABLE protein_uniprot_fallback_lookup {schema_sql}')
+    if resolver_rows:
+        con.executemany(
+            'INSERT INTO resolver_lookup VALUES (?, ?, ?, ?, ?, ?)',
+            resolver_rows,
+        )
+    if fallback_rows:
+        con.executemany(
+            'INSERT INTO protein_uniprot_fallback_lookup VALUES (?, ?, ?, ?, ?, ?)',
+            fallback_rows,
+        )
 
 
 def _create_duckdb_content_uuid_macro(con: duckdb.DuckDBPyConnection) -> None:
@@ -1380,6 +1701,7 @@ def _canonicalize_loaded_duckdb(
           AND ei.identifier <> ''
         """
     )
+    _materialize_live_utils_needed_resolver_tables(con)
     con.execute(
         """
         CREATE TABLE resolver_entity_type_match AS
