@@ -1778,6 +1778,7 @@ def _drop_duckdb_batch_tables(con: duckdb.DuckDBPyConnection) -> None:
         'new_entity',
         'canonical_entity',
         'canonical_entity_identifier',
+        'gene_protein_representative',
         'entity_evidence_resolution',
         'entity_ontology_relation',
         'relation_candidate_evidence',
