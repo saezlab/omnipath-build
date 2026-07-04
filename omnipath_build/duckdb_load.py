@@ -1894,6 +1894,7 @@ def _canonicalize_loaded_duckdb(
           SELECT DISTINCT
             ee.source,
             ee.entity_evidence_id,
+            rl.entity_type AS resolver_entity_type,
             coalesce(rl.taxonomy_id, ee.taxonomy_id) AS taxonomy_id,
             rl.canonical_identifier_type_id,
             rl.canonical_identifier
@@ -1918,10 +1919,12 @@ def _canonicalize_loaded_duckdb(
             source,
             entity_evidence_id,
             count(
-              DISTINCT coalesce(taxonomy_id, '') || chr(31) ||
+              DISTINCT resolver_entity_type || chr(31) ||
+              coalesce(taxonomy_id, '') || chr(31) ||
               canonical_identifier_type_id::VARCHAR || chr(31) ||
               canonical_identifier
             ) AS candidate_count,
+            min(resolver_entity_type) AS resolver_entity_type,
             min(taxonomy_id) AS taxonomy_id,
             min(canonical_identifier_type_id) AS canonical_identifier_type_id,
             min(canonical_identifier) AS canonical_identifier
@@ -1975,7 +1978,7 @@ def _canonicalize_loaded_duckdb(
           ee.entity_evidence_id,
           CASE
             WHEN rcs.candidate_count = 1
-            THEN coalesce(etm.resolver_entity_type, ee.entity_type)
+            THEN rcs.resolver_entity_type
             WHEN {protein_fallback_fires}
             -- T061b (open-decision #9): an unresolved gene-product known only by a
             -- primary UniProt is a GENE we cannot name, not a Protein. Type it Gene
@@ -2042,8 +2045,6 @@ def _canonicalize_loaded_duckdb(
         LEFT JOIN chemical_fallback_resolution cf
           ON cf.source = ee.source
          AND cf.entity_evidence_id = ee.entity_evidence_id
-        LEFT JOIN resolver_entity_type_match etm
-          ON etm.evidence_entity_type = ee.entity_type
         UNION ALL
         -- Multi-gene protein copies (T061): resolve each duplicated mention
         -- directly to its assigned gene (entity_type already GENE in
