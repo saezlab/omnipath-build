@@ -1893,16 +1893,28 @@ def _fetch_live_utils_rows_for_keys(
     """
     with psycopg2.connect(url) as pg:
         with pg.cursor() as cur:
+            # source_id is TEXT (not varchar(64)): evidence can carry ids longer
+            # than the resolver's varchar(64) source_id (BRENDA/MONDO), which used
+            # to raise StringDataRightTruncation on insert. A >64-char key simply
+            # never matches a (<=64-char) resolver row, so TEXT is both safe and
+            # correct here.
             cur.execute(
                 'CREATE TEMP TABLE tmp_resolver_key '
-                '(source_type text, source_id varchar(64), ncbi_tax_id integer) '
+                '(source_type text, source_id text, ncbi_tax_id integer) '
                 'ON COMMIT DROP'
             )
+            # None-safe ordering: ncbi_tax_id is None for no-taxon evidence, so a
+            # plain tuple sort raised "'<' not supported between int and NoneType"
+            # whenever the same (source_type, source_id) appeared both with and
+            # without a taxon (guidetopharma/bindingdb/drugcentral/wikipathways).
             execute_values(
                 cur,
                 'INSERT INTO tmp_resolver_key '
                 '(source_type, source_id, ncbi_tax_id) VALUES %s',
-                sorted(set(key_rows)),
+                sorted(
+                    set(key_rows),
+                    key=lambda r: (r[0], r[1], -1 if r[2] is None else r[2]),
+                ),
                 page_size=10000,
             )
             cur.execute(query, (entity_type, canonical_identifier_type_id))
