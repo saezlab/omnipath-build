@@ -213,6 +213,41 @@ def _combined_resolver_parquet_glob(resolver_dir: Path) -> str | None:
     return None
 
 
+def _combined_resolver_duckdb_path(resolver_dir: Path) -> Path | None:
+    """Return a persistent DuckDB path for the combined gene/protein resolver."""
+
+    configured = os.environ.get('OMNIPATH_BUILD_COMBINED_RESOLVER_DUCKDB')
+    candidates: list[Path] = []
+    if configured:
+        candidates.append(Path(configured).expanduser())
+    candidates.append(resolver_dir / 'resolver_gene_protein_combined.duckdb')
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    if configured:
+        raise FileNotFoundError(
+            'OMNIPATH_BUILD_COMBINED_RESOLVER_DUCKDB does not exist: '
+            f'{configured}'
+        )
+    return None
+
+
+def _attach_combined_resolver_duckdb(
+    con: duckdb.DuckDBPyConnection,
+    path: Path,
+    *,
+    alias: str = 'combined_resolver_db',
+) -> None:
+    attached = any(
+        row[1] == alias for row in con.execute('PRAGMA database_list').fetchall()
+    )
+    if not attached:
+        con.execute(
+            f'ATTACH {_sql_literal(str(path))} AS {_duckdb_identifier(alias)} '
+            '(READ_ONLY)'
+        )
+
+
 def _duckdb_load_postgres_extension(con: duckdb.DuckDBPyConnection) -> None:
     con.execute('INSTALL postgres; LOAD postgres;')
 
@@ -468,8 +503,99 @@ def _create_live_utils_resolver_views(
         """
     )
     _create_duckdb_identifier_type_all_view(con)
+    combined_duckdb_path = _combined_resolver_duckdb_path(resolver_dir)
     combined_parquet_glob = _combined_resolver_parquet_glob(resolver_dir)
-    if combined_parquet_glob is not None:
+    if combined_duckdb_path is not None:
+        _attach_combined_resolver_duckdb(con, combined_duckdb_path)
+        con.execute(
+            f"""
+            CREATE VIEW resolver_lookup AS
+            SELECT
+              entity_type,
+              key_identifier_type_id,
+              key_value,
+              taxonomy_id,
+              canonical_identifier_type_id,
+              canonical_identifier
+            FROM combined_resolver_db.resolver_lookup_gene_protein
+            WHERE key_value IS NOT NULL
+              AND canonical_identifier IS NOT NULL
+            UNION ALL
+            SELECT
+              {_sql_literal(CHEMICAL_ENTITY_TYPE)} AS entity_type,
+              ({chemical_key_case})::BIGINT AS key_identifier_type_id,
+              rc.source_id::VARCHAR AS key_value,
+              NULL::VARCHAR AS taxonomy_id,
+              {identifier_type_id(STANDARD_INCHI_KEY_TYPE)}::BIGINT
+                AS canonical_identifier_type_id,
+              rc.inchikey::VARCHAR AS canonical_identifier
+            FROM utils_pg.omnipath_utils.resolver_chemical rc
+            WHERE rc.source_type IN ({chemical_source_types})
+              AND rc.source_id IS NOT NULL
+              AND rc.inchikey IS NOT NULL
+            UNION ALL
+            SELECT DISTINCT
+              {_sql_literal(CHEMICAL_ENTITY_TYPE)} AS entity_type,
+              {identifier_type_id(STANDARD_INCHI_KEY_TYPE)}::BIGINT
+                AS key_identifier_type_id,
+              rc.inchikey::VARCHAR AS key_value,
+              NULL::VARCHAR AS taxonomy_id,
+              {identifier_type_id(STANDARD_INCHI_KEY_TYPE)}::BIGINT
+                AS canonical_identifier_type_id,
+              rc.inchikey::VARCHAR AS canonical_identifier
+            FROM utils_pg.omnipath_utils.resolver_chemical rc
+            WHERE rc.inchikey IS NOT NULL
+              AND rc.inchikey <> ''
+            {mirna_lookup_sql}
+            """
+        )
+        _create_empty_protein_uniprot_fallback_view(con)
+        con.execute(
+            f"""
+            CREATE VIEW resolver_canonical_entity AS
+            SELECT
+              row_number() OVER (
+                ORDER BY
+                  entity_type,
+                  taxonomy_id NULLS FIRST,
+                  canonical_identifier_type_id,
+                  canonical_identifier
+              )::BIGINT AS resolver_entity_id,
+              entity_type,
+              taxonomy_id,
+              canonical_identifier_type_id,
+              canonical_identifier,
+              list_distinct(list(key_identifier_type_id))
+                AS key_identifier_type_ids,
+              count(*)::BIGINT AS lookup_rows
+            FROM combined_resolver_db.resolver_lookup_gene_protein
+            WHERE canonical_identifier IS NOT NULL
+            GROUP BY
+              entity_type,
+              taxonomy_id,
+              canonical_identifier_type_id,
+              canonical_identifier
+            UNION ALL
+            SELECT
+              row_number() OVER (
+                ORDER BY {identifier_type_id(STANDARD_INCHI_KEY_TYPE)}, rc.inchikey
+              )::BIGINT AS resolver_entity_id,
+              {_sql_literal(CHEMICAL_ENTITY_TYPE)} AS entity_type,
+              NULL::VARCHAR AS taxonomy_id,
+              {identifier_type_id(STANDARD_INCHI_KEY_TYPE)}::BIGINT
+                AS canonical_identifier_type_id,
+              rc.inchikey::VARCHAR AS canonical_identifier,
+              list_distinct(list(({chemical_key_case})::BIGINT))
+                AS key_identifier_type_ids,
+              count(*)::BIGINT AS lookup_rows
+            FROM utils_pg.omnipath_utils.resolver_chemical rc
+            WHERE rc.source_type IN ({chemical_source_types})
+              AND rc.inchikey IS NOT NULL
+            GROUP BY rc.inchikey
+            {mirna_canonical_sql}
+            """
+        )
+    elif combined_parquet_glob is not None:
         con.execute(
             f"""
             CREATE VIEW resolver_lookup AS
