@@ -185,6 +185,34 @@ def _has_parquet_files(path: Path) -> bool:
     return path.is_dir() and any(path.glob('*.parquet'))
 
 
+def _has_nested_parquet_files(path: Path) -> bool:
+    return path.is_dir() and any(path.rglob('*.parquet'))
+
+
+def _combined_resolver_parquet_glob(resolver_dir: Path) -> str | None:
+    """Return a glob for the combined gene/protein resolver parquet dataset."""
+
+    configured = os.environ.get('OMNIPATH_BUILD_COMBINED_RESOLVER_PARQUET')
+    candidates: list[Path] = []
+    if configured:
+        candidates.append(Path(configured).expanduser())
+    candidates.extend(
+        (
+            resolver_dir / 'resolver_gene_protein_combined',
+            resolver_dir / 'resolver_gene_protein_combined.parquet',
+        )
+    )
+    for candidate in candidates:
+        if _has_nested_parquet_files(candidate):
+            return _parquet_glob(candidate / '**' / '*.parquet')
+    if configured:
+        raise FileNotFoundError(
+            'OMNIPATH_BUILD_COMBINED_RESOLVER_PARQUET does not contain '
+            f'any parquet files: {configured}'
+        )
+    return None
+
+
 def _duckdb_load_postgres_extension(con: duckdb.DuckDBPyConnection) -> None:
     con.execute('INSTALL postgres; LOAD postgres;')
 
@@ -440,7 +468,131 @@ def _create_live_utils_resolver_views(
         """
     )
     _create_duckdb_identifier_type_all_view(con)
-    if _attached_utils_relation_exists(con, 'resolver_gene_protein_combined'):
+    combined_parquet_glob = _combined_resolver_parquet_glob(resolver_dir)
+    if combined_parquet_glob is not None:
+        con.execute(
+            f"""
+            CREATE VIEW resolver_lookup AS
+            SELECT
+              CASE rgp.canonical_type
+                WHEN 'entrez' THEN {_sql_literal(GENE_ENTITY_TYPE)}
+                WHEN 'uniprot' THEN {_sql_literal(PROTEIN_ENTITY_TYPE)}
+              END AS entity_type,
+              ({combined_key_case})::BIGINT AS key_identifier_type_id,
+              rgp.source_id::VARCHAR AS key_value,
+              NULLIF(rgp.ncbi_tax_id, 0)::VARCHAR AS taxonomy_id,
+              CASE rgp.canonical_type
+                WHEN 'entrez' THEN {identifier_type_id(ENTREZ_TYPE)}
+                WHEN 'uniprot' THEN {identifier_type_id(UNIPROT_TYPE)}
+              END::BIGINT AS canonical_identifier_type_id,
+              rgp.canonical_id::VARCHAR AS canonical_identifier
+            FROM read_parquet(
+              '{combined_parquet_glob}',
+              hive_partitioning = true
+            ) rgp
+            WHERE rgp.source_type IN ({gene_source_types})
+              AND rgp.source_id IS NOT NULL
+              AND rgp.canonical_id IS NOT NULL
+              AND rgp.canonical_type IN ('entrez', 'uniprot')
+            UNION ALL
+            SELECT
+              {_sql_literal(CHEMICAL_ENTITY_TYPE)} AS entity_type,
+              ({chemical_key_case})::BIGINT AS key_identifier_type_id,
+              rc.source_id::VARCHAR AS key_value,
+              NULL::VARCHAR AS taxonomy_id,
+              {identifier_type_id(STANDARD_INCHI_KEY_TYPE)}::BIGINT
+                AS canonical_identifier_type_id,
+              rc.inchikey::VARCHAR AS canonical_identifier
+            FROM utils_pg.omnipath_utils.resolver_chemical rc
+            WHERE rc.source_type IN ({chemical_source_types})
+              AND rc.source_id IS NOT NULL
+              AND rc.inchikey IS NOT NULL
+            UNION ALL
+            SELECT DISTINCT
+              {_sql_literal(CHEMICAL_ENTITY_TYPE)} AS entity_type,
+              {identifier_type_id(STANDARD_INCHI_KEY_TYPE)}::BIGINT
+                AS key_identifier_type_id,
+              rc.inchikey::VARCHAR AS key_value,
+              NULL::VARCHAR AS taxonomy_id,
+              {identifier_type_id(STANDARD_INCHI_KEY_TYPE)}::BIGINT
+                AS canonical_identifier_type_id,
+              rc.inchikey::VARCHAR AS canonical_identifier
+            FROM utils_pg.omnipath_utils.resolver_chemical rc
+            WHERE rc.inchikey IS NOT NULL
+              AND rc.inchikey <> ''
+            {mirna_lookup_sql}
+            """
+        )
+        _create_empty_protein_uniprot_fallback_view(con)
+        con.execute(
+            f"""
+            CREATE VIEW resolver_canonical_entity AS
+            WITH gene_product AS (
+              SELECT
+                CASE rgp.canonical_type
+                  WHEN 'entrez' THEN {_sql_literal(GENE_ENTITY_TYPE)}
+                  WHEN 'uniprot' THEN {_sql_literal(PROTEIN_ENTITY_TYPE)}
+                END AS entity_type,
+                NULLIF(rgp.ncbi_tax_id, 0)::VARCHAR AS taxonomy_id,
+                CASE rgp.canonical_type
+                  WHEN 'entrez' THEN {identifier_type_id(ENTREZ_TYPE)}
+                  WHEN 'uniprot' THEN {identifier_type_id(UNIPROT_TYPE)}
+                END::BIGINT AS canonical_identifier_type_id,
+                rgp.canonical_id::VARCHAR AS canonical_identifier,
+                ({combined_key_case})::BIGINT AS key_identifier_type_id
+              FROM read_parquet(
+                '{combined_parquet_glob}',
+                hive_partitioning = true
+              ) rgp
+              WHERE rgp.source_type IN ({gene_source_types})
+                AND rgp.canonical_id IS NOT NULL
+                AND rgp.canonical_type IN ('entrez', 'uniprot')
+            )
+            SELECT
+              row_number() OVER (
+                ORDER BY
+                  entity_type,
+                  taxonomy_id NULLS FIRST,
+                  canonical_identifier_type_id,
+                  canonical_identifier
+              )::BIGINT AS resolver_entity_id,
+              entity_type,
+              taxonomy_id,
+              canonical_identifier_type_id,
+              canonical_identifier,
+              list_distinct(list(key_identifier_type_id))
+                AS key_identifier_type_ids,
+              count(*)::BIGINT AS lookup_rows
+            FROM gene_product
+            GROUP BY
+              entity_type,
+              taxonomy_id,
+              canonical_identifier_type_id,
+              canonical_identifier
+            UNION ALL
+            SELECT
+              row_number() OVER (
+                ORDER BY {identifier_type_id(STANDARD_INCHI_KEY_TYPE)}, rc.inchikey
+              )::BIGINT AS resolver_entity_id,
+              {_sql_literal(CHEMICAL_ENTITY_TYPE)} AS entity_type,
+              NULL::VARCHAR AS taxonomy_id,
+              {identifier_type_id(STANDARD_INCHI_KEY_TYPE)}::BIGINT
+                AS canonical_identifier_type_id,
+              rc.inchikey::VARCHAR AS canonical_identifier,
+              list_distinct(list(({chemical_key_case})::BIGINT))
+                AS key_identifier_type_ids,
+              count(*)::BIGINT AS lookup_rows
+            FROM utils_pg.omnipath_utils.resolver_chemical rc
+            WHERE rc.source_type IN ({chemical_source_types})
+              AND rc.inchikey IS NOT NULL
+            GROUP BY rc.inchikey
+            {mirna_canonical_sql}
+            """
+        )
+    elif _attached_utils_relation_exists(
+        con,
+        'resolver_gene_protein_combined',
+    ):
         con.execute(
             f"""
             CREATE VIEW resolver_lookup AS
