@@ -12,6 +12,7 @@ import duckdb
 import pyarrow as pa
 import psycopg2
 from psycopg2 import sql
+from psycopg2.extras import execute_values
 
 from omnipath_build.cv_terms import (
     CV_TERM_ID_TYPE,
@@ -1796,6 +1797,210 @@ def _drop_duckdb_batch_tables(con: duckdb.DuckDBPyConnection) -> None:
         con.execute(f'DROP TABLE IF EXISTS {table}')
 
 
+def _live_utils_attached(con: duckdb.DuckDBPyConnection) -> bool:
+    """True when the utils Postgres is ATTACHed as ``utils_pg`` in this DuckDB."""
+    return any(
+        row[1] == 'utils_pg'
+        for row in con.execute('PRAGMA database_list').fetchall()
+    )
+
+
+def _fetch_live_utils_rows_for_keys(
+    *,
+    url: str,
+    table: str,
+    mapping: dict[str, str],
+    entity_type: str,
+    canonical_identifier_type_id: int,
+    canonical_column: str,
+    key_rows: list[tuple[str, str, int | None]],
+    has_taxonomy: bool = True,
+) -> list[tuple[str, int, str, str | None, int, str]]:
+    """Fetch resolver rows for the current shard's keys from utils Postgres.
+
+    Keyed lookup (2026-07-04, adopted+finished from Jonathan's keyed-lookup WIP):
+    only this shard's ids are shipped to Postgres (a temp table) and joined against
+    the MATERIALIZED, indexed resolver, so index probes return just the needed
+    rows -- never the full-table scan into DuckDB that the full-view path did (the
+    ~500M-row-per-shard remote scan + multi-GB blow-up). ALL resolution and
+    normalization now lives in the utils resolver (ADR 0006 + the authoritative
+    gene2ensembl/BioMart gene-space); this only READS it -- so Jonathan's original
+    inline re-derivations from ``id_mapping``/``id_mapping_ftp`` (one special-case
+    per resolver) are dropped in favour of this single generic keyed join.
+    ``has_taxonomy`` is False for the organism-agnostic ``resolver_chemical``.
+    """
+    if not key_rows:
+        return []
+
+    key_type_case = ' '.join(
+        f"WHEN {source_type!r} THEN {identifier_type_id(identifier_type)}"
+        for source_type, identifier_type in mapping.items()
+    )
+    tax_join = (
+        'AND (k.ncbi_tax_id IS NULL OR k.ncbi_tax_id = r.ncbi_tax_id)'
+        if has_taxonomy else ''
+    )
+    tax_select = 'NULLIF(r.ncbi_tax_id, 0)::text' if has_taxonomy else 'NULL::text'
+    query = f"""
+        SELECT
+          %s AS entity_type,
+          (CASE r.source_type {key_type_case} END)::bigint
+            AS key_identifier_type_id,
+          r.source_id::text AS key_value,
+          {tax_select} AS taxonomy_id,
+          %s::bigint AS canonical_identifier_type_id,
+          r.{canonical_column}::text AS canonical_identifier
+        FROM omnipath_utils.{table} r
+        JOIN tmp_resolver_key k
+          ON k.source_type = r.source_type
+         AND k.source_id = r.source_id
+         {tax_join}
+        WHERE r.{canonical_column} IS NOT NULL
+    """
+    with psycopg2.connect(url) as pg:
+        with pg.cursor() as cur:
+            cur.execute(
+                'CREATE TEMP TABLE tmp_resolver_key '
+                '(source_type text, source_id varchar(64), ncbi_tax_id integer) '
+                'ON COMMIT DROP'
+            )
+            execute_values(
+                cur,
+                'INSERT INTO tmp_resolver_key '
+                '(source_type, source_id, ncbi_tax_id) VALUES %s',
+                sorted(set(key_rows)),
+                page_size=10000,
+            )
+            cur.execute(query, (entity_type, canonical_identifier_type_id))
+            return cur.fetchall()
+
+
+def _live_utils_key_rows(
+    con: duckdb.DuckDBPyConnection,
+    *,
+    mapping: dict[str, str],
+    evidence_entity_types: tuple[str, ...],
+) -> list[tuple[str, str, int | None]]:
+    """The shard's distinct (source_type, source_id, ncbi_tax_id) resolver keys."""
+    id_to_source_types: dict[int, list[str]] = {}
+    for source_type, identifier_type in mapping.items():
+        id_to_source_types.setdefault(
+            identifier_type_id(identifier_type), []
+        ).append(source_type)
+
+    entity_placeholders = ', '.join('?' for _ in evidence_entity_types)
+    id_placeholders = ', '.join('?' for _ in id_to_source_types)
+    rows = con.execute(
+        f"""
+        SELECT DISTINCT
+          key_identifier_type_id,
+          key_value,
+          try_cast(taxonomy_id AS INTEGER) AS ncbi_tax_id
+        FROM evidence_identifier_key
+        WHERE entity_type IN ({entity_placeholders})
+          AND key_identifier_type_id IN ({id_placeholders})
+          AND key_value IS NOT NULL
+          AND key_value <> ''
+        """,
+        [*evidence_entity_types, *id_to_source_types.keys()],
+    ).fetchall()
+
+    keys: list[tuple[str, str, int | None]] = []
+    for key_identifier_type_id, key_value, ncbi_tax_id in rows:
+        for source_type in id_to_source_types[int(key_identifier_type_id)]:
+            keys.append((source_type, str(key_value), ncbi_tax_id))
+    return keys
+
+
+def _materialize_live_utils_needed_resolver_tables(
+    con: duckdb.DuckDBPyConnection,
+) -> None:
+    """Replace the full live-utils resolver VIEWS with per-shard keyed tables.
+
+    No-op unless the utils Postgres is attached. Reads the materialized resolvers
+    (resolver_gene -> entrez, resolver_protein -> uniprot fallback, resolver_chemical
+    -> inchikey) by keyed lookup and rebuilds the small local ``resolver_lookup`` /
+    ``protein_uniprot_fallback_lookup`` tables that canonicalize joins against.
+    """
+    url = os.environ.get('OMNIPATH_BUILD_UTILS_PG_URL')
+    if not url or not _live_utils_attached(con):
+        return
+
+    resolver_rows: list[tuple[str, int, str, str | None, int, str]] = []
+    resolver_rows.extend(
+        _fetch_live_utils_rows_for_keys(
+            url=url,
+            table='resolver_gene',
+            mapping=RESOLVER_PROTEIN_SLUG_TO_IDENTIFIER_TYPE,
+            entity_type=GENE_ENTITY_TYPE,
+            canonical_identifier_type_id=identifier_type_id(ENTREZ_TYPE),
+            canonical_column='entrez',
+            key_rows=_live_utils_key_rows(
+                con,
+                mapping=RESOLVER_PROTEIN_SLUG_TO_IDENTIFIER_TYPE,
+                evidence_entity_types=(PROTEIN_ENTITY_TYPE, GENE_ENTITY_TYPE),
+            ),
+        )
+    )
+    resolver_rows.extend(
+        _fetch_live_utils_rows_for_keys(
+            url=url,
+            table='resolver_chemical',
+            mapping=RESOLVER_CHEMICAL_SLUG_TO_IDENTIFIER_TYPE,
+            entity_type=CHEMICAL_ENTITY_TYPE,
+            canonical_identifier_type_id=identifier_type_id(
+                STANDARD_INCHI_KEY_TYPE
+            ),
+            canonical_column='inchikey',
+            has_taxonomy=False,
+            key_rows=_live_utils_key_rows(
+                con,
+                mapping=RESOLVER_CHEMICAL_SLUG_TO_IDENTIFIER_TYPE,
+                evidence_entity_types=(CHEMICAL_ENTITY_TYPE,),
+            ),
+        )
+    )
+    fallback_rows = _fetch_live_utils_rows_for_keys(
+        url=url,
+        table='resolver_protein',
+        mapping=RESOLVER_PROTEIN_SLUG_TO_IDENTIFIER_TYPE,
+        entity_type=PROTEIN_ENTITY_TYPE,
+        canonical_identifier_type_id=identifier_type_id(UNIPROT_TYPE),
+        canonical_column='uniprot',
+        key_rows=_live_utils_key_rows(
+            con,
+            mapping=RESOLVER_PROTEIN_SLUG_TO_IDENTIFIER_TYPE,
+            evidence_entity_types=(PROTEIN_ENTITY_TYPE,),
+        ),
+    )
+
+    for name in ('resolver_lookup', 'protein_uniprot_fallback_lookup'):
+        con.execute(f'DROP VIEW IF EXISTS {name}')
+        con.execute(f'DROP TABLE IF EXISTS {name}')
+    schema_sql = """
+        (
+          entity_type VARCHAR,
+          key_identifier_type_id BIGINT,
+          key_value VARCHAR,
+          taxonomy_id VARCHAR,
+          canonical_identifier_type_id BIGINT,
+          canonical_identifier VARCHAR
+        )
+    """
+    con.execute(f'CREATE TABLE resolver_lookup {schema_sql}')
+    con.execute(f'CREATE TABLE protein_uniprot_fallback_lookup {schema_sql}')
+    if resolver_rows:
+        con.executemany(
+            'INSERT INTO resolver_lookup VALUES (?, ?, ?, ?, ?, ?)',
+            resolver_rows,
+        )
+    if fallback_rows:
+        con.executemany(
+            'INSERT INTO protein_uniprot_fallback_lookup VALUES (?, ?, ?, ?, ?, ?)',
+            fallback_rows,
+        )
+
+
 def _canonicalize_loaded_duckdb(
     con: duckdb.DuckDBPyConnection,
 ) -> tuple[int, int, int]:
@@ -1826,6 +2031,10 @@ def _canonicalize_loaded_duckdb(
           AND ei.identifier <> ''
         """
     )
+    # Keyed lookup: now that the shard's evidence keys exist, replace the full
+    # live-utils resolver VIEWS with small per-shard tables fetched by key (only
+    # this shard's ids scan the remote resolver, not the whole 500M-row tables).
+    _materialize_live_utils_needed_resolver_tables(con)
     con.execute(
         """
         CREATE TABLE resolver_entity_type_match AS
