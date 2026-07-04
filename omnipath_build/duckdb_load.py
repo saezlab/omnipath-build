@@ -1805,6 +1805,40 @@ def _live_utils_attached(con: duckdb.DuckDBPyConnection) -> bool:
     )
 
 
+def _bulk_insert_resolver_lookup_rows(
+    con: duckdb.DuckDBPyConnection,
+    table: str,
+    rows: list[tuple[str, int, str, str | None, int, str]],
+) -> None:
+    """Bulk-insert fetched resolver rows into a local DuckDB ``resolver_lookup``.
+
+    Row-by-row ``executemany`` is pathologically slow in DuckDB for large result
+    sets — observed making per-shard canonicalize balloon to ~30 min on id-dense
+    sources (ChEMBL), both Postgres instances idle (so the cost was the DuckDB
+    insert, not the keyed fetch). Insert via an Arrow table (vectorised, one
+    statement) instead. Column types are pinned so an all-null column (e.g. the
+    organism-agnostic ``taxonomy_id`` for chemicals) still matches the schema.
+    """
+    if not rows:
+        return
+    columns = list(zip(*rows))
+    arrow_table = pa.table({
+        'entity_type': pa.array(columns[0], type=pa.string()),
+        'key_identifier_type_id': pa.array(columns[1], type=pa.int64()),
+        'key_value': pa.array(columns[2], type=pa.string()),
+        'taxonomy_id': pa.array(columns[3], type=pa.string()),
+        'canonical_identifier_type_id': pa.array(columns[4], type=pa.int64()),
+        'canonical_identifier': pa.array(columns[5], type=pa.string()),
+    })
+    con.register('_resolver_lookup_rows', arrow_table)
+    try:
+        con.execute(
+            f'INSERT INTO {table} SELECT * FROM _resolver_lookup_rows'
+        )
+    finally:
+        con.unregister('_resolver_lookup_rows')
+
+
 def _fetch_live_utils_rows_for_keys(
     *,
     url: str,
@@ -1989,16 +2023,10 @@ def _materialize_live_utils_needed_resolver_tables(
     """
     con.execute(f'CREATE TABLE resolver_lookup {schema_sql}')
     con.execute(f'CREATE TABLE protein_uniprot_fallback_lookup {schema_sql}')
-    if resolver_rows:
-        con.executemany(
-            'INSERT INTO resolver_lookup VALUES (?, ?, ?, ?, ?, ?)',
-            resolver_rows,
-        )
-    if fallback_rows:
-        con.executemany(
-            'INSERT INTO protein_uniprot_fallback_lookup VALUES (?, ?, ?, ?, ?, ?)',
-            fallback_rows,
-        )
+    _bulk_insert_resolver_lookup_rows(con, 'resolver_lookup', resolver_rows)
+    _bulk_insert_resolver_lookup_rows(
+        con, 'protein_uniprot_fallback_lookup', fallback_rows
+    )
 
 
 def _append_live_utils_ontology_endpoint_resolver_rows(
@@ -2051,11 +2079,7 @@ def _append_live_utils_ontology_endpoint_resolver_rows(
         has_taxonomy=False,
         key_rows=key_rows,
     )
-    if new_rows:
-        con.executemany(
-            'INSERT INTO resolver_lookup VALUES (?, ?, ?, ?, ?, ?)',
-            new_rows,
-        )
+    _bulk_insert_resolver_lookup_rows(con, 'resolver_lookup', new_rows)
 
 
 def _canonicalize_loaded_duckdb(
