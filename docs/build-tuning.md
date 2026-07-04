@@ -61,6 +61,15 @@ COPY. **Tune it in its compose `command:`, not by ad-hoc `ALTER SYSTEM`** (which
 is lost on recreate). The `utils2` compose
 (`~/instances/utils2/docker-compose.yml`) now carries the canonical values below.
 
+**`max_connections` scales with `LOAD_JOBS`.** The build's `LOAD_JOBS` (a.k.a.
+`--stage-jobs`) parallel staging workers each read the resolver from this PG —
+one DuckDB `ATTACH` connection plus a handful of short-lived psycopg2
+connections for the keyed lookups (`_fetch_live_utils_rows_for_keys`). Peak
+concurrent connections roughly track `LOAD_JOBS × ~4`, so the utils PG's
+`max_connections` must comfortably exceed that. The default 100 is fine for
+`LOAD_JOBS=16` but overflows at `LOAD_JOBS=32`; keep `max_connections` at
+`400` (set below) or raise it alongside any further `LOAD_JOBS` increase.
+
 ## Canonical values on the beauty host (503 GB RAM, 64 cores)
 
 Both containers set these via their compose `command:` (build PG:
@@ -77,6 +86,7 @@ Both containers set these via their compose `command:` (build PG:
 | `max_parallel_workers_per_gather` | 6 (session) | 8 | |
 | `effective_io_concurrency` | 200 | 200 | NVMe |
 | `wal_level` | (WAL tuned) | `minimal` | utils build DB is rebuildable → skip WAL |
+| `max_connections` | 100 (default) | **400** | each `LOAD_JOBS` stage worker holds a DuckDB `ATTACH` + serial psycopg2 keyed-lookup connections to the utils PG; at `LOAD_JOBS=32` the default 100 overflowed (`FATAL: sorry, too many clients already` → ~50 datasets fail to stage). 400 leaves ~12/worker of headroom (steady-state peak was ~46). Restart-only. |
 
 `shared_buffers` and `max_worker_processes` are **restart-only** — after changing
 them, recreate the container (`docker compose up -d`), don't just `ALTER SYSTEM`.
