@@ -1739,6 +1739,10 @@ def _canonicalize_loaded_duckdb(
         FROM resolver_lookup rl
         JOIN taxonomy_optional_resolver_key_type opt
           ON opt.identifier_type_id = rl.key_identifier_type_id
+        JOIN evidence_identifier_key k
+          ON k.entity_type = ?
+         AND k.key_identifier_type_id = rl.key_identifier_type_id
+         AND k.key_value = rl.key_value
         WHERE rl.entity_type = ?
         GROUP BY
           rl.key_identifier_type_id,
@@ -1746,7 +1750,7 @@ def _canonicalize_loaded_duckdb(
           rl.canonical_identifier_type_id
         HAVING count(DISTINCT rl.canonical_identifier) = 1
         """,
-        [GENE_ENTITY_TYPE],
+        [PROTEIN_ENTITY_TYPE, GENE_ENTITY_TYPE],
     )
     con.execute(
         """
