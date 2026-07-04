@@ -1758,9 +1758,11 @@ def _drop_duckdb_batch_tables(con: duckdb.DuckDBPyConnection) -> None:
         'evidence_identifier_key',
         'resolver_entity_type_match',
         'resolver_evidence_identifier_key',
+        'ontology_endpoint_identifier_key',
         'taxonomy_optional_resolver_key_type',
         'taxonomy_optional_unambiguous_key',
         'needed_resolver_lookup',
+        'needed_ontology_endpoint_resolver_lookup',
         'protein_uniprot_fallback_taxonomy_optional_unambiguous_key',
         'needed_protein_uniprot_fallback_lookup',
         'entity_identifier_group',
@@ -1951,6 +1953,74 @@ def _canonicalize_loaded_duckdb(
               NULL::BIGINT AS canonical_identifier_type_id,
               NULL::VARCHAR AS canonical_identifier,
               NULL::BOOLEAN AS taxonomy_optional_match
+            WHERE false
+            """
+        )
+    con.execute(
+        """
+        CREATE TABLE ontology_endpoint_identifier_key AS
+        SELECT DISTINCT
+          endpoint.entity_type AS evidence_entity_type,
+          etm.resolver_entity_type,
+          kit.identifier_type_id AS key_identifier_type_id,
+          endpoint.identifier AS key_value
+        FROM (
+          SELECT
+            subject_entity_type AS entity_type,
+            subject_identifier_type AS identifier_type,
+            subject_identifier AS identifier
+          FROM ontology_relation_raw
+          WHERE subject_entity_evidence_id IS NULL
+            AND subject_identifier IS NOT NULL
+            AND subject_identifier <> ''
+          UNION
+          SELECT
+            object_entity_type AS entity_type,
+            object_identifier_type AS identifier_type,
+            object_identifier AS identifier
+          FROM ontology_relation_raw
+          WHERE object_identifier IS NOT NULL
+            AND object_identifier <> ''
+        ) endpoint
+        JOIN resolver_entity_type_match etm
+          ON etm.evidence_entity_type = endpoint.entity_type
+        JOIN identifier_type_all kit
+          ON kit.name = endpoint.identifier_type
+        WHERE endpoint.entity_type IS NOT NULL
+        """
+    )
+    has_ontology_endpoint_resolver_keys = bool(
+        con.execute(
+            'SELECT count(*) > 0 FROM ontology_endpoint_identifier_key'
+        ).fetchone()[0]
+    )
+    if has_ontology_endpoint_resolver_keys:
+        con.execute(
+            """
+            CREATE TABLE needed_ontology_endpoint_resolver_lookup AS
+            SELECT DISTINCT
+              k.evidence_entity_type,
+              rl.*
+            FROM resolver_lookup rl
+            JOIN ontology_endpoint_identifier_key k
+              ON k.resolver_entity_type = rl.entity_type
+             AND k.key_identifier_type_id = rl.key_identifier_type_id
+             AND k.key_value = rl.key_value
+            WHERE rl.taxonomy_id IS NULL
+            """
+        )
+    else:
+        con.execute(
+            """
+            CREATE TABLE needed_ontology_endpoint_resolver_lookup AS
+            SELECT
+              NULL::VARCHAR AS evidence_entity_type,
+              NULL::VARCHAR AS entity_type,
+              NULL::BIGINT AS key_identifier_type_id,
+              NULL::VARCHAR AS key_value,
+              NULL::VARCHAR AS taxonomy_id,
+              NULL::BIGINT AS canonical_identifier_type_id,
+              NULL::VARCHAR AS canonical_identifier
             WHERE false
             """
         )
@@ -2892,10 +2962,8 @@ def _canonicalize_loaded_duckdb(
           ) endpoint
           JOIN identifier_type_all kit
             ON kit.name = endpoint.identifier_type
-          LEFT JOIN resolver_entity_type_match etm
-            ON etm.evidence_entity_type = endpoint.entity_type
-          LEFT JOIN resolver_lookup rl
-            ON rl.entity_type = etm.resolver_entity_type
+          LEFT JOIN needed_ontology_endpoint_resolver_lookup rl
+            ON rl.evidence_entity_type = endpoint.entity_type
            AND rl.key_identifier_type_id = kit.identifier_type_id
            AND rl.key_value = endpoint.identifier
            AND rl.taxonomy_id IS NULL
@@ -3178,7 +3246,17 @@ def _canonicalize_loaded_duckdb(
             """
         ).fetchone()[0]
     )
-    if gene_protein_representative_src_exists:
+    has_gene_entities = bool(
+        con.execute(
+            f"""
+            SELECT count(*) > 0
+            FROM canonical_entity
+            WHERE entity_type = {_sql_literal(GENE_ENTITY_TYPE)}
+              AND canonical_identifier_type_id = {identifier_type_id(ENTREZ_TYPE)}
+            """
+        ).fetchone()[0]
+    )
+    if gene_protein_representative_src_exists and has_gene_entities:
         con.execute(
             f"""
             CREATE TABLE gene_protein_representative AS
@@ -3205,6 +3283,43 @@ def _canonicalize_loaded_duckdb(
             )
             """
         )
+    has_resolver_alias_entities = bool(
+        con.execute(
+            """
+            SELECT count(*) > 0
+            FROM canonical_entity ce
+            JOIN resolver_entity_type_match etm
+              ON etm.evidence_entity_type = ce.entity_type
+            """
+        ).fetchone()[0]
+    )
+    resolver_alias_identifier_sql = ''
+    if has_resolver_alias_entities:
+        resolver_alias_identifier_sql = f"""
+          UNION
+          SELECT
+            se.source,
+            se.entity_id,
+            rl.key_identifier_type_id AS identifier_type_id,
+            rl.key_value AS identifier
+          FROM source_entity se
+          JOIN resolver_entity_type_match etm
+            ON etm.evidence_entity_type = se.entity_type
+          JOIN resolver_lookup rl
+            ON rl.entity_type = etm.resolver_entity_type
+           AND rl.canonical_identifier_type_id =
+               se.canonical_identifier_type_id
+           AND rl.canonical_identifier = se.canonical_identifier
+           AND (
+             rl.taxonomy_id = se.taxonomy_id
+             OR rl.taxonomy_id IS NULL
+           )
+          WHERE rl.key_value IS NOT NULL
+            AND rl.key_value <> ''
+            AND rl.key_identifier_type_id NOT IN (
+              {resolver_alias_expansion_excluded_type_ids}
+            )
+        """
     con.execute(
         f"""
         CREATE TABLE canonical_entity_identifier AS
@@ -3232,29 +3347,7 @@ def _canonicalize_loaded_duckdb(
           FROM source_entity se
           WHERE se.canonical_identifier IS NOT NULL
             AND se.canonical_identifier <> ''
-          UNION
-          SELECT
-            se.source,
-            se.entity_id,
-            rl.key_identifier_type_id AS identifier_type_id,
-            rl.key_value AS identifier
-          FROM source_entity se
-          JOIN resolver_entity_type_match etm
-            ON etm.evidence_entity_type = se.entity_type
-          JOIN resolver_lookup rl
-            ON rl.entity_type = etm.resolver_entity_type
-           AND rl.canonical_identifier_type_id =
-               se.canonical_identifier_type_id
-           AND rl.canonical_identifier = se.canonical_identifier
-           AND (
-             rl.taxonomy_id = se.taxonomy_id
-             OR rl.taxonomy_id IS NULL
-           )
-          WHERE rl.key_value IS NOT NULL
-            AND rl.key_value <> ''
-            AND rl.key_identifier_type_id NOT IN (
-              {resolver_alias_expansion_excluded_type_ids}
-            )
+          {resolver_alias_identifier_sql}
           UNION
           SELECT
             er.source,
@@ -3389,10 +3482,8 @@ def _canonicalize_loaded_duckdb(
           ) endpoint
           JOIN identifier_type_all kit
             ON kit.name = endpoint.identifier_type
-          LEFT JOIN resolver_entity_type_match etm
-            ON etm.evidence_entity_type = endpoint.entity_type
-          LEFT JOIN resolver_lookup rl
-            ON rl.entity_type = etm.resolver_entity_type
+          LEFT JOIN needed_ontology_endpoint_resolver_lookup rl
+            ON rl.evidence_entity_type = endpoint.entity_type
            AND rl.key_identifier_type_id = kit.identifier_type_id
            AND rl.key_value = endpoint.identifier
            AND rl.taxonomy_id IS NULL
