@@ -1946,20 +1946,27 @@ def _live_utils_key_rows(
     return keys
 
 
-def _materialize_live_utils_needed_resolver_tables(
+def _build_resolver_lookup(
     con: duckdb.DuckDBPyConnection,
 ) -> None:
     """Replace the full live-utils resolver VIEWS with per-shard keyed tables.
 
     No-op unless the utils Postgres is attached. Reads the materialized resolvers
-    (resolver_gene -> entrez, resolver_protein -> uniprot fallback, resolver_chemical
-    -> inchikey) by keyed lookup and rebuilds the small local ``resolver_lookup`` /
-    ``protein_uniprot_fallback_lookup`` tables that canonicalize joins against.
+    (resolver_gene -> entrez per taxon; resolver_gene_protein_global -> entrez
+    taxon-agnostic for no-taxon proteins; resolver_protein -> uniprot fallback;
+    resolver_chemical -> inchikey) by keyed lookup and rebuilds the small local
+    ``resolver_lookup`` / ``protein_uniprot_fallback_lookup`` tables that
+    canonicalize joins against.
     """
     url = os.environ.get('OMNIPATH_BUILD_UTILS_PG_URL')
     if not url or not _live_utils_attached(con):
         return
 
+    protein_gene_keys = _live_utils_key_rows(
+        con,
+        mapping=RESOLVER_PROTEIN_SLUG_TO_IDENTIFIER_TYPE,
+        evidence_entity_types=(PROTEIN_ENTITY_TYPE, GENE_ENTITY_TYPE),
+    )
     resolver_rows: list[tuple[str, int, str, str | None, int, str]] = []
     resolver_rows.extend(
         _fetch_live_utils_rows_for_keys(
@@ -1969,11 +1976,26 @@ def _materialize_live_utils_needed_resolver_tables(
             entity_type=GENE_ENTITY_TYPE,
             canonical_identifier_type_id=identifier_type_id(ENTREZ_TYPE),
             canonical_column='entrez',
-            key_rows=_live_utils_key_rows(
-                con,
-                mapping=RESOLVER_PROTEIN_SLUG_TO_IDENTIFIER_TYPE,
-                evidence_entity_types=(PROTEIN_ENTITY_TYPE, GENE_ENTITY_TYPE),
-            ),
+            key_rows=protein_gene_keys,
+        )
+    )
+    # Taxon-agnostic gene anchor for proteins that arrive with NO taxon
+    # (Rhea/Brenda/TCDB/ChEMBL reference UniProt without an organism): the
+    # per-taxon resolver_gene rows carry the resolver's taxon, which the no-taxon
+    # evidence cannot match, so also emit taxon-agnostic (NULL) entrez matches
+    # from resolver_gene_protein_global (has_taxonomy=False). This is the T069
+    # global slice the parquet path used; the live keyed path was missing it,
+    # leaving ~162k UniProt-bearing no-taxon proteins unresolved.
+    resolver_rows.extend(
+        _fetch_live_utils_rows_for_keys(
+            url=url,
+            table='resolver_gene_protein_global',
+            mapping=RESOLVER_PROTEIN_SLUG_TO_IDENTIFIER_TYPE,
+            entity_type=GENE_ENTITY_TYPE,
+            canonical_identifier_type_id=identifier_type_id(ENTREZ_TYPE),
+            canonical_column='entrez',
+            has_taxonomy=False,
+            key_rows=protein_gene_keys,
         )
     )
     resolver_rows.extend(
@@ -2038,7 +2060,7 @@ def _append_live_utils_ontology_endpoint_resolver_rows(
     reference ids with NO ``entity_evidence`` row (``subject_entity_evidence_id
     IS NULL``), so they are absent from ``evidence_identifier_key`` and thus from
     the per-shard keyed ``resolver_lookup`` built by
-    ``_materialize_live_utils_needed_resolver_tables``. The ontology prefilter
+    ``_build_resolver_lookup``. The ontology prefilter
     (``needed_ontology_endpoint_resolver_lookup``) reads ``resolver_lookup``
     ``WHERE taxonomy_id IS NULL`` — i.e. only the organism-agnostic **chemical**
     resolver rows — so fetch the chemical resolver rows for those endpoint keys
@@ -2115,7 +2137,7 @@ def _canonicalize_loaded_duckdb(
     # Keyed lookup: now that the shard's evidence keys exist, replace the full
     # live-utils resolver VIEWS with small per-shard tables fetched by key (only
     # this shard's ids scan the remote resolver, not the whole 500M-row tables).
-    _materialize_live_utils_needed_resolver_tables(con)
+    _build_resolver_lookup(con)
     con.execute(
         """
         CREATE TABLE resolver_entity_type_match AS
@@ -2614,9 +2636,18 @@ def _canonicalize_loaded_duckdb(
           SELECT
             source,
             entity_evidence_id,
+            -- taxonomy is NOT part of the ambiguity key: the canonical id
+            -- (entrez / inchikey) is globally unique and organism-determining,
+            -- so the SAME gene reached both via a per-taxon resolver_gene row
+            -- (e.g. taxonomy 9606) and the taxon-agnostic
+            -- resolver_gene_protein_global row (taxonomy NULL) is ONE candidate,
+            -- not two. Without this, no-taxon proteins that legitimately resolve
+            -- to a single gene were miscounted as candidate_count=2 and dropped
+            -- to unresolved. Distinct canonical ids still count separately, so
+            -- genuine multi-gene ambiguity stays unresolved. min(taxonomy_id)
+            -- below then keeps the concrete taxon (NULLs are ignored).
             count(
               DISTINCT resolver_entity_type || chr(31) ||
-              coalesce(taxonomy_id, '') || chr(31) ||
               canonical_identifier_type_id::VARCHAR || chr(31) ||
               canonical_identifier
             ) AS candidate_count,
