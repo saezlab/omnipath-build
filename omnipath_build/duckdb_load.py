@@ -1757,6 +1757,7 @@ def _drop_duckdb_batch_tables(con: duckdb.DuckDBPyConnection) -> None:
     for table in (
         'evidence_identifier_key',
         'resolver_entity_type_match',
+        'resolver_evidence_identifier_key',
         'taxonomy_optional_resolver_key_type',
         'taxonomy_optional_unambiguous_key',
         'needed_resolver_lookup',
@@ -1844,6 +1845,20 @@ def _canonicalize_loaded_duckdb(
     )
     con.execute(
         """
+        CREATE TABLE resolver_evidence_identifier_key AS
+        SELECT DISTINCT
+          k.entity_type AS evidence_entity_type,
+          etm.resolver_entity_type,
+          k.taxonomy_id,
+          k.key_identifier_type_id,
+          k.key_value
+        FROM evidence_identifier_key k
+        JOIN resolver_entity_type_match etm
+          ON etm.evidence_entity_type = k.entity_type
+        """
+    )
+    con.execute(
+        """
         CREATE TABLE taxonomy_optional_resolver_key_type AS
         SELECT identifier_type_id
         FROM identifier_type_all
@@ -1855,55 +1870,85 @@ def _canonicalize_loaded_duckdb(
         ),
         list(PROTEIN_TAXONOMY_OPTIONAL_IDENTIFIER_TYPES),
     )
-    con.execute(
-        """
-        CREATE TABLE taxonomy_optional_unambiguous_key AS
-        SELECT
-          rl.key_identifier_type_id,
-          rl.key_value,
-          rl.canonical_identifier_type_id
-        FROM resolver_lookup rl
-        JOIN taxonomy_optional_resolver_key_type opt
-          ON opt.identifier_type_id = rl.key_identifier_type_id
-        JOIN evidence_identifier_key k
-          ON k.entity_type = ?
-         AND k.key_identifier_type_id = rl.key_identifier_type_id
-         AND k.key_value = rl.key_value
-        WHERE rl.entity_type = ?
-        GROUP BY
-          rl.key_identifier_type_id,
-          rl.key_value,
-          rl.canonical_identifier_type_id
-        HAVING count(DISTINCT rl.canonical_identifier) = 1
-        """,
-        [PROTEIN_ENTITY_TYPE, GENE_ENTITY_TYPE],
+    has_resolver_keys = bool(
+        con.execute(
+            'SELECT count(*) > 0 FROM resolver_evidence_identifier_key'
+        ).fetchone()[0]
     )
-    con.execute(
-        """
-        CREATE TABLE needed_resolver_lookup AS
-        SELECT DISTINCT
-          etm.evidence_entity_type,
-          rl.*,
-          opt.key_identifier_type_id IS NOT NULL AS taxonomy_optional_match
-        FROM resolver_lookup rl
-        JOIN resolver_entity_type_match etm
-          ON etm.resolver_entity_type = rl.entity_type
-        LEFT JOIN taxonomy_optional_unambiguous_key opt
-          ON opt.key_identifier_type_id = rl.key_identifier_type_id
-         AND opt.key_value = rl.key_value
-         AND opt.canonical_identifier_type_id =
-             rl.canonical_identifier_type_id
-        JOIN evidence_identifier_key k
-          ON k.entity_type = etm.evidence_entity_type
-         AND k.key_identifier_type_id = rl.key_identifier_type_id
-         AND k.key_value = rl.key_value
-         AND (
-           rl.taxonomy_id = k.taxonomy_id
-           OR rl.taxonomy_id IS NULL
-           OR opt.key_identifier_type_id IS NOT NULL
-         )
-        """
-    )
+    if has_resolver_keys:
+        con.execute(
+            """
+            CREATE TABLE taxonomy_optional_unambiguous_key AS
+            SELECT
+              rl.key_identifier_type_id,
+              rl.key_value,
+              rl.canonical_identifier_type_id
+            FROM resolver_lookup rl
+            JOIN taxonomy_optional_resolver_key_type opt
+              ON opt.identifier_type_id = rl.key_identifier_type_id
+            JOIN resolver_evidence_identifier_key k
+              ON k.evidence_entity_type = ?
+             AND k.resolver_entity_type = rl.entity_type
+             AND k.key_identifier_type_id = rl.key_identifier_type_id
+             AND k.key_value = rl.key_value
+            WHERE rl.entity_type = ?
+            GROUP BY
+              rl.key_identifier_type_id,
+              rl.key_value,
+              rl.canonical_identifier_type_id
+            HAVING count(DISTINCT rl.canonical_identifier) = 1
+            """,
+            [PROTEIN_ENTITY_TYPE, GENE_ENTITY_TYPE],
+        )
+        con.execute(
+            """
+            CREATE TABLE needed_resolver_lookup AS
+            SELECT DISTINCT
+              k.evidence_entity_type,
+              rl.*,
+              opt.key_identifier_type_id IS NOT NULL AS taxonomy_optional_match
+            FROM resolver_lookup rl
+            JOIN resolver_evidence_identifier_key k
+              ON k.resolver_entity_type = rl.entity_type
+             AND k.key_identifier_type_id = rl.key_identifier_type_id
+             AND k.key_value = rl.key_value
+            LEFT JOIN taxonomy_optional_unambiguous_key opt
+              ON opt.key_identifier_type_id = rl.key_identifier_type_id
+             AND opt.key_value = rl.key_value
+             AND opt.canonical_identifier_type_id =
+                 rl.canonical_identifier_type_id
+            WHERE
+              rl.taxonomy_id = k.taxonomy_id
+              OR rl.taxonomy_id IS NULL
+              OR opt.key_identifier_type_id IS NOT NULL
+            """
+        )
+    else:
+        con.execute(
+            """
+            CREATE TABLE taxonomy_optional_unambiguous_key AS
+            SELECT
+              NULL::BIGINT AS key_identifier_type_id,
+              NULL::VARCHAR AS key_value,
+              NULL::BIGINT AS canonical_identifier_type_id
+            WHERE false
+            """
+        )
+        con.execute(
+            """
+            CREATE TABLE needed_resolver_lookup AS
+            SELECT
+              NULL::VARCHAR AS evidence_entity_type,
+              NULL::VARCHAR AS entity_type,
+              NULL::BIGINT AS key_identifier_type_id,
+              NULL::VARCHAR AS key_value,
+              NULL::VARCHAR AS taxonomy_id,
+              NULL::BIGINT AS canonical_identifier_type_id,
+              NULL::VARCHAR AS canonical_identifier,
+              NULL::BOOLEAN AS taxonomy_optional_match
+            WHERE false
+            """
+        )
     con.execute(
         """
         CREATE TABLE protein_uniprot_fallback_taxonomy_optional_unambiguous_key AS
