@@ -76,6 +76,9 @@ UNIPROT_TYPE = cv_term_label_accession(IdentifierNamespaceCv.UNIPROT)
 GENE_NAME_PRIMARY_TYPE = cv_term_label_accession(
     IdentifierNamespaceCv.GENE_NAME_PRIMARY
 )
+UNIPROT_ENTRY_NAME_TYPE = cv_term_label_accession(
+    IdentifierNamespaceCv.UNIPROT_ENTRY_NAME
+)
 ENSEMBL_TYPE = cv_term_label_accession(IdentifierNamespaceCv.ENSEMBL)
 ENTREZ_TYPE = cv_term_label_accession(IdentifierNamespaceCv.ENTREZ)
 RESOLVER_PROTEIN_SLUG_TO_IDENTIFIER_TYPE = {
@@ -84,6 +87,7 @@ RESOLVER_PROTEIN_SLUG_TO_IDENTIFIER_TYPE = {
     'ensg': ENSEMBL_TYPE,
     'ensp': ENSEMBL_TYPE,
     'uniprot': UNIPROT_TYPE,
+    'uniprot_entry': UNIPROT_ENTRY_NAME_TYPE,
 }
 # protein molecular_type_id (matches the entity_evidence_resolution CASE seed);
 # the per-record asserted UniProt form is a protein state (FR-027b, T060).
@@ -203,6 +207,43 @@ def _duckdb_attach_utils_postgres(
             '(TYPE postgres, READ_ONLY)'
         )
     return True
+
+
+def _attached_utils_relation_exists(
+    con: duckdb.DuckDBPyConnection,
+    relation_name: str,
+) -> bool:
+    return bool(
+        con.execute(
+            """
+            SELECT count(*) > 0
+            FROM utils_pg.pg_catalog.pg_class c
+            JOIN utils_pg.pg_catalog.pg_namespace n
+              ON n.oid = c.relnamespace
+            WHERE n.nspname = 'omnipath_utils'
+              AND c.relname = ?
+            """,
+            [relation_name],
+        ).fetchone()[0]
+    )
+
+
+def _create_empty_protein_uniprot_fallback_view(
+    con: duckdb.DuckDBPyConnection,
+) -> None:
+    con.execute(
+        f"""
+        CREATE VIEW protein_uniprot_fallback_lookup AS
+        SELECT
+          {_sql_literal(PROTEIN_ENTITY_TYPE)} AS entity_type,
+          NULL::BIGINT AS key_identifier_type_id,
+          NULL::VARCHAR AS key_value,
+          NULL::VARCHAR AS taxonomy_id,
+          NULL::BIGINT AS canonical_identifier_type_id,
+          NULL::VARCHAR AS canonical_identifier
+        WHERE false
+        """
+    )
 
 
 def _create_protein_uniprot_fallback_view(
@@ -380,6 +421,10 @@ def _create_live_utils_resolver_views(
     gene_source_types = _source_type_in_sql(
         RESOLVER_PROTEIN_SLUG_TO_IDENTIFIER_TYPE
     )
+    combined_key_case = _source_type_case_sql(
+        RESOLVER_PROTEIN_SLUG_TO_IDENTIFIER_TYPE,
+        expression='rgp.source_type',
+    )
     chemical_key_case = _source_type_case_sql(
         RESOLVER_CHEMICAL_SLUG_TO_IDENTIFIER_TYPE,
         expression='rc.source_type',
@@ -395,95 +440,210 @@ def _create_live_utils_resolver_views(
         """
     )
     _create_duckdb_identifier_type_all_view(con)
-    con.execute(
-        f"""
-        CREATE VIEW resolver_lookup AS
-        SELECT
-          {_sql_literal(GENE_ENTITY_TYPE)} AS entity_type,
-          ({gene_key_case})::BIGINT AS key_identifier_type_id,
-          rg.source_id::VARCHAR AS key_value,
-          rg.ncbi_tax_id::VARCHAR AS taxonomy_id,
-          {identifier_type_id(ENTREZ_TYPE)}::BIGINT
-            AS canonical_identifier_type_id,
-          rg.entrez::VARCHAR AS canonical_identifier
-        FROM utils_pg.omnipath_utils.resolver_gene rg
-        WHERE rg.source_type IN ({gene_source_types})
-          AND rg.source_id IS NOT NULL
-          AND rg.entrez IS NOT NULL
-        UNION ALL
-        SELECT
-          {_sql_literal(CHEMICAL_ENTITY_TYPE)} AS entity_type,
-          ({chemical_key_case})::BIGINT AS key_identifier_type_id,
-          rc.source_id::VARCHAR AS key_value,
-          NULL::VARCHAR AS taxonomy_id,
-          {identifier_type_id(STANDARD_INCHI_KEY_TYPE)}::BIGINT
-            AS canonical_identifier_type_id,
-          rc.inchikey::VARCHAR AS canonical_identifier
-        FROM utils_pg.omnipath_utils.resolver_chemical rc
-        WHERE rc.source_type IN ({chemical_source_types})
-          AND rc.source_id IS NOT NULL
-          AND rc.inchikey IS NOT NULL
-        UNION ALL
-        SELECT DISTINCT
-          {_sql_literal(CHEMICAL_ENTITY_TYPE)} AS entity_type,
-          {identifier_type_id(STANDARD_INCHI_KEY_TYPE)}::BIGINT
-            AS key_identifier_type_id,
-          rc.inchikey::VARCHAR AS key_value,
-          NULL::VARCHAR AS taxonomy_id,
-          {identifier_type_id(STANDARD_INCHI_KEY_TYPE)}::BIGINT
-            AS canonical_identifier_type_id,
-          rc.inchikey::VARCHAR AS canonical_identifier
-        FROM utils_pg.omnipath_utils.resolver_chemical rc
-        WHERE rc.inchikey IS NOT NULL
-          AND rc.inchikey <> ''
-        {mirna_lookup_sql}
-        """
-    )
-    _create_protein_uniprot_fallback_view(con)
-    con.execute(
-        f"""
-        CREATE VIEW resolver_canonical_entity AS
-        SELECT
-          row_number() OVER (
-            ORDER BY
-              rg.ncbi_tax_id NULLS FIRST,
-              {identifier_type_id(ENTREZ_TYPE)},
+    if _attached_utils_relation_exists(con, 'resolver_gene_protein_combined'):
+        con.execute(
+            f"""
+            CREATE VIEW resolver_lookup AS
+            SELECT
+              CASE rgp.canonical_type
+                WHEN 'entrez' THEN {_sql_literal(GENE_ENTITY_TYPE)}
+                WHEN 'uniprot' THEN {_sql_literal(PROTEIN_ENTITY_TYPE)}
+              END AS entity_type,
+              ({combined_key_case})::BIGINT AS key_identifier_type_id,
+              rgp.source_id::VARCHAR AS key_value,
+              NULLIF(rgp.ncbi_tax_id, 0)::VARCHAR AS taxonomy_id,
+              CASE rgp.canonical_type
+                WHEN 'entrez' THEN {identifier_type_id(ENTREZ_TYPE)}
+                WHEN 'uniprot' THEN {identifier_type_id(UNIPROT_TYPE)}
+              END::BIGINT AS canonical_identifier_type_id,
+              rgp.canonical_id::VARCHAR AS canonical_identifier
+            FROM utils_pg.omnipath_utils.resolver_gene_protein_combined rgp
+            WHERE rgp.source_type IN ({gene_source_types})
+              AND rgp.source_id IS NOT NULL
+              AND rgp.canonical_id IS NOT NULL
+              AND rgp.canonical_type IN ('entrez', 'uniprot')
+            UNION ALL
+            SELECT
+              {_sql_literal(CHEMICAL_ENTITY_TYPE)} AS entity_type,
+              ({chemical_key_case})::BIGINT AS key_identifier_type_id,
+              rc.source_id::VARCHAR AS key_value,
+              NULL::VARCHAR AS taxonomy_id,
+              {identifier_type_id(STANDARD_INCHI_KEY_TYPE)}::BIGINT
+                AS canonical_identifier_type_id,
+              rc.inchikey::VARCHAR AS canonical_identifier
+            FROM utils_pg.omnipath_utils.resolver_chemical rc
+            WHERE rc.source_type IN ({chemical_source_types})
+              AND rc.source_id IS NOT NULL
+              AND rc.inchikey IS NOT NULL
+            UNION ALL
+            SELECT DISTINCT
+              {_sql_literal(CHEMICAL_ENTITY_TYPE)} AS entity_type,
+              {identifier_type_id(STANDARD_INCHI_KEY_TYPE)}::BIGINT
+                AS key_identifier_type_id,
+              rc.inchikey::VARCHAR AS key_value,
+              NULL::VARCHAR AS taxonomy_id,
+              {identifier_type_id(STANDARD_INCHI_KEY_TYPE)}::BIGINT
+                AS canonical_identifier_type_id,
+              rc.inchikey::VARCHAR AS canonical_identifier
+            FROM utils_pg.omnipath_utils.resolver_chemical rc
+            WHERE rc.inchikey IS NOT NULL
+              AND rc.inchikey <> ''
+            {mirna_lookup_sql}
+            """
+        )
+        _create_empty_protein_uniprot_fallback_view(con)
+        con.execute(
+            f"""
+            CREATE VIEW resolver_canonical_entity AS
+            WITH gene_product AS (
+              SELECT
+                CASE rgp.canonical_type
+                  WHEN 'entrez' THEN {_sql_literal(GENE_ENTITY_TYPE)}
+                  WHEN 'uniprot' THEN {_sql_literal(PROTEIN_ENTITY_TYPE)}
+                END AS entity_type,
+                NULLIF(rgp.ncbi_tax_id, 0)::VARCHAR AS taxonomy_id,
+                CASE rgp.canonical_type
+                  WHEN 'entrez' THEN {identifier_type_id(ENTREZ_TYPE)}
+                  WHEN 'uniprot' THEN {identifier_type_id(UNIPROT_TYPE)}
+                END::BIGINT AS canonical_identifier_type_id,
+                rgp.canonical_id::VARCHAR AS canonical_identifier,
+                ({combined_key_case})::BIGINT AS key_identifier_type_id
+              FROM utils_pg.omnipath_utils.resolver_gene_protein_combined rgp
+              WHERE rgp.source_type IN ({gene_source_types})
+                AND rgp.canonical_id IS NOT NULL
+                AND rgp.canonical_type IN ('entrez', 'uniprot')
+            )
+            SELECT
+              row_number() OVER (
+                ORDER BY
+                  entity_type,
+                  taxonomy_id NULLS FIRST,
+                  canonical_identifier_type_id,
+                  canonical_identifier
+              )::BIGINT AS resolver_entity_id,
+              entity_type,
+              taxonomy_id,
+              canonical_identifier_type_id,
+              canonical_identifier,
+              list_distinct(list(key_identifier_type_id))
+                AS key_identifier_type_ids,
+              count(*)::BIGINT AS lookup_rows
+            FROM gene_product
+            GROUP BY
+              entity_type,
+              taxonomy_id,
+              canonical_identifier_type_id,
+              canonical_identifier
+            UNION ALL
+            SELECT
+              row_number() OVER (
+                ORDER BY {identifier_type_id(STANDARD_INCHI_KEY_TYPE)}, rc.inchikey
+              )::BIGINT AS resolver_entity_id,
+              {_sql_literal(CHEMICAL_ENTITY_TYPE)} AS entity_type,
+              NULL::VARCHAR AS taxonomy_id,
+              {identifier_type_id(STANDARD_INCHI_KEY_TYPE)}::BIGINT
+                AS canonical_identifier_type_id,
+              rc.inchikey::VARCHAR AS canonical_identifier,
+              list_distinct(list(({chemical_key_case})::BIGINT))
+                AS key_identifier_type_ids,
+              count(*)::BIGINT AS lookup_rows
+            FROM utils_pg.omnipath_utils.resolver_chemical rc
+            WHERE rc.source_type IN ({chemical_source_types})
+              AND rc.inchikey IS NOT NULL
+            GROUP BY rc.inchikey
+            {mirna_canonical_sql}
+            """
+        )
+    else:
+        con.execute(
+            f"""
+            CREATE VIEW resolver_lookup AS
+            SELECT
+              {_sql_literal(GENE_ENTITY_TYPE)} AS entity_type,
+              ({gene_key_case})::BIGINT AS key_identifier_type_id,
+              rg.source_id::VARCHAR AS key_value,
+              rg.ncbi_tax_id::VARCHAR AS taxonomy_id,
+              {identifier_type_id(ENTREZ_TYPE)}::BIGINT
+                AS canonical_identifier_type_id,
+              rg.entrez::VARCHAR AS canonical_identifier
+            FROM utils_pg.omnipath_utils.resolver_gene rg
+            WHERE rg.source_type IN ({gene_source_types})
+              AND rg.source_id IS NOT NULL
+              AND rg.entrez IS NOT NULL
+            UNION ALL
+            SELECT
+              {_sql_literal(CHEMICAL_ENTITY_TYPE)} AS entity_type,
+              ({chemical_key_case})::BIGINT AS key_identifier_type_id,
+              rc.source_id::VARCHAR AS key_value,
+              NULL::VARCHAR AS taxonomy_id,
+              {identifier_type_id(STANDARD_INCHI_KEY_TYPE)}::BIGINT
+                AS canonical_identifier_type_id,
+              rc.inchikey::VARCHAR AS canonical_identifier
+            FROM utils_pg.omnipath_utils.resolver_chemical rc
+            WHERE rc.source_type IN ({chemical_source_types})
+              AND rc.source_id IS NOT NULL
+              AND rc.inchikey IS NOT NULL
+            UNION ALL
+            SELECT DISTINCT
+              {_sql_literal(CHEMICAL_ENTITY_TYPE)} AS entity_type,
+              {identifier_type_id(STANDARD_INCHI_KEY_TYPE)}::BIGINT
+                AS key_identifier_type_id,
+              rc.inchikey::VARCHAR AS key_value,
+              NULL::VARCHAR AS taxonomy_id,
+              {identifier_type_id(STANDARD_INCHI_KEY_TYPE)}::BIGINT
+                AS canonical_identifier_type_id,
+              rc.inchikey::VARCHAR AS canonical_identifier
+            FROM utils_pg.omnipath_utils.resolver_chemical rc
+            WHERE rc.inchikey IS NOT NULL
+              AND rc.inchikey <> ''
+            {mirna_lookup_sql}
+            """
+        )
+        _create_protein_uniprot_fallback_view(con)
+        con.execute(
+            f"""
+            CREATE VIEW resolver_canonical_entity AS
+            SELECT
+              row_number() OVER (
+                ORDER BY
+                  rg.ncbi_tax_id NULLS FIRST,
+                  {identifier_type_id(ENTREZ_TYPE)},
+                  rg.entrez
+              )::BIGINT AS resolver_entity_id,
+              {_sql_literal(GENE_ENTITY_TYPE)} AS entity_type,
+              rg.ncbi_tax_id::VARCHAR AS taxonomy_id,
+              {identifier_type_id(ENTREZ_TYPE)}::BIGINT
+                AS canonical_identifier_type_id,
+              rg.entrez::VARCHAR AS canonical_identifier,
+              list_distinct(list(({gene_key_case})::BIGINT))
+                AS key_identifier_type_ids,
+              count(*)::BIGINT AS lookup_rows
+            FROM utils_pg.omnipath_utils.resolver_gene rg
+            WHERE rg.source_type IN ({gene_source_types})
+              AND rg.entrez IS NOT NULL
+            GROUP BY
+              rg.ncbi_tax_id,
               rg.entrez
-          )::BIGINT AS resolver_entity_id,
-          {_sql_literal(GENE_ENTITY_TYPE)} AS entity_type,
-          rg.ncbi_tax_id::VARCHAR AS taxonomy_id,
-          {identifier_type_id(ENTREZ_TYPE)}::BIGINT
-            AS canonical_identifier_type_id,
-          rg.entrez::VARCHAR AS canonical_identifier,
-          list_distinct(list(({gene_key_case})::BIGINT))
-            AS key_identifier_type_ids,
-          count(*)::BIGINT AS lookup_rows
-        FROM utils_pg.omnipath_utils.resolver_gene rg
-        WHERE rg.source_type IN ({gene_source_types})
-          AND rg.entrez IS NOT NULL
-        GROUP BY
-          rg.ncbi_tax_id,
-          rg.entrez
-        UNION ALL
-        SELECT
-          row_number() OVER (
-            ORDER BY {identifier_type_id(STANDARD_INCHI_KEY_TYPE)}, rc.inchikey
-          )::BIGINT AS resolver_entity_id,
-          {_sql_literal(CHEMICAL_ENTITY_TYPE)} AS entity_type,
-          NULL::VARCHAR AS taxonomy_id,
-          {identifier_type_id(STANDARD_INCHI_KEY_TYPE)}::BIGINT
-            AS canonical_identifier_type_id,
-          rc.inchikey::VARCHAR AS canonical_identifier,
-          list_distinct(list(({chemical_key_case})::BIGINT))
-            AS key_identifier_type_ids,
-          count(*)::BIGINT AS lookup_rows
-        FROM utils_pg.omnipath_utils.resolver_chemical rc
-        WHERE rc.source_type IN ({chemical_source_types})
-          AND rc.inchikey IS NOT NULL
-        GROUP BY rc.inchikey
-        {mirna_canonical_sql}
-        """
-    )
+            UNION ALL
+            SELECT
+              row_number() OVER (
+                ORDER BY {identifier_type_id(STANDARD_INCHI_KEY_TYPE)}, rc.inchikey
+              )::BIGINT AS resolver_entity_id,
+              {_sql_literal(CHEMICAL_ENTITY_TYPE)} AS entity_type,
+              NULL::VARCHAR AS taxonomy_id,
+              {identifier_type_id(STANDARD_INCHI_KEY_TYPE)}::BIGINT
+                AS canonical_identifier_type_id,
+              rc.inchikey::VARCHAR AS canonical_identifier,
+              list_distinct(list(({chemical_key_case})::BIGINT))
+                AS key_identifier_type_ids,
+              count(*)::BIGINT AS lookup_rows
+            FROM utils_pg.omnipath_utils.resolver_chemical rc
+            WHERE rc.source_type IN ({chemical_source_types})
+              AND rc.inchikey IS NOT NULL
+            GROUP BY rc.inchikey
+            {mirna_canonical_sql}
+            """
+        )
     con.execute(
         """
         CREATE VIEW gene_protein_representative_src AS
@@ -1388,13 +1548,16 @@ def _canonicalize_loaded_duckdb(
         SELECT ?, ?
         UNION ALL
         SELECT ?, ?
+        UNION ALL
+        SELECT ?, ?
         """,
-        # Gene-anchored (spec 002 US7): protein AND gene evidence both resolve to
-        # the GENE-typed canonical entity (the resolver lookup is gene-anchored,
-        # canonical_identifier = Entrez gene). Was: both -> PROTEIN.
+        # Protein evidence first tries the gene-product resolver's gene anchor
+        # rows, but can also resolve to protein rows when Entrez is unavailable.
         [
             PROTEIN_ENTITY_TYPE,
             GENE_ENTITY_TYPE,
+            PROTEIN_ENTITY_TYPE,
+            PROTEIN_ENTITY_TYPE,
             GENE_ENTITY_TYPE,
             GENE_ENTITY_TYPE,
             CHEMICAL_ENTITY_TYPE,
