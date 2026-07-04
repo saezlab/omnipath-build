@@ -2001,6 +2001,63 @@ def _materialize_live_utils_needed_resolver_tables(
         )
 
 
+def _append_live_utils_ontology_endpoint_resolver_rows(
+    con: duckdb.DuckDBPyConnection,
+) -> None:
+    """Add ontology-endpoint keys to the keyed ``resolver_lookup``.
+
+    Ontology relation endpoints (``ontology_endpoint_identifier_key``) can
+    reference ids with NO ``entity_evidence`` row (``subject_entity_evidence_id
+    IS NULL``), so they are absent from ``evidence_identifier_key`` and thus from
+    the per-shard keyed ``resolver_lookup`` built by
+    ``_materialize_live_utils_needed_resolver_tables``. The ontology prefilter
+    (``needed_ontology_endpoint_resolver_lookup``) reads ``resolver_lookup``
+    ``WHERE taxonomy_id IS NULL`` — i.e. only the organism-agnostic **chemical**
+    resolver rows — so fetch the chemical resolver rows for those endpoint keys
+    and append them, keeping ontology resolution at full coverage under the keyed
+    read (the full-view path saw every row for free). No-op unless utils attached.
+    """
+    url = os.environ.get('OMNIPATH_BUILD_UTILS_PG_URL')
+    if not url or not _live_utils_attached(con):
+        return
+
+    chem_id_to_slugs: dict[int, list[str]] = {}
+    for slug, idt in RESOLVER_CHEMICAL_SLUG_TO_IDENTIFIER_TYPE.items():
+        chem_id_to_slugs.setdefault(identifier_type_id(idt), []).append(slug)
+    placeholders = ', '.join('?' for _ in chem_id_to_slugs)
+    endpoint_rows = con.execute(
+        f"""
+        SELECT DISTINCT key_identifier_type_id, key_value
+        FROM ontology_endpoint_identifier_key
+        WHERE key_identifier_type_id IN ({placeholders})
+          AND key_value IS NOT NULL
+          AND key_value <> ''
+        """,
+        list(chem_id_to_slugs.keys()),
+    ).fetchall()
+
+    key_rows: list[tuple[str, str, int | None]] = []
+    for key_identifier_type_id, key_value in endpoint_rows:
+        for slug in chem_id_to_slugs[int(key_identifier_type_id)]:
+            key_rows.append((slug, str(key_value), None))
+
+    new_rows = _fetch_live_utils_rows_for_keys(
+        url=url,
+        table='resolver_chemical',
+        mapping=RESOLVER_CHEMICAL_SLUG_TO_IDENTIFIER_TYPE,
+        entity_type=CHEMICAL_ENTITY_TYPE,
+        canonical_identifier_type_id=identifier_type_id(STANDARD_INCHI_KEY_TYPE),
+        canonical_column='inchikey',
+        has_taxonomy=False,
+        key_rows=key_rows,
+    )
+    if new_rows:
+        con.executemany(
+            'INSERT INTO resolver_lookup VALUES (?, ?, ?, ?, ?, ?)',
+            new_rows,
+        )
+
+
 def _canonicalize_loaded_duckdb(
     con: duckdb.DuckDBPyConnection,
 ) -> tuple[int, int, int]:
@@ -2198,6 +2255,10 @@ def _canonicalize_loaded_duckdb(
         WHERE endpoint.entity_type IS NOT NULL
         """
     )
+    # Keyed read only fetched entity-evidence keys; ontology endpoints may carry
+    # ids absent from that set — append their (chemical) resolver rows so the
+    # prefilter below keeps full coverage.
+    _append_live_utils_ontology_endpoint_resolver_rows(con)
     has_ontology_endpoint_resolver_keys = bool(
         con.execute(
             'SELECT count(*) > 0 FROM ontology_endpoint_identifier_key'
