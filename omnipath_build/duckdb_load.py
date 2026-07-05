@@ -1991,13 +1991,18 @@ def _build_resolver_lookup(
             key_rows=protein_gene_keys,
         )
     )
-    # Taxon-agnostic gene anchor for proteins that arrive with NO taxon
+    # Global gene anchor for proteins that arrive with NO taxon
     # (Rhea/Brenda/TCDB/ChEMBL reference UniProt without an organism): the
-    # per-taxon resolver_gene rows carry the resolver's taxon, which the no-taxon
-    # evidence cannot match, so also emit taxon-agnostic (NULL) entrez matches
-    # from resolver_gene_protein_global (has_taxonomy=False). This is the T069
-    # global slice the parquet path used; the live keyed path was missing it,
-    # leaving ~162k UniProt-bearing no-taxon proteins unresolved.
+    # per-taxon resolver_gene only materializes a subset of organisms, so a
+    # UniProt from an unmaterialized organism has no resolver_gene row at all.
+    # resolver_gene_protein_global covers uniprot->entrez across ALL taxa (T069).
+    # It DOES carry the gene's real ncbi_tax_id (entrez->taxon is 1:1), so fetch
+    # WITH taxonomy (has_taxonomy=True): the no-taxon evidence still matches (the
+    # keyed join keeps rows where the evidence taxon IS NULL), and the resolved
+    # gene gets its concrete taxon. Fetching it taxon-agnostically (NULL) instead
+    # created a second, NULL-taxon copy of every gene, colliding with the real-
+    # taxon copy of the same entrez and breaking the entity_evidence_resolution
+    # primary key at derive time.
     resolver_rows.extend(
         _fetch_live_utils_rows_for_keys(
             url=url,
@@ -2006,7 +2011,7 @@ def _build_resolver_lookup(
             entity_type=GENE_ENTITY_TYPE,
             canonical_identifier_type_id=identifier_type_id(ENTREZ_TYPE),
             canonical_column='entrez',
-            has_taxonomy=False,
+            has_taxonomy=True,
             key_rows=protein_gene_keys,
         )
     )
@@ -2648,18 +2653,9 @@ def _canonicalize_loaded_duckdb(
           SELECT
             source,
             entity_evidence_id,
-            -- taxonomy is NOT part of the ambiguity key: the canonical id
-            -- (entrez / inchikey) is globally unique and organism-determining,
-            -- so the SAME gene reached both via a per-taxon resolver_gene row
-            -- (e.g. taxonomy 9606) and the taxon-agnostic
-            -- resolver_gene_protein_global row (taxonomy NULL) is ONE candidate,
-            -- not two. Without this, no-taxon proteins that legitimately resolve
-            -- to a single gene were miscounted as candidate_count=2 and dropped
-            -- to unresolved. Distinct canonical ids still count separately, so
-            -- genuine multi-gene ambiguity stays unresolved. min(taxonomy_id)
-            -- below then keeps the concrete taxon (NULLs are ignored).
             count(
               DISTINCT resolver_entity_type || chr(31) ||
+              coalesce(taxonomy_id, '') || chr(31) ||
               canonical_identifier_type_id::VARCHAR || chr(31) ||
               canonical_identifier
             ) AS candidate_count,
