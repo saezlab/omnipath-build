@@ -87,6 +87,7 @@ Both containers set these via their compose `command:` (build PG:
 | `effective_io_concurrency` | 200 | 200 | NVMe |
 | `wal_level` | (WAL tuned) | `minimal` | utils build DB is rebuildable → skip WAL |
 | `max_connections` | 100 (default) | **400** | each `LOAD_JOBS` stage worker holds a DuckDB `ATTACH` + serial psycopg2 keyed-lookup connections to the utils PG; at `LOAD_JOBS=32` the default 100 overflowed (`FATAL: sorry, too many clients already` → ~50 datasets fail to stage). 400 leaves ~12/worker of headroom (steady-state peak was ~46). Restart-only. |
+| `shm_size` (container, not a GUC) | **1 GB** | **16 GB** | `/dev/shm` for parallel workers + large hash/sort temp. Docker's **64 MB default** is far too small (a single parallel segment is 256 MB) and silently applies if omitted → `could not resize shared memory segment … No space left on device`. Set via `shm_size:` on the compose service (restart-only). Web/serving PGs also want ≥1 GB. A heavy *parallel* analysis query can still exceed 1 GB → `SET max_parallel_workers_per_gather=0` in the query instead. |
 
 `shared_buffers` and `max_worker_processes` are **restart-only** — after changing
 them, recreate the container (`docker compose up -d`), don't just `ALTER SYSTEM`.
