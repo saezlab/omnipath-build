@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import logging
 from pathlib import Path
 import tempfile
 from itertools import islice
@@ -48,6 +49,8 @@ from omnipath_build.resolver.identifier_types import (
     identifier_type_rows,
 )
 
+_log = logging.getLogger(__name__)
+
 PROTEIN_ENTITY_TYPE = 'Protein:MI:0326'
 COMPLEX_ENTITY_TYPE = 'Complex:MI:0314'
 REACTION_ENTITY_TYPE = 'Reaction:OM:0015'
@@ -90,6 +93,20 @@ RESOLVER_PROTEIN_SLUG_TO_IDENTIFIER_TYPE = {
     'uniprot': UNIPROT_TYPE,
     'uniprot_entry': UNIPROT_ENTRY_NAME_TYPE,
 }
+# Deterministic best-identifier priority for an entity that could not be resolved
+# to a canonical accession. Such an entity is keyed by its single highest-priority
+# raw identifier (rather than an opaque hash of its whole identifier bag), so the
+# key is human-readable, stable across builds, and repeated mentions of the same
+# identifier collapse into one entity. Ties break deterministically by identifier
+# string. Identifier types not listed here fall to a common lowest rank (still
+# deterministic via the identifier-type-id and identifier tie-breakers).
+UNRESOLVED_KEY_IDENTIFIER_PRIORITY = (
+    UNIPROT_TYPE,
+    ENSEMBL_TYPE,
+    ENTREZ_TYPE,
+    GENE_NAME_PRIMARY_TYPE,
+    UNIPROT_ENTRY_NAME_TYPE,
+)
 # protein molecular_type_id (matches the entity_evidence_resolution CASE seed);
 # the per-record asserted UniProt form is a protein state (FR-027b, T060).
 PROTEIN_MOLECULAR_TYPE_ID = 2
@@ -1958,6 +1975,90 @@ def _live_utils_key_rows(
     return keys
 
 
+# The identifier-resolution (utils) relations the live build reads, and the
+# evidence entity types each one can resolve. An entity type is only left
+# unresolvable *for lack of reference data* when EVERY relation that could
+# resolve it is absent or empty.
+REQUIRED_TRANSLATION_TABLES: dict[str, tuple[str, ...]] = {
+    'resolver_gene': (GENE_ENTITY_TYPE, PROTEIN_ENTITY_TYPE),
+    'resolver_gene_protein_global': (GENE_ENTITY_TYPE, PROTEIN_ENTITY_TYPE),
+    'resolver_protein': (PROTEIN_ENTITY_TYPE,),
+    'resolver_chemical': (CHEMICAL_ENTITY_TYPE,),
+}
+
+
+def _attached_utils_relation_nonempty(
+    con: duckdb.DuckDBPyConnection,
+    relation_name: str,
+) -> bool:
+    """Whether an attached utils relation holds at least one row (cheap probe)."""
+    return bool(
+        con.execute(
+            'SELECT EXISTS (SELECT 1 FROM utils_pg.omnipath_utils.'
+            f'{_duckdb_identifier(relation_name)})'
+        ).fetchone()[0]
+    )
+
+
+def preflight_translation_tables(
+    con: duckdb.DuckDBPyConnection,
+) -> list[dict[str, object]]:
+    """Report whether each required identifier-resolution table is usable.
+
+    Before resolving evidence against the connected resolver database, check that
+    every relation the build depends on is present and non-empty, and log a
+    warning for any that is missing or empty — so a silently degraded resolver
+    database shows up in the build log instead of quietly producing unresolved
+    records. Records the evidence entity types that no present relation can
+    resolve, so canonicalisation can mark them as blocked by missing reference
+    data rather than genuinely unresolvable. Returns the per-relation report
+    (also surfaced in the build manifest). A no-op returning an empty report when
+    no resolver database is attached.
+    """
+    con.execute(
+        'CREATE TABLE IF NOT EXISTS missing_translation_entity_type '
+        '(entity_type VARCHAR)'
+    )
+    if not _live_utils_attached(con):
+        return []
+
+    report: list[dict[str, object]] = []
+    resolvable_entity_type: dict[str, bool] = {}
+    for relation, entity_types in REQUIRED_TRANSLATION_TABLES.items():
+        present = _attached_utils_relation_exists(con, relation)
+        usable = present and _attached_utils_relation_nonempty(con, relation)
+        status = 'present' if usable else ('empty' if present else 'absent')
+        report.append({'relation': relation, 'status': status})
+        if not usable:
+            _log.warning(
+                'identifier-resolution table %r is %s in the connected resolver '
+                'database; records that rely on it cannot be resolved',
+                relation,
+                status,
+            )
+        for entity_type in entity_types:
+            resolvable_entity_type[entity_type] = (
+                resolvable_entity_type.get(entity_type, False) or usable
+            )
+
+    blocked = sorted(
+        entity_type
+        for entity_type, resolvable in resolvable_entity_type.items()
+        if not resolvable
+    )
+    con.execute('DELETE FROM missing_translation_entity_type')
+    if blocked:
+        con.executemany(
+            'INSERT INTO missing_translation_entity_type VALUES (?)',
+            [(entity_type,) for entity_type in blocked],
+        )
+    _log.info(
+        'identifier-resolution pre-flight: %s',
+        ', '.join(f'{r["relation"]}={r["status"]}' for r in report),
+    )
+    return report
+
+
 def _build_resolver_lookup(
     con: duckdb.DuckDBPyConnection,
 ) -> None:
@@ -1970,6 +2071,7 @@ def _build_resolver_lookup(
     ``resolver_lookup`` / ``protein_uniprot_fallback_lookup`` tables that
     canonicalize joins against.
     """
+    preflight_translation_tables(con)
     url = os.environ.get('OMNIPATH_BUILD_UTILS_PG_URL')
     if not url or not _live_utils_attached(con):
         return
@@ -2442,6 +2544,55 @@ def _canonicalize_loaded_duckdb(
         GROUP BY ee.source, ee.entity_evidence_id
         """
     )
+    # The single highest-priority raw identifier per evidence record, used as the
+    # canonical identifier for records that survive every resolution path (in
+    # place of a hash of the whole identifier bag). Deterministic: rank by the
+    # best-identifier priority, then by identifier-type-id, then by the identifier
+    # string. Records with no usable identifier get no row here and fall back to
+    # the per-record composite key carried by entity_identifier_group.
+    unresolved_priority_case = '\n'.join(
+        [
+            '            CASE',
+            *(
+                f'              WHEN ei.identifier_type = '
+                f'{_sql_literal(identifier_type)} THEN {rank}'
+                for rank, identifier_type in enumerate(
+                    UNRESOLVED_KEY_IDENTIFIER_PRIORITY
+                )
+            ),
+            f'              ELSE {len(UNRESOLVED_KEY_IDENTIFIER_PRIORITY)}',
+            '            END',
+        ]
+    )
+    con.execute(
+        f"""
+        CREATE TABLE entity_best_identifier AS
+        SELECT
+          source,
+          entity_evidence_id,
+          best_identifier
+        FROM (
+          SELECT
+            ee.source,
+            ee.entity_evidence_id,
+            ei.identifier AS best_identifier,
+{unresolved_priority_case} AS priority,
+            coalesce(kit.identifier_type_id, 2147483647) AS identifier_type_id
+          FROM entity_evidence_raw ee
+          JOIN entity_identifier_raw ei
+            ON ei.source = ee.source
+           AND ei.entity_evidence_id = ee.entity_evidence_id
+           AND ei.identifier IS NOT NULL
+           AND ei.identifier <> ''
+          LEFT JOIN identifier_type_all kit
+            ON kit.name = ei.identifier_type
+        )
+        QUALIFY row_number() OVER (
+          PARTITION BY source, entity_evidence_id
+          ORDER BY priority, identifier_type_id, best_identifier
+        ) = 1
+        """
+    )
     con.execute(
         """
         CREATE TABLE cv_term_evidence_resolution AS
@@ -2748,7 +2899,12 @@ def _canonicalize_loaded_duckdb(
             WHEN rcs.candidate_count = 1 THEN rcs.canonical_identifier
             WHEN {protein_fallback_fires} THEN puf.canonical_identifier
             WHEN {cf_fires} THEN cf.canonical_identifier
-            ELSE md5(eig.unresolved_identifier_key)
+            -- An entity that could not be resolved is keyed by its best raw
+            -- identifier (deterministic, human-readable, reproducible), so
+            -- repeated mentions of the same identifier collapse into one entity.
+            -- Records with no usable identifier fall back to the per-record
+            -- composite (source:entity_evidence_id).
+            ELSE coalesce(ebi.best_identifier, eig.unresolved_identifier_key)
           END AS canonical_identifier,
           CASE
             WHEN rcs.candidate_count = 1 THEN 'resolved'
@@ -2766,6 +2922,9 @@ def _canonicalize_loaded_duckdb(
         JOIN entity_identifier_group eig
           ON eig.source = ee.source
          AND eig.entity_evidence_id = ee.entity_evidence_id
+        LEFT JOIN entity_best_identifier ebi
+          ON ebi.source = ee.source
+         AND ebi.entity_evidence_id = ee.entity_evidence_id
         CROSS JOIN (
           SELECT identifier_type_id
           FROM identifier_type_all
@@ -3589,6 +3748,22 @@ def _canonicalize_loaded_duckdb(
             """
         ).fetchone()[0]
     )
+    # A gene product known only by a UniProt accession is typed as a gene keyed by
+    # that accession (an "unknown gene"). Such a gene is its own representative
+    # UniProt. This arm is disjoint from the Entrez-anchored arm below — a
+    # different canonical identifier type gives a different entity_id — so the 1:1
+    # entity_id primary key holds under UNION ALL. It exists regardless of whether
+    # the resolver snapshot ships the gene_protein_representative source view.
+    uniprot_gene_arm = f"""
+        SELECT
+          ce.entity_id,
+          ce.canonical_identifier AS representative_uniprot,
+          NULL::BOOLEAN AS is_reviewed,
+          [ce.canonical_identifier] AS uniprot_all
+        FROM canonical_entity ce
+        WHERE ce.entity_type = {_sql_literal(GENE_ENTITY_TYPE)}
+          AND ce.canonical_identifier_type_id = {identifier_type_id(UNIPROT_TYPE)}
+    """
     if gene_protein_representative_src_exists and has_gene_entities:
         con.execute(
             f"""
@@ -3603,17 +3778,15 @@ def _canonicalize_loaded_duckdb(
               ON ce.entity_type = {_sql_literal(GENE_ENTITY_TYPE)}
              AND ce.canonical_identifier = src.canonical_identifier
              AND ce.taxonomy_id IS NOT DISTINCT FROM src.taxonomy_id
+            UNION ALL
+{uniprot_gene_arm}
             """
         )
     else:
         con.execute(
-            """
-            CREATE TABLE gene_protein_representative (
-              entity_id UUID,
-              representative_uniprot VARCHAR,
-              is_reviewed BOOLEAN,
-              uniprot_all VARCHAR[]
-            )
+            f"""
+            CREATE TABLE gene_protein_representative AS
+{uniprot_gene_arm}
             """
         )
     has_resolver_alias_entities = bool(
@@ -3879,13 +4052,25 @@ def _canonicalize_loaded_duckdb(
             WHEN {_sql_literal(PROTEIN_ENTITY_TYPE)} THEN 2
             WHEN {_sql_literal(MIRNA_ENTITY_TYPE)} THEN 4
             ELSE NULL
-          END AS molecular_type_id
+          END AS molecular_type_id,
+          -- Why an unresolved record stayed unresolved: 'missing_translation_table'
+          -- (6) when no resolver relation covering its entity type was available
+          -- (pre-flight found them absent/empty), otherwise
+          -- 'no_accepted_resolver_candidate' (3) — the resolver had data but no
+          -- match. Resolved and ambiguous records carry no reason.
+          CASE
+            WHEN er.status = 'unresolved' AND mtt.entity_type IS NOT NULL THEN 6
+            WHEN er.status = 'unresolved' THEN 3
+            ELSE NULL
+          END::SMALLINT AS reason_id
         FROM entity_resolution er
         LEFT JOIN canonical_entity ce
           ON ce.entity_type = er.entity_type
          AND ce.taxonomy_id IS NOT DISTINCT FROM er.taxonomy_id
          AND ce.canonical_identifier_type_id = er.canonical_identifier_type_id
          AND ce.canonical_identifier = er.canonical_identifier
+        LEFT JOIN missing_translation_entity_type mtt
+          ON mtt.entity_type = er.entity_type
         """
     )
     # --- molecular state (heavy opt-in tier, FR-027b/T060) ----------------
@@ -5351,7 +5536,7 @@ def _bulk_copy_canonical(
             er.entity_evidence_id::UUID,
             rs.resolution_status_id,
             er.entity_id,
-            NULL::SMALLINT,
+            er.reason_id::SMALLINT,
             now(),
             er.molecular_type_id::SMALLINT
           FROM pq_entity_evidence_resolution er

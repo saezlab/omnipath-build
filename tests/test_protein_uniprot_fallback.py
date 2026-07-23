@@ -12,6 +12,7 @@ from omnipath_build.duckdb_load import (  # noqa: E402
     PROTEIN_ENTITY_TYPE,
     UNIPROT_TYPE,
     _canonicalize_loaded_duckdb,
+    _create_duckdb_content_uuid_macro,
     _create_duckdb_evidence_tables,
 )
 from omnipath_build.resolver.identifier_types import (  # noqa: E402
@@ -26,6 +27,7 @@ UNRESOLVED_TID = identifier_type_id(UNRESOLVED_ID_TYPE)
 
 def _con():
     con = duckdb.connect(':memory:')
+    _create_duckdb_content_uuid_macro(con)
     _create_duckdb_evidence_tables(con)
     con.execute(
         'CREATE TABLE identifier_type (identifier_type_id BIGINT, name VARCHAR)'

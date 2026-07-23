@@ -972,9 +972,30 @@ def _ensure_gene_anchored_schema(
             SELECT
               e.entity_id,
               e.taxonomy_id,
-              e.canonical_identifier AS ncbi_gene_id,
+              -- A gene product known only by a UniProt accession ("unknown gene")
+              -- is keyed by that accession, not an NCBI Gene id — so ncbi_gene_id
+              -- is populated only for Entrez-canonical genes; UniProt-keyed genes
+              -- surface their accession via `uniprot` below and leave ncbi_gene_id
+              -- NULL. The accession literals mirror the hardcoded 'Gene:MI:0250'
+              -- entity type below (CV terms: Entrez MI:0477, UniProt MI:1097).
+              CASE
+                WHEN e.canonical_identifier_type_id = (
+                  SELECT identifier_type_id
+                  FROM {0}.vocab_identifier_type
+                  WHERE name = 'Entrez:MI:0477'
+                ) THEN e.canonical_identifier
+              END AS ncbi_gene_id,
               coalesce(e.label, e.canonical_identifier) AS gene,
-              gpr.representative_uniprot AS uniprot,
+              coalesce(
+                gpr.representative_uniprot,
+                CASE
+                  WHEN e.canonical_identifier_type_id = (
+                    SELECT identifier_type_id
+                    FROM {0}.vocab_identifier_type
+                    WHERE name = 'Uniprot:MI:1097'
+                  ) THEN e.canonical_identifier
+                END
+              ) AS uniprot,
               gpr.is_reviewed AS uniprot_is_reviewed,
               gpr.uniprot_all
             FROM {0}.entity e
@@ -2078,6 +2099,10 @@ def _ensure_static_resolution_reasons(
         (3, 'no_accepted_resolver_candidate'),
         (4, 'multiple_entity_candidates'),
         (5, 'legacy_unresolved'),
+        # The record could not be resolved because a translation table it needed
+        # was absent or empty in the connected identifier-resolution database —
+        # distinct from a record for which the resolver had data but no match.
+        (6, 'missing_translation_table'),
     )
     cur.executemany(
         sql.SQL(

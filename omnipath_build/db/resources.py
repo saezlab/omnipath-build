@@ -69,6 +69,21 @@ def emit_build_manifest(
                 """
             ).format(schema_id)
         )
+        # Provenance about how identifiers were canonicalised. Both are
+        # descriptive only and are deliberately kept out of the build_id content
+        # hash: `translation_tables` names the identifier-resolution relations the
+        # build consumed, and `canonicalization_coverage` counts how many records
+        # resolved vs stayed unresolved (and why) — volatile numbers that must not
+        # change a build's identity.
+        cur.execute(
+            sql.SQL(
+                """
+                ALTER TABLE {}.build_manifest
+                  ADD COLUMN IF NOT EXISTS translation_tables jsonb,
+                  ADD COLUMN IF NOT EXISTS canonicalization_coverage jsonb
+                """
+            ).format(schema_id)
+        )
         cur.execute(
             sql.SQL(
                 """
@@ -101,16 +116,26 @@ def emit_build_manifest(
         build_id = hashlib.sha256(
             json.dumps(payload, sort_keys=True, separators=(',', ':')).encode()
         ).hexdigest()[:12]
+        translation_tables = _translation_tables_used(cur, schema)
+        coverage = _canonicalization_coverage(cur, schema)
         cur.execute(sql.SQL('TRUNCATE {}.build_manifest').format(schema_id))
         cur.execute(
             sql.SQL(
                 """
                 INSERT INTO {}.build_manifest
-                  (build_id, package_commits, resources, partial_build)
-                VALUES (%s, %s, %s, %s)
+                  (build_id, package_commits, resources, partial_build,
+                   translation_tables, canonicalization_coverage)
+                VALUES (%s, %s, %s, %s, %s, %s)
                 """
             ).format(schema_id),
-            [build_id, Json(package_commits), Json(resources), partial_build],
+            [
+                build_id,
+                Json(package_commits),
+                Json(resources),
+                partial_build,
+                Json(translation_tables),
+                Json(coverage),
+            ],
         )
     conn.commit()
     return BuildManifestStats(
@@ -118,6 +143,75 @@ def emit_build_manifest(
         partial_build=partial_build,
         resources=len(resources),
     )
+
+
+# The identifier-resolution relations the build reads to canonicalise evidence.
+# Kept here (rather than imported from the build pipeline) so the manifest layer
+# stays free of the pipeline's heavy imports.
+_TRANSLATION_TABLES = (
+    'resolver_gene',
+    'resolver_gene_protein_global',
+    'resolver_protein',
+    'resolver_chemical',
+)
+
+
+def _translation_tables_used(
+    cur: psycopg2.extensions.cursor,
+    schema: str,
+) -> list[dict[str, Any]]:
+    """Identifier-resolution relations consulted while canonicalising evidence.
+
+    These relations live in the separate identifier-resolution database the build
+    reads from, so only their names are recorded here; whether each was present
+    and usable at build time is reported by the build's resolver pre-flight (and
+    its warnings) in the build log.
+    """
+
+    return [{'name': name} for name in _TRANSLATION_TABLES]
+
+
+def _canonicalization_coverage(
+    cur: psycopg2.extensions.cursor,
+    schema: str,
+) -> dict[str, Any] | None:
+    """How completely evidence was canonicalised.
+
+    Counts how many evidence records resolved to an entity versus stayed
+    unresolved, and — for the unresolved ones — why. Returns ``None`` if the
+    resolution table is not present. A single grouped scan run once per build;
+    the counts are descriptive and excluded from the build's identity hash.
+    """
+
+    schema_id = sql.Identifier(schema)
+    try:
+        cur.execute(
+            sql.SQL(
+                """
+                SELECT rs.name AS status, rr.name AS reason, count(*) AS n
+                FROM {0}.entity_evidence_resolution eer
+                JOIN {0}.vocab_resolution_status rs
+                  ON rs.resolution_status_id = eer.status_id
+                LEFT JOIN {0}.vocab_resolution_reason rr
+                  ON rr.resolution_reason_id = eer.reason_id
+                GROUP BY rs.name, rr.name
+                """
+            ).format(schema_id)
+        )
+    except psycopg2.Error:
+        cur.connection.rollback()
+        return None
+
+    by_status: dict[str, int] = {}
+    by_reason: dict[str, int] = {}
+    total = 0
+    for status, reason, n in cur.fetchall():
+        n = int(n)
+        total += n
+        by_status[status] = by_status.get(status, 0) + n
+        if reason is not None:
+            by_reason[reason] = by_reason.get(reason, 0) + n
+    return {'total': total, 'by_status': by_status, 'by_reason': by_reason}
 
 
 @lru_cache(maxsize=32)
