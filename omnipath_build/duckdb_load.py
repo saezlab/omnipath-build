@@ -107,6 +107,14 @@ UNRESOLVED_KEY_IDENTIFIER_PRIORITY = (
     GENE_NAME_PRIMARY_TYPE,
     UNIPROT_ENTRY_NAME_TYPE,
 )
+# The UniProtKB accession format (both 6- and 10-character forms). A protein
+# mention that carries a well-formed UniProt accession names a real gene product,
+# so even when the identifier-resolution database has no gene for it we can type
+# it as a gene keyed by that accession rather than leaving a bare protein node.
+# An optional ``-<n>`` isoform suffix is stripped before matching.
+UNIPROT_AC_REGEX = (
+    '^[A-NR-Z][0-9]([A-Z][A-Z0-9]{2}[0-9]){1,2}$|^[OPQ][0-9][A-Z0-9]{3}[0-9]$'
+)
 # protein molecular_type_id (matches the entity_evidence_resolution CASE seed);
 # the per-record asserted UniProt form is a protein state (FR-027b, T060).
 PROTEIN_MOLECULAR_TYPE_ID = 2
@@ -2712,6 +2720,17 @@ def _canonicalize_loaded_duckdb(
         "AND (rcs.candidate_count IS NULL OR rcs.candidate_count = 0) "
         "AND puf.candidate_count = 1"
     )
+    # A protein mention with a well-formed UniProt accession (and a real taxon),
+    # for which the resolver produced neither a gene nor a canonicalisable primary
+    # UniProt, still names a gene product — type it as a gene keyed by that
+    # accession. Requires exactly one distinct accession so the key is unambiguous;
+    # mutually exclusive with the resolver and fallback arms by construction.
+    protein_uniprot_selftype_fires = (
+        f'ee.entity_type = {_sql_literal(PROTEIN_ENTITY_TYPE)} '
+        'AND (rcs.candidate_count IS NULL OR rcs.candidate_count = 0) '
+        'AND (puf.candidate_count IS NULL OR puf.candidate_count <> 1) '
+        'AND st.accession_count = 1'
+    )
     con.execute(
         f"""
         CREATE TABLE entity_resolution_base AS
@@ -2854,6 +2873,30 @@ def _canonicalize_loaded_duckdb(
             min(canonical_identifier) AS canonical_identifier
           FROM protein_uniprot_fallback_candidate
           GROUP BY source, entity_evidence_id
+        ),
+        protein_uniprot_selftype AS (
+          SELECT
+            ee.source,
+            ee.entity_evidence_id,
+            min(ee.taxonomy_id) AS taxonomy_id,
+            count(
+              DISTINCT regexp_replace(ei.identifier, '-[0-9]+$', '')
+            ) AS accession_count,
+            min(regexp_replace(ei.identifier, '-[0-9]+$', '')) AS uniprot_ac
+          FROM remaining_entity ee
+          JOIN entity_identifier_raw ei
+            ON ei.source = ee.source
+           AND ei.entity_evidence_id = ee.entity_evidence_id
+           AND ei.identifier_type = {_sql_literal(UNIPROT_TYPE)}
+           AND ei.identifier IS NOT NULL
+           AND ei.identifier <> ''
+          WHERE ee.entity_type = {_sql_literal(PROTEIN_ENTITY_TYPE)}
+            AND ee.taxonomy_id IS NOT NULL
+            AND regexp_matches(
+              regexp_replace(ei.identifier, '-[0-9]+$', ''),
+              {_sql_literal(UNIPROT_AC_REGEX)}
+            )
+          GROUP BY ee.source, ee.entity_evidence_id
         )
         SELECT * FROM direct_resolution
         UNION ALL
@@ -2865,13 +2908,17 @@ def _canonicalize_loaded_duckdb(
           CASE
             WHEN rcs.candidate_count = 1
             THEN rcs.resolver_entity_type
+            -- A gene product the resolver knows only by a UniProt accession, with
+            -- no gene, is a gene we cannot name — type it Gene, keyed by that
+            -- accession (deduped by it), so the base graph is gene-typed;
+            -- molecular_entity_type below stays Protein, so the accession still
+            -- becomes a protein `state`, and a later real resolution can merge
+            -- this into the known gene. The fallback arm keys by the resolver's
+            -- primary UniProt; the self-type arm keys by the accession the source
+            -- gave, for proteins whose accession the resolver does not carry.
             WHEN {protein_fallback_fires}
-            -- T061b (open-decision #9): an unresolved gene-product known only by a
-            -- primary UniProt is a GENE we cannot name, not a Protein. Type it Gene
-            -- (a synthetic "unknown gene" keyed by that primary UniProt, deduped by
-            -- it) so the base graph is uniformly gene-typed; molecular_entity_type
-            -- below stays Protein, so the AC still becomes a `protein` state (T060),
-            -- and a later real resolution can merge this into the known gene.
+            THEN {_sql_literal(GENE_ENTITY_TYPE)}
+            WHEN {protein_uniprot_selftype_fires}
             THEN {_sql_literal(GENE_ENTITY_TYPE)}
             ELSE ee.entity_type
           END AS entity_type,
@@ -2879,6 +2926,7 @@ def _canonicalize_loaded_duckdb(
           CASE
             WHEN rcs.candidate_count = 1 THEN rcs.taxonomy_id
             WHEN {protein_fallback_fires} THEN puf.taxonomy_id
+            WHEN {protein_uniprot_selftype_fires} THEN st.taxonomy_id
             ELSE ee.taxonomy_id
           END AS taxonomy_id,
           -- Chemical fallback (T020/R22): when the structure + resolver-
@@ -2891,6 +2939,8 @@ def _canonicalize_loaded_duckdb(
             WHEN rcs.candidate_count = 1 THEN rcs.canonical_identifier_type_id
             WHEN {protein_fallback_fires}
               THEN puf.canonical_identifier_type_id
+            WHEN {protein_uniprot_selftype_fires}
+              THEN {identifier_type_id(UNIPROT_TYPE)}
             WHEN {cf_fires}
               THEN cf.canonical_identifier_type_id
             ELSE unresolved_type.identifier_type_id
@@ -2898,6 +2948,7 @@ def _canonicalize_loaded_duckdb(
           CASE
             WHEN rcs.candidate_count = 1 THEN rcs.canonical_identifier
             WHEN {protein_fallback_fires} THEN puf.canonical_identifier
+            WHEN {protein_uniprot_selftype_fires} THEN st.uniprot_ac
             WHEN {cf_fires} THEN cf.canonical_identifier
             -- An entity that could not be resolved is keyed by its best raw
             -- identifier (deterministic, human-readable, reproducible), so
@@ -2909,12 +2960,14 @@ def _canonicalize_loaded_duckdb(
           CASE
             WHEN rcs.candidate_count = 1 THEN 'resolved'
             WHEN {protein_fallback_fires} THEN 'resolved'
+            WHEN {protein_uniprot_selftype_fires} THEN 'resolved'
             WHEN {cf_fires} THEN 'resolved'
             ELSE 'unresolved'
           END AS status,
           CASE
             WHEN rcs.candidate_count = 1 THEN 'resolver'
             WHEN {protein_fallback_fires} THEN 'unknown_gene'
+            WHEN {protein_uniprot_selftype_fires} THEN 'unknown_gene'
             WHEN {cf_fires} THEN cf.mechanism
             ELSE 'unresolved'
           END AS resolution_mechanism
@@ -2936,6 +2989,9 @@ def _canonicalize_loaded_duckdb(
         LEFT JOIN protein_uniprot_fallback_summary puf
           ON puf.source = ee.source
          AND puf.entity_evidence_id = ee.entity_evidence_id
+        LEFT JOIN protein_uniprot_selftype st
+          ON st.source = ee.source
+         AND st.entity_evidence_id = ee.entity_evidence_id
         LEFT JOIN chemical_fallback_resolution cf
           ON cf.source = ee.source
          AND cf.entity_evidence_id = ee.entity_evidence_id

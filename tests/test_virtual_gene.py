@@ -1,7 +1,9 @@
-"""A gene product known only by a UniProt accession (primary or secondary) is
-typed as a gene keyed by the primary accession, and carries the accession the
-source asserted as a protein state. No stray protein entity is left behind, and
-the entity key is deterministic (re-runnable build)."""
+"""A gene product known only by a UniProt accession is typed as a gene keyed by
+that accession, carrying the accession the source asserted as a protein state.
+This holds whether the accession resolves through the identifier-resolution
+database (primary or secondary) or is one the resolver does not carry at all (a
+well-formed accession still names a gene product). No stray protein entity is left
+behind, and the entity key is deterministic (re-runnable build)."""
 
 from __future__ import annotations
 
@@ -144,6 +146,61 @@ def test_representative_uniprot_arm_for_virtual_gene():
         """,
         [gene_entity_id],
     ).fetchone() == ('P04637', ['P04637'])
+
+
+def test_resolver_unknown_uniprot_still_mints_gene():
+    con = _con()
+    # A well-formed UniProt accession the resolver carries no gene or fallback for
+    # (e.g. a TrEMBL accession) still names a gene product: typed Gene keyed by the
+    # accession, using the evidence taxon. No resolver/fallback rows are loaded.
+    _insert_protein(con, 'trembl', 'A0A8M9QHZ6', taxon='7955')
+    _canonicalize_loaded_duckdb(con)
+
+    assert con.execute(
+        """
+        SELECT entity_type, taxonomy_id, canonical_identifier_type_id,
+               canonical_identifier, status, resolution_mechanism
+        FROM entity_resolution WHERE entity_evidence_id = 'trembl'
+        """
+    ).fetchone() == (
+        GENE_ENTITY_TYPE, '7955', UNIPROT_TID, 'A0A8M9QHZ6',
+        'resolved', 'unknown_gene',
+    )
+    assert con.execute(
+        'SELECT count(*) FROM canonical_entity WHERE entity_type = ?',
+        [PROTEIN_ENTITY_TYPE],
+    ).fetchone()[0] == 0
+
+
+def test_protein_uniprot_without_taxon_is_not_minted():
+    con = _con()
+    # Virtual genes must carry a real taxon; a UniProt-only protein with no
+    # organism cannot be safely typed as a gene, so it stays unresolved.
+    con.execute(
+        'INSERT INTO entity_evidence_raw VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+        ('s', 'd', 1, 'notax', None, 'r', PROTEIN_ENTITY_TYPE, None),
+    )
+    con.execute(
+        'INSERT INTO entity_identifier_raw VALUES (?, ?, ?, ?, ?)',
+        ('s', 'notax', 'i_notax', UNIPROT_TYPE, 'A0A8M9QHZ6'),
+    )
+    _canonicalize_loaded_duckdb(con)
+
+    assert con.execute(
+        'SELECT entity_type, status FROM entity_resolution '
+        "WHERE entity_evidence_id = 'notax'"
+    ).fetchone() == (PROTEIN_ENTITY_TYPE, 'unresolved')
+
+
+def test_malformed_uniprot_value_is_not_minted():
+    con = _con()
+    _insert_protein(con, 'bad', 'NOTANACCESSION', taxon='9606')
+    _canonicalize_loaded_duckdb(con)
+
+    assert con.execute(
+        'SELECT entity_type, status FROM entity_resolution '
+        "WHERE entity_evidence_id = 'bad'"
+    ).fetchone() == (PROTEIN_ENTITY_TYPE, 'unresolved')
 
 
 def test_virtual_gene_key_is_idempotent():
