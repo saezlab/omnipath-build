@@ -174,8 +174,9 @@ def test_resolver_unknown_uniprot_still_mints_gene():
 
 def test_protein_uniprot_without_taxon_is_not_minted():
     con = _con()
-    # Virtual genes must carry a real taxon; a UniProt-only protein with no
-    # organism cannot be safely typed as a gene, so it stays unresolved.
+    # Virtual genes must carry a real taxon. A UniProt-only protein with no
+    # organism — and none recoverable from the accession (no accession->organism
+    # lookup here) — cannot be safely typed as a gene, so it stays unresolved.
     con.execute(
         'INSERT INTO entity_evidence_raw VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
         ('s', 'd', 1, 'notax', None, 'r', PROTEIN_ENTITY_TYPE, None),
@@ -190,6 +191,69 @@ def test_protein_uniprot_without_taxon_is_not_minted():
         'SELECT entity_type, status FROM entity_resolution '
         "WHERE entity_evidence_id = 'notax'"
     ).fetchone() == (PROTEIN_ENTITY_TYPE, 'unresolved')
+
+
+def test_no_taxon_protein_gains_organism_from_accession_then_mints():
+    con = _con()
+    # The same organism-less mention, but now its accession's organism is known
+    # (the accession->organism lookup carries it): the organism is recovered onto
+    # the mention, so it is typed as a gene keyed by the accession, carrying the
+    # recovered organism — no bare protein node is left behind.
+    con.execute(
+        'INSERT INTO entity_evidence_raw VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+        ('s', 'd', 1, 'recovered', None, 'r', PROTEIN_ENTITY_TYPE, None),
+    )
+    con.execute(
+        'INSERT INTO entity_identifier_raw VALUES (?, ?, ?, ?, ?)',
+        ('s', 'recovered', 'i_recovered', UNIPROT_TYPE, 'A0A8M9QHZ6'),
+    )
+    con.execute(
+        'CREATE TABLE uniprot_taxon_lookup (uniprot VARCHAR, taxonomy_id VARCHAR)'
+    )
+    con.execute(
+        "INSERT INTO uniprot_taxon_lookup VALUES ('A0A8M9QHZ6', '7955')"
+    )
+    _canonicalize_loaded_duckdb(con)
+
+    assert con.execute(
+        """
+        SELECT entity_type, taxonomy_id, canonical_identifier, status,
+               resolution_mechanism
+        FROM entity_resolution WHERE entity_evidence_id = 'recovered'
+        """
+    ).fetchone() == (
+        GENE_ENTITY_TYPE, '7955', 'A0A8M9QHZ6', 'resolved', 'unknown_gene',
+    )
+    assert con.execute(
+        'SELECT count(*) FROM canonical_entity WHERE entity_type = ?',
+        [PROTEIN_ENTITY_TYPE],
+    ).fetchone()[0] == 0
+
+
+def test_isoform_accession_recovers_organism_from_base_accession():
+    con = _con()
+    # A mention that cites an isoform accession (``-<n>`` suffix) is matched to the
+    # lookup by its base accession, so the organism is still recovered.
+    con.execute(
+        'INSERT INTO entity_evidence_raw VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+        ('s', 'd', 1, 'iso', None, 'r', PROTEIN_ENTITY_TYPE, None),
+    )
+    con.execute(
+        'INSERT INTO entity_identifier_raw VALUES (?, ?, ?, ?, ?)',
+        ('s', 'iso', 'i_iso', UNIPROT_TYPE, 'A0A8M9QHZ6-2'),
+    )
+    con.execute(
+        'CREATE TABLE uniprot_taxon_lookup (uniprot VARCHAR, taxonomy_id VARCHAR)'
+    )
+    con.execute(
+        "INSERT INTO uniprot_taxon_lookup VALUES ('A0A8M9QHZ6', '7955')"
+    )
+    _canonicalize_loaded_duckdb(con)
+
+    assert con.execute(
+        'SELECT taxonomy_id, status FROM entity_resolution '
+        "WHERE entity_evidence_id = 'iso'"
+    ).fetchone() == ('7955', 'resolved')
 
 
 def test_malformed_uniprot_value_is_not_minted():

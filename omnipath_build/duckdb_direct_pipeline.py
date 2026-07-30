@@ -300,6 +300,11 @@ def run_direct_copy_pipeline(
         ontology_terms = 0
         projection_seconds = time.perf_counter() - projection_started
 
+        # Attach the identifier-resolution database up front (idempotent), so the
+        # canonicalize step's organism recovery — which runs before the resolver
+        # lookup that would otherwise attach it — can read the accession->organism
+        # map. No-op when no resolution database is configured.
+        duckdb_load._duckdb_attach_utils_postgres(con)
         canonicalize_started = time.perf_counter()
         entities, relations, links = duckdb_load._canonicalize_loaded_duckdb(con)
         canonicalize_seconds = time.perf_counter() - canonicalize_started
@@ -428,6 +433,10 @@ def stage_direct_copy_pipeline(
         )
 
         _load_log('stage', 'canonicalize_start', source=source, dataset=dataset)
+        # Attach the identifier-resolution database up front (idempotent), so the
+        # canonicalize step's organism recovery can read the accession->organism
+        # map before the resolver lookup would otherwise attach it.
+        duckdb_load._duckdb_attach_utils_postgres(con)
         canonicalize_started = time.perf_counter()
         entities, relations, links = duckdb_load._canonicalize_loaded_duckdb(con)
         canonicalize_seconds = time.perf_counter() - canonicalize_started

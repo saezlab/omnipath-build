@@ -2067,6 +2067,161 @@ def preflight_translation_tables(
     return report
 
 
+def _recover_no_taxon_protein_from_uniprot(
+    con: duckdb.DuckDBPyConnection,
+) -> None:
+    """Recover the organism of a protein mention that arrived without one.
+
+    Some sources cite a UniProt accession but state no organism (reaction and
+    binding-affinity resources in particular). The accession itself names the
+    organism, so look it up in the identifier-resolution database's
+    accession -> organism map and record it on the mention *before* resolution.
+    A recovered organism both lets the mention reach its gene through the
+    per-organism gene map and, when no gene is known, lets it be typed as a gene
+    keyed by the accession (which requires a known organism). No-op when the
+    resolution database is not attached or carries no accession -> organism map.
+    """
+    _fetch_uniprot_taxon_lookup(con)
+    _apply_uniprot_taxon_recovery(con)
+
+
+def _fetch_uniprot_taxon_lookup(
+    con: duckdb.DuckDBPyConnection,
+) -> None:
+    """Fetch accession -> organism for this shard's organism-less proteins.
+
+    Ships the shard's well-formed accessions (protein mentions with no organism)
+    to the identifier-resolution Postgres and reads back their organism from the
+    ``resolver_uniprot_taxon`` map, into a local ``uniprot_taxon_lookup`` table.
+    No-op (and leaves any existing lookup untouched) when the resolver is not
+    attached or the map is absent.
+    """
+    url = os.environ.get('OMNIPATH_BUILD_UTILS_PG_URL')
+    if not url or not _live_utils_attached(con):
+        return
+    accessions = [
+        row[0]
+        for row in con.execute(
+            f"""
+            SELECT DISTINCT regexp_replace(ei.identifier, '-[0-9]+$', '') AS ac
+            FROM entity_evidence_raw ee
+            JOIN entity_identifier_raw ei
+              ON ei.source = ee.source
+             AND ei.entity_evidence_id = ee.entity_evidence_id
+            WHERE ee.entity_type = {_sql_literal(PROTEIN_ENTITY_TYPE)}
+              AND ee.taxonomy_id IS NULL
+              AND ei.identifier_type = {_sql_literal(UNIPROT_TYPE)}
+              AND ei.identifier IS NOT NULL
+              AND ei.identifier <> ''
+              AND regexp_matches(
+                regexp_replace(ei.identifier, '-[0-9]+$', ''),
+                {_sql_literal(UNIPROT_AC_REGEX)}
+              )
+            """
+        ).fetchall()
+    ]
+    con.execute('DROP TABLE IF EXISTS uniprot_taxon_lookup')
+    con.execute(
+        'CREATE TABLE uniprot_taxon_lookup (uniprot VARCHAR, taxonomy_id VARCHAR)'
+    )
+    if not accessions:
+        return
+    with psycopg2.connect(url) as pg:
+        with pg.cursor() as cur:
+            cur.execute(
+                "SELECT to_regclass('omnipath_utils.resolver_uniprot_taxon')"
+                ' IS NOT NULL'
+            )
+            if not cur.fetchone()[0]:
+                return
+            cur.execute(
+                'CREATE TEMP TABLE tmp_uniprot_key (uniprot text) ON COMMIT DROP'
+            )
+            execute_values(
+                cur,
+                'INSERT INTO tmp_uniprot_key (uniprot) VALUES %s',
+                [(a,) for a in sorted(set(accessions))],
+                page_size=10000,
+            )
+            cur.execute(
+                """
+                SELECT r.uniprot, NULLIF(r.ncbi_tax_id, 0)::text
+                FROM omnipath_utils.resolver_uniprot_taxon r
+                JOIN tmp_uniprot_key k ON k.uniprot = r.uniprot
+                WHERE r.ncbi_tax_id IS NOT NULL
+                """
+            )
+            rows = cur.fetchall()
+    if not rows:
+        return
+    columns = list(zip(*rows, strict=True))
+    arrow_table = pa.table({
+        'uniprot': pa.array(columns[0], type=pa.string()),
+        'taxonomy_id': pa.array(columns[1], type=pa.string()),
+    })
+    con.register('_uniprot_taxon_rows', arrow_table)
+    try:
+        con.execute(
+            'INSERT INTO uniprot_taxon_lookup SELECT * FROM _uniprot_taxon_rows'
+        )
+    finally:
+        con.unregister('_uniprot_taxon_rows')
+    _log.info(
+        'organism recovery: %d of %d organism-less protein accessions '
+        'matched an organism',
+        len(rows),
+        len(accessions),
+    )
+
+
+def _apply_uniprot_taxon_recovery(
+    con: duckdb.DuckDBPyConnection,
+) -> None:
+    """Write the recovered organism onto organism-less protein mentions.
+
+    Reads the local ``uniprot_taxon_lookup`` (built by
+    :func:`_fetch_uniprot_taxon_lookup`, or supplied directly in tests) and sets
+    ``taxonomy_id`` on every protein mention that had none, from the organism of
+    its UniProt accession. When one mention carries accessions of different
+    organisms the lowest taxon id is chosen deterministically. No-op when the
+    lookup is absent or empty.
+    """
+    has_lookup = bool(
+        con.execute(
+            """
+            SELECT COUNT(*)
+            FROM information_schema.tables
+            WHERE table_name = 'uniprot_taxon_lookup'
+            """
+        ).fetchone()[0]
+    )
+    if not has_lookup:
+        return
+    con.execute(
+        f"""
+        UPDATE entity_evidence_raw AS ee
+        SET taxonomy_id = sub.taxonomy_id
+        FROM (
+          SELECT ee2.source, ee2.entity_evidence_id,
+                 min(utl.taxonomy_id) AS taxonomy_id
+          FROM entity_evidence_raw ee2
+          JOIN entity_identifier_raw ei
+            ON ei.source = ee2.source
+           AND ei.entity_evidence_id = ee2.entity_evidence_id
+           AND ei.identifier_type = {_sql_literal(UNIPROT_TYPE)}
+          JOIN uniprot_taxon_lookup utl
+            ON utl.uniprot = regexp_replace(ei.identifier, '-[0-9]+$', '')
+          WHERE ee2.entity_type = {_sql_literal(PROTEIN_ENTITY_TYPE)}
+            AND ee2.taxonomy_id IS NULL
+          GROUP BY ee2.source, ee2.entity_evidence_id
+        ) AS sub
+        WHERE ee.source = sub.source
+          AND ee.entity_evidence_id = sub.entity_evidence_id
+          AND ee.taxonomy_id IS NULL
+        """
+    )
+
+
 def _build_resolver_lookup(
     con: duckdb.DuckDBPyConnection,
 ) -> None:
@@ -2239,6 +2394,11 @@ def _canonicalize_loaded_duckdb(
     _create_duckdb_identifier_type_all_view(con)
     _ensure_duckdb_canonical_caches(con)
     _drop_duckdb_batch_tables(con)
+    # Fill in the organism of protein mentions that cited a UniProt accession but
+    # no species, from the accession itself — before the resolver keys are built,
+    # so the recovered organism drives both gene resolution and the accession-keyed
+    # gene mint (which requires a known organism).
+    _recover_no_taxon_protein_from_uniprot(con)
     resolver_alias_expansion_excluded_type_ids = ', '.join(
         str(identifier_type_id(name))
         for name in RESOLVER_ALIAS_EXPANSION_EXCLUDED_IDENTIFIER_TYPES
