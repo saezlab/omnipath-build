@@ -2222,6 +2222,94 @@ def _apply_uniprot_taxon_recovery(
     )
 
 
+def _canonicalize_taxon_to_species(
+    con: duckdb.DuckDBPyConnection,
+) -> None:
+    """Canonicalize each mention's organism to species level (strain -> species).
+
+    NCBI files some genes under a strain taxon while an Entrez GeneID belongs to
+    one species; left unreconciled, the same gene surfaces under several NCBI
+    strain taxa and splits into duplicate taxon-specific entities. Map every
+    mention's taxon to its species-level taxon via the resolver's ``taxon_species``
+    map (built from the NCBI taxdump) so mentions and the resolver agree on one
+    taxon per gene. Ships this shard's distinct taxa to the resolver Postgres and
+    reads back only the strain taxa that actually differ from their species. No-op
+    when the resolver is not attached or the map is absent/empty.
+    """
+    url = os.environ.get('OMNIPATH_BUILD_UTILS_PG_URL')
+    if not url or not _live_utils_attached(con):
+        return
+    taxa = [
+        row[0]
+        for row in con.execute(
+            """
+            SELECT DISTINCT taxonomy_id
+            FROM entity_evidence_raw
+            WHERE taxonomy_id IS NOT NULL AND taxonomy_id <> ''
+            """
+        ).fetchall()
+    ]
+    con.execute('DROP TABLE IF EXISTS taxon_species_lookup')
+    con.execute(
+        'CREATE TABLE taxon_species_lookup (tax_id VARCHAR, species_tax_id VARCHAR)'
+    )
+    numeric = sorted({t for t in taxa if t and t.isdigit()})
+    if not numeric:
+        return
+    with psycopg2.connect(url) as pg:
+        with pg.cursor() as cur:
+            cur.execute(
+                "SELECT to_regclass('omnipath_utils.taxon_species') IS NOT NULL"
+            )
+            if not cur.fetchone()[0]:
+                return
+            cur.execute(
+                'CREATE TEMP TABLE tmp_taxon_key (tax_id integer) ON COMMIT DROP'
+            )
+            execute_values(
+                cur,
+                'INSERT INTO tmp_taxon_key (tax_id) VALUES %s',
+                [(int(t),) for t in numeric],
+                page_size=10000,
+            )
+            cur.execute(
+                """
+                SELECT s.tax_id::text, s.species_tax_id::text
+                FROM omnipath_utils.taxon_species s
+                JOIN tmp_taxon_key k ON k.tax_id = s.tax_id
+                WHERE s.species_tax_id IS NOT NULL
+                  AND s.species_tax_id <> s.tax_id
+                """
+            )
+            rows = cur.fetchall()
+    if not rows:
+        return
+    columns = list(zip(*rows, strict=True))
+    arrow_table = pa.table({
+        'tax_id': pa.array(columns[0], type=pa.string()),
+        'species_tax_id': pa.array(columns[1], type=pa.string()),
+    })
+    con.register('_taxon_species_rows', arrow_table)
+    try:
+        con.execute(
+            'INSERT INTO taxon_species_lookup SELECT * FROM _taxon_species_rows'
+        )
+    finally:
+        con.unregister('_taxon_species_rows')
+    con.execute(
+        """
+        UPDATE entity_evidence_raw AS ee
+        SET taxonomy_id = tsl.species_tax_id
+        FROM taxon_species_lookup tsl
+        WHERE ee.taxonomy_id = tsl.tax_id
+        """
+    )
+    _log.info(
+        'taxon canonicalization: %d strain taxa mapped to species level',
+        len(rows),
+    )
+
+
 def _build_resolver_lookup(
     con: duckdb.DuckDBPyConnection,
 ) -> None:
@@ -2399,6 +2487,11 @@ def _canonicalize_loaded_duckdb(
     # so the recovered organism drives both gene resolution and the accession-keyed
     # gene mint (which requires a known organism).
     _recover_no_taxon_protein_from_uniprot(con)
+    # Canonicalize each mention's organism to species level (strain -> species),
+    # after recovery so a recovered strain taxon is canonicalized too. Keeps
+    # mentions and the resolver on one taxon per gene, so a gene is not split
+    # across NCBI strain-vs-species taxa.
+    _canonicalize_taxon_to_species(con)
     resolver_alias_expansion_excluded_type_ids = ', '.join(
         str(identifier_type_id(name))
         for name in RESOLVER_ALIAS_EXPANSION_EXCLUDED_IDENTIFIER_TYPES
