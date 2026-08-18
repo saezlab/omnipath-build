@@ -2273,15 +2273,17 @@ def _ensure_interaction_schema(
     cur: psycopg2.extensions.cursor,
     schema: str,
 ) -> None:
-    """Interaction header, participants and the participant-role vocabulary.
+    """Interaction header, participants, role vocabulary and the fact table.
 
-    Spec 008 data model §1, §2 and §7. The header carries an
+    Spec 008 data model §1, §2, §3 and §7. The header carries an
     endpoint-independent identity for one interaction or reaction event;
     ``interaction_party``
     generalises the two endpoints of ``relation_evidence`` and the
     reactant/product grain of the DuckDB ``reaction_member_signature`` to N
     participants, each in a role, on a side, at an ordinal, optionally with a
-    stoichiometry, a compartment and its own organism.
+    stoichiometry, a compartment and its own organism. ``interaction_fact`` is
+    the flat binary projection the hot queries read, one row per ordered
+    endpoint pair and interaction class.
 
     The tables are declared here; the derive step fills them.
     """
@@ -2369,6 +2371,96 @@ def _ensure_interaction_schema(
             """
         ).format(schema_id)
     )
+    cur.execute(
+        sql.SQL(
+            """
+            CREATE TABLE IF NOT EXISTS {}.interaction_fact (
+              subject_entity_id uuid NOT NULL
+                REFERENCES {}.entity(entity_id),
+              object_entity_id uuid NOT NULL
+                REFERENCES {}.entity(entity_id),
+              interaction_class_id smallint
+                REFERENCES {}.vocab_interaction_class(interaction_class_id),
+              subject_organism bigint,
+              object_organism bigint,
+              is_directed boolean,
+              is_stimulation boolean,
+              is_inhibition boolean,
+              sign_source_count smallint,
+              direction_source_count smallint,
+              affinity double precision,
+              pchembl double precision,
+              score double precision,
+              sources text[],
+              source_count integer,
+              dataset_tags text[],
+              curation_flags text[],
+              reference_pubmed_ids text[],
+              reference_dois text[],
+              reference_count integer,
+              attributes jsonb,
+              interaction_id uuid
+                REFERENCES {}.interaction(interaction_id)
+                ON DELETE CASCADE
+            )
+            """
+        ).format(schema_id, schema_id, schema_id, schema_id, schema_id)
+    )
+    # Sign and direction are three-valued (FR-044, research R15): NULL means no
+    # contributing resource asserts the attribute, and that is a different
+    # statement from an asserted `false`. They therefore carry no NOT NULL and
+    # no DEFAULT. `sign_source_count` and `direction_source_count` say how many
+    # resources asserted anything, so a caller can weigh a summary that one
+    # resource out of twelve produced. `is_stimulation` and `is_inhibition` may
+    # both be true: resources disagreeing is represented here, not resolved.
+    # `sources` and the reference arrays aggregate every contributing resource
+    # and reference, including those asserting neither sign nor direction
+    # (FR-044c). Added here too, for databases created before the columns
+    # existed.
+    cur.execute(
+        sql.SQL(
+            """
+            ALTER TABLE {}.interaction_fact
+            ADD COLUMN IF NOT EXISTS subject_organism bigint,
+            ADD COLUMN IF NOT EXISTS object_organism bigint,
+            ADD COLUMN IF NOT EXISTS is_directed boolean,
+            ADD COLUMN IF NOT EXISTS is_stimulation boolean,
+            ADD COLUMN IF NOT EXISTS is_inhibition boolean,
+            ADD COLUMN IF NOT EXISTS sign_source_count smallint,
+            ADD COLUMN IF NOT EXISTS direction_source_count smallint,
+            ADD COLUMN IF NOT EXISTS affinity double precision,
+            ADD COLUMN IF NOT EXISTS pchembl double precision,
+            ADD COLUMN IF NOT EXISTS score double precision,
+            ADD COLUMN IF NOT EXISTS sources text[],
+            ADD COLUMN IF NOT EXISTS source_count integer,
+            ADD COLUMN IF NOT EXISTS dataset_tags text[],
+            ADD COLUMN IF NOT EXISTS curation_flags text[],
+            ADD COLUMN IF NOT EXISTS reference_pubmed_ids text[],
+            ADD COLUMN IF NOT EXISTS reference_dois text[],
+            ADD COLUMN IF NOT EXISTS reference_count integer,
+            ADD COLUMN IF NOT EXISTS attributes jsonb,
+            ADD COLUMN IF NOT EXISTS interaction_id uuid
+            """
+        ).format(schema_id)
+    )
+    # The key is ordered: A→B and B→A are two distinct rows, never merged
+    # (FR-044d, research R1). The class is part of the identity, and R18 is
+    # what makes it discriminate — the derive step reads it from the resource
+    # annotations, not from the predicate alone. `NULLS NOT DISTINCT` keeps a
+    # row whose class stayed unresolved from duplicating, the same rule
+    # `entity_canonical_key_idx` follows.
+    cur.execute(
+        sql.SQL(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS interaction_fact_key_idx
+            ON {}.interaction_fact (
+              subject_entity_id,
+              object_entity_id,
+              interaction_class_id
+            ) NULLS NOT DISTINCT
+            """
+        ).format(schema_id)
+    )
     specs = [
         (
             'interaction_class_idx',
@@ -2390,6 +2482,40 @@ def _ensure_interaction_schema(
             'interaction_party',
             ('role_id',),
         ),
+        # The unique key leads with `subject_entity_id`, so an object-first
+        # lookup needs its own index; the class and the header link are the
+        # other two hot equality filters.
+        (
+            'interaction_fact_object_idx',
+            'interaction_fact',
+            ('object_entity_id',),
+        ),
+        (
+            'interaction_fact_class_idx',
+            'interaction_fact',
+            ('interaction_class_id',),
+        ),
+        (
+            'interaction_fact_interaction_idx',
+            'interaction_fact',
+            ('interaction_id',),
+        ),
+        # Affinity, pchembl and score are range-filtered and sorted on.
+        (
+            'interaction_fact_affinity_idx',
+            'interaction_fact',
+            ('affinity',),
+        ),
+        (
+            'interaction_fact_pchembl_idx',
+            'interaction_fact',
+            ('pchembl',),
+        ),
+        (
+            'interaction_fact_score_idx',
+            'interaction_fact',
+            ('score',),
+        ),
     ]
     for index_name, table, columns in specs:
         cur.execute(
@@ -2403,18 +2529,27 @@ def _ensure_interaction_schema(
             )
         )
     # The aggregated provenance arrays are filtered with array containment;
-    # the `attributes` GIN is benchmark-gated (research R2) and is not created
-    # until its size and build cost are measured.
-    for index_name, column in (
-        ('interaction_sources_gin_idx', 'sources'),
-        ('interaction_dataset_tags_gin_idx', 'dataset_tags'),
+    # the `attributes` GIN on either table is benchmark-gated (research R2)
+    # and is not created until its size and build cost are measured. The
+    # partial indexes on the three-valued sign and direction columns wait on
+    # the same measurement (data model §3).
+    for index_name, table, column in (
+        ('interaction_sources_gin_idx', 'interaction', 'sources'),
+        ('interaction_dataset_tags_gin_idx', 'interaction', 'dataset_tags'),
+        ('interaction_fact_sources_gin_idx', 'interaction_fact', 'sources'),
+        (
+            'interaction_fact_dataset_tags_gin_idx',
+            'interaction_fact',
+            'dataset_tags',
+        ),
     ):
         cur.execute(
             sql.SQL(
-                'CREATE INDEX IF NOT EXISTS {} ON {}.interaction USING gin ({})'
+                'CREATE INDEX IF NOT EXISTS {} ON {}.{} USING gin ({})'
             ).format(
                 sql.Identifier(index_name),
                 schema_id,
+                sql.Identifier(table),
                 sql.Identifier(column),
             )
         )

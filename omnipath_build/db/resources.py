@@ -7,11 +7,12 @@ evidence/graph tables or from bitmap tables when they have been refreshed.
 
 from __future__ import annotations
 
-from typing import Any, NamedTuple
+from typing import Any, Mapping, NamedTuple, Sequence
 from pathlib import Path
 from functools import lru_cache
 import json
 import hashlib
+import logging
 import subprocess
 from dataclasses import dataclass
 import importlib.util
@@ -21,6 +22,8 @@ from psycopg2.extras import Json
 import psycopg2.extensions
 
 from omnipath_build.cv_terms import CV_TERM_ENTITY_TYPE
+
+logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class ResourceTableStats:
@@ -44,6 +47,7 @@ def emit_build_manifest(
     schema: str = 'public',
     inputs_package: str = 'pypath.inputs_v2',
     partial_build: bool = False,
+    derive_cost: Mapping[str, Any] | Sequence[Mapping[str, Any]] | None = None,
 ) -> BuildManifestStats:
     """Write the single self-describing ``build_manifest`` row (Milestone D).
 
@@ -52,6 +56,16 @@ def emit_build_manifest(
     content, independent of ``built_at``. One current row per build (TRUNCATE +
     INSERT). Projects per-resource provenance from the ``resources`` table, so it
     runs in ``derive`` right after ``sync_resources_table``.
+
+    ``derive_cost`` is what the interaction derive steps cost this run — seconds
+    and rows per step (fact, assay, party, reaction projection, intercell),
+    either as ``{step: {seconds, rows}}`` or as a sequence of such records. It is
+    written to ``interactions_derive_cost`` and, with the ``network_presets``
+    inventory read from ``network_registry``, stays **outside** the hashed
+    payload: both are volatile — timings vary run to run and the preset list
+    changes without the built content changing — and neither may move a build's
+    identity (the cycle-007 lesson). The hash covers ``{package_commits,
+    resources}`` and nothing else.
     """
 
     schema_id = sql.Identifier(schema)
@@ -69,18 +83,24 @@ def emit_build_manifest(
                 """
             ).format(schema_id)
         )
-        # Provenance about how identifiers were canonicalised. Both are
-        # descriptive only and are deliberately kept out of the build_id content
-        # hash: `translation_tables` names the identifier-resolution relations the
-        # build consumed, and `canonicalization_coverage` counts how many records
-        # resolved vs stayed unresolved (and why) — volatile numbers that must not
-        # change a build's identity.
+        # Descriptive columns, every one of them deliberately outside the
+        # build_id content hash: `translation_tables` names the
+        # identifier-resolution relations the build consumed,
+        # `canonicalization_coverage` counts how many records resolved vs stayed
+        # unresolved (and why), `interactions_derive_cost` holds this run's
+        # per-step seconds and rows, and `network_presets` the registered preset
+        # inventory — volatile numbers and metadata that must not change a
+        # build's identity. They are added as columns rather than folded into
+        # the hashed payload, which is what keeps them out of the hash by
+        # construction: `payload` below is built from two names only.
         cur.execute(
             sql.SQL(
                 """
                 ALTER TABLE {}.build_manifest
                   ADD COLUMN IF NOT EXISTS translation_tables jsonb,
-                  ADD COLUMN IF NOT EXISTS canonicalization_coverage jsonb
+                  ADD COLUMN IF NOT EXISTS canonicalization_coverage jsonb,
+                  ADD COLUMN IF NOT EXISTS interactions_derive_cost jsonb,
+                  ADD COLUMN IF NOT EXISTS network_presets jsonb
                 """
             ).format(schema_id)
         )
@@ -118,14 +138,17 @@ def emit_build_manifest(
         ).hexdigest()[:12]
         translation_tables = _translation_tables_used(cur, schema)
         coverage = _canonicalization_coverage(cur, schema)
+        interactions_derive_cost = _interactions_derive_cost(derive_cost)
+        network_presets = _network_preset_inventory(cur, schema)
         cur.execute(sql.SQL('TRUNCATE {}.build_manifest').format(schema_id))
         cur.execute(
             sql.SQL(
                 """
                 INSERT INTO {}.build_manifest
                   (build_id, package_commits, resources, partial_build,
-                   translation_tables, canonicalization_coverage)
-                VALUES (%s, %s, %s, %s, %s, %s)
+                   translation_tables, canonicalization_coverage,
+                   interactions_derive_cost, network_presets)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 """
             ).format(schema_id),
             [
@@ -135,6 +158,10 @@ def emit_build_manifest(
                 partial_build,
                 Json(translation_tables),
                 Json(coverage),
+                Json(interactions_derive_cost)
+                if interactions_derive_cost is not None
+                else None,
+                Json(network_presets) if network_presets is not None else None,
             ],
         )
     conn.commit()
@@ -184,6 +211,9 @@ def _canonicalization_coverage(
     """
 
     schema_id = sql.Identifier(schema)
+    # A savepoint, not a bare rollback: the manifest's own DDL was issued in this
+    # same transaction, and a missing resolution table must not undo it.
+    cur.execute('SAVEPOINT canonicalization_coverage_probe')
     try:
         cur.execute(
             sql.SQL(
@@ -199,8 +229,10 @@ def _canonicalization_coverage(
             ).format(schema_id)
         )
     except psycopg2.Error:
-        cur.connection.rollback()
+        cur.execute('ROLLBACK TO SAVEPOINT canonicalization_coverage_probe')
+        logger.debug('build manifest: no resolution table in %s; coverage skipped', schema)
         return None
+    cur.execute('RELEASE SAVEPOINT canonicalization_coverage_probe')
 
     by_status: dict[str, int] = {}
     by_reason: dict[str, int] = {}
@@ -212,6 +244,125 @@ def _canonicalization_coverage(
         if reason is not None:
             by_reason[reason] = by_reason.get(reason, 0) + n
     return {'total': total, 'by_status': by_status, 'by_reason': by_reason}
+
+
+# The interaction derive steps whose cost the manifest reports, in build order.
+_DERIVE_STEPS = (
+    'interaction_fact',
+    'interaction_assay',
+    'interaction_party',
+    'reaction_projection',
+    'intercell',
+)
+
+
+def _interactions_derive_cost(
+    derive_cost: Mapping[str, Any] | Sequence[Mapping[str, Any]] | None,
+) -> dict[str, Any] | None:
+    """Normalise what the interaction derive steps cost into a manifest record.
+
+    Accepts ``{step: {seconds, rows}}`` or a sequence of ``{step, seconds, rows}``
+    records and returns ``{'steps': [...]}`` ordered by the build order of the
+    steps it knows, unknown steps last. Returns ``None`` when no derive step
+    reported a cost, so a build that ran none says so rather than claiming zeros.
+
+    These are timings and row counts — the most volatile thing a build produces.
+    They are recorded next to the identity hash and never inside it.
+    """
+
+    if not derive_cost:
+        return None
+    if isinstance(derive_cost, Mapping):
+        records = [
+            {'step': step, **dict(cost)} for step, cost in derive_cost.items()
+        ]
+    else:
+        records = [dict(cost) for cost in derive_cost]
+
+    steps: list[dict[str, Any]] = []
+    for record in records:
+        step = record.get('step')
+        if step is None:
+            logger.warning('build manifest: derive-cost record without a step: %r', record)
+            continue
+        seconds = record.get('seconds')
+        rows = record.get('rows')
+        steps.append(
+            {
+                'step': str(step),
+                'seconds': float(seconds) if seconds is not None else None,
+                'rows': int(rows) if rows is not None else None,
+            }
+        )
+    if not steps:
+        return None
+
+    order = {step: n for n, step in enumerate(_DERIVE_STEPS)}
+    steps.sort(key=lambda entry: (order.get(entry['step'], len(order)), entry['step']))
+    return {'steps': steps}
+
+
+def _network_preset_inventory(
+    cur: psycopg2.extensions.cursor,
+    schema: str,
+) -> list[dict[str, Any]] | None:
+    """The datasets registered in ``network_registry`` at the end of this build.
+
+    One record per preset — its scope, the attributes it returns, its curation
+    and where its attributes come from — so the manifest says which datasets this
+    build serves without a second query. Returns ``None`` when the registry is
+    absent (a build that registered nothing). Descriptive only: a preset is
+    metadata over the fact table, so the inventory changes without the built
+    content changing, and it stays out of the identity hash.
+    """
+
+    schema_id = sql.Identifier(schema)
+    # Same savepoint discipline as the coverage probe: a missing registry must
+    # not undo the manifest DDL issued earlier in this transaction.
+    cur.execute('SAVEPOINT network_preset_inventory_probe')
+    try:
+        cur.execute(
+            sql.SQL(
+                """
+                SELECT name, kind, included_sources, interaction_class_scope,
+                       evidence_scope, default_attributes, mandatory_attributes,
+                       curation, attribute_sources
+                FROM {}.network_registry
+                ORDER BY name
+                """
+            ).format(schema_id)
+        )
+    except psycopg2.Error:
+        cur.execute('ROLLBACK TO SAVEPOINT network_preset_inventory_probe')
+        logger.debug('build manifest: no network_registry in %s; presets skipped', schema)
+        return None
+    rows = cur.fetchall()
+    cur.execute('RELEASE SAVEPOINT network_preset_inventory_probe')
+
+    return [
+        {
+            'name': name,
+            'kind': kind,
+            'included_sources': list(included_sources or ()),
+            'interaction_class_scope': list(class_scope or ()),
+            'evidence_scope': evidence_scope,
+            'default_attributes': list(default_attributes or ()),
+            'mandatory_attributes': list(mandatory_attributes or ()),
+            'curation': curation,
+            'attribute_sources': attribute_sources,
+        }
+        for (
+            name,
+            kind,
+            included_sources,
+            class_scope,
+            evidence_scope,
+            default_attributes,
+            mandatory_attributes,
+            curation,
+            attribute_sources,
+        ) in rows
+    ]
 
 
 @lru_cache(maxsize=32)

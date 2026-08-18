@@ -1,8 +1,21 @@
-"""The networks onboarded into the framework this cycle: MetalinksDB + LIANA.
+"""The datasets onboarded into the framework: MetalinksDB + LIANA.
 
-Each is a :class:`NetworkDefinition` — declarative metadata plus the curated SQL
-files that materialise it. A future network (e.g. COSMOS-in-Postgres) is added
-the same way: a definition here, served by the same uniform API.
+Each is a :class:`NetworkDefinition`, and both generations of definition live
+here side by side:
+
+* a **preset** (cycle 008) carries only metadata — contributing sources,
+  interaction-class scope, evidence scope, default and mandatory attributes,
+  labels, curation thresholds and attribute sources — and is served by filtering
+  the interaction fact table. Registering it is the whole build step.
+* a **matview network** (Milestone G) carries a schema, a combined relation and
+  the curated SQL files that materialise it. The two below are still of this
+  kind; they become presets over the fact table as their stories land (T044 for
+  MetaLinksDB, T025 for the reduced LIANA), and the ``schema``/
+  ``combined_relation`` fields — with the registry columns behind them — retire
+  with the last bespoke matview (T046).
+
+Adding a dataset stays a declarative change: a definition here, served by the
+same uniform API.
 """
 
 from __future__ import annotations
