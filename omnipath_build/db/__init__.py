@@ -23,7 +23,10 @@ from omnipath_build.db.resources import (
 )
 from omnipath_build.db.derived_tables import (
     DerivedTableStats,
+    InteractionDeriveStats,
+    interaction_content_uuid_sql,
     rebuild_derived_tables,
+    rebuild_interaction_tables,
     rebuild_resource_overlap_summary,
     sweep_staging_tables,
 )
@@ -32,6 +35,9 @@ __all__ = [
     'BitmapStats',
     'BuildManifestStats',
     'DerivedTableStats',
+    'InteractionDeriveStats',
+    'interaction_content_uuid_sql',
+    'rebuild_interaction_tables',
     'ResourceTableStats',
     'SourceContentDropStats',
     'create_secondary_indexes',

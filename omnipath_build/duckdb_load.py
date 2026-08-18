@@ -1013,6 +1013,45 @@ def _create_duckdb_content_uuid_macro(con: duckdb.DuckDBPyConnection) -> None:
         )
         """
     )
+    # The interaction header's identity (008 data model §1, FR-002): a content
+    # hash of the **sorted participant multiset** and the interaction class.
+    # Sorting is what makes it endpoint-independent — the same participants in
+    # any input order name the same interaction, so A→B and B→A are two facts of
+    # one interaction — and keeping it a multiset rather than a set keeps a
+    # homodimer distinct from a single participant. The participants are cast to
+    # lowercase text before sorting so the payload is byte-identical to the one
+    # the Postgres derive step builds (`db/derived_tables.py`,
+    # `interaction_content_uuid_sql`); the two engines must mint the same uuid
+    # for the same content.
+    con.execute(
+        """
+        CREATE OR REPLACE MACRO interaction_content_key(
+          participant_ids,
+          interaction_class
+        ) AS (
+          to_json(
+            list_prepend(
+              interaction_class::VARCHAR,
+              list_sort(
+                list_transform(participant_ids, x -> lower(x::VARCHAR))
+              )
+            )
+          )
+        )
+        """
+    )
+    con.execute(
+        """
+        CREATE OR REPLACE MACRO interaction_content_uuid(
+          participant_ids,
+          interaction_class
+        ) AS (
+          content_uuid(
+            interaction_content_key(participant_ids, interaction_class)
+          )
+        )
+        """
+    )
     con.execute(
         """
         CREATE OR REPLACE MACRO canonical_entity_uuid(

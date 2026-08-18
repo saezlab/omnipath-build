@@ -139,6 +139,17 @@ def emit_build_manifest(
         translation_tables = _translation_tables_used(cur, schema)
         coverage = _canonicalization_coverage(cur, schema)
         interactions_derive_cost = _interactions_derive_cost(derive_cost)
+        # The sign-conflict measurement (T013c, FR-044b) rides next to the
+        # cost, read from what the derive step recorded rather than passed in,
+        # so it reaches the manifest without the orchestration having to
+        # forward it. It is a measurement of the build, never part of its
+        # identity, so it lands in the same non-hashed column.
+        sign_conflict = _interaction_sign_conflict(cur, schema)
+        if sign_conflict is not None:
+            interactions_derive_cost = {
+                **(interactions_derive_cost or {}),
+                'sign_conflict': sign_conflict,
+            }
         network_presets = _network_preset_inventory(cur, schema)
         cur.execute(sql.SQL('TRUNCATE {}.build_manifest').format(schema_id))
         cur.execute(
@@ -232,12 +243,16 @@ def _canonicalization_coverage(
         cur.execute('ROLLBACK TO SAVEPOINT canonicalization_coverage_probe')
         logger.debug('build manifest: no resolution table in %s; coverage skipped', schema)
         return None
+    # Read the rows out before releasing the savepoint: executing the RELEASE
+    # replaces the cursor's result set, and fetching afterwards raises "no
+    # results to fetch" on every schema that actually has a resolution table.
+    rows = cur.fetchall()
     cur.execute('RELEASE SAVEPOINT canonicalization_coverage_probe')
 
     by_status: dict[str, int] = {}
     by_reason: dict[str, int] = {}
     total = 0
-    for status, reason, n in cur.fetchall():
+    for status, reason, n in rows:
         n = int(n)
         total += n
         by_status[status] = by_status.get(status, 0) + n
@@ -254,6 +269,47 @@ _DERIVE_STEPS = (
     'reaction_projection',
     'intercell',
 )
+
+
+def _interaction_sign_conflict(
+    cur: psycopg2.extensions.cursor,
+    schema: str,
+) -> dict[str, Any] | None:
+    """The sign-conflict summary the interaction derive step recorded.
+
+    ``None`` when no interaction derive step has run in this schema, so a build
+    without one says nothing rather than claiming zero conflicts.
+    """
+    cur.execute(
+        'SELECT to_regclass(%s)',
+        [f'{schema}.interaction_sign_conflict'],
+    )
+    if cur.fetchone()[0] is None:
+        return None
+    cur.execute(
+        sql.SQL(
+            """
+            SELECT fact_rows, signed_rows, both_flags_rows,
+                   both_flags_percent, single_resource_rows,
+                   cross_resource_rows
+            FROM {}.interaction_sign_conflict
+            ORDER BY measured_at DESC
+            LIMIT 1
+            """
+        ).format(sql.Identifier(schema))
+    )
+    row = cur.fetchone()
+    if row is None:
+        return None
+    names = (
+        'fact_rows',
+        'signed_rows',
+        'both_flags_rows',
+        'both_flags_percent',
+        'single_resource_rows',
+        'cross_resource_rows',
+    )
+    return dict(zip(names, row))
 
 
 def _interactions_derive_cost(

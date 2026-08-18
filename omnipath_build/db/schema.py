@@ -2379,7 +2379,7 @@ def _ensure_interaction_schema(
                 REFERENCES {}.entity(entity_id),
               object_entity_id uuid NOT NULL
                 REFERENCES {}.entity(entity_id),
-              interaction_class_id smallint
+              interaction_class_id smallint NOT NULL
                 REFERENCES {}.vocab_interaction_class(interaction_class_id),
               subject_organism bigint,
               object_organism bigint,
@@ -2442,6 +2442,29 @@ def _ensure_interaction_schema(
             ADD COLUMN IF NOT EXISTS interaction_id uuid
             """
         ).format(schema_id)
+    )
+    # The class is NOT NULL: under research R18 every relation reaches at least
+    # `other`, because `other` is a real class rather than the residue of a
+    # derivation that failed. A NULL here would therefore mean the projection is
+    # broken, and the constraint says so instead of letting the row through.
+    # Tightened only when nothing violates it, so a database still holding
+    # pre-R18 rows reports the problem at derive time rather than failing to
+    # create its schema.
+    cur.execute(
+        sql.SQL(
+            """
+            DO $$
+            BEGIN
+              IF NOT EXISTS (
+                SELECT 1 FROM {}.interaction_fact
+                WHERE interaction_class_id IS NULL
+              ) THEN
+                ALTER TABLE {}.interaction_fact
+                ALTER COLUMN interaction_class_id SET NOT NULL;
+              END IF;
+            END $$
+            """
+        ).format(schema_id, schema_id)
     )
     # The key is ordered: A→B and B→A are two distinct rows, never merged
     # (FR-044d, research R1). The class is part of the identity, and R18 is
