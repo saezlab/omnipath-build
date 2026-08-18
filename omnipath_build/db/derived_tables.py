@@ -1041,11 +1041,16 @@ _ANNOTATION_CLASS_TERMS = (
 _FALLBACK_CLASS = 'other'
 
 # Direction, per predicate. A resource that records `A positively_regulates B`
-# asserts a direction; one that records `A interacts_with B` asserts a symmetric
-# relation, which is an assertion of undirectedness rather than an absence.
-# Every other verb — complex membership, participation, the structural ontology
-# predicates — says nothing about direction, and its rows keep `is_directed`
-# NULL (FR-044a: an unasserted attribute never becomes an asserted false).
+# asserts a direction, so those rows carry `is_directed` true.
+#
+# Every other verb leaves `is_directed` NULL, symmetric ones included. A first
+# pass wrote false for `interacts_with` and `associated_with`, reading a
+# symmetric predicate as an assertion of undirectedness. Decided 2026-08-18 that
+# it stays NULL: the predicate vocabulary is a coarse ontology layer that the
+# resources did not choose per interaction (R18 makes the same point about
+# class), so a symmetric verb is not the resource saying "this interaction has
+# no direction". FR-044a governs — an unasserted attribute never becomes an
+# asserted false, and 8.2M rows rested on that reading.
 _DIRECTED_PREDICATES = (
     'controls',
     'regulates',
@@ -1053,7 +1058,6 @@ _DIRECTED_PREDICATES = (
     'negatively_regulates',
     'transports',
 )
-_SYMMETRIC_PREDICATES = ('interacts_with', 'associated_with')
 
 # Reference and hot-column annotation terms.
 _PUBMED_TERM = 'Pubmed:MI:0446'
@@ -1427,7 +1431,6 @@ def _stage_interaction_class_evidence(
               )::smallint AS interaction_class_id,
               CASE
                 WHEN predicate.name = ANY(%(directed)s) THEN true
-                WHEN predicate.name = ANY(%(symmetric)s) THEN false
               END AS asserts_directed,
               participant.subject_ligand,
               participant.subject_receptor,
@@ -1450,7 +1453,6 @@ def _stage_interaction_class_evidence(
             'transport': classes['transport'],
             'fallback': classes[_FALLBACK_CLASS],
             'directed': list(_DIRECTED_PREDICATES),
-            'symmetric': list(_SYMMETRIC_PREDICATES),
         },
     )
     cur.execute('CREATE INDEX _if_relation_idx ON _if_relation (relation_id)')

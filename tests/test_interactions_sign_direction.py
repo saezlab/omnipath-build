@@ -165,6 +165,32 @@ def test_direction_is_null_where_no_predicate_speaks_to_it(built):
     assert row['direction_source_count'] == 0
 
 
+
+def test_a_symmetric_predicate_does_not_assert_undirectedness(built):
+    """`interacts_with` leaves `is_directed` NULL, it does not write false.
+
+    Decided 2026-08-18, reverting a first pass that read a symmetric predicate as
+    an assertion of undirectedness and wrote false on 8.2M rows. The predicate
+    vocabulary is a coarse ontology layer the resources did not choose per
+    interaction, so a symmetric verb is not a resource saying "this interaction
+    has no direction". FR-044a: an unasserted attribute never becomes an asserted
+    false.
+    """
+    conn, _stats = built
+    row = _row(conn, 'a', 'b')
+    assert row['is_directed'] is None
+    assert row['direction_source_count'] == 0
+
+
+def test_no_fact_row_ever_asserts_a_false_direction(built):
+    """The whole projection, not one case: `is_directed` is true or NULL."""
+    conn, _stats = built
+    with conn.cursor() as cur:
+        cur.execute(
+            f'SELECT count(*) FROM {SCRATCH}.interaction_fact WHERE is_directed IS FALSE'
+        )
+        assert cur.fetchone()[0] == 0
+
 # --- T013d: the sign-conflict summary reaches the manifest -------------------
 
 
