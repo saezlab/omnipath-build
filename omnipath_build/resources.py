@@ -35,6 +35,25 @@ class DiscoveryError(RuntimeError):
     """Raised when inputs_v2 resource discovery fails."""
 
 
+# A source is named after its ``inputs_v2`` module, which need not name the
+# release the module actually loads (FR-047). Where a module carries a resource
+# *family* name while loading one specific *release*, the build renames the
+# source here, so the slug written to ``data_source`` names the release. This is
+# a rename, not an alias: the left-hand name must not survive anywhere.
+SOURCE_NAME_OVERRIDES: dict[str, str] = {
+    # pypath.inputs_v2.connectomedb declares name='ConnectomeDB2025' and
+    # downloads connectomedb.org Current-Release (FR-032b). The bare slug would
+    # collide with a later ConnectomeDB2020 onboarding.
+    'connectomedb': 'connectomedb2025',
+}
+
+
+def resolve_source_name(module_name: str) -> str:
+    """The build's source slug for an ``inputs_v2`` module name (FR-047)."""
+
+    return SOURCE_NAME_OVERRIDES.get(module_name, module_name)
+
+
 def configure_pypath_download_dir() -> Path:
     """Ensure pypath downloads use a project-local cache directory."""
 
@@ -106,6 +125,7 @@ def discover_resources(
         relative_name = module_name[len(prefix) :]
         if not relative_name or relative_name.split('.')[-1].startswith('_'):
             continue
+        source_slug = resolve_source_name(relative_name)
 
         try:
             module = importlib.import_module(module_name)
@@ -147,11 +167,11 @@ def discover_resources(
         for _, resource_obj in resource_members:
             module_functions.append(
                 ResourceFunction(
-                    source=relative_name,
+                    source=source_slug,
                     function_name='resource',
                     qualified_module=module_name,
                     call=resource_obj,
-                    resource_id=relative_name,
+                    resource_id=source_slug,
                 ),
             )
             break
@@ -165,7 +185,7 @@ def discover_resources(
 
                 def dataset_call(
                     dataset_obj=dataset_obj,
-                    source_name=relative_name,
+                    source_name=source_slug,
                     dataset_name=dataset_name,
                 ):
                     return dataset_obj(
@@ -179,17 +199,17 @@ def discover_resources(
 
             module_functions.append(
                 ResourceFunction(
-                    source=relative_name,
+                    source=source_slug,
                     function_name=dataset_name,
                     qualified_module=module_name,
                     call=dataset_call,
-                    resource_id=relative_name,
+                    resource_id=source_slug,
                     output_kind=output_kind,
                 ),
             )
 
         if module_functions:
-            discovered[relative_name] = module_functions
+            discovered[source_slug] = module_functions
 
     if not discovered:
         raise DiscoveryError(

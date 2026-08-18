@@ -68,7 +68,7 @@ LIANA = NetworkDefinition(
     included_sources=(
         'cellchat',
         'cellphonedb',
-        'connectomedb',
+        'connectomedb2025',
         'icellnet',
         'nichenet',
     ),

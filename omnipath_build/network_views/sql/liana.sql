@@ -33,7 +33,7 @@ WITH included_source(source_name) AS (
   VALUES
     ('cellchat'),
     ('cellphonedb'),
-    ('connectomedb'),
+    ('connectomedb2025'),
     ('icellnet'),
     ('nichenet')
 ),

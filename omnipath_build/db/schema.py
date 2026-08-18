@@ -2233,8 +2233,23 @@ def _ensure_classification_vocab(
             """
             CREATE TABLE IF NOT EXISTS {}.vocab_interaction_class (
               interaction_class_id smallint PRIMARY KEY,
-              name text NOT NULL UNIQUE
+              name text NOT NULL UNIQUE,
+              label text,
+              controlled_vocabulary_mapping text
             )
+            """
+        ).format(schema_id)
+    )
+    # `name` is the snake_case slug used for storage and filtering, `label` the
+    # capitalised display form, `controlled_vocabulary_mapping` the nullable
+    # ontology CURIE (FR-033). Added here too, for databases created before the
+    # columns existed.
+    cur.execute(
+        sql.SQL(
+            """
+            ALTER TABLE {}.vocab_interaction_class
+            ADD COLUMN IF NOT EXISTS label text,
+            ADD COLUMN IF NOT EXISTS controlled_vocabulary_mapping text
             """
         ).format(schema_id)
     )

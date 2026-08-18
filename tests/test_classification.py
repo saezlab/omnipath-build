@@ -153,14 +153,14 @@ def test_metabolic_domain_facet_present(conn):
 
 
 def test_vocab_interaction_class_seeded(conn):
-    """The interaction-class CV is seeded with the coarse 7 classes."""
+    """The interaction-class CV is seeded, by snake_case slug (FR-033)."""
     names = {
         row
         for (row,) in _rows(
             conn, f'SELECT name FROM {SCHEMA}.vocab_interaction_class'
         )
     }
-    assert {'Signaling', 'Transport', 'Other'} <= names
+    assert {'signaling', 'transport', 'other'} <= names
 
 
 def test_every_predicate_has_an_interaction_class(conn):

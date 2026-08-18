@@ -41,19 +41,30 @@ def classify_interaction_class(
     rules = _load_rules()
     schema_id = sql.Identifier(schema)
     with conn.cursor() as cur:
-        # Seed the controlled vocabulary (id = declaration order).
+        # Seed the controlled vocabulary (id = declaration order). `name` is the
+        # snake_case slug everything filters by, `label` its capitalised display
+        # form, `controlled_vocabulary_mapping` a nullable ontology CURIE.
         class_rows = [
-            (index, name)
-            for index, name in enumerate(rules['classes'], start=1)
+            (
+                index,
+                entry['name'],
+                entry['label'],
+                entry.get('controlled_vocabulary_mapping'),
+            )
+            for index, entry in enumerate(rules['classes'], start=1)
         ]
         cur.executemany(
             sql.SQL(
                 """
                 INSERT INTO {}.vocab_interaction_class
-                  (interaction_class_id, name)
-                VALUES (%s, %s)
+                  (interaction_class_id, name, label,
+                   controlled_vocabulary_mapping)
+                VALUES (%s, %s, %s, %s)
                 ON CONFLICT (interaction_class_id) DO UPDATE
-                SET name = EXCLUDED.name
+                SET name = EXCLUDED.name,
+                    label = EXCLUDED.label,
+                    controlled_vocabulary_mapping =
+                      EXCLUDED.controlled_vocabulary_mapping
                 """
             ).format(schema_id).as_string(cur.connection),
             class_rows,

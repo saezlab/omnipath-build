@@ -7,35 +7,58 @@
 # omnipath_build/classify/interaction_class.py.
 #
 # Reviewable: one predicate per line under `predicates`; a predicate not listed
-# resolves to `default` (Other) and is logged at derive time, so a resource that
+# resolves to `default` (other) and is logged at derive time, so a resource that
 # introduces a new predicate surfaces it for curation rather than failing.
 
 # The controlled vocabulary (seeded into vocab_interaction_class); id = order.
+# This is the single canonical interaction-type vocabulary (FR-033):
+#   name  — snake_case slug, the stored and filterable value
+#   label — capitalised display form, for presentation only
+#   controlled_vocabulary_mapping — ontology CURIE (BioLink or other), null
+#           where no mapping has been curated yet
+# Legacy OmniPath dataset names (post_translational, transcriptional, ...) are
+# NOT rows here: they are preset scopes over these classes.
 classes:
-  - Signaling
-  - TF-target
-  - Allosteric
-  - Orthosteric
-  - Transport
-  - Ligand-receptor
-  - Maturation
-  - Other
+  - name: signaling
+    label: Signaling
+    controlled_vocabulary_mapping: null
+  - name: tf_target
+    label: TF-target
+    controlled_vocabulary_mapping: null
+  - name: allosteric
+    label: Allosteric
+    controlled_vocabulary_mapping: null
+  - name: orthosteric
+    label: Orthosteric
+    controlled_vocabulary_mapping: null
+  - name: transport
+    label: Transport
+    controlled_vocabulary_mapping: null
+  - name: ligand_receptor
+    label: Ligand-receptor
+    controlled_vocabulary_mapping: null
+  - name: maturation
+    label: Maturation
+    controlled_vocabulary_mapping: null
+  - name: other
+    label: Other
+    controlled_vocabulary_mapping: null
 
-# Any predicate not listed here -> Other (100% coverage, no NULLs).
-default: Other
+# Any predicate not listed here -> other (100% coverage, no NULLs).
+default: other
 
-# predicate name (verbatim vocab_relation_predicate.name) -> interaction class.
-# The build's predicates are coarse RO/BFO-style terms; only causal-regulation
-# and transport map to a specific class today. Membership/participation/generic
-# association and the structural ontology predicates (is_a, part_of, ...) fall to
-# Other by default.
+# predicate name (verbatim vocab_relation_predicate.name) -> interaction class
+# slug. The build's predicates are coarse RO/BFO-style terms; only
+# causal-regulation and transport map to a specific class today. Membership,
+# participation, generic association and the structural ontology predicates
+# (is_a, part_of, ...) fall to `other` by default.
 predicates:
-  controls: Signaling
-  regulates: Signaling
-  negatively_regulates: Signaling
-  positively_regulates: Signaling
-  transports: Transport
+  controls: signaling
+  regulates: signaling
+  negatively_regulates: signaling
+  positively_regulates: signaling
+  transports: transport
   # Milestone L: pre-miRNA → mature-miRNA processing (appears once the miRBase
   # resource emits maturation relations; until then it simply has no rows).
-  miRNA maturation: Maturation
-  miRNA_maturation: Maturation
+  miRNA maturation: maturation
+  miRNA_maturation: maturation
