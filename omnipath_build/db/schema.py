@@ -39,6 +39,8 @@ CONTENT_TABLES: tuple[str, ...] = (
     'relation_evidence_relation',
     'entity_evidence_resolution',
     'annotation',
+    'interaction_party',
+    'interaction',
     'relation',
     'relation_evidence',
     'entity_evidence_identifier',
@@ -1454,6 +1456,8 @@ def _ensure_resolution_schema(
     )
     log_step('create canonical annotation tables')
     _ensure_canonical_annotation_tables(cur, schema)
+    log_step('create interaction header and participant tables')
+    _ensure_interaction_schema(cur, schema)
     log_step('drop relation_evidence_resolution table')
     cur.execute(
         sql.SQL('DROP TABLE IF EXISTS {}.relation_evidence_resolution').format(
@@ -2262,6 +2266,196 @@ def _ensure_classification_vocab(
             ADD COLUMN IF NOT EXISTS interaction_class_id smallint
             """
         ).format(schema_id)
+    )
+
+
+def _ensure_interaction_schema(
+    cur: psycopg2.extensions.cursor,
+    schema: str,
+) -> None:
+    """Interaction header, participants and the participant-role vocabulary.
+
+    Spec 008 data model §1, §2 and §7. The header carries an
+    endpoint-independent identity for one interaction or reaction event;
+    ``interaction_party``
+    generalises the two endpoints of ``relation_evidence`` and the
+    reactant/product grain of the DuckDB ``reaction_member_signature`` to N
+    participants, each in a role, on a side, at an ordinal, optionally with a
+    stoichiometry, a compartment and its own organism.
+
+    The tables are declared here; the derive step fills them.
+    """
+    schema_id = sql.Identifier(schema)
+    cur.execute(
+        sql.SQL(
+            """
+            CREATE TABLE IF NOT EXISTS {}.vocab_relation_role (
+              relation_role_id bigserial PRIMARY KEY,
+              name text NOT NULL UNIQUE
+            )
+            """
+        ).format(schema_id)
+    )
+    _ensure_static_relation_roles(cur, schema)
+    cur.execute(
+        sql.SQL(
+            """
+            CREATE TABLE IF NOT EXISTS {}.interaction (
+              interaction_id uuid PRIMARY KEY,
+              interaction_class_id smallint
+                REFERENCES {}.vocab_interaction_class(interaction_class_id),
+              arity smallint NOT NULL,
+              sources text[],
+              dataset_tags text[],
+              attributes jsonb,
+              created_at timestamptz NOT NULL DEFAULT now()
+            )
+            """
+        ).format(schema_id, schema_id)
+    )
+    # `interaction_id` is a deterministic content hash over the sorted
+    # participant multiset and the interaction class, so it is stable across
+    # builds and independent of which endpoint a caller asks from.
+    # Added here too, for databases created before the columns existed.
+    cur.execute(
+        sql.SQL(
+            """
+            ALTER TABLE {}.interaction
+            ADD COLUMN IF NOT EXISTS interaction_class_id smallint,
+            ADD COLUMN IF NOT EXISTS arity smallint,
+            ADD COLUMN IF NOT EXISTS sources text[],
+            ADD COLUMN IF NOT EXISTS dataset_tags text[],
+            ADD COLUMN IF NOT EXISTS attributes jsonb,
+            ADD COLUMN IF NOT EXISTS created_at timestamptz
+              NOT NULL DEFAULT now()
+            """
+        ).format(schema_id)
+    )
+    cur.execute(
+        sql.SQL(
+            """
+            CREATE TABLE IF NOT EXISTS {}.interaction_party (
+              interaction_id uuid NOT NULL
+                REFERENCES {}.interaction(interaction_id)
+                ON DELETE CASCADE,
+              entity_id uuid NOT NULL
+                REFERENCES {}.entity(entity_id),
+              role_id bigint NOT NULL
+                REFERENCES {}.vocab_relation_role(relation_role_id),
+              side smallint,
+              ordinal smallint,
+              stoichiometry numeric,
+              organism bigint,
+              compartment text,
+              role_flag smallint
+            )
+            """
+        ).format(schema_id, schema_id, schema_id, schema_id)
+    )
+    # `organism`, `compartment` and `role_flag` are hot per-participant
+    # columns: they answer set-predicates and the per-entity compartment
+    # question without a join back to `entity`. Added here too, for databases
+    # created before the columns existed.
+    cur.execute(
+        sql.SQL(
+            """
+            ALTER TABLE {}.interaction_party
+            ADD COLUMN IF NOT EXISTS side smallint,
+            ADD COLUMN IF NOT EXISTS ordinal smallint,
+            ADD COLUMN IF NOT EXISTS stoichiometry numeric,
+            ADD COLUMN IF NOT EXISTS organism bigint,
+            ADD COLUMN IF NOT EXISTS compartment text,
+            ADD COLUMN IF NOT EXISTS role_flag smallint
+            """
+        ).format(schema_id)
+    )
+    specs = [
+        (
+            'interaction_class_idx',
+            'interaction',
+            ('interaction_class_id',),
+        ),
+        (
+            'interaction_party_interaction_idx',
+            'interaction_party',
+            ('interaction_id',),
+        ),
+        (
+            'interaction_party_entity_idx',
+            'interaction_party',
+            ('entity_id',),
+        ),
+        (
+            'interaction_party_role_idx',
+            'interaction_party',
+            ('role_id',),
+        ),
+    ]
+    for index_name, table, columns in specs:
+        cur.execute(
+            sql.SQL('CREATE INDEX IF NOT EXISTS {} ON {}.{} ({})').format(
+                sql.Identifier(index_name),
+                schema_id,
+                sql.Identifier(table),
+                sql.SQL(', ').join(
+                    sql.Identifier(column) for column in columns
+                ),
+            )
+        )
+    # The aggregated provenance arrays are filtered with array containment;
+    # the `attributes` GIN is benchmark-gated (research R2) and is not created
+    # until its size and build cost are measured.
+    for index_name, column in (
+        ('interaction_sources_gin_idx', 'sources'),
+        ('interaction_dataset_tags_gin_idx', 'dataset_tags'),
+    ):
+        cur.execute(
+            sql.SQL(
+                'CREATE INDEX IF NOT EXISTS {} ON {}.interaction USING gin ({})'
+            ).format(
+                sql.Identifier(index_name),
+                schema_id,
+                sql.Identifier(column),
+            )
+        )
+
+
+def _ensure_static_relation_roles(
+    cur: psycopg2.extensions.cursor,
+    schema: str,
+) -> None:
+    """Seed the participant roles, by name.
+
+    The id is a serial the database assigns; every consumer joins
+    ``vocab_relation_role`` on ``name`` and never hardcodes an id. Inserting
+    only the missing names keeps ids stable across reruns.
+    """
+    names = [
+        'subject',
+        'object',
+        'reactant',
+        'product',
+        'enzyme',
+        'cofactor',
+        'regulator',
+        'member',
+    ]
+    cur.execute(
+        sql.SQL(
+            """
+            INSERT INTO {}.vocab_relation_role (name)
+            SELECT candidate.name
+            FROM unnest(%s::text[]) WITH ORDINALITY
+              AS candidate(name, position)
+            WHERE NOT EXISTS (
+              SELECT 1
+              FROM {}.vocab_relation_role existing
+              WHERE existing.name = candidate.name
+            )
+            ORDER BY candidate.position
+            """
+        ).format(sql.Identifier(schema), sql.Identifier(schema)),
+        [names],
     )
 
 
