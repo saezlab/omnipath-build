@@ -39,6 +39,10 @@ dependencies = [
     "python-dotenv>=1.0.0",
     "pyarrow>=21.0.0",
     "pyyaml>=6.0.2",
+    # Session + logging setup (research R17). It already arrived transitively
+    # through cachedir/dlmachine/pypath-omnipath; a transitive path is not a
+    # declaration, and `omnipath_build._session` imports it directly.
+    "pkg-infra>=0.1.1",
     "rich>=13.0.0",
     "textual>=0.85.0",
     "toml",

@@ -10,12 +10,14 @@ from __future__ import annotations
 import os
 import sys
 import argparse
+import logging
 import time
 
 import psycopg2
 
 from omnipath_build import configure_build_tmpdir
 
+from omnipath_build.db.derived_tables import InteractionDeriveStats
 from omnipath_build.db import (
     ensure_schema,
     reset_content_tables,
@@ -24,6 +26,7 @@ from omnipath_build.db import (
     delete_source_content,
     rebuild_bitmap_tables,
     rebuild_derived_tables,
+    rebuild_interaction_tables,
     rebuild_resource_overlap_summary,
     sweep_staging_tables,
     ensure_deferred_indexes,
@@ -47,6 +50,19 @@ from omnipath_build.resolver.mapping_tables import (
     SOURCE_NAMES as RESOLVER_SOURCE_NAMES,
     run_sources as build_resolver_sources,
 )
+
+
+# The derive orchestration logs through the package logger, which
+# `omnipath_build._session` configured on import (research R17). Bare `print`
+# call sites elsewhere in the build keep what they have; this cycle does not
+# sweep them.
+#
+# The name is spelled out rather than taken from `__name__`: the build runs
+# this module as `python -m omnipath_build.cli`, where `__name__` is
+# `__main__` — a logger outside the package tree, left at the root level
+# (WARNING by default), which would silence the derive progress output in
+# exactly the way the build is actually invoked.
+_logger = logging.getLogger('omnipath_build.cli')
 
 
 # Build-phase Postgres session tuning. The build connection runs a few heavy
@@ -206,6 +222,16 @@ def main(argv: list[str] | None = None) -> int:
         help='Create and populate derived search/count tables.',
     )
     derive.add_argument(
+        '--interactions',
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            'Project the canonical graph into interaction/interaction_party/'
+            'interaction_fact (008 T013/T014). Runs after the interaction-class '
+            'classification, which fills the predicate map it reads.'
+        ),
+    )
+    derive.add_argument(
         '--bitmaps',
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -334,7 +360,18 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.command == 'derive':
             derive_started = time.perf_counter()
-            _derive_log('start', schema=args.schema)
+            # `MAX_RECORDS` reaches the derive as a cap the load already
+            # applied: the derived tables are projections of what was loaded,
+            # so a capped load caps them by construction. What the derive owes
+            # it is visibility — the progress output says the run was capped,
+            # and the manifest flags the build partial rather than letting a
+            # capped build read as authoritative.
+            _derive_log(
+                'start',
+                schema=args.schema,
+                max_records=args.max_records or '',
+                partial_build=_is_partial_build(args.max_records),
+            )
             step_started = time.perf_counter()
             _derive_log('primary_keys_start')
             ensure_content_primary_keys(conn, schema=args.schema, progress=True)
@@ -369,6 +406,12 @@ def main(argv: list[str] | None = None) -> int:
                     conn,
                     schema=args.schema,
                     progress=True,
+                    # The interaction projection is a step of its own below,
+                    # after `classify_interaction_class` fills the
+                    # predicate->class map it reads. Left at the default it
+                    # would run here as well — a second pass over 14M relations
+                    # for every build, out of order and for nothing.
+                    interactions=False,
                 )
                 _derive_log(
                     'tables_done',
@@ -453,6 +496,11 @@ def main(argv: list[str] | None = None) -> int:
                         interaction_class_stats.default_predicates
                     ),
                     seconds=f'{time.perf_counter() - step_started:.3f}',
+                )
+                interaction_stats = (
+                    _derive_interactions(conn, schema=args.schema)
+                    if args.interactions
+                    else None
                 )
                 step_started = time.perf_counter()
                 _derive_log('entity_labels_start')
@@ -549,6 +597,7 @@ def main(argv: list[str] | None = None) -> int:
                     schema=args.schema,
                     inputs_package=args.inputs_package,
                     partial_build=_is_partial_build(args.max_records),
+                    derive_cost=_interaction_derive_cost(interaction_stats),
                 )
                 _derive_log(
                     'build_manifest_done',
@@ -578,6 +627,7 @@ def main(argv: list[str] | None = None) -> int:
                         conn.rollback()
                         _derive_log(
                             'network_views_failed',
+                            _level=logging.ERROR,
                             error=repr(exc),
                             seconds=f'{time.perf_counter() - step_started:.3f}',
                         )
@@ -646,6 +696,76 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
+def _derive_interactions(
+    conn,
+    *,
+    schema: str = 'public',
+    progress: bool = True,
+) -> InteractionDeriveStats:
+    """The interaction projection as a registered derive step (T013/T014/T015).
+
+    Runs after ``classify_interaction_class``, which fills the
+    ``vocab_relation_predicate.interaction_class_id`` map the projection reads,
+    and once per build: ``rebuild_derived_tables`` is called with
+    ``interactions=False`` because the step is registered here.
+
+    A failure is logged at error level in the structured derive shape and then
+    **re-raised** (T015a): unlike the network views this is a phase of the
+    build, not a supplementary layer, so a broken projection must abort the
+    derive with a non-zero exit rather than pass as a successful build
+    (Principle V, no silently skipped phase).
+    """
+    step_started = time.perf_counter()
+    _derive_log('interactions_start', schema=schema)
+    try:
+        stats = rebuild_interaction_tables(
+            conn,
+            schema=schema,
+            progress=progress,
+        )
+    except Exception as exc:
+        conn.rollback()
+        _derive_log(
+            'interactions_failed',
+            _level=logging.ERROR,
+            error=repr(exc),
+            seconds=f'{time.perf_counter() - step_started:.3f}',
+        )
+        raise
+    _derive_log(
+        'interactions_done',
+        interactions=stats.interactions,
+        parties=stats.parties,
+        facts=stats.facts,
+        rows_by_class=','.join(
+            f'{name}:{count}' for name, count in sorted(stats.rows_by_class.items())
+        ),
+        seconds=f'{stats.seconds:.3f}',
+    )
+    return stats
+
+
+def _interaction_derive_cost(
+    stats: InteractionDeriveStats | None,
+) -> dict[str, dict[str, object]] | None:
+    """What the interaction projection cost this run, for the build manifest.
+
+    Read off the ``InteractionDeriveStats`` the derive step already returned
+    rather than re-derived: ``seconds`` is the whole projection's wall clock and
+    is attributed to ``interaction_fact``, the step that dominates it; the
+    header and participant rows are reported as row counts of their own. Returns
+    ``None`` when the projection did not run, so ``--no-interactions`` records
+    no cost instead of claiming zeros.
+    """
+    if stats is None:
+        return None
+    return {
+        'interaction_fact': {'seconds': stats.seconds, 'rows': stats.facts},
+        'interaction_party': {'rows': stats.parties},
+        'interaction_header': {'rows': stats.interactions},
+    }
+
+
 def _is_partial_build(max_records: object) -> bool:
     """A non-zero MAX_RECORDS cap means the load was truncated (not authoritative)."""
     if max_records in (None, ''):
@@ -656,11 +776,20 @@ def _is_partial_build(max_records: object) -> bool:
         return False
 
 
-def _derive_log(event: str, **fields: object) -> None:
+def _derive_log(event: str, _level: int = logging.INFO, **fields: object) -> None:
+    """One structured derive-orchestration line.
+
+    The ``event=… key=value`` shape is a contract, not a preference: T013c's
+    sign-conflict figures and T020's cost report are read out of this
+    ``--progress`` output. Only the sink changed, from ``print`` to the package
+    logger (research R17), which `omnipath_build._session` configures.
+    """
     details = ' '.join(f'{key}={value}' for key, value in fields.items())
-    print(
-        f'[derive] event={event}' + (f' {details}' if details else ''),
-        flush=True,
+    _logger.log(
+        _level,
+        '[derive] event=%s%s',
+        event,
+        f' {details}' if details else '',
     )
 
 
