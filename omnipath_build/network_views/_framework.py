@@ -19,6 +19,16 @@ framework or API code.
 matview and mean nothing for a preset; they stay nullable while both generations
 coexist and are dropped when the last bespoke matview retires (T046). They are
 recorded here so they are not left behind as silent dead columns.
+
+**Grain amendment (2026-08-20, R19/R20).** A preset also says how it collapses
+the per-resource record over its own resource scope (``collapse_mode``) and
+which license terms a resource must meet to contribute (``license_scope``).
+Neither buys a preset a table of its own: a third column,
+``materialize_collapse``, was proposed and withdrawn the same day, because N
+precomputed per-dataset tables is exactly what FR-001 forbids, and a derived
+table built only when a flag says so is the silently skipped phase constitution
+Principle V rules out. There are two interaction tables and both are built
+unconditionally — a scoped preset collapses the record at query time.
 """
 
 from __future__ import annotations
@@ -39,6 +49,31 @@ logger = logging.getLogger(__name__)
 # The matview-era registry columns. A preset leaves them NULL; they are dropped
 # once the last bespoke matview retires (T046) — see the module docstring.
 MATVIEW_ERA_COLUMNS = ('schema_name', 'combined_relation')
+
+# How a preset folds the per-resource record over its own resource scope
+# (data-model §9). `endpoints` is the default because it reproduces the legacy
+# one-row-per-interaction contract, so a preset written before the amendment
+# keeps behaving as it did.
+COLLAPSE_MODES = ('none', 'assertion', 'endpoints')
+DEFAULT_COLLAPSE_MODE = 'endpoints'
+
+AMENDMENT_COLUMN_COMMENTS = {
+    'collapse_mode': (
+        'How this preset folds the per-resource interaction record over its '
+        "own resource scope (cycle 008, R19): 'none' keeps one row per "
+        "resource assertion, 'assertion' folds resources agreeing on sign and "
+        "direction, 'endpoints' folds to the collapsed key. Default "
+        "'endpoints', the legacy one-row-per-interaction contract. No preset "
+        'gets a materialisation of its own: the scoped collapse happens at '
+        'query time.'
+    ),
+    'license_scope': (
+        'Minimum purpose/sharing/attrib levels a resource must meet to '
+        'contribute to this preset (cycle 008, FR-049). NULL is no license '
+        'restriction. A resource whose license is unknown is excluded, never '
+        'admitted under a permissive default.'
+    ),
+}
 
 
 @dataclass(frozen=True)
@@ -67,6 +102,19 @@ class NetworkDefinition:
     ``attribute_sources``
         Which source supplies each mandatory attribute, carrying the
         interim-vs-Intercell provenance (FR-046).
+    ``collapse_mode``
+        How the preset folds the per-resource record over *its own* resource
+        scope (R19): ``none`` keeps one row per resource assertion,
+        ``assertion`` folds the resources that agree on sign and direction, and
+        ``endpoints`` — the default — folds to the collapsed key, the legacy
+        one-row-per-interaction contract. A single-resource preset collapses
+        nothing whatever the mode says, because every group holds one row.
+    ``license_scope``
+        The minimum ``purpose`` / ``sharing`` / ``attrib`` levels a resource
+        must meet to contribute (FR-049, R20). ``None`` is no restriction at
+        all; a scope that is set resolves to a resource set before the query
+        runs, and a resource whose license is unknown fails it however
+        permissive its recorded levels read — never admitted by default.
 
     ``schema``, ``combined_relation``, ``matviews`` and ``sql_files`` are the
     matview-era fields: a preset leaves them empty.
@@ -82,6 +130,11 @@ class NetworkDefinition:
     labels: Mapping[str, Any] | None = None
     curation: Mapping[str, Any] | None = None
     attribute_sources: Mapping[str, Any] | None = None
+    # The grain amendment (R19/R20). Both default, so no existing definition
+    # changes: no mode named is the legacy collapse, no scope named is no
+    # license restriction.
+    collapse_mode: str = DEFAULT_COLLAPSE_MODE
+    license_scope: Mapping[str, Any] | None = None
     # Matview-era fields — retire with the columns above (T046).
     schema: str | None = None
     combined_relation: str | None = None
@@ -110,6 +163,12 @@ def ensure_network_registry(
     matview descriptor are migrated in place: the preset columns are added, and
     ``schema_name`` / ``combined_relation`` lose their NOT NULL so a preset can
     leave them empty until they are dropped (T046).
+
+    The amendment's two columns migrate the same way. ``collapse_mode`` arrives
+    NOT NULL with the ``endpoints`` default, so rows registered before it keep
+    the legacy collapse rather than acquiring an undefined grain, and
+    ``license_scope`` arrives nullable, because no license restriction is NULL
+    and not a level of zero.
     """
     with conn.cursor() as cur:
         cur.execute(
@@ -128,6 +187,8 @@ def ensure_network_registry(
                   labels jsonb,
                   curation jsonb,
                   attribute_sources jsonb,
+                  collapse_mode text NOT NULL DEFAULT 'endpoints',
+                  license_scope jsonb,
                   built_at timestamptz NOT NULL DEFAULT now()
                 )
                 """
@@ -144,10 +205,29 @@ def ensure_network_registry(
                   ADD COLUMN IF NOT EXISTS labels jsonb,
                   ADD COLUMN IF NOT EXISTS curation jsonb,
                   ADD COLUMN IF NOT EXISTS attribute_sources jsonb,
+                  ADD COLUMN IF NOT EXISTS collapse_mode text NOT NULL
+                    DEFAULT 'endpoints',
+                  ADD COLUMN IF NOT EXISTS license_scope jsonb,
                   ALTER COLUMN schema_name DROP NOT NULL,
                   ALTER COLUMN combined_relation DROP NOT NULL
                 """
             ).format(sql.Identifier(registry_schema))
+        )
+        # data-model §9 names three modes and no more. Dropping the constraint
+        # before adding it keeps the statement idempotent and lets the set of
+        # modes change with the definition rather than only on a fresh database.
+        cur.execute(
+            sql.SQL(
+                """
+                ALTER TABLE {}.network_registry
+                  DROP CONSTRAINT IF EXISTS network_registry_collapse_mode_check,
+                  ADD CONSTRAINT network_registry_collapse_mode_check
+                    CHECK (collapse_mode = ANY({}))
+                """
+            ).format(
+                sql.Identifier(registry_schema),
+                sql.Literal(list(COLLAPSE_MODES)),
+            )
         )
         # The transition is recorded in the database too, so nobody meets these
         # two columns without learning they are on their way out.
@@ -163,6 +243,17 @@ def ensure_network_registry(
                     'fact table. Dropped when the last bespoke matview retires '
                     '(cycle 008, T046).'
                 ],
+            )
+        # The amendment's two columns say the same thing to a reader with psql
+        # and no specification open.
+        for column, comment in AMENDMENT_COLUMN_COMMENTS.items():
+            cur.execute(
+                sql.SQL(
+                    'COMMENT ON COLUMN {}.network_registry.{} IS %s'
+                ).format(
+                    sql.Identifier(registry_schema), sql.Identifier(column)
+                ),
+                [comment],
             )
     conn.commit()
 
@@ -237,8 +328,9 @@ def register_network(
                   (name, kind, schema_name, combined_relation, included_sources,
                    interaction_class_scope, evidence_scope, default_attributes,
                    mandatory_attributes, labels, curation, attribute_sources,
-                   built_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now())
+                   collapse_mode, license_scope, built_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                        now())
                 ON CONFLICT (name) DO UPDATE SET
                   kind = EXCLUDED.kind,
                   schema_name = EXCLUDED.schema_name,
@@ -251,6 +343,8 @@ def register_network(
                   labels = EXCLUDED.labels,
                   curation = EXCLUDED.curation,
                   attribute_sources = EXCLUDED.attribute_sources,
+                  collapse_mode = EXCLUDED.collapse_mode,
+                  license_scope = EXCLUDED.license_scope,
                   built_at = now()
                 """
             ).format(sql.Identifier(registry_schema)),
@@ -270,6 +364,10 @@ def register_network(
                 Json(definition.curation) if definition.curation is not None else None,
                 Json(definition.attribute_sources)
                 if definition.attribute_sources is not None
+                else None,
+                definition.collapse_mode,
+                Json(definition.license_scope)
+                if definition.license_scope is not None
                 else None,
             ],
         )

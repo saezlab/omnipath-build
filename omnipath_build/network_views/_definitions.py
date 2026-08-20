@@ -5,8 +5,12 @@ here side by side:
 
 * a **preset** (cycle 008) carries only metadata — contributing sources,
   interaction-class scope, evidence scope, default and mandatory attributes,
-  labels, curation thresholds and attribute sources — and is served by filtering
-  the interaction fact table. Registering it is the whole build step.
+  labels, curation thresholds, attribute sources, the mode it collapses the
+  per-resource record with and the license levels a resource must meet to
+  contribute — and is served by filtering the interaction fact table.
+  Registering it is the whole build step, and it materialises nothing of its
+  own: a preset restricted to a resource subset collapses the record at query
+  time (R19).
 * a **matview network** (Milestone G) carries a schema, a combined relation and
   the curated SQL files that materialise it. The two below are still of this
   kind; they become presets over the fact table as their stories land (T044 for
