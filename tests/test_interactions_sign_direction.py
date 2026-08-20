@@ -1,4 +1,18 @@
-"""Sign and direction on the projection (008 T013b/T013d, FR-044, R15).
+"""Sign and direction, per resource and per scope (008 T013b/T013d/T013g).
+
+**Amended 2026-08-20 (R19/R20).** Sign and direction are asserted **per
+resource**, on ``interaction_fact_resource`` — the record. ``interaction_fact_combined``
+is the collapse of that record over **every** resource, which is one scope's
+materialisation rather than the stored grain. So the file holds three layers of
+assertion: what a single resource says on its own row, what the all-resources
+collapse says, and what a collapse restricted to a resource subset says. A
+resource that is silent leaves NULL on its own row and never inherits what a
+neighbour on the same endpoint pair asserted (FR-044a). A scoped collapse
+(FR-048 / SC-021) reports the kept resources' count, references and sign flags
+alone: selecting the collapsed row and filtering it with ``sources &&
+ARRAY[...]`` returns the right interaction carrying the wrong numbers, and the
+T013g tests here are built on a three-resource pair precisely so that
+implementation fails them.
 
 ``is_directed``, ``is_stimulation`` and ``is_inhibition`` are **three-valued**.
 NULL means *no contributing resource asserts the attribute*, which is a
@@ -40,6 +54,15 @@ SCRATCH = os.environ.get(
     'interactions_sign_test',
 )
 
+#: The record table (data-model 3a): one row per endpoint pair, class, resource
+#: and assertion signature. What a resource asserts lives here.
+RECORD_TABLE = 'interaction_fact_resource'
+
+#: The collapse routine the derive phase and the query path share (T013e). It
+#: takes a resource scope and returns the collapsed shape, so a materialised
+#: scope and a per-query scope cannot drift apart.
+COLLAPSE_ROUTINE = 'collapse_interaction_scope'
+
 pytestmark = pytest.mark.skipif(
     not DATABASE_URL,
     reason='DATABASE_URL not set; the projection test needs a Postgres',
@@ -72,13 +95,29 @@ def built():
         connection.close()
 
 
+#: The collapsed shape, in the order both helpers below select it.
+_FACT_KEYS = (
+    'is_directed',
+    'is_stimulation',
+    'is_inhibition',
+    'sign_source_count',
+    'direction_source_count',
+    'sources',
+    'source_count',
+    'reference_pubmed_ids',
+    'reference_count',
+)
+
+
 def _row(conn, subject: str, object_: str) -> dict[str, object]:
+    """One row of the all-resources collapse, by endpoint pair."""
     with conn.cursor() as cur:
         cur.execute(
             f"""
             SELECT f.is_directed, f.is_stimulation, f.is_inhibition,
                    f.sign_source_count, f.direction_source_count,
-                   f.sources, f.source_count
+                   f.sources, f.source_count,
+                   f.reference_pubmed_ids, f.reference_count
             FROM {SCRATCH}.interaction_fact_combined f
             JOIN {SCRATCH}.entity subject
               ON subject.entity_id = f.subject_entity_id
@@ -91,16 +130,7 @@ def _row(conn, subject: str, object_: str) -> dict[str, object]:
         )
         rows = cur.fetchall()
     assert len(rows) == 1, f'{subject}->{object_} produced {len(rows)} rows'
-    keys = (
-        'is_directed',
-        'is_stimulation',
-        'is_inhibition',
-        'sign_source_count',
-        'direction_source_count',
-        'sources',
-        'source_count',
-    )
-    return dict(zip(keys, rows[0]))
+    return dict(zip(_FACT_KEYS, rows[0]))
 
 
 def test_an_unasserted_sign_stays_null(built):
@@ -182,14 +212,269 @@ def test_a_symmetric_predicate_does_not_assert_undirectedness(built):
     assert row['direction_source_count'] == 0
 
 
-def test_no_fact_row_ever_asserts_a_false_direction(built):
-    """The whole projection, not one case: `is_directed` is true or NULL."""
+def test_no_collapsed_row_ever_asserts_a_false_sign_or_direction(built):
+    """The whole collapse, not one case: every flag is true or NULL.
+
+    Widened 2026-08-20 from direction alone to both signs: FR-044a is one rule
+    over three columns, and a defaulted `false` is as wrong on a sign as it is
+    on a direction.
+    """
     conn, _stats = built
     with conn.cursor() as cur:
         cur.execute(
-            f'SELECT count(*) FROM {SCRATCH}.interaction_fact_combined WHERE is_directed IS FALSE'
+            f"""
+            SELECT count(*) FROM {SCRATCH}.interaction_fact_combined
+            WHERE is_directed IS FALSE
+               OR is_stimulation IS FALSE
+               OR is_inhibition IS FALSE
+            """
         )
         assert cur.fetchone()[0] == 0
+
+# --- T013b (reopened 2026-08-20, R19): the assertion is per resource --------
+
+
+def _require_record_table(conn) -> None:
+    """Say why the record grain is missing, rather than raising UndefinedTable."""
+    with conn.cursor() as cur:
+        cur.execute('SELECT to_regclass(%s)', (f'{SCRATCH}.{RECORD_TABLE}',))
+        present = cur.fetchone()[0]
+    if present is None:
+        pytest.fail(
+            f'{SCRATCH}.{RECORD_TABLE} does not exist: the derive still folds '
+            f'every resource into one row, so what a single resource asserts '
+            f'has nowhere to live (data-model 3a, T013/T013e)'
+        )
+
+
+def _record(conn, subject: str, object_: str) -> dict[str, dict[str, object]]:
+    """The record rows for one ordered endpoint pair, keyed by resource name."""
+    _require_record_table(conn)
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT source.name, r.is_directed, r.is_stimulation,
+                   r.is_inhibition, r.reference_pubmed_ids
+            FROM {SCRATCH}.{RECORD_TABLE} r
+            JOIN {SCRATCH}.entity subject
+              ON subject.entity_id = r.subject_entity_id
+            JOIN {SCRATCH}.entity object
+              ON object.entity_id = r.object_entity_id
+            JOIN {SCRATCH}.data_source source
+              ON source.source_id = r.source_id
+            WHERE subject.canonical_identifier = %s
+              AND object.canonical_identifier = %s
+            """,
+            (f'FIXTURE_{subject}', f'FIXTURE_{object_}'),
+        )
+        rows = cur.fetchall()
+    keys = ('is_directed', 'is_stimulation', 'is_inhibition', 'references')
+    return {row[0]: dict(zip(keys, row[1:])) for row in rows}
+
+
+def test_the_record_carries_one_row_per_contributing_resource(built):
+    """Three resources report c->d, so the record holds three rows for it."""
+    conn, _stats = built
+    rows = _record(conn, 'c', 'd')
+    assert set(rows) == {'fixture_res_a', 'fixture_res_b', 'fixture_res_c'}, (
+        'the record grain is not per resource'
+    )
+
+
+def test_a_silent_resource_leaves_null_on_its_own_row(built):
+    """The core of the R19 amendment: silence is not inherited.
+
+    `fixture_res_c` reports c->d and asserts no sign. Its neighbours on the
+    same endpoint pair assert opposite signs. A row that carried the group's
+    summary would show `fixture_res_c` as both stimulating and inhibiting,
+    which is a claim that resource never made.
+    """
+    conn, _stats = built
+    rows = _record(conn, 'c', 'd')
+    silent = rows['fixture_res_c']
+    assert silent['is_stimulation'] is None, (
+        'a silent resource inherited a neighbour sign assertion'
+    )
+    assert silent['is_inhibition'] is None, (
+        'a silent resource inherited a neighbour sign assertion'
+    )
+    # And the two that do assert keep their own sign, not the group summary.
+    assert rows['fixture_res_a']['is_stimulation'] is True
+    assert rows['fixture_res_a']['is_inhibition'] is None
+    assert rows['fixture_res_b']['is_inhibition'] is True
+    assert rows['fixture_res_b']['is_stimulation'] is None
+
+
+def test_a_resource_silent_on_direction_leaves_null_on_its_own_row(built):
+    """Direction is per resource too (T013f), and NULL where none is asserted."""
+    conn, _stats = built
+    unsigned = _record(conn, 'e', 'f')['fixture_res_c']
+    assert unsigned['is_directed'] is None
+    directed = _record(conn, 'g', 'h')['fixture_res_a']
+    assert directed['is_directed'] is True
+
+
+def test_the_record_holds_only_that_resources_references(built):
+    """A reference belongs to the resource that supplied it, not to the pair."""
+    conn, _stats = built
+    rows = _record(conn, 'c', 'd')
+    assert rows['fixture_res_a']['references'] == ['11111111']
+    assert rows['fixture_res_c']['references'] == ['33333333']
+    assert not rows['fixture_res_b']['references']
+
+
+def test_no_record_row_ever_asserts_a_false_sign_or_direction(built):
+    """FR-044a at the record grain: unasserted stays NULL, never `false`."""
+    conn, _stats = built
+    _require_record_table(conn)
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT count(*) FROM {SCRATCH}.{RECORD_TABLE}
+            WHERE is_directed IS FALSE
+               OR is_stimulation IS FALSE
+               OR is_inhibition IS FALSE
+            """
+        )
+        assert cur.fetchone()[0] == 0, (
+            'a record row defaulted an unasserted attribute to false'
+        )
+
+
+def test_an_opposite_direction_pair_is_two_records(built):
+    """FR-044d holds at the record grain as well as at the collapse."""
+    conn, _stats = built
+    forward = _record(conn, 'g', 'h')
+    reverse = _record(conn, 'h', 'g')
+    assert set(forward) == set(reverse) == {'fixture_res_a'}
+    assert forward['fixture_res_a']['is_directed'] is True
+    assert reverse['fixture_res_a']['is_directed'] is True
+
+
+# --- T013b scope case + T013g (FR-048 / SC-021) -----------------------------
+
+
+def _collapse_query(sources) -> tuple[str, tuple[object, ...]]:
+    """The scoped collapse the derive and the query path both run (T013e).
+
+    The routine takes a resource scope and returns the collapsed shape as SQL,
+    so that a materialised scope and a per-query scope cannot drift apart. It
+    returns either a SELECT statement or a `(statement, parameters)` pair; the
+    test embeds it as a subquery, which is what the query path does too.
+    """
+    from omnipath_build.db import derived_tables
+
+    routine = getattr(derived_tables, COLLAPSE_ROUTINE, None)
+    if routine is None:
+        pytest.fail(
+            f'omnipath_build.db.derived_tables.{COLLAPSE_ROUTINE} does not '
+            f'exist: there is no shared routine that collapses the record for '
+            f'a resource scope, so a scoped query can only read the '
+            f'all-resources collapse and report its numbers (T013e, FR-048)'
+        )
+    produced = routine(schema=SCRATCH, sources=list(sources))
+    if isinstance(produced, str):
+        return produced, ()
+    statement, parameters = produced
+    return statement, tuple(parameters or ())
+
+
+def _scoped(conn, subject: str, object_: str, sources) -> dict[str, object]:
+    """One collapsed row for an endpoint pair, over `sources` alone."""
+    statement, parameters = _collapse_query(sources)
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT f.is_directed, f.is_stimulation, f.is_inhibition,
+                   f.sign_source_count, f.direction_source_count,
+                   f.sources, f.source_count,
+                   f.reference_pubmed_ids, f.reference_count
+            FROM ({statement}) f
+            JOIN {SCRATCH}.entity subject
+              ON subject.entity_id = f.subject_entity_id
+            JOIN {SCRATCH}.entity object
+              ON object.entity_id = f.object_entity_id
+            WHERE subject.canonical_identifier = %s
+              AND object.canonical_identifier = %s
+            """,
+            parameters + (f'FIXTURE_{subject}', f'FIXTURE_{object_}'),
+        )
+        rows = cur.fetchall()
+    assert len(rows) == 1, (
+        f'{subject}->{object_} scoped to {list(sources)} produced '
+        f'{len(rows)} rows'
+    )
+    return dict(zip(_FACT_KEYS, rows[0]))
+
+
+def test_the_scope_fixture_is_not_vacuous(built):
+    """The guard on T013g: c->d must be a row several resources report.
+
+    97.43 per cent of the built rows carry a single resource and pass the
+    scope tests whether or not the rule is implemented. This pair carries
+    three, and the all-resources collapse disagrees with the single-resource
+    scope on the count, the references and both sign flags — so reading the
+    collapsed row and filtering it with `sources && ARRAY[...]` cannot pass
+    the three tests below.
+    """
+    conn, _stats = built
+    combined = _row(conn, 'c', 'd')
+    assert combined['source_count'] == 3
+    assert combined['is_stimulation'] is True
+    assert combined['is_inhibition'] is True
+    assert sorted(combined['reference_pubmed_ids']) == ['11111111', '33333333']
+
+
+def test_a_scoped_collapse_reports_only_that_resources_assertion(built):
+    """T013b scope case: restricted to one resource, its assertion alone."""
+    conn, _stats = built
+    row = _scoped(conn, 'c', 'd', ['fixture_res_b'])
+    assert row['is_inhibition'] is True
+    assert row['is_stimulation'] is None, (
+        'the scoped row reports a sign asserted by a resource outside the scope'
+    )
+    assert row['sign_source_count'] == 1
+    assert row['sources'] == ['fixture_res_b']
+
+
+def test_a_resource_scoped_query_counts_only_that_resource(built):
+    """SC-021: `source_count` is one, not the three of the wider fold."""
+    conn, _stats = built
+    row = _scoped(conn, 'c', 'd', ['fixture_res_a'])
+    assert row['source_count'] == 1
+    assert row['sources'] == ['fixture_res_a']
+
+
+def test_a_resource_scoped_query_returns_only_that_resources_references(built):
+    """SC-021: the references of the kept resource, and no other."""
+    conn, _stats = built
+    row = _scoped(conn, 'c', 'd', ['fixture_res_a'])
+    assert row['reference_pubmed_ids'] == ['11111111']
+    assert row['reference_count'] == 1
+
+
+def test_a_resource_scoped_query_reports_only_that_resources_sign(built):
+    """SC-021: the flags say what `fixture_res_a` asserts, nothing more."""
+    conn, _stats = built
+    row = _scoped(conn, 'c', 'd', ['fixture_res_a'])
+    assert row['is_stimulation'] is True
+    assert row['is_inhibition'] is None, (
+        'the scoped row carries the inhibition another resource asserted'
+    )
+    assert row['sign_source_count'] == 1
+
+
+def test_a_scope_on_the_silent_resource_reports_no_sign_at_all(built):
+    """The other half of SC-021: scoping to the contributor that asserts
+    nothing yields NULL sign flags, not the pair's summary."""
+    conn, _stats = built
+    row = _scoped(conn, 'c', 'd', ['fixture_res_c'])
+    assert row['is_stimulation'] is None
+    assert row['is_inhibition'] is None
+    assert row['sign_source_count'] == 0
+    assert row['source_count'] == 1
+    assert row['reference_pubmed_ids'] == ['33333333']
+
 
 # --- T013d: the sign-conflict summary reaches the manifest -------------------
 

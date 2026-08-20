@@ -8,8 +8,10 @@ and canonicalized.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 import logging
+import os
 import time
 
 from psycopg2 import sql
@@ -1076,19 +1078,28 @@ _NUMERIC_VALUE = r'^-?[0-9]+(\.[0-9]+)?([eE][-+]?[0-9]+)?$'
 class InteractionDeriveStats:
     """What the interaction projection produced, and what it cost.
 
+    ``records`` counts ``interaction_fact_resource`` and ``facts`` counts
+    ``interaction_fact_combined``: the grain amendment (R19) makes the derive
+    two writes rather than one, and the manifest reports them apart (T020b), so
+    a cost overrun can be attributed to the record or to the collapse instead of
+    to "the interaction step".
+
     ``rows_by_class`` is the per-class row count research R18 asks every run to
     report: a class collapsing back to zero has to be visible in the build
     output, not discovered a phase later. ``sign_conflict`` is the T013c
     measurement — how often both sign flags land on one row, and whether that
     is one resource asserting both or resources genuinely disagreeing.
+    ``step_seconds`` carries the per-step wall clock the manifest splits.
     """
 
     interactions: int = 0
     parties: int = 0
+    records: int = 0
     facts: int = 0
     rows_by_class: dict[str, int] = field(default_factory=dict)
     sign_conflict: dict[str, float] = field(default_factory=dict)
     seconds: float = 0.0
+    step_seconds: dict[str, float] = field(default_factory=dict)
 
 
 def interaction_content_uuid_sql(
@@ -1117,25 +1128,378 @@ def interaction_content_uuid_sql(
     )
 
 
+def interaction_record_uuid_sql(
+    *,
+    subject_entity_id: str,
+    object_entity_id: str,
+    interaction_class: str,
+    source: str,
+    is_directed: str,
+    is_stimulation: str,
+    is_inhibition: str,
+) -> str:
+    """SQL for the record's surrogate primary key (data model §3a, R19).
+
+    Every argument is a SQL expression. The payload is the **full key** of
+    ``interaction_fact_resource`` — the ordered endpoints, the interaction
+    class, the contributing resource and the assertion signature that resource
+    states — JSON-encoded and hashed by the same ``md5(to_json(...))::uuid``
+    scheme :func:`interaction_content_uuid_sql` and the DuckDB ``content_uuid``
+    macro use. One scheme across the load side, the header and the record.
+
+    Two choices in the payload are deliberate. The class and the resource enter
+    as their **names** rather than as their surrogate ids, so the id is
+    content-addressed all the way down and survives a vocabulary or
+    ``data_source`` reload that renumbers them. And a NULL signature column
+    encodes as JSON ``null``, which is distinct from the string ``"false"`` — a
+    resource that is silent and a resource that asserts a negative are two keys,
+    which is exactly what FR-044a asks the grain to keep apart.
+
+    The surrogate is not a convenience. The rest of the key is nullable and
+    Postgres foreign keys default to ``MATCH SIMPLE``, under which a key with
+    any NULL column is not checked at all, so the detail tables of §4 and §6 can
+    only anchor here.
+    """
+    return (
+        'md5(to_json(ARRAY['
+        'lower({subject_entity_id}::text),'
+        'lower({object_entity_id}::text),'
+        '{interaction_class}::text,'
+        '{source}::text,'
+        '{is_directed}::text,'
+        '{is_stimulation}::text,'
+        '{is_inhibition}::text'
+        ']::text[])::text)::uuid'
+    ).format(
+        subject_entity_id=subject_entity_id,
+        object_entity_id=object_entity_id,
+        interaction_class=interaction_class,
+        source=source,
+        is_directed=is_directed,
+        is_stimulation=is_stimulation,
+        is_inhibition=is_inhibition,
+    )
+
+
+#: The record table the collapse reads, and the collapse's output columns in
+#: the order :func:`collapse_interaction_scope` selects them — which is the
+#: column order of ``interaction_fact_combined``, so the derive can insert the
+#: routine's output without restating it.
+INTERACTION_RECORD_TABLE = 'interaction_fact_resource'
+INTERACTION_COLLAPSE_TABLE = 'interaction_fact_combined'
+INTERACTION_COLLAPSE_COLUMNS = (
+    'subject_entity_id',
+    'object_entity_id',
+    'interaction_class_id',
+    'subject_organism',
+    'object_organism',
+    'is_directed',
+    'is_stimulation',
+    'is_inhibition',
+    'sign_source_count',
+    'direction_source_count',
+    'affinity',
+    'pchembl',
+    'score',
+    'sources',
+    'source_count',
+    'dataset_tags',
+    'curation_flags',
+    'reference_pubmed_ids',
+    'reference_dois',
+    'reference_count',
+    'attributes',
+    'interaction_id',
+)
+
+
+#: The ``attributes`` GIN on each interaction table, by table name (T016).
+#: Both are ``jsonb_path_ops``: the long tail is queried with containment and
+#: nothing else, and ``jsonb_path_ops`` indexes the hash of a whole path rather
+#: than every key and every value separately, so it is the smaller and the
+#: faster of the two operator classes for exactly that query. It cannot serve
+#: key-existence (``?``, ``?|``, ``?&``), and that is the trade the gate is
+#: about.
+#:
+#: **There are two of them because the amendment (R19) made two tables.** The
+#: record holds one row per contributing resource with that resource's long
+#: tail unfolded, and the materialisation holds the merge of it, so the record
+#: is the larger column and the real sizing question.
+INTERACTION_ATTRIBUTES_GIN_INDEXES = {
+    INTERACTION_RECORD_TABLE: 'interaction_fact_resource_attributes_gin_idx',
+    INTERACTION_COLLAPSE_TABLE: 'interaction_fact_combined_attributes_gin_idx',
+}
+
+#: The environment variable the benchmark toggles the gate with (T017).
+INTERACTION_ATTRIBUTES_GIN_ENV = 'OMNIPATH_BUILD_ATTRIBUTES_GIN'
+
+#: Whether a build creates the two indexes when nothing says otherwise. It is
+#: ``False`` until the T017 benchmark decides, because the gate is about build
+#: cost and on-disk size, and a default that pays them before they are measured
+#: would answer the question by shipping it.
+INTERACTION_ATTRIBUTES_GIN_DEFAULT = False
+
+
+def attributes_gin_enabled(override: bool | None = None) -> bool:
+    """Whether this build indexes ``attributes`` on the interaction tables.
+
+    ``override`` wins when it is not ``None``, so a caller — the benchmark,
+    a test — states the answer directly. Otherwise the environment variable
+    :data:`INTERACTION_ATTRIBUTES_GIN_ENV` decides, and an unset or unreadable
+    value falls back to :data:`INTERACTION_ATTRIBUTES_GIN_DEFAULT`.
+    """
+    if override is not None:
+        return bool(override)
+    raw = os.environ.get(INTERACTION_ATTRIBUTES_GIN_ENV)
+    if raw is None:
+        return INTERACTION_ATTRIBUTES_GIN_DEFAULT
+    return raw.strip().lower() in {'1', 'true', 'yes', 'on'}
+
+
+def ensure_interaction_attributes_gin(
+    cur: psycopg2.extensions.cursor,
+    schema: str,
+    *,
+    enabled: bool,
+) -> dict[str, float]:
+    """Create or drop the two ``attributes`` GIN indexes (T016).
+
+    Returns the wall seconds each index took, keyed by table name, so the
+    benchmark and the build manifest can attribute the cost rather than watch
+    it disappear into the projection's total. A dropped index reports the drop's
+    seconds, which are near zero and are still reported rather than omitted.
+
+    **The toggle drops as well as creates**, and it has to. The gate is a
+    measurement of what these indexes cost, so a run with the toggle off must
+    leave a table that carries none — otherwise the second half of an A/B pair
+    measures the first half's index. The derive owns these two index names and
+    nothing else creates them: ``schema.py`` deliberately leaves ``attributes``
+    unindexed on both tables and says so where the other GIN indexes are made.
+
+    They are built **after** the tables are filled, never maintained during the
+    insert. A GIN maintained per row through a 14.7-million-row load pays the
+    pending-list flush over and over; built once at the end it is a single
+    sorted build that ``maintenance_work_mem`` and the parallel maintenance
+    workers both apply to.
+    """
+    schema_id = sql.Identifier(schema)
+    seconds: dict[str, float] = {}
+    for table, index_name in INTERACTION_ATTRIBUTES_GIN_INDEXES.items():
+        started = time.perf_counter()
+        if enabled:
+            cur.execute(
+                sql.SQL(
+                    'CREATE INDEX IF NOT EXISTS {} ON {}.{} '
+                    'USING gin (attributes jsonb_path_ops)'
+                ).format(
+                    sql.Identifier(index_name),
+                    schema_id,
+                    sql.Identifier(table),
+                )
+            )
+        else:
+            cur.execute(
+                sql.SQL('DROP INDEX IF EXISTS {}.{}').format(
+                    schema_id,
+                    sql.Identifier(index_name),
+                )
+            )
+        seconds[table] = time.perf_counter() - started
+    return seconds
+
+
+def _quoted(identifier: str) -> str:
+    """A double-quoted SQL identifier, for a statement built as text.
+
+    :func:`collapse_interaction_scope` returns a string rather than a
+    ``psycopg2.sql.Composed``, because the query path embeds it as a subquery
+    and the tests do too. Composing needs a connection to render, a string does
+    not, so the one identifier that varies — the schema — is quoted here.
+    """
+    return '"{}"'.format(identifier.replace('"', '""'))
+
+
+_COLLAPSE_SQL = """
+WITH scoped_provenance AS (
+  SELECT
+    r.subject_entity_id,
+    r.object_entity_id,
+    r.interaction_class_id,
+    array_agg(DISTINCT contribution.value)
+      FILTER (WHERE contribution.kind = 'pubmed') AS reference_pubmed_ids,
+    array_agg(DISTINCT contribution.value)
+      FILTER (WHERE contribution.kind = 'doi') AS reference_dois,
+    array_agg(DISTINCT contribution.value)
+      FILTER (WHERE contribution.kind = 'curation') AS curation_flags
+  FROM {record} r
+  CROSS JOIN LATERAL (
+    SELECT 'pubmed'::text AS kind, pubmed.value
+      FROM unnest(r.reference_pubmed_ids) AS pubmed(value)
+    UNION ALL
+    SELECT 'doi'::text, doi.value
+      FROM unnest(r.reference_dois) AS doi(value)
+    UNION ALL
+    SELECT 'curation'::text, flag.value
+      FROM unnest(r.curation_flags) AS flag(value)
+  ) AS contribution
+  WHERE {scope}
+  GROUP BY 1, 2, 3
+)
+SELECT
+  r.subject_entity_id,
+  r.object_entity_id,
+  r.interaction_class_id,
+  min(r.subject_organism) AS subject_organism,
+  min(r.object_organism) AS object_organism,
+  bool_or(r.is_directed) AS is_directed,
+  bool_or(r.is_stimulation) AS is_stimulation,
+  bool_or(r.is_inhibition) AS is_inhibition,
+  (count(DISTINCT r.source_id) FILTER (
+     WHERE r.is_stimulation IS NOT NULL OR r.is_inhibition IS NOT NULL
+   ))::smallint AS sign_source_count,
+  (count(DISTINCT r.source_id) FILTER (
+     WHERE r.is_directed IS NOT NULL
+   ))::smallint AS direction_source_count,
+  min(r.affinity) AS affinity,
+  max(r.pchembl) AS pchembl,
+  max(r.score) AS score,
+  array_agg(DISTINCT contributor.name) AS sources,
+  count(DISTINCT r.source_id)::int AS source_count,
+  NULL::text[] AS dataset_tags,
+  provenance.curation_flags,
+  provenance.reference_pubmed_ids,
+  provenance.reference_dois,
+  (coalesce(cardinality(provenance.reference_pubmed_ids), 0)
+   + coalesce(cardinality(provenance.reference_dois), 0))::int
+    AS reference_count,
+  NULL::jsonb AS attributes,
+  -- Postgres has no min(uuid); the text form orders the same way for the
+  -- canonical rendering, and every record row of a group carries the same
+  -- header anyway, so any one of them is the answer.
+  min(r.interaction_id::text)::uuid AS interaction_id
+FROM {record} r
+JOIN {data_source} contributor ON contributor.source_id = r.source_id
+LEFT JOIN scoped_provenance provenance
+  ON provenance.subject_entity_id = r.subject_entity_id
+ AND provenance.object_entity_id = r.object_entity_id
+ AND provenance.interaction_class_id = r.interaction_class_id
+WHERE {scope}
+GROUP BY
+  r.subject_entity_id,
+  r.object_entity_id,
+  r.interaction_class_id,
+  provenance.reference_pubmed_ids,
+  provenance.reference_dois,
+  provenance.curation_flags
+"""
+
+
+def collapse_interaction_scope(
+    *,
+    schema: str = 'public',
+    sources: Sequence[str] | None = None,
+    source_ids: Sequence[int] | None = None,
+) -> tuple[str, tuple[object, ...]]:
+    """The collapse of the interaction record for one resource scope (T013e).
+
+    Returns ``(statement, parameters)``. The statement is a bare ``SELECT``
+    producing :data:`INTERACTION_COLLAPSE_COLUMNS` in order, so a caller embeds
+    it as a subquery, feeds it to an ``INSERT ... SELECT``, or wraps it in its
+    own filters. It is a string rather than a composable, because the query path
+    in ``omnipath-present`` interpolates it the same way.
+
+    ``sources`` names the resources by ``data_source.name``, ``source_ids`` by
+    id; pass at most one. ``None`` means **every** resource, which is the
+    all-resources scope of data model §3b — the scope the derive materialises
+    into ``interaction_fact_combined``. An **empty** sequence is an empty scope
+    and collapses to no rows, which is a different answer from "no restriction".
+
+    This routine is the whole of the scope rule's mechanism, so there is exactly
+    one of it (contract §1). ``interaction_fact_combined`` is this routine run
+    with ``sources=None`` and nothing else — writing a second SQL body for the
+    all-resources case is what would let a materialised scope and a per-query
+    scope drift apart, and the drift would be silent: the two agree on which
+    rows come back and disagree on the numbers those rows carry.
+
+    Every column the collapse recomputes is recomputed here from the rows the
+    scope kept — ``sources``, ``source_count``, the three assertion flags, the
+    two source counts, ``affinity``/``pchembl``/``score``, the reference arrays
+    and ``reference_count``. ``bool_or`` gives the three-valued answer FR-044a
+    asks for without a ``coalesce`` anywhere: it ignores NULLs and returns NULL
+    when every contributor is silent, so silence survives the collapse instead
+    of becoming an asserted ``false``. And the counts are
+    ``count(DISTINCT source_id) FILTER (...)`` over the same scope, so
+    ``sign_source_count <= cardinality(sources)`` holds by construction — a
+    resource asserting neither sign nor direction still contributes its
+    provenance (FR-044c).
+    """
+    if sources is not None and source_ids is not None:
+        raise ValueError(
+            'collapse_interaction_scope takes sources or source_ids, not both'
+        )
+    schema_sql = _quoted(schema)
+    record = f'{schema_sql}.{_quoted(INTERACTION_RECORD_TABLE)}'
+    data_source = f'{schema_sql}.{_quoted("data_source")}'
+    if sources is not None:
+        scope = (
+            'r.source_id IN (SELECT source_id FROM '
+            f'{data_source} WHERE name = ANY(%s::text[]))'
+        )
+        parameters: tuple[object, ...] = (list(sources), list(sources))
+    elif source_ids is not None:
+        scope = 'r.source_id = ANY(%s::bigint[])'
+        parameters = ([int(one) for one in source_ids],) * 2
+    else:
+        scope = 'true'
+        parameters = ()
+    statement = _COLLAPSE_SQL.format(
+        record=record,
+        data_source=data_source,
+        scope=scope,
+    )
+    return statement, parameters
+
 def rebuild_interaction_tables(
     conn: psycopg2.extensions.connection,
     *,
     schema: str = 'public',
     progress: bool = False,
+    attributes_gin: bool | None = None,
 ) -> InteractionDeriveStats:
     """Project the canonical graph into the interaction model (T013, T014).
 
-    Writes ``interaction`` (one endpoint-independent header per participant set
-    and class), ``interaction_party`` (its participants, in role) and
-    ``interaction_fact_combined`` (one row per **ordered** subject/object/class triple,
-    with provenance folded across every contributing resource). The three tables
-    are pure projections of `relation`, so they are rebuilt whole rather than
-    sliced: nothing in them is evidence that a partial rebuild could lose.
+    Writes four tables. ``interaction`` is one endpoint-independent header per
+    participant set and class, ``interaction_party`` its participants in role,
+    ``interaction_fact_resource`` the **record** and
+    ``interaction_fact_combined`` the record's collapse over every resource.
+    All four are pure projections of `relation`, so they are rebuilt whole
+    rather than sliced: nothing in them is evidence a partial rebuild could
+    lose.
+
+    **The projection is two steps, since the R19 grain amendment.** The record
+    (data model §3a) holds one row per ordered ``(subject, object, class)``,
+    contributing ``source_id`` **and** the assertion signature that resource
+    states, which is what makes every summary on it decomposable. The
+    materialisation (§3b) is that record collapsed for the all-resources scope
+    — the one scope that applies no filter — and it is produced by
+    :func:`collapse_interaction_scope`, the same routine a scoped query runs
+    over a smaller input. There is deliberately no second SQL body for the
+    all-resources case: a materialised scope and a per-query scope that were
+    written twice would drift, and the drift would show up as correct rows
+    carrying numbers computed over a resource set the caller excluded.
 
     Runs after ``classify_interaction_class``, which fills the predicate→class
     map the third derivation tier reads. When that map is still empty the step
     seeds it itself, so the projection does not silently fall back to `other`
     just because the derive steps ran in the wrong order.
+
+    ``attributes_gin`` states whether this build carries the ``attributes`` GIN
+    on the two interaction tables (T016). ``None`` leaves the answer to
+    :func:`attributes_gin_enabled`, which reads the environment and otherwise
+    says no, because the index is a benchmark gate and its cost is the thing
+    being measured. Either answer drops the two indexes before the load and
+    rebuilds them after it, so a leftover from the previous build neither slows
+    the insert down nor makes an A/B pair measure the wrong thing.
     """
     if conn.autocommit:
         # The staging tables are placed by a `SET LOCAL search_path`, which an
@@ -1147,6 +1511,7 @@ def rebuild_interaction_tables(
             'the connection is in autocommit mode'
         )
     started = time.perf_counter()
+    step_seconds: dict[str, float] = {}
     _ensure_interaction_class_map(conn, schema=schema, progress=progress)
     with conn.cursor() as cur:
         # The projection is one large grouped scan of the evidence link table;
@@ -1169,47 +1534,128 @@ def rebuild_interaction_tables(
         )
         classes = _interaction_class_ids(cur, schema)
 
+        # Drop the two `attributes` GIN indexes before anything writes to the
+        # tables, and rebuild them at the end (T016). `TRUNCATE` keeps a table's
+        # indexes, so an index left in place from the previous build is
+        # maintained row by row through the load. Measured on the record's
+        # column: the same 14.7-million-row insert costs 6.6 s with no index,
+        # 33.0 s with the GIN in place, and 6.6 s plus a 7.2 s build afterwards.
+        # Maintaining it through the load therefore costs about three and a half
+        # times what building it once does.
+        ensure_interaction_attributes_gin(cur, schema, enabled=False)
+
         _log(progress, 'interaction_class_evidence', 'start')
         step_started = time.perf_counter()
         _stage_interaction_class_evidence(cur, schema, classes)
+        step_seconds['interaction_class_evidence'] = (
+            time.perf_counter() - step_started
+        )
         _log(
             progress,
             'interaction_class_evidence',
             'done',
-            seconds=f'{time.perf_counter() - step_started:.3f}',
+            seconds=f'{step_seconds["interaction_class_evidence"]:.3f}',
         )
 
         _log(progress, 'interaction_evidence_fold', 'start')
         step_started = time.perf_counter()
-        _stage_interaction_evidence_fold(cur, schema)
+        _stage_interaction_record(cur, schema)
+        step_seconds['interaction_evidence_fold'] = (
+            time.perf_counter() - step_started
+        )
         _log(
             progress,
             'interaction_evidence_fold',
             'done',
-            seconds=f'{time.perf_counter() - step_started:.3f}',
+            seconds=f'{step_seconds["interaction_evidence_fold"]:.3f}',
         )
 
         _log(progress, 'interaction_header', 'start')
         step_started = time.perf_counter()
         interactions, parties = _populate_interaction_header(cur, schema)
+        step_seconds['interaction_header'] = time.perf_counter() - step_started
         _log(
             progress,
             'interaction_header',
             'done',
             rows=interactions,
             parties=parties,
-            seconds=f'{time.perf_counter() - step_started:.3f}',
+            seconds=f'{step_seconds["interaction_header"]:.3f}',
+        )
+
+        # The record first, then its collapse: the materialisation reads the
+        # record and nothing else, so the order is a data dependency rather
+        # than a preference.
+        _log(progress, 'interaction_fact_resource', 'start')
+        step_started = time.perf_counter()
+        records = _populate_interaction_fact_resource(cur, schema)
+        # The collapse reads the record it just wrote, and it reads it with
+        # `array_agg(DISTINCT ...)`, which needs sorted input. Without fresh
+        # statistics on a table that was truncated and refilled in this same
+        # transaction the planner sorts 14.7 million rows instead of walking
+        # `interaction_fact_resource_collapse_idx`, which is what that index is
+        # in the schema for.
+        cur.execute(
+            sql.SQL('ANALYZE {}.interaction_fact_resource').format(
+                sql.Identifier(schema)
+            )
+        )
+        step_seconds['interaction_fact_resource'] = (
+            time.perf_counter() - step_started
+        )
+        _log(
+            progress,
+            'interaction_fact_resource',
+            'done',
+            rows=records,
+            seconds=f'{step_seconds["interaction_fact_resource"]:.3f}',
         )
 
         _log(progress, 'interaction_fact_combined', 'start')
         step_started = time.perf_counter()
         facts = _populate_interaction_fact_combined(cur, schema)
+        step_seconds['interaction_fact_combined'] = (
+            time.perf_counter() - step_started
+        )
         _log(
             progress,
             'interaction_fact_combined',
             'done',
             rows=facts,
-            seconds=f'{time.perf_counter() - step_started:.3f}',
+            seconds=f'{step_seconds["interaction_fact_combined"]:.3f}',
+        )
+
+        # The `attributes` GIN on both tables, after both are filled (T016).
+        # The gate is off by default, so this is a second drop on an ordinary
+        # build and a build on a benchmark one. Either way the two tables leave
+        # this step in the state the toggle names, which is what makes an A/B
+        # pair mean anything.
+        gin_enabled = attributes_gin_enabled(attributes_gin)
+        _log(
+            progress,
+            'interaction_attributes_gin',
+            'start',
+            enabled=gin_enabled,
+        )
+        step_started = time.perf_counter()
+        gin_seconds = ensure_interaction_attributes_gin(
+            cur,
+            schema,
+            enabled=gin_enabled,
+        )
+        step_seconds['interaction_attributes_gin'] = (
+            time.perf_counter() - step_started
+        )
+        _log(
+            progress,
+            'interaction_attributes_gin',
+            'done',
+            enabled=gin_enabled,
+            seconds=f'{step_seconds["interaction_attributes_gin"]:.3f}',
+            **{
+                table: f'{value:.3f}'
+                for table, value in sorted(gin_seconds.items())
+            },
         )
 
         rows_by_class = _interaction_rows_by_class(cur, schema)
@@ -1230,16 +1676,19 @@ def rebuild_interaction_tables(
         progress,
         'interactions',
         'done',
+        records=records,
         rows=facts,
         seconds=f'{seconds:.3f}',
     )
     return InteractionDeriveStats(
         interactions=interactions,
         parties=parties,
+        records=records,
         facts=facts,
         rows_by_class=rows_by_class,
         sign_conflict=sign_conflict,
         seconds=seconds,
+        step_seconds=step_seconds,
     )
 
 
@@ -1459,123 +1908,180 @@ def _stage_interaction_class_evidence(
     cur.execute('ANALYZE _if_relation')
 
 
-def _stage_interaction_evidence_fold(
+def _stage_interaction_record(
     cur: psycopg2.extensions.cursor,
     schema: str,
 ) -> None:
-    """Fold the evidence onto the ordered fact key.
+    """Stage the interaction record, one row per resource assertion (T013/T013f).
 
-    Everything here groups by ``(subject_entity_id, object_entity_id,
-    interaction_class_id)`` — the ordered key of data model §3, so A→B and B→A
-    fold separately and are never merged (FR-044d).
+    Four staging tables, and the shape of them is the R19 amendment in
+    miniature. ``_if_evidence_sign`` reads what each **evidence row** asserts
+    about sign. ``_if_evidence`` puts that beside the ordered endpoints, the
+    class and the resource, and mints the record's surrogate id. ``_if_record``
+    groups the evidence rows onto the record key of data model §3a — the
+    endpoints, the class, the ``source_id`` **and** the assertion signature —
+    aggregating only that key's own annotations. ``_if_fact`` stays at the
+    triple grain, because the header and the participant table are keyed by the
+    unordered endpoint pair and need the union over both directions.
+
+    **The assertion is read per evidence row, not per canonical relation**
+    (T013f). ``relation_evidence`` carries its own ``predicate_id``, and that is
+    the resource's own statement; the canonical relation's predicate is the
+    graph's summary of every resource that reported the pair. Reading direction
+    off the relation made ``direction_source_count`` equal ``source_count``
+    whenever the predicate was directed and zero otherwise — measured across all
+    8,505 multi-resource signed rows on dev4 — so the column read as consensus
+    in every case and could never say "one resource of twelve", which is what
+    FR-044b asks it for.
+
+    Nothing here ever writes an asserted ``false``. A resource that publishes no
+    sign leaves NULL on its own row, and a verb that says nothing about
+    direction leaves NULL too — including the symmetric ones, which are the
+    ingest layer's vocabulary rather than a resource's per-interaction claim
+    (FR-044a, and the 8,243,981 rows an August pass wrote ``false`` on before
+    that was reverted). Silence is never inherited from a neighbour either: the
+    grouping key holds the resource, so ``fixture_res_c`` reporting a pair its
+    neighbours signed keeps its own NULLs.
     """
     schema_id = sql.Identifier(schema)
     positive = sorted(POSITIVE_SIGN_ACCESSIONS)
     negative = sorted(NEGATIVE_SIGN_ACCESSIONS)
 
-    # Sign, per contributing resource first. The per-resource step is what lets
-    # T013c tell one resource asserting both signs (under two predicates that
-    # share a class) apart from resources genuinely disagreeing.
-    cur.execute('DROP TABLE IF EXISTS _if_sign_source')
+    # Sign, per **evidence row**. `nullif(..., false)` is FR-044a: an evidence
+    # row carrying no sign annotation leaves the column NULL, which is a
+    # different statement from an asserted false. One resource asserting both
+    # signs under two predicates therefore arrives as two rows here and stays
+    # two rows on the record, because the signature is part of its key — the
+    # 7,803-row case research R19 measured, which is real pharmacology rather
+    # than noise.
+    cur.execute('DROP TABLE IF EXISTS _if_evidence_sign')
     cur.execute(
         sql.SQL(
             """
-            CREATE UNLOGGED TABLE _if_sign_source AS
+            CREATE UNLOGGED TABLE _if_evidence_sign AS
             SELECT
+              rea.source_id,
+              rea.relation_evidence_id,
+              nullif(bool_or(a.term = ANY(%s)), false) AS is_stimulation,
+              nullif(bool_or(a.term = ANY(%s)), false) AS is_inhibition
+            FROM {}.relation_evidence_annotation rea
+            JOIN {}.annotation a ON a.annotation_key = rea.annotation_key
+            WHERE a.term = ANY(%s)
+            GROUP BY 1, 2
+            """
+        ).format(schema_id, schema_id),
+        [positive, negative, sorted(set(positive) | set(negative))],
+    )
+    cur.execute(
+        'CREATE INDEX _if_evidence_sign_idx ON _if_evidence_sign '
+        '(source_id, relation_evidence_id)'
+    )
+    cur.execute('ANALYZE _if_evidence_sign')
+
+    # The record key, per evidence row, with its surrogate already minted. The
+    # id is computed once here rather than at insert time so that the grouping
+    # below can hash a single uuid instead of seven columns, two of which are
+    # uuids themselves: `array_agg(DISTINCT ...)` forces a sorted aggregation,
+    # and the sort key is what that costs.
+    record_identity = interaction_record_uuid_sql(
+        subject_entity_id='ir.subject_entity_id',
+        object_entity_id='ir.object_entity_id',
+        interaction_class='vic.name',
+        source='ds.name',
+        is_directed='CASE WHEN predicate.name = ANY(%(directed)s) THEN true END',
+        is_stimulation='sign.is_stimulation',
+        is_inhibition='sign.is_inhibition',
+    )
+    cur.execute('DROP TABLE IF EXISTS _if_evidence')
+    cur.execute(
+        sql.SQL(
+            """
+            CREATE UNLOGGED TABLE _if_evidence AS
+            SELECT
+              {identity} AS interaction_fact_resource_id,
               ir.subject_entity_id,
               ir.object_entity_id,
               ir.interaction_class_id,
               rer.source_id,
-              nullif(bool_or(a.term = ANY(%s)), false) AS asserts_positive,
-              nullif(bool_or(a.term = ANY(%s)), false) AS asserts_negative
-            FROM {}.relation_evidence_annotation rea
-            JOIN {}.annotation a ON a.annotation_key = rea.annotation_key
-            JOIN {}.relation_evidence_relation rer
-              ON rer.source_id = rea.source_id
-             AND rer.relation_evidence_id = rea.relation_evidence_id
-            JOIN _if_relation ir ON ir.relation_id = rer.relation_id
-            WHERE a.term = ANY(%s)
-            GROUP BY 1, 2, 3, 4
+              rer.relation_evidence_id,
+              CASE
+                WHEN predicate.name = ANY(%(directed)s) THEN true
+              END AS is_directed,
+              sign.is_stimulation,
+              sign.is_inhibition
+            FROM _if_relation ir
+            JOIN {schema}.relation_evidence_relation rer
+              ON rer.relation_id = ir.relation_id
+            JOIN {schema}.relation_evidence re
+              ON re.source_id = rer.source_id
+             AND re.relation_evidence_id = rer.relation_evidence_id
+            JOIN {schema}.vocab_relation_predicate predicate
+              ON predicate.relation_predicate_id = re.predicate_id
+            JOIN {schema}.vocab_interaction_class vic
+              ON vic.interaction_class_id = ir.interaction_class_id
+            JOIN {schema}.data_source ds ON ds.source_id = rer.source_id
+            LEFT JOIN _if_evidence_sign sign
+              ON sign.source_id = rer.source_id
+             AND sign.relation_evidence_id = rer.relation_evidence_id
             """
-        ).format(schema_id, schema_id, schema_id),
-        [positive, negative, sorted(set(positive) | set(negative))],
-    )
-
-    # The summary the fact row carries. `nullif(..., false)` is the whole point
-    # of FR-044a: a resource that asserts no sign leaves the column NULL, which
-    # is a different statement from an asserted false. Both flags stay true
-    # where resources disagree — no silent winner.
-    cur.execute('DROP TABLE IF EXISTS _if_sign')
-    cur.execute(
-        """
-        CREATE UNLOGGED TABLE _if_sign AS
-        SELECT
-          subject_entity_id,
-          object_entity_id,
-          interaction_class_id,
-          nullif(bool_or(asserts_positive), false) AS is_stimulation,
-          nullif(bool_or(asserts_negative), false) AS is_inhibition,
-          count(*)::smallint AS sign_source_count,
-          bool_or(asserts_positive AND asserts_negative)
-            AS single_resource_conflict
-        FROM _if_sign_source
-        GROUP BY 1, 2, 3
-        """
+        ).format(identity=sql.SQL(record_identity), schema=schema_id),
+        {'directed': list(_DIRECTED_PREDICATES)},
     )
     cur.execute(
-        'CREATE INDEX _if_sign_idx ON _if_sign '
-        '(subject_entity_id, object_entity_id, interaction_class_id)'
+        'CREATE INDEX _if_evidence_idx ON _if_evidence '
+        '(source_id, relation_evidence_id)'
     )
-    cur.execute('ANALYZE _if_sign')
+    cur.execute('ANALYZE _if_evidence')
 
-    # References and the annotation-borne hot columns. Every contributor's
-    # references are aggregated, including resources that assert no sign and no
-    # direction (FR-044c) — attribute-poor evidence is still evidence.
-    cur.execute('DROP TABLE IF EXISTS _if_annotation')
+    # The record itself. Everything aggregated here is aggregated **within one
+    # resource's assertion**, which is the whole point of the grain: a
+    # reference, an affinity or a curation flag belongs to the resource that
+    # published it, so a scoped collapse can recompute the summary from the
+    # rows the scope kept instead of reading numbers folded over resources the
+    # caller excluded.
+    cur.execute('DROP TABLE IF EXISTS _if_record_annotation')
     cur.execute(
         sql.SQL(
             """
-            CREATE UNLOGGED TABLE _if_annotation AS
+            CREATE UNLOGGED TABLE _if_record_annotation AS
             SELECT
-              ir.subject_entity_id,
-              ir.object_entity_id,
-              ir.interaction_class_id,
-              array_agg(DISTINCT a.value) FILTER (
-                WHERE a.term = %(pubmed)s
+              ev.interaction_fact_resource_id,
+              array_agg(DISTINCT ann.value) FILTER (
+                WHERE ann.term = %(pubmed)s
               ) AS reference_pubmed_ids,
-              array_agg(DISTINCT a.value) FILTER (
-                WHERE a.term = %(doi)s
+              array_agg(DISTINCT ann.value) FILTER (
+                WHERE ann.term = %(doi)s
               ) AS reference_dois,
-              min(a.value::double precision) FILTER (
-                WHERE a.term = ANY(%(affinity)s)
+              min(ann.value::double precision) FILTER (
+                WHERE ann.term = ANY(%(affinity)s)
               ) AS affinity,
-              max(a.value::double precision) FILTER (
-                WHERE a.term = %(pchembl)s
+              max(ann.value::double precision) FILTER (
+                WHERE ann.term = %(pchembl)s
               ) AS pchembl,
-              max(a.value::double precision) FILTER (
-                WHERE a.term = %(score)s
+              max(ann.value::double precision) FILTER (
+                WHERE ann.term = %(score)s
               ) AS score,
-              array_agg(DISTINCT a.value) FILTER (
-                WHERE a.term = %(curation)s
+              array_agg(DISTINCT ann.value) FILTER (
+                WHERE ann.term = %(curation)s
               ) AS curation_flags
             FROM {}.relation_evidence_annotation rea
-            JOIN {}.annotation a ON a.annotation_key = rea.annotation_key
-            JOIN {}.relation_evidence_relation rer
-              ON rer.source_id = rea.source_id
-             AND rer.relation_evidence_id = rea.relation_evidence_id
-            JOIN _if_relation ir ON ir.relation_id = rer.relation_id
-            WHERE a.value IS NOT NULL
-              AND a.value <> ''
+            JOIN {}.annotation ann
+              ON ann.annotation_key = rea.annotation_key
+            JOIN _if_evidence ev
+              ON ev.source_id = rea.source_id
+             AND ev.relation_evidence_id = rea.relation_evidence_id
+            WHERE ann.value IS NOT NULL
+              AND ann.value <> ''
               AND (
-                a.term IN (%(pubmed)s, %(doi)s, %(curation)s)
+                ann.term IN (%(pubmed)s, %(doi)s, %(curation)s)
                 OR (
-                  a.term = ANY(%(numeric_terms)s)
-                  AND a.value ~ %(numeric)s
+                  ann.term = ANY(%(numeric_terms)s)
+                  AND ann.value ~ %(numeric)s
                 )
               )
-            GROUP BY 1, 2, 3
+            GROUP BY 1
             """
-        ).format(schema_id, schema_id, schema_id),
+        ).format(schema_id, schema_id),
         {
             'pubmed': _PUBMED_TERM,
             'doi': _DOI_TERM,
@@ -1592,15 +2098,66 @@ def _stage_interaction_evidence_fold(
         },
     )
     cur.execute(
-        'CREATE INDEX _if_annotation_idx ON _if_annotation '
+        'CREATE INDEX _if_record_annotation_idx ON _if_record_annotation '
+        '(interaction_fact_resource_id)'
+    )
+    cur.execute('ANALYZE _if_record_annotation')
+
+    # One row per record key. The distinct step is a plain grouped scan — the
+    # surrogate determines the key, so grouping by it and carrying the key
+    # columns along costs a hash rather than the sort the annotation
+    # aggregation above needs.
+    cur.execute('DROP TABLE IF EXISTS _if_record')
+    cur.execute(
+        """
+        CREATE UNLOGGED TABLE _if_record AS
+        SELECT
+          key.interaction_fact_resource_id,
+          key.subject_entity_id,
+          key.object_entity_id,
+          key.interaction_class_id,
+          key.source_id,
+          key.is_directed,
+          key.is_stimulation,
+          key.is_inhibition,
+          annotation.reference_pubmed_ids,
+          annotation.reference_dois,
+          annotation.affinity,
+          annotation.pchembl,
+          annotation.score,
+          annotation.curation_flags
+        FROM (
+          SELECT
+            interaction_fact_resource_id,
+            subject_entity_id,
+            object_entity_id,
+            interaction_class_id,
+            source_id,
+            is_directed,
+            is_stimulation,
+            is_inhibition
+          FROM _if_evidence
+          GROUP BY 1, 2, 3, 4, 5, 6, 7, 8
+        ) key
+        LEFT JOIN _if_record_annotation annotation
+          ON annotation.interaction_fact_resource_id
+               = key.interaction_fact_resource_id
+        """
+    )
+    cur.execute(
+        'CREATE INDEX _if_record_idx ON _if_record '
         '(subject_entity_id, object_entity_id, interaction_class_id)'
     )
-    cur.execute('ANALYZE _if_annotation')
+    cur.execute('ANALYZE _if_record')
 
-    # Provenance and direction over **every** contributing evidence row. The
-    # join to the link table is left-outer so a canonical relation with no
-    # evidence link still reaches the projection, with an empty source set,
-    # rather than disappearing from the graph the API serves.
+    # The triple grain, for the header and the participant table alone. Those
+    # two are keyed by the **unordered** endpoint pair, so they need the union
+    # over both directions and over every resource, which the record does not
+    # carry. The join to the evidence link is left-outer so a canonical
+    # relation with no evidence still reaches a header rather than disappearing
+    # from the graph; it reaches no fact row, because a record row without a
+    # contributing resource is not a thing the grain can express. Measured on
+    # dev4: no such relation exists.
     cur.execute('DROP TABLE IF EXISTS _if_fact')
     cur.execute(
         sql.SQL(
@@ -1611,11 +2168,6 @@ def _stage_interaction_evidence_fold(
               ir.object_entity_id,
               ir.interaction_class_id,
               array_remove(array_agg(DISTINCT ds.name), NULL) AS sources,
-              count(DISTINCT ds.name)::int AS source_count,
-              bool_or(ir.asserts_directed) AS is_directed,
-              count(DISTINCT ds.name) FILTER (
-                WHERE ir.asserts_directed IS NOT NULL
-              )::smallint AS direction_source_count,
               bool_or(coalesce(ir.subject_ligand, false)) AS subject_ligand,
               bool_or(coalesce(ir.subject_receptor, false))
                 AS subject_receptor,
@@ -1634,6 +2186,7 @@ def _stage_interaction_evidence_fold(
         '(subject_entity_id, object_entity_id, interaction_class_id)'
     )
     cur.execute('ANALYZE _if_fact')
+
 
 
 def _populate_interaction_header(
@@ -1733,13 +2286,18 @@ def _populate_interaction_header(
     )
     cur.execute('ANALYZE _if_header')
 
-    # The three tables are projections, so they are rebuilt whole. Truncating
-    # them together keeps the header's dependants from tripping over the FK.
+    # The four tables are projections, so they are rebuilt whole. Truncating
+    # them together keeps the header's dependants from tripping over the FK:
+    # `TRUNCATE` refuses when a table outside the statement references one
+    # inside it, whatever the row counts are, so `interaction_fact_resource`
+    # has to be named here from the moment it carries a key to `interaction`,
+    # and not only once the derive starts filling it (T011a, T013).
     cur.execute(
         sql.SQL(
-            'TRUNCATE {}.interaction_fact_combined, {}.interaction_party, '
+            'TRUNCATE {}.interaction_fact_resource, '
+            '{}.interaction_fact_combined, {}.interaction_party, '
             '{}.interaction'
-        ).format(schema_id, schema_id, schema_id)
+        ).format(schema_id, schema_id, schema_id, schema_id)
     )
     # The header's provenance is the union over both directions of the pair, so
     # it is aggregated once here rather than looked up per header: a correlated
@@ -1820,71 +2378,100 @@ def _populate_interaction_header(
     return interactions, parties
 
 
-def _populate_interaction_fact_combined(
+def _populate_interaction_fact_resource(
     cur: psycopg2.extensions.cursor,
     schema: str,
 ) -> int:
-    """Write the flat binary projection (T013, data model §3)."""
+    """Write the interaction record (T013, data model §3a).
+
+    The staged key goes in as it stands, with its surrogate already minted, the
+    two organisms read off the endpoints and the header id joined from
+    ``_if_header``. Joining the header rather than recomputing it is what keeps
+    the foreign key satisfiable by construction: the record is written after the
+    header, and every record row therefore points at a header row that exists.
+
+    ``attributes`` stays NULL. The long tail is R2 benchmark-gated (T017) and
+    ``dataset_tags`` belongs to the preset registry (T018); neither is a value
+    this step has.
+    """
     schema_id = sql.Identifier(schema)
     cur.execute(
         sql.SQL(
             """
-            INSERT INTO {schema}.interaction_fact_combined (
+            INSERT INTO {schema}.interaction_fact_resource (
+              interaction_fact_resource_id,
               subject_entity_id, object_entity_id, interaction_class_id,
-              subject_organism, object_organism,
+              source_id,
               is_directed, is_stimulation, is_inhibition,
-              sign_source_count, direction_source_count,
+              subject_organism, object_organism,
               affinity, pchembl, score,
-              sources, source_count, curation_flags,
-              reference_pubmed_ids, reference_dois, reference_count,
-              interaction_id
+              curation_flags, reference_pubmed_ids, reference_dois,
+              attributes, interaction_id
             )
             SELECT
-              f.subject_entity_id,
-              f.object_entity_id,
-              f.interaction_class_id,
+              rec.interaction_fact_resource_id,
+              rec.subject_entity_id,
+              rec.object_entity_id,
+              rec.interaction_class_id,
+              rec.source_id,
+              rec.is_directed,
+              rec.is_stimulation,
+              rec.is_inhibition,
               subject_entity.taxonomy_id,
               object_entity.taxonomy_id,
-              f.is_directed,
-              sign.is_stimulation,
-              sign.is_inhibition,
-              coalesce(sign.sign_source_count, 0),
-              f.direction_source_count,
-              annotation.affinity,
-              annotation.pchembl,
-              annotation.score,
-              f.sources,
-              f.source_count,
-              annotation.curation_flags,
-              annotation.reference_pubmed_ids,
-              annotation.reference_dois,
-              coalesce(
-                cardinality(annotation.reference_pubmed_ids), 0
-              ) + coalesce(cardinality(annotation.reference_dois), 0),
+              rec.affinity,
+              rec.pchembl,
+              rec.score,
+              rec.curation_flags,
+              rec.reference_pubmed_ids,
+              rec.reference_dois,
+              NULL::jsonb,
               h.interaction_id
-            FROM _if_fact f
-            LEFT JOIN _if_sign sign
-              ON sign.subject_entity_id = f.subject_entity_id
-             AND sign.object_entity_id = f.object_entity_id
-             AND sign.interaction_class_id = f.interaction_class_id
-            LEFT JOIN _if_annotation annotation
-              ON annotation.subject_entity_id = f.subject_entity_id
-             AND annotation.object_entity_id = f.object_entity_id
-             AND annotation.interaction_class_id = f.interaction_class_id
+            FROM _if_record rec
             JOIN _if_header h
               ON h.entity_low
-                   = least(f.subject_entity_id, f.object_entity_id)
+                   = least(rec.subject_entity_id, rec.object_entity_id)
              AND h.entity_high
-                   = greatest(f.subject_entity_id, f.object_entity_id)
-             AND h.interaction_class_id = f.interaction_class_id
+                   = greatest(rec.subject_entity_id, rec.object_entity_id)
+             AND h.interaction_class_id = rec.interaction_class_id
             LEFT JOIN {schema}.entity subject_entity
-              ON subject_entity.entity_id = f.subject_entity_id
+              ON subject_entity.entity_id = rec.subject_entity_id
             LEFT JOIN {schema}.entity object_entity
-              ON object_entity.entity_id = f.object_entity_id
+              ON object_entity.entity_id = rec.object_entity_id
             """
         ).format(schema=schema_id)
     )
     return int(cur.rowcount)
+
+
+def _populate_interaction_fact_combined(
+    cur: psycopg2.extensions.cursor,
+    schema: str,
+) -> int:
+    """Materialise the all-resources scope (T013e, data model §3b).
+
+    This is :func:`collapse_interaction_scope` with no resource restriction,
+    inserted. There is no second SQL body for it, and that is the point of the
+    task: the routine a scoped query runs is the routine that built this table,
+    so the two cannot disagree about what a collapse means. If they could, the
+    disagreement would be invisible in the row set and visible only in the
+    numbers — the exact failure the scope rule exists to prevent.
+    """
+    statement, parameters = collapse_interaction_scope(schema=schema)
+    cur.execute(
+        sql.SQL('INSERT INTO {}.{} ({}) {}').format(
+            sql.Identifier(schema),
+            sql.Identifier(INTERACTION_COLLAPSE_TABLE),
+            sql.SQL(', ').join(
+                sql.Identifier(column)
+                for column in INTERACTION_COLLAPSE_COLUMNS
+            ),
+            sql.SQL(statement),
+        ),
+        parameters or None,
+    )
+    return int(cur.rowcount)
+
 
 
 def _interaction_rows_by_class(
@@ -1920,6 +2507,11 @@ def _record_sign_conflict_summary(
     it is re-measured on every build rather than trusted once. A figure
     substantially above ~2 per cent reopens whether the sign-bearing predicate
     belongs in the fact-table key.
+
+    Under the R19 grain the two halves of the split are readable rather than
+    inferred: one resource asserting both signs keeps **two** record rows, so
+    the split asks the record which resources asserted what instead of carrying
+    a `single_resource_conflict` flag through a fold.
     """
     schema_id = sql.Identifier(schema)
     cur.execute(
@@ -1937,30 +2529,64 @@ def _record_sign_conflict_summary(
             """
         ).format(schema_id)
     )
+    # Read off the two built tables rather than off a staging fold, since the
+    # record is where a per-resource assertion now lives. The split between a
+    # single resource asserting both signs and resources disagreeing is asked
+    # only of the rows that carry both flags — 7,925 of 14.3 million on dev4 —
+    # so it joins back through the record's collapse index instead of grouping
+    # the whole record a second time.
     cur.execute(
-        """
-        SELECT
-          count(*) FILTER (
-            WHERE is_stimulation IS NOT NULL OR is_inhibition IS NOT NULL
-          )::bigint,
-          count(*) FILTER (WHERE is_stimulation AND is_inhibition)::bigint,
-          count(*) FILTER (
-            WHERE is_stimulation AND is_inhibition AND single_resource_conflict
-          )::bigint,
-          count(*) FILTER (
-            WHERE is_stimulation AND is_inhibition
-              AND NOT coalesce(single_resource_conflict, false)
-          )::bigint
-        FROM _if_sign
-        """
+        sql.SQL(
+            """
+            SELECT
+              count(*)::bigint,
+              count(*) FILTER (
+                WHERE is_stimulation IS NOT NULL OR is_inhibition IS NOT NULL
+              )::bigint,
+              count(*) FILTER (WHERE is_stimulation AND is_inhibition)::bigint
+            FROM {}.interaction_fact_combined
+            """
+        ).format(schema_id)
     )
-    signed, both, single, cross = cur.fetchone()
+    fact_rows, signed, both = (int(value) for value in cur.fetchone())
     cur.execute(
-        sql.SQL('SELECT count(*)::bigint FROM {}.interaction_fact_combined').format(
-            schema_id
-        )
+        sql.SQL(
+            """
+            WITH conflicted AS (
+              SELECT subject_entity_id, object_entity_id, interaction_class_id
+              FROM {}.interaction_fact_combined
+              WHERE is_stimulation AND is_inhibition
+            ), per_resource AS (
+              SELECT
+                r.subject_entity_id,
+                r.object_entity_id,
+                r.interaction_class_id,
+                r.source_id,
+                bool_or(r.is_stimulation) AS asserts_positive,
+                bool_or(r.is_inhibition) AS asserts_negative
+              FROM {}.interaction_fact_resource r
+              JOIN conflicted c
+                ON c.subject_entity_id = r.subject_entity_id
+               AND c.object_entity_id = r.object_entity_id
+               AND c.interaction_class_id = r.interaction_class_id
+              GROUP BY 1, 2, 3, 4
+            ), per_row AS (
+              SELECT coalesce(
+                       bool_or(asserts_positive AND asserts_negative),
+                       false
+                     ) AS single_resource_conflict
+              FROM per_resource
+              GROUP BY subject_entity_id, object_entity_id,
+                       interaction_class_id
+            )
+            SELECT
+              count(*) FILTER (WHERE single_resource_conflict)::bigint,
+              count(*) FILTER (WHERE NOT single_resource_conflict)::bigint
+            FROM per_row
+            """
+        ).format(schema_id, schema_id)
     )
-    fact_rows = int(cur.fetchone()[0])
+    single, cross = cur.fetchone()
     summary = {
         'fact_rows': int(fact_rows),
         'signed_rows': int(signed),
@@ -2001,12 +2627,18 @@ def _drop_interaction_staging(cur: psycopg2.extensions.cursor) -> None:
         '_if_participant_class',
         '_if_annotation_class',
         '_if_relation',
-        '_if_sign_source',
-        '_if_sign',
-        '_if_annotation',
+        '_if_evidence_sign',
+        '_if_evidence',
+        '_if_record_annotation',
+        '_if_record',
         '_if_fact',
         '_if_party',
         '_if_header',
         '_if_header_source',
+        # Left by the pre-amendment fold; dropped here so a database that ran
+        # the old derive does not keep 14-million-row staging tables around.
+        '_if_sign_source',
+        '_if_sign',
+        '_if_annotation',
     ):
         cur.execute(f'DROP TABLE IF EXISTS {table}')
