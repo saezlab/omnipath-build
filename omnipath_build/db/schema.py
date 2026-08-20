@@ -1463,6 +1463,8 @@ def _ensure_resolution_schema(
     )
     log_step('create canonical annotation tables')
     _ensure_canonical_annotation_tables(cur, schema)
+    log_step('create resource license terms')
+    _ensure_data_source_license(cur, schema)
     log_step('create interaction header and participant tables')
     _ensure_interaction_schema(cur, schema)
     log_step('drop relation_evidence_resolution table')
@@ -2276,6 +2278,100 @@ def _ensure_classification_vocab(
     )
 
 
+def _ensure_data_source_license(
+    cur: psycopg2.extensions.cursor,
+    schema: str,
+) -> None:
+    """Resource license terms, as ordinal levels (spec 008 data model §8a, R20).
+
+    The build recorded no license anywhere: ``data_source`` held
+    ``(source_id, name)`` and nothing else. This table adds the terms, one row
+    per resource, in the ordinal form ``pypath/internals/license.py`` already
+    models.
+
+    **Levels, not a name.** ``License.enables(other)`` is ``self >= other``, so
+    a license question is a range predicate over three small integers, and
+    "everything usable commercially" is ``WHERE purpose_level >= 15`` over a
+    44-row table. A name answers no question on its own — two resources under
+    different names can permit the same use, and one name under two versions
+    can not — so ``license_name`` is stored for attribution and is never what a
+    filter compares. The vocabularies, ascending:
+
+    * ``purpose_level``: ignore 0, academic 5, nonprofit 10, commercial 15,
+      free 20, composite 25
+    * ``sharing_level``: ignore 0, noshare 5, noderiv 10, alike 15, share 20,
+      free 25
+    * ``attrib_level``: ignore 0, attrib 5, free 10
+
+    **Unknown terms are exclusions, never defaults** (FR-049). A resource whose
+    license could not be mapped carries ``is_known = false`` and must not
+    appear in a license-filtered result. The flag defaults to ``false`` for the
+    same reason: absence of terms is not permission, and an unmapped license
+    admitted as permissive is the one failure mode of this table that cannot be
+    detected downstream.
+
+    Every other column is nullable, because a resource with no license record
+    has no name, no url and no levels to store. Nullable levels are deliberate
+    rather than lax: a range predicate silently drops a NULL, which is the
+    right answer for the wrong reason, so the exclusion is carried by
+    ``is_known`` and never by the numbers.
+
+    The table is declared here; the load step fills it from
+    ``pypath/resources/data/resources.json``.
+    """
+    schema_id = sql.Identifier(schema)
+    cur.execute(
+        sql.SQL(
+            """
+            CREATE TABLE IF NOT EXISTS {}.data_source_license (
+              source_id bigint PRIMARY KEY
+                REFERENCES {}.data_source(source_id),
+              license_name text,
+              license_full_name text,
+              license_url text,
+              purpose_level smallint,
+              sharing_level smallint,
+              attrib_level smallint,
+              is_known boolean NOT NULL DEFAULT false
+            )
+            """
+        ).format(schema_id, schema_id)
+    )
+    # Added here too, for databases created before the columns existed.
+    cur.execute(
+        sql.SQL(
+            """
+            ALTER TABLE {}.data_source_license
+            ADD COLUMN IF NOT EXISTS license_name text,
+            ADD COLUMN IF NOT EXISTS license_full_name text,
+            ADD COLUMN IF NOT EXISTS license_url text,
+            ADD COLUMN IF NOT EXISTS purpose_level smallint,
+            ADD COLUMN IF NOT EXISTS sharing_level smallint,
+            ADD COLUMN IF NOT EXISTS attrib_level smallint,
+            ADD COLUMN IF NOT EXISTS is_known boolean NOT NULL DEFAULT false
+            """
+        ).format(schema_id)
+    )
+    # A license filter resolves to a resource set before it touches an
+    # interaction table, and that resolution is a range scan over the levels.
+    # The table holds 44 rows, so the index is for the shape of the predicate
+    # rather than for the scan; the partial clause states the rule the query
+    # must follow, which is that an unknown license is never a candidate.
+    cur.execute(
+        sql.SQL(
+            """
+            CREATE INDEX IF NOT EXISTS data_source_license_levels_idx
+            ON {}.data_source_license (
+              purpose_level,
+              sharing_level,
+              attrib_level
+            )
+            WHERE is_known
+            """
+        ).format(schema_id)
+    )
+
+
 def _drop_legacy_interaction_fact(
     cur: psycopg2.extensions.cursor,
     schema: str,
@@ -2320,17 +2416,26 @@ def _ensure_interaction_schema(
     cur: psycopg2.extensions.cursor,
     schema: str,
 ) -> None:
-    """Interaction header, participants, role vocabulary and the fact table.
+    """Interaction header, participants, role vocabulary and the fact tables.
 
-    Spec 008 data model §1, §2, §3 and §7. The header carries an
+    Spec 008 data model §1, §2, §3, §3a, §3b and §7. The header carries an
     endpoint-independent identity for one interaction or reaction event;
     ``interaction_party``
     generalises the two endpoints of ``relation_evidence`` and the
     reactant/product grain of the DuckDB ``reaction_member_signature`` to N
     participants, each in a role, on a side, at an ordinal, optionally with a
-    stoichiometry, a compartment and its own organism. ``interaction_fact_combined`` is
-    the flat binary projection the hot queries read, one row per ordered
-    endpoint pair and interaction class.
+    stoichiometry, a compartment and its own organism.
+
+    The binary projection is **two tables, and the scope decides which one a
+    query reads** (research R19). ``interaction_fact_resource`` (§3a) is the
+    **record**: one row per ordered endpoint pair, class and contributing
+    **resource**, plus the assertion signature that resource states.
+    ``interaction_fact_combined`` (§3b) is the **all-resources scope,
+    materialised**: the collapse of the record over every resource, one row per
+    ordered endpoint pair and class, precomputed because that scope applies no
+    filter. Every preset produces the same shape over its own scope, so the
+    collapsed table is one scope's materialisation rather than a layer above
+    the record.
 
     The tables are declared here; the derive step fills them.
     """
@@ -2419,6 +2524,118 @@ def _ensure_interaction_schema(
             """
         ).format(schema_id)
     )
+    # `interaction_fact_resource` is the interaction **record** (data model
+    # §3a): one row per ordered `(subject, object, class)` and contributing
+    # `source_id`, plus the assertion signature that resource states. Keeping
+    # the resource on the row is what makes every summary decomposable — a
+    # query restricted to a subset of resources recollapses these rows for its
+    # own scope instead of reading numbers computed over all of them.
+    #
+    # A resource that asserts two contradicting signs for the same endpoints
+    # under different predicates keeps two rows, because the signature is part
+    # of the key.
+    #
+    # `interaction_fact_resource_id` is a **surrogate primary key, and it is
+    # not optional**. The rest of the key includes the nullable signature
+    # columns, and Postgres foreign keys default to `MATCH SIMPLE`, under which
+    # **a foreign key with any NULL column is not checked at all**. Drug-target
+    # rows assert neither sign nor direction, so a composite foreign key would
+    # pass silently on nearly every row of the largest detail table while
+    # looking enforced. The surrogate is a deterministic content hash over the
+    # full key — the same `md5(to_json(...))::uuid` scheme the header id uses
+    # (`derived_tables.interaction_content_uuid_sql`, DuckDB macro
+    # `content_uuid`) — so it is stable across builds and a rebuilt record does
+    # not orphan its detail rows.
+    cur.execute(
+        sql.SQL(
+            """
+            CREATE TABLE IF NOT EXISTS {}.interaction_fact_resource (
+              interaction_fact_resource_id uuid PRIMARY KEY,
+              subject_entity_id uuid NOT NULL
+                REFERENCES {}.entity(entity_id),
+              object_entity_id uuid NOT NULL
+                REFERENCES {}.entity(entity_id),
+              interaction_class_id smallint NOT NULL
+                REFERENCES {}.vocab_interaction_class(interaction_class_id),
+              source_id bigint NOT NULL
+                REFERENCES {}.data_source(source_id),
+              is_directed boolean,
+              is_stimulation boolean,
+              is_inhibition boolean,
+              subject_organism bigint,
+              object_organism bigint,
+              affinity double precision,
+              pchembl double precision,
+              score double precision,
+              curation_flags text[],
+              reference_pubmed_ids text[],
+              reference_dois text[],
+              attributes jsonb,
+              interaction_id uuid
+                REFERENCES {}.interaction(interaction_id)
+                ON DELETE CASCADE
+            )
+            """
+        ).format(
+            schema_id,
+            schema_id,
+            schema_id,
+            schema_id,
+            schema_id,
+            schema_id,
+        )
+    )
+    # Sign and direction are three-valued here for the same reason they are on
+    # the collapse (FR-044a, research R15), and the statement is narrower: NULL
+    # means **this** resource is silent, which is a different claim from an
+    # asserted `false`. They therefore carry no NOT NULL and no DEFAULT. The
+    # numeric and reference columns hold what this one resource asserts, not a
+    # cross-resource best or union — that is what a collapse computes, per
+    # scope. Added here too, for databases created before the columns existed.
+    cur.execute(
+        sql.SQL(
+            """
+            ALTER TABLE {}.interaction_fact_resource
+            ADD COLUMN IF NOT EXISTS is_directed boolean,
+            ADD COLUMN IF NOT EXISTS is_stimulation boolean,
+            ADD COLUMN IF NOT EXISTS is_inhibition boolean,
+            ADD COLUMN IF NOT EXISTS subject_organism bigint,
+            ADD COLUMN IF NOT EXISTS object_organism bigint,
+            ADD COLUMN IF NOT EXISTS affinity double precision,
+            ADD COLUMN IF NOT EXISTS pchembl double precision,
+            ADD COLUMN IF NOT EXISTS score double precision,
+            ADD COLUMN IF NOT EXISTS curation_flags text[],
+            ADD COLUMN IF NOT EXISTS reference_pubmed_ids text[],
+            ADD COLUMN IF NOT EXISTS reference_dois text[],
+            ADD COLUMN IF NOT EXISTS attributes jsonb,
+            ADD COLUMN IF NOT EXISTS interaction_id uuid
+            """
+        ).format(schema_id)
+    )
+    # The full key of the record, which is the endpoint pair, the class, the
+    # resource **and** the signature that resource asserts. `NULLS NOT
+    # DISTINCT` is what makes it a key at all: the three signature columns are
+    # nullable, and under the default a resource silent on both sign and
+    # direction would be free to repeat its row without the index noticing.
+    # The same rule `interaction_fact_combined_key_idx` and
+    # `entity_canonical_key_idx` follow.
+    cur.execute(
+        sql.SQL(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS
+              interaction_fact_resource_key_idx
+            ON {}.interaction_fact_resource (
+              subject_entity_id,
+              object_entity_id,
+              interaction_class_id,
+              source_id,
+              is_directed,
+              is_stimulation,
+              is_inhibition
+            ) NULLS NOT DISTINCT
+            """
+        ).format(schema_id)
+    )
     cur.execute(
         sql.SQL(
             """
@@ -2454,6 +2671,20 @@ def _ensure_interaction_schema(
             """
         ).format(schema_id, schema_id, schema_id, schema_id, schema_id)
     )
+    # `interaction_fact_combined` is the **all-resources scope, materialised**
+    # (data model §3b): the collapse of `interaction_fact_resource` over every
+    # resource. Its key stays the ordered `(subject, object, class)` triple.
+    #
+    # It gains **no surrogate key** and takes **no inbound foreign key**
+    # (anchoring rule, §3b). Keys point at the record, never at a
+    # materialisation: this table is one scope's collapse and is droppable by
+    # policy, so a key into it would turn the decision not to materialise a
+    # scope into a migration. It has no stable identity to offer either — a
+    # serial reshuffles every build, and a deterministic id would only
+    # re-encode the triple a child row can carry directly. Navigation to a
+    # collapse is therefore a join on the denormalised triple, which reaches
+    # **any** scope's collapse and not only this one.
+    #
     # Sign and direction are three-valued (FR-044, research R15): NULL means no
     # contributing resource asserts the attribute, and that is a different
     # statement from an asserted `false`. They therefore carry no NOT NULL and
@@ -2552,6 +2783,23 @@ def _ensure_interaction_schema(
             'interaction_party_role_idx',
             'interaction_party',
             ('role_id',),
+        ),
+        # A collapse groups the record by the endpoint/class triple, so it
+        # gets a B-tree on exactly that prefix and runs over sorted input
+        # rather than through a hash over 14.7 million rows. The unique key
+        # starts with the same three columns but continues into the resource
+        # and the signature, so it does not serve a grouped scan as cheaply.
+        (
+            'interaction_fact_resource_collapse_idx',
+            'interaction_fact_resource',
+            ('subject_entity_id', 'object_entity_id', 'interaction_class_id'),
+        ),
+        # Every scoped query starts by restricting the resource set, so the
+        # resource is the other selective column on the record.
+        (
+            'interaction_fact_resource_source_idx',
+            'interaction_fact_resource',
+            ('source_id',),
         ),
         # The unique key leads with `subject_entity_id`, so an object-first
         # lookup needs its own index; the class and the header link are the
