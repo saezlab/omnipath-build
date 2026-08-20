@@ -48,6 +48,7 @@ def emit_build_manifest(
     inputs_package: str = 'pypath.inputs_v2',
     partial_build: bool = False,
     derive_cost: Mapping[str, Any] | Sequence[Mapping[str, Any]] | None = None,
+    scope_cost: Mapping[str, Any] | Sequence[Mapping[str, Any]] | None = None,
 ) -> BuildManifestStats:
     """Write the single self-describing ``build_manifest`` row (Milestone D).
 
@@ -58,14 +59,29 @@ def emit_build_manifest(
     runs in ``derive`` right after ``sync_resources_table``.
 
     ``derive_cost`` is what the interaction derive steps cost this run — seconds
-    and rows per step (fact, assay, party, reaction projection, intercell),
-    either as ``{step: {seconds, rows}}`` or as a sequence of such records. It is
-    written to ``interactions_derive_cost`` and, with the ``network_presets``
-    inventory read from ``network_registry``, stays **outside** the hashed
-    payload: both are volatile — timings vary run to run and the preset list
-    changes without the built content changing — and neither may move a build's
-    identity (the cycle-007 lesson). The hash covers ``{package_commits,
-    resources}`` and nothing else.
+    and rows per step (record fact, collapse, assay, party, reaction projection,
+    intercell), either as ``{step: {seconds, rows}}`` or as a sequence of such
+    records. The **two interaction tables are reported separately** (T020b):
+    ``interaction_fact_resource`` is the record and ``interaction_fact_combined``
+    the all-resources collapse, and the normalised cost names them under
+    ``interaction_tables`` as ``record`` and ``collapse`` so the grain
+    amendment's cost is attributable rather than buried in one interaction-step
+    total.
+
+    ``scope_cost`` is what materialising each query scope cost — seconds, rows
+    and whether it was materialised at all, per scope — either as
+    ``{scope: {...}}`` or as a sequence of ``{scope, ...}`` records. FR-050 wants
+    this for **every** scope measured, the all-resources scope included, so that
+    declining to materialise a scope stays an available answer to a cost
+    overrun. Both are optional: a build that recorded neither still emits a
+    manifest.
+
+    All of it is written to ``interactions_derive_cost`` and, with the
+    ``network_presets`` inventory read from ``network_registry``, stays
+    **outside** the hashed payload: both are volatile — timings vary run to run
+    and the preset list changes without the built content changing — and neither
+    may move a build's identity (the cycle-007 lesson). The hash covers
+    ``{package_commits, resources}`` and nothing else.
     """
 
     schema_id = sql.Identifier(schema)
@@ -87,9 +103,10 @@ def emit_build_manifest(
         # build_id content hash: `translation_tables` names the
         # identifier-resolution relations the build consumed,
         # `canonicalization_coverage` counts how many records resolved vs stayed
-        # unresolved (and why), `interactions_derive_cost` holds this run's
-        # per-step seconds and rows, and `network_presets` the registered preset
-        # inventory — volatile numbers and metadata that must not change a
+        # unresolved (and why), `interactions_derive_cost` holds this
+        # run's per-step seconds and rows, the two interaction tables named
+        # apart and the per-scope materialisation cost, and `network_presets`
+        # the registered preset inventory — volatile numbers and metadata that must not change a
         # build's identity. They are added as columns rather than folded into
         # the hashed payload, which is what keeps them out of the hash by
         # construction: `payload` below is built from two names only.
@@ -138,7 +155,7 @@ def emit_build_manifest(
         ).hexdigest()[:12]
         translation_tables = _translation_tables_used(cur, schema)
         coverage = _canonicalization_coverage(cur, schema)
-        interactions_derive_cost = _interactions_derive_cost(derive_cost)
+        interactions_derive_cost = _interactions_derive_cost(derive_cost, scope_cost)
         # The sign-conflict measurement (T013c, FR-044b) rides next to the
         # cost, read from what the derive step recorded rather than passed in,
         # so it reaches the manifest without the orchestration having to
@@ -261,11 +278,28 @@ def _canonicalization_coverage(
     return {'total': total, 'by_status': by_status, 'by_reason': by_reason}
 
 
+# The two interaction tables of the grain amendment, named apart (T020b): the
+# record is one row per (subject, object, class, resource) plus the assertion
+# signature, the collapse is that record folded over every resource. Their costs
+# are reported separately because the amendment's cost has to be attributable —
+# a single interaction-step total cannot say whether the record or the collapse
+# is what pushed the derive over its ceiling.
+INTERACTION_RECORD_STEP = 'interaction_fact_resource'
+INTERACTION_COLLAPSE_STEP = 'interaction_fact_combined'
+
+# The scope name reserved for the collapse over every resource. The derive step
+# reports it like any other scope so the manifest can be read without knowing
+# which scope happens to be materialised as `interaction_fact_combined`
+# (FR-050: "including the all-resources scope").
+ALL_RESOURCES_SCOPE = 'all_resources'
+
 # The interaction derive steps whose cost the manifest reports, in build order.
 _DERIVE_STEPS = (
-    'interaction_fact_combined',
-    'interaction_assay',
+    'interaction_header',
     'interaction_party',
+    INTERACTION_RECORD_STEP,
+    INTERACTION_COLLAPSE_STEP,
+    'interaction_assay',
     'reaction_projection',
     'intercell',
 )
@@ -314,20 +348,33 @@ def _interaction_sign_conflict(
 
 def _interactions_derive_cost(
     derive_cost: Mapping[str, Any] | Sequence[Mapping[str, Any]] | None,
+    scope_cost: Mapping[str, Any] | Sequence[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any] | None:
-    """Normalise what the interaction derive steps cost into a manifest record.
+    """Normalise what the interaction derive cost into one manifest record.
 
-    Accepts ``{step: {seconds, rows}}`` or a sequence of ``{step, seconds, rows}``
-    records and returns ``{'steps': [...]}`` ordered by the build order of the
-    steps it knows, unknown steps last. Returns ``None`` when no derive step
-    reported a cost, so a build that ran none says so rather than claiming zeros.
+    Returns, as available:
+
+    ``steps``
+        ``[{step, seconds, rows}]`` ordered by the build order of the steps it
+        knows, unknown steps last. Fed from ``{step: {seconds, rows}}`` or a
+        sequence of ``{step, seconds, rows}`` records.
+    ``interaction_tables``
+        the two tables of the grain amendment named apart (T020b) — see
+        :func:`_interaction_table_cost`.
+    ``scopes``
+        what each measured query scope cost to materialise (FR-050) — see
+        :func:`_scope_materialisation_cost`.
+
+    Returns ``None`` when nothing was reported at all, so a build that ran no
+    interaction derive step says so rather than claiming zeros.
 
     These are timings and row counts — the most volatile thing a build produces.
     They are recorded next to the identity hash and never inside it.
     """
 
+    scopes = _scope_materialisation_cost(scope_cost)
     if not derive_cost:
-        return None
+        return {'scopes': scopes} if scopes else None
     if isinstance(derive_cost, Mapping):
         records = [
             {'step': step, **dict(cost)} for step, cost in derive_cost.items()
@@ -351,11 +398,142 @@ def _interactions_derive_cost(
             }
         )
     if not steps:
-        return None
+        return {'scopes': scopes} if scopes else None
 
     order = {step: n for n, step in enumerate(_DERIVE_STEPS)}
     steps.sort(key=lambda entry: (order.get(entry['step'], len(order)), entry['step']))
-    return {'steps': steps}
+    cost: dict[str, Any] = {'steps': steps}
+    tables = _interaction_table_cost(steps)
+    if tables is not None:
+        cost['interaction_tables'] = tables
+    if scopes:
+        cost['scopes'] = scopes
+    return cost
+
+
+def _interaction_table_cost(
+    steps: Sequence[Mapping[str, Any]],
+) -> dict[str, Any] | None:
+    """The two interaction tables' cost, named apart (T020b, FR-050).
+
+    ``{'record': {table, seconds, rows}, 'collapse': {...}, 'total_seconds': …}``
+    — ``record`` is ``interaction_fact_resource``, ``collapse`` is the
+    ``interaction_fact_combined`` fold over every resource. A half that no step
+    reported is ``None`` rather than a dict of zeros: not run and run for free
+    are different facts, and the decision this field will be argued from turns on
+    which of the two costs what.
+
+    ``total_seconds`` adds up the halves that were measured, so the pair can be
+    held against the whole-derive ceiling without unpacking the block. Returns
+    ``None`` when neither table reported, leaving pre-amendment builds unchanged.
+    """
+
+    by_step = {entry['step']: entry for entry in steps}
+
+    def half(step: str) -> dict[str, Any] | None:
+        entry = by_step.get(step)
+        if entry is None:
+            return None
+        return {
+            'table': step,
+            'seconds': entry.get('seconds'),
+            'rows': entry.get('rows'),
+        }
+
+    record = half(INTERACTION_RECORD_STEP)
+    collapse = half(INTERACTION_COLLAPSE_STEP)
+    if record is None and collapse is None:
+        return None
+    measured = [
+        part['seconds']
+        for part in (record, collapse)
+        if part is not None and part['seconds'] is not None
+    ]
+    return {
+        'record': record,
+        'collapse': collapse,
+        'total_seconds': sum(measured) if measured else None,
+    }
+
+
+def _scope_materialisation_cost(
+    scope_cost: Mapping[str, Any] | Sequence[Mapping[str, Any]] | None,
+) -> list[dict[str, Any]] | None:
+    """What each query scope cost to materialise (FR-050).
+
+    Accepts ``{scope: {...}}`` or a sequence of ``{scope, ...}`` records and
+    normalises each to ``{scope, table, materialised, seconds, rows, sources}``:
+
+    ``scope``
+        the scope's name; :data:`ALL_RESOURCES_SCOPE` for the collapse over
+        every resource, which FR-050 requires to be reported like any other.
+    ``table``
+        the relation it was materialised into, ``None`` when it was measured
+        without being materialised.
+    ``materialised``
+        whether this build actually stores it. Inferred from ``table`` when the
+        record does not say. A measured-but-not-materialised scope is the whole
+        point of the field: declining to materialise has to stay an available
+        response to a cost overrun, and that argument needs the number for the
+        scope that was declined.
+    ``seconds`` / ``rows``
+        derive time and row count, ``None`` when not measured.
+    ``sources``
+        the resource set the scope resolves to, so a later reader can tell which
+        scope this was without re-resolving the preset or license filter.
+
+    Ordered all-resources first, then materialised scopes, then by name. Returns
+    ``None`` when nothing was reported, so a build that measured no scope says
+    so rather than claiming it materialised none.
+    """
+
+    if not scope_cost:
+        return None
+    if isinstance(scope_cost, Mapping):
+        records = [
+            {'scope': scope, **dict(cost)} for scope, cost in scope_cost.items()
+        ]
+    else:
+        records = [dict(cost) for cost in scope_cost]
+
+    scopes: list[dict[str, Any]] = []
+    for record in records:
+        scope = record.get('scope')
+        if scope is None:
+            logger.warning('build manifest: scope-cost record without a scope: %r', record)
+            continue
+        table = record.get('table')
+        materialised = record.get('materialised')
+        seconds = record.get('seconds')
+        rows = record.get('rows')
+        sources = record.get('sources')
+        scopes.append(
+            {
+                'scope': str(scope),
+                'table': str(table) if table is not None else None,
+                # Absent means "as the table says": a scope written somewhere
+                # was materialised, one measured into nothing was not.
+                'materialised': bool(materialised)
+                if materialised is not None
+                else table is not None,
+                'seconds': float(seconds) if seconds is not None else None,
+                'rows': int(rows) if rows is not None else None,
+                'sources': [str(source) for source in sources]
+                if sources is not None
+                else None,
+            }
+        )
+    if not scopes:
+        return None
+
+    scopes.sort(
+        key=lambda entry: (
+            entry['scope'] != ALL_RESOURCES_SCOPE,
+            not entry['materialised'],
+            entry['scope'],
+        )
+    )
+    return scopes
 
 
 def _network_preset_inventory(

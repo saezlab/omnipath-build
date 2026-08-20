@@ -18,6 +18,11 @@ import psycopg2
 from omnipath_build import configure_build_tmpdir
 
 from omnipath_build.db.derived_tables import InteractionDeriveStats
+from omnipath_build.db.resources import (
+    ALL_RESOURCES_SCOPE,
+    INTERACTION_COLLAPSE_STEP,
+    INTERACTION_RECORD_STEP,
+)
 from omnipath_build.db import (
     ensure_schema,
     reset_content_tables,
@@ -598,6 +603,7 @@ def main(argv: list[str] | None = None) -> int:
                     inputs_package=args.inputs_package,
                     partial_build=_is_partial_build(args.max_records),
                     derive_cost=_interaction_derive_cost(interaction_stats),
+                    scope_cost=_interaction_scope_cost(interaction_stats),
                 )
                 _derive_log(
                     'build_manifest_done',
@@ -736,6 +742,7 @@ def _derive_interactions(
         'interactions_done',
         interactions=stats.interactions,
         parties=stats.parties,
+        records=stats.records,
         facts=stats.facts,
         rows_by_class=','.join(
             f'{name}:{count}' for name, count in sorted(stats.rows_by_class.items())
@@ -751,19 +758,75 @@ def _interaction_derive_cost(
     """What the interaction projection cost this run, for the build manifest.
 
     Read off the ``InteractionDeriveStats`` the derive step already returned
-    rather than re-derived: ``seconds`` is the whole projection's wall clock and
-    is attributed to ``interaction_fact_combined``, the step that dominates it; the
-    header and participant rows are reported as row counts of their own. Returns
-    ``None`` when the projection did not run, so ``--no-interactions`` records
-    no cost instead of claiming zeros.
+    rather than re-derived. **Seconds and rows are reported per table** (T020b):
+    the R19 amendment makes the projection two writes — the record
+    ``interaction_fact_resource`` and its all-resources collapse
+    ``interaction_fact_combined`` — and attributing the whole projection's wall
+    clock to one of them, as this function did before the amendment, hides which
+    half a cost overrun came from. That is the number FR-036's ceiling will be
+    argued against, so each half carries its own measured seconds, taken from
+    ``step_seconds``, and its own row count.
+
+    Returns ``None`` when the projection did not run, so ``--no-interactions``
+    records no cost instead of claiming zeros.
     """
     if stats is None:
         return None
+    step_seconds = stats.step_seconds or {}
     return {
-        'interaction_fact_combined': {'seconds': stats.seconds, 'rows': stats.facts},
+        INTERACTION_RECORD_STEP: {
+            'seconds': step_seconds.get(INTERACTION_RECORD_STEP),
+            'rows': stats.records,
+        },
+        INTERACTION_COLLAPSE_STEP: {
+            'seconds': step_seconds.get(INTERACTION_COLLAPSE_STEP),
+            'rows': stats.facts,
+        },
         'interaction_party': {'rows': stats.parties},
-        'interaction_header': {'rows': stats.interactions},
+        'interaction_header': {
+            'seconds': step_seconds.get('interaction_header'),
+            'rows': stats.interactions,
+        },
+        # The two staging steps carry no rows of their own and are reported
+        # anyway, so the step seconds add up to the projection's wall clock
+        # rather than leaving an unattributed remainder. A ceiling argument
+        # made against a partial accounting is an argument about the wrong
+        # number.
+        'interaction_class_evidence': {
+            'seconds': step_seconds.get('interaction_class_evidence'),
+        },
+        'interaction_evidence_fold': {
+            'seconds': step_seconds.get('interaction_evidence_fold'),
+        },
     }
+
+
+def _interaction_scope_cost(
+    stats: InteractionDeriveStats | None,
+) -> list[dict[str, object]] | None:
+    """What materialising each query scope cost this run (FR-050, T020b).
+
+    One scope is materialised today: the collapse over every resource, which
+    ``interaction_fact_combined`` holds. FR-050 asks for it to be reported like
+    any other scope rather than left implicit, so that declining to materialise
+    a scope stays an available answer to a cost overrun — an argument that needs
+    the number for the scope it would decline.
+
+    ``sources`` is left unset because the all-resources scope is not a resource
+    list: naming its 45 members would read as a restriction that is not there.
+    """
+    if stats is None:
+        return None
+    step_seconds = stats.step_seconds or {}
+    return [
+        {
+            'scope': ALL_RESOURCES_SCOPE,
+            'table': INTERACTION_COLLAPSE_STEP,
+            'materialised': True,
+            'seconds': step_seconds.get(INTERACTION_COLLAPSE_STEP),
+            'rows': stats.facts,
+        }
+    ]
 
 
 def _is_partial_build(max_records: object) -> bool:
