@@ -169,7 +169,7 @@ class TestHeadersOverTheFixtureGraph:
             cur.execute(
                 f"""
                 SELECT count(DISTINCT interaction_id), count(*)
-                FROM {SCRATCH}.interaction_fact f
+                FROM {SCRATCH}.interaction_fact_combined f
                 JOIN {SCRATCH}.entity subject
                   ON subject.entity_id = f.subject_entity_id
                 JOIN {SCRATCH}.entity object

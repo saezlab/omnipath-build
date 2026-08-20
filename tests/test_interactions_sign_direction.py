@@ -79,7 +79,7 @@ def _row(conn, subject: str, object_: str) -> dict[str, object]:
             SELECT f.is_directed, f.is_stimulation, f.is_inhibition,
                    f.sign_source_count, f.direction_source_count,
                    f.sources, f.source_count
-            FROM {SCRATCH}.interaction_fact f
+            FROM {SCRATCH}.interaction_fact_combined f
             JOIN {SCRATCH}.entity subject
               ON subject.entity_id = f.subject_entity_id
             JOIN {SCRATCH}.entity object
@@ -140,7 +140,7 @@ def test_the_sign_source_count_never_exceeds_the_sources(built):
     with conn.cursor() as cur:
         cur.execute(
             f"""
-            SELECT count(*) FROM {SCRATCH}.interaction_fact
+            SELECT count(*) FROM {SCRATCH}.interaction_fact_combined
             WHERE sign_source_count > cardinality(sources)
                OR direction_source_count > cardinality(sources)
             """
@@ -187,7 +187,7 @@ def test_no_fact_row_ever_asserts_a_false_direction(built):
     conn, _stats = built
     with conn.cursor() as cur:
         cur.execute(
-            f'SELECT count(*) FROM {SCRATCH}.interaction_fact WHERE is_directed IS FALSE'
+            f'SELECT count(*) FROM {SCRATCH}.interaction_fact_combined WHERE is_directed IS FALSE'
         )
         assert cur.fetchone()[0] == 0
 
@@ -238,7 +238,7 @@ def test_the_summary_is_recorded_next_to_the_derive_cost(built):
     stats = emit_build_manifest(
         conn,
         schema=SCRATCH,
-        derive_cost={'interaction_fact': {'seconds': 1.0, 'rows': 12}},
+        derive_cost={'interaction_fact_combined': {'seconds': 1.0, 'rows': 12}},
     )
     with conn.cursor() as cur:
         cur.execute(

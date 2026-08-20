@@ -4,7 +4,7 @@ Constitution III: every new table this cycle adds is asserted to exist and to
 carry rows after a build. Four tables make up the model — the header
 ``interaction`` (data model §1), the participant ``interaction_party`` (§2),
 the participant-role vocabulary ``vocab_relation_role`` (§7) and the flat
-binary projection ``interaction_fact`` (§3), the hot query target.
+binary projection ``interaction_fact_combined`` (§3), the hot query target.
 
 The schema half runs against a throwaway scratch schema, so it needs no data.
 The population half reads the built schema and needs a build — a capped
@@ -37,7 +37,7 @@ INTERACTION_TABLES = (
     'interaction',
     'interaction_party',
     'vocab_relation_role',
-    'interaction_fact',
+    'interaction_fact_combined',
 )
 
 # Sign and direction are three-valued (FR-044, research R15): NULL means no
@@ -129,7 +129,7 @@ def test_table_is_created(conn, scratch, table):
 
 def test_fact_table_carries_the_hot_columns(conn, scratch):
     """The fact table carries the hot filter columns of data model §3."""
-    columns = _columns(conn, scratch, 'interaction_fact')
+    columns = _columns(conn, scratch, 'interaction_fact_combined')
     expected = {
         'subject_entity_id',
         'object_entity_id',
@@ -156,8 +156,8 @@ def test_fact_table_carries_the_hot_columns(conn, scratch):
 @pytest.mark.parametrize('column', THREE_VALUED_COLUMNS)
 def test_sign_and_direction_are_three_valued(conn, scratch, column):
     """NULL means unasserted, so these three are nullable and undefaulted."""
-    columns = _columns(conn, scratch, 'interaction_fact')
-    assert column in columns, f'{column} is missing from interaction_fact'
+    columns = _columns(conn, scratch, 'interaction_fact_combined')
+    assert column in columns, f'{column} is missing from interaction_fact_combined'
     data_type, nullable, default = columns[column]
     assert data_type == 'boolean'
     assert nullable == 'YES', (
@@ -184,7 +184,7 @@ def test_fact_key_is_unique_and_ordered(conn, scratch):
             JOIN pg_attribute att
               ON att.attrelid = rel.oid AND att.attnum = k.attnum
             WHERE ns.nspname = %s
-              AND rel.relname = 'interaction_fact'
+              AND rel.relname = 'interaction_fact_combined'
               AND idx.indisunique
             GROUP BY idx.indexrelid
             """,
@@ -225,7 +225,7 @@ def test_every_fact_row_links_to_a_header(conn):
     """The projection keeps its link to the endpoint-independent header."""
     with conn.cursor() as cur:
         cur.execute(
-            f'SELECT count(*) FROM {SCHEMA}.interaction_fact '
+            f'SELECT count(*) FROM {SCHEMA}.interaction_fact_combined '
             f'WHERE interaction_id IS NULL'
         )
         orphans = cur.fetchone()[0]
@@ -240,7 +240,7 @@ def test_the_ordered_key_holds_in_the_built_data(conn):
             SELECT count(*)
             FROM (
               SELECT 1
-              FROM {SCHEMA}.interaction_fact
+              FROM {SCHEMA}.interaction_fact_combined
               GROUP BY
                 subject_entity_id,
                 object_entity_id,

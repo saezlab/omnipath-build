@@ -227,7 +227,7 @@ def main(argv: list[str] | None = None) -> int:
         default=True,
         help=(
             'Project the canonical graph into interaction/interaction_party/'
-            'interaction_fact (008 T013/T014). Runs after the interaction-class '
+            'interaction_fact_combined (008 T013/T014). Runs after the interaction-class '
             'classification, which fills the predicate map it reads.'
         ),
     )
@@ -752,7 +752,7 @@ def _interaction_derive_cost(
 
     Read off the ``InteractionDeriveStats`` the derive step already returned
     rather than re-derived: ``seconds`` is the whole projection's wall clock and
-    is attributed to ``interaction_fact``, the step that dominates it; the
+    is attributed to ``interaction_fact_combined``, the step that dominates it; the
     header and participant rows are reported as row counts of their own. Returns
     ``None`` when the projection did not run, so ``--no-interactions`` records
     no cost instead of claiming zeros.
@@ -760,7 +760,7 @@ def _interaction_derive_cost(
     if stats is None:
         return None
     return {
-        'interaction_fact': {'seconds': stats.seconds, 'rows': stats.facts},
+        'interaction_fact_combined': {'seconds': stats.seconds, 'rows': stats.facts},
         'interaction_party': {'rows': stats.parties},
         'interaction_header': {'rows': stats.interactions},
     }

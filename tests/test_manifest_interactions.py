@@ -49,7 +49,7 @@ PRESET = NetworkDefinition(
 # Two runs of the same build: identical inputs, different timings and row counts
 # observed along the way.
 COST_FIRST = {
-    'interaction_fact': {'seconds': 12.5, 'rows': 1000},
+    'interaction_fact_combined': {'seconds': 12.5, 'rows': 1000},
     'interaction_assay': {'seconds': 3.25, 'rows': 400},
     'interaction_party': {'seconds': 5.0, 'rows': 2000},
     'reaction_projection': {'seconds': 8.75, 'rows': 700},
@@ -127,8 +127,8 @@ def test_manifest_records_derive_cost_and_preset_inventory(conn, build_schema):
     assert isinstance(cost, dict), 'no interactions_derive_cost in the manifest'
     by_step = {entry['step']: entry for entry in cost['steps']}
     assert set(by_step) == set(COST_FIRST)
-    assert by_step['interaction_fact']['seconds'] == pytest.approx(12.5)
-    assert by_step['interaction_fact']['rows'] == 1000
+    assert by_step['interaction_fact_combined']['seconds'] == pytest.approx(12.5)
+    assert by_step['interaction_fact_combined']['rows'] == 1000
 
     assert isinstance(presets, list) and presets, 'no network_presets inventory'
     registered = {entry['name']: entry for entry in presets}

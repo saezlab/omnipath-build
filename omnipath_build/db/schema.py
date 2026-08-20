@@ -14,8 +14,15 @@ quickly, and then create the indexes once before canonicalization or derivation.
 
 from __future__ import annotations
 
+import logging
+
 from psycopg2 import sql
 import psycopg2.extensions
+
+# Named for the module rather than taken from ``__name__``: this module is only
+# ever imported, so the two agree, but naming it keeps the logger inside the
+# ``omnipath_build`` subtree that ``_session`` configures (research R17).
+_logger = logging.getLogger('omnipath_build.db.schema')
 
 CONTENT_TABLES: tuple[str, ...] = (
     'annotation_term_entity_bitmap',
@@ -2269,6 +2276,46 @@ def _ensure_classification_vocab(
     )
 
 
+def _drop_legacy_interaction_fact(
+    cur: psycopg2.extensions.cursor,
+    schema: str,
+) -> None:
+    """Drop ``interaction_fact``, renamed to ``interaction_fact_combined``.
+
+    The rename (spec 008, R19, 2026-08-20) leaves the old table behind on any
+    database built before it. That is not merely untidy. The old table keeps a
+    foreign key to ``interaction``, and the derive step truncates the header
+    together with its dependants precisely so the key does not block it. A
+    left-behind ``interaction_fact`` is a dependant the truncate no longer
+    names, so the next derive fails on it.
+
+    Dropping is safe because the table is a projection: every row in it is
+    rebuilt from ``relation`` and ``relation_evidence`` on the next derive.
+    """
+
+    cur.execute(
+        """
+        SELECT 1
+        FROM information_schema.tables
+        WHERE table_schema = %s AND table_name = 'interaction_fact'
+        """,
+        [schema],
+    )
+    if cur.fetchone() is None:
+        return
+
+    _logger.info(
+        'Dropping legacy %s.interaction_fact; it is now '
+        'interaction_fact_combined and is rebuilt by the derive step.',
+        schema,
+    )
+    cur.execute(
+        sql.SQL('DROP TABLE {}.interaction_fact CASCADE').format(
+            sql.Identifier(schema),
+        )
+    )
+
+
 def _ensure_interaction_schema(
     cur: psycopg2.extensions.cursor,
     schema: str,
@@ -2281,13 +2328,14 @@ def _ensure_interaction_schema(
     generalises the two endpoints of ``relation_evidence`` and the
     reactant/product grain of the DuckDB ``reaction_member_signature`` to N
     participants, each in a role, on a side, at an ordinal, optionally with a
-    stoichiometry, a compartment and its own organism. ``interaction_fact`` is
+    stoichiometry, a compartment and its own organism. ``interaction_fact_combined`` is
     the flat binary projection the hot queries read, one row per ordered
     endpoint pair and interaction class.
 
     The tables are declared here; the derive step fills them.
     """
     schema_id = sql.Identifier(schema)
+    _drop_legacy_interaction_fact(cur, schema)
     cur.execute(
         sql.SQL(
             """
@@ -2374,7 +2422,7 @@ def _ensure_interaction_schema(
     cur.execute(
         sql.SQL(
             """
-            CREATE TABLE IF NOT EXISTS {}.interaction_fact (
+            CREATE TABLE IF NOT EXISTS {}.interaction_fact_combined (
               subject_entity_id uuid NOT NULL
                 REFERENCES {}.entity(entity_id),
               object_entity_id uuid NOT NULL
@@ -2420,7 +2468,7 @@ def _ensure_interaction_schema(
     cur.execute(
         sql.SQL(
             """
-            ALTER TABLE {}.interaction_fact
+            ALTER TABLE {}.interaction_fact_combined
             ADD COLUMN IF NOT EXISTS subject_organism bigint,
             ADD COLUMN IF NOT EXISTS object_organism bigint,
             ADD COLUMN IF NOT EXISTS is_directed boolean,
@@ -2456,10 +2504,10 @@ def _ensure_interaction_schema(
             DO $$
             BEGIN
               IF NOT EXISTS (
-                SELECT 1 FROM {}.interaction_fact
+                SELECT 1 FROM {}.interaction_fact_combined
                 WHERE interaction_class_id IS NULL
               ) THEN
-                ALTER TABLE {}.interaction_fact
+                ALTER TABLE {}.interaction_fact_combined
                 ALTER COLUMN interaction_class_id SET NOT NULL;
               END IF;
             END $$
@@ -2475,8 +2523,8 @@ def _ensure_interaction_schema(
     cur.execute(
         sql.SQL(
             """
-            CREATE UNIQUE INDEX IF NOT EXISTS interaction_fact_key_idx
-            ON {}.interaction_fact (
+            CREATE UNIQUE INDEX IF NOT EXISTS interaction_fact_combined_key_idx
+            ON {}.interaction_fact_combined (
               subject_entity_id,
               object_entity_id,
               interaction_class_id
@@ -2509,34 +2557,34 @@ def _ensure_interaction_schema(
         # lookup needs its own index; the class and the header link are the
         # other two hot equality filters.
         (
-            'interaction_fact_object_idx',
-            'interaction_fact',
+            'interaction_fact_combined_object_idx',
+            'interaction_fact_combined',
             ('object_entity_id',),
         ),
         (
-            'interaction_fact_class_idx',
-            'interaction_fact',
+            'interaction_fact_combined_class_idx',
+            'interaction_fact_combined',
             ('interaction_class_id',),
         ),
         (
-            'interaction_fact_interaction_idx',
-            'interaction_fact',
+            'interaction_fact_combined_interaction_idx',
+            'interaction_fact_combined',
             ('interaction_id',),
         ),
         # Affinity, pchembl and score are range-filtered and sorted on.
         (
-            'interaction_fact_affinity_idx',
-            'interaction_fact',
+            'interaction_fact_combined_affinity_idx',
+            'interaction_fact_combined',
             ('affinity',),
         ),
         (
-            'interaction_fact_pchembl_idx',
-            'interaction_fact',
+            'interaction_fact_combined_pchembl_idx',
+            'interaction_fact_combined',
             ('pchembl',),
         ),
         (
-            'interaction_fact_score_idx',
-            'interaction_fact',
+            'interaction_fact_combined_score_idx',
+            'interaction_fact_combined',
             ('score',),
         ),
     ]
@@ -2559,10 +2607,10 @@ def _ensure_interaction_schema(
     for index_name, table, column in (
         ('interaction_sources_gin_idx', 'interaction', 'sources'),
         ('interaction_dataset_tags_gin_idx', 'interaction', 'dataset_tags'),
-        ('interaction_fact_sources_gin_idx', 'interaction_fact', 'sources'),
+        ('interaction_fact_combined_sources_gin_idx', 'interaction_fact_combined', 'sources'),
         (
-            'interaction_fact_dataset_tags_gin_idx',
-            'interaction_fact',
+            'interaction_fact_combined_dataset_tags_gin_idx',
+            'interaction_fact_combined',
             'dataset_tags',
         ),
     ):

@@ -263,7 +263,7 @@ def _canonicalization_coverage(
 
 # The interaction derive steps whose cost the manifest reports, in build order.
 _DERIVE_STEPS = (
-    'interaction_fact',
+    'interaction_fact_combined',
     'interaction_assay',
     'interaction_party',
     'reaction_projection',

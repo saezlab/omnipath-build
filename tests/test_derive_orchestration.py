@@ -106,7 +106,7 @@ def test_successful_step_logs_the_cost_figures(monkeypatch, caplog):
 def test_derive_cost_reaches_the_manifest_with_real_numbers():
     """The stats the step returned become the manifest's per-step cost record."""
     cost = cli._interaction_derive_cost(STATS)
-    assert cost['interaction_fact'] == {'seconds': 1.25, 'rows': 33}
+    assert cost['interaction_fact_combined'] == {'seconds': 1.25, 'rows': 33}
     assert cost['interaction_party']['rows'] == 22
     assert cost['interaction_header']['rows'] == 11
     # A build that ran no projection records no cost rather than zeros.
@@ -189,7 +189,7 @@ def test_registered_step_cost_reaches_the_manifest(scratch_conn):
 
     assert cost is not None, 'interactions_derive_cost landed NULL'
     by_step = {entry['step']: entry for entry in cost['steps']}
-    assert by_step['interaction_fact']['rows'] == stats.facts
-    assert by_step['interaction_fact']['seconds'] > 0
+    assert by_step['interaction_fact_combined']['rows'] == stats.facts
+    assert by_step['interaction_fact_combined']['seconds'] > 0
     assert by_step['interaction_party']['rows'] == stats.parties
     assert by_step['interaction_header']['rows'] == stats.interactions

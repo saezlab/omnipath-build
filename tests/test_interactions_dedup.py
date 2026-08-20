@@ -1,6 +1,6 @@
 """The fact table's grain and its provenance folding (008 T013a, FR-006, R1).
 
-``interaction_fact`` carries **one row per ordered**
+``interaction_fact_combined`` carries **one row per ordered**
 ``(subject_entity_id, object_entity_id, interaction_class_id)``. Ordered means
 A→B and B→A stay two rows (FR-044d). One row means every resource that asserts
 that endpoint pair in that class folds into it, with ``sources`` and the
@@ -73,7 +73,7 @@ def _fact(conn, subject: str, object_: str) -> dict[str, object] | None:
             f"""
             SELECT vic.name, f.sources, f.source_count, f.reference_pubmed_ids,
                    f.reference_count, f.interaction_id
-            FROM {SCRATCH}.interaction_fact f
+            FROM {SCRATCH}.interaction_fact_combined f
             JOIN {SCRATCH}.entity subject
               ON subject.entity_id = f.subject_entity_id
             JOIN {SCRATCH}.entity object
@@ -107,7 +107,7 @@ def test_the_ordered_key_is_unique(built):
         cur.execute(
             f"""
             SELECT count(*) FROM (
-              SELECT 1 FROM {SCRATCH}.interaction_fact
+              SELECT 1 FROM {SCRATCH}.interaction_fact_combined
               GROUP BY subject_entity_id, object_entity_id,
                        interaction_class_id
               HAVING count(*) > 1
@@ -153,14 +153,14 @@ def test_every_fact_row_links_to_its_header(built):
     conn, _stats = built
     with conn.cursor() as cur:
         cur.execute(
-            f'SELECT count(*) FROM {SCRATCH}.interaction_fact '
+            f'SELECT count(*) FROM {SCRATCH}.interaction_fact_combined '
             f'WHERE interaction_id IS NULL'
         )
         assert cur.fetchone()[0] == 0
         cur.execute(
             f"""
             SELECT count(*)
-            FROM {SCRATCH}.interaction_fact f
+            FROM {SCRATCH}.interaction_fact_combined f
             LEFT JOIN {SCRATCH}.interaction i
               ON i.interaction_id = f.interaction_id
             WHERE i.interaction_id IS NULL
@@ -218,7 +218,7 @@ def test_no_fact_row_is_left_without_a_class(built):
     conn, _stats = built
     with conn.cursor() as cur:
         cur.execute(
-            f'SELECT count(*) FROM {SCRATCH}.interaction_fact '
+            f'SELECT count(*) FROM {SCRATCH}.interaction_fact_combined '
             f'WHERE interaction_class_id IS NULL'
         )
         assert cur.fetchone()[0] == 0

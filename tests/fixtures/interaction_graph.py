@@ -2,7 +2,7 @@
 
 The interaction derive step (008 T013/T014) folds ``relation`` and its
 ``relation_evidence`` provenance into ``interaction``, ``interaction_party`` and
-``interaction_fact``. Asserting its semantics against the full build would make
+``interaction_fact_combined``. Asserting its semantics against the full build would make
 the assertions depend on whatever the resources happen to say this week, so the
 three projection tests build this fixture instead: a dozen relations in a
 throwaway schema, each one carrying exactly the situation a requirement talks

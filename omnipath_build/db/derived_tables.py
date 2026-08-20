@@ -1001,7 +1001,7 @@ def sweep_staging_tables(
 
 # --- The interaction projection (008 T012-T014) ------------------------------
 #
-# `interaction_fact` is a denormalised precomputed projection over the canonical
+# `interaction_fact_combined` is a denormalised precomputed projection over the canonical
 # graph, not a new store of evidence (research R0): `relation` supplies the
 # deduped endpoints, `relation_evidence` and its annotations the provenance, and
 # `relation_evidence_relation` links the two. The evidence table's own endpoint
@@ -1127,7 +1127,7 @@ def rebuild_interaction_tables(
 
     Writes ``interaction`` (one endpoint-independent header per participant set
     and class), ``interaction_party`` (its participants, in role) and
-    ``interaction_fact`` (one row per **ordered** subject/object/class triple,
+    ``interaction_fact_combined`` (one row per **ordered** subject/object/class triple,
     with provenance folded across every contributing resource). The three tables
     are pure projections of `relation`, so they are rebuilt whole rather than
     sliced: nothing in them is evidence that a partial rebuild could lose.
@@ -1201,12 +1201,12 @@ def rebuild_interaction_tables(
             seconds=f'{time.perf_counter() - step_started:.3f}',
         )
 
-        _log(progress, 'interaction_fact', 'start')
+        _log(progress, 'interaction_fact_combined', 'start')
         step_started = time.perf_counter()
-        facts = _populate_interaction_fact(cur, schema)
+        facts = _populate_interaction_fact_combined(cur, schema)
         _log(
             progress,
-            'interaction_fact',
+            'interaction_fact_combined',
             'done',
             rows=facts,
             seconds=f'{time.perf_counter() - step_started:.3f}',
@@ -1217,12 +1217,12 @@ def rebuild_interaction_tables(
         # class collapsing back to zero is visible here rather than a phase later.
         _log(
             progress,
-            'interaction_fact',
+            'interaction_fact_combined',
             'rows_by_class',
             **{name: count for name, count in sorted(rows_by_class.items())},
         )
         sign_conflict = _record_sign_conflict_summary(cur, schema)
-        _log(progress, 'interaction_fact', 'sign_conflict', **sign_conflict)
+        _log(progress, 'interaction_fact_combined', 'sign_conflict', **sign_conflict)
         _drop_interaction_staging(cur)
     conn.commit()
     seconds = time.perf_counter() - started
@@ -1737,7 +1737,7 @@ def _populate_interaction_header(
     # them together keeps the header's dependants from tripping over the FK.
     cur.execute(
         sql.SQL(
-            'TRUNCATE {}.interaction_fact, {}.interaction_party, '
+            'TRUNCATE {}.interaction_fact_combined, {}.interaction_party, '
             '{}.interaction'
         ).format(schema_id, schema_id, schema_id)
     )
@@ -1820,7 +1820,7 @@ def _populate_interaction_header(
     return interactions, parties
 
 
-def _populate_interaction_fact(
+def _populate_interaction_fact_combined(
     cur: psycopg2.extensions.cursor,
     schema: str,
 ) -> int:
@@ -1829,7 +1829,7 @@ def _populate_interaction_fact(
     cur.execute(
         sql.SQL(
             """
-            INSERT INTO {schema}.interaction_fact (
+            INSERT INTO {schema}.interaction_fact_combined (
               subject_entity_id, object_entity_id, interaction_class_id,
               subject_organism, object_organism,
               is_directed, is_stimulation, is_inhibition,
@@ -1897,7 +1897,7 @@ def _interaction_rows_by_class(
             """
             SELECT vic.name, count(f.*)::bigint
             FROM {}.vocab_interaction_class vic
-            LEFT JOIN {}.interaction_fact f
+            LEFT JOIN {}.interaction_fact_combined f
               ON f.interaction_class_id = vic.interaction_class_id
             GROUP BY vic.name
             ORDER BY vic.name
@@ -1956,7 +1956,7 @@ def _record_sign_conflict_summary(
     )
     signed, both, single, cross = cur.fetchone()
     cur.execute(
-        sql.SQL('SELECT count(*)::bigint FROM {}.interaction_fact').format(
+        sql.SQL('SELECT count(*)::bigint FROM {}.interaction_fact_combined').format(
             schema_id
         )
     )
