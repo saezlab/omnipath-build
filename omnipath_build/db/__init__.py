@@ -15,6 +15,10 @@ from omnipath_build.db.refresh import (
     delete_source_content,
     source_has_content,
 )
+from omnipath_build.db.licenses import (
+    LicenseTableStats,
+    sync_data_source_licenses,
+)
 from omnipath_build.db.resources import (
     BuildManifestStats,
     ResourceTableStats,
@@ -36,6 +40,7 @@ __all__ = [
     'BuildManifestStats',
     'DerivedTableStats',
     'InteractionDeriveStats',
+    'LicenseTableStats',
     'interaction_content_uuid_sql',
     'rebuild_interaction_tables',
     'ResourceTableStats',
@@ -54,5 +59,6 @@ __all__ = [
     'reset_content_tables',
     'sweep_staging_tables',
     'source_has_content',
+    'sync_data_source_licenses',
     'sync_resources_table',
 ]
