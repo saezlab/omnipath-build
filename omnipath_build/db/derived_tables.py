@@ -1060,6 +1060,35 @@ _DIRECTED_PREDICATES = (
     'transports',
 )
 
+# Direction, per interaction class. A class whose definition names the two
+# endpoints asymmetrically fixes their order, so every row of that class is
+# directed however coarse its predicate is. `ligand_receptor` is such a class:
+# the role evidence says which participant is the ligand and which the
+# receptor, and the projection stores the ordered pair ligand first. Verified
+# on dev4 across all five resources that publish the roles: of 70,921
+# relation-and-resource pairs, 67,593 place the ligand on the subject and not
+# one places the receptor there, so the order is a property of the projection
+# rather than an accident of one resource. The remainder assert one role only
+# and settle nothing either way.
+#
+# `transport` deliberately stays out. Its role term marks the *substrate*
+# alone, on either endpoint, so the class leaves the order open and the
+# `transports` predicate is what asserts it where a resource chose that verb.
+#
+# This is not the predicate rule in disguise. There the verb is an ingest-time
+# label the resource did not choose per interaction, which is why a symmetric
+# verb stays NULL (see above). Here the asymmetry is in the class the resource's
+# own participant annotations produced, and it holds for every row that reaches
+# the class.
+_DIRECTED_CLASSES = ('ligand_receptor',)
+
+# The direction expression, shared by the record key and the column it keys, so
+# the two cannot drift apart.
+_DIRECTION_SQL = """CASE
+                WHEN predicate.name = ANY(%(directed)s) THEN true
+                WHEN vic.name = ANY(%(directed_classes)s) THEN true
+              END"""
+
 # Reference and hot-column annotation terms.
 _PUBMED_TERM = 'Pubmed:MI:0446'
 _DOI_TERM = 'Doi:MI:0574'
@@ -2206,7 +2235,7 @@ def _stage_interaction_record(
         object_entity_id='ir.object_entity_id',
         interaction_class='vic.name',
         source='ds.name',
-        is_directed='CASE WHEN predicate.name = ANY(%(directed)s) THEN true END',
+        is_directed=_DIRECTION_SQL,
         is_stimulation='sign.is_stimulation',
         is_inhibition='sign.is_inhibition',
     )
@@ -2222,9 +2251,7 @@ def _stage_interaction_record(
               ir.interaction_class_id,
               rer.source_id,
               rer.relation_evidence_id,
-              CASE
-                WHEN predicate.name = ANY(%(directed)s) THEN true
-              END AS is_directed,
+              {direction} AS is_directed,
               sign.is_stimulation,
               sign.is_inhibition
             FROM _if_relation ir
@@ -2242,8 +2269,15 @@ def _stage_interaction_record(
               ON sign.source_id = rer.source_id
              AND sign.relation_evidence_id = rer.relation_evidence_id
             """
-        ).format(identity=sql.SQL(record_identity), schema=schema_id),
-        {'directed': list(_DIRECTED_PREDICATES)},
+        ).format(
+            identity=sql.SQL(record_identity),
+            direction=sql.SQL(_DIRECTION_SQL),
+            schema=schema_id,
+        ),
+        {
+            'directed': list(_DIRECTED_PREDICATES),
+            'directed_classes': list(_DIRECTED_CLASSES),
+        },
     )
     cur.execute(
         'CREATE INDEX _if_evidence_idx ON _if_evidence '

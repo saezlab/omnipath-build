@@ -224,11 +224,29 @@ def test_a_symmetric_predicate_does_not_assert_undirectedness(built):
     interaction, so a symmetric verb is not a resource saying "this interaction
     has no direction". FR-044a: an unasserted attribute never becomes an asserted
     false.
+
+    The pair is `e`-`f`, the symmetric verb over a class that says nothing about
+    order. The ligand-receptor pair used to stand here and no longer can: its
+    class asserts the order on its own, which the test below is about.
+    """
+    conn, _stats = built
+    row = _row(conn, 'e', 'f')
+    assert row['is_directed'] is None
+    assert row['direction_source_count'] == 0
+
+
+def test_a_ligand_receptor_row_is_directed_under_a_symmetric_predicate(built):
+    """The class names its two endpoints asymmetrically, so the order is fixed.
+
+    `a`-`b` carries `interacts_with`, the same verb as the pair above, and the
+    same silence from its resource about direction. What differs is the class:
+    the participant annotations make it ligand-receptor, and the projection
+    stores the ligand as the subject. A row whose class is an ordered pair of
+    roles is directed however coarse the verb the ingest layer gave it.
     """
     conn, _stats = built
     row = _row(conn, 'a', 'b')
-    assert row['is_directed'] is None
-    assert row['direction_source_count'] == 0
+    assert row['is_directed'] is True
 
 
 def test_no_collapsed_row_ever_asserts_a_false_sign_or_direction(built):
