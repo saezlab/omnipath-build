@@ -2337,21 +2337,6 @@ def _ensure_data_source_license(
             """
         ).format(schema_id, schema_id)
     )
-    # Added here too, for databases created before the columns existed.
-    cur.execute(
-        sql.SQL(
-            """
-            ALTER TABLE {}.data_source_license
-            ADD COLUMN IF NOT EXISTS license_name text,
-            ADD COLUMN IF NOT EXISTS license_full_name text,
-            ADD COLUMN IF NOT EXISTS license_url text,
-            ADD COLUMN IF NOT EXISTS purpose_level smallint,
-            ADD COLUMN IF NOT EXISTS sharing_level smallint,
-            ADD COLUMN IF NOT EXISTS attrib_level smallint,
-            ADD COLUMN IF NOT EXISTS is_known boolean NOT NULL DEFAULT false
-            """
-        ).format(schema_id)
-    )
     # A license filter resolves to a resource set before it touches an
     # interaction table, and that resolution is a range scan over the levels.
     # The table holds 44 rows, so the index is for the shape of the predicate
@@ -2429,21 +2414,6 @@ def _ensure_interaction_schema(
     # `interaction_id` is a deterministic content hash over the sorted
     # participant multiset and the interaction class, so it is stable across
     # builds and independent of which endpoint a caller asks from.
-    # Added here too, for databases created before the columns existed.
-    cur.execute(
-        sql.SQL(
-            """
-            ALTER TABLE {}.interaction
-            ADD COLUMN IF NOT EXISTS interaction_class_id smallint,
-            ADD COLUMN IF NOT EXISTS arity smallint,
-            ADD COLUMN IF NOT EXISTS sources text[],
-            ADD COLUMN IF NOT EXISTS dataset_tags text[],
-            ADD COLUMN IF NOT EXISTS attributes jsonb,
-            ADD COLUMN IF NOT EXISTS created_at timestamptz
-              NOT NULL DEFAULT now()
-            """
-        ).format(schema_id)
-    )
     cur.execute(
         sql.SQL(
             """
@@ -2467,21 +2437,6 @@ def _ensure_interaction_schema(
     )
     # `organism`, `compartment` and `role_flag` are hot per-participant
     # columns: they answer set-predicates and the per-entity compartment
-    # question without a join back to `entity`. Added here too, for databases
-    # created before the columns existed.
-    cur.execute(
-        sql.SQL(
-            """
-            ALTER TABLE {}.interaction_party
-            ADD COLUMN IF NOT EXISTS side smallint,
-            ADD COLUMN IF NOT EXISTS ordinal smallint,
-            ADD COLUMN IF NOT EXISTS stoichiometry numeric,
-            ADD COLUMN IF NOT EXISTS organism bigint,
-            ADD COLUMN IF NOT EXISTS compartment text,
-            ADD COLUMN IF NOT EXISTS role_flag smallint
-            """
-        ).format(schema_id)
-    )
     # `interaction_fact_resource` is the interaction **record** (data model
     # §3a): one row per ordered `(subject, object, class)` and contributing
     # `source_id`, plus the assertion signature that resource states. Keeping
@@ -2549,27 +2504,6 @@ def _ensure_interaction_schema(
     # asserted `false`. They therefore carry no NOT NULL and no DEFAULT. The
     # numeric and reference columns hold what this one resource asserts, not a
     # cross-resource best or union — that is what a collapse computes, per
-    # scope. Added here too, for databases created before the columns existed.
-    cur.execute(
-        sql.SQL(
-            """
-            ALTER TABLE {}.interaction_fact_resource
-            ADD COLUMN IF NOT EXISTS is_directed boolean,
-            ADD COLUMN IF NOT EXISTS is_stimulation boolean,
-            ADD COLUMN IF NOT EXISTS is_inhibition boolean,
-            ADD COLUMN IF NOT EXISTS subject_organism bigint,
-            ADD COLUMN IF NOT EXISTS object_organism bigint,
-            ADD COLUMN IF NOT EXISTS affinity double precision,
-            ADD COLUMN IF NOT EXISTS pchembl double precision,
-            ADD COLUMN IF NOT EXISTS score double precision,
-            ADD COLUMN IF NOT EXISTS curation_flags text[],
-            ADD COLUMN IF NOT EXISTS reference_pubmed_ids text[],
-            ADD COLUMN IF NOT EXISTS reference_dois text[],
-            ADD COLUMN IF NOT EXISTS attributes jsonb,
-            ADD COLUMN IF NOT EXISTS interaction_id uuid
-            """
-        ).format(schema_id)
-    )
     # The full key of the record, which is the endpoint pair, the class, the
     # resource **and** the signature that resource asserts. `NULLS NOT
     # DISTINCT` is what makes it a key at all: the three signature columns are
