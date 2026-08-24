@@ -21,6 +21,7 @@ pytestmark = pytest.mark.skipif(
     reason='DATABASE_URL not set; network-view test needs a built database',
 )
 
+REGISTERED_NETWORKS = ('metalinksdb', 'liana')
 NEW_SOURCES = ('recon3d', 'rhea', 'humangem', 'cellphonedb', 'neuronchat')
 TRANSPORT_SOURCES = ('recon3d', 'rhea', 'humangem')
 SIGNALING_SOURCES = ('cellphonedb', 'neuronchat')
@@ -47,35 +48,76 @@ def _scalar(conn, query, params=None):
     return _rows(conn, query, params)[0][0]
 
 
+def _registry_rows(conn, names=REGISTERED_NETWORKS):
+    """The registry rows for the named datasets, in the order they were asked for."""
+    by_name = {
+        row[0]: row
+        for row in _rows(
+            conn,
+            'SELECT name, kind, schema_name, combined_relation, included_sources, '
+            'interaction_class_scope, default_attributes '
+            'FROM public.network_registry WHERE name = ANY(%s)',
+            [list(names)],
+        )
+    }
+    missing = [name for name in names if name not in by_name]
+    assert not missing, f'not registered: {", ".join(missing)}'
+    return [by_name[name] for name in names]
+
+
 def test_registry_lists_both_networks(conn):
     names = {row for (row,) in _rows(conn, 'SELECT name FROM public.network_registry')}
-    assert {'metalinksdb', 'liana'} <= names
+    assert set(REGISTERED_NETWORKS) <= names
 
 
 def test_registry_metadata_well_formed(conn):
-    for name, kind, schema, combined, sources in _rows(
-        conn,
-        'SELECT name, kind, schema_name, combined_relation, included_sources '
-        'FROM public.network_registry WHERE name IN (%s, %s)',
-        ['metalinksdb', 'liana'],
+    """Every row is one generation of dataset or the other, never half of each.
+
+    A matview-backed dataset names the schema and the combined relation it
+    materialised. A preset over the interaction fact table materialises nothing,
+    so it names neither, and instead carries the interaction classes it scopes
+    to and the attributes it returns when the caller asks for none.
+    """
+    presets, matview_backed = [], []
+    for name, kind, schema, combined, sources, classes, attributes in _registry_rows(
+        conn
     ):
-        assert kind and schema and combined
-        assert isinstance(sources, list) and len(sources) >= 1
+        assert kind, f'{name} has no kind'
+        assert isinstance(sources, list) and len(sources) >= 1, (
+            f'{name} contributes from no source'
+        )
+        if schema is None and combined is None:
+            presets.append(name)
+            assert classes, f'{name} is a preset with no interaction-class scope'
+            assert attributes, f'{name} is a preset with no default attributes'
+        else:
+            matview_backed.append(name)
+            assert schema and combined, (
+                f'{name} carries half a matview descriptor: '
+                f'schema={schema!r} relation={combined!r}'
+            )
+    assert len(presets) + len(matview_backed) == len(REGISTERED_NETWORKS)
 
 
 def test_combined_contracts_populated(conn):
-    """Each network's combined contract exists and the API can read it."""
-    for name in ('metalinksdb', 'liana'):
-        schema, relation = _rows(
-            conn,
-            'SELECT schema_name, combined_relation FROM public.network_registry '
-            'WHERE name = %s',
-            [name],
-        )[0]
+    """A matview-backed dataset's combined contract exists and the API can read it.
+
+    A preset has no contract of its own to check — it is served by filtering the
+    fact table — so it is skipped here and checked for its own shape above.
+    """
+    checked = []
+    for name, _kind, schema, relation, _sources, _classes, _attributes in (
+        _registry_rows(conn)
+    ):
+        if schema is None and relation is None:
+            continue
         regclass = _scalar(conn, 'SELECT to_regclass(%s)', [f'{schema}.{relation}'])
         assert regclass is not None, f'{name} combined view missing'
         count = _scalar(conn, f'SELECT count(*) FROM "{schema}"."{relation}"')
         assert count > 0, f'{name} combined view empty'
+        checked.append(name)
+    if not checked:
+        pytest.skip('every registered dataset is a preset; no combined contract left')
 
 
 def test_metalinksdb_per_source_views_present(conn):

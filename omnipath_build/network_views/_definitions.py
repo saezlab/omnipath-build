@@ -12,11 +12,11 @@ here side by side:
   own: a preset restricted to a resource subset collapses the record at query
   time (R19).
 * a **matview network** (Milestone G) carries a schema, a combined relation and
-  the curated SQL files that materialise it. The two below are still of this
-  kind; they become presets over the fact table as their stories land (T044 for
-  MetaLinksDB, T025 for the reduced LIANA), and the ``schema``/
-  ``combined_relation`` fields — with the registry columns behind them — retire
-  with the last bespoke matview (T046).
+  the curated SQL files that materialise it. MetaLinksDB below is still of this
+  kind. LIANA is not: it became a preset over the fact table, and the matview it
+  used to own is left standing, unmanaged, as the rollback path until the
+  retirement step drops it. The ``schema``/``combined_relation`` fields — with
+  the registry columns behind them — retire with the last bespoke matview.
 
 Adding a dataset stays a declarative change: a definition here, served by the
 same uniform API.
@@ -75,23 +75,39 @@ METALINKSDB = NetworkDefinition(
     sql_files=('metalinksdb_annotations.sql', 'metalinksdb.sql'),
 )
 
-# LIANA: ligand↔receptor pairs from 5 cell-cell-communication resources, a single
-# combined contract matview. Migrated from custom_views/liana.sql — proving a
-# network is onboarded by a definition alone, with no bespoke API code.
+# LIANA: ligand↔receptor pairs, a preset over the interaction fact table. It was
+# a matview network over 5 cell-cell-communication resources; the reduced drop
+# scopes to ConnectomeDB2025 alone, so the other four are out of scope here.
+# Nothing materialises: registering this row is the whole build step, and the
+# old matview `custom_views.liana_ligand_receptor_pairs` is deliberately left in
+# place — unmanaged and unrefreshed — as the rollback path until it is retired.
+#
+# Organism scope: all 14 taxa the resource loads, not human alone. That is a
+# decision, not an oversight. Organism is a dimension a caller queries on, not a
+# property of a preset: `subject_organism` and `object_organism` are populated on
+# every one of the 44,455 rows and never disagree, so asking for organism 9606
+# yields the human drop at no cost, whereas a human-scoped preset could not be
+# widened later without registering a second one. Scoping to human here would
+# throw away 92 per cent of a resource the build already holds. The consequence
+# is worth stating plainly: **this preset's default result is all taxa**, so a
+# consumer expecting the legacy human-only LIANA meets a result roughly twelve
+# times larger, and should pass an organism filter to get the old shape.
+#
+# `references` stays among the default attributes even though it returns empty
+# today. ConnectomeDB2025 does publish PubMed ids, but the loader that produced
+# this build (`pypath/inputs_v2/connectomedb.py`) never reads the `AI summary`
+# column they sit in, so there is no reference annotation for the projection to
+# collect and nothing to serve. That is an ingest gap, tracked as a follow-up in
+# this cycle's task list, not a property of the dataset. Keeping the attribute in
+# the defaults keeps the response shape stable — the field is present and empty —
+# and it fills in once the loader is fixed and the resource re-ingested. Nothing
+# here claims otherwise: `attribute_sources` names no source for references.
 LIANA = NetworkDefinition(
     name='liana',
     kind='ligand_receptor',
-    schema='custom_views',
-    included_sources=(
-        'cellchat',
-        'cellphonedb',
-        'connectomedb2025',
-        'icellnet',
-        'nichenet',
-    ),
-    combined_relation='liana_ligand_receptor_pairs',
-    matviews=('liana_ligand_receptor_pairs',),
-    sql_files=('liana.sql',),
+    included_sources=('connectomedb2025',),
+    interaction_class_scope=('ligand_receptor',),
+    default_attributes=('endpoints', 'label', 'references', 'evidence'),
 )
 
 NETWORKS: list[NetworkDefinition] = [METALINKSDB, LIANA]
