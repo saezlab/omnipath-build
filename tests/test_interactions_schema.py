@@ -51,10 +51,6 @@ SCRATCH = os.environ.get(
 # so it needs a schema of its own: the module-scoped `scratch` is shared, and a
 # table planted in it would be visible to the tests asserting that no such
 # table exists anywhere.
-SCRATCH_MIGRATION = os.environ.get(
-    'OMNIPATH_TEST_SCRATCH_SCHEMA_MIGRATION',
-    'interactions_migration_test',
-)
 
 # The tables the interaction model adds (data model §1, §2, §3a, §7, §8a).
 # `interaction_fact_resource` and `data_source_license` joined the list with the
@@ -82,21 +78,6 @@ PROJECTION_TABLES = (
 # The removed materialisation (data model §3b/§3c). Named once, because two
 # tests ask the catalogue for it and neither may spell it differently.
 LEGACY_COLLAPSE_TABLE = 'interaction_fact_combined'
-
-# Enough of the removed table to be the thing the migration has to find, and
-# in particular **the foreign key into `interaction`**, which is why a
-# left-behind copy is a failure rather than clutter: the derive truncates the
-# header together with the dependants it names, and a table it does not name
-# blocks the truncate regardless of row counts.
-LEGACY_COLLAPSE_DDL = """
-CREATE TABLE IF NOT EXISTS {schema}.interaction_fact_combined (
-  subject_entity_id uuid NOT NULL REFERENCES {schema}.entity(entity_id),
-  object_entity_id uuid NOT NULL REFERENCES {schema}.entity(entity_id),
-  interaction_class_id smallint NOT NULL
-    REFERENCES {schema}.vocab_interaction_class(interaction_class_id),
-  interaction_id uuid REFERENCES {schema}.interaction(interaction_id)
-)
-"""
 
 # The detail tables of data model §4 and §6. They hang off the record, not off
 # the collapse — see the anchoring rule below.
@@ -602,67 +583,3 @@ def test_the_derive_writes_three_tables_and_folds_nothing(conn):
         + f' — the projection writes {len(PROJECTION_TABLES)} tables and folds '
         'nothing (R24), so §3b must resolve to no relation at all'
     )
-
-
-def test_the_migration_drops_a_legacy_collapse_table(conn):
-    """A database built before the removal loses the table on the next schema run.
-
-    The removal is a ``DROP TABLE`` and no rebuild, and that is a property of
-    the anchoring rule rather than a convenience: the table has no surrogate
-    key and, by T011b, nothing keys into it, so nothing has to be rewritten
-    when it goes. What forces the drop is the other direction — the leftover
-    holds a foreign key **into** ``interaction``, and the derive truncates the
-    header together with the dependants it names. A dependant it does not name
-    blocks the truncate whatever the row counts are, so a database that keeps
-    the table fails its next derive rather than merely wasting the disk.
-
-    The migration is exercised through ``ensure_schema`` rather than by calling
-    ``_drop_legacy_interaction_fact`` directly, because the entry point is what
-    a pre-change database actually runs, and because the removal may arrive as
-    a sibling of that function rather than inside it.
-
-    **Run twice.** An idempotent migration is the whole requirement here: a
-    schema run is not a one-off script, and the second pass must find nothing,
-    drop nothing and raise nothing.
-    """
-    import psycopg2
-
-    from omnipath_build.db import schema as build_schema
-
-    writable = psycopg2.connect(DATABASE_URL)
-    try:
-        build_schema.ensure_schema(
-            writable,
-            schema=SCRATCH_MIGRATION,
-            drop_existing=True,
-        )
-        writable.commit()
-        with writable.cursor() as cur:
-            cur.execute(LEGACY_COLLAPSE_DDL.format(schema=SCRATCH_MIGRATION))
-        writable.commit()
-        # Pre-change the schema run creates the table itself, so the plant is a
-        # no-op; post-change it is the only thing that puts one there. Either
-        # way the migration has something to find, which is what makes the
-        # assertions below non-vacuous.
-        assert _table_exists(conn, SCRATCH_MIGRATION, LEGACY_COLLAPSE_TABLE), (
-            f'{SCRATCH_MIGRATION}.{LEGACY_COLLAPSE_TABLE} was not planted, so '
-            f'the migration has nothing to remove and the test proves nothing'
-        )
-
-        after = []
-        for _ in range(2):
-            build_schema.ensure_schema(writable, schema=SCRATCH_MIGRATION)
-            writable.commit()
-            after.append(
-                _table_exists(conn, SCRATCH_MIGRATION, LEGACY_COLLAPSE_TABLE)
-            )
-        assert after == [False, False], (
-            f'{LEGACY_COLLAPSE_TABLE} present after each of two ensure_schema '
-            f'runs: {after}; the first True means the migration does not drop '
-            f'a pre-change table, a False then True means it recreates one'
-        )
-    finally:
-        with writable.cursor() as cur:
-            cur.execute(f'DROP SCHEMA IF EXISTS {SCRATCH_MIGRATION} CASCADE')
-        writable.commit()
-        writable.close()

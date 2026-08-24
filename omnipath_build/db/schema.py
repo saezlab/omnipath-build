@@ -2372,99 +2372,6 @@ def _ensure_data_source_license(
     )
 
 
-def _drop_legacy_interaction_fact(
-    cur: psycopg2.extensions.cursor,
-    schema: str,
-) -> None:
-    """Drop ``interaction_fact``, the pre-rename name of the collapsed table.
-
-    The rename (spec 008, R19, 2026-08-20) leaves the old table behind on any
-    database built before it. That is not merely untidy. The old table keeps a
-    foreign key to ``interaction``, and the derive step truncates the header
-    together with its dependants precisely so the key does not block it. A
-    left-behind ``interaction_fact`` is a dependant the truncate no longer
-    names, so the next derive fails on it.
-
-    Dropping was safe because the table was a projection: every row in it was
-    rebuilt from ``relation`` and ``relation_evidence`` on the next derive.
-    The table it was renamed to is itself removed now — see
-    :func:`_drop_legacy_interaction_fact_combined`, its sibling.
-    """
-
-    cur.execute(
-        """
-        SELECT 1
-        FROM information_schema.tables
-        WHERE table_schema = %s AND table_name = 'interaction_fact'
-        """,
-        [schema],
-    )
-    if cur.fetchone() is None:
-        return
-
-    _logger.info(
-        'Dropping legacy %s.interaction_fact; the collapse it held is a '
-        'query-time shape and no longer a table (spec 008, R24).',
-        schema,
-    )
-    cur.execute(
-        sql.SQL('DROP TABLE {}.interaction_fact CASCADE').format(
-            sql.Identifier(schema),
-        )
-    )
-
-
-def _drop_legacy_interaction_fact_combined(
-    cur: psycopg2.extensions.cursor,
-    schema: str,
-) -> None:
-    """Drop ``interaction_fact_combined``, the removed materialisation.
-
-    Spec 008, R24 and data model §3b/§3c: the collapse of the record over a
-    resource scope is what a **query** produces, not what the build stores. The
-    all-resources scope was the one scope materialised, and the page-first fold
-    (R25) leaves it with no job — it was holding 4.68 GiB and 51.4 s of derive
-    to precompute the cheapest scope in the system.
-
-    **The migration is this drop and no rebuild.** The table carried no
-    surrogate key and no inbound foreign key, which is what the anchoring rule
-    of §3b was for: keys point at the record, never at a materialisation, so
-    declining to materialise a scope stays a policy change. Nothing has to be
-    rewritten when it goes.
-
-    What forces the drop rather than leaving the table to rot is the other
-    direction. The leftover holds a foreign key **into** ``interaction``, and
-    the derive truncates the header together with the dependants it names. A
-    dependant it no longer names blocks the truncate whatever the row counts
-    are, so a database that keeps the table fails its next derive — the same
-    reason :func:`_drop_legacy_interaction_fact` exists for the pre-rename
-    name.
-    """
-
-    cur.execute(
-        """
-        SELECT 1
-        FROM information_schema.tables
-        WHERE table_schema = %s AND table_name = 'interaction_fact_combined'
-        """,
-        [schema],
-    )
-    if cur.fetchone() is None:
-        return
-
-    _logger.info(
-        'Dropping %s.interaction_fact_combined; the collapse is computed per '
-        'query over interaction_fact_resource and is materialised nowhere '
-        '(spec 008, R24).',
-        schema,
-    )
-    cur.execute(
-        sql.SQL('DROP TABLE {}.interaction_fact_combined CASCADE').format(
-            sql.Identifier(schema),
-        )
-    )
-
-
 def _ensure_interaction_schema(
     cur: psycopg2.extensions.cursor,
     schema: str,
@@ -2485,14 +2392,13 @@ def _ensure_interaction_schema(
     signature that resource states. No scope is precomputed, the all-resources
     scope included — §3b is the shape a query produces by folding the record
     for its own scope at request time, and it is declared nowhere here because
-    it is not a table. The materialisation that used to hold it is dropped from
-    any database still carrying one, below.
+    it is not a table, and no database carries the materialisation that used to
+    hold it: both names existed only between 2026-08-18 and 2026-08-24, and the
+    one build made in that window no longer holds either.
 
     The tables are declared here; the derive step fills them.
     """
     schema_id = sql.Identifier(schema)
-    _drop_legacy_interaction_fact(cur, schema)
-    _drop_legacy_interaction_fact_combined(cur, schema)
     cur.execute(
         sql.SQL(
             """
