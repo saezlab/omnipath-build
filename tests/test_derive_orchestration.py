@@ -33,10 +33,11 @@ from omnipath_build.db.derived_tables import InteractionDeriveStats
 STATS = InteractionDeriveStats(
     interactions=11,
     parties=22,
-    facts=33,
+    records=33,
     rows_by_class={'signaling': 30, 'ligand_receptor': 3},
     sign_conflict={'signed_rows': 10.0, 'both_flags_rows': 1.0},
     seconds=1.25,
+    step_seconds={'interaction_header': 0.5, 'interaction_fact_resource': 0.75},
 )
 
 
@@ -95,7 +96,7 @@ def test_successful_step_logs_the_cost_figures(monkeypatch, caplog):
     done = [line for line in _lines(caplog) if 'event=interactions_done' in line]
     assert done, 'the derive step reported no done line'
     line = done[0]
-    assert 'facts=33' in line
+    assert 'records=33' in line
     assert 'interactions=11' in line
     assert 'parties=22' in line
     assert 'seconds=1.250' in line
@@ -106,9 +107,12 @@ def test_successful_step_logs_the_cost_figures(monkeypatch, caplog):
 def test_derive_cost_reaches_the_manifest_with_real_numbers():
     """The stats the step returned become the manifest's per-step cost record."""
     cost = cli._interaction_derive_cost(STATS)
-    assert cost['interaction_fact_combined'] == {'seconds': 1.25, 'rows': 33}
+    assert cost['interaction_fact_resource'] == {'seconds': 0.75, 'rows': 33}
     assert cost['interaction_party']['rows'] == 22
     assert cost['interaction_header']['rows'] == 11
+    # R24 leaves one interaction table, so the collapse is not reported as a
+    # step that ran unmeasured — it is not reported at all.
+    assert 'interaction_fact_combined' not in cost
     # A build that ran no projection records no cost rather than zeros.
     assert cli._interaction_derive_cost(None) is None
 
@@ -176,7 +180,7 @@ def test_registered_step_cost_reaches_the_manifest(scratch_conn):
     from omnipath_build.db.resources import emit_build_manifest
 
     stats = cli._derive_interactions(scratch_conn, schema=SCRATCH)
-    assert stats.facts > 0, 'the fixture graph projected no facts'
+    assert stats.records > 0, 'the fixture graph projected no records'
 
     emit_build_manifest(
         scratch_conn,
@@ -189,7 +193,7 @@ def test_registered_step_cost_reaches_the_manifest(scratch_conn):
 
     assert cost is not None, 'interactions_derive_cost landed NULL'
     by_step = {entry['step']: entry for entry in cost['steps']}
-    assert by_step['interaction_fact_combined']['rows'] == stats.facts
-    assert by_step['interaction_fact_combined']['seconds'] > 0
+    assert by_step['interaction_fact_resource']['rows'] == stats.records
+    assert by_step['interaction_fact_resource']['seconds'] > 0
     assert by_step['interaction_party']['rows'] == stats.parties
     assert by_step['interaction_header']['rows'] == stats.interactions

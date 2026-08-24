@@ -49,6 +49,7 @@ def emit_build_manifest(
     partial_build: bool = False,
     derive_cost: Mapping[str, Any] | Sequence[Mapping[str, Any]] | None = None,
     scope_cost: Mapping[str, Any] | Sequence[Mapping[str, Any]] | None = None,
+    deferral_cost: Mapping[str, Any] | None = None,
 ) -> BuildManifestStats:
     """Write the single self-describing ``build_manifest`` row (Milestone D).
 
@@ -59,28 +60,30 @@ def emit_build_manifest(
     runs in ``derive`` right after ``sync_resources_table``.
 
     ``derive_cost`` is what the interaction derive steps cost this run — seconds
-    and rows per step (record fact, collapse, assay, party, reaction projection,
+    and rows per step (record fact, assay, party, reaction projection,
     intercell), either as ``{step: {seconds, rows}}`` or as a sequence of such
-    records. The **two interaction tables are reported separately** (T020b):
-    ``interaction_fact_resource`` is the record and ``interaction_fact_combined``
-    the all-resources collapse, and the normalised cost names them under
-    ``interaction_tables`` as ``record`` and ``collapse`` so the grain
-    amendment's cost is attributable rather than buried in one interaction-step
-    total.
+    records. The **interaction table is named apart** under
+    ``interaction_tables`` as ``record`` (T020b), so the cost FR-036's ceiling is
+    argued against is readable without knowing which step wrote the table.
 
     ``scope_cost`` is what materialising each query scope cost — seconds, rows
     and whether it was materialised at all, per scope — either as
     ``{scope: {...}}`` or as a sequence of ``{scope, ...}`` records. FR-050 wants
-    this for **every** scope measured, the all-resources scope included, so that
-    declining to materialise a scope stays an available answer to a cost
-    overrun. Both are optional: a build that recorded neither still emits a
-    manifest.
+    this for **every** scope measured, so that declining to materialise a scope
+    stays an available answer to a cost overrun.
 
-    All of it is written to ``interactions_derive_cost`` and, with the
-    ``network_presets`` inventory read from ``network_registry``, stays
-    **outside** the hashed payload: both are volatile — timings vary run to run
-    and the preset list changes without the built content changing — and neither
-    may move a build's identity (the cycle-007 lesson). The hash covers
+    ``deferral_cost`` is what deferring the foreign keys and the secondary
+    indexes over the load bought (T013k, R23): the seconds it saved, and the
+    seconds the drop, the restore and the revalidation cost — see
+    :func:`_interactions_deferral_cost`. All three are optional: a build that
+    recorded none of them still emits a manifest.
+
+    The cost is written to ``interactions_derive_cost``, the deferral to
+    ``interactions_deferral_cost``, and both, with the ``network_presets``
+    inventory read from ``network_registry``, stay **outside** the hashed
+    payload: all of it is volatile — timings vary run to run and the preset list
+    changes without the built content changing — and none of it may move a
+    build's identity (the cycle-007 lesson). The hash covers
     ``{package_commits, resources}`` and nothing else.
     """
 
@@ -104,8 +107,9 @@ def emit_build_manifest(
         # identifier-resolution relations the build consumed,
         # `canonicalization_coverage` counts how many records resolved vs stayed
         # unresolved (and why), `interactions_derive_cost` holds this
-        # run's per-step seconds and rows, the two interaction tables named
-        # apart and the per-scope materialisation cost, and `network_presets`
+        # run's per-step seconds and rows, the interaction table named apart and
+        # the per-scope materialisation cost, `interactions_deferral_cost` what
+        # deferring the constraints over the load saved, and `network_presets`
         # the registered preset inventory — volatile numbers and metadata that must not change a
         # build's identity. They are added as columns rather than folded into
         # the hashed payload, which is what keeps them out of the hash by
@@ -117,6 +121,7 @@ def emit_build_manifest(
                   ADD COLUMN IF NOT EXISTS translation_tables jsonb,
                   ADD COLUMN IF NOT EXISTS canonicalization_coverage jsonb,
                   ADD COLUMN IF NOT EXISTS interactions_derive_cost jsonb,
+                  ADD COLUMN IF NOT EXISTS interactions_deferral_cost jsonb,
                   ADD COLUMN IF NOT EXISTS network_presets jsonb
                 """
             ).format(schema_id)
@@ -167,6 +172,7 @@ def emit_build_manifest(
                 **(interactions_derive_cost or {}),
                 'sign_conflict': sign_conflict,
             }
+        interactions_deferral_cost = _interactions_deferral_cost(deferral_cost)
         network_presets = _network_preset_inventory(cur, schema)
         cur.execute(sql.SQL('TRUNCATE {}.build_manifest').format(schema_id))
         cur.execute(
@@ -175,8 +181,9 @@ def emit_build_manifest(
                 INSERT INTO {}.build_manifest
                   (build_id, package_commits, resources, partial_build,
                    translation_tables, canonicalization_coverage,
-                   interactions_derive_cost, network_presets)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                   interactions_derive_cost, interactions_deferral_cost,
+                   network_presets)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """
             ).format(schema_id),
             [
@@ -188,6 +195,9 @@ def emit_build_manifest(
                 Json(coverage),
                 Json(interactions_derive_cost)
                 if interactions_derive_cost is not None
+                else None,
+                Json(interactions_deferral_cost)
+                if interactions_deferral_cost is not None
                 else None,
                 Json(network_presets) if network_presets is not None else None,
             ],
@@ -278,27 +288,20 @@ def _canonicalization_coverage(
     return {'total': total, 'by_status': by_status, 'by_reason': by_reason}
 
 
-# The two interaction tables of the grain amendment, named apart (T020b): the
-# record is one row per (subject, object, class, resource) plus the assertion
-# signature, the collapse is that record folded over every resource. Their costs
-# are reported separately because the amendment's cost has to be attributable —
-# a single interaction-step total cannot say whether the record or the collapse
-# is what pushed the derive over its ceiling.
+# The one interaction table the derive writes (T020b, R24): one row per
+# (subject, object, class, resource) plus the assertion signature. It is named
+# apart from the step list because it is the table FR-036's ceiling is argued
+# against, and a reader should not have to know which step wrote it. R24 removed
+# the collapse `interaction_fact_combined`, so there is no second half to name
+# and no all-resources scope to reserve a name for — the fold is what a query
+# does now, and it materialises nothing.
 INTERACTION_RECORD_STEP = 'interaction_fact_resource'
-INTERACTION_COLLAPSE_STEP = 'interaction_fact_combined'
-
-# The scope name reserved for the collapse over every resource. The derive step
-# reports it like any other scope so the manifest can be read without knowing
-# which scope happens to be materialised as `interaction_fact_combined`
-# (FR-050: "including the all-resources scope").
-ALL_RESOURCES_SCOPE = 'all_resources'
 
 # The interaction derive steps whose cost the manifest reports, in build order.
 _DERIVE_STEPS = (
     'interaction_header',
     'interaction_party',
     INTERACTION_RECORD_STEP,
-    INTERACTION_COLLAPSE_STEP,
     'interaction_assay',
     'reaction_projection',
     'intercell',
@@ -359,7 +362,7 @@ def _interactions_derive_cost(
         knows, unknown steps last. Fed from ``{step: {seconds, rows}}`` or a
         sequence of ``{step, seconds, rows}`` records.
     ``interaction_tables``
-        the two tables of the grain amendment named apart (T020b) — see
+        the interaction table named apart from the step list (T020b) — see
         :func:`_interaction_table_cost`.
     ``scopes``
         what each measured query scope cost to materialise (FR-050) — see
@@ -414,45 +417,39 @@ def _interactions_derive_cost(
 def _interaction_table_cost(
     steps: Sequence[Mapping[str, Any]],
 ) -> dict[str, Any] | None:
-    """The two interaction tables' cost, named apart (T020b, FR-050).
+    """The interaction table's cost, named apart from the step list (T020b).
 
-    ``{'record': {table, seconds, rows}, 'collapse': {...}, 'total_seconds': …}``
-    — ``record`` is ``interaction_fact_resource``, ``collapse`` is the
-    ``interaction_fact_combined`` fold over every resource. A half that no step
-    reported is ``None`` rather than a dict of zeros: not run and run for free
-    are different facts, and the decision this field will be argued from turns on
-    which of the two costs what.
+    ``{'record': {table, seconds, rows}}`` — ``record`` is
+    ``interaction_fact_resource``, the one table the projection writes. A
+    seconds or rows the step did not report stays ``None`` rather than becoming
+    a zero: not measured and measured as free are different facts, and the
+    ceiling this field will be argued against is decided by which.
 
-    ``total_seconds`` adds up the halves that were measured, so the pair can be
-    held against the whole-derive ceiling without unpacking the block. Returns
-    ``None`` when neither table reported, leaving pre-amendment builds unchanged.
+    Returns ``None`` when no step wrote the table, so a build that projected no
+    interactions says nothing rather than naming a table it does not hold.
+
+    **Amended by R24**: the collapse half and the ``total_seconds`` that summed
+    the two halves are gone with the table they described. A ``collapse: null``
+    would read as a table that ran unmeasured, which is a claim about a build
+    that has no such table.
     """
 
-    by_step = {entry['step']: entry for entry in steps}
-
-    def half(step: str) -> dict[str, Any] | None:
-        entry = by_step.get(step)
-        if entry is None:
-            return None
-        return {
-            'table': step,
+    entry = next(
+        (
+            entry
+            for entry in steps
+            if entry['step'] == INTERACTION_RECORD_STEP
+        ),
+        None,
+    )
+    if entry is None:
+        return None
+    return {
+        'record': {
+            'table': INTERACTION_RECORD_STEP,
             'seconds': entry.get('seconds'),
             'rows': entry.get('rows'),
         }
-
-    record = half(INTERACTION_RECORD_STEP)
-    collapse = half(INTERACTION_COLLAPSE_STEP)
-    if record is None and collapse is None:
-        return None
-    measured = [
-        part['seconds']
-        for part in (record, collapse)
-        if part is not None and part['seconds'] is not None
-    ]
-    return {
-        'record': record,
-        'collapse': collapse,
-        'total_seconds': sum(measured) if measured else None,
     }
 
 
@@ -465,8 +462,7 @@ def _scope_materialisation_cost(
     normalises each to ``{scope, table, materialised, seconds, rows, sources}``:
 
     ``scope``
-        the scope's name; :data:`ALL_RESOURCES_SCOPE` for the collapse over
-        every resource, which FR-050 requires to be reported like any other.
+        the scope's name.
     ``table``
         the relation it was materialised into, ``None`` when it was measured
         without being materialised.
@@ -482,9 +478,9 @@ def _scope_materialisation_cost(
         the resource set the scope resolves to, so a later reader can tell which
         scope this was without re-resolving the preset or license filter.
 
-    Ordered all-resources first, then materialised scopes, then by name. Returns
-    ``None`` when nothing was reported, so a build that measured no scope says
-    so rather than claiming it materialised none.
+    Ordered materialised scopes first, then measured ones, each by name.
+    Returns ``None`` when nothing was reported, so a build that measured no
+    scope says so rather than claiming it materialised none.
     """
 
     if not scope_cost:
@@ -526,14 +522,118 @@ def _scope_materialisation_cost(
     if not scopes:
         return None
 
-    scopes.sort(
-        key=lambda entry: (
-            entry['scope'] != ALL_RESOURCES_SCOPE,
-            not entry['materialised'],
-            entry['scope'],
-        )
-    )
+    scopes.sort(key=lambda entry: (not entry['materialised'], entry['scope']))
     return scopes
+
+
+# What a deferred load reports, read back by kind: seconds as floats, object
+# counts as ints, the two claims as booleans. The names are the contract T013j
+# fills; a field it did not measure is simply absent from what it hands over.
+_DEFERRAL_SECONDS = (
+    'seconds_saved',
+    'drop_seconds',
+    'restore_seconds',
+    'revalidate_seconds',
+    # ``load_seconds`` is this build's own load window, and it is recorded so a
+    # later build can subtract it. ``seconds_saved`` is a difference against a
+    # build that ran without the deferral, which is not a thing any single build
+    # can measure about itself: the first deferred build reports it as null and
+    # the next one reads this number off the manifest. Dropping it would leave
+    # the baseline recoverable only by parsing the step list.
+    'load_seconds',
+)
+_DEFERRAL_COUNTS = ('constraints_deferred', 'indexes_deferred')
+_DEFERRAL_FLAGS = ('deferred', 'catalogue_unchanged')
+
+
+def _interactions_deferral_cost(
+    deferral_cost: Mapping[str, Any] | None,
+) -> dict[str, Any] | None:
+    """What deferring the constraints over the interaction load bought (T013k).
+
+    R23 takes the deferral: the load runs with the 13 foreign keys and the 18
+    secondary indexes off and puts them back validated, at 709.7 s against
+    1,814.7 s, with revalidation set-based at 44.6 s against 726.3 s of per-row
+    triggers. Recording it per build is what makes a regression in the deferral
+    show up in the manifest rather than in somebody's stopwatch.
+
+    Normalises one record to::
+
+        {deferred, seconds_saved, drop_seconds, restore_seconds,
+         revalidate_seconds, constraints_deferred, indexes_deferred,
+         catalogue_unchanged}
+
+    ``seconds_saved``
+        the load without the deferral less the load with it. The producer
+        computes it; the manifest records it, because the baseline is not a
+        thing this build ran.
+    ``drop_seconds`` / ``restore_seconds`` / ``revalidate_seconds``
+        the three halves of the mechanism's own cost, kept apart from the load
+        (data-model §10) — the revalidation is the one that could quietly be
+        skipped, and a deferral that returns a `NOT VALID` key has saved
+        nothing.
+    ``catalogue_unchanged``
+        whether the catalogue on the far side matched the near side (T013i).
+
+    Every field is ``None`` when the producer did not report it, and the whole
+    record is ``None`` when it reported nothing readable — **a build that ran
+    without the deferral says nothing rather than claiming zero**. Zero seconds
+    saved is a measurement, and it is a regression to chase; no deferral at all
+    is not, and the two must not read alike.
+
+    A field that cannot be read as its kind is warned about and dropped, never
+    raised: a malformed number from the derive must not cost the build its
+    manifest. ``deferred`` is inferred from the presence of a measurement when
+    the record does not say, the way ``materialised`` is inferred from
+    ``table``.
+    """
+
+    if not deferral_cost:
+        return None
+
+    record: dict[str, Any] = {}
+
+    def read(field: str, cast: Any) -> Any:
+        value = deferral_cost.get(field)
+        if value is None:
+            return None
+        try:
+            return cast(value)
+        except (TypeError, ValueError):
+            logger.warning(
+                'build manifest: unreadable deferral-cost field %s: %r',
+                field,
+                value,
+            )
+            return None
+
+    for field in _DEFERRAL_SECONDS:
+        record[field] = read(field, float)
+    for field in _DEFERRAL_COUNTS:
+        record[field] = read(field, int)
+    for field in _DEFERRAL_FLAGS:
+        record[field] = read(field, bool)
+
+    measured = [
+        value
+        for field, value in record.items()
+        if field != 'deferred' and value is not None
+    ]
+    if not measured and record['deferred'] is None:
+        logger.warning(
+            'build manifest: deferral-cost record with nothing readable in it: %r',
+            deferral_cost,
+        )
+        return None
+    if record['deferred'] is None:
+        # Something was measured, so something was deferred.
+        record['deferred'] = True
+    return {
+        'deferred': record['deferred'],
+        **{field: record[field] for field in _DEFERRAL_SECONDS},
+        **{field: record[field] for field in _DEFERRAL_COUNTS},
+        'catalogue_unchanged': record['catalogue_unchanged'],
+    }
 
 
 def _network_preset_inventory(

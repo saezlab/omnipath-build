@@ -1,18 +1,27 @@
 """Sign and direction, per resource and per scope (008 T013b/T013d/T013g).
 
 **Amended 2026-08-20 (R19/R20).** Sign and direction are asserted **per
-resource**, on ``interaction_fact_resource`` — the record. ``interaction_fact_combined``
-is the collapse of that record over **every** resource, which is one scope's
-materialisation rather than the stored grain. So the file holds three layers of
-assertion: what a single resource says on its own row, what the all-resources
-collapse says, and what a collapse restricted to a resource subset says. A
+resource**, on ``interaction_fact_resource`` — the record. The collapse of that
+record over a resource set is one scope's fold rather than the stored grain. So
+the file holds three layers of assertion: what a single resource says on its
+own row, what the all-resources collapse says, and what a collapse restricted
+to a resource subset says. A
 resource that is silent leaves NULL on its own row and never inherits what a
 neighbour on the same endpoint pair asserted (FR-044a). A scoped collapse
 (FR-048 / SC-021) reports the kept resources' count, references and sign flags
-alone: selecting the collapsed row and filtering it with ``sources &&
+alone: selecting a wider collapse's row and filtering it with ``sources &&
 ARRAY[...]`` returns the right interaction carrying the wrong numbers, and the
 T013g tests here are built on a three-resource pair precisely so that
 implementation fails them.
+
+**Amended 2026-08-21 (R24/T013e).** The collapse is no longer a table and no
+longer a build routine: ``interaction_fact_combined`` is dropped and
+``collapse_interaction_scope`` is deleted, because the derive has no caller for
+a fold and the query path has one, in the api-service. The collapse assertions
+here read ``tests.fixtures.collapse`` instead — the fold written once on the
+test side, as a view for the all-resources scope and as a statement for a
+scoped one. Every assertion below is the one it was: they were about what a
+collapse must report, never about where it was stored.
 
 ``is_directed``, ``is_stimulation`` and ``is_inhibition`` are **three-valued**.
 NULL means *no contributing resource asserts the attribute*, which is a
@@ -46,6 +55,11 @@ import os
 
 import pytest
 
+from tests.fixtures.collapse import (
+    COLLAPSE_VIEW,
+    collapse_sql,
+    create_collapse_view,
+)
 from tests.fixtures.interaction_graph import build_interaction_fixture
 
 DATABASE_URL = os.environ.get('DATABASE_URL')
@@ -58,10 +72,11 @@ SCRATCH = os.environ.get(
 #: and assertion signature. What a resource asserts lives here.
 RECORD_TABLE = 'interaction_fact_resource'
 
-#: The collapse routine the derive phase and the query path share (T013e). It
-#: takes a resource scope and returns the collapsed shape, so a materialised
-#: scope and a per-query scope cannot drift apart.
-COLLAPSE_ROUTINE = 'collapse_interaction_scope'
+#: The build routine that used to fold the record for a resource scope. R24
+#: removed the materialisation it filled, leaving the derive with no caller for
+#: it, so T013e deleted it: one body with one caller, in the package that calls
+#: it. A build that still exports it has not finished the removal.
+REMOVED_COLLAPSE_ROUTINE = 'collapse_interaction_scope'
 
 pytestmark = pytest.mark.skipif(
     not DATABASE_URL,
@@ -87,6 +102,10 @@ def built():
         connection.commit()
         build_interaction_fixture(connection, SCRATCH)
         stats = rebuild_interaction_tables(connection, schema=SCRATCH)
+        # The all-resources collapse, as a view over the record. The derive
+        # writes no such table since R24, and the assertions below are about
+        # what the fold reports rather than about what the build stores.
+        create_collapse_view(connection, SCRATCH)
         yield connection, stats
     finally:
         with connection.cursor() as cur:
@@ -118,7 +137,7 @@ def _row(conn, subject: str, object_: str) -> dict[str, object]:
                    f.sign_source_count, f.direction_source_count,
                    f.sources, f.source_count,
                    f.reference_pubmed_ids, f.reference_count
-            FROM {SCRATCH}.interaction_fact_combined f
+            FROM {SCRATCH}.{COLLAPSE_VIEW} f
             JOIN {SCRATCH}.entity subject
               ON subject.entity_id = f.subject_entity_id
             JOIN {SCRATCH}.entity object
@@ -170,7 +189,7 @@ def test_the_sign_source_count_never_exceeds_the_sources(built):
     with conn.cursor() as cur:
         cur.execute(
             f"""
-            SELECT count(*) FROM {SCRATCH}.interaction_fact_combined
+            SELECT count(*) FROM {SCRATCH}.{COLLAPSE_VIEW}
             WHERE sign_source_count > cardinality(sources)
                OR direction_source_count > cardinality(sources)
             """
@@ -223,7 +242,7 @@ def test_no_collapsed_row_ever_asserts_a_false_sign_or_direction(built):
     with conn.cursor() as cur:
         cur.execute(
             f"""
-            SELECT count(*) FROM {SCRATCH}.interaction_fact_combined
+            SELECT count(*) FROM {SCRATCH}.{COLLAPSE_VIEW}
             WHERE is_directed IS FALSE
                OR is_stimulation IS FALSE
                OR is_inhibition IS FALSE
@@ -355,28 +374,28 @@ def test_an_opposite_direction_pair_is_two_records(built):
 
 
 def _collapse_query(sources) -> tuple[str, tuple[object, ...]]:
-    """The scoped collapse the derive and the query path both run (T013e).
+    """The scoped collapse, as a statement the test embeds as a subquery."""
+    statement, parameters = collapse_sql(schema=SCRATCH, sources=list(sources))
+    return statement, tuple(parameters or ())
 
-    The routine takes a resource scope and returns the collapsed shape as SQL,
-    so that a materialised scope and a per-query scope cannot drift apart. It
-    returns either a SELECT statement or a `(statement, parameters)` pair; the
-    test embeds it as a subquery, which is what the query path does too.
+
+def test_the_build_exports_no_collapse_routine():
+    """T013e: the fold left the build, and it left no stub behind.
+
+    R24 removes the materialisation, so the derive has no caller for a fold and
+    the query path has one, in the api-service. A routine still exported from
+    ``omnipath_build.db.derived_tables`` would be the second body the removal
+    exists to prevent — and one the api-service cannot import in any case: its
+    ``pyproject.toml`` declares no build package, and the import only ever
+    resolved because both checkouts sit on one path (Principle I/II).
     """
     from omnipath_build.db import derived_tables
 
-    routine = getattr(derived_tables, COLLAPSE_ROUTINE, None)
-    if routine is None:
-        pytest.fail(
-            f'omnipath_build.db.derived_tables.{COLLAPSE_ROUTINE} does not '
-            f'exist: there is no shared routine that collapses the record for '
-            f'a resource scope, so a scoped query can only read the '
-            f'all-resources collapse and report its numbers (T013e, FR-048)'
-        )
-    produced = routine(schema=SCRATCH, sources=list(sources))
-    if isinstance(produced, str):
-        return produced, ()
-    statement, parameters = produced
-    return statement, tuple(parameters or ())
+    assert not hasattr(derived_tables, REMOVED_COLLAPSE_ROUTINE), (
+        f'omnipath_build.db.derived_tables.{REMOVED_COLLAPSE_ROUTINE} still '
+        f'exists: the fold has one caller and it is not in this repository '
+        f'(T013e, R24)'
+    )
 
 
 def _scoped(conn, subject: str, object_: str, sources) -> dict[str, object]:
@@ -523,7 +542,7 @@ def test_the_summary_is_recorded_next_to_the_derive_cost(built):
     stats = emit_build_manifest(
         conn,
         schema=SCRATCH,
-        derive_cost={'interaction_fact_combined': {'seconds': 1.0, 'rows': 12}},
+        derive_cost={'interaction_fact_resource': {'seconds': 1.0, 'rows': 12}},
     )
     with conn.cursor() as cur:
         cur.execute(

@@ -11,12 +11,16 @@ So this file asserts two things that used to be one:
   is_inhibition)`` that resource states. A resource asserting two contradicting
   signs for the same endpoints under different predicates therefore keeps
   **two** rows, because the signature is part of the key.
-* ``interaction_fact_combined`` is the **all-resources scope materialised**
-  (data-model §3b): collapsing the record over **every** resource must
-  reproduce it exactly — the same keys, the same row count, and the same values
-  on every recomputed column. A materialisation that can differ from the
-  collapse has already drifted from the scoped query path, which is what the
-  scope rule exists to prevent.
+* **the collapse** (data-model §3b) holds one row per ordered triple over the
+  scope it was folded for. **Amended 2026-08-21 by R24**: it is no longer a
+  table. ``interaction_fact_combined`` materialised the all-resources scope and
+  is removed, so the collapse assertions here read
+  ``tests.fixtures.collapse`` — the fold written once on the test side — through
+  a view over the record. What they assert is unchanged, which is the evidence
+  that they were always about the collapse and never about its storage. The
+  pair of tests that compared the fold against the materialisation went with
+  the table: there is nothing left for the fold to disagree with, and the
+  equivalence the api-service owes its own fold is asserted there (T020d).
 
 Endpoints stay ordered on both grains, so A→B and B→A remain distinct rows
 (FR-044d).
@@ -42,6 +46,7 @@ import os
 import psycopg2
 import pytest
 
+from tests.fixtures.collapse import COLLAPSE_VIEW, create_collapse_view
 from tests.fixtures.interaction_graph import build_interaction_fixture
 
 DATABASE_URL = os.environ.get('DATABASE_URL')
@@ -54,75 +59,6 @@ pytestmark = pytest.mark.skipif(
     not DATABASE_URL,
     reason='DATABASE_URL not set; the projection test needs a Postgres',
 )
-
-# The columns a collapse recomputes for its scope (data-model §3b). Reading
-# them under any scope but the one they were built for is the error the
-# amendment exists to stop, so the collapse must reproduce every one of them.
-RECOMPUTED_COLUMNS = (
-    'sources',
-    'source_count',
-    'is_directed',
-    'is_stimulation',
-    'is_inhibition',
-    'sign_source_count',
-    'direction_source_count',
-    'reference_pubmed_ids',
-    'reference_dois',
-    'reference_count',
-)
-
-# Which of those are arrays, and so compare order-independently.
-ARRAY_COLUMNS = frozenset(
-    {'sources', 'reference_pubmed_ids', 'reference_dois'}
-)
-
-# The collapse of the record over every resource, written once. The derive
-# materialises this scope into `interaction_fact_combined`; a query restricting
-# the resource set runs the same shape over a smaller input (T013e). The two
-# must agree, which is what the `test_the_collapse_reproduces_*` pair checks.
-COLLAPSE_SQL = f"""
-WITH refs AS (
-  SELECT r.subject_entity_id,
-         r.object_entity_id,
-         r.interaction_class_id,
-         array_agg(DISTINCT pm.pubmed) FILTER (WHERE pm.pubmed IS NOT NULL)
-           AS reference_pubmed_ids,
-         array_agg(DISTINCT dd.doi) FILTER (WHERE dd.doi IS NOT NULL)
-           AS reference_dois
-  FROM {SCRATCH}.interaction_fact_resource r
-  LEFT JOIN LATERAL unnest(r.reference_pubmed_ids) AS pm(pubmed) ON true
-  LEFT JOIN LATERAL unnest(r.reference_dois) AS dd(doi) ON true
-  GROUP BY 1, 2, 3
-)
-SELECT r.subject_entity_id,
-       r.object_entity_id,
-       r.interaction_class_id,
-       array_agg(DISTINCT ds.name) AS sources,
-       count(DISTINCT r.source_id)::int AS source_count,
-       bool_or(r.is_directed) AS is_directed,
-       bool_or(r.is_stimulation) AS is_stimulation,
-       bool_or(r.is_inhibition) AS is_inhibition,
-       count(DISTINCT r.source_id) FILTER (
-         WHERE r.is_stimulation IS NOT NULL OR r.is_inhibition IS NOT NULL
-       )::int AS sign_source_count,
-       count(DISTINCT r.source_id) FILTER (
-         WHERE r.is_directed IS NOT NULL
-       )::int AS direction_source_count,
-       refs.reference_pubmed_ids,
-       refs.reference_dois,
-       (coalesce(cardinality(refs.reference_pubmed_ids), 0)
-        + coalesce(cardinality(refs.reference_dois), 0))::int
-         AS reference_count
-FROM {SCRATCH}.interaction_fact_resource r
-JOIN {SCRATCH}.data_source ds ON ds.source_id = r.source_id
-LEFT JOIN refs
-  ON refs.subject_entity_id = r.subject_entity_id
- AND refs.object_entity_id = r.object_entity_id
- AND refs.interaction_class_id = r.interaction_class_id
-GROUP BY r.subject_entity_id, r.object_entity_id, r.interaction_class_id,
-         refs.reference_pubmed_ids, refs.reference_dois
-"""
-
 
 @pytest.fixture(scope='module')
 def built():
@@ -140,6 +76,10 @@ def built():
         connection.commit()
         build_interaction_fixture(connection, SCRATCH)
         stats = rebuild_interaction_tables(connection, schema=SCRATCH)
+        # The collapse is a query-time shape (R24), so the tests below read it
+        # through a view over the record rather than through a table the derive
+        # writes — there is no such table any more.
+        create_collapse_view(connection, SCRATCH)
         yield connection, stats
     finally:
         with connection.cursor() as cur:
@@ -173,7 +113,7 @@ def _fact(conn, subject: str, object_: str) -> dict[str, object] | None:
         SELECT vic.name, f.sources, f.source_count, f.reference_pubmed_ids,
                f.reference_count, f.interaction_id, f.is_stimulation,
                f.is_inhibition, f.sign_source_count
-        FROM {SCRATCH}.interaction_fact_combined f
+        FROM {SCRATCH}.{COLLAPSE_VIEW} f
         JOIN {SCRATCH}.entity subject
           ON subject.entity_id = f.subject_entity_id
         JOIN {SCRATCH}.entity object
@@ -457,93 +397,6 @@ def test_no_record_row_is_left_without_a_class(built):
 # ---------------------------------------------------------------------------
 
 
-def test_the_collapse_reproduces_the_materialisation_row_count(built):
-    """Collapsing the record over every resource yields exactly the rows the
-    materialisation holds — no key in one and missing from the other."""
-    conn, _stats = built
-    rows = _query(
-        conn,
-        f"""
-        WITH collapsed AS ({COLLAPSE_SQL})
-        SELECT
-          (SELECT count(*) FROM collapsed),
-          (SELECT count(*) FROM {SCRATCH}.interaction_fact_combined),
-          (SELECT count(*) FROM (
-             SELECT subject_entity_id, object_entity_id, interaction_class_id
-             FROM collapsed
-             EXCEPT
-             SELECT subject_entity_id, object_entity_id, interaction_class_id
-             FROM {SCRATCH}.interaction_fact_combined
-           ) missing),
-          (SELECT count(*) FROM (
-             SELECT subject_entity_id, object_entity_id, interaction_class_id
-             FROM {SCRATCH}.interaction_fact_combined
-             EXCEPT
-             SELECT subject_entity_id, object_entity_id, interaction_class_id
-             FROM collapsed
-           ) extra)
-        """,
-    )
-    collapsed, materialised, missing, extra = rows[0]
-    assert collapsed > 0, 'the collapse of the record produced no rows'
-    assert missing == 0, (
-        f'{missing} collapsed keys are absent from interaction_fact_combined'
-    )
-    assert extra == 0, (
-        f'{extra} materialised keys are not produced by the collapse'
-    )
-    assert collapsed == materialised
-
-
-def _mismatch_expression(column: str) -> str:
-    """Count the rows where the collapse and the materialisation disagree."""
-    if column in ARRAY_COLUMNS:
-        return f"""
-        count(*) FILTER (
-          WHERE (SELECT array_agg(v ORDER BY v)
-                 FROM unnest(coalesce(c.{column}, '{{}}'::text[])) v)
-            IS DISTINCT FROM
-                (SELECT array_agg(v ORDER BY v)
-                 FROM unnest(coalesce(f.{column}, '{{}}'::text[])) v)
-        )
-        """
-    return f'count(*) FILTER (WHERE c.{column} IS DISTINCT FROM f.{column})'
-
-
-def test_the_collapse_reproduces_the_materialisation_values(built):
-    """Every recomputed column matches, not merely the shape.
-
-    A materialisation agreeing on the keys and disagreeing on the numbers is
-    the failure the scope rule exists to prevent: the right interactions
-    carrying figures that describe a different resource set.
-    """
-    conn, _stats = built
-    comparisons = ',\n'.join(
-        _mismatch_expression(column) for column in RECOMPUTED_COLUMNS
-    )
-    rows = _query(
-        conn,
-        f"""
-        WITH collapsed AS ({COLLAPSE_SQL})
-        SELECT {comparisons}
-        FROM collapsed c
-        JOIN {SCRATCH}.interaction_fact_combined f
-          ON f.subject_entity_id = c.subject_entity_id
-         AND f.object_entity_id = c.object_entity_id
-         AND f.interaction_class_id = c.interaction_class_id
-        """,
-    )
-    mismatches = {
-        column: count
-        for column, count in zip(RECOMPUTED_COLUMNS, rows[0])
-        if count
-    }
-    assert not mismatches, (
-        'the collapse of the record disagrees with the materialised '
-        f'all-resources scope on: {mismatches}'
-    )
-
-
 def test_the_carried_columns_come_through_the_collapse_unchanged(built):
     """`subject_organism`, `object_organism` and `interaction_id` are carried
     rather than recomputed, so a record row must state each (data-model §3b)."""
@@ -552,7 +405,7 @@ def test_the_carried_columns_come_through_the_collapse_unchanged(built):
         conn,
         f"""
         SELECT count(*)
-        FROM {SCRATCH}.interaction_fact_combined f
+        FROM {SCRATCH}.{COLLAPSE_VIEW} f
         WHERE NOT EXISTS (
           SELECT 1 FROM {SCRATCH}.interaction_fact_resource r
           WHERE r.subject_entity_id = f.subject_entity_id
@@ -578,7 +431,7 @@ def test_the_collapse_invents_no_summary_value(built):
             conn,
             f"""
             SELECT count(*)
-            FROM {SCRATCH}.interaction_fact_combined f
+            FROM {SCRATCH}.{COLLAPSE_VIEW} f
             WHERE f.{column} IS NOT NULL
               AND NOT EXISTS (
                 SELECT 1 FROM {SCRATCH}.interaction_fact_resource r
@@ -594,7 +447,7 @@ def test_the_collapse_invents_no_summary_value(built):
         conn,
         f"""
         SELECT count(*)
-        FROM {SCRATCH}.interaction_fact_combined f
+        FROM {SCRATCH}.{COLLAPSE_VIEW} f
         CROSS JOIN LATERAL unnest(coalesce(f.curation_flags, '{{}}'::text[]))
           AS c(flag)
         WHERE NOT EXISTS (
@@ -616,7 +469,7 @@ def test_the_ordered_key_is_unique(built):
         conn,
         f"""
         SELECT count(*) FROM (
-          SELECT 1 FROM {SCRATCH}.interaction_fact_combined
+          SELECT 1 FROM {SCRATCH}.{COLLAPSE_VIEW}
           GROUP BY subject_entity_id, object_entity_id,
                    interaction_class_id
           HAVING count(*) > 1
@@ -662,7 +515,7 @@ def test_every_fact_row_links_to_its_header(built):
     conn, _stats = built
     rows = _query(
         conn,
-        f'SELECT count(*) FROM {SCRATCH}.interaction_fact_combined '
+        f'SELECT count(*) FROM {SCRATCH}.{COLLAPSE_VIEW} '
         f'WHERE interaction_id IS NULL',
     )
     assert rows[0][0] == 0
@@ -670,7 +523,7 @@ def test_every_fact_row_links_to_its_header(built):
         conn,
         f"""
         SELECT count(*)
-        FROM {SCRATCH}.interaction_fact_combined f
+        FROM {SCRATCH}.{COLLAPSE_VIEW} f
         LEFT JOIN {SCRATCH}.interaction i
           ON i.interaction_id = f.interaction_id
         WHERE i.interaction_id IS NULL
@@ -728,7 +581,7 @@ def test_no_fact_row_is_left_without_a_class(built):
     conn, _stats = built
     rows = _query(
         conn,
-        f'SELECT count(*) FROM {SCRATCH}.interaction_fact_combined '
+        f'SELECT count(*) FROM {SCRATCH}.{COLLAPSE_VIEW} '
         f'WHERE interaction_class_id IS NULL',
     )
     assert rows[0][0] == 0
@@ -748,3 +601,99 @@ def test_the_step_reports_its_per_class_counts(built):
         'transport',
         'other',
     }
+
+
+# ---------------------------------------------------------------------------
+# The `source_count` histogram — data-model §12, T013m
+# ---------------------------------------------------------------------------
+
+
+def test_the_histogram_counts_every_collapse_key_once(built):
+    """`interaction_source_count_histogram` partitions the collapse keys.
+
+    One row per **observed** level, the count of keys at each, and nothing
+    outside: the levels sum to the number of collapse keys, so a key is counted
+    once and no key is missed. Written to the database rather than only
+    returned, because the consumer is the api-service's guardrail (T020j) and
+    it reads the build's output, not the build's process.
+
+    Nine levels on dev4 at present cardinality, which is a property of the data
+    and not of the table — this fixture holds three resources, so it shows the
+    levels it has.
+    """
+    conn, _stats = built
+    histogram = _query(
+        conn,
+        f'SELECT source_count, keys FROM '
+        f'{SCRATCH}.interaction_source_count_histogram ORDER BY source_count',
+    )
+    assert histogram, 'the derive recorded no source_count histogram'
+    keys = _query(
+        conn,
+        f"""
+        SELECT count(*) FROM (
+          SELECT 1 FROM {SCRATCH}.interaction_fact_resource
+          GROUP BY subject_entity_id, object_entity_id, interaction_class_id
+        ) folded
+        """,
+    )[0][0]
+    assert sum(count for _level, count in histogram) == keys
+    assert all(level >= 1 for level, _count in histogram), (
+        'a collapse key with no contributing resource is not a collapse key'
+    )
+
+
+def test_the_histogram_counts_resources_and_not_record_rows(built):
+    """The level is `count(DISTINCT source_id)`, never `count(*)`.
+
+    One resource asserting two contradicting signs keeps **two** record rows
+    under the R19 grain, and it is still one resource contributing. A histogram
+    built on `count(*)` would price `source_count >= 2` from a population that
+    includes single-resource keys, which is the guardrail estimating a filter
+    from the wrong distribution.
+    """
+    conn, _stats = built
+    # i->j is the single-resource conflict: two record rows, one resource.
+    rows = _query(
+        conn,
+        f"""
+        SELECT count(*), count(DISTINCT r.source_id)
+        FROM {SCRATCH}.interaction_fact_resource r
+        JOIN {SCRATCH}.entity subject
+          ON subject.entity_id = r.subject_entity_id
+        JOIN {SCRATCH}.entity object
+          ON object.entity_id = r.object_entity_id
+        WHERE subject.canonical_identifier = 'FIXTURE_i'
+          AND object.canonical_identifier = 'FIXTURE_j'
+        """,
+    )
+    record_rows, resources = rows[0]
+    assert record_rows == 2 and resources == 1, (
+        'the single-resource conflict fixture no longer has two record rows '
+        'from one resource, so this test proves nothing'
+    )
+    level = _query(
+        conn,
+        f"""
+        SELECT count(DISTINCT r.source_id)
+        FROM {SCRATCH}.interaction_fact_resource r
+        JOIN {SCRATCH}.entity subject
+          ON subject.entity_id = r.subject_entity_id
+        JOIN {SCRATCH}.entity object
+          ON object.entity_id = r.object_entity_id
+        WHERE subject.canonical_identifier = 'FIXTURE_i'
+          AND object.canonical_identifier = 'FIXTURE_j'
+        GROUP BY r.subject_entity_id, r.object_entity_id,
+                 r.interaction_class_id
+        """,
+    )[0][0]
+    assert level == 1
+    at_one = _query(
+        conn,
+        f'SELECT keys FROM {SCRATCH}.interaction_source_count_histogram '
+        f'WHERE source_count = 1',
+    )
+    assert at_one and at_one[0][0] >= 1, (
+        'the one-resource level is absent from the histogram, so the two-row '
+        'key was counted as two resources'
+    )

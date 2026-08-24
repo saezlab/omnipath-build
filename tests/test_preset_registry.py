@@ -22,6 +22,22 @@ the columns to hold them.
     is set excludes a resource whose license is unknown, however permissive its
     recorded levels look (FR-049).
 
+**Amended 2026-08-21 (R26)** with ``composition`` (data-model §9), the column a
+preset carries when it is not one query: the ordered component list and the
+operation that joins them (``union``, ``collapse``, ``exclude``, ``annotate``).
+A component is either a parameter set or the **name of another preset**, which
+is what gives ``nichenet`` its per-component override (FR-035). NULL means the
+preset is a single parameter set — the common case, and the shape every other
+test in this module registers.
+
+Two orders in that value are binding rather than stylistic, and the column has
+to be able to state them: the ``collapse`` runs after the ``union`` and over the
+union's own resolved scope, and the ``exclude`` runs **before** the ``collapse``
+— dropping a resource after the fold leaves its contribution inside
+``source_count``, ``references`` and the sign flags (FR-048). The algebra itself
+lives in the api-service (T020k); what is asserted here is that a registry
+round-trip preserves the order it was written in.
+
 A third column, ``materialize_collapse``, was proposed and **withdrawn on
 2026-08-20**: both interaction tables are built unconditionally, so no preset
 carries a materialisation flag. Nothing here tests for it.
@@ -109,6 +125,8 @@ PRESET_COLUMNS = {
     # R19/R20 — the grain amendment.
     'collapse_mode': 'text',
     'license_scope': 'jsonb',
+    # R26 — the composition algebra.
+    'composition': 'jsonb',
 }
 
 COLLAPSE_MODES = ('none', 'assertion', 'endpoints')
@@ -127,6 +145,57 @@ COLLAPSE_KEYS = {
     ),
     'endpoints': 'subject_entity_id, object_entity_id, interaction_class_id',
 }
+
+
+# The composition of `metalinksdb` (R26): a union of three parameter sets, then
+# the exclusion, then the fold, then the annotation layer. The two orders R26
+# calls binding are visible in the value itself — the `collapse` follows the
+# `union` and the `exclude` precedes the `collapse`.
+METALINKSDB_COMPOSITION = {
+    'operation': 'union',
+    'components': [
+        {
+            'parameters': {
+                'resources': ['chembl'],
+                'curation_flags': ['chembl_mechanism'],
+            }
+        },
+        {'parameters': {'resources': ['cellinker', 'guidetopharma', 'stitch']}},
+        {
+            'parameters': {
+                'resources': ['recon3d', 'humangem'],
+                'interaction_classes': ['transport'],
+            }
+        },
+    ],
+    'steps': [
+        {'operation': 'exclude', 'resources': ['bindingdb']},
+        {'operation': 'collapse', 'collapse_mode': 'endpoints'},
+        {'operation': 'annotate', 'layers': ['entity_intercell_annotation']},
+    ],
+}
+
+# The composition of `nichenet` (R26): the components are *named presets*, not
+# parameter sets. That is where FR-035's per-component override comes from —
+# an override replaces one named component and leaves the recipe alone.
+NICHENET_COMPOSITION = {
+    'operation': 'union',
+    'components': [
+        {'preset': 'curated_ligand_receptor'},
+        {'preset': 'omnipath'},
+        {'preset': 'collectri'},
+    ],
+    'steps': [{'operation': 'collapse', 'collapse_mode': 'endpoints'}],
+}
+
+
+def _component_names(composition):
+    """Each entry's named preset, or None where the component is a parameter set."""
+    return [component.get('preset') for component in composition['components']]
+
+
+def _step_operations(composition):
+    return [step['operation'] for step in composition.get('steps', ())]
 
 
 @pytest.fixture(scope='module')
@@ -233,7 +302,7 @@ def _preset_row(conn, schema, name):
             SELECT kind, included_sources, interaction_class_scope,
                    evidence_scope, default_attributes, mandatory_attributes,
                    labels, curation, attribute_sources,
-                   collapse_mode, license_scope
+                   collapse_mode, license_scope, composition
             FROM {schema}.network_registry WHERE name = %s
             """,
             [name],
@@ -315,6 +384,7 @@ def test_registry_round_trips_the_full_preset_spec(conn, registry):
         attribute_sources,
         collapse_mode,
         license_scope,
+        composition,
     ) = row
     assert kind == preset.kind
     assert tuple(included_sources) == preset.included_sources
@@ -327,6 +397,9 @@ def test_registry_round_trips_the_full_preset_spec(conn, registry):
     assert attribute_sources == preset.attribute_sources
     assert collapse_mode == preset.collapse_mode
     assert license_scope == preset.license_scope
+    # The full spec is still one parameter set: a composition is the exception,
+    # and its absence is NULL rather than an empty recipe (data-model §9).
+    assert composition is None
 
 
 def test_re_registration_upserts_the_preset(conn, registry):
@@ -500,6 +573,108 @@ def test_license_scope_excludes_an_unknown_license_resource(conn, registry, lice
     assert contributing == {'signor'}
 
 
+def test_registry_round_trips_a_composition(conn, registry):
+    """A preset that is not one query round-trips its whole recipe (R26).
+
+    Value equality is not enough on its own here: the recipe is *ordered*, so
+    the component list and the step list are compared as sequences.
+    """
+    composed = _full_preset(
+        name='_roundtrip_preset_composition',
+        composition=METALINKSDB_COMPOSITION,
+    )
+    register_network(conn, composed, registry_schema=registry)
+    stored = _preset_row(conn, registry, composed.name)[11]
+    assert stored == METALINKSDB_COMPOSITION
+    assert stored['operation'] == 'union'
+    assert [
+        component['parameters']['resources']
+        for component in stored['components']
+    ] == [
+        component['parameters']['resources']
+        for component in METALINKSDB_COMPOSITION['components']
+    ], 'the component order did not survive the round trip'
+
+
+def test_composition_keeps_the_two_binding_orders(conn, registry):
+    """The stored recipe states R26's order rules, not only the operations.
+
+    The ``collapse`` follows the ``union`` and works over the union's own
+    resolved scope, and the ``exclude`` precedes the ``collapse`` — an exclusion
+    applied after the fold leaves the dropped resource inside ``source_count``,
+    ``references`` and the sign flags, which is FR-048 under another name. The
+    api-service executes this (T020k); the column has to be able to say it.
+    """
+    composed = _full_preset(
+        name='_roundtrip_preset_composition_order',
+        composition=METALINKSDB_COMPOSITION,
+    )
+    register_network(conn, composed, registry_schema=registry)
+    stored = _preset_row(conn, registry, composed.name)[11]
+    operations = _step_operations(stored)
+    assert stored['operation'] == 'union', 'the components are joined by the union'
+    assert 'collapse' in operations, 'a multi-resource composition folds'
+    # The union is the top-level operation and the collapse is a step, so the
+    # fold cannot precede the union by construction; what has to be checked is
+    # the exclusion against the fold.
+    assert operations.index('exclude') < operations.index('collapse'), (
+        f'the exclude runs after the collapse: {operations} (FR-048)'
+    )
+
+
+def test_composition_component_can_name_another_preset(conn, registry):
+    """A component is a parameter set **or** the name of another preset (FR-035).
+
+    That is where the per-component override comes from: replacing one named
+    component leaves the other two exactly as the recipe wrote them.
+    """
+    nichenet = _full_preset(
+        name='_roundtrip_preset_named_components',
+        composition=NICHENET_COMPOSITION,
+    )
+    register_network(conn, nichenet, registry_schema=registry)
+    stored = _preset_row(conn, registry, nichenet.name)[11]
+    assert _component_names(stored) == [
+        'curated_ligand_receptor',
+        'omnipath',
+        'collectri',
+    ]
+    # The override: one named component swapped, the rest of the recipe alone.
+    overridden = {
+        **NICHENET_COMPOSITION,
+        'components': [
+            NICHENET_COMPOSITION['components'][0],
+            NICHENET_COMPOSITION['components'][1],
+            {'preset': 'dorothea'},
+        ],
+    }
+    register_network(
+        conn,
+        _full_preset(name=nichenet.name, composition=overridden),
+        registry_schema=registry,
+    )
+    stored = _preset_row(conn, registry, nichenet.name)[11]
+    assert _component_names(stored) == [
+        'curated_ligand_receptor',
+        'omnipath',
+        'dorothea',
+    ]
+    assert _step_operations(stored) == ['collapse'], (
+        'the override changed the rest of the recipe'
+    )
+
+
+def test_preset_without_composition_stores_null(conn, registry):
+    """One parameter set is the common case, and it stores NULL (data-model §9).
+
+    NULL and not an empty recipe: a reader must be able to tell "no composition"
+    from "a composition with no components" without guessing.
+    """
+    single = _full_preset(name='_roundtrip_preset_no_composition')
+    register_network(conn, single, registry_schema=registry)
+    assert _preset_row(conn, registry, single.name)[11] is None
+
+
 def test_live_registry_carries_the_preset_columns(conn):
     """The build database's own ``network_registry`` holds the preset columns."""
     with conn.cursor() as cur:
@@ -517,6 +692,9 @@ def test_live_registry_carries_the_preset_columns(conn):
         assert columns[column][0] == udt, f'{column} is {columns[column][0]}, want {udt}'
     # A license restriction is optional; its absence is NULL, not a level of 0.
     assert columns['license_scope'][1] == 'YES'
+    # So is a composition: NULL is the single-parameter-set preset (R26), which
+    # is what a database written before the amendment holds in every row.
+    assert columns['composition'][1] == 'YES'
     # Matview-era columns: nullable through the transition, dropped at T046.
     assert columns['schema_name'][1] == 'YES'
     assert columns['combined_relation'][1] == 'YES'

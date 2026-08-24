@@ -165,15 +165,22 @@ class TestHeadersOverTheFixtureGraph:
     def test_both_directions_share_one_header(self, built):
         """A→B and B→A are two facts of one endpoint-independent interaction."""
         connection, _first, _second = built
+        # Counted over the record's collapse key rather than over a collapsed
+        # table: R24 removed the materialisation, and the claim — two facts,
+        # one header — is a property of the key and the header link, both of
+        # which the record carries per contributing resource.
         with connection.cursor() as cur:
             cur.execute(
                 f"""
-                SELECT count(DISTINCT interaction_id), count(*)
-                FROM {SCRATCH}.interaction_fact_combined f
+                SELECT count(DISTINCT r.interaction_id),
+                       count(DISTINCT (r.subject_entity_id,
+                                       r.object_entity_id,
+                                       r.interaction_class_id))
+                FROM {SCRATCH}.interaction_fact_resource r
                 JOIN {SCRATCH}.entity subject
-                  ON subject.entity_id = f.subject_entity_id
+                  ON subject.entity_id = r.subject_entity_id
                 JOIN {SCRATCH}.entity object
-                  ON object.entity_id = f.object_entity_id
+                  ON object.entity_id = r.object_entity_id
                 WHERE subject.canonical_identifier IN ('FIXTURE_g', 'FIXTURE_h')
                   AND object.canonical_identifier IN ('FIXTURE_g', 'FIXTURE_h')
                 """

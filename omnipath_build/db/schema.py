@@ -2376,7 +2376,7 @@ def _drop_legacy_interaction_fact(
     cur: psycopg2.extensions.cursor,
     schema: str,
 ) -> None:
-    """Drop ``interaction_fact``, renamed to ``interaction_fact_combined``.
+    """Drop ``interaction_fact``, the pre-rename name of the collapsed table.
 
     The rename (spec 008, R19, 2026-08-20) leaves the old table behind on any
     database built before it. That is not merely untidy. The old table keeps a
@@ -2385,8 +2385,10 @@ def _drop_legacy_interaction_fact(
     left-behind ``interaction_fact`` is a dependant the truncate no longer
     names, so the next derive fails on it.
 
-    Dropping is safe because the table is a projection: every row in it is
+    Dropping was safe because the table was a projection: every row in it was
     rebuilt from ``relation`` and ``relation_evidence`` on the next derive.
+    The table it was renamed to is itself removed now — see
+    :func:`_drop_legacy_interaction_fact_combined`, its sibling.
     """
 
     cur.execute(
@@ -2401,12 +2403,63 @@ def _drop_legacy_interaction_fact(
         return
 
     _logger.info(
-        'Dropping legacy %s.interaction_fact; it is now '
-        'interaction_fact_combined and is rebuilt by the derive step.',
+        'Dropping legacy %s.interaction_fact; the collapse it held is a '
+        'query-time shape and no longer a table (spec 008, R24).',
         schema,
     )
     cur.execute(
         sql.SQL('DROP TABLE {}.interaction_fact CASCADE').format(
+            sql.Identifier(schema),
+        )
+    )
+
+
+def _drop_legacy_interaction_fact_combined(
+    cur: psycopg2.extensions.cursor,
+    schema: str,
+) -> None:
+    """Drop ``interaction_fact_combined``, the removed materialisation.
+
+    Spec 008, R24 and data model §3b/§3c: the collapse of the record over a
+    resource scope is what a **query** produces, not what the build stores. The
+    all-resources scope was the one scope materialised, and the page-first fold
+    (R25) leaves it with no job — it was holding 4.68 GiB and 51.4 s of derive
+    to precompute the cheapest scope in the system.
+
+    **The migration is this drop and no rebuild.** The table carried no
+    surrogate key and no inbound foreign key, which is what the anchoring rule
+    of §3b was for: keys point at the record, never at a materialisation, so
+    declining to materialise a scope stays a policy change. Nothing has to be
+    rewritten when it goes.
+
+    What forces the drop rather than leaving the table to rot is the other
+    direction. The leftover holds a foreign key **into** ``interaction``, and
+    the derive truncates the header together with the dependants it names. A
+    dependant it no longer names blocks the truncate whatever the row counts
+    are, so a database that keeps the table fails its next derive — the same
+    reason :func:`_drop_legacy_interaction_fact` exists for the pre-rename
+    name.
+    """
+
+    cur.execute(
+        """
+        SELECT 1
+        FROM information_schema.tables
+        WHERE table_schema = %s AND table_name = 'interaction_fact_combined'
+        """,
+        [schema],
+    )
+    if cur.fetchone() is None:
+        return
+
+    _logger.info(
+        'Dropping %s.interaction_fact_combined; the collapse is computed per '
+        'query over interaction_fact_resource and is materialised nowhere '
+        '(spec 008, R24).',
+        schema,
+    )
+    cur.execute(
+        sql.SQL('DROP TABLE {}.interaction_fact_combined CASCADE').format(
             sql.Identifier(schema),
         )
     )
@@ -2426,21 +2479,20 @@ def _ensure_interaction_schema(
     participants, each in a role, on a side, at an ordinal, optionally with a
     stoichiometry, a compartment and its own organism.
 
-    The binary projection is **two tables, and the scope decides which one a
-    query reads** (research R19). ``interaction_fact_resource`` (§3a) is the
-    **record**: one row per ordered endpoint pair, class and contributing
-    **resource**, plus the assertion signature that resource states.
-    ``interaction_fact_combined`` (§3b) is the **all-resources scope,
-    materialised**: the collapse of the record over every resource, one row per
-    ordered endpoint pair and class, precomputed because that scope applies no
-    filter. Every preset produces the same shape over its own scope, so the
-    collapsed table is one scope's materialisation rather than a layer above
-    the record.
+    The binary projection is **one table** (research R24).
+    ``interaction_fact_resource`` (§3a) is the **record**: one row per ordered
+    endpoint pair, class and contributing **resource**, plus the assertion
+    signature that resource states. No scope is precomputed, the all-resources
+    scope included — §3b is the shape a query produces by folding the record
+    for its own scope at request time, and it is declared nowhere here because
+    it is not a table. The materialisation that used to hold it is dropped from
+    any database still carrying one, below.
 
     The tables are declared here; the derive step fills them.
     """
     schema_id = sql.Identifier(schema)
     _drop_legacy_interaction_fact(cur, schema)
+    _drop_legacy_interaction_fact_combined(cur, schema)
     cur.execute(
         sql.SQL(
             """
@@ -2617,8 +2669,7 @@ def _ensure_interaction_schema(
     # DISTINCT` is what makes it a key at all: the three signature columns are
     # nullable, and under the default a resource silent on both sign and
     # direction would be free to repeat its row without the index noticing.
-    # The same rule `interaction_fact_combined_key_idx` and
-    # `entity_canonical_key_idx` follow.
+    # The same rule `entity_canonical_key_idx` follows.
     cur.execute(
         sql.SQL(
             """
@@ -2632,133 +2683,6 @@ def _ensure_interaction_schema(
               is_directed,
               is_stimulation,
               is_inhibition
-            ) NULLS NOT DISTINCT
-            """
-        ).format(schema_id)
-    )
-    cur.execute(
-        sql.SQL(
-            """
-            CREATE TABLE IF NOT EXISTS {}.interaction_fact_combined (
-              subject_entity_id uuid NOT NULL
-                REFERENCES {}.entity(entity_id),
-              object_entity_id uuid NOT NULL
-                REFERENCES {}.entity(entity_id),
-              interaction_class_id smallint NOT NULL
-                REFERENCES {}.vocab_interaction_class(interaction_class_id),
-              subject_organism bigint,
-              object_organism bigint,
-              is_directed boolean,
-              is_stimulation boolean,
-              is_inhibition boolean,
-              sign_source_count smallint,
-              direction_source_count smallint,
-              affinity double precision,
-              pchembl double precision,
-              score double precision,
-              sources text[],
-              source_count integer,
-              dataset_tags text[],
-              curation_flags text[],
-              reference_pubmed_ids text[],
-              reference_dois text[],
-              reference_count integer,
-              attributes jsonb,
-              interaction_id uuid
-                REFERENCES {}.interaction(interaction_id)
-                ON DELETE CASCADE
-            )
-            """
-        ).format(schema_id, schema_id, schema_id, schema_id, schema_id)
-    )
-    # `interaction_fact_combined` is the **all-resources scope, materialised**
-    # (data model §3b): the collapse of `interaction_fact_resource` over every
-    # resource. Its key stays the ordered `(subject, object, class)` triple.
-    #
-    # It gains **no surrogate key** and takes **no inbound foreign key**
-    # (anchoring rule, §3b). Keys point at the record, never at a
-    # materialisation: this table is one scope's collapse and is droppable by
-    # policy, so a key into it would turn the decision not to materialise a
-    # scope into a migration. It has no stable identity to offer either — a
-    # serial reshuffles every build, and a deterministic id would only
-    # re-encode the triple a child row can carry directly. Navigation to a
-    # collapse is therefore a join on the denormalised triple, which reaches
-    # **any** scope's collapse and not only this one.
-    #
-    # Sign and direction are three-valued (FR-044, research R15): NULL means no
-    # contributing resource asserts the attribute, and that is a different
-    # statement from an asserted `false`. They therefore carry no NOT NULL and
-    # no DEFAULT. `sign_source_count` and `direction_source_count` say how many
-    # resources asserted anything, so a caller can weigh a summary that one
-    # resource out of twelve produced. `is_stimulation` and `is_inhibition` may
-    # both be true: resources disagreeing is represented here, not resolved.
-    # `sources` and the reference arrays aggregate every contributing resource
-    # and reference, including those asserting neither sign nor direction
-    # (FR-044c). Added here too, for databases created before the columns
-    # existed.
-    cur.execute(
-        sql.SQL(
-            """
-            ALTER TABLE {}.interaction_fact_combined
-            ADD COLUMN IF NOT EXISTS subject_organism bigint,
-            ADD COLUMN IF NOT EXISTS object_organism bigint,
-            ADD COLUMN IF NOT EXISTS is_directed boolean,
-            ADD COLUMN IF NOT EXISTS is_stimulation boolean,
-            ADD COLUMN IF NOT EXISTS is_inhibition boolean,
-            ADD COLUMN IF NOT EXISTS sign_source_count smallint,
-            ADD COLUMN IF NOT EXISTS direction_source_count smallint,
-            ADD COLUMN IF NOT EXISTS affinity double precision,
-            ADD COLUMN IF NOT EXISTS pchembl double precision,
-            ADD COLUMN IF NOT EXISTS score double precision,
-            ADD COLUMN IF NOT EXISTS sources text[],
-            ADD COLUMN IF NOT EXISTS source_count integer,
-            ADD COLUMN IF NOT EXISTS dataset_tags text[],
-            ADD COLUMN IF NOT EXISTS curation_flags text[],
-            ADD COLUMN IF NOT EXISTS reference_pubmed_ids text[],
-            ADD COLUMN IF NOT EXISTS reference_dois text[],
-            ADD COLUMN IF NOT EXISTS reference_count integer,
-            ADD COLUMN IF NOT EXISTS attributes jsonb,
-            ADD COLUMN IF NOT EXISTS interaction_id uuid
-            """
-        ).format(schema_id)
-    )
-    # The class is NOT NULL: under research R18 every relation reaches at least
-    # `other`, because `other` is a real class rather than the residue of a
-    # derivation that failed. A NULL here would therefore mean the projection is
-    # broken, and the constraint says so instead of letting the row through.
-    # Tightened only when nothing violates it, so a database still holding
-    # pre-R18 rows reports the problem at derive time rather than failing to
-    # create its schema.
-    cur.execute(
-        sql.SQL(
-            """
-            DO $$
-            BEGIN
-              IF NOT EXISTS (
-                SELECT 1 FROM {}.interaction_fact_combined
-                WHERE interaction_class_id IS NULL
-              ) THEN
-                ALTER TABLE {}.interaction_fact_combined
-                ALTER COLUMN interaction_class_id SET NOT NULL;
-              END IF;
-            END $$
-            """
-        ).format(schema_id, schema_id)
-    )
-    # The key is ordered: A→B and B→A are two distinct rows, never merged
-    # (FR-044d, research R1). The class is part of the identity, and R18 is
-    # what makes it discriminate — the derive step reads it from the resource
-    # annotations, not from the predicate alone. `NULLS NOT DISTINCT` keeps a
-    # row whose class stayed unresolved from duplicating, the same rule
-    # `entity_canonical_key_idx` follows.
-    cur.execute(
-        sql.SQL(
-            """
-            CREATE UNIQUE INDEX IF NOT EXISTS interaction_fact_combined_key_idx
-            ON {}.interaction_fact_combined (
-              subject_entity_id,
-              object_entity_id,
-              interaction_class_id
             ) NULLS NOT DISTINCT
             """
         ).format(schema_id)
@@ -2801,40 +2725,6 @@ def _ensure_interaction_schema(
             'interaction_fact_resource',
             ('source_id',),
         ),
-        # The unique key leads with `subject_entity_id`, so an object-first
-        # lookup needs its own index; the class and the header link are the
-        # other two hot equality filters.
-        (
-            'interaction_fact_combined_object_idx',
-            'interaction_fact_combined',
-            ('object_entity_id',),
-        ),
-        (
-            'interaction_fact_combined_class_idx',
-            'interaction_fact_combined',
-            ('interaction_class_id',),
-        ),
-        (
-            'interaction_fact_combined_interaction_idx',
-            'interaction_fact_combined',
-            ('interaction_id',),
-        ),
-        # Affinity, pchembl and score are range-filtered and sorted on.
-        (
-            'interaction_fact_combined_affinity_idx',
-            'interaction_fact_combined',
-            ('affinity',),
-        ),
-        (
-            'interaction_fact_combined_pchembl_idx',
-            'interaction_fact_combined',
-            ('pchembl',),
-        ),
-        (
-            'interaction_fact_combined_score_idx',
-            'interaction_fact_combined',
-            ('score',),
-        ),
     ]
     for index_name, table, columns in specs:
         cur.execute(
@@ -2848,19 +2738,13 @@ def _ensure_interaction_schema(
             )
         )
     # The aggregated provenance arrays are filtered with array containment;
-    # the `attributes` GIN on either table is benchmark-gated (research R2)
-    # and is not created until its size and build cost are measured. The
-    # partial indexes on the three-valued sign and direction columns wait on
-    # the same measurement (data model §3).
+    # the `attributes` GIN on the record is benchmark-gated (research R2) and
+    # is not created until its size and build cost are measured. The partial
+    # indexes on the three-valued sign and direction columns wait on the same
+    # measurement (data model §3a).
     for index_name, table, column in (
         ('interaction_sources_gin_idx', 'interaction', 'sources'),
         ('interaction_dataset_tags_gin_idx', 'interaction', 'dataset_tags'),
-        ('interaction_fact_combined_sources_gin_idx', 'interaction_fact_combined', 'sources'),
-        (
-            'interaction_fact_combined_dataset_tags_gin_idx',
-            'interaction_fact_combined',
-            'dataset_tags',
-        ),
     ):
         cur.execute(
             sql.SQL(

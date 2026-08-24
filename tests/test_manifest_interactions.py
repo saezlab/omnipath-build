@@ -1,9 +1,10 @@
 """The manifest records interaction derive cost and the preset inventory (T020a).
 
-The grain amendment splits that cost in two (T020b): the record table
-``interaction_fact_resource`` and the collapse ``interaction_fact_combined`` are
-reported apart, and every measured query scope reports what materialising it
-cost — the scopes this build declined to materialise included (FR-050).
+R24 leaves one interaction table, so the cost block names it alone (T020b):
+``interaction_fact_resource``, the record. Every measured query scope still
+reports what materialising it cost — the scopes this build declined to
+materialise included (FR-050) — and ``interactions_deferral_cost`` reports what
+the deferred load saved and what restoring the catalogue cost (T013k, R23).
 
 Both are volatile — per-step seconds and row counts, and the registered preset
 list — so they are written next to the identity hash, never inside it. These
@@ -29,8 +30,6 @@ import os
 import pytest
 
 from omnipath_build.db.resources import (
-    ALL_RESOURCES_SCOPE,
-    INTERACTION_COLLAPSE_STEP,
     INTERACTION_RECORD_STEP,
     emit_build_manifest,
 )
@@ -60,7 +59,7 @@ PRESET = NetworkDefinition(
 # Two runs of the same build: identical inputs, different timings and row counts
 # observed along the way.
 COST_FIRST = {
-    'interaction_fact_combined': {'seconds': 12.5, 'rows': 1000},
+    INTERACTION_RECORD_STEP: {'seconds': 12.5, 'rows': 1000},
     'interaction_assay': {'seconds': 3.25, 'rows': 400},
     'interaction_party': {'seconds': 5.0, 'rows': 2000},
     'reaction_projection': {'seconds': 8.75, 'rows': 700},
@@ -138,8 +137,8 @@ def test_manifest_records_derive_cost_and_preset_inventory(conn, build_schema):
     assert isinstance(cost, dict), 'no interactions_derive_cost in the manifest'
     by_step = {entry['step']: entry for entry in cost['steps']}
     assert set(by_step) == set(COST_FIRST)
-    assert by_step['interaction_fact_combined']['seconds'] == pytest.approx(12.5)
-    assert by_step['interaction_fact_combined']['rows'] == 1000
+    assert by_step[INTERACTION_RECORD_STEP]['seconds'] == pytest.approx(12.5)
+    assert by_step[INTERACTION_RECORD_STEP]['rows'] == 1000
 
     assert isinstance(presets, list) and presets, 'no network_presets inventory'
     registered = {entry['name']: entry for entry in presets}
@@ -186,33 +185,28 @@ def test_manifest_omits_cost_when_no_derive_step_ran(conn, build_schema):
     assert presets is not None
 
 
-# --- the grain amendment's cost, named apart (T020b, FR-050) ----------------
+# --- one interaction table, and the deferral over its load (T020b, T013k) ---
 #
-# The record and the collapse are two tables now, and the manifest has to say
-# which of them cost what. A scope that was measured without being materialised
-# is the case FR-050 exists for, so it gets a run of its own below.
+# R24 removes the materialisation, so `interaction_tables` names the record and
+# nothing else, and no scope is the all-resources one any more. What the
+# collapse used to buy the reader — an attributable share of the projection's
+# cost — is now bought by `interactions_deferral_cost`, which says what the
+# deferred load saved and what putting the catalogue back cost.
 
-COST_BOTH_TABLES = {
+COST_INTERACTION_TABLES = {
     'interaction_party': {'seconds': 679.1, 'rows': 28359137},
-    INTERACTION_RECORD_STEP: {'seconds': 394.0, 'rows': 14678638},
-    INTERACTION_COLLAPSE_STEP: {'seconds': 103.25, 'rows': 14292093},
+    INTERACTION_RECORD_STEP: {'seconds': 138.6, 'rows': 14686404},
     'intercell': {'seconds': 1.5, 'rows': 90},
 }
 
-# A build from before the amendment: one interaction fact table, no record step.
-COST_PRE_AMENDMENT = {
+# A build that wrote no interaction table at all: nothing to name apart.
+COST_NO_INTERACTION_TABLE = {
     'interaction_party': {'seconds': 5.0, 'rows': 2000},
     'intercell': {'seconds': 1.5, 'rows': 90},
 }
 
 SCOPE_COST = {
     'kinase_extra': {'seconds': 4.0, 'rows': 120},
-    ALL_RESOURCES_SCOPE: {
-        'table': 'interaction_fact_combined',
-        'seconds': 103.25,
-        'rows': 14292093,
-        'sources': ('signor', 'connectomedb2025'),
-    },
     'academic_license': {
         'table': 'interaction_fact_academic',
         'seconds': 51.5,
@@ -227,109 +221,102 @@ SCOPE_COST = {
     },
 }
 
+# What R23 measured, in the shape T013j will hand over.
+# Measured on dev4 2026-08-24, after T011c took the materialisation out: the
+# deferral drops nine foreign keys and nine secondary indexes, not the 13 and 18
+# R23 counted, because `interaction_fact_combined` carried four of the keys and
+# nine of the indexes and no longer exists to carry them.
+DEFERRAL_COST = {
+    'deferred': True,
+    'seconds_saved': 737.0,
+    'load_seconds': 399.5,
+    'drop_seconds': 1.003,
+    'restore_seconds': 25.537,
+    'revalidate_seconds': 31.910,
+    'constraints_deferred': 9,
+    'indexes_deferred': 9,
+    'catalogue_unchanged': True,
+}
 
-def test_interaction_tables_split_record_from_collapse(conn, build_schema):
-    """The record and the collapse are reported apart, each with its own cost."""
-    emit_build_manifest(conn, schema=build_schema, derive_cost=COST_BOTH_TABLES)
+
+def _deferral(conn, schema):
+    with conn.cursor() as cur:
+        cur.execute(
+            f'SELECT interactions_deferral_cost FROM {schema}.build_manifest'
+        )
+        return cur.fetchone()[0]
+
+
+def test_interaction_tables_name_the_record_alone(conn, build_schema):
+    """One table is built, so one table is named — no collapse, no total."""
+    emit_build_manifest(
+        conn, schema=build_schema, derive_cost=COST_INTERACTION_TABLES
+    )
     _id, _c, _r, cost, _p = _manifest(conn, build_schema)
 
     tables = cost['interaction_tables']
-    assert tables['record'] == {
-        'table': INTERACTION_RECORD_STEP,
-        'seconds': pytest.approx(394.0),
-        'rows': 14678638,
+    assert tables == {
+        'record': {
+            'table': INTERACTION_RECORD_STEP,
+            'seconds': pytest.approx(138.6),
+            'rows': 14686404,
+        }
     }
-    assert tables['collapse'] == {
-        'table': INTERACTION_COLLAPSE_STEP,
-        'seconds': pytest.approx(103.25),
-        'rows': 14292093,
-    }
-    assert tables['total_seconds'] == pytest.approx(394.0 + 103.25)
+    # The removed halves are gone rather than emitted empty: a `collapse: null`
+    # would read as a table that ran and was not measured, which is a claim
+    # about a table this build does not have.
+    assert 'collapse' not in tables
+    assert 'total_seconds' not in tables
 
-    # The split is an extra reading of the same steps, not a replacement: both
-    # tables stay in `steps` too, so the whole-derive total is still readable.
+    # The naming is an extra reading of the same step, not a replacement: the
+    # record stays in `steps` too, so the whole-derive total is still readable.
     by_step = {entry['step']: entry for entry in cost['steps']}
     assert INTERACTION_RECORD_STEP in by_step
-    assert INTERACTION_COLLAPSE_STEP in by_step
 
 
-def test_unmeasured_table_half_is_null_and_not_zero(conn, build_schema):
+def test_unmeasured_record_is_null_and_not_zero(conn, build_schema):
     """Absent and free stay distinguishable: nothing reported renders ``null``.
 
-    This is what makes the amendment's cost attributable. A half rendered as
-    zero reads as "the collapse was free", which is a claim about the build; a
-    half rendered as ``null`` reads as "nobody measured it", which is a claim
-    about the measurement. The two must not be confused, so ``total_seconds``
-    adds up only the halves that carry a number.
+    A record rendered as zero reads as "the table was free", which is a claim
+    about the build; one rendered as ``null`` reads as "nobody measured it",
+    which is a claim about the measurement.
     """
-    derive_cost = {
-        INTERACTION_RECORD_STEP: {'seconds': 394.0, 'rows': 14678638},
-        # The collapse ran but was never timed.
-        INTERACTION_COLLAPSE_STEP: {'seconds': None, 'rows': None},
-    }
-    emit_build_manifest(conn, schema=build_schema, derive_cost=derive_cost)
+    emit_build_manifest(
+        conn,
+        schema=build_schema,
+        # The record was written but never timed or counted.
+        derive_cost={INTERACTION_RECORD_STEP: {'seconds': None, 'rows': None}},
+    )
     _id, _c, _r, cost, _p = _manifest(conn, build_schema)
 
-    collapse = cost['interaction_tables']['collapse']
-    assert collapse['table'] == INTERACTION_COLLAPSE_STEP
-    assert collapse['seconds'] is None, 'an unmeasured half was rendered as a number'
-    assert collapse['rows'] is None, 'an uncounted half was rendered as a number'
-    # Only the measured half is summed — not 394.0 + 0.
-    assert cost['interaction_tables']['total_seconds'] == pytest.approx(394.0)
+    record = cost['interaction_tables']['record']
+    assert record['table'] == INTERACTION_RECORD_STEP
+    assert record['seconds'] is None, 'an unmeasured table was rendered as a number'
+    assert record['rows'] is None, 'an uncounted table was rendered as a number'
 
-    # And a step that did not run at all is absent, not zeroed.
+
+def test_interaction_tables_absent_when_no_table_reported(conn, build_schema):
+    """The block is omitted, not emitted empty, when the record did not run."""
     emit_build_manifest(
-        conn,
-        schema=build_schema,
-        derive_cost={INTERACTION_COLLAPSE_STEP: {'seconds': 103.25, 'rows': 7}},
+        conn, schema=build_schema, derive_cost=COST_NO_INTERACTION_TABLE
     )
-    _id2, _c2, _r2, cost2, _p2 = _manifest(conn, build_schema)
-    assert cost2['interaction_tables']['record'] is None
-    assert cost2['interaction_tables']['total_seconds'] == pytest.approx(103.25)
-
-    # Nothing measured on either half: the block is there (a table reported),
-    # but it claims no total.
-    emit_build_manifest(
-        conn,
-        schema=build_schema,
-        derive_cost={INTERACTION_RECORD_STEP: {'rows': 14678638}},
-    )
-    _id3, _c3, _r3, cost3, _p3 = _manifest(conn, build_schema)
-    assert cost3['interaction_tables']['total_seconds'] is None
-
-
-def test_interaction_tables_absent_for_a_pre_amendment_build(conn, build_schema):
-    """Neither table reported — the block is omitted, not emitted empty.
-
-    A build that predates the amendment writes exactly the manifest it wrote
-    before: `steps` and nothing beside it.
-    """
-    emit_build_manifest(conn, schema=build_schema, derive_cost=COST_PRE_AMENDMENT)
     _id, _c, _r, cost, _p = _manifest(conn, build_schema)
 
     assert 'interaction_tables' not in cost
     assert set(cost) == {'steps'}
 
 
-def test_scope_cost_orders_all_resources_first(conn, build_schema):
-    """All-resources first, then the materialised scopes, then by name."""
-    scope_cost = dict(SCOPE_COST)
-    # The all-resources scope leads even when it is the one not materialised.
-    scope_cost[ALL_RESOURCES_SCOPE] = {
-        **scope_cost[ALL_RESOURCES_SCOPE],
-        'table': None,
-        'materialised': False,
-    }
+def test_scope_cost_orders_materialised_scopes_first(conn, build_schema):
+    """Materialised scopes first, then the measured ones, each by name."""
     emit_build_manifest(
         conn,
         schema=build_schema,
-        derive_cost=COST_BOTH_TABLES,
-        scope_cost=scope_cost,
+        derive_cost=COST_INTERACTION_TABLES,
+        scope_cost=SCOPE_COST,
     )
     _id, _c, _r, cost, _p = _manifest(conn, build_schema)
 
     assert [entry['scope'] for entry in cost['scopes']] == [
-        ALL_RESOURCES_SCOPE,
         'academic_license',
         'signor_only',
         'kinase_extra',
@@ -347,7 +334,7 @@ def test_scope_measured_without_being_materialised_round_trips(conn, build_schem
     emit_build_manifest(
         conn,
         schema=build_schema,
-        derive_cost=COST_BOTH_TABLES,
+        derive_cost=COST_INTERACTION_TABLES,
         scope_cost=SCOPE_COST,
     )
     _id, _c, _r, cost, _p = _manifest(conn, build_schema)
@@ -361,57 +348,10 @@ def test_scope_measured_without_being_materialised_round_trips(conn, build_schem
     assert declined['sources'] is None
 
     # A scope that named a table is materialised without having to say so.
-    stored = by_scope[ALL_RESOURCES_SCOPE]
-    assert stored['table'] == 'interaction_fact_combined'
+    stored = by_scope['academic_license']
+    assert stored['table'] == 'interaction_fact_academic'
     assert stored['materialised'] is True
-    assert stored['sources'] == ['signor', 'connectomedb2025']
-
-
-def test_table_and_scope_cost_do_not_move_the_build_id(conn, build_schema):
-    """Two builds differing only in these costs share one identity.
-
-    The amendment added fields to the manifest; the cycle-007 lesson says a
-    field describing a run may never move the identity of what the run built.
-    Asserted here so a later edit cannot fold them into the hashed payload
-    unnoticed.
-    """
-    first = emit_build_manifest(
-        conn,
-        schema=build_schema,
-        derive_cost=COST_BOTH_TABLES,
-        scope_cost=SCOPE_COST,
-    )
-    _id, commits, resources, first_cost, _p = _manifest(conn, build_schema)
-
-    slower_tables = {
-        step: {'seconds': cost['seconds'] * 3 + 1.0, 'rows': cost['rows']}
-        for step, cost in COST_BOTH_TABLES.items()
-    }
-    fewer_scopes = {
-        ALL_RESOURCES_SCOPE: {
-            'table': None,
-            'materialised': False,
-            'seconds': 9999.0,
-            'rows': 1,
-        },
-    }
-    second = emit_build_manifest(
-        conn,
-        schema=build_schema,
-        derive_cost=slower_tables,
-        scope_cost=fewer_scopes,
-    )
-    _id2, _c2, _r2, second_cost, _p2 = _manifest(conn, build_schema)
-
-    assert first_cost['interaction_tables'] != second_cost['interaction_tables']
-    assert first_cost['scopes'] != second_cost['scopes']
-    assert first.build_id == second.build_id
-
-    # And the identity is still the hash of the two names it always covered.
-    payload = {'package_commits': commits, 'resources': resources}
-    assert first.build_id == hashlib.sha256(
-        json.dumps(payload, sort_keys=True, separators=(',', ':')).encode()
-    ).hexdigest()[:12]
+    assert stored['sources'] == ['signor']
 
 
 def test_scope_record_without_a_name_is_warned_about_and_dropped(
@@ -433,7 +373,7 @@ def test_scope_record_without_a_name_is_warned_about_and_dropped(
         stats = emit_build_manifest(
             conn,
             schema=build_schema,
-            derive_cost=COST_BOTH_TABLES,
+            derive_cost=COST_INTERACTION_TABLES,
             scope_cost=scope_cost,
         )
     _id, _c, _r, cost, _p = _manifest(conn, build_schema)
@@ -444,3 +384,166 @@ def test_scope_record_without_a_name_is_warned_about_and_dropped(
         'scope-cost record without a scope' in record.getMessage()
         for record in caplog.records
     )
+
+
+def test_deferral_cost_is_recorded(conn, build_schema):
+    """What the deferral saved and what the restore cost, per build (T013k)."""
+    emit_build_manifest(
+        conn,
+        schema=build_schema,
+        derive_cost=COST_INTERACTION_TABLES,
+        deferral_cost=DEFERRAL_COST,
+    )
+    deferral = _deferral(conn, build_schema)
+
+    assert deferral == {
+        'deferred': True,
+        'seconds_saved': pytest.approx(737.0),
+        'load_seconds': pytest.approx(399.5),
+        'drop_seconds': pytest.approx(1.003),
+        'restore_seconds': pytest.approx(25.537),
+        'revalidate_seconds': pytest.approx(31.910),
+        'constraints_deferred': 9,
+        'indexes_deferred': 9,
+        'catalogue_unchanged': True,
+    }
+
+    # It is its own column, not a nested reading of the derive cost: the
+    # deferral is a property of how the load ran, not of what a step cost.
+    _id, _c, _r, cost, _p = _manifest(conn, build_schema)
+    assert 'deferral' not in cost
+
+
+def test_deferral_cost_is_null_when_the_deferral_did_not_run(conn, build_schema):
+    """A build without the deferral reports ``null``, never zero.
+
+    Zero seconds saved is a measurement — a deferral that bought nothing. No
+    deferral at all is the absence of one, and the two must not read alike,
+    because the first is a regression to chase and the second is not.
+    """
+    emit_build_manifest(
+        conn, schema=build_schema, derive_cost=COST_INTERACTION_TABLES
+    )
+    assert _deferral(conn, build_schema) is None
+
+    # And a deferral that measured nothing at all says nothing, rather than
+    # claiming a run with every number missing.
+    emit_build_manifest(
+        conn,
+        schema=build_schema,
+        derive_cost=COST_INTERACTION_TABLES,
+        deferral_cost={},
+    )
+    assert _deferral(conn, build_schema) is None
+
+
+def test_deferral_cost_tolerates_a_partial_producer(conn, build_schema):
+    """T013j reports what it measured; the rest stays ``null``, not zero."""
+    emit_build_manifest(
+        conn,
+        schema=build_schema,
+        derive_cost=COST_INTERACTION_TABLES,
+        deferral_cost={'seconds_saved': 1105.0, 'revalidate_seconds': 44.6},
+    )
+    deferral = _deferral(conn, build_schema)
+
+    assert deferral['seconds_saved'] == pytest.approx(1105.0)
+    assert deferral['revalidate_seconds'] == pytest.approx(44.6)
+    assert deferral['drop_seconds'] is None
+    assert deferral['restore_seconds'] is None
+    assert deferral['constraints_deferred'] is None
+    assert deferral['indexes_deferred'] is None
+    assert deferral['catalogue_unchanged'] is None
+    # A producer that measured a saving deferred something, whether or not it
+    # said so — the same inference `materialised` makes from `table`.
+    assert deferral['deferred'] is True
+
+
+def test_malformed_deferral_cost_is_warned_about_and_dropped(
+    conn,
+    build_schema,
+    caplog,
+):
+    """An unreadable number costs a warning, never the build."""
+    with caplog.at_level(logging.WARNING, logger='omnipath_build.db.resources'):
+        stats = emit_build_manifest(
+            conn,
+            schema=build_schema,
+            derive_cost=COST_INTERACTION_TABLES,
+            deferral_cost={
+                'seconds_saved': 'eighteen minutes',
+                'revalidate_seconds': 44.6,
+            },
+        )
+    deferral = _deferral(conn, build_schema)
+
+    assert stats.build_id
+    assert deferral['seconds_saved'] is None
+    assert deferral['revalidate_seconds'] == pytest.approx(44.6)
+    assert any(
+        'deferral-cost field' in record.getMessage() for record in caplog.records
+    )
+
+    # A record with nothing readable in it at all is dropped, not stored empty.
+    with caplog.at_level(logging.WARNING, logger='omnipath_build.db.resources'):
+        emit_build_manifest(
+            conn,
+            schema=build_schema,
+            derive_cost=COST_INTERACTION_TABLES,
+            deferral_cost={'how_long': 'a while'},
+        )
+    assert _deferral(conn, build_schema) is None
+
+
+def test_table_scope_and_deferral_cost_do_not_move_the_build_id(
+    conn, build_schema
+):
+    """Two builds differing only in these costs share one identity.
+
+    The amendment added fields to the manifest; the cycle-007 lesson says a
+    field describing a run may never move the identity of what the run built.
+    Asserted here so a later edit cannot fold them into the hashed payload
+    unnoticed.
+    """
+    first = emit_build_manifest(
+        conn,
+        schema=build_schema,
+        derive_cost=COST_INTERACTION_TABLES,
+        scope_cost=SCOPE_COST,
+        deferral_cost=DEFERRAL_COST,
+    )
+    _id, commits, resources, first_cost, _p = _manifest(conn, build_schema)
+    first_deferral = _deferral(conn, build_schema)
+
+    slower = {
+        step: {'seconds': cost['seconds'] * 3 + 1.0, 'rows': cost['rows']}
+        for step, cost in COST_INTERACTION_TABLES.items()
+    }
+    fewer_scopes = {
+        'signor_only': {
+            'table': None,
+            'materialised': False,
+            'seconds': 9999.0,
+            'rows': 1,
+        },
+    }
+    second = emit_build_manifest(
+        conn,
+        schema=build_schema,
+        derive_cost=slower,
+        scope_cost=fewer_scopes,
+        # This run took the deferral and bought nothing by it.
+        deferral_cost={'deferred': True, 'seconds_saved': 0.0},
+    )
+    _id2, _c2, _r2, second_cost, _p2 = _manifest(conn, build_schema)
+
+    assert first_cost['interaction_tables'] != second_cost['interaction_tables']
+    assert first_cost['scopes'] != second_cost['scopes']
+    assert first_deferral != _deferral(conn, build_schema)
+    assert first.build_id == second.build_id
+
+    # And the identity is still the hash of the two names it always covered.
+    payload = {'package_commits': commits, 'resources': resources}
+    assert first.build_id == hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(',', ':')).encode()
+    ).hexdigest()[:12]

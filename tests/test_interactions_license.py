@@ -21,11 +21,17 @@ the vocabulary has*. If the resolution consults the levels rather than
 
 **A license filter restricts the resource set, so the scope rule applies**
 (R19, FR-048, data model §3b). The surviving summaries must be recomputed by
-collapsing ``interaction_fact_resource`` over the surviving resources.
-Selecting rows from ``interaction_fact_combined`` with ``sources &&
-ARRAY[...]`` returns the right interactions carrying numbers that describe
-resources the license excluded. The last test holds that shortcut to be a
-defect by showing the two answers differ.
+collapsing ``interaction_fact_resource`` over the surviving resources. Reusing
+a fold computed over a **wider** set returns the right interactions carrying
+numbers that describe resources the license excluded. The last test holds that
+shortcut to be a defect by showing the two answers differ.
+
+**Amended 2026-08-21 by R24**: the wider fold used to be a table —
+``interaction_fact_combined``, the all-resources scope materialised — and it is
+removed, so the last test folds the record over every resource instead of
+reading one. The rule survives the table because it was never about the table:
+it forbids reusing a fold computed over a wider set, whether that fold is
+stored or computed a moment ago.
 
 Run::
 
@@ -314,38 +320,6 @@ def _collapse(conn, sources: list[str] | None) -> dict[tuple[str, str], dict]:
     }
 
 
-def _combined(conn, subject: str, object_: str) -> dict[str, object]:
-    """One row of the all-resources materialisation, by endpoint letters."""
-    with conn.cursor() as cur:
-        cur.execute(
-            f"""
-            SELECT f.sources, f.source_count, f.is_stimulation, f.is_inhibition,
-                   f.sign_source_count
-            FROM {SCRATCH}.interaction_fact_combined f
-            JOIN {SCRATCH}.entity subject
-              ON subject.entity_id = f.subject_entity_id
-            JOIN {SCRATCH}.entity object
-              ON object.entity_id = f.object_entity_id
-            WHERE subject.canonical_identifier = %s
-              AND object.canonical_identifier = %s
-            """,
-            (f'FIXTURE_{subject}', f'FIXTURE_{object_}'),
-        )
-        rows = cur.fetchall()
-    assert len(rows) == 1, f'{subject}->{object_} produced {len(rows)} rows'
-    keys = (
-        'sources',
-        'source_count',
-        'is_stimulation',
-        'is_inhibition',
-        'sign_source_count',
-    )
-    return dict(zip(keys, rows[0]))
-
-
-# --- the table holds levels, and the filter compares them --------------------
-
-
 def test_the_license_table_stores_ordinal_levels_not_only_a_name(built):
     """§8a: three smallint levels plus `is_known`, keyed by resource."""
     conn = built
@@ -546,28 +520,35 @@ def test_the_surviving_summaries_are_recomputed_over_the_survivors(built):
     assert row['sign_source_count'] == 1
 
 
-def test_filtering_the_materialisation_by_sources_reports_the_wrong_numbers(built):
+def test_reusing_a_wider_fold_reports_the_wrong_numbers(built):
     """Why the shortcut is a defect, not an optimisation (data model §3b).
 
-    `interaction_fact_combined` materialises the all-resources scope. Selecting
-    its c->d row with `sources && ARRAY['fixture_res_a','fixture_res_c']`
-    returns the right interaction carrying a source count and a sign that
-    describe three resources, one of which the license excluded.
+    The all-resources fold of c->d says three resources and an inhibition.
+    Filtering *that* row down to the license's resource set — with `sources &&
+    ARRAY['fixture_res_a','fixture_res_c']`, or by any other predicate over an
+    already-folded row — returns the right interaction carrying a source count
+    and a sign that describe three resources, one of which the license
+    excluded. Only re-folding over the surviving resources answers the
+    question that was asked.
+
+    Under R24 the wider fold is computed rather than read from
+    `interaction_fact_combined`, which is removed. That changes where the wrong
+    numbers come from and not whether they are wrong.
     """
     conn = built
     _load_fixture_licenses(conn)
 
-    materialised = _combined(conn, 'c', 'd')
-    assert materialised['source_count'] == 3
-    assert materialised['is_inhibition'] is True
+    wider = _collapse(conn, None)[('c', 'd')]
+    assert wider['source_count'] == 3
+    assert wider['is_inhibition'] is True
 
     scoped = _collapse(
         conn,
         sorted(_resolve(conn, **COMMERCIAL)['admitted']),
     )[('c', 'd')]
 
-    assert scoped['source_count'] != materialised['source_count']
-    assert scoped['is_inhibition'] != materialised['is_inhibition'], (
-        'the scoped collapse agreed with the all-resources materialisation, '
-        'so this fixture no longer proves the scope rule bites'
+    assert scoped['source_count'] != wider['source_count']
+    assert scoped['is_inhibition'] != wider['is_inhibition'], (
+        'the scoped collapse agreed with the all-resources fold, so this '
+        'fixture no longer proves the scope rule bites'
     )

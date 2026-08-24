@@ -18,11 +18,7 @@ import psycopg2
 from omnipath_build import configure_build_tmpdir
 
 from omnipath_build.db.derived_tables import InteractionDeriveStats
-from omnipath_build.db.resources import (
-    ALL_RESOURCES_SCOPE,
-    INTERACTION_COLLAPSE_STEP,
-    INTERACTION_RECORD_STEP,
-)
+from omnipath_build.db.resources import INTERACTION_RECORD_STEP
 from omnipath_build.db import (
     ensure_schema,
     reset_content_tables,
@@ -232,8 +228,10 @@ def main(argv: list[str] | None = None) -> int:
         default=True,
         help=(
             'Project the canonical graph into interaction/interaction_party/'
-            'interaction_fact_combined (008 T013/T014). Runs after the interaction-class '
-            'classification, which fills the predicate map it reads.'
+            'interaction_fact_resource (008 T013/T014). Runs after the '
+            'interaction-class classification, which fills the predicate map '
+            'it reads. Nothing is folded: the collapse of a resource scope is '
+            'what a query produces (R24).'
         ),
     )
     derive.add_argument(
@@ -603,7 +601,7 @@ def main(argv: list[str] | None = None) -> int:
                     inputs_package=args.inputs_package,
                     partial_build=_is_partial_build(args.max_records),
                     derive_cost=_interaction_derive_cost(interaction_stats),
-                    scope_cost=_interaction_scope_cost(interaction_stats),
+                    deferral_cost=_interaction_deferral_cost(interaction_stats),
                 )
                 _derive_log(
                     'build_manifest_done',
@@ -743,7 +741,6 @@ def _derive_interactions(
         interactions=stats.interactions,
         parties=stats.parties,
         records=stats.records,
-        facts=stats.facts,
         rows_by_class=','.join(
             f'{name}:{count}' for name, count in sorted(stats.rows_by_class.items())
         ),
@@ -758,14 +755,17 @@ def _interaction_derive_cost(
     """What the interaction projection cost this run, for the build manifest.
 
     Read off the ``InteractionDeriveStats`` the derive step already returned
-    rather than re-derived. **Seconds and rows are reported per table** (T020b):
-    the R19 amendment makes the projection two writes — the record
-    ``interaction_fact_resource`` and its all-resources collapse
-    ``interaction_fact_combined`` — and attributing the whole projection's wall
-    clock to one of them, as this function did before the amendment, hides which
-    half a cost overrun came from. That is the number FR-036's ceiling will be
-    argued against, so each half carries its own measured seconds, taken from
-    ``step_seconds``, and its own row count.
+    rather than re-derived. **Seconds and rows are reported per step** (T020b),
+    each taken from ``step_seconds``, rather than the projection's whole wall
+    clock being attributed to one table — that is the number FR-036's ceiling
+    will be argued against, and a step total cannot say which step overran.
+
+    **Amended by R24**: the projection writes ``interaction_fact_resource`` and
+    stops, so the ``interaction_fact_combined`` line is gone with the table it
+    priced. The ``scope_cost`` its neighbour used to hand the manifest went with
+    it — that neighbour reported one scope, the all-resources collapse, and the
+    fold is a query now and materialises nothing, so this build has no scope to
+    report rather than a scope reported as free.
 
     Returns ``None`` when the projection did not run, so ``--no-interactions``
     records no cost instead of claiming zeros.
@@ -777,10 +777,6 @@ def _interaction_derive_cost(
         INTERACTION_RECORD_STEP: {
             'seconds': step_seconds.get(INTERACTION_RECORD_STEP),
             'rows': stats.records,
-        },
-        INTERACTION_COLLAPSE_STEP: {
-            'seconds': step_seconds.get(INTERACTION_COLLAPSE_STEP),
-            'rows': stats.facts,
         },
         'interaction_party': {'rows': stats.parties},
         'interaction_header': {
@@ -801,32 +797,24 @@ def _interaction_derive_cost(
     }
 
 
-def _interaction_scope_cost(
+def _interaction_deferral_cost(
     stats: InteractionDeriveStats | None,
-) -> list[dict[str, object]] | None:
-    """What materialising each query scope cost this run (FR-050, T020b).
+) -> dict[str, object] | None:
+    """What deferring the constraints over the load bought, for the manifest.
 
-    One scope is materialised today: the collapse over every resource, which
-    ``interaction_fact_combined`` holds. FR-050 asks for it to be reported like
-    any other scope rather than left implicit, so that declining to materialise
-    a scope stays an available answer to a cost overrun — an argument that needs
-    the number for the scope it would decline.
+    Read off the record the derive step already returned (T013j), and handed
+    to ``emit_build_manifest`` unchanged: the normalising is that function's
+    job (T013k), including the rule that an unmeasured field stays ``null``
+    rather than becoming a zero, so that a build which ran without the deferral
+    and a deferral that saved nothing do not read alike.
 
-    ``sources`` is left unset because the all-resources scope is not a resource
-    list: naming its 45 members would read as a restriction that is not there.
+    Returns ``None`` when the projection did not run at all, so
+    ``--no-interactions`` records no deferral rather than claiming one that
+    saved nothing.
     """
     if stats is None:
         return None
-    step_seconds = stats.step_seconds or {}
-    return [
-        {
-            'scope': ALL_RESOURCES_SCOPE,
-            'table': INTERACTION_COLLAPSE_STEP,
-            'materialised': True,
-            'seconds': step_seconds.get(INTERACTION_COLLAPSE_STEP),
-            'rows': stats.facts,
-        }
-    ]
+    return dict(stats.deferral) or None
 
 
 def _is_partial_build(max_records: object) -> bool:

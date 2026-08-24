@@ -8,7 +8,6 @@ and canonicalized.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 from dataclasses import dataclass, field
 import logging
 import os
@@ -1003,13 +1002,13 @@ def sweep_staging_tables(
 
 # --- The interaction projection (008 T012-T014) ------------------------------
 #
-# `interaction_fact_combined` is a denormalised precomputed projection over the canonical
-# graph, not a new store of evidence (research R0): `relation` supplies the
-# deduped endpoints, `relation_evidence` and its annotations the provenance, and
-# `relation_evidence_relation` links the two. The evidence table's own endpoint
-# columns are unusable for this — `object_entity_id` is NULL on every row and
-# `subject_entity_id` set on about a fifth — so endpoints come from `relation`
-# and never from the evidence rows.
+# `interaction_fact_resource` is a denormalised precomputed projection over the
+# canonical graph, not a new store of evidence (research R0): `relation`
+# supplies the deduped endpoints, `relation_evidence` and its annotations the
+# provenance, and `relation_evidence_relation` links the two. The evidence
+# table's own endpoint columns are unusable for this — `object_entity_id` is
+# NULL on every row and `subject_entity_id` set on about a fifth — so endpoints
+# come from `relation` and never from the evidence rows.
 
 
 # Participant-role terms, the first tier of the class derivation (research R18).
@@ -1078,28 +1077,40 @@ _NUMERIC_VALUE = r'^-?[0-9]+(\.[0-9]+)?([eE][-+]?[0-9]+)?$'
 class InteractionDeriveStats:
     """What the interaction projection produced, and what it cost.
 
-    ``records`` counts ``interaction_fact_resource`` and ``facts`` counts
-    ``interaction_fact_combined``: the grain amendment (R19) makes the derive
-    two writes rather than one, and the manifest reports them apart (T020b), so
-    a cost overrun can be attributed to the record or to the collapse instead of
-    to "the interaction step".
+    ``records`` counts ``interaction_fact_resource``, the projection's one fact
+    output. There is no second count beside it: R24 removes the materialised
+    collapse, so the derive writes the record and stops, and the manifest names
+    that table apart from the step list (T020b) because it is the number
+    FR-036's ceiling is argued against.
 
     ``rows_by_class`` is the per-class row count research R18 asks every run to
     report: a class collapsing back to zero has to be visible in the build
     output, not discovered a phase later. ``sign_conflict`` is the T013c
     measurement — how often both sign flags land on one row, and whether that
     is one resource asserting both or resources genuinely disagreeing.
-    ``step_seconds`` carries the per-step wall clock the manifest splits.
+    ``step_seconds`` carries the per-step wall clock the manifest splits, and
+    ``deferral`` what running the load with its foreign keys and secondary
+    indexes dropped bought and cost (R23) — the seconds saved against a
+    recorded undeferred baseline, the drop, the restore, the revalidation, how
+    many objects each covered, and whether the catalogue round trip closed. The
+    manifest records it under ``interactions_deferral_cost`` (T013k), where a
+    field nobody measured stays ``null`` rather than becoming a zero.
+
+    ``source_count_histogram`` is the §12 distribution — how many collapse
+    keys carry each ``source_count`` — returned for the build log. Its real
+    consumer reads ``interaction_source_count_histogram`` from the database,
+    because it is the api-service's guardrail and not this process.
     """
 
     interactions: int = 0
     parties: int = 0
     records: int = 0
-    facts: int = 0
     rows_by_class: dict[str, int] = field(default_factory=dict)
     sign_conflict: dict[str, float] = field(default_factory=dict)
     seconds: float = 0.0
     step_seconds: dict[str, float] = field(default_factory=dict)
+    deferral: dict[str, object] = field(default_factory=dict)
+    source_count_histogram: dict[int, int] = field(default_factory=dict)
 
 
 def interaction_content_uuid_sql(
@@ -1181,36 +1192,10 @@ def interaction_record_uuid_sql(
     )
 
 
-#: The record table the collapse reads, and the collapse's output columns in
-#: the order :func:`collapse_interaction_scope` selects them — which is the
-#: column order of ``interaction_fact_combined``, so the derive can insert the
-#: routine's output without restating it.
+#: The one fact table the projection writes (data model §3a). The collapse of
+#: it for a resource scope is a query-time shape and has no table, so there is
+#: no second name here and no column list for one (R24, T013e).
 INTERACTION_RECORD_TABLE = 'interaction_fact_resource'
-INTERACTION_COLLAPSE_TABLE = 'interaction_fact_combined'
-INTERACTION_COLLAPSE_COLUMNS = (
-    'subject_entity_id',
-    'object_entity_id',
-    'interaction_class_id',
-    'subject_organism',
-    'object_organism',
-    'is_directed',
-    'is_stimulation',
-    'is_inhibition',
-    'sign_source_count',
-    'direction_source_count',
-    'affinity',
-    'pchembl',
-    'score',
-    'sources',
-    'source_count',
-    'dataset_tags',
-    'curation_flags',
-    'reference_pubmed_ids',
-    'reference_dois',
-    'reference_count',
-    'attributes',
-    'interaction_id',
-)
 
 
 #: The ``attributes`` GIN on each interaction table, by table name (T016).
@@ -1221,23 +1206,296 @@ INTERACTION_COLLAPSE_COLUMNS = (
 #: key-existence (``?``, ``?|``, ``?&``), and that is the trade the gate is
 #: about.
 #:
-#: **There are two of them because the amendment (R19) made two tables.** The
-#: record holds one row per contributing resource with that resource's long
-#: tail unfolded, and the materialisation holds the merge of it, so the record
-#: is the larger column and the real sizing question.
+#: **There is one of them because R24 leaves one table.** The record holds one
+#: row per contributing resource with that resource's long tail unfolded, which
+#: is the larger column and the real sizing question; the merge of it belonged
+#: to the materialisation, and the materialisation is gone.
 INTERACTION_ATTRIBUTES_GIN_INDEXES = {
     INTERACTION_RECORD_TABLE: 'interaction_fact_resource_attributes_gin_idx',
-    INTERACTION_COLLAPSE_TABLE: 'interaction_fact_combined_attributes_gin_idx',
 }
 
 #: The environment variable the benchmark toggles the gate with (T017).
 INTERACTION_ATTRIBUTES_GIN_ENV = 'OMNIPATH_BUILD_ATTRIBUTES_GIN'
 
-#: Whether a build creates the two indexes when nothing says otherwise. It is
+#: Whether a build creates the index when nothing says otherwise. It is
 #: ``False`` until the T017 benchmark decides, because the gate is about build
 #: cost and on-disk size, and a default that pays them before they are measured
 #: would answer the question by shipping it.
 INTERACTION_ATTRIBUTES_GIN_DEFAULT = False
+
+
+#: The three tables the load writes, and the deferral therefore covers (R23,
+#: data model §3c). Ordered as the load writes them, which is also the order a
+#: reader of the build log meets them in.
+INTERACTION_LOADED_TABLES = (
+    'interaction',
+    'interaction_party',
+    INTERACTION_RECORD_TABLE,
+)
+
+#: The environment variable that turns the deferral off, for the A/B arm the
+#: saving is measured against. There is no reason to turn it off in a build.
+INTERACTION_DEFER_ENV = 'OMNIPATH_BUILD_DEFER_INTERACTION_CONSTRAINTS'
+
+#: Whether a build defers when nothing says otherwise. ``True``, because R23
+#: took the decision on a measurement — 709.7 s against 1,814.7 s, with the
+#: catalogue on the far side identical to the catalogue on the near side — and
+#: a default that did not take it would leave the measured design unshipped.
+INTERACTION_DEFER_DEFAULT = True
+
+
+def defer_constraints_enabled(override: bool | None = None) -> bool:
+    """Whether this load drops its foreign keys and secondary indexes first.
+
+    ``override`` wins when it is not ``None``, so a caller — a benchmark, the
+    catalogue round-trip test — states the answer directly. Otherwise
+    :data:`INTERACTION_DEFER_ENV` decides and an unset value falls back to
+    :data:`INTERACTION_DEFER_DEFAULT`, the same shape
+    :func:`attributes_gin_enabled` follows.
+    """
+    if override is not None:
+        return bool(override)
+    raw = os.environ.get(INTERACTION_DEFER_ENV)
+    if raw is None:
+        return INTERACTION_DEFER_DEFAULT
+    return raw.strip().lower() in {'1', 'true', 'yes', 'on'}
+
+
+def interaction_catalogue(
+    cur: psycopg2.extensions.cursor,
+    schema: str,
+) -> dict[str, dict[str, object]]:
+    """The constraints and indexes the three loaded tables carry, right now.
+
+    ``{'constraints': {name: definition}, 'indexes': {name: definition}}``,
+    with every definition as Postgres renders it. Taken on both sides of the
+    load so the step can say whether the round trip closed, which is the claim
+    R23 rests on: the deferral is only a saving if the catalogue after it is
+    the catalogue before it. A foreign key that came back ``NOT VALID`` renders
+    differently — ``pg_get_constraintdef`` appends ``NOT VALID`` — so the
+    comparison catches the failure that looks most like success.
+
+    Only foreign and primary keys are read. Postgres 17 and later also list
+    every ``NOT NULL`` in ``pg_constraint``, and those are column properties
+    that no load can drop or restore.
+    """
+    catalogue: dict[str, dict[str, object]] = {}
+    cur.execute(
+        """
+        SELECT con.conname, pg_get_constraintdef(con.oid)
+        FROM pg_constraint con
+        JOIN pg_class cls ON cls.oid = con.conrelid
+        JOIN pg_namespace ns ON ns.oid = cls.relnamespace
+        WHERE ns.nspname = %s
+          AND cls.relname = ANY(%s)
+          AND con.contype IN ('f', 'p')
+        """,
+        [schema, list(INTERACTION_LOADED_TABLES)],
+    )
+    catalogue['constraints'] = dict(cur.fetchall())
+    cur.execute(
+        """
+        SELECT indexname, indexdef
+        FROM pg_indexes
+        WHERE schemaname = %s AND tablename = ANY(%s)
+        """,
+        [schema, list(INTERACTION_LOADED_TABLES)],
+    )
+    catalogue['indexes'] = dict(cur.fetchall())
+    return catalogue
+
+
+def _defer_interaction_constraints(
+    cur: psycopg2.extensions.cursor,
+    schema: str,
+) -> tuple[list[tuple[str, str, str]], list[str]]:
+    """Drop the foreign keys and the secondary indexes, and say how to restore.
+
+    Returns ``(constraints, indexes)``: the constraints as
+    ``(table, name, definition)`` and the indexes as their ``CREATE INDEX``
+    statements, both taken from the catalogue rather than from a list kept in
+    step with ``schema.py`` by hand. An object added to the schema is therefore
+    deferred by the next build without anybody remembering to add it here, and
+    an object the restore cannot reproduce is one the catalogue could not
+    describe.
+
+    **The two primary keys stay.** The header insert deduplicates with
+    ``ON CONFLICT (interaction_id) DO NOTHING``, which needs its unique index
+    while the insert runs. Every index backing a constraint **on the same
+    table** is left alone with it, which is what ``con.conrelid =
+    idx.indrelid`` says — an index a *foreign* key merely points at is not
+    backing a constraint on this table and is dropped like any other.
+
+    The record's own unique key is not a constraint and does go, because the
+    record's insert names no conflict target. It is rebuilt with the rest, and
+    a load that produced a duplicate fails there rather than passing quietly:
+    the rebuild is a ``CREATE UNIQUE INDEX`` inside the step's transaction, so
+    the whole projection rolls back with it.
+
+    Foreign keys go first: an index a key depends on cannot be dropped under
+    it.
+    """
+    cur.execute(
+        """
+        SELECT cls.relname, con.conname, pg_get_constraintdef(con.oid)
+        FROM pg_constraint con
+        JOIN pg_class cls ON cls.oid = con.conrelid
+        JOIN pg_namespace ns ON ns.oid = cls.relnamespace
+        WHERE ns.nspname = %s
+          AND cls.relname = ANY(%s)
+          AND con.contype = 'f'
+        ORDER BY cls.relname, con.conname
+        """,
+        [schema, list(INTERACTION_LOADED_TABLES)],
+    )
+    constraints = [(table, name, definition) for table, name, definition in cur]
+    cur.execute(
+        """
+        SELECT pg_get_indexdef(idx.indexrelid), i.relname
+        FROM pg_index idx
+        JOIN pg_class i ON i.oid = idx.indexrelid
+        JOIN pg_class cls ON cls.oid = idx.indrelid
+        JOIN pg_namespace ns ON ns.oid = cls.relnamespace
+        WHERE ns.nspname = %s
+          AND cls.relname = ANY(%s)
+          AND NOT EXISTS (
+            SELECT 1 FROM pg_constraint con
+            WHERE con.conindid = idx.indexrelid
+              AND con.conrelid = idx.indrelid
+          )
+        ORDER BY i.relname
+        """,
+        [schema, list(INTERACTION_LOADED_TABLES)],
+    )
+    rows = cur.fetchall()
+    indexes = [definition for definition, _name in rows]
+    schema_id = sql.Identifier(schema)
+    for table, name, _definition in constraints:
+        cur.execute(
+            sql.SQL('ALTER TABLE {}.{} DROP CONSTRAINT {}').format(
+                schema_id,
+                sql.Identifier(table),
+                sql.Identifier(name),
+            )
+        )
+    for _definition, name in rows:
+        cur.execute(
+            sql.SQL('DROP INDEX {}.{}').format(schema_id, sql.Identifier(name))
+        )
+    return constraints, indexes
+
+
+def _restore_interaction_constraints(
+    cur: psycopg2.extensions.cursor,
+    schema: str,
+    constraints: list[tuple[str, str, str]],
+    indexes: list[str],
+) -> tuple[float, float]:
+    """Put them back, validated, and return ``(index seconds, key seconds)``.
+
+    Indexes first, then the foreign keys, which is the order the drop ran in
+    reversed.
+
+    **The keys come back with a plain ``ADD CONSTRAINT``, and that is the whole
+    point.** Postgres validates such a key with one set-based join over the
+    table — 44.6 s for all 229.9 million row checks, against 726.3 s to fire
+    the same checks one row at a time through the load. ``ADD ... NOT VALID``
+    would return in no time and leave a constraint that describes only rows
+    written after it, which is not the constraint the schema declares. The
+    seconds are returned apart from the index build because that is the half a
+    future change could quietly drop, and the manifest records it (T013k).
+    """
+    schema_id = sql.Identifier(schema)
+    started = time.perf_counter()
+    for definition in indexes:
+        cur.execute(definition)
+    restore_seconds = time.perf_counter() - started
+    started = time.perf_counter()
+    for table, name, definition in constraints:
+        cur.execute(
+            sql.SQL('ALTER TABLE {}.{} ADD CONSTRAINT {} {}').format(
+                schema_id,
+                sql.Identifier(table),
+                sql.Identifier(name),
+                sql.SQL(definition),
+            )
+        )
+    revalidate_seconds = time.perf_counter() - started
+    return restore_seconds, revalidate_seconds
+
+
+def _previous_undeferred_load_seconds(
+    cur: psycopg2.extensions.cursor,
+    schema: str,
+) -> float | None:
+    """What the load cost on the last build that ran **without** the deferral.
+
+    This is the baseline ``seconds_saved`` is measured against, and it cannot
+    come from this run: a build runs one arm, not both. It comes from the
+    manifest of the other arm, which records per-step seconds
+    (``interactions_derive_cost``) beside whether that build deferred
+    (``interactions_deferral_cost``). So the A/B is: run once with
+    :data:`INTERACTION_DEFER_ENV` off, then run normally, and the second build
+    reports what the first one cost it.
+
+    ``None`` whenever the answer would be a guess — no manifest, no such
+    column, no undeferred build recorded, or one whose ``partial_build`` flag
+    differs from this one's, since a capped load and a full load are not each
+    other's baseline. A missing baseline leaves ``seconds_saved`` unreported,
+    which the manifest keeps distinct from a measured zero.
+    """
+    cur.execute('SAVEPOINT interaction_deferral_baseline')
+    try:
+        cur.execute(
+            sql.SQL(
+                """
+                SELECT interactions_derive_cost, interactions_deferral_cost,
+                       partial_build
+                FROM {}.build_manifest
+                """
+            ).format(sql.Identifier(schema))
+        )
+        rows = cur.fetchall()
+    except psycopg2.Error:
+        cur.execute('ROLLBACK TO SAVEPOINT interaction_deferral_baseline')
+        return None
+    finally:
+        cur.execute('RELEASE SAVEPOINT interaction_deferral_baseline')
+    for derive_cost, deferral_cost, partial in rows:
+        if not derive_cost or not deferral_cost:
+            continue
+        if deferral_cost.get('deferred') is not False:
+            continue
+        if bool(partial) != _is_capped_load():
+            continue
+        steps = {
+            entry.get('step'): entry for entry in derive_cost.get('steps') or ()
+        }
+        seconds = [
+            steps[step].get('seconds')
+            for step in ('interaction_header', INTERACTION_RECORD_TABLE)
+            if step in steps
+        ]
+        measured = [value for value in seconds if value is not None]
+        if len(measured) == 2:
+            return float(sum(measured))
+    return None
+
+
+def _is_capped_load() -> bool:
+    """Whether this process is running a ``MAX_RECORDS``-capped build.
+
+    Read from the environment, which is where the CLI's ``--max-records``
+    default comes from, so the two agree unless a caller passes the flag and
+    unsets the variable. It gates nothing but the choice of baseline.
+    """
+    raw = (os.environ.get('MAX_RECORDS') or '').strip()
+    if not raw:
+        return False
+    try:
+        return int(raw) > 0
+    except ValueError:
+        return False
 
 
 def attributes_gin_enabled(override: bool | None = None) -> bool:
@@ -1262,7 +1520,7 @@ def ensure_interaction_attributes_gin(
     *,
     enabled: bool,
 ) -> dict[str, float]:
-    """Create or drop the two ``attributes`` GIN indexes (T016).
+    """Create or drop the record's ``attributes`` GIN index (T016).
 
     Returns the wall seconds each index took, keyed by table name, so the
     benchmark and the build manifest can attribute the cost rather than watch
@@ -1274,9 +1532,9 @@ def ensure_interaction_attributes_gin(
     leave a table that carries none — otherwise the second half of an A/B pair
     measures the first half's index. The derive owns these two index names and
     nothing else creates them: ``schema.py`` deliberately leaves ``attributes``
-    unindexed on both tables and says so where the other GIN indexes are made.
+    unindexed on the record and says so where the other GIN indexes are made.
 
-    They are built **after** the tables are filled, never maintained during the
+    It is built **after** the table is filled, never maintained during the
     insert. A GIN maintained per row through a 14.7-million-row load pays the
     pending-list flush over and over; built once at the end it is a single
     sorted build that ``maintenance_work_mem`` and the parallel maintenance
@@ -1308,198 +1566,63 @@ def ensure_interaction_attributes_gin(
     return seconds
 
 
-def _quoted(identifier: str) -> str:
-    """A double-quoted SQL identifier, for a statement built as text.
-
-    :func:`collapse_interaction_scope` returns a string rather than a
-    ``psycopg2.sql.Composed``, because the query path embeds it as a subquery
-    and the tests do too. Composing needs a connection to render, a string does
-    not, so the one identifier that varies — the schema — is quoted here.
-    """
-    return '"{}"'.format(identifier.replace('"', '""'))
-
-
-_COLLAPSE_SQL = """
-WITH scoped_provenance AS (
-  SELECT
-    r.subject_entity_id,
-    r.object_entity_id,
-    r.interaction_class_id,
-    array_agg(DISTINCT contribution.value)
-      FILTER (WHERE contribution.kind = 'pubmed') AS reference_pubmed_ids,
-    array_agg(DISTINCT contribution.value)
-      FILTER (WHERE contribution.kind = 'doi') AS reference_dois,
-    array_agg(DISTINCT contribution.value)
-      FILTER (WHERE contribution.kind = 'curation') AS curation_flags
-  FROM {record} r
-  CROSS JOIN LATERAL (
-    SELECT 'pubmed'::text AS kind, pubmed.value
-      FROM unnest(r.reference_pubmed_ids) AS pubmed(value)
-    UNION ALL
-    SELECT 'doi'::text, doi.value
-      FROM unnest(r.reference_dois) AS doi(value)
-    UNION ALL
-    SELECT 'curation'::text, flag.value
-      FROM unnest(r.curation_flags) AS flag(value)
-  ) AS contribution
-  WHERE {scope}
-  GROUP BY 1, 2, 3
-)
-SELECT
-  r.subject_entity_id,
-  r.object_entity_id,
-  r.interaction_class_id,
-  min(r.subject_organism) AS subject_organism,
-  min(r.object_organism) AS object_organism,
-  bool_or(r.is_directed) AS is_directed,
-  bool_or(r.is_stimulation) AS is_stimulation,
-  bool_or(r.is_inhibition) AS is_inhibition,
-  (count(DISTINCT r.source_id) FILTER (
-     WHERE r.is_stimulation IS NOT NULL OR r.is_inhibition IS NOT NULL
-   ))::smallint AS sign_source_count,
-  (count(DISTINCT r.source_id) FILTER (
-     WHERE r.is_directed IS NOT NULL
-   ))::smallint AS direction_source_count,
-  min(r.affinity) AS affinity,
-  max(r.pchembl) AS pchembl,
-  max(r.score) AS score,
-  array_agg(DISTINCT contributor.name) AS sources,
-  count(DISTINCT r.source_id)::int AS source_count,
-  NULL::text[] AS dataset_tags,
-  provenance.curation_flags,
-  provenance.reference_pubmed_ids,
-  provenance.reference_dois,
-  (coalesce(cardinality(provenance.reference_pubmed_ids), 0)
-   + coalesce(cardinality(provenance.reference_dois), 0))::int
-    AS reference_count,
-  NULL::jsonb AS attributes,
-  -- Postgres has no min(uuid); the text form orders the same way for the
-  -- canonical rendering, and every record row of a group carries the same
-  -- header anyway, so any one of them is the answer.
-  min(r.interaction_id::text)::uuid AS interaction_id
-FROM {record} r
-JOIN {data_source} contributor ON contributor.source_id = r.source_id
-LEFT JOIN scoped_provenance provenance
-  ON provenance.subject_entity_id = r.subject_entity_id
- AND provenance.object_entity_id = r.object_entity_id
- AND provenance.interaction_class_id = r.interaction_class_id
-WHERE {scope}
-GROUP BY
-  r.subject_entity_id,
-  r.object_entity_id,
-  r.interaction_class_id,
-  provenance.reference_pubmed_ids,
-  provenance.reference_dois,
-  provenance.curation_flags
-"""
-
-
-def collapse_interaction_scope(
-    *,
-    schema: str = 'public',
-    sources: Sequence[str] | None = None,
-    source_ids: Sequence[int] | None = None,
-) -> tuple[str, tuple[object, ...]]:
-    """The collapse of the interaction record for one resource scope (T013e).
-
-    Returns ``(statement, parameters)``. The statement is a bare ``SELECT``
-    producing :data:`INTERACTION_COLLAPSE_COLUMNS` in order, so a caller embeds
-    it as a subquery, feeds it to an ``INSERT ... SELECT``, or wraps it in its
-    own filters. It is a string rather than a composable, because the query path
-    in ``omnipath-present`` interpolates it the same way.
-
-    ``sources`` names the resources by ``data_source.name``, ``source_ids`` by
-    id; pass at most one. ``None`` means **every** resource, which is the
-    all-resources scope of data model §3b — the scope the derive materialises
-    into ``interaction_fact_combined``. An **empty** sequence is an empty scope
-    and collapses to no rows, which is a different answer from "no restriction".
-
-    This routine is the whole of the scope rule's mechanism, so there is exactly
-    one of it (contract §1). ``interaction_fact_combined`` is this routine run
-    with ``sources=None`` and nothing else — writing a second SQL body for the
-    all-resources case is what would let a materialised scope and a per-query
-    scope drift apart, and the drift would be silent: the two agree on which
-    rows come back and disagree on the numbers those rows carry.
-
-    Every column the collapse recomputes is recomputed here from the rows the
-    scope kept — ``sources``, ``source_count``, the three assertion flags, the
-    two source counts, ``affinity``/``pchembl``/``score``, the reference arrays
-    and ``reference_count``. ``bool_or`` gives the three-valued answer FR-044a
-    asks for without a ``coalesce`` anywhere: it ignores NULLs and returns NULL
-    when every contributor is silent, so silence survives the collapse instead
-    of becoming an asserted ``false``. And the counts are
-    ``count(DISTINCT source_id) FILTER (...)`` over the same scope, so
-    ``sign_source_count <= cardinality(sources)`` holds by construction — a
-    resource asserting neither sign nor direction still contributes its
-    provenance (FR-044c).
-    """
-    if sources is not None and source_ids is not None:
-        raise ValueError(
-            'collapse_interaction_scope takes sources or source_ids, not both'
-        )
-    schema_sql = _quoted(schema)
-    record = f'{schema_sql}.{_quoted(INTERACTION_RECORD_TABLE)}'
-    data_source = f'{schema_sql}.{_quoted("data_source")}'
-    if sources is not None:
-        scope = (
-            'r.source_id IN (SELECT source_id FROM '
-            f'{data_source} WHERE name = ANY(%s::text[]))'
-        )
-        parameters: tuple[object, ...] = (list(sources), list(sources))
-    elif source_ids is not None:
-        scope = 'r.source_id = ANY(%s::bigint[])'
-        parameters = ([int(one) for one in source_ids],) * 2
-    else:
-        scope = 'true'
-        parameters = ()
-    statement = _COLLAPSE_SQL.format(
-        record=record,
-        data_source=data_source,
-        scope=scope,
-    )
-    return statement, parameters
-
 def rebuild_interaction_tables(
     conn: psycopg2.extensions.connection,
     *,
     schema: str = 'public',
     progress: bool = False,
     attributes_gin: bool | None = None,
+    defer_constraints: bool | None = None,
 ) -> InteractionDeriveStats:
     """Project the canonical graph into the interaction model (T013, T014).
 
-    Writes four tables. ``interaction`` is one endpoint-independent header per
+    Writes three tables. ``interaction`` is one endpoint-independent header per
     participant set and class, ``interaction_party`` its participants in role,
-    ``interaction_fact_resource`` the **record** and
-    ``interaction_fact_combined`` the record's collapse over every resource.
-    All four are pure projections of `relation`, so they are rebuilt whole
-    rather than sliced: nothing in them is evidence a partial rebuild could
-    lose.
+    and ``interaction_fact_resource`` the **record**. All three are pure
+    projections of `relation`, so they are rebuilt whole rather than sliced:
+    nothing in them is evidence a partial rebuild could lose.
 
-    **The projection is two steps, since the R19 grain amendment.** The record
-    (data model §3a) holds one row per ordered ``(subject, object, class)``,
-    contributing ``source_id`` **and** the assertion signature that resource
-    states, which is what makes every summary on it decomposable. The
-    materialisation (§3b) is that record collapsed for the all-resources scope
-    — the one scope that applies no filter — and it is produced by
-    :func:`collapse_interaction_scope`, the same routine a scoped query runs
-    over a smaller input. There is deliberately no second SQL body for the
-    all-resources case: a materialised scope and a per-query scope that were
-    written twice would drift, and the drift would show up as correct rows
-    carrying numbers computed over a resource set the caller excluded.
+    **The projection ends when the record lands** (R24). The record (data model
+    §3a) holds one row per ordered ``(subject, object, class)``, contributing
+    ``source_id`` **and** the assertion signature that resource states, which is
+    what makes every summary on it decomposable. The collapse of it for a
+    resource scope (§3b) is what a **query** produces, at request time, for
+    every scope including the empty one — no scope is precomputed here, the
+    all-resources scope included, because a page-first fold costs the page
+    rather than the scope and leaves a materialisation nothing to save.
 
     Runs after ``classify_interaction_class``, which fills the predicate→class
     map the third derivation tier reads. When that map is still empty the step
     seeds it itself, so the projection does not silently fall back to `other`
     just because the derive steps ran in the wrong order.
 
+    ``defer_constraints`` states whether the load runs with the three tables'
+    foreign keys and secondary indexes **dropped**, restoring them validated
+    before the step ends (R23, FR-036, data model §3c). ``None`` leaves the
+    answer to :func:`defer_constraints_enabled`, which says yes: R22 measured
+    the projection at 709.7 s deferred against 1,814.7 s undeferred, with the
+    largest step falling from 674.0 s to 272.2 s — sixty per cent of it was
+    constraint and index maintenance rather than the work of building a header
+    — and the tables landing 0.97 GiB smaller, because an index built once over
+    sorted input is denser than the same index grown through fourteen million
+    inserts. ``False`` is the A/B arm the saving is measured against.
+
+    **The unconstrained window is visible to nobody.** ``DROP CONSTRAINT``,
+    ``DROP INDEX``, ``ADD CONSTRAINT`` and ``CREATE INDEX`` are transactional
+    in Postgres, and this step already refuses an autocommit connection, so the
+    drop, the load and the restore commit together or roll back together. A
+    failed build leaves the catalogue as it found it. ``CREATE INDEX
+    CONCURRENTLY`` is the one form that could not join that transaction, and
+    the deferral does not need it: the step holds an exclusive lock on tables
+    it is rewriting anyway.
+
     ``attributes_gin`` states whether this build carries the ``attributes`` GIN
-    on the two interaction tables (T016). ``None`` leaves the answer to
+    on the record (T016). ``None`` leaves the answer to
     :func:`attributes_gin_enabled`, which reads the environment and otherwise
     says no, because the index is a benchmark gate and its cost is the thing
-    being measured. Either answer drops the two indexes before the load and
-    rebuilds them after it, so a leftover from the previous build neither slows
-    the insert down nor makes an A/B pair measure the wrong thing.
+    being measured. Either answer drops the index before the load and rebuilds
+    it after it, so a leftover from the previous build neither slows the insert
+    down nor makes an A/B pair measure the wrong thing.
     """
     if conn.autocommit:
         # The staging tables are placed by a `SET LOCAL search_path`, which an
@@ -1534,8 +1657,8 @@ def rebuild_interaction_tables(
         )
         classes = _interaction_class_ids(cur, schema)
 
-        # Drop the two `attributes` GIN indexes before anything writes to the
-        # tables, and rebuild them at the end (T016). `TRUNCATE` keeps a table's
+        # Drop the `attributes` GIN index before anything writes to the
+        # tables, and rebuild it at the end (T016). `TRUNCATE` keeps a table's
         # indexes, so an index left in place from the previous build is
         # maintained row by row through the load. Measured on the record's
         # column: the same 14.7-million-row insert costs 6.6 s with no index,
@@ -1570,6 +1693,34 @@ def rebuild_interaction_tables(
             seconds=f'{step_seconds["interaction_evidence_fold"]:.3f}',
         )
 
+        # The deferral opens here, immediately before the first statement that
+        # writes one of the three tables, and closes after the last one (R23).
+        # The staging steps above touch none of them, so nothing is loaded
+        # through a constraint this drops.
+        deferring = defer_constraints_enabled(defer_constraints)
+        catalogue_before = interaction_catalogue(cur, schema)
+        baseline_seconds = _previous_undeferred_load_seconds(cur, schema)
+        deferred_constraints: list[tuple[str, str, str]] = []
+        deferred_indexes: list[str] = []
+        drop_seconds = 0.0
+        if deferring:
+            _log(progress, 'interaction_defer', 'start')
+            step_started = time.perf_counter()
+            deferred_constraints, deferred_indexes = (
+                _defer_interaction_constraints(cur, schema)
+            )
+            drop_seconds = time.perf_counter() - step_started
+            step_seconds['interaction_defer'] = drop_seconds
+            _log(
+                progress,
+                'interaction_defer',
+                'done',
+                constraints=len(deferred_constraints),
+                indexes=len(deferred_indexes),
+                seconds=f'{drop_seconds:.3f}',
+            )
+        load_started = time.perf_counter()
+
         _log(progress, 'interaction_header', 'start')
         step_started = time.perf_counter()
         interactions, parties = _populate_interaction_header(cur, schema)
@@ -1583,18 +1734,14 @@ def rebuild_interaction_tables(
             seconds=f'{step_seconds["interaction_header"]:.3f}',
         )
 
-        # The record first, then its collapse: the materialisation reads the
-        # record and nothing else, so the order is a data dependency rather
-        # than a preference.
         _log(progress, 'interaction_fact_resource', 'start')
         step_started = time.perf_counter()
         records = _populate_interaction_fact_resource(cur, schema)
-        # The collapse reads the record it just wrote, and it reads it with
-        # `array_agg(DISTINCT ...)`, which needs sorted input. Without fresh
-        # statistics on a table that was truncated and refilled in this same
-        # transaction the planner sorts 14.7 million rows instead of walking
-        # `interaction_fact_resource_collapse_idx`, which is what that index is
-        # in the schema for.
+        # Fresh statistics on a table that was truncated and refilled in this
+        # same transaction. Nothing inside this step reads the record any more
+        # — R24 deleted the collapse pass that did — but the histogram below
+        # groups it, the restored constraints validate against it, and a query
+        # arriving after the commit plans against whatever this leaves behind.
         cur.execute(
             sql.SQL('ANALYZE {}.interaction_fact_resource').format(
                 sql.Identifier(schema)
@@ -1611,25 +1758,71 @@ def rebuild_interaction_tables(
             seconds=f'{step_seconds["interaction_fact_resource"]:.3f}',
         )
 
-        _log(progress, 'interaction_fact_combined', 'start')
-        step_started = time.perf_counter()
-        facts = _populate_interaction_fact_combined(cur, schema)
-        step_seconds['interaction_fact_combined'] = (
-            time.perf_counter() - step_started
+        load_seconds = time.perf_counter() - load_started
+
+        # The restore, before anything reads the record again: the histogram
+        # and the sign-conflict summary below both group it on
+        # `interaction_fact_resource_collapse_idx`, and a query arriving after
+        # the commit plans against whatever this leaves behind.
+        restore_seconds = 0.0
+        revalidate_seconds = 0.0
+        if deferring:
+            _log(progress, 'interaction_restore', 'start')
+            step_started = time.perf_counter()
+            restore_seconds, revalidate_seconds = (
+                _restore_interaction_constraints(
+                    cur,
+                    schema,
+                    deferred_constraints,
+                    deferred_indexes,
+                )
+            )
+            step_seconds['interaction_restore'] = (
+                time.perf_counter() - step_started
+            )
+            _log(
+                progress,
+                'interaction_restore',
+                'done',
+                indexes=f'{restore_seconds:.3f}',
+                revalidate=f'{revalidate_seconds:.3f}',
+                seconds=f'{step_seconds["interaction_restore"]:.3f}',
+            )
+        # Asserted here rather than only in a test (R23): the catalogue after
+        # the step must equal the catalogue before it, and a build that cannot
+        # say so has not earned the seconds it saved.
+        catalogue_unchanged = (
+            interaction_catalogue(cur, schema) == catalogue_before
         )
+        deferral = {
+            'deferred': deferring,
+            'seconds_saved': (
+                baseline_seconds - load_seconds
+                if baseline_seconds is not None
+                else None
+            ),
+            'load_seconds': load_seconds,
+            'drop_seconds': drop_seconds if deferring else None,
+            'restore_seconds': restore_seconds if deferring else None,
+            'revalidate_seconds': revalidate_seconds if deferring else None,
+            'constraints_deferred': len(deferred_constraints),
+            'indexes_deferred': len(deferred_indexes),
+            'catalogue_unchanged': catalogue_unchanged,
+        }
         _log(
             progress,
-            'interaction_fact_combined',
-            'done',
-            rows=facts,
-            seconds=f'{step_seconds["interaction_fact_combined"]:.3f}',
+            'interaction_defer',
+            'catalogue',
+            unchanged=catalogue_unchanged,
+            constraints=len(catalogue_before['constraints']),
+            indexes=len(catalogue_before['indexes']),
         )
 
-        # The `attributes` GIN on both tables, after both are filled (T016).
-        # The gate is off by default, so this is a second drop on an ordinary
-        # build and a build on a benchmark one. Either way the two tables leave
-        # this step in the state the toggle names, which is what makes an A/B
-        # pair mean anything.
+        # The `attributes` GIN on the record, after it is filled (T016). The
+        # gate is off by default, so this is a second drop on an ordinary build
+        # and a build on a benchmark one. Either way the table leaves this step
+        # in the state the toggle names, which is what makes an A/B pair mean
+        # anything.
         gin_enabled = attributes_gin_enabled(attributes_gin)
         _log(
             progress,
@@ -1658,17 +1851,42 @@ def rebuild_interaction_tables(
             },
         )
 
+        # The three measurements the build takes off the record it has just
+        # written — the class distribution (R18), the sign-conflict rate
+        # (T013c) and the `source_count` histogram (T013m) — timed together,
+        # because they are one cost centre: each is a grouped scan of the same
+        # table, and they are the only folds left in the derive.
+        _log(progress, 'interaction_measurements', 'start')
+        measurements_started = time.perf_counter()
         rows_by_class = _interaction_rows_by_class(cur, schema)
         # R18: the per-class counts go into the build output on every run, so a
         # class collapsing back to zero is visible here rather than a phase later.
         _log(
             progress,
-            'interaction_fact_combined',
+            'interaction_fact_resource',
             'rows_by_class',
             **{name: count for name, count in sorted(rows_by_class.items())},
         )
         sign_conflict = _record_sign_conflict_summary(cur, schema)
-        _log(progress, 'interaction_fact_combined', 'sign_conflict', **sign_conflict)
+        _log(progress, 'interaction_fact_resource', 'sign_conflict', **sign_conflict)
+        source_count_histogram = _record_source_count_histogram(cur, schema)
+        step_seconds['interaction_measurements'] = (
+            time.perf_counter() - measurements_started
+        )
+        # Logged per run like the class counts: the distribution is what the
+        # guardrail prices from, and a shift in it is the thing T070a is
+        # waiting for.
+        _log(
+            progress,
+            'interaction_source_count_histogram',
+            'done',
+            levels=len(source_count_histogram),
+            seconds=f'{step_seconds["interaction_measurements"]:.3f}',
+            **{
+                f'n{level}': keys
+                for level, keys in sorted(source_count_histogram.items())
+            },
+        )
         _drop_interaction_staging(cur)
     conn.commit()
     seconds = time.perf_counter() - started
@@ -1677,15 +1895,15 @@ def rebuild_interaction_tables(
         'interactions',
         'done',
         records=records,
-        rows=facts,
         seconds=f'{seconds:.3f}',
     )
     return InteractionDeriveStats(
         interactions=interactions,
         parties=parties,
         records=records,
-        facts=facts,
+        deferral=deferral,
         rows_by_class=rows_by_class,
+        source_count_histogram=source_count_histogram,
         sign_conflict=sign_conflict,
         seconds=seconds,
         step_seconds=step_seconds,
@@ -2286,18 +2504,21 @@ def _populate_interaction_header(
     )
     cur.execute('ANALYZE _if_header')
 
-    # The four tables are projections, so they are rebuilt whole. Truncating
+    # The three tables are projections, so they are rebuilt whole. Truncating
     # them together keeps the header's dependants from tripping over the FK:
     # `TRUNCATE` refuses when a table outside the statement references one
     # inside it, whatever the row counts are, so `interaction_fact_resource`
     # has to be named here from the moment it carries a key to `interaction`,
-    # and not only once the derive starts filling it (T011a, T013).
+    # and not only once the derive starts filling it (T011a, T013). The
+    # removed materialisation is not named because it no longer exists —
+    # `_drop_legacy_interaction_fact_combined` clears one a pre-R24 database
+    # still carries, and it has to, since a dependant this statement does not
+    # name blocks the truncate whatever the row counts are.
     cur.execute(
         sql.SQL(
-            'TRUNCATE {}.interaction_fact_resource, '
-            '{}.interaction_fact_combined, {}.interaction_party, '
+            'TRUNCATE {}.interaction_fact_resource, {}.interaction_party, '
             '{}.interaction'
-        ).format(schema_id, schema_id, schema_id, schema_id)
+        ).format(schema_id, schema_id, schema_id)
     )
     # The header's provenance is the union over both directions of the pair, so
     # it is aggregated once here rather than looked up per header: a correlated
@@ -2444,54 +2665,107 @@ def _populate_interaction_fact_resource(
     return int(cur.rowcount)
 
 
-def _populate_interaction_fact_combined(
-    cur: psycopg2.extensions.cursor,
-    schema: str,
-) -> int:
-    """Materialise the all-resources scope (T013e, data model §3b).
-
-    This is :func:`collapse_interaction_scope` with no resource restriction,
-    inserted. There is no second SQL body for it, and that is the point of the
-    task: the routine a scoped query runs is the routine that built this table,
-    so the two cannot disagree about what a collapse means. If they could, the
-    disagreement would be invisible in the row set and visible only in the
-    numbers — the exact failure the scope rule exists to prevent.
-    """
-    statement, parameters = collapse_interaction_scope(schema=schema)
-    cur.execute(
-        sql.SQL('INSERT INTO {}.{} ({}) {}').format(
-            sql.Identifier(schema),
-            sql.Identifier(INTERACTION_COLLAPSE_TABLE),
-            sql.SQL(', ').join(
-                sql.Identifier(column)
-                for column in INTERACTION_COLLAPSE_COLUMNS
-            ),
-            sql.SQL(statement),
-        ),
-        parameters or None,
-    )
-    return int(cur.rowcount)
-
-
-
 def _interaction_rows_by_class(
     cur: psycopg2.extensions.cursor,
     schema: str,
 ) -> dict[str, int]:
-    """Fact rows per interaction class, every class named even at zero."""
+    """Record rows per interaction class, every class named even at zero.
+
+    R18 asks every run to report this, so that a class collapsing back to zero
+    is visible in the build output rather than discovered a phase later. The
+    count is taken at the **record** grain since R24 — one row per contributing
+    resource — because that is the only grain the build stores. It therefore
+    runs a little above the collapsed counts R18 recorded, by the same 2.7 per
+    cent the record runs above the fold, and the shape of the distribution is
+    what the check is about.
+    """
     cur.execute(
         sql.SQL(
             """
-            SELECT vic.name, count(f.*)::bigint
+            SELECT vic.name, count(r.*)::bigint
             FROM {}.vocab_interaction_class vic
-            LEFT JOIN {}.interaction_fact_combined f
-              ON f.interaction_class_id = vic.interaction_class_id
+            LEFT JOIN {}.interaction_fact_resource r
+              ON r.interaction_class_id = vic.interaction_class_id
             GROUP BY vic.name
             ORDER BY vic.name
             """
         ).format(sql.Identifier(schema), sql.Identifier(schema))
     )
     return {name: int(count) for name, count in cur.fetchall()}
+
+
+def _record_source_count_histogram(
+    cur: psycopg2.extensions.cursor,
+    schema: str,
+) -> dict[int, int]:
+    """Record how many collapse keys carry each ``source_count`` (T013m, §12).
+
+    Nine rows on dev4, one per observed level from 1 to 9, each with the number
+    of keys at it. Returned as ``{source_count: keys}`` and stored in
+    ``interaction_source_count_histogram``, because the consumer is the
+    api-service's guardrail (T020j) and it reads the database rather than this
+    build's return value.
+
+    **What it is for.** A ``HAVING`` filter on a folded value costs the page
+    size divided by the selectivity (R25), so the guardrail can price a request
+    before running it — but only if it knows the selectivity. This is that
+    number. It is nine rows rather than a statistic worth estimating, and a
+    grouped scan of a table the step has just written is the cheapest moment in
+    the whole cycle to take it.
+
+    **It is an estimator, not a gate.** Measured on dev4: `source_count >= 2`
+    returns a page in 1.354 ms, `>= 3` in 7.781 ms and `>= 5` in 379 ms, every
+    one streaming through `GroupAggregate` and every one inside SC-002. So the
+    histogram tells a caller what a request costs, and today the answer is
+    always "affordable". It becomes a gate when `interaction_assay` multiplies
+    the grain in Phase 8, which T070a re-measures.
+
+    The level is `count(DISTINCT source_id)` per key and never `count(*)`: a
+    resource asserting two signatures for the same endpoints keeps two record
+    rows, and it is still one resource contributing.
+    """
+    schema_id = sql.Identifier(schema)
+    cur.execute(
+        sql.SQL(
+            """
+            CREATE TABLE IF NOT EXISTS {}.interaction_source_count_histogram (
+              source_count integer PRIMARY KEY,
+              keys bigint NOT NULL,
+              measured_at timestamptz NOT NULL DEFAULT now()
+            )
+            """
+        ).format(schema_id)
+    )
+    cur.execute(
+        sql.SQL('TRUNCATE {}.interaction_source_count_histogram').format(
+            schema_id
+        )
+    )
+    cur.execute(
+        sql.SQL(
+            """
+            INSERT INTO {}.interaction_source_count_histogram
+              (source_count, keys)
+            SELECT source_count, count(*)::bigint
+            FROM (
+              SELECT count(DISTINCT source_id)::int AS source_count
+              FROM {}.interaction_fact_resource
+              GROUP BY
+                subject_entity_id, object_entity_id, interaction_class_id
+            ) folded
+            GROUP BY source_count
+            ORDER BY source_count
+            """
+        ).format(schema_id, schema_id)
+    )
+    cur.execute(
+        sql.SQL(
+            'SELECT source_count, keys '
+            'FROM {}.interaction_source_count_histogram '
+            'ORDER BY source_count'
+        ).format(schema_id)
+    )
+    return {int(level): int(keys) for level, keys in cur.fetchall()}
 
 
 def _record_sign_conflict_summary(
@@ -2512,6 +2786,18 @@ def _record_sign_conflict_summary(
     inferred: one resource asserting both signs keeps **two** record rows, so
     the split asks the record which resources asserted what instead of carrying
     a `single_resource_conflict` flag through a fold.
+
+    **Both halves fold the record here, since R24 removed the collapsed table
+    this used to read.** The conflict is a property of the collapse key and not
+    of a record row: a resource asserting a positive and a negative sign under
+    two predicates leaves two record rows, neither of which carries both flags,
+    and the row that carries both is the folded one. So the summary groups the
+    record by the endpoint/class triple and asks the group, which is the same
+    question the removed table answered and gives the same numbers. It is two
+    grouped scans of a table the step has just written and analysed — a
+    build-time measurement rather than a query-time fold, and, with the §12
+    histogram beside it, the only place in the derive that folds anything at
+    all.
     """
     schema_id = sql.Identifier(schema)
     cur.execute(
@@ -2529,33 +2815,45 @@ def _record_sign_conflict_summary(
             """
         ).format(schema_id)
     )
-    # Read off the two built tables rather than off a staging fold, since the
-    # record is where a per-resource assertion now lives. The split between a
-    # single resource asserting both signs and resources disagreeing is asked
-    # only of the rows that carry both flags — 7,925 of 14.3 million on dev4 —
-    # so it joins back through the record's collapse index instead of grouping
-    # the whole record a second time.
+    # `fact_rows` counts **collapse keys**, which is what the removed table
+    # held one row of. The three figures come from one grouped scan of the
+    # record over the endpoint/class triple, walking
+    # `interaction_fact_resource_collapse_idx` on the statistics the step
+    # ANALYZEd a moment ago.
     cur.execute(
         sql.SQL(
             """
+            WITH folded AS (
+              SELECT
+                bool_or(is_stimulation) AS is_stimulation,
+                bool_or(is_inhibition) AS is_inhibition
+              FROM {}.interaction_fact_resource
+              GROUP BY
+                subject_entity_id, object_entity_id, interaction_class_id
+            )
             SELECT
               count(*)::bigint,
               count(*) FILTER (
                 WHERE is_stimulation IS NOT NULL OR is_inhibition IS NOT NULL
               )::bigint,
               count(*) FILTER (WHERE is_stimulation AND is_inhibition)::bigint
-            FROM {}.interaction_fact_combined
+            FROM folded
             """
         ).format(schema_id)
     )
     fact_rows, signed, both = (int(value) for value in cur.fetchone())
+    # The split between a single resource asserting both signs and resources
+    # disagreeing is asked only of the keys that carry both flags — 7,925 of
+    # 14.3 million on dev4 — so the second pass folds the record again and
+    # keeps only those keys, rather than carrying every group through.
     cur.execute(
         sql.SQL(
             """
             WITH conflicted AS (
               SELECT subject_entity_id, object_entity_id, interaction_class_id
-              FROM {}.interaction_fact_combined
-              WHERE is_stimulation AND is_inhibition
+              FROM {}.interaction_fact_resource
+              GROUP BY 1, 2, 3
+              HAVING bool_or(is_stimulation) AND bool_or(is_inhibition)
             ), per_resource AS (
               SELECT
                 r.subject_entity_id,

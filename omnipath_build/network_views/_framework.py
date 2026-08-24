@@ -29,6 +29,14 @@ precomputed per-dataset tables is exactly what FR-001 forbids, and a derived
 table built only when a flag says so is the silently skipped phase constitution
 Principle V rules out. There are two interaction tables and both are built
 unconditionally — a scoped preset collapses the record at query time.
+
+**Composition amendment (2026-08-21, R26).** A preset is a parameter set or a
+composition of them, and never a third thing. A composition names its components
+in order and the operation that joins them (``composition``); a component is
+either a parameter set or the name of another preset, which is where a
+per-component override comes from (FR-035). Most presets are one parameter set
+and leave the column NULL. The algebra runs in the api-service, not here — the
+build stores the recipe and nothing executes it.
 """
 
 from __future__ import annotations
@@ -57,6 +65,10 @@ MATVIEW_ERA_COLUMNS = ('schema_name', 'combined_relation')
 COLLAPSE_MODES = ('none', 'assertion', 'endpoints')
 DEFAULT_COLLAPSE_MODE = 'endpoints'
 
+# The operations a composition joins its components with (R26). `union` is the
+# operation of the composition itself; the rest are the steps that follow it.
+COMPOSITION_OPERATIONS = ('union', 'collapse', 'exclude', 'annotate')
+
 AMENDMENT_COLUMN_COMMENTS = {
     'collapse_mode': (
         'How this preset folds the per-resource interaction record over its '
@@ -72,6 +84,17 @@ AMENDMENT_COLUMN_COMMENTS = {
         'contribute to this preset (cycle 008, FR-049). NULL is no license '
         'restriction. A resource whose license is unknown is excluded, never '
         'admitted under a permissive default.'
+    ),
+    'composition': (
+        'For a preset that is not one query (cycle 008, R26): the ordered '
+        "component list and the operation joining them ('union'), followed by "
+        "the ordered steps ('exclude', 'collapse', 'annotate'). A component is "
+        'a parameter set or the name of another preset, which is what gives a '
+        'per-component override (FR-035). NULL means one parameter set, the '
+        'common case. Two orders are binding: the collapse runs after the '
+        "union and over the union's own resolved scope, and the exclude runs "
+        'before the collapse, or the dropped resource stays inside '
+        'source_count, references and the sign flags (FR-048).'
     ),
 }
 
@@ -115,6 +138,18 @@ class NetworkDefinition:
         all; a scope that is set resolves to a resource set before the query
         runs, and a resource whose license is unknown fails it however
         permissive its recorded levels read — never admitted by default.
+    ``composition``
+        The recipe of a preset that is not one query (R26): the ordered
+        ``components`` and the ``operation`` joining them, then the ordered
+        ``steps`` that follow. A component is a parameter set or the name of
+        another preset — the second form is what lets an override replace one
+        component and leave the rest of the recipe alone (FR-035). ``None`` —
+        the common case — means the preset is a single parameter set. The
+        order is part of the value: the collapse follows the union and folds
+        over the union's own resolved scope, and the exclude precedes the
+        collapse, because a resource dropped after the fold still counts
+        towards ``source_count``, the references and the sign flags (FR-048).
+        The api-service executes the algebra; the registry only stores it.
 
     ``schema``, ``combined_relation``, ``matviews`` and ``sql_files`` are the
     matview-era fields: a preset leaves them empty.
@@ -135,6 +170,9 @@ class NetworkDefinition:
     # license restriction.
     collapse_mode: str = DEFAULT_COLLAPSE_MODE
     license_scope: Mapping[str, Any] | None = None
+    # The composition amendment (R26). Defaulted too: a preset that is one
+    # parameter set names no composition at all.
+    composition: Mapping[str, Any] | None = None
     # Matview-era fields — retire with the columns above (T046).
     schema: str | None = None
     combined_relation: str | None = None
@@ -168,7 +206,9 @@ def ensure_network_registry(
     NOT NULL with the ``endpoints`` default, so rows registered before it keep
     the legacy collapse rather than acquiring an undefined grain, and
     ``license_scope`` arrives nullable, because no license restriction is NULL
-    and not a level of zero.
+    and not a level of zero. So does ``composition`` (R26): a database written
+    before the amendment holds one parameter set per row, which is exactly what
+    a NULL composition says, so the migration rewrites no existing row.
     """
     with conn.cursor() as cur:
         cur.execute(
@@ -189,6 +229,7 @@ def ensure_network_registry(
                   attribute_sources jsonb,
                   collapse_mode text NOT NULL DEFAULT 'endpoints',
                   license_scope jsonb,
+                  composition jsonb,
                   built_at timestamptz NOT NULL DEFAULT now()
                 )
                 """
@@ -208,6 +249,7 @@ def ensure_network_registry(
                   ADD COLUMN IF NOT EXISTS collapse_mode text NOT NULL
                     DEFAULT 'endpoints',
                   ADD COLUMN IF NOT EXISTS license_scope jsonb,
+                  ADD COLUMN IF NOT EXISTS composition jsonb,
                   ALTER COLUMN schema_name DROP NOT NULL,
                   ALTER COLUMN combined_relation DROP NOT NULL
                 """
@@ -227,6 +269,29 @@ def ensure_network_registry(
             ).format(
                 sql.Identifier(registry_schema),
                 sql.Literal(list(COLLAPSE_MODES)),
+            )
+        )
+        # A composition is a named operation over an ordered component list, or
+        # it is nothing at all (R26). The same drop-then-add shape, so the set
+        # of operations can change with the definition. Only the shape is
+        # checked here: what the components mean is the api-service's business.
+        cur.execute(
+            sql.SQL(
+                """
+                ALTER TABLE {}.network_registry
+                  DROP CONSTRAINT IF EXISTS network_registry_composition_check,
+                  ADD CONSTRAINT network_registry_composition_check
+                    CHECK (
+                      composition IS NULL
+                      OR (
+                        composition->>'operation' = ANY({})
+                        AND jsonb_typeof(composition->'components') = 'array'
+                      )
+                    )
+                """
+            ).format(
+                sql.Identifier(registry_schema),
+                sql.Literal(list(COMPOSITION_OPERATIONS)),
             )
         )
         # The transition is recorded in the database too, so nobody meets these
@@ -328,9 +393,9 @@ def register_network(
                   (name, kind, schema_name, combined_relation, included_sources,
                    interaction_class_scope, evidence_scope, default_attributes,
                    mandatory_attributes, labels, curation, attribute_sources,
-                   collapse_mode, license_scope, built_at)
+                   collapse_mode, license_scope, composition, built_at)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                        now())
+                        %s, now())
                 ON CONFLICT (name) DO UPDATE SET
                   kind = EXCLUDED.kind,
                   schema_name = EXCLUDED.schema_name,
@@ -345,6 +410,7 @@ def register_network(
                   attribute_sources = EXCLUDED.attribute_sources,
                   collapse_mode = EXCLUDED.collapse_mode,
                   license_scope = EXCLUDED.license_scope,
+                  composition = EXCLUDED.composition,
                   built_at = now()
                 """
             ).format(sql.Identifier(registry_schema)),
@@ -368,6 +434,9 @@ def register_network(
                 definition.collapse_mode,
                 Json(definition.license_scope)
                 if definition.license_scope is not None
+                else None,
+                Json(definition.composition)
+                if definition.composition is not None
                 else None,
             ],
         )

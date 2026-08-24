@@ -1,20 +1,26 @@
 """Schema-existence and population tests for the interaction model (008).
 
 Constitution III: every new table this cycle adds is asserted to exist and to
-carry rows after a build. Six tables make up the model — the header
+carry rows after a build. Five tables make up the model — the header
 ``interaction`` (data model §1), the participant ``interaction_party`` (§2),
 the participant-role vocabulary ``vocab_relation_role`` (§7), the interaction
-record ``interaction_fact_resource`` (§3a), the all-resources collapse of that
-record ``interaction_fact_combined`` (§3b) and the resource license terms
+record ``interaction_fact_resource`` (§3a) and the resource license terms
 ``data_source_license`` (§8a).
 
 **Amended 2026-08-20 by research R19/R20.** ``interaction_fact_combined`` was
-the projection; it is now one scope's materialisation of a record kept per
-contributing resource. The tests follow: the record and the license table are
-asserted alongside the rest, ``interaction_fact_combined`` is asserted to be
-*derivable* from the record rather than merely present, and the anchoring rule
-of §3b — foreign keys point at the record, never at a materialisation — is
-asserted against the Postgres catalogue.
+the projection; it became one scope's materialisation of a record kept per
+contributing resource.
+
+**Amended 2026-08-21 by research R24.** That materialisation is removed. The
+derive writes **three tables and folds nothing** — the header, the participant
+and the record — and §3b is the shape a query produces at request time, not a
+table. The tests follow: the projection is asserted to write exactly those
+three, no ``interaction_fact_combined`` may survive a build in any non-system
+schema, ``ensure_schema`` is asserted to drop one a pre-change database still
+carries, and the anchoring rule of §3b — the detail tables anchor on the
+record through the denormalised triple — is asserted against the Postgres
+catalogue. The collapse-equivalence assertions this file used to carry moved
+to the api-service under T020d, which is where the fold now lives.
 
 The schema half runs against a throwaway scratch schema, so it needs no data.
 The population half reads the built schema and needs a build — a capped
@@ -41,19 +47,56 @@ SCRATCH = os.environ.get(
     'OMNIPATH_TEST_SCRATCH_SCHEMA_INTERACTIONS',
     'interactions_schema_test',
 )
+# The migration test plants a legacy table and reruns `ensure_schema` over it,
+# so it needs a schema of its own: the module-scoped `scratch` is shared, and a
+# table planted in it would be visible to the tests asserting that no such
+# table exists anywhere.
+SCRATCH_MIGRATION = os.environ.get(
+    'OMNIPATH_TEST_SCRATCH_SCHEMA_MIGRATION',
+    'interactions_migration_test',
+)
 
-# The tables the interaction model adds (data model §1, §2, §3a, §3b, §7, §8a).
+# The tables the interaction model adds (data model §1, §2, §3a, §7, §8a).
 # `interaction_fact_resource` and `data_source_license` joined the list with the
 # R19/R20 amendment: the record is what the projection now stores, and a license
 # filter resolves to a resource set over the ordinal levels of §8a.
+# `interaction_fact_combined` left it with R24: §3b is a query-time shape, so
+# there is no fourth table for the existence or the population half to assert.
 INTERACTION_TABLES = (
     'interaction',
     'interaction_party',
     'vocab_relation_role',
     'interaction_fact_resource',
-    'interaction_fact_combined',
     'data_source_license',
 )
+
+# What the derive writes, and all of what it writes (R24, data model §3).
+# `vocab_relation_role` and `data_source_license` are seeded rather than
+# projected, so they are model tables without being projection outputs.
+PROJECTION_TABLES = (
+    'interaction',
+    'interaction_party',
+    'interaction_fact_resource',
+)
+
+# The removed materialisation (data model §3b/§3c). Named once, because two
+# tests ask the catalogue for it and neither may spell it differently.
+LEGACY_COLLAPSE_TABLE = 'interaction_fact_combined'
+
+# Enough of the removed table to be the thing the migration has to find, and
+# in particular **the foreign key into `interaction`**, which is why a
+# left-behind copy is a failure rather than clutter: the derive truncates the
+# header together with the dependants it names, and a table it does not name
+# blocks the truncate regardless of row counts.
+LEGACY_COLLAPSE_DDL = """
+CREATE TABLE IF NOT EXISTS {schema}.interaction_fact_combined (
+  subject_entity_id uuid NOT NULL REFERENCES {schema}.entity(entity_id),
+  object_entity_id uuid NOT NULL REFERENCES {schema}.entity(entity_id),
+  interaction_class_id smallint NOT NULL
+    REFERENCES {schema}.vocab_interaction_class(interaction_class_id),
+  interaction_id uuid REFERENCES {schema}.interaction(interaction_id)
+)
+"""
 
 # The detail tables of data model §4 and §6. They hang off the record, not off
 # the collapse — see the anchoring rule below.
@@ -68,15 +111,6 @@ RECORD_KEY_COLUMNS = ('source_id', 'interaction_fact_resource_id')
 # `self >= other`, so a license question is a range predicate over three
 # smallints. `is_known` is the exclusion flag of FR-049.
 LICENSE_LEVEL_COLUMNS = ('purpose_level', 'sharing_level', 'attrib_level')
-
-# The columns a collapse carries through from §3a unchanged (data model §3b).
-# Everything else on `interaction_fact_combined` is recomputed per scope and is
-# therefore not comparable across scopes at all.
-CARRIED_THROUGH_COLUMNS = (
-    'subject_organism',
-    'object_organism',
-    'interaction_id',
-)
 
 # Sign and direction are three-valued (FR-044, research R15): NULL means no
 # contributing resource asserts the attribute, which is a different statement
@@ -168,32 +202,33 @@ def _require_table(conn, schema: str, table: str) -> None:
     )
 
 
-def _referencing_foreign_keys(conn, table: str) -> list[tuple[str, str, str]]:
-    """Every foreign key in the catalogue that points *at* ``table``.
+def _relations_named(conn, table: str) -> list[tuple[str, str]]:
+    """Every relation called ``table`` in a non-system schema, as (schema, kind).
 
-    Catalogue, not source: a grep over the schema module proves what the code
-    says, and this rule is about what the database ends up enforcing.
+    Catalogue rather than ``information_schema``, and every relation kind that
+    can carry the name — a table, a partitioned table, a view, a materialised
+    view or a foreign table. "Removed" means the name resolves to nothing a
+    query can read, not merely that the ordinary table is gone.
+
+    ``pg_temp_*`` and ``pg_toast*`` are excluded with the rest of the system
+    namespaces: this database carries about ninety of them, and a session-local
+    scratch relation is not a schema object anybody inherits.
     """
     with conn.cursor() as cur:
         cur.execute(
-            """
-            SELECT
-              src_ns.nspname,
-              src.relname,
-              con.conname
-            FROM pg_constraint con
-            JOIN pg_class tgt ON tgt.oid = con.confrelid
-            JOIN pg_namespace tgt_ns ON tgt_ns.oid = tgt.relnamespace
-            JOIN pg_class src ON src.oid = con.conrelid
-            JOIN pg_namespace src_ns ON src_ns.oid = src.relnamespace
-            WHERE con.contype = 'f'
-              AND tgt.relname = %s
-              AND tgt_ns.nspname NOT IN ('pg_catalog', 'information_schema')
-            ORDER BY 1, 2, 3
+            r"""
+            SELECT ns.nspname, cls.relkind
+            FROM pg_class cls
+            JOIN pg_namespace ns ON ns.oid = cls.relnamespace
+            WHERE cls.relname = %s
+              AND cls.relkind IN ('r', 'p', 'v', 'm', 'f')
+              AND ns.nspname <> 'information_schema'
+              AND ns.nspname NOT LIKE 'pg\_%%'
+            ORDER BY 1
             """,
             (table,),
         )
-        return list(cur.fetchall())
+        return [(schema, kind) for schema, kind in cur.fetchall()]
 
 
 def _foreign_key_targets(conn, schema: str, table: str) -> set[str]:
@@ -230,25 +265,32 @@ def test_table_is_created(conn, scratch, table):
 
 
 def test_fact_table_carries_the_hot_columns(conn, scratch):
-    """The fact table carries the hot filter columns of data model §3."""
-    columns = _columns(conn, scratch, 'interaction_fact_combined')
+    """The fact table carries the hot filter columns of data model §3.
+
+    **Repointed 2026-08-21 (R24)**: §3 is `interaction_fact_resource`, and it
+    is the only stored fact table. The list shrinks with the move, and the
+    columns it loses are exactly the ones §3b recomputes for the scope that
+    asks — `sources`, `source_count`, `dataset_tags`, `reference_count`,
+    `sign_source_count` and `direction_source_count`. Those are produced by a
+    fold and never stored, so asserting them here would ask the record to hold
+    a summary that is only true of one scope.
+    """
+    columns = _columns(conn, scratch, 'interaction_fact_resource')
     expected = {
         'subject_entity_id',
         'object_entity_id',
         'interaction_class_id',
+        'source_id',
         'subject_organism',
         'object_organism',
         'affinity',
         'pchembl',
         'score',
-        'sources',
-        'source_count',
-        'dataset_tags',
-        'reference_count',
+        'curation_flags',
+        'reference_pubmed_ids',
+        'reference_dois',
         'attributes',
         'interaction_id',
-        'sign_source_count',
-        'direction_source_count',
     }
     assert expected <= set(columns), (
         f'missing hot columns: {sorted(expected - set(columns))}'
@@ -257,9 +299,15 @@ def test_fact_table_carries_the_hot_columns(conn, scratch):
 
 @pytest.mark.parametrize('column', THREE_VALUED_COLUMNS)
 def test_sign_and_direction_are_three_valued(conn, scratch, column):
-    """NULL means unasserted, so these three are nullable and undefaulted."""
-    columns = _columns(conn, scratch, 'interaction_fact_combined')
-    assert column in columns, f'{column} is missing from interaction_fact_combined'
+    """NULL means unasserted, so these three are nullable and undefaulted.
+
+    **Repointed 2026-08-21 (R24)** to the record, where the flags say what one
+    resource asserts. The claim is the same one and it matters more here: the
+    fold reads these columns, so a defaulted `false` on the record would be
+    summarised into every scope that touches the row.
+    """
+    columns = _columns(conn, scratch, 'interaction_fact_resource')
+    assert column in columns, f'{column} is missing from interaction_fact_resource'
     data_type, nullable, default = columns[column]
     assert data_type == 'boolean'
     assert nullable == 'YES', (
@@ -268,33 +316,6 @@ def test_sign_and_direction_are_three_valued(conn, scratch, column):
     assert default is None, (
         f'{column} carries a default ({default}); an unasserted attribute '
         f'must stay NULL, never become an asserted false'
-    )
-
-
-def test_fact_key_is_unique_and_ordered(conn, scratch):
-    """The key is ordered: A→B and B→A are two rows, never merged."""
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            SELECT array_agg(attname ORDER BY ordinality)
-            FROM pg_index idx
-            JOIN pg_class rel ON rel.oid = idx.indrelid
-            JOIN pg_namespace ns ON ns.oid = rel.relnamespace
-            CROSS JOIN LATERAL unnest(idx.indkey) WITH ORDINALITY AS k(
-              attnum, ordinality
-            )
-            JOIN pg_attribute att
-              ON att.attrelid = rel.oid AND att.attnum = k.attnum
-            WHERE ns.nspname = %s
-              AND rel.relname = 'interaction_fact_combined'
-              AND idx.indisunique
-            GROUP BY idx.indexrelid
-            """,
-            (scratch,),
-        )
-        keys = [row[0] for row in cur.fetchall()]
-    assert FACT_KEY_COLUMNS in keys, (
-        f'no unique index on the ordered endpoint/class key; found {keys}'
     )
 
 
@@ -325,38 +346,25 @@ def test_table_is_populated_by_the_build(conn, table):
 
 
 def test_every_fact_row_links_to_a_header(conn):
-    """The projection keeps its link to the endpoint-independent header."""
+    """The projection keeps its link to the endpoint-independent header.
+
+    **Repointed 2026-08-21 (R24)** to the record, which is what the projection
+    now writes. The link is what carries the header through a fold: §3b lists
+    `interaction_id` among the columns a collapse carries through unchanged, so
+    a record row without one produces a collapsed row without one.
+    """
+    _require_table(conn, SCHEMA, 'interaction_fact_resource')
     with conn.cursor() as cur:
         cur.execute(
-            f'SELECT count(*) FROM {SCHEMA}.interaction_fact_combined '
+            f'SELECT count(*) FROM {SCHEMA}.interaction_fact_resource '
             f'WHERE interaction_id IS NULL'
         )
         orphans = cur.fetchone()[0]
-    assert orphans == 0, f'{orphans} fact rows carry no header link'
-
-
-def test_the_ordered_key_holds_in_the_built_data(conn):
-    """Both directions of a pair are separate rows, and neither is doubled."""
-    with conn.cursor() as cur:
-        cur.execute(
-            f"""
-            SELECT count(*)
-            FROM (
-              SELECT 1
-              FROM {SCHEMA}.interaction_fact_combined
-              GROUP BY
-                subject_entity_id,
-                object_entity_id,
-                interaction_class_id
-              HAVING count(*) > 1
-            ) AS duplicated
-            """
-        )
-        assert cur.fetchone()[0] == 0
+    assert orphans == 0, f'{orphans} record rows carry no header link'
 
 
 # ---------------------------------------------------------------------------
-# T007 (reopened) — the record, the license table, and a derivable collapse
+# T007 (reopened again, R24) — the record and the license table
 # ---------------------------------------------------------------------------
 
 
@@ -458,135 +466,61 @@ def test_license_table_can_exclude_unknown_terms(conn, scratch):
     assert columns['is_known'][0] == 'boolean'
 
 
-def test_combined_is_the_collapse_of_the_record(conn):
-    """The materialisation is derivable from the record, not merely present.
-
-    ``interaction_fact_combined`` (§3b) is defined as the collapse of §3a over
-    **every** resource. If it holds a row the record cannot produce, or misses
-    one the record does produce, then it is a second projection rather than one
-    scope of the first, and the scope rule has nothing to stand on.
-    """
-    _require_table(conn, SCHEMA, 'interaction_fact_resource')
-    _require_table(conn, SCHEMA, 'interaction_fact_combined')
-    with conn.cursor() as cur:
-        cur.execute('SET statement_timeout = %s', ('20min',))
-        cur.execute(
-            f"""
-            SELECT
-              (
-                SELECT count(*)
-                FROM (
-                  SELECT
-                    subject_entity_id,
-                    object_entity_id,
-                    interaction_class_id
-                  FROM {SCHEMA}.interaction_fact_resource
-                  GROUP BY 1, 2, 3
-                ) AS collapse
-              ),
-              (SELECT count(*) FROM {SCHEMA}.interaction_fact_combined)
-            """
-        )
-        collapsed, materialised = cur.fetchone()
-    assert collapsed == materialised, (
-        f'collapsing interaction_fact_resource over every resource yields '
-        f'{collapsed} rows, while interaction_fact_combined holds '
-        f'{materialised}; the materialisation is not the collapse'
-    )
-
-
-def test_the_collapse_reproduces_the_carried_through_columns(conn):
-    """Every group of the record agrees with the row it collapses into.
-
-    §3b splits the fact columns in two: the carried-through ones, which every
-    contributing resource shares, and the recomputed ones, which describe the
-    scope and are meaningless outside it. The carried-through half is the half
-    a collapse must reproduce exactly, and a mismatch here says the two tables
-    were derived independently.
-    """
-    _require_table(conn, SCHEMA, 'interaction_fact_resource')
-    _require_table(conn, SCHEMA, 'interaction_fact_combined')
-    with conn.cursor() as cur:
-        cur.execute('SET statement_timeout = %s', ('20min',))
-        cur.execute(
-            f"""
-            WITH collapse AS (
-              SELECT
-                subject_entity_id,
-                object_entity_id,
-                interaction_class_id,
-                min(subject_organism) AS subject_organism,
-                min(object_organism) AS object_organism,
-                -- Postgres has no min(uuid); the text form orders the
-                -- same way for a canonical uuid rendering.
-                min(interaction_id::text)::uuid AS interaction_id
-              FROM {SCHEMA}.interaction_fact_resource
-              GROUP BY 1, 2, 3
-            )
-            SELECT
-              count(*) FILTER (WHERE m.subject_entity_id IS NULL),
-              count(*) FILTER (WHERE c.subject_entity_id IS NULL),
-              count(*) FILTER (
-                WHERE c.subject_entity_id IS NOT NULL
-                  AND m.subject_entity_id IS NOT NULL
-                  AND (
-                    c.subject_organism IS DISTINCT FROM m.subject_organism
-                    OR c.object_organism IS DISTINCT FROM m.object_organism
-                    OR c.interaction_id IS DISTINCT FROM m.interaction_id
-                  )
-              )
-            FROM collapse c
-            FULL OUTER JOIN {SCHEMA}.interaction_fact_combined m
-              ON m.subject_entity_id = c.subject_entity_id
-             AND m.object_entity_id = c.object_entity_id
-             AND m.interaction_class_id = c.interaction_class_id
-            """
-        )
-        missing, extra, disagreeing = cur.fetchone()
-    assert (missing, extra, disagreeing) == (0, 0, 0), (
-        f'the collapse of interaction_fact_resource does not reproduce '
-        f'interaction_fact_combined: {missing} collapsed groups are absent '
-        f'from the materialisation, {extra} materialised rows the record '
-        f'cannot produce, {disagreeing} rows disagree on '
-        f'{", ".join(CARRIED_THROUGH_COLUMNS)}'
-    )
-
-
 # ---------------------------------------------------------------------------
-# T011b — the anchoring rule (data model §3b)
+# T011b (reopened, R24) — the anchoring rule (data model §3b)
 # ---------------------------------------------------------------------------
 
 
-def test_no_foreign_key_points_at_the_materialisation(conn, scratch):
-    """Foreign keys point at the record, never at a materialisation.
+def test_nothing_anchors_on_a_materialisation(conn, scratch):
+    """The detail tables anchor on the record, and no materialisation survives.
 
-    A key into a materialisation turns the decision not to materialise a scope
-    into a migration. ``interaction_fact_combined`` is one scope's collapse and
-    is droppable by policy; it also has no stable identity to offer, because a
-    serial reshuffles every build and a deterministic id would only re-encode
-    the endpoint/class triple a child row can carry directly.
+    **Generalised 2026-08-21 (R24).** The rule used to be "no foreign key
+    points at ``interaction_fact_combined``". That check has nothing left to
+    point at: the table is removed, so the way to state the rule is that the
+    name resolves to nothing in any non-system schema, and that the tables
+    which would have keyed into it anchor on ``interaction_fact_resource``
+    through the denormalised ``(subject_entity_id, object_entity_id,
+    interaction_class_id)`` triple instead.
 
-    The check reads ``pg_constraint``, not the schema module: what matters is
-    what the database ends up enforcing. It is guarded by the detail tables,
-    because a schema with nothing to anchor satisfies the rule for free.
+    The triple is what makes the removal a deletion rather than a migration,
+    and it is more general than the key it replaced: it reaches **any** scope's
+    collapse — a preset's, a license-filtered one, the empty one — and not only
+    the all-resources scope that used to be stored.
+
+    The check reads ``pg_class`` and ``pg_constraint``, not the schema module:
+    what matters is what the database ends up holding and enforcing.
+
+    **The vacuity guard is kept, and it now guards both halves.** A schema with
+    no detail table in it satisfies "nothing anchors on a materialisation" for
+    free, and it would satisfy the triple assertion for free as well.
     """
     present = [
         table for table in DETAIL_TABLES if _table_exists(conn, scratch, table)
     ]
     assert present == list(DETAIL_TABLES), (
         f'no detail table to anchor: {sorted(set(DETAIL_TABLES) - set(present))}'
-        f' missing from {scratch}, so "nothing references the materialisation" '
-        f'holds vacuously and proves nothing'
+        f' missing from {scratch}, so both halves of the anchoring rule hold '
+        f'vacuously and prove nothing'
     )
-    referencing = _referencing_foreign_keys(conn, 'interaction_fact_combined')
-    assert referencing == [], (
-        'foreign keys point at interaction_fact_combined: '
-        + '; '.join(
-            f'{ns}.{table}.{name}' for ns, table, name in referencing
+    surviving = _relations_named(conn, LEGACY_COLLAPSE_TABLE)
+    assert surviving == [], (
+        f'{LEGACY_COLLAPSE_TABLE} still exists as '
+        + '; '.join(f'{ns} (relkind {kind})' for ns, kind in surviving)
+        + ' — §3b is the shape a query produces, not a table, and a stored '
+        'copy is something a foreign key can be pointed at again'
+    )
+    for table in DETAIL_TABLES:
+        columns = _columns(conn, scratch, table)
+        missing = [c for c in FACT_KEY_COLUMNS if c not in columns]
+        assert not missing, (
+            f'{table} is missing the denormalised anchor {missing}; with no '
+            f'materialisation left it has no other route to a collapse'
         )
-        + ' — a key into a materialisation turns the decision not to '
-        'materialise a scope into a migration'
-    )
+        targets = _foreign_key_targets(conn, scratch, table)
+        assert 'interaction_fact_resource' in targets, (
+            f'{table} declares no foreign key to interaction_fact_resource; '
+            f'it references {sorted(targets)}'
+        )
 
 
 @pytest.mark.parametrize('table', DETAIL_TABLES)
@@ -619,10 +553,11 @@ def test_detail_table_carries_the_denormalised_join_key(conn, scratch, table):
     """Navigation to a collapse is a join, not a key.
 
     The three denormalised columns reach **any** scope's collapse — a preset's,
-    a license-filtered one — and not only ``interaction_fact_combined``. That is
-    both cheaper and more general than the foreign key it replaces, and it costs
-    the two largest planned tables no per-row key validation, which matters
-    where the derive already measures 1,205 seconds under a 20-minute ceiling.
+    a license-filtered one, the empty one. That is both cheaper and more general
+    than the foreign key it replaces, and it costs the two largest planned
+    tables no per-row key validation, which matters where the derive already
+    measures 1,205 seconds under a 20-minute ceiling. **Under R24 it is also
+    the only route left**: there is no stored collapse to key into.
     """
     assert _table_exists(conn, scratch, table), (
         f'{scratch}.{table} was not created'
@@ -633,3 +568,101 @@ def test_detail_table_carries_the_denormalised_join_key(conn, scratch, table):
         f'{table} is missing the denormalised join key {missing}; without it a '
         f'scoped collapse is unreachable except through the materialisation'
     )
+
+
+# ---------------------------------------------------------------------------
+# T013l — three tables, and nothing folded (R24)
+# ---------------------------------------------------------------------------
+
+
+def test_the_derive_writes_three_tables_and_folds_nothing(conn):
+    """The projection writes the header, the participant and the record. Only.
+
+    Data model §3 as amended by R24: there is **one stored fact table**, and no
+    scope is precomputed — not even the all-resources scope, which is the one
+    the removed ``interaction_fact_combined`` held. The two halves belong in
+    one test because either alone is satisfiable by the wrong build: three
+    populated tables say nothing about a fourth still being written, and an
+    absent fourth table is what a derive that produced nothing at all also
+    looks like.
+
+    The absence is asserted across **every** non-system schema rather than only
+    the built one. A build writes into the schema it is pointed at, and a copy
+    left in a second schema is exactly the stale 4.68 GiB the removal is for.
+    """
+    for table in PROJECTION_TABLES:
+        _require_table(conn, SCHEMA, table)
+        assert _row_count(conn, SCHEMA, table) > 0, (
+            f'{SCHEMA}.{table} is empty; the derive step produced no rows'
+        )
+    surviving = _relations_named(conn, LEGACY_COLLAPSE_TABLE)
+    assert surviving == [], (
+        f'the derive still leaves {LEGACY_COLLAPSE_TABLE} behind in '
+        + '; '.join(f'{ns} (relkind {kind})' for ns, kind in surviving)
+        + f' — the projection writes {len(PROJECTION_TABLES)} tables and folds '
+        'nothing (R24), so §3b must resolve to no relation at all'
+    )
+
+
+def test_the_migration_drops_a_legacy_collapse_table(conn):
+    """A database built before the removal loses the table on the next schema run.
+
+    The removal is a ``DROP TABLE`` and no rebuild, and that is a property of
+    the anchoring rule rather than a convenience: the table has no surrogate
+    key and, by T011b, nothing keys into it, so nothing has to be rewritten
+    when it goes. What forces the drop is the other direction — the leftover
+    holds a foreign key **into** ``interaction``, and the derive truncates the
+    header together with the dependants it names. A dependant it does not name
+    blocks the truncate whatever the row counts are, so a database that keeps
+    the table fails its next derive rather than merely wasting the disk.
+
+    The migration is exercised through ``ensure_schema`` rather than by calling
+    ``_drop_legacy_interaction_fact`` directly, because the entry point is what
+    a pre-change database actually runs, and because the removal may arrive as
+    a sibling of that function rather than inside it.
+
+    **Run twice.** An idempotent migration is the whole requirement here: a
+    schema run is not a one-off script, and the second pass must find nothing,
+    drop nothing and raise nothing.
+    """
+    import psycopg2
+
+    from omnipath_build.db import schema as build_schema
+
+    writable = psycopg2.connect(DATABASE_URL)
+    try:
+        build_schema.ensure_schema(
+            writable,
+            schema=SCRATCH_MIGRATION,
+            drop_existing=True,
+        )
+        writable.commit()
+        with writable.cursor() as cur:
+            cur.execute(LEGACY_COLLAPSE_DDL.format(schema=SCRATCH_MIGRATION))
+        writable.commit()
+        # Pre-change the schema run creates the table itself, so the plant is a
+        # no-op; post-change it is the only thing that puts one there. Either
+        # way the migration has something to find, which is what makes the
+        # assertions below non-vacuous.
+        assert _table_exists(conn, SCRATCH_MIGRATION, LEGACY_COLLAPSE_TABLE), (
+            f'{SCRATCH_MIGRATION}.{LEGACY_COLLAPSE_TABLE} was not planted, so '
+            f'the migration has nothing to remove and the test proves nothing'
+        )
+
+        after = []
+        for _ in range(2):
+            build_schema.ensure_schema(writable, schema=SCRATCH_MIGRATION)
+            writable.commit()
+            after.append(
+                _table_exists(conn, SCRATCH_MIGRATION, LEGACY_COLLAPSE_TABLE)
+            )
+        assert after == [False, False], (
+            f'{LEGACY_COLLAPSE_TABLE} present after each of two ensure_schema '
+            f'runs: {after}; the first True means the migration does not drop '
+            f'a pre-change table, a False then True means it recreates one'
+        )
+    finally:
+        with writable.cursor() as cur:
+            cur.execute(f'DROP SCHEMA IF EXISTS {SCRATCH_MIGRATION} CASCADE')
+        writable.commit()
+        writable.close()

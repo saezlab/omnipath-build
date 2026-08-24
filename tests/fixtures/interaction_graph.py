@@ -1,11 +1,11 @@
 """A small hand-built canonical graph for the interaction-projection tests.
 
-The interaction derive step (008 T013/T014) folds ``relation`` and its
+The interaction derive step (008 T013/T014) projects ``relation`` and its
 ``relation_evidence`` provenance into ``interaction``, ``interaction_party`` and
-``interaction_fact_combined``. Asserting its semantics against the full build would make
-the assertions depend on whatever the resources happen to say this week, so the
-three projection tests build this fixture instead: a dozen relations in a
-throwaway schema, each one carrying exactly the situation a requirement talks
+``interaction_fact_resource``. Asserting its semantics against the full build
+would make the assertions depend on whatever the resources happen to say this
+week, so the projection tests build this fixture instead: a dozen relations in
+a throwaway schema, each one carrying exactly the situation a requirement talks
 about.
 
 What the graph is built to exercise:
