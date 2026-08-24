@@ -2577,6 +2577,33 @@ def _ensure_interaction_schema(
                 ),
             )
         )
+    # A scoped query restricts the resource and then groups the endpoint/class
+    # triple, and the planner costs those two steps as if the resource and the
+    # class varied independently. They do not: a resource contributes to one or
+    # two classes, so multiplying a resource's row count by a class's *global*
+    # rarity understates a single-resource scope by orders of magnitude — a
+    # ligand-receptor drop of 44,455 rows planned at 213. The cost governor
+    # prices every request from that same number, so an understated scope is an
+    # underpriced one, and the governor admits the work it exists to refuse.
+    # `dependencies` is what corrects it; `ndistinct` sharpens the group count
+    # the DISTINCT over the triple asks for. Statistics objects survive the
+    # truncate-and-refill the load performs, and the ANALYZE that follows it
+    # fills these along with the column statistics, so they cost no extra scan.
+    # The name is schema-qualified because a statistics object lives in a
+    # schema of its own: left bare it would land wherever the search path
+    # points, and the second schema to be ensured would find the name taken
+    # and quietly get no statistics at all.
+    cur.execute(
+        sql.SQL(
+            'CREATE STATISTICS IF NOT EXISTS {}.{} (dependencies, ndistinct) '
+            'ON source_id, interaction_class_id, subject_entity_id, '
+            'object_entity_id FROM {}.interaction_fact_resource'
+        ).format(
+            schema_id,
+            sql.Identifier('interaction_fact_resource_scope_stx'),
+            schema_id,
+        )
+    )
     # The aggregated provenance arrays are filtered with array containment;
     # the `attributes` GIN on the record is benchmark-gated (research R2) and
     # is not created until its size and build cost are measured. The partial
