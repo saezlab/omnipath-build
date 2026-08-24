@@ -21,6 +21,15 @@ What the graph is built to exercise:
 * a pair with **no sign at all**, so the sign columns stay NULL, and
 * an **opposite-direction pair**, which must stay two rows.
 
+Beside those single-situation rows the graph carries a **coverage pair per
+interaction class**: one ordered endpoint pair for every class the graph can
+evidence, each reported by two resources that both publish a reference. Those
+are what let the dedup and provenance rule be asserted class by class instead
+of on ``signaling`` alone, and they are the reason a class reached only by a
+verb no rule maps cannot pass unnoticed. One endpoint pair carries **two**
+classes at once, which turns the class into a claim about rows rather than
+about a column.
+
 Every id is fixed, so a test can name the row it means.
 """
 
@@ -43,11 +52,47 @@ SOURCE_NAMES = {
 }
 
 
-# The participants, by the letter the docstrings above use. Only hex digits are
-# legal in a uuid, so the letter names the entity and an ordinal carries it.
+# The predicate miRBase publishes its pre-miRNA to mature-miRNA processing
+# under. The build stores the bare accession, because the controlled-vocabulary
+# term is an (accession, label) pair and the loader writes the accession.
+MATURATION_PREDICATE = 'OM:1257'
+
+# One ordered endpoint pair per interaction class the graph can evidence:
+# the class slug, the predicate the pair is reported under, and the
+# interaction-level annotation that names the class where the verb cannot.
+# `tf_target` is absent on purpose — no resource in the graph asserts it, and
+# a fixture that invented one would hide the gap instead of surfacing it.
+CLASS_PAIRS = (
+    ('ligand_receptor', 'interacts_with', ()),
+    ('signaling', 'controls', ()),
+    ('transport', 'transports', ()),
+    ('orthosteric', 'interacts_with', ('Agonist:OM:1001',)),
+    ('allosteric', 'interacts_with', ('Allosteric Modulator:OM:1005',)),
+    ('maturation', MATURATION_PREDICATE, ()),
+    ('other', 'has_member', ()),
+)
+
+# The classes the coverage pairs above evidence, in the order they are built.
+COVERED_CLASSES = tuple(slug for slug, _predicate, _terms in CLASS_PAIRS)
+
+# The participants. The single-situation rows name theirs by the letter the
+# docstrings above use. The coverage pairs name theirs after the class they
+# carry, so a failure names the class that broke. Only hex digits are
+# legal in a uuid, so the name indexes the entity and an ordinal carries it.
+ENTITY_NAMES = (
+    *'abcdefghijklmnopqr',
+    *(
+        f'{slug}_{side}'
+        for slug in COVERED_CLASSES
+        for side in ('s', 'o')
+    ),
+    'dual_s',
+    'dual_o',
+)
+
 ENTITY = {
-    letter: f'e0000000-0000-4000-8000-{index:012d}'
-    for index, letter in enumerate('abcdefghijklmnopqr', start=1)
+    name: f'e0000000-0000-4000-8000-{index:012d}'
+    for index, name in enumerate(ENTITY_NAMES, start=1)
 }
 
 # Relations: (key, subject letter, predicate, object letter).
@@ -65,6 +110,17 @@ RELATIONS = (
     ('allosteric', 'm', 'interacts_with', 'n'),
     ('transport', 'o', 'transports', 'p'),
     ('other', 'q', 'has_member', 'r'),
+    # One coverage pair per class, the maturation pair reversed so the ordered
+    # key holds outside `signaling` too, and an endpoint pair carrying two
+    # classes at once.
+    *(
+        (f'pair_{slug}', f'{slug}_s', predicate, f'{slug}_o')
+        for slug, predicate, _terms in CLASS_PAIRS
+    ),
+    ('pair_maturation_reverse', 'maturation_o', MATURATION_PREDICATE,
+     'maturation_s'),
+    ('dual_signaling', 'dual_s', 'positively_regulates', 'dual_o'),
+    ('dual_orthosteric', 'dual_s', 'interacts_with', 'dual_o'),
 )
 
 # Evidence: (relation key, source id, relation-level annotation terms).
@@ -86,6 +142,17 @@ EVIDENCE = (
     ('allosteric', SOURCE_A, ('Allosteric Modulator:OM:1005',)),
     ('transport', SOURCE_A, ()),
     ('other', SOURCE_A, ()),
+    # Two resources on every coverage pair, so folding one is folding a group
+    # rather than copying a row. The annotation that names the class rides on
+    # the first resource alone — it resolves the relation, not the record.
+    *(
+        (f'pair_{slug}', source, terms if source == SOURCE_A else ())
+        for slug, _predicate, terms in CLASS_PAIRS
+        for source in (SOURCE_A, SOURCE_B)
+    ),
+    ('pair_maturation_reverse', SOURCE_A, ()),
+    ('dual_signaling', SOURCE_A, ()),
+    ('dual_orthosteric', SOURCE_B, ('Agonist:OM:1001',)),
 )
 
 # Which evidence rows carry a PubMed reference, and which id.
@@ -93,6 +160,14 @@ REFERENCES = {
     ('sig_pos', SOURCE_A): '11111111',
     ('sig_plain', SOURCE_C): '33333333',
     ('lr', SOURCE_LR): '44444444',
+    # Both contributors to a coverage pair publish a reference, and they
+    # publish different ones, so a collapsed row reporting two of them is
+    # reporting a collection rather than one resource's list.
+    **{
+        (f'pair_{slug}', source): f'{prefix}{index:07d}'
+        for index, (slug, _predicate, _terms) in enumerate(CLASS_PAIRS, start=1)
+        for source, prefix in ((SOURCE_A, '7'), (SOURCE_B, '8'))
+    },
 }
 
 PREDICATES = (
@@ -102,6 +177,18 @@ PREDICATES = (
     'controls',
     'transports',
     'has_member',
+    MATURATION_PREDICATE,
+)
+
+# Participant-role annotations, and the endpoint evidence rows they hang off:
+# (relation key, source, side, term). Role evidence is the one tier that lives
+# at the entity-evidence grain, so a relation reaching a class through it needs
+# an evidence row per endpoint rather than a bare entity id.
+ROLE_EVIDENCE = (
+    ('lr', SOURCE_LR, 'subject', 'Ligand:OM:7777'),
+    ('lr', SOURCE_LR, 'object', 'Receptor:OM:7778'),
+    ('pair_ligand_receptor', SOURCE_A, 'subject', 'Ligand:OM:7777'),
+    ('pair_ligand_receptor', SOURCE_A, 'object', 'Receptor:OM:7778'),
 )
 
 TAXONOMY_ID = 9606
@@ -130,12 +217,15 @@ def build_interaction_fixture(
         (key, source): _uuid5('22222222', index)
         for index, (key, source, _terms) in enumerate(EVIDENCE, start=1)
     }
-    # Endpoint evidence ids exist only for the ligand/receptor relation: that is
-    # the one whose class comes from participant-role annotations, which hang off
-    # the entity-evidence grain.
+    # Endpoint evidence ids exist only for the ligand/receptor relations: those
+    # are the ones whose class comes from participant-role annotations, which
+    # hang off the entity-evidence grain.
     endpoint_ids = {
-        ('lr', SOURCE_LR, 'subject'): _uuid5('33333333', 1),
-        ('lr', SOURCE_LR, 'object'): _uuid5('33333333', 2),
+        (key, source, side): _uuid5('33333333', index)
+        for index, (key, source, side, _term) in enumerate(
+            ROLE_EVIDENCE,
+            start=1,
+        )
     }
 
     with conn.cursor() as cur:
@@ -336,15 +426,11 @@ def build_interaction_fixture(
             ).as_string(cur.connection),
             [
                 (
-                    SOURCE_LR,
-                    endpoint_ids[('lr', SOURCE_LR, 'subject')],
-                    annotation_key('Ligand:OM:7777'),
-                ),
-                (
-                    SOURCE_LR,
-                    endpoint_ids[('lr', SOURCE_LR, 'object')],
-                    annotation_key('Receptor:OM:7778'),
-                ),
+                    source,
+                    endpoint_ids[(key, source, side)],
+                    annotation_key(term),
+                )
+                for key, source, side, term in ROLE_EVIDENCE
             ],
         )
     conn.commit()

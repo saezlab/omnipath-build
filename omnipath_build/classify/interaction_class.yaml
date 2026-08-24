@@ -58,7 +58,13 @@ predicates:
   negatively_regulates: signaling
   positively_regulates: signaling
   transports: transport
-  # Milestone L: pre-miRNA → mature-miRNA processing (appears once the miRBase
-  # resource emits maturation relations; until then it simply has no rows).
+  # pre-miRNA → mature-miRNA processing. The build stores this predicate as the
+  # bare accession, because its controlled-vocabulary term is an
+  # (accession, label) pair and the loader writes the first element. Keyed on
+  # the label alone the rule matched nothing, and miRBase's whole contribution
+  # — 53,316 relations, every one of them a maturation event — was served as
+  # `other`. The label forms stay listed, so a loader that writes them keeps
+  # working.
+  OM:1257: maturation
   miRNA maturation: maturation
   miRNA_maturation: maturation

@@ -520,11 +520,14 @@ def test_the_step_measures_the_sign_conflict_rate(built):
     """T013c: every build reports how often both sign flags land on one row."""
     _conn, stats = built
     conflict = stats.sign_conflict
-    # Three rows carry a sign: c->d and i->j, plus the orthosteric k->l, whose
-    # `Agonist` annotation is both a class and a positive sign.
-    assert conflict['signed_rows'] == 3
+    # Five rows carry a sign: c->d and i->j, plus the three orthosteric pairs,
+    # whose `Agonist` annotation is both a class and a positive sign. There is
+    # no orthosteric fixture row that is not also signed, and that is the data
+    # rather than the fixture: every term that names the class — agonist,
+    # antagonist, inhibitor, activator — is a sign term as well.
+    assert conflict['signed_rows'] == 5
     assert conflict['both_flags_rows'] == 2
-    assert conflict['both_flags_percent'] == pytest.approx(100.0 * 2 / 3, abs=0.01)
+    assert conflict['both_flags_percent'] == pytest.approx(100.0 * 2 / 5, abs=0.01)
     # c->d is two resources disagreeing; i->j is one resource asserting both
     # under two predicates that share the `signaling` class.
     assert conflict['single_resource_rows'] == 1
@@ -577,7 +580,7 @@ def test_the_summary_is_recorded_next_to_the_derive_cost(built):
         'single_resource_rows',
         'cross_resource_rows',
     }
-    assert conflict['signed_rows'] == 3
+    assert conflict['signed_rows'] == 5
 
     # And it stayed out of the identity: the hash covers the package commits
     # and the resource inventory, nothing else.

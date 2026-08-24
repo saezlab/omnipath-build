@@ -1125,6 +1125,14 @@ class InteractionDeriveStats:
     manifest records it under ``interactions_deferral_cost`` (T013k), where a
     field nobody measured stays ``null`` rather than becoming a zero.
 
+    ``fallback_predicates`` breaks the fallback class down by the verb its
+    relations arrived under. A per-class count alone cannot separate the two
+    things ``other`` holds — the interactions no resource characterises, and
+    the ones a resource characterises under a predicate no rule maps — so a
+    whole class published under an unrecognised verb reads as more of the same
+    large number. Broken down per predicate it reads as a verb with a class-sized
+    row count beside it, which is what asks to be curated.
+
     ``source_count_histogram`` is the §12 distribution — how many collapse
     keys carry each ``source_count`` — returned for the build log. Its real
     consumer reads ``interaction_source_count_histogram`` from the database,
@@ -1135,6 +1143,7 @@ class InteractionDeriveStats:
     parties: int = 0
     records: int = 0
     rows_by_class: dict[str, int] = field(default_factory=dict)
+    fallback_predicates: dict[str, int] = field(default_factory=dict)
     sign_conflict: dict[str, float] = field(default_factory=dict)
     seconds: float = 0.0
     step_seconds: dict[str, float] = field(default_factory=dict)
@@ -1896,6 +1905,25 @@ def rebuild_interaction_tables(
             'rows_by_class',
             **{name: count for name, count in sorted(rows_by_class.items())},
         )
+        fallback_predicates = _interaction_fallback_predicates(
+            cur,
+            schema,
+            classes[_FALLBACK_CLASS],
+        )
+        # And what the fallback is made of, so that a class arriving under a
+        # verb no rule maps cannot hide inside the one large number. The verbs
+        # go into one field rather than one field each: a predicate name is
+        # free text from the loader, and a resource introducing one called
+        # `event` or `step` would collide with the line's own keys.
+        _log(
+            progress,
+            'interaction_fact_resource',
+            'fallback_predicates',
+            predicates=','.join(
+                f'{name}:{count}'
+                for name, count in fallback_predicates.items()
+            ),
+        )
         sign_conflict = _record_sign_conflict_summary(cur, schema)
         _log(progress, 'interaction_fact_resource', 'sign_conflict', **sign_conflict)
         source_count_histogram = _record_source_count_histogram(cur, schema)
@@ -1932,6 +1960,7 @@ def rebuild_interaction_tables(
         records=records,
         deferral=deferral,
         rows_by_class=rows_by_class,
+        fallback_predicates=fallback_predicates,
         source_count_histogram=source_count_histogram,
         sign_conflict=sign_conflict,
         seconds=seconds,
@@ -2116,6 +2145,7 @@ def _stage_interaction_class_evidence(
               r.relation_id,
               r.subject_entity_id,
               r.object_entity_id,
+              r.predicate_id,
               coalesce(
                 CASE
                   WHEN participant.is_ligand_receptor THEN %(ligand_receptor)s
@@ -2724,6 +2754,45 @@ def _interaction_rows_by_class(
             ORDER BY vic.name
             """
         ).format(sql.Identifier(schema), sql.Identifier(schema))
+    )
+    return {name: int(count) for name, count in cur.fetchall()}
+
+
+def _interaction_fallback_predicates(
+    cur: psycopg2.extensions.cursor,
+    schema: str,
+    fallback_class_id: int,
+) -> dict[str, int]:
+    """What the fallback class is made of, by the verb its relations arrived under.
+
+    ``other`` is a real class and also the place every relation lands that no
+    rule characterises, and the per-class counts cannot tell those two apart.
+    A resource publishing an entire class under a predicate the curated map has
+    no entry for therefore shows up as nothing at all: its rows join the
+    largest number in the report and the class it belongs to reads as empty.
+    That is not hypothetical — miRBase's 53,316 maturation relations sat in the
+    fallback for exactly this reason, under a predicate stored as a bare
+    accession while the rule was keyed on the label.
+
+    Counted per **relation** rather than per record row, because the question
+    it answers is about the verb the graph holds and the map that reads it, not
+    about how many resources reported each edge. Read off the staging table the
+    class derivation already built, so it costs one grouped scan of a column
+    that is in memory.
+    """
+    cur.execute(
+        sql.SQL(
+            """
+            SELECT predicate.name, count(*)::bigint
+            FROM _if_relation ir
+            JOIN {}.vocab_relation_predicate predicate
+              ON predicate.relation_predicate_id = ir.predicate_id
+            WHERE ir.interaction_class_id = %s
+            GROUP BY 1
+            ORDER BY 2 DESC, 1
+            """
+        ).format(sql.Identifier(schema)),
+        [fallback_class_id],
     )
     return {name: int(count) for name, count in cur.fetchall()}
 

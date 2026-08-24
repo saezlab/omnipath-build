@@ -31,6 +31,16 @@ interaction-level annotation, then the predicate, then ``other``. Resolving it
 from the predicate alone put 93.5 per cent of the graph in ``other`` and left
 five classes empty, so the precedence is asserted here class by class.
 
+**And the grain is asserted class by class too.** The fold is written once and
+the class is only a column in it, so a rule shown to hold for the class the
+first slice exercised has not been shown to hold for the rest. The fixture
+carries a coverage pair per class — two resources, two references, one ordered
+key — and the dedup and provenance assertions run over all of them. A class the
+graph evidences but the projection never names is the failure these catch, and
+it is a real one: a whole resource can arrive under a verb the curated map has
+no entry for, and be served as ``other`` with nothing in the per-class counts
+to say so.
+
 Run::
 
     DATABASE_URL=postgresql://omnipath:omnipath@localhost:5404/omnipath \
@@ -47,7 +57,14 @@ import psycopg2
 import pytest
 
 from tests.fixtures.collapse import COLLAPSE_VIEW, create_collapse_view
-from tests.fixtures.interaction_graph import build_interaction_fixture
+from tests.fixtures.interaction_graph import (
+    COVERED_CLASSES,
+    REFERENCES,
+    SOURCE_A,
+    SOURCE_B,
+    SOURCE_NAMES,
+    build_interaction_fixture,
+)
 
 DATABASE_URL = os.environ.get('DATABASE_URL')
 SCRATCH = os.environ.get(
@@ -105,8 +122,13 @@ def _query(conn, statement: str, params=None) -> list[tuple]:
         raise
 
 
-def _fact(conn, subject: str, object_: str) -> dict[str, object] | None:
-    """The single collapsed row for a fixture endpoint pair, by name."""
+def _facts(conn, subject: str, object_: str) -> list[dict[str, object]]:
+    """Every collapsed row for a fixture endpoint pair, by name.
+
+    An endpoint pair reaches one collapsed row **per class**, so this returns a
+    list: the class is part of the key, and a pair two resources report under
+    two different classes is two rows rather than one row with two labels.
+    """
     rows = _query(
         conn,
         f"""
@@ -125,31 +147,40 @@ def _fact(conn, subject: str, object_: str) -> dict[str, object] | None:
         """,
         (f'FIXTURE_{subject}', f'FIXTURE_{object_}'),
     )
-    assert len(rows) <= 1, f'{subject}->{object_} produced {len(rows)} rows'
-    if not rows:
-        return None
-    (
-        name,
-        sources,
-        source_count,
-        pubmed,
-        reference_count,
-        interaction_id,
-        is_stimulation,
-        is_inhibition,
-        sign_source_count,
-    ) = rows[0]
-    return {
-        'class': name,
-        'sources': sorted(sources or []),
-        'source_count': source_count,
-        'pubmed': sorted(pubmed or []),
-        'reference_count': reference_count,
-        'interaction_id': interaction_id,
-        'is_stimulation': is_stimulation,
-        'is_inhibition': is_inhibition,
-        'sign_source_count': sign_source_count,
-    }
+    return [
+        {
+            'class': name,
+            'sources': sorted(sources or []),
+            'source_count': source_count,
+            'pubmed': sorted(pubmed or []),
+            'reference_count': reference_count,
+            'interaction_id': interaction_id,
+            'is_stimulation': is_stimulation,
+            'is_inhibition': is_inhibition,
+            'sign_source_count': sign_source_count,
+        }
+        for (
+            name,
+            sources,
+            source_count,
+            pubmed,
+            reference_count,
+            interaction_id,
+            is_stimulation,
+            is_inhibition,
+            sign_source_count,
+        ) in rows
+    ]
+
+
+def _fact(conn, subject: str, object_: str) -> dict[str, object] | None:
+    """The single collapsed row for a fixture endpoint pair, by name.
+
+    Most fixture rows carry one class, and this is the shape they read in.
+    """
+    facts = _facts(conn, subject, object_)
+    assert len(facts) <= 1, f'{subject}->{object_} produced {len(facts)} rows'
+    return facts[0] if facts else None
 
 
 def _records(conn, subject: str, object_: str) -> list[dict[str, object]]:
@@ -564,6 +595,7 @@ def test_every_header_has_its_participants(built):
         # Tier 3, the predicate.
         ('c', 'd', 'signaling'),
         ('o', 'p', 'transport'),
+        ('maturation_s', 'maturation_o', 'maturation'),
         # The fallback, which stays a real class rather than a dumping ground.
         ('q', 'r', 'other'),
     ],
@@ -588,19 +620,188 @@ def test_no_fact_row_is_left_without_a_class(built):
 
 
 def test_the_step_reports_its_per_class_counts(built):
-    """R18 asks for per-class row counts on every run, so they are returned."""
+    """R18 asks for per-class row counts on every run, so they are returned.
+
+    Every class in the vocabulary is named, including the ones at zero: a count
+    that is absent reads as "not measured", and the whole point of the report is
+    that a class collapsing back to nothing is visible in the build output.
+    """
     conn, _stats = built
     _connection, stats = built
-    assert stats.rows_by_class['ligand_receptor'] == 1
-    assert stats.rows_by_class['signaling'] >= 3
-    assert set(stats.rows_by_class) >= {
-        'ligand_receptor',
-        'orthosteric',
-        'allosteric',
-        'signaling',
-        'transport',
-        'other',
+    vocabulary = {
+        name
+        for (name,) in _query(
+            conn,
+            f'SELECT name FROM {SCRATCH}.vocab_interaction_class',
+        )
     }
+    assert set(stats.rows_by_class) == vocabulary
+    assert stats.rows_by_class['signaling'] >= 3
+
+
+@pytest.mark.parametrize('class_name', COVERED_CLASSES)
+def test_every_class_the_graph_evidences_reaches_the_projection(
+    built,
+    class_name,
+):
+    """A class the graph evidences is a class the projection produces rows for.
+
+    The projection is not the ligand-receptor slice with a fallback beside it.
+    Every class some resource states, by a participant role, by an
+    interaction-level annotation or by the verb it publishes under, has to
+    arrive in the fact table under its own name — otherwise it is served as
+    `other`, which is the one label that cannot be filtered on usefully.
+    """
+    _conn, stats = built
+    assert stats.rows_by_class[class_name] > 0, (
+        f'the graph evidences {class_name} and the projection produced no row '
+        f'for it; the rows are in the fallback class instead'
+    )
+
+
+def test_a_class_no_resource_evidences_is_reported_at_zero(built):
+    """A class with no evidence stays empty and stays visible.
+
+    Transcription-factor targets are a missing-resource gap rather than a
+    derivation to force: nothing in the graph asserts one. The report names the
+    class at zero, which is how a gap is surfaced instead of being filled with
+    guesses.
+    """
+    _conn, stats = built
+    assert stats.rows_by_class['tf_target'] == 0
+
+
+# ---------------------------------------------------------------------------
+# The dedup and aggregation rule, class by class
+# ---------------------------------------------------------------------------
+
+
+def _coverage_pair(class_name: str) -> tuple[str, str]:
+    return f'{class_name}_s', f'{class_name}_o'
+
+
+def _coverage_references(class_name: str) -> list[str]:
+    key = f'pair_{class_name}'
+    return sorted(
+        reference
+        for (relation, _source), reference in REFERENCES.items()
+        if relation == key
+    )
+
+
+@pytest.mark.parametrize('class_name', COVERED_CLASSES)
+def test_the_ordered_triple_folds_to_one_row_in_every_class(built, class_name):
+    """Two resources on one ordered pair and class fold to a single row.
+
+    Asserted per class rather than on `signaling` alone: the fold is written
+    once and the classes are only a column in it, so a rule that held for the
+    class the first slice exercised has to be shown holding for the rest.
+    """
+    conn, _stats = built
+    subject, object_ = _coverage_pair(class_name)
+    facts = _facts(conn, subject, object_)
+    assert len(facts) == 1, (
+        f'{class_name} folded to {len(facts)} rows, not one'
+    )
+    assert facts[0]['class'] == class_name
+
+
+@pytest.mark.parametrize('class_name', COVERED_CLASSES)
+def test_provenance_aggregates_across_resources_in_every_class(
+    built,
+    class_name,
+):
+    """The folded row names both contributors and both their references."""
+    conn, _stats = built
+    subject, object_ = _coverage_pair(class_name)
+    fact = _fact(conn, subject, object_)
+    assert fact is not None, f'{class_name} produced no folded row'
+    assert fact['sources'] == sorted(
+        (SOURCE_NAMES[SOURCE_A], SOURCE_NAMES[SOURCE_B])
+    )
+    assert fact['source_count'] == 2
+    assert fact['pubmed'] == _coverage_references(class_name)
+    assert fact['reference_count'] == 2
+
+
+@pytest.mark.parametrize('class_name', COVERED_CLASSES)
+def test_the_record_keeps_one_row_per_resource_in_every_class(
+    built,
+    class_name,
+):
+    """Below the fold the grain is per resource, whatever the class.
+
+    The stored table keeps the contributors apart so a query scoped to one of
+    them can recompute the summary from its own rows. That is the property the
+    fold depends on, and it has to hold in every class rather than in the ones
+    the first slice happened to cover.
+    """
+    conn, _stats = built
+    subject, object_ = _coverage_pair(class_name)
+    records = _records(conn, subject, object_)
+    assert [record['source'] for record in records] == [
+        SOURCE_NAMES[SOURCE_A],
+        SOURCE_NAMES[SOURCE_B],
+    ]
+    assert {record['class'] for record in records} == {class_name}
+    by_source = {record['source']: record for record in records}
+    assert by_source[SOURCE_NAMES[SOURCE_A]]['pubmed'] == [
+        REFERENCES[(f'pair_{class_name}', SOURCE_A)]
+    ]
+    assert by_source[SOURCE_NAMES[SOURCE_B]]['pubmed'] == [
+        REFERENCES[(f'pair_{class_name}', SOURCE_B)]
+    ]
+
+
+def test_the_class_is_part_of_the_collapse_key(built):
+    """One endpoint pair reported under two classes stays two folded rows.
+
+    Merging them would answer "what kind of interaction is this?" with a list,
+    and would pool the provenance of a signalling claim with that of a
+    pharmacological one. Each row carries the resource that made its own claim.
+    """
+    conn, _stats = built
+    facts = _facts(conn, 'dual_s', 'dual_o')
+    assert len(facts) == 2, (
+        f'one pair under two classes folded to {len(facts)} rows'
+    )
+    by_class = {fact['class']: fact for fact in facts}
+    assert set(by_class) == {'signaling', 'orthosteric'}
+    assert by_class['signaling']['sources'] == [SOURCE_NAMES[SOURCE_A]]
+    assert by_class['orthosteric']['sources'] == [SOURCE_NAMES[SOURCE_B]]
+    assert by_class['signaling']['source_count'] == 1
+    assert by_class['orthosteric']['source_count'] == 1
+
+
+def test_the_ordered_key_holds_outside_the_signalling_class(built):
+    """A→B and B→A stay two rows in a class the first slice never exercised."""
+    conn, _stats = built
+    forward = _fact(conn, 'maturation_s', 'maturation_o')
+    reverse = _fact(conn, 'maturation_o', 'maturation_s')
+    assert forward is not None and reverse is not None
+    assert forward['class'] == reverse['class'] == 'maturation'
+    assert forward['sources'] != reverse['sources']
+
+
+def test_the_step_reports_what_the_fallback_class_is_made_of(built):
+    """The fallback is broken down by the verb its rows arrived under.
+
+    `other` is a real class and also the place every unrecognised verb lands,
+    so a per-class count alone cannot tell the two apart: a resource publishing
+    a whole class under a predicate no rule maps shows up as more of the same
+    large number. Reporting the fallback per predicate is what makes that
+    visible, and it is the only report that would have caught it.
+    """
+    _conn, stats = built
+    fallback = stats.fallback_predicates
+    assert fallback, 'the step reported no breakdown of the fallback class'
+    assert 'has_member' in fallback, (
+        'the verb the fallback rows arrived under is not named'
+    )
+    assert fallback['has_member'] > 0
+    assert 'transports' not in fallback, (
+        'a verb that reaches a class of its own is not part of the fallback'
+    )
 
 
 # ---------------------------------------------------------------------------
