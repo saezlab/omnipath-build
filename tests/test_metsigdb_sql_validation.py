@@ -28,6 +28,8 @@ TABLE = 'metsigdb_membership'
 # departs from these needs an explanation before it is accepted.
 EXPECTED = {
     'Reactome': {'rows': 24235, 'sets': 2239, 'metabolites': 2191},
+    'WikiPathways': {'rows': 5431, 'sets': 818, 'metabolites': 2789},
+    'KEGG': {'rows': 4969, 'sets': 176, 'metabolites': 1799},
 }
 
 TOLERANCE = 0.02

@@ -14,12 +14,14 @@ identity. Only the extraction differs per resource.
 from __future__ import annotations
 
 import logging
+import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from psycopg2 import sql
+import psycopg2.errors
 import psycopg2.extensions
+from psycopg2 import sql
 
 from omnipath_build.metsigdb.mapping import (
     CHEMICAL_ENTITY_TYPE,
@@ -31,6 +33,14 @@ _SQL_DIR = Path(__file__).with_name('sql')
 logger = logging.getLogger(__name__)
 
 TABLE = 'metsigdb_membership'
+
+# Temp-table headroom for the extractions. A temp table lives in the backend's
+# local buffers, and the default 8 MB is far too small for intermediates of a
+# few million rows: Postgres reports "no empty local buffer available" rather
+# than spilling. The setting only takes effect before a session touches its
+# first temp table, so the build sets it once per connection and lets a later
+# call fail quietly.
+TEMP_BUFFERS = os.environ.get('METSIGDB_TEMP_BUFFERS', '1GB')
 
 
 @dataclass(frozen=True)
@@ -70,6 +80,19 @@ def ensure_membership_table(
         cur.execute('RESET search_path')
     conn.commit()
     logger.info('metsigdb: %s.%s is present', schema, TABLE)
+
+
+def _widen_temp_buffers(cur) -> None:
+    """Give the backend room for the extraction intermediates.
+
+    Postgres refuses the change once the session has touched a temp table, so a
+    connection that already loaded one resource keeps the value it got then.
+    That is the wanted behavior, and the refusal is not an error.
+    """
+    try:
+        cur.execute(f"SET temp_buffers = '{TEMP_BUFFERS}'")
+    except psycopg2.errors.ActiveSqlTransaction:  # pragma: no cover
+        logger.debug('metsigdb: temp_buffers already fixed for this session')
 
 
 def _scalar(cur, query: str, params=None):
@@ -139,6 +162,7 @@ def load_resource(
     """
     started = time.monotonic()
     with conn.cursor() as cur:
+        _widen_temp_buffers(cur)
         params = {
             'source_id': _source_id(cur, rule.source_name),
             'set_entity_type_id': _entity_type_id(cur, rule.set_entity_type),
