@@ -1,22 +1,25 @@
 """The datasets onboarded into the framework: MetalinksDB + LIANA.
 
-Each is a :class:`NetworkDefinition`, and both generations of definition live
-here side by side:
+Both are now **presets**: metadata over the interaction fact table — the
+contributing sources, the interaction-class scope, the evidence scope, the
+default and mandatory attributes, the labels, the curation thresholds, the
+attribute sources, the mode the per-resource record folds under, the license a
+resource must meet, and — where the dataset is not one query — the recipe that
+assembles it. Registering the row is the whole build step, and it materialises
+nothing at all.
 
-* a **preset** (cycle 008) carries only metadata — contributing sources,
-  interaction-class scope, evidence scope, default and mandatory attributes,
-  labels, curation thresholds, attribute sources, the mode it collapses the
-  per-resource record with and the license levels a resource must meet to
-  contribute — and is served by filtering the interaction fact table.
-  Registering it is the whole build step, and it materialises nothing of its
-  own: a preset restricted to a resource subset collapses the record at query
-  time.
-* a **matview network** carries a schema, a combined relation and
-  the curated SQL files that materialise it. MetaLinksDB below is still of this
-  kind. LIANA is not: it became a preset over the fact table, and the matview it
-  used to own is left standing, unmanaged, as the rollback path until the
-  retirement step drops it. The ``schema``/``combined_relation`` fields — with
-  the registry columns behind them — retire with the last bespoke matview.
+The framework still carries the older **matview network** shape: a schema, a
+combined relation and the curated SQL that fills them. No definition here uses
+it any more, and the ``schema`` / ``combined_relation`` fields retire with the
+registry columns behind them once the standing views are dropped.
+
+**Both datasets' old views are still on disk, and both are unmanaged.**
+Converting a dataset stops the framework *managing* its views and does not drop
+them: ``apply_network`` returns early for a preset, and the only ``DROP`` for
+each relation sits inside the SQL file the derive has stopped executing. So
+they survive, frozen at their last refresh, serving data the build has since
+corrected. They are a rollback path and not a live contract — a fresh
+``init-db --drop-existing`` takes them and nothing recreates them.
 
 Adding a dataset stays a declarative change: a definition here, served by the
 same uniform API.
@@ -26,61 +29,148 @@ from __future__ import annotations
 
 from omnipath_build.network_views._framework import NetworkDefinition
 
-# MetalinksDB: compound↔protein relations from 12 interaction/transport/signaling
-# sources, each a per-source matview, unioned into the single `metalinksdb_relations`
-# combined contract (004-metalinksdb-view: now also carrying protein/compound
-# annotations inline via LEFT JOIN, so the two former standalone annotation
-# matviews are upstream inputs rather than a separate public contract).
-# Human-GEM is loaded under the pypath/data_source name 'metatlas'; its per-source
-# matview and combined-view `source` label are both 'humangem' to match this
-# spec's naming (see metalinksdb.sql header comment).
-# (`metalinksdb` the multi-resource network is distinct from `mrclinksdb` the
-# single source.)
+# MetalinksDB: metabolite↔protein relations, a preset over the interaction
+# fact table. It was fifteen materialized views and 1,571 lines of SQL; the
+# recipe below is the whole of what that SQL said, expressed as parameters.
+#
+# **The resource names are the loaded ones, not the published ones.** Human-GEM
+# loads under `metatlas` and the retiring views only read `humangem` because
+# they label their own rows so by hand. A preset naming `humangem` would
+# resolve it to nothing, and an empty contribution reads exactly like a
+# resource that failed to load. `labels` carries the published name for output.
+#
+# **Two of the twelve contribute nothing, for two different reasons, and both
+# are worth stating so neither reads as a defect.** BindingDB is excluded by
+# the recipe: its assertions stay in the record for any other query to find,
+# and no row of this dataset counts them. ChEMBL survives the recipe and then
+# meets the metabolite gate, which removes it entirely — a mechanism-of-action
+# compound is a drug. The retiring view delivers exactly this: ten resources
+# reach its combined contract, and ChEMBL is not among them.
+#
+# **The reaction-grain components are declared and currently empty.** Rhea,
+# Recon3D and Human-GEM contribute metabolite↔enzyme pairs that the record
+# holds as two hops through a reaction entity — gene → reaction and reaction →
+# metabolite — because the load binarised the reaction rather than keeping it
+# as a hyperedge. Until the reaction projection lands, this component selects
+# the handful of pairs already stated directly, and the dataset is short of the
+# view's rhea, recon3d and humangem rows. That is a known gap with a named
+# cause, declared here rather than left as a silent difference.
+_CURATED_SOURCES = (
+    'cellinker',
+    'guidetopharma',
+    'mrclinksdb',
+    'stitch',
+    'tcdb',
+    'cellphonedb',
+    'neuronchat',
+)
+
+# The classes the transport component scopes to. Named rather than left open
+# because the reaction-derived contribution is a transport statement, and
+# widening it would pull in the signaling rows of the same resources.
+_TRANSPORT_CLASSES = ('transport', 'ligand_receptor')
+
+# The gate every component carries. It is on the entity, so no resource can
+# route around it: a compound is a metabolite or it is not.
+_GATE = {'chemical_classes': ['metabolite']}
+
 METALINKSDB = NetworkDefinition(
     name='metalinksdb',
     kind='compound_protein',
-    schema='custom_views',
     included_sources=(
         'chembl',
         'bindingdb',
-        'cellinker',
-        'guidetopharma',
-        'mrclinksdb',
-        'stitch',
-        'tcdb',
+        *_CURATED_SOURCES,
         'recon3d',
         'rhea',
-        'humangem',
-        'cellphonedb',
-        'neuronchat',
+        'metatlas',
     ),
-    combined_relation='metalinksdb_relations',
-    matviews=(
-        'metalinksdb_chembl_relations',
-        'metalinksdb_bindingdb_relations',
-        'metalinksdb_cellinker_relations',
-        'metalinksdb_guidetopharma_relations',
-        'metalinksdb_mrclinksdb_relations',
-        'metalinksdb_stitch_relations',
-        'metalinksdb_tcdb_relations',
-        'metalinksdb_recon3d_relations',
-        'metalinksdb_rhea_relations',
-        'metalinksdb_humangem_relations',
-        'metalinksdb_cellphonedb_relations',
-        'metalinksdb_neuronchat_relations',
-        'metalinksdb_protein_annotations',
-        'metalinksdb_compound_annotations',
-        'metalinksdb_relations',
-    ),
-    sql_files=('metalinksdb_annotations.sql', 'metalinksdb.sql'),
+    interaction_class_scope=(),
+    default_attributes=('endpoints', 'label', 'references', 'evidence'),
+    # The node classification the delivered contract carries inline. Mandatory
+    # rather than default: a consumer of this dataset reads the compound and
+    # protein annotations, and a request naming another attribute must not
+    # take them away.
+    mandatory_attributes=('intercell',),
+    labels={
+        'preset': 'MetaLinksDB',
+        'resources': {'metatlas': 'humangem'},
+    },
+    curation={
+        # Every threshold the retiring SQL held inline, as configuration.
+        'chemical_class_gate': 'metabolite',
+        'chembl_curation': 'mechanism_of_action',
+        'excluded_from_combined': ['bindingdb'],
+    },
+    attribute_sources={
+        # Provenance for the node classification, and it says which stage
+        # answered. The interim stage is the annotation content the resources
+        # already publish; the rebuild replaces the vocabulary behind the same
+        # output names, and this field is how a caller tells them apart.
+        'intercell': {
+            'stage': 'interim',
+            'source': 'loaded resource annotations',
+            'note': (
+                'role and location terms as the contributing resources publish '
+                'them, not a cross-resource consensus'
+            ),
+        },
+    },
+    composition={
+        'operation': 'union',
+        'components': [
+            {
+                'parameters': {
+                    'filters': {
+                        'resources': ['chembl'],
+                        # Presence of the mechanism annotation, folded onto the
+                        # record as a flag. An affinity threshold is the
+                        # alternative and it floods the set: pChEMBL above 6 is
+                        # 1.6 M pairs, and mechanism and pChEMBL sit in
+                        # different ChEMBL tables, so their conjunction is empty.
+                        'curation_flags': ['mechanism_of_action'],
+                        **_GATE,
+                    },
+                },
+            },
+            {
+                'parameters': {
+                    'filters': {
+                        'resources': list(_CURATED_SOURCES),
+                        **_GATE,
+                    },
+                },
+            },
+            {
+                'parameters': {
+                    'filters': {
+                        'resources': ['recon3d', 'rhea', 'metatlas'],
+                        'interaction_classes': list(_TRANSPORT_CLASSES),
+                        **_GATE,
+                    },
+                },
+            },
+        ],
+        'steps': [
+            # Before the fold, so the dropped resource contributes no row and
+            # no count. After it, its assertions would stay inside
+            # source_count, the references and the sign flags.
+            {'operation': 'exclude', 'resources': ['bindingdb']},
+            {'operation': 'collapse'},
+            {'operation': 'annotate', 'layer': 'intercell'},
+        ],
+    },
 )
 
 # LIANA: ligand↔receptor pairs, a preset over the interaction fact table. It was
 # a matview network over 5 cell-cell-communication resources; the reduced drop
 # scopes to ConnectomeDB2025 alone, so the other four are out of scope here.
-# Nothing materialises: registering this row is the whole build step, and the
-# old matview `custom_views.liana_ligand_receptor_pairs` is deliberately left in
-# place — unmanaged and unrefreshed — as the rollback path until it is retired.
+# Nothing materialises: registering this row is the whole build step. The SQL
+# that built the old matview is deleted, so no build recreates it, and a
+# database still holding one holds a relation nothing owns — frozen at its last
+# refresh, its `sources` column reading a resource name the build has since
+# corrected. Dropping that leftover is a one-line statement against the
+# database and not a code change, which is why it is not here.
 #
 # Organism scope: all 14 taxa the resource loads, not human alone. That is a
 # decision, not an oversight. Organism is a dimension a caller queries on, not a
