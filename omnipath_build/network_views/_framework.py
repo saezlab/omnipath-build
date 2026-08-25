@@ -1,4 +1,4 @@
-"""Declarative network-view framework (Milestone G; presets since cycle 008).
+"""Declarative network-view framework, carrying presets since cycle 008.
 
 A dataset is described by a :class:`NetworkDefinition` and registered as one
 ``network_registry`` row. Two generations of definition share that table:
@@ -7,7 +7,7 @@ A dataset is described by a :class:`NetworkDefinition` and registered as one
   sources contribute, which interaction classes and evidence it scopes to, which
   attributes it returns, how it is labelled and curated. It materialises nothing;
   registering it is the whole build step.
-* the **matview network** (Milestone G) — metadata plus the curated SQL that
+* the **matview network** — metadata plus the curated SQL that
   materialises per-source and combined matviews under its own schema.
 
 The framework manages both uniformly — create the schema and apply the SQL where
@@ -197,8 +197,8 @@ def ensure_network_registry(
 ) -> None:
     """Create (or extend) the discovery table the network API reads.
 
-    Fresh databases get the full preset table. Databases carrying the Milestone G
-    matview descriptor are migrated in place: the preset columns are added, and
+    Fresh databases get the full preset table. Databases carrying the older
+    matview-only descriptor are migrated in place: the preset columns are added, and
     ``schema_name`` / ``combined_relation`` lose their NOT NULL so a preset can
     leave them empty until they are dropped.
 

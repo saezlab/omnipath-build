@@ -1,4 +1,4 @@
-"""Chemical-class classification for ``Chemical:OM:0037`` entities (Milestone B).
+"""Chemical-class classification for ``Chemical:OM:0037`` entities.
 
 Flat, single-valued: a chemical's class is the most specific (lowest
 ``precedence``) class implied by the resources that contributed it, per the

@@ -1,4 +1,4 @@
-"""Integration tests for Milestone D: the build manifest.
+"""Integration tests for the build manifest.
 
 Run against a built instance after `derive`, e.g. on beauty::
 

@@ -11,7 +11,7 @@ here side by side:
   Registering it is the whole build step, and it materialises nothing of its
   own: a preset restricted to a resource subset collapses the record at query
   time.
-* a **matview network** (Milestone G) carries a schema, a combined relation and
+* a **matview network** carries a schema, a combined relation and
   the curated SQL files that materialise it. MetaLinksDB below is still of this
   kind. LIANA is not: it became a preset over the fact table, and the matview it
   used to own is left standing, unmanaged, as the rollback path until the

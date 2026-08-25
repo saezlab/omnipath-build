@@ -1,4 +1,4 @@
-"""Integration tests for Milestone A: derive completion + count/overlap tables.
+"""Integration tests for derive completion + count/overlap tables.
 
 Asserts the post-`derive` state of a built OmniPath database:
 - the derive ran end-to-end (resources, facet bitmaps, and the ontology

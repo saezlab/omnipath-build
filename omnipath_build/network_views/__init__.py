@@ -1,4 +1,4 @@
-"""Declarative network-view framework + the onboarded networks (Milestone G)."""
+"""Declarative network-view framework + the onboarded networks."""
 
 from __future__ import annotations
 

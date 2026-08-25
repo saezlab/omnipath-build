@@ -1,4 +1,4 @@
-"""Integration tests for Milestone B: chemical-class classification.
+"""Integration tests for chemical-class classification.
 
 Run against a built instance after `derive`, e.g. on beauty::
 
@@ -91,7 +91,7 @@ def test_chemical_class_facet_present(conn):
     )
 
 
-# --- Milestone C: metabolic-domain + interaction-class --------------------
+# --- metabolic-domain + interaction-class ---------------------------------
 
 
 def test_vocab_metabolic_domain_seeded(conn):

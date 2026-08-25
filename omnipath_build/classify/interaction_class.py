@@ -1,4 +1,4 @@
-"""Interaction-class mapping for ``vocab_relation_predicate`` (Milestone C).
+"""Interaction-class mapping for ``vocab_relation_predicate``.
 
 Every relation predicate maps to exactly one coarse interaction class, per the
 curated rules in ``interaction_class.yaml``. Runs during ``derive`` after load

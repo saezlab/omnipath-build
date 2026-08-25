@@ -1,4 +1,4 @@
-"""Integration tests for Milestone G: the network-view framework (build side).
+"""Integration tests for the network-view framework (build side).
 
 Run against a built instance after `make network-views`, e.g. on beauty::
 

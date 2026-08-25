@@ -1098,7 +1098,7 @@ def _create_duckdb_resolver_views(
     chemical_lookup_glob = chemical_lookup_dir / '*.parquet'
     chemical_type_path = chemical_dir / 'identifier_type.parquet'
 
-    # miRNA (Milestone L): organism-agnostic name/accession -> MI#/MIMAT#. The
+    # miRNA: organism-agnostic name/accession -> MI#/MIMAT#. The
     # lookup already carries the identity rows (MI#->MI#, MIMAT#->MIMAT#), so it
     # both resolves precursor/mature names and collapses the maturation-stub
     # matures onto their MIMAT#. Guarded so resolver snapshots predating the

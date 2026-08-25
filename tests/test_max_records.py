@@ -1,4 +1,4 @@
-"""Integration test for Milestone K: MAX_RECORDS capped full cycle.
+"""Integration test for the MAX_RECORDS capped full cycle.
 
 Two layers:
 

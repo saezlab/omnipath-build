@@ -1,4 +1,4 @@
-"""Metabolic-domain classification for ``Chemical:OM:0037`` entities (Milestone C).
+"""Metabolic-domain classification for ``Chemical:OM:0037`` entities.
 
 Coarse, flat, single-valued grouping that primarily subdivides metabolites. A
 chemical's domain is read from its taxonomy/pathway annotations (HMDB ClassyFire

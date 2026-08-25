@@ -1,4 +1,4 @@
-"""Build-side tests for the resource 3-name model (Milestone M).
+"""Build-side tests for the resource 3-name model.
 
 Run against a built instance after `derive`, e.g. on beauty::
 

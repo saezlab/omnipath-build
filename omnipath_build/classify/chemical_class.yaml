@@ -1,4 +1,4 @@
-# Curated chemical-class rules for Chemical:OM:0037 entities (Milestone B).
+# Curated chemical-class rules for Chemical:OM:0037 entities.
 #
 # Flat, single-valued classification. A chemical's class is decided by which
 # resources contributed it (data_source.name); the MOST SPECIFIC class wins
