@@ -1,9 +1,9 @@
-"""Resolution benchmark fixtures (spec-002 T006).
+"""Resolution benchmark fixtures.
 
 Pure, importable data — **no database dependency at import time**. These
 fixtures pin the expected outcome of gene-anchored entity resolution and the
-chemical-naming cascade, and are consumed by the US7/US1/US2/US8 tests
-(``tests/test_resolution_benchmarks.py`` and friends).
+chemical-naming cascade, and are consumed by the gene- and chemical-resolution
+tests (``tests/test_resolution_benchmarks.py`` and friends).
 
 Two flavours of benchmark are distinguished so consuming tests can degrade
 gracefully on a capped ``MAX_RECORDS`` build:
@@ -147,7 +147,7 @@ CORE_GENE_BENCHMARKS: tuple[GeneBenchmark, ...] = tuple(
 
 @dataclass(frozen=True)
 class ChemicalBenchmark:
-    """A chemical-naming benchmark (US1 'no orphaned chemicals').
+    """A chemical-naming benchmark: the build orphans no chemical.
 
     At least one chemical entity must carry one of ``expected_labels`` produced
     by one of ``expected_label_rules`` — and that label must not look like an
@@ -161,11 +161,11 @@ class ChemicalBenchmark:
     core: bool = True
 
 
-#: Alanine — the US1 'no orphaned chemicals' benchmark. Validated on dev4 as
+#: Alanine — the 'no orphaned chemicals' benchmark. Validated on dev4 as
 #: ``Alanine`` / ``L-Alanine`` / ``D-Alanine`` / ``beta-Alanine``, all
 #: ``label_rule = 'chemical_name'``.
 ALANINE = ChemicalBenchmark(
-    description='alanine is a named chemical, not an InChIKey/hash (US1)',
+    description='alanine is a named chemical, not an InChIKey/hash',
     expected_labels=('Alanine', 'L-Alanine', 'D-Alanine', 'beta-Alanine'),
     expected_entity_type=CHEMICAL_ENTITY_TYPE,
     expected_label_rules=('chemical_name', 'chemical_iupac_name'),
@@ -180,7 +180,7 @@ CORE_CHEMICAL_BENCHMARKS: tuple[ChemicalBenchmark, ...] = tuple(
 
 
 # ---------------------------------------------------------------------------
-# Chemical resolution-level (structural-specificity) benchmarks (spec-003 T003)
+# Chemical resolution-level (structural-specificity) benchmarks
 # ---------------------------------------------------------------------------
 
 

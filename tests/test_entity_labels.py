@@ -1,13 +1,13 @@
-"""US8 / SC-011: every entity has a stored human-readable label.
+"""Every entity has a stored human-readable label.
 
-Asserts the post-``derive`` label state (FR-031):
+Asserts the post-``derive`` label state:
 - **100%** of entities have a non-empty stored ``label``;
 - gene entities are labelled by their **gene symbol** (``label_rule = gene_symbol``),
   and the EGFR benchmark shows ``EGFR``;
 - the producing rule is recorded in ``label_rule``.
 
-The chemical brevity-first cascade (a chemical shows a short name, not a raw
-InChIKey/id where a name exists) lands with **T064**.
+The chemical brevity-first cascade — a chemical shows a short name, not a raw
+InChIKey or id, where a name exists — is a separate piece of work.
 
 Run against a built instance, e.g. on beauty::
 
@@ -72,11 +72,11 @@ def test_entity_label_column_exists(conn):
         [SCHEMA],
     )
     if present != 2:
-        pytest.skip('entity.label/label_rule absent — build predates FR-031')
+        pytest.skip('entity.label/label_rule absent — build predates labels')
 
 
 def test_all_entities_have_a_label(conn):
-    """SC-011: 100% of entities carry a non-empty stored label."""
+    """100% of entities carry a non-empty stored label."""
     missing = _scalar(
         conn,
         f"SELECT count(*) FROM {SCHEMA}.entity WHERE label IS NULL OR label = ''",
@@ -141,13 +141,13 @@ def test_egfr_labelled_egfr(conn):
 
 
 def test_chemical_has_a_name_not_a_raw_identifier(conn):
-    """T064: no chemical is labelled by a raw InChIKey or an opaque hash."""
+    """No chemical is labelled by a raw InChIKey or an opaque hash."""
     chemical_type_id = _type_id(conn, CHEMICAL_ENTITY_TYPE)
     if chemical_type_id is None:
         pytest.skip('no Chemical entity type')
     # An InChIKey-shaped label (e.g. ``XXXXXXXXXXXXXX-YYYYYYYYYY-Z``) or the
     # 32-hex ``unresolved_entity_key`` hash means no human-readable name/id was
-    # selected — the cascade (T064) must avoid both.
+    # selected — the label cascade must avoid both.
     raw_like = _scalar(
         conn,
         f"""
@@ -164,9 +164,9 @@ def test_chemical_has_a_name_not_a_raw_identifier(conn):
 
 
 def test_chemicals_labelled_by_cascade_rules(conn):
-    """T064: every chemical leaves the universal fallback for a cascade rule.
+    """Every chemical leaves the universal fallback for a cascade rule.
 
-    Robust to the metabo Goslin lipid layer (T066), which may overwrite some
+    Robust to the metabo Goslin lipid layer, which may overwrite some
     chemical labels with ``goslin_lipid`` after the build's derive — the
     invariant is that **no** chemical is left on the universal
     ``identifier_fallback`` (the opaque hash/InChIKey last resort).

@@ -1,4 +1,4 @@
-"""The interaction header id is content-addressed (008 T012/T012a, FR-002).
+"""The interaction header id is content-addressed.
 
 ``interaction.interaction_id`` is a deterministic hash of the **sorted
 participant multiset** and the interaction class, so it is endpoint-independent:
@@ -74,7 +74,7 @@ def test_participant_order_does_not_change_the_id(duck):
 
 
 def test_the_class_is_part_of_the_identity(duck):
-    """Same participants, different class, different interaction (FR-006)."""
+    """Same participants, different class, different interaction."""
     signaling = _duck_uuid(duck, [ENTITY_ONE, ENTITY_TWO], 'signaling')
     transport = _duck_uuid(duck, [ENTITY_ONE, ENTITY_TWO], 'transport')
     assert signaling != transport
@@ -166,7 +166,7 @@ class TestHeadersOverTheFixtureGraph:
         """A→B and B→A are two facts of one endpoint-independent interaction."""
         connection, _first, _second = built
         # Counted over the record's collapse key rather than over a collapsed
-        # table: R24 removed the materialisation, and the claim — two facts,
+        # table: the materialisation went, and the claim — two facts,
         # one header — is a property of the key and the header link, both of
         # which the record carries per contributing resource.
         with connection.cursor() as cur:

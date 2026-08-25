@@ -1,4 +1,4 @@
-"""Chemical resolution-level grouping tests (spec-003 Phase 6, T028/T029).
+"""Chemical resolution-level grouping tests (spec-003 Phase 6).
 
 Two layers:
 
@@ -11,7 +11,7 @@ Two layers:
   over it, and the materialised group/member/relation tables are asserted —
   including that a relation expressed on different sub-level structures by
   different resources collapses to **one** projected edge carrying per-resource
-  provenance (T029). Needs only a Postgres connection, not a full build.
+  provenance. Needs only a Postgres connection, not a full build.
 """
 
 from __future__ import annotations
@@ -38,7 +38,7 @@ from tests.fixtures.resolution_benchmarks import (
 
 
 # ---------------------------------------------------------------------------
-# Pure unit — level-key logic (T028 core)
+# Pure unit — level-key logic
 # ---------------------------------------------------------------------------
 
 
@@ -371,7 +371,7 @@ def test_relation_collapses_with_union_provenance(synthetic_schema):
 
 @pg
 def test_ambiguous_name_attaches_to_candidates(synthetic_schema):
-    # T030: the trivial name 'alanine' is borne by L/D/DL (3 distinct
+    # The trivial name 'alanine' is borne by L/D/DL (3 distinct
     # structures) → it attaches to all three candidates; an unambiguous name
     # (one structure) produces no candidate links.
     from omnipath_build.chemical_resolution_level import (

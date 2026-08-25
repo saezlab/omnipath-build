@@ -1,4 +1,4 @@
-"""Unit test for the multi-gene protein split explosion (US7 T061, FR-027).
+"""Unit test for the multi-gene protein split explosion.
 
 Builds a minimal synthetic set of the DuckDB raw tables — a protein mention
 whose UniProt maps to two genes, participating in one relation (with a relation

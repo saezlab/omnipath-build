@@ -75,7 +75,8 @@ def test_no_underscore_in_names(conn):
 
     Spaces in inputs_v2-only resources' short names (not in the legacy
     resources.json) are flagged by the build validator and curated per-module in
-    the FR-049 audit; here we only assert the underscore invariant holds.
+    the resource-metadata audit; here we only assert the underscore invariant
+    holds.
     """
     for rid, short, full in _rows(
         conn,

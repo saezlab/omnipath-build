@@ -1,4 +1,4 @@
-"""Validate the resolution benchmark fixtures against the live DB (T006).
+"""Validate the resolution benchmark fixtures against the live DB.
 
 Consumes :mod:`tests.fixtures.resolution_benchmarks` and asserts that the
 gene-anchored entity build matches each pinned benchmark:
@@ -249,7 +249,7 @@ def test_chemical_benchmark(conn, bm: ChemicalBenchmark):
 
 
 def test_genes_anchored_on_entrez(conn, gene_type_id):
-    """Every gene entity is keyed by the Entrez anchor (US7 / SC-002)."""
+    """Every gene entity is keyed by the Entrez anchor."""
     entrez_type_id = _scalar(
         conn,
         f'SELECT identifier_type_id FROM {SCHEMA}.vocab_identifier_type WHERE name = %s',
@@ -287,7 +287,7 @@ def test_one_gene_entity_per_gene_per_organism(conn, gene_type_id):
 
 
 def test_no_chemical_labelled_by_inchikey_or_hash(conn):
-    """US1: no chemical is left labelled by a raw InChIKey or 32-hex hash."""
+    """No chemical is left labelled by a raw InChIKey or 32-hex hash."""
     chem_type_id = _scalar(
         conn,
         "SELECT entity_type_id FROM {0}.vocab_entity_type WHERE name = %s".format(

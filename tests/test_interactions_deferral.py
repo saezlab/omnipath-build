@@ -1,12 +1,12 @@
-"""The catalogue round trip across a deferred load (008 T013i, R23, FR-036).
+"""The catalogue round trip across a deferred load.
 
 The projection loads ``interaction``, ``interaction_party`` and
 ``interaction_fact_resource`` with their foreign keys and secondary indexes
-**dropped**, and puts them back before the step ends (data model §3c). R22
-priced it at 709.7 s against 1,814.7 s over the four tables that existed then,
-with the largest step falling from 674.0 s to 272.2 s — sixty per cent of that
-step was constraint and index maintenance rather than the work of building a
-header.
+**dropped**, and puts them back before the step ends (data model §3c). A
+measurement priced it at 709.7 s against 1,814.7 s over the four tables that
+existed then, with the largest step falling from 674.0 s to 272.2 s — sixty per
+cent of that step was constraint and index maintenance rather than the work of
+building a header.
 
 **The saving is only a saving if the far side of the step is the near side.**
 So this file asserts the round trip rather than the seconds: the same
@@ -22,15 +22,15 @@ is not the constraint the schema declares, and a deferral that returns one has
 traded a guarantee for time. Every foreign key is therefore asserted
 ``convalidated`` by the catalogue, not by its presence.
 
-The counts come from the schema rather than from R22's note. That measurement
-was taken on 2026-08-20 over **four** tables and recorded 15 constraints and 20
-indexes, 13 of them foreign keys and 18 secondary. R24 removed
-``interaction_fact_combined`` — four foreign keys and nine indexes — so the
-amended schema holds **11 constraints and 11 indexes**, of which **9 foreign
-keys and 9 secondary indexes** are what the deferral drops and restores. The
-two primary keys stay through the load, because the header insert deduplicates
-with ``ON CONFLICT (interaction_id) DO NOTHING`` and needs its unique index
-while the insert runs.
+The counts come from the schema rather than from the note that priced the
+deferral. That measurement was taken on 2026-08-20 over **four** tables and
+recorded 15 constraints and 20 indexes, 13 of them foreign keys and 18
+secondary. Removing ``interaction_fact_combined`` — four foreign keys and nine
+indexes — left the amended schema holding **11 constraints and 11 indexes**, of
+which **9 foreign keys and 9 secondary indexes** are what the deferral drops
+and restores. The two primary keys stay through the load, because the header
+insert deduplicates with ``ON CONFLICT (interaction_id) DO NOTHING`` and needs
+its unique index while the insert runs.
 
 The fixture graph is a dozen relations, so nothing here measures anything. It
 is the round trip that is being asserted, and the round trip is a property of
@@ -82,10 +82,10 @@ PROJECTION_TABLES = (
 #: adding it to the deferral is a failure rather than a silent gap.
 #:
 #: ``TABLE_CONSTRAINTS`` counts foreign keys and primary keys — the constraint
-#: kinds R22 counted. Postgres 17 and later also list every ``NOT NULL`` in
-#: ``pg_constraint``; those are column properties that no load can drop, and
-#: counting them would make the number depend on the server version rather than
-#: on the schema.
+#: kinds the deferral measurement counted. Postgres 17 and later also list
+#: every ``NOT NULL`` in ``pg_constraint``; those are column properties that no
+#: load can drop, and counting them would make the number depend on the server
+#: version rather than on the schema.
 TABLE_CONSTRAINTS = 11
 TABLE_INDEXES = 11
 
@@ -93,7 +93,7 @@ TABLE_INDEXES = 11
 DEFERRED_FOREIGN_KEYS = 9
 DEFERRED_INDEXES = 9
 
-#: The parameter T013j adds to the step. Named once, because the fixture and
+#: The parameter that turns the deferral on. Named once, because the fixture and
 #: the guard below must not spell it differently.
 DEFER_PARAMETER = 'defer_constraints'
 
@@ -103,8 +103,8 @@ def _require_the_deferral_exists() -> None:
 
     Constitution III puts this test before the implementation, so it has to
     fail for a reason a reader can act on. ``rebuild_interaction_tables``
-    without the parameter is the pre-T013j build, and saying so is more use
-    than an unexpected keyword argument traceback.
+    without the parameter is the build before the deferral, and saying so is
+    more use than an unexpected keyword argument traceback.
     """
     from omnipath_build.db.derived_tables import rebuild_interaction_tables
 
@@ -112,9 +112,9 @@ def _require_the_deferral_exists() -> None:
     if DEFER_PARAMETER not in parameters:
         pytest.fail(
             f'rebuild_interaction_tables takes no {DEFER_PARAMETER!r}: the '
-            f'load still runs through its foreign keys and secondary indexes, '
-            f'so there is no deferral for the catalogue to round-trip (T013j, '
-            f'R23, FR-036)'
+            f'load still runs through its foreign keys and secondary '
+            f'indexes, so there is no deferral for the catalogue to '
+            f'round-trip'
         )
 
 
@@ -279,7 +279,7 @@ def test_every_restored_foreign_key_is_validated(arms):
 def test_the_deferral_drops_the_keys_and_indexes_it_says_it_does(arms):
     """The step reports what it deferred, and the numbers are the schema's.
 
-    Reported rather than inferred, because the manifest records it (T013k) and
+    Reported rather than inferred, because the manifest records it and
     because a deferral that quietly stopped dropping anything would still pass
     every catalogue assertion above — the round trip of a load that deferred
     nothing is trivially unchanged.
@@ -325,18 +325,18 @@ def test_the_deferred_load_writes_the_same_rows(arms):
 
 
 def test_the_deferred_load_reports_the_same_class_counts(arms):
-    """R18's eight classes, every one of them, at the same count."""
+    """All eight interaction classes, every one of them, at the same count."""
     (_deferred_conn, deferred_stats), (_plain_conn, plain_stats) = arms
     assert deferred_stats.rows_by_class == plain_stats.rows_by_class
     assert len(plain_stats.rows_by_class) == 8, (
         f'the class vocabulary holds {len(plain_stats.rows_by_class)} classes, '
-        f'not the eight R18 derives, so this comparison covers less than it '
-        f'claims'
+        f'not the eight the derivation produces, so this comparison covers '
+        f'less than it claims'
     )
 
 
 def test_the_deferred_load_reports_the_same_sign_conflict(arms):
-    """T013c's summary is a measurement of the rows, so it cannot move.
+    """The sign-conflict summary measures the rows, so it cannot move.
 
     It is measured by folding the record, and the fold reads the collapse index
     the deferral drops and restores. A summary that differs between the arms

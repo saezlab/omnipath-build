@@ -1,4 +1,4 @@
-"""License filtering over the interaction record (008 T013h, FR-049, SC-022, R20).
+"""License filtering over the interaction record.
 
 A license is not a name. `pypath/internals/license.py` models it as three
 **ordinal** levels — ``purpose``, ``sharing``, ``attrib`` — and defines
@@ -20,13 +20,13 @@ the vocabulary has*. If the resolution consults the levels rather than
 ``is_known``, it admits it, and the test says so.
 
 **A license filter restricts the resource set, so the scope rule applies**
-(R19, FR-048, data model §3b). The surviving summaries must be recomputed by
+(data model §3b). The surviving summaries must be recomputed by
 collapsing ``interaction_fact_resource`` over the surviving resources. Reusing
 a fold computed over a **wider** set returns the right interactions carrying
 numbers that describe resources the license excluded. The last test holds that
 shortcut to be a defect by showing the two answers differ.
 
-**Amended 2026-08-21 by R24**: the wider fold used to be a table —
+**Amended 2026-08-21**: the wider fold used to be a table —
 ``interaction_fact_combined``, the all-resources scope materialised — and it is
 removed, so the last test folds the record over every resource instead of
 reading one. The rule survives the table because it was never about the table:
@@ -215,8 +215,8 @@ def _load_fixture_licenses(conn) -> None:
 def _resolve(conn, **minimum_levels: int) -> dict[str, object]:
     """Resolve a license question to a resource set, and say what it dropped.
 
-    The reference semantics FR-049 asks the implementation for, written out so
-    the assertions below are about behaviour rather than about an import:
+    The reference semantics the implementation owes, written out so the
+    assertions below are about behaviour rather than about an import:
 
     * a resource whose license is **unknown** is excluded first, whatever its
       stored levels say;
@@ -224,7 +224,7 @@ def _resolve(conn, **minimum_levels: int) -> dict[str, object]:
       level is met under ``enables(other) == self >= other``.
 
     Returns ``{'admitted': [names], 'excluded': {name: reason}}``, so the
-    caller can name the resources the filter removed (SC-022).
+    caller can name the resources the filter removed.
     """
     with conn.cursor() as cur:
         cur.execute(
@@ -244,7 +244,7 @@ def _resolve(conn, **minimum_levels: int) -> dict[str, object]:
     for name, is_known, purpose, sharing, attrib in rows:
         if not is_known:
             # Includes the source with no row at all: absence of terms is not
-            # permission (R20).
+            # permission.
             excluded[name] = 'license_unknown'
             continue
         stored = {
@@ -269,8 +269,8 @@ def _collapse(conn, sources: list[str] | None) -> dict[tuple[str, str], dict]:
 
     This is the collapse the scope rule requires (data model §3b): the
     summaries are recomputed from ``interaction_fact_resource`` over the rows
-    that survived the restriction. ``bool_or`` gives the three-valued answer
-    FR-044a asks for, because no record row ever carries an asserted ``false``.
+    that survived the restriction. ``bool_or`` gives the three-valued answer,
+    because no record row ever carries an asserted ``false``.
     """
     with conn.cursor() as cur:
         cur.execute(
@@ -346,7 +346,7 @@ def test_the_license_table_stores_ordinal_levels_not_only_a_name(built):
     for level in ('purpose_level', 'sharing_level', 'attrib_level'):
         assert columns[level] == 'smallint', (
             f'{level} is {columns[level]}, not an ordinal smallint — '
-            'a license question is a comparison, not a name match (R20)'
+            'a license question is a comparison, not a name match'
         )
     assert columns['is_known'] == 'boolean'
 
@@ -393,7 +393,7 @@ def test_the_filter_is_a_comparison_over_levels_not_a_name_match(built):
 
 
 def test_the_filter_names_the_resources_it_excluded(built):
-    """SC-022: the excluded resources are named, with the reason each fell."""
+    """The excluded resources are named, with the reason each fell."""
     conn = built
     _load_fixture_licenses(conn)
 
@@ -405,7 +405,7 @@ def test_the_filter_names_the_resources_it_excluded(built):
 
 
 def test_an_unknown_license_is_never_admitted_by_a_permissive_default(built):
-    """FR-049: `is_known = false` excludes, whatever the stored levels say.
+    """`is_known = false` excludes, whatever the stored levels say.
 
     The fixture stores this resource with the highest level in every
     vocabulary, so a resolution that consults the numbers admits it under any
@@ -443,7 +443,7 @@ def test_an_unknown_license_is_never_admitted_by_a_permissive_default(built):
     assert NAME_LR not in permissive['admitted'], (
         'a resource with no mapped license was admitted under a permissive '
         'default — the one failure mode of this table that cannot be '
-        'detected downstream (FR-049)'
+        'detected downstream'
     )
     assert permissive['excluded'][NAME_LR] == 'license_unknown'
 
@@ -455,7 +455,8 @@ def test_an_unknown_license_is_never_admitted_by_a_permissive_default(built):
 
 
 def test_a_license_filtered_result_is_a_strict_subset(built):
-    """SC-022: strictly smaller, and every survivor was there before."""
+    """A license-filtered result is strictly smaller, and every survivor was
+    there before."""
     conn = built
     _load_fixture_licenses(conn)
 
@@ -497,7 +498,7 @@ def test_the_interactions_the_filter_removed_are_named(built):
 
 
 def test_the_surviving_summaries_are_recomputed_over_the_survivors(built):
-    """The scope rule (FR-048): c->d loses a resource, and its numbers change.
+    """The scope rule: c->d loses a resource, and its numbers change.
 
     Three resources report c->d: one asserts stimulation, one inhibition, one
     neither. The inhibiting resource is academic-only, so a commercial filter
@@ -531,7 +532,7 @@ def test_reusing_a_wider_fold_reports_the_wrong_numbers(built):
     excluded. Only re-folding over the surviving resources answers the
     question that was asked.
 
-    Under R24 the wider fold is computed rather than read from
+    The test now computes the wider fold rather than reading it from
     `interaction_fact_combined`, which is removed. That changes where the wrong
     numbers come from and not whether they are wrong.
     """

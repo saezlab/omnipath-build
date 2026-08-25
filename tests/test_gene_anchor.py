@@ -1,4 +1,4 @@
-"""US7 / SC-002 / SC-010: gene-anchored resolution invariants.
+"""Gene-anchored resolution invariants.
 
 Asserts the post-build state of a gene-anchored OmniPath database:
 - every gene-family entity is keyed by an **NCBI Gene (Entrez)** anchor;

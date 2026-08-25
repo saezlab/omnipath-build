@@ -1,7 +1,7 @@
-"""US7 / SC-012 / SC-013: the gene-centric output reads no state tables.
+"""The gene-centric output reads no state tables.
 
 The common gene-level query path MUST NOT touch ``state`` / ``state_component`` /
-``evidence_state`` (FR-030/FR-033). These tests assert that from the *query plan*:
+``evidence_state``. These tests assert that from the *query plan*:
 - ``gene_output`` (gene + representative UniProt) plans without any state table;
 - filtering "records that are proteins" via the indexed ``molecular_type_id`` on
   ``entity_evidence_resolution`` plans without any state table;
@@ -83,7 +83,7 @@ def _plan_relations(conn, query: str) -> set[str]:
 @pytest.fixture(scope='module')
 def require_gene_output(conn):
     if not _relation_exists(conn, 'gene_output'):
-        pytest.skip('gene_output view absent — build predates T062')
+        pytest.skip('gene_output view absent — build predates the view')
 
 
 def test_gene_output_has_gene_centric_columns(conn, require_gene_output):
@@ -95,14 +95,14 @@ def test_gene_output_has_gene_centric_columns(conn, require_gene_output):
 
 
 def test_gene_output_plan_touches_no_state(conn, require_gene_output):
-    """SC-012: a gene_output read does not reference any state table."""
+    """A gene_output read does not reference any state table."""
     relations = _plan_relations(conn, f'SELECT * FROM {SCHEMA}.gene_output')
     leaked = relations & STATE_TABLES
     assert not leaked, f'gene_output plan touches state tables: {leaked}'
 
 
 def test_protein_filter_plan_touches_no_state(conn):
-    """SC-013: 'records that are proteins' uses molecular_type, not state."""
+    """'Records that are proteins' uses molecular_type, not state."""
     if not _relation_exists(conn, 'entity_evidence_resolution'):
         pytest.skip('entity_evidence_resolution absent')
     relations = _plan_relations(
@@ -119,7 +119,7 @@ def test_protein_filter_plan_touches_no_state(conn):
 
 
 def test_egfr_gene_centric_row(conn, require_gene_output):
-    """SC-013: EGFR reproduces the classic gene + UniProt layout, no state join."""
+    """EGFR reproduces the classic gene + UniProt layout, with no state join."""
     with conn.cursor() as cur:
         cur.execute(
             f"""
@@ -134,5 +134,5 @@ def test_egfr_gene_centric_row(conn, require_gene_output):
     gene, ncbi_gene_id, uniprot = row
     assert ncbi_gene_id == '1956'
     assert uniprot == 'P00533', f'EGFR representative UniProt = {uniprot!r}'
-    # gene is the symbol once labels are populated (T065); NCBI id fallback else.
+    # gene is the symbol once labels are populated; NCBI id fallback else.
     assert gene in {'EGFR', '1956'}, f'unexpected EGFR gene label {gene!r}'

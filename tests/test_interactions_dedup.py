@@ -1,6 +1,6 @@
-"""The interaction grain and its collapse (008 T013a, FR-006, FR-044d, R1, R19).
+"""The interaction grain and its collapse.
 
-**Amended 2026-08-20 by research R19.** The dedup claim moved. One row per
+**Amended 2026-08-20.** The dedup claim moved. One row per
 ordered ``(subject_entity_id, object_entity_id, interaction_class_id)`` is the
 contract of the **collapsed output for a stated scope**, not the stored grain.
 So this file asserts two things that used to be one:
@@ -12,7 +12,7 @@ So this file asserts two things that used to be one:
   signs for the same endpoints under different predicates therefore keeps
   **two** rows, because the signature is part of the key.
 * **the collapse** (data-model §3b) holds one row per ordered triple over the
-  scope it was folded for. **Amended 2026-08-21 by R24**: it is no longer a
+  scope it was folded for. **Amended 2026-08-21**: it is no longer a
   table. ``interaction_fact_combined`` materialised the all-resources scope and
   is removed, so the collapse assertions here read
   ``tests.fixtures.collapse`` — the fold written once on the test side — through
@@ -20,16 +20,15 @@ So this file asserts two things that used to be one:
   that they were always about the collapse and never about its storage. The
   pair of tests that compared the fold against the materialisation went with
   the table: there is nothing left for the fold to disagree with, and the
-  equivalence the api-service owes its own fold is asserted there (T020d).
+  equivalence the api-service owes its own fold is asserted there.
 
-Endpoints stay ordered on both grains, so A→B and B→A remain distinct rows
-(FR-044d).
+Endpoints stay ordered on both grains, so A→B and B→A remain distinct rows.
 
-The class is what makes the key discriminate, and research R18 (2026-08-18)
-settles where it comes from: participant-role evidence first, then
-interaction-level annotation, then the predicate, then ``other``. Resolving it
-from the predicate alone put 93.5 per cent of the graph in ``other`` and left
-five classes empty, so the precedence is asserted here class by class.
+The class is what makes the key discriminate, and the derive step reads it off
+the resource annotations: participant-role evidence first, then
+interaction-level annotation, then the predicate, then ``other``. Resolving it from the predicate
+alone put 93.5 per cent of the graph in ``other`` and left five classes empty,
+so the precedence is asserted here class by class.
 
 **And the grain is asserted class by class too.** The fold is written once and
 the class is only a column in it, so a rule shown to hold for the class the
@@ -93,7 +92,7 @@ def built():
         connection.commit()
         build_interaction_fixture(connection, SCRATCH)
         stats = rebuild_interaction_tables(connection, schema=SCRATCH)
-        # The collapse is a query-time shape (R24), so the tests below read it
+        # The collapse is a query-time shape, so the tests below read it
         # through a view over the record rather than through a table the derive
         # writes — there is no such table any more.
         create_collapse_view(connection, SCRATCH)
@@ -304,7 +303,7 @@ def test_contradicting_signs_from_one_resource_keep_two_rows(built):
 
 def test_the_contradiction_collapses_to_one_row_with_both_flags(built):
     """Collapsed over the whole resource set the same pair is one row, with
-    both sign flags true and a `sign_source_count` of one (FR-044, R15)."""
+    both sign flags true and a `sign_source_count` of one."""
     conn, _stats = built
     fact = _fact(conn, 'i', 'j')
     assert fact is not None, 'the single-resource conflict produced no row'
@@ -382,7 +381,7 @@ def test_the_surrogate_key_is_deterministic_across_rebuilds(built):
 
 
 def test_opposite_directions_stay_two_record_rows(built):
-    """The record key is ordered too, so A→B and B→A never merge (FR-044d)."""
+    """The record key is ordered too, so A→B and B→A never merge."""
     conn, _stats = built
     forward = _records(conn, 'g', 'h')
     reverse = _records(conn, 'h', 'g')
@@ -533,7 +532,7 @@ def test_references_aggregate_across_the_contributors(built):
 
 
 def test_opposite_directions_stay_two_rows(built):
-    """The key is ordered, so A→B and B→A are never merged (FR-044d)."""
+    """The key is ordered, so A→B and B→A are never merged."""
     conn, _stats = built
     forward = _fact(conn, 'g', 'h')
     reverse = _fact(conn, 'h', 'g')
@@ -542,7 +541,7 @@ def test_opposite_directions_stay_two_rows(built):
 
 
 def test_every_fact_row_links_to_its_header(built):
-    """The projection keeps the header link the general API reads (T014)."""
+    """The projection keeps the header link the general API reads."""
     conn, _stats = built
     rows = _query(
         conn,
@@ -564,7 +563,7 @@ def test_every_fact_row_links_to_its_header(built):
 
 
 def test_every_header_has_its_participants(built):
-    """A binary interaction records both parties, with its arity (T014, §2)."""
+    """A binary interaction records both parties, with its arity (§2)."""
     conn, _stats = built
     rows = _query(
         conn,
@@ -587,7 +586,7 @@ def test_every_header_has_its_participants(built):
     [
         # Tier 1, participant-role evidence: a ligand on one side and a
         # receptor on the other, under the generic `interacts_with` verb the
-        # predicate vocabulary cannot classify (research R18).
+        # predicate vocabulary cannot classify.
         ('a', 'b', 'ligand_receptor'),
         # Tier 2, interaction-level annotation, again under `interacts_with`.
         ('k', 'l', 'orthosteric'),
@@ -620,7 +619,7 @@ def test_no_fact_row_is_left_without_a_class(built):
 
 
 def test_the_step_reports_its_per_class_counts(built):
-    """R18 asks for per-class row counts on every run, so they are returned.
+    """Deriving the class from annotations is fragile, so every run counts it.
 
     Every class in the vocabulary is named, including the ones at zero: a count
     that is absent reads as "not measured", and the whole point of the report is
@@ -805,7 +804,7 @@ def test_the_step_reports_what_the_fallback_class_is_made_of(built):
 
 
 # ---------------------------------------------------------------------------
-# The `source_count` histogram — data-model §12, T013m
+# The `source_count` histogram — data-model §12
 # ---------------------------------------------------------------------------
 
 
@@ -815,7 +814,7 @@ def test_the_histogram_counts_every_collapse_key_once(built):
     One row per **observed** level, the count of keys at each, and nothing
     outside: the levels sum to the number of collapse keys, so a key is counted
     once and no key is missed. Written to the database rather than only
-    returned, because the consumer is the api-service's guardrail (T020j) and
+    returned, because the consumer is the api-service's guardrail and
     it reads the build's output, not the build's process.
 
     Nine levels on dev4 at present cardinality, which is a property of the data
@@ -848,10 +847,10 @@ def test_the_histogram_counts_resources_and_not_record_rows(built):
     """The level is `count(DISTINCT source_id)`, never `count(*)`.
 
     One resource asserting two contradicting signs keeps **two** record rows
-    under the R19 grain, and it is still one resource contributing. A histogram
-    built on `count(*)` would price `source_count >= 2` from a population that
-    includes single-resource keys, which is the guardrail estimating a filter
-    from the wrong distribution.
+    under the per-resource grain, and it is still one resource contributing. A
+    histogram built on `count(*)` would price `source_count >= 2` from a
+    population that includes single-resource keys, which is the guardrail
+    estimating a filter from the wrong distribution.
     """
     conn, _stats = built
     # i->j is the single-resource conflict: two record rows, one resource.

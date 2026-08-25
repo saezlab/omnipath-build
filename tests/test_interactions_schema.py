@@ -7,11 +7,11 @@ the participant-role vocabulary ``vocab_relation_role`` (§7), the interaction
 record ``interaction_fact_resource`` (§3a) and the resource license terms
 ``data_source_license`` (§8a).
 
-**Amended 2026-08-20 by research R19/R20.** ``interaction_fact_combined`` was
+**Amended 2026-08-20.** ``interaction_fact_combined`` was
 the projection; it became one scope's materialisation of a record kept per
 contributing resource.
 
-**Amended 2026-08-21 by research R24.** That materialisation is removed. The
+**Amended 2026-08-21.** That materialisation is removed. The
 derive writes **three tables and folds nothing** — the header, the participant
 and the record — and §3b is the shape a query produces at request time, not a
 table. The tests follow: the projection is asserted to write exactly those
@@ -20,7 +20,7 @@ schema, ``ensure_schema`` is asserted to drop one a pre-change database still
 carries, and the anchoring rule of §3b — the detail tables anchor on the
 record through the denormalised triple — is asserted against the Postgres
 catalogue. The collapse-equivalence assertions this file used to carry moved
-to the api-service under T020d, which is where the fold now lives.
+to the api-service, which is where the fold now lives.
 
 The schema half runs against a throwaway scratch schema, so it needs no data.
 The population half reads the built schema and needs a build — a capped
@@ -54,10 +54,11 @@ SCRATCH = os.environ.get(
 
 # The tables the interaction model adds (data model §1, §2, §3a, §7, §8a).
 # `interaction_fact_resource` and `data_source_license` joined the list with the
-# R19/R20 amendment: the record is what the projection now stores, and a license
+# grain amendment: the record is what the projection now stores, and a license
 # filter resolves to a resource set over the ordinal levels of §8a.
-# `interaction_fact_combined` left it with R24: §3b is a query-time shape, so
-# there is no fourth table for the existence or the population half to assert.
+# `interaction_fact_combined` left it when the build stopped storing the fold:
+# §3b is a query-time shape, so there is no fourth table for the existence or
+# the population half to assert.
 INTERACTION_TABLES = (
     'interaction',
     'interaction_party',
@@ -66,7 +67,7 @@ INTERACTION_TABLES = (
     'data_source_license',
 )
 
-# What the derive writes, and all of what it writes (R24, data model §3).
+# What the derive writes, and all of what it writes (data model §3).
 # `vocab_relation_role` and `data_source_license` are seeded rather than
 # projected, so they are model tables without being projection outputs.
 PROJECTION_TABLES = (
@@ -90,16 +91,16 @@ RECORD_KEY_COLUMNS = ('source_id', 'interaction_fact_resource_id')
 
 # `data_source_license` (§8a) stores ordinal levels, not a name: `enables` is
 # `self >= other`, so a license question is a range predicate over three
-# smallints. `is_known` is the exclusion flag of FR-049.
+# smallints. `is_known` is the flag that excludes an unmapped license.
 LICENSE_LEVEL_COLUMNS = ('purpose_level', 'sharing_level', 'attrib_level')
 
-# Sign and direction are three-valued (FR-044, research R15): NULL means no
-# contributing resource asserts the attribute, which is a different statement
-# from an asserted `false`. A NOT NULL or a DEFAULT on any of these three
-# destroys the distinction, so the test pins both.
+# Sign and direction are three-valued: NULL means no contributing resource
+# asserts the attribute, which is a different statement from an asserted
+# `false`. A NOT NULL or a DEFAULT on any of these three destroys the
+# distinction, so the test pins both.
 THREE_VALUED_COLUMNS = ('is_directed', 'is_stimulation', 'is_inhibition')
 
-# The ordered key of the fact table: A→B and B→A are two rows (FR-044d).
+# The ordered key of the fact table: A→B and B→A are two rows.
 FACT_KEY_COLUMNS = [
     'subject_entity_id',
     'object_entity_id',
@@ -248,7 +249,7 @@ def test_table_is_created(conn, scratch, table):
 def test_fact_table_carries_the_hot_columns(conn, scratch):
     """The fact table carries the hot filter columns of data model §3.
 
-    **Repointed 2026-08-21 (R24)**: §3 is `interaction_fact_resource`, and it
+    **Repointed 2026-08-21**: §3 is `interaction_fact_resource`, and it
     is the only stored fact table. The list shrinks with the move, and the
     columns it loses are exactly the ones §3b recomputes for the scope that
     asks — `sources`, `source_count`, `dataset_tags`, `reference_count`,
@@ -282,7 +283,7 @@ def test_fact_table_carries_the_hot_columns(conn, scratch):
 def test_sign_and_direction_are_three_valued(conn, scratch, column):
     """NULL means unasserted, so these three are nullable and undefaulted.
 
-    **Repointed 2026-08-21 (R24)** to the record, where the flags say what one
+    **Repointed 2026-08-21** to the record, where the flags say what one
     resource asserts. The claim is the same one and it matters more here: the
     fold reads these columns, so a defaulted `false` on the record would be
     summarised into every scope that touches the row.
@@ -329,7 +330,7 @@ def test_table_is_populated_by_the_build(conn, table):
 def test_every_fact_row_links_to_a_header(conn):
     """The projection keeps its link to the endpoint-independent header.
 
-    **Repointed 2026-08-21 (R24)** to the record, which is what the projection
+    **Repointed 2026-08-21** to the record, which is what the projection
     now writes. The link is what carries the header through a fold: §3b lists
     `interaction_id` among the columns a collapse carries through unchanged, so
     a record row without one produces a collapsed row without one.
@@ -345,7 +346,7 @@ def test_every_fact_row_links_to_a_header(conn):
 
 
 # ---------------------------------------------------------------------------
-# T007 (reopened again, R24) — the record and the license table
+# The record and the license table
 # ---------------------------------------------------------------------------
 
 
@@ -430,7 +431,7 @@ def test_license_table_stores_ordinal_levels(conn, scratch):
 
 
 def test_license_table_can_exclude_unknown_terms(conn, scratch):
-    """Unknown terms are exclusions, never defaults (FR-049).
+    """Unknown terms are exclusions, never defaults.
 
     A resource whose license could not be mapped must not appear in a
     license-filtered result. Without ``is_known`` the only way to express "no
@@ -442,20 +443,20 @@ def test_license_table_can_exclude_unknown_terms(conn, scratch):
     assert columns, 'data_source_license was not created'
     assert 'is_known' in columns, (
         'data_source_license carries no is_known flag; an unmapped license '
-        'would have to be admitted under a permissive default (FR-049)'
+        'would have to be admitted under a permissive default'
     )
     assert columns['is_known'][0] == 'boolean'
 
 
 # ---------------------------------------------------------------------------
-# T011b (reopened, R24) — the anchoring rule (data model §3b)
+# The anchoring rule (data model §3b)
 # ---------------------------------------------------------------------------
 
 
 def test_nothing_anchors_on_a_materialisation(conn, scratch):
     """The detail tables anchor on the record, and no materialisation survives.
 
-    **Generalised 2026-08-21 (R24).** The rule used to be "no foreign key
+    **Generalised 2026-08-21.** The rule used to be "no foreign key
     points at ``interaction_fact_combined``". That check has nothing left to
     point at: the table is removed, so the way to state the rule is that the
     name resolves to nothing in any non-system schema, and that the tables
@@ -537,8 +538,8 @@ def test_detail_table_carries_the_denormalised_join_key(conn, scratch, table):
     a license-filtered one, the empty one. That is both cheaper and more general
     than the foreign key it replaces, and it costs the two largest planned
     tables no per-row key validation, which matters where the derive already
-    measures 1,205 seconds under a 20-minute ceiling. **Under R24 it is also
-    the only route left**: there is no stored collapse to key into.
+    measures 1,205 seconds under a 20-minute ceiling. **With no stored collapse
+    it is also the only route left**: there is nothing left to key into.
     """
     assert _table_exists(conn, scratch, table), (
         f'{scratch}.{table} was not created'
@@ -552,14 +553,14 @@ def test_detail_table_carries_the_denormalised_join_key(conn, scratch, table):
 
 
 # ---------------------------------------------------------------------------
-# T013l — three tables, and nothing folded (R24)
+# Three tables, and nothing folded
 # ---------------------------------------------------------------------------
 
 
 def test_the_derive_writes_three_tables_and_folds_nothing(conn):
     """The projection writes the header, the participant and the record. Only.
 
-    Data model §3 as amended by R24: there is **one stored fact table**, and no
+    Data model §3 as amended: there is **one stored fact table**, and no
     scope is precomputed — not even the all-resources scope, which is the one
     the removed ``interaction_fact_combined`` held. The two halves belong in
     one test because either alone is satisfiable by the wrong build: three
@@ -581,5 +582,5 @@ def test_the_derive_writes_three_tables_and_folds_nothing(conn):
         f'the derive still leaves {LEGACY_COLLAPSE_TABLE} behind in '
         + '; '.join(f'{ns} (relkind {kind})' for ns, kind in surviving)
         + f' — the projection writes {len(PROJECTION_TABLES)} tables and folds '
-        'nothing (R24), so §3b must resolve to no relation at all'
+        'nothing, so §3b must resolve to no relation at all'
     )

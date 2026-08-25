@@ -1,11 +1,11 @@
-"""US7 / FR-027: a UniProt AC mapping to >1 gene is split per gene.
+"""A UniProt AC mapping to >1 gene is split per gene.
 
 The rare identical-gene-copies case (one UniProt AC, several NCBI genes producing
 identical protein) MUST be **split into one gene-anchored record per gene**, each
 carrying the same form as state (molecular_type = protein, uniprot = the AC); the
 protein-centric view re-collapses them. No anchor is chosen and nothing is dropped.
 
-DELIVERED (T061). The split is realised **1:1**: a multi-gene UniProt mention is
+DELIVERED. The split is realised **1:1**: a multi-gene UniProt mention is
 *duplicated* per gene before resolution (``omnipath_build/multigene_split.py``),
 each copy resolving to its own gene and carrying the same UniProt as a protein
 ``state``. So the signature of a performed split is **one UniProt AC appearing as

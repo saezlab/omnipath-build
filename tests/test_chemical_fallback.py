@@ -1,4 +1,4 @@
-"""Unit test for the non-lipid chemical fallback resolution (US1 T020, R22).
+"""Unit test for the non-lipid chemical fallback resolution.
 
 Synthetic DuckDB raw tables → ``build_chemical_fallback_resolution`` → assert the
 per-record priority pick (no transitive clustering): SMILES → ChEBI → ChEMBL →
@@ -85,14 +85,14 @@ def test_priority_pick_and_mechanisms():
     assert _pick(con, 'm_pubchem') == (TYPES['Pubchem Compound:OM:0002'], '999', 'pubchem')
     # FooDB-only → keep-original (stable id, not a hash).
     assert _pick(con, 'm_foodb') == (TYPES['Foodb:OM:0213'], 'FDB000123', 'original_id')
-    # SMILES is no longer a fallback tier (R9/T046) → ChEBI wins.
+    # SMILES is no longer a fallback tier → ChEBI wins.
     assert _pick(con, 'm_smiles_chebi') == (TYPES['Chebi:MI:0474'], '16236', 'chebi')
     # name-only → name.
     assert _pick(con, 'm_name') == (TYPES['Name:OM:0202'], 'aspirin', 'name')
 
 
 def test_smiles_is_not_a_fallback_tier():
-    # R9/T046: a placeholder SMILES of a structure-less lipid (e.g. unknown
+    # A placeholder SMILES of a structure-less lipid (e.g. unknown
     # sn-position) would false-merge distinct species, so SMILES is NOT a
     # canonical merge key — it stays an attached identifier only.
     from omnipath_build.chemical_fallback import _TIERS
@@ -117,7 +117,7 @@ def test_smiles_only_chemical_has_no_fallback_pick():
 
 
 def test_chemical_fallback_gate_predicate():
-    # R10/T047: the per-record fallback may supply the canonical identity ONLY
+    # The per-record fallback may supply the canonical identity ONLY
     # when the resolver produced NO candidates. An ambiguous chemical
     # (candidate_count > 1) must stay unresolved — never a fallback pick.
     from omnipath_build.chemical_fallback import chemical_fallback_fires_sql

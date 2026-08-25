@@ -1,10 +1,10 @@
-"""The manifest records interaction derive cost and the preset inventory (T020a).
+"""The manifest records interaction derive cost and the preset inventory.
 
-R24 leaves one interaction table, so the cost block names it alone (T020b):
+The build leaves one interaction table, so the cost block names it alone:
 ``interaction_fact_resource``, the record. Every measured query scope still
 reports what materialising it cost — the scopes this build declined to
-materialise included (FR-050) — and ``interactions_deferral_cost`` reports what
-the deferred load saved and what restoring the catalogue cost (T013k, R23).
+materialise included — and ``interactions_deferral_cost`` reports what the
+deferred load saved and what restoring the catalogue cost.
 
 Both are volatile — per-step seconds and row counts, and the registered preset
 list — so they are written next to the identity hash, never inside it. These
@@ -185,9 +185,9 @@ def test_manifest_omits_cost_when_no_derive_step_ran(conn, build_schema):
     assert presets is not None
 
 
-# --- one interaction table, and the deferral over its load (T020b, T013k) ---
+# --- one interaction table, and the deferral over its load ----------------
 #
-# R24 removes the materialisation, so `interaction_tables` names the record and
+# With the materialisation gone, `interaction_tables` names the record and
 # nothing else, and no scope is the all-resources one any more. What the
 # collapse used to buy the reader — an attributable share of the projection's
 # cost — is now bought by `interactions_deferral_cost`, which says what the
@@ -221,11 +221,11 @@ SCOPE_COST = {
     },
 }
 
-# What R23 measured, in the shape T013j will hand over.
-# Measured on dev4 2026-08-24, after T011c took the materialisation out: the
-# deferral drops nine foreign keys and nine secondary indexes, not the 13 and 18
-# R23 counted, because `interaction_fact_combined` carried four of the keys and
-# nine of the indexes and no longer exists to carry them.
+# What the deferral measurement found, in the shape the step hands over.
+# Measured on dev4 2026-08-24, after the materialisation came out: the deferral
+# drops nine foreign keys and nine secondary indexes, not the 13 and 18 the
+# first measurement counted, because `interaction_fact_combined` carried four of
+# the keys and nine of the indexes and no longer exists to carry them.
 DEFERRAL_COST = {
     'deferred': True,
     'seconds_saved': 737.0,
@@ -324,7 +324,7 @@ def test_scope_cost_orders_materialised_scopes_first(conn, build_schema):
 
 
 def test_scope_measured_without_being_materialised_round_trips(conn, build_schema):
-    """FR-050: the scope this build declined to store still reports its cost.
+    """The scope this build declined to store still reports its cost.
 
     Declining to materialise a scope has to stay an available answer to a cost
     overrun, and that argument is made from the number for the scope that was
@@ -387,7 +387,7 @@ def test_scope_record_without_a_name_is_warned_about_and_dropped(
 
 
 def test_deferral_cost_is_recorded(conn, build_schema):
-    """What the deferral saved and what the restore cost, per build (T013k)."""
+    """What the deferral saved and what the restore cost, per build."""
     emit_build_manifest(
         conn,
         schema=build_schema,
@@ -438,7 +438,7 @@ def test_deferral_cost_is_null_when_the_deferral_did_not_run(conn, build_schema)
 
 
 def test_deferral_cost_tolerates_a_partial_producer(conn, build_schema):
-    """T013j reports what it measured; the rest stays ``null``, not zero."""
+    """The step reports what it measured; the rest stays ``null``, not zero."""
     emit_build_manifest(
         conn,
         schema=build_schema,

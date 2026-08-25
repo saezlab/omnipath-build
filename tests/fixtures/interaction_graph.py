@@ -1,6 +1,6 @@
 """A small hand-built canonical graph for the interaction-projection tests.
 
-The interaction derive step (008 T013/T014) projects ``relation`` and its
+The interaction derive step projects ``relation`` and its
 ``relation_evidence`` provenance into ``interaction``, ``interaction_party`` and
 ``interaction_fact_resource``. Asserting its semantics against the full build
 would make the assertions depend on whatever the resources happen to say this
@@ -10,7 +10,7 @@ about.
 
 What the graph is built to exercise:
 
-* ``ligand_receptor`` from **participant-role** evidence (research R18 tier 1),
+* ``ligand_receptor`` from **participant-role** evidence (tier 1),
 * ``allosteric`` and ``orthosteric`` from **interaction-level** annotation
   (tier 2), ``signaling``/``transport`` from the **predicate** (tier 3) and
   ``other`` as the fallback,
@@ -129,13 +129,14 @@ EVIDENCE = (
     ('sig_pos', SOURCE_A, ('Activation:OM:0930',)),
     ('sig_neg', SOURCE_B, ('Inhibition:OM:0931',)),
     # The third resource on the same endpoint pair asserts neither sign nor
-    # anything else — only a reference. FR-044c keeps it in `sources`.
+    # anything else — only a reference. It stays in `sources` all the same.
     ('sig_plain', SOURCE_C, ()),
     ('unsigned', SOURCE_C, ()),
     ('forward', SOURCE_A, ()),
     ('reverse', SOURCE_A, ()),
     # One resource asserting both signs, under two predicates that share the
-    # `signaling` class — the 93% case research R15 measured.
+    # `signaling` class. 93 per cent of both-flags rows are this rather than
+    # a disagreement between resources.
     ('self_pos', SOURCE_A, ('Activation:OM:0930',)),
     ('self_neg', SOURCE_A, ('Inhibition:OM:0931',)),
     ('orthosteric', SOURCE_A, ('Agonist:OM:1001',)),

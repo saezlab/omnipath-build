@@ -1,4 +1,4 @@
-"""Schema-addition assertions for the gene-anchored entity model (spec 002 US7/US8).
+"""Schema-addition assertions for the gene-anchored entity model.
 
 Constitution III: assert each new table/column the gene-anchored model introduces
 exists after the schema is created. Self-contained — it builds the schema into a

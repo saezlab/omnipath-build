@@ -153,7 +153,7 @@ def test_metabolic_domain_facet_present(conn):
 
 
 def test_vocab_interaction_class_seeded(conn):
-    """The interaction-class CV is seeded, by snake_case slug (FR-033)."""
+    """The interaction-class CV is seeded, by snake_case slug."""
     names = {
         row
         for (row,) in _rows(

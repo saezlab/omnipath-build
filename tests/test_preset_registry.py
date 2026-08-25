@@ -1,4 +1,4 @@
-"""The preset registry: ``network_registry`` carries a full preset spec (T018a).
+"""The preset registry: ``network_registry`` carries a full preset spec.
 
 A dataset is a preset — a ``network_registry`` row that filters the interaction
 fact table — not a bespoke matview. These tests assert the registry round-trips
@@ -6,7 +6,7 @@ every field of that spec (class scope, evidence scope, default and mandatory
 attributes, labels, curation, attribute sources) and that the live table carries
 the columns to hold them.
 
-**Amended 2026-08-20 (R19/R20)** with the two columns the grain amendment adds
+**Amended 2026-08-20** with the two columns the grain amendment adds
 (data-model §9):
 
 ``collapse_mode``
@@ -20,23 +20,23 @@ the columns to hold them.
     The minimum ``purpose`` / ``sharing`` / ``attrib`` levels a resource must
     meet to contribute. No ``license_scope`` means unrestricted; a scope that
     is set excludes a resource whose license is unknown, however permissive its
-    recorded levels look (FR-049).
+    recorded levels look.
 
-**Amended 2026-08-21 (R26)** with ``composition`` (data-model §9), the column a
+**Amended 2026-08-21** with ``composition`` (data-model §9), the column a
 preset carries when it is not one query: the ordered component list and the
 operation that joins them (``union``, ``collapse``, ``exclude``, ``annotate``).
 A component is either a parameter set or the **name of another preset**, which
-is what gives ``nichenet`` its per-component override (FR-035). NULL means the
-preset is a single parameter set — the common case, and the shape every other
-test in this module registers.
+is what gives ``nichenet`` its per-component override. NULL means the preset is
+a single parameter set — the common case, and the shape every other test in
+this module registers.
 
 Two orders in that value are binding rather than stylistic, and the column has
 to be able to state them: the ``collapse`` runs after the ``union`` and over the
 union's own resolved scope, and the ``exclude`` runs **before** the ``collapse``
 — dropping a resource after the fold leaves its contribution inside
-``source_count``, ``references`` and the sign flags (FR-048). The algebra itself
-lives in the api-service (T020k); what is asserted here is that a registry
-round-trip preserves the order it was written in.
+``source_count``, ``references`` and the sign flags. The algebra itself lives
+in the api-service; what is asserted here is that a registry round-trip
+preserves the order it was written in.
 
 A third column, ``materialize_collapse``, was proposed and **withdrawn on
 2026-08-20**: both interaction tables are built unconditionally, so no preset
@@ -44,7 +44,7 @@ carries a materialisation flag. Nothing here tests for it.
 
 The license assertions here are about the *preset spec* — that the registry
 stores enough to resolve a scope, and that resolving it excludes unknown terms.
-The query path carries its own version of that rule (T013h).
+The query path carries its own version of that rule.
 
 Run against a build database, e.g. on dev4::
 
@@ -79,7 +79,7 @@ pytestmark = pytest.mark.skipif(
 
 # A preset spec with every field populated — the shape data-model §9 asks the
 # registry to carry. `interaction_class_scope` holds class slugs (§8), never
-# legacy dataset names; the class derivation itself (R18) is another task.
+# legacy dataset names; the class derivation itself is another task.
 # Built by a factory rather than at import, so a missing field fails the test
 # that needs it instead of the whole module at collection.
 def _full_preset(**overrides: object) -> NetworkDefinition:
@@ -122,18 +122,18 @@ PRESET_COLUMNS = {
     'labels': 'jsonb',
     'curation': 'jsonb',
     'attribute_sources': 'jsonb',
-    # R19/R20 — the grain amendment.
+    # The grain amendment.
     'collapse_mode': 'text',
     'license_scope': 'jsonb',
-    # R26 — the composition algebra.
+    # The composition algebra.
     'composition': 'jsonb',
 }
 
 COLLAPSE_MODES = ('none', 'assertion', 'endpoints')
 
 # The group key each collapse mode folds to (data-model §9). The derive and the
-# query path share one collapse routine (T013e); this mirrors its keys so the
-# registry test can state what a mode *means* without importing it.
+# query path share one collapse routine; this mirrors its keys so the registry
+# test can state what a mode *means* without importing it.
 COLLAPSE_KEYS = {
     'none': (
         'subject_entity_id, object_entity_id, interaction_class_id, source_id, '
@@ -147,10 +147,10 @@ COLLAPSE_KEYS = {
 }
 
 
-# The composition of `metalinksdb` (R26): a union of three parameter sets, then
-# the exclusion, then the fold, then the annotation layer. The two orders R26
-# calls binding are visible in the value itself — the `collapse` follows the
-# `union` and the `exclude` precedes the `collapse`.
+# The composition of `metalinksdb`: a union of three parameter sets, then the
+# exclusion, then the fold, then the annotation layer. The two binding orders
+# are visible in the value itself — the `collapse` follows the `union` and the
+# `exclude` precedes the `collapse`.
 METALINKSDB_COMPOSITION = {
     'operation': 'union',
     'components': [
@@ -175,8 +175,8 @@ METALINKSDB_COMPOSITION = {
     ],
 }
 
-# The composition of `nichenet` (R26): the components are *named presets*, not
-# parameter sets. That is where FR-035's per-component override comes from —
+# The composition of `nichenet`: the components are *named presets*, not
+# parameter sets. That is where the per-component override comes from —
 # an override replaces one named component and leaves the recipe alone.
 NICHENET_COMPOSITION = {
     'operation': 'union',
@@ -234,8 +234,8 @@ def _clean_transaction(conn):
 def licenses(conn, registry):
     """A throwaway license catalogue, shaped like ``data_source_license`` (§8a).
 
-    ``mystery_db`` is the trap FR-049 names: its recorded levels are maximal,
-    but nothing maps a license to it, so a license-filtered scope must drop it.
+    ``mystery_db`` is the trap: its recorded levels are maximal, but nothing
+    maps a license to it, so a license-filtered scope must drop it.
     """
     with conn.cursor() as cur:
         cur.execute(
@@ -331,8 +331,8 @@ def _collapsed_row_count(conn, schema, mode, sources):
 def _contributing_sources(conn, schema, preset_name):
     """The resources a registered preset admits, after its ``license_scope``.
 
-    The scope is a comparison over three ordinal levels (R20), and a resource
-    whose license is unknown fails it however permissive its levels read.
+    The scope is a comparison over three ordinal levels, and a resource whose
+    license is unknown fails it however permissive its levels read.
     """
     with conn.cursor() as cur:
         cur.execute(
@@ -453,7 +453,8 @@ def test_preset_without_matview_registers(conn, registry):
             [bare.name],
         )
         schema_name, combined_relation = cur.fetchone()
-    # The matview-era columns stay empty for a fact-table preset (T046 drops them).
+    # The matview-era columns stay empty for a fact-table preset, and go once
+    # the last bespoke matview retires.
     assert schema_name is None
     assert combined_relation is None
 
@@ -551,7 +552,7 @@ def test_preset_without_license_scope_is_unrestricted(conn, registry, licenses):
 
 
 def test_license_scope_excludes_an_unknown_license_resource(conn, registry, licenses):
-    """FR-049: unknown terms are an exclusion, never a permissive default.
+    """Unknown terms are an exclusion, never a permissive default.
 
     ``mystery_db`` records the most permissive levels in the catalogue and is
     still dropped, because ``is_known`` is false. ``cellphonedb`` is dropped on
@@ -568,13 +569,13 @@ def test_license_scope_excludes_an_unknown_license_resource(conn, registry, lice
     contributing = _contributing_sources(conn, registry, restricted.name)
     assert 'mystery_db' not in contributing, (
         'a resource with an unknown license was admitted to a license-scoped '
-        'preset (FR-049)'
+        'preset'
     )
     assert contributing == {'signor'}
 
 
 def test_registry_round_trips_a_composition(conn, registry):
-    """A preset that is not one query round-trips its whole recipe (R26).
+    """A preset that is not one query round-trips its whole recipe.
 
     Value equality is not enough on its own here: the recipe is *ordered*, so
     the component list and the step list are compared as sequences.
@@ -597,13 +598,13 @@ def test_registry_round_trips_a_composition(conn, registry):
 
 
 def test_composition_keeps_the_two_binding_orders(conn, registry):
-    """The stored recipe states R26's order rules, not only the operations.
+    """The stored recipe states both order rules, not only the operations.
 
     The ``collapse`` follows the ``union`` and works over the union's own
     resolved scope, and the ``exclude`` precedes the ``collapse`` — an exclusion
     applied after the fold leaves the dropped resource inside ``source_count``,
-    ``references`` and the sign flags, which is FR-048 under another name. The
-    api-service executes this (T020k); the column has to be able to say it.
+    ``references`` and the sign flags, which is the scoped-collapse rule under
+    another name. The api-service executes this; the column has to say it.
     """
     composed = _full_preset(
         name='_roundtrip_preset_composition_order',
@@ -618,12 +619,12 @@ def test_composition_keeps_the_two_binding_orders(conn, registry):
     # fold cannot precede the union by construction; what has to be checked is
     # the exclusion against the fold.
     assert operations.index('exclude') < operations.index('collapse'), (
-        f'the exclude runs after the collapse: {operations} (FR-048)'
+        f'the exclude runs after the collapse: {operations}'
     )
 
 
 def test_composition_component_can_name_another_preset(conn, registry):
-    """A component is a parameter set **or** the name of another preset (FR-035).
+    """A component is a parameter set **or** the name of another preset.
 
     That is where the per-component override comes from: replacing one named
     component leaves the other two exactly as the recipe wrote them.
@@ -692,9 +693,10 @@ def test_live_registry_carries_the_preset_columns(conn):
         assert columns[column][0] == udt, f'{column} is {columns[column][0]}, want {udt}'
     # A license restriction is optional; its absence is NULL, not a level of 0.
     assert columns['license_scope'][1] == 'YES'
-    # So is a composition: NULL is the single-parameter-set preset (R26), which
+    # So is a composition: NULL is the single-parameter-set preset, which
     # is what a database written before the amendment holds in every row.
     assert columns['composition'][1] == 'YES'
-    # Matview-era columns: nullable through the transition, dropped at T046.
+    # Matview-era columns: nullable through the transition, dropped once the
+    # last bespoke matview retires.
     assert columns['schema_name'][1] == 'YES'
     assert columns['combined_relation'][1] == 'YES'

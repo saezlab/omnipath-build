@@ -1,25 +1,24 @@
 """The collapse of the interaction record, for the tests that assert its shape.
 
-Data model §3b, as amended by research R24: the collapse of
+Data model §3b, as amended: the collapse of
 ``interaction_fact_resource`` for a resource scope is what a **query** produces
 at request time, and it is not a table. The build stops when the record lands,
 so ``interaction_fact_combined`` — the all-resources scope materialised — is
 gone, and with it ``collapse_interaction_scope``, the build routine that filled
-it (T013e).
+it.
 
-The assertions that table carried are not gone. FR-044a's three-valued flags,
-FR-044c's provenance over every contributor, FR-044d's ordered key and R18's
-class precedence are all statements about **the collapse**, and they hold or
-fail whether the collapse is stored or computed. So this module is the oracle
-those tests read: the fold, written once, in SQL, on the test side.
+The assertions that table carried are not gone. The three-valued flags, the
+provenance over every contributor, the ordered key and the class precedence are
+all statements about **the collapse**, and they hold or fail whether the
+collapse is stored or computed. So this module is the oracle those tests read:
+the fold, written once, in SQL, on the test side.
 
 **It is a test fixture and not a second implementation.** The production fold
-has exactly one caller — the api-service, under T020i — which is the whole of
-what R24 bought by removing the materialisation. What lives here is the
-specification of that fold in executable form: the same aggregate on the same
-column, so an engine that folds differently fails a test in the repository that
-owns the record rather than agreeing with itself in the repository that owns
-the query.
+has exactly one caller — the api-service — which is the whole of what removing
+the materialisation bought. What lives here is the specification of that fold
+in executable form: the same aggregate on the same column, so an engine that
+folds differently fails a test in the repository that owns the record rather
+than agreeing with itself in the repository that owns the query.
 
 The scope is the resource set, exactly as it was on the removed routine.
 ``None`` means every resource — the all-resources scope, which is the shape the
@@ -163,8 +162,8 @@ def collapse_sql(
     The scope predicate appears twice — once in the provenance CTE and once in
     the outer aggregate — so the parameter is passed twice. A fold that applied
     it to only one of them would report the scope's sources beside every
-    contributor's references, which is the FR-048 defect with the halves the
-    other way round.
+    contributor's references, which is the scope-rule defect with the halves
+    the other way round.
     """
     schema_sql = _quoted(schema)
     record = f'{schema_sql}.{_quoted(RECORD_TABLE)}'

@@ -1,6 +1,6 @@
 """The derive orchestration registers the interaction step, and it is not silent.
 
-Three things this covers (008 T015/T015a):
+Three things this covers:
 
 - the interaction projection is a **registered step of its own**, run once per
   build — ``rebuild_derived_tables`` is called with ``interactions=False``, so
@@ -9,7 +9,7 @@ Three things this covers (008 T015/T015a):
   and re-raised, so a broken projection aborts the derive with a non-zero exit
   instead of passing as a successful build (Principle V, no silently skipped
   phase) — unlike the supplementary network views, which stay caught;
-- importing the package **configures logging** (research R17), so the
+- importing the package **configures logging**, so the
   ``--progress`` output actually reaches a sink rather than being swallowed by
   a root logger left at WARNING.
 
@@ -81,7 +81,7 @@ def test_failing_interaction_step_is_reported_and_propagates(monkeypatch, caplog
 
 
 def test_successful_step_logs_the_cost_figures(monkeypatch, caplog):
-    """The done line carries the counts T013c and T020 read out of --progress."""
+    """The done line carries the counts the manifest reads out of --progress."""
 
     monkeypatch.setattr(
         cli,
@@ -110,8 +110,8 @@ def test_derive_cost_reaches_the_manifest_with_real_numbers():
     assert cost['interaction_fact_resource'] == {'seconds': 0.75, 'rows': 33}
     assert cost['interaction_party']['rows'] == 22
     assert cost['interaction_header']['rows'] == 11
-    # R24 leaves one interaction table, so the collapse is not reported as a
-    # step that ran unmeasured — it is not reported at all.
+    # The build leaves one interaction table, so the collapse is not reported
+    # as a step that ran unmeasured — it is not reported at all.
     assert 'interaction_fact_combined' not in cost
     # A build that ran no projection records no cost rather than zeros.
     assert cli._interaction_derive_cost(None) is None
@@ -131,7 +131,7 @@ def test_projection_is_registered_once_not_twice():
 
 
 def test_progress_logging_is_configured():
-    """R17: importing the package configures a session, so INFO output is visible."""
+    """Importing the package configures a session, so INFO output is visible."""
     assert logging.getLogger('omnipath_build').level == logging.INFO, (
         'the package logger is not at INFO; pkg_infra leaves root at WARNING, '
         'so the derive --progress output would be silent'

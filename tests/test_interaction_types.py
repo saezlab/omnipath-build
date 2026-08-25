@@ -1,4 +1,4 @@
-"""Integration tests for the interaction-type registry (008, FR-033).
+"""Integration tests for the interaction-type registry.
 
 ``vocab_interaction_class`` is the single canonical interaction-type
 vocabulary: a snake_case ``name`` slug for storage and filtering, a capitalised
@@ -26,7 +26,7 @@ SCHEMA = os.environ.get('OMNIPATH_PG_SCHEMA', 'public')
 
 SNAKE_CASE = re.compile(r'^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$')
 
-# The canonical eight classes (research R14, data-model §8).
+# The canonical eight classes (data-model §8).
 EXPECTED_SLUGS = {
     'signaling',
     'tf_target',
@@ -38,7 +38,7 @@ EXPECTED_SLUGS = {
     'other',
 }
 
-# Legacy OmniPath dataset names: preset identities (FR-017), not type rows.
+# Legacy OmniPath dataset names: preset identities, not type rows.
 LEGACY_DATASET_NAMES = {
     'post_translational',
     'transcriptional',
@@ -99,12 +99,12 @@ def test_every_class_has_a_distinct_capitalised_label(classes):
 
 
 def test_slug_and_label_are_separate_fields(classes):
-    """No class is filterable only by its display form (FR-033)."""
+    """No class is filterable only by its display form."""
     assert all(name != label for name, label, _ in classes)
 
 
 def test_controlled_vocabulary_mapping_slot_exists(conn):
-    """The CV/ontology mapping slot exists and is nullable (FR-033)."""
+    """The CV/ontology mapping slot exists and is nullable."""
     with conn.cursor() as cur:
         cur.execute(
             """
