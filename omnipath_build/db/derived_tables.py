@@ -14,6 +14,7 @@ import os
 import time
 
 from psycopg2 import sql
+from psycopg2.extras import Json
 import psycopg2.extensions
 
 from omnipath_build.db.schema import _ensure_ontology_terms_table
@@ -1097,6 +1098,16 @@ _AFFINITY_TERMS = ('Ki:MI:0643', 'Ic50:MI:0641', 'Kd:MI:0646', 'Ec50:MI:0642')
 _PCHEMBL_TERM = 'Pchembl Value:OM:0708'
 _SCORE_TERM = 'Confidence Value:OM:1201'
 _CURATION_TERM = 'Interaction Directness:OM:1216'
+
+# Curation terms whose *presence* is the statement, and whose value is not.
+# ChEMBL publishes a mechanism id, and no query wants the id: what separates
+# the canonical drug-target set from three and a half million assay readings is
+# that the annotation is there at all. So the term becomes a flag beside the
+# directness values, and a caller filters on the flag rather than on a join to
+# the annotation store. Adding an entry here adds a flag and changes no column.
+_CURATION_PRESENCE_TERMS = {
+    'Chembl Mechanism:OM:0227': 'mechanism_of_action',
+}
 
 # A value is lifted into a numeric hot column only when it reads as a number;
 # the CV carries free text in the same slot often enough to matter.
@@ -2345,8 +2356,11 @@ def _stage_interaction_record(
               max(ann.value::double precision) FILTER (
                 WHERE ann.term = %(score)s
               ) AS score,
-              array_agg(DISTINCT ann.value) FILTER (
+              array_agg(DISTINCT coalesce(
+                %(presence)s::jsonb ->> ann.term, ann.value
+              )) FILTER (
                 WHERE ann.term = %(curation)s
+                   OR %(presence)s::jsonb ? ann.term
               ) AS curation_flags
             FROM {}.relation_evidence_annotation rea
             JOIN {}.annotation ann
@@ -2358,6 +2372,7 @@ def _stage_interaction_record(
               AND ann.value <> ''
               AND (
                 ann.term IN (%(pubmed)s, %(doi)s, %(curation)s)
+                OR %(presence)s::jsonb ? ann.term
                 OR (
                   ann.term = ANY(%(numeric_terms)s)
                   AND ann.value ~ %(numeric)s
@@ -2373,6 +2388,7 @@ def _stage_interaction_record(
             'pchembl': _PCHEMBL_TERM,
             'score': _SCORE_TERM,
             'curation': _CURATION_TERM,
+            'presence': Json(_CURATION_PRESENCE_TERMS),
             'numeric_terms': [
                 *_AFFINITY_TERMS,
                 _PCHEMBL_TERM,
