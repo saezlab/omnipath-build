@@ -71,3 +71,30 @@ def test_only_reactome_derives_an_organism():
 def test_rule_for_rejects_an_unknown_resource():
     with pytest.raises(KeyError):
         rule_for('SMPDB')
+
+
+def test_extraction_files_carry_no_bare_percent_sign():
+    """psycopg2 interpolates the extraction files, comments included.
+
+    A bare `%` reads as a malformed placeholder and fails the whole load with
+    "dict is not a sequence", which names neither the file nor the character.
+    Twice was enough.
+    """
+    import re
+    from pathlib import Path
+
+    import omnipath_build.metsigdb.build as build
+
+    named = re.compile(r'%\((?:source_id|set_entity_type_id|'
+                       r'chemical_entity_type_id|hierarchy_source_id|'
+                       r'max_records|resource|set_type|provenance_source|'
+                       r'build_id)\)s')
+    for rule in RESOURCES:
+        path = Path(build._SQL_DIR) / rule.extraction
+        if not path.exists():
+            continue
+        stripped = named.sub('', path.read_text(encoding='utf-8'))
+        assert '%' not in stripped, (
+            f'{rule.extraction} carries a bare percent sign; '
+            f'psycopg2 reads it as a placeholder'
+        )

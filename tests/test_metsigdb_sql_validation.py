@@ -30,6 +30,8 @@ EXPECTED = {
     'Reactome': {'rows': 24235, 'sets': 2239, 'metabolites': 2191},
     'WikiPathways': {'rows': 5431, 'sets': 818, 'metabolites': 2789},
     'KEGG': {'rows': 4969, 'sets': 176, 'metabolites': 1799},
+    'MACdb': {'rows': 20291, 'sets': 269, 'metabolites': 5389},
+    'ClassyFire': {'rows': 3453875, 'sets': 2863, 'metabolites': 145937},
 }
 
 TOLERANCE = 0.02

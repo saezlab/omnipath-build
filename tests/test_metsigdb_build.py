@@ -171,3 +171,78 @@ def test_ddl_is_idempotent(conn):
         ['public', TABLE],
     )
     assert before == after
+
+
+def _fingerprint(conn):
+    """Row count plus a content hash over the row identity and set_size."""
+    return _rows(
+        conn,
+        f"""
+        SELECT count(*), md5(string_agg(
+          resource || '|' || set_source_id || '|' || metabolite_entity_id::text
+          || '|' || set_size::text,
+          ',' ORDER BY resource, set_source_id, metabolite_entity_id))
+        FROM {TABLE}
+        """,
+    )[0]
+
+
+@pytest.fixture(scope='module')
+def loaded(conn):
+    if not _rows(conn, f'SELECT count(*) FROM {TABLE}')[0][0]:
+        pytest.skip('the substrate is empty; run the MetSigDB build first')
+    return True
+
+
+def test_rebuild_is_idempotent(conn, loaded):
+    """A second load of one resource changes neither count nor content."""
+    from omnipath_build.metsigdb import build_id, load_resource, rule_for
+
+    before = _fingerprint(conn)
+    stats = load_resource(conn, rule_for('MACdb'), stamp=build_id(conn))
+    after = _fingerprint(conn)
+    assert before == after
+    assert stats.removed == 0
+
+
+def test_every_row_carries_the_manifest_build_stamp(conn, loaded):
+    stamps = _rows(conn, f'SELECT DISTINCT build_id FROM {TABLE}')
+    manifest = _rows(conn, 'SELECT build_id FROM build_manifest')
+    assert [s for (s,) in stamps] == [manifest[0][0]]
+
+
+def test_a_capped_run_holds_only_what_it_loaded(conn, loaded):
+    """The cap is for the loop, so the substrate must not keep the full load.
+
+    The resource is restored at the end, because the other tests read a
+    complete substrate.
+    """
+    from omnipath_build.metsigdb import build_id, load_resource, rule_for
+
+    rule = rule_for('MACdb')
+    stamp = build_id(conn)
+    full = _rows(conn, f"SELECT count(*) FROM {TABLE} WHERE resource = 'MACdb'")[0][0]
+    try:
+        capped = load_resource(conn, rule, stamp=stamp, max_records=500)
+        assert capped.rows == 500
+        assert capped.removed == full - 500
+        held = _rows(
+            conn, f"SELECT count(*) FROM {TABLE} WHERE resource = 'MACdb'"
+        )[0][0]
+        assert held == 500
+    finally:
+        restored = load_resource(conn, rule, stamp=stamp)
+        assert restored.rows == full
+
+
+def test_set_size_follows_the_capped_population(conn, loaded):
+    """`set_size` counts what the build published, never an upstream total."""
+    rows = _rows(
+        conn,
+        f"""
+        SELECT resource, set_source_id, min(set_size), count(*)
+        FROM {TABLE} GROUP BY 1, 2
+        HAVING min(set_size) <> count(*)
+        """,
+    )
+    assert rows == []

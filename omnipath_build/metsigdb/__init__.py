@@ -15,8 +15,10 @@ other consumer of the canonical entity layer.
 from __future__ import annotations
 
 from omnipath_build.metsigdb.build import (
+    BuildStats,
     ResourceLoadStats,
     build_id,
+    build_metsigdb,
     ensure_membership_table,
     load_resource,
 )
@@ -24,9 +26,11 @@ from omnipath_build.metsigdb.mapping import RESOURCES, ResourceRule, rule_for
 
 __all__ = [
     'RESOURCES',
+    'BuildStats',
     'ResourceLoadStats',
     'ResourceRule',
     'build_id',
+    'build_metsigdb',
     'ensure_membership_table',
     'load_resource',
     'rule_for',

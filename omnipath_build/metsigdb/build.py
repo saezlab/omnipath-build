@@ -25,6 +25,7 @@ from psycopg2 import sql
 
 from omnipath_build.metsigdb.mapping import (
     CHEMICAL_ENTITY_TYPE,
+    RESOURCES,
     ResourceRule,
 )
 
@@ -175,6 +176,9 @@ def load_resource(
         cur.execute(_sql_text(rule.extraction), params)
         cur.execute('CREATE INDEX ON metsigdb_stage (metabolite_entity_id)')
         cur.execute('CREATE INDEX ON metsigdb_stage (set_source_id)')
+        cur.execute(
+            'CREATE INDEX ON metsigdb_stage (set_source_id, metabolite_entity_id)'
+        )
         cur.execute('ANALYZE metsigdb_stage')
         staged = _scalar(cur, 'SELECT count(*) FROM metsigdb_stage')
 
@@ -195,9 +199,23 @@ def load_resource(
             },
         )
 
+        # After the upsert, the resource's rows are whatever it staged and
+        # nothing else. An anti-join against the stage is exact for every case
+        # the build has: a membership that vanished upstream, a metabolite that
+        # re-anchored on a merged entity, and a capped run that must hold only
+        # what it loaded. Matching on the build stamp would miss all three
+        # whenever the stamp did not change.
         cur.execute(
-            f'DELETE FROM {TABLE} WHERE resource = %s AND build_id <> %s',
-            [rule.name, stamp],
+            f"""
+            DELETE FROM {TABLE} m
+            WHERE m.resource = %(resource)s
+              AND NOT EXISTS (
+                SELECT 1 FROM metsigdb_stage s
+                WHERE s.set_source_id = m.set_source_id
+                  AND s.metabolite_entity_id = m.metabolite_entity_id
+              )
+            """,
+            {'resource': rule.name},
         )
         removed = cur.rowcount
 
@@ -229,3 +247,69 @@ def load_resource(
         stats.metabolites, stats.removed, stats.seconds,
     )
     return stats
+
+
+@dataclass(frozen=True)
+class BuildStats:
+    """What a whole MetSigDB build published."""
+
+    build_id: str
+    partial: bool
+    rows: int
+    seconds: float
+    resources: tuple[ResourceLoadStats, ...]
+
+
+def build_metsigdb(
+    conn: psycopg2.extensions.connection,
+    *,
+    resources: tuple[ResourceRule, ...] = RESOURCES,
+    max_records: int | None = None,
+    schema: str = 'public',
+) -> BuildStats:
+    """Publish the whole MetSigDB substrate.
+
+    Applies the DDL, loads each resource in turn, and stamps every row with the
+    current build. A non-zero ``max_records`` caps each resource and marks the
+    build manifest partial, because a capped substrate is not authoritative.
+    """
+    started = time.monotonic()
+    ensure_membership_table(conn, schema=schema)
+    stamp = build_id(conn)
+
+    loaded = tuple(
+        load_resource(conn, rule, stamp=stamp, max_records=max_records)
+        for rule in resources
+    )
+
+    partial = bool(max_records)
+    if partial:
+        _mark_partial_build(conn)
+
+    with conn.cursor() as cur:
+        rows = _scalar(cur, f'SELECT count(*) FROM {TABLE}')
+
+    stats = BuildStats(
+        build_id=stamp,
+        partial=partial,
+        rows=rows,
+        seconds=round(time.monotonic() - started, 1),
+        resources=loaded,
+    )
+    logger.info(
+        'metsigdb: build=%s rows=%s partial=%s seconds=%s',
+        stats.build_id, stats.rows, stats.partial, stats.seconds,
+    )
+    return stats
+
+
+def _mark_partial_build(conn: psycopg2.extensions.connection) -> None:
+    """Flag the manifest, because a capped run did not load everything.
+
+    The flag is never cleared here. Only a full build may claim to be complete,
+    and that claim belongs to the derive that writes the manifest.
+    """
+    with conn.cursor() as cur:
+        cur.execute('UPDATE build_manifest SET partial_build = true')
+    conn.commit()
+    logger.info('metsigdb: capped run; build_manifest.partial_build set')
