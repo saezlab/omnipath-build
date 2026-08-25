@@ -700,3 +700,115 @@ def test_live_registry_carries_the_preset_columns(conn):
     # last bespoke matview retires.
     assert columns['schema_name'][1] == 'YES'
     assert columns['combined_relation'][1] == 'YES'
+
+
+# ── adding a dataset is a declarative change ────────────────────────────────
+#
+# The claim: a new dataset costs a definition and nothing else. No view is
+# created for it, no column is added to the record for it, and it is queryable
+# the moment it is registered. Every part of that is easy to believe and easy
+# to lose — the first bespoke view added "just for this one dataset" is how the
+# fifteen MetaLinksDB views started. So the invariants are measured across a
+# registration rather than trusted.
+
+
+def _matviews(conn):
+    """Every materialized view in the database, as `schema.name` strings."""
+    with conn.cursor() as cur:
+        cur.execute('SELECT schemaname, matviewname FROM pg_matviews')
+        return {f'{schema}.{name}' for schema, name in cur.fetchall()}
+
+
+def _record_columns(conn, schema):
+    """The column names of the interaction record, in a set."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT column_name FROM information_schema.columns
+            WHERE table_schema = %s AND table_name = 'interaction_fact_resource'
+            """,
+            [schema],
+        )
+        return {name for (name,) in cur.fetchall()}
+
+
+def test_registering_a_dataset_creates_no_view(conn, registry):
+    """A dataset is a row. Nothing is materialized on its behalf."""
+    before = _matviews(conn)
+    register_network(
+        conn,
+        _full_preset(name='_declarative_preset'),
+        registry_schema=registry,
+    )
+    after = _matviews(conn)
+    assert after == before, (
+        f'registering a preset created {sorted(after - before)}; a dataset '
+        f'that needs a view of its own is the mechanism this cycle retires'
+    )
+
+
+def test_registering_a_dataset_changes_no_record_column(conn, registry):
+    """The record's shape is a property of the build, not of any dataset."""
+    before = _record_columns(conn, SCHEMA)
+    if not before:
+        pytest.skip('the build database holds no interaction record to compare')
+    register_network(
+        conn,
+        _full_preset(name='_declarative_preset_columns'),
+        registry_schema=registry,
+    )
+    after = _record_columns(conn, SCHEMA)
+    assert after == before, (
+        f'registering a preset changed the record columns by '
+        f'{sorted(after ^ before)}; a dataset that widens the fact table makes '
+        f'every other dataset pay for it'
+    )
+
+
+def test_a_registered_dataset_is_enumerable_and_scoped(conn, registry):
+    """Registration alone makes a dataset discoverable with its full spec."""
+    definition = _full_preset(name='_declarative_preset_enumerable')
+    register_network(conn, definition, registry_schema=registry)
+    with conn.cursor() as cur:
+        cur.execute(
+            f'SELECT name, kind, included_sources, interaction_class_scope, '
+            f'default_attributes, mandatory_attributes '
+            f'FROM {registry}.network_registry WHERE name = %s',
+            [definition.name],
+        )
+        row = cur.fetchone()
+    assert row is not None, 'the registered dataset is not enumerable'
+    name, kind, sources, classes, defaults, mandatory = row
+    assert kind == definition.kind
+    assert tuple(sources) == definition.included_sources
+    assert tuple(classes) == definition.interaction_class_scope
+    assert tuple(defaults) == definition.default_attributes
+    assert tuple(mandatory) == definition.mandatory_attributes
+
+
+def test_a_registered_dataset_resolves_to_record_rows(conn, records):
+    """Queryable, not only listed: its scope selects rows of the record."""
+    definition = _full_preset(
+        name='_declarative_preset_queryable',
+        included_sources=('signor', 'cellphonedb'),
+        license_scope=None,
+    )
+    register_network(conn, definition, registry_schema=records)
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT count(*)
+            FROM {records}.interaction_fact_resource f
+            JOIN {records}.data_source d USING (source_id)
+            WHERE d.name = ANY(
+              SELECT unnest(included_sources)
+              FROM {records}.network_registry WHERE name = %s
+            )
+            """,
+            [definition.name],
+        )
+        selected = cur.fetchone()[0]
+    assert selected, (
+        'the registered dataset selects no record row through its own scope; '
+        'enumerable and queryable are one claim, and this is the second half'
+    )
