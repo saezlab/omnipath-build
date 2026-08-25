@@ -26,7 +26,7 @@ SCHEMA = os.environ.get('OMNIPATH_PG_SCHEMA', 'public')
 
 SNAKE_CASE = re.compile(r'^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$')
 
-# The canonical eight classes (data-model §8).
+# The canonical eight classes of `vocab_interaction_class`.
 EXPECTED_SLUGS = {
     'signaling',
     'tf_target',

@@ -5,15 +5,15 @@ ordered ``(subject_entity_id, object_entity_id, interaction_class_id)`` is the
 contract of the **collapsed output for a stated scope**, not the stored grain.
 So this file asserts two things that used to be one:
 
-* ``interaction_fact_resource`` is the **record** (data-model §3a): one row per
+* ``interaction_fact_resource`` is the **record**: one row per
   ``(subject_entity_id, object_entity_id, interaction_class_id, source_id)``
   **plus the assertion signature** ``(is_directed, is_stimulation,
   is_inhibition)`` that resource states. A resource asserting two contradicting
   signs for the same endpoints under different predicates therefore keeps
   **two** rows, because the signature is part of the key.
-* **the collapse** (data-model §3b) holds one row per ordered triple over the
-  scope it was folded for. **Amended 2026-08-21**: it is no longer a
-  table. ``interaction_fact_combined`` materialised the all-resources scope and
+* **the collapse** holds one row per ordered triple over the scope it was
+  folded for. **Amended 2026-08-21**: it is no longer a table.
+  ``interaction_fact_combined`` materialised the all-resources scope and
   is removed, so the collapse assertions here read
   ``tests.fixtures.collapse`` — the fold written once on the test side — through
   a view over the record. What they assert is unchanged, which is the evidence
@@ -185,7 +185,7 @@ def _fact(conn, subject: str, object_: str) -> dict[str, object] | None:
 def _records(conn, subject: str, object_: str) -> list[dict[str, object]]:
     """Every record row for a fixture endpoint pair.
 
-    One per contributing resource **and** assertion signature (data-model §3a).
+    One per contributing resource **and** assertion signature.
     """
     rows = _query(
         conn,
@@ -232,7 +232,7 @@ def _records(conn, subject: str, object_: str) -> list[dict[str, object]]:
 
 
 # ---------------------------------------------------------------------------
-# The record grain — data-model §3a
+# The record grain — `interaction_fact_resource`
 # ---------------------------------------------------------------------------
 
 
@@ -283,7 +283,7 @@ def test_the_record_keeps_one_row_per_contributing_resource(built):
 
 def test_contradicting_signs_from_one_resource_keep_two_rows(built):
     """The assertion signature is part of the key, so one resource stating both
-    signs under two predicates keeps **two** record rows (data-model §3a)."""
+    signs under two predicates keeps **two** record rows."""
     conn, _stats = built
     records = _records(conn, 'i', 'j')
     assert len(records) == 2, (
@@ -423,13 +423,13 @@ def test_no_record_row_is_left_without_a_class(built):
 
 
 # ---------------------------------------------------------------------------
-# The all-resources collapse — data-model §3b
+# The all-resources collapse
 # ---------------------------------------------------------------------------
 
 
 def test_the_carried_columns_come_through_the_collapse_unchanged(built):
     """`subject_organism`, `object_organism` and `interaction_id` are carried
-    rather than recomputed, so a record row must state each (data-model §3b)."""
+    rather than recomputed, so a record row must state each."""
     conn, _stats = built
     rows = _query(
         conn,
@@ -563,7 +563,7 @@ def test_every_fact_row_links_to_its_header(built):
 
 
 def test_every_header_has_its_participants(built):
-    """A binary interaction records both parties, with its arity (§2)."""
+    """Each header's ``interaction_party`` rows match its stated arity."""
     conn, _stats = built
     rows = _query(
         conn,
@@ -804,7 +804,7 @@ def test_the_step_reports_what_the_fallback_class_is_made_of(built):
 
 
 # ---------------------------------------------------------------------------
-# The `source_count` histogram — data-model §12
+# The `source_count` histogram
 # ---------------------------------------------------------------------------
 
 

@@ -6,8 +6,8 @@ every field of that spec (class scope, evidence scope, default and mandatory
 attributes, labels, curation, attribute sources) and that the live table carries
 the columns to hold them.
 
-**Amended 2026-08-20** with the two columns the grain amendment adds
-(data-model §9):
+**Amended 2026-08-20** with the two ``network_registry`` columns the grain
+amendment adds:
 
 ``collapse_mode``
     How the preset collapses the per-resource record over **its own** resource
@@ -22,13 +22,13 @@ the columns to hold them.
     is set excludes a resource whose license is unknown, however permissive its
     recorded levels look.
 
-**Amended 2026-08-21** with ``composition`` (data-model §9), the column a
-preset carries when it is not one query: the ordered component list and the
-operation that joins them (``union``, ``collapse``, ``exclude``, ``annotate``).
-A component is either a parameter set or the **name of another preset**, which
-is what gives ``nichenet`` its per-component override. NULL means the preset is
-a single parameter set — the common case, and the shape every other test in
-this module registers.
+**Amended 2026-08-21** with ``composition``, the column a preset carries when
+it is not one query: the ordered component list and the operation that joins
+them (``union``, ``collapse``, ``exclude``, ``annotate``). A component is
+either a parameter set or the **name of another preset**, which is what gives
+``nichenet`` its per-component override. NULL means the preset is a single
+parameter set — the common case, and the shape every other test in this
+module registers.
 
 Two orders in that value are binding rather than stylistic, and the column has
 to be able to state them: the ``collapse`` runs after the ``union`` and over the
@@ -77,9 +77,9 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-# A preset spec with every field populated — the shape data-model §9 asks the
-# registry to carry. `interaction_class_scope` holds class slugs (§8), never
-# legacy dataset names; the class derivation itself is another task.
+# A preset spec with every field populated — the shape `network_registry` has
+# to carry. `interaction_class_scope` holds `vocab_interaction_class` slugs,
+# never legacy dataset names; the class derivation itself is another task.
 # Built by a factory rather than at import, so a missing field fails the test
 # that needs it instead of the whole module at collection.
 def _full_preset(**overrides: object) -> NetworkDefinition:
@@ -131,9 +131,9 @@ PRESET_COLUMNS = {
 
 COLLAPSE_MODES = ('none', 'assertion', 'endpoints')
 
-# The group key each collapse mode folds to (data-model §9). The derive and the
-# query path share one collapse routine; this mirrors its keys so the registry
-# test can state what a mode *means* without importing it.
+# The group key each collapse mode folds to. The derive and the query path
+# share one collapse routine; this mirrors its keys so the registry test can
+# state what a mode *means* without importing it.
 COLLAPSE_KEYS = {
     'none': (
         'subject_entity_id, object_entity_id, interaction_class_id, source_id, '
@@ -232,7 +232,7 @@ def _clean_transaction(conn):
 
 @pytest.fixture(scope='module')
 def licenses(conn, registry):
-    """A throwaway license catalogue, shaped like ``data_source_license`` (§8a).
+    """A throwaway license catalogue, shaped like ``data_source_license``.
 
     ``mystery_db`` is the trap: its recorded levels are maximal, but nothing
     maps a license to it, so a license-filtered scope must drop it.
@@ -267,7 +267,7 @@ def licenses(conn, registry):
 
 @pytest.fixture(scope='module')
 def records(conn, registry, licenses):
-    """A throwaway record table, shaped like ``interaction_fact_resource`` (§3a).
+    """A throwaway record table, shaped like ``interaction_fact_resource``.
 
     Two triples. ``signor`` asserts each of them once; ``cellphonedb`` asserts
     the first one too, with the same signature. So a two-resource scope folds
@@ -398,7 +398,7 @@ def test_registry_round_trips_the_full_preset_spec(conn, registry):
     assert collapse_mode == preset.collapse_mode
     assert license_scope == preset.license_scope
     # The full spec is still one parameter set: a composition is the exception,
-    # and its absence is NULL rather than an empty recipe (data-model §9).
+    # and its absence is NULL rather than an empty recipe.
     assert composition is None
 
 
@@ -463,7 +463,7 @@ def test_collapse_mode_defaults_to_endpoints(conn, registry):
     """A preset that names no mode collapses to the endpoints key.
 
     That is the legacy one-row-per-interaction contract, so a preset written
-    before the amendment keeps behaving as it did (data-model §9).
+    before the amendment keeps behaving as it did.
     """
     legacy = NetworkDefinition(
         name='_roundtrip_preset_default_mode',
@@ -481,7 +481,7 @@ def test_collapse_mode_defaults_to_endpoints(conn, registry):
 
 @pytest.mark.parametrize('mode', COLLAPSE_MODES)
 def test_registry_round_trips_every_collapse_mode(conn, registry, mode):
-    """All three modes of data-model §9 survive registration."""
+    """Every ``network_registry.collapse_mode`` value survives registration."""
     preset = _full_preset(
         name=f'_roundtrip_preset_mode_{mode}',
         collapse_mode=mode,
@@ -498,7 +498,7 @@ def test_registry_round_trips_every_collapse_mode(conn, registry, mode):
 def test_single_resource_preset_collapses_nothing_whatever_the_mode(
     conn, registry, records
 ):
-    """One resource in scope means every collapse group holds one row (§9).
+    """One resource in scope means every collapse group holds one row.
 
     The mode is a real choice only where the scope holds resources that can
     disagree — the two-resource control below shows the same data folding.
@@ -666,7 +666,7 @@ def test_composition_component_can_name_another_preset(conn, registry):
 
 
 def test_preset_without_composition_stores_null(conn, registry):
-    """One parameter set is the common case, and it stores NULL (data-model §9).
+    """One parameter set is the common case, and it stores NULL.
 
     NULL and not an empty recipe: a reader must be able to tell "no composition"
     from "a composition with no components" without guessing.

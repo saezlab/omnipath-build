@@ -5,9 +5,9 @@ A license is not a name. `pypath/internals/license.py` models it as three
 ``enables(other)`` as ``self >= other``, so "usable commercially" is a
 comparison over three smallints and never a match on ``license_name``. Two
 resources under different names can permit the same use, and one name under two
-versions can not. `data_source_license` (data model §8a) stores the levels, and
-a license question resolves to a **set of resources** before anything touches
-the interaction tables.
+versions can not. `data_source_license` stores the levels, and a license
+question resolves to a **set of resources** before anything touches the
+interaction tables.
 
 Two properties this file exists to pin:
 
@@ -19,11 +19,11 @@ is adversarial: the unknown resource is stored with the *most permissive levels
 the vocabulary has*. If the resolution consults the levels rather than
 ``is_known``, it admits it, and the test says so.
 
-**A license filter restricts the resource set, so the scope rule applies**
-(data model §3b). The surviving summaries must be recomputed by
-collapsing ``interaction_fact_resource`` over the surviving resources. Reusing
-a fold computed over a **wider** set returns the right interactions carrying
-numbers that describe resources the license excluded. The last test holds that
+**A license filter restricts the resource set, so the scope rule applies.** The
+surviving summaries must be recomputed by collapsing
+``interaction_fact_resource`` over the surviving resources. Reusing a fold
+computed over a **wider** set returns the right interactions carrying numbers
+that describe resources the license excluded. The last test holds that
 shortcut to be a defect by showing the two answers differ.
 
 **Amended 2026-08-21**: the wider fold used to be a table —
@@ -62,8 +62,9 @@ SCRATCH = os.environ.get(
     'interactions_license_test',
 )
 
-# The ordinal vocabularies of `pypath/internals/license.py`, as data model §8a
-# stores them. Ascending: a higher level enables everything below it.
+# The ordinal vocabularies of `pypath/internals/license.py`, as
+# `data_source_license` stores them. Ascending: a higher level enables
+# everything below it.
 PURPOSE = {
     'ignore': 0,
     'academic': 5,
@@ -267,10 +268,10 @@ def _resolve(conn, **minimum_levels: int) -> dict[str, object]:
 def _collapse(conn, sources: list[str] | None) -> dict[tuple[str, str], dict]:
     """Collapse the record over ``sources``; ``None`` means every resource.
 
-    This is the collapse the scope rule requires (data model §3b): the
-    summaries are recomputed from ``interaction_fact_resource`` over the rows
-    that survived the restriction. ``bool_or`` gives the three-valued answer,
-    because no record row ever carries an asserted ``false``.
+    This is the collapse the scope rule requires: the summaries are recomputed
+    from ``interaction_fact_resource`` over the rows that survived the
+    restriction. ``bool_or`` gives the three-valued answer, because no record
+    row ever carries an asserted ``false``.
     """
     with conn.cursor() as cur:
         cur.execute(
@@ -321,7 +322,7 @@ def _collapse(conn, sources: list[str] | None) -> dict[tuple[str, str], dict]:
 
 
 def test_the_license_table_stores_ordinal_levels_not_only_a_name(built):
-    """§8a: three smallint levels plus `is_known`, keyed by resource."""
+    """`data_source_license` holds three levels and `is_known` per resource."""
     conn = built
     _load_fixture_licenses(conn)
     with conn.cursor() as cur:
@@ -522,7 +523,7 @@ def test_the_surviving_summaries_are_recomputed_over_the_survivors(built):
 
 
 def test_reusing_a_wider_fold_reports_the_wrong_numbers(built):
-    """Why the shortcut is a defect, not an optimisation (data model §3b).
+    """Why the shortcut is a defect, not an optimisation.
 
     The all-resources fold of c->d says three resources and an inhibition.
     Filtering *that* row down to the license's resource set — with `sources &&

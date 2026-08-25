@@ -2,11 +2,10 @@
 
 The projection loads ``interaction``, ``interaction_party`` and
 ``interaction_fact_resource`` with their foreign keys and secondary indexes
-**dropped**, and puts them back before the step ends (data model §3c). A
-measurement priced it at 709.7 s against 1,814.7 s over the four tables that
-existed then, with the largest step falling from 674.0 s to 272.2 s — sixty per
-cent of that step was constraint and index maintenance rather than the work of
-building a header.
+**dropped**, and puts them back before the step ends. A measurement priced it
+at 709.7 s against 1,814.7 s over the four tables that existed then, with the
+largest step falling from 674.0 s to 272.2 s — sixty per cent of that step was
+constraint and index maintenance rather than the work of building a header.
 
 **The saving is only a saving if the far side of the step is the near side.**
 So this file asserts the round trip rather than the seconds: the same
@@ -69,8 +68,8 @@ pytestmark = pytest.mark.skipif(
     reason='DATABASE_URL not set; the deferral test needs a Postgres',
 )
 
-#: The tables the deferral covers (data model §3c). The vocabularies and the
-#: license table are seeded rather than loaded, so nothing is deferred on them.
+#: The tables the deferral covers. The vocabularies and the license table are
+#: seeded rather than loaded, so nothing is deferred on them.
 PROJECTION_TABLES = (
     'interaction',
     'interaction_party',

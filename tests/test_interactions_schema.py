@@ -2,10 +2,10 @@
 
 Constitution III: every new table this cycle adds is asserted to exist and to
 carry rows after a build. Five tables make up the model — the header
-``interaction`` (data model §1), the participant ``interaction_party`` (§2),
-the participant-role vocabulary ``vocab_relation_role`` (§7), the interaction
-record ``interaction_fact_resource`` (§3a) and the resource license terms
-``data_source_license`` (§8a).
+``interaction``, the participant ``interaction_party``, the participant-role
+vocabulary ``vocab_relation_role``, the interaction record
+``interaction_fact_resource`` and the resource license terms
+``data_source_license``.
 
 **Amended 2026-08-20.** ``interaction_fact_combined`` was
 the projection; it became one scope's materialisation of a record kept per
@@ -13,14 +13,15 @@ contributing resource.
 
 **Amended 2026-08-21.** That materialisation is removed. The
 derive writes **three tables and folds nothing** — the header, the participant
-and the record — and §3b is the shape a query produces at request time, not a
-table. The tests follow: the projection is asserted to write exactly those
-three, no ``interaction_fact_combined`` may survive a build in any non-system
-schema, ``ensure_schema`` is asserted to drop one a pre-change database still
-carries, and the anchoring rule of §3b — the detail tables anchor on the
-record through the denormalised triple — is asserted against the Postgres
-catalogue. The collapse-equivalence assertions this file used to carry moved
-to the api-service, which is where the fold now lives.
+and the record — and the collapse is the shape a query produces at request
+time, not a table. The tests follow: the projection is asserted to write
+exactly those three, no ``interaction_fact_combined`` may survive a build in
+any non-system schema, ``ensure_schema`` is asserted to drop one a pre-change
+database still carries, and the anchoring rule the collapse rests on — the
+detail tables anchor on the record through the denormalised triple — is
+asserted against the Postgres catalogue. The collapse-equivalence assertions
+this file used to carry moved to the api-service, which is where the fold now
+lives.
 
 The schema half runs against a throwaway scratch schema, so it needs no data.
 The population half reads the built schema and needs a build — a capped
@@ -52,13 +53,13 @@ SCRATCH = os.environ.get(
 # table planted in it would be visible to the tests asserting that no such
 # table exists anywhere.
 
-# The tables the interaction model adds (data model §1, §2, §3a, §7, §8a).
+# The tables the interaction model adds.
 # `interaction_fact_resource` and `data_source_license` joined the list with the
 # grain amendment: the record is what the projection now stores, and a license
-# filter resolves to a resource set over the ordinal levels of §8a.
-# `interaction_fact_combined` left it when the build stopped storing the fold:
-# §3b is a query-time shape, so there is no fourth table for the existence or
-# the population half to assert.
+# filter resolves to a resource set over the ordinal levels of
+# `data_source_license`. `interaction_fact_combined` left it when the build
+# stopped storing the fold: the collapse is a query-time shape, so there is
+# no fourth table for the existence or the population half to assert.
 INTERACTION_TABLES = (
     'interaction',
     'interaction_party',
@@ -67,7 +68,7 @@ INTERACTION_TABLES = (
     'data_source_license',
 )
 
-# What the derive writes, and all of what it writes (data model §3).
+# What the derive writes, and all of what it writes.
 # `vocab_relation_role` and `data_source_license` are seeded rather than
 # projected, so they are model tables without being projection outputs.
 PROJECTION_TABLES = (
@@ -76,20 +77,20 @@ PROJECTION_TABLES = (
     'interaction_fact_resource',
 )
 
-# The removed materialisation (data model §3b/§3c). Named once, because two
-# tests ask the catalogue for it and neither may spell it differently.
+# The removed materialisation. Named once, because two tests ask the
+# catalogue for it and neither may spell it differently.
 LEGACY_COLLAPSE_TABLE = 'interaction_fact_combined'
 
-# The detail tables of data model §4 and §6. They hang off the record, not off
-# the collapse — see the anchoring rule below.
+# The detail tables. They hang off the record, not off the collapse — see
+# the anchoring rule below.
 DETAIL_TABLES = ('interaction_assay', 'interaction_ptm')
 
-# The record table (§3a) is keyed per contributing resource and carries a
+# `interaction_fact_resource` is keyed per contributing resource and carries a
 # deterministic uuid surrogate, because the rest of the key is nullable and
 # Postgres `MATCH SIMPLE` does not check a foreign key with any NULL column.
 RECORD_KEY_COLUMNS = ('source_id', 'interaction_fact_resource_id')
 
-# `data_source_license` (§8a) stores ordinal levels, not a name: `enables` is
+# `data_source_license` stores ordinal levels, not a name: `enables` is
 # `self >= other`, so a license question is a range predicate over three
 # smallints. `is_known` is the flag that excludes an unmapped license.
 LICENSE_LEVEL_COLUMNS = ('purpose_level', 'sharing_level', 'attrib_level')
@@ -247,12 +248,12 @@ def test_table_is_created(conn, scratch, table):
 
 
 def test_fact_table_carries_the_hot_columns(conn, scratch):
-    """The fact table carries the hot filter columns of data model §3.
+    """The fact table carries the hot filter columns.
 
-    **Repointed 2026-08-21**: §3 is `interaction_fact_resource`, and it
-    is the only stored fact table. The list shrinks with the move, and the
-    columns it loses are exactly the ones §3b recomputes for the scope that
-    asks — `sources`, `source_count`, `dataset_tags`, `reference_count`,
+    **Repointed 2026-08-21**: `interaction_fact_resource` is the only stored
+    fact table. The list shrinks with the move, and the columns it loses are
+    exactly the ones the collapse recomputes for the scope that asks —
+    `sources`, `source_count`, `dataset_tags`, `reference_count`,
     `sign_source_count` and `direction_source_count`. Those are produced by a
     fold and never stored, so asserting them here would ask the record to hold
     a summary that is only true of one scope.
@@ -302,7 +303,7 @@ def test_sign_and_direction_are_three_valued(conn, scratch, column):
 
 
 def test_role_vocabulary_is_populated_by_name(conn, scratch):
-    """The role vocabulary is seeded with the roles of data model §7."""
+    """``vocab_relation_role`` is seeded with the participant roles."""
     with conn.cursor() as cur:
         cur.execute(f'SELECT name FROM {scratch}.vocab_relation_role')
         names = {row[0] for row in cur.fetchall()}
@@ -331,9 +332,9 @@ def test_every_fact_row_links_to_a_header(conn):
     """The projection keeps its link to the endpoint-independent header.
 
     **Repointed 2026-08-21** to the record, which is what the projection
-    now writes. The link is what carries the header through a fold: §3b lists
-    `interaction_id` among the columns a collapse carries through unchanged, so
-    a record row without one produces a collapsed row without one.
+    now writes. The link is what carries the header through a fold: a collapse
+    carries `interaction_id` through unchanged, so a record row without one
+    produces a collapsed row without one.
     """
     _require_table(conn, SCHEMA, 'interaction_fact_resource')
     with conn.cursor() as cur:
@@ -354,7 +355,7 @@ def test_every_fact_row_links_to_a_header(conn):
 def test_record_table_is_keyed_per_resource(conn, scratch, column):
     """The record keeps the resource, which is what makes summaries decomposable.
 
-    ``interaction_fact_resource`` (§3a) is one row per ordered endpoint pair,
+    ``interaction_fact_resource`` is one row per ordered endpoint pair,
     class and **source**, plus the assertion signature that source states. Drop
     ``source_id`` and the table is the collapse again, with no way to recompute
     a summary for a subset of resources.
@@ -408,7 +409,7 @@ def test_record_surrogate_key_is_the_primary_key(conn, scratch):
 
 
 def test_license_table_stores_ordinal_levels(conn, scratch):
-    """A license filter is a comparison, so §8a stores levels and not a name.
+    """A license filter compares levels, so `data_source_license` stores them.
 
     ``License.enables(other)`` is ``self >= other``, so "everything usable
     commercially" is ``WHERE purpose_level >= 15`` over a 44-row table. A name
@@ -449,7 +450,7 @@ def test_license_table_can_exclude_unknown_terms(conn, scratch):
 
 
 # ---------------------------------------------------------------------------
-# The anchoring rule (data model §3b)
+# The anchoring rule
 # ---------------------------------------------------------------------------
 
 
@@ -488,8 +489,8 @@ def test_nothing_anchors_on_a_materialisation(conn, scratch):
     assert surviving == [], (
         f'{LEGACY_COLLAPSE_TABLE} still exists as '
         + '; '.join(f'{ns} (relkind {kind})' for ns, kind in surviving)
-        + ' — §3b is the shape a query produces, not a table, and a stored '
-        'copy is something a foreign key can be pointed at again'
+        + ' — the collapse is the shape a query produces, not a table, and '
+        'a stored copy is something a foreign key can be pointed at again'
     )
     for table in DETAIL_TABLES:
         columns = _columns(conn, scratch, table)
@@ -507,7 +508,7 @@ def test_nothing_anchors_on_a_materialisation(conn, scratch):
 
 @pytest.mark.parametrize('table', DETAIL_TABLES)
 def test_detail_table_references_the_record(conn, scratch, table):
-    """A detail row belongs to a resource, so it keys into §3a.
+    """A detail row keys into ``interaction_fact_resource``, not the header.
 
     An assay is ChEMBL's measurement and a PTM site is SIGNOR's or
     PhosphoSitePlus's. The record is keyed by resource, so the foreign key
@@ -560,10 +561,10 @@ def test_detail_table_carries_the_denormalised_join_key(conn, scratch, table):
 def test_the_derive_writes_three_tables_and_folds_nothing(conn):
     """The projection writes the header, the participant and the record. Only.
 
-    Data model §3 as amended: there is **one stored fact table**, and no
-    scope is precomputed — not even the all-resources scope, which is the one
-    the removed ``interaction_fact_combined`` held. The two halves belong in
-    one test because either alone is satisfiable by the wrong build: three
+    As amended, there is **one stored fact table**, and no scope is
+    precomputed — not even the all-resources scope, which is the one the
+    removed ``interaction_fact_combined`` held. The two halves belong in one
+    test because either alone is satisfiable by the wrong build: three
     populated tables say nothing about a fourth still being written, and an
     absent fourth table is what a derive that produced nothing at all also
     looks like.
@@ -582,5 +583,5 @@ def test_the_derive_writes_three_tables_and_folds_nothing(conn):
         f'the derive still leaves {LEGACY_COLLAPSE_TABLE} behind in '
         + '; '.join(f'{ns} (relkind {kind})' for ns, kind in surviving)
         + f' — the projection writes {len(PROJECTION_TABLES)} tables and folds '
-        'nothing, so §3b must resolve to no relation at all'
+        'nothing, so the collapse must resolve to no relation at all'
     )

@@ -67,8 +67,8 @@ SCRATCH = os.environ.get(
     'interactions_sign_test',
 )
 
-#: The record table (data-model 3a): one row per endpoint pair, class, resource
-#: and assertion signature. What a resource asserts lives here.
+#: The record table: one row per endpoint pair, class, resource and assertion
+#: signature. What a resource asserts lives here.
 RECORD_TABLE = 'interaction_fact_resource'
 
 #: The build routine that used to fold the record for a resource scope.
@@ -278,7 +278,7 @@ def _require_record_table(conn) -> None:
         pytest.fail(
             f'{SCRATCH}.{RECORD_TABLE} does not exist: the derive still folds '
             f'every resource into one row, so what a single resource asserts '
-            f'has nowhere to live (data-model 3a)'
+            f'has nowhere to live'
         )
 
 

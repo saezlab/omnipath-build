@@ -1,11 +1,10 @@
 """The collapse of the interaction record, for the tests that assert its shape.
 
-Data model §3b, as amended: the collapse of
-``interaction_fact_resource`` for a resource scope is what a **query** produces
-at request time, and it is not a table. The build stops when the record lands,
-so ``interaction_fact_combined`` — the all-resources scope materialised — is
-gone, and with it ``collapse_interaction_scope``, the build routine that filled
-it.
+As amended, the collapse of ``interaction_fact_resource`` for a resource scope
+is what a **query** produces at request time, and it is not a table. The build
+stops when the record lands, so ``interaction_fact_combined`` — the
+all-resources scope materialised — is gone, and with it
+``collapse_interaction_scope``, the build routine that filled it.
 
 The assertions that table carried are not gone. The three-valued flags, the
 provenance over every contributor, the ordered key and the class precedence are
