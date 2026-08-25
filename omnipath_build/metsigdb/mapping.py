@@ -42,11 +42,12 @@ PROJECTION_IDENTIFIERS: tuple[tuple[str, str], ...] = (
 class ResourceRule:
     """How one v1 resource becomes MetSigDB memberships.
 
-    ``organism_sql`` is a SQL expression over the staged ``set_source_id``, not
-    a bind parameter: the value is derived from the set identifier, and it is a
-    constant of this module rather than anything a caller supplies. No set
-    entity in the build database carries a taxonomy id, so a resource whose
-    identifiers name no species gets ``NULL``.
+    The organism is not a field here. It is read from the taxonomy the source
+    recorded on its set evidence, in ``publish_membership.sql``, which is the
+    same lookup for every resource. An earlier version derived it from the
+    identifier — 9606 for anything matching ``R-HSA-`` — and that guessed where
+    the data already answers, and published null for the 38 species
+    WikiPathways covers.
     """
 
     name: str
@@ -54,7 +55,6 @@ class ResourceRule:
     set_type: str
     set_entity_type: str
     extraction: str
-    organism_sql: str = 'NULL'
     # ClassyFire alone reads a second source: HMDB assigns the class, and
     # ChemOnt supplies the hierarchy the assignment expands over.
     hierarchy_source_name: str | None = None
@@ -66,10 +66,6 @@ REACTOME = ResourceRule(
     set_type='pathway',
     set_entity_type=PATHWAY_ENTITY_TYPE,
     extraction='extract_onehop.sql',
-    # Every Reactome pathway in this build is R-HSA-*, so the species sits in
-    # the identifier. The CASE returns NULL for any other prefix rather than
-    # claiming human, so a non-human pathway would publish an honest null.
-    organism_sql="CASE WHEN s.set_source_id LIKE 'R-HSA-%%' THEN 9606 END",
 )
 
 WIKIPATHWAYS = ResourceRule(

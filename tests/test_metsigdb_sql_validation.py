@@ -135,16 +135,32 @@ def test_v6_only_in_scope_resources_appear(conn):
     }
 
 
-def test_v7_organism_is_null_outside_reactome(conn):
+def test_v7_organism_comes_from_the_source(conn):
+    """Reactome is human; WikiPathways spans many species; the rest are null.
+
+    An earlier version derived the organism from an `R-HSA-` prefix, which
+    published null for every WikiPathways pathway even though the source
+    records a species for most of them.
+    """
     rows = _rows(
         conn,
-        f"SELECT DISTINCT resource, organism FROM {TABLE} ORDER BY 1, 2",
+        f"""
+        SELECT resource, count(organism), count(DISTINCT organism)
+        FROM {TABLE} GROUP BY 1
+        """,
     )
-    for resource, organism in rows:
-        if resource == 'Reactome':
-            assert organism == 9606
-        else:
-            assert organism is None
+    seen = {resource: (n, taxa) for resource, n, taxa in rows}
+    if 'Reactome' in seen:
+        assert seen['Reactome'][1] == 1
+        assert _rows(
+            conn, f"SELECT DISTINCT organism FROM {TABLE} WHERE resource='Reactome'"
+        ) == [(9606,)]
+    if 'WikiPathways' in seen:
+        assert seen['WikiPathways'][0] > 0
+        assert seen['WikiPathways'][1] > 10, 'WikiPathways is many-species'
+    for resource in ('KEGG', 'MACdb', 'ClassyFire'):
+        if resource in seen:
+            assert seen[resource][0] == 0, resource
 
 
 def test_v8_row_counts_match_the_frozen_population(conn):
@@ -179,7 +195,38 @@ def test_v9_every_row_carries_one_build_stamp(conn):
     assert stamps[0][0] == manifest[0][0]
 
 
-def test_set_label_is_null_throughout_v1(conn):
-    """ontology_terms is empty, so no set carries a readable name."""
-    rows = _rows(conn, f'SELECT count(*) FROM {TABLE} WHERE set_label IS NOT NULL')
-    assert rows[0][0] == 0
+def test_set_labels_come_from_the_ontology_terms(conn):
+    """Three resources name every set. Two carry no name in this build.
+
+    The first published substrate had no name anywhere, because the freeze
+    checked `ontology_terms`, which is empty, instead of
+    `entity_ontology_term`, which holds 711,731 rows.
+    """
+    rows = _rows(
+        conn,
+        f'SELECT resource, count(*), count(set_label) FROM {TABLE} GROUP BY 1',
+    )
+    seen = {resource: (total, named) for resource, total, named in rows}
+    for resource in ('Reactome', 'MACdb', 'ClassyFire'):
+        if resource in seen:
+            total, named = seen[resource]
+            assert named == total, f'{resource}: {named} of {total} named'
+    for resource in ('KEGG', 'WikiPathways'):
+        if resource in seen:
+            assert seen[resource][1] == 0, resource
+
+
+def test_a_named_set_reads_as_a_name(conn):
+    """A spot check, because a non-null column can still hold the identifier."""
+    rows = _rows(
+        conn,
+        f"""
+        SELECT DISTINCT set_source_id, set_label FROM {TABLE}
+        WHERE set_source_id IN ('R-HSA-1059683', 'CHEMONTID:0000118', '46')
+          AND set_label IS NOT NULL
+        """,
+    )
+    labels = dict(rows)
+    assert labels.get('R-HSA-1059683') == 'Interleukin-6 signaling'
+    assert labels.get('CHEMONTID:0000118') == 'Ketones'
+    assert labels.get('46') == 'Colorectal Cancer (CRC)'

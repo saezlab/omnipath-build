@@ -17,6 +17,7 @@ DROP TABLE IF EXISTS metsigdb_stage;
 CREATE TEMP TABLE metsigdb_stage AS
 SELECT DISTINCT ON (st.canonical_identifier, res.entity_id)
        st.canonical_identifier AS set_source_id,
+       st.entity_id            AS set_entity_id,
        res.entity_id           AS metabolite_entity_id,
        jsonb_build_object(
          'source_id',  re.source_id,

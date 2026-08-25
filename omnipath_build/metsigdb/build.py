@@ -182,15 +182,11 @@ def load_resource(
         cur.execute('ANALYZE metsigdb_stage')
         staged = _scalar(cur, 'SELECT count(*) FROM metsigdb_stage')
 
-        cur.execute(_sql_text('publish_membership.sql'))
+        cur.execute('CREATE INDEX ON metsigdb_stage (set_entity_id)')
+        cur.execute(_sql_text('publish_membership.sql'), params)
 
         cur.execute(
-            sql.SQL(_sql_text('upsert_membership.sql')).format(
-                # A SQL expression, not a bind parameter: the organism is
-                # derived from the set identifier. The text is a constant of
-                # `mapping.py`, never anything a caller supplies.
-                organism=sql.SQL(rule.organism_sql),
-            ),
+            _sql_text('upsert_membership.sql'),
             {
                 'resource': rule.name,
                 'set_type': rule.set_type,
@@ -286,6 +282,8 @@ def build_metsigdb(
     if partial:
         _mark_partial_build(conn)
 
+    _vacuum(conn, schema=schema)
+
     with conn.cursor() as cur:
         rows = _scalar(cur, f'SELECT count(*) FROM {TABLE}')
 
@@ -301,6 +299,37 @@ def build_metsigdb(
         stats.build_id, stats.rows, stats.partial, stats.seconds,
     )
     return stats
+
+
+def _vacuum(
+    conn: psycopg2.extensions.connection,
+    *,
+    schema: str = 'public',
+) -> None:
+    """Reclaim the rebuild's dead rows and refresh the planner's statistics.
+
+    A rebuild updates every row it already had, so Postgres leaves one dead
+    version per row: a second full build takes the table from 2.2 GB to 4.3 GB
+    on disk. Plain VACUUM does not shrink the file, it makes that space
+    reusable, which is what keeps the table at a steady size instead of growing
+    with every build. Reclaiming the file itself needs VACUUM FULL and an
+    exclusive lock, which is an operator's decision, not the build's.
+
+    ANALYZE is not optional here. The build replaces the whole table, and the
+    serving layer plans its filters against these statistics.
+    """
+    previous = conn.autocommit
+    conn.autocommit = True  # VACUUM cannot run inside a transaction block.
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                sql.SQL('VACUUM (ANALYZE) {}.{}').format(
+                    sql.Identifier(schema), sql.Identifier(TABLE)
+                )
+            )
+    finally:
+        conn.autocommit = previous
+    logger.info('metsigdb: vacuumed and analyzed %s.%s', schema, TABLE)
 
 
 def _mark_partial_build(conn: psycopg2.extensions.connection) -> None:

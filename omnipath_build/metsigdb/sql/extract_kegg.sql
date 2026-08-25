@@ -29,6 +29,7 @@ DROP TABLE IF EXISTS metsigdb_stage;
 -- because the reaction is an internal join key that is never published.
 CREATE TEMP TABLE metsigdb_kegg_pathway_reaction AS
 SELECT pw.canonical_identifier AS set_source_id,
+       pw.entity_id            AS set_entity_id,
        rx.entity_id            AS reaction_entity_id
 FROM relation_evidence re
 JOIN vocab_relation_predicate p
@@ -78,6 +79,7 @@ ANALYZE metsigdb_kegg_reaction_compound;
 CREATE TEMP TABLE metsigdb_stage AS
 SELECT DISTINCT ON (pr.set_source_id, rc.metabolite_entity_id)
        pr.set_source_id,
+       pr.set_entity_id,
        rc.metabolite_entity_id,
        jsonb_build_object(
          'source_id',    rc.source_id,

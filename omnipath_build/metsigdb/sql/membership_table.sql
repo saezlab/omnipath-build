@@ -21,16 +21,31 @@ CREATE TABLE IF NOT EXISTS metsigdb_membership (
   metabolite_label       text NOT NULL,
   metabolite_entity_type text NOT NULL,
   inchikey               text,
+  -- The connectivity-level InChIKey block: charge, stereo and tautomer
+  -- variants of one molecule share it. The anchor stays the entity, so
+  -- identity is unchanged; this is what lets a consumer join a membership
+  -- from one resource to the same molecule in another when the two picked
+  -- different protonation states.
+  metabolite_structure_key text,
   smiles                 text,
   hmdb                   text,
   pubchem                text,
   chebi                  text,
   kegg                   text,
 
-  -- Set side. `set_label` is null throughout v1: ontology_terms is empty, so
-  -- no set carries a readable name. `organism` is 9606 for Reactome and null
-  -- elsewhere, because no set entity carries a taxonomy_id.
-  set_label   text,
+  -- Set side. `set_entity_id` is the canonical entity behind the set, and it
+  -- is what a name joins on: matching `set_source_id` against
+  -- entity.canonical_identifier is unsafe, because MACdb trait ids are bare
+  -- integers that collide with ChEBI ids in that same column.
+  --
+  -- `set_label` comes from entity_ontology_term. Reactome, MACdb and
+  -- ClassyFire name every set. KEGG and WikiPathways carry no name in this
+  -- build, so theirs stay null.
+  --
+  -- `organism` is read from the taxonomy the source recorded on its set
+  -- evidence, never guessed from the identifier.
+  set_entity_id uuid,
+  set_label     text,
   set_type    text   NOT NULL,
   organism    bigint,
   set_size    integer NOT NULL,
@@ -52,6 +67,13 @@ CREATE TABLE IF NOT EXISTS metsigdb_membership (
     CHECK (set_size > 0)
 );
 
+-- Columns added after the first publication, for a database that already
+-- carries the table. CREATE TABLE IF NOT EXISTS is a no-op there, so the new
+-- columns arrive here, and they arrive before the indexes that read them.
+ALTER TABLE metsigdb_membership
+  ADD COLUMN IF NOT EXISTS set_entity_id uuid,
+  ADD COLUMN IF NOT EXISTS metabolite_structure_key text;
+
 -- The five shared filter columns of the API contract, and nothing else. The
 -- serving layer filters on these alone, so these alone are indexed.
 --
@@ -63,7 +85,12 @@ CREATE INDEX IF NOT EXISTS metsigdb_membership_metabolite_idx
 CREATE INDEX IF NOT EXISTS metsigdb_membership_set_type_idx
   ON metsigdb_membership (set_type);
 
--- Partial: only Reactome rows carry an organism in v1, so the index stays
+-- Cross-resource grouping runs on the structure key, which is the point of
+-- publishing it.
+CREATE INDEX IF NOT EXISTS metsigdb_membership_structure_idx
+  ON metsigdb_membership (metabolite_structure_key);
+
+-- Partial: Reactome and WikiPathways rows carry an organism, so the index stays
 -- small and an `organism` filter never scans the null-organism bulk.
 CREATE INDEX IF NOT EXISTS metsigdb_membership_organism_idx
   ON metsigdb_membership (organism) WHERE organism IS NOT NULL;

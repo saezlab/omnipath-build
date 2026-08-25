@@ -104,6 +104,7 @@ ANALYZE metsigdb_classyfire_pair;
 
 CREATE TEMP TABLE metsigdb_stage AS
 SELECT se.canonical_identifier AS set_source_id,
+       se.entity_id            AS set_entity_id,
        pr.metabolite_entity_id,
        jsonb_build_object(
          'source_id',  pr.source_id,

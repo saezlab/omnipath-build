@@ -58,14 +58,14 @@ def test_classyfire_declares_its_hierarchy_source():
     )
 
 
-def test_only_reactome_derives_an_organism():
-    """No set entity carries a taxonomy id, so organism is derived or null."""
-    for rule in RESOURCES:
-        if rule.name == 'Reactome':
-            assert 'R-HSA-' in rule.organism_sql
-            assert '9606' in rule.organism_sql
-        else:
-            assert rule.organism_sql == 'NULL'
+def test_no_rule_derives_an_organism_from_an_identifier():
+    """The organism is read from the source, never guessed from the id.
+
+    Deriving 9606 from an `R-HSA-` prefix gave the right answer for Reactome
+    and null for the 38 species WikiPathways covers, because a WP id names no
+    species while the source record does.
+    """
+    assert not any(hasattr(rule, 'organism_sql') for rule in RESOURCES)
 
 
 def test_rule_for_rejects_an_unknown_resource():
@@ -73,28 +73,22 @@ def test_rule_for_rejects_an_unknown_resource():
         rule_for('SMPDB')
 
 
-def test_extraction_files_carry_no_bare_percent_sign():
-    """psycopg2 interpolates the extraction files, comments included.
+def test_no_sql_file_carries_a_bare_percent_sign():
+    """psycopg2 interpolates these files, comments included.
 
     A bare `%` reads as a malformed placeholder and fails the whole load with
     "dict is not a sequence", which names neither the file nor the character.
-    Twice was enough.
+    The first version of this test covered the extraction files only, and the
+    fourth occurrence of the bug was in the shared publication file.
     """
     import re
     from pathlib import Path
 
     import omnipath_build.metsigdb.build as build
 
-    named = re.compile(r'%\((?:source_id|set_entity_type_id|'
-                       r'chemical_entity_type_id|hierarchy_source_id|'
-                       r'max_records|resource|set_type|provenance_source|'
-                       r'build_id)\)s')
-    for rule in RESOURCES:
-        path = Path(build._SQL_DIR) / rule.extraction
-        if not path.exists():
-            continue
-        stripped = named.sub('', path.read_text(encoding='utf-8'))
-        assert '%' not in stripped, (
-            f'{rule.extraction} carries a bare percent sign; '
-            f'psycopg2 reads it as a placeholder'
-        )
+    named = re.compile(r'%\([a-z_]+\)s')
+    offenders = []
+    for path in sorted(Path(build._SQL_DIR).glob('*.sql')):
+        if '%' in named.sub('', path.read_text(encoding='utf-8')):
+            offenders.append(path.name)
+    assert not offenders, f'bare percent sign in: {", ".join(offenders)}'

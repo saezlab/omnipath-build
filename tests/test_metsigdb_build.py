@@ -246,3 +246,14 @@ def test_set_size_follows_the_capped_population(conn, loaded):
         """,
     )
     assert rows == []
+
+
+def test_a_build_leaves_the_table_analyzed(conn, loaded):
+    """The build replaces every row, so stale statistics misplan every filter."""
+    rows = _rows(
+        conn,
+        "SELECT last_analyze IS NOT NULL OR last_autoanalyze IS NOT NULL "
+        "FROM pg_stat_user_tables WHERE relname = %s",
+        [TABLE],
+    )
+    assert rows and rows[0][0]
