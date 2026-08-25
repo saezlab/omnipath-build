@@ -74,6 +74,28 @@ _TRANSPORT_CLASSES = ('transport', 'ligand_receptor')
 # route around it: a compound is a metabolite or it is not.
 _GATE = {'chemical_classes': ['metabolite']}
 
+# **Two filters the retiring views applied and this recipe does not**, measured
+# on the dev4 build 2026-08-25. Neither loses a row the views delivered — their
+# output is a strict subset of this preset's, pair for pair — but a consumer
+# moving across meets a result about three times larger, so the difference is
+# stated here rather than met as a surprise.
+#
+# **Organism.** Every per-source view was human-only, filtering the protein
+# mention on taxon 9606. This preset has none, for the reason the ligand-receptor
+# drop has none: organism is a dimension a caller queries on, not a property of
+# a dataset, and a human-scoped preset cannot be widened later without
+# registering a second one. The effect is large and uneven — of STITCH's 202,669
+# metabolite pairs, 78,495 are human and 93,636 are mouse — so **a consumer
+# expecting the delivered human-only contract should pass an organism filter**.
+#
+# **Resolution status.** The combined view kept a pair only where both ends
+# resolved cleanly, and the query surface has no parameter for that, so this
+# recipe cannot express it. It costs little on most resources and a great deal
+# on two: of Cellinker's 4,653 metabolite pairs only 41 have both ends resolved,
+# and of MRC-LinkDB's 1,447 only 33. Those are pairs whose endpoints never
+# reached a canonical identifier, and serving them under a curated dataset's
+# name is the weaker half of this conversion. Tracked as a follow-up.
+
 METALINKSDB = NetworkDefinition(
     name='metalinksdb',
     kind='compound_protein',
