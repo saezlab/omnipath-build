@@ -135,12 +135,13 @@ ORDER BY resource, mentions DESC;
 \echo
 \echo ==================================================================
 \echo == 6. Translation-path reference (source id type -> Entrez anchor)
-\echo ==    Documented in analysis/README + research R13; the build
-\echo ==    collapses ENSG/ENSP into the 'Ensembl' id type.
+\echo ==    A gene identifier reaches its Entrez anchor through gene space
+\echo ==    (NCBI gene2ensembl + Ensembl BioMart), never by routing through
+\echo ==    UniProt; the build collapses ENSG/ENSP into the 'Ensembl' id type.
 \echo ==================================================================
 -- uniprot     -> Entrez : UniProt idmapping (uniprot->entrez), direct
 -- ensembl     -> Entrez : NCBI gene2ensembl (ensp/ensg->entrez, all transcripts,
 --                          772 taxa) + Ensembl BioMart (ensp->ensg, ensg->symbol)
 -- genesymbol  -> Entrez : Ensembl BioMart (symbol->ensg) -> gene2ensembl, or via UniProt
 -- entrez      -> Entrez : identity
--- (see omnipath-utils resolver_protein.sql / resolver_gene; research R13/R14)
+-- (see omnipath-utils resolver_protein.sql / resolver_gene)

@@ -36,20 +36,20 @@ class DiscoveryError(RuntimeError):
 
 
 # A source is named after its ``inputs_v2`` module, which need not name the
-# release the module actually loads (FR-047). Where a module carries a resource
+# release the module actually loads. Where a module carries a resource
 # *family* name while loading one specific *release*, the build renames the
 # source here, so the slug written to ``data_source`` names the release. This is
 # a rename, not an alias: the left-hand name must not survive anywhere.
 SOURCE_NAME_OVERRIDES: dict[str, str] = {
     # pypath.inputs_v2.connectomedb declares name='ConnectomeDB2025' and
-    # downloads connectomedb.org Current-Release (FR-032b). The bare slug would
-    # collide with a later ConnectomeDB2020 onboarding.
+    # downloads connectomedb.org Current-Release. The bare slug would collide
+    # with a later ConnectomeDB2020 onboarding.
     'connectomedb': 'connectomedb2025',
 }
 
 
 def resolve_source_name(module_name: str) -> str:
-    """The build's source slug for an ``inputs_v2`` module name (FR-047)."""
+    """The build's source slug for an ``inputs_v2`` module name."""
 
     return SOURCE_NAME_OVERRIDES.get(module_name, module_name)
 

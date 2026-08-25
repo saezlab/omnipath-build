@@ -1,4 +1,4 @@
-"""utils-backed chemical resolver export (spec 003 US4 / R7 — chemical repoint).
+"""utils-backed chemical resolver export (the chemical repoint).
 
 The native chemical resolver streams a capped/sharded PubChem SDF; this module
 instead pulls the **authoritative** chemical structure mappings from the

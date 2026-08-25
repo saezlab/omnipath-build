@@ -1,11 +1,12 @@
-"""Non-lipid chemical fallback resolution (US1 T020, research R22).
+"""Non-lipid chemical fallback resolution.
 
 When a chemical mention has no usable **structure** (InChIKey), the legacy
 resolver dropped it to the opaque ``unresolved_entity_key`` md5 hash — ~44% of
-chemicals. R22 replaces the distrusted transitive co-occurrence clustering with
-a **per-record, priority-ordered pick** (no transitivity, no false chain-merges):
-each structure-less chemical canonicalises to its single best identifier by a
-fixed priority, recording the producing ``resolution_mechanism``.
+chemicals. This module replaces the distrusted transitive co-occurrence
+clustering with a **per-record, priority-ordered pick** (no transitivity, no
+false chain-merges): each structure-less chemical canonicalises to its single
+best identifier by a fixed priority, recording the producing
+``resolution_mechanism``.
 
 Priority (this module — STAGE 1):
 
@@ -17,16 +18,16 @@ A mention's primary id is therefore never a lower-priority id when a higher one
 is present (a ChEBI+PubChem record anchors on ChEBI). Same id across resources
 merges; different ids stay distinct. **InChIKey** is intentionally absent —
 those mentions resolve through the existing direct InChIKey path and never reach
-here. **SMILES** is also intentionally absent (R9/T046): a structure-less lipid
-like ``PC(18:1_16:0)`` yields a placeholder SMILES that would collapse distinct
+here. **SMILES** is also intentionally absent: a structure-less lipid like
+``PC(18:1_16:0)`` yields a placeholder SMILES that would collapse distinct
 species, so SMILES is never a canonical merge key — it stays an attached
 identifier only.
 
-Deferred to a follow-up (R22 steps 4–5, the ~3.4% non-priority bulk): the
-**within-resource id merge** (FooDB membership→compound, lifting structure-less
-membership rows onto the structured compound that shares their FooDB id) and the
-**ChEBI-xref 1:1 translation** (CAS/KEGG→ChEBI, abort on 1→many). UniChem is not
-ingested. Until then those ids resolve via *keep-original* (a stable id, the
+Deferred to a follow-up (the ~3.4% non-priority bulk): the **within-resource
+id merge** (FooDB membership→compound, lifting structure-less membership rows
+onto the structured compound that shares their FooDB id) and the **ChEBI-xref
+1:1 translation** (CAS/KEGG→ChEBI, abort on 1→many). UniChem is not ingested.
+Until then those ids resolve via *keep-original* (a stable id, the
 ``original_id`` mechanism — still far better than the md5 hash).
 
 The result table ``chemical_fallback_resolution`` is consumed by
@@ -48,7 +49,7 @@ NAME_TYPE = cv_term_label_accession(IdentifierNamespaceCv.NAME)
 # (identifier_type label, tier [lower=preferred], resolution_mechanism).
 # Tiers are distinct so the per-mention pick is fully deterministic.
 _TIERS: tuple[tuple[str, int, str], ...] = (
-    # SMILES intentionally omitted (R9/T046) — never a canonical merge key.
+    # SMILES intentionally omitted — never a canonical merge key.
     ('Chebi:MI:0474', 2, 'chebi'),
     ('Chembl Compound:MI:0967', 3, 'chembl'),
     ('Pubchem Compound:OM:0002', 4, 'pubchem'),
@@ -97,12 +98,12 @@ def chemical_fallback_fires_sql(
 ) -> str:
     """SQL predicate: may the per-record chemical fallback supply the identity?
 
-    R10/T047 (folds 002-T070): the resolver wins at ``candidate_count = 1``; the
-    fallback (``cf``) fires **only when the resolver produced no candidates**
-    (``candidate_count`` 0 or NULL). When the resolver is genuinely ambiguous
-    (``candidate_count > 1``) the entity stays **unresolved** — the fallback must
-    not pick one of several distinct structures. This is the single source of
-    truth for the gate, consumed by ``entity_resolution_base`` and unit-tested.
+    The resolver wins at ``candidate_count = 1``; the fallback (``cf``) fires
+    **only when the resolver produced no candidates** (``candidate_count`` 0 or
+    NULL). When the resolver is genuinely ambiguous (``candidate_count > 1``)
+    the entity stays **unresolved** — the fallback must not pick one of several
+    distinct structures. This is the single source of truth for the gate,
+    consumed by ``entity_resolution_base`` and unit-tested.
     """
 
     return (
@@ -113,7 +114,7 @@ def chemical_fallback_fires_sql(
 
 def build_chemical_anchor_map(con, *, log=lambda *_: None) -> int:
     """Build ``chemical_anchor_map`` — 1:1 translations of a non-structural id to
-    a structure/ChEBI **anchor** (US1 T020 stage 2, R22 steps 4–5).
+    a structure/ChEBI **anchor** (stage 2 of the fallback).
 
     For every chemical mention that carries an InChIKey or ChEBI, map its *other*
     ids (FooDB/KEGG/PubChem/CAS/…) to that mention's anchor (InChIKey preferred,
@@ -183,7 +184,7 @@ def build_chemical_anchor_map(con, *, log=lambda *_: None) -> int:
         WHERE n_ik = 1 OR (n_ik = 0 AND n_chebi = 1)   -- 1:1 only
         """
     )
-    # Collision guard (R22 step 6): a chemical name is ambiguous if, on
+    # Collision guard: a chemical name is ambiguous if, on
     # structure-bearing mentions, it appears with >1 distinct InChIKey (e.g. a
     # trivial name shared by L-/D-/racemic forms). Such names must NOT be used as
     # a canonical identity (they would false-merge distinct molecules).
@@ -257,13 +258,13 @@ def build_chemical_fallback_resolution(con, *, log=lambda *_: None) -> int:
                 trim(ei.identifier) ~ {name_re}
                 OR trim(ei.identifier) ~ '^[0-9]+$'
                 OR length(trim(ei.identifier)) < 2
-                -- collision guard (R22 step 6): drop names that map to >1
+                -- collision guard: drop names that map to >1
                 -- distinct structure (ambiguous → never a canonical identity).
                 OR trim(ei.identifier) IN (SELECT name_val FROM chemical_ambiguous_name)
               )
             )
           UNION ALL
-          -- stage 2 (R22 steps 4-5): translate a mention's id to its 1:1
+          -- stage 2: translate a mention's id to its 1:1
           -- structure/ChEBI anchor; enters at the anchor's tier (InChIKey 0,
           -- ChEBI 2) so it beats keep-original and merges the mention onto the
           -- structured / ChEBI-keyed entity.

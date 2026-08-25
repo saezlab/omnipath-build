@@ -1,4 +1,4 @@
-"""Multi-gene protein split (FR-027, US7 T061).
+"""Multi-gene protein split.
 
 The rare *identical gene copies* case: one UniProt accession maps to several
 NCBI (Entrez) genes that produce the identical protein. Per the gene-anchored
@@ -24,7 +24,8 @@ The explosion runs in DuckDB **before** ``entity_resolution_base`` (it needs
 3. emits ``multigene_resolution`` so ``entity_resolution_base`` resolves each
    copy **directly** to its assigned gene (bypassing the ``candidate_count > 1``
    → *unresolved* branch). The retained UniProt then yields a per-gene protein
-   ``state`` via the existing T060 logic, so the same AC ends up under each gene.
+   ``state`` via the existing evidence-state logic, so the same AC ends up
+   under each gene.
 
 Restricted to the UniProt key type: the build collapses Ensembl gene/protein
 into one ``Ensembl`` id-type, so an Ensembl multi-map cannot be told apart from

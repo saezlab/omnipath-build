@@ -6,7 +6,7 @@ import os
 import tempfile
 from pathlib import Path
 
-# Configures the logging tree once, for every module in the package (R17). The
+# Configures the logging tree once, for every module in the package. The
 # import is the part that matters — without it `get_session` never runs and the
 # build's structured progress output is silent — so it must not be removed.
 from omnipath_build._session import session as _session

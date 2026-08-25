@@ -39,7 +39,7 @@ PROTEIN_IDENTIFIER_LOOKUP_SCHEMA: dict[str, pl.DataType] = {
 }
 
 UNIPROT_TYPE = cv_term_label_accession(IdentifierNamespaceCv.UNIPROT)
-# Gene-anchored model (spec 002 US7): the canonical identifier is the gene anchor
+# Gene-anchored model: the canonical identifier is the gene anchor
 # = NCBI Gene (Entrez); the protein/isoform is record-level state, not identity.
 ENTREZ_TYPE = cv_term_label_accession(IdentifierNamespaceCv.ENTREZ)
 # omnipath_utils.resolver_gene source_type slug -> build CV id-type.
@@ -95,7 +95,7 @@ def _utils_pg_url() -> str:
         raise RuntimeError(
             'OMNIPATH_BUILD_UTILS_PG_URL is not set; the gene-anchored protein '
             'resolver reads omnipath_utils.resolver_gene from the omnipath-utils '
-            'Postgres (spec 002 US7, FR-005).'
+            'Postgres.'
         )
     return url
 
@@ -106,10 +106,10 @@ def _protein_identifier_rows(
     """Yield gene-anchored resolver rows from ``omnipath_utils.resolver_gene``.
 
     Each row maps a source identifier (gene symbol / Entrez / Ensembl / UniProt)
-    to its **NCBI Gene (Entrez) anchor** for its organism (US7) — the canonical
+    to its **NCBI Gene (Entrez) anchor** for its organism — the canonical
     collapsing identity. The asserted protein/isoform becomes record-level state
-    downstream, not here. Read directly from the utils Postgres (FR-005/R21),
-    per-taxon so the ``resolver_gene`` taxon filter pushes into the covering index.
+    downstream, not here. Read directly from the utils Postgres, per-taxon so the
+    ``resolver_gene`` taxon filter pushes into the covering index.
     ``primary_uniprot`` carries the Entrez gene id (kept name = downstream
     contract; it is the canonical anchor, not a UniProt).
     """
@@ -142,7 +142,7 @@ def _protein_identifier_rows(
 
 
 def _global_uniprot_resolver_enabled(flag: bool | None) -> bool:
-    """Whether to fold in the taxon-agnostic UniProt/Entrez slice (T069/R25).
+    """Whether to fold in the taxon-agnostic UniProt/Entrez slice.
 
     Off by default (the ~24M-row global map would slow capped dev loops); enabled
     explicitly for full/showcase builds via ``OMNIPATH_BUILD_GLOBAL_UNIPROT_RESOLVER``
@@ -159,7 +159,7 @@ def _global_uniprot_resolver_enabled(flag: bool | None) -> bool:
 
 
 def _global_protein_lookup_df() -> pl.DataFrame:
-    """Taxon-agnostic UniProt/Entrez -> Entrez gene rows (T069/R25/US7).
+    """Taxon-agnostic UniProt/Entrez -> Entrez gene rows.
 
     Reads ``omnipath_utils.resolver_gene_protein_global`` (the global UniProt->Entrez
     map, ~24M rows over ~50k taxa) so UniProt-referenced proteins that arrive with
@@ -213,7 +213,7 @@ def _single_taxonomy_id(values: set[str] | None) -> str | None:
 def _gene_protein_representative_rows(
     taxonomy_ids: Iterable[int | str] | None = None,
 ) -> Iterable[dict]:
-    """Yield per-gene representative UniProt rows (FR-033, T059).
+    """Yield per-gene representative UniProt rows.
 
     From ``omnipath_utils.resolver_protein`` (Entrez → UniProt, already
     SwissProt-preferred), grouped per gene: ``representative_uniprot`` = a reviewed
@@ -287,8 +287,8 @@ def materialize_proteins(
 
     When ``include_global_uniprot`` (env ``OMNIPATH_BUILD_GLOBAL_UNIPROT_RESOLVER``)
     is on, the per-taxon ``DEFAULT_ORGANISMS`` rows are augmented with the
-    taxon-agnostic global UniProt/Entrez slice (T069/R25) so UniProt-referenced
-    proteins with no taxonomy still gene-anchor.
+    taxon-agnostic global UniProt/Entrez slice so UniProt-referenced proteins
+    with no taxonomy still gene-anchor.
     """
 
     output_dir = (
@@ -328,7 +328,7 @@ def materialize_proteins(
     activate_raw_download_data_dir()
     extra_lookup_df = None
     if _global_uniprot_resolver_enabled(include_global_uniprot):
-        print('[resolver] uniprot global taxon-agnostic slice ON (T069)', flush=True)
+        print('[resolver] uniprot global taxon-agnostic slice ON', flush=True)
         extra_lookup_df = _global_protein_lookup_df()
         print(
             f'[resolver] uniprot global slice rows={extra_lookup_df.height}',
@@ -385,8 +385,8 @@ def _split_protein_identifier_lookup(
         )
 
     if extra_lookup_df is not None and extra_lookup_df.height:
-        # the global slice keys on UniProt + Entrez (T069); make sure both id
-        # types reach the identifier_type parquet even if no per-taxon rows did.
+        # the global slice keys on UniProt + Entrez; make sure both id types
+        # reach the identifier_type parquet even if no per-taxon rows did.
         type_names.update({UNIPROT_TYPE, ENTREZ_TYPE})
 
     identifier_types = pl.DataFrame(

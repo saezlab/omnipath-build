@@ -116,7 +116,7 @@ UNIPROT_AC_REGEX = (
     '^[A-NR-Z][0-9]([A-Z][A-Z0-9]{2}[0-9]){1,2}$|^[OPQ][0-9][A-Z0-9]{3}[0-9]$'
 )
 # protein molecular_type_id (matches the entity_evidence_resolution CASE seed);
-# the per-record asserted UniProt form is a protein state (FR-027b, T060).
+# the per-record asserted UniProt form is a protein state.
 PROTEIN_MOLECULAR_TYPE_ID = 2
 STANDARD_INCHI_KEY_TYPE = cv_term_label_accession(
     IdentifierNamespaceCv.STANDARD_INCHI_KEY
@@ -1013,16 +1013,15 @@ def _create_duckdb_content_uuid_macro(con: duckdb.DuckDBPyConnection) -> None:
         )
         """
     )
-    # The interaction header's identity (008 data model §1, FR-002): a content
-    # hash of the **sorted participant multiset** and the interaction class.
-    # Sorting is what makes it endpoint-independent — the same participants in
-    # any input order name the same interaction, so A→B and B→A are two facts of
-    # one interaction — and keeping it a multiset rather than a set keeps a
-    # homodimer distinct from a single participant. The participants are cast to
-    # lowercase text before sorting so the payload is byte-identical to the one
-    # the Postgres derive step builds (`db/derived_tables.py`,
-    # `interaction_content_uuid_sql`); the two engines must mint the same uuid
-    # for the same content.
+    # The interaction header's identity: a content hash of the **sorted
+    # participant multiset** and the interaction class. Sorting is what makes
+    # it endpoint-independent — the same participants in any input order name
+    # the same interaction, so A→B and B→A are two facts of one interaction —
+    # and keeping it a multiset rather than a set keeps a homodimer distinct
+    # from a single participant. The participants are cast to lowercase text
+    # before sorting so the payload is byte-identical to the one the Postgres
+    # derive step builds (`db/derived_tables.py`, `interaction_content_uuid_sql`);
+    # the two engines must mint the same uuid for the same content.
     con.execute(
         """
         CREATE OR REPLACE MACRO interaction_content_key(
@@ -1255,9 +1254,9 @@ def _create_duckdb_resolver_views(
         {mirna_canonical_sql}
         """
     )
-    # Per-gene representative UniProt (FR-033, T059). Guarded so resolver
-    # snapshots predating the gene_protein_representative output still load; the
-    # canonicalize step skips the table when the view is absent.
+    # Per-gene representative UniProt. Guarded so resolver snapshots predating
+    # the gene_protein_representative output still load; the canonicalize step
+    # skips the table when the view is absent.
     if gene_protein_representative_path.exists():
         con.execute(
             f"""
@@ -2387,14 +2386,14 @@ def _build_resolver_lookup(
     # (Rhea/Brenda/TCDB/ChEMBL reference UniProt without an organism): the
     # per-taxon resolver_gene only materializes a subset of organisms, so a
     # UniProt from an unmaterialized organism has no resolver_gene row at all.
-    # resolver_gene_protein_global covers uniprot->entrez across ALL taxa (T069).
-    # It DOES carry the gene's real ncbi_tax_id (entrez->taxon is 1:1), so fetch
-    # WITH taxonomy (has_taxonomy=True): the no-taxon evidence still matches (the
-    # keyed join keeps rows where the evidence taxon IS NULL), and the resolved
-    # gene gets its concrete taxon. Fetching it taxon-agnostically (NULL) instead
-    # created a second, NULL-taxon copy of every gene, colliding with the real-
-    # taxon copy of the same entrez and breaking the entity_evidence_resolution
-    # primary key at derive time.
+    # resolver_gene_protein_global covers uniprot->entrez across ALL taxa. It
+    # DOES carry the gene's real ncbi_tax_id (entrez->taxon is 1:1), so fetch
+    # WITH taxonomy (has_taxonomy=True): the no-taxon evidence still matches
+    # (the keyed join keeps rows where the evidence taxon IS NULL), and the
+    # resolved gene gets its concrete taxon. Fetching it taxon-agnostically
+    # (NULL) instead created a second, NULL-taxon copy of every gene, colliding
+    # with the real- taxon copy of the same entrez and breaking the
+    # entity_evidence_resolution primary key at derive time.
     resolver_rows.extend(
         _fetch_live_utils_rows_for_keys(
             url=url,
@@ -2808,15 +2807,15 @@ def _canonicalize_loaded_duckdb(
         """,
         [PROTEIN_ENTITY_TYPE],
     )
-    # Multi-gene protein split (FR-027, T061): a UniProt mapping to >1 gene is
-    # duplicated 1:1 per gene *before* resolution, so the existing 1:1 machinery
-    # resolves each copy to its gene. Rewrites the raw tables in place + leaves
+    # Multi-gene protein split: a UniProt mapping to >1 gene is duplicated 1:1
+    # per gene *before* resolution, so the existing 1:1 machinery resolves each
+    # copy to its gene. Rewrites the raw tables in place + leaves
     # `multigene_resolution` for entity_resolution_base's direct-resolution arm.
     explode_multi_gene_protein_mentions(con)
-    # Non-lipid chemical fallback (T020/R22): best non-structure id per chemical
-    # mention, consumed by entity_resolution_base's unresolved branch below.
-    # Stage 2 anchor map (1:1 id->structure/ChEBI) feeds the fallback's
-    # translated candidates, so it must be built first.
+    # Non-lipid chemical fallback: best non-structure id per chemical mention,
+    # consumed by entity_resolution_base's unresolved branch below. Stage 2
+    # anchor map (1:1 id->structure/ChEBI) feeds the fallback's translated
+    # candidates, so it must be built first.
     build_chemical_anchor_map(con)
     build_chemical_fallback_resolution(con)
     con.execute(
@@ -3079,8 +3078,8 @@ def _canonicalize_loaded_duckdb(
             ON direct.source = ee.source
            AND direct.entity_evidence_id = ee.entity_evidence_id
           WHERE direct.entity_evidence_id IS NULL
-            -- multi-gene protein copies (T061) resolve directly to their
-            -- assigned gene below, not through the candidate/unresolved path.
+            -- multi-gene protein copies resolve directly to their assigned
+            -- gene below, not through the candidate/unresolved path.
             AND NOT EXISTS (
               SELECT 1 FROM multigene_resolution mr
               WHERE mr.source = ee.source
@@ -3221,12 +3220,12 @@ def _canonicalize_loaded_duckdb(
             WHEN {protein_uniprot_selftype_fires} THEN st.taxonomy_id
             ELSE ee.taxonomy_id
           END AS taxonomy_id,
-          -- Chemical fallback (T020/R22): when the structure + resolver-
-          -- candidate paths leave a chemical unresolved, take its best
-          -- non-structure id by priority (cf) instead of the md5 hash.
-          -- Gated (R10/T047): cf fires ONLY when the resolver produced no
-          -- candidates ({cf_fires}); candidate_count > 1 (ambiguous) stays
-          -- unresolved — never a fallback pick over several distinct structures.
+          -- Chemical fallback: when the structure + resolver-candidate paths
+          -- leave a chemical unresolved, take its best non-structure id by
+          -- priority (cf) instead of the md5 hash. Gated: cf fires ONLY when
+          -- the resolver produced no candidates ({cf_fires}); an ambiguous
+          -- candidate_count > 1 stays unresolved — never a fallback pick over
+          -- several distinct structures.
           CASE
             WHEN rcs.candidate_count = 1 THEN rcs.canonical_identifier_type_id
             WHEN {protein_fallback_fires}
@@ -3288,8 +3287,8 @@ def _canonicalize_loaded_duckdb(
           ON cf.source = ee.source
          AND cf.entity_evidence_id = ee.entity_evidence_id
         UNION ALL
-        -- Multi-gene protein copies (T061): resolve each duplicated mention
-        -- directly to its assigned gene (entity_type already GENE in
+        -- Multi-gene protein copies: resolve each duplicated mention directly
+        -- to its assigned gene (entity_type already GENE in
         -- multigene_resolution); molecular_entity_type stays the protein
         -- evidence type so the state layer records the UniProt per gene.
         SELECT
@@ -3989,8 +3988,8 @@ def _canonicalize_loaded_duckdb(
              all_entity.canonical_identifier_type_id
          AND source_rows.canonical_identifier = all_entity.canonical_identifier
         LEFT JOIN (
-          -- representative resolution_mechanism per canonical entity (FR-026):
-          -- when several mentions resolve to the same entity by different
+          -- representative resolution_mechanism per canonical entity: when
+          -- several mentions resolve to the same entity by different
           -- mechanisms, keep the most authoritative one (lower priority wins).
           SELECT
             entity_type,
@@ -4073,10 +4072,10 @@ def _canonicalize_loaded_duckdb(
         SELECT * FROM batch_entity_candidate
         """
     )
-    # gene_protein_representative (FR-033, T059): 1:1 gene entity -> chosen
-    # representative UniProt, joined by Entrez anchor. Guarded on the resolver
-    # source view (older resolver snapshots omit it) — empty table otherwise so
-    # the bulk-copy path stays uniform.
+    # gene_protein_representative: 1:1 gene entity -> chosen representative
+    # UniProt, joined by Entrez anchor. Guarded on the resolver source view
+    # (older resolver snapshots omit it) — empty table otherwise so the
+    # bulk-copy path stays uniform.
     gene_protein_representative_src_exists = bool(
         con.execute(
             """
@@ -4421,14 +4420,15 @@ def _canonicalize_loaded_duckdb(
           ON mtt.entity_type = er.entity_type
         """
     )
-    # --- molecular state (heavy opt-in tier, FR-027b/T060) ----------------
+    # --- molecular state (the heavy opt-in tier) -----------------------------
     # The per-record asserted UniProt AC/isoform a source gave for a
-    # gene-resolved protein mention, captured as a `state` (a bag of components)
-    # linked to the evidence via `evidence_state` (one-to-many). Only protein
-    # records that carry a specific UniProt AC get a state — bare-symbol mentions
-    # already have molecular_type=protein on entity_evidence_resolution (the
-    # cheap tier, FR-027a) and need no state row. Isoforms (``P12345-2``) split
-    # into a ``uniprot`` base-AC component plus an ``isoform`` component.
+    # gene-resolved protein mention, captured as a `state` (a bag of
+    # components) linked to the evidence via `evidence_state` (one-to-many).
+    # Only protein records that carry a specific UniProt AC get a state —
+    # bare-symbol mentions already have molecular_type=protein on
+    # entity_evidence_resolution (the cheap tier) and need no state row.
+    # Isoforms (``P12345-2``) split into a ``uniprot`` base-AC component plus
+    # an ``isoform`` component.
     con.execute(
         f"""
         CREATE TABLE evidence_state_link AS
@@ -5942,12 +5942,12 @@ def _bulk_copy_canonical(
         """,
         source_id=source_id,
     )
-    # gene_protein_representative (FR-033, T059): global 1:1 table, copied like
-    # `entity`. The staged pipeline canonicalises per source-shard, so a gene
-    # entity recurs across shards — dedup against the rows already in Postgres
-    # (mirrors the `entity` copy). uniprot_all is rendered as a Postgres array
-    # literal so the CSV round-trip parses back into text[] (UniProt ACs need no
-    # element quoting).
+    # gene_protein_representative: global 1:1 table, copied like `entity`. The
+    # staged pipeline canonicalises per source-shard, so a gene entity recurs
+    # across shards — dedup against the rows already in Postgres (mirrors the
+    # `entity` copy). uniprot_all is rendered as a Postgres array literal so
+    # the CSV round-trip parses back into text[] (UniProt ACs need no element
+    # quoting).
     existing_gene_protein_representative = _duckdb_pg_table(
         schema,
         'gene_protein_representative',
@@ -5978,9 +5978,9 @@ def _bulk_copy_canonical(
           WHERE existing.entity_id IS NULL
         """,
     )
-    # state / state_component (FR-027b, T060): content-hashed global tables —
-    # identical (gene, uniprot, isoform) forms across shards/sources collapse to
-    # one state. Dedup against the rows already in Postgres (like `entity`).
+    # state / state_component: content-hashed global tables — identical (gene,
+    # uniprot, isoform) forms across shards/sources collapse to one state.
+    # Dedup against the rows already in Postgres (like `entity`).
     existing_state = _duckdb_pg_table(schema, 'state')
     _copy_duckdb_query_to_postgres(
         con,
@@ -6019,8 +6019,8 @@ def _bulk_copy_canonical(
           WHERE existing.state_id IS NULL
         """,
     )
-    # evidence_state (FR-027b, T060): one-to-many assignment of states to source
-    # records — partitioned by source_id like entity_evidence_resolution.
+    # evidence_state: one-to-many assignment of states to source records —
+    # partitioned by source_id like entity_evidence_resolution.
     _copy_source_partition(
         con,
         database_url=database_url,

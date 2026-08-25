@@ -54,9 +54,8 @@ from omnipath_build.resolver.mapping_tables import (
 
 
 # The derive orchestration logs through the package logger, which
-# `omnipath_build._session` configured on import (research R17). Bare `print`
-# call sites elsewhere in the build keep what they have; this cycle does not
-# sweep them.
+# `omnipath_build._session` configured on import. Bare `print` call sites
+# elsewhere in the build keep what they have; this cycle does not sweep them.
 #
 # The name is spelled out rather than taken from `__name__`: the build runs
 # this module as `python -m omnipath_build.cli`, where `__name__` is
@@ -228,10 +227,10 @@ def main(argv: list[str] | None = None) -> int:
         default=True,
         help=(
             'Project the canonical graph into interaction/interaction_party/'
-            'interaction_fact_resource (008 T013/T014). Runs after the '
-            'interaction-class classification, which fills the predicate map '
-            'it reads. Nothing is folded: the collapse of a resource scope is '
-            'what a query produces (R24).'
+            'interaction_fact_resource. Runs after the interaction-class '
+            'classification, which fills the predicate map it reads. Nothing '
+            'is folded: the collapse of a resource scope is what a query '
+            'produces.'
         ),
     )
     derive.add_argument(
@@ -706,7 +705,7 @@ def _derive_interactions(
     schema: str = 'public',
     progress: bool = True,
 ) -> InteractionDeriveStats:
-    """The interaction projection as a registered derive step (T013/T014/T015).
+    """The interaction projection as a registered derive step.
 
     Runs after ``classify_interaction_class``, which fills the
     ``vocab_relation_predicate.interaction_class_id`` map the projection reads,
@@ -714,10 +713,10 @@ def _derive_interactions(
     ``interactions=False`` because the step is registered here.
 
     A failure is logged at error level in the structured derive shape and then
-    **re-raised** (T015a): unlike the network views this is a phase of the
-    build, not a supplementary layer, so a broken projection must abort the
-    derive with a non-zero exit rather than pass as a successful build
-    (Principle V, no silently skipped phase).
+    **re-raised**: unlike the network views this is a phase of the build, not a
+    supplementary layer, so a broken projection must abort the derive with a
+    non-zero exit rather than pass as a successful build. A build that reports
+    success must not have skipped a phase in silence.
     """
     step_started = time.perf_counter()
     _derive_log('interactions_start', schema=schema)
@@ -755,17 +754,18 @@ def _interaction_derive_cost(
     """What the interaction projection cost this run, for the build manifest.
 
     Read off the ``InteractionDeriveStats`` the derive step already returned
-    rather than re-derived. **Seconds and rows are reported per step** (T020b),
-    each taken from ``step_seconds``, rather than the projection's whole wall
-    clock being attributed to one table — that is the number FR-036's ceiling
-    will be argued against, and a step total cannot say which step overran.
+    rather than re-derived. **Seconds and rows are reported per step**, each
+    taken from ``step_seconds``, rather than the projection's whole wall clock
+    being attributed to one table — these are the numbers the projection's
+    share of the build-cost budget is argued against, and a step total cannot
+    say which step overran.
 
-    **Amended by R24**: the projection writes ``interaction_fact_resource`` and
-    stops, so the ``interaction_fact_combined`` line is gone with the table it
-    priced. The ``scope_cost`` its neighbour used to hand the manifest went with
-    it — that neighbour reported one scope, the all-resources collapse, and the
-    fold is a query now and materialises nothing, so this build has no scope to
-    report rather than a scope reported as free.
+    The projection writes ``interaction_fact_resource`` and stops, so the
+    ``interaction_fact_combined`` line is gone with the table it priced. The
+    ``scope_cost`` its neighbour used to hand the manifest went with it — that
+    neighbour reported one scope, the all-resources collapse, and the fold is a
+    query now and materialises nothing, so this build has no scope to report
+    rather than a scope reported as free.
 
     Returns ``None`` when the projection did not run, so ``--no-interactions``
     records no cost instead of claiming zeros.
@@ -802,11 +802,11 @@ def _interaction_deferral_cost(
 ) -> dict[str, object] | None:
     """What deferring the constraints over the load bought, for the manifest.
 
-    Read off the record the derive step already returned (T013j), and handed
-    to ``emit_build_manifest`` unchanged: the normalising is that function's
-    job (T013k), including the rule that an unmeasured field stays ``null``
-    rather than becoming a zero, so that a build which ran without the deferral
-    and a deferral that saved nothing do not read alike.
+    Read off the record the derive step already returned, and handed to
+    ``emit_build_manifest`` unchanged: the normalising is that function's job,
+    including the rule that an unmeasured field stays ``null`` rather than
+    becoming a zero, so that a build which ran without the deferral and a
+    deferral that saved nothing do not read alike.
 
     Returns ``None`` when the projection did not run at all, so
     ``--no-interactions`` records no deferral rather than claiming one that
@@ -830,10 +830,11 @@ def _is_partial_build(max_records: object) -> bool:
 def _derive_log(event: str, _level: int = logging.INFO, **fields: object) -> None:
     """One structured derive-orchestration line.
 
-    The ``event=… key=value`` shape is a contract, not a preference: T013c's
-    sign-conflict figures and T020's cost report are read out of this
-    ``--progress`` output. Only the sink changed, from ``print`` to the package
-    logger (research R17), which `omnipath_build._session` configures.
+    The ``event=… key=value`` shape is a contract, not a preference: the
+    sign-conflict summary and the derive-cost figures the build manifest
+    records are read out of this ``--progress`` output. Only the sink changed,
+    from ``print`` to the package logger, which `omnipath_build._session`
+    configures.
     """
     details = ' '.join(f'{key}={value}' for key, value in fields.items())
     _logger.log(

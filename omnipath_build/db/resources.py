@@ -51,7 +51,7 @@ def emit_build_manifest(
     scope_cost: Mapping[str, Any] | Sequence[Mapping[str, Any]] | None = None,
     deferral_cost: Mapping[str, Any] | None = None,
 ) -> BuildManifestStats:
-    """Write the single self-describing ``build_manifest`` row (Milestone D).
+    """Write the single self-describing ``build_manifest`` row.
 
     ``build_id`` is the SHA-256 of the canonical sorted-key JSON of
     ``{package_commits, resources}`` (12 hex chars) — reproducible for identical
@@ -63,18 +63,18 @@ def emit_build_manifest(
     and rows per step (record fact, assay, party, reaction projection,
     intercell), either as ``{step: {seconds, rows}}`` or as a sequence of such
     records. The **interaction table is named apart** under
-    ``interaction_tables`` as ``record`` (T020b), so the cost FR-036's ceiling is
+    ``interaction_tables`` as ``record``, so the cost the derive-time budget is
     argued against is readable without knowing which step wrote the table.
 
     ``scope_cost`` is what materialising each query scope cost — seconds, rows
     and whether it was materialised at all, per scope — either as
-    ``{scope: {...}}`` or as a sequence of ``{scope, ...}`` records. FR-050 wants
-    this for **every** scope measured, so that declining to materialise a scope
-    stays an available answer to a cost overrun.
+    ``{scope: {...}}`` or as a sequence of ``{scope, ...}`` records. It is
+    recorded for **every** scope measured, so that declining to materialise a
+    scope stays an available answer to a cost overrun.
 
     ``deferral_cost`` is what deferring the foreign keys and the secondary
-    indexes over the load bought (T013k, R23): the seconds it saved, and the
-    seconds the drop, the restore and the revalidation cost — see
+    indexes over the load bought: the seconds it saved, and the seconds the
+    drop, the restore and the revalidation cost — see
     :func:`_interactions_deferral_cost`. All three are optional: a build that
     recorded none of them still emits a manifest.
 
@@ -161,11 +161,12 @@ def emit_build_manifest(
         translation_tables = _translation_tables_used(cur, schema)
         coverage = _canonicalization_coverage(cur, schema)
         interactions_derive_cost = _interactions_derive_cost(derive_cost, scope_cost)
-        # The sign-conflict measurement (T013c, FR-044b) rides next to the
-        # cost, read from what the derive step recorded rather than passed in,
-        # so it reaches the manifest without the orchestration having to
-        # forward it. It is a measurement of the build, never part of its
-        # identity, so it lands in the same non-hashed column.
+        # The sign-conflict measurement — how often a collapsed row hides
+        # resources disagreeing on sign — rides next to the cost, read from
+        # what the derive step recorded rather than passed in, so it reaches
+        # the manifest without the orchestration having to forward it. It is a
+        # measurement of the build, never part of its identity, so it lands in
+        # the same non-hashed column.
         sign_conflict = _interaction_sign_conflict(cur, schema)
         if sign_conflict is not None:
             interactions_derive_cost = {
@@ -288,11 +289,11 @@ def _canonicalization_coverage(
     return {'total': total, 'by_status': by_status, 'by_reason': by_reason}
 
 
-# The one interaction table the derive writes (T020b, R24): one row per
-# (subject, object, class, resource) plus the assertion signature. It is named
-# apart from the step list because it is the table FR-036's ceiling is argued
-# against, and a reader should not have to know which step wrote it. R24 removed
-# the collapse `interaction_fact_combined`, so there is no second half to name
+# The one interaction table the derive writes: one row per (subject, object,
+# class, resource) plus the assertion signature. It is named apart from the
+# step list because it is the table the derive-time budget is argued against,
+# and a reader should not have to know which step wrote it. The collapse
+# `interaction_fact_combined` was removed, so there is no second half to name
 # and no all-resources scope to reserve a name for — the fold is what a query
 # does now, and it materialises nothing.
 INTERACTION_RECORD_STEP = 'interaction_fact_resource'
@@ -362,10 +363,10 @@ def _interactions_derive_cost(
         knows, unknown steps last. Fed from ``{step: {seconds, rows}}`` or a
         sequence of ``{step, seconds, rows}`` records.
     ``interaction_tables``
-        the interaction table named apart from the step list (T020b) — see
+        the interaction table named apart from the step list — see
         :func:`_interaction_table_cost`.
     ``scopes``
-        what each measured query scope cost to materialise (FR-050) — see
+        what each measured query scope cost to materialise — see
         :func:`_scope_materialisation_cost`.
 
     Returns ``None`` when nothing was reported at all, so a build that ran no
@@ -417,7 +418,7 @@ def _interactions_derive_cost(
 def _interaction_table_cost(
     steps: Sequence[Mapping[str, Any]],
 ) -> dict[str, Any] | None:
-    """The interaction table's cost, named apart from the step list (T020b).
+    """The interaction table's cost, named apart from the step list.
 
     ``{'record': {table, seconds, rows}}`` — ``record`` is
     ``interaction_fact_resource``, the one table the projection writes. A
@@ -428,10 +429,10 @@ def _interaction_table_cost(
     Returns ``None`` when no step wrote the table, so a build that projected no
     interactions says nothing rather than naming a table it does not hold.
 
-    **Amended by R24**: the collapse half and the ``total_seconds`` that summed
-    the two halves are gone with the table they described. A ``collapse: null``
-    would read as a table that ran unmeasured, which is a claim about a build
-    that has no such table.
+    **The collapse half is gone**, together with the ``total_seconds`` that
+    summed the two halves, because the table they described was removed. A
+    ``collapse: null`` would read as a table that ran unmeasured, which is a
+    claim about a build that has no such table.
     """
 
     entry = next(
@@ -456,7 +457,7 @@ def _interaction_table_cost(
 def _scope_materialisation_cost(
     scope_cost: Mapping[str, Any] | Sequence[Mapping[str, Any]] | None,
 ) -> list[dict[str, Any]] | None:
-    """What each query scope cost to materialise (FR-050).
+    """What each query scope cost to materialise.
 
     Accepts ``{scope: {...}}`` or a sequence of ``{scope, ...}`` records and
     normalises each to ``{scope, table, materialised, seconds, rows, sources}``:
@@ -527,8 +528,9 @@ def _scope_materialisation_cost(
 
 
 # What a deferred load reports, read back by kind: seconds as floats, object
-# counts as ints, the two claims as booleans. The names are the contract T013j
-# fills; a field it did not measure is simply absent from what it hands over.
+# counts as ints, the two claims as booleans. The names are the contract the
+# derive's deferred load fills; a field it did not measure is simply absent
+# from what it hands over.
 _DEFERRAL_SECONDS = (
     'seconds_saved',
     'drop_seconds',
@@ -549,9 +551,9 @@ _DEFERRAL_FLAGS = ('deferred', 'catalogue_unchanged')
 def _interactions_deferral_cost(
     deferral_cost: Mapping[str, Any] | None,
 ) -> dict[str, Any] | None:
-    """What deferring the constraints over the interaction load bought (T013k).
+    """What deferring the constraints over the interaction load bought.
 
-    R23 takes the deferral: the load runs with the 13 foreign keys and the 18
+    The deferral is taken: the load runs with the 13 foreign keys and the 18
     secondary indexes off and puts them back validated, at 709.7 s against
     1,814.7 s, with revalidation set-based at 44.6 s against 726.3 s of per-row
     triggers. Recording it per build is what makes a regression in the deferral
@@ -573,7 +575,7 @@ def _interactions_deferral_cost(
         skipped, and a deferral that returns a `NOT VALID` key has saved
         nothing.
     ``catalogue_unchanged``
-        whether the catalogue on the far side matched the near side (T013i).
+        whether the catalogue on the far side matched the near side.
 
     Every field is ``None`` when the producer did not report it, and the whole
     record is ``None`` when it reported nothing readable — **a build that ran
@@ -935,7 +937,12 @@ def _resource_row(
 
 
 def _validate_resource_names(rows: list[dict[str, Any]]) -> None:
-    """Flag resource-name rule violations at build time (Milestone M, FR-045)."""
+    """Flag resource-name rule violations at build time.
+
+    The ``_`` character is reserved for ``primary_secondary`` composite labels
+    (``PhosphoSite_SIGNOR``), so no single resource may carry one in any of its
+    three names; the slug must also be lowercase alphanumeric and space-free.
+    """
     try:
         from pypath.inputs_v2.resource_names import validate_resource_name
     except ImportError:
@@ -966,7 +973,7 @@ class _FallbackNames(NamedTuple):
 
 
 def _resource_names(config: object, source: str):
-    """Resolve the resource 3-name model (Milestone M).
+    """Resolve the resource 3-name model.
 
     Prefers the resource's own ``ResourceConfig.names()`` — which resolves via the
     canonical ``ResourceCv`` slug against the authoritative ``resources.json`` —

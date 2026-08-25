@@ -143,7 +143,7 @@ def run_sources(
             {f'chemicals_{key}': value for key, value in result.items()}
         )
 
-    # utils-backed chemical export (R7): full PubChem cid→InChIKey + UniChem
+    # utils-backed chemical export: full PubChem cid→InChIKey + UniChem
     # cross-refs from the omnipath-utils Postgres, written into the same
     # chemicals/lookup partition. Skipped (warn, not fail) when the utils URL is
     # unset — the native sources above still provide a capped fallback.

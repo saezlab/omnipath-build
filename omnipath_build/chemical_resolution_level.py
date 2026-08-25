@@ -1,4 +1,4 @@
-"""Chemical resolution-level grouping (spec-003 Phase 6; folds 002-T027/28/29).
+"""Chemical resolution-level grouping.
 
 Resolved chemical entities are grouped into **selectable structural-specificity
 levels** derived purely from the InChIKey block structure — *without RDKit*
@@ -141,7 +141,7 @@ def ensure_chemical_resolution_schema(
     cur: psycopg2.extensions.cursor,
     schema: str = 'public',
 ) -> None:
-    """Create the resolution-level tables and (re)seed ``*_level`` (T031)."""
+    """Create the resolution-level tables and (re)seed ``*_level``."""
 
     schema_id = sql.Identifier(schema)
     cur.execute(
@@ -489,7 +489,7 @@ def rebuild_chemical_resolution_levels(
 
 @dataclass(frozen=True)
 class ChemicalAmbiguousNameStats:
-    """Summary counts from the ambiguous-name→candidate build (T030)."""
+    """Summary counts from the ambiguous-name→candidate build."""
 
     ambiguous_names: int = 0
     candidate_links: int = 0
@@ -501,17 +501,17 @@ def rebuild_chemical_ambiguous_name_candidates(
     schema: str = 'public',
     progress: bool = False,
 ) -> ChemicalAmbiguousNameStats:
-    """Attach ambiguous trivial names to their candidate structures (T030).
+    """Attach ambiguous trivial names to their candidate structures.
 
     A trivial Name/Synonym borne by **>1 distinct chemical structure** (full
     InChIKey) is ambiguous (e.g. ``alanine`` → L-/D-/racemic). Rather than
     collapsing distinct compounds under the name or dropping it, link the name to
     **each** candidate structure entity (``resolution_mechanism =
     'ambiguous_name_class'``) — the destination for ambiguous/variable chemicals
-    now that the SMILES tier is gone (R9) and the fallback abstains on ambiguity
-    (R10). Broad ChEBI **class** nodes are retained separately as ontology nodes
+    now that the SMILES tier is gone and the fallback abstains on ambiguity.
+    Broad ChEBI **class** nodes are retained separately as ontology nodes
     (``entity_ontology_relation``, class → member edges) — this builds only the
-    name→candidate attachment. Folds 002-T021.
+    name→candidate attachment.
 
     Reads ``chemical_resolution_group_member`` (full level) for the structure
     entities + their InChIKeys, so it must run AFTER

@@ -68,9 +68,9 @@ DROP MATERIALIZED VIEW IF EXISTS metalinksdb_chembl_relations;
 CREATE MATERIALIZED VIEW metalinksdb_chembl_relations AS
 WITH
 
--- CURATION (003 US1, FR-001/002, decided 2026-06-15): keep only the CANONICAL
--- drug-target set = ChEMBL **mechanism-of-action** pairs (`Chembl Mechanism:OM:0227`
--- annotation), ~6,940 pairs. NON-HUMAN INCLUDED (no ncbi_tax_id gate).
+-- CURATION (decided 2026-06-15): keep only the CANONICAL drug-target set =
+-- ChEMBL **mechanism-of-action** pairs (`Chembl Mechanism:OM:0227` annotation),
+-- ~6,940 pairs. NON-HUMAN INCLUDED (no ncbi_tax_id gate).
 -- Rationale: pChEMBL affinity thresholds flood the view (>6 = 1.6M, even >9 = 127k),
 -- and MoA + pChEMBL sit in different ChEMBL tables (their AND = 0) — so the curated
 -- contribution is the MoA mechanism set, not affinity-filtered assays. (CTE name
@@ -268,10 +268,10 @@ DROP MATERIALIZED VIEW IF EXISTS metalinksdb_bindingdb_relations;
 CREATE MATERIALIZED VIEW metalinksdb_bindingdb_relations AS
 WITH
 
--- CURATION (003 US1, FR-002): keep only high-affinity BindingDB pairs
--- (pChEMBL >= 6) whose protein resolves to a gene. NON-HUMAN INCLUDED (no
--- taxonomy_id gate). Uses the Pchembl Value annotation (present on ~707k rows);
--- TODO(FR-009): also admit rows that lack pChEMBL but carry Ic50/Ki/Kd/Ec50 in
+-- CURATION: keep only high-affinity BindingDB pairs (pChEMBL >= 6) whose
+-- protein resolves to a gene. NON-HUMAN INCLUDED (no taxonomy_id gate). Uses
+-- the Pchembl Value annotation (present on ~707k rows);
+-- TODO: also admit rows that lack pChEMBL but carry Ic50/Ki/Kd/Ec50 in
 -- nM via the derived pChEMBL = 9 - log10(nM) (censored/non-positive excluded).
 -- (CTE name kept `human_re` for minimal-diff — now the curated set.)
 human_re AS (
@@ -1017,8 +1017,9 @@ CREATE INDEX ON metalinksdb_tcdb_relations (protein_uniprot);
 
 -- ────────────────────────────────────────────────────────────────────────────
 -- New sources added by 004-metalinksdb-view: RECON3D, Rhea, Human-GEM (transport),
--- CellPhoneDB, NeuronChat (signaling). See research.md for the data-shape findings
--- (Transport:OM:0035 entity type, Human-GEM loaded as 'metatlas', etc).
+-- CellPhoneDB, NeuronChat (signaling). Their data shapes differ from the older
+-- sources: transport edges arrive under the Transport:OM:0035 entity type, and
+-- Human-GEM is loaded under the source name 'metatlas'.
 -- ────────────────────────────────────────────────────────────────────────────
 
 -- ────────────────────────────────────────────────────────────────────────────
@@ -1200,11 +1201,12 @@ CREATE INDEX ON metalinksdb_rhea_relations (compound_canonical_id);
 -- Human-GEM-shaped -- same Transport/Reaction entity-type split as RECON3D,
 -- taxonomy_id NULL throughout, single-organism model). All get_source_id() lookups
 -- below read from 'metatlas'; the view itself is named/labelled 'humangem' to match
--- FR-010's source name and the 12-source list. Same two-hop model + Subcellular
+-- the onboarded source name and the 12-source list. Same two-hop model + Subcellular
 -- Location compartment as RECON3D. Protein-side resolution is currently poor
 -- (Ensembl-keyed identifiers mostly unresolved -- a resolver-layer gap, out of this
 -- view-layer-only spec's scope) so this view is mechanically correct but near-empty
--- today; FR-013 applies (empty/near-empty + logged, not a failure).
+-- today; an empty or near-empty contribution from a source is logged, not a
+-- build failure.
 -- ────────────────────────────────────────────────────────────────────────────
 
 DROP MATERIALIZED VIEW IF EXISTS metalinksdb_humangem_relations;
@@ -1466,8 +1468,8 @@ FROM (
         FROM metalinksdb_chembl_relations
         WHERE compound_resolution_status = 1 AND protein_resolution_status = 1
 
-        -- BindingDB DROPPED from the curated combined view (003 US1, decided 2026-06-15)
-        -- -- preserved as-is by 004 (research.md R3): per-source matview kept for
+        -- BindingDB DROPPED from the curated combined view (decided 2026-06-15)
+        -- -- preserved as-is by 004-metalinksdb-view: per-source matview kept for
         -- provenance, never unioned into the combined contract.
 
         UNION ALL
@@ -1552,7 +1554,7 @@ FROM (
         WHERE compound_resolution_status = 1 AND protein_resolution_status = 1
     ) combined
     LEFT JOIN gene_protein_representative gpr ON gpr.entity_id = combined.protein_entity_id
-    -- metabolite-class filter (FR-014/research.md R2 -- net-new, applied to all 12 sources)
+    -- metabolite-class filter (net-new, applied to all 12 sources)
     WHERE combined.compound_entity_id IN (
         SELECT entity_id FROM entity
         WHERE chemical_class_id = (SELECT chemical_class_id FROM vocab_chemical_class WHERE name = 'metabolite')

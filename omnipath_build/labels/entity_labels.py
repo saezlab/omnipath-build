@@ -1,4 +1,4 @@
-"""Stored entity labels — gene symbol + universal fallback (FR-031, T065).
+"""Stored entity labels — gene symbol + universal fallback.
 
 Runs during ``derive`` against the canonical graph. Gene-based entities
 (``Gene:MI:0250``) are labelled by their **primary gene symbol** — the
@@ -6,8 +6,8 @@ Runs during ``derive`` against the canonical graph. Gene-based entities
 distinct from synonyms). A gene carrying several primary-symbol identifiers
 (across sources) takes the most-attested one (then shortest, then alphabetical)
 for determinism. Any entity still without a label falls back to its canonical
-identifier so every entity has a non-empty ``label`` (FR-031); the chemical /
-lipid cascades (T064/T066) overwrite their types' labels when they land.
+identifier so every entity has a non-empty ``label``; the chemical and lipid
+cascades overwrite their types' labels when they land.
 """
 
 from __future__ import annotations
@@ -116,7 +116,7 @@ def populate_entity_labels(
             gene_symbol = cur.rowcount
 
         # Universal fallback: any entity still without a label takes its
-        # canonical identifier, so every entity has a non-empty label (FR-031).
+        # canonical identifier, so every entity has a non-empty label.
         cur.execute(
             sql.SQL(
                 """

@@ -1,4 +1,4 @@
-"""Brevity-first chemical label cascade (FR-031, R19, T064).
+"""Brevity-first chemical label cascade.
 
 Runs during ``derive`` **after** :func:`populate_entity_labels` (which has
 already labelled genes by symbol and given every entity a universal
@@ -127,7 +127,7 @@ def populate_chemical_labels(
     *,
     schema: str = 'public',
 ) -> ChemicalLabelStats:
-    """Overwrite chemical ``entity.label`` / ``label_rule`` via the R19 cascade."""
+    """Overwrite chemical labels via the recognisability-then-brevity cascade."""
 
     schema_id = sql.Identifier(schema)
 

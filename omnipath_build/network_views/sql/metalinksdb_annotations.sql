@@ -6,8 +6,8 @@ SET max_parallel_workers = 0;
 -- One row per canonical human protein.
 -- Sources: UniProt (10), GuideToPharma (21), TCDB (41)
 -- 004-metalinksdb-view: added uniprot_pathway_participations (UniProt
--- 'Pathway Participation:OM:0607' -- closes the protein-pathway gap named in
--- FR-002; see research.md R5).
+-- 'Pathway Participation:OM:0607' -- closes the protein-pathway gap: the
+-- category was named in the annotation contract but no live view covered it).
 -- ============================================================
 -- One row per canonical human protein with functional annotations aggregated from UniProt, GuideToPharma, and TCDB.
 DROP MATERIALIZED VIEW IF EXISTS metalinksdb_protein_annotations;
@@ -94,9 +94,9 @@ CREATE INDEX ON metalinksdb_protein_annotations USING gin (uniprot_ec_numbers);
 -- metalinksdb_compound_annotations
 -- One row per canonical compound.
 -- Sources: HMDB (22), LipidMaps (25)
--- 004-metalinksdb-view (research.md R5): metabolite PATHWAY, DISEASE,
--- STITCH SCORE, and ENDOGENOUS/EXOGENOUS were checked against the live build
--- and found NOT addable at this entity level:
+-- 004-metalinksdb-view: metabolite PATHWAY, DISEASE, STITCH SCORE, and
+-- ENDOGENOUS/EXOGENOUS were checked against the live build and found NOT
+-- addable at this entity level:
 --   - pathway: only source is KEGG's 'Pathway:OM:0874'/'Pathway Component:OM:0315',
 --     both attached to Reaction entities (a multi-hop, non-MetaLinksDB-source
 --     traversal) -- documented gap, not implemented.

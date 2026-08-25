@@ -1,4 +1,4 @@
-"""Fill ``data_source_license`` from pypath's resource metadata (008 T010b, R20).
+"""Fill ``data_source_license`` from pypath's resource metadata.
 
 The build database recorded no license anywhere. `data_source` held
 ``(source_id, name)`` and nothing more, so "everything usable commercially" was
@@ -38,7 +38,7 @@ quietly.
 **The name mapping** is the awkward part on the ``resources.json`` side and is
 not invented here. Its keys are display names such as ``CellChatDB``, while
 ``data_source.name`` holds slugs such as ``cellchat``. The build already
-resolves the two through the R5a three-name model
+resolves the two through the three-name model
 (``pypath.inputs_v2.resource_names``), whose filter index maps every
 {slug, slugified short name, slugified synonym} onto one canonical slug, and
 whose registry maps that slug back to the ``resources.json`` key. The candidate
@@ -46,7 +46,7 @@ names a source offers the index are its own slug and the short/full/synonym
 names ``sync_resources_table`` already resolved into the ``resources`` table —
 the same mapping, read rather than rebuilt.
 
-**Unknown terms are exclusions, never defaults** (FR-049). A source the mapping
+**Unknown terms are exclusions, never defaults.** A source the mapping
 does not reach gets a row all the same, carrying ``is_known = false`` and no
 levels at all. Nothing here invents a level for it: a NULL level is silently
 dropped by a range predicate, which is the right answer for the wrong reason,
@@ -210,7 +210,7 @@ def _cv_terms() -> dict[str, object]:
 
 @lru_cache(maxsize=1)
 def _name_mapping() -> tuple[dict[str, str], dict[str, str]]:
-    """The R5a mapping, as ``(filter index, canonical slug → JSON key)``.
+    """The name mapping, as ``(filter index, canonical slug → JSON key)``.
 
     ``build_filter_index`` already folds slug, short name and synonyms onto one
     canonical slug; the registry carries that slug back to the self-spelled
@@ -308,8 +308,8 @@ def resolve_curated_license(candidates: list[str | None]) -> ResourceLicense:
     """The hand-curated ``resources.json`` entry, if one of ``candidates`` hits.
 
     ``candidates`` are the names one source answers to, most canonical first:
-    its build slug, then the short/full/synonym names the R5a model resolved
-    for it. Returns the unknown license when none of them reaches an entry.
+    its build slug, then the short/full/synonym names the three-name model
+    resolved for it. Returns the unknown license when none of them reaches an entry.
     """
 
     index, key_of = _name_mapping()
@@ -423,7 +423,7 @@ def _source_candidates(
     """Every ``data_source`` row with the names it answers to and its CV term.
 
     Both come from the ``resources`` table, which ``sync_resources_table``
-    fills from ``ResourceConfig``: the names through the R5a three-name model,
+    fills from ``ResourceConfig``: the names through the three-name model,
     the license accession straight off ``ResourceConfig.license``. Reading them
     here keeps one resolution of each in the build rather than two, and is why
     this module needs no ``inputs_v2`` import — the declared term is already in
@@ -556,8 +556,8 @@ def sync_data_source_licenses(
 
     if unmapped:
         # Named rather than counted: each of these is dropped from every
-        # license-filtered result, and silence about which ones is what makes
-        # FR-049 hard to audit.
+        # license-filtered result, and silence about which ones would leave
+        # that exclusion unauditable.
         logger.warning(
             'no license mapped for %d of %d sources: %s',
             len(unmapped),

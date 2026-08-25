@@ -49,7 +49,7 @@ def rebuild_derived_tables(
 ) -> DerivedTableStats:
     """Create and fully rebuild derived search/count tables.
 
-    ``interactions`` also rebuilds the interaction projection (008 T013/T014).
+    ``interactions`` also rebuilds the interaction projection.
     Pass ``interactions=False`` where the derive orchestration registers
     :func:`rebuild_interaction_tables` as a step of its own, so the projection
     runs once per build rather than twice.
@@ -155,10 +155,10 @@ def _log(progress: bool, step: str, event: str, **fields: object) -> None:
     """One structured derive-progress line.
 
     The ``step=… event=… key=value`` shape is a contract, not a preference:
-    T013c's sign-conflict figures and T020's cost report are read back out of
-    this output. Only the sink is the logger rather than ``print`` (research
-    R17) — pre-existing ``print`` call sites elsewhere in the build keep what
-    they have.
+    the sign-conflict figures and the per-step cost report are read back out of
+    this output. Only the sink is the logger rather than ``print`` —
+    pre-existing ``print`` call sites elsewhere in the build keep what they
+    have.
     """
     if not progress:
         return
@@ -1000,10 +1000,10 @@ def sweep_staging_tables(
     return len(names)
 
 
-# --- The interaction projection (008 T012-T014) ------------------------------
+# --- The interaction projection ----------------------------------------------
 #
 # `interaction_fact_resource` is a denormalised precomputed projection over the
-# canonical graph, not a new store of evidence (research R0): `relation`
+# canonical graph, not a new store of evidence: `relation`
 # supplies the deduped endpoints, `relation_evidence` and its annotations the
 # provenance, and `relation_evidence_relation` links the two. The evidence
 # table's own endpoint columns are unusable for this — `object_entity_id` is
@@ -1011,7 +1011,7 @@ def sweep_staging_tables(
 # come from `relation` and never from the evidence rows.
 
 
-# Participant-role terms, the first tier of the class derivation (research R18).
+# Participant-role terms, the first tier of the class derivation.
 # Ligand-receptor is a property of the roles the two participants hold, not of
 # the verb between them: all 45,768 ConnectomeDB2025 rows say `interacts_with`.
 _LIGAND_TERM = 'Ligand:OM:7777'
@@ -1048,9 +1048,10 @@ _FALLBACK_CLASS = 'other'
 # pass wrote false for `interacts_with` and `associated_with`, reading a
 # symmetric predicate as an assertion of undirectedness. Decided 2026-08-18 that
 # it stays NULL: the predicate vocabulary is a coarse ontology layer that the
-# resources did not choose per interaction (R18 makes the same point about
-# class), so a symmetric verb is not the resource saying "this interaction has
-# no direction". FR-044a governs — an unasserted attribute never becomes an
+# resources did not choose per interaction — the same reason the interaction
+# class is derived from the resource annotations rather than from the verb — so
+# a symmetric verb is not the resource saying "this interaction has no
+# direction". The rule is that an unasserted attribute never becomes an
 # asserted false, and 8.2M rows rested on that reading.
 _DIRECTED_PREDICATES = (
     'controls',
@@ -1107,23 +1108,23 @@ class InteractionDeriveStats:
     """What the interaction projection produced, and what it cost.
 
     ``records`` counts ``interaction_fact_resource``, the projection's one fact
-    output. There is no second count beside it: R24 removes the materialised
-    collapse, so the derive writes the record and stops, and the manifest names
-    that table apart from the step list (T020b) because it is the number
-    FR-036's ceiling is argued against.
+    output. There is no second count beside it: no collapse is materialised, so
+    the derive writes the record and stops, and the manifest names that table
+    apart from the step list because it is the number the build-cost ceiling is
+    argued against.
 
-    ``rows_by_class`` is the per-class row count research R18 asks every run to
-    report: a class collapsing back to zero has to be visible in the build
-    output, not discovered a phase later. ``sign_conflict`` is the T013c
-    measurement — how often both sign flags land on one row, and whether that
-    is one resource asserting both or resources genuinely disagreeing.
+    ``rows_by_class`` is the per-class row count every run reports: a class
+    collapsing back to zero has to be visible in the build output, not
+    discovered a phase later. ``sign_conflict`` measures how often both sign
+    flags land on one row, and whether that is one resource asserting both or
+    resources genuinely disagreeing.
     ``step_seconds`` carries the per-step wall clock the manifest splits, and
     ``deferral`` what running the load with its foreign keys and secondary
-    indexes dropped bought and cost (R23) — the seconds saved against a
-    recorded undeferred baseline, the drop, the restore, the revalidation, how
-    many objects each covered, and whether the catalogue round trip closed. The
-    manifest records it under ``interactions_deferral_cost`` (T013k), where a
-    field nobody measured stays ``null`` rather than becoming a zero.
+    indexes dropped bought and cost — the seconds saved against a recorded
+    undeferred baseline, the drop, the restore, the revalidation, how many
+    objects each covered, and whether the catalogue round trip closed. The
+    manifest records it under ``interactions_deferral_cost``, where a field
+    nobody measured stays ``null`` rather than becoming a zero.
 
     ``fallback_predicates`` breaks the fallback class down by the verb its
     relations arrived under. A per-class count alone cannot separate the two
@@ -1155,7 +1156,7 @@ def interaction_content_uuid_sql(
     participants: str,
     interaction_class: str,
 ) -> str:
-    """SQL for the header's content-addressed id (data model §1, FR-002).
+    """SQL for the header's content-addressed id (data model §1).
 
     ``participants`` is any SQL expression yielding a uuid array,
     ``interaction_class`` one yielding the class slug. The payload is the class
@@ -1187,7 +1188,7 @@ def interaction_record_uuid_sql(
     is_stimulation: str,
     is_inhibition: str,
 ) -> str:
-    """SQL for the record's surrogate primary key (data model §3a, R19).
+    """SQL for the record's surrogate primary key (data model §3a).
 
     Every argument is a SQL expression. The payload is the **full key** of
     ``interaction_fact_resource`` — the ordered endpoints, the interaction
@@ -1202,7 +1203,7 @@ def interaction_record_uuid_sql(
     ``data_source`` reload that renumbers them. And a NULL signature column
     encodes as JSON ``null``, which is distinct from the string ``"false"`` — a
     resource that is silent and a resource that asserts a negative are two keys,
-    which is exactly what FR-044a asks the grain to keep apart.
+    which the grain has to keep apart.
 
     The surrogate is not a convenience. The rest of the key is nullable and
     Postgres foreign keys default to ``MATCH SIMPLE``, under which a key with
@@ -1232,11 +1233,11 @@ def interaction_record_uuid_sql(
 
 #: The one fact table the projection writes (data model §3a). The collapse of
 #: it for a resource scope is a query-time shape and has no table, so there is
-#: no second name here and no column list for one (R24, T013e).
+#: no second name here and no column list for one.
 INTERACTION_RECORD_TABLE = 'interaction_fact_resource'
 
 
-#: The ``attributes`` GIN on each interaction table, by table name (T016).
+#: The ``attributes`` GIN on each interaction table, by table name.
 #: Both are ``jsonb_path_ops``: the long tail is queried with containment and
 #: nothing else, and ``jsonb_path_ops`` indexes the hash of a whole path rather
 #: than every key and every value separately, so it is the smaller and the
@@ -1244,26 +1245,26 @@ INTERACTION_RECORD_TABLE = 'interaction_fact_resource'
 #: key-existence (``?``, ``?|``, ``?&``), and that is the trade the gate is
 #: about.
 #:
-#: **There is one of them because R24 leaves one table.** The record holds one
-#: row per contributing resource with that resource's long tail unfolded, which
-#: is the larger column and the real sizing question; the merge of it belonged
-#: to the materialisation, and the materialisation is gone.
+#: **There is one of them because the derive stores one table.** The record
+#: holds one row per contributing resource with that resource's long tail
+#: unfolded, which is the larger column and the real sizing question; the merge
+#: of it belonged to the materialisation, and the materialisation is gone.
 INTERACTION_ATTRIBUTES_GIN_INDEXES = {
     INTERACTION_RECORD_TABLE: 'interaction_fact_resource_attributes_gin_idx',
 }
 
-#: The environment variable the benchmark toggles the gate with (T017).
+#: The environment variable the benchmark toggles the gate with.
 INTERACTION_ATTRIBUTES_GIN_ENV = 'OMNIPATH_BUILD_ATTRIBUTES_GIN'
 
 #: Whether a build creates the index when nothing says otherwise. It is
-#: ``False`` until the T017 benchmark decides, because the gate is about build
+#: ``False`` until the benchmark decides, because the gate is about build
 #: cost and on-disk size, and a default that pays them before they are measured
 #: would answer the question by shipping it.
 INTERACTION_ATTRIBUTES_GIN_DEFAULT = False
 
 
-#: The three tables the load writes, and the deferral therefore covers (R23,
-#: data model §3c). Ordered as the load writes them, which is also the order a
+#: The three tables the load writes, and the deferral therefore covers (data
+#: model §3c). Ordered as the load writes them, which is also the order a
 #: reader of the build log meets them in.
 INTERACTION_LOADED_TABLES = (
     'interaction',
@@ -1275,8 +1276,8 @@ INTERACTION_LOADED_TABLES = (
 #: saving is measured against. There is no reason to turn it off in a build.
 INTERACTION_DEFER_ENV = 'OMNIPATH_BUILD_DEFER_INTERACTION_CONSTRAINTS'
 
-#: Whether a build defers when nothing says otherwise. ``True``, because R23
-#: took the decision on a measurement — 709.7 s against 1,814.7 s, with the
+#: Whether a build defers when nothing says otherwise. ``True``, because the
+#: decision rests on a measurement — 709.7 s against 1,814.7 s, with the
 #: catalogue on the far side identical to the catalogue on the near side — and
 #: a default that did not take it would leave the measured design unshipped.
 INTERACTION_DEFER_DEFAULT = True
@@ -1307,9 +1308,9 @@ def interaction_catalogue(
 
     ``{'constraints': {name: definition}, 'indexes': {name: definition}}``,
     with every definition as Postgres renders it. Taken on both sides of the
-    load so the step can say whether the round trip closed, which is the claim
-    R23 rests on: the deferral is only a saving if the catalogue after it is
-    the catalogue before it. A foreign key that came back ``NOT VALID`` renders
+    load so the step can say whether the round trip closed, which is what the
+    deferral rests on: it is only a saving if the catalogue after it is the
+    catalogue before it. A foreign key that came back ``NOT VALID`` renders
     differently — ``pg_get_constraintdef`` appends ``NOT VALID`` — so the
     comparison catches the failure that looks most like success.
 
@@ -1441,7 +1442,7 @@ def _restore_interaction_constraints(
     would return in no time and leave a constraint that describes only rows
     written after it, which is not the constraint the schema declares. The
     seconds are returned apart from the index build because that is the half a
-    future change could quietly drop, and the manifest records it (T013k).
+    future change could quietly drop, and the manifest records it.
     """
     schema_id = sql.Identifier(schema)
     started = time.perf_counter()
@@ -1558,7 +1559,7 @@ def ensure_interaction_attributes_gin(
     *,
     enabled: bool,
 ) -> dict[str, float]:
-    """Create or drop the record's ``attributes`` GIN index (T016).
+    """Create or drop the record's ``attributes`` GIN index.
 
     Returns the wall seconds each index took, keyed by table name, so the
     benchmark and the build manifest can attribute the cost rather than watch
@@ -1612,7 +1613,7 @@ def rebuild_interaction_tables(
     attributes_gin: bool | None = None,
     defer_constraints: bool | None = None,
 ) -> InteractionDeriveStats:
-    """Project the canonical graph into the interaction model (T013, T014).
+    """Project the canonical graph into the interaction model.
 
     Writes three tables. ``interaction`` is one endpoint-independent header per
     participant set and class, ``interaction_party`` its participants in role,
@@ -1620,7 +1621,7 @@ def rebuild_interaction_tables(
     projections of `relation`, so they are rebuilt whole rather than sliced:
     nothing in them is evidence a partial rebuild could lose.
 
-    **The projection ends when the record lands** (R24). The record (data model
+    **The projection ends when the record lands.** The record (data model
     §3a) holds one row per ordered ``(subject, object, class)``, contributing
     ``source_id`` **and** the assertion signature that resource states, which is
     what makes every summary on it decomposable. The collapse of it for a
@@ -1636,9 +1637,9 @@ def rebuild_interaction_tables(
 
     ``defer_constraints`` states whether the load runs with the three tables'
     foreign keys and secondary indexes **dropped**, restoring them validated
-    before the step ends (R23, FR-036, data model §3c). ``None`` leaves the
-    answer to :func:`defer_constraints_enabled`, which says yes: R22 measured
-    the projection at 709.7 s deferred against 1,814.7 s undeferred, with the
+    before the step ends (data model §3c). ``None`` leaves the answer to
+    :func:`defer_constraints_enabled`, which says yes: the projection was
+    measured at 709.7 s deferred against 1,814.7 s undeferred, with the
     largest step falling from 674.0 s to 272.2 s — sixty per cent of it was
     constraint and index maintenance rather than the work of building a header
     — and the tables landing 0.97 GiB smaller, because an index built once over
@@ -1655,7 +1656,7 @@ def rebuild_interaction_tables(
     it is rewriting anyway.
 
     ``attributes_gin`` states whether this build carries the ``attributes`` GIN
-    on the record (T016). ``None`` leaves the answer to
+    on the record. ``None`` leaves the answer to
     :func:`attributes_gin_enabled`, which reads the environment and otherwise
     says no, because the index is a benchmark gate and its cost is the thing
     being measured. Either answer drops the index before the load and rebuilds
@@ -1696,7 +1697,7 @@ def rebuild_interaction_tables(
         classes = _interaction_class_ids(cur, schema)
 
         # Drop the `attributes` GIN index before anything writes to the
-        # tables, and rebuild it at the end (T016). `TRUNCATE` keeps a table's
+        # tables, and rebuild it at the end. `TRUNCATE` keeps a table's
         # indexes, so an index left in place from the previous build is
         # maintained row by row through the load. Measured on the record's
         # column: the same 14.7-million-row insert costs 6.6 s with no index,
@@ -1732,7 +1733,7 @@ def rebuild_interaction_tables(
         )
 
         # The deferral opens here, immediately before the first statement that
-        # writes one of the three tables, and closes after the last one (R23).
+        # writes one of the three tables, and closes after the last one.
         # The staging steps above touch none of them, so nothing is loaded
         # through a constraint this drops.
         deferring = defer_constraints_enabled(defer_constraints)
@@ -1777,7 +1778,7 @@ def rebuild_interaction_tables(
         records = _populate_interaction_fact_resource(cur, schema)
         # Fresh statistics on a table that was truncated and refilled in this
         # same transaction. Nothing inside this step reads the record any more
-        # — R24 deleted the collapse pass that did — but the histogram below
+        # — the collapse pass that did was deleted — but the histogram below
         # groups it, the restored constraints validate against it, and a query
         # arriving after the commit plans against whatever this leaves behind.
         cur.execute(
@@ -1826,7 +1827,7 @@ def rebuild_interaction_tables(
                 revalidate=f'{revalidate_seconds:.3f}',
                 seconds=f'{step_seconds["interaction_restore"]:.3f}',
             )
-        # Asserted here rather than only in a test (R23): the catalogue after
+        # Asserted here rather than only in a test: the catalogue after
         # the step must equal the catalogue before it, and a build that cannot
         # say so has not earned the seconds it saved.
         catalogue_unchanged = (
@@ -1856,7 +1857,7 @@ def rebuild_interaction_tables(
             indexes=len(catalogue_before['indexes']),
         )
 
-        # The `attributes` GIN on the record, after it is filled (T016). The
+        # The `attributes` GIN on the record, after it is filled. The
         # gate is off by default, so this is a second drop on an ordinary build
         # and a build on a benchmark one. Either way the table leaves this step
         # in the state the toggle names, which is what makes an A/B pair mean
@@ -1890,14 +1891,14 @@ def rebuild_interaction_tables(
         )
 
         # The three measurements the build takes off the record it has just
-        # written — the class distribution (R18), the sign-conflict rate
-        # (T013c) and the `source_count` histogram (T013m) — timed together,
-        # because they are one cost centre: each is a grouped scan of the same
-        # table, and they are the only folds left in the derive.
+        # written — the class distribution, the sign-conflict rate and the
+        # `source_count` histogram — timed together, because they are one cost
+        # centre: each is a grouped scan of the same table, and they are the
+        # only folds left in the derive.
         _log(progress, 'interaction_measurements', 'start')
         measurements_started = time.perf_counter()
         rows_by_class = _interaction_rows_by_class(cur, schema)
-        # R18: the per-class counts go into the build output on every run, so a
+        # The per-class counts go into the build output on every run, so a
         # class collapsing back to zero is visible here rather than a phase later.
         _log(
             progress,
@@ -1931,8 +1932,8 @@ def rebuild_interaction_tables(
             time.perf_counter() - measurements_started
         )
         # Logged per run like the class counts: the distribution is what the
-        # guardrail prices from, and a shift in it is the thing T070a is
-        # waiting for.
+        # guardrail prices from, and a shift in it is what the next round of
+        # cost benchmarking is waiting for.
         _log(
             progress,
             'interaction_source_count_histogram',
@@ -2012,7 +2013,7 @@ def _stage_interaction_class_evidence(
     schema: str,
     classes: dict[str, int],
 ) -> None:
-    """Resolve every relation's interaction class, by the R18 precedence.
+    """Resolve every relation's interaction class, in tier precedence order.
 
     Three staging tables, one per tier that can override the fallback, and then
     ``_if_relation``: relation id, its endpoints, its class and whether its
@@ -2189,48 +2190,48 @@ def _stage_interaction_record(
     cur: psycopg2.extensions.cursor,
     schema: str,
 ) -> None:
-    """Stage the interaction record, one row per resource assertion (T013/T013f).
+    """Stage the interaction record, one row per resource assertion.
 
-    Four staging tables, and the shape of them is the R19 amendment in
-    miniature. ``_if_evidence_sign`` reads what each **evidence row** asserts
-    about sign. ``_if_evidence`` puts that beside the ordered endpoints, the
-    class and the resource, and mints the record's surrogate id. ``_if_record``
-    groups the evidence rows onto the record key of data model §3a — the
-    endpoints, the class, the ``source_id`` **and** the assertion signature —
-    aggregating only that key's own annotations. ``_if_fact`` stays at the
-    triple grain, because the header and the participant table are keyed by the
-    unordered endpoint pair and need the union over both directions.
+    Four staging tables, and the shape of them is the per-resource record grain
+    in miniature. ``_if_evidence_sign`` reads what each **evidence row**
+    asserts about sign. ``_if_evidence`` puts that beside the ordered
+    endpoints, the class and the resource, and mints the record's surrogate id.
+    ``_if_record`` groups the evidence rows onto the record key of data model
+    §3a — the endpoints, the class, the ``source_id`` **and** the assertion
+    signature — aggregating only that key's own annotations. ``_if_fact`` stays
+    at the triple grain, because the header and the participant table are keyed
+    by the unordered endpoint pair and need the union over both directions.
 
-    **The assertion is read per evidence row, not per canonical relation**
-    (T013f). ``relation_evidence`` carries its own ``predicate_id``, and that is
+    **The assertion is read per evidence row, not per canonical relation.**
+    ``relation_evidence`` carries its own ``predicate_id``, and that is
     the resource's own statement; the canonical relation's predicate is the
     graph's summary of every resource that reported the pair. Reading direction
     off the relation made ``direction_source_count`` equal ``source_count``
     whenever the predicate was directed and zero otherwise — measured across all
     8,505 multi-resource signed rows on dev4 — so the column read as consensus
-    in every case and could never say "one resource of twelve", which is what
-    FR-044b asks it for.
+    in every case and could never say "one resource of twelve", which is the
+    whole point of counting the resources that asserted a direction.
 
     Nothing here ever writes an asserted ``false``. A resource that publishes no
     sign leaves NULL on its own row, and a verb that says nothing about
     direction leaves NULL too — including the symmetric ones, which are the
     ingest layer's vocabulary rather than a resource's per-interaction claim
-    (FR-044a, and the 8,243,981 rows an August pass wrote ``false`` on before
-    that was reverted). Silence is never inherited from a neighbour either: the
-    grouping key holds the resource, so ``fixture_res_c`` reporting a pair its
-    neighbours signed keeps its own NULLs.
+    (the 8,243,981 rows an August pass wrote ``false`` on were reverted for
+    exactly that reason). Silence is never inherited from a neighbour either:
+    the grouping key holds the resource, so ``fixture_res_c`` reporting a pair
+    its neighbours signed keeps its own NULLs.
     """
     schema_id = sql.Identifier(schema)
     positive = sorted(POSITIVE_SIGN_ACCESSIONS)
     negative = sorted(NEGATIVE_SIGN_ACCESSIONS)
 
-    # Sign, per **evidence row**. `nullif(..., false)` is FR-044a: an evidence
-    # row carrying no sign annotation leaves the column NULL, which is a
-    # different statement from an asserted false. One resource asserting both
-    # signs under two predicates therefore arrives as two rows here and stays
-    # two rows on the record, because the signature is part of its key — the
-    # 7,803-row case research R19 measured, which is real pharmacology rather
-    # than noise.
+    # Sign, per **evidence row**. `nullif(..., false)` keeps an unasserted
+    # sign unasserted: an evidence row carrying no sign annotation leaves the
+    # column NULL, which is a different statement from an asserted false. One
+    # resource asserting both signs under two predicates therefore arrives as
+    # two rows here and stays two rows on the record, because the signature is
+    # part of its key — the 7,803-row case measured on dev4, which is real
+    # pharmacology rather than noise.
     cur.execute('DROP TABLE IF EXISTS _if_evidence_sign')
     cur.execute(
         sql.SQL(
@@ -2475,14 +2476,14 @@ def _populate_interaction_header(
     cur: psycopg2.extensions.cursor,
     schema: str,
 ) -> tuple[int, int]:
-    """Write ``interaction`` and ``interaction_party`` (T014, data model §1-§2).
+    """Write ``interaction`` and ``interaction_party`` (data model §1-§2).
 
     The header is endpoint-independent: its participants are the unordered set
     of the fact row's endpoints, so both directions of a pair share one header
     and a caller can reach the interaction from either side. A participant's
     role records how it appears across the contributing facts — ``subject``,
     ``object``, or ``member`` when it appears as both — and ``role_flag`` carries
-    the ligand/receptor role that R18's first derivation tier read.
+    the ligand/receptor role that the class derivation's first tier read.
     """
     schema_id = sql.Identifier(schema)
 
@@ -2573,9 +2574,9 @@ def _populate_interaction_header(
     # `TRUNCATE` refuses when a table outside the statement references one
     # inside it, whatever the row counts are, so `interaction_fact_resource`
     # has to be named here from the moment it carries a key to `interaction`,
-    # and not only once the derive starts filling it (T011a, T013). The
-    # removed materialisation is not named because it no longer exists —
-    # `_drop_legacy_interaction_fact_combined` clears one a pre-R24 database
+    # and not only once the derive starts filling it. The removed
+    # materialisation is not named because it no longer exists —
+    # `_drop_legacy_interaction_fact_combined` clears one an older database
     # still carries, and it has to, since a dependant this statement does not
     # name blocks the truncate whatever the row counts are.
     cur.execute(
@@ -2667,7 +2668,7 @@ def _populate_interaction_fact_resource(
     cur: psycopg2.extensions.cursor,
     schema: str,
 ) -> int:
-    """Write the interaction record (T013, data model §3a).
+    """Write the interaction record (data model §3a).
 
     The staged key goes in as it stands, with its surrogate already minted, the
     two organisms read off the endpoints and the header id joined from
@@ -2675,9 +2676,9 @@ def _populate_interaction_fact_resource(
     the foreign key satisfiable by construction: the record is written after the
     header, and every record row therefore points at a header row that exists.
 
-    ``attributes`` stays NULL. The long tail is R2 benchmark-gated (T017) and
-    ``dataset_tags`` belongs to the preset registry (T018); neither is a value
-    this step has.
+    ``attributes`` stays NULL. The long tail is gated on the benchmark that
+    prices the hot-column split against the JSONB store, and ``dataset_tags``
+    belongs to the preset registry; neither is a value this step has.
     """
     schema_id = sql.Identifier(schema)
     cur.execute(
@@ -2735,13 +2736,12 @@ def _interaction_rows_by_class(
 ) -> dict[str, int]:
     """Record rows per interaction class, every class named even at zero.
 
-    R18 asks every run to report this, so that a class collapsing back to zero
-    is visible in the build output rather than discovered a phase later. The
-    count is taken at the **record** grain since R24 — one row per contributing
-    resource — because that is the only grain the build stores. It therefore
-    runs a little above the collapsed counts R18 recorded, by the same 2.7 per
-    cent the record runs above the fold, and the shape of the distribution is
-    what the check is about.
+    Every run reports this, so that a class collapsing back to zero is visible
+    in the build output rather than discovered a phase later. The count is
+    taken at the **record** grain — one row per contributing resource —
+    because that is the only grain the build stores. It therefore runs a little
+    above the collapsed counts, by the same 2.7 per cent the record runs above
+    the fold, and the shape of the distribution is what the check is about.
     """
     cur.execute(
         sql.SQL(
@@ -2801,16 +2801,16 @@ def _record_source_count_histogram(
     cur: psycopg2.extensions.cursor,
     schema: str,
 ) -> dict[int, int]:
-    """Record how many collapse keys carry each ``source_count`` (T013m, §12).
+    """Record how many collapse keys carry each ``source_count`` (§12).
 
     Nine rows on dev4, one per observed level from 1 to 9, each with the number
     of keys at it. Returned as ``{source_count: keys}`` and stored in
     ``interaction_source_count_histogram``, because the consumer is the
-    api-service's guardrail (T020j) and it reads the database rather than this
+    api-service's guardrail and it reads the database rather than this
     build's return value.
 
     **What it is for.** A ``HAVING`` filter on a folded value costs the page
-    size divided by the selectivity (R25), so the guardrail can price a request
+    size divided by the selectivity, so the guardrail can price a request
     before running it — but only if it knows the selectivity. This is that
     number. It is nine rows rather than a statistic worth estimating, and a
     grouped scan of a table the step has just written is the cheapest moment in
@@ -2818,10 +2818,11 @@ def _record_source_count_histogram(
 
     **It is an estimator, not a gate.** Measured on dev4: `source_count >= 2`
     returns a page in 1.354 ms, `>= 3` in 7.781 ms and `>= 5` in 379 ms, every
-    one streaming through `GroupAggregate` and every one inside SC-002. So the
-    histogram tells a caller what a request costs, and today the answer is
-    always "affordable". It becomes a gate when `interaction_assay` multiplies
-    the grain in Phase 8, which T070a re-measures.
+    one streaming through `GroupAggregate` and every one well inside the
+    one-second interactive latency target. So the histogram tells a caller what
+    a request costs, and today the answer is always "affordable". It becomes a
+    gate when `interaction_assay` multiplies the grain, and the cost benchmark
+    is re-run against it then.
 
     The level is `count(DISTINCT source_id)` per key and never `count(*)`: a
     resource asserting two signatures for the same endpoints keeps two record
@@ -2875,7 +2876,7 @@ def _record_sign_conflict_summary(
     cur: psycopg2.extensions.cursor,
     schema: str,
 ) -> dict[str, float]:
-    """Measure and store the sign-conflict rate (T013c, FR-044b).
+    """Measure and store the sign-conflict rate.
 
     The rate is set by the **grain**, not by the biology: merging the four
     predicates that share the `signaling` class flattens an agonist and an
@@ -2885,13 +2886,13 @@ def _record_sign_conflict_summary(
     substantially above ~2 per cent reopens whether the sign-bearing predicate
     belongs in the fact-table key.
 
-    Under the R19 grain the two halves of the split are readable rather than
-    inferred: one resource asserting both signs keeps **two** record rows, so
-    the split asks the record which resources asserted what instead of carrying
-    a `single_resource_conflict` flag through a fold.
+    Under the per-resource record grain the two halves of the split are
+    readable rather than inferred: one resource asserting both signs keeps
+    **two** record rows, so the split asks the record which resources asserted
+    what instead of carrying a `single_resource_conflict` flag through a fold.
 
-    **Both halves fold the record here, since R24 removed the collapsed table
-    this used to read.** The conflict is a property of the collapse key and not
+    **Both halves fold the record here, since the collapsed table this used to
+    read was removed.** The conflict is a property of the collapse key and not
     of a record row: a resource asserting a positive and a negative sign under
     two predicates leaves two record rows, neither of which carries both flags,
     and the row that carries both is the folded one. So the summary groups the

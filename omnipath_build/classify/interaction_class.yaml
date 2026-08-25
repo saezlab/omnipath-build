@@ -1,4 +1,4 @@
-# Curated interaction-class rules for vocab_relation_predicate (Milestone C).
+# Curated interaction-class rules for vocab_relation_predicate.
 #
 # Maps every relation predicate (a row in the dynamically-populated
 # vocab_relation_predicate) to exactly one coarse interaction class. Applied
@@ -11,7 +11,7 @@
 # introduces a new predicate surfaces it for curation rather than failing.
 
 # The controlled vocabulary (seeded into vocab_interaction_class); id = order.
-# This is the single canonical interaction-type vocabulary (FR-033):
+# This is the single canonical interaction-type vocabulary:
 #   name  — snake_case slug, the stored and filterable value
 #   label — capitalised display form, for presentation only
 #   controlled_vocabulary_mapping — ontology CURIE (BioLink or other), null

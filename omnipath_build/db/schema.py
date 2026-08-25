@@ -21,7 +21,7 @@ import psycopg2.extensions
 
 # Named for the module rather than taken from ``__name__``: this module is only
 # ever imported, so the two agree, but naming it keeps the logger inside the
-# ``omnipath_build`` subtree that ``_session`` configures (research R17).
+# ``omnipath_build`` subtree that ``_session`` configures.
 _logger = logging.getLogger('omnipath_build.db.schema')
 
 CONTENT_TABLES: tuple[str, ...] = (
@@ -840,7 +840,7 @@ def _ensure_gene_anchored_schema(
     cur: psycopg2.extensions.cursor,
     schema: str,
 ) -> None:
-    """Gene-anchored entity model (spec 002 US7/US8; data-model.md §C2).
+    """Gene-anchored entity model (data model §C2).
 
     Additive + idempotent. The base ``entity`` gains the stored label +
     resolution-mechanism columns; ``entity_evidence_resolution`` gains the cheap
@@ -848,7 +848,7 @@ def _ensure_gene_anchored_schema(
     lives in two tiers: a precomputed ``gene_protein_representative`` (1:1, the
     no-state-join representative UniProt) and the heavy opt-in ``state`` /
     ``state_component`` / ``evidence_state``. The base graph keeps referencing
-    gene-level entities (FR-026/027/030/031/033).
+    gene-level entities.
     """
     schema_id = sql.Identifier(schema)
 
@@ -874,7 +874,9 @@ def _ensure_gene_anchored_schema(
         ).format(schema_id)
     )
 
-    # entity: stored label + resolution mechanism (FR-031/FR-004/FR-026)
+    # entity: the label is precomputed here and stored, never derived per
+    # request; the resolution mechanism records what resolved the entity and
+    # to what.
     for ddl in (
         'ALTER TABLE {0}.entity ADD COLUMN IF NOT EXISTS label text',
         'ALTER TABLE {0}.entity ADD COLUMN IF NOT EXISTS label_rule text',
@@ -885,7 +887,7 @@ def _ensure_gene_anchored_schema(
     ):
         cur.execute(sql.SQL(ddl).format(schema_id))
 
-    # cheap-tier molecular type on the resolved evidence slot (FR-027a/030)
+    # cheap-tier molecular type on the resolved evidence slot
     cur.execute(
         sql.SQL(
             'ALTER TABLE {0}.entity_evidence_resolution '
@@ -900,7 +902,7 @@ def _ensure_gene_anchored_schema(
         ).format(schema_id)
     )
 
-    # precomputed representative UniProt (cheap tier, no state join; FR-033)
+    # precomputed representative UniProt (cheap tier, no state join)
     cur.execute(
         sql.SQL(
             """
@@ -915,7 +917,7 @@ def _ensure_gene_anchored_schema(
         ).format(schema_id)
     )
 
-    # heavy opt-in: full molecular state (FR-027b)
+    # heavy opt-in: full molecular state
     cur.execute(
         sql.SQL(
             """
@@ -968,12 +970,12 @@ def _ensure_gene_anchored_schema(
         ).format(schema_id)
     )
 
-    # gene-centric output (FR-034/T062, contracts §4): the primary deliverable
-    # layout — one row per gene entity with the human-readable `gene` (symbol,
-    # NCBI Gene id fallback), the pure `ncbi_gene_id`, and the representative
-    # UniProt on demand from gene_protein_representative. Reads only gene-level
-    # columns — NO state/evidence_state join (SC-012/SC-013). A view (not a
-    # materialised table) so it stays continuous with `entity` at zero cost.
+    # gene-centric output (contracts §4): the primary deliverable layout —
+    # one row per gene entity with the human-readable `gene` (symbol, NCBI Gene
+    # id fallback), the pure `ncbi_gene_id`, and the representative UniProt on
+    # demand from gene_protein_representative. Reads only gene-level columns —
+    # NO state/evidence_state join. A view (not a materialised table) so it
+    # stays continuous with `entity` at zero cost.
     cur.execute(
         sql.SQL(
             """
@@ -1234,7 +1236,7 @@ def _ensure_resolution_schema(
             """
         ).format(schema_id)
     )
-    log_step('ensure gene-anchored schema (spec 002 US7/US8)')
+    log_step('ensure gene-anchored schema')
     _ensure_gene_anchored_schema(cur, schema)
     log_step('create identifier type table')
     cur.execute(
@@ -1479,7 +1481,7 @@ def _ensure_resolution_schema(
             schema_id
         )
     )
-    log_step('ensure chemical resolution-level schema (spec 003 Phase 6)')
+    log_step('ensure chemical resolution-level schema')
     from omnipath_build.chemical_resolution_level import (
         ensure_chemical_resolution_schema,
     )
@@ -2255,8 +2257,8 @@ def _ensure_classification_vocab(
     )
     # `name` is the snake_case slug used for storage and filtering, `label` the
     # capitalised display form, `controlled_vocabulary_mapping` the nullable
-    # ontology CURIE (FR-033). Added here too, for databases created before the
-    # columns existed.
+    # ontology CURIE. Added here too, for databases created before the columns
+    # existed.
     cur.execute(
         sql.SQL(
             """
@@ -2282,7 +2284,7 @@ def _ensure_data_source_license(
     cur: psycopg2.extensions.cursor,
     schema: str,
 ) -> None:
-    """Resource license terms, as ordinal levels (spec 008 data model §8a, R20).
+    """Resource license terms, as ordinal levels (data model §8a).
 
     The build recorded no license anywhere: ``data_source`` held
     ``(source_id, name)`` and nothing else. This table adds the terms, one row
@@ -2303,7 +2305,7 @@ def _ensure_data_source_license(
       free 25
     * ``attrib_level``: ignore 0, attrib 5, free 10
 
-    **Unknown terms are exclusions, never defaults** (FR-049). A resource whose
+    **Unknown terms are exclusions, never defaults.** A resource whose
     license could not be mapped carries ``is_known = false`` and must not
     appear in a license-filtered result. The flag defaults to ``false`` for the
     same reason: absence of terms is not permission, and an unmapped license
@@ -2363,7 +2365,7 @@ def _ensure_interaction_schema(
 ) -> None:
     """Interaction header, participants, role vocabulary and the fact tables.
 
-    Spec 008 data model §1, §2, §3, §3a, §3b and §7. The header carries an
+    Data model §1, §2, §3, §3a, §3b and §7. The header carries an
     endpoint-independent identity for one interaction or reaction event;
     ``interaction_party``
     generalises the two endpoints of ``relation_evidence`` and the
@@ -2371,7 +2373,7 @@ def _ensure_interaction_schema(
     participants, each in a role, on a side, at an ordinal, optionally with a
     stoichiometry, a compartment and its own organism.
 
-    The binary projection is **one table** (research R24).
+    The binary projection is **one table**.
     ``interaction_fact_resource`` (§3a) is the **record**: one row per ordered
     endpoint pair, class and contributing **resource**, plus the assertion
     signature that resource states. No scope is precomputed, the all-resources
@@ -2499,11 +2501,12 @@ def _ensure_interaction_schema(
         )
     )
     # Sign and direction are three-valued here for the same reason they are on
-    # the collapse (FR-044a, research R15), and the statement is narrower: NULL
-    # means **this** resource is silent, which is a different claim from an
-    # asserted `false`. They therefore carry no NOT NULL and no DEFAULT. The
-    # numeric and reference columns hold what this one resource asserts, not a
-    # cross-resource best or union — that is what a collapse computes, per
+    # the collapse, and the statement is narrower: NULL means **this** resource
+    # is silent, which is a different claim from an asserted `false`. They
+    # therefore carry no NOT NULL and no DEFAULT. The numeric and reference
+    # columns hold what this one resource asserts, not a cross-resource best or
+    # union — that is what a collapse computes.
+
     # The full key of the record, which is the endpoint pair, the class, the
     # resource **and** the signature that resource asserts. `NULLS NOT
     # DISTINCT` is what makes it a key at all: the three signature columns are
@@ -2605,10 +2608,10 @@ def _ensure_interaction_schema(
         )
     )
     # The aggregated provenance arrays are filtered with array containment;
-    # the `attributes` GIN on the record is benchmark-gated (research R2) and
-    # is not created until its size and build cost are measured. The partial
-    # indexes on the three-valued sign and direction columns wait on the same
-    # measurement (data model §3a).
+    # the `attributes` GIN on the record is benchmark-gated and is not created
+    # until its size and build cost are measured. The partial indexes on the
+    # three-valued sign and direction columns wait on the same measurement
+    # (data model §3a).
     for index_name, table, column in (
         ('interaction_sources_gin_idx', 'interaction', 'sources'),
         ('interaction_dataset_tags_gin_idx', 'interaction', 'dataset_tags'),
