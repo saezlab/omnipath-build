@@ -147,7 +147,7 @@ class LicenseTableStats:
 
 @dataclass(frozen=True)
 class ResourceLicense:
-    """One resource's license terms, as the ordinal levels of data model §8a."""
+    """One resource's ``data_source_license`` terms, as ordinal levels."""
 
     license_name: str | None = None
     license_full_name: str | None = None
@@ -479,7 +479,7 @@ def sync_data_source_licenses(
     *,
     schema: str = 'public',
 ) -> LicenseTableStats:
-    """Load one ``data_source_license`` row per resource (data model §8a).
+    """Load one ``data_source_license`` row per resource.
 
     Every source gets a row, the unmapped ones included: a row saying
     ``is_known = false`` states the exclusion, where a missing row leaves it to

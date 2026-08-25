@@ -58,10 +58,10 @@ logger = logging.getLogger(__name__)
 # once the last bespoke matview retires — see the module docstring.
 MATVIEW_ERA_COLUMNS = ('schema_name', 'combined_relation')
 
-# How a preset folds the per-resource record over its own resource scope
-# (data-model §9). `endpoints` is the default because it reproduces the legacy
-# one-row-per-interaction contract, so a preset written before the amendment
-# keeps behaving as it did.
+# How a preset folds the per-resource record over its own resource scope, as
+# the `network_registry.collapse_mode` column records it. `endpoints` is the
+# default because it reproduces the legacy one-row-per-interaction contract,
+# so a preset written before the amendment keeps behaving as it did.
 COLLAPSE_MODES = ('none', 'assertion', 'endpoints')
 DEFAULT_COLLAPSE_MODE = 'endpoints'
 
@@ -103,12 +103,13 @@ AMENDMENT_COLUMN_COMMENTS = {
 class NetworkDefinition:
     """A dataset: a preset over the fact table, or a matview-backed network.
 
-    The preset fields (data-model §9) describe *what a query for this dataset
-    selects and returns*; they carry no SQL:
+    The preset fields — the ``network_registry`` columns — describe *what a
+    query for this dataset selects and returns*; they carry no SQL:
 
     ``interaction_class_scope``
-        Interaction-class slugs (data-model §8: ``signaling``, ``tf_target``,
-        ``ligand_receptor``, …) the preset restricts to; empty means all classes.
+        Interaction-class slugs from ``vocab_interaction_class``
+        (``signaling``, ``tf_target``, ``ligand_receptor``, …) the preset
+        restricts to; empty means all classes.
         A class is derived from the resource annotations, never from a legacy
         dataset name — a legacy name is preset identity, not a class.
     ``evidence_scope``
@@ -255,9 +256,10 @@ def ensure_network_registry(
                 """
             ).format(sql.Identifier(registry_schema))
         )
-        # data-model §9 names three modes and no more. Dropping the constraint
-        # before adding it keeps the statement idempotent and lets the set of
-        # modes change with the definition rather than only on a fresh database.
+        # `COLLAPSE_MODES` names three modes and no more. Dropping the
+        # constraint before adding it keeps the statement idempotent and lets
+        # the set of modes change with the definition rather than only on a
+        # fresh database.
         cur.execute(
             sql.SQL(
                 """

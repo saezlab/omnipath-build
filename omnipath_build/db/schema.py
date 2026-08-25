@@ -840,7 +840,7 @@ def _ensure_gene_anchored_schema(
     cur: psycopg2.extensions.cursor,
     schema: str,
 ) -> None:
-    """Gene-anchored entity model (data model §C2).
+    """Gene-anchored entity model.
 
     Additive + idempotent. The base ``entity`` gains the stored label +
     resolution-mechanism columns; ``entity_evidence_resolution`` gains the cheap
@@ -970,12 +970,12 @@ def _ensure_gene_anchored_schema(
         ).format(schema_id)
     )
 
-    # gene-centric output (contracts §4): the primary deliverable layout —
-    # one row per gene entity with the human-readable `gene` (symbol, NCBI Gene
-    # id fallback), the pure `ncbi_gene_id`, and the representative UniProt on
-    # demand from gene_protein_representative. Reads only gene-level columns —
-    # NO state/evidence_state join. A view (not a materialised table) so it
-    # stays continuous with `entity` at zero cost.
+    # gene-centric output: the primary deliverable layout — one row per gene
+    # entity with the human-readable `gene` (symbol, NCBI Gene id fallback),
+    # the pure `ncbi_gene_id`, and the representative UniProt on demand from
+    # gene_protein_representative. Reads only gene-level columns — NO
+    # state/evidence_state join. A view (not a materialised table) so it stays
+    # continuous with `entity` at zero cost.
     cur.execute(
         sql.SQL(
             """
@@ -2284,7 +2284,7 @@ def _ensure_data_source_license(
     cur: psycopg2.extensions.cursor,
     schema: str,
 ) -> None:
-    """Resource license terms, as ordinal levels (data model §8a).
+    """Resource license terms in ``data_source_license``, as ordinal levels.
 
     The build recorded no license anywhere: ``data_source`` held
     ``(source_id, name)`` and nothing else. This table adds the terms, one row
@@ -2365,23 +2365,23 @@ def _ensure_interaction_schema(
 ) -> None:
     """Interaction header, participants, role vocabulary and the fact tables.
 
-    Data model §1, §2, §3, §3a, §3b and §7. The header carries an
-    endpoint-independent identity for one interaction or reaction event;
-    ``interaction_party``
+    ``interaction``, ``interaction_party``, ``interaction_fact_resource`` and
+    ``vocab_relation_role``. The header carries an endpoint-independent
+    identity for one interaction or reaction event; ``interaction_party``
     generalises the two endpoints of ``relation_evidence`` and the
     reactant/product grain of the DuckDB ``reaction_member_signature`` to N
     participants, each in a role, on a side, at an ordinal, optionally with a
     stoichiometry, a compartment and its own organism.
 
     The binary projection is **one table**.
-    ``interaction_fact_resource`` (§3a) is the **record**: one row per ordered
+    ``interaction_fact_resource`` is the **record**: one row per ordered
     endpoint pair, class and contributing **resource**, plus the assertion
     signature that resource states. No scope is precomputed, the all-resources
-    scope included — §3b is the shape a query produces by folding the record
-    for its own scope at request time, and it is declared nowhere here because
-    it is not a table, and no database carries the materialisation that used to
-    hold it: both names existed only between 2026-08-18 and 2026-08-24, and the
-    one build made in that window no longer holds either.
+    scope included — the collapse is the shape a query produces by folding the
+    record for its own scope at request time, and it is declared nowhere here
+    because it is not a table, and no database carries the materialisation that
+    used to hold it: both names existed only between 2026-08-18 and 2026-08-24,
+    and the one build made in that window no longer holds either.
 
     The tables are declared here; the derive step fills them.
     """
@@ -2439,12 +2439,12 @@ def _ensure_interaction_schema(
     )
     # `organism`, `compartment` and `role_flag` are hot per-participant
     # columns: they answer set-predicates and the per-entity compartment
-    # `interaction_fact_resource` is the interaction **record** (data model
-    # §3a): one row per ordered `(subject, object, class)` and contributing
-    # `source_id`, plus the assertion signature that resource states. Keeping
-    # the resource on the row is what makes every summary decomposable — a
-    # query restricted to a subset of resources recollapses these rows for its
-    # own scope instead of reading numbers computed over all of them.
+    # `interaction_fact_resource` is the interaction **record**: one row per
+    # ordered `(subject, object, class)` and contributing `source_id`, plus the
+    # assertion signature that resource states. Keeping the resource on the row
+    # is what makes every summary decomposable — a query restricted to a subset
+    # of resources recollapses these rows for its own scope instead of reading
+    # numbers computed over all of them.
     #
     # A resource that asserts two contradicting signs for the same endpoints
     # under different predicates keeps two rows, because the signature is part
@@ -2610,8 +2610,7 @@ def _ensure_interaction_schema(
     # The aggregated provenance arrays are filtered with array containment;
     # the `attributes` GIN on the record is benchmark-gated and is not created
     # until its size and build cost are measured. The partial indexes on the
-    # three-valued sign and direction columns wait on the same measurement
-    # (data model §3a).
+    # three-valued sign and direction columns wait on the same measurement.
     for index_name, table, column in (
         ('interaction_sources_gin_idx', 'interaction', 'sources'),
         ('interaction_dataset_tags_gin_idx', 'interaction', 'dataset_tags'),

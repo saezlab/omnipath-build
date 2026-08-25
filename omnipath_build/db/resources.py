@@ -571,8 +571,8 @@ def _interactions_deferral_cost(
         thing this build ran.
     ``drop_seconds`` / ``restore_seconds`` / ``revalidate_seconds``
         the three halves of the mechanism's own cost, kept apart from the load
-        (data-model §10) — the revalidation is the one that could quietly be
-        skipped, and a deferral that returns a `NOT VALID` key has saved
+        in ``build_manifest`` — the revalidation is the one that could quietly
+        be skipped, and a deferral that returns a `NOT VALID` key has saved
         nothing.
     ``catalogue_unchanged``
         whether the catalogue on the far side matched the near side.

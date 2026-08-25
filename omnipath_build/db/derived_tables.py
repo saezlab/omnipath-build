@@ -1134,10 +1134,10 @@ class InteractionDeriveStats:
     large number. Broken down per predicate it reads as a verb with a class-sized
     row count beside it, which is what asks to be curated.
 
-    ``source_count_histogram`` is the §12 distribution — how many collapse
-    keys carry each ``source_count`` — returned for the build log. Its real
-    consumer reads ``interaction_source_count_histogram`` from the database,
-    because it is the api-service's guardrail and not this process.
+    ``source_count_histogram`` counts how many collapse keys carry each
+    ``source_count``, returned for the build log. Its real consumer reads
+    ``interaction_source_count_histogram`` from the database, because it is
+    the api-service's guardrail and not this process.
     """
 
     interactions: int = 0
@@ -1156,7 +1156,7 @@ def interaction_content_uuid_sql(
     participants: str,
     interaction_class: str,
 ) -> str:
-    """SQL for the header's content-addressed id (data model §1).
+    """SQL for the ``interaction`` header's content-addressed id.
 
     ``participants`` is any SQL expression yielding a uuid array,
     ``interaction_class`` one yielding the class slug. The payload is the class
@@ -1188,7 +1188,7 @@ def interaction_record_uuid_sql(
     is_stimulation: str,
     is_inhibition: str,
 ) -> str:
-    """SQL for the record's surrogate primary key (data model §3a).
+    """SQL for the ``interaction_fact_resource`` surrogate primary key.
 
     Every argument is a SQL expression. The payload is the **full key** of
     ``interaction_fact_resource`` — the ordered endpoints, the interaction
@@ -1207,8 +1207,8 @@ def interaction_record_uuid_sql(
 
     The surrogate is not a convenience. The rest of the key is nullable and
     Postgres foreign keys default to ``MATCH SIMPLE``, under which a key with
-    any NULL column is not checked at all, so the detail tables of §4 and §6 can
-    only anchor here.
+    any NULL column is not checked at all, so the detail tables
+    ``interaction_assay`` and ``interaction_ptm`` can only anchor here.
     """
     return (
         'md5(to_json(ARRAY['
@@ -1231,9 +1231,9 @@ def interaction_record_uuid_sql(
     )
 
 
-#: The one fact table the projection writes (data model §3a). The collapse of
-#: it for a resource scope is a query-time shape and has no table, so there is
-#: no second name here and no column list for one.
+#: The one fact table the projection writes. The collapse of it for a resource
+#: scope is a query-time shape and has no table, so there is no second name
+#: here and no column list for one.
 INTERACTION_RECORD_TABLE = 'interaction_fact_resource'
 
 
@@ -1263,9 +1263,9 @@ INTERACTION_ATTRIBUTES_GIN_ENV = 'OMNIPATH_BUILD_ATTRIBUTES_GIN'
 INTERACTION_ATTRIBUTES_GIN_DEFAULT = False
 
 
-#: The three tables the load writes, and the deferral therefore covers (data
-#: model §3c). Ordered as the load writes them, which is also the order a
-#: reader of the build log meets them in.
+#: The three tables the load writes, and the deferral therefore covers.
+#: Ordered as the load writes them, which is also the order a reader of the
+#: build log meets them in.
 INTERACTION_LOADED_TABLES = (
     'interaction',
     'interaction_party',
@@ -1621,12 +1621,12 @@ def rebuild_interaction_tables(
     projections of `relation`, so they are rebuilt whole rather than sliced:
     nothing in them is evidence a partial rebuild could lose.
 
-    **The projection ends when the record lands.** The record (data model
-    §3a) holds one row per ordered ``(subject, object, class)``, contributing
+    **The projection ends when the record lands.** ``interaction_fact_resource``
+    holds one row per ordered ``(subject, object, class)``, contributing
     ``source_id`` **and** the assertion signature that resource states, which is
     what makes every summary on it decomposable. The collapse of it for a
-    resource scope (§3b) is what a **query** produces, at request time, for
-    every scope including the empty one — no scope is precomputed here, the
+    resource scope is what a **query** produces, at request time, for every
+    scope including the empty one — no scope is precomputed here, the
     all-resources scope included, because a page-first fold costs the page
     rather than the scope and leaves a materialisation nothing to save.
 
@@ -1637,10 +1637,10 @@ def rebuild_interaction_tables(
 
     ``defer_constraints`` states whether the load runs with the three tables'
     foreign keys and secondary indexes **dropped**, restoring them validated
-    before the step ends (data model §3c). ``None`` leaves the answer to
+    before the step ends. ``None`` leaves the answer to
     :func:`defer_constraints_enabled`, which says yes: the projection was
-    measured at 709.7 s deferred against 1,814.7 s undeferred, with the
-    largest step falling from 674.0 s to 272.2 s — sixty per cent of it was
+    measured at 709.7 s deferred against 1,814.7 s undeferred, with the largest
+    step falling from 674.0 s to 272.2 s — sixty per cent of it was
     constraint and index maintenance rather than the work of building a header
     — and the tables landing 0.97 GiB smaller, because an index built once over
     sorted input is denser than the same index grown through fourteen million
@@ -2196,11 +2196,12 @@ def _stage_interaction_record(
     in miniature. ``_if_evidence_sign`` reads what each **evidence row**
     asserts about sign. ``_if_evidence`` puts that beside the ordered
     endpoints, the class and the resource, and mints the record's surrogate id.
-    ``_if_record`` groups the evidence rows onto the record key of data model
-    §3a — the endpoints, the class, the ``source_id`` **and** the assertion
-    signature — aggregating only that key's own annotations. ``_if_fact`` stays
-    at the triple grain, because the header and the participant table are keyed
-    by the unordered endpoint pair and need the union over both directions.
+    ``_if_record`` groups the evidence rows onto the
+    ``interaction_fact_resource`` key — the endpoints, the class, the
+    ``source_id`` **and** the assertion signature — aggregating only that
+    key's own annotations. ``_if_fact`` stays at the triple grain, because the
+    header and the participant table are keyed by the unordered endpoint pair
+    and need the union over both directions.
 
     **The assertion is read per evidence row, not per canonical relation.**
     ``relation_evidence`` carries its own ``predicate_id``, and that is
@@ -2476,7 +2477,7 @@ def _populate_interaction_header(
     cur: psycopg2.extensions.cursor,
     schema: str,
 ) -> tuple[int, int]:
-    """Write ``interaction`` and ``interaction_party`` (data model §1-§2).
+    """Write ``interaction`` and ``interaction_party``.
 
     The header is endpoint-independent: its participants are the unordered set
     of the fact row's endpoints, so both directions of a pair share one header
@@ -2668,7 +2669,7 @@ def _populate_interaction_fact_resource(
     cur: psycopg2.extensions.cursor,
     schema: str,
 ) -> int:
-    """Write the interaction record (data model §3a).
+    """Write ``interaction_fact_resource``, the interaction record.
 
     The staged key goes in as it stands, with its surrogate already minted, the
     two organisms read off the endpoints and the header id joined from
@@ -2801,7 +2802,7 @@ def _record_source_count_histogram(
     cur: psycopg2.extensions.cursor,
     schema: str,
 ) -> dict[int, int]:
-    """Record how many collapse keys carry each ``source_count`` (§12).
+    """Record how many collapse keys carry each ``source_count``.
 
     Nine rows on dev4, one per observed level from 1 to 9, each with the number
     of keys at it. Returned as ``{source_count: keys}`` and stored in
@@ -2899,9 +2900,9 @@ def _record_sign_conflict_summary(
     record by the endpoint/class triple and asks the group, which is the same
     question the removed table answered and gives the same numbers. It is two
     grouped scans of a table the step has just written and analysed — a
-    build-time measurement rather than a query-time fold, and, with the §12
-    histogram beside it, the only place in the derive that folds anything at
-    all.
+    build-time measurement rather than a query-time fold, and, with the
+    ``interaction_source_count_histogram`` beside it, the only place in the
+    derive that folds anything at all.
     """
     schema_id = sql.Identifier(schema)
     cur.execute(
