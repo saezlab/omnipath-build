@@ -21,6 +21,13 @@ SELECT DISTINCT ON (st.canonical_identifier, cpd.entity_id)
          'dataset_id', re.dataset_id,
          'row_id',     re.row_id
        ) AS provenance_record,
+       -- MACdb records a type for every trait, and pypath models it as a
+       -- `part_of` relation. Only 153 of the 269 traits are diseases: the rest
+       -- are interventions, phenotypes, genotypes and gene abnormalities, all
+       -- carrying `set_type = disease` because a resource contributes one
+       -- semantic. The sub-type is where the difference lives, and it comes
+       -- from the source, not from reading the label.
+       tt.trait_type AS set_sub_type,
        NULL::jsonb AS set_context
 FROM relation_evidence re
 JOIN vocab_relation_predicate p
@@ -40,6 +47,16 @@ JOIN entity_evidence_resolution cpd
 JOIN entity met
   ON met.entity_id = cpd.entity_id
  AND met.entity_type_id = %(chemical_entity_type_id)s
+LEFT JOIN (
+  SELECT tr.subject_entity_id AS entity_id,
+         min(o.canonical_identifier) AS trait_type
+  FROM entity_ontology_relation tr
+  JOIN vocab_relation_predicate tp
+    ON tp.relation_predicate_id = tr.predicate_id AND tp.name = 'part_of'
+  JOIN entity o ON o.entity_id = tr.object_entity_id
+  WHERE tr.source_id = %(source_id)s
+  GROUP BY 1
+) tt ON tt.entity_id = trait.entity_id
 WHERE re.source_id = %(source_id)s
 ORDER BY st.canonical_identifier, cpd.entity_id, re.row_id
 LIMIT %(max_records)s;

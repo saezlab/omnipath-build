@@ -25,6 +25,7 @@ from psycopg2 import sql
 
 from omnipath_build.metsigdb.mapping import (
     CHEMICAL_ENTITY_TYPE,
+    KEGG_OVERVIEW_MAPS,
     RESOURCES,
     ResourceRule,
 )
@@ -170,6 +171,8 @@ def load_resource(
             'chemical_entity_type_id': _entity_type_id(cur, CHEMICAL_ENTITY_TYPE),
             'max_records': max_records,
         }
+        if rule.name == 'KEGG':
+            params['overview_maps'] = list(KEGG_OVERVIEW_MAPS)
         if rule.hierarchy_source_name:
             params['hierarchy_source_id'] = _source_id(cur, rule.hierarchy_source_name)
 

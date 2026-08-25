@@ -76,6 +76,25 @@ WIKIPATHWAYS = ResourceRule(
     extraction='extract_onehop.sql',
 )
 
+# KEGG's global and overview maps: whole-metabolism diagrams rather than
+# pathways. Eleven of them carry 2,332 of KEGG's 4,969 memberships, and a hit
+# in one says a compound participates in metabolism. The list is KEGG's own
+# BRITE grouping, declared here so no row's sub-type comes from a label.
+KEGG_OVERVIEW_MAPS: tuple[str, ...] = (
+    'rn01100',  # Metabolic pathways
+    'rn01110',  # Biosynthesis of secondary metabolites
+    'rn01120',  # Microbial metabolism in diverse environments
+    'rn01200',  # Carbon metabolism
+    'rn01210',  # 2-Oxocarboxylic acid metabolism
+    'rn01212',  # Fatty acid metabolism
+    'rn01220',  # Degradation of aromatic compounds
+    'rn01230',  # Biosynthesis of amino acids
+    'rn01232',  # Nucleotide metabolism
+    'rn01240',  # Biosynthesis of cofactors
+    'rn01250',  # Biosynthesis of nucleotide sugars
+)
+
+
 KEGG = ResourceRule(
     name='KEGG',
     source_name='kegg',

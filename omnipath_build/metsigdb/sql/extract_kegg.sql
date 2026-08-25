@@ -87,6 +87,11 @@ SELECT DISTINCT ON (pr.set_source_id, rc.metabolite_entity_id)
          'row_id',       rc.row_id,
          'via_reaction', rc.reaction_entity_id
        ) AS provenance_record,
+       -- KEGG's global and overview maps are whole-metabolism diagrams, not
+       -- pathways: eleven of them hold half of KEGG's memberships. The list is
+       -- KEGG's own, declared in mapping.py, never guessed from a label.
+       CASE WHEN pr.set_source_id = ANY(%(overview_maps)s)
+            THEN 'overview_map' ELSE 'metabolic_map' END AS set_sub_type,
        NULL::jsonb AS set_context
 FROM metsigdb_kegg_pathway_reaction pr
 JOIN metsigdb_kegg_reaction_compound rc

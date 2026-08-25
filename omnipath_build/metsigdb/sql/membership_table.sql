@@ -47,6 +47,11 @@ CREATE TABLE IF NOT EXISTS metsigdb_membership (
   set_entity_id uuid,
   set_label     text,
   set_type    text   NOT NULL,
+  -- A finer semantic than `set_type`, where the source publishes one. MACdb
+  -- takes it from the trait type it records, KEGG marks its whole-metabolism
+  -- overview maps. A resource with no structured answer leaves it null rather
+  -- than inferring one from a label.
+  set_sub_type text,
   organism    bigint,
   set_size    integer NOT NULL,
   set_context jsonb,
@@ -72,7 +77,8 @@ CREATE TABLE IF NOT EXISTS metsigdb_membership (
 -- columns arrive here, and they arrive before the indexes that read them.
 ALTER TABLE metsigdb_membership
   ADD COLUMN IF NOT EXISTS set_entity_id uuid,
-  ADD COLUMN IF NOT EXISTS metabolite_structure_key text;
+  ADD COLUMN IF NOT EXISTS metabolite_structure_key text,
+  ADD COLUMN IF NOT EXISTS set_sub_type text;
 
 -- The five shared filter columns of the API contract, and nothing else. The
 -- serving layer filters on these alone, so these alone are indexed.
@@ -84,6 +90,11 @@ CREATE INDEX IF NOT EXISTS metsigdb_membership_metabolite_idx
 
 CREATE INDEX IF NOT EXISTS metsigdb_membership_set_type_idx
   ON metsigdb_membership (set_type);
+
+-- Partial: two resources fill the sub-type, so the index stays small and a
+-- sub-type filter never scans the ClassyFire bulk.
+CREATE INDEX IF NOT EXISTS metsigdb_membership_set_sub_type_idx
+  ON metsigdb_membership (set_sub_type) WHERE set_sub_type IS NOT NULL;
 
 -- Cross-resource grouping runs on the structure key, which is the point of
 -- publishing it.

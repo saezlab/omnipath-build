@@ -26,6 +26,7 @@ SELECT DISTINCT ON (st.canonical_identifier, res.entity_id)
        ) AS provenance_record,
        -- Every extraction produces the same stage shape, so one publication
        -- path serves all five resources. Only ClassyFire fills this column.
+       NULL::text  AS set_sub_type,
        NULL::jsonb AS set_context
 FROM relation_evidence re
 JOIN vocab_relation_predicate p

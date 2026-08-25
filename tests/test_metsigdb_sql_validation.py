@@ -230,3 +230,41 @@ def test_a_named_set_reads_as_a_name(conn):
     assert labels.get('R-HSA-1059683') == 'Interleukin-6 signaling'
     assert labels.get('CHEMONTID:0000118') == 'Ketones'
     assert labels.get('46') == 'Colorectal Cancer (CRC)'
+
+
+def test_the_sub_type_comes_from_the_source(conn):
+    """MACdb records a trait type, and KEGG's overview maps are a known list.
+
+    MACdb calls all 269 of its traits a disease, and 116 of them are
+    interventions, phenotypes, genotypes or gene abnormalities. The sub-type is
+    where that difference lives, and it is read rather than inferred from a
+    label.
+    """
+    seen = {
+        (resource, sub_type)
+        for resource, sub_type in _rows(
+            conn,
+            f'SELECT DISTINCT resource, set_sub_type FROM {TABLE} '
+            f'WHERE set_sub_type IS NOT NULL',
+        )
+    }
+    macdb = {s for r, s in seen if r == 'MACdb'}
+    assert macdb == {
+        'cancer', 'phenotype', 'medical intervention',
+        'gene abnormality', 'genotype',
+    }
+    assert {s for r, s in seen if r == 'KEGG'} == {'overview_map', 'metabolic_map'}
+    # No other resource publishes a structured sub-type in this build.
+    assert {r for r, _ in seen} == {'MACdb', 'KEGG'}
+
+
+def test_kegg_overview_maps_are_the_declared_ones(conn):
+    """The eleven whole-metabolism maps, not a guess from an identifier shape."""
+    rows = _rows(
+        conn,
+        f"SELECT DISTINCT set_source_id FROM {TABLE} "
+        f"WHERE resource = 'KEGG' AND set_sub_type = 'overview_map'",
+    )
+    from omnipath_build.metsigdb.mapping import KEGG_OVERVIEW_MAPS
+
+    assert {set_id for (set_id,) in rows} <= set(KEGG_OVERVIEW_MAPS)

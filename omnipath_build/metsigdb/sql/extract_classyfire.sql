@@ -111,6 +111,7 @@ SELECT se.canonical_identifier AS set_source_id,
          'dataset_id', pr.dataset_id,
          'row_id',     pr.row_id
        ) AS provenance_record,
+       NULL::text AS set_sub_type,
        CASE WHEN pr.depth = 0
             THEN jsonb_build_object('assignment', 'direct', 'depth', 0)
             ELSE jsonb_build_object(
