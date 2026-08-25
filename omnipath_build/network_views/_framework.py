@@ -386,7 +386,17 @@ def register_network(
 
     The whole preset spec travels with the row, so the API resolves a dataset
     from the registry alone.
+
+    A resource the definition names and the build has not loaded is normal — a
+    dataset is registered once and its resources arrive over several cycles,
+    and a capped development build loads a fraction of them. It is also
+    invisible: the dataset registers, the resource contributes nothing, and an
+    empty contribution looks exactly like a resource with nothing to say. So
+    the missing names are logged, and logged individually, before the row goes
+    in. The scope keeps them: they are what the dataset is waiting for, and
+    dropping them would turn a known gap into a forgotten one.
     """
+    _warn_unloaded(conn, definition, registry_schema=registry_schema)
     with conn.cursor() as cur:
         cur.execute(
             sql.SQL(
@@ -443,6 +453,55 @@ def register_network(
             ],
         )
     conn.commit()
+
+
+def _warn_unloaded(
+    conn: psycopg2.extensions.connection,
+    definition: NetworkDefinition,
+    *,
+    registry_schema: str = 'public',
+) -> tuple[str, ...]:
+    """Log every resource this dataset names that the build has not loaded.
+
+    Args:
+        conn: An open connection.
+        definition: The dataset being registered.
+        registry_schema: The schema holding ``data_source``.
+
+    Returns:
+        The unloaded resource names, sorted. Empty when every one is present,
+        and empty too when the schema carries no ``data_source`` at all — a
+        database without one cannot say what is loaded, and guessing there
+        would produce a warning for every resource of every dataset.
+    """
+    named = list(definition.included_sources)
+    if not named:
+        return ()
+    with conn.cursor() as cur:
+        cur.execute(
+            sql.SQL('SELECT to_regclass({})').format(
+                sql.Literal(f'{registry_schema}.data_source')
+            )
+        )
+        if cur.fetchone()[0] is None:
+            return ()
+        cur.execute(
+            sql.SQL(
+                'SELECT name FROM {}.data_source WHERE name = ANY(%s)'
+            ).format(sql.Identifier(registry_schema)),
+            [named],
+        )
+        loaded = {name for (name,) in cur.fetchall()}
+    missing = tuple(sorted(set(named) - loaded))
+    for name in missing:
+        logger.warning(
+            'the dataset %r names the resource %r, which this build has not '
+            'loaded; it contributes no row and the dataset is short of '
+            'whatever it would have contributed',
+            definition.name,
+            name,
+        )
+    return missing
 
 
 @dataclass(frozen=True)
