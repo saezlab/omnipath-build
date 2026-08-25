@@ -14,6 +14,20 @@ other consumer of the canonical entity layer.
 
 from __future__ import annotations
 
-from omnipath_build.metsigdb.build import ensure_membership_table
+from omnipath_build.metsigdb.build import (
+    ResourceLoadStats,
+    build_id,
+    ensure_membership_table,
+    load_resource,
+)
+from omnipath_build.metsigdb.mapping import RESOURCES, ResourceRule, rule_for
 
-__all__ = ['ensure_membership_table']
+__all__ = [
+    'RESOURCES',
+    'ResourceLoadStats',
+    'ResourceRule',
+    'build_id',
+    'ensure_membership_table',
+    'load_resource',
+    'rule_for',
+]
