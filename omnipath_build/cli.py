@@ -403,6 +403,10 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.command == 'derive':
             derive_started = time.perf_counter()
+            # Supplementary steps are caught rather than raised. Their names
+            # land here so the derive can say, in its exit code, that it
+            # published less than it was asked to.
+            failed_steps: list[str] = []
             # `MAX_RECORDS` reaches the derive as a cap the load already
             # applied: the derived tables are projections of what was loaded,
             # so a capped load caps them by construction. What the derive owes
@@ -669,21 +673,34 @@ def main(argv: list[str] | None = None) -> int:
                         # Network views are a supplementary layer; a failure here
                         # (e.g. a missing source) must not abort the core build.
                         conn.rollback()
-                        _derive_log(
-                            'network_views_failed',
-                            _level=logging.ERROR,
-                            error=repr(exc),
-                            seconds=f'{time.perf_counter() - step_started:.3f}',
+                        _supplementary_step_failed(
+                            failed_steps,
+                            'network_views',
+                            exc,
+                            time.perf_counter() - step_started,
                         )
                 if args.metsigdb:
                     step_started = time.perf_counter()
                     _derive_log('metsigdb_start')
+                    metsigdb_conn = None
                     try:
+                        # The step needs a session of its own. Its extractions
+                        # are temp tables sized by `temp_buffers`, which
+                        # Postgres refuses to raise once a session has touched
+                        # one — and by now this session has touched many. On
+                        # the derive's connection the widening is refused, the
+                        # step keeps the 8 MB default and dies on KEGG with
+                        # "no empty local buffer available". So commit what the
+                        # derive owes, then hand the step a fresh connection.
+                        conn.commit()
+                        metsigdb_conn = psycopg2.connect(args.database_url)
                         # No record cap here. The substrate is a projection of
                         # what the load wrote, so a capped load caps it by
                         # construction; re-applying the cap would truncate a
                         # full build whose derive was handed the load's figure.
-                        metsigdb_stats = build_metsigdb(conn, schema=args.schema)
+                        metsigdb_stats = build_metsigdb(
+                            metsigdb_conn, schema=args.schema
+                        )
                         _derive_log(
                             'metsigdb_done',
                             build=metsigdb_stats.build_id,
@@ -699,12 +716,15 @@ def main(argv: list[str] | None = None) -> int:
                         # network views: a failure is loud but must not abort
                         # the build that produced the content it reads.
                         conn.rollback()
-                        _derive_log(
-                            'metsigdb_failed',
-                            _level=logging.ERROR,
-                            error=repr(exc),
-                            seconds=f'{time.perf_counter() - step_started:.3f}',
+                        _supplementary_step_failed(
+                            failed_steps,
+                            'metsigdb',
+                            exc,
+                            time.perf_counter() - step_started,
                         )
+                    finally:
+                        if metsigdb_conn is not None:
+                            metsigdb_conn.close()
                 print(
                     '[derive] '
                     f'entity_identifier_lookup='
@@ -764,8 +784,9 @@ def main(argv: list[str] | None = None) -> int:
             _derive_log(
                 'done',
                 seconds=f'{time.perf_counter() - derive_started:.3f}',
+                failed_steps=','.join(failed_steps),
             )
-            return 0
+            return _derive_exit_code(failed_steps)
 
     return 0
 
@@ -886,6 +907,53 @@ def _interaction_deferral_cost(
     if stats is None:
         return None
     return dict(stats.deferral) or None
+
+
+def _supplementary_step_failed(
+    failed: list[str],
+    step: str,
+    exc: BaseException,
+    seconds: float,
+) -> None:
+    """Record a supplementary step's failure so the build cannot hide it.
+
+    These steps are caught on purpose: a published dataset over the core
+    content must not abort the build that produced the content it reads. What
+    was missing is that the operator could not tell. The error went to the
+    package logger, and `make` exports a quiet logging config, so a derive that
+    published nothing printed its usual summary and exited 0. That is the
+    silently skipped phase Principle V forbids, arrived at through the back
+    door: the phase was not skipped, it failed and said so to nobody.
+
+    So the failure goes to `print` as well, which is the channel the steps'
+    own progress already uses and no logging config suppresses, and the name is
+    recorded for the exit code.
+    """
+    failed.append(step)
+    _derive_log(
+        f'{step}_failed',
+        _level=logging.ERROR,
+        error=repr(exc),
+        seconds=f'{seconds:.3f}',
+    )
+    print(f'[derive] STEP FAILED step={step} error={exc!r}', flush=True)
+
+
+def _derive_exit_code(failed: list[str]) -> int:
+    """0 when every step ran, 1 when a supplementary one did not.
+
+    The build still completed, and everything that did run is committed. The
+    non-zero code says the result is not the whole build, so a caller that
+    treats exit 0 as "the database is ready to serve" is not misled.
+    """
+    if not failed:
+        return 0
+    print(
+        f'[derive] incomplete: {len(failed)} step(s) failed: '
+        + ', '.join(failed),
+        flush=True,
+    )
+    return 1
 
 
 def _record_cap(max_records: object) -> int | None:

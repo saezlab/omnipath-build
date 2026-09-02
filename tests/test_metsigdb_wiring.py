@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import inspect
 import logging
+import re
 
 import pytest
 
@@ -133,32 +134,61 @@ def test_the_derive_runs_it_by_default_and_can_be_told_not_to():
     )
 
 
+def _derive_step() -> str:
+    """The derive's MetSigDB block, from its start line to the end of its finally.
+
+    Anchored on the log event rather than on how the call is spelled, so a
+    change to the call site does not silently stop testing it.
+    """
+    source = inspect.getsource(cli.main)
+    start = source.index("_derive_log('metsigdb_start')")
+    end = source.index('metsigdb_conn.close()', start)
+    return source[start:end + len('metsigdb_conn.close()')]
+
+
 def test_it_runs_after_the_manifest_it_stamps_rows_with():
     """`build_id()` reads build_manifest, so the order is a requirement."""
     source = inspect.getsource(cli.main)
-    # The derive call site, not the subcommand's: the subcommand is declared
-    # earlier in the source and enforces the same order at runtime instead,
-    # where `build_id()` raises on an empty manifest.
-    derive_call = source.index('build_metsigdb(conn, schema=')
-    assert source.index("'build_manifest_done'") < derive_call
+    step = source.index("_derive_log('metsigdb_start')")
+    assert source.index("'build_manifest_done'") < step
+
+
+def test_the_derive_gives_the_step_its_own_connection():
+    """The step stages temp tables and must set `temp_buffers` to size them.
+
+    Postgres refuses that once a session has touched a temp table, and by the
+    time the step runs the derive's session has touched many. Lending it that
+    connection leaves the step on the 8 MB default, where it loads Reactome and
+    WikiPathways and then dies on KEGG with "no empty local buffer available".
+    """
+    step = _derive_step()
+    assert 'psycopg2.connect(args.database_url)' in step, (
+        'the derive must open a connection for the step, not lend its own'
+    )
+    assert 'metsigdb_conn' in step, 'the step has to receive that connection'
+    assert 'conn.commit()' in step, (
+        'the derive owes a commit before a second session reads what it wrote'
+    )
+    assert 'metsigdb_conn.close()' in step, "the step's connection is leaked"
 
 
 def test_the_derive_does_not_reapply_the_load_cap():
-    """The substrate is a projection of what the load wrote, capped by construction."""
-    source = inspect.getsource(cli.main)
-    call = source.index('build_metsigdb(conn, schema=')
-    assert call > 0, 'the derive passes a record cap it should not re-apply'
+    """The substrate is a projection of what the load wrote, capped already."""
+    assert 'max_records' not in _derive_step(), (
+        'the derive passes a record cap it should not re-apply'
+    )
 
 
-def test_a_failure_is_loud_and_does_not_abort_the_build(caplog):
+def test_a_failure_is_loud_and_does_not_abort_the_build():
     """Like the network views: reported at error level, and the build goes on."""
-    source = inspect.getsource(cli.main)
-    step = source.index("_derive_log('metsigdb_start')")
-    tail = source[step:step + 1600]
-    assert "'metsigdb_failed'" in tail
-    assert '_level=logging.ERROR' in tail
-    assert 'conn.rollback()' in tail
-    assert 'raise' not in tail, (
+    step = _derive_step()
+    # The failure goes through the shared helper, which prints as well as logs
+    # and records the step for the derive's exit code. See
+    # tests/test_derive_supplementary_steps.py.
+    assert '_supplementary_step_failed(' in step
+    assert "'metsigdb'," in step
+    assert 'conn.rollback()' in step
+    assert not re.search(r'^\s*raise\b', step, re.MULTILINE), (
         'a published dataset must not abort the build that produced its content'
     )
 

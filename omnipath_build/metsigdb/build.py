@@ -90,11 +90,34 @@ def _widen_temp_buffers(cur) -> None:
     Postgres refuses the change once the session has touched a temp table, so a
     connection that already loaded one resource keeps the value it got then.
     That is the wanted behavior, and the refusal is not an error.
+
+    The refusal arrives as `invalid_parameter_value`, and it aborts the
+    transaction it happened in, so the attempt runs inside a savepoint and the
+    caller keeps a usable connection.
+
+    Tolerating the refusal is right **within one build**, where the session
+    already carries the widened value from the first resource. It is not a
+    licence to run on any connection: a session that reaches here still on the
+    8 MB default cannot stage KEGG or ClassyFire, and fails with "no empty
+    local buffer available". Callers must pass a connection that has touched
+    no temp table — which is why the derive opens one of its own rather than
+    lending the step the session it has been building on.
     """
+    savepoint = not cur.connection.autocommit
+    if savepoint:
+        cur.execute('SAVEPOINT metsigdb_temp_buffers')
     try:
         cur.execute(f"SET temp_buffers = '{TEMP_BUFFERS}'")
-    except psycopg2.errors.ActiveSqlTransaction:  # pragma: no cover
+    except (
+        psycopg2.errors.InvalidParameterValue,
+        psycopg2.errors.ActiveSqlTransaction,
+    ):
+        if savepoint:
+            cur.execute('ROLLBACK TO SAVEPOINT metsigdb_temp_buffers')
         logger.debug('metsigdb: temp_buffers already fixed for this session')
+    else:
+        if savepoint:
+            cur.execute('RELEASE SAVEPOINT metsigdb_temp_buffers')
 
 
 def _scalar(cur, query: str, params=None):
