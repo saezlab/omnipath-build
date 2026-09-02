@@ -45,6 +45,7 @@ from omnipath_build.classify import (
     classify_interaction_class,
 )
 from omnipath_build.labels import populate_chemical_labels, populate_entity_labels
+from omnipath_build.metsigdb import build_metsigdb
 from omnipath_build.network_views import NETWORKS, apply_all as apply_network_views
 from omnipath_build.resources import discover_resources
 from omnipath_build.resolver.mapping_tables import (
@@ -245,6 +246,16 @@ def main(argv: list[str] | None = None) -> int:
         default=True,
         help='Apply + register the specialized network views (MetalinksDB, LIANA).',
     )
+    derive.add_argument(
+        '--metsigdb',
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            'Publish the MetSigDB membership substrate (KEGG, Reactome, '
+            'WikiPathways, MACdb, ClassyFire). Runs after the build manifest, '
+            'whose stamp every published row carries.'
+        ),
+    )
     derive.add_argument('--inputs-package', default='pypath.inputs_v2')
     derive.add_argument('--database', default='omnipath')
     derive.add_argument(
@@ -262,6 +273,20 @@ def main(argv: list[str] | None = None) -> int:
         '--refresh',
         action='store_true',
         help='Refresh existing matviews instead of a full apply (faster).',
+    )
+
+    metsigdb = subparsers.add_parser('metsigdb')
+    metsigdb.add_argument('--schema', default='public')
+    metsigdb.add_argument(
+        '--max-records',
+        default=None,
+        help=(
+            'Cap each resource for the dev loop. Unlike the derive, this does '
+            'not default to the MAX_RECORDS env var: there the cap describes a '
+            'load that already happened, here it decides what gets written and '
+            'permanently flags build_manifest.partial_build. A destructive '
+            'default has to be typed, not inherited from the shell.'
+        ),
     )
 
     args = parser.parse_args(argv)
@@ -303,6 +328,22 @@ def main(argv: list[str] | None = None) -> int:
             print(
                 f'[network-views] {"refreshed" if args.refresh else "applied"}: '
                 f'{", ".join(stats.applied)}',
+                flush=True,
+            )
+            return 0
+        if args.command == 'metsigdb':
+            cap = _record_cap(args.max_records)
+            stats = build_metsigdb(conn, max_records=cap, schema=args.schema)
+            print(
+                '[metsigdb] '
+                f'build={stats.build_id} '
+                f'rows={stats.rows} '
+                f'partial={stats.partial} '
+                f'seconds={stats.seconds} '
+                + ' '.join(
+                    f'{loaded.resource}={loaded.rows}'
+                    for loaded in stats.resources
+                ),
                 flush=True,
             )
             return 0
@@ -634,6 +675,36 @@ def main(argv: list[str] | None = None) -> int:
                             error=repr(exc),
                             seconds=f'{time.perf_counter() - step_started:.3f}',
                         )
+                if args.metsigdb:
+                    step_started = time.perf_counter()
+                    _derive_log('metsigdb_start')
+                    try:
+                        # No record cap here. The substrate is a projection of
+                        # what the load wrote, so a capped load caps it by
+                        # construction; re-applying the cap would truncate a
+                        # full build whose derive was handed the load's figure.
+                        metsigdb_stats = build_metsigdb(conn, schema=args.schema)
+                        _derive_log(
+                            'metsigdb_done',
+                            build=metsigdb_stats.build_id,
+                            rows=metsigdb_stats.rows,
+                            resources=','.join(
+                                f'{loaded.resource}={loaded.rows}'
+                                for loaded in metsigdb_stats.resources
+                            ),
+                            seconds=f'{time.perf_counter() - step_started:.3f}',
+                        )
+                    except Exception as exc:
+                        # A published dataset over the core content, like the
+                        # network views: a failure is loud but must not abort
+                        # the build that produced the content it reads.
+                        conn.rollback()
+                        _derive_log(
+                            'metsigdb_failed',
+                            _level=logging.ERROR,
+                            error=repr(exc),
+                            seconds=f'{time.perf_counter() - step_started:.3f}',
+                        )
                 print(
                     '[derive] '
                     f'entity_identifier_lookup='
@@ -815,6 +886,22 @@ def _interaction_deferral_cost(
     if stats is None:
         return None
     return dict(stats.deferral) or None
+
+
+def _record_cap(max_records: object) -> int | None:
+    """``MAX_RECORDS`` as a cap the MetSigDB step can apply, or None.
+
+    Same input as :func:`_is_partial_build` and the same tolerance for an unset
+    or unparseable value: an absent cap is the authoritative case, so anything
+    that is not a positive integer means "do not cap" rather than an error.
+    """
+    if max_records in (None, ''):
+        return None
+    try:
+        cap = int(max_records)
+    except (TypeError, ValueError):
+        return None
+    return cap if cap > 0 else None
 
 
 def _is_partial_build(max_records: object) -> bool:
