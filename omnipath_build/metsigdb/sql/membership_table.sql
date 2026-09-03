@@ -118,10 +118,11 @@ COMMENT ON TABLE metsigdb_membership IS
 --
 -- Partial or full is decided per column by measurement, not by habit. The
 -- identifier columns are sparse **per metabolite** and populated **per row**,
--- and an index is built per row: ClassyFire is 98.4% of the substrate and
+-- and an index is built per row: ClassyFire is 98.4 per cent of the substrate
 -- carries HMDB and InChIKey for nearly every metabolite it publishes. So
--- `WHERE ... IS NOT NULL` excludes 1% of `inchikey` and `hmdb` and 28% of
--- `pubchem` — harmless but pointless — while excluding four fifths of `chebi`
+-- `WHERE ... IS NOT NULL` excludes one row in a hundred of `inchikey` and
+-- `hmdb`, and a little over a quarter of `pubchem` — harmless but pointless —
+-- while it excludes four fifths of `chebi`
 -- and nineteen twentieths of `kegg`.
 CREATE INDEX IF NOT EXISTS metsigdb_membership_inchikey_idx
   ON metsigdb_membership (inchikey);
@@ -132,7 +133,7 @@ CREATE INDEX IF NOT EXISTS metsigdb_membership_hmdb_idx
 CREATE INDEX IF NOT EXISTS metsigdb_membership_pubchem_idx
   ON metsigdb_membership (pubchem);
 
--- Partial: 19.6% of rows carry a ChEBI id, 5.0% a KEGG id.
+-- Partial: one row in five carries a ChEBI id, one in twenty a KEGG id.
 CREATE INDEX IF NOT EXISTS metsigdb_membership_chebi_idx
   ON metsigdb_membership (chebi) WHERE chebi IS NOT NULL;
 

@@ -195,25 +195,54 @@ def test_v9_every_row_carries_one_build_stamp(conn):
     assert stamps[0][0] == manifest[0][0]
 
 
-def test_set_labels_come_from_the_ontology_terms(conn):
-    """Three resources name every set. Two carry no name in this build.
+def test_set_labels_come_from_a_term_or_from_the_name(conn):
+    """A set is named by its ontology term, or failing that by its `Name`.
 
-    The first published substrate had no name anywhere, because the freeze
-    checked `ontology_terms`, which is empty, instead of
-    `entity_ontology_term`, which holds 711,731 rows.
+    Three resources are ontology terms and carry a label. WikiPathways
+    pathways are not terms at all, and the source publishes their title as a
+    `Name` identifier instead; cycle 012 reads that as the fallback, which took
+    WikiPathways from no named set to 745 of 818.
+
+    Two populations are still unnamed and neither is a naming defect:
+
+    - **73 WikiPathways sets** have no name anywhere in the database and no
+      duplicate entity that carries one. The name never arrived.
+    - **All 176 KEGG sets** are anchored on an entity that carries no name,
+      while a duplicate of the same accession does. 2,605 KEGG pathway
+      accessions map to more than one entity. That is the entity-duplication
+      defect cycle 011 owns, not something a label fallback can reach.
+
+    Asserted as counts rather than as "every set is named", because the honest
+    state is partial and a test that demanded completeness would have to be
+    skipped instead of read.
     """
     rows = _rows(
         conn,
-        f'SELECT resource, count(*), count(set_label) FROM {TABLE} GROUP BY 1',
+        f'SELECT resource, count(DISTINCT set_source_id), '
+        f'count(DISTINCT set_source_id) FILTER (WHERE set_label IS NOT NULL) '
+        f'FROM {TABLE} GROUP BY 1',
     )
     seen = {resource: (total, named) for resource, total, named in rows}
+
     for resource in ('Reactome', 'MACdb', 'ClassyFire'):
         if resource in seen:
             total, named = seen[resource]
             assert named == total, f'{resource}: {named} of {total} named'
-    for resource in ('KEGG', 'WikiPathways'):
-        if resource in seen:
-            assert seen[resource][1] == 0, resource
+
+    if 'WikiPathways' in seen:
+        total, named = seen['WikiPathways']
+        assert named > 0, 'the Name fallback stopped working'
+        assert total - named <= 73, (
+            f'WikiPathways: {total - named} unnamed, was 73. More sets lost '
+            'their name than the recorded gap.'
+        )
+
+    if 'KEGG' in seen:
+        # Zero until the duplicate pathway entities are merged upstream.
+        assert seen['KEGG'][1] == 0, (
+            'KEGG sets gained names: the entity duplication may be fixed, and '
+            'this expectation should be raised rather than left passing.'
+        )
 
 
 def test_a_named_set_reads_as_a_name(conn):

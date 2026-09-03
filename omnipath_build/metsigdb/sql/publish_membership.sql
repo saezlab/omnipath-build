@@ -57,12 +57,31 @@ ANALYZE metsigdb_projection;
 -- identifier is not a reliable substitute: WP ids name no species, and
 -- deriving one from an R-HSA prefix guesses where the data already answers.
 -- Measured across all 4,569 set entities, no entity's evidences disagree.
+--
+-- The name has two sources and the ontology term wins. A curated term carries a
+-- label; a set that is not an ontology term at all carries its name as a `Name`
+-- identifier instead, which is how the source published it. WikiPathways
+-- pathways are the second case: 745 of 818 carry `Name`, none is an ontology
+-- term, and reading only the term published null for every one of them.
+--
+-- `starts_with` rather than `LIKE`, because psycopg2 interpolates this file and
+-- a per-cent sign in it — escaped or not — is the bug that failed the cycle 010
+-- load four times.
 CREATE TEMP TABLE metsigdb_set_attrs AS
 SELECT s.set_entity_id AS entity_id,
-       max(t.label)    AS set_label,
+       coalesce(max(t.label), max(nm.name)) AS set_label,
        min(tax.taxonomy_id) AS organism
 FROM (SELECT DISTINCT set_entity_id FROM metsigdb_stage) s
 LEFT JOIN entity_ontology_term t ON t.term_entity_id = s.set_entity_id
+LEFT JOIN (
+  SELECT l.entity_id, min(ie.value) AS name
+  FROM (SELECT DISTINCT set_entity_id FROM metsigdb_stage) staged
+  JOIN entity_identifier_lookup l ON l.entity_id = staged.set_entity_id
+  JOIN identifier_evidence ie ON ie.identifier_id = l.identifier_id
+  JOIN vocab_identifier_type it ON it.identifier_type_id = ie.identifier_type_id
+  WHERE starts_with(it.name, 'Name:')
+  GROUP BY l.entity_id
+) nm ON nm.entity_id = s.set_entity_id
 LEFT JOIN (
   SELECT r.entity_id, ee.taxonomy_id
   FROM entity_evidence ee
