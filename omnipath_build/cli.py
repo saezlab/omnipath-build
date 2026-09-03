@@ -47,7 +47,7 @@ from omnipath_build.classify import (
 from omnipath_build.labels import populate_chemical_labels, populate_entity_labels
 from omnipath_build.metsigdb import build_metsigdb
 from omnipath_build.network_views import NETWORKS, apply_all as apply_network_views
-from omnipath_build.resources import discover_resources
+from omnipath_build.resources import discover_resources, populate_identifier_authority
 from omnipath_build.resolver.mapping_tables import (
     SOURCE_NAMES as RESOLVER_SOURCE_NAMES,
     run_sources as build_resolver_sources,
@@ -580,7 +580,7 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 step_started = time.perf_counter()
                 _derive_log('discover_resources_start')
-                discovered, _ = discover_resources(
+                discovered, configs = discover_resources(
                     database_name=args.database,
                     inputs_package=args.inputs_package,
                     progress=True,
@@ -591,6 +591,18 @@ def main(argv: list[str] | None = None) -> int:
                     functions=sum(
                         len(functions) for functions in discovered.values()
                     ),
+                    seconds=f'{time.perf_counter() - step_started:.3f}',
+                )
+                step_started = time.perf_counter()
+                _derive_log('identifier_authority_start')
+                with conn.cursor() as cur:
+                    authority_rows = populate_identifier_authority(
+                        cur, args.schema, configs, progress=True,
+                    )
+                conn.commit()
+                _derive_log(
+                    'identifier_authority_done',
+                    rows=authority_rows,
                     seconds=f'{time.perf_counter() - step_started:.3f}',
                 )
                 bitmap_stats = None

@@ -38,6 +38,7 @@ class DerivedTableStats:
     ontology_terms: int = 0
     entity_ontology_terms: int = 0
     entity_source_count: int = 0
+    identifier_role: int = 0
     interactions: InteractionDeriveStats | None = None
 
 
@@ -126,6 +127,17 @@ def rebuild_derived_tables(
             seconds=f'{time.perf_counter() - step_started:.3f}',
         )
 
+        _log(progress, 'identifier_role', 'start')
+        step_started = time.perf_counter()
+        identifier_role = _populate_identifier_role(cur, schema)
+        _log(
+            progress,
+            'identifier_role',
+            'done',
+            rows=identifier_role,
+            seconds=f'{time.perf_counter() - step_started:.3f}',
+        )
+
         _log(progress, 'indexes', 'start')
         step_started = time.perf_counter()
         _create_derived_indexes(cur, schema)
@@ -148,6 +160,7 @@ def rebuild_derived_tables(
         ontology_terms=ontology_terms,
         entity_ontology_terms=entity_ontology_terms,
         entity_source_count=entity_source_count,
+        identifier_role=identifier_role,
         interactions=interaction_stats,
     )
 
@@ -396,6 +409,53 @@ def _populate_entity_source_count(
             GROUP BY er.entity_id
             """
         ).format(schema_id, schema_id, schema_id, schema_id)
+    )
+    return int(cur.rowcount)
+
+
+def _populate_identifier_role(
+    cur: psycopg2.extensions.cursor,
+    schema: str,
+) -> int:
+    """Per (resource, namespace) pair actually seen in evidence, how the
+    resource used it: ``authoritative`` when ``identifier_authority`` names
+    that resource as the namespace's minting authority, else
+    ``cross_reference``.
+
+    Quality-control scope, arbitration, and the coverage report filter on
+    ``role`` rather than naming resources one by one.
+    """
+    schema_id = sql.Identifier(schema)
+    cur.execute(sql.SQL('TRUNCATE {}.identifier_role').format(schema_id))
+    cur.execute(
+        sql.SQL(
+            """
+            INSERT INTO {}.identifier_role (
+              source_id,
+              identifier_type_id,
+              role,
+              mention_count
+            )
+            SELECT
+              ee.source_id,
+              ie.identifier_type_id,
+              CASE
+                WHEN a.identifier_type_id IS NOT NULL THEN 'authoritative'
+                ELSE 'cross_reference'
+              END,
+              count(*)
+            FROM {}.entity_evidence ee
+            JOIN {}.entity_evidence_identifier eei
+              ON eei.source_id = ee.source_id
+             AND eei.entity_evidence_id = ee.entity_evidence_id
+            JOIN {}.identifier_evidence ie
+              ON ie.identifier_id = eei.identifier_id
+            LEFT JOIN {}.identifier_authority a
+              ON a.identifier_type_id = ie.identifier_type_id
+             AND a.source_id = ee.source_id
+            GROUP BY 1, 2, 3
+            """
+        ).format(schema_id, schema_id, schema_id, schema_id, schema_id)
     )
     return int(cur.rowcount)
 

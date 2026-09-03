@@ -1240,6 +1240,38 @@ def _ensure_resolution_schema(
             """
         ).format(schema_id)
     )
+    log_step('create identifier authority table')
+    cur.execute(
+        sql.SQL(
+            """
+            CREATE TABLE IF NOT EXISTS {}.identifier_authority (
+              identifier_type_id bigint PRIMARY KEY
+                REFERENCES {}.vocab_identifier_type(identifier_type_id),
+              source_id bigint NOT NULL
+                REFERENCES {}.data_source(source_id),
+              is_structure_authority boolean NOT NULL DEFAULT false
+            )
+            """
+        ).format(schema_id, schema_id, schema_id)
+    )
+    log_step('create identifier role table')
+    cur.execute(
+        sql.SQL(
+            """
+            CREATE TABLE IF NOT EXISTS {}.identifier_role (
+              source_id bigint NOT NULL
+                REFERENCES {}.data_source(source_id),
+              identifier_type_id bigint NOT NULL
+                REFERENCES {}.vocab_identifier_type(identifier_type_id),
+              role text NOT NULL CHECK (
+                role IN ('authoritative', 'cross_reference')
+              ),
+              mention_count bigint NOT NULL,
+              PRIMARY KEY (source_id, identifier_type_id)
+            )
+            """
+        ).format(schema_id, schema_id, schema_id)
+    )
     log_step('ensure gene-anchored schema')
     _ensure_gene_anchored_schema(cur, schema)
     log_step('create identifier type table')

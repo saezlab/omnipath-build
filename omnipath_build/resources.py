@@ -83,8 +83,14 @@ def discover_resources(
     database_name: str,
     inputs_package: str = 'pypath.inputs_v2',
     progress: bool = False,
-) -> tuple[dict[str, list[ResourceFunction]], None]:
-    """Return input dataset callables grouped by source module name."""
+) -> tuple[dict[str, list[ResourceFunction]], dict[str, 'ResourceConfig']]:
+    """Return input dataset callables grouped by source module name.
+
+    The second value maps each source slug to its module's ``ResourceConfig``,
+    when the module declares a module-level ``config``. It carries the
+    ``mints`` declaration onward to ``populate_identifier_authority`` without
+    a second package walk.
+    """
 
     del database_name
     started = time.perf_counter()
@@ -100,6 +106,7 @@ def discover_resources(
         ArtifactDataset,
         Dataset,
         Resource,
+        ResourceConfig,
     )
 
     try:
@@ -117,6 +124,7 @@ def discover_resources(
 
     prefix = f'{inputs_package}.'
     discovered: dict[str, list[ResourceFunction]] = {}
+    configs: dict[str, ResourceConfig] = {}
     dataset_types = (Dataset, ArtifactDataset)
 
     for module_info in pkgutil.walk_packages(package_paths, prefix):
@@ -162,6 +170,10 @@ def discover_resources(
 
         if not resource_members and not dataset_members:
             continue
+
+        module_config = getattr(module, 'config', None)
+        if isinstance(module_config, ResourceConfig) and source_slug not in configs:
+            configs[source_slug] = module_config
 
         module_functions: list[ResourceFunction] = []
         for _, resource_obj in resource_members:
@@ -224,4 +236,96 @@ def discover_resources(
             f'elapsed={time.perf_counter() - started:.1f}s',
             flush=True,
         )
-    return discovered, None
+    return discovered, configs
+
+
+def populate_identifier_authority(
+    cur,
+    schema: str,
+    configs: dict[str, 'ResourceConfig'],
+    *,
+    progress: bool = False,
+) -> int:
+    """Write the ``mints`` declarations from ``discover_resources`` into
+    ``identifier_authority``: one row per namespace a resource is the
+    authority for.
+
+    It looks up against this database's live ``vocab_identifier_type`` and
+    ``data_source`` tables, not the resolver's static namespace list. Each
+    build assigns its own identifier type IDs, and that narrower,
+    resolver-only list does not cover every namespace a resource mints.
+
+    The walk skips a namespace with no matching ``vocab_identifier_type``
+    row, or a source with no ``data_source`` row, rather than raising an
+    error. The resource walk runs before ingest populates those tables.
+
+    Returns the number of rows written.
+    """
+    from psycopg2 import sql
+
+    from pypath.internals.cv_terms import cv_term_label_accession
+
+    schema_id = sql.Identifier(schema)
+    written = 0
+
+    for source_slug, config in configs.items():
+        if not config.mints:
+            continue
+
+        cur.execute(
+            sql.SQL(
+                'SELECT source_id FROM {}.data_source WHERE name = %s'
+            ).format(schema_id),
+            [source_slug],
+        )
+        source_row = cur.fetchone()
+        if source_row is None:
+            if progress:
+                print(
+                    f'[identifier_authority] no data_source row for '
+                    f'{source_slug!r}, skipping',
+                    flush=True,
+                )
+            continue
+        source_id = source_row[0]
+
+        for namespace in config.mints:
+            type_name = cv_term_label_accession(namespace)
+            cur.execute(
+                sql.SQL(
+                    'SELECT identifier_type_id FROM {}.vocab_identifier_type'
+                    ' WHERE name = %s'
+                ).format(schema_id),
+                [type_name],
+            )
+            type_row = cur.fetchone()
+            if type_row is None:
+                if progress:
+                    print(
+                        f'[identifier_authority] no vocab_identifier_type '
+                        f'row for {type_name!r} ({source_slug}), skipping',
+                        flush=True,
+                    )
+                continue
+
+            cur.execute(
+                sql.SQL(
+                    """
+                    INSERT INTO {}.identifier_authority
+                        (identifier_type_id, source_id)
+                    VALUES (%s, %s)
+                    ON CONFLICT (identifier_type_id) DO UPDATE
+                    SET source_id = EXCLUDED.source_id
+                    """
+                ).format(schema_id),
+                [type_row[0], source_id],
+            )
+            written += 1
+
+    if progress:
+        print(
+            f'[identifier_authority] wrote {written} row(s) from '
+            f'{len(configs)} resource config(s)',
+            flush=True,
+        )
+    return written
