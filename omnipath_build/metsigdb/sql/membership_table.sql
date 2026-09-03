@@ -113,3 +113,44 @@ CREATE INDEX IF NOT EXISTS metsigdb_membership_organism_idx
 COMMENT ON TABLE metsigdb_membership IS
   'MetSigDB v1: canonical metabolite memberships in resource-native sets from '
   'KEGG, Reactome, WikiPathways, MACdb and ClassyFire (cycle 010).';
+
+-- Cycle 012: identifier lookup and case-insensitive vocabulary filters.
+--
+-- Partial or full is decided per column by measurement, not by habit. The
+-- identifier columns are sparse **per metabolite** and populated **per row**,
+-- and an index is built per row: ClassyFire is 98.4% of the substrate and
+-- carries HMDB and InChIKey for nearly every metabolite it publishes. So
+-- `WHERE ... IS NOT NULL` excludes 1% of `inchikey` and `hmdb` and 28% of
+-- `pubchem` — harmless but pointless — while excluding four fifths of `chebi`
+-- and nineteen twentieths of `kegg`.
+CREATE INDEX IF NOT EXISTS metsigdb_membership_inchikey_idx
+  ON metsigdb_membership (inchikey);
+
+CREATE INDEX IF NOT EXISTS metsigdb_membership_hmdb_idx
+  ON metsigdb_membership (hmdb);
+
+CREATE INDEX IF NOT EXISTS metsigdb_membership_pubchem_idx
+  ON metsigdb_membership (pubchem);
+
+-- Partial: 19.6% of rows carry a ChEBI id, 5.0% a KEGG id.
+CREATE INDEX IF NOT EXISTS metsigdb_membership_chebi_idx
+  ON metsigdb_membership (chebi) WHERE chebi IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS metsigdb_membership_kegg_idx
+  ON metsigdb_membership (kegg) WHERE kegg IS NOT NULL;
+
+-- `smiles` is deliberately unindexed and is not an accepted `entity` value. It
+-- is 111 bytes per row, the widest column in the table, and indexing it would
+-- cost more than every other identifier index combined — to serve a lookup
+-- nobody performs, because a SMILES string is not canonical across producers
+-- and has no shape a recognition rule could claim.
+
+-- Case-insensitive vocabulary matching needs **no index of its own**. The three
+-- closed vocabularies are canonicalised to their published spelling before the
+-- value reaches SQL, so the predicate stays exact equality and `resource` keeps
+-- the primary key's index condition.
+--
+-- Lowering the column instead was tried and measured: one five-row WikiPathways
+-- page went from 6 buffers to 91,442, because `lower(resource) = …` demotes the
+-- primary key from an index condition to a filter and the scan discards
+-- 3,503,370 ClassyFire rows before reaching a match.
