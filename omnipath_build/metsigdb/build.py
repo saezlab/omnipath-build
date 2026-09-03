@@ -285,6 +285,7 @@ class BuildStats:
 def build_metsigdb(
     conn: psycopg2.extensions.connection,
     *,
+    database_url: str,
     resources: tuple[ResourceRule, ...] = RESOURCES,
     max_records: int | None = None,
     schema: str = 'public',
@@ -308,7 +309,7 @@ def build_metsigdb(
     if partial:
         _mark_partial_build(conn)
 
-    _vacuum(conn, schema=schema)
+    _vacuum(conn, database_url=database_url, schema=schema)
 
     with conn.cursor() as cur:
         rows = _scalar(cur, f'SELECT count(*) FROM {TABLE}')
@@ -330,6 +331,7 @@ def build_metsigdb(
 def _vacuum(
     conn: psycopg2.extensions.connection,
     *,
+    database_url: str,
     schema: str = 'public',
 ) -> None:
     """Reclaim the rebuild's dead rows and refresh the planner's statistics.
@@ -343,18 +345,26 @@ def _vacuum(
 
     ANALYZE is not optional here. The build replaces the whole table, and the
     serving layer plans its filters against these statistics.
+
+    The fix first tried toggling ``conn.autocommit`` on the load connection.
+    That did not reliably close an already-open transaction on this
+    driver/server combination. VACUUM still refused with "cannot run inside a
+    transaction block", even right after an explicit ``conn.commit()``. A
+    dedicated connection sidesteps the ambiguity: it starts in autocommit
+    mode, so Postgres never sees an open transaction to refuse.
     """
-    previous = conn.autocommit
-    conn.autocommit = True  # VACUUM cannot run inside a transaction block.
+    conn.commit()  # make the load visible to the dedicated connection below.
+    vacuum_conn = psycopg2.connect(database_url)
+    vacuum_conn.autocommit = True  # set before any statement runs on it.
     try:
-        with conn.cursor() as cur:
+        with vacuum_conn.cursor() as cur:
             cur.execute(
                 sql.SQL('VACUUM (ANALYZE) {}.{}').format(
                     sql.Identifier(schema), sql.Identifier(TABLE)
                 )
             )
     finally:
-        conn.autocommit = previous
+        vacuum_conn.close()
     logger.info('metsigdb: vacuumed and analyzed %s.%s', schema, TABLE)
 
 

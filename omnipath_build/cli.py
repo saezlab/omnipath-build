@@ -333,7 +333,10 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.command == 'metsigdb':
             cap = _record_cap(args.max_records)
-            stats = build_metsigdb(conn, max_records=cap, schema=args.schema)
+            stats = build_metsigdb(
+                conn, database_url=args.database_url,
+                max_records=cap, schema=args.schema,
+            )
             print(
                 '[metsigdb] '
                 f'build={stats.build_id} '
@@ -699,7 +702,8 @@ def main(argv: list[str] | None = None) -> int:
                         # construction; re-applying the cap would truncate a
                         # full build whose derive was handed the load's figure.
                         metsigdb_stats = build_metsigdb(
-                            metsigdb_conn, schema=args.schema
+                            metsigdb_conn, database_url=args.database_url,
+                            schema=args.schema,
                         )
                         _derive_log(
                             'metsigdb_done',
