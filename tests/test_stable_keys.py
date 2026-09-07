@@ -60,8 +60,8 @@ def _insert(con, ev_id, entity_type, ids: list[tuple[str, str]], taxon='9606'):
     )
     for i, (id_type, value) in enumerate(ids):
         con.execute(
-            'INSERT INTO entity_identifier_raw VALUES (?, ?, ?, ?, ?)',
-            ('s', ev_id, f'i_{ev_id}_{i}', id_type, value),
+            'INSERT INTO entity_identifier_raw VALUES (?, ?, ?, ?, ?, ?)',
+            ('s', ev_id, f'i_{ev_id}_{i}', id_type, value, None),
         )
 
 

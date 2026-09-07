@@ -57,8 +57,8 @@ def _insert_protein(con, ev_id: str, accession: str, taxon: str = '9606') -> Non
         ('s', 'd', 1, ev_id, None, 'r', PROTEIN_ENTITY_TYPE, taxon),
     )
     con.execute(
-        'INSERT INTO entity_identifier_raw VALUES (?, ?, ?, ?, ?)',
-        ('s', ev_id, f'i_{ev_id}', UNIPROT_TYPE, accession),
+        'INSERT INTO entity_identifier_raw VALUES (?, ?, ?, ?, ?, ?)',
+        ('s', ev_id, f'i_{ev_id}', UNIPROT_TYPE, accession, None),
     )
 
 
@@ -182,8 +182,8 @@ def test_protein_uniprot_without_taxon_is_not_minted():
         ('s', 'd', 1, 'notax', None, 'r', PROTEIN_ENTITY_TYPE, None),
     )
     con.execute(
-        'INSERT INTO entity_identifier_raw VALUES (?, ?, ?, ?, ?)',
-        ('s', 'notax', 'i_notax', UNIPROT_TYPE, 'A0A8M9QHZ6'),
+        'INSERT INTO entity_identifier_raw VALUES (?, ?, ?, ?, ?, ?)',
+        ('s', 'notax', 'i_notax', UNIPROT_TYPE, 'A0A8M9QHZ6', None),
     )
     _canonicalize_loaded_duckdb(con)
 
@@ -204,8 +204,8 @@ def test_no_taxon_protein_gains_organism_from_accession_then_mints():
         ('s', 'd', 1, 'recovered', None, 'r', PROTEIN_ENTITY_TYPE, None),
     )
     con.execute(
-        'INSERT INTO entity_identifier_raw VALUES (?, ?, ?, ?, ?)',
-        ('s', 'recovered', 'i_recovered', UNIPROT_TYPE, 'A0A8M9QHZ6'),
+        'INSERT INTO entity_identifier_raw VALUES (?, ?, ?, ?, ?, ?)',
+        ('s', 'recovered', 'i_recovered', UNIPROT_TYPE, 'A0A8M9QHZ6', None),
     )
     con.execute(
         'CREATE TABLE uniprot_taxon_lookup (uniprot VARCHAR, taxonomy_id VARCHAR)'
@@ -239,8 +239,8 @@ def test_isoform_accession_recovers_organism_from_base_accession():
         ('s', 'd', 1, 'iso', None, 'r', PROTEIN_ENTITY_TYPE, None),
     )
     con.execute(
-        'INSERT INTO entity_identifier_raw VALUES (?, ?, ?, ?, ?)',
-        ('s', 'iso', 'i_iso', UNIPROT_TYPE, 'A0A8M9QHZ6-2'),
+        'INSERT INTO entity_identifier_raw VALUES (?, ?, ?, ?, ?, ?)',
+        ('s', 'iso', 'i_iso', UNIPROT_TYPE, 'A0A8M9QHZ6-2', None),
     )
     con.execute(
         'CREATE TABLE uniprot_taxon_lookup (uniprot VARCHAR, taxonomy_id VARCHAR)'

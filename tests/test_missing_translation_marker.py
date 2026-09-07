@@ -59,8 +59,8 @@ def _insert_unresolvable_protein(con, ev_id='p'):
         ('s', 'd', 1, ev_id, None, 'r', PROTEIN_ENTITY_TYPE, '9606'),
     )
     con.execute(
-        'INSERT INTO entity_identifier_raw VALUES (?, ?, ?, ?, ?)',
-        ('s', ev_id, f'i_{ev_id}', ENSEMBL_TYPE, 'ENSP00000269305'),
+        'INSERT INTO entity_identifier_raw VALUES (?, ?, ?, ?, ?, ?)',
+        ('s', ev_id, f'i_{ev_id}', ENSEMBL_TYPE, 'ENSP00000269305', None),
     )
 
 
@@ -106,8 +106,8 @@ def test_resolved_record_has_no_reason():
         ('s', 'd', 1, 'known', None, 'r', PROTEIN_ENTITY_TYPE, '9606'),
     )
     con.execute(
-        'INSERT INTO entity_identifier_raw VALUES (?, ?, ?, ?, ?)',
-        ('s', 'known', 'i_known', UNIPROT_TYPE, 'P00533'),
+        'INSERT INTO entity_identifier_raw VALUES (?, ?, ?, ?, ?, ?)',
+        ('s', 'known', 'i_known', UNIPROT_TYPE, 'P00533', None),
     )
     con.execute(
         'INSERT INTO protein_uniprot_fallback_lookup VALUES (?, ?, ?, ?, ?, ?)',

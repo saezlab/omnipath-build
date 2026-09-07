@@ -29,6 +29,9 @@ from omnipath_build.relation_rules import (
     entity_type_accession,
     is_projectable_transport,
 )
+from omnipath_build.resolver.chemical_normalization import (
+    normalize_chemical_identifier,
+)
 from pypath.internals.cv_terms import (
     BiologicalRoleCv,
     ControlEffectCv,
@@ -165,6 +168,9 @@ class EvidenceProjectorBase:
                         'identifier_id': identifier_key(ident_type, ident_value),
                         'identifier_type': ident_type,
                         'identifier': ident_value,
+                        'identifier_normalized': normalize_chemical_identifier(
+                            ident_type, ident_value,
+                        ),
                     }
                 )
                 stats.identifiers += 1

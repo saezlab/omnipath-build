@@ -65,8 +65,8 @@ def _insert_protein(con, ev_id: str, accession: str) -> None:
         ('s', 'd', 1, ev_id, None, 'r', PROTEIN_ENTITY_TYPE, '9606'),
     )
     con.execute(
-        'INSERT INTO entity_identifier_raw VALUES (?, ?, ?, ?, ?)',
-        ('s', ev_id, f'i_{ev_id}', UNIPROT_TYPE, accession),
+        'INSERT INTO entity_identifier_raw VALUES (?, ?, ?, ?, ?, ?)',
+        ('s', ev_id, f'i_{ev_id}', UNIPROT_TYPE, accession, None),
     )
 
 

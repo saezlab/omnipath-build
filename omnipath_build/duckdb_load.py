@@ -1566,6 +1566,10 @@ _ENTITY_IDENTIFIER_SCHEMA = pa.schema(
         ('identifier_id', pa.string()),
         ('identifier_type', pa.string()),
         ('identifier', pa.string()),
+        # WP1's normalized key, chemical identifier types only (spec 011
+        # T040). NULL for every other identifier type -- the resolver join
+        # falls back to `identifier` itself when this is unset.
+        ('identifier_normalized', pa.string()),
     ]
 )
 
@@ -1710,7 +1714,8 @@ def _create_duckdb_evidence_tables(con: duckdb.DuckDBPyConnection) -> None:
           entity_evidence_id VARCHAR,
           identifier_id VARCHAR,
           identifier_type VARCHAR,
-          identifier VARCHAR
+          identifier VARCHAR,
+          identifier_normalized VARCHAR
         )
         """
     )
@@ -2541,7 +2546,7 @@ def _canonicalize_loaded_duckdb(
           ee.entity_type,
           ee.taxonomy_id,
           kit.identifier_type_id AS key_identifier_type_id,
-          ei.identifier AS key_value
+          COALESCE(ei.identifier_normalized, ei.identifier) AS key_value
         FROM entity_evidence_raw ee
         JOIN entity_identifier_raw ei
           ON ei.source = ee.source
@@ -5054,7 +5059,7 @@ def _bulk_load_materialize_dimensions(
         (
             'load_vocab_identifier_type',
             f"""
-            SELECT identifier_type_id, name
+            SELECT identifier_type_id, name, value_pattern
             FROM pg.{schema}.vocab_identifier_type
             """,
         ),
@@ -5420,12 +5425,15 @@ def _bulk_copy_evidence(
         database_url=database_url,
         schema=schema,
         table='identifier_evidence',
-        columns=('identifier_id', 'identifier_type_id', 'value'),
+        columns=(
+            'identifier_id', 'identifier_type_id', 'value', 'value_normalized',
+        ),
         query="""
           SELECT DISTINCT
             i.identifier_id::UUID,
             it.identifier_type_id,
-            i.identifier
+            i.identifier,
+            i.identifier_normalized
           FROM pq_entity_identifier i
           JOIN load_vocab_identifier_type it
             ON it.name = i.identifier_type
@@ -5590,7 +5598,9 @@ def _bulk_copy_canonical(
         database_url=database_url,
         schema=schema,
         table='identifier_evidence',
-        columns=('identifier_id', 'identifier_type_id', 'value'),
+        columns=(
+            'identifier_id', 'identifier_type_id', 'value', 'value_normalized',
+        ),
         query=f"""
           SELECT DISTINCT
             content_uuid(
@@ -5599,7 +5609,16 @@ def _bulk_copy_canonical(
               i.identifier
             ) AS identifier_id,
             it.identifier_type_id,
-            i.identifier
+            i.identifier,
+            -- This table's values already come from the resolver's own key
+            -- (chemical source_ids are normalized upstream, T033/T034) or
+            -- from the canonical identifier itself, so no transform is
+            -- needed here -- only a check that the value is already in its
+            -- namespace's canonical form (spec 011 T040/T041).
+            CASE WHEN it.value_pattern IS NOT NULL
+                  AND i.identifier ~ it.value_pattern
+                 THEN i.identifier
+            END AS value_normalized
           FROM pq_entity_identifier_resolved i
           JOIN load_vocab_identifier_type it
             ON it.name = i.identifier_type
