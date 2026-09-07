@@ -84,8 +84,17 @@ def test_vocab_identifier_type_has_value_pattern_column(conn):
 
 
 @pg_pytestmark
-def test_chemical_identifier_types_have_a_registered_value_pattern(conn):
+def test_structure_and_chebi_fallback_identity_have_a_registered_value_pattern(conn):
+    """SC-007's own query only checks types that *have* a pattern -- a type
+    with none is silently skipped, not a failure. WP1 only designates two
+    canonical identity types for a chemical: the structure key (InChIKey)
+    and the no-structure ChEBI fallback (spec.md US1 acceptance scenario 2).
+    Every *other* type a chemical entity's canonical identity might carry
+    (bindingdb, foodb, an opaque per-resource accession, ...) is a
+    pre-existing fallback this cycle does not touch."""
+
     from omnipath_build.cv_terms import CHEMICAL_ENTITY_TYPE
+    from omnipath_build.duckdb_load import CHEBI_TYPE, STANDARD_INCHI_KEY_TYPE
 
     if not _column_exists(conn, 'vocab_identifier_type', 'value_pattern'):
         pytest.skip('value_pattern does not exist yet')
@@ -96,11 +105,11 @@ def test_chemical_identifier_types_have_a_registered_value_pattern(conn):
         FROM entity e
         JOIN vocab_identifier_type t ON t.identifier_type_id = e.canonical_identifier_type_id
         JOIN vocab_entity_type et ON et.entity_type_id = e.entity_type_id
-        WHERE et.name = %s
+        WHERE et.name = %s AND t.name IN (%s, %s)
         """,
-        [CHEMICAL_ENTITY_TYPE],
+        [CHEMICAL_ENTITY_TYPE, CHEBI_TYPE, STANDARD_INCHI_KEY_TYPE],
     )
-    assert rows, 'no chemical canonical identifiers to check'
+    assert rows, 'neither structure nor ChEBI-fallback identities found'
     missing = [name for name, pattern in rows if not pattern]
     assert not missing, (
         f'chemical identifier types with no value_pattern: {missing}'

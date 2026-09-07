@@ -230,6 +230,10 @@ def ensure_schema(
         )
         log_step('ensure identifier evidence shape')
         _ensure_identifier_evidence_key(cur, schema)
+        log_step('ensure identifier evidence normalized-value column')
+        _ensure_identifier_evidence_value_normalized(cur, schema)
+        log_step('ensure identifier type value_pattern/normalization_rule')
+        _ensure_identifier_type_value_pattern(cur, schema)
         log_step('create normalized dimension tables')
         _ensure_evidence_dimension_tables(cur, schema)
         log_step('create entity_evidence table')
@@ -1541,6 +1545,114 @@ def _ensure_resolution_schema(
         _ensure_resolution_indexes(cur, schema)
     else:
         log_step('defer resolution indexes')
+
+
+def _ensure_identifier_evidence_value_normalized(
+    cur: psycopg2.extensions.cursor,
+    schema: str,
+) -> None:
+    """``identifier_evidence.value_normalized``: the same canonical form
+    ``normalize_identifier()`` (omnipath-utils, spec 011 T024-T026) computes.
+    It sits beside the untouched raw ``value`` (T028/T038). WP1's resolver
+    lookup joins on this column, not on ``value``. A source's raw
+    prefix/case/padding must never matter to the join.
+    """
+
+    schema_id = sql.Identifier(schema)
+    cur.execute(
+        sql.SQL(
+            """
+            ALTER TABLE {}.identifier_evidence
+            ADD COLUMN IF NOT EXISTS value_normalized text
+            """
+        ).format(schema_id)
+    )
+    cur.execute(
+        sql.SQL(
+            """
+            CREATE INDEX IF NOT EXISTS identifier_evidence_value_normalized_idx
+            ON {}.identifier_evidence (identifier_type_id, value_normalized)
+            """
+        ).format(schema_id)
+    )
+
+
+#: One value_pattern per chemical namespace -- mirrors _VALUE_PATTERNS in
+#: omnipath-utils' omnipath_utils/mapping/_id_types.py. Keep the two in
+#: sync. The same duplication already exists in resolver_chemical.sql,
+#: because the two repos share no runtime dependency.
+#:
+#: The build stores a bare accession as ``entity.canonical_identifier``,
+#: with no namespace prefix -- the namespace is already carried by
+#: ``canonical_identifier_type_id``. This differs from omnipath-utils'
+#: CURIE-style resolver key (``CHEBI:123``, T024-T026). That prefix is a
+#: join-key convention for the translation database, not the build's own
+#: identity-storage convention, so this table keeps the two apart.
+_CHEMICAL_VALUE_PATTERNS: dict[str, str] = {
+    'pubchem': r'[1-9]\d*|0',
+    'chembl': r'CHEMBL\d+',
+    'chebi': r'\d+',
+    'hmdb': r'HMDB\d{7}',
+    'lipidmaps': r'LM[A-Z0-9]+',
+    'swisslipids': r'SLM:\d+',
+    'kegg': r'C\d{5}',
+    'inchikey': r'[A-Z]{14}-[A-Z]{10}-[A-Z]',
+}
+
+
+def _ensure_identifier_type_value_pattern(
+    cur: psycopg2.extensions.cursor,
+    schema: str,
+) -> None:
+    """``vocab_identifier_type.value_pattern``/``normalization_rule`` (T039).
+
+    SC-007 checks every canonical chemical identity against its own
+    namespace's syntax with ``value_pattern`` (see
+    contracts/coverage-acceptance.sql). ``normalization_rule`` names which
+    of omnipath-utils' normalizers applies. That rule itself lives in one
+    place (omnipath-utils), not duplicated as code here -- this column is
+    a pointer for a human reading the vocabulary table, nothing more.
+    """
+
+    from omnipath_build.duckdb_load import (
+        RESOLVER_CHEMICAL_SLUG_TO_IDENTIFIER_TYPE,
+        STANDARD_INCHI_KEY_TYPE,
+    )
+
+    slug_to_type_name = dict(RESOLVER_CHEMICAL_SLUG_TO_IDENTIFIER_TYPE)
+    slug_to_type_name['inchikey'] = STANDARD_INCHI_KEY_TYPE
+
+    schema_id = sql.Identifier(schema)
+    cur.execute(
+        sql.SQL(
+            """
+            ALTER TABLE {}.vocab_identifier_type
+            ADD COLUMN IF NOT EXISTS value_pattern text
+            """
+        ).format(schema_id)
+    )
+    cur.execute(
+        sql.SQL(
+            """
+            ALTER TABLE {}.vocab_identifier_type
+            ADD COLUMN IF NOT EXISTS normalization_rule text
+            """
+        ).format(schema_id)
+    )
+    for slug, type_name in slug_to_type_name.items():
+        pattern = _CHEMICAL_VALUE_PATTERNS.get(slug)
+        if pattern is None:
+            continue
+        cur.execute(
+            sql.SQL(
+                """
+                UPDATE {}.vocab_identifier_type
+                SET value_pattern = %s, normalization_rule = %s
+                WHERE name = %s
+                """
+            ).format(schema_id),
+            [pattern, slug, type_name],
+        )
 
 
 def _ensure_identifier_evidence_key(
