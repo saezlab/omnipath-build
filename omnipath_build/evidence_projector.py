@@ -30,6 +30,7 @@ from omnipath_build.relation_rules import (
     is_projectable_transport,
 )
 from omnipath_build.resolver.chemical_normalization import (
+    is_chemical_identifier_type,
     normalize_chemical_identifier,
 )
 from pypath.internals.cv_terms import (
@@ -161,6 +162,19 @@ class EvidenceProjectorBase:
                 ident_value = string_or_none(identifier.get('value'))
                 if not include_identifier(ident_type, ident_value):
                     continue
+                ident_normalized = normalize_chemical_identifier(
+                    ident_type, ident_value,
+                )
+                # A chemical value that fails its own namespace's syntax --
+                # InChIKey=none and similar placeholders -- must never
+                # become evidence at all. Then it can never become a
+                # canonical identity through any path (spec 011 T043,
+                # spec.md US1 acceptance scenario 4).
+                if (
+                    ident_normalized is None
+                    and is_chemical_identifier_type(ident_type)
+                ):
+                    continue
                 writers.identifier.write(
                     {
                         'source': source,
@@ -168,9 +182,7 @@ class EvidenceProjectorBase:
                         'identifier_id': identifier_key(ident_type, ident_value),
                         'identifier_type': ident_type,
                         'identifier': ident_value,
-                        'identifier_normalized': normalize_chemical_identifier(
-                            ident_type, ident_value,
-                        ),
+                        'identifier_normalized': ident_normalized,
                     }
                 )
                 stats.identifiers += 1

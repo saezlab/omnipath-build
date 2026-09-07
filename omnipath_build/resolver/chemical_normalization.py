@@ -113,3 +113,17 @@ def normalize_chemical_identifier(
         _NORMALIZERS = _build_normalizers()
     normalizer = _NORMALIZERS.get(identifier_type)
     return normalizer(value) if normalizer else None
+
+
+def is_chemical_identifier_type(identifier_type: str | None) -> bool:
+    """Whether ``identifier_type`` is one of the chemical namespaces this
+    module normalizes -- the structure key or one of the seven
+    cross-reference namespaces (spec 011 T024-T026/T040).
+    """
+
+    global _NORMALIZERS
+    if identifier_type is None:
+        return False
+    if _NORMALIZERS is None:
+        _NORMALIZERS = _build_normalizers()
+    return identifier_type in _NORMALIZERS

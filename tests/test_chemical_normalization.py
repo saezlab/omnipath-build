@@ -7,6 +7,7 @@ from __future__ import annotations
 import pytest
 
 from omnipath_build.resolver.chemical_normalization import (
+    is_chemical_identifier_type,
     normalize_chemical_identifier,
 )
 
@@ -43,3 +44,19 @@ def test_malformed_value_returns_none():
     """A value that never matches its namespace's raw form -- the raw
     value must be kept by the caller, not replaced with garbage."""
     assert normalize_chemical_identifier('Chebi:MI:0474', 'not-a-chebi-id') is None
+
+
+@pytest.mark.parametrize(
+    'identifier_type',
+    [
+        'Chebi:MI:0474', 'Hmdb:OM:0004', 'Kegg Compound:MI:2012',
+        'Pubchem Compound:OM:0002', 'Standard Inchi Key:MI:1101',
+    ],
+)
+def test_is_chemical_identifier_type_true_for_chemical_namespaces(identifier_type):
+    assert is_chemical_identifier_type(identifier_type)
+
+
+def test_is_chemical_identifier_type_false_for_non_chemical():
+    assert not is_chemical_identifier_type('Uniprot:MI:0486')
+    assert not is_chemical_identifier_type(None)
