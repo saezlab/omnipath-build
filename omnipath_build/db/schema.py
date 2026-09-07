@@ -1272,6 +1272,19 @@ def _ensure_resolution_schema(
             """
         ).format(schema_id, schema_id, schema_id)
     )
+    log_step('create build capability table')
+    cur.execute(
+        sql.SQL(
+            """
+            CREATE TABLE IF NOT EXISTS {}.build_capability (
+              capability text PRIMARY KEY,
+              available boolean NOT NULL,
+              provider text NOT NULL,
+              reason text
+            )
+            """
+        ).format(schema_id)
+    )
     log_step('ensure gene-anchored schema')
     _ensure_gene_anchored_schema(cur, schema)
     log_step('create identifier type table')

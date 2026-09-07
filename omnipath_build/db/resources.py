@@ -50,6 +50,7 @@ def emit_build_manifest(
     derive_cost: Mapping[str, Any] | Sequence[Mapping[str, Any]] | None = None,
     scope_cost: Mapping[str, Any] | Sequence[Mapping[str, Any]] | None = None,
     deferral_cost: Mapping[str, Any] | None = None,
+    utils_db_url: str | None = None,
 ) -> BuildManifestStats:
     """Write the single self-describing ``build_manifest`` row.
 
@@ -122,7 +123,8 @@ def emit_build_manifest(
                   ADD COLUMN IF NOT EXISTS canonicalization_coverage jsonb,
                   ADD COLUMN IF NOT EXISTS interactions_derive_cost jsonb,
                   ADD COLUMN IF NOT EXISTS interactions_deferral_cost jsonb,
-                  ADD COLUMN IF NOT EXISTS network_presets jsonb
+                  ADD COLUMN IF NOT EXISTS network_presets jsonb,
+                  ADD COLUMN IF NOT EXISTS capabilities jsonb
                 """
             ).format(schema_id)
         )
@@ -175,6 +177,8 @@ def emit_build_manifest(
             }
         interactions_deferral_cost = _interactions_deferral_cost(deferral_cost)
         network_presets = _network_preset_inventory(cur, schema)
+        capabilities = _build_capabilities(cur, schema, utils_db_url=utils_db_url)
+        _populate_build_capability_table(cur, schema, capabilities)
         cur.execute(sql.SQL('TRUNCATE {}.build_manifest').format(schema_id))
         cur.execute(
             sql.SQL(
@@ -183,8 +187,8 @@ def emit_build_manifest(
                   (build_id, package_commits, resources, partial_build,
                    translation_tables, canonicalization_coverage,
                    interactions_derive_cost, interactions_deferral_cost,
-                   network_presets)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                   network_presets, capabilities)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """
             ).format(schema_id),
             [
@@ -201,6 +205,7 @@ def emit_build_manifest(
                 if interactions_deferral_cost is not None
                 else None,
                 Json(network_presets) if network_presets is not None else None,
+                Json(capabilities),
             ],
         )
     conn.commit()
@@ -287,6 +292,172 @@ def _canonicalization_coverage(
         if reason is not None:
             by_reason[reason] = by_reason.get(reason, 0) + n
     return {'total': total, 'by_status': by_status, 'by_reason': by_reason}
+
+
+def _build_capabilities(
+    cur: psycopg2.extensions.cursor,
+    schema: str,
+    *,
+    utils_db_url: str | None,
+) -> list[dict[str, Any]]:
+    """What the build could do this run, and why not when it could not
+    (spec 011 data-model section 8, research R14).
+
+    Absence never changes the identity of an entity that resolves. It
+    only reduces coverage or switches off a feature -- and says so,
+    rather than failing the build or quietly returning less.
+    """
+
+    return [
+        _detect_structure_substrate(cur, schema),
+        _detect_in_database_structure_key(cur),
+        _detect_lipid_nomenclature(cur, schema),
+        _detect_structure_key_computation(utils_db_url),
+    ]
+
+
+def _detect_structure_substrate(
+    cur: psycopg2.extensions.cursor,
+    schema: str,
+) -> dict[str, Any]:
+    """The metabo phase's RDKit structure substrate.
+
+    Checked by row count, not just table existence. Schema setup creates
+    the table up front. Only the metabo phase populates it, once it
+    actually runs against this build.
+    """
+
+    from omnipath_build.db.schema import _table_exists
+
+    provider = 'metabo phase'
+    if not _table_exists(cur, schema, 'metabo_entity_structure'):
+        return {
+            'capability': 'structure_substrate', 'available': False,
+            'provider': provider,
+            'reason': 'metabo_entity_structure does not exist',
+        }
+    cur.execute(
+        sql.SQL('SELECT count(*) FROM {}.metabo_entity_structure')
+        .format(sql.Identifier(schema))
+    )
+    populated = int(cur.fetchone()[0]) > 0
+    return {
+        'capability': 'structure_substrate', 'available': populated,
+        'provider': provider,
+        'reason': None if populated else (
+            'metabo_entity_structure is empty. The metabo phase has not '
+            'run against this build'
+        ),
+    }
+
+
+def _detect_in_database_structure_key(
+    cur: psycopg2.extensions.cursor,
+) -> dict[str, Any]:
+    """The rdkit Postgres cartridge, for ad-hoc in-database structure
+    queries. A convenience, not a prerequisite (plan.md). Structure
+    computation itself runs through the library binding -- which the
+    metabo phase already uses -- whether or not this extension is present.
+    """
+
+    cur.execute("SELECT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'rdkit')")
+    available = bool(cur.fetchone()[0])
+    return {
+        'capability': 'in_database_structure_key', 'available': available,
+        'provider': 'the container image',
+        'reason': None if available else (
+            'the rdkit extension is not installed in this Postgres image'
+        ),
+    }
+
+
+def _detect_lipid_nomenclature(
+    cur: psycopg2.extensions.cursor,
+    schema: str,
+) -> dict[str, Any]:
+    """The nomenclature grammar (an omnipath-utils optional extra) that
+    assigns lipid identity. When absent, ``lipid_name_node`` and
+    ``lipid_name_edge`` exist (schema setup creates them) but stay empty,
+    and lipids fall back to a normalized raw name as identity.
+    """
+
+    from omnipath_build.db.schema import _table_exists
+
+    provider = 'the utils build, nomenclature extra'
+    if not _table_exists(cur, schema, 'lipid_name_node'):
+        return {
+            'capability': 'lipid_nomenclature', 'available': False,
+            'provider': provider,
+            'reason': 'lipid_name_node does not exist',
+        }
+    cur.execute(
+        sql.SQL('SELECT count(*) FROM {}.lipid_name_node')
+        .format(sql.Identifier(schema))
+    )
+    populated = int(cur.fetchone()[0]) > 0
+    return {
+        'capability': 'lipid_nomenclature', 'available': populated,
+        'provider': provider,
+        'reason': None if populated else (
+            'lipid_name_node is empty. The nomenclature grammar has not '
+            'assigned lipid identity for this build'
+        ),
+    }
+
+
+def _detect_structure_key_computation(
+    utils_db_url: str | None,
+) -> dict[str, Any]:
+    """The chemistry toolkit (an omnipath-utils optional extra) that
+    computes a structure key -- InChIKey, canonical SMILES -- from a raw
+    structure. Structure-to-anything translation routes report themselves
+    unavailable without it. Identifier-to-identifier translation is
+    unaffected.
+
+    No rdkit-computed structure-key route exists anywhere yet to check
+    for. This capability belongs to a later, not-yet-implemented phase of
+    this cycle (structures translate like any other identifier). This
+    always reports unavailable until that phase lands and gives it a
+    real signal to read instead.
+    """
+
+    provider = 'the utils build, chemistry extra'
+    if not utils_db_url:
+        return {
+            'capability': 'structure_key_computation', 'available': False,
+            'provider': provider,
+            'reason': 'OMNIPATH_BUILD_UTILS_PG_URL is not set',
+        }
+    return {
+        'capability': 'structure_key_computation', 'available': False,
+        'provider': provider,
+        'reason': (
+            'structure-to-anything translation has not been implemented '
+            'yet in this cycle'
+        ),
+    }
+
+
+def _populate_build_capability_table(
+    cur: psycopg2.extensions.cursor,
+    schema: str,
+    capabilities: list[dict[str, Any]],
+) -> None:
+    schema_id = sql.Identifier(schema)
+    cur.execute(sql.SQL('TRUNCATE {}.build_capability').format(schema_id))
+    cur.executemany(
+        sql.SQL(
+            """
+            INSERT INTO {}.build_capability
+              (capability, available, provider, reason)
+            VALUES (%s, %s, %s, %s)
+            """
+        ).format(schema_id).as_string(cur.connection),
+        [
+            (c['capability'], c['available'], c['provider'], c['reason'])
+            for c in capabilities
+        ],
+    )
 
 
 # The one interaction table the derive writes: one row per (subject, object,

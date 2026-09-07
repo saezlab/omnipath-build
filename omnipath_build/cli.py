@@ -661,6 +661,7 @@ def main(argv: list[str] | None = None) -> int:
                     partial_build=_is_partial_build(args.max_records),
                     derive_cost=_interaction_derive_cost(interaction_stats),
                     deferral_cost=_interaction_deferral_cost(interaction_stats),
+                    utils_db_url=os.environ.get('OMNIPATH_BUILD_UTILS_PG_URL'),
                 )
                 _derive_log(
                     'build_manifest_done',
