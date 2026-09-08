@@ -3107,7 +3107,7 @@ def _canonicalize_loaded_duckdb(
             ON kit.name = ei.identifier_type
           JOIN needed_resolver_lookup rl
             ON rl.key_identifier_type_id = kit.identifier_type_id
-           AND rl.key_value = ei.identifier
+           AND rl.key_value = COALESCE(ei.identifier_normalized, ei.identifier)
            AND rl.evidence_entity_type = ee.entity_type
            AND (
              rl.taxonomy_id = ee.taxonomy_id
