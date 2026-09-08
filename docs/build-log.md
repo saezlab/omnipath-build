@@ -85,11 +85,22 @@ timings below are what was actually observed, not estimates, unless marked):
     once reached: `chebi.molecules` 216,787 rows, `kegg.reactions` 87,381 rows,
     `reactome` (reactions 14,953 / pathways 2,883 / controls 10,080 /
     control_groups 1,130), `rhea` and `pfocr` — all sub-minute.
-  - As of 12:16 UTC (~1h49m elapsed since start), 95 (source, dataset) pairs
-    preparsed; `task_done`/`queue_done` still 0 — real staging/canonicalize/
-    copy had not started for a single dataset yet at that point. This section
-    will be filled in with stage/canonicalize/copy/derive timings once the run
-    reaches and completes those phases.
+  - Preparse pass finished entirely at 12:26 UTC (~1h59m elapsed): 103
+    (source, dataset) pairs preparsed across all ~47 sources, alphabetically
+    `bindingdb` → `wikipathways`.
+- Stage/canonicalize/copy pass (the real chemical-resolution pipeline —
+  project → canonicalize → COPY to Postgres, one dataset/shard at a time,
+  50k-row shards): began 12:26 UTC, much faster throughput than preparse.
+  `task_done` reached 40 within 5 minutes of starting (vs. 95 datasets over
+  ~2h for preparse) — most individual shard canonicalize times are single-digit
+  seconds. `chebi.molecules` (216,787 rows, the acceptance-critical source for
+  T040/T041/d879ba9) staged and canonicalized cleanly across 5 shards, 2–16s
+  canonicalize each, **no BinderException** — the resolver-candidate fix is
+  holding under real, uncapped data. Still working through `chembl.molecules`
+  as of 12:31 UTC; `reactome`/`hmdb`/`kegg`/`rhea`/`pfocr`/`tcdb`/`intact`
+  not yet reached in this phase (staging also runs alphabetically). This
+  section will be updated with copy/derive timings and the acceptance-critical
+  sources' canonicalize times once reached.
 
 **Outcome**: not yet known — run in progress. Update this entry (or add a
 follow-up dated entry) with the final phase timings and the
