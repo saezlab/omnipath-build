@@ -196,3 +196,11 @@ def test_a_failure_is_loud_and_does_not_abort_the_build():
 def test_reset_content_truncates_the_substrate():
     """A reload cannot leave rows keyed on entity ids that no longer exist."""
     assert 'metsigdb_membership' in CONTENT_TABLES
+
+
+def test_reset_content_includes_interaction_fact_resource():
+    """interaction_fact_resource carries a foreign key to interaction, so a
+    reset that truncates interaction without it fails with
+    psycopg2.errors.FeatureNotSupported (caught live during a spec 011 T047
+    rebuild) -- both must always be truncated together."""
+    assert 'interaction_fact_resource' in CONTENT_TABLES

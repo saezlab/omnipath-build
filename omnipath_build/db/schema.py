@@ -50,6 +50,7 @@ CONTENT_TABLES: tuple[str, ...] = (
     'relation_evidence_relation',
     'entity_evidence_resolution',
     'annotation',
+    'interaction_fact_resource',
     'interaction_party',
     'interaction',
     'relation',
