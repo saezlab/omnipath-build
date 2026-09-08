@@ -204,3 +204,19 @@ def test_reset_content_includes_interaction_fact_resource():
     psycopg2.errors.FeatureNotSupported (caught live during a spec 011 T047
     rebuild) -- both must always be truncated together."""
     assert 'interaction_fact_resource' in CONTENT_TABLES
+
+
+def test_reset_content_includes_every_data_source_dependent():
+    """Five more tables carry a foreign key to data_source and were missing
+    from CONTENT_TABLES for the same reason as interaction_fact_resource
+    (caught live, same rebuild): each fails TRUNCATE the moment it has any
+    rows, since Postgres refuses regardless of the referencing table's
+    row count, not just when one is populated."""
+    for table in (
+        'data_source_license',
+        'entity_annotation_relation_default',
+        'identifier_authority',
+        'identifier_role',
+        'resource_overlap_summary',
+    ):
+        assert table in CONTENT_TABLES

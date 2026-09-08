@@ -61,6 +61,11 @@ CONTENT_TABLES: tuple[str, ...] = (
     'entity',
     'resources',
     'dataset',
+    'data_source_license',
+    'entity_annotation_relation_default',
+    'identifier_authority',
+    'identifier_role',
+    'resource_overlap_summary',
     'data_source',
 )
 
