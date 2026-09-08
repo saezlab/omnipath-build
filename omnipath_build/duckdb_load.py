@@ -3713,6 +3713,23 @@ def _canonicalize_loaded_duckdb(
             )
         ),
         annotation_object_entity AS (
+          -- KNOWN GAP (spec 011, found 2026-09-08 during T047): this self-types
+          -- the annotation-relation object by its RAW (object_id_type, object_id)
+          -- verbatim -- no resolver_candidate join, no InChIKey promotion. Only
+          -- CV-term objects are excluded, so a chemical object (e.g. a reaction
+          -- annotated with a bare ChEBI id, not a full entity_evidence mention)
+          -- mints its own entity keyed by that ChEBI id, permanently separate
+          -- from whatever properly-resolved InChIKey entity the SAME real
+          -- molecule gets through the normal entity_resolution_base path
+          -- (chebi's own citation, or any other source's). That entity has no
+          -- entity_evidence_resolution row referencing it (it isn't a mention
+          -- outcome) and typically no relation row either -- a dead, unpromoted
+          -- duplicate. Confirmed reproducibly with CHEBI:107644 (piperonylic
+          -- acid) across two full rebuilds, identical UUID both times (entity
+          -- ids are content-addressed), inflating SC-001's ChEBI-canonical
+          -- count. Fix would mean routing annotation-relation chemical objects
+          -- through the same resolver_candidate/needed_resolver_lookup join
+          -- entity_resolution_base uses for mentions, not attempted here.
           SELECT DISTINCT
             ar.object_entity_type AS entity_type,
             NULL::VARCHAR AS taxonomy_id,
