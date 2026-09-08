@@ -5428,11 +5428,12 @@ def _bulk_copy_evidence(
         'identifier_evidence',
     )
     # entity_identifier_raw is created with identifier_normalized (T040) on
-    # every path that builds it, but a separate process re-opening this
-    # shard's persisted .duckdb file can observe an older on-disk catalog
-    # snapshot missing the column. Seen in practice. Root cause not pinned
-    # down -- a DuckDB cross-process persistence timing question, not a
-    # schema bug here. Degrade to NULL rather than crash the whole load.
+    # every path that builds it -- but multigene_split.explode_multi_gene_-
+    # protein_mentions used to rebuild the table via an explicit column list
+    # that predated T040 and dropped this column whenever a shard had a
+    # multi-gene UniProt mention (fixed; see multigene_split._explode_one).
+    # Kept as a defensive check rather than assuming the fix covers every
+    # future rebuild path: degrade to NULL rather than crash the whole load.
     has_identifier_normalized = bool(
         con.execute(
             """

@@ -454,11 +454,13 @@ def stage_direct_copy_pipeline(
             seconds=f'{canonicalize_seconds:.3f}',
         )
         # copy_staged_direct_load reopens this exact file from a different
-        # process. Without an explicit checkpoint, that reopen can observe
-        # an on-disk catalog snapshot older than what this connection just
-        # wrote. Caught in practice two ways: entity_identifier_raw missing
-        # its newest column, and chemical resolution results computed here
-        # not surviving the reopen at all (spec 011 T046 verification).
+        # process. Without an explicit checkpoint, uncommitted WAL changes
+        # from this connection are not guaranteed to be visible to that
+        # reopen. (One symptom once blamed on this -- entity_identifier_raw
+        # missing its newest column -- turned out to be a separate bug:
+        # multigene_split's explosion dropping the column outright, fixed in
+        # multigene_split._explode_one. This checkpoint stands on its own
+        # merits as a correctness practice, not as that bug's fix.)
         con.execute('CHECKPOINT')
     finally:
         con.close()
