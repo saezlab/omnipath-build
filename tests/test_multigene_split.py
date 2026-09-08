@@ -87,15 +87,15 @@ def _con():
         """
         CREATE TABLE entity_identifier_raw (
           source VARCHAR, entity_evidence_id VARCHAR, identifier_id VARCHAR,
-          identifier_type VARCHAR, identifier VARCHAR
+          identifier_type VARCHAR, identifier VARCHAR, identifier_normalized VARCHAR
         )
         """
     )
     con.executemany(
-        'INSERT INTO entity_identifier_raw VALUES (?,?,?,?,?)',
+        'INSERT INTO entity_identifier_raw VALUES (?,?,?,?,?,?)',
         [
-            ('s', 'M', 'i1', UNIPROT_TYPE, 'P1'),
-            ('s', 'P2ev', 'i2', UNIPROT_TYPE, 'P2'),
+            ('s', 'M', 'i1', UNIPROT_TYPE, 'P1', None),
+            ('s', 'P2ev', 'i2', UNIPROT_TYPE, 'P2', None),
         ],
     )
     con.execute(
@@ -252,3 +252,34 @@ def test_no_multi_gene_is_a_noop():
     assert copies == 0
     ids = {r[0] for r in _vals(con, 'SELECT entity_evidence_id FROM entity_evidence_raw')}
     assert ids == {'M', 'P2ev', 'X'}  # untouched
+
+
+def test_explosion_preserves_identifier_normalized_column():
+    # T040/T041 added entity_identifier_raw.identifier_normalized; the
+    # multi-gene explosion rebuilds this table via an explicit column list
+    # (_explode_one) and must carry it through unchanged, or every mention
+    # caught up in a multi-gene split (any dataset with an isozyme-mapped
+    # UniProt) silently loses the resolver's normalized join key downstream
+    # in entity_resolution_base.
+    con = _con()
+    con.execute(
+        "UPDATE entity_identifier_raw SET identifier_normalized = 'CHEBI:1' "
+        "WHERE entity_evidence_id = 'M'"
+    )
+    copies = explode_multi_gene_protein_mentions(con)
+    assert copies == 2
+
+    cols = {
+        r[0] for r in _vals(con, "DESCRIBE entity_identifier_raw")
+    }
+    assert 'identifier_normalized' in cols
+
+    m100, m200 = cu('M#mg=100'), cu('M#mg=200')
+    rows = {
+        tuple(r) for r in _vals(
+            con,
+            'SELECT entity_evidence_id, identifier_normalized '
+            'FROM entity_identifier_raw WHERE identifier = \'P1\'',
+        )
+    }
+    assert rows == {(m100, 'CHEBI:1'), (m200, 'CHEBI:1')}

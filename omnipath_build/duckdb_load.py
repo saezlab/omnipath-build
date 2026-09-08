@@ -3100,14 +3100,21 @@ def _canonicalize_loaded_duckdb(
             rl.canonical_identifier_type_id,
             rl.canonical_identifier
           FROM remaining_entity ee
-          JOIN entity_identifier_raw ei
+          JOIN (
+            SELECT
+              source,
+              entity_evidence_id,
+              identifier_type,
+              COALESCE(identifier_normalized, identifier) AS identifier_key
+            FROM entity_identifier_raw
+          ) ei
             ON ei.source = ee.source
            AND ei.entity_evidence_id = ee.entity_evidence_id
           JOIN identifier_type_all kit
             ON kit.name = ei.identifier_type
           JOIN needed_resolver_lookup rl
             ON rl.key_identifier_type_id = kit.identifier_type_id
-           AND rl.key_value = COALESCE(ei.identifier_normalized, ei.identifier)
+           AND rl.key_value = ei.identifier_key
            AND rl.evidence_entity_type = ee.entity_type
            AND (
              rl.taxonomy_id = ee.taxonomy_id

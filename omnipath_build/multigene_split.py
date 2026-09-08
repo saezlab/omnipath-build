@@ -163,6 +163,7 @@ def explode_multi_gene_protein_mentions(con, *, log=lambda *_: None) -> int:
         cols=[
             'source', ('entity_evidence_id', 'new_entity_evidence_id'),
             'identifier_id', 'identifier_type', 'identifier',
+            'identifier_normalized',
         ],
     )
     _explode_one(
