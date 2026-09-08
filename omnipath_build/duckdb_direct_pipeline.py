@@ -50,7 +50,10 @@ from omnipath_build.resources import (
 from omnipath_build.db.refresh import source_has_content, delete_source_content
 
 DEFAULT_LOAD_EXCLUDED_SOURCES = frozenset({'imm1415', 'rampdb'})
-PREPARSE_SHARD_CACHE_VERSION = 'raw_shards_v1'
+#: v2: entity_identifier_raw gained identifier_normalized (spec 011 T040) --
+#: a cached shard preparsed under v1 lacks that column, so a stale cache hit
+#: crashes the later Postgres copy with "no column named identifier_normalized".
+PREPARSE_SHARD_CACHE_VERSION = 'raw_shards_v2'
 STAGED_LOAD_TABLES: tuple[str, ...] = (
     'entity_evidence_raw',
     'entity_identifier_raw',
