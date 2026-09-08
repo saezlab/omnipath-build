@@ -5420,6 +5420,25 @@ def _bulk_copy_evidence(
         schema,
         'identifier_evidence',
     )
+    # entity_identifier_raw is created with identifier_normalized (T040) on
+    # every path that builds it, but a separate process re-opening this
+    # shard's persisted .duckdb file can observe an older on-disk catalog
+    # snapshot missing the column. Seen in practice. Root cause not pinned
+    # down -- a DuckDB cross-process persistence timing question, not a
+    # schema bug here. Degrade to NULL rather than crash the whole load.
+    has_identifier_normalized = bool(
+        con.execute(
+            """
+            SELECT COUNT(*) FROM information_schema.columns
+            WHERE table_name = 'entity_identifier_raw'
+              AND column_name = 'identifier_normalized'
+            """
+        ).fetchone()[0]
+    )
+    identifier_normalized_sql = (
+        'i.identifier_normalized' if has_identifier_normalized
+        else 'NULL::VARCHAR'
+    )
     _copy_duckdb_query_to_postgres(
         con,
         database_url=database_url,
@@ -5433,7 +5452,7 @@ def _bulk_copy_evidence(
             i.identifier_id::UUID,
             it.identifier_type_id,
             i.identifier,
-            i.identifier_normalized
+            {identifier_normalized_sql}
           FROM pq_entity_identifier i
           JOIN load_vocab_identifier_type it
             ON it.name = i.identifier_type
@@ -5445,6 +5464,7 @@ def _bulk_copy_evidence(
             AND existing.identifier_id IS NULL
         """.format(
             existing_identifier_evidence=existing_identifier_evidence,
+            identifier_normalized_sql=identifier_normalized_sql,
         ),
     )
     existing_annotation = _duckdb_pg_table(schema, 'annotation')
