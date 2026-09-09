@@ -414,11 +414,12 @@ def _detect_structure_key_computation(
     unavailable without it. Identifier-to-identifier translation is
     unaffected.
 
-    No rdkit-computed structure-key route exists anywhere yet to check
-    for. This capability belongs to a later, not-yet-implemented phase of
-    this cycle (structures translate like any other identifier). This
-    always reports unavailable until that phase lands and gives it a
-    real signal to read instead.
+    The real signal (spec 011 T082) is the utils build's own record of
+    whether it ran with the toolkit importable
+    (``DatabaseBuilder.record_structure_key_capability``,
+    ``build_info`` row ``table_name='capability'``) -- this build never
+    imports rdkit itself, only reads what the *utils* build already
+    determined about its own environment.
     """
 
     provider = 'the utils build, chemistry extra'
@@ -428,12 +429,46 @@ def _detect_structure_key_computation(
             'provider': provider,
             'reason': 'OMNIPATH_BUILD_UTILS_PG_URL is not set',
         }
+
+    import psycopg2
+
+    try:
+        conn = psycopg2.connect(utils_db_url)
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT status FROM omnipath_utils.build_info"
+                    " WHERE table_name = 'capability'"
+                    " AND source_type = 'structure_key_computation'"
+                    " ORDER BY built_at DESC LIMIT 1"
+                )
+                row = cur.fetchone()
+        finally:
+            conn.close()
+    except Exception as exc:  # noqa: BLE001 -- report unavailable, don't crash
+        return {
+            'capability': 'structure_key_computation', 'available': False,
+            'provider': provider,
+            'reason': f'could not reach the utils database: {exc}',
+        }
+
+    if row is None:
+        return {
+            'capability': 'structure_key_computation', 'available': False,
+            'provider': provider,
+            'reason': (
+                'the utils build has never run '
+                'DatabaseBuilder.record_structure_key_capability'
+            ),
+        }
+
+    available = row[0] == 'available'
     return {
-        'capability': 'structure_key_computation', 'available': False,
+        'capability': 'structure_key_computation', 'available': available,
         'provider': provider,
         'reason': (
-            'structure-to-anything translation has not been implemented '
-            'yet in this cycle'
+            None if available
+            else 'the utils build ran without the chemistry extra installed'
         ),
     }
 
