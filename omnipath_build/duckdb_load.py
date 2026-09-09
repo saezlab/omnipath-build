@@ -132,6 +132,10 @@ PUBCHEM_COMPOUND_TYPE = cv_term_label_accession(
 )
 SWISSLIPIDS_TYPE = cv_term_label_accession(IdentifierNamespaceCv.SWISSLIPIDS)
 KEGG_COMPOUND_TYPE = cv_term_label_accession(IdentifierNamespaceCv.KEGG_COMPOUND)
+DRUGBANK_TYPE = cv_term_label_accession(IdentifierNamespaceCv.DRUGBANK)
+REACTOME_STABLE_ID_TYPE = cv_term_label_accession(
+    IdentifierNamespaceCv.REACTOME_STABLE_ID
+)
 RESOLVER_CHEMICAL_SLUG_TO_IDENTIFIER_TYPE = {
     'pubchem': PUBCHEM_COMPOUND_TYPE,
     'chembl': CHEMBL_COMPOUND_TYPE,
@@ -140,10 +144,19 @@ RESOLVER_CHEMICAL_SLUG_TO_IDENTIFIER_TYPE = {
     'lipidmaps': LIPIDMAPS_TYPE,
     'swisslipids': SWISSLIPIDS_TYPE,
     'kegg': KEGG_COMPOUND_TYPE,
+    # T092: every namespace with a structure route through
+    # omnipath_utils.resolver_chemical, not just the original seven.
+    # DrugBank was already loaded (id_mapping, via UniChem's pubchem
+    # bridge -- 15,293 rows, research.md R7) and simply never read here.
+    # Reactome is this cycle's new chebi-bridged load (T089). RefMet
+    # (T088) is NOT added here: its cross-reference lives in
+    # id_mapping_long (the name-axis table), which resolver_chemical does
+    # not read at all -- RefMet translates through the name axis
+    # (translate_ids), a separate, already-adequate mechanism, not
+    # through this structure-route resolver.
+    'drugbank': DRUGBANK_TYPE,
+    'reactome': REACTOME_STABLE_ID_TYPE,
 }
-REACTOME_STABLE_ID_TYPE = cv_term_label_accession(
-    IdentifierNamespaceCv.REACTOME_STABLE_ID
-)
 WIKIPATHWAYS_ID_TYPE = cv_term_label_accession(IdentifierNamespaceCv.WIKIPATHWAYS)
 
 
