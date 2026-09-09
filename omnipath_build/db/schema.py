@@ -50,6 +50,14 @@ CONTENT_TABLES: tuple[str, ...] = (
     'relation_evidence_relation',
     'entity_evidence_resolution',
     'resolution_conflict',
+    # Gene-anchored state model (spec 011's predecessor, "spec-003 Phase 6"):
+    # not previously listed here, so reset-content never truncated these --
+    # stale rows survived every wipe and eventually collided with a later
+    # PRIMARY KEY add on evidence_state. Found live on 2026-09-09.
+    'evidence_state',
+    'state_component',
+    'state',
+    'gene_protein_representative',
     'annotation',
     'interaction_fact_resource',
     'interaction_party',
@@ -98,6 +106,7 @@ SOURCE_PARTITION_DROP_ORDER: tuple[str, ...] = (
     'resolution_conflict',
     'entity_identifier',
     'entity_evidence_identifier',
+    'evidence_state',
     'entity_evidence',
 )
 
@@ -241,6 +250,7 @@ def ensure_schema(
                 """
             ).format(sql.Identifier(schema), sql.Identifier(schema))
         )
+        _ensure_primary_key(cur, schema, 'identifier_evidence', ('identifier_id',))
         log_step('ensure identifier evidence shape')
         _ensure_identifier_evidence_key(cur, schema)
         log_step('ensure identifier evidence normalized-value column')
@@ -279,6 +289,9 @@ def ensure_schema(
                 sql.Identifier(schema),
                 sql.Identifier(schema),
             )
+        )
+        _ensure_primary_key(
+            cur, schema, 'entity_evidence', ('source_id', 'entity_evidence_id')
         )
         cur.execute(
             sql.SQL(
@@ -366,6 +379,9 @@ def ensure_schema(
                 sql.Identifier(schema),
             )
         )
+        _ensure_primary_key(
+            cur, schema, 'relation_evidence', ('source_id', 'relation_evidence_id')
+        )
         cur.execute(
             sql.SQL(
                 """
@@ -387,6 +403,7 @@ def ensure_schema(
                 """
             ).format(sql.Identifier(schema))
         )
+        _ensure_primary_key(cur, schema, 'annotation', ('annotation_key',))
         log_step('ensure annotation value schema')
         _ensure_annotation_value_schema(cur, schema)
         log_step('create evidence annotation tables')
@@ -611,6 +628,46 @@ def _rename_legacy_vocab_tables(
                     sql.Identifier(new_name),
                 )
             )
+
+
+def _ensure_primary_key(
+    cur: psycopg2.extensions.cursor,
+    schema: str,
+    table: str,
+    columns: tuple[str, ...],
+) -> None:
+    """Retrofit a primary key ``CREATE TABLE IF NOT EXISTS`` cannot add.
+
+    ``IF NOT EXISTS`` is a no-op on an already-existing table, so a table
+    that predates its declared ``PRIMARY KEY`` (an older build, or schema
+    drift) keeps missing it forever -- and every later ``ADD CONSTRAINT
+    ... FOREIGN KEY REFERENCES <table>(<columns>)`` then fails with "no
+    unique constraint matching given keys". Found live on 2026-09-09
+    preparing to add spec 011 WP2's new FKs, on a database where several
+    core tables had no primary key despite their key columns already being
+    unique.
+    """
+
+    column_list = sql.SQL(', ').join(sql.Identifier(c) for c in columns)
+    cur.execute(
+        sql.SQL(
+            """
+            DO $$
+            BEGIN
+              IF NOT EXISTS (
+                SELECT 1 FROM pg_constraint
+                WHERE conrelid = {}::regclass AND contype = 'p'
+              ) THEN
+                ALTER TABLE {} ADD PRIMARY KEY ({});
+              END IF;
+            END $$
+            """
+        ).format(
+            sql.Literal(f'{schema}.{table}'),
+            sql.Identifier(schema, table),
+            column_list,
+        )
+    )
 
 
 def _drop_legacy_content_tables_if_needed(
@@ -915,7 +972,6 @@ def _ensure_gene_anchored_schema(
     # "how specific is this entity's own identity" and "what level would this
     # entity's structure group at" read the same way. A non-chemical entity's
     # identity_level_id stays NULL -- the concept is chemical-specific.
-    log_step('create identity level vocabulary')
     from omnipath_build.chemical_resolution_level import LEVELS as _IDENTITY_LEVELS
 
     cur.execute(
@@ -1199,6 +1255,7 @@ def _ensure_resolution_schema(
             """
         ).format(schema_id, schema_id, schema_id, schema_id)
     )
+    _ensure_primary_key(cur, schema, 'entity', ('entity_id',))
     log_step('ensure identifier types')
     _ensure_static_identifier_types(cur, schema)
     log_step('ensure entity indexes')
@@ -1538,6 +1595,7 @@ def _ensure_resolution_schema(
             """
         ).format(schema_id, schema_id, schema_id, schema_id, schema_id)
     )
+    _ensure_primary_key(cur, schema, 'relation', ('relation_id',))
     log_step('create relation unique index')
     cur.execute(
         sql.SQL(
