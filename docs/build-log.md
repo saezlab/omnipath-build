@@ -31,6 +31,47 @@ Keep entries factual and specific — numbers and log excerpts, not vibes.
 
 ---
 
+## 2026-09-09 — WP2 full uncapped rebuild (spec 011, cycle 011)
+
+**Reason**: WP2 (T048-T060, candidate arbitration — skeleton collapse,
+neutral-parent/least-specified-stereo tie-break, authority arbitration,
+`resolution_conflict` recording) is implemented and unit-tested
+(`main@8d9b0f1`), but not yet checked against real, full-scale data. This
+run exists to answer: does WP2 actually move SC-001/002/003/004/005 past
+their targets now, and does T061/T062's threshold hold (unresolved <5,500,
+KEGG structure reach >70%)?
+
+First had to fix a database schema issue found while preparing this run:
+`entity`, `entity_evidence`, `identifier_evidence`, `relation`,
+`relation_evidence`, and `annotation` all predated their declared
+`PRIMARY KEY` on this database (`CREATE TABLE IF NOT EXISTS` is a no-op on
+an existing table, so a table created before the PK was added to its DDL
+never retrofits one) — blocked every `make db-setup`. Separately,
+`gene_protein_representative`/`state`/`state_component`/`evidence_state`
+were never in `CONTENT_TABLES`, so `reset-content` never truncated them;
+stale rows survived every prior wipe this cycle and eventually collided
+with `evidence_state`'s own PK add. Both fixed in `main@b7e16b0`, verified
+with a clean `make reset-content` (`entity` count confirmed 0) followed by
+two consecutive clean `make db-setup` runs.
+
+**Parameters**: identical to the two T047 runs below —
+
+```
+make reload \
+  DATABASE_URL="postgresql://omnipath:omnipath@omnipath-build-postgres-1:5432/omnipath" \
+  OMNIPATH_BUILD_UTILS_PG_URL="postgresql://omnipath:omnipath_utils_chemres1-utils_dev@omnipath-utils-chemres1-utils-db:5432/omnipath_utils"
+```
+
+All ~47 sources, uncapped (`--max-records 0`), `--stage-jobs 1`,
+`BATCH_SIZE=50000`, `THREADS=4`. Started ~09:10 UTC. Only Postgres content
+was wiped (`reset-content`), not the on-disk preparse shard cache, so
+preparse should reuse the cache from the 2026-09-08 runs and be fast, same
+as the second T047 run below.
+
+**Phase durations / outcome**: TBD, filling in once the run finishes.
+
+---
+
 ## 2026-09-08 — T047 full uncapped rebuild (spec 011, cycle 011)
 
 **Reason**: T046's capped reload (`reactome,hmdb,chebi,kegg`, `MAX_RECORDS=5000`)
