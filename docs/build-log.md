@@ -31,6 +31,66 @@ Keep entries factual and specific — numbers and log excerpts, not vibes.
 
 ---
 
+## 2026-09-09 — omnipath-metabo WP6: structure consistency diagnostics (T098-T105)
+
+**Reason**: verify WP6's three structure-consistency checks
+(`omnipath-metabo/omnipath_metabo/postbuild/_qc_layer.py`) against the live
+build — a different repo/service (`omnipath-metabo`, freshly cloned this
+session) than `omnipath-build`'s own `make load`/`make reload`, but the same
+target database, so logged here per the standing rule of recording every real
+run against it.
+
+**Parameters**: not a `make` invocation — direct Python calls against
+`postgresql://omnipath:omnipath@chemres1-omnipath-build-postgres:5432/omnipath`,
+schema `public`: `build_structure_consistency_findings(conn, schema='public')`
+(three times, iterating on a performance fix) and `post_build_metabo(conn,
+schema='public', force=True, conflicts=False)` (the full post-build pipeline,
+including the new QC step).
+
+**Phase durations**: first version of the cross-reference/cross-reference-pair
+queries — driven from `entity_evidence` (all chemical mentions, ~tens of
+millions across 43 partitions) before filtering down to structure-bearing
+ones — did not finish in 15 minutes (`timeout 900` killed it). Rewritten to
+start from the ~2.9M structure-authority-typed `identifier_evidence` rows
+(and a precomputed authority-identifier-to-entity map, built once, reused by
+both checks): full three-check pass **671s (~11m12s)** —
+`internal=1,199 cross_reference=44,303 cross_reference_pair=16,979
+summary_rows=194`. The full `post_build_metabo(force=True)` pipeline
+(substrate rebuild + specificity + facet + lipid labels + QC, no RaMP
+conflicts): structure substrate **2,223,612 molecules**; specificity
+`cis_trans_only=102,451 constitution_only=752,411 no_structure=288,224
+stereospecific=1,173,513 unknown_constitution=387,377
+variable_constitution=195,237`; Goslin lipid labels on 1,072,117 entities
+(1,125,099 names resolved, 770,019 unresolved).
+
+**Outcome**: the checks are correctly derived from `identifier_authority`
+(no hand-listed sources), classify sensibly (`different_structure` well
+under half of every summary row, e.g. a real `refmet`/`kegg` namespace
+disagreement at 3.3% agreement against markedly-higher agreement for other
+pairs — the same class of defect research.md R8's original KEGG
+investigation found), and are served with no request-time computation
+(`test_qc_layer.py`, 13/13 passing). The internal check is narrower than
+`contracts/quality-control-api.md` describes — this build's rdkit cartridge
+has no InChI support (`mol_from_inchi` does not exist; `mol_inchikey`
+returns the literal string `InChI not available`), and `omnipath-metabo`
+deliberately runs chemistry only through the cartridge, never Python rdkit —
+so it compares a record's own duplicate SMILES assertions against each
+other, not SMILES vs. InChI vs. InChIKey. Full writeup in `saezverse`
+`specs/011-chemical-resolution/deferred-items.md`.
+
+**Self-inflicted incident, noted for the record**: an intermediate
+`test_postbuild.py::test_post_build_refuses_on_build_id_mismatch` run was
+killed by its own 30-minute `timeout` wrapper mid-way through a `force=True`
+rebuild (the QC step roughly tripled that test's total cost, since it calls
+`post_build_metabo` three times). This left `metabo_build_state` stuck at
+the test's injected sentinel `deadbeefdead` and an orphaned
+`CREATE INDEX ... metabo_entity_structure_mol_idx` still finishing
+server-side (harmless — any subsequent `build_structure_substrate` call
+drops and rebuilds it anyway). Fixed with one more `force=True` run once the
+orphaned index finished; not a code defect.
+
+---
+
 ## 2026-09-09 — derive run for entity_name/T072-T074, and the shared-database rename
 
 **Reason**: verify T072-T074 (entity_name table, its population, the new
