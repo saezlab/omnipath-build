@@ -75,6 +75,7 @@ CONTENT_TABLES: tuple[str, ...] = (
     'entity_annotation_relation_default',
     'identifier_authority',
     'identifier_role',
+    'chemical_resolution_coverage',
     'resource_overlap_summary',
     'data_source',
 )
@@ -1439,6 +1440,29 @@ def _ensure_resolution_schema(
               ),
               mention_count bigint NOT NULL,
               PRIMARY KEY (source_id, identifier_type_id)
+            )
+            """
+        ).format(schema_id, schema_id, schema_id)
+    )
+    log_step('create chemical resolution coverage table')
+    cur.execute(
+        sql.SQL(
+            """
+            CREATE TABLE IF NOT EXISTS {}.chemical_resolution_coverage (
+              source_id bigint NOT NULL
+                REFERENCES {}.data_source(source_id),
+              identifier_type_id bigint NOT NULL
+                REFERENCES {}.vocab_identifier_type(identifier_type_id),
+              role text NOT NULL CHECK (
+                role IN ('authoritative', 'cross_reference')
+              ),
+              mentions bigint NOT NULL,
+              entities bigint NOT NULL,
+              reached_structure bigint NOT NULL,
+              reached_name bigint NOT NULL,
+              unresolved bigint NOT NULL,
+              conflicted bigint NOT NULL,
+              PRIMARY KEY (source_id, identifier_type_id, role)
             )
             """
         ).format(schema_id, schema_id, schema_id)

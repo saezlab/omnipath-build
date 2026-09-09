@@ -124,7 +124,8 @@ def emit_build_manifest(
                   ADD COLUMN IF NOT EXISTS interactions_derive_cost jsonb,
                   ADD COLUMN IF NOT EXISTS interactions_deferral_cost jsonb,
                   ADD COLUMN IF NOT EXISTS network_presets jsonb,
-                  ADD COLUMN IF NOT EXISTS capabilities jsonb
+                  ADD COLUMN IF NOT EXISTS capabilities jsonb,
+                  ADD COLUMN IF NOT EXISTS chemical_resolution_coverage jsonb
                 """
             ).format(schema_id)
         )
@@ -179,6 +180,9 @@ def emit_build_manifest(
         network_presets = _network_preset_inventory(cur, schema)
         capabilities = _build_capabilities(cur, schema, utils_db_url=utils_db_url)
         _populate_build_capability_table(cur, schema, capabilities)
+        chemical_resolution_coverage = _chemical_resolution_coverage_manifest(
+            cur, schema,
+        )
         cur.execute(sql.SQL('TRUNCATE {}.build_manifest').format(schema_id))
         cur.execute(
             sql.SQL(
@@ -187,8 +191,8 @@ def emit_build_manifest(
                   (build_id, package_commits, resources, partial_build,
                    translation_tables, canonicalization_coverage,
                    interactions_derive_cost, interactions_deferral_cost,
-                   network_presets, capabilities)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                   network_presets, capabilities, chemical_resolution_coverage)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """
             ).format(schema_id),
             [
@@ -206,6 +210,9 @@ def emit_build_manifest(
                 else None,
                 Json(network_presets) if network_presets is not None else None,
                 Json(capabilities),
+                Json(chemical_resolution_coverage)
+                if chemical_resolution_coverage is not None
+                else None,
             ],
         )
     conn.commit()
@@ -292,6 +299,69 @@ def _canonicalization_coverage(
         if reason is not None:
             by_reason[reason] = by_reason.get(reason, 0) + n
     return {'total': total, 'by_status': by_status, 'by_reason': by_reason}
+
+
+def _chemical_resolution_coverage_manifest(
+    cur: psycopg2.extensions.cursor,
+    schema: str,
+) -> list[dict[str, Any]] | None:
+    """spec 011 T128: the per (resource, namespace, role) coverage
+    :func:`derived_tables._populate_chemical_resolution_coverage` already
+    wrote, read into the manifest as-is -- so two builds compare from
+    their manifests alone (data-model.md section 9), without re-running
+    analysis. Returns ``None`` if the coverage table is not present (an
+    older build, or one where derive has not run yet).
+    """
+
+    schema_id = sql.Identifier(schema)
+    cur.execute('SAVEPOINT chemical_resolution_coverage_probe')
+    try:
+        cur.execute(
+            sql.SQL(
+                """
+                SELECT
+                  crc.source_id, ds.name AS source, crc.identifier_type_id,
+                  vit.name AS namespace, crc.role, crc.mentions, crc.entities,
+                  crc.reached_structure, crc.reached_name, crc.unresolved,
+                  crc.conflicted
+                FROM {0}.chemical_resolution_coverage crc
+                JOIN {0}.data_source ds ON ds.source_id = crc.source_id
+                JOIN {0}.vocab_identifier_type vit
+                  ON vit.identifier_type_id = crc.identifier_type_id
+                ORDER BY ds.name, vit.name, crc.role
+                """
+            ).format(schema_id)
+        )
+    except psycopg2.Error:
+        cur.execute('ROLLBACK TO SAVEPOINT chemical_resolution_coverage_probe')
+        logger.debug(
+            'build manifest: no chemical_resolution_coverage table in %s; skipped',
+            schema,
+        )
+        return None
+    rows = cur.fetchall()
+    cur.execute('RELEASE SAVEPOINT chemical_resolution_coverage_probe')
+
+    return [
+        {
+            'source_id': source_id,
+            'source': source,
+            'identifier_type_id': identifier_type_id,
+            'namespace': namespace,
+            'role': role,
+            'mentions': int(mentions),
+            'entities': int(entities),
+            'reached_structure': int(reached_structure),
+            'reached_name': int(reached_name),
+            'unresolved': int(unresolved),
+            'conflicted': int(conflicted),
+        }
+        for (
+            source_id, source, identifier_type_id, namespace, role,
+            mentions, entities, reached_structure, reached_name,
+            unresolved, conflicted,
+        ) in rows
+    ]
 
 
 def _build_capabilities(

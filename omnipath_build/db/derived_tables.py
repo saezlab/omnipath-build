@@ -39,6 +39,7 @@ class DerivedTableStats:
     entity_ontology_terms: int = 0
     entity_source_count: int = 0
     identifier_role: int = 0
+    chemical_resolution_coverage: int = 0
     interactions: InteractionDeriveStats | None = None
 
 
@@ -138,6 +139,19 @@ def rebuild_derived_tables(
             seconds=f'{time.perf_counter() - step_started:.3f}',
         )
 
+        _log(progress, 'chemical_resolution_coverage', 'start')
+        step_started = time.perf_counter()
+        chemical_resolution_coverage = _populate_chemical_resolution_coverage(
+            cur, schema,
+        )
+        _log(
+            progress,
+            'chemical_resolution_coverage',
+            'done',
+            rows=chemical_resolution_coverage,
+            seconds=f'{time.perf_counter() - step_started:.3f}',
+        )
+
         _log(progress, 'indexes', 'start')
         step_started = time.perf_counter()
         _create_derived_indexes(cur, schema)
@@ -161,6 +175,7 @@ def rebuild_derived_tables(
         entity_ontology_terms=entity_ontology_terms,
         entity_source_count=entity_source_count,
         identifier_role=identifier_role,
+        chemical_resolution_coverage=chemical_resolution_coverage,
         interactions=interaction_stats,
     )
 
@@ -456,6 +471,121 @@ def _populate_identifier_role(
             GROUP BY 1, 2, 3
             """
         ).format(schema_id, schema_id, schema_id, schema_id, schema_id)
+    )
+    return int(cur.rowcount)
+
+
+def _populate_chemical_resolution_coverage(
+    cur: psycopg2.extensions.cursor,
+    schema: str,
+) -> int:
+    """spec 011 data-model.md section 9 (T126/T127): per (resource,
+    namespace, role) -- the same scope :func:`_populate_identifier_role`
+    already computes -- how the chemical mentions in that scope resolved:
+    volume (``mentions``/``entities``), and outcome
+    (``reached_structure``/``reached_name``/``unresolved``/``conflicted``).
+
+    Written to the build manifest too (``resources.py``), so two builds
+    compare per-resource coverage from the manifests alone, without
+    re-running analysis.
+    """
+
+    schema_id = sql.Identifier(schema)
+
+    def _type_id(name: str) -> int | None:
+        cur.execute(
+            sql.SQL(
+                'SELECT identifier_type_id FROM {}.vocab_identifier_type'
+                ' WHERE name = %s'
+            ).format(schema_id),
+            [name],
+        )
+        row = cur.fetchone()
+        return int(row[0]) if row else None
+
+    cur.execute(
+        sql.SQL(
+            'SELECT entity_type_id FROM {}.vocab_entity_type WHERE name = %s'
+        ).format(schema_id),
+        ['Chemical:OM:0037'],
+    )
+    chem_row = cur.fetchone()
+    cur.execute(sql.SQL('TRUNCATE {}.chemical_resolution_coverage').format(schema_id))
+    if not chem_row:
+        return 0
+    chem_type_id = int(chem_row[0])
+
+    structure_type_id = _type_id('Standard Inchi Key:MI:1101')
+    name_type_id = _type_id('Name:OM:0202')
+    unresolved_type_id = _type_id('omnipath:unresolved_entity_key')
+
+    cur.execute(
+        sql.SQL(
+            """
+            WITH chem_mention AS (
+              SELECT ee.source_id, ee.entity_evidence_id, ie.identifier_type_id,
+                CASE
+                  WHEN a.identifier_type_id IS NOT NULL THEN 'authoritative'
+                  ELSE 'cross_reference'
+                END AS role
+              FROM {schema}.entity_evidence ee
+              JOIN {schema}.entity_evidence_identifier eei
+                ON eei.source_id = ee.source_id
+               AND eei.entity_evidence_id = ee.entity_evidence_id
+              JOIN {schema}.identifier_evidence ie
+                ON ie.identifier_id = eei.identifier_id
+              LEFT JOIN {schema}.identifier_authority a
+                ON a.identifier_type_id = ie.identifier_type_id
+               AND a.source_id = ee.source_id
+              WHERE ee.entity_type_id = %(chem)s
+            ),
+            outcome AS (
+              SELECT
+                cm.source_id, cm.identifier_type_id, cm.role,
+                cm.entity_evidence_id,
+                r.entity_id,
+                e.canonical_identifier_type_id,
+                EXISTS (
+                  SELECT 1 FROM {schema}.resolution_conflict rc
+                  WHERE rc.source_id = cm.source_id
+                    AND rc.entity_evidence_id = cm.entity_evidence_id
+                ) AS conflicted
+              FROM chem_mention cm
+              LEFT JOIN {schema}.entity_evidence_resolution r
+                ON r.source_id = cm.source_id
+               AND r.entity_evidence_id = cm.entity_evidence_id
+              LEFT JOIN {schema}.entity e ON e.entity_id = r.entity_id
+            )
+            INSERT INTO {schema}.chemical_resolution_coverage (
+              source_id, identifier_type_id, role,
+              mentions, entities,
+              reached_structure, reached_name, unresolved, conflicted
+            )
+            SELECT
+              source_id, identifier_type_id, role,
+              count(*) AS mentions,
+              count(DISTINCT entity_id) AS entities,
+              count(*) FILTER (
+                WHERE canonical_identifier_type_id = %(structure)s
+              ) AS reached_structure,
+              count(*) FILTER (
+                WHERE canonical_identifier_type_id = %(name)s
+              ) AS reached_name,
+              count(*) FILTER (
+                WHERE entity_id IS NULL
+                   OR canonical_identifier_type_id = %(unresolved)s
+              ) AS unresolved,
+              count(*) FILTER (WHERE conflicted) AS conflicted
+            FROM outcome
+            GROUP BY 1, 2, 3
+            """
+        ).format(schema=schema_id),
+        dict(
+            chem=chem_type_id,
+            structure=structure_type_id,
+            name=name_type_id,
+            unresolved=unresolved_type_id,
+        ),
     )
     return int(cur.rowcount)
 
