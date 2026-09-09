@@ -31,6 +31,76 @@ Keep entries factual and specific — numbers and log excerpts, not vibes.
 
 ---
 
+## 2026-09-09 — omnipath-utils WP5: RefMet/Reactome loads, HMDB extension, SwissLipids fix, exemptions (T084-T094)
+
+**Reason**: verify spec 011 WP5 (namespace coverage) against the live
+`chemres1` utils DB — a different database
+(`omnipath-utils-chemres1-utils-db:5432/omnipath_utils`) than
+`omnipath-build`'s own, logged here per the standing rule of recording
+every real run against a project database.
+
+**Parameters**: not a `make` invocation — direct Python calls (via
+`DatabaseBuilder`) against
+`postgresql://omnipath:omnipath_utils_chemres1-utils_dev@omnipath-utils-chemres1-utils-db:5432/omnipath_utils`:
+`_long_refmet()`, `_populate_reactome()`, `_long_hmdb()` (re-run with the
+CAS/IUPAC/traditional-IUPAC extension), `_clear_wrong_content_rows()`,
+`populate_namespace_exemptions()`, plus a one-time SQL cleanup of
+already-stored SwissLipids rows and two runs of
+`rebuild_resolver_chemical_duckdb` (the first with a since-fixed Reactome
+bug, so its output was discarded and rebuilt).
+
+**Phase durations**: RefMet load (208,170 raw rows fetched from a 22.9 MB
+CSV, cached fast) a few seconds. Reactome load (`reactome_chebis()`, a
+streamed TSV) well under a minute. HMDB re-run (2.2M+ metabolite records,
+the largest single source) a few minutes. `resolver_chemical` rebuild via
+DuckDB: ~65s to compute 132.8M rows, ~90-100s to write the Postgres staging
+table, then a native `CREATE MATERIALIZED VIEW` + index over that — the
+first rebuild attempt's own `DROP TABLE IF EXISTS` (lacking `CASCADE`)
+failed because the old materialized view still depended on the staging
+table; fixed by dropping the old view `CASCADE` first (a pre-existing
+script limitation, not something this cycle introduced).
+
+**Outcome**: RefMet — 208,170 `refmet_id<->name` rows plus 98,502
+cross-reference rows to chebi/hmdb/kegg/lipidmaps/pubchem (a raw-CSV
+quirk cost one round trip: RefMet's first CSV header column carries a
+leading space, `" refmet_id"` not `"refmet_id"`, silently producing zero
+rows for the primary id until caught and fixed). Reactome — a new
+`reactome` id_type, 38,329 `chebi<->reactome` `id_mapping` rows (a second
+bug caught and fixed: Reactome's raw `chebi_id` is a bare number, but
+`id_mapping`'s own chebi convention is `CHEBI:NNNN` — verified against
+existing `bigg->chebi` and `chebi->inchikey` rows before fixing), 31,406 of
+which now bridge to a real InChIKey through the rebuilt
+`resolver_chemical`. DrugBank — no new load needed (already had 15,293
+`id_mapping` rows from an earlier run), now reads 14,138 rows through
+`resolver_chemical` after `duckdb_load.py`'s namespace-slug list was
+widened (T092). SwissLipids — 777,811 stored `swisslipids -> inchikey`
+rows cleaned to 593,217 well-formed keys (184,509 `InChIKey=none`
+placeholders deleted, 592,254 prefixed values stripped in place, 85 other
+garbage values deleted); the loader fix itself is verified by a unit test
+since the live reload is still blocked by the pre-existing `cachedir` bug.
+HMDB — extended to also reach CAS (15,672-216,844 rows depending on the
+pairing), IUPAC name and traditional IUPAC name, fields its raw records
+already carried but the loader never read. Rhea/PDBe — 3,219 and 242,934
+wrong-content `id_mapping` rows respectively cleared (UniChem's Rhea
+"compound id" is really the participant's ChEBI id; its PDBe "id" is a
+display label plus conformer type, not the ligand code), and both excluded
+from future auto-discovery. 21 namespaces recorded as reviewed exemptions
+(`namespace_exemption`, new table) — id_types.yaml declares each reachable
+via hmdb/ramp/chalmers_gem, but a live check of each source's actual raw
+data confirms none of the fields exist. Full namespace-by-namespace
+reasoning in `saezverse` `deferred-items.md`.
+
+**Verification**: every declared small-molecule namespace (53 total) now
+has either real `id_mapping`/`id_mapping_long` rows or a recorded, reviewed
+exemption, and no exemption is stale (both checked directly via SQL against
+the live database — the equivalent `pytest` suite,
+`tests/test_namespace_coverage.py`, is correct but impractically slow over
+this DB's network round-trip time, ~5-14s per parametrized case across 60
+cases; the two fast, non-DB unit tests in `test_swisslipids_backend.py`
+pass in under half a second).
+
+---
+
 ## 2026-09-09 — omnipath-metabo WP6: structure consistency diagnostics (T098-T105)
 
 **Reason**: verify WP6's three structure-consistency checks
