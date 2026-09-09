@@ -63,10 +63,67 @@ make reload \
 ```
 
 All ~47 sources, uncapped (`--max-records 0`), `--stage-jobs 1`,
-`BATCH_SIZE=50000`, `THREADS=4`. Started ~09:10 UTC. Only Postgres content
-was wiped (`reset-content`), not the on-disk preparse shard cache, so
-preparse should reuse the cache from the 2026-09-08 runs and be fast, same
-as the second T047 run below.
+`BATCH_SIZE=50000`, `THREADS=4`. Only Postgres content was wiped
+(`reset-content`), not the on-disk preparse shard cache, so preparse reused
+the cache from the 2026-09-08 runs and was fast, same as the second T047
+run below.
+
+**Finished** ~13:58 UTC. Pipeline's own reported total: `sources=45
+skipped_sources=0 datasets=100 failed_sources=3 failed_datasets=4
+source_rows=9920814 identifiers=63614139 annotations=92029431
+total=6455.728s` (~1h47m36s) — same 4 pre-existing unrelated failures as
+both 2026-09-08 runs (bindingdb.interactions, metatlas.metabolites,
+mirbase.precursors, ptfi.foods), plus the already-documented
+`hormone2cell` discovery failure. `source_rows`/`identifiers`/`annotations`
+are byte-for-byte identical to the second 2026-09-08 run, as expected —
+same source data, cache reused.
+
+**Outcome — first four acceptance blocks, before vs. after WP2**:
+
+| Criterion | Target | Before WP2 (both 2026-09-08 runs) | After WP2 (this run) |
+|---|---|---|---|
+| SC-001 ChEBI-canonical | ≤23,000 | 51,832 (fail) | 51,832 (fail, unchanged — tied to the deferred `annotation_object_entity` bug, not WP2's scope) |
+| SC-002/003 Reactome structure reach | ≥80% | 63.1% (fail) | 63.7% (fail, ~unchanged — legitimate ChEBI generic/class-node structurelessness, confirmed non-bug) |
+| SC-002/003 intact/rhea/pfocr | ≥60% | pass | pass (80.6% / 81.9% / 81.9%) |
+| SC-004 Reactome↔HMDB shared | ≥1,300 | 493 (fail) | 494 (fail, unchanged — same root cause as SC-001) |
+| **SC-005 unresolved chemical entities** | **≤5,500** | **11,424 (fail)** | **365 (PASS)** |
+| **SC-006 KEGG structure reach** | **≥70%** | not yet passing | **81.9% (PASS)** |
+
+T061/T062's two thresholds (unresolved <5,500, KEGG structure reach >70%)
+both cleared. SC-001/002-003(reactome)/004 remain exactly where they were —
+expected, since none of them are in WP2's scope (they trace to the deferred
+`annotation_object_entity` bug and legitimate ChEBI class-node
+structurelessness, both already root-caused in the 2026-09-08 entry below).
+
+**Bug found via this run's own diagnostic column**: SC-005's
+`with_conflict_record` came back 0 despite 11,424→365 unresolved entities
+and WP2's own unit tests proving the `resolution_conflict` CTE logic is
+correct. Root cause: `resolution_conflict` was created correctly inside
+each shard's DuckDB session, but was never added to
+`STAGED_LOAD_TABLES` (`duckdb_direct_pipeline.py`), the `pq_*` view mapping,
+or `_bulk_copy_canonical`'s COPY step (`duckdb_load.py`) — so it was
+silently discarded before ever reaching Postgres. `resolution_conflict` was
+0 rows database-wide after this run despite genuine candidate disagreements
+existing. Fixed in `main@4e6f5c2`; verified against real data with a
+standalone `kegg`-only reload (35,307 correctly-translated conflict rows
+written for kegg alone). Full rebuild re-run below to backfill this for
+every source.
+
+---
+
+## 2026-09-09 — WP2 rebuild #2, after fixing the resolution_conflict copy bug
+
+**Reason**: the run above proved WP2's resolution logic works
+(SC-005/SC-006 both clear target), but `resolution_conflict` was silently
+empty database-wide due to the COPY bug fixed in `main@4e6f5c2` (see above).
+A `kegg`-only standalone reload confirmed the fix works (35,307 rows for
+kegg alone), but left the database in a mixed state — only `kegg` carries
+`resolution_conflict` rows, the other 44 sources still reflect the buggy
+pre-fix run. Re-running the full rebuild for a coherent, fully-correct
+state and an accurate `with_conflict_record` figure.
+
+**Parameters**: identical to the run above, preceded by a verified-clean
+`make reset-content` (`entity` count confirmed 0).
 
 **Phase durations / outcome**: TBD, filling in once the run finishes.
 
