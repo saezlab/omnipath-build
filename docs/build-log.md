@@ -125,7 +125,48 @@ state and an accurate `with_conflict_record` figure.
 **Parameters**: identical to the run above, preceded by a verified-clean
 `make reset-content` (`entity` count confirmed 0).
 
-**Phase durations / outcome**: TBD, filling in once the run finishes.
+**Finished**: pipeline's own reported total: `sources=45 skipped_sources=0
+datasets=100 failed_sources=3 failed_datasets=4 source_rows=9920814
+identifiers=63614139 annotations=92029431 total=7213.428s` (~2h0m13s — a
+little slower than run #1's 1h47m36s, ordinary run-to-run variance on the
+shared host, not a regression). `source_rows`/`identifiers`/`annotations`
+identical to run #1 and to both 2026-09-08 runs, as expected — same source
+data, same resolution logic, only the `resolution_conflict` COPY path
+changed. Same 4 pre-existing unrelated failures again
+(bindingdb.interactions, metatlas.metabolites, mirbase.precursors,
+ptfi.foods).
+
+**`resolution_conflict` now populated for every source with real
+disagreements**, not just `kegg`:
+
+| source | conflict rows |
+|---|---|
+| kegg | 35,307 |
+| recon3d | 23,514 |
+| metatlas | 3,472 |
+| wikipathways | 2,117 |
+| pmidb | 416 |
+| phenol_explorer | 268 |
+| intact | 168 |
+| mrclinksdb | 68 |
+| chebi | 12 |
+| lipidmaps | 6 |
+| mebocost | 4 |
+
+Total 65,352 rows across 11 sources.
+
+**Outcome — full re-run of the acceptance gate**: identical to run #1 on
+every criterion (SC-001 51,832 fail, SC-002/003 Reactome 63.7% fail /
+intact+rhea+pfocr pass their own bar, SC-004 494 fail, SC-005 365 unresolved
+pass, SC-006 KEGG 81.9% pass) — confirming the copy-bug fix only affected
+the `resolution_conflict` diagnostic table, not any resolution outcome.
+**SC-005's `with_conflict_record` is now 365, exactly matching `unresolved`
+(365)** — every unresolved chemical entity is accounted for by a recorded
+conflict, closing the gap run #1 exposed. This is the fully-correct,
+coherent state of the database for cycle 011's WP2 work: T061/T062 both
+clear target, and the "recorded, never silently dropped" guarantee the
+spec's User Story 2 asks for is now actually true in Postgres, not just in
+the DuckDB session that computes it.
 
 ---
 
