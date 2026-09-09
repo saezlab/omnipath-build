@@ -31,6 +31,55 @@ Keep entries factual and specific — numbers and log excerpts, not vibes.
 
 ---
 
+## 2026-09-09 — derive run for entity_name/T072-T074, and the shared-database rename
+
+**Reason**: verify T072-T074 (entity_name table, its population, the new
+label-cascade pass) against real data by running `derive` on the live build
+DB, per T065's test. Mid-run, a colleague reported that `netds1` and this
+sandbox (`chemres1`) appeared to be sharing the same build database
+container. Confirmed on `beauty`: both sandboxes' Docker Compose projects
+defaulted to the same project name (`omnipath-build`, from the directory
+basename), so both had been writing to the exact same
+`omnipath-build-postgres-1` container and volume the whole cycle, unknown
+to either side. Full story in the `shared-db-incident` memory.
+
+**Parameters**: `make derive` (no `MAX_RECORDS`, full uncapped) against
+`DATABASE_URL=postgresql://omnipath:omnipath@omnipath-build-postgres-1:5432/omnipath`
+(the hostname *at the time this ran* — see below, it no longer resolves).
+Launched ~17:07 UTC.
+
+**Phase durations**: total `event=done seconds=3073.780` (~51m14s),
+`failed_steps=` empty. Major phases: derive-tables (schema/PK/index setup
+plus `entity_identifier_lookup`/`entity_relation_counts`/
+`entity_ontology_term`/`entity_source_count`) 351s; chemical resolution
+levels 185s; chemical ambiguous-name candidates 62s; `classify_chemical_class`
+308s; `classify_metabolic_domain` 439s; interactions (the largest single
+phase) 679s; `entity_labels` 145s; **`entity_name` 77s, 4,157,246 rows
+written**; **`chemical_labels` 158s**, `chemical_name=1,194,082
+chemical_iupac_name=4,605 chemical_preferred_name=0 chemical_identifier=1,699,773
+without_real_label=753`; bitmaps (the second-largest phase) 452s; metsigdb
+158s.
+
+**Outcome**: `entity_name`/T072-T073 confirmed working against real,
+full-scale data. `chemical_preferred_name=0` is expected, not a bug — the
+new T074 pass is a safety net for names `entity_name` reaches but the
+pre-existing tiered cascade doesn't; today both read identical underlying
+data, so pass 1 already covers everything pass 1b would have caught.
+`tests/test_preferred_label.py` (T065) 4/4 GREEN against this run's
+resulting state.
+
+**Database hostname changed as a result of the shared-DB fix**: the
+container was renamed `omnipath-build-postgres-1` →
+`chemres1-omnipath-build-postgres` and its old network aliases dropped
+(disconnect+reconnect on the running container — Postgres itself was never
+restarted, no data touched). Every command above used the *old* name,
+still correct history for what actually ran; **any new command from this
+point on must use the new name** — `db-access.env` and the `cycle011-status`
+memory are both already updated. `netds1`'s own isolation (a distinct
+`COMPOSE_PROJECT_NAME`) is still pending on their side as of this writing.
+
+---
+
 ## 2026-09-09 — WP2 full uncapped rebuild (spec 011, cycle 011)
 
 **Reason**: WP2 (T048-T060, candidate arbitration — skeleton collapse,
