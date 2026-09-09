@@ -49,6 +49,7 @@ CONTENT_TABLES: tuple[str, ...] = (
     'entity_evidence_annotation',
     'relation_evidence_relation',
     'entity_evidence_resolution',
+    'resolution_conflict',
     'annotation',
     'interaction_fact_resource',
     'interaction_party',
@@ -79,6 +80,7 @@ SOURCE_PARTITIONED_TABLES: tuple[str, ...] = (
     'entity_evidence_annotation',
     'relation_evidence_annotation',
     'entity_evidence_resolution',
+    'resolution_conflict',
     'relation_evidence_relation',
     'entity_annotation_relation',
     'evidence_state',
@@ -93,6 +95,7 @@ SOURCE_PARTITION_DROP_ORDER: tuple[str, ...] = (
     'relation_evidence',
     'entity_evidence_annotation',
     'entity_evidence_resolution',
+    'resolution_conflict',
     'entity_identifier',
     'entity_evidence_identifier',
     'entity_evidence',
@@ -123,6 +126,10 @@ CONTENT_PRIMARY_KEYS: tuple[tuple[str, tuple[str, ...]], ...] = (
         ),
     ),
     ('entity_evidence_resolution', ('source_id', 'entity_evidence_id')),
+    (
+        'resolution_conflict',
+        ('source_id', 'entity_evidence_id', 'candidate_structure'),
+    ),
     ('relation', ('relation_id',)),
     (
         'relation_evidence_relation',
@@ -901,6 +908,60 @@ def _ensure_gene_anchored_schema(
     ):
         cur.execute(sql.SQL(ddl).format(schema_id))
 
+    # vocab_identity_level (spec 011 data-model.md section 3): how specific a
+    # resolved chemical identity is. Reuses the same three-tier InChIKey-block
+    # scheme chemical_resolution_level.py already established for the derive-
+    # phase group tables (connectivity / stereo_isotope_tautomer / full), so
+    # "how specific is this entity's own identity" and "what level would this
+    # entity's structure group at" read the same way. A non-chemical entity's
+    # identity_level_id stays NULL -- the concept is chemical-specific.
+    log_step('create identity level vocabulary')
+    from omnipath_build.chemical_resolution_level import LEVELS as _IDENTITY_LEVELS
+
+    cur.execute(
+        sql.SQL(
+            """
+            CREATE TABLE IF NOT EXISTS {0}.vocab_identity_level (
+              identity_level_id smallint PRIMARY KEY,
+              name text NOT NULL UNIQUE,
+              specificity_rank smallint NOT NULL,
+              description text NOT NULL
+            )
+            """
+        ).format(schema_id)
+    )
+    cur.executemany(
+        sql.SQL(
+            """
+            INSERT INTO {0}.vocab_identity_level
+              (identity_level_id, name, specificity_rank, description)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (identity_level_id) DO UPDATE SET
+              name = EXCLUDED.name,
+              specificity_rank = EXCLUDED.specificity_rank,
+              description = EXCLUDED.description
+            """
+        ).format(schema_id),
+        [
+            (level.level_id, level.name, level.specificity_rank, level.description)
+            for level in _IDENTITY_LEVELS
+        ],
+    )
+
+    # entity, WP2 additions (spec 011 T054): identity_level_id names how
+    # specific the chosen representative's identity is; identity_variants
+    # records what skeleton collapse (T057) folded into it -- the discarded
+    # structures and which layer they differed in, so a consumer can see a
+    # charge/stereo/tautomer variant was merged rather than dropped.
+    for ddl in (
+        'ALTER TABLE {0}.entity ADD COLUMN IF NOT EXISTS '
+        'identity_level_id smallint '
+        'REFERENCES {0}.vocab_identity_level(identity_level_id)',
+        'ALTER TABLE {0}.entity ADD COLUMN IF NOT EXISTS '
+        'identity_variants jsonb',
+    ):
+        cur.execute(sql.SQL(ddl).format(schema_id))
+
     # cheap-tier molecular type on the resolved evidence slot
     cur.execute(
         sql.SQL(
@@ -1227,6 +1288,42 @@ def _ensure_resolution_schema(
             """
             CREATE TABLE IF NOT EXISTS {}.entity_evidence_resolution_default
             PARTITION OF {}.entity_evidence_resolution DEFAULT
+            """
+        ).format(schema_id, schema_id)
+    )
+    log_step('create resolution_conflict table')
+    cur.execute(
+        sql.SQL(
+            """
+            CREATE TABLE IF NOT EXISTS {}.resolution_conflict (
+              source_id bigint NOT NULL
+                REFERENCES {}.data_source(source_id),
+              entity_evidence_id uuid NOT NULL,
+              identifier_type_id bigint NOT NULL
+                REFERENCES {}.vocab_identifier_type(identifier_type_id),
+              value_normalized text NOT NULL,
+              candidate_structure text NOT NULL,
+              candidate_source_id bigint NOT NULL
+                REFERENCES {}.data_source(source_id),
+              candidate_role text NOT NULL CHECK (
+                candidate_role IN ('authoritative', 'cross_reference')
+              ),
+              skeleton text NOT NULL,
+              recorded_at timestamptz NOT NULL DEFAULT now(),
+              PRIMARY KEY
+                (source_id, entity_evidence_id, candidate_structure),
+              FOREIGN KEY (source_id, entity_evidence_id)
+                REFERENCES {}.entity_evidence(source_id, entity_evidence_id)
+                ON DELETE CASCADE
+            ) PARTITION BY LIST (source_id)
+            """
+        ).format(schema_id, schema_id, schema_id, schema_id, schema_id)
+    )
+    cur.execute(
+        sql.SQL(
+            """
+            CREATE TABLE IF NOT EXISTS {}.resolution_conflict_default
+            PARTITION OF {}.resolution_conflict DEFAULT
             """
         ).format(schema_id, schema_id)
     )

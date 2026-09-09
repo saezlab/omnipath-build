@@ -2217,6 +2217,72 @@ def _fetch_uniprot_taxon_lookup(
     )
 
 
+def _fetch_identifier_authority(
+    con: duckdb.DuckDBPyConnection,
+) -> None:
+    """Fetch the structure-authority declarations into a local table (spec
+    011 T058, WP2).
+
+    ``identifier_authority`` lives in the *build's own* Postgres (populated
+    by the resource walk before ``load`` runs), not the identifier-resolution
+    Postgres this module otherwise reads via ``OMNIPATH_BUILD_UTILS_PG_URL``
+    -- so this reads ``DATABASE_URL`` instead, the same env var the CLI's own
+    ``--database-url`` default already reads. Small, static table (one row
+    per identifier type), so no keyed/sharded fetch is needed -- the whole
+    thing is read every time. Degrades to an empty local table (arbitration
+    then finds no authority match, so a genuine disagreement stays
+    unresolved, never silently guessed) when the env var is unset or the
+    table does not exist yet -- a build's very first run, before the
+    resource walk has populated it.
+    """
+    url = os.environ.get('DATABASE_URL')
+    if not url:
+        con.execute(
+            'CREATE TABLE IF NOT EXISTS identifier_authority '
+            '(identifier_type_id BIGINT, source_id BIGINT, '
+            'is_structure_authority BOOLEAN)'
+        )
+        return
+    with psycopg2.connect(url) as pg:
+        with pg.cursor() as cur:
+            cur.execute(
+                "SELECT to_regclass('public.identifier_authority') IS NOT NULL"
+            )
+            if not cur.fetchone()[0]:
+                con.execute(
+                    'CREATE TABLE IF NOT EXISTS identifier_authority '
+                    '(identifier_type_id BIGINT, source_id BIGINT, '
+                    'is_structure_authority BOOLEAN)'
+                )
+                return
+            cur.execute(
+                'SELECT identifier_type_id, source_id, is_structure_authority '
+                'FROM identifier_authority WHERE is_structure_authority'
+            )
+            rows = cur.fetchall()
+    con.execute(
+        'CREATE TABLE IF NOT EXISTS identifier_authority '
+        '(identifier_type_id BIGINT, source_id BIGINT, '
+        'is_structure_authority BOOLEAN)'
+    )
+    if not rows:
+        return
+    columns = list(zip(*rows, strict=True))
+    arrow_table = pa.table({
+        'identifier_type_id': pa.array(columns[0], type=pa.int64()),
+        'source_id': pa.array(columns[1], type=pa.int64()),
+        'is_structure_authority': pa.array(columns[2], type=pa.bool_()),
+    })
+    con.register('_identifier_authority_rows', arrow_table)
+    try:
+        con.execute(
+            'INSERT INTO identifier_authority '
+            'SELECT * FROM _identifier_authority_rows'
+        )
+    finally:
+        con.unregister('_identifier_authority_rows')
+
+
 def _apply_uniprot_taxon_recovery(
     con: duckdb.DuckDBPyConnection,
 ) -> None:
@@ -2535,6 +2601,10 @@ def _canonicalize_loaded_duckdb(
     # mentions and the resolver on one taxon per gene, so a gene is not split
     # across NCBI strain-vs-species taxa.
     _canonicalize_taxon_to_species(con)
+    # WP2 skeleton-collapse/authority-arbitration (T056-T058) needs to know
+    # which identifier types are declared structure authorities; fetch it
+    # once per shard, before entity_resolution_base is built.
+    _fetch_identifier_authority(con)
     resolver_alias_expansion_excluded_type_ids = ', '.join(
         str(identifier_type_id(name))
         for name in RESOLVER_ALIAS_EXPANSION_EXCLUDED_IDENTIFIER_TYPES
@@ -3095,10 +3165,27 @@ def _canonicalize_loaded_duckdb(
           SELECT DISTINCT
             ee.source,
             ee.entity_evidence_id,
+            kit.identifier_type_id AS key_identifier_type_id,
+            ei.identifier_type AS key_identifier_type_name,
+            ei.identifier_key AS key_value,
             rl.entity_type AS resolver_entity_type,
             coalesce(rl.taxonomy_id, ee.taxonomy_id) AS taxonomy_id,
             rl.canonical_identifier_type_id,
-            rl.canonical_identifier
+            rl.canonical_identifier,
+            -- WP2 (spec 011 T056): the connectivity skeleton -- InChIKey
+            -- block 1, the first 14 chars -- for a chemical structure
+            -- candidate; the full identifier unchanged for anything else
+            -- (gene/protein candidates, or a chemical candidate that for
+            -- some reason isn't InChIKey-typed). Grouping candidates by this
+            -- key, not the full identifier, is what tells a real
+            -- cross-skeleton disagreement apart from the same molecule in a
+            -- different protonation/tautomer/stereo state.
+            CASE
+              WHEN rl.canonical_identifier_type_id = {identifier_type_id(STANDARD_INCHI_KEY_TYPE)}
+                AND rl.canonical_identifier ~ '^[A-Z]{{14}}-[A-Z]{{10}}-[A-Z]$'
+              THEN left(rl.canonical_identifier, 14)
+              ELSE rl.canonical_identifier
+            END AS skeleton_group_key
           FROM remaining_entity ee
           JOIN (
             SELECT
@@ -3122,21 +3209,104 @@ def _canonicalize_loaded_duckdb(
              OR rl.taxonomy_optional_match
            )
         ),
-        resolver_candidate_summary AS (
+        resolver_candidate_group_size AS (
+          -- how many raw candidates fed each skeleton group -- >1 means real
+          -- collapsing happened (T057's resolution_mechanism distinguishes
+          -- 'resolver', one candidate all along, from 'skeleton_collapsed').
           SELECT
             source,
             entity_evidence_id,
-            count(
-              DISTINCT resolver_entity_type || chr(31) ||
-              coalesce(taxonomy_id, '') || chr(31) ||
-              canonical_identifier_type_id::VARCHAR || chr(31) ||
-              canonical_identifier
-            ) AS candidate_count,
+            skeleton_group_key,
+            count(*) AS raw_candidate_count
+          FROM resolver_candidate
+          GROUP BY source, entity_evidence_id, skeleton_group_key
+        ),
+        resolver_candidate_group AS (
+          -- one row per (mention, skeleton group): the group's own
+          -- representative candidate, chosen per T057's fixed, documented
+          -- rule -- neutral parent first (the structure key's last
+          -- character, 'N'), then the least specified stereo layer (the
+          -- InChIKey's own "no stereo/isotope/tautomer defined" hash,
+          -- 'UHFFFAOYSA', over one asserting a specific layer some other
+          -- candidate in the group disagrees with), then the lowest
+          -- identifier as the final deterministic tie-break. Both
+          -- conditions are no-ops for a non-InChIKey candidate (gene/
+          -- protein, or an ungrouped chemical), which sorts by identifier
+          -- alone -- unchanged single-candidate behaviour.
+          SELECT
+            rc.source,
+            rc.entity_evidence_id,
+            rc.skeleton_group_key,
+            rc.key_identifier_type_id,
+            rc.key_identifier_type_name,
+            rc.key_value,
+            rc.resolver_entity_type,
+            rc.taxonomy_id,
+            rc.canonical_identifier_type_id,
+            rc.canonical_identifier,
+            g.raw_candidate_count
+          FROM resolver_candidate rc
+          JOIN resolver_candidate_group_size g
+            ON g.source = rc.source
+           AND g.entity_evidence_id = rc.entity_evidence_id
+           AND g.skeleton_group_key = rc.skeleton_group_key
+          QUALIFY row_number() OVER (
+            PARTITION BY rc.source, rc.entity_evidence_id, rc.skeleton_group_key
+            ORDER BY
+              CASE
+                WHEN rc.canonical_identifier_type_id = {identifier_type_id(STANDARD_INCHI_KEY_TYPE)}
+                THEN (right(rc.canonical_identifier, 1) <> 'N')
+                ELSE false
+              END,
+              CASE
+                WHEN rc.canonical_identifier_type_id = {identifier_type_id(STANDARD_INCHI_KEY_TYPE)}
+                THEN (substr(rc.canonical_identifier, 16, 10) <> 'UHFFFAOYSA')
+                ELSE false
+              END,
+              rc.canonical_identifier
+          ) = 1
+        ),
+        resolver_candidate_summary AS (
+          -- candidate_count now counts distinct SKELETON GROUPS, not
+          -- distinct full identifiers -- several protonation/stereo variants
+          -- of one molecule collapse to candidate_count = 1 here.
+          SELECT
+            source,
+            entity_evidence_id,
+            count(*) AS candidate_count,
+            min(resolver_entity_type) AS resolver_entity_type,
+            min(taxonomy_id) AS taxonomy_id,
+            min(canonical_identifier_type_id) AS canonical_identifier_type_id,
+            min(canonical_identifier) AS canonical_identifier,
+            max(raw_candidate_count) AS max_raw_candidate_count
+          FROM resolver_candidate_group
+          GROUP BY source, entity_evidence_id
+        ),
+        resolver_candidate_authority AS (
+          -- WP2 (spec 011 T058): among a mention's skeleton-group
+          -- candidates, the ones whose OWN citing identifier type is a
+          -- declared structure authority. Never named a resource in code --
+          -- the authority table alone decides.
+          SELECT g.*
+          FROM resolver_candidate_group g
+          JOIN identifier_authority ia
+            ON ia.identifier_type_id = g.key_identifier_type_id
+           AND ia.is_structure_authority
+        ),
+        resolver_authority_summary AS (
+          -- one row per mention: how many DISTINCT authority-backed skeleton
+          -- groups it has. Arbitration only succeeds at exactly one -- two
+          -- different authorities backing two different skeletons is still
+          -- a genuine, unarbitrated disagreement.
+          SELECT
+            source,
+            entity_evidence_id,
+            count(DISTINCT skeleton_group_key) AS authority_candidate_count,
             min(resolver_entity_type) AS resolver_entity_type,
             min(taxonomy_id) AS taxonomy_id,
             min(canonical_identifier_type_id) AS canonical_identifier_type_id,
             min(canonical_identifier) AS canonical_identifier
-          FROM resolver_candidate
+          FROM resolver_candidate_authority
           GROUP BY source, entity_evidence_id
         ),
         protein_uniprot_fallback_candidate AS (
@@ -3228,6 +3398,8 @@ def _canonicalize_loaded_duckdb(
           ee.entity_type AS molecular_entity_type,
           CASE
             WHEN rcs.candidate_count = 1 THEN rcs.taxonomy_id
+            WHEN rcs.candidate_count > 1 AND ras.authority_candidate_count = 1
+              THEN ras.taxonomy_id
             WHEN {protein_fallback_fires} THEN puf.taxonomy_id
             WHEN {protein_uniprot_selftype_fires} THEN st.taxonomy_id
             ELSE ee.taxonomy_id
@@ -3236,10 +3408,13 @@ def _canonicalize_loaded_duckdb(
           -- leave a chemical unresolved, take its best non-structure id by
           -- priority (cf) instead of the md5 hash. Gated: cf fires ONLY when
           -- the resolver produced no candidates ({cf_fires}); an ambiguous
-          -- candidate_count > 1 stays unresolved — never a fallback pick over
-          -- several distinct structures.
+          -- candidate_count > 1 that no authority arbitrates (spec 011 T058,
+          -- T060) stays unresolved — never a fallback pick over several
+          -- distinct structures.
           CASE
             WHEN rcs.candidate_count = 1 THEN rcs.canonical_identifier_type_id
+            WHEN rcs.candidate_count > 1 AND ras.authority_candidate_count = 1
+              THEN ras.canonical_identifier_type_id
             WHEN {protein_fallback_fires}
               THEN puf.canonical_identifier_type_id
             WHEN {protein_uniprot_selftype_fires}
@@ -3250,6 +3425,8 @@ def _canonicalize_loaded_duckdb(
           END AS canonical_identifier_type_id,
           CASE
             WHEN rcs.candidate_count = 1 THEN rcs.canonical_identifier
+            WHEN rcs.candidate_count > 1 AND ras.authority_candidate_count = 1
+              THEN ras.canonical_identifier
             WHEN {protein_fallback_fires} THEN puf.canonical_identifier
             WHEN {protein_uniprot_selftype_fires} THEN st.uniprot_ac
             WHEN {cf_fires} THEN cf.canonical_identifier
@@ -3262,13 +3439,23 @@ def _canonicalize_loaded_duckdb(
           END AS canonical_identifier,
           CASE
             WHEN rcs.candidate_count = 1 THEN 'resolved'
+            WHEN rcs.candidate_count > 1 AND ras.authority_candidate_count = 1
+              THEN 'resolved'
             WHEN {protein_fallback_fires} THEN 'resolved'
             WHEN {protein_uniprot_selftype_fires} THEN 'resolved'
             WHEN {cf_fires} THEN 'resolved'
             ELSE 'unresolved'
           END AS status,
           CASE
+            -- spec 011 T057: a skeleton that collapsed more than one raw
+            -- candidate records that it did, not the plain 'resolver' a
+            -- single-candidate mention gets — same status, different
+            -- provenance.
+            WHEN rcs.candidate_count = 1 AND rcs.max_raw_candidate_count > 1
+              THEN 'skeleton_collapsed'
             WHEN rcs.candidate_count = 1 THEN 'resolver'
+            WHEN rcs.candidate_count > 1 AND ras.authority_candidate_count = 1
+              THEN 'authority_arbitrated'
             WHEN {protein_fallback_fires} THEN 'unknown_gene'
             WHEN {protein_uniprot_selftype_fires} THEN 'unknown_gene'
             WHEN {cf_fires} THEN cf.mechanism
@@ -3289,6 +3476,9 @@ def _canonicalize_loaded_duckdb(
         LEFT JOIN resolver_candidate_summary rcs
           ON rcs.source = ee.source
          AND rcs.entity_evidence_id = ee.entity_evidence_id
+        LEFT JOIN resolver_authority_summary ras
+          ON ras.source = ee.source
+         AND ras.entity_evidence_id = ee.entity_evidence_id
         LEFT JOIN protein_uniprot_fallback_summary puf
           ON puf.source = ee.source
          AND puf.entity_evidence_id = ee.entity_evidence_id
@@ -3321,6 +3511,97 @@ def _canonicalize_loaded_duckdb(
          AND mr.entity_evidence_id = ee.entity_evidence_id
         """,
         [UNRESOLVED_ID_TYPE],
+    )
+    # spec 011 T059 (WP2): every unarbitrated chemical disagreement gets a
+    # queryable conflict record naming the sources, the identifiers and the
+    # competing structures -- scenario 3 requires it never be silently
+    # dropped. Scoped to entity_resolution_base's own unresolved chemical
+    # rows (a small set), re-deriving each one's skeleton-group candidates
+    # directly rather than reusing entity_resolution_base's WITH-scoped CTEs
+    # (which do not outlive that one statement) -- same grouping and
+    # tie-break rule as resolver_candidate_group in entity_resolution_base
+    # (T056/T057); keep the two in sync if either changes.
+    con.execute(
+        f"""
+        CREATE TABLE resolution_conflict AS
+        WITH conflicted_mention AS (
+          SELECT source, entity_evidence_id
+          FROM entity_resolution_base
+          WHERE status = 'unresolved'
+            AND entity_type = {_sql_literal(CHEMICAL_ENTITY_TYPE)}
+        ),
+        conflict_candidate AS (
+          SELECT
+            ee.source,
+            ee.entity_evidence_id,
+            kit.identifier_type_id AS key_identifier_type_id,
+            ei.identifier_type AS key_identifier_type_name,
+            COALESCE(ei.identifier_normalized, ei.identifier) AS key_value,
+            rl.canonical_identifier_type_id,
+            rl.canonical_identifier,
+            CASE
+              WHEN rl.canonical_identifier_type_id = {identifier_type_id(STANDARD_INCHI_KEY_TYPE)}
+                AND rl.canonical_identifier ~ '^[A-Z]{{14}}-[A-Z]{{10}}-[A-Z]$'
+              THEN left(rl.canonical_identifier, 14)
+              ELSE rl.canonical_identifier
+            END AS skeleton_group_key
+          FROM conflicted_mention cm
+          JOIN entity_evidence_raw ee
+            ON ee.source = cm.source
+           AND ee.entity_evidence_id = cm.entity_evidence_id
+          JOIN entity_identifier_raw ei
+            ON ei.source = ee.source
+           AND ei.entity_evidence_id = ee.entity_evidence_id
+          JOIN identifier_type_all kit
+            ON kit.name = ei.identifier_type
+          JOIN needed_resolver_lookup rl
+            ON rl.key_identifier_type_id = kit.identifier_type_id
+           AND rl.key_value = COALESCE(ei.identifier_normalized, ei.identifier)
+           AND rl.evidence_entity_type = ee.entity_type
+           AND (
+             rl.taxonomy_id = ee.taxonomy_id
+             OR rl.taxonomy_id IS NULL
+             OR rl.taxonomy_optional_match
+           )
+        ),
+        conflict_group AS (
+          SELECT *
+          FROM conflict_candidate
+          QUALIFY row_number() OVER (
+            PARTITION BY source, entity_evidence_id, skeleton_group_key
+            ORDER BY
+              CASE
+                WHEN canonical_identifier_type_id = {identifier_type_id(STANDARD_INCHI_KEY_TYPE)}
+                THEN (right(canonical_identifier, 1) <> 'N')
+                ELSE false
+              END,
+              CASE
+                WHEN canonical_identifier_type_id = {identifier_type_id(STANDARD_INCHI_KEY_TYPE)}
+                THEN (substr(canonical_identifier, 16, 10) <> 'UHFFFAOYSA')
+                ELSE false
+              END,
+              canonical_identifier
+          ) = 1
+        )
+        SELECT
+          cg.source,
+          cg.entity_evidence_id,
+          cg.key_identifier_type_name AS identifier_type,
+          cg.key_value AS value_normalized,
+          cg.canonical_identifier AS candidate_structure,
+          -- the candidate came from an identifier attached to this same
+          -- mention, so the mention's own source is who supplied it.
+          cg.source AS candidate_source,
+          CASE
+            WHEN ia.identifier_type_id IS NOT NULL THEN 'authoritative'
+            ELSE 'cross_reference'
+          END AS candidate_role,
+          cg.skeleton_group_key AS skeleton
+        FROM conflict_group cg
+        LEFT JOIN identifier_authority ia
+          ON ia.identifier_type_id = cg.key_identifier_type_id
+         AND ia.is_structure_authority
+        """
     )
     con.execute(
         """

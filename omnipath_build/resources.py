@@ -265,6 +265,20 @@ def populate_identifier_authority(
 
     from pypath.internals.cv_terms import cv_term_label_accession
 
+    # spec 011 T058: a mints declaration for one of the resolver's own
+    # structure-bearing chemical namespaces (the same set resolver_chemical
+    # supplies a lookup for) makes that resource the *structure* authority
+    # for it, not just the identifier authority -- what
+    # resolver_candidate_authority in duckdb_load.py checks to arbitrate a
+    # genuine cross-skeleton disagreement.
+    from omnipath_build.duckdb_load import (  # noqa: PLC0415
+        RESOLVER_CHEMICAL_SLUG_TO_IDENTIFIER_TYPE,
+    )
+
+    structure_bearing_type_names = frozenset(
+        RESOLVER_CHEMICAL_SLUG_TO_IDENTIFIER_TYPE.values()
+    )
+
     schema_id = sql.Identifier(schema)
     written = 0
 
@@ -308,17 +322,19 @@ def populate_identifier_authority(
                     )
                 continue
 
+            is_structure_authority = type_name in structure_bearing_type_names
             cur.execute(
                 sql.SQL(
                     """
                     INSERT INTO {}.identifier_authority
-                        (identifier_type_id, source_id)
-                    VALUES (%s, %s)
+                        (identifier_type_id, source_id, is_structure_authority)
+                    VALUES (%s, %s, %s)
                     ON CONFLICT (identifier_type_id) DO UPDATE
-                    SET source_id = EXCLUDED.source_id
+                    SET source_id = EXCLUDED.source_id,
+                        is_structure_authority = EXCLUDED.is_structure_authority
                     """
                 ).format(schema_id),
-                [type_row[0], source_id],
+                [type_row[0], source_id, is_structure_authority],
             )
             written += 1
 
