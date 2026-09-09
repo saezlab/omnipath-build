@@ -5070,6 +5070,7 @@ _BULK_COPY_CONTENT_TABLES = (
     'ontology_terms',
     'entity_ontology_relation',
     'entity_evidence_resolution',
+    'resolution_conflict',
     'relation',
     'relation_evidence_relation',
     'gene_protein_representative',
@@ -5093,6 +5094,7 @@ def _bulk_load_create_views_from_loaded_tables(
         'pq_entity': 'canonical_entity',
         'pq_entity_identifier_resolved': 'canonical_entity_identifier',
         'pq_entity_evidence_resolution': 'entity_evidence_resolution',
+        'pq_resolution_conflict': 'resolution_conflict',
         'pq_relation': 'relation',
         'pq_relation_evidence_relation': 'relation_evidence_relation',
         'pq_ontology_terms': 'ontology_terms_raw',
@@ -5137,6 +5139,7 @@ def _bulk_load_assert_empty(
         'relation_evidence',
         'relation_evidence_annotation',
         'entity_evidence_resolution',
+        'resolution_conflict',
         'relation_evidence_relation',
         'entity_annotation_relation',
         'ontology_terms',
@@ -6238,6 +6241,41 @@ def _bulk_copy_canonical(
           JOIN load_vocab_resolution_status rs
             ON rs.name = er.status
           WHERE er.entity_id IS NOT NULL
+        """,
+        source_id=source_id,
+    )
+    _copy_source_partition(
+        con,
+        database_url=database_url,
+        schema=schema,
+        table='resolution_conflict',
+        columns=(
+            'source_id',
+            'entity_evidence_id',
+            'identifier_type_id',
+            'value_normalized',
+            'candidate_structure',
+            'candidate_source_id',
+            'candidate_role',
+            'skeleton',
+        ),
+        query="""
+          SELECT
+            ds.source_id,
+            rc.entity_evidence_id::UUID,
+            it.identifier_type_id,
+            rc.value_normalized,
+            rc.candidate_structure,
+            cs.source_id AS candidate_source_id,
+            rc.candidate_role,
+            rc.skeleton
+          FROM pq_resolution_conflict rc
+          JOIN load_data_source ds
+            ON ds.name = rc.source
+          JOIN load_vocab_identifier_type it
+            ON it.name = rc.identifier_type
+          JOIN load_data_source cs
+            ON cs.name = rc.candidate_source
         """,
         source_id=source_id,
     )

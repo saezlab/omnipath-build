@@ -66,6 +66,7 @@ STAGED_LOAD_TABLES: tuple[str, ...] = (
     'canonical_entity',
     'canonical_entity_identifier',
     'entity_evidence_resolution',
+    'resolution_conflict',
     'ontology_term_resolution',
     'relation',
     'relation_evidence_relation',
