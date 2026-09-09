@@ -44,7 +44,11 @@ from omnipath_build.classify import (
     classify_metabolic_domain,
     classify_interaction_class,
 )
-from omnipath_build.labels import populate_chemical_labels, populate_entity_labels
+from omnipath_build.labels import (
+    populate_chemical_labels,
+    populate_entity_labels,
+    populate_entity_name,
+)
 from omnipath_build.metsigdb import build_metsigdb
 from omnipath_build.network_views import NETWORKS, apply_all as apply_network_views
 from omnipath_build.resources import discover_resources, populate_identifier_authority
@@ -563,6 +567,16 @@ def main(argv: list[str] | None = None) -> int:
                     seconds=f'{time.perf_counter() - step_started:.3f}',
                 )
                 step_started = time.perf_counter()
+                _derive_log('entity_name_start')
+                entity_name_stats = populate_entity_name(
+                    conn, schema=args.schema,
+                )
+                _derive_log(
+                    'entity_name_done',
+                    rows_written=entity_name_stats.rows_written,
+                    seconds=f'{time.perf_counter() - step_started:.3f}',
+                )
+                step_started = time.perf_counter()
                 _derive_log('chemical_labels_start')
                 chem_label_stats = populate_chemical_labels(
                     conn,
@@ -572,6 +586,9 @@ def main(argv: list[str] | None = None) -> int:
                     'chemical_labels_done',
                     chemical_name=chem_label_stats.chemical_name,
                     chemical_iupac_name=chem_label_stats.chemical_iupac_name,
+                    chemical_preferred_name=(
+                        chem_label_stats.chemical_preferred_name
+                    ),
                     chemical_identifier=chem_label_stats.chemical_identifier,
                     without_real_label=(
                         chem_label_stats.chemical_without_real_label

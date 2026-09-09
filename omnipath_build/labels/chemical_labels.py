@@ -5,7 +5,7 @@ already labelled genes by symbol and given every entity a universal
 identifier fallback). This step overwrites the labels of **chemical** entities
 (``Chemical:OM:0037``) with a human-readable cascade.
 
-Selection follows two passes:
+Selection follows three passes:
 
 1. **Name cascade** — over the name-bearing identifier types collected from
    ChEBI / HMDB / ChEMBL / RaMP / RefMet / LIPID MAPS / SwissLipids (all
@@ -18,7 +18,13 @@ Selection follows two passes:
    ordering the user asked for: recognisable first (e.g. ``alanine``), short
    second, systematic IUPAC only when nothing better exists.
 
-2. **Identifier fallback** — chemicals with no usable name take their best real
+2. **The shortest name the authority supports** (spec 011 data-model.md
+   section 4) — for whatever pass 1 still left unlabeled, the shortest name
+   ``entity_name.py`` marked ``is_preferred`` (the minting resource's own
+   recommended name, the authority relation applied to names, R1/FR-016).
+   Additive only: it never overrides a pass-1 label.
+
+3. **Identifier fallback** — chemicals with no usable name take their best real
    external identifier (ChEBI / KEGG / PubChem / HMDB / ChEMBL / … →
    molecular formula → SMILES → InChIKey as the true last resort). The opaque
    ``unresolved_entity_key`` hash that the universal fallback would otherwise
@@ -43,6 +49,7 @@ CHEMICAL_ENTITY_TYPE = 'Chemical:OM:0037'
 
 CHEMICAL_NAME_RULE = 'chemical_name'
 CHEMICAL_IUPAC_RULE = 'chemical_iupac_name'
+CHEMICAL_PREFERRED_NAME_RULE = 'chemical_preferred_name'
 CHEMICAL_IDENTIFIER_RULE = 'chemical_identifier'
 
 # An InChIKey is 14-10-1 uppercase blocks — never a human-readable label.
@@ -97,6 +104,7 @@ _ID_TIERS = (
 class ChemicalLabelStats:
     chemical_name: int = 0
     chemical_iupac_name: int = 0
+    chemical_preferred_name: int = 0
     chemical_identifier: int = 0
     chemical_without_real_label: int = 0
 
@@ -236,6 +244,52 @@ def populate_chemical_labels(
             ),
         )
 
+        # --- Pass 1b: the shortest name the authority supports -------------
+        # entity_name (spec 011 data-model.md section 4) marks a name
+        # is_preferred when the minting resource itself recommends it --
+        # the same authority relation the resolver uses (R1), applied to
+        # names. Pass 1's own tiered cascade already covers most of this
+        # ground through entity_identifier directly; this pass only fires
+        # for the entities it left unlabeled, catching a preferred name
+        # attached through entity_name but not through the tiered
+        # identifier types above (e.g. a resource entity_name reaches that
+        # chemical_labels.py's own name-bearing type list does not).
+        cur.execute(
+            sql.SQL(
+                """
+                WITH candidate AS (
+                  SELECT en.entity_id, en.name AS val, length(en.name) AS len
+                  FROM {schema}.entity e
+                  JOIN {schema}.entity_name en ON en.entity_id = e.entity_id
+                  WHERE e.entity_type_id = %(chem)s
+                    AND e.label_rule IS DISTINCT FROM %(name_rule)s
+                    AND e.label_rule IS DISTINCT FROM %(iupac_rule)s
+                    AND en.is_preferred
+                ),
+                ranked AS (
+                  SELECT entity_id, val,
+                    row_number() OVER (
+                      PARTITION BY entity_id ORDER BY len, val
+                    ) AS rk
+                  FROM candidate
+                )
+                UPDATE {schema}.entity e
+                SET label = ranked.val,
+                    label_rule = %(preferred_name_rule)s
+                FROM ranked
+                WHERE ranked.entity_id = e.entity_id
+                  AND ranked.rk = 1
+                  AND e.entity_type_id = %(chem)s
+                """
+            ).format(schema=schema_id),
+            dict(
+                chem=chem_type_id,
+                name_rule=CHEMICAL_NAME_RULE,
+                iupac_rule=CHEMICAL_IUPAC_RULE,
+                preferred_name_rule=CHEMICAL_PREFERRED_NAME_RULE,
+            ),
+        )
+
         # --- Pass 2: real-identifier fallback (no usable name) -------------
         cur.execute(
             sql.SQL(
@@ -258,6 +312,7 @@ def populate_chemical_labels(
                   WHERE e.entity_type_id = %(chem)s
                     AND e.label_rule IS DISTINCT FROM %(name_rule)s
                     AND e.label_rule IS DISTINCT FROM %(iupac_rule)s
+                    AND e.label_rule IS DISTINCT FROM %(preferred_name_rule)s
                     AND ie.value IS NOT NULL
                     AND btrim(ie.value) <> ''
                 ),
@@ -285,6 +340,7 @@ def populate_chemical_labels(
                 chem=chem_type_id,
                 name_rule=CHEMICAL_NAME_RULE,
                 iupac_rule=CHEMICAL_IUPAC_RULE,
+                preferred_name_rule=CHEMICAL_PREFERRED_NAME_RULE,
                 id_rule=CHEMICAL_IDENTIFIER_RULE,
             ),
         )
@@ -302,6 +358,7 @@ def populate_chemical_labels(
 
         chemical_name = _count(CHEMICAL_NAME_RULE)
         chemical_iupac_name = _count(CHEMICAL_IUPAC_RULE)
+        chemical_preferred_name = _count(CHEMICAL_PREFERRED_NAME_RULE)
         chemical_identifier = _count(CHEMICAL_IDENTIFIER_RULE)
         without_real_label = _scalar(
             cur,
@@ -310,13 +367,14 @@ def populate_chemical_labels(
                 "WHERE entity_type_id = %s "
                 "AND (label IS NULL OR label = '' "
                 "     OR label ~ %s "
-                "     OR label_rule NOT IN (%s, %s, %s))"
+                "     OR label_rule NOT IN (%s, %s, %s, %s))"
             ).format(schema_id),
             [
                 chem_type_id,
                 INCHIKEY_RE,
                 CHEMICAL_NAME_RULE,
                 CHEMICAL_IUPAC_RULE,
+                CHEMICAL_PREFERRED_NAME_RULE,
                 CHEMICAL_IDENTIFIER_RULE,
             ],
         )
@@ -325,6 +383,7 @@ def populate_chemical_labels(
     return ChemicalLabelStats(
         chemical_name=chemical_name,
         chemical_iupac_name=chemical_iupac_name,
+        chemical_preferred_name=chemical_preferred_name,
         chemical_identifier=chemical_identifier,
         chemical_without_real_label=without_real_label,
     )

@@ -42,6 +42,7 @@ CONTENT_TABLES: tuple[str, ...] = (
     'entity_ontology_term',
     'entity_ontology_relation',
     'ontology_terms',
+    'entity_name',
     'relation_annotation',
     'relation_evidence_annotation',
     'entity_annotation_relation',
@@ -81,6 +82,7 @@ CONTENT_TABLES: tuple[str, ...] = (
 SOURCE_PARTITIONED_TABLES: tuple[str, ...] = (
     'ontology_terms',
     'entity_ontology_relation',
+    'entity_name',
     'entity_evidence',
     'entity_evidence_identifier',
     'entity_identifier',
@@ -97,6 +99,7 @@ SOURCE_PARTITIONED_TABLES: tuple[str, ...] = (
 SOURCE_PARTITION_DROP_ORDER: tuple[str, ...] = (
     'ontology_terms',
     'entity_ontology_relation',
+    'entity_name',
     'relation_evidence_annotation',
     'relation_evidence_relation',
     'entity_annotation_relation',
@@ -154,6 +157,10 @@ CONTENT_PRIMARY_KEYS: tuple[tuple[str, tuple[str, ...]], ...] = (
             'object_entity_id',
             'ontology_id',
         ),
+    ),
+    (
+        'entity_name',
+        ('source_id', 'entity_id', 'name_normalized'),
     ),
     ('gene_protein_representative', ('entity_id',)),
     ('state', ('state_id',)),
@@ -1563,6 +1570,8 @@ def _ensure_resolution_schema(
     _ensure_ontology_terms_table(cur, schema)
     log_step('create entity ontology relation table')
     _ensure_entity_ontology_relation_table(cur, schema)
+    log_step('create entity name table')
+    _ensure_entity_name_table(cur, schema)
     log_step('create resolver policy index')
     cur.execute(
         sql.SQL(
@@ -2372,6 +2381,57 @@ def _ensure_entity_ontology_relation_table(
             """
             CREATE TABLE IF NOT EXISTS {}.entity_ontology_relation_default
             PARTITION OF {}.entity_ontology_relation DEFAULT
+            """
+        ).format(schema_id, schema_id)
+    )
+
+
+def _ensure_entity_name_table(
+    cur: psycopg2.extensions.cursor,
+    schema: str,
+) -> None:
+    """spec 011 data-model.md section 4: one row per name attached to an
+    entity, replacing the implicit name/synonym identifier-type split with
+    an explicit preference flag. Populated during ``derive``
+    (``entity_name.py``), not per-source ingestion -- entity ids only
+    stabilize after resolution, and the same candidate query
+    ``chemical_labels.py`` already runs supplies the raw material.
+    """
+
+    schema_id = sql.Identifier(schema)
+    if _table_exists(cur, schema, 'entity_name') and (
+        not _is_partitioned_table(cur, schema, 'entity_name')
+    ):
+        cur.execute(
+            sql.SQL('DROP TABLE {}.entity_name CASCADE').format(schema_id)
+        )
+    cur.execute(
+        sql.SQL(
+            """
+            CREATE TABLE IF NOT EXISTS {}.entity_name (
+              source_id bigint NOT NULL
+                REFERENCES {}.data_source(source_id),
+              entity_id uuid NOT NULL
+                REFERENCES {}.entity(entity_id)
+                ON DELETE CASCADE,
+              name text NOT NULL,
+              name_normalized text NOT NULL,
+              is_preferred boolean NOT NULL,
+              name_kind text NOT NULL CHECK (
+                name_kind IN (
+                  'trivial', 'systematic', 'abbreviation', 'brand'
+                )
+              ),
+              PRIMARY KEY (source_id, entity_id, name_normalized)
+            ) PARTITION BY LIST (source_id)
+            """
+        ).format(schema_id, schema_id, schema_id)
+    )
+    cur.execute(
+        sql.SQL(
+            """
+            CREATE TABLE IF NOT EXISTS {}.entity_name_default
+            PARTITION OF {}.entity_name DEFAULT
             """
         ).format(schema_id, schema_id)
     )

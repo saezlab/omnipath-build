@@ -23,10 +23,16 @@ from omnipath_build.labels.entity_labels import (
     EntityLabelStats,
     populate_entity_labels,
 )
+from omnipath_build.labels.entity_name import (
+    EntityNameStats,
+    populate_entity_name,
+)
 
 __all__ = [
     'ChemicalLabelStats',
     'EntityLabelStats',
+    'EntityNameStats',
     'populate_chemical_labels',
     'populate_entity_labels',
+    'populate_entity_name',
 ]
