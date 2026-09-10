@@ -2606,6 +2606,111 @@ def _append_live_utils_ontology_endpoint_resolver_rows(
     _bulk_insert_resolver_lookup_rows(con, 'resolver_lookup', new_rows)
 
 
+def _append_live_utils_annotation_object_resolver_rows(
+    con: duckdb.DuckDBPyConnection,
+) -> None:
+    """Add annotation-relation chemical-object keys to the keyed ``resolver_lookup``.
+
+    An annotation relation's object (``annotation_relation_evidence_raw``) is a
+    bare external identifier, never an ``entity_evidence`` mention -- so, like
+    ontology relation endpoints just above, it can be absent from the per-shard
+    keyed ``resolver_lookup`` (``_build_resolver_lookup``, which is keyed off
+    ``entity_evidence``/``entity_identifier_raw``). Fetch the chemical resolver
+    rows for those object keys and append them.
+
+    This is the fix for the previously-known gap where a chemical annotation
+    object (e.g. a reaction annotated with a bare ChEBI id, not a full
+    ``entity_evidence`` mention) self-typed by its raw id and minted its own
+    entity, permanently separate from whatever entity the same real molecule
+    resolves to elsewhere via the normal mention pipeline. Scoped to chemical
+    objects only (the documented scope of the gap) -- no-op unless utils
+    attached.
+    """
+    url = os.environ.get('OMNIPATH_BUILD_UTILS_PG_URL')
+    if not url or not _live_utils_attached(con):
+        return
+
+    chem_id_to_slugs: dict[int, list[str]] = {}
+    for slug, idt in RESOLVER_CHEMICAL_SLUG_TO_IDENTIFIER_TYPE.items():
+        chem_id_to_slugs.setdefault(identifier_type_id(idt), []).append(slug)
+    placeholders = ', '.join('?' for _ in chem_id_to_slugs)
+    object_rows = con.execute(
+        f"""
+        SELECT DISTINCT object_type.identifier_type_id, ar.object_id
+        FROM annotation_relation_evidence_raw ar
+        JOIN identifier_type_all object_type
+          ON object_type.name = ar.object_id_type
+        WHERE ar.object_entity_type = ?
+          AND object_type.identifier_type_id IN ({placeholders})
+          AND ar.object_id IS NOT NULL
+          AND ar.object_id <> ''
+        """,
+        [CHEMICAL_ENTITY_TYPE] + list(chem_id_to_slugs.keys()),
+    ).fetchall()
+
+    key_rows: list[tuple[str, str, int | None]] = []
+    for key_identifier_type_id, key_value in object_rows:
+        for slug in chem_id_to_slugs[int(key_identifier_type_id)]:
+            key_rows.append((slug, str(key_value), None))
+
+    new_rows = _fetch_live_utils_rows_for_keys(
+        url=url,
+        table='resolver_chemical',
+        mapping=RESOLVER_CHEMICAL_SLUG_TO_IDENTIFIER_TYPE,
+        entity_type=CHEMICAL_ENTITY_TYPE,
+        canonical_identifier_type_id=identifier_type_id(STANDARD_INCHI_KEY_TYPE),
+        canonical_column='inchikey',
+        has_taxonomy=False,
+        key_rows=key_rows,
+    )
+    _bulk_insert_resolver_lookup_rows(con, 'resolver_lookup', new_rows)
+
+
+def _build_annotation_object_resolution(con: duckdb.DuckDBPyConnection) -> None:
+    """Resolve every distinct annotation-relation object key once, as a
+    persisted table -- shared by ``annotation_object_entity`` (which entity
+    it mints/joins), the entity ``sources`` attribution, and
+    ``annotation_projected`` (which entity a relation's object edge points
+    at), so all three agree on the same promoted identity instead of drifting
+    if only one were fixed.
+
+    A key promotes to its resolver hit when ``resolver_lookup`` has one
+    (chemical keys only, see ``_append_live_utils_annotation_object_resolver_rows``
+    just above); anything else -- non-chemical object types, or a chemical id
+    with no resolver coverage -- falls through to the previous raw self-typed
+    behaviour via ``coalesce``, unchanged.
+    """
+    con.execute(
+        """
+        CREATE TABLE annotation_object_resolution AS
+        SELECT DISTINCT
+          ar.object_entity_type AS entity_type,
+          object_type.identifier_type_id AS raw_identifier_type_id,
+          ar.object_id AS raw_identifier,
+          coalesce(rl.canonical_identifier_type_id, object_type.identifier_type_id)
+            AS canonical_identifier_type_id,
+          coalesce(rl.canonical_identifier, ar.object_id) AS canonical_identifier
+        FROM annotation_relation_evidence_raw ar
+        JOIN identifier_type_all object_type
+          ON object_type.name = ar.object_id_type
+        LEFT JOIN resolver_lookup rl
+          ON rl.entity_type = ar.object_entity_type
+         AND rl.key_identifier_type_id = object_type.identifier_type_id
+         AND rl.key_value = ar.object_id
+         AND rl.taxonomy_id IS NULL
+        WHERE ar.object_id IS NOT NULL AND ar.object_id <> ''
+        QUALIFY row_number() OVER (
+          PARTITION BY
+            ar.object_entity_type, object_type.identifier_type_id, ar.object_id
+          ORDER BY
+            rl.canonical_identifier IS NULL,
+            rl.canonical_identifier_type_id,
+            rl.canonical_identifier
+        ) = 1
+        """
+    )
+
+
 def _canonicalize_loaded_duckdb(
     con: duckdb.DuckDBPyConnection,
 ) -> tuple[int, int, int]:
@@ -2856,6 +2961,12 @@ def _canonicalize_loaded_duckdb(
             WHERE false
             """
         )
+    # Annotation-relation chemical objects promote through the same keyed
+    # resolver_lookup, for the same reason ontology endpoints just above do --
+    # built once here so batch_entity_candidate (below) and the later
+    # annotation_projected relation-building step both read one agreed answer.
+    _append_live_utils_annotation_object_resolver_rows(con)
+    _build_annotation_object_resolution(con)
     con.execute(
         """
         CREATE TABLE protein_uniprot_fallback_taxonomy_optional_unambiguous_key AS
@@ -4109,42 +4220,35 @@ def _canonicalize_loaded_duckdb(
             )
         ),
         annotation_object_entity AS (
-          -- KNOWN GAP (spec 011, found 2026-09-08 during T047): this self-types
-          -- the annotation-relation object by its RAW (object_id_type, object_id)
-          -- verbatim -- no resolver_candidate join, no InChIKey promotion. Only
-          -- CV-term objects are excluded, so a chemical object (e.g. a reaction
-          -- annotated with a bare ChEBI id, not a full entity_evidence mention)
-          -- mints its own entity keyed by that ChEBI id, permanently separate
-          -- from whatever properly-resolved InChIKey entity the SAME real
-          -- molecule gets through the normal entity_resolution_base path
-          -- (chebi's own citation, or any other source's). That entity has no
-          -- entity_evidence_resolution row referencing it (it isn't a mention
-          -- outcome) and typically no relation row either -- a dead, unpromoted
-          -- duplicate. Confirmed reproducibly with CHEBI:107644 (piperonylic
-          -- acid) across two full rebuilds, identical UUID both times (entity
-          -- ids are content-addressed), inflating SC-001's ChEBI-canonical
-          -- count. Fix would mean routing annotation-relation chemical objects
-          -- through the same resolver_candidate/needed_resolver_lookup join
-          -- entity_resolution_base uses for mentions, not attempted here.
+          -- Fixed (spec 011, found 2026-09-08 during T047, fixed at the
+          -- cycle's final rebuild): promotes through annotation_object_resolution
+          -- (built above, in _build_annotation_object_resolution) instead of
+          -- self-typing the raw (object_id_type, object_id) verbatim -- so a
+          -- chemical object (e.g. a reaction annotated with a bare ChEBI id, not
+          -- a full entity_evidence mention) lands on whatever entity the same
+          -- real molecule resolves to via the normal entity_resolution_base
+          -- mention path, instead of minting a permanent, unpromoted duplicate.
+          -- Confirmed reproducibly with CHEBI:107644 (piperonylic acid) across
+          -- two full rebuilds before this fix, identical orphaned UUID both
+          -- times (entity ids are content-addressed) -- inflated SC-001's
+          -- ChEBI-canonical count. Non-chemical object types (no resolver
+          -- coverage fetched for them) fall through unchanged to the same raw
+          -- self-typing as before -- only CV-term objects stay excluded.
           SELECT DISTINCT
-            ar.object_entity_type AS entity_type,
+            aor.entity_type,
             NULL::VARCHAR AS taxonomy_id,
-            object_type.identifier_type_id AS canonical_identifier_type_id,
-            ar.object_id AS canonical_identifier
-          FROM annotation_relation_evidence_raw ar
-          JOIN identifier_type_all object_type
-            ON object_type.name = ar.object_id_type
-          WHERE ar.object_entity_type <> ?
-            AND ar.object_id IS NOT NULL
-            AND ar.object_id <> ''
+            aor.canonical_identifier_type_id,
+            aor.canonical_identifier
+          FROM annotation_object_resolution aor
+          WHERE aor.entity_type <> ?
             AND NOT EXISTS (
               SELECT 1
               FROM needed_resolved_entity existing_entity
-              WHERE existing_entity.entity_type = ar.object_entity_type
+              WHERE existing_entity.entity_type = aor.entity_type
                 AND existing_entity.taxonomy_id IS NULL
                 AND existing_entity.canonical_identifier_type_id =
-                    object_type.identifier_type_id
-                AND existing_entity.canonical_identifier = ar.object_id
+                    aor.canonical_identifier_type_id
+                AND existing_entity.canonical_identifier = aor.canonical_identifier
             )
         ),
         ontology_term_identifier_row AS (
@@ -4380,16 +4484,25 @@ def _canonicalize_loaded_duckdb(
             canonical_identifier
           FROM entity_resolution
           UNION
+          -- Matches annotation_object_entity's own resolution above (the
+          -- promoted identifier when the resolver has one, the raw one when it
+          -- doesn't) -- so this source-attribution join actually finds the
+          -- all_entity row a promoted annotation object landed on, not the
+          -- (now nonexistent) raw-keyed one.
           SELECT DISTINCT
-            source,
-            object_entity_type AS entity_type,
+            ar.source,
+            aor.entity_type,
             NULL::VARCHAR AS taxonomy_id,
-            object_type.identifier_type_id AS canonical_identifier_type_id,
-            object_id AS canonical_identifier
+            aor.canonical_identifier_type_id,
+            aor.canonical_identifier
           FROM annotation_relation_evidence_raw ar
           JOIN identifier_type_all object_type
             ON object_type.name = ar.object_id_type
-          WHERE object_id IS NOT NULL
+          JOIN annotation_object_resolution aor
+            ON aor.entity_type = ar.object_entity_type
+           AND aor.raw_identifier_type_id = object_type.identifier_type_id
+           AND aor.raw_identifier = ar.object_id
+          WHERE ar.object_id IS NOT NULL
           UNION
           SELECT DISTINCT
             source,
@@ -4952,6 +5065,11 @@ def _canonicalize_loaded_duckdb(
             AND object.entity_id IS NOT NULL
         ),
         annotation_projected AS (
+          -- object repoints through annotation_object_resolution (the same
+          -- promotion annotation_object_entity applied when minting/joining
+          -- the object's own entity row) -- previously joined canonical_entity
+          -- on the raw (object_id_type, object_id), a dead end for any object
+          -- that promoted to a different, properly-resolved entity elsewhere.
           SELECT
             ar.source,
             ar.relation_evidence_id,
@@ -4963,10 +5081,19 @@ def _canonicalize_loaded_duckdb(
           JOIN entity_evidence_resolution subject
             ON subject.source = ar.source
            AND subject.entity_evidence_id = ar.subject_entity_evidence_id
+          JOIN identifier_type_all raw_object_type
+            ON raw_object_type.name = ar.object_id_type
+          JOIN annotation_object_resolution aor
+            ON aor.entity_type = ar.object_entity_type
+           AND aor.raw_identifier_type_id = raw_object_type.identifier_type_id
+           AND aor.raw_identifier = ar.object_id
+          JOIN identifier_type_all resolved_object_type
+            ON resolved_object_type.identifier_type_id =
+               aor.canonical_identifier_type_id
           JOIN canonical_entity object
-            ON object.entity_type = ar.object_entity_type
-           AND object.canonical_identifier_type = ar.object_id_type
-           AND object.canonical_identifier = ar.object_id
+            ON object.entity_type = aor.entity_type
+           AND object.canonical_identifier_type = resolved_object_type.name
+           AND object.canonical_identifier = aor.canonical_identifier
           WHERE subject.entity_id IS NOT NULL
         )
         SELECT * FROM member_projected
@@ -5224,14 +5351,27 @@ def _bulk_load_create_views_from_loaded_tables(
     con.execute(
         """
         CREATE VIEW pq_annotation_relation_evidence_resolved AS
+        -- object repoints through annotation_object_resolution, same as
+        -- annotation_projected above -- the raw (object_id_type, object_id)
+        -- join is a dead end for any object promoted to a different,
+        -- properly-resolved entity.
         SELECT
           ar.*,
           object.entity_id AS object_entity_id
         FROM annotation_relation_evidence_raw ar
+        JOIN identifier_type_all raw_object_type
+          ON raw_object_type.name = ar.object_id_type
+        JOIN annotation_object_resolution aor
+          ON aor.entity_type = ar.object_entity_type
+         AND aor.raw_identifier_type_id = raw_object_type.identifier_type_id
+         AND aor.raw_identifier = ar.object_id
+        JOIN identifier_type_all resolved_object_type
+          ON resolved_object_type.identifier_type_id =
+             aor.canonical_identifier_type_id
         JOIN canonical_entity object
-          ON object.entity_type = ar.object_entity_type
-         AND object.canonical_identifier_type = ar.object_id_type
-         AND object.canonical_identifier = ar.object_id
+          ON object.entity_type = aor.entity_type
+         AND object.canonical_identifier_type = resolved_object_type.name
+         AND object.canonical_identifier = aor.canonical_identifier
         """
     )
 
