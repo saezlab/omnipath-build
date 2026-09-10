@@ -1469,6 +1469,26 @@ def _ensure_resolution_schema(
             """
         ).format(schema_id, schema_id, schema_id)
     )
+    log_step('seed the lipid name identifier type')
+    # Purely build-computed -- unlike every other canonical identifier type
+    # (InChIKey, Name, ChEBI, ...), no resource ever asserts a raw "Lipid
+    # Name:OM:0209" identifier, so it never appears in entity_identifier_raw
+    # for vocab_identifier_type's usual auto-discovery (schema.py's own
+    # `missing`/`missing_new` INSERT below) to pick up. Seeded explicitly
+    # here instead, before any data loads, so the auto-discovery step's own
+    # MAX(identifier_type_id)+1 never collides with it.
+    cur.execute(
+        sql.SQL(
+            """
+            INSERT INTO {}.vocab_identifier_type (identifier_type_id, name)
+            SELECT COALESCE(MAX(identifier_type_id), 0) + 1, 'Lipid Name:OM:0209'
+            FROM {}.vocab_identifier_type
+            WHERE NOT EXISTS (
+              SELECT 1 FROM {}.vocab_identifier_type WHERE name = 'Lipid Name:OM:0209'
+            )
+            """
+        ).format(schema_id, schema_id, schema_id)
+    )
     log_step('create lipid identity tables')
     cur.execute(
         sql.SQL(

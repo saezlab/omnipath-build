@@ -136,6 +136,16 @@ DRUGBANK_TYPE = cv_term_label_accession(IdentifierNamespaceCv.DRUGBANK)
 REACTOME_STABLE_ID_TYPE = cv_term_label_accession(
     IdentifierNamespaceCv.REACTOME_STABLE_ID
 )
+LIPID_NAME_TYPE = cv_term_label_accession(IdentifierNamespaceCv.LIPID_NAME)
+# Name-axis identifier types that may carry a lipid shorthand (spec 011 T116) --
+# matches omnipath-metabo's own _lipid_layer.py _NAME_TYPES exactly, so both
+# layers consider the same candidate identifiers lipid-shaped.
+LIPID_NAME_SOURCE_TYPES = (
+    'Name:OM:0202',
+    'Synonym:OM:0203',
+    'Abbreviated Name:OM:0208',
+    'Iupac Traditional Name:OM:0211',
+)
 RESOLVER_CHEMICAL_SLUG_TO_IDENTIFIER_TYPE = {
     'pubchem': PUBCHEM_COMPOUND_TYPE,
     'chembl': CHEMBL_COMPOUND_TYPE,
@@ -3058,6 +3068,91 @@ def _canonicalize_loaded_duckdb(
             WIKIPATHWAYS_ID_TYPE,
         ],
     )
+    # A lipid mention canonicalizes on its standardized nomenclature name,
+    # never on structure (research R9): "any InChIKey, ChEBI, LIPID MAPS or
+    # SwissLipids identifier is attached as an ordinary identifier" -- so
+    # this must be resolved and threaded into direct_resolution's coalesce
+    # BEFORE std_inchi_key below, not after. Degrades cleanly (T112/R14):
+    # an empty table, not a failure, when the utils Postgres isn't attached
+    # or its lipid_name table doesn't exist (an older utils build, or one
+    # without the `lipid` extra).
+    lipid_name_available = _duckdb_attach_utils_postgres(con) and (
+        _attached_utils_relation_exists(con, 'lipid_name')
+    )
+    if lipid_name_available:
+        con.execute(
+            f"""
+            CREATE TABLE lipid_name_evidence_resolution AS
+            WITH candidate AS (
+              SELECT
+                ee.source,
+                ee.entity_evidence_id,
+                ln.lipid_name,
+                ln.lipid_level,
+                ln.chains_listed,
+                ln.chains_possible,
+                -- a mention may carry more than one name-axis identifier
+                -- (a primary name and a synonym, say); the finer-grained
+                -- match wins, mirroring omnipath-metabo's own
+                -- "highest-granularity parse wins" rule.
+                row_number() OVER (
+                  PARTITION BY ee.source, ee.entity_evidence_id
+                  ORDER BY
+                    CASE ln.lipid_level
+                      WHEN 'complete_structure' THEN 8
+                      WHEN 'full_structure' THEN 7
+                      WHEN 'structure_defined' THEN 6
+                      WHEN 'sn_position' THEN 5
+                      WHEN 'molecular_species' THEN 4
+                      WHEN 'partially_specified' THEN 3
+                      WHEN 'species' THEN 2
+                      ELSE 1
+                    END DESC
+                ) AS rk
+              FROM entity_evidence_raw ee
+              JOIN entity_identifier_raw ei
+                ON ei.source = ee.source
+               AND ei.entity_evidence_id = ee.entity_evidence_id
+              JOIN utils_pg.omnipath_utils.lipid_name ln
+                ON ln.raw_name = ei.identifier
+              WHERE ee.entity_type = ?
+                AND ei.identifier_type IN ({
+                    ','.join('?' for _ in LIPID_NAME_SOURCE_TYPES)
+                })
+            )
+            SELECT
+              source,
+              entity_evidence_id,
+              lname_type.identifier_type_id AS canonical_identifier_type_id,
+              -- the composite key (lipid_name, lipid_level, chains_listed,
+              -- chains_possible) encoded as one string: lipid_name alone is
+              -- not unique across levels (e.g. a one-chain class's
+              -- full_structure and complete_structure renderings can be
+              -- textually identical, verified live on this build's own
+              -- corpus -- 'CAR 11:0' is one of 2,828 such collisions).
+              lipid_name || '|' || lipid_level || '|' || chains_listed || '|'
+                || chains_possible AS canonical_identifier
+            FROM candidate
+            CROSS JOIN (
+              SELECT identifier_type_id FROM identifier_type_all
+              WHERE name = ?
+            ) lname_type
+            WHERE rk = 1
+            """,
+            [CHEMICAL_ENTITY_TYPE, *LIPID_NAME_SOURCE_TYPES, LIPID_NAME_TYPE],
+        )
+    else:
+        con.execute(
+            """
+            CREATE TABLE lipid_name_evidence_resolution AS
+            SELECT
+              NULL::VARCHAR AS source,
+              NULL::VARCHAR AS entity_evidence_id,
+              NULL::BIGINT AS canonical_identifier_type_id,
+              NULL::VARCHAR AS canonical_identifier
+            WHERE false
+            """
+        )
     con.execute(
         """
         CREATE TABLE standard_inchi_key_evidence_resolution AS
@@ -3129,11 +3224,13 @@ def _canonicalize_loaded_duckdb(
             coalesce(
               cv_term.canonical_identifier_type_id,
               pathway_identifier.canonical_identifier_type_id,
+              lipid_name.canonical_identifier_type_id,
               std_inchi_key.canonical_identifier_type_id
             ) AS canonical_identifier_type_id,
             coalesce(
               cv_term.canonical_identifier,
               pathway_identifier.canonical_identifier,
+              lipid_name.canonical_identifier,
               std_inchi_key.canonical_identifier
             ) AS canonical_identifier,
             'resolved' AS status,
@@ -3141,6 +3238,7 @@ def _canonicalize_loaded_duckdb(
               WHEN cv_term.canonical_identifier IS NOT NULL THEN 'cv_term'
               WHEN pathway_identifier.canonical_identifier IS NOT NULL
                 THEN 'pathway'
+              WHEN lipid_name.canonical_identifier IS NOT NULL THEN 'lipid_name'
               ELSE 'inchikey'
             END AS resolution_mechanism
           FROM entity_evidence_raw ee
@@ -3150,12 +3248,16 @@ def _canonicalize_loaded_duckdb(
           LEFT JOIN pathway_identifier_evidence_resolution pathway_identifier
             ON pathway_identifier.source = ee.source
            AND pathway_identifier.entity_evidence_id = ee.entity_evidence_id
+          LEFT JOIN lipid_name_evidence_resolution lipid_name
+            ON lipid_name.source = ee.source
+           AND lipid_name.entity_evidence_id = ee.entity_evidence_id
           LEFT JOIN standard_inchi_key_evidence_resolution std_inchi_key
             ON std_inchi_key.source = ee.source
            AND std_inchi_key.entity_evidence_id = ee.entity_evidence_id
           WHERE coalesce(
             cv_term.canonical_identifier,
             pathway_identifier.canonical_identifier,
+            lipid_name.canonical_identifier,
             std_inchi_key.canonical_identifier
           ) IS NOT NULL
         ),

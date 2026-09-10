@@ -47,6 +47,9 @@ IDENTIFIER_TYPE_NAMES: tuple[str, ...] = (
     # miRNA accessions — appended to keep existing IDs stable
     cv_term_label_accession(IdentifierNamespaceCv.MIRBASE_PRECURSOR),
     cv_term_label_accession(IdentifierNamespaceCv.MIRBASE_MATURE),
+    # Standardized lipid nomenclature name (spec 011 T116) — appended to keep
+    # existing IDs stable, same convention as the miRNA accessions above.
+    cv_term_label_accession(IdentifierNamespaceCv.LIPID_NAME),
 )
 
 IDENTIFIER_TYPE_IDS: dict[str, int] = {
