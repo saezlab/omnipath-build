@@ -2554,21 +2554,48 @@ def _ensure_static_identifier_types(
     cur: psycopg2.extensions.cursor,
     schema: str,
 ) -> None:
+    """Seed the small set of "core" identifier types this codebase references
+    by a stable id (``identifier_type_id(CHEBI_TYPE)`` etc.), from
+    ``omnipath_build.resolver.identifier_types.IDENTIFIER_TYPE_NAMES``.
+
+    ``vocab_identifier_type`` is NOT a content table (absent from
+    CONTENT_TABLES; reset-content never truncates it) -- it accumulates
+    across every build this database has ever run, and the *dynamic*
+    discovery step (duckdb_load.py, ``INSERT ... base.max_id + row_number()``)
+    assigns its own sequential ids, alphabetically, to every OTHER identifier
+    type name actually cited in loaded data. On a database with build
+    history, a name that is now in this static list may already hold a
+    *different* id from an earlier run/session that discovered it
+    dynamically before it was added here (found live: ``Lipid Name:OM:0209``,
+    ``Drugbank:MI:2002`` and ``Reactome Stable Id:OM:0130`` all landed in this
+    list this cycle, spec 011 T092/T116, but this sandbox's accumulated table
+    already had them at other ids from earlier partial runs -- an
+    unconditional upsert-by-id would either crash on the id/name pair
+    (`ON CONFLICT (identifier_type_id) DO UPDATE` hitting the separate
+    `name` UNIQUE constraint) or, worse, silently rename an unrelated,
+    already-FK-referenced row that happens to already hold the target id.
+
+    So: purely additive. Only inserts a (id, name) pair when NEITHER the id
+    NOR the name exists yet -- never updates or renames an existing row,
+    whichever mechanism (this seed, or dynamic discovery) put it there.
+    """
     from omnipath_build.resolver.identifier_types import identifier_type_rows
 
     cur.executemany(
         sql.SQL(
             """
             INSERT INTO {}.vocab_identifier_type (identifier_type_id, name)
-            VALUES (%s, %s)
-            ON CONFLICT (identifier_type_id) DO UPDATE
-            SET name = EXCLUDED.name
+            SELECT %s, %s
+            WHERE NOT EXISTS (
+              SELECT 1 FROM {}.vocab_identifier_type existing
+              WHERE existing.name = %s OR existing.identifier_type_id = %s
+            )
             """
         )
-        .format(sql.Identifier(schema))
+        .format(sql.Identifier(schema), sql.Identifier(schema))
         .as_string(cur.connection),
         [
-            (row['identifier_type_id'], row['name'])
+            (row['identifier_type_id'], row['name'], row['name'], row['identifier_type_id'])
             for row in identifier_type_rows()
         ],
     )
