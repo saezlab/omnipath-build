@@ -46,6 +46,27 @@ from omnipath_build.cv_terms import CHEMICAL_ENTITY_TYPE
 
 NAME_TYPE = cv_term_label_accession(IdentifierNamespaceCv.NAME)
 
+
+def normalize_name(value: str) -> str:
+    """The one normalized form of a chemical name or synonym (spec 011 R5).
+
+    Case- and whitespace-folded so the same molecule under different
+    capitalization or incidental spacing collapses to one canonical entity,
+    instead of two content-addressed entity ids for "Taurine" and "taurine".
+    Mirrors ``omnipath_utils.mapping._id_types.normalize_name`` exactly (the
+    established cross-repo duplication precedent for a small, pure function
+    needed identically in both repos) -- keep the two in sync if either
+    changes.
+
+    Not called directly by ``build_chemical_fallback_resolution`` below (the
+    actual per-row computation runs as DuckDB SQL, ``lower(trim(...))``, for
+    bulk performance) -- this is the single documented, tested source of
+    truth for what that SQL must compute, and the function any other Python
+    caller should use.
+    """
+
+    return str(value).strip().lower()
+
 # (identifier_type label, tier [lower=preferred], resolution_mechanism).
 # Tiers are distinct so the per-mention pick is fully deterministic.
 _TIERS: tuple[tuple[str, int, str], ...] = (
@@ -188,11 +209,17 @@ def build_chemical_anchor_map(con, *, log=lambda *_: None) -> int:
     # structure-bearing mentions, it appears with >1 distinct InChIKey (e.g. a
     # trivial name shared by L-/D-/racemic forms). Such names must NOT be used as
     # a canonical identity (they would false-merge distinct molecules).
+    #
+    # Grouped by the SAME normalize_name() fold build_chemical_fallback_resolution
+    # applies to canonical_identifier below (lower(trim(...))) -- otherwise this
+    # guard could disagree on a name's ambiguity status across case variants that
+    # fold now merges (e.g. "Taurine" flagged ambiguous, "taurine" not, for what
+    # becomes one canonical identity either way).
     con.execute(
         f"""
         CREATE OR REPLACE TABLE chemical_ambiguous_name AS
         SELECT name_val FROM (
-          SELECT trim(nm.identifier) AS name_val,
+          SELECT lower(trim(nm.identifier)) AS name_val,
                  count(DISTINCT trim(ik.identifier)) AS n_ik
           FROM entity_evidence_raw ee
           JOIN entity_identifier_raw nm
@@ -206,7 +233,7 @@ def build_chemical_anchor_map(con, *, log=lambda *_: None) -> int:
            AND trim(ik.identifier) ~ {inchikey_re}
           WHERE ee.entity_type = '{chem}'
             AND nm.identifier IS NOT NULL AND trim(nm.identifier) <> ''
-          GROUP BY trim(nm.identifier)
+          GROUP BY lower(trim(nm.identifier))
         ) WHERE n_ik > 1
         """
     )
@@ -241,7 +268,15 @@ def build_chemical_fallback_resolution(con, *, log=lambda *_: None) -> int:
             0 AS is_anchored,
             t.mechanism,
             it.identifier_type_id AS canonical_identifier_type_id,
-            trim(ei.identifier) AS canonical_identifier
+            -- name tiers: case/whitespace-folded (normalize_name, spec 011
+            -- R5) so "Taurine" and "taurine" from two different mentions
+            -- merge into one canonical entity instead of two. Every other
+            -- tier's identifier is a structured id (chebi/chembl/pubchem/
+            -- kegg/...), never folded -- those must stay exactly as-is.
+            CASE
+              WHEN t.mechanism = 'name' THEN lower(trim(ei.identifier))
+              ELSE trim(ei.identifier)
+            END AS canonical_identifier
           FROM entity_evidence_raw ee
           JOIN entity_identifier_raw ei
             ON ei.source = ee.source
@@ -260,7 +295,8 @@ def build_chemical_fallback_resolution(con, *, log=lambda *_: None) -> int:
                 OR length(trim(ei.identifier)) < 2
                 -- collision guard: drop names that map to >1
                 -- distinct structure (ambiguous → never a canonical identity).
-                OR trim(ei.identifier) IN (SELECT name_val FROM chemical_ambiguous_name)
+                -- chemical_ambiguous_name is grouped by the same fold.
+                OR lower(trim(ei.identifier)) IN (SELECT name_val FROM chemical_ambiguous_name)
               )
             )
           UNION ALL

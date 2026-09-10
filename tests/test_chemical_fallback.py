@@ -15,7 +15,14 @@ duckdb = pytest.importorskip('duckdb')
 from omnipath_build.chemical_fallback import (  # noqa: E402
     build_chemical_anchor_map,
     build_chemical_fallback_resolution,
+    normalize_name,
 )
+
+
+def test_normalize_name_folds_case_and_whitespace():
+    assert normalize_name('Taurine') == 'taurine'
+    assert normalize_name('  taurine  ') == 'taurine'
+    assert normalize_name('TAURINE') == 'taurine'
 
 
 def _resolve(con):
@@ -203,3 +210,45 @@ def test_ambiguous_name_guard():
     _resolve(con)
     assert _pick(con, 'alname') is None, 'ambiguous name must not be canonical'
     assert _pick(con, 'uniq') == (TYPES['Name:OM:0202'], 'uniquechem', 'name')
+
+
+def test_case_variant_names_merge_into_one_canonical_identity():
+    """spec 011 R5: 'Taurine' and 'taurine' from two different mentions must
+    fold to the same canonical_identifier, not two separate content-addressed
+    entities."""
+    con = _con([
+        ('m_upper', CHEM, [('Name:OM:0202', 'Taurine')]),
+        ('m_lower', CHEM, [('Name:OM:0202', 'taurine')]),
+        ('m_spaced', CHEM, [('Name:OM:0202', '  taurine  ')]),
+    ])
+    _resolve(con)
+    upper = _pick(con, 'm_upper')
+    lower = _pick(con, 'm_lower')
+    spaced = _pick(con, 'm_spaced')
+    assert upper == lower == spaced == (TYPES['Name:OM:0202'], 'taurine', 'name')
+
+
+def test_ambiguous_name_guard_is_case_insensitive():
+    """The collision guard must catch a case variant of an ambiguous name too
+    -- otherwise 'Alanine' could slip through as canonical while 'alanine' is
+    correctly dropped, for what becomes one merged identity either way."""
+    con = _con([
+        ('al1', CHEM, [('Name:OM:0202', 'alanine'), ('Standard Inchi Key:MI:1101', IK1)]),
+        ('al2', CHEM, [('Name:OM:0202', 'alanine'), ('Standard Inchi Key:MI:1101', IK2)]),
+        # case variant of the ambiguous name -- the guard must still drop it.
+        ('alname_upper', CHEM, [('Name:OM:0202', 'Alanine')]),
+    ])
+    _resolve(con)
+    assert _pick(con, 'alname_upper') is None, (
+        'a case variant of an ambiguous name must not be canonical either'
+    )
+
+
+def test_non_name_tiers_are_never_case_folded():
+    """Only the name/synonym tiers fold case -- a structured id (ChEBI here)
+    must stay byte-exact."""
+    con = _con([
+        ('m1', CHEM, [('Chebi:MI:0474', 'CHEBI:15891')]),
+    ])
+    _resolve(con)
+    assert _pick(con, 'm1') == (TYPES['Chebi:MI:0474'], 'CHEBI:15891', 'chebi')
