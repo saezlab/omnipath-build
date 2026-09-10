@@ -14,7 +14,7 @@ import os
 import time
 
 from psycopg2 import sql
-from psycopg2.extras import Json
+from psycopg2.extras import Json, execute_values
 import psycopg2.extensions
 
 from omnipath_build.db.schema import _ensure_ontology_terms_table
@@ -40,6 +40,8 @@ class DerivedTableStats:
     entity_source_count: int = 0
     identifier_role: int = 0
     chemical_resolution_coverage: int = 0
+    lipid_name_nodes: int = 0
+    lipid_name_edges: int = 0
     interactions: InteractionDeriveStats | None = None
 
 
@@ -49,6 +51,7 @@ def rebuild_derived_tables(
     schema: str = 'public',
     progress: bool = False,
     interactions: bool = True,
+    utils_db_url: str | None = None,
 ) -> DerivedTableStats:
     """Create and fully rebuild derived search/count tables.
 
@@ -152,6 +155,20 @@ def rebuild_derived_tables(
             seconds=f'{time.perf_counter() - step_started:.3f}',
         )
 
+        _log(progress, 'lipid_name_graph', 'start')
+        step_started = time.perf_counter()
+        lipid_nodes, lipid_edges = _populate_lipid_identity_graph(
+            cur, schema, utils_db_url or os.environ.get('OMNIPATH_BUILD_UTILS_PG_URL'),
+        )
+        _log(
+            progress,
+            'lipid_name_graph',
+            'done',
+            nodes=lipid_nodes,
+            edges=lipid_edges,
+            seconds=f'{time.perf_counter() - step_started:.3f}',
+        )
+
         _log(progress, 'indexes', 'start')
         step_started = time.perf_counter()
         _create_derived_indexes(cur, schema)
@@ -176,6 +193,8 @@ def rebuild_derived_tables(
         entity_source_count=entity_source_count,
         identifier_role=identifier_role,
         chemical_resolution_coverage=chemical_resolution_coverage,
+        lipid_name_nodes=lipid_nodes,
+        lipid_name_edges=lipid_edges,
         interactions=interaction_stats,
     )
 
@@ -473,6 +492,174 @@ def _populate_identifier_role(
         ).format(schema_id, schema_id, schema_id, schema_id, schema_id)
     )
     return int(cur.rowcount)
+
+
+#: T119's hierarchy invariant -- "no parent whose child count exceeds the
+#: configured hub threshold" (data-model.md section 7), the check that would
+#: have caught the SwissLipids ChEBI placeholder absorbing 184,509
+#: identifiers before anyone noticed (a defect of the same shape -- one node
+#: silently absorbing an implausible number of others). No number is
+#: specified in the docs; chosen empirically against this build's real
+#: lipid_name corpus (409,598 names, 314,916 nodes, 286,246 edges): the
+#: single largest legitimate species-level parent, ``CL 68:0``
+#: (cardiolipin -- 4 acyl chains, so combinatorially the class with the most
+#: molecular-species/sn-position/structure-defined/full/complete-structure
+#: renderings of any one species total), has 3,461 children. 10,000 sits
+#: comfortably above that real maximum (headroom for corpus growth) while
+#: still catching anything at the 184,509-style pathological scale.
+LIPID_HUB_THRESHOLD = 10_000
+
+_LIPID_LEVEL_RANK = {
+    'complete_structure': 8, 'full_structure': 7, 'structure_defined': 6,
+    'sn_position': 5, 'molecular_species': 4, 'partially_specified': 3,
+    'species': 2, 'class': 1, 'category': 0,
+}
+
+
+def _populate_lipid_identity_graph(
+    cur: psycopg2.extensions.cursor,
+    schema: str,
+    utils_db_url: str | None,
+) -> tuple[int, int]:
+    """spec 011 T118/T119: ``lipid_name_node``/``lipid_name_edge`` -- the
+    generalization graph over every standardized lipid name the utils build
+    parsed (T113), read live from the utils Postgres. Generated, never
+    asserted by a resource (research R9): every non-species node gets an
+    ``is_a`` edge to its species node, synthesizing that species node first
+    when no resource happened to mention the bare species name on its own
+    (a species parent must always exist for the edge to attach to).
+
+    Degrades to ``(0, 0)`` -- not an error -- when ``utils_db_url`` is unset
+    or the utils build has no ``lipid_name`` table (an older utils build, or
+    one without the ``lipid`` extra): matches every other optional-capability
+    degradation this cycle (R14).
+    """
+
+    schema_id = sql.Identifier(schema)
+    cur.execute(
+        sql.SQL('TRUNCATE {}.lipid_name_edge, {}.lipid_name_node').format(
+            schema_id, schema_id,
+        )
+    )
+    if not utils_db_url:
+        return 0, 0
+
+    try:
+        utils_conn = psycopg2.connect(utils_db_url)
+    except psycopg2.Error:
+        return 0, 0
+    try:
+        with utils_conn.cursor() as utils_cur:
+            utils_cur.execute(
+                """
+                SELECT to_regclass('omnipath_utils.lipid_name') IS NOT NULL
+                """
+            )
+            if not utils_cur.fetchone()[0]:
+                return 0, 0
+            utils_cur.execute(
+                """
+                SELECT DISTINCT
+                  lipid_name, lipid_level, chains_listed, chains_possible,
+                  lipid_category, lipid_class, total_carbon, total_db,
+                  sum_formula, parser_version
+                FROM omnipath_utils.lipid_name
+                """
+            )
+            parsed_rows = utils_cur.fetchall()
+    finally:
+        utils_conn.close()
+
+    if not parsed_rows:
+        return 0, 0
+
+    # key = (lipid_name, lipid_level, chains_listed, chains_possible),
+    # matching lipid_name_node's own PK exactly.
+    nodes: dict[tuple[str, str, int, int], tuple] = {}
+    for (
+        name, level, listed, possible, category, lipid_class,
+        carbon, db, formula, version,
+    ) in parsed_rows:
+        listed = listed or 0
+        possible = possible or 0
+        nodes[(name, level, listed, possible)] = (
+            name, level, possible, listed, category, lipid_class,
+            carbon, db, formula, version,
+        )
+
+    # Every non-species node's parent is its own species: same class, same
+    # totals, chains_listed=0 -- computed from the parse's own fields, not
+    # asserted, so the parent always exists even if no resource ever wrote
+    # the bare species name on its own (T118).
+    edges: dict[tuple, tuple] = {}
+    for key, row in list(nodes.items()):
+        name, level, listed, possible, category, lipid_class, carbon, db, _, _ = row
+        if level == 'species' or listed == 0:
+            continue
+        if not lipid_class or carbon is None or db is None:
+            continue
+        parent_name = f'{lipid_class} {carbon}:{db}'
+        parent_key = (parent_name, 'species', 0, possible)
+        if parent_key not in nodes:
+            nodes[parent_key] = (
+                parent_name, 'species', possible, 0, category, lipid_class,
+                carbon, db, None, row[9],
+            )
+        if parent_key == key:
+            continue  # a species-total rendering that round-tripped to itself
+        edges[(key, parent_key)] = (
+            *key, *parent_key, 'is_a', 'species_generalization',
+        )
+
+    # T119: no parent exceeding the hub threshold. A real violation would be
+    # a bug (a placeholder-style collapse), not a legitimate lipid hierarchy
+    # -- drop those edges and log rather than let a pathological node poison
+    # the graph silently.
+    child_counts: dict[tuple, int] = {}
+    for (_child, parent), _ in edges.items():
+        child_counts[parent] = child_counts.get(parent, 0) + 1
+    oversized_parents = {
+        parent for parent, count in child_counts.items()
+        if count > LIPID_HUB_THRESHOLD
+    }
+    if oversized_parents:
+        _logger.warning(
+            'lipid_name_graph: %d parent(s) exceed the hub threshold '
+            '(%d) -- dropping their edges: %s',
+            len(oversized_parents), LIPID_HUB_THRESHOLD,
+            sorted(p[0] for p in oversized_parents)[:10],
+        )
+        edges = {
+            k: v for k, v in edges.items() if k[1] not in oversized_parents
+        }
+
+    execute_values(
+        cur,
+        sql.SQL(
+            'INSERT INTO {}.lipid_name_node ('
+            'lipid_name, lipid_level, chains_possible, chains_listed, '
+            'lipid_category, lipid_class, total_carbon, total_db, '
+            'sum_formula, parser_version'
+            ') VALUES %s'
+        ).format(schema_id).as_string(cur.connection),
+        list(nodes.values()),
+        page_size=5000,
+    )
+    if edges:
+        execute_values(
+            cur,
+            sql.SQL(
+                'INSERT INTO {}.lipid_name_edge ('
+                'child_name, child_level, child_chains_listed, '
+                'child_chains_possible, parent_name, parent_level, '
+                'parent_chains_listed, parent_chains_possible, '
+                'relation, derivation'
+                ') VALUES %s'
+            ).format(schema_id).as_string(cur.connection),
+            list(edges.values()),
+            page_size=5000,
+        )
+    return len(nodes), len(edges)
 
 
 def _populate_chemical_resolution_coverage(
