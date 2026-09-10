@@ -1484,12 +1484,23 @@ def _ensure_resolution_schema(
     # `missing`/`missing_new` INSERT below) to pick up. Seeded explicitly
     # here instead, before any data loads, so the auto-discovery step's own
     # MAX(identifier_type_id)+1 never collides with it.
+    #
+    # The MAX(...) must be computed in its own FROM-less scalar subquery, not
+    # a `... FROM vocab_identifier_type WHERE NOT EXISTS (...)` on the outer
+    # query -- an aggregate without GROUP BY always returns exactly one row
+    # even when its WHERE excludes every row (MAX over zero rows is NULL, not
+    # "no row"), so that shape still attempts an insert (with the bogus id
+    # COALESCE(NULL, 0) + 1 = 1) and crashes on this sandbox's accumulated
+    # vocab_identifier_type (which, across many builds, already has this row
+    # at a real id from before it was added here) instead of being skipped as
+    # intended. Found live running this cycle's final rebuild.
     cur.execute(
         sql.SQL(
             """
             INSERT INTO {}.vocab_identifier_type (identifier_type_id, name)
-            SELECT COALESCE(MAX(identifier_type_id), 0) + 1, 'Lipid Name:OM:0209'
-            FROM {}.vocab_identifier_type
+            SELECT
+              (SELECT COALESCE(MAX(identifier_type_id), 0) + 1 FROM {}.vocab_identifier_type),
+              'Lipid Name:OM:0209'
             WHERE NOT EXISTS (
               SELECT 1 FROM {}.vocab_identifier_type WHERE name = 'Lipid Name:OM:0209'
             )
