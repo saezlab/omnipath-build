@@ -79,6 +79,13 @@ CONTENT_TABLES: tuple[str, ...] = (
     'lipid_name_edge',
     'lipid_name_node',
     'resource_overlap_summary',
+    # omnipath-metabo's WP6 QC layer (structure_consistency_finding
+    # references data_source; found live during the cycle's final
+    # reset-content -- same "not previously listed here" bug class as
+    # evidence_state/state_component above, T098's tables just never got
+    # added when they landed in the other repo).
+    'structure_consistency_finding',
+    'structure_consistency_summary',
     'data_source',
 )
 
