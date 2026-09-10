@@ -31,6 +31,123 @@ Keep entries factual and specific — numbers and log excerpts, not vibes.
 
 ---
 
+## 2026-09-10 — cycle 011's final full uncapped rebuild
+
+**Reason**: land the two fixes the cycle had deliberately deferred to its
+final rebuild (`annotation_object_entity`'s unpromoted duplicate chemical
+entities, `chemical_fallback.py`'s unnormalized name-tier canonical key),
+then verify the whole cycle (WP1-WP8) against `contracts/coverage-
+acceptance.sql` on one clean, complete build — the gating step before cycle
+011 can be considered closed.
+
+**Parameters**: `make reset-content` then `make reload` (`RELOAD_EXISTING=1`,
+all sources, uncapped, default `LOAD_JOBS=1`/`THREADS=4`/`BATCH_SIZE=50000`)
+against `DATABASE_URL=postgresql://omnipath:omnipath@chemres1-omnipath-build-postgres:5432/omnipath`
+and `OMNIPATH_BUILD_UTILS_PG_URL=postgresql://omnipath:omnipath_utils_chemres1-utils_dev@omnipath-utils-chemres1-utils-db:5432/omnipath_utils`,
+then `make derive`, then (`omnipath-metabo`) a one-time
+`TRUNCATE metabo_lipid_name_resolution` (the ~1.9M-row incremental cache still
+carrying pre-T121 chain counts) followed by `post_build_metabo(force=True,
+conflicts=False)`.
+
+**Four real bugs found and fixed along the way** (all committed, all
+verified live before proceeding to the next step):
+
+1. `84a3ff1` — `annotation_object_entity` self-typed a chemical annotation
+   object's raw `(object_id_type, object_id)` instead of promoting it through
+   the resolver, minting permanent unpromoted duplicates (the deferred fix
+   this rebuild existed to land). Fixed via a new `annotation_object_resolution`
+   table (mirrors `ontology_relation_endpoint_key`'s existing pattern for "a
+   bare external identifier that is not a full mention"); three other read
+   sites needed the identical fix to stay consistent with the entity this now
+   mints (`sources` attribution, `annotation_projected`,
+   `pq_annotation_relation_evidence_resolved`).
+2. `d5c2cda` — WP5's T092 (widening the resolver's chemical namespace list to
+   drugbank/reactome) registered both in `RESOLVER_CHEMICAL_SLUG_TO_IDENTIFIER_TYPE`
+   but never in `resolver/identifier_types.py`'s separate, must-stay-in-sync
+   stable-id registry every resolver setup call validates against. Crashed
+   **every single dataset** identically on the first reload attempt
+   (`source_rows=0` across all 45 sources, `ValueError: Unknown resolver
+   identifier type: 'Drugbank:MI:2002'`) — caught immediately since a full
+   reload is exactly the kind of run T092's own narrower verification never
+   exercised.
+3. `ef6a75b` — `structure_consistency_finding`/`_summary` (WP6, T098) were
+   never added to `CONTENT_TABLES`; `reset-content` truncates the whole list
+   in one statement, so the unlisted table (with a `data_source` FK) made
+   Postgres refuse the entire truncate.
+4. `a141963` + `1667fc3` — two separate `vocab_identifier_type` seeding bugs,
+   both only reachable on a database with real build history (this sandbox's
+   table accumulates across every build ever run here — it is not a content
+   table, `reset-content` never touches it): `_ensure_static_identifier_types`
+   unconditionally upserted by id, which either crashed or would have silently
+   renamed an unrelated row wherever a newly-statically-listed name (T092's
+   drugbank/reactome, T116's lipid name) already held a different id from an
+   earlier partial run; separately, WP7's own lipid-name seed's
+   `... FROM vocab_identifier_type WHERE NOT EXISTS (...)` guard didn't
+   actually skip the insert when false (an aggregate without GROUP BY always
+   returns one row), so it still attempted an insert with a bogus id and
+   crashed on the same already-populated row. Both made purely additive/
+   idempotent; verified live as true no-ops against the populated table
+   before rerunning.
+
+One further **non-code** issue: the first reload attempt ran clean for
+1h48m (through chembl/foodb/go/intact/kegg/pfocr/stitch) then hard-crashed on
+a `UnicodeDecodeError` copying a SwissLipids shard to Postgres. Root cause: a
+stale preparse cache (`pypath-data/swisslipids/preparse/lipids/batch_50000_all`,
+dated 2026-09-08, predating this cycle's SwissLipids `InChIKey=` prefix fix)
+had corrupted bytes baked in from before the fix landed — not a code bug.
+Deleting the cache directory (forcing a fresh preparse, correctly applying
+the `encoding='latin-1'` the loader already declares) resolved it; verified
+with a small scoped reload before restarting the full one. This also
+suggests the earlier-documented "SwissLipids reload blocked by a `cachedir`
+bug" note may no longer reproduce — a fresh reload succeeded cleanly this
+time with no sign of that error.
+
+**Phase durations** (second, successful full attempt): reload
+**6536.2s (~1h49m)** — `sources=45 skipped_sources=0 datasets=100
+failed_sources=3 failed_datasets=5 source_rows=9,920,814
+identifiers=63,614,139 annotations=92,029,431` (matches an earlier cycle
+baseline almost exactly); the 5 failed datasets are the already-documented
+pre-existing bugs (`bindingdb.interactions`, `metatlas.metabolites`,
+`mirbase.matures`, `mirbase.precursors`, `ptfi.foods`) — none new. `derive`
+**~1h15m** (chem-resolution-level 232s: `chemical_entities=2,401,031
+members=7,203,093 groups=6,877,860 relations=15,421,707`; ambiguous-name
+candidates 71s; bitmaps 589.6s). `post_build_metabo` **4816.0s (~80m)** —
+structure substrate 2,196,732 molecules; Goslin lipid labels on 1,027,283
+entities (1,124,040 names resolved) with **`partially_specified=6,258`
+appearing as its own real level for the first time** (direct, real-data
+confirmation of WP7's T109 fix — the removed species-downgrade used to
+collapse every one of these); QC structure-consistency: internal=503,958
+cross_reference=85,974 cross_reference_pair=21,125.
+
+**Outcome — the full `coverage-acceptance.sql` gate**:
+
+| SC | Check | Baseline → target | Result | Verdict |
+|---|---|---|---|---|
+| SC-001 | ChEBI-canonical entities | 54,323 → ≤23,000 | 50,301 | fail (moved from 51,832; not expected to close alone, per `deferred-items.md`) |
+| SC-002/003 | Reactome structure reach | ~0.1% → ≥80% | 63.6% | fail (known, legitimate ChEBI class-node structurelessness, not a bug) |
+| SC-002/003 | zero-reach group ≥60% | — | rhea 81.9%, pfocr 81.9%, intact 80.6% | pass (tcdb has <100 chemical entities, below the query's own threshold) |
+| SC-004 | Reactome↔HMDB shared | 4 → ≥1,300 | 484 | fail (expected; not this fix's target) |
+| SC-005 | unresolved chemical entities | 13,631 → ≤5,500, accounted | 365, 365 accounted | **pass** |
+| SC-006 | KEGG structure reach ≥70% | — | 81.9% | **pass** |
+| SC-006 | KEGG pair-check agreement ≥90% | — | no rows (kegg is itself a structure authority, so it never appears as a *structureless citing* party under WP6's redesigned pair check — a scoping mismatch with this criterion's original, pre-redesign assumption, not a new failure) | n/a |
+| SC-007 | every identity syntactically valid | — | 0 invalid | **pass** |
+| SC-007 | no identity exceeds the hub threshold | — | largest = 2,650 | **pass** |
+| SC-011 | no lipid name collision across chain assignment | — | 0 | **pass** |
+| SC-012 | name-canonical entities | 171,852 → ≤40,000 | 47,282 | fail, but close (a ~3.6x reduction from baseline; the normalize_name fix worked, remaining gap is other near-duplicate forms a simple case/whitespace fold doesn't catch) |
+| SC-013 | manifest carries coverage | — | true | **pass** |
+| SC-014 | db size ≤82GB × 1.10 | — | 91 GB (budget 90.2 GB) | fail, narrowly (~1% over; WP6/WP7 added more than R11's ~3% estimate) |
+
+SC-008/009/010/015/016 are verified elsewhere per the acceptance file's own
+header (contract tests, not this SQL gate).
+
+**Net**: 6 of 13 directly-gated criteria pass outright (SC-005, SC-006a,
+SC-007 ×2, SC-011, SC-013); SC-001/004/002-003/012/014 remain open, all
+either already-documented-as-out-of-scope for these two fixes or improved
+substantially without fully closing. No new, unexplained acceptance
+regressions.
+
+---
+
 ## 2026-09-09 — omnipath-utils WP5: RefMet/Reactome loads, HMDB extension, SwissLipids fix, exemptions (T084-T094)
 
 **Reason**: verify spec 011 WP5 (namespace coverage) against the live
