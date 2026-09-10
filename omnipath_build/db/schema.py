@@ -76,6 +76,8 @@ CONTENT_TABLES: tuple[str, ...] = (
     'identifier_authority',
     'identifier_role',
     'chemical_resolution_coverage',
+    'lipid_name_edge',
+    'lipid_name_node',
     'resource_overlap_summary',
     'data_source',
 )
@@ -1463,6 +1465,66 @@ def _ensure_resolution_schema(
               unresolved bigint NOT NULL,
               conflicted bigint NOT NULL,
               PRIMARY KEY (source_id, identifier_type_id, role)
+            )
+            """
+        ).format(schema_id, schema_id, schema_id)
+    )
+    log_step('create lipid identity tables')
+    cur.execute(
+        sql.SQL(
+            """
+            CREATE TABLE IF NOT EXISTS {}.lipid_name_node (
+              lipid_name text NOT NULL,
+              lipid_level text NOT NULL,
+              chains_possible smallint NOT NULL DEFAULT 0,
+              chains_listed smallint NOT NULL DEFAULT 0,
+              lipid_category text,
+              lipid_class text,
+              total_carbon smallint,
+              total_db smallint,
+              sum_formula text,
+              parser_version text,
+              PRIMARY KEY (lipid_name, lipid_level, chains_listed, chains_possible)
+            )
+            """
+        ).format(schema_id)
+    )
+    cur.execute(
+        sql.SQL(
+            """
+            CREATE TABLE IF NOT EXISTS {}.lipid_name_edge (
+              child_name text NOT NULL,
+              child_level text NOT NULL,
+              child_chains_listed smallint NOT NULL,
+              child_chains_possible smallint NOT NULL,
+              parent_name text NOT NULL,
+              parent_level text NOT NULL,
+              parent_chains_listed smallint NOT NULL,
+              parent_chains_possible smallint NOT NULL,
+              relation text NOT NULL CHECK (relation = 'is_a'),
+              derivation text NOT NULL,
+              PRIMARY KEY (
+                child_name, child_level, child_chains_listed,
+                child_chains_possible, parent_name, parent_level,
+                parent_chains_listed, parent_chains_possible
+              ),
+              FOREIGN KEY (
+                child_name, child_level, child_chains_listed,
+                child_chains_possible
+              ) REFERENCES {}.lipid_name_node (
+                lipid_name, lipid_level, chains_listed, chains_possible
+              ),
+              FOREIGN KEY (
+                parent_name, parent_level, parent_chains_listed,
+                parent_chains_possible
+              ) REFERENCES {}.lipid_name_node (
+                lipid_name, lipid_level, chains_listed, chains_possible
+              ),
+              CHECK (
+                child_name <> parent_name OR child_level <> parent_level
+                OR child_chains_listed <> parent_chains_listed
+                OR child_chains_possible <> parent_chains_possible
+              )
             )
             """
         ).format(schema_id, schema_id, schema_id)
