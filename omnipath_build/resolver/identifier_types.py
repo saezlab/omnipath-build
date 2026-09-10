@@ -50,6 +50,16 @@ IDENTIFIER_TYPE_NAMES: tuple[str, ...] = (
     # Standardized lipid nomenclature name (spec 011 T116) — appended to keep
     # existing IDs stable, same convention as the miRNA accessions above.
     cv_term_label_accession(IdentifierNamespaceCv.LIPID_NAME),
+    # DrugBank and Reactome, widened into the resolver_chemical structure
+    # route (spec 011 T092) — appended here too, the same append-only
+    # convention, since every resolver setup call validates its namespace
+    # slugs against this registry (found live: T092 registered both in
+    # RESOLVER_CHEMICAL_SLUG_TO_IDENTIFIER_TYPE, duckdb_load.py, but not
+    # here, so every dataset's resolver setup failed identically with
+    # "Unknown resolver identifier type: 'Drugbank:MI:2002'" during the
+    # cycle's final reload).
+    cv_term_label_accession(IdentifierNamespaceCv.DRUGBANK),
+    cv_term_label_accession(IdentifierNamespaceCv.REACTOME_STABLE_ID),
 )
 
 IDENTIFIER_TYPE_IDS: dict[str, int] = {
