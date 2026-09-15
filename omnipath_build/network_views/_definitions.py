@@ -29,7 +29,7 @@ from __future__ import annotations
 
 from omnipath_build.network_views._framework import NetworkDefinition
 
-# MetalinksDB: metabolite↔protein relations, a preset over the interaction
+# MetalinksDB: compound↔protein relations, a preset over the interaction
 # fact table. It was fifteen materialized views and 1,571 lines of SQL; the
 # recipe below is the whole of what that SQL said, expressed as parameters.
 #
@@ -39,13 +39,11 @@ from omnipath_build.network_views._framework import NetworkDefinition
 # resolve it to nothing, and an empty contribution reads exactly like a
 # resource that failed to load. `labels` carries the published name for output.
 #
-# **Two of the twelve contribute nothing, for two different reasons, and both
-# are worth stating so neither reads as a defect.** BindingDB is excluded by
-# the recipe: its assertions stay in the record for any other query to find,
-# and no row of this dataset counts them. ChEMBL survives the recipe and then
-# meets the metabolite gate, which removes it entirely — a mechanism-of-action
-# compound is a drug. The retiring view delivers exactly this: ten resources
-# reach its combined contract, and ChEMBL is not among them.
+# **One of the twelve contributes nothing, and it is worth stating so it does
+# not read as a defect.** BindingDB is excluded by the recipe: its assertions
+# stay in the record for any other query to find, and no row of this dataset
+# counts them. ChEMBL's mechanism-of-action pairs do contribute, and no
+# retiring view delivered them — the gate below says why.
 #
 # **The reaction-grain components are declared and currently empty.** Rhea,
 # Recon3D and Human-GEM contribute metabolite↔enzyme pairs that the record
@@ -71,14 +69,24 @@ _CURATED_SOURCES = (
 _TRANSPORT_CLASSES = ('transport', 'ligand_receptor')
 
 # The gate every component carries. It is on the entity, so no resource can
-# route around it: a compound is a metabolite or it is not.
-_GATE = {'chemical_classes': ['metabolite']}
+# route around it: one end of every row is a small molecule.
+#
+# **It gated on chemical class until this cycle, and now gates on entity type.**
+# The class comes from `classify/chemical_class.yaml`, which reads a compound's
+# class off the resources that contributed it and calls anything unmapped a
+# metabolite. That is provenance standing in for chemistry, and it decides
+# both ways. Gadolinium and olanzapine entered as metabolites because no rule
+# spoke for their resources. BindingDB's catalog entered because one rule did.
+# A dataset gated on that inherits both. The entity type asserts only what the
+# record holds — this end is a small molecule — and leaves metabolite-or-not
+# to the caller, who can still pass `chemical_classes` on any request.
+_GATE = {'entity_types': ['Chemical:OM:0037']}
 
-# **Two filters the retiring views applied and this recipe does not**, measured
-# on the dev4 build 2026-08-25. Neither loses a row the views delivered — their
-# output is a strict subset of this preset's, pair for pair — but a consumer
-# moving across meets a result about three times larger, so the difference is
-# stated here rather than met as a surprise.
+# **Three filters the retiring views applied and this recipe does not**, the
+# first two measured on the dev4 build 2026-08-25. None loses a row the views
+# delivered: their output stays a subset of this preset's, pair for pair. But a
+# consumer moving across meets a result several times larger, so this states
+# the differences rather than leaving them to be met as a surprise.
 #
 # **Organism.** Every per-source view was human-only, filtering the protein
 # mention on taxon 9606. This preset has none, for the reason the ligand-receptor
@@ -95,6 +103,12 @@ _GATE = {'chemical_classes': ['metabolite']}
 # and of MRC-LinkDB's 1,447 only 33. Those are pairs whose endpoints never
 # reached a canonical identifier, and serving them under a curated dataset's
 # name is the weaker half of this conversion. Tracked as a follow-up.
+#
+# **Chemical class.** Every per-source view kept a pair only where the compound
+# classified as a metabolite, and so did this recipe. The gate above replaced
+# it. The change admits ChEMBL, whose mechanism-of-action compounds classify
+# as drugs. It also admits any compound of the other resources that a rule or
+# the default classified away from metabolite.
 
 METALINKSDB = NetworkDefinition(
     name='metalinksdb',
@@ -120,7 +134,7 @@ METALINKSDB = NetworkDefinition(
     },
     curation={
         # Every threshold the retiring SQL held inline, as configuration.
-        'chemical_class_gate': 'metabolite',
+        'entity_type_gate': 'Chemical:OM:0037',
         'chembl_curation': 'mechanism_of_action',
         'excluded_from_combined': ['bindingdb'],
     },
