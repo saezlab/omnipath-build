@@ -126,7 +126,11 @@ indexed_reaction AS (
     reaction.sources,
     reaction.reaction_entity_id,
     event.canonical_identifier AS reaction_identifier,
-    event_id_type.name AS reaction_id_type,
+    -- The pseudo-enzyme's label is the reaction's own identifier, which no
+    -- translation touches: a reaction is neither a protein nor a metabolite,
+    -- and neither namespace has anything to say about it. Its namespace is
+    -- still reported in the same vocabulary as every other endpoint's.
+    coalesce(event_namespace.namespace, 'unknown') AS reaction_id_type,
     -- The event's own type decides the edge kind. The header's interaction
     -- class would be the other candidate and is the worse one: the class
     -- derivation resolves every reaction to `other` on the current build, so
@@ -145,25 +149,35 @@ indexed_reaction AS (
   JOIN entity event ON event.entity_id = reaction.reaction_entity_id
   JOIN vocab_entity_type event_type
     ON event_type.entity_type_id = event.entity_type_id
-  LEFT JOIN vocab_identifier_type event_id_type
-    ON event_id_type.identifier_type_id = event.canonical_identifier_type_id
+  LEFT JOIN _cos_namespace event_namespace
+    ON event_namespace.identifier_type_id
+       = event.canonical_identifier_type_id
 ),
 party AS (
+  -- `_cos_label` is the translation stage's answer for this entity: the
+  -- identifier the label carries and the namespace that identifier belongs to.
+  -- It is a left join and both columns are coalesced, because the stage is
+  -- allowed to say nothing — a build with no reachable mapping database stages
+  -- a fallback for every entity, and a build whose entity reached no party row
+  -- of a projected role is not in the table at all.
   SELECT
     reaction.interaction_id,
     role.name AS role_name,
     party.entity_id,
     nullif(party.compartment, '') AS compartment,
-    participant.canonical_identifier,
-    participant_id_type.name AS id_type
+    coalesce(label.identifier, participant.canonical_identifier)
+      AS canonical_identifier,
+    coalesce(label.id_namespace, participant_namespace.namespace, 'unknown')
+      AS id_type
   FROM indexed_reaction reaction
   JOIN interaction_party party
     ON party.interaction_id = reaction.interaction_id
   JOIN vocab_relation_role role
     ON role.relation_role_id = party.role_id
   JOIN entity participant ON participant.entity_id = party.entity_id
-  LEFT JOIN vocab_identifier_type participant_id_type
-    ON participant_id_type.identifier_type_id
+  LEFT JOIN _cos_label label ON label.entity_id = party.entity_id
+  LEFT JOIN _cos_namespace participant_namespace
+    ON participant_namespace.identifier_type_id
        = participant.canonical_identifier_type_id
   WHERE role.name IN ('reactant', 'product', 'enzyme')
 ),

@@ -23,6 +23,12 @@ from pathlib import Path
 import psycopg2.extensions
 from psycopg2 import sql
 
+from omnipath_build.cosmos.translate import (
+    UTILS_SCHEMA,
+    drop_label_translation,
+    stage_label_translation,
+)
+
 _SQL_DIR = Path(__file__).with_name('sql')
 
 logger = logging.getLogger(__name__)
@@ -68,6 +74,25 @@ class CosmosBuildStats:
     # Nothing labels them, so they are not projected; a non-zero figure means
     # the record lost a star its header kept, and is worth looking at.
     headers_without_event: int
+    # What the label translation reached, counted over entities rather than
+    # over edges: one enzyme in five hundred reactions is five hundred nodes
+    # carrying one identifier, and the question these answer is how much of the
+    # build reaches the namespaces COSMOS asks for.
+    #
+    # `translated` is a label that carries the wanted namespace -- UniProt on
+    # the gene side, ChEBI on the chemical one -- whether a mapping put it
+    # there or it was already in it. `mapped` is the subset a mapping moved.
+    # `fallback` is the rest, each one recorded on its edges under the
+    # namespace it actually came from.
+    gene_labels_translated: int
+    gene_labels_mapped: int
+    gene_labels_fallback: int
+    chemical_labels_translated: int
+    chemical_labels_mapped: int
+    chemical_labels_fallback: int
+    # A mapping database answered. False where none was given or the
+    # connection failed, which falls every label back and is not an error.
+    identifier_translation: bool
     seconds: float
 
 
@@ -228,6 +253,8 @@ def build_cosmos_projection(
     conn: psycopg2.extensions.connection,
     *,
     schema: str = 'public',
+    utils_db_url: str | None = None,
+    utils_schema: str = UTILS_SCHEMA,
     progress: bool = False,
 ) -> CosmosBuildStats:
     """Rebuild the whole COSMOS edge table from the reaction stars.
@@ -237,6 +264,14 @@ def build_cosmos_projection(
     participant carried, and the reaction index is ranked over the reactions
     this build sees, so a surviving row from an earlier one would carry a label
     from a different numbering.
+
+    ``utils_db_url`` points at the identifier mappings, which live in another
+    database on another server and are read through a second connection. It is
+    optional, and so is the database answering: a step that cannot reach it
+    labels every node with the identifier the build canonicalised it to and
+    records that namespace on the edge. The output is then narrower, never
+    absent, which is what lets this run on a machine that has no mapping
+    database at all.
     """
     started = time.monotonic()
     ensure_cosmos_edge_table(conn, schema=schema)
@@ -253,6 +288,25 @@ def build_cosmos_projection(
             sql.SQL('TRUNCATE {}.{} RESTART IDENTITY').format(
                 sql.Identifier(schema), sql.Identifier(TABLE)
             )
+        )
+
+        # The labels come out of the staging tables this leaves behind, so the
+        # translation runs before either projection statement and the drop at
+        # the end of the step is what takes them away again.
+        translation = stage_label_translation(
+            cur,
+            utils_db_url=utils_db_url,
+            utils_schema=utils_schema,
+            progress=progress,
+        )
+        _log(
+            progress,
+            'cosmos_translation',
+            utils=translation.utils_available,
+            gene_uniprot=translation.gene_in_namespace,
+            gene_fallback=translation.gene_fallback,
+            chemical_chebi=translation.chemical_in_namespace,
+            chemical_fallback=translation.chemical_fallback,
         )
 
         cur.execute(
@@ -298,6 +352,7 @@ def build_cosmos_projection(
         skipped_parties = _skipped_parties(cur)
         headers_without_event = _headers_without_event(cur)
 
+        drop_label_translation(cur)
         cur.execute('RESET search_path')
     conn.commit()
 
@@ -313,6 +368,13 @@ def build_cosmos_projection(
         gene_nodes=gene_nodes,
         skipped_parties=skipped_parties,
         headers_without_event=headers_without_event,
+        gene_labels_translated=translation.gene_in_namespace,
+        gene_labels_mapped=translation.gene_mapped,
+        gene_labels_fallback=translation.gene_fallback,
+        chemical_labels_translated=translation.chemical_in_namespace,
+        chemical_labels_mapped=translation.chemical_mapped,
+        chemical_labels_fallback=translation.chemical_fallback,
+        identifier_translation=translation.utils_available,
         seconds=round(time.monotonic() - started, 1),
     )
     _log(
@@ -328,15 +390,26 @@ def build_cosmos_projection(
         gene_nodes=stats.gene_nodes,
         skipped_parties=stats.skipped_parties,
         headers_without_event=stats.headers_without_event,
+        gene_labels_translated=stats.gene_labels_translated,
+        gene_labels_mapped=stats.gene_labels_mapped,
+        gene_labels_fallback=stats.gene_labels_fallback,
+        chemical_labels_translated=stats.chemical_labels_translated,
+        chemical_labels_mapped=stats.chemical_labels_mapped,
+        chemical_labels_fallback=stats.chemical_labels_fallback,
+        identifier_translation=stats.identifier_translation,
         seconds=stats.seconds,
     )
     logger.info(
         'cosmos: build=%s edges=%s reactions=%s orphans=%s reversible=%s '
         'reverse_edges=%s connectors=%s metabolites=%s genes=%s skipped=%s '
-        'unlabelled=%s seconds=%s',
+        'unlabelled=%s translation=%s gene_uniprot=%s gene_fallback=%s '
+        'chemical_chebi=%s chemical_fallback=%s seconds=%s',
         stats.build_id, stats.edges, stats.reactions, stats.orphan_reactions,
         stats.reversible_reactions, stats.reverse_edges, stats.connectors,
         stats.metabolite_nodes, stats.gene_nodes, stats.skipped_parties,
-        stats.headers_without_event, stats.seconds,
+        stats.headers_without_event, stats.identifier_translation,
+        stats.gene_labels_translated, stats.gene_labels_fallback,
+        stats.chemical_labels_translated, stats.chemical_labels_fallback,
+        stats.seconds,
     )
     return stats

@@ -50,6 +50,7 @@ from omnipath_build.labels import (
     populate_entity_name,
 )
 from omnipath_build.cosmos import (
+    CosmosBuildStats,
     build_cosmos_projection,
     ensure_cosmos_edge_table,
 )
@@ -778,9 +779,17 @@ def main(argv: list[str] | None = None) -> int:
                     _derive_log('cosmos_start')
                     try:
                         ensure_cosmos_edge_table(conn, schema=args.schema)
+                        # The identifier mappings live in the utils database,
+                        # which the manifest step above already reads through
+                        # the same variable. A build that has none still
+                        # projects: the labels keep the identifiers the build
+                        # canonicalised them to and say so.
                         cosmos_stats = build_cosmos_projection(
                             conn,
                             schema=args.schema,
+                            utils_db_url=os.environ.get(
+                                'OMNIPATH_BUILD_UTILS_PG_URL'
+                            ),
                         )
                         _derive_log(
                             'cosmos_done',
@@ -789,6 +798,7 @@ def main(argv: list[str] | None = None) -> int:
                             orphan_reactions=cosmos_stats.orphan_reactions,
                             connectors=cosmos_stats.connectors,
                             skipped_parties=cosmos_stats.skipped_parties,
+                            labels=_cosmos_label_counts(cosmos_stats),
                             seconds=f'{time.perf_counter() - step_started:.3f}',
                         )
                     except Exception as exc:
@@ -985,6 +995,24 @@ def _interaction_deferral_cost(
     if stats is None:
         return None
     return dict(stats.deferral) or None
+
+
+def _cosmos_label_counts(stats: CosmosBuildStats) -> str:
+    """What the label translation reached, as one field of the derive log.
+
+    Both sides in one field rather than six of their own. What a reader wants
+    from the line is the shape of the translation — whether a mapping database
+    answered at all, and how much of each side reached the namespace COSMOS
+    asks for against how much kept the build's own identifier — and six
+    near-identical keys bury that rather than state it. The MetSigDB step
+    reports its per-resource row counts the same way.
+    """
+    return (
+        f'mappings={stats.identifier_translation},'
+        f'gene={stats.gene_labels_translated}/{stats.gene_labels_fallback},'
+        f'chemical={stats.chemical_labels_translated}'
+        f'/{stats.chemical_labels_fallback}'
+    )
 
 
 def _supplementary_step_failed(

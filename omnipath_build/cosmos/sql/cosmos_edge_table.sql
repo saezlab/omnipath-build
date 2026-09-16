@@ -87,10 +87,13 @@ CREATE TABLE IF NOT EXISTS cosmos_edge (
   direction text,
 
   -- The namespace each label's identifier actually came from. COSMOS wants
-  -- ChEBI on the metabolite side and UniProt on the gene side; the build does
-  -- not yet translate into either, so the namespace that answered is recorded
-  -- here and a row that is not in the wanted one says so in the data rather
-  -- than looking like a row that is.
+  -- ChEBI on the metabolite side and UniProt on the gene side, and the
+  -- projection translates into both where a mapping answers; where none does,
+  -- the label keeps the identifier the build canonicalised it to and this
+  -- column names that namespace instead. It is the whole point of the pair: a
+  -- consumer tells a translated label from a fallen-back one without parsing
+  -- the string, and a row that is not in the wanted namespace cannot look like
+  -- a row that is.
   source_id_type text,
   target_id_type text,
 

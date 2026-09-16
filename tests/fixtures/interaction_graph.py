@@ -216,6 +216,52 @@ COSMOS_DIRECTION_NAMES = (
     'cos_orphan_back_out',
 )
 
+# The reactions the **label translation** is asserted on. COSMOS reads UniProt
+# on the gene side and ChEBI on the metabolite side, and the build hands the
+# projection whatever identifier its resources agreed on, so a stage in between
+# asks a mapping database and falls back where it gets no answer. Each of these
+# reactions carries one population of that rule.
+#
+# The identifiers here are not `FIXTURE_*` strings, and they cannot be: the
+# rule reads the shape of an identifier as well as its declared type, and a
+# string no namespace would ever hold exercises none of it.
+COSMOS_TRANSLATION_NAMES = (
+    # Everything translates. Both metabolites are typed ChEBI and the build
+    # stores them as bare numerals, which the label has to prefix; the catalyst
+    # is an Entrez gene the mapping answers for.
+    'cos_rxn_named',
+    'cos_chebi_in',
+    'cos_chebi_out',
+    'cos_entrez_enz',
+    # Nothing translates, and nothing is dropped. The substrate is an untyped
+    # bare numeral no mapping database knows, the product is an untyped bare
+    # numeral one **does** know as a ChEBI, and the catalyst is an Entrez gene
+    # with no mapping at all. Three quarters of the untyped numerals on a real
+    # build are the first kind, which is why shape alone never decides.
+    'cos_rxn_unmapped',
+    'cos_numeral_in',
+    'cos_numeral_out',
+    'cos_entrez_missing_enz',
+    # The catalyst the build failed to type is a UniProt accession all the
+    # same, which is the largest population on the gene side. Its label does
+    # not change and its namespace is still `uniprot`, because the string is
+    # one and a column claiming otherwise would hide coverage the network has.
+    'cos_rxn_shaped',
+    'cos_shaped_in',
+    'cos_shaped_out',
+    'cos_shaped_enz',
+    # Two ambiguities, resolved in opposite directions. An InChIKey several
+    # ChEBI entries claim keeps the InChIKey, because that disagreement is
+    # about stereochemistry and an InChIKey is an identifier a consumer can
+    # use. An Entrez gene several accessions answer for takes the lowest,
+    # because a COSMOS gene node is one enzyme in one reaction and minting two
+    # would state that the reaction runs twice.
+    'cos_rxn_ambiguous',
+    'cos_ambiguous_in',
+    'cos_ambiguous_out',
+    'cos_entrez_many_enz',
+)
+
 # The transport whose cargo crosses the membrane. A transport **is** a
 # compartment change, and the resource states it by publishing the same
 # metabolite twice on the same membership: once as the reactant, in the
@@ -245,6 +291,7 @@ ENTITY_NAMES = (
     *COSMOS_NAMES,
     *COSMOS_DIRECTION_NAMES,
     *TRANSPORT_SPLIT_NAMES,
+    *COSMOS_TRANSLATION_NAMES,
 )
 
 ENTITY_TYPES = {
@@ -290,6 +337,62 @@ ENTITY_TYPES = {
     'trn_b': TRANSPORT_TYPE,
     'met_cargo': CHEMICAL_TYPE,
     'met_fuel': CHEMICAL_TYPE,
+    'cos_rxn_named': REACTION_TYPE,
+    'cos_rxn_unmapped': REACTION_TYPE,
+    'cos_rxn_shaped': REACTION_TYPE,
+    'cos_rxn_ambiguous': REACTION_TYPE,
+    'cos_chebi_in': CHEMICAL_TYPE,
+    'cos_chebi_out': CHEMICAL_TYPE,
+    'cos_numeral_in': CHEMICAL_TYPE,
+    'cos_numeral_out': CHEMICAL_TYPE,
+    'cos_shaped_in': CHEMICAL_TYPE,
+    'cos_shaped_out': CHEMICAL_TYPE,
+    'cos_ambiguous_in': CHEMICAL_TYPE,
+    'cos_ambiguous_out': CHEMICAL_TYPE,
+}
+
+# The identifier every other entity carries is `FIXTURE_<name>`, which is a
+# string no namespace would claim and exactly what the rest of the graph wants.
+# The translation rows need real ones, because the rule reads the shape of an
+# identifier as well as its declared type: ChEBI numerals that have to gain a
+# prefix, Entrez genes a mapping answers or does not, an accession the build
+# failed to type. Written out rather than generated, so a test can name the
+# string it expects to see in a node label.
+ENTITY_IDENTIFIERS = {
+    'cos_chebi_in': '15422',
+    'cos_chebi_out': '16810',
+    'cos_entrez_enz': '7157',
+    'cos_numeral_in': '90000001',
+    'cos_numeral_out': '17234',
+    'cos_entrez_missing_enz': '90000002',
+    'cos_shaped_out': '100',
+    'cos_shaped_enz': 'P12345',
+    'cos_ambiguous_in': 'FIXTUREINCHIKA-FIXTUREKEY-N',
+    'cos_ambiguous_out': '200',
+    'cos_entrez_many_enz': '7158',
+}
+
+# What the build canonicalised each of those to, as the name of a row in
+# `vocab_identifier_type`. Every other entity in the graph carries no declared
+# type at all, which is its own situation and the one the rest of the suite
+# runs under.
+#
+# `cos_numeral_in` and `cos_numeral_out` are both untyped on purpose. They are
+# the population the build could resolve to nothing, and the projection has to
+# tell them apart by asking rather than by looking at the digits.
+ENTITY_ID_TYPES = {
+    'cos_chebi_in': 'Chebi:MI:0474',
+    'cos_chebi_out': 'Chebi:MI:0474',
+    'cos_entrez_enz': 'Entrez:MI:0477',
+    'cos_numeral_in': 'omnipath:unresolved_entity_key',
+    'cos_numeral_out': 'omnipath:unresolved_entity_key',
+    'cos_entrez_missing_enz': 'Entrez:MI:0477',
+    'cos_shaped_in': 'omnipath:unresolved_entity_key',
+    'cos_shaped_out': 'Chebi:MI:0474',
+    'cos_shaped_enz': 'omnipath:unresolved_entity_key',
+    'cos_ambiguous_in': 'Standard Inchi Key:MI:1101',
+    'cos_ambiguous_out': 'Chebi:MI:0474',
+    'cos_entrez_many_enz': 'Entrez:MI:0477',
 }
 
 ENTITY = {
@@ -396,6 +499,29 @@ RELATIONS = (
      'cos_orphan_back_in'),
     ('cos_orphan_back_product', 'cos_rxn_orphan_back', 'has_participant',
      'cos_orphan_back_out'),
+    # The reactions the label translation reads. Same star shape as the rest:
+    # the parent is the subject of every membership and the catalyst points at
+    # the parent under `controls`.
+    ('cos_named_reactant', 'cos_rxn_named', 'has_participant', 'cos_chebi_in'),
+    ('cos_named_product', 'cos_rxn_named', 'has_participant', 'cos_chebi_out'),
+    ('cos_named_enzyme', 'cos_entrez_enz', 'controls', 'cos_rxn_named'),
+    ('cos_unmapped_reactant', 'cos_rxn_unmapped', 'has_participant',
+     'cos_numeral_in'),
+    ('cos_unmapped_product', 'cos_rxn_unmapped', 'has_participant',
+     'cos_numeral_out'),
+    ('cos_unmapped_enzyme', 'cos_entrez_missing_enz', 'controls',
+     'cos_rxn_unmapped'),
+    ('cos_shaped_reactant', 'cos_rxn_shaped', 'has_participant',
+     'cos_shaped_in'),
+    ('cos_shaped_product', 'cos_rxn_shaped', 'has_participant',
+     'cos_shaped_out'),
+    ('cos_shaped_enzyme', 'cos_shaped_enz', 'controls', 'cos_rxn_shaped'),
+    ('cos_ambiguous_reactant', 'cos_rxn_ambiguous', 'has_participant',
+     'cos_ambiguous_in'),
+    ('cos_ambiguous_product', 'cos_rxn_ambiguous', 'has_participant',
+     'cos_ambiguous_out'),
+    ('cos_ambiguous_enzyme', 'cos_entrez_many_enz', 'controls',
+     'cos_rxn_ambiguous'),
     # The transport whose cargo holds both roles. `trn_b_cargo` is **one**
     # relation — `relation` is unique on (subject, predicate, object), so the
     # two statements about the cargo cannot be two of them — and the role it
@@ -494,6 +620,18 @@ EVIDENCE = (
     ('cos_fwd_lower_enzyme', SOURCE_A, ()),
     ('cos_orphan_back_reactant', SOURCE_A, ()),
     ('cos_orphan_back_product', SOURCE_A, ()),
+    ('cos_named_reactant', SOURCE_A, ()),
+    ('cos_named_product', SOURCE_A, ()),
+    ('cos_named_enzyme', SOURCE_A, ()),
+    ('cos_unmapped_reactant', SOURCE_A, ()),
+    ('cos_unmapped_product', SOURCE_A, ()),
+    ('cos_unmapped_enzyme', SOURCE_A, ()),
+    ('cos_shaped_reactant', SOURCE_A, ()),
+    ('cos_shaped_product', SOURCE_A, ()),
+    ('cos_shaped_enzyme', SOURCE_A, ()),
+    ('cos_ambiguous_reactant', SOURCE_A, ()),
+    ('cos_ambiguous_product', SOURCE_A, ()),
+    ('cos_ambiguous_enzyme', SOURCE_A, ()),
     # The transport with the two-role cargo. `trn_b_cargo` is deliberately
     # absent here: one row per (relation, resource) is exactly what it cannot
     # be expressed as, and `SPLIT_ROLE_EVIDENCE` below writes its two.
@@ -604,6 +742,29 @@ PARTICIPANT_EVIDENCE = (
      'Subcellular Location:OM:0604', 'c'),
     ('cos_orphan_back_product', SOURCE_A, 'Product:OM:0311', None),
     ('cos_orphan_back_product', SOURCE_A, 'Subcellular Location:OM:0604', 'c'),
+    # The translation reactions. Every substrate sits in the cytosol, so a test
+    # naming a node string has one compartment to track and the prefix rule is
+    # asserted on a label that carries a location as well as an identifier.
+    ('cos_named_reactant', SOURCE_A, 'Reactant:OM:0310', None),
+    ('cos_named_reactant', SOURCE_A, 'Subcellular Location:OM:0604', 'c'),
+    ('cos_named_product', SOURCE_A, 'Product:OM:0311', None),
+    ('cos_named_product', SOURCE_A, 'Subcellular Location:OM:0604', 'm'),
+    ('cos_named_enzyme', SOURCE_A, 'Enzyme:MI:0501', None),
+    ('cos_unmapped_reactant', SOURCE_A, 'Reactant:OM:0310', None),
+    ('cos_unmapped_reactant', SOURCE_A, 'Subcellular Location:OM:0604', 'c'),
+    ('cos_unmapped_product', SOURCE_A, 'Product:OM:0311', None),
+    ('cos_unmapped_product', SOURCE_A, 'Subcellular Location:OM:0604', 'c'),
+    ('cos_unmapped_enzyme', SOURCE_A, 'Enzyme:MI:0501', None),
+    ('cos_shaped_reactant', SOURCE_A, 'Reactant:OM:0310', None),
+    ('cos_shaped_reactant', SOURCE_A, 'Subcellular Location:OM:0604', 'c'),
+    ('cos_shaped_product', SOURCE_A, 'Product:OM:0311', None),
+    ('cos_shaped_product', SOURCE_A, 'Subcellular Location:OM:0604', 'c'),
+    ('cos_shaped_enzyme', SOURCE_A, 'Enzyme:MI:0501', None),
+    ('cos_ambiguous_reactant', SOURCE_A, 'Reactant:OM:0310', None),
+    ('cos_ambiguous_reactant', SOURCE_A, 'Subcellular Location:OM:0604', 'c'),
+    ('cos_ambiguous_product', SOURCE_A, 'Product:OM:0311', None),
+    ('cos_ambiguous_product', SOURCE_A, 'Subcellular Location:OM:0604', 'c'),
+    ('cos_ambiguous_enzyme', SOURCE_A, 'Enzyme:MI:0501', None),
     # The fuel of the transport below: consumed in the cytosol and never
     # produced, so it holds one role and one compartment.
     ('trn_b_fuel', SOURCE_A, 'Reactant:OM:0310', None),
@@ -766,18 +927,32 @@ def build_interaction_fixture(
         entity_type_ids = dict(cur.fetchall())
         entity_type_id = entity_type_ids[PROTEIN_TYPE]
 
+        # The identifier types the translation rows declare. They are seeded
+        # rows of the schema rather than fixture inventions, so this reads the
+        # ids back rather than minting them; a type the schema does not carry
+        # would be a typo in the fixture and the lookup says so at once.
+        cur.execute(
+            q('SELECT name, identifier_type_id FROM {}.vocab_identifier_type')
+        )
+        identifier_type_ids = dict(cur.fetchall())
         cur.executemany(
             q(
                 'INSERT INTO {}.entity (entity_id, entity_type_id, '
-                'taxonomy_id, canonical_identifier, resolution_status_id) '
-                'VALUES (%s, %s, %s, %s, 1) ON CONFLICT DO NOTHING'
+                'taxonomy_id, canonical_identifier, '
+                'canonical_identifier_type_id, resolution_status_id) '
+                'VALUES (%s, %s, %s, %s, %s, 1) ON CONFLICT DO NOTHING'
             ).as_string(cur.connection),
             [
                 (
                     entity_id,
                     entity_type_ids[ENTITY_TYPES.get(letter, PROTEIN_TYPE)],
                     TAXONOMY_ID,
-                    f'FIXTURE_{letter}',
+                    ENTITY_IDENTIFIERS.get(letter, f'FIXTURE_{letter}'),
+                    (
+                        identifier_type_ids[ENTITY_ID_TYPES[letter]]
+                        if letter in ENTITY_ID_TYPES
+                        else None
+                    ),
                 )
                 for letter, entity_id in ENTITY.items()
             ],

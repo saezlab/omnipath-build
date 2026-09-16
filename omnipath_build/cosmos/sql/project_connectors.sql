@@ -51,7 +51,16 @@ WITH gene_node AS (
 )
 SELECT
   %(build_id)s,
-  coalesce(enzyme.canonical_identifier, event.canonical_identifier),
+  -- The bare side is the same identifier the node label carries, translation
+  -- and all. Reading the entity's canonical identifier here instead would
+  -- point a connector from an Entrez gene at a node named after a UniProt
+  -- accession, and the connector exists precisely so that a caller holding one
+  -- identifier reaches every node that carries it.
+  coalesce(
+    enzyme_label.identifier,
+    enzyme.canonical_identifier,
+    event.canonical_identifier
+  ),
   gene_node.label,
   gene_node.entity_id,
   gene_node.entity_id,
@@ -74,6 +83,10 @@ SELECT
   gene_node.sources
 FROM gene_node
 LEFT JOIN entity enzyme ON enzyme.entity_id = gene_node.entity_id
+LEFT JOIN _cos_label enzyme_label ON enzyme_label.entity_id = gene_node.entity_id
 LEFT JOIN entity event ON event.entity_id = gene_node.reaction_entity_id
-WHERE coalesce(enzyme.canonical_identifier, event.canonical_identifier)
-        IS NOT NULL
+WHERE coalesce(
+        enzyme_label.identifier,
+        enzyme.canonical_identifier,
+        event.canonical_identifier
+      ) IS NOT NULL

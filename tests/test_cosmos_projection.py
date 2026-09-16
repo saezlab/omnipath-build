@@ -22,6 +22,16 @@ things the rewrite has to get right.
   shape in a metabolic model. The reaction stands in for the unknown catalyst,
   the row says so in ``orphan``, and no reaction is dropped for want of a
   catalyst.
+* **The labels reach the namespaces the network reads, or say that they did
+  not.** COSMOS is written against UniProt on the gene side and ChEBI on the
+  metabolite side, and the build hands the projection whatever identifier its
+  resources agreed on. A metabolite typed ChEBI gains the prefix the build
+  does not store and the network does; a catalyst a mapping answers for
+  becomes an accession; a catalyst nothing answers for keeps its own
+  identifier, and both endpoints of every edge record the namespace their
+  label actually carries, so a fallen-back node cannot be mistaken for a
+  translated one. A run with no mapping database at all falls every label
+  back and still emits the whole network.
 * **A reversible reaction runs both ways, and only a reversible one does.** The
   resource states the direction on the reaction event, under two spellings per
   value. A reversible conversion gains the mirrored pair — every product into
@@ -52,6 +62,23 @@ DATABASE_URL = os.environ.get('DATABASE_URL')
 SCRATCH = os.environ.get(
     'OMNIPATH_TEST_SCRATCH_SCHEMA_COSMOS',
     'cosmos_projection_test',
+)
+# The translated projection gets a namespace of its own rather than a second
+# run over the first: the two differ in every label the mappings touch, and one
+# table holding whichever of them ran last would make every assertion in this
+# file depend on the order pytest happened to build its fixtures in.
+TRANSLATION_SCRATCH = os.environ.get(
+    'OMNIPATH_TEST_SCRATCH_SCHEMA_COSMOS_TRANSLATION',
+    'cosmos_translation_test',
+)
+# The mapping database, staged. The real one lives on another server, holds 618
+# million rows and changes when the utils build runs, so a test that asked it
+# would be asserting today's coverage rather than the rule. This one is four
+# mappings and one resolver row, in the shape the utils schema publishes, and
+# the step reads it through exactly the queries it uses against the real thing.
+MAPPINGS_SCRATCH = os.environ.get(
+    'OMNIPATH_TEST_SCRATCH_SCHEMA_COSMOS_MAPPINGS',
+    'cosmos_mappings_test',
 )
 
 pytestmark = pytest.mark.skipif(
@@ -903,3 +930,722 @@ def test_the_edges_live_in_their_own_table():
     from omnipath_build.cosmos import TABLE
 
     assert TABLE == 'cosmos_edge'
+
+
+# The identifier types the staged mapping database knows, numbered as the utils
+# build numbers them. The step reads the numbers back by name rather than
+# assuming them, and these are here so that it has something to read.
+STAGED_ID_TYPES = (
+    (1, 'uniprot'),
+    (18, 'entrez'),
+    (44, 'chebi'),
+    (52, 'inchikey'),
+)
+
+# The mappings themselves, in the utils table's own shape: a source type, a
+# target type, the taxonomy the pair holds under, and the two identifiers.
+#
+# Two of them are deliberately ambiguous, and the two ambiguities resolve in
+# opposite directions. One Entrez gene answering two accessions takes the lower
+# one; one InChIKey two ChEBI entries claim keeps the InChIKey.
+#
+# The ChEBI side is stored **prefixed**, which is how the utils build stores it
+# and is not how the OmniPath build stores it. A lookup that compared the two
+# spellings directly would match nothing at all and report a mapping database
+# that answers everything as one that answers nothing.
+STAGED_MAPPINGS = (
+    (18, 1, 9606, '7157', 'Q00000'),
+    (18, 1, 9606, '7158', 'Q99999'),
+    (18, 1, 9606, '7158', 'P11111'),
+    # Published ChEBI to InChIKey, which is the only direction the real mapping
+    # table holds it in, so reading it backwards is the whole of the chemical
+    # lookup rather than an optimisation of it.
+    (44, 52, 0, 'CHEBI:30000', 'FIXTUREINCHIKA-FIXTUREKEY-N'),
+    (44, 52, 0, 'CHEBI:30001', 'FIXTUREINCHIKA-FIXTUREKEY-N'),
+)
+
+# The protein resolver, which is the gene side's first oracle: it covers 32,838
+# organisms against the mapping table's two, and where both answer it returns
+# the reviewed accession while the mapping table lists every accession the gene
+# ever reached.
+#
+# `7157` is here **and** in the mapping table, under two different accessions,
+# because the order the two are asked in is a claim the projection makes rather
+# than an implementation detail. `7158` is in the mapping table alone, so the
+# table still answers for what the resolver does not hold.
+STAGED_PROTEINS = (
+    (9606, 'entrez', '7157', 'P04637'),
+)
+
+# Which bare numerals the mapping database knows as ChEBI identifiers. This is
+# the oracle an untyped numeral is checked against, and the reason a numeral it
+# does not answer for stays a numeral.
+STAGED_CHEMICALS = (
+    ('chebi', 'CHEBI:17234', 'FIXTUREKNOWNKA-FIXTUREKEY-N'),
+)
+
+# What the translation is expected to produce, per fixture entity: the
+# identifier the label carries and the namespace the columns report. Written
+# out rather than derived, because a table computed from the same rules the
+# step applies would agree with it however wrong the rules are.
+TRANSLATED = {
+    # Typed ChEBI. Only the prefix changes, and it has to.
+    'cos_chebi_in': ('CHEBI:15422', 'chebi'),
+    'cos_chebi_out': ('CHEBI:16810', 'chebi'),
+    'cos_shaped_out': ('CHEBI:100', 'chebi'),
+    'cos_ambiguous_out': ('CHEBI:200', 'chebi'),
+    # An untyped numeral the mapping database knows, and one it does not.
+    'cos_numeral_out': ('CHEBI:17234', 'chebi'),
+    'cos_numeral_in': ('90000001', 'unresolved'),
+    # An InChIKey two ChEBI entries claim.
+    'cos_ambiguous_in': ('FIXTUREINCHIKA-FIXTUREKEY-N', 'inchikey'),
+    # An untyped string that is no identifier of any namespace.
+    'cos_shaped_in': ('FIXTURE_cos_shaped_in', 'unresolved'),
+    # The gene side: one mapped, one ambiguous and resolved low, one with no
+    # mapping at all, one never typed but plainly an accession.
+    'cos_entrez_enz': ('P04637', 'uniprot'),
+    'cos_entrez_many_enz': ('P11111', 'uniprot'),
+    'cos_entrez_missing_enz': ('90000002', 'entrez'),
+    'cos_shaped_enz': ('P12345', 'uniprot'),
+}
+
+# The shapes a namespace column claims about the string beside it. A column
+# saying `uniprot` over a bare numeral would be worse than one saying `entrez`,
+# because a consumer filtering on the column would take the row.
+NAMESPACE_SHAPE = {
+    'chebi': re.compile(r'^CHEBI:[0-9]+$'),
+    'entrez': re.compile(r'^[0-9]+$'),
+    'uniprot': re.compile(
+        r'^(?:[OPQ][0-9][A-Z0-9]{3}[0-9]'
+        r'|[A-NR-Z][0-9](?:[A-Z][A-Z0-9]{2}[0-9]){1,2})(?:-[0-9]+)?$'
+    ),
+    'inchikey': re.compile(r'^[A-Z]{14}-[A-Z]{10}-[A-Z]$'),
+}
+
+METABOLITE_PREFIX = 'Metab__'
+
+
+def _stage_mappings(conn, schema: str) -> None:
+    """Build a mapping database in the shape the utils schema publishes.
+
+    Three tables and ten rows, named and keyed exactly as the real ones are, so
+    the projection reaches them through the queries it runs in production
+    rather than through a seam opened for the test.
+    """
+    from psycopg2 import sql
+
+    schema_id = sql.Identifier(schema)
+    with conn.cursor() as cur:
+        cur.execute(
+            sql.SQL('DROP SCHEMA IF EXISTS {} CASCADE').format(schema_id)
+        )
+        cur.execute(sql.SQL('CREATE SCHEMA {}').format(schema_id))
+        cur.execute(
+            sql.SQL(
+                """
+                CREATE TABLE {}.id_type (
+                  id smallint PRIMARY KEY,
+                  name text NOT NULL
+                )
+                """
+            ).format(schema_id)
+        )
+        cur.execute(
+            sql.SQL(
+                """
+                CREATE TABLE {}.id_mapping (
+                  source_type_id smallint NOT NULL,
+                  target_type_id smallint NOT NULL,
+                  ncbi_tax_id integer NOT NULL,
+                  source_id varchar(64) NOT NULL,
+                  target_id varchar(64) NOT NULL
+                )
+                """
+            ).format(schema_id)
+        )
+        cur.execute(
+            sql.SQL(
+                """
+                CREATE TABLE {}.resolver_protein (
+                  ncbi_tax_id integer,
+                  source_type varchar(64),
+                  source_id varchar(64),
+                  uniprot varchar(64)
+                )
+                """
+            ).format(schema_id)
+        )
+        cur.execute(
+            sql.SQL(
+                """
+                CREATE TABLE {}.resolver_chemical (
+                  source_type varchar(64),
+                  source_id varchar(64),
+                  inchikey varchar(64)
+                )
+                """
+            ).format(schema_id)
+        )
+        cur.executemany(
+            sql.SQL('INSERT INTO {}.id_type (id, name) VALUES (%s, %s)')
+            .format(schema_id)
+            .as_string(conn),
+            STAGED_ID_TYPES,
+        )
+        cur.executemany(
+            sql.SQL(
+                'INSERT INTO {}.id_mapping (source_type_id, target_type_id, '
+                'ncbi_tax_id, source_id, target_id) VALUES (%s, %s, %s, %s, %s)'
+            )
+            .format(schema_id)
+            .as_string(conn),
+            STAGED_MAPPINGS,
+        )
+        cur.executemany(
+            sql.SQL(
+                'INSERT INTO {}.resolver_protein '
+                '(ncbi_tax_id, source_type, source_id, uniprot) '
+                'VALUES (%s, %s, %s, %s)'
+            )
+            .format(schema_id)
+            .as_string(conn),
+            STAGED_PROTEINS,
+        )
+        cur.executemany(
+            sql.SQL(
+                'INSERT INTO {}.resolver_chemical '
+                '(source_type, source_id, inchikey) VALUES (%s, %s, %s)'
+            )
+            .format(schema_id)
+            .as_string(conn),
+            STAGED_CHEMICALS,
+        )
+    conn.commit()
+
+
+@pytest.fixture(scope='module')
+def mappings(conn):
+    """The staged mapping database, for the length of the module."""
+    from psycopg2 import sql
+
+    _stage_mappings(conn, MAPPINGS_SCRATCH)
+    try:
+        yield MAPPINGS_SCRATCH
+    finally:
+        conn.rollback()
+        with conn.cursor() as cur:
+            cur.execute(
+                sql.SQL('DROP SCHEMA IF EXISTS {} CASCADE').format(
+                    sql.Identifier(MAPPINGS_SCRATCH)
+                )
+            )
+        conn.commit()
+
+
+@pytest.fixture(scope='module')
+def translated_scratch(conn):
+    """A second copy of the fixture graph, for the translated projection."""
+    from omnipath_build.db import schema as build_schema
+    from omnipath_build.db.derived_tables import rebuild_interaction_tables
+
+    build_schema.ensure_schema(
+        conn, schema=TRANSLATION_SCRATCH, drop_existing=True
+    )
+    conn.commit()
+    build_interaction_fixture(conn, TRANSLATION_SCRATCH)
+    rebuild_interaction_tables(conn, schema=TRANSLATION_SCRATCH)
+    conn.commit()
+    try:
+        yield TRANSLATION_SCRATCH
+    finally:
+        conn.rollback()
+        with conn.cursor() as cur:
+            cur.execute(
+                f'DROP SCHEMA IF EXISTS {TRANSLATION_SCRATCH} CASCADE'
+            )
+        conn.commit()
+
+
+@pytest.fixture(scope='module')
+def translated(conn, translated_scratch, mappings):
+    """The projection with the mappings in reach, and what it reported.
+
+    The mapping database is another schema of the same Postgres rather than
+    another server, which is a difference the step cannot see: it opens a
+    second connection either way and reads the same three tables through it.
+    """
+    from omnipath_build.cosmos import (
+        build_cosmos_projection,
+        ensure_cosmos_edge_table,
+    )
+
+    ensure_cosmos_edge_table(conn, schema=translated_scratch)
+    conn.commit()
+    try:
+        stats = build_cosmos_projection(
+            conn,
+            schema=translated_scratch,
+            utils_db_url=DATABASE_URL,
+            utils_schema=mappings,
+        )
+    except Exception:
+        conn.rollback()
+        raise
+    conn.commit()
+    return stats
+
+
+def _translated_edges(conn, translated_scratch, name: str) -> list[dict]:
+    """The reaction edges of one named fixture reaction, after translation."""
+    return _reaction_edges(conn, translated_scratch, name)
+
+
+def _endpoint_identifier(label: str, compartment: str | None) -> str:
+    """The bare identifier inside a node label.
+
+    A metabolite label is the prefix, the identifier and the compartment; a
+    gene label is the prefix with the reaction index, the identifier and, on
+    the mirrored half, the suffix. Everything else — the bare side of a
+    connector — is the identifier already.
+    """
+    if label.startswith(METABOLITE_PREFIX):
+        body = label[len(METABOLITE_PREFIX):]
+        if compartment and body.endswith(f'_{compartment}'):
+            body = body[: -len(compartment) - 1]
+        return body
+    gene = GENE_NODE.match(label)
+    if gene:
+        body = gene.group(2)
+        if body.endswith(REVERSE_SUFFIX):
+            body = body[: -len(REVERSE_SUFFIX)]
+        return body
+    return label
+
+
+def _endpoints(edges: list[dict]) -> list[tuple[str, str | None]]:
+    """Every (identifier, namespace) pair the given edges claim."""
+    return [
+        (
+            _endpoint_identifier(edge[f'{side}_label'],
+                                 edge[f'{side}_compartment']),
+            edge[f'{side}_id_type'],
+        )
+        for edge in edges
+        for side in ('source', 'target')
+    ]
+
+
+class TestAChebiMetaboliteCarriesThePrefixTheNetworkReads:
+    """The one change that is not optional.
+
+    The build stores a ChEBI identifier as a bare numeral, `15422`. Every other
+    database that holds one, the delivered network included, writes
+    `CHEBI:15422`. Without the prefix every metabolite node in the projection
+    differs from its counterpart in the network for a reason that has nothing
+    to do with the chemistry, and a consumer joining the two matches nothing.
+    """
+
+    @pytest.fixture(scope='class')
+    def edges(self, conn, translated_scratch, translated):
+        found = _translated_edges(conn, translated_scratch, 'cos_rxn_named')
+        assert found, 'the translated conversion produced no edges at all'
+        return found
+
+    def test_the_substrate_label_is_the_prefixed_identifier(self, edges):
+        assert 'Metab__CHEBI:15422_c' in {
+            edge['source_label'] for edge in edges
+        }
+
+    def test_the_product_label_is_the_prefixed_identifier(self, edges):
+        assert 'Metab__CHEBI:16810_m' in {
+            edge['target_label'] for edge in edges
+        }
+
+    def test_the_bare_numeral_is_nowhere_in_the_labels(self, edges):
+        """A label the build could have emitted before, and must not now."""
+        labels = {
+            label
+            for edge in edges
+            for label in (edge['source_label'], edge['target_label'])
+        }
+        assert 'Metab__15422_c' not in labels
+        assert 'Metab__16810_m' not in labels
+
+    def test_the_prefix_is_applied_once(self, edges):
+        """Prefixing an already prefixed identifier is its own bug."""
+        for edge in edges:
+            for label in (edge['source_label'], edge['target_label']):
+                assert label.count('CHEBI:') <= 1
+
+    def test_the_namespace_says_chebi(self, edges):
+        namespaces = {
+            namespace
+            for identifier, namespace in _endpoints(edges)
+            if identifier.startswith('CHEBI:')
+        }
+        assert namespaces == {'chebi'}
+
+
+class TestACatalystTranslatesWhereAMappingAnswers:
+    """An Entrez gene becomes the accession COSMOS is written against."""
+
+    @pytest.fixture(scope='class')
+    def edges(self, conn, translated_scratch, translated):
+        return _translated_edges(conn, translated_scratch, 'cos_rxn_named')
+
+    @pytest.fixture(scope='class')
+    def gene_label(self, edges):
+        return _one_gene_node(edges)
+
+    def test_the_node_carries_the_accession(self, gene_label):
+        assert gene_label.endswith('__P04637')
+
+    def test_the_gene_identifier_is_gone_from_the_node(self, gene_label):
+        assert '7157' not in gene_label
+
+    def test_the_namespace_says_uniprot(self, edges, gene_label):
+        namespaces = {
+            edge[f'{side}_id_type']
+            for edge in edges
+            for side in ('source', 'target')
+            if edge[f'{side}_label'] == gene_label
+        }
+        assert namespaces == {'uniprot'}
+
+    def test_the_connector_starts_from_the_translated_identifier(
+        self,
+        conn,
+        translated_scratch,
+        gene_label,
+    ):
+        """The attachment point has to be the identifier the node carries.
+
+        A connector running from `7157` to `Gene3__P04637` would leave the node
+        reachable only by a caller holding the identifier the build happened to
+        canonicalise to, which is the one thing the connector exists to stop.
+        """
+        connectors = _edges(
+            conn,
+            translated_scratch,
+            "interaction_type = 'connector' AND target_label = %s",
+            [gene_label],
+        )
+        assert [edge['source_label'] for edge in connectors] == ['P04637']
+
+    def test_the_resolver_answers_before_the_mapping_table(self, gene_label):
+        """Both oracles hold this gene, under different accessions.
+
+        The order is a claim, not an accident. The mapping table lists every
+        accession an Entrez gene ever reached, so choosing among them by sort
+        order returns an unreviewed isoform; the resolver returns the one
+        accession the gene is known by. Where both answer, that one stands.
+        """
+        assert not gene_label.endswith('__Q00000')
+
+    def test_one_gene_reaches_one_node_even_where_two_accessions_answer(
+        self,
+        conn,
+        translated_scratch,
+        translated,
+    ):
+        """Ambiguity resolves low, and it resolves to a single node.
+
+        Two accessions for one Entrez gene are two names for the enzyme, not
+        two enzymes. Emitting both would say the reaction runs twice, and
+        picking whichever the mapping table returned first would move the label
+        between rebuilds; the lowest by sort order does neither.
+        """
+        edges = _translated_edges(
+            conn, translated_scratch, 'cos_rxn_ambiguous'
+        )
+        assert _one_gene_node(edges).endswith('__P11111')
+
+
+class TestACatalystWithNoMappingKeepsWhatTheBuildHolds:
+    """Entrez is an identifier. An unanswered lookup is not a reason to lie."""
+
+    @pytest.fixture(scope='class')
+    def edges(self, conn, translated_scratch, translated):
+        return _translated_edges(conn, translated_scratch, 'cos_rxn_unmapped')
+
+    @pytest.fixture(scope='class')
+    def gene_label(self, edges):
+        return _one_gene_node(edges)
+
+    def test_the_node_keeps_the_gene_identifier(self, gene_label):
+        assert gene_label.endswith('__90000002')
+
+    def test_the_namespace_says_entrez(self, edges, gene_label):
+        namespaces = {
+            edge[f'{side}_id_type']
+            for edge in edges
+            for side in ('source', 'target')
+            if edge[f'{side}_label'] == gene_label
+        }
+        assert namespaces == {'entrez'}
+
+    def test_the_reaction_keeps_both_sides_of_its_arrow(self, edges):
+        """A catalyst nothing could translate loses no chemistry."""
+        assert len(edges) == 2
+
+
+class TestAnUntypedAccessionIsReportedAsUniprot:
+    """The largest population on the gene side is this one.
+
+    140,312 of the build's 140,345 untyped catalysts are UniProt accessions
+    that merely failed to be typed as such. Reading the declared type and
+    calling them unresolved would report the gene side as almost entirely
+    untranslated when almost all of it is already in the namespace COSMOS
+    wants. The column follows the string, not the type.
+    """
+
+    @pytest.fixture(scope='class')
+    def edges(self, conn, translated_scratch, translated):
+        return _translated_edges(conn, translated_scratch, 'cos_rxn_shaped')
+
+    @pytest.fixture(scope='class')
+    def gene_label(self, edges):
+        return _one_gene_node(edges)
+
+    def test_the_label_is_unchanged(self, gene_label):
+        assert gene_label.endswith('__P12345')
+
+    def test_the_namespace_says_uniprot(self, edges, gene_label):
+        namespaces = {
+            edge[f'{side}_id_type']
+            for edge in edges
+            for side in ('source', 'target')
+            if edge[f'{side}_label'] == gene_label
+        }
+        assert namespaces == {'uniprot'}
+
+    def test_a_string_of_no_namespace_stays_unresolved(self, edges):
+        """The same untyped population, where the string is not an accession."""
+        found = {
+            namespace
+            for identifier, namespace in _endpoints(edges)
+            if identifier == 'FIXTURE_cos_shaped_in'
+        }
+        assert found == {'unresolved'}
+
+
+class TestAnUntypedNumeralIsChebiOnlyWhereTheMappingSaysSo:
+    """Shape is not evidence.
+
+    About 28 per cent of the build's untyped bare numerals are ChEBI
+    identifiers and the rest are model-local accessions that merely look like
+    them. Prefixing all of them would put a wrong identifier into three
+    published labels out of four, which is worse than an honest fallback.
+    """
+
+    @pytest.fixture(scope='class')
+    def endpoints(self, conn, translated_scratch, translated):
+        return dict(
+            _endpoints(
+                _translated_edges(
+                    conn, translated_scratch, 'cos_rxn_unmapped'
+                )
+            )
+        )
+
+    def test_a_confirmed_numeral_becomes_a_chebi_identifier(self, endpoints):
+        assert endpoints['CHEBI:17234'] == 'chebi'
+
+    def test_an_unconfirmed_numeral_is_left_alone(self, endpoints):
+        assert endpoints['90000001'] == 'unresolved'
+
+    def test_the_unconfirmed_numeral_never_gains_the_prefix(self, endpoints):
+        assert 'CHEBI:90000001' not in endpoints
+
+
+class TestAnAmbiguousChemicalMappingKeepsTheBuildsIdentifier:
+    """The chemical side resolves an ambiguity the other way from the gene one.
+
+    Two ChEBI entries claiming one InChIKey is a disagreement about
+    stereochemistry, and choosing between them would state a structure neither
+    database did. An InChIKey is an identifier a consumer can work with, so the
+    honest answer keeps it and says so.
+    """
+
+    @pytest.fixture(scope='class')
+    def endpoints(self, conn, translated_scratch, translated):
+        return dict(
+            _endpoints(
+                _translated_edges(
+                    conn, translated_scratch, 'cos_rxn_ambiguous'
+                )
+            )
+        )
+
+    def test_the_inchikey_survives(self, endpoints):
+        assert (
+            endpoints['FIXTUREINCHIKA-FIXTUREKEY-N'] == 'inchikey'
+        )
+
+    def test_neither_candidate_was_picked(self, endpoints):
+        assert 'CHEBI:30000' not in endpoints
+        assert 'CHEBI:30001' not in endpoints
+
+
+class TestEveryTranslatedLabelIsTheOneTheTableWasToldToExpect:
+    """One assertion per fixture entity, against a written-out answer."""
+
+    @pytest.fixture(scope='class')
+    def endpoints(self, conn, translated_scratch, translated):
+        return dict(_endpoints(_edges(conn, translated_scratch)))
+
+    @pytest.mark.parametrize('name', sorted(TRANSLATED))
+    def test_the_label_and_the_namespace_are_both_what_was_expected(
+        self,
+        endpoints,
+        name,
+    ):
+        identifier, namespace = TRANSLATED[name]
+        assert identifier in endpoints, (
+            f'{name} should be labelled {identifier}; '
+            f'the projection holds {sorted(endpoints)}'
+        )
+        assert endpoints[identifier] == namespace
+
+
+class TestTheNamespaceColumnAgreesWithTheLabel:
+    """The column is the whole point, so it has to be true of every row.
+
+    A consumer that needs UniProt takes the endpoints whose namespace says
+    `uniprot` and leaves the rest, without parsing one label. That only works
+    if a column never claims a namespace the string beside it does not belong
+    to, which is asserted here over every endpoint of every edge rather than
+    over the ones the other classes name.
+    """
+
+    @pytest.fixture(scope='class')
+    def endpoints(self, conn, translated_scratch, translated):
+        return _endpoints(_edges(conn, translated_scratch))
+
+    def test_every_endpoint_names_a_namespace(self, endpoints):
+        assert all(namespace for _identifier, namespace in endpoints)
+
+    def test_no_column_holds_a_vocabulary_name(self, endpoints):
+        """`chebi`, not `Chebi:MI:0474`.
+
+        The build names an identifier type after the controlled-vocabulary term
+        it came from. That is the right name inside the build and the wrong one
+        in a published network, where the column is read by a consumer who has
+        never heard of the vocabulary.
+        """
+        for _identifier, namespace in endpoints:
+            assert ':' not in namespace
+            assert namespace == namespace.lower()
+
+    def test_a_claimed_namespace_matches_the_string_beside_it(
+        self,
+        endpoints,
+    ):
+        for identifier, namespace in endpoints:
+            shape = NAMESPACE_SHAPE.get(namespace)
+            if shape is None:
+                continue
+            assert shape.match(identifier), (
+                f'{identifier} is labelled {namespace} and does not look '
+                f'like one'
+            )
+
+    def test_the_step_counts_what_it_reached(self, translated):
+        """Each side reports what it reached and what it fell back to."""
+        assert translated.identifier_translation is True
+        assert translated.gene_labels_mapped >= 2
+        assert translated.gene_labels_translated >= (
+            translated.gene_labels_mapped
+        )
+        assert translated.chemical_labels_translated >= 5
+        assert translated.chemical_labels_fallback >= 1
+
+
+class TestWithoutAMappingDatabaseTheProjectionIsStillWhole:
+    """A missing mapping database narrows the output and never fails it.
+
+    This is the path every run of this file outside these classes takes, and it
+    is the path a build machine off the lab network takes. Every label keeps
+    the identifier the build canonicalised it to, every namespace column says
+    which one that is, and the edge set is the same edge set.
+    """
+
+    @pytest.fixture(scope='class')
+    def endpoints(self, conn, scratch, projection):
+        return dict(_endpoints(_edges(conn, scratch)))
+
+    def test_the_step_reports_that_nothing_was_reachable(self, projection):
+        assert projection.identifier_translation is False
+
+    def test_nothing_was_mapped(self, projection):
+        assert projection.gene_labels_mapped == 0
+        assert projection.chemical_labels_mapped == 0
+
+    def test_the_edge_set_is_the_same_one(self, conn, scratch, projection,
+                                          translated_scratch, translated):
+        """Same reactions, same arrows, same count. Only the labels differ."""
+        assert projection.edges == translated.edges
+        assert projection.connectors == translated.connectors
+        assert projection.reactions == translated.reactions
+
+    def test_a_catalyst_keeps_its_gene_identifier(self, endpoints):
+        assert endpoints['7157'] == 'entrez'
+        assert 'P04637' not in endpoints
+
+    def test_an_untyped_numeral_is_not_guessed_at(self, endpoints):
+        """With nothing to ask, a numeral cannot be confirmed as a ChEBI."""
+        assert endpoints['17234'] == 'unresolved'
+        assert 'CHEBI:17234' not in endpoints
+
+    def test_the_chebi_prefix_is_still_applied(self, endpoints):
+        """The prefix is a spelling of an identifier the build already holds.
+
+        Nothing has to be looked up to know that the build's `15422` and the
+        network's `CHEBI:15422` are the same identifier, so the one change the
+        network cannot do without survives having no mapping database at all.
+        """
+        assert endpoints['CHEBI:15422'] == 'chebi'
+
+    def test_an_untyped_accession_is_still_read_as_one(self, endpoints):
+        """Reading the shape of a string needs no database either."""
+        assert endpoints['P12345'] == 'uniprot'
+
+
+def test_a_mapping_database_that_answers_with_an_error_falls_back():
+    """A reachable mapping database is not the same as a usable one.
+
+    An older utils build with one of these tables missing, or a connection
+    without the rights to read them, answers every query with an error. The
+    step cannot tell that from an absent database and must not treat it as a
+    reason to fail a projection over content the build already wrote, so both
+    land on the same fallback and the step records that nothing answered.
+
+    Pointed at a schema that holds no mapping tables at all, on a connection of
+    its own: the failing statements abort the transaction they run in, and
+    lending them the connection the rest of this file builds on would take the
+    other fixtures down with them.
+    """
+    import psycopg2
+
+    from omnipath_build.cosmos.translate import (
+        IdentifierMappings,
+        LabelEntity,
+        translate_identifiers,
+    )
+
+    entity_id = ENTITY['cos_entrez_enz']
+    entities = [
+        LabelEntity(entity_id, '7157', 'Entrez:MI:0477', 9606, 'gene'),
+    ]
+    connection = psycopg2.connect(DATABASE_URL)
+    connection.set_session(readonly=True, autocommit=True)
+    try:
+        mappings = IdentifierMappings(connection, schema='pg_catalog')
+        labels = translate_identifiers(entities, mappings)
+    finally:
+        connection.close()
+
+    assert mappings.failed is True
+    assert labels[entity_id].identifier == '7157'
+    assert labels[entity_id].namespace == 'entrez'
+    assert labels[entity_id].mapped is False
