@@ -1401,6 +1401,71 @@ _PARTICIPANT_ROLE_TERMS = (
     _TRANSPORT_SUBSTRATE_TERM,
 )
 
+# A metabolic resource publishes a reaction as a **star**, never as a pair: a
+# `Reaction` or `Transport` entity standing for the event, one
+# `has_participant` relation from it to each member, and — because
+# `relation_rules.predicate_for_membership` flips a catalytic membership — the
+# catalyst as a sibling `controls` edge pointing *at* the event. Read as
+# ordered endpoint pairs, `A + B -> C` becomes three unrelated arity-2
+# interactions between a metabolite and an abstract node, which is what the
+# projection produced until the hyperedge staging below was added.
+#
+# **The gate is the parent's entity type, not the verb.** A pathway lists its
+# members under the same `has_participant`, and on the current build that is
+# 315,754 of the 639,433 participant relations — very nearly half. A projection
+# keyed on the predicate would turn every pathway into one interaction of a few
+# hundred participants.
+_REACTION_PARENT_TYPES = ('Reaction:OM:0015', 'Transport:OM:0035')
+_PARTICIPANT_PREDICATE = 'has_participant'
+# The verb a catalytic membership was rewritten to. The catalyst is the
+# subject of it and the reaction the object, which is the opposite direction
+# from every `has_participant` row in the same star.
+_CATALYSIS_PREDICATE = 'controls'
+
+# The participant's role, as the resource states it on the membership. Each
+# term is listed in both the forms the load side can write — the
+# `Label:PREFIX:id` pair and the bare accession — because a resource reaching
+# the graph through the controlled vocabulary writes the first and one
+# reaching it through a raw accession writes the second, and 53,316 maturation
+# relations once sat in the fallback class for exactly that reason.
+_REACTANT_ROLE_TERMS = (
+    'Reactant:OM:0310',
+    'OM:0310',
+    'Substrate:MI:0502',
+    'MI:0502',
+)
+_PRODUCT_ROLE_TERMS = ('Product:OM:0311', 'OM:0311')
+_COFACTOR_ROLE_TERMS = ('Cofactor:OM:0317', 'OM:0317')
+# A regulator of a reaction that is not its catalyst: the flip in
+# `predicate_for_membership` only catches enzymes and controllers, so an
+# inhibitor or a stimulator stays a `has_participant` member and reaches the
+# reaction here rather than through the `controls` edge.
+_REGULATOR_ROLE_TERMS = (
+    'Regulator:MI:2274',
+    'MI:2274',
+    'Inhibitor:MI:0586',
+    'MI:0586',
+    'Stimulator:MI:0840',
+    'MI:0840',
+    'Allosteric Effector:MI:1160',
+    'MI:1160',
+)
+
+# The two numbers a participant carries beside its role. Both are published per
+# member and both have been dropped on the floor by the pairwise projection
+# since the model was declared: `interaction_party.stoichiometry` and
+# `interaction_party.compartment` were 100 per cent NULL on every build.
+_STOICHIOMETRY_TERM = 'Stoichiometry:OM:1226'
+# A reaction says which organelle its member sits in. A transport says which
+# side of the membrane it is on. They answer the same question about the
+# participant — *where* — so they land in the same column, the subcellular
+# location first because it is the more specific of the two and 184,314 of the
+# 187,004 annotations are it.
+_COMPARTMENT_TERMS = (
+    'Subcellular Location:OM:0604',
+    'Membrane Side:OM:1231',
+)
+
 # Interaction-level annotation, the second tier: what the resource says the
 # interaction *is*. The precedence column orders the tier internally, so a
 # relation annotated both allosteric and orthosteric resolves to `allosteric`.
@@ -2523,6 +2588,30 @@ def _stage_interaction_class_evidence(
     )
     cur.execute('ANALYZE _if_annotation_class')
 
+    # The events a reaction star hangs off, as a set of entity ids. Built as
+    # its own table so that marking the star spokes below is a join against
+    # 80,288 rows rather than a join from 14 million relations into `entity`
+    # and its type vocabulary.
+    cur.execute('DROP TABLE IF EXISTS _if_reaction_entity')
+    cur.execute(
+        sql.SQL(
+            """
+            CREATE UNLOGGED TABLE _if_reaction_entity AS
+            SELECT e.entity_id
+            FROM {}.entity e
+            JOIN {}.vocab_entity_type vet
+              ON vet.entity_type_id = e.entity_type_id
+            WHERE vet.name = ANY(%s)
+            """
+        ).format(schema_id, schema_id),
+        [list(_REACTION_PARENT_TYPES)],
+    )
+    cur.execute(
+        'CREATE INDEX _if_reaction_entity_idx ON _if_reaction_entity '
+        '(entity_id)'
+    )
+    cur.execute('ANALYZE _if_reaction_entity')
+
     # The precedence itself: participant roles, then interaction annotation,
     # then the predicate, then `other`.
     cur.execute('DROP TABLE IF EXISTS _if_relation')
@@ -2550,7 +2639,16 @@ def _stage_interaction_class_evidence(
               participant.subject_ligand,
               participant.subject_receptor,
               participant.object_ligand,
-              participant.object_receptor
+              participant.object_receptor,
+              -- The event this relation is a spoke of, or NULL when it is an
+              -- ordinary pair. Carried here rather than recomputed downstream
+              -- because three later steps ask the same question, and the join
+              -- to `entity` that answers it is one pass over 14 million rows.
+              CASE
+                WHEN predicate.name = %(participant_predicate)s
+                 AND parent.entity_id IS NOT NULL
+                THEN r.subject_entity_id
+              END AS reaction_entity_id
             FROM {}.relation r
             JOIN {}.vocab_relation_predicate predicate
               ON predicate.relation_predicate_id = r.predicate_id
@@ -2561,6 +2659,8 @@ def _stage_interaction_class_evidence(
               FROM _if_annotation_class ac
               JOIN {}.vocab_interaction_class vic ON vic.name = ac.class_name
             ) annotated ON annotated.relation_id = r.relation_id
+            LEFT JOIN _if_reaction_entity parent
+              ON parent.entity_id = r.subject_entity_id
             """
         ).format(schema_id, schema_id, schema_id),
         {
@@ -2568,6 +2668,7 @@ def _stage_interaction_class_evidence(
             'transport': classes['transport'],
             'fallback': classes[_FALLBACK_CLASS],
             'directed': list(_DIRECTED_PREDICATES),
+            'participant_predicate': _PARTICIPANT_PREDICATE,
         },
     )
     cur.execute('CREATE INDEX _if_relation_idx ON _if_relation (relation_id)')
@@ -2854,6 +2955,13 @@ def _stage_interaction_record(
             LEFT JOIN {}.relation_evidence_relation rer
               ON rer.relation_id = ir.relation_id
             LEFT JOIN {}.data_source ds ON ds.source_id = rer.source_id
+            -- A spoke of a reaction star is not a pair, and the pair reading
+            -- of it is the thing the hyperedge staging replaces. It is
+            -- excluded **here** and not from `_if_relation`, because the
+            -- record below still needs it: `interaction_fact_resource` is
+            -- structurally binary, keeps its `(event, member)` rows, and only
+            -- changes which header they point at.
+            WHERE ir.reaction_entity_id IS NULL
             GROUP BY 1, 2, 3
             """
         ).format(schema_id, schema_id)
@@ -2864,6 +2972,438 @@ def _stage_interaction_record(
     )
     cur.execute('ANALYZE _if_fact')
 
+
+
+def _stage_reaction_hyperedges(
+    cur: psycopg2.extensions.cursor,
+    schema: str,
+) -> None:
+    """Stage the reaction stars as N-ary interactions.
+
+    Six unlogged tables, ending in ``_if_reaction_header`` and
+    ``_if_reaction_party_merged`` — the header and its participants — plus
+    ``_if_reaction_map``, which tells the record which header its star rows now
+    belong to.
+
+    **The header is keyed on the chemistry, not on the event node.** The group
+    key is the sorted multiset of ``(member, role)`` pairs, so two resources
+    describing the same reaction reach one header even when the graph holds two
+    event entities for it. It holds two often enough to matter: the load side
+    content-addresses a reaction entity through
+    ``duckdb_load.reaction_member_signature``, and that hash ends in ``HAVING
+    bool_or(role = 'reactant') AND bool_or(role = 'product')`` — a reaction a
+    resource states only one side of is not hashed at all and falls back to a
+    per-resource identity. Keying the header on the event entity would inherit
+    that gap. Keying it on the members does not.
+
+    **The catalyst is a participant, and it is not part of the key.** A
+    reaction without its enzyme is not the reaction, so the sibling ``controls``
+    edge joins the header as an ``enzyme`` party. It stays out of the group key
+    because resources disagree about who catalyses what far more than they
+    disagree about the chemistry, and a catalyst in the key would split one
+    reaction into one header per catalyst set. This mirrors the load side,
+    where the reaction hash also sees reactants and products only — a catalyst
+    never arrives as ``has_participant`` and so was never in it.
+
+    ``interaction_id`` is minted by the one identity scheme the projection
+    already uses, :func:`interaction_content_uuid_sql`, over the participants
+    actually written. Sorting the participants is what made the binary header
+    endpoint-independent, and it generalises to N without a second scheme: the
+    id of a reaction is the hash of its class and its sorted participant
+    multiset, exactly as the id of a pair is.
+
+    The class is **not** decided here. It is whatever
+    :func:`_stage_interaction_class_evidence` resolved for the star's own
+    relations, taken as the minimum when the tiers disagree across the spokes
+    so that one star yields one class deterministically. On the current build
+    that is ``other`` for every reaction, which is a gap in the classification
+    map rather than one in this projection, and inventing a class here would
+    hide it.
+
+    **One identity scheme means one namespace, and it can collide.** A reaction
+    whose entire participant set is two molecules hashes to the id of a plain
+    pair over those same two molecules in the same class, because that is
+    precisely what the scheme says the id is. Measured on the current build:
+    4,770 reactions have a two-participant set and 161 of them have such a
+    pair. :func:`_populate_interaction_header` resolves those in the pair's
+    favour — the pair's header and its record rows are already there, and the
+    record's foreign key has to keep pointing at something — so those 161
+    reactions contribute no participant rows and lose their roles,
+    stoichiometries and compartments, while their record rows survive and
+    point at the shared header. That is a real, bounded loss, and the fix for
+    it is a class of its own for a reaction event rather than a second identity
+    scheme: the moment the two readings carry different class names they stop
+    sharing a hash.
+    """
+    schema_id = sql.Identifier(schema)
+
+    cur.execute(
+        'CREATE INDEX _if_relation_reaction_idx ON _if_relation '
+        '(reaction_entity_id) WHERE reaction_entity_id IS NOT NULL'
+    )
+
+    # One class per event, so a star cannot split into two headers because one
+    # of its spokes picked up an annotation the others did not.
+    cur.execute('DROP TABLE IF EXISTS _if_reaction_class')
+    cur.execute(
+        """
+        CREATE UNLOGGED TABLE _if_reaction_class AS
+        SELECT
+          ir.reaction_entity_id,
+          min(ir.interaction_class_id)::smallint AS interaction_class_id
+        FROM _if_relation ir
+        WHERE ir.reaction_entity_id IS NOT NULL
+        GROUP BY 1
+        """
+    )
+    cur.execute(
+        'CREATE INDEX _if_reaction_class_idx ON _if_reaction_class '
+        '(reaction_entity_id)'
+    )
+    cur.execute('ANALYZE _if_reaction_class')
+
+    # What the resource says about the member, read off the membership's own
+    # evidence. Every one of these annotations is written at `object` scope,
+    # because the thing it describes is the object of `has_participant`. The
+    # scope column is not filtered on all the same, since the catalyst's role
+    # annotation carries the same `object` scope while describing the
+    # **subject** of its `controls` edge — `evidence_projector` stamps the
+    # scope before `predicate_for_membership` flips the endpoints, on all
+    # 810,240 of them. The term is the reliable half of that pair, not the
+    # scope.
+    #
+    # The numeric guard is a `CASE` rather than an aggregate `FILTER` so the
+    # cast never sees a value the regex rejects: `FILTER` restricts which rows
+    # the aggregate accumulates, not which rows its argument is evaluated on.
+    cur.execute('DROP TABLE IF EXISTS _if_reaction_annotation')
+    cur.execute(
+        sql.SQL(
+            """
+            CREATE UNLOGGED TABLE _if_reaction_annotation AS
+            SELECT
+              rer.relation_id,
+              bool_or(a.term = ANY(%(reactant)s)) AS is_reactant,
+              bool_or(a.term = ANY(%(product)s)) AS is_product,
+              bool_or(a.term = ANY(%(cofactor)s)) AS is_cofactor,
+              bool_or(a.term = ANY(%(regulator)s)) AS is_regulator,
+              min(
+                CASE
+                  WHEN a.term = %(stoichiometry)s AND a.value ~ %(numeric)s
+                  THEN a.value::numeric
+                END
+              ) AS stoichiometry,
+              min(
+                CASE
+                  WHEN a.term = %(compartment_primary)s
+                   AND coalesce(a.value, '') <> ''
+                  THEN a.value
+                END
+              ) AS compartment,
+              min(
+                CASE
+                  WHEN a.term = %(compartment_fallback)s
+                   AND coalesce(a.value, '') <> ''
+                  THEN a.value
+                END
+              ) AS membrane_side
+            FROM _if_relation ir
+            JOIN {}.relation_evidence_relation rer
+              ON rer.relation_id = ir.relation_id
+            JOIN {}.relation_evidence_annotation rea
+              ON rea.source_id = rer.source_id
+             AND rea.relation_evidence_id = rer.relation_evidence_id
+            JOIN {}.annotation a ON a.annotation_key = rea.annotation_key
+            WHERE ir.reaction_entity_id IS NOT NULL
+            GROUP BY rer.relation_id
+            """
+        ).format(schema_id, schema_id, schema_id),
+        {
+            'reactant': list(_REACTANT_ROLE_TERMS),
+            'product': list(_PRODUCT_ROLE_TERMS),
+            'cofactor': list(_COFACTOR_ROLE_TERMS),
+            'regulator': list(_REGULATOR_ROLE_TERMS),
+            'stoichiometry': _STOICHIOMETRY_TERM,
+            'numeric': _NUMERIC_VALUE,
+            'compartment_primary': _COMPARTMENT_TERMS[0],
+            'compartment_fallback': _COMPARTMENT_TERMS[1],
+        },
+    )
+    cur.execute(
+        'CREATE INDEX _if_reaction_annotation_idx ON _if_reaction_annotation '
+        '(relation_id)'
+    )
+    cur.execute('ANALYZE _if_reaction_annotation')
+
+    # One row per (event, member). A member reported twice by two resources
+    # folds here, which is why the stoichiometry and the compartment are
+    # aggregates rather than a lookup: a resource that states the role and
+    # nothing else must not erase what another one stated, and `min` over a
+    # NULL-free subset is what leaves the stated value standing.
+    cur.execute('DROP TABLE IF EXISTS _if_reaction_member')
+    cur.execute(
+        """
+        CREATE UNLOGGED TABLE _if_reaction_member AS
+        SELECT
+          ir.reaction_entity_id,
+          ir.object_entity_id AS entity_id,
+          bool_or(coalesce(ann.is_reactant, false)) AS is_reactant,
+          bool_or(coalesce(ann.is_product, false)) AS is_product,
+          bool_or(coalesce(ann.is_cofactor, false)) AS is_cofactor,
+          bool_or(coalesce(ann.is_regulator, false)) AS is_regulator,
+          min(ann.stoichiometry) AS stoichiometry,
+          coalesce(min(ann.compartment), min(ann.membrane_side)) AS compartment
+        FROM _if_relation ir
+        LEFT JOIN _if_reaction_annotation ann
+          ON ann.relation_id = ir.relation_id
+        WHERE ir.reaction_entity_id IS NOT NULL
+        GROUP BY 1, 2
+        """
+    )
+    cur.execute('ANALYZE _if_reaction_member')
+
+    # The catalysts. Gated on `_if_reaction_class` rather than on the entity
+    # type again: a `controls` edge reaches a party here only if its object is
+    # an event that has members, which is the only case where there is a
+    # header for it to join. The edge itself is left in the binary projection
+    # untouched — "this protein controls that reaction" is a statement the
+    # record grain can express, and deleting it would take the api-service's
+    # only handle on catalysis with it.
+    cur.execute('DROP TABLE IF EXISTS _if_reaction_catalyst')
+    cur.execute(
+        sql.SQL(
+            """
+            CREATE UNLOGGED TABLE _if_reaction_catalyst AS
+            SELECT DISTINCT
+              r.object_entity_id AS reaction_entity_id,
+              r.subject_entity_id AS entity_id,
+              r.relation_id
+            FROM {}.relation r
+            JOIN {}.vocab_relation_predicate predicate
+              ON predicate.relation_predicate_id = r.predicate_id
+            JOIN _if_reaction_class rc
+              ON rc.reaction_entity_id = r.object_entity_id
+            WHERE predicate.name = %s
+            """
+        ).format(schema_id, schema_id),
+        [_CATALYSIS_PREDICATE],
+    )
+    cur.execute('ANALYZE _if_reaction_catalyst')
+
+    # The participant, in role and on a side. The roles unpivot rather than
+    # resolve to one, because a member that is both consumed and produced holds
+    # two roles in the same reaction and is two participants of it. `side` is
+    # which side of the arrow the participant stands on, so only the two roles
+    # that name a side carry one: a catalyst, a cofactor and a regulator are on
+    # neither, and `NULL` says that rather than picking one. It replaces the
+    # `least`/`greatest` tiebreak the pair projection writes, which carried no
+    # biology at all.
+    cur.execute('DROP TABLE IF EXISTS _if_reaction_party')
+    cur.execute(
+        """
+        CREATE UNLOGGED TABLE _if_reaction_party AS
+        SELECT
+          m.reaction_entity_id,
+          m.entity_id,
+          role.name AS role_name,
+          role.side,
+          m.stoichiometry,
+          m.compartment
+        FROM _if_reaction_member m
+        CROSS JOIN LATERAL (
+          VALUES
+            ('reactant', 1::smallint, m.is_reactant),
+            ('product', 2::smallint, m.is_product),
+            ('cofactor', NULL::smallint, m.is_cofactor),
+            ('regulator', NULL::smallint, m.is_regulator),
+            (
+              'member', NULL::smallint,
+              NOT (
+                m.is_reactant OR m.is_product
+                OR m.is_cofactor OR m.is_regulator
+              )
+            )
+        ) AS role(name, side, applies)
+        WHERE role.applies
+        UNION ALL
+        SELECT
+          c.reaction_entity_id,
+          c.entity_id,
+          'enzyme',
+          NULL::smallint,
+          NULL::numeric,
+          NULL::text
+        FROM _if_reaction_catalyst c
+        """
+    )
+    cur.execute('ANALYZE _if_reaction_party')
+
+    # The merge key: the chemistry, as a sorted text multiset of the members
+    # and the roles they hold. Two event entities with the same key are the
+    # same reaction and reach the same header. The enzyme is excluded, for the
+    # reason in the docstring.
+    cur.execute('DROP TABLE IF EXISTS _if_reaction_key')
+    cur.execute(
+        """
+        CREATE UNLOGGED TABLE _if_reaction_key AS
+        SELECT
+          p.reaction_entity_id,
+          rc.interaction_class_id,
+          array_agg(
+            DISTINCT lower(p.entity_id::text) || ':' || p.role_name
+            ORDER BY lower(p.entity_id::text) || ':' || p.role_name
+          ) AS member_signature
+        FROM _if_reaction_party p
+        JOIN _if_reaction_class rc
+          ON rc.reaction_entity_id = p.reaction_entity_id
+        WHERE p.role_name <> 'enzyme'
+        GROUP BY 1, 2
+        """
+    )
+    cur.execute(
+        'CREATE INDEX _if_reaction_key_idx ON _if_reaction_key '
+        '(reaction_entity_id)'
+    )
+    cur.execute('ANALYZE _if_reaction_key')
+
+    # The participants of the merged header, one row per (entity, role). The
+    # ordinal ranks them inside their side by entity id, which is the only
+    # ordering available that does not depend on which resource was read first
+    # — the resources publish no participant order, and a projection that used
+    # the physical row order would mint a different `ordinal` on every rebuild.
+    cur.execute('DROP TABLE IF EXISTS _if_reaction_party_merged')
+    cur.execute(
+        """
+        CREATE UNLOGGED TABLE _if_reaction_party_merged AS
+        SELECT
+          merged.member_signature,
+          merged.interaction_class_id,
+          merged.entity_id,
+          merged.role_name,
+          merged.side,
+          row_number() OVER (
+            PARTITION BY
+              merged.member_signature,
+              merged.interaction_class_id,
+              merged.side
+            ORDER BY merged.entity_id, merged.role_name
+          )::smallint AS ordinal,
+          merged.stoichiometry,
+          merged.compartment
+        FROM (
+          SELECT
+            k.member_signature,
+            k.interaction_class_id,
+            p.entity_id,
+            p.role_name,
+            min(p.side) AS side,
+            min(p.stoichiometry) AS stoichiometry,
+            min(p.compartment) AS compartment
+          FROM _if_reaction_party p
+          JOIN _if_reaction_key k
+            ON k.reaction_entity_id = p.reaction_entity_id
+          GROUP BY 1, 2, 3, 4
+        ) merged
+        """
+    )
+    cur.execute(
+        'CREATE INDEX _if_reaction_party_merged_idx '
+        'ON _if_reaction_party_merged (member_signature, interaction_class_id)'
+    )
+    cur.execute('ANALYZE _if_reaction_party_merged')
+
+    identity = interaction_content_uuid_sql(
+        participants='grouped.participants',
+        interaction_class='vic.name',
+    )
+    cur.execute('DROP TABLE IF EXISTS _if_reaction_header')
+    cur.execute(
+        sql.SQL(
+            """
+            CREATE UNLOGGED TABLE _if_reaction_header AS
+            SELECT
+              grouped.member_signature,
+              grouped.interaction_class_id,
+              grouped.arity,
+              {identity} AS interaction_id
+            FROM (
+              SELECT
+                member_signature,
+                interaction_class_id,
+                array_agg(entity_id) AS participants,
+                count(*)::smallint AS arity
+              FROM _if_reaction_party_merged
+              GROUP BY 1, 2
+            ) grouped
+            JOIN {schema}.vocab_interaction_class vic
+              ON vic.interaction_class_id = grouped.interaction_class_id
+            """
+        ).format(identity=sql.SQL(identity), schema=schema_id)
+    )
+    cur.execute(
+        'CREATE INDEX _if_reaction_header_idx ON _if_reaction_header '
+        '(member_signature, interaction_class_id)'
+    )
+    cur.execute('ANALYZE _if_reaction_header')
+
+    # Provenance. Both halves of the star contribute: the memberships say who
+    # published the chemistry and the `controls` edges who published the
+    # catalyst, and a header that credited only the first would drop a resource
+    # that contributed nothing but the enzyme.
+    cur.execute('DROP TABLE IF EXISTS _if_reaction_source')
+    cur.execute(
+        sql.SQL(
+            """
+            CREATE UNLOGGED TABLE _if_reaction_source AS
+            SELECT
+              spoke.member_signature,
+              spoke.interaction_class_id,
+              array_agg(DISTINCT ds.name) AS sources
+            FROM (
+              SELECT k.member_signature, k.interaction_class_id, ir.relation_id
+              FROM _if_reaction_key k
+              JOIN _if_relation ir
+                ON ir.reaction_entity_id = k.reaction_entity_id
+              UNION ALL
+              SELECT k.member_signature, k.interaction_class_id, c.relation_id
+              FROM _if_reaction_key k
+              JOIN _if_reaction_catalyst c
+                ON c.reaction_entity_id = k.reaction_entity_id
+            ) spoke
+            JOIN {}.relation_evidence_relation rer
+              ON rer.relation_id = spoke.relation_id
+            JOIN {}.data_source ds ON ds.source_id = rer.source_id
+            GROUP BY 1, 2
+            """
+        ).format(schema_id, schema_id)
+    )
+    cur.execute(
+        'CREATE INDEX _if_reaction_source_idx ON _if_reaction_source '
+        '(member_signature, interaction_class_id)'
+    )
+    cur.execute('ANALYZE _if_reaction_source')
+
+    # Event entity to header, for the record. The record keeps its binary
+    # `(event, member)` rows and needs to know which header they now belong
+    # to. It holds the event id, not the member signature.
+    cur.execute('DROP TABLE IF EXISTS _if_reaction_map')
+    cur.execute(
+        """
+        CREATE UNLOGGED TABLE _if_reaction_map AS
+        SELECT
+          k.reaction_entity_id,
+          k.interaction_class_id,
+          h.interaction_id
+        FROM _if_reaction_key k
+        JOIN _if_reaction_header h
+          ON h.member_signature = k.member_signature
+         AND h.interaction_class_id = k.interaction_class_id
+        """
+    )
+    cur.execute(
+        'CREATE INDEX _if_reaction_map_idx ON _if_reaction_map '
+        '(reaction_entity_id)'
+    )
+    cur.execute('ANALYZE _if_reaction_map')
 
 
 def _populate_interaction_header(
@@ -2878,8 +3418,18 @@ def _populate_interaction_header(
     role records how it appears across the contributing facts — ``subject``,
     ``object``, or ``member`` when it appears as both — and ``role_flag`` carries
     the ligand/receptor role that the class derivation's first tier read.
+
+    Two kinds of header land in the same two tables. Everything reached through
+    ``_if_fact`` is a pair. :func:`_stage_reaction_hyperedges` stages the
+    reaction stars, whose headers carry the arity of the reaction and whose
+    participants carry the roles, sides, stoichiometries and compartments the
+    resources published. The two are disjoint by construction —
+    ``_if_fact`` drops every spoke of a star — so the inserts are two
+    statements over one table rather than a union that has to dedupe.
     """
     schema_id = sql.Identifier(schema)
+
+    _stage_reaction_hyperedges(cur, schema)
 
     cur.execute('DROP TABLE IF EXISTS _if_party')
     cur.execute(
@@ -3022,6 +3572,56 @@ def _populate_interaction_header(
         ).format(schema_id)
     )
     interactions = int(cur.rowcount)
+    # The two readings share an identity namespace, so a reaction whose whole
+    # participant set is two molecules can hash to the id of a pair over the
+    # same two. The pair wins: its header already carries record rows that key
+    # on it. The reaction is dropped from the header and the participant insert
+    # alike — writing its participants onto the pair's header would leave four
+    # party rows under an `arity` of two and break the invariant that the id is
+    # the hash of the participants recorded. Its record rows still resolve,
+    # through `_if_reaction_map`, to the header the pair minted.
+    cur.execute(
+        """
+        SELECT count(*)
+        FROM _if_reaction_header h
+        WHERE EXISTS (
+          SELECT 1 FROM _if_header pair
+          WHERE pair.interaction_id = h.interaction_id
+        )
+        """
+    )
+    collisions = int(cur.fetchone()[0])
+    if collisions:
+        _logger.warning(
+            'interaction projection: %s reaction headers share an id with a '
+            'pair over the same participants and class, and keep the pair '
+            'reading; their roles, stoichiometries and compartments are not '
+            'recorded',
+            collisions,
+        )
+    cur.execute(
+        sql.SQL(
+            """
+            INSERT INTO {}.interaction
+              (interaction_id, interaction_class_id, arity, sources)
+            SELECT
+              h.interaction_id,
+              h.interaction_class_id,
+              h.arity,
+              contributor.sources
+            FROM _if_reaction_header h
+            LEFT JOIN _if_reaction_source contributor
+              ON contributor.member_signature = h.member_signature
+             AND contributor.interaction_class_id = h.interaction_class_id
+            WHERE NOT EXISTS (
+              SELECT 1 FROM _if_header pair
+              WHERE pair.interaction_id = h.interaction_id
+            )
+            ON CONFLICT (interaction_id) DO NOTHING
+            """
+        ).format(schema_id)
+    )
+    interactions += int(cur.rowcount)
     cur.execute(
         sql.SQL(
             """
@@ -3055,6 +3655,39 @@ def _populate_interaction_header(
         ).format(schema_id, schema_id, schema_id)
     )
     parties = int(cur.rowcount)
+    # The reaction's participants. This is the one path that fills
+    # `stoichiometry` and `compartment`. Both columns were declared with the
+    # model and have been NULL on every build since, because a pair has no
+    # stoichiometry to carry and the pair projection was the only writer.
+    cur.execute(
+        sql.SQL(
+            """
+            INSERT INTO {}.interaction_party
+              (interaction_id, entity_id, role_id, side, ordinal,
+               stoichiometry, organism, compartment)
+            SELECT
+              h.interaction_id,
+              p.entity_id,
+              role.relation_role_id,
+              p.side,
+              p.ordinal,
+              p.stoichiometry,
+              e.taxonomy_id,
+              p.compartment
+            FROM _if_reaction_party_merged p
+            JOIN _if_reaction_header h
+              ON h.member_signature = p.member_signature
+             AND h.interaction_class_id = p.interaction_class_id
+            JOIN {}.vocab_relation_role role ON role.name = p.role_name
+            LEFT JOIN {}.entity e ON e.entity_id = p.entity_id
+            WHERE NOT EXISTS (
+              SELECT 1 FROM _if_header pair
+              WHERE pair.interaction_id = h.interaction_id
+            )
+            """
+        ).format(schema_id, schema_id, schema_id)
+    )
+    parties += int(cur.rowcount)
     return interactions, parties
 
 
@@ -3073,6 +3706,18 @@ def _populate_interaction_fact_resource(
     ``attributes`` stays NULL. The long tail is gated on the benchmark that
     prices the hot-column split against the JSONB store, and ``dataset_tags``
     belongs to the preset registry; neither is a value this step has.
+
+    **The record stays binary, including for reactions.** Its key is an ordered
+    ``(subject, object)`` pair with both columns ``NOT NULL``, and the
+    api-service reads this table and nothing else, so a reaction's star keeps
+    one row per ``(event, member)`` exactly as before. What changes is the
+    header it points at: ``_if_reaction_map`` sends those rows to the N-ary
+    header instead of to the arity-2 one the pair reading used to mint. A
+    caller following ``interaction_id`` from one star row therefore arrives at
+    the whole reaction. The consequence to be aware of is that such a row's own
+    ``subject_entity_id`` — the event entity — is **not** among that header's
+    participants: the participants are the molecules, and the event is the
+    interaction rather than a party to it.
     """
     schema_id = sql.Identifier(schema)
     cur.execute(
@@ -3106,18 +3751,31 @@ def _populate_interaction_fact_resource(
               rec.reference_pubmed_ids,
               rec.reference_dois,
               NULL::jsonb,
-              h.interaction_id
+              coalesce(h.interaction_id, reaction.interaction_id)
             FROM _if_record rec
-            JOIN _if_header h
+            LEFT JOIN _if_header h
               ON h.entity_low
                    = least(rec.subject_entity_id, rec.object_entity_id)
              AND h.entity_high
                    = greatest(rec.subject_entity_id, rec.object_entity_id)
              AND h.interaction_class_id = rec.interaction_class_id
+            -- A star row reaches no pair header any more, so it resolves
+            -- through the event entity instead. The event is always the
+            -- subject of `has_participant`, and the binary header is tried
+            -- first, so an entity that is somehow both cannot be captured by
+            -- this join.
+            LEFT JOIN _if_reaction_map reaction
+              ON reaction.reaction_entity_id = rec.subject_entity_id
+             AND reaction.interaction_class_id = rec.interaction_class_id
             LEFT JOIN {schema}.entity subject_entity
               ON subject_entity.entity_id = rec.subject_entity_id
             LEFT JOIN {schema}.entity object_entity
               ON object_entity.entity_id = rec.object_entity_id
+            -- The inner join this replaced made "every record row points at a
+            -- header that exists" true by construction. Two outer joins would
+            -- give that up silently, so the filter restates it.
+            WHERE coalesce(h.interaction_id, reaction.interaction_id)
+                    IS NOT NULL
             """
         ).format(schema=schema_id)
     )
@@ -3431,6 +4089,17 @@ def _drop_interaction_staging(cur: psycopg2.extensions.cursor) -> None:
         '_if_party',
         '_if_header',
         '_if_header_source',
+        '_if_reaction_entity',
+        '_if_reaction_class',
+        '_if_reaction_annotation',
+        '_if_reaction_member',
+        '_if_reaction_catalyst',
+        '_if_reaction_party',
+        '_if_reaction_key',
+        '_if_reaction_party_merged',
+        '_if_reaction_header',
+        '_if_reaction_source',
+        '_if_reaction_map',
         # Left by the pre-amendment fold; dropped here so a database that ran
         # the old derive does not keep 14-million-row staging tables around.
         '_if_sign_source',
