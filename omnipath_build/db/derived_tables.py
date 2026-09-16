@@ -3005,6 +3005,15 @@ def _stage_reaction_hyperedges(
     where the reaction hash also sees reactants and products only — a catalyst
     never arrives as ``has_participant`` and so was never in it.
 
+    **A member holds a role, and the numbers hang off the role.** A transport
+    states the same metabolite twice on one membership — as the reactant, in
+    the compartment it leaves, and as the product, in the one it arrives in —
+    and ``relation`` is unique on its endpoint triple, so those two statements
+    are one relation and two evidence rows. The compartment and the
+    stoichiometry are therefore resolved per ``(member, role)`` rather than
+    per member: fold them across the roles first and ``min('c', 'e')`` puts a
+    transported metabolite on both sides of the membrane it never crossed.
+
     ``interaction_id`` is minted by the one identity scheme the projection
     already uses, :func:`interaction_content_uuid_sql`, over the participants
     actually written. Sorting the participants is what made the binary header
@@ -3063,14 +3072,56 @@ def _stage_reaction_hyperedges(
     cur.execute('ANALYZE _if_reaction_class')
 
     # What the resource says about the member, read off the membership's own
-    # evidence. Every one of these annotations is written at `object` scope,
-    # because the thing it describes is the object of `has_participant`. The
-    # scope column is not filtered on all the same, since the catalyst's role
-    # annotation carries the same `object` scope while describing the
-    # **subject** of its `controls` edge — `evidence_projector` stamps the
-    # scope before `predicate_for_membership` flips the endpoints, on all
-    # 810,240 of them. The term is the reliable half of that pair, not the
-    # scope.
+    # evidence — and read **per evidence row**, because the role and the two
+    # numbers that qualify it are one statement and mean nothing apart.
+    #
+    # A transport is the case that makes this load-bearing. The cargo of a
+    # transport is a reactant in the compartment it leaves and a product in
+    # the one it arrives in, and both statements hang off the **same**
+    # canonical relation: `relation` is unique on
+    # `(subject_entity_id, predicate_id, object_entity_id)`, so a
+    # `(reaction, member)` pair is exactly one row and the two roles are two
+    # of its evidence rows. Resolving the compartment per relation and
+    # unpivoting the roles afterwards therefore hands both sides
+    # `min('c', 'e') = 'c'` — the roles survive and the movement between them,
+    # which is the entire content of a transport, does not. On the current
+    # build 24,220 `(reaction, metabolite)` pairs hold both roles, 21,927 of
+    # them carry more than one compartment value, and reading the compartment
+    # per role puts a different one on each side of 20,686 of them; the rest
+    # carry their several values inside one side. The same argument applies to
+    # the stoichiometry — a metabolite consumed twice and produced once comes
+    # out as 1 on both sides — and it separates 48 pairs.
+    #
+    # The association is recoverable because the resource publishes it that
+    # way: over the star spokes of the current build 187,004 evidence rows
+    # carry a role **and** a compartment, and not one carries a compartment
+    # without a role. So the aggregation groups on `(relation_id, role)` and
+    # each role takes the values off the rows that stated it. metatlas and
+    # recon3d publish the subcellular location; rhea publishes the membrane
+    # side, on 2,702 rows, and no rhea membership holds both roles at all —
+    # it splits a transport into one membership per side — so the asymmetry
+    # in its 2,691 reactant-side against 11 product-side rows never reaches a
+    # member that has to be told apart here.
+    #
+    # An evidence row that states no role at all lands under a NULL role. That
+    # is not a fifth role: it is the bucket for values nobody attributed to a
+    # side, and `_if_reaction_party` keeps it only where the member holds no
+    # stated role anywhere, which is the one case where there is exactly one
+    # party row for it to belong to. Where a member does hold a role and a
+    # value arrives unattributed beside it, the value is dropped rather than
+    # guessed at, because a compartment on the wrong side reads as a statement
+    # about the chemistry while a NULL reads as silence. No spoke of the
+    # current build is in that position — the 14,834 role-less stoichiometries
+    # that do exist are complex memberships, which are not stars and never
+    # reach here.
+    #
+    # Every one of these annotations is written at `object` scope, because the
+    # thing it describes is the object of `has_participant`. The scope column
+    # is not filtered on all the same, since the catalyst's role annotation
+    # carries the same `object` scope while describing the **subject** of its
+    # `controls` edge — `evidence_projector` stamps the scope before
+    # `predicate_for_membership` flips the endpoints, on all 810,240 of them.
+    # The term is the reliable half of that pair, not the scope.
     #
     # The numeric guard is a `CASE` rather than an aggregate `FILTER` so the
     # cast never sees a value the regex rejects: `FILTER` restricts which rows
@@ -3080,41 +3131,68 @@ def _stage_reaction_hyperedges(
         sql.SQL(
             """
             CREATE UNLOGGED TABLE _if_reaction_annotation AS
+            WITH stated AS (
+              SELECT
+                rer.relation_id,
+                rer.source_id,
+                rer.relation_evidence_id,
+                bool_or(a.term = ANY(%(reactant)s)) AS is_reactant,
+                bool_or(a.term = ANY(%(product)s)) AS is_product,
+                bool_or(a.term = ANY(%(cofactor)s)) AS is_cofactor,
+                bool_or(a.term = ANY(%(regulator)s)) AS is_regulator,
+                min(
+                  CASE
+                    WHEN a.term = %(stoichiometry)s AND a.value ~ %(numeric)s
+                    THEN a.value::numeric
+                  END
+                ) AS stoichiometry,
+                min(
+                  CASE
+                    WHEN a.term = %(compartment_primary)s
+                     AND coalesce(a.value, '') <> ''
+                    THEN a.value
+                  END
+                ) AS compartment,
+                min(
+                  CASE
+                    WHEN a.term = %(compartment_fallback)s
+                     AND coalesce(a.value, '') <> ''
+                    THEN a.value
+                  END
+                ) AS membrane_side
+              FROM _if_relation ir
+              JOIN {}.relation_evidence_relation rer
+                ON rer.relation_id = ir.relation_id
+              JOIN {}.relation_evidence_annotation rea
+                ON rea.source_id = rer.source_id
+               AND rea.relation_evidence_id = rer.relation_evidence_id
+              JOIN {}.annotation a ON a.annotation_key = rea.annotation_key
+              WHERE ir.reaction_entity_id IS NOT NULL
+              GROUP BY rer.relation_id, rer.source_id, rer.relation_evidence_id
+            )
             SELECT
-              rer.relation_id,
-              bool_or(a.term = ANY(%(reactant)s)) AS is_reactant,
-              bool_or(a.term = ANY(%(product)s)) AS is_product,
-              bool_or(a.term = ANY(%(cofactor)s)) AS is_cofactor,
-              bool_or(a.term = ANY(%(regulator)s)) AS is_regulator,
-              min(
-                CASE
-                  WHEN a.term = %(stoichiometry)s AND a.value ~ %(numeric)s
-                  THEN a.value::numeric
-                END
-              ) AS stoichiometry,
-              min(
-                CASE
-                  WHEN a.term = %(compartment_primary)s
-                   AND coalesce(a.value, '') <> ''
-                  THEN a.value
-                END
-              ) AS compartment,
-              min(
-                CASE
-                  WHEN a.term = %(compartment_fallback)s
-                   AND coalesce(a.value, '') <> ''
-                  THEN a.value
-                END
-              ) AS membrane_side
-            FROM _if_relation ir
-            JOIN {}.relation_evidence_relation rer
-              ON rer.relation_id = ir.relation_id
-            JOIN {}.relation_evidence_annotation rea
-              ON rea.source_id = rer.source_id
-             AND rea.relation_evidence_id = rer.relation_evidence_id
-            JOIN {}.annotation a ON a.annotation_key = rea.annotation_key
-            WHERE ir.reaction_entity_id IS NOT NULL
-            GROUP BY rer.relation_id
+              stated.relation_id,
+              role.name AS role_name,
+              min(stated.stoichiometry) AS stoichiometry,
+              min(stated.compartment) AS compartment,
+              min(stated.membrane_side) AS membrane_side
+            FROM stated
+            CROSS JOIN LATERAL (
+              VALUES
+                ('reactant'::text, stated.is_reactant),
+                ('product', stated.is_product),
+                ('cofactor', stated.is_cofactor),
+                ('regulator', stated.is_regulator),
+                (
+                  NULL,
+                  NOT (
+                    stated.is_reactant OR stated.is_product
+                    OR stated.is_cofactor OR stated.is_regulator
+                  )
+                )
+            ) AS role(name, states_it)
+            WHERE role.states_it
+            GROUP BY 1, 2
             """
         ).format(schema_id, schema_id, schema_id),
         {
@@ -3134,11 +3212,27 @@ def _stage_reaction_hyperedges(
     )
     cur.execute('ANALYZE _if_reaction_annotation')
 
-    # One row per (event, member). A member reported twice by two resources
-    # folds here, which is why the stoichiometry and the compartment are
-    # aggregates rather than a lookup: a resource that states the role and
-    # nothing else must not erase what another one stated, and `min` over a
-    # NULL-free subset is what leaves the stated value standing.
+    # One row per (event, member, **role**). The role is in the key because
+    # the values are the role's and not the member's: fold the two sides of a
+    # transported metabolite together here and no later step can tell them
+    # apart again.
+    #
+    # A member reported twice by two resources folds across them, which is why
+    # the stoichiometry and the compartment are aggregates rather than a
+    # lookup: a resource that states the role and nothing else must not erase
+    # what another one stated, and `min` over a NULL-free subset is what
+    # leaves the stated value standing. That fold is now per role, so the two
+    # resources agreeing about the reactant side no longer reach across the
+    # arrow to the product side.
+    #
+    # The subcellular location beats the membrane side when a member carries
+    # both, because it is the more specific answer to the same question —
+    # *where* — and they share the column. The `coalesce` is per role for the
+    # same reason the aggregates are.
+    #
+    # `role_name` is NULL for a member whose membership carries no annotation
+    # at all, and for one whose annotations state values without a role.
+    # `_if_reaction_party` decides what that means.
     cur.execute('DROP TABLE IF EXISTS _if_reaction_member')
     cur.execute(
         """
@@ -3146,17 +3240,14 @@ def _stage_reaction_hyperedges(
         SELECT
           ir.reaction_entity_id,
           ir.object_entity_id AS entity_id,
-          bool_or(coalesce(ann.is_reactant, false)) AS is_reactant,
-          bool_or(coalesce(ann.is_product, false)) AS is_product,
-          bool_or(coalesce(ann.is_cofactor, false)) AS is_cofactor,
-          bool_or(coalesce(ann.is_regulator, false)) AS is_regulator,
+          ann.role_name,
           min(ann.stoichiometry) AS stoichiometry,
           coalesce(min(ann.compartment), min(ann.membrane_side)) AS compartment
         FROM _if_relation ir
         LEFT JOIN _if_reaction_annotation ann
           ON ann.relation_id = ir.relation_id
         WHERE ir.reaction_entity_id IS NOT NULL
-        GROUP BY 1, 2
+        GROUP BY 1, 2, 3
         """
     )
     cur.execute('ANALYZE _if_reaction_member')
@@ -3189,14 +3280,29 @@ def _stage_reaction_hyperedges(
     )
     cur.execute('ANALYZE _if_reaction_catalyst')
 
-    # The participant, in role and on a side. The roles unpivot rather than
-    # resolve to one, because a member that is both consumed and produced holds
-    # two roles in the same reaction and is two participants of it. `side` is
-    # which side of the arrow the participant stands on, so only the two roles
-    # that name a side carry one: a catalyst, a cofactor and a regulator are on
-    # neither, and `NULL` says that rather than picking one. It replaces the
-    # `least`/`greatest` tiebreak the pair projection writes, which carried no
-    # biology at all.
+    # The participant, in role and on a side. A member that is both consumed
+    # and produced holds two roles in the same reaction and is two
+    # participants of it, and it arrives here as two rows already — the role
+    # is part of the member key, so each of them carries the compartment and
+    # the stoichiometry the resource stated **for that role**. Nothing is
+    # unpivoted at this point; all that is left is to name the side.
+    #
+    # `side` is which side of the arrow the participant stands on, so only the
+    # two roles that name a side carry one: a catalyst, a cofactor and a
+    # regulator are on neither, and `NULL` says that rather than picking one.
+    # It replaces the `least`/`greatest` tiebreak the pair projection writes,
+    # which carried no biology at all.
+    #
+    # The NULL role is the fallback, and it survives only where the member has
+    # no stated role anywhere in this reaction — a membership with no
+    # annotation on it, which is what `member` has always meant, and now also
+    # a membership whose annotations state values but no role. Where the
+    # member does hold a role elsewhere, the unattributed row is dropped with
+    # its values: a value that names no side cannot be put on one without
+    # inventing the side, and a wrong compartment reads as a statement about
+    # the chemistry while a NULL reads as silence. The window rather than a
+    # semi-join because the answer is one pass over a table that is already
+    # grouped on the same two columns.
     cur.execute('DROP TABLE IF EXISTS _if_reaction_party')
     cur.execute(
         """
@@ -3204,26 +3310,25 @@ def _stage_reaction_hyperedges(
         SELECT
           m.reaction_entity_id,
           m.entity_id,
-          role.name AS role_name,
+          coalesce(m.role_name, 'member') AS role_name,
           role.side,
           m.stoichiometry,
           m.compartment
-        FROM _if_reaction_member m
-        CROSS JOIN LATERAL (
+        FROM (
+          SELECT
+            member.*,
+            bool_or(member.role_name IS NOT NULL) OVER (
+              PARTITION BY member.reaction_entity_id, member.entity_id
+            ) AS holds_a_stated_role
+          FROM _if_reaction_member member
+        ) m
+        LEFT JOIN (
           VALUES
-            ('reactant', 1::smallint, m.is_reactant),
-            ('product', 2::smallint, m.is_product),
-            ('cofactor', NULL::smallint, m.is_cofactor),
-            ('regulator', NULL::smallint, m.is_regulator),
-            (
-              'member', NULL::smallint,
-              NOT (
-                m.is_reactant OR m.is_product
-                OR m.is_cofactor OR m.is_regulator
-              )
-            )
-        ) AS role(name, side, applies)
-        WHERE role.applies
+            ('reactant'::text, 1::smallint),
+            ('product', 2::smallint)
+        ) AS role(name, side)
+          ON role.name = m.role_name
+        WHERE m.role_name IS NOT NULL OR NOT m.holds_a_stated_role
         UNION ALL
         SELECT
           c.reaction_entity_id,
@@ -3270,6 +3375,12 @@ def _stage_reaction_hyperedges(
     # ordering available that does not depend on which resource was read first
     # — the resources publish no participant order, and a projection that used
     # the physical row order would mint a different `ordinal` on every rebuild.
+    #
+    # The role is in the group key, so the `min` over the stoichiometry and
+    # the compartment folds the event entities this signature merged and
+    # nothing else. Two resources describing the same transport agree about
+    # the cargo's reactant side and about its product side separately, and the
+    # two sides never meet here.
     cur.execute('DROP TABLE IF EXISTS _if_reaction_party_merged')
     cur.execute(
         """

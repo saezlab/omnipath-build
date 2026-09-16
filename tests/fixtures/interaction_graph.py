@@ -40,6 +40,25 @@ catalyst arriving as a sibling ``controls`` edge that points *at* the parent.
   ordinary pair already joins, which is the one shape where the two readings
   hash to the same header id.
 
+Three further reaction stars are there for the **binary metabolic projection**,
+which reads a reaction party row by party row and turns it into substrate and
+product edges around a per-reaction enzyme node:
+
+* an ordinary catalysed conversion, two substrates and one product, one of the
+  substrates stated **without** a compartment,
+* a conversion **no resource names an enzyme for**, which has to keep its edges
+  rather than be dropped for want of a catalyst, and
+* a conversion carrying a **cofactor** and a **regulator** beside its
+  substrates, neither of which stands on a side of the arrow.
+
+Five more carry a **direction**, which a resource states on the reaction event
+as an entity annotation rather than on any one membership: two reversible
+conversions, two one-way ones and a reversible one nobody names an enzyme for.
+Each direction appears under both of the spellings the build holds, so a
+projection that folded only one of them is caught rather than assumed correct.
+Three of the reactions above carry **no** direction at all, which is what a
+resource publishing only the chemistry looks like.
+
 Beside those single-situation rows the graph carries a **coverage pair per
 interaction class**: one ordered endpoint pair for every class the graph can
 evidence, each reported by two resources that both publish a reference. Those
@@ -128,6 +147,89 @@ STAR_NAMES = (
     'rxn_c',
 )
 
+# The reactions the binary metabolic projection is asserted on. They are
+# separate from the stars above because that projection reads a reaction one
+# party row at a time and each of these carries one situation it has to answer
+# for: the ordinary catalysed conversion, a conversion nobody names an enzyme
+# for, and a conversion whose party list holds a cofactor and a regulator
+# beside its substrates. Every metabolite here is its own entity, so a test can
+# scope an assertion to one reaction by naming the row it means.
+COSMOS_NAMES = (
+    # The ordinary case: two substrates, one product, one enzyme. `cos_met_b`
+    # carries no compartment, which is the half of the label rule the other two
+    # metabolites cannot exercise.
+    'cos_rxn',
+    'cos_met_a',
+    'cos_met_b',
+    'cos_met_c',
+    'cos_enz',
+    # A conversion with no catalyst. The resource states the chemistry and says
+    # nothing about who runs it, which is the majority shape in a genome-scale
+    # model and the one a projection keyed on the enzyme would drop.
+    'cos_rxn_orphan',
+    'cos_orphan_in',
+    'cos_orphan_out',
+    # A conversion whose party list holds roles that name no side of the arrow.
+    # A cofactor is consumed and regenerated and a regulator is neither
+    # consumed nor produced, so projecting either as a substrate would state
+    # something the resource did not.
+    'cos_rxn_helper',
+    'cos_helper_in',
+    'cos_helper_out',
+    'cos_cofactor',
+    'cos_regulator',
+    'cos_enz_helper',
+)
+
+# The reactions that carry a **direction**. A resource states it on the
+# reaction event itself, not on any one membership, so it arrives as an entity
+# annotation and the fixture writes it as one. Four of these exist because each
+# direction reaches the build under two spellings, and a projection that folded
+# only the one it happened to meet first would read half the build as silent.
+COSMOS_DIRECTION_NAMES = (
+    # Reversible, stated in upper case. Two substrates and one product, so the
+    # mirrored side has something to mirror.
+    'cos_rxn_back',
+    'cos_back_in_a',
+    'cos_back_in_b',
+    'cos_back_out',
+    'cos_enz_back',
+    # Reversible, stated in lower case.
+    'cos_rxn_back_lower',
+    'cos_back_lower_in',
+    'cos_back_lower_out',
+    'cos_enz_back_lower',
+    # One way, stated with a hyphen and in upper case.
+    'cos_rxn_fwd',
+    'cos_fwd_in',
+    'cos_fwd_out',
+    'cos_enz_fwd',
+    # One way, stated with an underscore and in lower case.
+    'cos_rxn_fwd_lower',
+    'cos_fwd_lower_in',
+    'cos_fwd_lower_out',
+    'cos_enz_fwd_lower',
+    # Reversible and catalysed by nobody, which is where the two situations
+    # meet: the placeholder node has to carry the reverse suffix as well.
+    'cos_rxn_orphan_back',
+    'cos_orphan_back_in',
+    'cos_orphan_back_out',
+)
+
+# The transport whose cargo crosses the membrane. A transport **is** a
+# compartment change, and the resource states it by publishing the same
+# metabolite twice on the same membership: once as the reactant, in the
+# compartment it leaves, and once as the product, in the one it arrives in,
+# with a stoichiometry on each side. The fuel is consumed and never
+# regenerated, so it holds one role and stands beside the cargo as the
+# unchanged half of the same rule.
+TRANSPORT_SPLIT_NAMES = (
+    'trn_b',
+    'met_cargo',
+    'met_fuel',
+    'enz_tb',
+)
+
 ENTITY_NAMES = (
     *'abcdefghijklmnopqr',
     *(
@@ -140,6 +242,9 @@ ENTITY_NAMES = (
     # Appended, never inserted into: every id above is an index into this
     # tuple, and a test elsewhere names the row it means.
     *STAR_NAMES,
+    *COSMOS_NAMES,
+    *COSMOS_DIRECTION_NAMES,
+    *TRANSPORT_SPLIT_NAMES,
 )
 
 ENTITY_TYPES = {
@@ -153,6 +258,38 @@ ENTITY_TYPES = {
     'met_z': CHEMICAL_TYPE,
     'met_in': CHEMICAL_TYPE,
     'met_out': CHEMICAL_TYPE,
+    'cos_rxn': REACTION_TYPE,
+    'cos_rxn_orphan': REACTION_TYPE,
+    'cos_rxn_helper': REACTION_TYPE,
+    'cos_met_a': CHEMICAL_TYPE,
+    'cos_met_b': CHEMICAL_TYPE,
+    'cos_met_c': CHEMICAL_TYPE,
+    'cos_orphan_in': CHEMICAL_TYPE,
+    'cos_orphan_out': CHEMICAL_TYPE,
+    'cos_helper_in': CHEMICAL_TYPE,
+    'cos_helper_out': CHEMICAL_TYPE,
+    'cos_cofactor': CHEMICAL_TYPE,
+    # The regulator stays a protein, so a projection that turned every
+    # non-enzyme protein party into a gene node would be caught here.
+    'cos_rxn_back': REACTION_TYPE,
+    'cos_rxn_back_lower': REACTION_TYPE,
+    'cos_rxn_fwd': REACTION_TYPE,
+    'cos_rxn_fwd_lower': REACTION_TYPE,
+    'cos_rxn_orphan_back': REACTION_TYPE,
+    'cos_back_in_a': CHEMICAL_TYPE,
+    'cos_back_in_b': CHEMICAL_TYPE,
+    'cos_back_out': CHEMICAL_TYPE,
+    'cos_back_lower_in': CHEMICAL_TYPE,
+    'cos_back_lower_out': CHEMICAL_TYPE,
+    'cos_fwd_in': CHEMICAL_TYPE,
+    'cos_fwd_out': CHEMICAL_TYPE,
+    'cos_fwd_lower_in': CHEMICAL_TYPE,
+    'cos_fwd_lower_out': CHEMICAL_TYPE,
+    'cos_orphan_back_in': CHEMICAL_TYPE,
+    'cos_orphan_back_out': CHEMICAL_TYPE,
+    'trn_b': TRANSPORT_TYPE,
+    'met_cargo': CHEMICAL_TYPE,
+    'met_fuel': CHEMICAL_TYPE,
 }
 
 ENTITY = {
@@ -211,6 +348,63 @@ RELATIONS = (
     # than write four party rows under an `arity` of two.
     ('rxn_c_q', 'rxn_c', 'has_participant', 'q'),
     ('rxn_c_r', 'rxn_c', 'has_participant', 'r'),
+    # The reactions the binary metabolic projection reads. Same shape as the
+    # stars above: the parent is the subject of every membership, and the
+    # catalyst points at the parent under `controls`.
+    ('cos_reactant_a', 'cos_rxn', 'has_participant', 'cos_met_a'),
+    ('cos_reactant_b', 'cos_rxn', 'has_participant', 'cos_met_b'),
+    ('cos_product', 'cos_rxn', 'has_participant', 'cos_met_c'),
+    ('cos_enzyme', 'cos_enz', 'controls', 'cos_rxn'),
+    # No `controls` edge points at this one, so it reaches the header with no
+    # enzyme party at all.
+    ('cos_orphan_reactant', 'cos_rxn_orphan', 'has_participant',
+     'cos_orphan_in'),
+    ('cos_orphan_product', 'cos_rxn_orphan', 'has_participant',
+     'cos_orphan_out'),
+    ('cos_helper_reactant', 'cos_rxn_helper', 'has_participant',
+     'cos_helper_in'),
+    ('cos_helper_product', 'cos_rxn_helper', 'has_participant',
+     'cos_helper_out'),
+    ('cos_helper_cofactor', 'cos_rxn_helper', 'has_participant',
+     'cos_cofactor'),
+    ('cos_helper_regulator', 'cos_rxn_helper', 'has_participant',
+     'cos_regulator'),
+    ('cos_helper_enzyme', 'cos_enz_helper', 'controls', 'cos_rxn_helper'),
+    # The reactions whose event entity carries a direction. The stars
+    # themselves say nothing about it — the annotation rides on the event, and
+    # `ENTITY_ANNOTATION` below is where it lives.
+    ('cos_back_reactant_a', 'cos_rxn_back', 'has_participant', 'cos_back_in_a'),
+    ('cos_back_reactant_b', 'cos_rxn_back', 'has_participant', 'cos_back_in_b'),
+    ('cos_back_product', 'cos_rxn_back', 'has_participant', 'cos_back_out'),
+    ('cos_back_enzyme', 'cos_enz_back', 'controls', 'cos_rxn_back'),
+    ('cos_back_lower_reactant', 'cos_rxn_back_lower', 'has_participant',
+     'cos_back_lower_in'),
+    ('cos_back_lower_product', 'cos_rxn_back_lower', 'has_participant',
+     'cos_back_lower_out'),
+    ('cos_back_lower_enzyme', 'cos_enz_back_lower', 'controls',
+     'cos_rxn_back_lower'),
+    ('cos_fwd_reactant', 'cos_rxn_fwd', 'has_participant', 'cos_fwd_in'),
+    ('cos_fwd_product', 'cos_rxn_fwd', 'has_participant', 'cos_fwd_out'),
+    ('cos_fwd_enzyme', 'cos_enz_fwd', 'controls', 'cos_rxn_fwd'),
+    ('cos_fwd_lower_reactant', 'cos_rxn_fwd_lower', 'has_participant',
+     'cos_fwd_lower_in'),
+    ('cos_fwd_lower_product', 'cos_rxn_fwd_lower', 'has_participant',
+     'cos_fwd_lower_out'),
+    ('cos_fwd_lower_enzyme', 'cos_enz_fwd_lower', 'controls',
+     'cos_rxn_fwd_lower'),
+    ('cos_orphan_back_reactant', 'cos_rxn_orphan_back', 'has_participant',
+     'cos_orphan_back_in'),
+    ('cos_orphan_back_product', 'cos_rxn_orphan_back', 'has_participant',
+     'cos_orphan_back_out'),
+    # The transport whose cargo holds both roles. `trn_b_cargo` is **one**
+    # relation — `relation` is unique on (subject, predicate, object), so the
+    # two statements about the cargo cannot be two of them — and the role it
+    # carries is whichever of the two evidence rows under
+    # `SPLIT_ROLE_EVIDENCE` you are reading. The fuel and the transporter
+    # take the ordinary path.
+    ('trn_b_cargo', 'trn_b', 'has_participant', 'met_cargo'),
+    ('trn_b_fuel', 'trn_b', 'has_participant', 'met_fuel'),
+    ('trn_b_enzyme', 'enz_tb', 'controls', 'trn_b'),
 )
 
 # `has_participant` is a membership, and the build files memberships under the
@@ -271,6 +465,40 @@ EVIDENCE = (
     ('pathway_a_3', SOURCE_A, ()),
     ('rxn_c_q', SOURCE_C, ()),
     ('rxn_c_r', SOURCE_C, ()),
+    # One resource per binary-projection reaction. The projection carries the
+    # contributing resource onto every edge it emits, so a single publisher
+    # makes that column a claim a test can name.
+    ('cos_reactant_a', SOURCE_A, ()),
+    ('cos_reactant_b', SOURCE_A, ()),
+    ('cos_product', SOURCE_A, ()),
+    ('cos_enzyme', SOURCE_A, ()),
+    ('cos_orphan_reactant', SOURCE_A, ()),
+    ('cos_orphan_product', SOURCE_A, ()),
+    ('cos_helper_reactant', SOURCE_A, ()),
+    ('cos_helper_product', SOURCE_A, ()),
+    ('cos_helper_cofactor', SOURCE_A, ()),
+    ('cos_helper_regulator', SOURCE_A, ()),
+    ('cos_helper_enzyme', SOURCE_A, ()),
+    ('cos_back_reactant_a', SOURCE_A, ()),
+    ('cos_back_reactant_b', SOURCE_A, ()),
+    ('cos_back_product', SOURCE_A, ()),
+    ('cos_back_enzyme', SOURCE_A, ()),
+    ('cos_back_lower_reactant', SOURCE_A, ()),
+    ('cos_back_lower_product', SOURCE_A, ()),
+    ('cos_back_lower_enzyme', SOURCE_A, ()),
+    ('cos_fwd_reactant', SOURCE_A, ()),
+    ('cos_fwd_product', SOURCE_A, ()),
+    ('cos_fwd_enzyme', SOURCE_A, ()),
+    ('cos_fwd_lower_reactant', SOURCE_A, ()),
+    ('cos_fwd_lower_product', SOURCE_A, ()),
+    ('cos_fwd_lower_enzyme', SOURCE_A, ()),
+    ('cos_orphan_back_reactant', SOURCE_A, ()),
+    ('cos_orphan_back_product', SOURCE_A, ()),
+    # The transport with the two-role cargo. `trn_b_cargo` is deliberately
+    # absent here: one row per (relation, resource) is exactly what it cannot
+    # be expressed as, and `SPLIT_ROLE_EVIDENCE` below writes its two.
+    ('trn_b_fuel', SOURCE_A, ()),
+    ('trn_b_enzyme', SOURCE_A, ()),
 )
 
 # Participant-descriptive annotations: (relation key, source, term, value).
@@ -320,6 +548,130 @@ PARTICIPANT_EVIDENCE = (
     ('rxn_c_q', SOURCE_C, 'Reactant:OM:0310', None),
     ('rxn_c_q', SOURCE_C, 'Stoichiometry:OM:1226', '3'),
     ('rxn_c_r', SOURCE_C, 'Product:OM:0311', None),
+    # The ordinary conversion. `cos_met_b` is stated without a compartment, so
+    # the node string for it can carry no location and must not carry an empty
+    # one either.
+    ('cos_reactant_a', SOURCE_A, 'Reactant:OM:0310', None),
+    ('cos_reactant_a', SOURCE_A, 'Stoichiometry:OM:1226', '2'),
+    ('cos_reactant_a', SOURCE_A, 'Subcellular Location:OM:0604', 'c'),
+    ('cos_reactant_b', SOURCE_A, 'Reactant:OM:0310', None),
+    ('cos_product', SOURCE_A, 'Product:OM:0311', None),
+    ('cos_product', SOURCE_A, 'Subcellular Location:OM:0604', 'm'),
+    ('cos_enzyme', SOURCE_A, 'Enzyme:MI:0501', None),
+    # The catalyst-free conversion. Both sides are stated, the enzyme is not.
+    ('cos_orphan_reactant', SOURCE_A, 'Reactant:OM:0310', None),
+    ('cos_orphan_reactant', SOURCE_A, 'Subcellular Location:OM:0604', 'c'),
+    ('cos_orphan_product', SOURCE_A, 'Product:OM:0311', None),
+    ('cos_orphan_product', SOURCE_A, 'Subcellular Location:OM:0604', 'c'),
+    # The conversion with helpers. The cofactor and the regulator hold roles
+    # that name no side of the arrow, and the projection has to leave both
+    # where they are rather than read them as substrates.
+    ('cos_helper_reactant', SOURCE_A, 'Reactant:OM:0310', None),
+    ('cos_helper_reactant', SOURCE_A, 'Subcellular Location:OM:0604', 'c'),
+    ('cos_helper_product', SOURCE_A, 'Product:OM:0311', None),
+    ('cos_helper_product', SOURCE_A, 'Subcellular Location:OM:0604', 'c'),
+    ('cos_helper_cofactor', SOURCE_A, 'Cofactor:OM:0317', None),
+    ('cos_helper_cofactor', SOURCE_A, 'Subcellular Location:OM:0604', 'c'),
+    ('cos_helper_regulator', SOURCE_A, 'Regulator:MI:2274', None),
+    ('cos_helper_enzyme', SOURCE_A, 'Enzyme:MI:0501', None),
+    # The directional reactions. Each member sits in the cytosol, so a test can
+    # name the node string it expects without a second compartment to track.
+    ('cos_back_reactant_a', SOURCE_A, 'Reactant:OM:0310', None),
+    ('cos_back_reactant_a', SOURCE_A, 'Subcellular Location:OM:0604', 'c'),
+    ('cos_back_reactant_b', SOURCE_A, 'Reactant:OM:0310', None),
+    ('cos_back_reactant_b', SOURCE_A, 'Subcellular Location:OM:0604', 'c'),
+    ('cos_back_product', SOURCE_A, 'Product:OM:0311', None),
+    ('cos_back_product', SOURCE_A, 'Subcellular Location:OM:0604', 'c'),
+    ('cos_back_enzyme', SOURCE_A, 'Enzyme:MI:0501', None),
+    ('cos_back_lower_reactant', SOURCE_A, 'Reactant:OM:0310', None),
+    ('cos_back_lower_reactant', SOURCE_A,
+     'Subcellular Location:OM:0604', 'c'),
+    ('cos_back_lower_product', SOURCE_A, 'Product:OM:0311', None),
+    ('cos_back_lower_product', SOURCE_A, 'Subcellular Location:OM:0604', 'c'),
+    ('cos_back_lower_enzyme', SOURCE_A, 'Enzyme:MI:0501', None),
+    ('cos_fwd_reactant', SOURCE_A, 'Reactant:OM:0310', None),
+    ('cos_fwd_reactant', SOURCE_A, 'Subcellular Location:OM:0604', 'c'),
+    ('cos_fwd_product', SOURCE_A, 'Product:OM:0311', None),
+    ('cos_fwd_product', SOURCE_A, 'Subcellular Location:OM:0604', 'c'),
+    ('cos_fwd_enzyme', SOURCE_A, 'Enzyme:MI:0501', None),
+    ('cos_fwd_lower_reactant', SOURCE_A, 'Reactant:OM:0310', None),
+    ('cos_fwd_lower_reactant', SOURCE_A, 'Subcellular Location:OM:0604', 'c'),
+    ('cos_fwd_lower_product', SOURCE_A, 'Product:OM:0311', None),
+    ('cos_fwd_lower_product', SOURCE_A, 'Subcellular Location:OM:0604', 'c'),
+    ('cos_fwd_lower_enzyme', SOURCE_A, 'Enzyme:MI:0501', None),
+    ('cos_orphan_back_reactant', SOURCE_A, 'Reactant:OM:0310', None),
+    ('cos_orphan_back_reactant', SOURCE_A,
+     'Subcellular Location:OM:0604', 'c'),
+    ('cos_orphan_back_product', SOURCE_A, 'Product:OM:0311', None),
+    ('cos_orphan_back_product', SOURCE_A, 'Subcellular Location:OM:0604', 'c'),
+    # The fuel of the transport below: consumed in the cytosol and never
+    # produced, so it holds one role and one compartment.
+    ('trn_b_fuel', SOURCE_A, 'Reactant:OM:0310', None),
+    ('trn_b_fuel', SOURCE_A, 'Stoichiometry:OM:1226', '1'),
+    ('trn_b_fuel', SOURCE_A, 'Subcellular Location:OM:0604', 'c'),
+    ('trn_b_enzyme', SOURCE_A, 'Enzyme:MI:0501', None),
+)
+
+# The two statements a resource makes about a metabolite it transports. Both
+# ride on the **same** canonical relation and are told apart by the evidence
+# row each sits on, which is the grain the resource publishes them at: the
+# role and the compartment that qualifies it are on one row together, and
+# reading either without the other says nothing. A fixture that keyed one
+# evidence row per (relation, resource) — which is what `EVIDENCE` above does
+# — cannot express this, so these rows carry an occurrence number and are
+# written separately.
+#
+# The cargo leaves the cytosol two at a time and arrives outside one at a
+# time. The stoichiometries differ so that a projection collapsing them to one
+# value is caught on the number as well as on the compartment.
+#
+# (relation key, source, occurrence, ((term, value), ...))
+SPLIT_ROLE_EVIDENCE = (
+    (
+        'trn_b_cargo',
+        SOURCE_A,
+        1,
+        (
+            ('Reactant:OM:0310', None),
+            ('Subcellular Location:OM:0604', 'c'),
+            ('Stoichiometry:OM:1226', '2'),
+        ),
+    ),
+    (
+        'trn_b_cargo',
+        SOURCE_A,
+        2,
+        (
+            ('Product:OM:0311', None),
+            ('Subcellular Location:OM:0604', 'e'),
+            ('Stoichiometry:OM:1226', '1'),
+        ),
+    ),
+)
+
+# The term a resource publishes the direction of a conversion under, and the
+# four spellings it reaches the build in. Both halves of each pair are live on
+# the build — the upper-case forms carry the KEGG and Reactome side, the
+# lower-case forms the Human-GEM one — so a projection has to fold case and
+# read `-` and `_` alike before it compares.
+CONVERSION_DIRECTION_TERM = 'Conversion Direction:OM:1211'
+
+# Annotations on an **entity**: (entity name, source, term, value). A
+# conversion's direction describes the event, not any one of its memberships,
+# so the resource states it here rather than on a spoke. It reaches the build
+# through `entity_evidence_annotation`, and a consumer finds it by resolving
+# the evidence back to the entity.
+#
+# `cos_rxn`, `cos_rxn_orphan` and `cos_rxn_helper` are deliberately absent. A
+# resource that publishes no direction is not the same as one that publishes a
+# one-way reaction, and something has to hold the first case.
+ENTITY_ANNOTATION = (
+    ('cos_rxn_back', SOURCE_A, CONVERSION_DIRECTION_TERM, 'REVERSIBLE'),
+    ('cos_rxn_back_lower', SOURCE_A, CONVERSION_DIRECTION_TERM, 'reversible'),
+    ('cos_rxn_fwd', SOURCE_A, CONVERSION_DIRECTION_TERM, 'LEFT-TO-RIGHT'),
+    ('cos_rxn_fwd_lower', SOURCE_A, CONVERSION_DIRECTION_TERM,
+     'left_to_right'),
+    ('cos_rxn_orphan_back', SOURCE_A, CONVERSION_DIRECTION_TERM, 'REVERSIBLE'),
 )
 
 # Which evidence rows carry a PubMed reference, and which id.
@@ -360,6 +712,13 @@ ROLE_EVIDENCE = (
 )
 
 TAXONOMY_ID = 9606
+
+# Where the entity-annotation evidence rows start numbering, clear of the row
+# ids the relation evidence above uses.
+_ENTITY_ANNOTATION_ROW_BASE = 900000
+
+# And where the split-role evidence rows start, clear of both.
+_SPLIT_ROLE_ROW_BASE = 800000
 
 
 def _uuid5(prefix: str, index: int) -> str:
@@ -601,6 +960,87 @@ def build_interaction_fixture(
             ).as_string(cur.connection),
             relation_annotations,
         )
+
+        # The second and further evidence rows a resource publishes about one
+        # membership. `relation` holds a single row for the cargo of a
+        # transport — it is unique on (subject, predicate, object) — so the
+        # reactant statement and the product statement about that cargo can
+        # only be told apart by the evidence row each of them rides on. These
+        # rows are what a projection has to read at if it wants to keep the
+        # role and the compartment together, and the fixture writes them the
+        # way the loader does: one `relation_evidence` row per statement, all
+        # of them resolving to the same relation.
+        split_evidence_ids = {
+            (key, source, occurrence): _uuid5('66666666', index)
+            for index, (key, source, occurrence, _terms) in enumerate(
+                SPLIT_ROLE_EVIDENCE,
+                start=1,
+            )
+        }
+        cur.executemany(
+            q(
+                'INSERT INTO {}.relation_evidence (source_id, '
+                'relation_evidence_id, dataset_id, row_id, '
+                'subject_entity_id, predicate_id, object_entity_id, '
+                'relation_category_id) '
+                'VALUES (%s, %s, %s, %s, %s, %s, %s, %s) '
+                'ON CONFLICT DO NOTHING'
+            ).as_string(cur.connection),
+            [
+                (
+                    source,
+                    split_evidence_ids[(key, source, occurrence)],
+                    source,
+                    _SPLIT_ROLE_ROW_BASE + ordinal,
+                    ENTITY[
+                        next(s for k, s, _p, _o in RELATIONS if k == key)
+                    ],
+                    predicate_ids[predicate_of[key]],
+                    ENTITY[
+                        next(o for k, _s, _p, o in RELATIONS if k == key)
+                    ],
+                    RELATION_CATEGORY.get(key, 2),
+                )
+                for ordinal, (key, source, occurrence, _terms) in enumerate(
+                    SPLIT_ROLE_EVIDENCE,
+                    start=1,
+                )
+            ],
+        )
+        cur.executemany(
+            q(
+                'INSERT INTO {}.relation_evidence_relation '
+                '(source_id, relation_id, relation_evidence_id) '
+                'VALUES (%s, %s, %s) ON CONFLICT DO NOTHING'
+            ).as_string(cur.connection),
+            [
+                (
+                    source,
+                    relation_ids[key],
+                    split_evidence_ids[(key, source, occurrence)],
+                )
+                for key, source, occurrence, _terms in SPLIT_ROLE_EVIDENCE
+            ],
+        )
+        # Scope 3, `object`, exactly as the single-row participant evidence
+        # above: what these annotations describe is the member.
+        cur.executemany(
+            q(
+                'INSERT INTO {}.relation_evidence_annotation (source_id, '
+                'relation_evidence_id, annotation_key, annotation_scope_id) '
+                'VALUES (%s, %s, %s, %s) ON CONFLICT DO NOTHING'
+            ).as_string(cur.connection),
+            [
+                (
+                    source,
+                    split_evidence_ids[(key, source, occurrence)],
+                    annotation_key(term, value),
+                    3,
+                )
+                for key, source, occurrence, terms in SPLIT_ROLE_EVIDENCE
+                for term, value in terms
+            ],
+        )
         cur.executemany(
             q(
                 'INSERT INTO {}.entity_evidence_annotation (source_id, '
@@ -614,6 +1054,69 @@ def build_interaction_fixture(
                     annotation_key(term),
                 )
                 for key, source, side, term in ROLE_EVIDENCE
+            ],
+        )
+
+        # The annotations a resource states about an entity rather than about
+        # a relation. A conversion's direction is one: it describes the event,
+        # and it reaches a consumer by resolving the evidence back to the
+        # entity, which is the path the reaction event itself resolves along.
+        entity_annotation_ids = {
+            (name, source): _uuid5('55555555', index)
+            for index, (name, source, _term, _value) in enumerate(
+                ENTITY_ANNOTATION,
+                start=1,
+            )
+        }
+        cur.executemany(
+            q(
+                'INSERT INTO {}.entity_evidence (source_id, '
+                'entity_evidence_id, dataset_id, row_id, entity_role_id, '
+                'entity_type_id, taxonomy_id) '
+                'VALUES (%s, %s, %s, %s, 1, %s, %s) ON CONFLICT DO NOTHING'
+            ).as_string(cur.connection),
+            [
+                (
+                    source,
+                    entity_annotation_ids[(name, source)],
+                    source,
+                    _ENTITY_ANNOTATION_ROW_BASE + ordinal,
+                    entity_type_ids[ENTITY_TYPES.get(name, PROTEIN_TYPE)],
+                    TAXONOMY_ID,
+                )
+                for ordinal, (name, source, _term, _value) in enumerate(
+                    ENTITY_ANNOTATION,
+                    start=1,
+                )
+            ],
+        )
+        # The resolution is what ties the evidence to the canonical entity.
+        # Without it the annotation describes a row nobody can reach from the
+        # entity it is about.
+        cur.executemany(
+            q(
+                'INSERT INTO {}.entity_evidence_resolution (source_id, '
+                'entity_evidence_id, status_id, entity_id) '
+                'VALUES (%s, %s, 1, %s) ON CONFLICT DO NOTHING'
+            ).as_string(cur.connection),
+            [
+                (source, entity_annotation_ids[(name, source)], ENTITY[name])
+                for name, source, _term, _value in ENTITY_ANNOTATION
+            ],
+        )
+        cur.executemany(
+            q(
+                'INSERT INTO {}.entity_evidence_annotation (source_id, '
+                'entity_evidence_id, annotation_key) VALUES (%s, %s, %s) '
+                'ON CONFLICT DO NOTHING'
+            ).as_string(cur.connection),
+            [
+                (
+                    source,
+                    entity_annotation_ids[(name, source)],
+                    annotation_key(term, value),
+                )
+                for name, source, term, value in ENTITY_ANNOTATION
             ],
         )
     conn.commit()

@@ -130,6 +130,30 @@ def _parties(conn, schema: str, interaction_id) -> dict[str, tuple]:
     return {row[0]: row[1:] for row in rows}
 
 
+def _party_rows(conn, schema: str, interaction_id) -> list[tuple]:
+    """Every party row of a header, as a list.
+
+    :func:`_parties` keys on the participant's identifier, which is enough for
+    a reaction where each member appears once. A transport's cargo appears
+    **twice** — once per side of the membrane — so a dict would silently keep
+    one of the two rows the assertions are about.
+    """
+    return _rows(
+        conn,
+        f"""
+        SELECT e.canonical_identifier, role.name, p.side, p.ordinal,
+               p.stoichiometry, p.compartment
+        FROM {schema}.interaction_party p
+        JOIN {schema}.vocab_relation_role role
+          ON role.relation_role_id = p.role_id
+        JOIN {schema}.entity e ON e.entity_id = p.entity_id
+        WHERE p.interaction_id = %s
+        ORDER BY e.canonical_identifier, role.name
+        """,
+        [interaction_id],
+    )
+
+
 class TestTheReactionIsOneInteraction:
     """The three-member reaction the fixture publishes twice."""
 
@@ -421,3 +445,121 @@ class TestTheSharedIdentityNamespace:
             [interaction_id],
         )
         assert rows[0][0] == 2
+
+
+class TestTheTransportKeepsItsCompartmentChange:
+    """A metabolite on both sides of a membrane keeps both of its compartments.
+
+    A transport is a compartment change and nothing else: the same metabolite
+    is the reactant, in the compartment it leaves, and the product, in the one
+    it arrives in. The resource states that as two evidence rows on **one**
+    membership — ``relation`` is unique on
+    ``(subject, predicate, object)``, so the cargo cannot be two relations —
+    with the role and the compartment that qualifies it sitting on the same
+    row.
+
+    The two statements therefore have to be kept apart until the role is
+    known. A projection that resolves the compartment per **member** hands
+    both party rows ``min('c', 'e') = 'c'``, which says the metabolite starts
+    and ends in the cytosol: the transport is still there as two roles, and
+    the movement it consists of is gone. The same argument applies to the
+    stoichiometry, which is per side as well — two out of the cytosol, one
+    into the medium.
+    """
+
+    PARTICIPANTS = ('met_cargo', 'met_fuel', 'enz_tb')
+
+    @pytest.fixture(scope='class')
+    def header(self, conn, scratch):
+        found = _header_of(conn, scratch, self.PARTICIPANTS)
+        assert len(found) == 1, (
+            'the transport projects to one header; '
+            f'found {len(found)}'
+        )
+        return found[0]
+
+    def test_the_cargo_is_two_participants(self, conn, scratch, header):
+        """Two roles on one member are two party rows, not one."""
+        interaction_id, arity, _sources = header
+        rows = _party_rows(conn, scratch, interaction_id)
+        cargo = [row for row in rows if row[0] == 'FIXTURE_met_cargo']
+        assert [row[1] for row in cargo] == ['product', 'reactant']
+        # Four party rows over three entities: the cargo is counted once per
+        # side, which is what makes a transport an arity-4 interaction rather
+        # than an arity-3 one.
+        assert arity == len(rows) == 4
+
+    def test_the_compartment_change_survives(self, conn, scratch, header):
+        """The whole content of a transport is that the two differ."""
+        interaction_id, _arity, _sources = header
+        rows = _party_rows(conn, scratch, interaction_id)
+        compartment = {
+            row[1]: row[5]
+            for row in rows
+            if row[0] == 'FIXTURE_met_cargo'
+        }
+        assert compartment == {'reactant': 'c', 'product': 'e'}
+
+    def test_each_side_keeps_its_own_stoichiometry(
+        self,
+        conn,
+        scratch,
+        header,
+    ):
+        """Two leave the cytosol and one arrives outside it."""
+        interaction_id, _arity, _sources = header
+        rows = _party_rows(conn, scratch, interaction_id)
+        stoichiometry = {
+            row[1]: row[4]
+            for row in rows
+            if row[0] == 'FIXTURE_met_cargo'
+        }
+        assert stoichiometry == {'reactant': 2, 'product': 1}
+
+    def test_the_sides_are_still_the_sides_of_the_arrow(
+        self,
+        conn,
+        scratch,
+        header,
+    ):
+        interaction_id, _arity, _sources = header
+        rows = _party_rows(conn, scratch, interaction_id)
+        sides = {
+            row[1]: row[2]
+            for row in rows
+            if row[0] == 'FIXTURE_met_cargo'
+        }
+        assert sides == {'reactant': 1, 'product': 2}
+
+    def test_the_one_role_member_is_unchanged(self, conn, scratch, header):
+        """The fuel holds one role, and resolving per role must not move it.
+
+        It is consumed in the cytosol and never regenerated, so there is one
+        statement about it and one party row, carrying exactly what the
+        resource published. Splitting the aggregation by role is only correct
+        if it leaves this case alone.
+        """
+        interaction_id, _arity, _sources = header
+        rows = _party_rows(conn, scratch, interaction_id)
+        fuel = [row for row in rows if row[0] == 'FIXTURE_met_fuel']
+        assert len(fuel) == 1
+        _name, role, side, _ordinal, stoichiometry, compartment = fuel[0]
+        assert role == 'reactant'
+        assert side == 1
+        assert stoichiometry == 1
+        assert compartment == 'c'
+
+    def test_the_transporter_is_still_on_neither_side(
+        self,
+        conn,
+        scratch,
+        header,
+    ):
+        interaction_id, _arity, _sources = header
+        rows = _party_rows(conn, scratch, interaction_id)
+        enzyme = [row for row in rows if row[0] == 'FIXTURE_enz_tb']
+        assert len(enzyme) == 1
+        assert enzyme[0][1] == 'enzyme'
+        assert enzyme[0][2] is None
+        assert enzyme[0][4] is None
+        assert enzyme[0][5] is None
