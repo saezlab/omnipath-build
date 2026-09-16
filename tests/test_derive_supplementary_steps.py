@@ -58,10 +58,10 @@ def test_a_derive_that_skipped_a_step_exits_non_zero(capsys):
     assert 'metsigdb' in out and 'network_views' in out
 
 
-def test_both_supplementary_steps_report_through_the_helper():
-    """Neither may go back to logging the failure and moving on."""
+def test_every_supplementary_step_reports_through_the_helper():
+    """None of them may go back to logging the failure and moving on."""
     source = inspect.getsource(cli.main)
-    for step in ('network_views', 'metsigdb'):
+    for step in ('network_views', 'metsigdb', 'cosmos'):
         anchor = source.index(f"_derive_log('{step}_start')")
         tail = source[anchor:anchor + 2600]
         assert '_supplementary_step_failed(' in tail, step

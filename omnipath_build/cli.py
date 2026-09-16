@@ -49,6 +49,10 @@ from omnipath_build.labels import (
     populate_entity_labels,
     populate_entity_name,
 )
+from omnipath_build.cosmos import (
+    build_cosmos_projection,
+    ensure_cosmos_edge_table,
+)
 from omnipath_build.metsigdb import build_metsigdb
 from omnipath_build.network_views import NETWORKS, apply_all as apply_network_views
 from omnipath_build.resources import discover_resources, populate_identifier_authority
@@ -258,6 +262,16 @@ def main(argv: list[str] | None = None) -> int:
             'Publish the MetSigDB membership substrate (KEGG, Reactome, '
             'WikiPathways, MACdb, ClassyFire). Runs after the build manifest, '
             'whose stamp every published row carries.'
+        ),
+    )
+    derive.add_argument(
+        '--cosmos',
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            'Project the metabolic reactions into the binary COSMOS network. '
+            'Runs after the build manifest, and reads the reaction headers '
+            'the interactions phase wrote.'
         ),
     )
     derive.add_argument('--inputs-package', default='pypath.inputs_v2')
@@ -759,6 +773,36 @@ def main(argv: list[str] | None = None) -> int:
                     finally:
                         if metsigdb_conn is not None:
                             metsigdb_conn.close()
+                if args.cosmos:
+                    step_started = time.perf_counter()
+                    _derive_log('cosmos_start')
+                    try:
+                        ensure_cosmos_edge_table(conn, schema=args.schema)
+                        cosmos_stats = build_cosmos_projection(
+                            conn,
+                            schema=args.schema,
+                        )
+                        _derive_log(
+                            'cosmos_done',
+                            edges=cosmos_stats.edges,
+                            reactions=cosmos_stats.reactions,
+                            orphan_reactions=cosmos_stats.orphan_reactions,
+                            connectors=cosmos_stats.connectors,
+                            skipped_parties=cosmos_stats.skipped_parties,
+                            seconds=f'{time.perf_counter() - step_started:.3f}',
+                        )
+                    except Exception as exc:
+                        # A projection over the reaction headers the core phase
+                        # wrote, like the network views and MetSigDB: loud on
+                        # failure, but it must not abort the build that
+                        # produced the content it reads.
+                        conn.rollback()
+                        _supplementary_step_failed(
+                            failed_steps,
+                            'cosmos',
+                            exc,
+                            time.perf_counter() - step_started,
+                        )
                 print(
                     '[derive] '
                     f'entity_identifier_lookup='
