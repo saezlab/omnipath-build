@@ -1483,6 +1483,12 @@ _ANNOTATION_CLASS_TERMS = (
 # predicate has nothing to say", so the fallback shows through as the fallback
 # rather than as a predicate answer.
 _FALLBACK_CLASS = 'other'
+# The class a movement across a compartment boundary is stated under, and the
+# `attributes` key the two compartments ride in. The value is a list of
+# objects, one per movement the resource published, because a resource can
+# state several for one pair.
+_TRANSPORT_CLASS = 'transport'
+_TRANSPORT_ATTRIBUTE = 'transport'
 
 # Direction, per predicate. A resource that records `A positively_regulates B`
 # asserts a direction, so those rows carry `is_directed` true.
@@ -2903,7 +2909,12 @@ def _stage_interaction_record(
           annotation.affinity,
           annotation.pchembl,
           annotation.score,
-          annotation.curation_flags
+          annotation.curation_flags,
+          -- Filled only by `_stage_transport_pairs`, which appends rows here
+          -- after this table is built and merges onto the ones it finds. The
+          -- column is declared with the rest so that both writers and the
+          -- insert below see one shape.
+          NULL::jsonb AS attributes
         FROM (
           SELECT
             interaction_fact_resource_id,
@@ -3103,6 +3114,18 @@ def _stage_reaction_hyperedges(
     # in its 2,691 reactant-side against 11 product-side rows never reaches a
     # member that has to be told apart here.
     #
+    # **The resource stays in the key, and the member table folds it away
+    # again.** Everything downstream of a reaction header wants the merged
+    # answer, so `_if_reaction_member` groups the resources together and the
+    # values it reads are identical either way — a `min` over per-resource
+    # `min`s is the `min`. What needs the split is the binary transport pair:
+    # a movement is one resource's claim about one reaction, and reading the
+    # compartment it left off one resource and the one it reached off another
+    # would assemble a transport nobody published. Keeping the column here
+    # takes this table from 347,899 rows to 350,596 — most spokes have one
+    # resource — and saves a second pass over the 776,153 evidence rows the
+    # `stated` scan reads.
+    #
     # An evidence row that states no role at all lands under a NULL role. That
     # is not a fifth role: it is the bucket for values nobody attributed to a
     # side, and `_if_reaction_party` keeps it only where the member holds no
@@ -3172,6 +3195,7 @@ def _stage_reaction_hyperedges(
             )
             SELECT
               stated.relation_id,
+              stated.source_id,
               role.name AS role_name,
               min(stated.stoichiometry) AS stoichiometry,
               min(stated.compartment) AS compartment,
@@ -3192,7 +3216,7 @@ def _stage_reaction_hyperedges(
                 )
             ) AS role(name, states_it)
             WHERE role.states_it
-            GROUP BY 1, 2
+            GROUP BY 1, 2, 3
             """
         ).format(schema_id, schema_id, schema_id),
         {
@@ -3517,6 +3541,293 @@ def _stage_reaction_hyperedges(
     cur.execute('ANALYZE _if_reaction_map')
 
 
+def _stage_transport_pairs(
+    cur: psycopg2.extensions.cursor,
+    schema: str,
+) -> None:
+    """Stage the binary transport a reaction states, as ordinary pairs.
+
+    Three unlogged tables, and then two appends: ``_if_transport`` holds one
+    row per movement the resources published, ``_if_transport_record`` folds
+    those onto the record key, and the rows go into ``_if_fact`` and
+    ``_if_record`` so that the pair projection mints their headers, their
+    parties and their record ids exactly as it does for every other pair.
+
+    **The build already identifies transport, and has never exposed it.**
+    ``Transport:OM:0035`` is an entity type of its own because the inputs say
+    so — Recon3D and Human-GEM each declare a transport dataset, and the
+    compartment tracing that separates one is upstream in the loader. What the
+    graph stores is a **star**: one relation per member, whose subject is the
+    event. Selecting those gives metabolite-to-event rows, which are not
+    metabolite-protein interactions whatever class they carry. Measured before
+    this staging existed: recon3d and metatlas contributed no ``transport``
+    relation at all, and rhea contributed 12, against tcdb's 19,978.
+
+    **A transport is a compartment change, and that is what identifies one.**
+    The cargo is the same canonical metabolite twice inside one reaction — a
+    reactant in the compartment it leaves, a product in the one it reaches —
+    so the pair falls out of joining the reaction's annotations to themselves
+    across the two roles and keeping the rows whose compartments differ. The
+    two roles arrive as two rows because :func:`_stage_reaction_hyperedges`
+    resolves the compartment per role. Fold them first and both sides read
+    ``min('c', 'e')``, which leaves no movement to find.
+
+    **The transporter is the reaction's catalyst.** It never appears as a
+    member — it arrives as the sibling ``controls`` edge that points at the
+    event — so the pair is only assertable where the resource named one. On
+    the current build 12,528 events state a movement and 7,438 of them have a
+    catalyst, so two in five of those events yield no pair. That is a gap in
+    what the resources publish rather than one in this staging, and inventing
+    a transporter for the rest would be inventing the interaction.
+
+    **The movement and the catalysis have to come from one resource.** The
+    record grain says "this resource asserts this pair", so assembling the
+    compartment a resource stated with a transporter another resource named
+    would publish a claim nobody made. It costs almost nothing here, because
+    Recon3D and Human-GEM each publish a whole model of their own. Of the
+    11,952 movement-and-catalyst rows recon3d reaches without the rule, 41
+    pair a movement with a transporter only another resource named, and
+    metatlas loses none of its 16,506.
+
+    **The class is stated here rather than inherited.** The star's own class
+    resolves to ``other`` on the current build, which is a gap in the
+    classification map. The movement across a compartment boundary *is* the
+    transport statement, so the pair carries ``transport`` and the direction
+    that every other transport row already carries.
+
+    Yield on the current build: 7,847 record rows — 4,355 metatlas, 3,492
+    recon3d — over 8,448 distinct (metabolite, transporter, from, to) tuples.
+    Rhea contributes none, and the reason is structural rather than a filter.
+    It splits a transport into one membership per side, and the two sides are
+    two entities, so nothing it publishes says one molecule appeared in both
+    places.
+    """
+    schema_id = sql.Identifier(schema)
+
+    # The catalysts, with the resource that named each one. The reaction
+    # staging already found them, and all this adds is the evidence link. The
+    # record key holds a resource and `_if_reaction_catalyst` folds them
+    # away.
+    cur.execute('DROP TABLE IF EXISTS _if_transport_catalyst')
+    cur.execute(
+        sql.SQL(
+            """
+            CREATE UNLOGGED TABLE _if_transport_catalyst AS
+            SELECT DISTINCT
+              c.reaction_entity_id,
+              c.entity_id,
+              rer.source_id
+            FROM _if_reaction_catalyst c
+            JOIN {}.relation_evidence_relation rer
+              ON rer.relation_id = c.relation_id
+            """
+        ).format(schema_id)
+    )
+    cur.execute(
+        'CREATE INDEX _if_transport_catalyst_idx ON _if_transport_catalyst '
+        '(reaction_entity_id, source_id)'
+    )
+    cur.execute('ANALYZE _if_transport_catalyst')
+
+    # One row per movement: the transporter, the cargo, the resource, and the
+    # two compartments. The self-join is on the membership rather than on the
+    # member, which is the same thing said cheaply — `relation` is unique on
+    # its endpoint triple, so a `(reaction, member)` pair is exactly one
+    # relation and the two roles of a cargo hang off that one id.
+    #
+    # The subcellular location beats the membrane side on each end for the
+    # reason the merged party takes them in that order: they answer the same
+    # question about the participant and the location is the more specific
+    # answer. The comparison is between the resolved values, so a member
+    # stating an organelle on one side and a membrane side on the other is
+    # compared on what it actually published.
+    cur.execute('DROP TABLE IF EXISTS _if_transport')
+    cur.execute(
+        """
+        CREATE UNLOGGED TABLE _if_transport AS
+        SELECT
+          catalyst.entity_id AS subject_entity_id,
+          ir.object_entity_id,
+          leaving.source_id,
+          coalesce(leaving.compartment, leaving.membrane_side)
+            AS compartment_from,
+          coalesce(arriving.compartment, arriving.membrane_side)
+            AS compartment_to
+        FROM _if_relation ir
+        JOIN _if_reaction_annotation leaving
+          ON leaving.relation_id = ir.relation_id
+         AND leaving.role_name = 'reactant'
+        JOIN _if_reaction_annotation arriving
+          ON arriving.relation_id = ir.relation_id
+         AND arriving.role_name = 'product'
+         AND arriving.source_id = leaving.source_id
+        JOIN _if_transport_catalyst catalyst
+          ON catalyst.reaction_entity_id = ir.reaction_entity_id
+         AND catalyst.source_id = leaving.source_id
+        WHERE ir.reaction_entity_id IS NOT NULL
+          AND coalesce(leaving.compartment, leaving.membrane_side) IS NOT NULL
+          AND coalesce(arriving.compartment, arriving.membrane_side)
+                IS NOT NULL
+          AND coalesce(leaving.compartment, leaving.membrane_side)
+                <> coalesce(arriving.compartment, arriving.membrane_side)
+        """
+    )
+    cur.execute('ANALYZE _if_transport')
+
+    # The record key, with its surrogate minted by the one scheme the record
+    # uses. `is_directed` is stated rather than derived: a transporter moving
+    # a cargo is asymmetric, and every transport row the build already holds
+    # carries the flag.
+    #
+    # **The compartments ride in `attributes`, not in
+    # `interaction_party.compartment`.** That column holds one value for one
+    # party of one header, and a transport's cargo has two — where it came
+    # from and where it went — which no single column can express. Splitting
+    # the cargo into a party per side would put one entity twice under an
+    # `arity` of two and break the header id, which is the hash of the
+    # participant multiset. The header is also shared: it is
+    # endpoint-independent and folds every resource that reported the pair,
+    # while a movement is one resource's claim, and two resources need not
+    # agree about which membrane was crossed. And a single record key can
+    # carry several movements — 589 of the current build's 7,847 do, one of
+    # them seven — which only a list-valued store can hold. `attributes` is
+    # per record row, per resource, and takes a list, so it is the honest
+    # place and the party column is not.
+    identity = interaction_record_uuid_sql(
+        subject_entity_id='moved.subject_entity_id',
+        object_entity_id='moved.object_entity_id',
+        interaction_class='moved.interaction_class',
+        source='moved.source',
+        is_directed='true',
+        is_stimulation='NULL',
+        is_inhibition='NULL',
+    )
+    cur.execute('DROP TABLE IF EXISTS _if_transport_record')
+    cur.execute(
+        sql.SQL(
+            """
+            CREATE UNLOGGED TABLE _if_transport_record AS
+            SELECT
+              {identity} AS interaction_fact_resource_id,
+              moved.subject_entity_id,
+              moved.object_entity_id,
+              moved.interaction_class_id,
+              moved.source_id,
+              moved.attributes
+            FROM (
+              SELECT
+                t.subject_entity_id,
+                t.object_entity_id,
+                vic.interaction_class_id,
+                vic.name AS interaction_class,
+                t.source_id,
+                ds.name AS source,
+                jsonb_build_object(
+                  %(attribute)s,
+                  jsonb_agg(
+                    DISTINCT jsonb_build_object(
+                      'from', t.compartment_from,
+                      'to', t.compartment_to
+                    )
+                  )
+                ) AS attributes
+              FROM _if_transport t
+              JOIN {schema}.data_source ds ON ds.source_id = t.source_id
+              JOIN {schema}.vocab_interaction_class vic
+                ON vic.name = %(transport)s
+              GROUP BY 1, 2, 3, 4, 5, 6
+            ) moved
+            """
+        ).format(identity=sql.SQL(identity), schema=schema_id),
+        {
+            'attribute': _TRANSPORT_ATTRIBUTE,
+            'transport': _TRANSPORT_CLASS,
+        },
+    )
+    cur.execute('ANALYZE _if_transport_record')
+
+    # Into the pair projection, which has not been built yet: `_if_party`,
+    # `_if_header` and `_if_header_source` are all derived from `_if_fact`
+    # after this runs, so the transport pairs get their header, their two
+    # party rows and their provenance from the same code every other pair
+    # uses. Each of those three groups on the endpoint triple, so a pair a
+    # resource also states directly — four of them, all tcdb — lands as a
+    # second `_if_fact` row and folds back into one header crediting both.
+    cur.execute(
+        sql.SQL(
+            """
+            INSERT INTO _if_fact (
+              subject_entity_id, object_entity_id, interaction_class_id,
+              sources, subject_ligand, subject_receptor, object_ligand,
+              object_receptor
+            )
+            SELECT
+              r.subject_entity_id,
+              r.object_entity_id,
+              r.interaction_class_id,
+              array_agg(DISTINCT ds.name),
+              false, false, false, false
+            FROM _if_transport_record r
+            JOIN {}.data_source ds ON ds.source_id = r.source_id
+            GROUP BY 1, 2, 3
+            """
+        ).format(schema_id)
+    )
+    cur.execute('ANALYZE _if_fact')
+
+    # Into the record. A resource that states the same pair directly *and*
+    # through a reaction mints the same surrogate twice, so the compartments
+    # are merged onto the row that is already there rather than inserted
+    # beside it — the record's key is unique, and the direct row carries
+    # references and a header this one does not. No resource is in that
+    # position on the current build, which is why the merge is written to
+    # lose nothing rather than to resolve a conflict.
+    #
+    # Both statements match on the record's **key columns** rather than on the
+    # surrogate, and they are the same match: the surrogate is the hash of
+    # exactly those seven values. The key columns have `_if_record_idx` behind
+    # them, so each is 7,847 index lookups instead of a sequential pass over
+    # the 14.7 million rows the record holds by this point.
+    matches_the_record = """
+        rec.subject_entity_id = t.subject_entity_id
+        AND rec.object_entity_id = t.object_entity_id
+        AND rec.interaction_class_id = t.interaction_class_id
+        AND rec.source_id = t.source_id
+        AND rec.is_directed
+        AND rec.is_stimulation IS NULL
+        AND rec.is_inhibition IS NULL
+    """
+    cur.execute(
+        f"""
+        UPDATE _if_record rec
+        SET attributes = t.attributes
+        FROM _if_transport_record t
+        WHERE {matches_the_record}
+        """
+    )
+    cur.execute(
+        f"""
+        INSERT INTO _if_record (
+          interaction_fact_resource_id, subject_entity_id, object_entity_id,
+          interaction_class_id, source_id, is_directed, attributes
+        )
+        SELECT
+          t.interaction_fact_resource_id,
+          t.subject_entity_id,
+          t.object_entity_id,
+          t.interaction_class_id,
+          t.source_id,
+          true,
+          t.attributes
+        FROM _if_transport_record t
+        WHERE NOT EXISTS (
+          SELECT 1 FROM _if_record rec WHERE {matches_the_record}
+        )
+        """
+    )
+    cur.execute('ANALYZE _if_record')
+
+
 def _populate_interaction_header(
     cur: psycopg2.extensions.cursor,
     schema: str,
@@ -3541,6 +3852,7 @@ def _populate_interaction_header(
     schema_id = sql.Identifier(schema)
 
     _stage_reaction_hyperedges(cur, schema)
+    _stage_transport_pairs(cur, schema)
 
     cur.execute('DROP TABLE IF EXISTS _if_party')
     cur.execute(
@@ -3814,9 +4126,12 @@ def _populate_interaction_fact_resource(
     the foreign key satisfiable by construction: the record is written after the
     header, and every record row therefore points at a header row that exists.
 
-    ``attributes`` stays NULL. The long tail is gated on the benchmark that
-    prices the hot-column split against the JSONB store, and ``dataset_tags``
-    belongs to the preset registry; neither is a value this step has.
+    ``attributes`` carries what :func:`_stage_transport_pairs` staged and
+    nothing else: the two compartments a transported metabolite moved between,
+    on the 7,847 transport rows that step derives, and NULL on the other 14.7
+    million. The long tail is still gated on the benchmark that prices the
+    hot-column split against the JSONB store, and ``dataset_tags`` still
+    belongs to the preset registry. Neither is a value this step has.
 
     **The record stays binary, including for reactions.** Its key is an ordered
     ``(subject, object)`` pair with both columns ``NOT NULL``, and the
@@ -3861,7 +4176,7 @@ def _populate_interaction_fact_resource(
               rec.curation_flags,
               rec.reference_pubmed_ids,
               rec.reference_dois,
-              NULL::jsonb,
+              rec.attributes,
               coalesce(h.interaction_id, reaction.interaction_id)
             FROM _if_record rec
             LEFT JOIN _if_header h
@@ -4211,6 +4526,9 @@ def _drop_interaction_staging(cur: psycopg2.extensions.cursor) -> None:
         '_if_reaction_header',
         '_if_reaction_source',
         '_if_reaction_map',
+        '_if_transport_catalyst',
+        '_if_transport',
+        '_if_transport_record',
         # Left by the pre-amendment fold; dropped here so a database that ran
         # the old derive does not keep 14-million-row staging tables around.
         '_if_sign_source',

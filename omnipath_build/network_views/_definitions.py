@@ -45,14 +45,20 @@ from omnipath_build.network_views._framework import NetworkDefinition
 # counts them. ChEMBL's mechanism-of-action pairs do contribute, and no
 # retiring view delivered them — the gate below says why.
 #
-# **The reaction-grain components are declared and currently empty.** Rhea,
-# Recon3D and Human-GEM contribute metabolite↔enzyme pairs that the record
+# **The reaction-grain component delivers the transport half and not the rest.**
+# Rhea, Recon3D and Human-GEM state metabolite↔enzyme pairs that the record
 # holds as two hops through a reaction entity — gene → reaction and reaction →
 # metabolite — because the load binarised the reaction rather than keeping it
-# as a hyperedge. Until the reaction projection lands, this component selects
-# the handful of pairs already stated directly, and the dataset is short of the
-# view's rhea, recon3d and humangem rows. That is a known gap with a named
-# cause, declared here rather than left as a silent difference.
+# as a hyperedge. The derive now closes one of those hops where the resource
+# says the metabolite moved: a cargo stated as a reactant in one compartment
+# and a product in another, inside a reaction some protein catalyses, becomes
+# an ordinary transport pair between that protein and that metabolite, and
+# 7,847 of them reach this component. Two gaps remain, both with named causes.
+# Rhea contributes none, because it splits a transport into one membership per
+# side and the two sides are different entities, so nothing in it says the
+# same molecule appeared in both places. And a conversion that moves nothing
+# still has no pair reading at all — its enzyme reaches its substrates only
+# through the event.
 _CURATED_SOURCES = (
     'cellinker',
     'guidetopharma',

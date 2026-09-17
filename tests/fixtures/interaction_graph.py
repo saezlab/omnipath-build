@@ -59,6 +59,16 @@ projection that folded only one of them is caught rather than assumed correct.
 Three of the reactions above carry **no** direction at all, which is what a
 resource publishing only the chemistry looks like.
 
+Two more stars hold the same metabolite on **both** sides of the arrow, which
+is the shape a binary transport is read out of. One carries it across a
+membrane — a reactant in the cytosol and a product outside — and the other
+consumes and regenerates it in one compartment. Both statements ride on one
+membership, because ``relation`` is unique on its endpoint triple and the role
+lives on the evidence row rather than on the relation, so the two are told
+apart by the evidence they sit on. What separates them is the compartment and
+nothing else, so a projection reading the roles alone publishes a transporter
+for the reaction that transports nothing.
+
 Beside those single-situation rows the graph carries a **coverage pair per
 interaction class**: one ordered endpoint pair for every class the graph can
 evidence, each reported by two resources that both publish a reference. Those
@@ -276,6 +286,18 @@ TRANSPORT_SPLIT_NAMES = (
     'enz_tb',
 )
 
+# A metabolite a reaction consumes and regenerates without moving it. It holds
+# both roles, exactly as a transported cargo does, and it ends up where it
+# started — a cofactor turned over in the cytosol is the everyday case. What
+# separates a transport from this is the compartment change and not the pair of
+# roles, so a projection that read the roles alone would publish a transporter
+# that transports nothing.
+UNMOVED_MEMBER_NAMES = (
+    'rxn_still',
+    'met_still',
+    'enz_still',
+)
+
 ENTITY_NAMES = (
     *'abcdefghijklmnopqr',
     *(
@@ -292,6 +314,7 @@ ENTITY_NAMES = (
     *COSMOS_DIRECTION_NAMES,
     *TRANSPORT_SPLIT_NAMES,
     *COSMOS_TRANSLATION_NAMES,
+    *UNMOVED_MEMBER_NAMES,
 )
 
 ENTITY_TYPES = {
@@ -337,6 +360,8 @@ ENTITY_TYPES = {
     'trn_b': TRANSPORT_TYPE,
     'met_cargo': CHEMICAL_TYPE,
     'met_fuel': CHEMICAL_TYPE,
+    'rxn_still': REACTION_TYPE,
+    'met_still': CHEMICAL_TYPE,
     'cos_rxn_named': REACTION_TYPE,
     'cos_rxn_unmapped': REACTION_TYPE,
     'cos_rxn_shaped': REACTION_TYPE,
@@ -531,6 +556,11 @@ RELATIONS = (
     ('trn_b_cargo', 'trn_b', 'has_participant', 'met_cargo'),
     ('trn_b_fuel', 'trn_b', 'has_participant', 'met_fuel'),
     ('trn_b_enzyme', 'enz_tb', 'controls', 'trn_b'),
+    # The reaction that turns a cofactor over without moving it. Same shape as
+    # the transport above, down to the two evidence rows on one membership,
+    # and the compartment is the same on both of them.
+    ('rxn_still_member', 'rxn_still', 'has_participant', 'met_still'),
+    ('rxn_still_enzyme', 'enz_still', 'controls', 'rxn_still'),
 )
 
 # `has_participant` is a membership, and the build files memberships under the
@@ -637,6 +667,8 @@ EVIDENCE = (
     # be expressed as, and `SPLIT_ROLE_EVIDENCE` below writes its two.
     ('trn_b_fuel', SOURCE_A, ()),
     ('trn_b_enzyme', SOURCE_A, ()),
+    # `rxn_still_member` is absent for the same reason `trn_b_cargo` is.
+    ('rxn_still_enzyme', SOURCE_A, ()),
 )
 
 # Participant-descriptive annotations: (relation key, source, term, value).
@@ -771,6 +803,7 @@ PARTICIPANT_EVIDENCE = (
     ('trn_b_fuel', SOURCE_A, 'Stoichiometry:OM:1226', '1'),
     ('trn_b_fuel', SOURCE_A, 'Subcellular Location:OM:0604', 'c'),
     ('trn_b_enzyme', SOURCE_A, 'Enzyme:MI:0501', None),
+    ('rxn_still_enzyme', SOURCE_A, 'Enzyme:MI:0501', None),
 )
 
 # The two statements a resource makes about a metabolite it transports. Both
@@ -806,6 +839,27 @@ SPLIT_ROLE_EVIDENCE = (
             ('Product:OM:0311', None),
             ('Subcellular Location:OM:0604', 'e'),
             ('Stoichiometry:OM:1226', '1'),
+        ),
+    ),
+    # Consumed and regenerated in the cytosol. Both roles, one compartment,
+    # and the reaction has a catalyst — everything a transport has except the
+    # movement.
+    (
+        'rxn_still_member',
+        SOURCE_A,
+        1,
+        (
+            ('Reactant:OM:0310', None),
+            ('Subcellular Location:OM:0604', 'c'),
+        ),
+    ),
+    (
+        'rxn_still_member',
+        SOURCE_A,
+        2,
+        (
+            ('Product:OM:0311', None),
+            ('Subcellular Location:OM:0604', 'c'),
         ),
     ),
 )
