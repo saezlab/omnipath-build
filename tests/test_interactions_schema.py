@@ -101,6 +101,12 @@ LICENSE_LEVEL_COLUMNS = ('purpose_level', 'sharing_level', 'attrib_level')
 # distinction, so the test pins both.
 THREE_VALUED_COLUMNS = ('is_directed', 'is_stimulation', 'is_inhibition')
 
+# The record's index on the header id. A group keyed on the interaction rather
+# than on the endpoint pair reads this one, and so does a lookup that follows a
+# single header back to the rows asserting it; every other index on the table
+# leads with `subject_entity_id`, so neither is served without it.
+RECORD_INTERACTION_INDEX = 'interaction_fact_resource_interaction_idx'
+
 # The ordered key of the fact table: A→B and B→A are two rows.
 FACT_KEY_COLUMNS = [
     'subject_entity_id',
@@ -231,6 +237,32 @@ def _foreign_key_targets(conn, schema: str, table: str) -> set[str]:
             (schema, table),
         )
         return {row[0] for row in cur.fetchall()}
+
+
+def _index_columns(conn, schema: str, index: str) -> list[str]:
+    """The indexed columns of ``index``, in index order.
+
+    Read from ``pg_index`` rather than parsed out of ``indexdef``: the order is
+    the whole question here, and ``pg_attribute`` gives it without a text
+    scrape. An index that does not exist comes back as an empty list, so the
+    test says which index is missing instead of raising.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT att.attname
+            FROM pg_index idx
+            JOIN pg_class i ON i.oid = idx.indexrelid
+            JOIN pg_namespace ns ON ns.oid = i.relnamespace
+            JOIN unnest(idx.indkey) WITH ORDINALITY AS k(attnum, ord) ON true
+            JOIN pg_attribute att
+              ON att.attrelid = idx.indrelid AND att.attnum = k.attnum
+            WHERE ns.nspname = %s AND i.relname = %s
+            ORDER BY k.ord
+            """,
+            (schema, index),
+        )
+        return [name for (name,) in cur.fetchall()]
 
 
 def _row_count(conn, schema: str, table: str) -> int:
@@ -550,6 +582,37 @@ def test_detail_table_carries_the_denormalised_join_key(conn, scratch, table):
     assert not missing, (
         f'{table} is missing the denormalised join key {missing}; without it a '
         f'scoped collapse is unreachable except through the materialisation'
+    )
+
+
+# ---------------------------------------------------------------------------
+# Reaching the record by its header
+# ---------------------------------------------------------------------------
+
+
+def test_the_record_is_indexed_on_its_header(conn, scratch):
+    """The record can be grouped and looked up by ``interaction_id``.
+
+    A reaction is one interaction with any number of participants, so a query
+    that wants one group per interaction keys on the header id and not on the
+    endpoint pair. Nothing else on this table serves that: the unique key and
+    the collapse index both lead with ``subject_entity_id``, which is a column
+    such a query never restricts, so without an index of its own the grouping
+    falls back to a full scan of the largest table the build writes.
+
+    The leading column is what is asserted, not merely the presence of the
+    name. An index that carried ``interaction_id`` in second position would
+    satisfy an existence check and serve none of these queries.
+    """
+    columns = _index_columns(conn, scratch, RECORD_INTERACTION_INDEX)
+    assert columns, (
+        f'{scratch} carries no {RECORD_INTERACTION_INDEX}; a group keyed on '
+        f'the interaction has no index to run on'
+    )
+    assert columns[0] == 'interaction_id', (
+        f'{RECORD_INTERACTION_INDEX} leads on {columns[0]!r}, not on '
+        f'interaction_id, so it does not serve a lookup or a grouping by '
+        f'header: its columns are {columns}'
     )
 
 

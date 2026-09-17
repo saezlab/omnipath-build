@@ -3101,6 +3101,18 @@ def _ensure_interaction_schema(
             'interaction_fact_resource',
             ('source_id',),
         ),
+        # A query that groups one interaction whatever its arity keys on the
+        # header instead of on the endpoint pair, and no other index on this
+        # table leads with `interaction_id` — the collapse index starts at the
+        # endpoints and the unique key at the endpoints too, so both leave such
+        # a grouping to a full scan. This is also the index that follows a
+        # single header to the rows that assert it, which is how a reaction's
+        # star is read back.
+        (
+            'interaction_fact_resource_interaction_idx',
+            'interaction_fact_resource',
+            ('interaction_id',),
+        ),
     ]
     for index_name, table, columns in specs:
         cur.execute(

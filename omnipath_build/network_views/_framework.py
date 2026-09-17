@@ -65,6 +65,23 @@ MATVIEW_ERA_COLUMNS = ('schema_name', 'combined_relation')
 COLLAPSE_MODES = ('none', 'assertion', 'endpoints')
 DEFAULT_COLLAPSE_MODE = 'endpoints'
 
+# What a preset's groups are keyed on, as the `network_registry.grain` column
+# records it. `interaction` — the default — groups on the binary triple of
+# subject entity, object entity and interaction class, so a group is an ordered
+# pair. `participant` groups on the `interaction_id` header alone, so one group
+# is one interaction whatever its arity and its members come back as a
+# participant list rather than as a first and a second endpoint.
+#
+# **The grain is read before the collapse mode, and it can silence it.** Each
+# of the three collapse modes describes a fold over an ordered endpoint pair,
+# and a reaction is not one, so at `participant` grain nothing reads
+# `collapse_mode` at all and whatever it holds makes no claim. A preset at that
+# grain records `none` there — the closest available value, which states no
+# fold rather than the wrong one. This is a reading rule and not a constraint:
+# no CHECK enforces it across the two columns.
+GRAINS = ('interaction', 'participant')
+DEFAULT_GRAIN = 'interaction'
+
 # The operations a composition joins its components with. `union` is the
 # operation of the composition itself; the rest are the steps that follow it.
 COMPOSITION_OPERATIONS = ('union', 'collapse', 'exclude', 'annotate')
@@ -78,6 +95,19 @@ AMENDMENT_COLUMN_COMMENTS = {
         "'endpoints', the legacy one-row-per-interaction contract. No preset "
         'gets a materialisation of its own: the scoped collapse happens at '
         'query time.'
+    ),
+    'grain': (
+        'What this preset groups on (cycle 008): '
+        "'interaction' — the default — groups on the binary triple of subject "
+        "entity, object entity and interaction class, and 'participant' groups "
+        'on the interaction_id header alone, so one group is one interaction '
+        'whatever its arity and its members are returned as a participant list '
+        'rather than as two endpoints. Read this column before collapse_mode: '
+        'each collapse mode folds an ordered endpoint pair and a reaction is '
+        "not one, so at 'participant' grain nothing reads collapse_mode and "
+        "its value makes no claim. Such a preset records 'none' there, which "
+        'states no fold rather than the wrong one. A reading rule, not a '
+        'constraint: no CHECK ties the two columns together.'
     ),
     'license_scope': (
         'Minimum purpose/sharing/attrib levels a resource must meet to '
@@ -126,13 +156,25 @@ class NetworkDefinition:
     ``attribute_sources``
         Which source supplies each mandatory attribute, carrying the
         interim-vs-Intercell provenance.
+    ``grain``
+        What the preset's groups are keyed on: ``interaction`` — the default —
+        groups on the binary triple of subject entity, object entity and
+        interaction class, so a group is an ordered pair; ``participant``
+        groups on the ``interaction_id`` header alone, so one group is one
+        interaction whatever its arity and its members come back as a
+        participant list instead of a first and a second endpoint. It is read
+        before ``collapse_mode`` and can silence it — see that field.
     ``collapse_mode``
         How the preset folds the per-resource record over *its own* resource
         scope: ``none`` keeps one row per resource assertion, ``assertion``
         folds the resources that agree on sign and direction, and ``endpoints``
         — the default — folds to the collapsed key, the legacy
         one-row-per-interaction contract. A single-resource preset collapses
-        nothing whatever the mode says, because every group holds one row.
+        nothing whatever the mode says, because every group holds one row. At
+        ``participant`` grain nothing reads this field at all, because each of
+        the three modes folds an ordered endpoint pair and a reaction is not
+        one; a preset at that grain records ``none``, the closest available
+        value, which states no fold rather than the wrong one.
     ``license_scope``
         The minimum ``purpose`` / ``sharing`` / ``attrib`` levels a resource
         must meet to contribute. ``None`` is no restriction at all; a scope that
@@ -171,6 +213,9 @@ class NetworkDefinition:
     # license restriction.
     collapse_mode: str = DEFAULT_COLLAPSE_MODE
     license_scope: Mapping[str, Any] | None = None
+    # The key the groups are folded on, defaulted to the binary triple, so a
+    # definition written before the grain existed keeps the pair it had.
+    grain: str = DEFAULT_GRAIN
     # The composition amendment. Defaulted too: a preset that is one
     # parameter set names no composition at all.
     composition: Mapping[str, Any] | None = None
@@ -210,6 +255,10 @@ def ensure_network_registry(
     and not a level of zero. So does ``composition``: a database written
     before the amendment holds one parameter set per row, which is exactly what
     a NULL composition says, so the migration rewrites no existing row.
+
+    ``grain`` follows ``collapse_mode``: NOT NULL with the ``interaction``
+    default, so every row written before it keeps the binary triple it was
+    already grouped on rather than acquiring an undefined key.
     """
     with conn.cursor() as cur:
         cur.execute(
@@ -231,6 +280,7 @@ def ensure_network_registry(
                   collapse_mode text NOT NULL DEFAULT 'endpoints',
                   license_scope jsonb,
                   composition jsonb,
+                  grain text NOT NULL DEFAULT 'interaction',
                   built_at timestamptz NOT NULL DEFAULT now()
                 )
                 """
@@ -251,6 +301,8 @@ def ensure_network_registry(
                     DEFAULT 'endpoints',
                   ADD COLUMN IF NOT EXISTS license_scope jsonb,
                   ADD COLUMN IF NOT EXISTS composition jsonb,
+                  ADD COLUMN IF NOT EXISTS grain text NOT NULL
+                    DEFAULT 'interaction',
                   ALTER COLUMN schema_name DROP NOT NULL,
                   ALTER COLUMN combined_relation DROP NOT NULL
                 """
@@ -271,6 +323,24 @@ def ensure_network_registry(
             ).format(
                 sql.Identifier(registry_schema),
                 sql.Literal(list(COLLAPSE_MODES)),
+            )
+        )
+        # `GRAINS` names two keys and no more, and the same drop-then-add shape
+        # keeps the statement idempotent while letting the set of grains change
+        # with the definition. Nothing here ties the grain to `collapse_mode`:
+        # that a `participant` preset records `none` is how the pair is read,
+        # not something the table refuses to store otherwise.
+        cur.execute(
+            sql.SQL(
+                """
+                ALTER TABLE {}.network_registry
+                  DROP CONSTRAINT IF EXISTS network_registry_grain_check,
+                  ADD CONSTRAINT network_registry_grain_check
+                    CHECK (grain = ANY({}))
+                """
+            ).format(
+                sql.Identifier(registry_schema),
+                sql.Literal(list(GRAINS)),
             )
         )
         # A composition is a named operation over an ordered component list, or
@@ -405,9 +475,9 @@ def register_network(
                   (name, kind, schema_name, combined_relation, included_sources,
                    interaction_class_scope, evidence_scope, default_attributes,
                    mandatory_attributes, labels, curation, attribute_sources,
-                   collapse_mode, license_scope, composition, built_at)
+                   collapse_mode, license_scope, composition, grain, built_at)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                        %s, now())
+                        %s, %s, now())
                 ON CONFLICT (name) DO UPDATE SET
                   kind = EXCLUDED.kind,
                   schema_name = EXCLUDED.schema_name,
@@ -423,6 +493,7 @@ def register_network(
                   collapse_mode = EXCLUDED.collapse_mode,
                   license_scope = EXCLUDED.license_scope,
                   composition = EXCLUDED.composition,
+                  grain = EXCLUDED.grain,
                   built_at = now()
                 """
             ).format(sql.Identifier(registry_schema)),
@@ -450,6 +521,7 @@ def register_network(
                 Json(definition.composition)
                 if definition.composition is not None
                 else None,
+                definition.grain,
             ],
         )
     conn.commit()

@@ -25,11 +25,16 @@ The counts come from the schema rather than from the note that priced the
 deferral. That measurement was taken on 2026-08-20 over **four** tables and
 recorded 15 constraints and 20 indexes, 13 of them foreign keys and 18
 secondary. Removing ``interaction_fact_combined`` — four foreign keys and nine
-indexes — left the amended schema holding **11 constraints and 11 indexes**, of
-which **9 foreign keys and 9 secondary indexes** are what the deferral drops
+indexes — left the amended schema holding 11 constraints and 11 indexes, and
+the record's index on its header id brought the second number to **12**, of
+which **9 foreign keys and 10 secondary indexes** are what the deferral drops
 and restores. The two primary keys stay through the load, because the header
 insert deduplicates with ``ON CONFLICT (interaction_id) DO NOTHING`` and needs
 its unique index while the insert runs.
+
+The counts are asserted rather than derived on purpose: an index added to the
+schema and not to the deferral would otherwise be a silent gap, so a schema
+change is meant to land here as a failing number that someone recounts.
 
 The fixture graph is a dozen relations, so nothing here measures anything. It
 is the round trip that is being asserted, and the round trip is a property of
@@ -86,11 +91,11 @@ PROJECTION_TABLES = (
 #: load can drop, and counting them would make the number depend on the server
 #: version rather than on the schema.
 TABLE_CONSTRAINTS = 11
-TABLE_INDEXES = 11
+TABLE_INDEXES = 12
 
 #: What the load runs without, and gets back validated.
 DEFERRED_FOREIGN_KEYS = 9
-DEFERRED_INDEXES = 9
+DEFERRED_INDEXES = 10
 
 #: The parameter that turns the deferral on. Named once, because the fixture and
 #: the guard below must not spell it differently.

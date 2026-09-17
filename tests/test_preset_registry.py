@@ -22,6 +22,17 @@ amendment adds:
     is set excludes a resource whose license is unknown, however permissive its
     recorded levels look.
 
+``grain``
+    What the preset's groups are keyed on: ``interaction`` (the default) groups
+    on the binary triple of subject entity, object entity and interaction
+    class, and ``participant`` groups on the ``interaction_id`` header alone,
+    so one group is one interaction whatever its arity. The grain is read
+    before ``collapse_mode`` and can silence it — each collapse mode folds an
+    ordered endpoint pair, and a reaction is not one — so a preset at
+    ``participant`` grain records ``none`` as its mode, which states no fold
+    rather than the wrong one. Nothing enforces that across the two columns;
+    it is how the pair is read, and the tests here say so.
+
 **Amended 2026-08-21** with ``composition``, the column a preset carries when
 it is not one query: the ordered component list and the operation that joins
 them (``union``, ``collapse``, ``exclude``, ``annotate``). A component is
@@ -127,9 +138,13 @@ PRESET_COLUMNS = {
     'license_scope': 'jsonb',
     # The composition algebra.
     'composition': 'jsonb',
+    # The key the preset's groups are folded on.
+    'grain': 'text',
 }
 
 COLLAPSE_MODES = ('none', 'assertion', 'endpoints')
+
+GRAINS = ('interaction', 'participant')
 
 # The group key each collapse mode folds to. The derive and the query path
 # share one collapse routine; this mirrors its keys so the registry test can
@@ -532,6 +547,88 @@ def test_single_resource_preset_collapses_nothing_whatever_the_mode(
     assert _collapsed_row_count(conn, registry, 'endpoints', two) < (
         _collapsed_row_count(conn, registry, 'none', two)
     )
+
+
+def test_grain_defaults_to_interaction(conn, registry):
+    """A preset that names no grain groups on the binary triple.
+
+    That is the pair every dataset was written around, so a definition from
+    before the grain existed is registered unchanged rather than acquiring a
+    key nobody chose for it.
+    """
+    legacy = NetworkDefinition(
+        name='_roundtrip_preset_default_grain',
+        kind='signaling',
+        included_sources=('signor',),
+    )
+    register_network(conn, legacy, registry_schema=registry)
+    with conn.cursor() as cur:
+        cur.execute(
+            f'SELECT grain FROM {registry}.network_registry WHERE name = %s',
+            [legacy.name],
+        )
+        assert cur.fetchone()[0] == 'interaction'
+
+
+@pytest.mark.parametrize('grain', GRAINS)
+def test_registry_round_trips_every_grain(conn, registry, grain):
+    """Every ``network_registry.grain`` value survives registration."""
+    preset = _full_preset(
+        name=f'_roundtrip_preset_grain_{grain}',
+        grain=grain,
+    )
+    register_network(conn, preset, registry_schema=registry)
+    with conn.cursor() as cur:
+        cur.execute(
+            f'SELECT grain FROM {registry}.network_registry WHERE name = %s',
+            [preset.name],
+        )
+        assert cur.fetchone()[0] == grain
+
+
+def test_participant_grain_round_trips_with_no_fold_claimed(conn, registry):
+    """A participant-grain preset stores its grain and claims no fold.
+
+    One group is one interaction whatever its arity, so there is no ordered
+    endpoint pair for a collapse mode to describe. ``none`` is the value that
+    says so; the pair has to come back as it was written, because a reader who
+    trusted ``collapse_mode`` here would be reading a fold that never runs.
+    """
+    reactions = _full_preset(
+        name='_roundtrip_preset_participant_grain',
+        grain='participant',
+        collapse_mode='none',
+    )
+    register_network(conn, reactions, registry_schema=registry)
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT grain, collapse_mode
+            FROM {registry}.network_registry WHERE name = %s
+            """,
+            [reactions.name],
+        )
+        grain, collapse_mode = cur.fetchone()
+    assert grain == 'participant'
+    assert collapse_mode == 'none'
+
+
+def test_grain_refuses_a_value_outside_the_two(conn, registry):
+    """The registry takes the two grains and nothing else.
+
+    A grain nobody implemented is not a preset that returns something unusual;
+    it is a preset whose result shape no query path knows how to produce. The
+    CHECK is what keeps that out of the table instead of leaving it for the
+    api-service to discover.
+    """
+    import psycopg2
+
+    invented = _full_preset(
+        name='_roundtrip_preset_invented_grain',
+        grain='reaction',
+    )
+    with pytest.raises(psycopg2.errors.CheckViolation):
+        register_network(conn, invented, registry_schema=registry)
 
 
 def test_preset_without_license_scope_is_unrestricted(conn, registry, licenses):
