@@ -56,7 +56,17 @@ import re
 
 import pytest
 
-from tests.fixtures.interaction_graph import ENTITY, build_interaction_fixture
+from tests.fixtures.interaction_graph import (
+    ENTITY,
+    SOURCE_NAMES,
+    build_interaction_fixture,
+)
+
+# The projection serves a named set of metabolic resources. The fixture
+# publishes under its own names, so the tests hand it those rather than
+# renaming the fixture after real resources and reading as though the build
+# held them.
+FIXTURE_SOURCES = tuple(SOURCE_NAMES.values())
 
 DATABASE_URL = os.environ.get('DATABASE_URL')
 SCRATCH = os.environ.get(
@@ -174,7 +184,9 @@ def projection(conn, scratch):
     ensure_cosmos_edge_table(conn, schema=scratch)
     conn.commit()
     try:
-        stats = build_cosmos_projection(conn, schema=scratch)
+        stats = build_cosmos_projection(
+            conn, schema=scratch, reaction_sources=FIXTURE_SOURCES,
+        )
     except Exception:
         conn.rollback()
         raise
@@ -897,7 +909,9 @@ class TestASecondRunLandsOnTheSameGraph:
         from omnipath_build.cosmos import build_cosmos_projection
 
         before = _edges(conn, scratch)
-        build_cosmos_projection(conn, schema=scratch)
+        build_cosmos_projection(
+            conn, schema=scratch, reaction_sources=FIXTURE_SOURCES,
+        )
         conn.commit()
         return before, _edges(conn, scratch)
 
@@ -1187,6 +1201,7 @@ def translated(conn, translated_scratch, mappings):
             schema=translated_scratch,
             utils_db_url=DATABASE_URL,
             utils_schema=mappings,
+            reaction_sources=FIXTURE_SOURCES,
         )
     except Exception:
         conn.rollback()
@@ -1649,3 +1664,67 @@ def test_a_mapping_database_that_answers_with_an_error_falls_back():
     assert labels[entity_id].identifier == '7157'
     assert labels[entity_id].namespace == 'entrez'
     assert labels[entity_id].mapped is False
+
+
+class TestOnlyTheNamedResourcesReachTheNetwork:
+    """The network is a metabolic one, and the resource list is what says so.
+
+    A general reaction database states its events in proteins and complexes
+    rather than small molecules. One reaching the output would be labelled a
+    metabolite by the role it plays rather than by what it is, so the gate sits
+    on the resource that published the reaction.
+    """
+
+    def test_a_reaction_outside_the_named_resources_is_absent(
+        self,
+        conn,
+        scratch,
+    ):
+        """Narrowing the list to one resource leaves the others' reactions out."""
+        from omnipath_build.cosmos import (
+            build_cosmos_projection,
+            ensure_cosmos_edge_table,
+        )
+
+        ensure_cosmos_edge_table(conn, schema=scratch)
+        narrowed = build_cosmos_projection(
+            conn,
+            schema=scratch,
+            reaction_sources=(),
+        )
+        conn.commit()
+        assert narrowed.edges == 0, (
+            'no resource is in scope, so the projection has nothing to publish'
+        )
+        assert narrowed.reactions == 0
+
+        restored = build_cosmos_projection(
+            conn,
+            schema=scratch,
+            reaction_sources=FIXTURE_SOURCES,
+        )
+        conn.commit()
+        assert restored.edges > 0, (
+            'and naming the resources again brings the whole network back'
+        )
+
+    def test_the_gate_reads_the_resources_that_published_the_reaction(
+        self,
+        conn,
+        scratch,
+    ):
+        """A reaction two resources report survives on either one's word.
+
+        The overlap rather than a containment test is what keeps a reaction
+        whose second contributor is out of scope.
+        """
+        rows = _rows(
+            conn,
+            f'SELECT sources FROM {scratch}.interaction '
+            'WHERE arity > 2 AND sources IS NOT NULL LIMIT 5',
+        )
+        assert rows, 'the fixture holds reaction headers carrying resources'
+        for (sources,) in rows:
+            assert set(sources) & set(FIXTURE_SOURCES), (
+                'every fixture reaction names a resource the tests scope to'
+            )

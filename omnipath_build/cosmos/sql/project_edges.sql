@@ -73,7 +73,14 @@ reaction_header AS (
     event.reaction_entity_id
   FROM interaction header
   JOIN reaction_event event ON event.interaction_id = header.interaction_id
-  WHERE EXISTS (
+  -- The resource gate keeps this a metabolic network. A general reaction
+  -- database states its events in proteins and complexes rather than small
+  -- molecules, and one of those reaching the output would be labelled a
+  -- metabolite by the role it plays rather than by what it is. The overlap
+  -- test rather than a containment one is deliberate: a reaction two
+  -- resources describe stays on the word of whichever of them is in scope.
+  WHERE header.sources && %(reaction_sources)s
+    AND EXISTS (
     SELECT 1
     FROM interaction_party party
     JOIN vocab_relation_role role

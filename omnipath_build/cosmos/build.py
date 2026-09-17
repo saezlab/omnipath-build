@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -49,6 +50,24 @@ TRANSPORT_ENTITY_TYPE = 'Transport:OM:0035'
 # entity rather than on any of its participant relations, and both the
 # genome-scale-model and the Recon inputs declare it.
 DIRECTION_TERM = 'Conversion Direction:OM:1211'
+
+# The resources whose reactions this network is made of. A positive list
+# rather than an exclusion, so a reaction resource loaded later has to be
+# named here before it reaches the output instead of arriving unannounced.
+#
+# **Reactome is deliberately absent.** It is a general reaction database rather
+# than a metabolic reconstruction: its events are complex assembly, binding and
+# modification, so 16,743 of its 18,903 participants are complexes, genes,
+# protein families, DNA or RNA rather than small molecules, and it states no
+# catalysis at all — it holds no `controls` edge, so every one of its reactions
+# would reach the output through the unknown-enzyme path. The four named here
+# contribute chemicals and nothing else, on every participant of every reaction
+# they hold.
+#
+# A reaction two resources report keeps its place as long as one of them is
+# named here, because the gate is an overlap rather than a containment: the 532
+# reactions Reactome and Rhea both describe stay, on Rhea's word.
+REACTION_SOURCES = ('kegg', 'rhea', 'metatlas', 'recon3d')
 
 # The participant roles the projection reads. The rest of the vocabulary —
 # cofactor, regulator, member — is counted and left out, for the reason the
@@ -255,6 +274,7 @@ def build_cosmos_projection(
     schema: str = 'public',
     utils_db_url: str | None = None,
     utils_schema: str = UTILS_SCHEMA,
+    reaction_sources: Sequence[str] = REACTION_SOURCES,
     progress: bool = False,
 ) -> CosmosBuildStats:
     """Rebuild the whole COSMOS edge table from the reaction stars.
@@ -314,6 +334,7 @@ def build_cosmos_projection(
             {
                 'build_id': stamp,
                 'reaction_entity_types': list(REACTION_ENTITY_TYPES),
+                'reaction_sources': list(reaction_sources),
                 'transport_entity_type': TRANSPORT_ENTITY_TYPE,
                 'direction_term': DIRECTION_TERM,
             },
