@@ -69,6 +69,14 @@ apart by the evidence they sit on. What separates them is the compartment and
 nothing else, so a projection reading the roles alone publishes a transporter
 for the reaction that transports nothing.
 
+One more star is **wide**: seventy members and their enzyme, with entity ids
+that are hashes rather than the indexed ones the rest of the graph uses. The
+hyperedge projection groups on a text multiset of one element per participant,
+and a value that long is one a btree index row cannot hold — which is a
+`CREATE INDEX` that fails rather than an assertion that misses. The ids have to
+be hashes for it: a btree tuple holds the value compressed, and seventy ids
+differing in a digit shrink back under the ceiling.
+
 Beside those single-situation rows the graph carries a **coverage pair per
 interaction class**: one ordered endpoint pair for every class the graph can
 evidence, each reported by two resources that both publish a reference. Those
@@ -82,6 +90,8 @@ Every id is fixed, so a test can name the row it means.
 """
 
 from __future__ import annotations
+
+import uuid
 
 from psycopg2 import sql
 import psycopg2.extensions
@@ -298,6 +308,26 @@ UNMOVED_MEMBER_NAMES = (
     'enz_still',
 )
 
+# A reaction wide enough that its participant set does not fit in a btree
+# index row. The hyperedge projection groups on a text multiset of one element
+# per participant — an entity uuid, a colon and a role word, some fifty bytes
+# once the array header is counted — and a btree tuple cannot exceed 2704
+# bytes, so a reaction past roughly fifty members makes `CREATE INDEX` fail
+# outright on the staging tables that carry the signature. The build holds
+# stars this wide and the binary reading never met one, so nothing in the
+# graph above reproduces it. Seventy members puts the signature comfortably
+# past the ceiling while still being a reaction a resource could publish.
+WIDE_REACTION_MEMBERS = 70
+WIDE_MEMBER_NAMES = tuple(
+    f'wide_met_{index:03d}'
+    for index in range(1, WIDE_REACTION_MEMBERS + 1)
+)
+WIDE_REACTION_NAMES = (
+    'wide_rxn',
+    'wide_enz',
+    *WIDE_MEMBER_NAMES,
+)
+
 ENTITY_NAMES = (
     *'abcdefghijklmnopqr',
     *(
@@ -315,6 +345,7 @@ ENTITY_NAMES = (
     *TRANSPORT_SPLIT_NAMES,
     *COSMOS_TRANSLATION_NAMES,
     *UNMOVED_MEMBER_NAMES,
+    *WIDE_REACTION_NAMES,
 )
 
 ENTITY_TYPES = {
@@ -374,6 +405,8 @@ ENTITY_TYPES = {
     'cos_shaped_out': CHEMICAL_TYPE,
     'cos_ambiguous_in': CHEMICAL_TYPE,
     'cos_ambiguous_out': CHEMICAL_TYPE,
+    'wide_rxn': REACTION_TYPE,
+    **{name: CHEMICAL_TYPE for name in WIDE_MEMBER_NAMES},
 }
 
 # The identifier every other entity carries is `FIXTURE_<name>`, which is a
@@ -424,6 +457,23 @@ ENTITY = {
     name: f'e0000000-0000-4000-8000-{index:012d}'
     for index, name in enumerate(ENTITY_NAMES, start=1)
 }
+
+# The wide reaction's members are the one group that does **not** take the id
+# above. What overruns a btree index row is the width the signature has after
+# Postgres has tried to compress it, and an id differing from its neighbour in
+# a single digit compresses by an order of magnitude: seventy of those make a
+# signature that reports four thousand bytes and indexes without complaint,
+# which is the failure passing unnoticed rather than being reproduced. The
+# build's entity ids are content hashes — random-looking hex that pglz gives
+# up on — so these are hashes too, and a hash of the name keeps them as fixed
+# and as nameable as every other id here.
+_WIDE_MEMBER_NAMESPACE = uuid.UUID('e0000000-0000-4000-8000-000000000000')
+ENTITY.update(
+    {
+        name: str(uuid.uuid5(_WIDE_MEMBER_NAMESPACE, name))
+        for name in WIDE_MEMBER_NAMES
+    }
+)
 
 # Relations: (key, subject letter, predicate, object letter).
 RELATIONS = (
@@ -561,6 +611,13 @@ RELATIONS = (
     # and the compartment is the same on both of them.
     ('rxn_still_member', 'rxn_still', 'has_participant', 'met_still'),
     ('rxn_still_enzyme', 'enz_still', 'controls', 'rxn_still'),
+    # The wide reaction. Ordinary star shape, and the only thing unusual about
+    # it is how many spokes it has.
+    *(
+        (f'wide_member_{index:03d}', 'wide_rxn', 'has_participant', name)
+        for index, name in enumerate(WIDE_MEMBER_NAMES, start=1)
+    ),
+    ('wide_enzyme', 'wide_enz', 'controls', 'wide_rxn'),
 )
 
 # `has_participant` is a membership, and the build files memberships under the
@@ -669,6 +726,11 @@ EVIDENCE = (
     ('trn_b_enzyme', SOURCE_A, ()),
     # `rxn_still_member` is absent for the same reason `trn_b_cargo` is.
     ('rxn_still_enzyme', SOURCE_A, ()),
+    *(
+        (f'wide_member_{index:03d}', SOURCE_A, ())
+        for index in range(1, WIDE_REACTION_MEMBERS + 1)
+    ),
+    ('wide_enzyme', SOURCE_A, ()),
 )
 
 # Participant-descriptive annotations: (relation key, source, term, value).
@@ -804,6 +866,28 @@ PARTICIPANT_EVIDENCE = (
     ('trn_b_fuel', SOURCE_A, 'Subcellular Location:OM:0604', 'c'),
     ('trn_b_enzyme', SOURCE_A, 'Enzyme:MI:0501', None),
     ('rxn_still_enzyme', SOURCE_A, 'Enzyme:MI:0501', None),
+    # The wide reaction's members, half on each side of the arrow. Each one
+    # carries a role, because the role is half of what the signature is built
+    # from and a member with none would shorten it.
+    *(
+        (
+            f'wide_member_{index:03d}',
+            SOURCE_A,
+            'Reactant:OM:0310' if index % 2 else 'Product:OM:0311',
+            None,
+        )
+        for index in range(1, WIDE_REACTION_MEMBERS + 1)
+    ),
+    *(
+        (
+            f'wide_member_{index:03d}',
+            SOURCE_A,
+            'Subcellular Location:OM:0604',
+            'c',
+        )
+        for index in range(1, WIDE_REACTION_MEMBERS + 1)
+    ),
+    ('wide_enzyme', SOURCE_A, 'Enzyme:MI:0501', None),
 )
 
 # The two statements a resource makes about a metabolite it transports. Both

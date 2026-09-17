@@ -3440,9 +3440,33 @@ def _stage_reaction_hyperedges(
         ) merged
         """
     )
+    # **A hash index, and it has to stay one.** The signature holds one text
+    # element per participant — an entity uuid, a colon and a role word, some
+    # fifty bytes once the array header is counted — and a btree index tuple
+    # cannot exceed 2704 bytes. A reaction past roughly fifty members is
+    # therefore a value no btree will take, and `CREATE INDEX` fails outright
+    # rather than degrading: `index row size ... exceeds btree version 4
+    # maximum`, which aborts the step and the derive with it. Reactions that
+    # wide exist — 23 stars on the current build carry more than sixty members
+    # and the widest carries 107 — and nothing before this projection met one,
+    # because the binary reading never put a whole participant set into a
+    # single value. A hash index stores the hash rather than the value, so it
+    # has no such ceiling; it rechecks the row it finds, so there is no
+    # collision to reason about; and it has been WAL-logged and crash-safe
+    # since Postgres 10.
+    #
+    # Hash indexes are single-column, so `interaction_class_id` stays a filter
+    # rather than a second key column. That costs nothing: the class is one of
+    # eight values and is `other` for every reaction on the current build, so
+    # it separated no rows the signature had not already separated.
+    #
+    # The same holds for the two indexes on this column below. All three are
+    # read for equality alone — as the join key on to the header, and as the
+    # `GROUP BY` key that mints it — and none of them is ever range-scanned or
+    # ordered on, which is the one thing a hash index cannot serve.
     cur.execute(
         'CREATE INDEX _if_reaction_party_merged_idx '
-        'ON _if_reaction_party_merged (member_signature, interaction_class_id)'
+        'ON _if_reaction_party_merged USING hash (member_signature)'
     )
     cur.execute('ANALYZE _if_reaction_party_merged')
 
@@ -3476,7 +3500,7 @@ def _stage_reaction_hyperedges(
     )
     cur.execute(
         'CREATE INDEX _if_reaction_header_idx ON _if_reaction_header '
-        '(member_signature, interaction_class_id)'
+        'USING hash (member_signature)'
     )
     cur.execute('ANALYZE _if_reaction_header')
 
@@ -3513,7 +3537,7 @@ def _stage_reaction_hyperedges(
     )
     cur.execute(
         'CREATE INDEX _if_reaction_source_idx ON _if_reaction_source '
-        '(member_signature, interaction_class_id)'
+        'USING hash (member_signature)'
     )
     cur.execute('ANALYZE _if_reaction_source')
 

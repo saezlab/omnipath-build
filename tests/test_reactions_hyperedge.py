@@ -39,7 +39,12 @@ import os
 
 import pytest
 
-from tests.fixtures.interaction_graph import ENTITY, build_interaction_fixture
+from tests.fixtures.interaction_graph import (
+    ENTITY,
+    WIDE_MEMBER_NAMES,
+    WIDE_REACTION_MEMBERS,
+    build_interaction_fixture,
+)
 
 DATABASE_URL = os.environ.get('DATABASE_URL')
 SCRATCH = os.environ.get(
@@ -563,3 +568,109 @@ class TestTheTransportKeepsItsCompartmentChange:
         assert enzyme[0][2] is None
         assert enzyme[0][4] is None
         assert enzyme[0][5] is None
+
+
+class TestTheWideReactionIndexes:
+    """A reaction can have more members than a btree index row has room for.
+
+    The merge key is a text multiset of one element per participant, and an
+    element is an entity uuid, a colon and a role word — some fifty bytes once
+    the array header is counted. A btree tuple cannot exceed 2704 bytes, so a
+    reaction past roughly fifty members is a value no btree will take, and the
+    index the projection builds over the signature fails with
+    ``index row size ... exceeds btree version 4 maximum`` rather than
+    degrading. The whole step aborts, and with it the derive.
+
+    The build holds reactions that wide. Nothing before this projection did:
+    the binary reading never put a whole participant set into a single value,
+    so the ceiling was never approached and the failure appears only on the
+    first derive that writes the N-ary headers.
+
+    The fix is a hash index, which stores the hash of the value rather than
+    the value. This asserts that the wide reaction reaches a header at all,
+    which is what fails when somebody turns those indexes back into btrees.
+    """
+
+    def test_the_wide_reaction_reaches_one_header(self, conn, scratch):
+        """Seventy members and their enzyme are one header of arity 71."""
+        found = _header_of(
+            conn,
+            scratch,
+            (*WIDE_MEMBER_NAMES, 'wide_enz'),
+        )
+        assert len(found) == 1
+        _interaction_id, arity, _sources = found[0]
+        assert arity == WIDE_REACTION_MEMBERS + 1
+
+    def test_a_btree_over_this_signature_still_fails(self, conn, scratch):
+        """The fixture reproduces the failure rather than merely being large.
+
+        The staging tables are dropped at the end of the step, so the signature
+        is rebuilt here from the party rows by the same expression, put in a
+        table of its own and offered to a btree. It has to be refused. Width
+        alone would not prove it: a btree index tuple holds the value
+        **compressed**, and a signature over ids that differ in one digit
+        shrinks by an order of magnitude and indexes happily at any width.
+        """
+        import psycopg2
+
+        interaction_id, _arity, _sources = _header_of(
+            conn,
+            scratch,
+            (*WIDE_MEMBER_NAMES, 'wide_enz'),
+        )[0]
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                CREATE TEMP TABLE _wide_signature_probe AS
+                SELECT array_agg(
+                  DISTINCT lower(p.entity_id::text) || ':' || role.name
+                  ORDER BY lower(p.entity_id::text) || ':' || role.name
+                ) AS member_signature
+                FROM {scratch}.interaction_party p
+                JOIN {scratch}.vocab_relation_role role
+                  ON role.relation_role_id = p.role_id
+                WHERE p.interaction_id = %s
+                  AND role.name <> 'enzyme'
+                """,
+                [interaction_id],
+            )
+            with pytest.raises(psycopg2.errors.ProgramLimitExceeded):
+                cur.execute(
+                    'CREATE INDEX _wide_signature_btree '
+                    'ON _wide_signature_probe (member_signature)'
+                )
+        conn.rollback()
+
+    def test_every_member_keeps_its_party_row(self, conn, scratch):
+        """The width is in the key, so a truncated key would lose members."""
+        interaction_id, _arity, _sources = _header_of(
+            conn,
+            scratch,
+            (*WIDE_MEMBER_NAMES, 'wide_enz'),
+        )[0]
+        parties = _parties(conn, scratch, interaction_id)
+        assert set(parties) == {
+            f'FIXTURE_{name}'
+            for name in (*WIDE_MEMBER_NAMES, 'wide_enz')
+        }
+
+    def test_the_indexes_on_the_signature_are_hash_indexes(self):
+        """The index type is load-bearing, so it is asserted, not assumed.
+
+        A btree over this column builds on every fixture the suite had before
+        this one and fails on the first wide reaction, which is a failure that
+        reaches the build rather than the tests.
+        """
+        import inspect
+
+        from omnipath_build.db import derived_tables
+
+        source = inspect.getsource(derived_tables._stage_reaction_hyperedges)
+        hashed = [
+            line
+            for line in source.splitlines()
+            if 'USING hash (member_signature)' in line
+        ]
+        assert len(hashed) == 3
+        assert 'member_signature, interaction_class_id' not in source
