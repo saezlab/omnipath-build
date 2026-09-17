@@ -242,4 +242,113 @@ LIANA = NetworkDefinition(
     default_attributes=('endpoints', 'label', 'references', 'evidence'),
 )
 
-NETWORKS: list[NetworkDefinition] = [METALINKSDB, LIANA]
+# Reactions: metabolic reactions as native hyperedges, a preset over the same
+# interaction fact table but at participant grain. One group is one reaction
+# header whatever its arity, and its members come back as a participant list
+# rather than as a first and a second endpoint. Nothing materialises: as with
+# the two above, registering the row is the whole build step.
+#
+# **The grain identifies this dataset, not a class or a resource set.** Every
+# other preset here says what it is by naming an interaction class or the
+# resources that feed it. This one says it by how its groups are keyed, which
+# is why `interaction_class_scope` is empty. That emptiness is a statement and
+# not an omission: `vocab_interaction_class` holds no reaction slug, the
+# `has_participant` predicate maps to `other`, and scoping to `other` would
+# admit every unclassified pair in the build rather than narrowing anything. If
+# the classification later grows a term that fits, the scope narrows to it
+# without changing what the dataset means. `collapse_mode` records `none` for
+# the reason the field's own documentation gives — at participant grain nothing
+# reads it, because each mode folds an ordered endpoint pair and a reaction is
+# not one, so `none` states no fold rather than the wrong one.
+#
+# **It ships four of the six resources the specification names.** Metabolic
+# Atlas Human-GEM — loaded as `metatlas`, see the note above on loaded versus
+# published names — RECON3D, Rhea and KEGG are here. Mouse-GEM and iMM1415 are
+# not, and they are deliberately not carried as unloaded names either: the
+# build has no source slug for either one, Human-GEM loading under `metatlas`
+# and RECON3D under its own, so naming them would invent a loader rather than
+# record a resource that failed to load. The dataset is short of whatever those
+# two would have contributed, and that shortfall is an ingest gap tracked in
+# this cycle's task list, not a property of the dataset.
+#
+# **Reactome is loaded, publishes reactions, and is deliberately out of scope.**
+# This is a separate judgement from the COSMOS projection's, which excludes it
+# too, and it rests on its own measurement against dev3. The reason is what its
+# participants are. Across the four resources above, every one of the 722,435
+# participant edges resolves to a `Chemical`. Reactome's resolve to 34.5 per
+# cent `Chemical` and 65.5 per cent `Complex`, `Gene`, `Protein Family`,
+# `Physical Entity`, `DNA` and `RNA`; 8,238 of its 14,778 reaction events —
+# 55.8 per cent — contain no chemical participant at all. Those are not thinner
+# descriptions of the same object, they are a different one, and merging them
+# in would make the dataset's name false. It would also be an addition rather
+# than a merge: Reactome shares 532 reaction entities with Rhea and 7 with
+# Human-GEM, none with KEGG or RECON3D, so 96 per cent of it arrives as new
+# events.
+#
+# **The thin annotation is not the reason, and saying so matters.** Reactome
+# carries stoichiometry on 8.1 per cent of its participant edges and
+# subcellular location on none, which looks like the obvious disqualification
+# and cannot be one: Rhea publishes no stoichiometry on any of its 172,640
+# edges, and KEGG publishes no compartment on any of its 365,481. A rule that
+# turned either mandatory attribute into an admission bar would drop two of the
+# four resources this dataset is built on. Coverage is a per-resource fact that
+# `attribute_sources` below records; it decides nothing about scope.
+#
+# **Mandatory here means present, not known.** A mandatory attribute forces a
+# name into the output projection and reaches no `WHERE` clause, so declaring
+# role, side, stoichiometry and compartment mandatory guarantees the response
+# shape and takes no row away — a participant whose stoichiometry nobody
+# published is served as null. A caller who wants only the fully annotated
+# reactions asks for them through `attribute_filters`, which is a request
+# parameter and a different field.
+REACTIONS = NetworkDefinition(
+    name='reactions',
+    kind='reaction',
+    included_sources=('kegg', 'rhea', 'metatlas', 'recon3d'),
+    interaction_class_scope=(),
+    default_attributes=('endpoints', 'label', 'references', 'evidence'),
+    mandatory_attributes=('role', 'side', 'stoichiometry', 'compartment'),
+    grain='participant',
+    collapse_mode='none',
+    labels={
+        'preset': 'Reactions',
+        'resources': {'metatlas': 'humangem'},
+    },
+    curation={
+        # The grain restated where a consumer reading configuration rather than
+        # prose will find it, and the scope shortfall in machine-readable form.
+        'participant_grain': 'hyperedge',
+        'excluded_from_scope': ['reactome'],
+        'never_loaded': ['mouse-gem', 'imm1415'],
+    },
+    # Every entry is a resource publishing the field itself, so no stage is
+    # named: there is no interim vocabulary standing in for a later rebuild the
+    # way the intercell layer has one.
+    attribute_sources={
+        'role': {
+            'sources': ['kegg', 'rhea', 'metatlas', 'recon3d'],
+            'note': 'every participant of every reaction carries one',
+        },
+        'side': {
+            'sources': ['kegg', 'rhea', 'metatlas', 'recon3d'],
+            'note': 'derived from the reactant or product role',
+        },
+        'stoichiometry': {
+            'sources': ['kegg', 'metatlas', 'recon3d'],
+            'note': (
+                'complete on every reaction these three publish; rhea states '
+                'none on any of its reactions, and serves null'
+            ),
+        },
+        'compartment': {
+            'sources': ['metatlas', 'recon3d'],
+            'note': (
+                'per-participant subcellular location, complete on both; kegg '
+                'states none, and rhea states membrane sides that sit on '
+                'transport records rather than on reactions'
+            ),
+        },
+    },
+)
+
+NETWORKS: list[NetworkDefinition] = [METALINKSDB, LIANA, REACTIONS]

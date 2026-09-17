@@ -16,6 +16,7 @@ from omnipath_build.network_views._definitions import (
     NETWORKS,
     METALINKSDB,
     LIANA,
+    REACTIONS,
 )
 
 __all__ = [
@@ -30,4 +31,5 @@ __all__ = [
     'NETWORKS',
     'METALINKSDB',
     'LIANA',
+    'REACTIONS',
 ]
