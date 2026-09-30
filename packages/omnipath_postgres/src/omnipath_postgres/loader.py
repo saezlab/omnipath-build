@@ -99,6 +99,32 @@ COLUMNS = {
     ),
 }
 JSON_COLUMNS = frozenset({"record_json", "sources", "quantity"})
+_COPY_PARENTS = {
+    "identifiers": ("entities",),
+    "relations": ("entities",),
+    "evidence": ("relations",),
+}
+_HASH_JOIN_COLUMNS = {
+    "entities": ("resource", "version", "entity_key", "entity_type"),
+    "relations": (
+        "resource",
+        "version",
+        "relation_key",
+        "statement_kind",
+        "subject_entity_key",
+        "predicate",
+    ),
+    "evidence": ("resource", "version", "relation_key", "ordinal", "source", "row_id"),
+    "annotations": (
+        "resource",
+        "version",
+        "owner_kind",
+        "owner_key",
+        "evidence_ordinal",
+        "term",
+        "value",
+    ),
+}
 
 
 @dataclass(frozen=True)
@@ -145,6 +171,22 @@ def _copy(conn, schema: str, table: str, rows: list[dict]) -> None:
                     for column in columns
                 )
             )
+
+
+def _flush_copy_buffer(conn, schema: str, buffers: dict[str, list[dict]], table: str) -> None:
+    """Copy buffered parents before children while keeping immediate FKs valid.
+
+    A resource's entity file precedes its relation file, and each projection
+    yields the parent row before its identifier/evidence rows. A child may fill
+    its batch before the parent buffer does, so flush that partial parent batch
+    first. Annotation ownership is still checked by final integrity queries.
+    """
+    if not buffers[table]:
+        return
+    for parent in _COPY_PARENTS.get(table, ()):
+        _flush_copy_buffer(conn, schema, buffers, parent)
+    _copy(conn, schema, table, buffers[table])
+    buffers[table].clear()
 
 
 def _validate_payload_owners(
@@ -254,6 +296,19 @@ def _validate_reaction_payloads(
             )
 
 
+def _analyze_tables(conn, schema: str, tables, *, columns=None) -> None:
+    with conn.cursor() as cur:
+        for table in tables:
+            statement = sql.SQL("ANALYZE {}.{}").format(
+                sql.Identifier(schema), sql.Identifier(table)
+            )
+            if columns is not None:
+                statement += sql.SQL(" ({})").format(
+                    sql.SQL(",").join(map(sql.Identifier, columns[table]))
+                )
+            cur.execute(statement)
+
+
 def _analyze_schema(conn, schema: str) -> None:
     """Give joins current statistics inside the load transaction, before queries."""
     with conn.cursor() as cur:
@@ -262,10 +317,8 @@ def _analyze_schema(conn, schema: str) -> None:
             "WHERE n.nspname=%s AND c.relkind IN ('r','m') ORDER BY c.relname",
             (schema,),
         )
-        for (table,) in cur.fetchall():
-            cur.execute(
-                sql.SQL("ANALYZE {}.{}").format(sql.Identifier(schema), sql.Identifier(table))
-            )
+        tables = [table for (table,) in cur.fetchall()]
+    _analyze_tables(conn, schema, tables)
 
 
 def _validate_loaded(conn, schema: str) -> None:
@@ -384,17 +437,31 @@ def load_release(
         started = perf_counter()
         create_schema(conn, schema)
         _metadata(conn, schema, release)
+        # Validate each COPY statement instead of retaining FK trigger events
+        # for the entire release. All writes still share one outer transaction.
+        with conn.cursor() as cur:
+            cur.execute("SET CONSTRAINTS ALL IMMEDIATE")
         buffers = {table: [] for table in COLUMNS}
         for resource in release.resources:
             before = counts.copy()
+            has_activity = has_participant_relation = False
             for record in iter_resource_records(
                 resource.directory, resource.source, resource.version, batch_size=batch_size
             ):
+                if record.table == "entities":
+                    has_activity |= record.values["entity_type"] == "molecular_activity"
+                elif record.table == "relations":
+                    has_participant_relation |= record.values[
+                        "statement_kind"
+                    ] == "relation" and record.values["predicate"] in (
+                        "has_input",
+                        "has_output",
+                        "enabled_by",
+                    )
                 buffers[record.table].append(record.values)
                 counts[record.table] += 1
                 if len(buffers[record.table]) >= batch_size:
-                    _copy(conn, schema, record.table, buffers[record.table])
-                    buffers[record.table].clear()
+                    _flush_copy_buffer(conn, schema, buffers, record.table)
             for table, filename in (
                 ("entities", "entities.parquet"),
                 ("relations", "relations.parquet"),
@@ -403,11 +470,16 @@ def load_release(
                     raise ValueError(
                         f"Projected row count differs from manifest: {resource.source}/{filename}"
                     )
-            # Owner validation sees all rows after COPY, before deferred FK checks.
-            for table, rows in buffers.items():
-                if rows:
-                    _copy(conn, schema, table, rows)
-                    rows.clear()
+            # Owner validation sees every row, with COPY FKs already checked.
+            for table in buffers:
+                _flush_copy_buffer(conn, schema, buffers, table)
+            check_reaction_payloads = has_activity and has_participant_relation
+            if check_reaction_payloads:
+                # Autovacuum cannot see rows in this transaction. Supply current
+                # statistics before repeated batch joins into newly copied data.
+                # Only join/filter columns need preliminary samples; avoid wide
+                # record_json/quantity statistics and their TOAST work here.
+                _analyze_tables(conn, schema, _HASH_JOIN_COLUMNS, columns=_HASH_JOIN_COLUMNS)
             references = []
             validated_count = 0
             # Bound transient digest batches even when COPY uses larger batches.
@@ -421,17 +493,19 @@ def load_release(
                     _validate_payload_owners(
                         conn, schema, resource.source, resource.version, references
                     )
-                    _validate_reaction_payloads(
-                        conn, schema, resource.source, resource.version, references
-                    )
+                    if check_reaction_payloads:
+                        _validate_reaction_payloads(
+                            conn, schema, resource.source, resource.version, references
+                        )
                     references.clear()
             if references:
                 _validate_payload_owners(
                     conn, schema, resource.source, resource.version, references
                 )
-                _validate_reaction_payloads(
-                    conn, schema, resource.source, resource.version, references
-                )
+                if check_reaction_payloads:
+                    _validate_reaction_payloads(
+                        conn, schema, resource.source, resource.version, references
+                    )
             if validated_count != resource.files["evidence_payloads.parquet"].rows:
                 raise ValueError(
                     f"Validated row count differs from manifest: {resource.source}/evidence_payloads.parquet"
