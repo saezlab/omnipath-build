@@ -31,6 +31,45 @@ Keep entries factual and specific — numbers and log excerpts, not vibes.
 
 ---
 
+## 2026-09-30 — full resolved-Parquet release on nicesrv, attempt 5 (pending)
+
+**Reason**: retry the fixed release after HMDB entity staging exceeded attempt
+4's 512MB DuckDB allowance. All 46 resources / 230 exact production rotated-CSV
+projections have now passed with 1024MB and one thread. The preflight staged all
+selected records, checked each table's expected count, and removed its temporary
+CSV/spill directories. It took 1144.172568 s, process peak RSS 803,992 KiB.
+It made no PostgreSQL writes. The separate HMDB entity test staged all 220,400
+rows in 8.489402 s and used process peak RSS 768,216 KiB.
+
+**Parameters**: loader `420c407` (DuckDB projection `91317a3`, narrow statistics
+`15500f7`, bounded alias index `3c9bab3`); native replay remains `300d06b`,
+pypath `e27d72e095f53b1a0fd76d63bbe059c10f8a48d8`.
+Unchanged release `2026.9.30.4`, canonical manifest SHA-256
+`06f55112b371055b9b539c27eb7886d403b0131098393d1bafe4723ce006c03e`;
+schema `full_20260930`, same 46 exact pins. Invocation:
+`uv run --frozen --no-sync python
+/root/projects/omnipath-migration/full-release-20260930/postgres-sql-build.py`.
+`load_release(..., batch_size=1024, duckdb_threads=1, memory_limit='1024MB',
+validate_source_records=False, temp_directory=state)` then all three products.
+Database/role `omnipath_migration`, localhost5440, separate PG16 container.
+Process cap 3 GiB RAM / 256 MiB swap / two CPUs; PG4 GiB/two CPUs; disk floor
+64 GiB. CSV16MB rotation threshold / COPY1 MiB byte blocks. Session work_mem16MB,
+maintenance128MB, gather1, jit off. Unit:
+`omnipath-migration-full-postgres-sql-attempt5-20260930.service`.
+
+Raw source auditing is now disabled by the approved default; `--validate-source-records`
+retains the old deeper audit when requested. File schemas/counts/byte sizes/SHA
+before and after loading, normalized integrity, owner constraints, reaction
+annotation checks and atomic rollback remain mandatory. All 419 PostgreSQL/subset
+tests passed in 23.56 s, including identical stored output in both modes.
+
+**Phase durations**: pending in the new `postgres-build.json`/`.log`.
+
+**Outcome**: pending. Expected base rows: 6,383,473 entities; 80,136,865 identifiers;
+18,339,902 relations; 22,887,251 evidence; 150,690,040 annotations. No resource
+rebuilds or source-version changes for this retry. The full read-only and
+PostgreSQL-only product rebuild checks remain queued behind base/product commit.
+
 ## 2026-09-30 — full resolved-Parquet release on nicesrv, attempt 4 (failed)
 
 **Reason**: retry the unchanged full release after supplying narrow planner
