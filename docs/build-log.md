@@ -31,7 +31,7 @@ Keep entries factual and specific — numbers and log excerpts, not vibes.
 
 ---
 
-## 2026-09-30 — full resolved-Parquet release on nicesrv, attempt 3 (running)
+## 2026-09-30 — full resolved-Parquet release on nicesrv, attempt 3 (cancelled)
 
 **Reason**: run the complete fixed release through the restored DuckDB SQL
 projection and bulk COPY path after exact equivalence tests and a real-data
@@ -60,17 +60,24 @@ children. No Python projected-row expansion. Raw validation remains the separate
 dictionary-preserving reader with every pointer/owner/SHA/type/count check.
 No source parsing, entity resolution, downloads or resource rebuilds.
 
-**Phase durations**: pending in `postgres-build.json`/`.log`, which now record
-per-resource SQL validation, each table's stage/COPY timings, file counts/bytes,
-raw checks, indexes and derivations. Preliminary ANALYZE and validation are
-separate from the table timings. The independent 39-resource raw check already
-passed; full PG-only verification is gated on successful base and subset builds.
+**Phase durations**: deliberately cancelled after 2002.583925 s. Release
+reading took 5.378590 s; BindingDB SQL shape/count validation took 16.292700 s.
+All five BindingDB tables copied: 52,774,666 rows. Their SQL staging total was
+238.644504 s and PostgreSQL COPY total 1447.194627 s. Source-owner validation
+started at elapsed 1708.965 s but did not finish; indexes, derived tables and
+products did not run. A live owner-key query waited on DataFileRead after
+36.416660 s. The separate 39-resource raw validation remains successful.
 
-**Outcome**: in progress. Expected base counts remain 6,383,473 entities,
-80,136,865 identifiers, 18,339,902 relations, 22,887,251 evidence and 150,690,040
-annotations; 26,711,866 raw rows are checked and discarded. The seven native
-rebuilds still cover all 300,008 originally published records. Production and
-both earlier private schemas are preserved. No production publication.
+**Outcome**: cancelled to correct missing planner statistics before non-reaction
+source-owner checks. The preliminary scalar ANALYZE had covered only reaction
+resources; the batch owner lookups also need current entity/relation statistics.
+No data or schema change is required. Psycopg cancelled the active query and
+rolled back. A fresh private connection confirmed `full_20260930` absent, no
+import/verifier backend remaining and both previous private schemas present.
+`postgres-build-attempt3.json`/`.log` and `attempt3-rollback.json` retain the
+results. The queued verifier stopped before SQL checks. The seven full native
+rebuilds, 39 reused versions and fixed release pins remain unchanged. Production
+was not published or modified.
 
 ## 2026-09-30 — DuckDB bulk projection/COPY comparison on nicesrv (completed)
 

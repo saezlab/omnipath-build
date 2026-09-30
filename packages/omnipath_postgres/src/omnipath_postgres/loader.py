@@ -35,6 +35,10 @@ from .releases import PinnedRelease, load_release as read_release, verify_releas
 from .schema import create_schema
 
 
+_OWNER_LOOKUP_COLUMNS = {
+    "entities": ("resource", "version", "entity_key"),
+    "relations": ("resource", "version", "relation_key"),
+}
 _HASH_JOIN_COLUMNS = {
     "entities": ("resource", "version", "entity_key", "entity_type"),
     "relations": (
@@ -394,12 +398,18 @@ def load_release(
             check_reaction_payloads = (
                 validation.has_activity and validation.has_participant_relation
             )
-            if check_reaction_payloads:
-                # Autovacuum cannot see rows in this transaction. Supply current
-                # statistics before repeated batch joins into newly copied data.
-                # Only join/filter columns need preliminary samples; avoid wide
-                # record_json/quantity statistics and their TOAST work here.
-                _analyze_tables(conn, schema, _HASH_JOIN_COLUMNS, columns=_HASH_JOIN_COLUMNS)
+            # Autovacuum cannot see this transaction's copied rows. Every
+            # resource needs current scoped-key statistics before batched owner
+            # lookups; otherwise fresh tables can produce repeated broad scans.
+            # Reaction checks add their scalar join/filter columns in the same
+            # sample. Nonreactions never preliminarily scan evidence/annotations
+            # or wide record_json/quantity fields.
+            lookup_columns = (
+                _HASH_JOIN_COLUMNS if check_reaction_payloads else _OWNER_LOOKUP_COLUMNS
+            )
+            tick = perf_counter()
+            _analyze_tables(conn, schema, lookup_columns, columns=lookup_columns)
+            timings[f"analyze_payload_lookup_{resource.source}"] = perf_counter() - tick
             references = []
             validated_count = 0
             # Bound transient digest batches even when COPY uses larger batches.
