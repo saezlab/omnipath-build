@@ -31,6 +31,30 @@ Keep entries factual and specific — numbers and log excerpts, not vibes.
 
 ---
 
+## 2026-09-30 — nicesrv resolved-Parquet pilot, attempt 2
+
+**Reason**: repeat the identical pinned pilot after fixing statistics timing
+identified by the cancelled first attempt.
+
+**Parameters**: code `fa439b380c692de7531aa9dc067c9a3843bacb3b`; private release
+`2026.9.30.1`, SIGNOR/ChemOnt/Rhea each `2026.9.5.17`;
+`batch_size=1024`, DuckDB one thread / 256 MB. Same isolated new container,
+volume and localhost port `5440`, database `omnipath_migration`,
+fresh schema `pilot_20260930`; 2 CPUs / 4 GiB RAM. Exact configuration,
+artifact hashes and scripts are retained in the private server pilot directory.
+
+**Phase durations**: validate_files 0.13 s, copy_and_validate 313.03 s, indexes_and_derived 384.53 s, recheck_files 0.13 s;
+total successful load including commit 697.88 s.
+Per-resource projection/copy: chemont 1.33 s, rhea 174.18 s, signor 31.64 s.
+No delete, extraction/preparse or canonicalization ran. Independent verification
+took 176.28 s. Rhea is the source copy outlier.
+
+**Outcome**: committed pilot; every base record/raw payload matched its original
+Parquet, all flat-array, ontology, reaction, index and constraint checks passed.
+Database size 7.70 GiB from 134.44 MiB compressed input.
+Production PostgreSQL and prototype services were unchanged. Complete evidence
+and scope limits are in [the pilot report](nicesrv-parquet-pilot.md).
+
 ## 2026-09-30 — nicesrv resolved-Parquet pilot, attempt 1 (rolled back)
 
 **Reason**: test the migration loader against existing prototype artifacts before
