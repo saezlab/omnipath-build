@@ -151,6 +151,20 @@ def _copy(conn, schema: str, table: str, rows: list[dict]) -> None:
             )
 
 
+def _analyze_schema(conn, schema: str) -> None:
+    """Give joins current statistics inside the load transaction, before queries."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace "
+            "WHERE n.nspname=%s AND c.relkind IN ('r','m') ORDER BY c.relname",
+            (schema,),
+        )
+        for (table,) in cur.fetchall():
+            cur.execute(
+                sql.SQL("ANALYZE {}.{}").format(sql.Identifier(schema), sql.Identifier(table))
+            )
+
+
 def _validate_loaded(conn, schema: str) -> None:
     namespace = sql.Identifier(schema)
     checks = (
@@ -289,6 +303,10 @@ def load_release(
         for table, rows in buffers.items():
             if rows:
                 _copy(conn, schema, table, rows)
+        # COPY into new tables does not provide column statistics. Collect them
+        # before integrity joins and derivations, which run before autovacuum can
+        # see this transaction's rows. Wide reaction joins especially need them.
+        _analyze_schema(conn, schema)
         _validate_loaded(conn, schema)
         timings["copy_and_validate"] = perf_counter() - started
         started = perf_counter()
@@ -309,10 +327,8 @@ def load_release(
                     release.manifest_sha256,
                 ),
             )
-            for table in COLUMNS:
-                cur.execute(
-                    sql.SQL("ANALYZE {}.{}").format(sql.Identifier(schema), sql.Identifier(table))
-                )
+        # Include populated derived tables so consumers start with usable plans.
+        _analyze_schema(conn, schema)
         timings["indexes_and_derived"] = perf_counter() - started
         started = perf_counter()
         verify_release(release)

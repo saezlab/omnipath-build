@@ -31,6 +31,39 @@ Keep entries factual and specific — numbers and log excerpts, not vibes.
 
 ---
 
+## 2026-09-30 — nicesrv resolved-Parquet pilot, attempt 1 (rolled back)
+
+**Reason**: test the migration loader against existing prototype artifacts before
+expanding to a complete release. No resource extraction or resolution ran.
+
+**Parameters**: migration commit `0417420`, private release `2026.9.30.1`
+pinning SIGNOR, ChemOnt and Rhea at `2026.9.5.17`; source data
+`/root/projects/full_parquet/data`. Loader `batch_size=1024`, DuckDB one thread
+and 256 MB limit. A new PostgreSQL 16 container `omnipath-migration-postgres`
+uses only its new volume `omnipath-migration-postgres-data` and localhost port
+`5440`, database/role `omnipath_migration`, schema `pilot_20260930`; 2 CPUs,
+4 GiB memory, 256 MB shared buffers, 16 MB work_mem. Private scripts, manifest,
+credentials and logs are in `/root/projects/omnipath-migration/pilot-20260930`.
+
+**Phase durations**: preflight schema/footer/hash validation 0.14 s;
+ChemOnt copy/projection 1.31 s, Rhea 174.87 s, SIGNOR 30.28 s; integrity
+validation 115.67 s; ordinary indexes 15.85 s; ontology derivation 12.96 s.
+Reaction derivation's first FETCH remained blocked for about 262 s and the
+attempt was cancelled at 624.21 s total. Rhea is the copy outlier (842,046
+payload rows). At 140 s into the reaction FETCH, sampled container block I/O
+was 70.4 GB read / 21.7 GB written; those are cumulative container counters,
+not reaction-only I/O. Nine input files total 140,970,841 bytes.
+
+**Outcome**: base integrity checks passed, but fresh-table statistics were only
+collected after derivation. The reaction join therefore ran without column
+statistics and did excessive disk work. Cancelled only the pilot backend;
+the transaction rolled back and the pilot schema is absent. The production
+PostgreSQL and prototype containers were not accessed for SQL or changed.
+Attempt logs are retained as `attempt1.log` and `attempt1-result.json`.
+Moving ANALYZE before integrity joins/derivation and including derived tables
+in final statistics collection is the first correction; a retry will determine
+whether additional query changes are needed.
+
 ## 2026-09-10 — cycle 011's final full uncapped rebuild
 
 **Reason**: land the two fixes the cycle had deliberately deferred to its

@@ -475,3 +475,32 @@ def test_cli_loads_release_and_emits_inspection_counts(tmp_path, postgres_dsn):
     assert report["resources"] == {"signor": "1.0.0"}
     assert report["counts"]["evidence"] == 2
     assert query(postgres_dsn, schema, "SELECT count(*) FROM {s}.release_metadata") == [(1,)]
+
+
+def test_join_statistics_available_during_load_and_for_consumers(
+    tmp_path, postgres_dsn, monkeypatch
+):
+    resource(tmp_path)
+    schema = destination()
+    validate = loader._validate_loaded
+    observed = []
+
+    def validate_with_statistics(conn, destination_schema):
+        statistics = conn.execute(
+            "SELECT DISTINCT tablename FROM pg_stats WHERE schemaname=%s",
+            (destination_schema,),
+        ).fetchall()
+        assert set(loader.COLUMNS) <= {name for (name,) in statistics}
+        observed.append(destination_schema)
+        validate(conn, destination_schema)
+
+    monkeypatch.setattr(loader, "_validate_loaded", validate_with_statistics)
+    loader.load_release(tmp_path, release(tmp_path), postgres_dsn, schema=schema)
+    assert observed == [schema]
+    statistics = query(
+        postgres_dsn,
+        schema,
+        "SELECT DISTINCT tablename FROM pg_stats WHERE schemaname=%s",
+        (schema,),
+    )
+    assert "entity_relation_counts" in {name for (name,) in statistics}
