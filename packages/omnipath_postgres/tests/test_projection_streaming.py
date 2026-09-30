@@ -45,7 +45,12 @@ def test_compressed_payload_scan_does_not_retain_whole_result(tmp_path):
         from pathlib import Path
         import resource
         import sys
+        from omnipath_postgres import projection
         from omnipath_postgres.projection import iter_rows, iter_validated_payloads
+
+        # Isolate Arrow's streaming allocation from the separately bounded
+        # exact-text validation cache tested in test_payload_validation_cache.
+        projection._MAX_PAYLOAD_CACHE_BYTES = 0
 
         def peak_bytes():
             value = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss

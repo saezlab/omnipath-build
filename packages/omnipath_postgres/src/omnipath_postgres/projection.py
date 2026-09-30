@@ -6,12 +6,14 @@ entities or reinterprets Biolink terms, quantities or source evidence.
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from collections.abc import Iterator
 from copy import deepcopy
 from dataclasses import dataclass
 import hashlib
 import json
 from pathlib import Path
+import sys
 from typing import Any, Literal
 
 import pyarrow.parquet as pq
@@ -23,6 +25,13 @@ TableName = Literal["entities", "identifiers", "annotations", "relations", "evid
 # decoded or converted into a complete SQL result before the first row is read.
 _MAX_PARQUET_BATCH_ROWS = 64
 _PARQUET_READ_BUFFER_BYTES = 64 * 1024
+
+# A raw source record may occur once for each of many owners. Retain only its
+# exact text and validation result, with conservative room for the digest,
+# tuple, integer, OrderedDict node and hash-table slots in each entry's charge.
+_MAX_PAYLOAD_CACHE_BYTES = 64 * 1024 * 1024
+_MAX_PAYLOAD_CACHE_ENTRIES = 256
+_PAYLOAD_CACHE_ENTRY_OVERHEAD = 512
 
 
 @dataclass(frozen=True)
@@ -197,6 +206,56 @@ class PayloadReference:
     source_record_type: str | None
 
 
+def _validate_payload_text(text: str, ordinal: int) -> tuple[str, str]:
+    """Validate a body and return metadata without retaining the parsed object."""
+    try:
+        parsed = json.loads(text, parse_constant=_reject_nonfinite)
+        # An overflowing JSON exponent also becomes a nonfinite float.
+        _validate_json(parsed, f"payload {ordinal}")
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"Invalid payload_json at payload {ordinal}: {exc}") from exc
+    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    shape = (
+        "object" if isinstance(parsed, dict) else "array" if isinstance(parsed, list) else "scalar"
+    )
+    return digest, shape
+
+
+class _PayloadValidationCache:
+    """Per-reader LRU of valid exact source text, never parsed payload bodies."""
+
+    def __init__(self, *, max_bytes: int | None = None, max_entries: int | None = None) -> None:
+        self.max_bytes = _MAX_PAYLOAD_CACHE_BYTES if max_bytes is None else max_bytes
+        self.max_entries = _MAX_PAYLOAD_CACHE_ENTRIES if max_entries is None else max_entries
+        self.size_bytes = 0
+        self.entries: OrderedDict[str, tuple[str, str, int]] = OrderedDict()
+
+    def validate(self, text: str, ordinal: int) -> tuple[str, str]:
+        # The published schema is string-valued. Let JSON validation report any
+        # malformed non-string inputs instead of attempting to cache them.
+        cacheable = isinstance(text, str) and self.max_entries > 0
+        charge = sys.getsizeof(text) + _PAYLOAD_CACHE_ENTRY_OVERHEAD if cacheable else 0
+        cacheable = cacheable and charge <= self.max_bytes
+        if cacheable:
+            cached = self.entries.get(text)
+            if cached is not None:
+                self.entries.move_to_end(text)
+                digest, shape, _ = cached
+                return digest, shape
+
+        # Failed validation never changes the cache. In particular, invalid
+        # nonfinite constants and overflowing exponents cannot become hits.
+        digest, shape = _validate_payload_text(text, ordinal)
+        if cacheable:
+            while self.entries and (
+                len(self.entries) >= self.max_entries or self.size_bytes + charge > self.max_bytes
+            ):
+                self.size_bytes -= self.entries.popitem(last=False)[1][2]
+            self.entries[text] = (digest, shape, charge)
+            self.size_bytes += charge
+        return digest, shape
+
+
 def iter_validated_payloads(
     directory: str | Path, *, batch_size: int = 1024
 ) -> Iterator[PayloadReference]:
@@ -205,10 +264,13 @@ def iter_validated_payloads(
     Original Parquets remain authoritative. The loader checks each returned
     pointer against copied owners, checks reaction provenance against the exact
     source text digest and parsed shape, and checks the consumed count against
-    the manifest; no source payload table is created in PostgreSQL.
+    the manifest; no source payload table is created in PostgreSQL. A per-call
+    LRU reuses validation only for identical text, bounded to 256 entries and
+    64 MiB of charged key/entry storage. Larger bodies are validated uncached.
     """
     _validate_batch_size(batch_size)
     directory = Path(directory)
+    cache = _PayloadValidationCache()
     for ordinal, row in enumerate(
         iter_rows(directory / "evidence_payloads.parquet", batch_size=batch_size)
     ):
@@ -219,20 +281,7 @@ def iter_validated_payloads(
         _validate_key(row[owner], owner)
         digest = shape = None
         if row["payload_json"] is not None:
-            try:
-                parsed = json.loads(row["payload_json"], parse_constant=_reject_nonfinite)
-                # An overflowing JSON exponent also becomes a nonfinite float.
-                _validate_json(parsed, f"payload {ordinal}")
-            except (TypeError, ValueError) as exc:
-                raise ValueError(f"Invalid payload_json at payload {ordinal}: {exc}") from exc
-            digest = hashlib.sha256(row["payload_json"].encode("utf-8")).hexdigest()
-            shape = (
-                "object"
-                if isinstance(parsed, dict)
-                else "array"
-                if isinstance(parsed, list)
-                else "scalar"
-            )
+            digest, shape = cache.validate(row["payload_json"], ordinal)
         yield PayloadReference(
             ordinal,
             "entity" if owner == "entity_key" else "relation",
