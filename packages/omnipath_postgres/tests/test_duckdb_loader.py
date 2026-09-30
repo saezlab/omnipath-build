@@ -150,7 +150,8 @@ def test_every_normalized_column_and_full_json_survives_csv_copy(
         ), table
         assert result.phase_seconds[f"stage_signor_{table}"] >= 0
         assert result.phase_seconds[f"copy_signor_{table}"] >= 0
-    assert result.validated_payload_rows == {"signor": 2}
+    assert result.validate_source_records is False
+    assert result.validated_payload_rows == {}
     assert query(postgres_dsn, schema, "SELECT to_regclass(%s)", (schema + ".payloads",)) == [
         (None,)
     ]

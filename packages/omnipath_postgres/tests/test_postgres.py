@@ -97,7 +97,8 @@ def test_measurements_qualifiers_duplicate_occurrences_without_raw_storage(tmp_p
     assert (
         query(postgres_dsn, schema, "SELECT record_json FROM {s}.relations")[0][0] == original[1][0]
     )
-    assert result.validated_payload_rows == {"signor": 2}
+    assert result.validate_source_records is False
+    assert result.validated_payload_rows == {}
     assert query(postgres_dsn, schema, "SELECT to_regclass(%s)", (schema + ".payloads",)) == [
         (None,)
     ]
@@ -265,7 +266,12 @@ def test_late_validation_failure_rolls_back_entire_schema(tmp_path, postgres_dsn
     schema = destination()
     with pytest.raises((ValueError, psycopg.errors.ForeignKeyViolation)):
         loader.load_release(
-            tmp_path, release(tmp_path, resources), postgres_dsn, schema=schema, batch_size=1
+            tmp_path,
+            release(tmp_path, resources),
+            postgres_dsn,
+            schema=schema,
+            batch_size=1,
+            validate_source_records=failure in {"payload", "payload_owner"},
         )
     assert not exists(postgres_dsn, schema)
 
@@ -329,7 +335,8 @@ def test_existing_twenty_record_signor_artifact(tmp_path, postgres_dsn):
     assert result.counts["entities"] == 2
     assert result.counts["relations"] == 2
     assert result.counts["evidence"] == 20
-    assert result.validated_payload_rows["signor"] == 20
+    assert result.validate_source_records is False
+    assert result.validated_payload_rows == {}
     assert "payloads" not in result.counts
     original = pq.read_table(root / "resources/signor/0.1.1/relations.parquet").to_pylist()
     assert dict(

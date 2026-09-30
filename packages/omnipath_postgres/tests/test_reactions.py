@@ -165,7 +165,8 @@ def test_postgres_only_rebuild_preserves_attributes_after_parquets_are_unavailab
     result = loader.load_release(
         tmp_path, release(tmp_path, {"rhea": "1.0.0"}), postgres_dsn, schema=schema, batch_size=1
     )
-    assert result.validated_payload_rows == {"rhea": 2} and "payloads" not in result.counts
+    assert result.validate_source_records is False
+    assert result.validated_payload_rows == {} and "payloads" not in result.counts
     directory.rename(tmp_path / "raw_parquets_unavailable")
     namespace = sql.Identifier(schema)
     with psycopg.connect(postgres_dsn) as conn:
@@ -209,10 +210,18 @@ def test_postgres_only_rebuild_preserves_attributes_after_parquets_are_unavailab
 
 @pytest.mark.integration
 @pytest.mark.parametrize(
-    "problem", ["legacy_payload_only", "invalid_hash", "two_hashes", "relation_only_hash"]
+    "problem",
+    [
+        "legacy_payload_only",
+        "invalid_hash",
+        "two_hashes",
+        "relation_only_hash",
+        "conflicting_event_hash",
+    ],
 )
+@pytest.mark.parametrize("audit", [False, True])
 def test_unusable_reaction_provenance_rolls_back_import_with_rebuild_guidance(
-    tmp_path, postgres_dsn, problem
+    tmp_path, postgres_dsn, problem, audit
 ):
     rows = reaction_fixture(annotated=problem != "legacy_payload_only")
     if problem == "invalid_hash":
@@ -223,15 +232,25 @@ def test_unusable_reaction_provenance_rolls_back_import_with_rebuild_guidance(
         rows[1][0]["evidence"][0]["annotations"].append(
             annotation(SOURCE_RECORD_REFERENCE, value=SOURCE_RECORD_SHA256_PREFIX + "0" * 64)
         )
+    elif problem == "conflicting_event_hash":
+        rows[1][0]["evidence"][0]["annotations"][0]["value"] = (
+            SOURCE_RECORD_SHA256_PREFIX + "0" * 64
+        )
     elif problem == "relation_only_hash":
         for item in rows[1]:
             item["annotations"] = item["evidence"][0]["annotations"]
             item["evidence"][0]["annotations"] = []
     resource(tmp_path, "rhea", rows=rows)
     schema = "reactions_" + uuid.uuid4().hex
-    with pytest.raises(ValueError, match="source-record SHA reference"):
+    with pytest.raises(
+        ValueError, match="source-record SHA reference|Conflicting source record SHA"
+    ):
         loader.load_release(
-            tmp_path, release(tmp_path, {"rhea": "1.0.0"}), postgres_dsn, schema=schema
+            tmp_path,
+            release(tmp_path, {"rhea": "1.0.0"}),
+            postgres_dsn,
+            schema=schema,
+            validate_source_records=audit,
         )
     assert not exists(postgres_dsn, schema)
 
@@ -286,6 +305,7 @@ def test_exact_source_text_must_match_published_reaction_hash_atomically(
             postgres_dsn,
             schema=schema,
             batch_size=1,
+            validate_source_records=True,
         )
     assert not exists(postgres_dsn, schema)
 
@@ -306,6 +326,7 @@ def test_repeated_identical_raw_rows_and_evidence_references_are_valid(tmp_path,
         postgres_dsn,
         schema=schema,
         batch_size=1,
+        validate_source_records=True,
     )
     assert result.validated_payload_rows == {"rhea": 4}
     with psycopg.connect(postgres_dsn) as conn:
@@ -356,6 +377,7 @@ def test_raw_hash_matching_keeps_distinct_source_and_row_scopes_separate(
         postgres_dsn,
         schema=schema,
         batch_size=1,
+        validate_source_records=True,
     )
     assert result.validated_payload_rows == {"rhea": 3}
 
@@ -385,6 +407,7 @@ def test_matching_null_or_empty_source_scope_still_rejects_stale_hash(
             release(tmp_path, {"rhea": "1.0.0"}),
             postgres_dsn,
             schema=schema,
+            validate_source_records=True,
         )
     assert not exists(postgres_dsn, schema)
 
@@ -404,6 +427,7 @@ def test_every_matching_evidence_occurrence_is_checked(tmp_path, postgres_dsn):
             release(tmp_path, {"rhea": "1.0.0"}),
             postgres_dsn,
             schema=schema,
+            validate_source_records=True,
         )
     assert not exists(postgres_dsn, schema)
 
@@ -420,6 +444,7 @@ def test_declared_source_shape_must_match_existing_payload_atomically(tmp_path, 
             release(tmp_path, {"rhea": "1.0.0"}),
             postgres_dsn,
             schema=schema,
+            validate_source_records=True,
         )
     assert not exists(postgres_dsn, schema)
 
@@ -466,6 +491,7 @@ def test_annotations_remain_authoritative_when_no_matching_nonnull_body_exists(
         release(tmp_path, {"rhea": "1.0.0"}),
         postgres_dsn,
         schema=schema,
+        validate_source_records=True,
     )
     assert result.validated_payload_rows == {"rhea": len(rows[2])}
     with psycopg.connect(postgres_dsn) as conn:

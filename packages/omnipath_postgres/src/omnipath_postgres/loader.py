@@ -69,6 +69,7 @@ class LoadResult:
     manifest_sha256: str
     resources: dict[str, str]
     counts: dict[str, int]
+    validate_source_records: bool
     validated_payload_rows: dict[str, int]
     phase_seconds: dict[str, float]
 
@@ -313,9 +314,18 @@ def load_release(
     duckdb_threads: int = 1,
     memory_limit: str = "512MB",
     temp_directory: str | Path | None = None,
+    validate_source_records: bool = False,
 ) -> LoadResult:
-    """Load an exact release into a fresh schema; any failure rolls back all writes."""
+    """Load an exact release into a fresh schema; any failure rolls back all writes.
+
+    Source bodies are discarded. Their immutable file/schema/count checks remain
+    mandatory; parsing and owner/hash cross-checks run only for an explicit
+    ``validate_source_records`` audit. Stored projections and provenance
+    annotations are validated in both modes.
+    """
     validate_schema(schema)
+    if not isinstance(validate_source_records, bool):
+        raise ValueError("validate_source_records must be a boolean")
     if isinstance(batch_size, bool) or not isinstance(batch_size, int) or batch_size < 1:
         raise ValueError("batch_size must be a positive integer")
     if (
@@ -395,31 +405,41 @@ def load_release(
                 counts[table] += result.rows
                 timings[f"stage_{resource.source}_{table}"] = result.stage_seconds
                 timings[f"copy_{resource.source}_{table}"] = result.copy_seconds
-            check_reaction_payloads = (
-                validation.has_activity and validation.has_participant_relation
-            )
-            # Autovacuum cannot see this transaction's copied rows. Every
-            # resource needs current scoped-key statistics before batched owner
-            # lookups; otherwise fresh tables can produce repeated broad scans.
-            # Reaction checks add their scalar join/filter columns in the same
-            # sample. Nonreactions never preliminarily scan evidence/annotations
-            # or wide record_json/quantity fields.
-            lookup_columns = (
-                _HASH_JOIN_COLUMNS if check_reaction_payloads else _OWNER_LOOKUP_COLUMNS
-            )
-            tick = perf_counter()
-            _analyze_tables(conn, schema, lookup_columns, columns=lookup_columns)
-            timings[f"analyze_payload_lookup_{resource.source}"] = perf_counter() - tick
-            references = []
-            validated_count = 0
-            # Bound transient digest batches even when COPY uses larger batches.
-            payload_batch_size = min(batch_size, 1024)
-            for reference in iter_validated_payloads(
-                resource.directory, batch_size=payload_batch_size
-            ):
-                references.append(reference)
-                validated_count += 1
-                if len(references) >= payload_batch_size:
+            if validate_source_records:
+                check_reaction_payloads = (
+                    validation.has_activity and validation.has_participant_relation
+                )
+                # Autovacuum cannot see this transaction's copied rows. Every
+                # resource needs current scoped-key statistics before batched owner
+                # lookups; otherwise fresh tables can produce repeated broad scans.
+                # Reaction checks add their scalar join/filter columns in the same
+                # sample. Nonreactions never preliminarily scan evidence/annotations
+                # or wide record_json/quantity fields.
+                lookup_columns = (
+                    _HASH_JOIN_COLUMNS if check_reaction_payloads else _OWNER_LOOKUP_COLUMNS
+                )
+                tick = perf_counter()
+                _analyze_tables(conn, schema, lookup_columns, columns=lookup_columns)
+                timings[f"analyze_payload_lookup_{resource.source}"] = perf_counter() - tick
+                references = []
+                validated_count = 0
+                # Bound transient digest batches even when COPY uses larger batches.
+                payload_batch_size = min(batch_size, 1024)
+                for reference in iter_validated_payloads(
+                    resource.directory, batch_size=payload_batch_size
+                ):
+                    references.append(reference)
+                    validated_count += 1
+                    if len(references) >= payload_batch_size:
+                        _validate_payload_owners(
+                            conn, schema, resource.source, resource.version, references
+                        )
+                        if check_reaction_payloads:
+                            _validate_reaction_payloads(
+                                conn, schema, resource.source, resource.version, references
+                            )
+                        references.clear()
+                if references:
                     _validate_payload_owners(
                         conn, schema, resource.source, resource.version, references
                     )
@@ -427,20 +447,11 @@ def load_release(
                         _validate_reaction_payloads(
                             conn, schema, resource.source, resource.version, references
                         )
-                    references.clear()
-            if references:
-                _validate_payload_owners(
-                    conn, schema, resource.source, resource.version, references
-                )
-                if check_reaction_payloads:
-                    _validate_reaction_payloads(
-                        conn, schema, resource.source, resource.version, references
+                if validated_count != resource.files["evidence_payloads.parquet"].rows:
+                    raise ValueError(
+                        f"Validated row count differs from manifest: {resource.source}/evidence_payloads.parquet"
                     )
-            if validated_count != resource.files["evidence_payloads.parquet"].rows:
-                raise ValueError(
-                    f"Validated row count differs from manifest: {resource.source}/evidence_payloads.parquet"
-                )
-            validated_payload_rows[resource.source] = validated_count
+                validated_payload_rows[resource.source] = validated_count
         # COPY into new tables does not provide column statistics. Collect them
         # before integrity joins and derivations, which run before autovacuum can
         # see this transaction's rows. Wide reaction joins especially need them.
@@ -477,6 +488,7 @@ def load_release(
         release.sha256,
         {resource.source: resource.version for resource in release.resources},
         counts,
+        validate_source_records,
         validated_payload_rows,
         {name: round(seconds, 6) for name, seconds in timings.items()},
     )

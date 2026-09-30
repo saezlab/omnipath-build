@@ -113,6 +113,7 @@ def test_reaction_hash_queries_see_current_table_statistics(tmp_path, postgres_d
         postgres_dsn,
         schema=schema,
         batch_size=1,
+        validate_source_records=True,
     )
     assert batches == [1, 1]
     assert query(postgres_dsn, schema, "SELECT count(*) FROM {s}.reaction_context") == [(1,)]
@@ -126,7 +127,9 @@ def test_nonreaction_resource_avoids_inapplicable_hash_joins(tmp_path, postgres_
 
     monkeypatch.setattr(loader, "_validate_reaction_payloads", unexpected)
     schema = "copy_memory_" + uuid.uuid4().hex
-    result = loader.load_release(tmp_path, release(tmp_path), postgres_dsn, schema=schema)
+    result = loader.load_release(
+        tmp_path, release(tmp_path), postgres_dsn, schema=schema, validate_source_records=True
+    )
     assert result.validated_payload_rows == {"signor": 2}
     assert query(postgres_dsn, schema, "SELECT count(*) FROM {s}.evidence") == [(2,)]
 
@@ -144,5 +147,7 @@ def test_generic_pointer_integrity_is_not_skipped_for_nonreaction_resources(
     monkeypatch.setattr(loader, "_validate_reaction_payloads", unexpected)
     schema = "copy_memory_" + uuid.uuid4().hex
     with pytest.raises(ValueError, match="Payload references an absent relation owner"):
-        loader.load_release(tmp_path, release(tmp_path), postgres_dsn, schema=schema)
+        loader.load_release(
+            tmp_path, release(tmp_path), postgres_dsn, schema=schema, validate_source_records=True
+        )
     assert not exists(postgres_dsn, schema)

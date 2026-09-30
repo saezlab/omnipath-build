@@ -57,6 +57,7 @@ def test_preliminary_statistics_are_scalar_and_ready_before_all_owner_batches(
         postgres_dsn,
         schema=schema,
         batch_size=1,
+        validate_source_records=True,
     )
     assert batches == [1, 1]
     assert result.phase_seconds[f"analyze_payload_lookup_{source}"] >= 0

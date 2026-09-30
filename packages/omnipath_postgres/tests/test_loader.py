@@ -47,3 +47,16 @@ def test_rejects_invalid_memory_limit_before_connecting(monkeypatch, memory_limi
     monkeypatch.setattr(loader, "read_release", unexpected)
     with pytest.raises(ValueError, match="memory_limit"):
         loader.load_release("missing", "missing", "unused", memory_limit=memory_limit)
+
+
+@pytest.mark.parametrize("validate_source_records", [None, 0, 1, "true", [], {}])
+def test_rejects_nonboolean_source_audit_before_io(monkeypatch, validate_source_records):
+    def unexpected(*args, **kwargs):
+        pytest.fail("Invalid source audit mode must not read a release or connect")
+
+    monkeypatch.setattr(loader, "read_release", unexpected)
+    monkeypatch.setattr(loader.psycopg, "connect", unexpected)
+    with pytest.raises(ValueError, match="validate_source_records must be a boolean"):
+        loader.load_release(
+            "missing", "missing", "unused", validate_source_records=validate_source_records
+        )

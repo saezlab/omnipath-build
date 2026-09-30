@@ -18,7 +18,15 @@ def main(argv=None) -> int:
     parser.add_argument("--database-url", default=os.environ.get("OMNIPATH_DATABASE_URL"))
     parser.add_argument("--schema", default="omnipath", help="New destination schema")
     parser.add_argument(
-        "--batch-size", type=int, default=1024, help="Raw validation batch (capped at 1024)"
+        "--batch-size",
+        type=int,
+        default=1024,
+        help="Optional source-record audit batch (capped at 1024)",
+    )
+    parser.add_argument(
+        "--validate-source-records",
+        action="store_true",
+        help="Audit discarded raw source records and their owner/provenance references",
     )
     parser.add_argument("--duckdb-threads", type=int, default=1)
     parser.add_argument("--memory-limit", default="512MB", help="DuckDB working-memory limit")
@@ -39,6 +47,7 @@ def main(argv=None) -> int:
             duckdb_threads=args.duckdb_threads,
             memory_limit=args.memory_limit,
             temp_directory=args.temp_directory,
+            validate_source_records=args.validate_source_records,
         )
     except (ValueError, OSError, psycopg.Error, duckdb.Error) as exc:
         parser.exit(1, f"Release load failed: {exc}\n")
