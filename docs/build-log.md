@@ -31,7 +31,48 @@ Keep entries factual and specific — numbers and log excerpts, not vibes.
 
 ---
 
-## 2026-09-30 — DuckDB bulk projection/COPY comparison on nicesrv (running)
+## 2026-09-30 — full resolved-Parquet release on nicesrv, attempt 3 (running)
+
+**Reason**: run the complete fixed release through the restored DuckDB SQL
+projection and bulk COPY path after exact equivalence tests and a real-data
+comparison. The two Python-loading attempts rolled back without base commits.
+
+**Parameters**: loader `91317a3`; unchanged native replay `300d06b`, pypath
+`e27d72e095f53b1a0fd76d63bbe059c10f8a48d8`. Private release `2026.9.30.4`,
+manifest SHA-256 `06f55112b371055b9b539c27eb7886d403b0131098393d1bafe4723ce006c03e`,
+schema `full_20260930`; exact 46 pins in the private `release.json`.
+Invocation: `uv run --frozen --no-sync python
+/root/projects/omnipath-migration/full-release-20260930/postgres-sql-build.py`.
+The script calls `load_release(..., batch_size=1024, duckdb_threads=1,
+memory_limit='512MB', temp_directory=state)` then all three subset adapters.
+Database/role `omnipath_migration`, localhost 5440, isolated PG16 container
+(two CPUs / 4 GiB RAM). Process: two CPUs / 3 GiB RAM / 256 MiB swap;
+64 GiB free-disk reserve. Session: work_mem16MB, maintenance128MB,
+max_parallel_workers_per_gather1, jit off. Unit:
+`omnipath-migration-full-postgres-sql-20260930.service`.
+
+DuckDB validates typed source shapes/counts in two aggregate scans per resource,
+then flattens all five tables and serializes JSON in SQL. One table at a time
+is written to CSV chunks (16 MB rotation threshold), forwarded as 1 MiB byte
+blocks to PostgreSQL COPY, and deleted. Each chunk is a separate immediate-FK
+statement inside the atomic base transaction; complete parent tables precede
+children. No Python projected-row expansion. Raw validation remains the separate
+dictionary-preserving reader with every pointer/owner/SHA/type/count check.
+No source parsing, entity resolution, downloads or resource rebuilds.
+
+**Phase durations**: pending in `postgres-build.json`/`.log`, which now record
+per-resource SQL validation, each table's stage/COPY timings, file counts/bytes,
+raw checks, indexes and derivations. Preliminary ANALYZE and validation are
+separate from the table timings. The independent 39-resource raw check already
+passed; full PG-only verification is gated on successful base and subset builds.
+
+**Outcome**: in progress. Expected base counts remain 6,383,473 entities,
+80,136,865 identifiers, 18,339,902 relations, 22,887,251 evidence and 150,690,040
+annotations; 26,711,866 raw rows are checked and discarded. The seven native
+rebuilds still cover all 300,008 originally published records. Production and
+both earlier private schemas are preserved. No production publication.
+
+## 2026-09-30 — DuckDB bulk projection/COPY comparison on nicesrv (completed)
 
 **Reason**: confirm the restored SQL projection/COPY path is faithful and measure
 its cost against the Python implementation before restarting the full release.
@@ -52,12 +93,21 @@ is rolled back after exact bidirectional EXCEPT ALL checks on every projected
 column. No source parser, resolution, download or product/index derivation.
 Process cap: 3 GiB RAM / 256 MiB swap / two CPUs; isolated PG cap: 4 GiB/two CPUs.
 
-**Phase durations**: pending in `bulk-benchmark.json`/`.log`. SQL runs first once;
-Python benefits from any warmed cache. Process peak RSS is cumulative and cannot
-compare the two methods' memory independently. This is a projection/transport
-comparison, not a full-release performance estimate.
+**Phase durations**: subset preparation 0.869144 s; SQL projection/COPY
+17.944366 s, Python projection/COPY 28.587794 s. SQL staging took 0.997005 s
+across five tables; PostgreSQL COPY took 16.913948 s. Total benchmark/check/
+rollback script 55.885584 s. SQL ran first once; Python benefited from any warmed
+cache. Process peak RSS 532,532 KiB is cumulative and cannot compare the methods'
+memory independently. The cgroup peak was 467.8 MiB. This is a projection/
+transport comparison, not a full-release performance estimate.
 
-**Outcome**: pending. The corrected loader passed 389 PostgreSQL/subset tests
+**Outcome**: success. Both paths loaded the same 50,000 entities and 880,917
+identifiers. The relation, evidence and annotation outputs were empty; those
+populated cases are covered by the integration fixtures. All projected columns,
+including full entity JSON, passed exact bidirectional EXCEPT ALL. Both schemas
+were rolled back and confirmed absent. SQL reduced measured elapsed time by
+about 37%; no full-release speed claim follows from this subset. The corrected
+loader passed 389 PostgreSQL/subset tests
 (19.57 s) plus a separate actual multi-file CSV rotation regression (1.63 s).
 Independent code/benchmark review, Ruff and diff checks passed.
 
