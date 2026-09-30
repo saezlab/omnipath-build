@@ -7,6 +7,7 @@ evidence payloads as processing context directly for downstream canonicalization
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+import hashlib
 from .extract.observations import RawEntityObservation, RawRelationObservation
 from .merge_policy import preferred_label
 from typing import Any
@@ -14,6 +15,11 @@ from typing import Any
 from omnipath_core import Relation
 from omnipath_core.naming import normalize_namespace
 from omnipath_core.measurements import quantity_dict
+from omnipath_core.source_attributes import (
+    SOURCE_RECORD_REFERENCE,
+    SOURCE_RECORD_SHA256_PREFIX,
+    SOURCE_RECORD_TYPE,
+)
 
 
 from omnipath_core.keys import canonical_json, stable_hash, entity_key, relation_key
@@ -500,6 +506,45 @@ class SilverExtractor:
                         "payload_json": payload_str,
                     }
                 )
+        # Reaction products retain source-event provenance without storing the
+        # full raw record in PostgreSQL. These ordinary attributes do not enter
+        # statement identity, and each occurrence keeps its own source hash.
+        record_reference = None
+        record_type = (
+            "object"
+            if isinstance(raw_payload, Mapping)
+            else "array"
+            if isinstance(raw_payload, (list, tuple))
+            else "scalar"
+        )
+        for relation in self.relations[relation_start:]:
+            subject = self.entities[relation.subject_entity_key]
+            if subject.entity_type != "molecular_activity" or relation.predicate not in {
+                "has_input",
+                "has_output",
+                "enabled_by",
+            }:
+                continue
+            if record_reference is None:
+                record_reference = (
+                    SOURCE_RECORD_SHA256_PREFIX
+                    + hashlib.sha256(payload_str.encode("utf-8")).hexdigest()
+                )
+            for term, value in (
+                (SOURCE_RECORD_REFERENCE, record_reference),
+                (SOURCE_RECORD_TYPE, record_type),
+            ):
+                relation.annotations.append(
+                    {
+                        "term": term,
+                        "value": value,
+                        "quantity": None,
+                        "source": self.source,
+                        "dataset": self.dataset,
+                        "scope": "relation",
+                    }
+                )
+
         # Include derived membership/ontology/association statements as well.
         for rel_key in dict.fromkeys(r.relation_key for r in self.relations[relation_start:]):
             self.payloads.append(
