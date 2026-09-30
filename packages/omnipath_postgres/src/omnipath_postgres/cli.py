@@ -1,0 +1,34 @@
+"""Command-line entry point for a single pinned PostgreSQL release."""
+
+import argparse
+from dataclasses import asdict
+import json
+import os
+
+import psycopg
+
+from .loader import load_release
+
+
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("release_manifest", help="Explicit release JSON with resource version pins")
+    parser.add_argument("--data-root", required=True, help="Directory containing resources/")
+    parser.add_argument("--database-url", default=os.environ.get("OMNIPATH_DATABASE_URL"))
+    parser.add_argument("--schema", default="omnipath", help="New destination schema")
+    parser.add_argument("--batch-size", type=int, default=1024)
+    args = parser.parse_args(argv)
+    if not args.database_url:
+        parser.error("Set OMNIPATH_DATABASE_URL or pass --database-url")
+    try:
+        result = load_release(
+            args.data_root,
+            args.release_manifest,
+            args.database_url,
+            schema=args.schema,
+            batch_size=args.batch_size,
+        )
+    except (ValueError, OSError, psycopg.Error) as exc:
+        parser.exit(1, f"Release load failed: {exc}\n")
+    print(json.dumps(asdict(result), indent=2))
+    return 0

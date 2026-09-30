@@ -1,4 +1,4 @@
-.PHONY: setup test test-pypath check build sample
+.PHONY: setup test test-pypath test-postgres check build sample load-postgres
 
 export PKG_INFRA_CONFIG ?= $(CURDIR)/config/pkg_infra_quiet.yaml
 
@@ -17,6 +17,9 @@ test:
 test-pypath:
 	uv run --frozen pytest pypath/test/test_tabular_execution.py pypath/test/test_signor_identifiers.py pypath/test/test_inputs_v2_chemical_migration.py pypath/test/test_interaction_profiles.py pypath/test/test_measurement_review_fixes.py pypath/test/test_model_rule_review_fixes.py -q
 
+test-postgres:
+	OMNIPATH_TEST_POSTGRES=1 uv run --frozen pytest packages/omnipath_postgres/tests -q
+
 check:
 	uv run --frozen ruff check packages scripts
 	uv run --frozen ruff format --check packages scripts
@@ -26,3 +29,8 @@ build:
 
 sample:
 	uv run --frozen python scripts/migration_smoke.py --output-dir $(DATA_ROOT)/migration-smoke --version $(VERSION) --max-records $(MAX_RECORDS)
+
+# RELEASE_MANIFEST and OMNIPATH_DATABASE_URL select an explicit input and database.
+POSTGRES_SCHEMA ?= omnipath
+load-postgres:
+	uv run --frozen omnipath-postgres $(RELEASE_MANIFEST) --data-root $(DATA_ROOT) --schema $(POSTGRES_SCHEMA)

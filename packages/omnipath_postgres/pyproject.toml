@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "omnipath-postgres"
+version = "0.1.0"
+description = "Load pinned, resolved OmniPath Parquet releases into PostgreSQL"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "omnipath-core>=0.1.0,<0.2.0",
+    "duckdb>=1.5,<2",
+    "pyarrow>=14",
+    "psycopg[binary]>=3.2,<4",
+]
+
+[project.scripts]
+omnipath-postgres = "omnipath_postgres.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.uv.sources]
+omnipath-core = { workspace = true }

@@ -3,12 +3,14 @@ members = [
     "packages/omnipath_core",
     "packages/omnipath_resolver",
     "packages/omnipath_build",
+    "packages/omnipath_postgres",
 ]
 
 [tool.uv.sources]
 omnipath-core = { workspace = true }
 omnipath-resolver = { workspace = true }
 omnipath-build = { workspace = true }
+omnipath-postgres = { workspace = true }
 pypath-omnipath = { path = "pypath", editable = true }
 cachedir = { path = "cache-manager", editable = true }
 dlmachine = { path = "download-manager", editable = true }
@@ -33,4 +35,5 @@ markers = ["integration: requires an explicitly configured local dataset or exte
 testpaths = [
     "packages/omnipath_core/tests",
     "packages/omnipath_build/tests",
+    "packages/omnipath_postgres/tests",
 ]

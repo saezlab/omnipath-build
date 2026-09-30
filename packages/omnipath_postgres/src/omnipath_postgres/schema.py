@@ -1,0 +1,223 @@
+"""Lossless PostgreSQL projection of already resolved resource Parquet files."""
+
+from __future__ import annotations
+
+from psycopg import sql
+
+
+_TABLES = {
+    "resource_versions": """
+        resource text NOT NULL,
+        version text NOT NULL,
+        manifest_json jsonb NOT NULL,
+        manifest_text text NOT NULL,
+        manifest_sha256 text NOT NULL,
+        parquet_checksums jsonb NOT NULL,
+        PRIMARY KEY (resource, version)
+    """,
+    "release_metadata": """
+        release_id text PRIMARY KEY,
+        manifest_json jsonb NOT NULL,
+        manifest_text text NOT NULL,
+        manifest_sha256 text NOT NULL,
+        input_manifest_sha256 text NOT NULL,
+        loaded_at timestamptz NOT NULL DEFAULT now()
+    """,
+    "entities": """
+        resource text NOT NULL,
+        version text NOT NULL,
+        entity_key text NOT NULL,
+        entity_type text,
+        namespace text,
+        identifier text,
+        taxon text,
+        label text,
+        has_hierarchy boolean,
+        parent_count bigint,
+        child_count bigint,
+        record_json jsonb NOT NULL,
+        PRIMARY KEY (resource, version, entity_key),
+        FOREIGN KEY (resource, version) REFERENCES {s}.resource_versions (resource, version) DEFERRABLE INITIALLY DEFERRED
+    """,
+    "relations": """
+        resource text NOT NULL,
+        version text NOT NULL,
+        relation_key text NOT NULL,
+        statement_kind text,
+        subject_entity_key text,
+        subject_label text,
+        subject_type text,
+        predicate text,
+        object_entity_key text,
+        object_label text,
+        object_type text,
+        taxon text,
+        is_directed boolean,
+        sign integer,
+        category text,
+        interaction_class text,
+        sources jsonb,
+        evidence_count bigint,
+        record_json jsonb NOT NULL,
+        PRIMARY KEY (resource, version, relation_key),
+        FOREIGN KEY (resource, version) REFERENCES {s}.resource_versions (resource, version) DEFERRABLE INITIALLY DEFERRED,
+        FOREIGN KEY (resource, version, subject_entity_key)
+            REFERENCES {s}.entities (resource, version, entity_key) DEFERRABLE INITIALLY DEFERRED,
+        FOREIGN KEY (resource, version, object_entity_key)
+            REFERENCES {s}.entities (resource, version, entity_key) DEFERRABLE INITIALLY DEFERRED
+    """,
+    "identifiers": """
+        resource text NOT NULL,
+        version text NOT NULL,
+        entity_key text NOT NULL,
+        ordinal bigint NOT NULL CHECK (ordinal >= 0),
+        ns text,
+        id text,
+        is_canonical boolean,
+        source text,
+        PRIMARY KEY (resource, version, entity_key, ordinal),
+        FOREIGN KEY (resource, version, entity_key)
+            REFERENCES {s}.entities (resource, version, entity_key) DEFERRABLE INITIALLY DEFERRED
+    """,
+    "evidence": """
+        resource text NOT NULL,
+        version text NOT NULL,
+        relation_key text NOT NULL,
+        ordinal bigint NOT NULL CHECK (ordinal >= 0),
+        source text,
+        dataset text,
+        row_id text,
+        upstream_id text,
+        record_json jsonb NOT NULL,
+        PRIMARY KEY (resource, version, relation_key, ordinal),
+        FOREIGN KEY (resource, version, relation_key)
+            REFERENCES {s}.relations (resource, version, relation_key) DEFERRABLE INITIALLY DEFERRED
+    """,
+    "annotations": """
+        annotation_id bigserial PRIMARY KEY,
+        resource text NOT NULL,
+        version text NOT NULL,
+        owner_kind text NOT NULL CHECK (owner_kind IN ('entity', 'relation', 'evidence')),
+        owner_key text NOT NULL,
+        evidence_ordinal bigint,
+        ordinal bigint NOT NULL CHECK (ordinal >= 0),
+        term text,
+        value text,
+        quantity jsonb,
+        source text,
+        dataset text,
+        scope text,
+        CHECK (
+            (owner_kind = 'evidence' AND evidence_ordinal IS NOT NULL AND evidence_ordinal >= 0)
+            OR (owner_kind IN ('entity', 'relation') AND evidence_ordinal IS NULL)
+        ),
+        FOREIGN KEY (resource, version) REFERENCES {s}.resource_versions (resource, version) DEFERRABLE INITIALLY DEFERRED
+    """,
+    "payloads": """
+        resource text NOT NULL,
+        version text NOT NULL,
+        ordinal bigint NOT NULL CHECK (ordinal >= 0),
+        relation_key text,
+        entity_key text,
+        source text,
+        row_id text,
+        payload_json text,
+        CHECK ((relation_key IS NULL) <> (entity_key IS NULL)),
+        PRIMARY KEY (resource, version, ordinal),
+        FOREIGN KEY (resource, version) REFERENCES {s}.resource_versions (resource, version) DEFERRABLE INITIALLY DEFERRED,
+        FOREIGN KEY (resource, version, relation_key)
+            REFERENCES {s}.relations (resource, version, relation_key) DEFERRABLE INITIALLY DEFERRED,
+        FOREIGN KEY (resource, version, entity_key)
+            REFERENCES {s}.entities (resource, version, entity_key) DEFERRABLE INITIALLY DEFERRED
+    """,
+}
+
+
+def create_schema(conn, schema: str) -> None:
+    """Create a fresh release schema inside the caller's transaction.
+
+    An existing schema is an error. Full resource rows remain authoritative;
+    canonical views choose deterministic display fields and consensus taxon
+    without modifying source records.
+    The caller validates generic annotation owners before loading.
+    """
+    namespace = sql.Identifier(schema)
+    with conn.cursor() as cur:
+        cur.execute(sql.SQL("CREATE SCHEMA {}").format(namespace))
+        for name, definition in _TABLES.items():
+            columns = sql.SQL(definition).format(s=namespace)
+            cur.execute(
+                sql.SQL("CREATE TABLE {}.{} ({})").format(namespace, sql.Identifier(name), columns)
+            )
+        cur.execute(
+            sql.SQL("""
+                CREATE UNIQUE INDEX annotations_owner_ordinal_idx
+                ON {}.annotations (
+                    resource, version, owner_kind, owner_key,
+                    COALESCE(evidence_ordinal, -1), ordinal
+                )
+            """).format(namespace)
+        )
+        cur.execute(
+            sql.SQL("""
+                CREATE VIEW {s}.entity AS
+                WITH chosen AS (
+                    SELECT DISTINCT ON (entity_key) *
+                    FROM {s}.entities
+                    ORDER BY entity_key, resource, version
+                ), resources AS (
+                    SELECT entity_key,
+                        CASE WHEN COUNT(DISTINCT taxon) = 1
+                            AND BOOL_AND(taxon IS NOT NULL AND BTRIM(taxon) <> '')
+                            THEN MIN(taxon) ELSE '' END AS taxon,
+                        jsonb_agg(jsonb_build_object(
+                            'resource', resource, 'version', version, 'record', record_json
+                        ) ORDER BY resource, version) AS resource_records
+                    FROM {s}.entities
+                    GROUP BY entity_key
+                )
+                SELECT c.entity_key AS entity_id, c.entity_key, c.entity_type,
+                    c.namespace, c.identifier, r.taxon, c.label, c.has_hierarchy,
+                    c.parent_count, c.child_count, r.resource_records
+                FROM chosen c
+                JOIN resources r USING (entity_key)
+            """).format(s=namespace)
+        )
+        cur.execute(
+            sql.SQL("""
+                CREATE VIEW {s}.relation AS
+                WITH chosen AS (
+                    SELECT DISTINCT ON (relation_key) *
+                    FROM {s}.relations
+                    ORDER BY relation_key, resource, version
+                ), resources AS (
+                    SELECT relation_key, SUM(COALESCE(evidence_count, 0))::bigint AS evidence_count,
+                        CASE WHEN COUNT(DISTINCT taxon) = 1
+                            AND BOOL_AND(taxon IS NOT NULL AND BTRIM(taxon) <> '')
+                            THEN MIN(taxon) ELSE '' END AS taxon,
+                        jsonb_agg(jsonb_build_object(
+                            'resource', resource, 'version', version, 'record', record_json
+                        ) ORDER BY resource, version) AS resource_records
+                    FROM {s}.relations
+                    GROUP BY relation_key
+                ), source_sets AS (
+                    SELECT relation_key, jsonb_agg(DISTINCT item ORDER BY item) AS sources
+                    FROM {s}.relations,
+                        LATERAL jsonb_array_elements(
+                            CASE WHEN jsonb_typeof(sources) = 'array' THEN sources ELSE '[]'::jsonb END
+                        ) AS items(item)
+                    GROUP BY relation_key
+                )
+                SELECT c.relation_key AS relation_id, c.relation_key, c.statement_kind,
+                    c.subject_entity_key AS subject_entity_id,
+                    c.object_entity_key AS object_entity_id,
+                    c.subject_entity_key, c.subject_label, c.subject_type, c.predicate,
+                    c.object_entity_key, c.object_label, c.object_type, r.taxon,
+                    c.is_directed, c.sign, c.category, c.interaction_class,
+                    COALESCE(ss.sources, '[]'::jsonb) AS sources,
+                    r.evidence_count, r.resource_records
+                FROM chosen c
+                JOIN resources r USING (relation_key)
+                LEFT JOIN source_sets ss USING (relation_key)
+            """).format(s=namespace)
+        )
