@@ -31,6 +31,50 @@ Keep entries factual and specific — numbers and log excerpts, not vibes.
 
 ---
 
+## 2026-09-30 — full resolved-Parquet release on nicesrv, attempt 4 (running)
+
+**Reason**: retry the unchanged full release after supplying narrow planner
+statistics before every source-owner check. The third attempt copied BindingDB
+correctly, then was cancelled during inefficient owner lookups and rolled back.
+The new regression shows that unanalysed resource/version index probes filter
+98,976 of 100,000 synthetic rows per 1,024-owner batch. After narrow ANALYZE,
+both custom and generic plans put all three scoped keys in the index condition.
+Cache warming affects timings; predicate placement is the primary evidence.
+
+**Parameters**: loader `15500f7`; native replay remains `300d06b`, pypath
+`e27d72e095f53b1a0fd76d63bbe059c10f8a48d8`. Unchanged private release
+`2026.9.30.4`, manifest SHA-256
+`06f55112b371055b9b539c27eb7886d403b0131098393d1bafe4723ce006c03e`;
+schema `full_20260930`; all 46 exact pins in `release.json`.
+Invocation: `uv run --frozen --no-sync python
+/root/projects/omnipath-migration/full-release-20260930/postgres-sql-build.py`.
+Same database/role `omnipath_migration`, localhost 5440, isolated PG16 container.
+Same one-thread / 512 MB DuckDB SQL → 16 MB CSV rotation threshold → 1 MiB
+PostgreSQL COPY byte blocks; raw batches 1024 dictionary indices / 64 plain rows.
+Process limits: 3 GiB RAM / 256 MiB swap / two CPUs; PG: 4 GiB/two CPUs;
+64 GiB disk reserve. Session work_mem16MB, maintenance128MB, parallel gather1,
+jit off. Unit: `omnipath-migration-full-postgres-sql-attempt4-20260930.service`.
+
+Each resource now gets scalar resource/version/key statistics for entities and
+relations before owner queries. Reaction resources sample their additional
+scalar join/filter columns in the same call. No preliminary wide-JSON sampling,
+query rewrite or change to integrity rules. Base, indexes, derivations and exact
+release metadata still share one transaction; all three products follow after
+base commit. A queued verifier then checks the complete release read-only and
+rebuilds products with private Parquets unavailable, rolling that rebuild back.
+
+**Phase durations**: pending in `postgres-build.json`/`.log`. The private
+monitor also records per-resource owner-statistics duration. The changed loader
+passed all 393 PostgreSQL/subset tests in 23.00 s; Ruff, diff checks and independent
+review passed. The separate 39-resource raw validation remains successful.
+
+**Outcome**: in progress. Expected base rows: 6,383,473 entities; 80,136,865
+identifiers; 18,339,902 relations; 22,887,251 evidence; 150,690,040 annotations.
+All 26,711,866 raw occurrences are validated and discarded. The seven uncapped
+native replays cover all 300,008 originally published source records; 39 other
+pins are reused. Existing private schemas and production remain protected.
+No production publication.
+
 ## 2026-09-30 — full resolved-Parquet release on nicesrv, attempt 3 (cancelled)
 
 **Reason**: run the complete fixed release through the restored DuckDB SQL
