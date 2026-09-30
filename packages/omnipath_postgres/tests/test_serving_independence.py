@@ -49,7 +49,6 @@ def database_snapshot(dsn, schema):
             "relations",
             "evidence",
             "annotations",
-            "payloads",
             "resource_versions",
             "release_metadata",
         ):

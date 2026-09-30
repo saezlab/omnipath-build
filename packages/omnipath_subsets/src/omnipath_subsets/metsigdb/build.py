@@ -14,6 +14,8 @@ from typing import Literal
 from psycopg import sql
 from psycopg.pq import TransactionStatus
 
+from omnipath_core.source_attributes import TRAIT_TYPE
+
 from .mapping import CHEMICAL_TYPES, KEGG_OVERVIEW_MAPS, RESOURCES, ResourceRule
 
 
@@ -206,10 +208,11 @@ JOIN complete_projection p ON p.entity_id = c.metabolite_entity_id
 LEFT JOIN {s}.entities via ON via.resource = %(source)s AND via.version = %(version)s
     AND via.entity_key = c.via_class
 LEFT JOIN LATERAL (
-    SELECT MIN(NULLIF(pl.payload_json::jsonb ->> 'Trait_Type', '')) AS value
-    FROM {s}.payloads pl
-    WHERE %(resource)s = 'MACdb' AND pl.resource = %(source)s AND pl.version = %(version)s
-        AND pl.entity_key = c.set_entity_id
+    SELECT MIN(NULLIF(a.value, '')) AS value
+    FROM {s}.annotations a
+    WHERE %(resource)s = 'MACdb' AND a.resource = %(source)s AND a.version = %(version)s
+        AND a.owner_kind = 'entity' AND a.owner_key = c.set_entity_id
+        AND a.term = %(trait_type_term)s
 ) subtype ON true
 """
 
@@ -222,6 +225,7 @@ def _params(rule: ResourceRule, versions: dict[str, str], build_id: str) -> dict
         forward.extend(("part_of", "member_of"))
         reverse.extend(("has_part", "has_member"))
     return dict(
+        trait_type_term=TRAIT_TYPE,
         resource=rule.name,
         source=rule.source,
         version=versions[rule.source],

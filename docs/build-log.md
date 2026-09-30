@@ -31,6 +31,52 @@ Keep entries factual and specific — numbers and log excerpts, not vibes.
 
 ---
 
+## 2026-09-30 — capped annotation migration on nicesrv (in progress)
+
+**Reason**: verify that all former PostgreSQL product payload readers can use
+published annotations, so raw source bodies can stay exclusively in Parquet.
+
+**Parameters**: build code `7ed2e63`, pypath `e27d72e09`; seven new private
+resource versions and private release `2026.9.30.3`. Exactly 20 original records
+per resource, 140 total. Sources: Rhea, Recon3D, MetAtlas/Human-GEM, KEGG,
+Reactome, MACdb and ConnectomeDB2025. Selected originals and input hashes live in
+`/root/projects/omnipath-migration/annotation-migration-20260930/inputs`.
+
+Native rebuild invocation, from the isolated migration checkout:
+
+```sh
+uv run --frozen --no-sync python scripts/annotation_migration_smoke.py \
+  --inputs /root/projects/omnipath-migration/annotation-migration-20260930/inputs \
+  --output-dir /root/projects/omnipath-migration/annotation-migration-20260930/data \
+  --library-dir /root/projects/full_parquet/data/reference/.library-compact-20260912 \
+  --version 2026.9.30.3
+```
+
+One preparation worker and DuckDB thread, 1 GiB resource RAM, batches at most
+20 records, 20 relations and 64 MiB. The selected iterator enforces a total
+20-record cap across datasets, beyond the pipeline's per-dataset cap. No source
+downloads or reference preparation. Native resolution used the existing immutable
+prototype reference. An initial launch with an incorrect `data/ref` path failed
+before creating output or consuming records; the verified `data/reference` path
+above succeeded.
+
+Database invocation is the private `postgres-check.py` in that state directory,
+using `uv run --frozen --no-sync python` from the isolated checkout. Loader
+`batch_size=64`, DuckDB one thread / 256 MiB, database/role `omnipath_migration`
+on localhost port 5440 in `omnipath-migration-postgres`. Fresh schema
+`annotation_sample_20260930`; existing pilot schema retained. No source deletion,
+preparse or canonicalization runs in the loader. Source bodies are streamed and
+validated, including exact SHA/type checks, then discarded.
+
+**Phase durations**: native resource builds: Rhea 5.66 s, Recon3D 3.20 s,
+MetAtlas 4.16 s, KEGG 4.63 s, Reactome 4.19 s, MACdb 3.01 s,
+ConnectomeDB2025 3.21 s. Database load/check timings will be recorded on completion.
+
+**Outcome**: all seven capped native builds passed strict manifest/schema/hash
+inspection. Database loading and Parquet-unavailable product rebuild checks are
+pending. These private capped versions must not replace full production artifacts.
+
+
 ## 2026-09-30 — nicesrv resolved-Parquet pilot, attempt 2
 
 **Reason**: repeat the identical pinned pilot after fixing statistics timing

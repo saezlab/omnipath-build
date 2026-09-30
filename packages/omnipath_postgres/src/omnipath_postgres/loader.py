@@ -13,10 +13,15 @@ from psycopg import sql
 from psycopg.types.json import Jsonb
 
 from omnipath_core.biolink import qualifiers
+from omnipath_core.source_attributes import (
+    SOURCE_RECORD_REFERENCE,
+    SOURCE_RECORD_SHA256_PREFIX,
+    SOURCE_RECORD_TYPE,
+)
 
 from .derived import rebuild_derived
 from .indexes import create_indexes
-from .projection import iter_resource_records
+from .projection import PayloadReference, iter_resource_records, iter_validated_payloads
 from .releases import PinnedRelease, load_release as read_release, verify_release
 from .schema import create_schema
 
@@ -92,16 +97,6 @@ COLUMNS = {
         "dataset",
         "scope",
     ),
-    "payloads": (
-        "resource",
-        "version",
-        "ordinal",
-        "relation_key",
-        "entity_key",
-        "source",
-        "row_id",
-        "payload_json",
-    ),
 }
 JSON_COLUMNS = frozenset({"record_json", "sources", "quantity"})
 
@@ -113,6 +108,7 @@ class LoadResult:
     manifest_sha256: str
     resources: dict[str, str]
     counts: dict[str, int]
+    validated_payload_rows: dict[str, int]
     phase_seconds: dict[str, float]
 
 
@@ -148,6 +144,113 @@ def _copy(conn, schema: str, table: str, rows: list[dict]) -> None:
                     else row[column]
                     for column in columns
                 )
+            )
+
+
+def _validate_payload_owners(
+    conn, schema: str, resource: str, version: str, references: list[PayloadReference]
+) -> None:
+    """Validate discarded payload owners without staging or storing source bodies."""
+    with conn.cursor() as cur:
+        for kind, table, key in (
+            ("entity", "entities", "entity_key"),
+            ("relation", "relations", "relation_key"),
+        ):
+            expected = {
+                reference.owner_key for reference in references if reference.owner_kind == kind
+            }
+            if not expected:
+                continue
+            cur.execute(
+                sql.SQL(
+                    "SELECT {} FROM {}.{} WHERE resource=%s AND version=%s AND {}=ANY(%s)"
+                ).format(
+                    sql.Identifier(key),
+                    sql.Identifier(schema),
+                    sql.Identifier(table),
+                    sql.Identifier(key),
+                ),
+                (resource, version, list(expected)),
+            )
+            absent = expected - {row[0] for row in cur.fetchall()}
+            if absent:
+                raise ValueError(
+                    f"Payload references an absent {kind} owner in {resource}@{version}: {min(absent)}"
+                )
+
+
+def _validate_reaction_payloads(
+    conn, schema: str, resource: str, version: str, references: list[PayloadReference]
+) -> None:
+    """Cross-check existing nonnull reaction bodies before discarding them.
+
+    Missing source rows remain allowed: published annotations support PG-only
+    derivation. Each existing matching source row must agree with every evidence
+    occurrence at its exact relation/source/row scope, including null values.
+    Hashes cover the original text, including whitespace, rather than reencoded
+    JSON. Only pointer, digest and shape metadata reach this parameterized query.
+    """
+    rows = [
+        (
+            reference.ordinal,
+            reference.owner_key,
+            reference.source,
+            reference.row_id,
+            SOURCE_RECORD_SHA256_PREFIX + reference.source_record_sha256,
+            reference.source_record_type,
+        )
+        for reference in references
+        if reference.owner_kind == "relation" and reference.source_record_sha256 is not None
+    ]
+    if not rows:
+        return
+    values = sql.SQL(",").join(
+        sql.SQL("(%s::bigint,%s::text,%s::text,%s::text,%s::text,%s::text)") for _ in rows
+    )
+    statement = sql.SQL("""
+        WITH payload(ordinal,relation_key,source,row_id,sha,shape) AS (VALUES {values})
+        SELECT p.ordinal,p.relation_key,e.ordinal,a.hashes,a.shapes,p.sha,p.shape
+        FROM payload p
+        JOIN {s}.relations r ON r.resource=%s AND r.version=%s AND r.relation_key=p.relation_key
+        JOIN {s}.entities subject ON subject.resource=r.resource AND subject.version=r.version
+            AND subject.entity_key=r.subject_entity_key
+        JOIN {s}.evidence e ON e.resource=r.resource AND e.version=r.version
+            AND e.relation_key=r.relation_key AND e.source IS NOT DISTINCT FROM p.source
+            AND e.row_id IS NOT DISTINCT FROM p.row_id
+        LEFT JOIN LATERAL (
+            SELECT array_agg(DISTINCT a.value ORDER BY a.value) FILTER (
+                    WHERE a.term={sha_term} AND starts_with(a.value,{sha_prefix})
+                ) AS hashes,
+                array_agg(DISTINCT a.value ORDER BY a.value) FILTER (
+                    WHERE a.term={type_term} AND a.value IS NOT NULL AND a.value<>''
+                ) AS shapes
+            FROM {s}.annotations a WHERE a.resource=e.resource AND a.version=e.version
+                AND a.owner_kind='evidence' AND a.owner_key=e.relation_key
+                AND COALESCE(a.evidence_ordinal,-1)=e.ordinal
+        ) a ON true
+        WHERE r.statement_kind='relation' AND subject.entity_type='molecular_activity'
+            AND r.predicate IN ('has_input','has_output','enabled_by')
+            AND (a.hashes IS DISTINCT FROM ARRAY[p.sha]
+                OR (a.shapes IS NOT NULL AND a.shapes IS DISTINCT FROM ARRAY[p.shape]))
+        LIMIT 1
+    """).format(
+        values=values,
+        s=sql.Identifier(schema),
+        sha_term=sql.Literal(SOURCE_RECORD_REFERENCE),
+        sha_prefix=sql.Literal(SOURCE_RECORD_SHA256_PREFIX),
+        type_term=sql.Literal(SOURCE_RECORD_TYPE),
+    )
+    with conn.cursor() as cur:
+        cur.execute(statement, (*[value for row in rows for value in row], resource, version))
+        if problem := cur.fetchone():
+            ordinal, relation_key, evidence_ordinal, hashes, shapes, digest, shape = problem
+            attribute = (
+                "source-record SHA reference" if hashes != [digest] else "source-record type"
+            )
+            raise ValueError(
+                f"Reaction {attribute} does not match payload {ordinal} in {resource}@{version} "
+                f"{relation_key} evidence {evidence_ordinal}; rebuild the resource with consistent "
+                "evidence source attributes"
             )
 
 
@@ -270,6 +373,7 @@ def load_release(
     release = read_release(data_root, manifest_path)
     timings["validate_files"] = perf_counter() - started
     counts = dict.fromkeys(COLUMNS, 0)
+    validated_payload_rows = {}
     with psycopg.connect(database_url, autocommit=True) as conn, conn.transaction():
         with conn.cursor() as cur:
             # Serialize competing attempts at the same destination, without touching other releases.
@@ -294,15 +398,45 @@ def load_release(
             for table, filename in (
                 ("entities", "entities.parquet"),
                 ("relations", "relations.parquet"),
-                ("payloads", "evidence_payloads.parquet"),
             ):
                 if counts[table] - before[table] != resource.files[filename].rows:
                     raise ValueError(
                         f"Projected row count differs from manifest: {resource.source}/{filename}"
                     )
-        for table, rows in buffers.items():
-            if rows:
-                _copy(conn, schema, table, rows)
+            # Owner validation sees all rows after COPY, before deferred FK checks.
+            for table, rows in buffers.items():
+                if rows:
+                    _copy(conn, schema, table, rows)
+                    rows.clear()
+            references = []
+            validated_count = 0
+            # Bound transient digest batches even when COPY uses larger batches.
+            payload_batch_size = min(batch_size, 1024)
+            for reference in iter_validated_payloads(
+                resource.directory, batch_size=payload_batch_size
+            ):
+                references.append(reference)
+                validated_count += 1
+                if len(references) >= payload_batch_size:
+                    _validate_payload_owners(
+                        conn, schema, resource.source, resource.version, references
+                    )
+                    _validate_reaction_payloads(
+                        conn, schema, resource.source, resource.version, references
+                    )
+                    references.clear()
+            if references:
+                _validate_payload_owners(
+                    conn, schema, resource.source, resource.version, references
+                )
+                _validate_reaction_payloads(
+                    conn, schema, resource.source, resource.version, references
+                )
+            if validated_count != resource.files["evidence_payloads.parquet"].rows:
+                raise ValueError(
+                    f"Validated row count differs from manifest: {resource.source}/evidence_payloads.parquet"
+                )
+            validated_payload_rows[resource.source] = validated_count
         # COPY into new tables does not provide column statistics. Collect them
         # before integrity joins and derivations, which run before autovacuum can
         # see this transaction's rows. Wide reaction joins especially need them.
@@ -339,5 +473,6 @@ def load_release(
         release.sha256,
         {resource.source: resource.version for resource in release.resources},
         counts,
+        validated_payload_rows,
         {name: round(seconds, 6) for name, seconds in timings.items()},
     )

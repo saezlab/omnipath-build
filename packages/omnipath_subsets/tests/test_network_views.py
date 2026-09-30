@@ -1,7 +1,6 @@
 """Supported network recipes retain source evidence and report semantic gaps."""
 
 from copy import deepcopy
-import json
 import uuid
 
 import psycopg
@@ -11,7 +10,16 @@ import pytest
 from omnipath_postgres.loader import load_release
 from omnipath_subsets import network_views
 from omnipath_subsets.network_views._query import _binary_record, _explicit_roles, _transports
-from release_fixture import annotation, entity, payload, relation, write_release, write_resource
+from omnipath_core.source_attributes import PARTICIPANT_ROLE
+from release_fixture import (
+    annotation,
+    entity,
+    payload,
+    relation,
+    source_context_annotations,
+    write_release,
+    write_resource,
+)
 
 
 def test_mechanism_selection_keeps_quantities_duplicates_and_qualifiers():
@@ -39,52 +47,51 @@ def test_mechanism_selection_keeps_quantities_duplicates_and_qualifiers():
         dataset="mechanisms",
         annotations=[qualified, measurement],
     )
-    row["evidence"].append(deepcopy(row["evidence"][0]))
     row["evidence"].append(
         dict(source="assay-only", dataset="activities", row_id="2", upstream_id="a", annotations=[])
     )
+    row["evidence"].append(deepcopy(row["evidence"][0]))
     row["evidence_count"] = 3
     row["sources"].append("assay-only")
-    items = [
-        dict(ordinal=i, source=source, row_id=row_id, payload_json="{}")
-        for i, (source, row_id) in enumerate((("chembl", "1"), ("assay-only", "2")))
-    ]
     result = _binary_record(
-        ("chembl", "1.0.0", row["relation_key"], row, chemical, target, items), "metalinksdb"
+        ("chembl", "1.0.0", row["relation_key"], row, chemical, target, []), "metalinksdb"
     )
     assert result["statement"]["evidence_count"] == 2
     assert result["statement"]["evidence"][0] == result["statement"]["evidence"][1]
     assert result["statement"]["sources"] == ["chembl"]
     assert result["statement"]["annotations"] == [qualified, measurement]
     assert result["statement"]["annotations"][1]["quantity"] == quantity
-    assert [item["ordinal"] for item in result["payloads"]] == [0]
+    assert result["evidence_ordinals"] == [0, 2]
+    assert "payloads" not in result
     assert row["evidence_count"] == 3  # Adapter selection does not mutate the publication.
 
 
-def test_liana_orientation_requires_explicit_unambiguous_payload_ids():
+def test_liana_orientation_requires_complete_unambiguous_roles_per_evidence():
     ligand = entity("P1", "protein", "uniprot", aliases=[("genesymbol", "LIG"), ("hgnc", "1")])
     receptor = entity("P2", "protein", "uniprot", aliases=[("genesymbol", "REC"), ("hgnc", "2")])
-    raw = dict(
-        ordinal=0,
-        payload_json=json.dumps({"Ligand Symbols": "LIG (alias)", "Receptor Species ID": "HGNC:2"}),
-    )
-    roles = _explicit_roles(receptor, ligand, [raw])
+    roles_data = [
+        dict(evidence_ordinal=0, scope="subject", value="receptor"),
+        dict(evidence_ordinal=0, scope="object", value="ligand"),
+    ]
+    roles = _explicit_roles(receptor, ligand, roles_data)
     assert roles == {
         "ligand_entity_id": ligand["entity_key"],
         "receptor_entity_id": receptor["entity_key"],
-        "payload_ordinals": [0],
+        "evidence_ordinals": [0],
     }
     assert _explicit_roles(ligand, receptor, []) is None
-    assert (
-        _explicit_roles(
-            ligand, receptor, [dict(ordinal=0, payload_json='{"Ligand Symbols":"LIG"}')]
-        )
-        is None
-    )
-    opposite = dict(
-        ordinal=1, payload_json=json.dumps({"Ligand Symbols": "REC", "Receptor Symbols": "LIG"})
-    )
-    assert _explicit_roles(ligand, receptor, [raw, opposite]) is None
+    assert _explicit_roles(ligand, receptor, roles_data[:1]) is None
+    # Complementary annotations in different evidence rows never form a pair.
+    split = [roles_data[0], dict(roles_data[1], evidence_ordinal=1)]
+    assert _explicit_roles(receptor, ligand, split) is None
+    opposite = [
+        dict(evidence_ordinal=1, scope="subject", value="ligand"),
+        dict(evidence_ordinal=1, scope="object", value="receptor"),
+    ]
+    assert _explicit_roles(receptor, ligand, [*roles_data, *opposite]) is None
+    ambiguous = [*roles_data, dict(evidence_ordinal=0, scope="subject", value="ligand")]
+    assert _explicit_roles(receptor, ligand, ambiguous) is None
+    assert _explicit_roles(receptor, ligand, roles_data * 2) == roles
 
 
 def test_transport_requires_explicit_catalysis_and_two_known_compartments():
@@ -139,7 +146,17 @@ def test_transport_requires_explicit_catalysis_and_two_known_compartments():
 def test_registry_and_liana_query_preserve_statement_scope_and_transaction(tmp_path, postgres_dsn):
     a = entity("P1", "protein", "uniprot", taxon="9606", aliases=[("genesymbol", "LIG")])
     b = entity("P2", "protein", "uniprot", taxon="9606", aliases=[("genesymbol", "REC")])
-    first = relation(b, "interacts_with", a, source="connectomedb2025", row_id="1")
+    first = relation(
+        b,
+        "interacts_with",
+        a,
+        source="connectomedb2025",
+        row_id="1",
+        annotations=[
+            annotation(PARTICIPANT_ROLE, "receptor", scope="subject", source="connectomedb2025"),
+            annotation(PARTICIPANT_ROLE, "ligand", scope="object", source="connectomedb2025"),
+        ],
+    )
     second = relation(a, "affects", b, source="connectomedb2025", row_id="2")
     raw = {"Ligand Symbols": "LIG", "Receptor Symbols": "REC"}
     write_resource(
@@ -153,6 +170,8 @@ def test_registry_and_liana_query_preserve_statement_scope_and_transaction(tmp_p
     load_release(
         tmp_path, write_release(tmp_path, ["connectomedb2025"]), postgres_dsn, schema=schema
     )
+    # Neither the product adapter nor queries can read any published artifacts.
+    (tmp_path / "resources").rename(tmp_path / "unavailable_resources")
     with psycopg.connect(postgres_dsn) as conn:
         stats = network_views.rebuild(conn, schema)
         assert stats["registered"] == ["metalinksdb", "liana", "reactions"]
@@ -165,6 +184,9 @@ def test_registry_and_liana_query_preserve_statement_scope_and_transaction(tmp_p
         assert source_record["statement"] == first
         assert source_record["roles"]["ligand_entity_id"] == a["entity_key"]
         assert source_record["roles"]["receptor_entity_id"] == b["entity_key"]
+        assert source_record["roles"]["evidence_ordinals"] == [0]
+        assert "payloads" not in source_record
+        assert conn.execute("SELECT to_regclass(%s)", (schema + ".payloads",)).fetchone() == (None,)
         assert result["limitations"]
         assert network_views.query(conn, schema, "liana", organism="10090")["records"] == []
         columns = conn.execute(
@@ -182,6 +204,56 @@ def test_registry_and_liana_query_preserve_statement_scope_and_transaction(tmp_p
         assert conn.execute(
             "SELECT to_regclass(%s)", (schema + ".network_registry",)
         ).fetchone() == (None,)
+
+
+@pytest.mark.integration
+def test_liana_roles_ignore_global_annotations_and_never_pool_evidence(tmp_path, postgres_dsn):
+    source = "connectomedb2025"
+    ligand = entity(
+        "P1", "protein", "uniprot", annotations=[annotation(PARTICIPANT_ROLE, "ligand")]
+    )
+    receptor = entity(
+        "P2", "protein", "uniprot", annotations=[annotation(PARTICIPANT_ROLE, "receptor")]
+    )
+    roles = [
+        annotation(PARTICIPANT_ROLE, "ligand", scope="subject", source=source),
+        annotation(PARTICIPANT_ROLE, "receptor", scope="object", source=source),
+    ]
+    statements = []
+    for row_id, aspect in enumerate(("activity", "abundance", "activity_or_abundance"), 1):
+        item = relation(
+            ligand,
+            "interacts_with",
+            receptor,
+            source=source,
+            row_id=str(row_id),
+            annotations=[annotation("object_aspect_qualifier", aspect), *roles],
+        )
+        statements.append(item)
+    # Relation-level and global entity annotations are not evidence of a role pair.
+    statements[0]["evidence"][0]["annotations"] = []
+    # Two incomplete occurrences cannot complement each other.
+    statements[1]["evidence"][0]["annotations"] = roles[:1]
+    partial = deepcopy(statements[1]["evidence"][0])
+    partial.update(row_id="4", annotations=roles[1:])
+    statements[1]["evidence"].append(partial)
+    statements[1]["evidence_count"] = 2
+    # Two complete but opposing occurrences are ambiguous.
+    opposite = deepcopy(statements[2]["evidence"][0])
+    opposite.update(
+        row_id="5", annotations=[dict(roles[0], value="receptor"), dict(roles[1], value="ligand")]
+    )
+    statements[2]["evidence"].append(opposite)
+    statements[2]["evidence_count"] = 2
+    write_resource(tmp_path, source, [ligand, receptor], statements)
+    schema = "network_" + uuid.uuid4().hex
+    load_release(tmp_path, write_release(tmp_path, [source]), postgres_dsn, schema=schema)
+    (tmp_path / "resources").rename(tmp_path / "unavailable_resources")
+    with psycopg.connect(postgres_dsn) as conn:
+        records = list(network_views.iter_records(conn, schema, "liana"))
+        assert len(records) == 3
+        assert all(record["roles"] is None for record in records)
+        assert all("payloads" not in record for record in records)
 
 
 @pytest.mark.integration
@@ -266,6 +338,12 @@ def test_reactions_query_and_transport_respect_each_source_context(tmp_path, pos
                 dataset="reactions",
                 row_id=row_id,
                 upstream_id=f"{row_id}:member:{ordinal}",
+                annotations=source_context_annotations(
+                    raw,
+                    source="metatlas",
+                    dataset="reactions",
+                    compartment="c" if ordinal == 0 else "e" if ordinal == 1 else None,
+                ),
             )
             previous = next(
                 (record for record in statements if record["relation_key"] == item["relation_key"]),
@@ -280,11 +358,13 @@ def test_reactions_query_and_transport_respect_each_source_context(tmp_path, pos
     write_resource(tmp_path, "metatlas", [cargo, enzyme, gene, event], statements, payloads)
     schema = "network_" + uuid.uuid4().hex
     load_release(tmp_path, write_release(tmp_path, ["metatlas"]), postgres_dsn, schema=schema)
+    (tmp_path / "resources").rename(tmp_path / "unavailable_resources")
     with psycopg.connect(postgres_dsn) as conn:
         rebuild_reactions(conn, schema)
         network_views.rebuild(conn, schema)
         reactions = network_views.query(conn, schema, "reactions")
         assert reactions["source_records"] == 2
+        assert all("payload_json" not in record["context"] for record in reactions["records"])
         assert {record["context"]["row_id"] for record in reactions["records"]} == {
             "reactions:1",
             "reactions:2",

@@ -120,23 +120,6 @@ _TABLES = {
         ),
         FOREIGN KEY (resource, version) REFERENCES {s}.resource_versions (resource, version) DEFERRABLE INITIALLY DEFERRED
     """,
-    "payloads": """
-        resource text NOT NULL,
-        version text NOT NULL,
-        ordinal bigint NOT NULL CHECK (ordinal >= 0),
-        relation_key text,
-        entity_key text,
-        source text,
-        row_id text,
-        payload_json text,
-        CHECK ((relation_key IS NULL) <> (entity_key IS NULL)),
-        PRIMARY KEY (resource, version, ordinal),
-        FOREIGN KEY (resource, version) REFERENCES {s}.resource_versions (resource, version) DEFERRABLE INITIALLY DEFERRED,
-        FOREIGN KEY (resource, version, relation_key)
-            REFERENCES {s}.relations (resource, version, relation_key) DEFERRABLE INITIALLY DEFERRED,
-        FOREIGN KEY (resource, version, entity_key)
-            REFERENCES {s}.entities (resource, version, entity_key) DEFERRABLE INITIALLY DEFERRED
-    """,
 }
 
 

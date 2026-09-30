@@ -11,7 +11,16 @@ import pytest
 from omnipath_postgres import loader
 from omnipath_subsets.metsigdb import rebuild
 from omnipath_subsets.metsigdb.mapping import RESOURCES, KEGG_OVERVIEW_MAPS
-from release_fixture import entity, payload, relation, write_release, write_resource
+from omnipath_core.source_attributes import TRAIT_TYPE
+from release_fixture import (
+    annotation,
+    entity,
+    payload,
+    relation,
+    source_context_annotations,
+    write_release,
+    write_resource,
+)
 
 
 def test_five_existing_products_and_native_identifier_domains():
@@ -66,7 +75,16 @@ def metsig_release(tmp_path, postgres_dsn):
     wiki = entity("WP1", "pathway", "wikipathways", label="Mouse pathway", taxon="NCBITaxon:10090")
     overview = entity("rn01100", "pathway", "kegg_pathway", label="Overview")
     reaction_entity = entity("R00001", "molecular_activity", "kegg_reaction", label="Reaction")
-    trait = entity("1", "ontology_class", "macdb_trait", label="Trait label")
+    trait = entity(
+        "1",
+        "ontology_class",
+        "macdb_trait",
+        label="Trait label",
+        annotations=[
+            annotation(TRAIT_TYPE, value, source="macdb")
+            for value in (None, "", "cancer", "z-other")
+        ],
+    )
     leaf = entity("CHEMONT:0002", "ontology_class", "chemont")
     root = entity("CHEMONT:0001", "ontology_class", "chemont", label="Superclass")
     part_only = entity("CHEMONT:0003", "ontology_class", "chemont", label="Not a superclass")
@@ -110,8 +128,22 @@ def metsig_release(tmp_path, postgres_dsn):
         [chemical, fallback, protein, overview, reaction_entity],
         [
             relation(overview, "has_part", reaction_entity, source="kegg", row_id="1"),
-            relation(reaction_entity, "has_input", chemical, source="kegg", row_id="2"),
-            relation(reaction_entity, "has_output", fallback, source="kegg", row_id="3"),
+            relation(
+                reaction_entity,
+                "has_input",
+                chemical,
+                source="kegg",
+                row_id="2",
+                annotations=source_context_annotations({}, source="kegg"),
+            ),
+            relation(
+                reaction_entity,
+                "has_output",
+                fallback,
+                source="kegg",
+                row_id="3",
+                annotations=source_context_annotations({}, source="kegg"),
+            ),
             relation(reaction_entity, "has_participant", protein, source="kegg", row_id="4"),
         ],
     )
@@ -122,10 +154,17 @@ def metsig_release(tmp_path, postgres_dsn):
         "macdb",
         [chemical, fallback, trait, collision],
         [
-            relation(chemical, "associated_with", trait, source="macdb", row_id="1"),
+            relation(
+                chemical,
+                "associated_with",
+                trait,
+                source="macdb",
+                row_id="1",
+                annotations=[annotation(TRAIT_TYPE, "a-relation-only", source="macdb")],
+            ),
             relation(trait, "associated_with", fallback, source="macdb", row_id="2"),
         ],
-        [payload(trait, {"Trait_Type": "cancer"}, source="macdb")],
+        [payload(trait, {"Trait_Type": "raw value must not be used"}, source="macdb")],
     )
     write_resource(
         tmp_path,
@@ -155,6 +194,7 @@ def metsig_release(tmp_path, postgres_dsn):
     loaded = loader.load_release(
         tmp_path, write_release(tmp_path, sources), postgres_dsn, schema=schema
     )
+    (tmp_path / "resources").rename(tmp_path / "unavailable_resources")
     return dict(
         dsn=postgres_dsn,
         schema=schema,

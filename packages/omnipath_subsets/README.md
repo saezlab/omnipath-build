@@ -54,10 +54,15 @@ contributors may span pages. `iter_records` streams complete source records.
 
 Distinct qualified statements remain distinct. The legacy endpoint collapse
 and custom interaction classes are not fully reproduced. LIANA orientation
-requires explicit ligand/receptor identifiers in preserved ConnectomeDB payloads;
-missing or ambiguous roles are reported. ChEMBL selection uses mechanism evidence.
+requires explicit subject/object role annotations within one published
+ConnectomeDB evidence occurrence; missing or contradictory roles are reported.
+The adapter never combines partial roles from different evidence. ChEMBL
+selection uses mechanism evidence.
 Transport projection requires an explicit catalyst and the same chemical in
 different verified compartments. Results report missing inputs and limitations.
+Network outputs retain compiled statements, selected evidence, measurements and
+qualifiers. They omit raw records. `evidence_ordinals` identify the original
+published occurrences, including LIANA role support and ChEMBL mechanism selection.
 
 ## COSMOS
 
@@ -73,8 +78,9 @@ Unknown direction stays unknown and does not create a reverse half.
 Reaction indexes enumerate separate source events. Unlike the legacy
 participant-multiset merge, evidence from different source rows is not pooled
 into one pseudo-node. Shared `reaction_context` and `reaction_participant`
-tables retain source versions, exact raw payload text, coefficient annotations,
-compartment checks and diagnostics.
+tables retain source versions, coefficient annotations, published member
+compartments and diagnostics. Source SHA-256 values retain
+record identity without storing the original raw records in PostgreSQL.
 
 ## Validation scope
 

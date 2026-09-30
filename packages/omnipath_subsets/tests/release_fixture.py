@@ -8,6 +8,13 @@ import pyarrow.parquet as pq
 
 from omnipath_core.keys import entity_key, relation_key
 from omnipath_core.schema import ENTITY_SCHEMA, RELATION_SCHEMA, PAYLOAD_SCHEMA
+from omnipath_core.source_attributes import (
+    CELLULAR_LOCATION,
+    CONVERSION_DIRECTION,
+    SOURCE_RECORD_REFERENCE,
+    SOURCE_RECORD_SHA256_PREFIX,
+    SOURCE_RECORD_TYPE,
+)
 
 
 def annotation(
@@ -16,6 +23,37 @@ def annotation(
     return dict(
         term=term, value=value, quantity=quantity, source=source, dataset=dataset, scope=scope
     )
+
+
+def source_context_annotations(raw, *, source="fixture", dataset="fixture", compartment=None):
+    """Publish mapper/build context without needing raw records after the load."""
+    result = [
+        annotation(
+            SOURCE_RECORD_REFERENCE,
+            SOURCE_RECORD_SHA256_PREFIX + hashlib.sha256(json.dumps(raw).encode()).hexdigest(),
+            source=source,
+            dataset=dataset,
+        ),
+        annotation(
+            SOURCE_RECORD_TYPE,
+            "object" if isinstance(raw, dict) else "array" if isinstance(raw, list) else "scalar",
+            source=source,
+            dataset=dataset,
+        ),
+    ]
+    if isinstance(raw, dict):
+        for field in ("direction", "conversion_direction"):
+            if raw.get(field) is not None:
+                result.append(
+                    annotation(CONVERSION_DIRECTION, raw[field], source=source, dataset=dataset)
+                )
+    if compartment is not None:
+        result.append(
+            annotation(
+                CELLULAR_LOCATION, compartment, source=source, dataset=dataset, scope="object"
+            )
+        )
+    return result
 
 
 def entity(

@@ -7,9 +7,18 @@ from psycopg import sql
 import pytest
 
 from omnipath_postgres import loader
-from omnipath_postgres.reactions import direction_context, participant_context, rebuild_reactions
+from omnipath_postgres.reactions import rebuild_reactions
 from omnipath_subsets.cosmos import project_context, published_label, rebuild
-from release_fixture import annotation, entity, payload, relation, write_release, write_resource
+from omnipath_core.source_attributes import SOURCE_RECORD_REFERENCE, SOURCE_RECORD_SHA256_PREFIX
+from release_fixture import (
+    annotation,
+    entity,
+    payload,
+    relation,
+    source_context_annotations,
+    write_release,
+    write_resource,
+)
 
 
 def party(key="chem", role="reactant", compartment="c", **kwargs):
@@ -104,57 +113,6 @@ def test_alias_projection_only_uses_unambiguous_published_identifiers():
     )
 
 
-def test_direction_preserves_silence_and_diagnostics():
-    assert direction_context({}, "rhea") == (None, None, [])
-    assert direction_context({"direction": "REVERSIBLE"}, "recon3d") == (
-        "reversible",
-        "REVERSIBLE",
-        [],
-    )
-    assert direction_context({"conversion_direction": "RIGHT-TO-LEFT"}, "kegg") == (
-        "left_to_right",
-        "RIGHT-TO-LEFT",
-        ["kegg_inputs_already_oriented_right_to_left"],
-    )
-    result = direction_context(
-        {"direction": "REVERSIBLE", "conversion_direction": "LEFT-TO-RIGHT"}, "fixture"
-    )
-    assert result[0] is None and "contradictory_direction_assertions" in result[2]
-    result = direction_context({"direction": "UNKNOWN"}, "fixture")
-    assert (
-        result[0] is None
-        and result[1] == "UNKNOWN"
-        and result[2] == ["unsupported_direction_assertion"]
-    )
-
-
-def test_compartments_require_matching_source_alias_and_member_ordinal():
-    quantity = dict(has_numeric_value=2.5, has_unit="UO:0000000", source_field="coefficient")
-    coefficient = annotation("stoichiometry", "2.5", quantity=quantity)
-    row = dict(
-        resource="recon3d",
-        row_id="rows:1",
-        upstream_id="rows:1:member:1",
-        predicate="has_output",
-        evidence_record=dict(annotations=[coefficient]),
-        participant_record=dict(
-            identifier="resolved", identifiers=[dict(ns="bigg_metabolite", id="x")]
-        ),
-    )
-    raw = dict(reactants="x:c:1", products="x:e:2.5")
-    result = participant_context(row, raw)
-    assert result["compartment"] == "e" and result["raw_stoichiometry"] == "2.5"
-    assert result["stoichiometry"] == {"annotations": [coefficient]}
-    wrong = participant_context(dict(row, upstream_id="rows:1:member:0"), raw)
-    assert wrong["compartment"] is None and wrong["context_status"] == "unverified_member_ordinal"
-    unmapped = participant_context(
-        dict(row, participant_record=dict(identifier="unknown", identifiers=[])), raw
-    )
-    assert unmapped["compartment"] is None
-    no_ordinal = participant_context(dict(row, upstream_id="foreign-id"), raw)
-    assert no_ordinal["compartment"] is None
-
-
 def fixture(root):
     molecule = entity("123", aliases=[("bigg_metabolite", "x")])
     catalyst = entity("P12345", "protein", "uniprot")
@@ -186,9 +144,19 @@ def fixture(root):
                 dataset="reactions",
                 row_id=row_id,
                 upstream_id=f"{row_id}:member:{ordinal}",
-                annotations=[annotation("stoichiometry", str(ordinal + 1), source="recon3d")]
-                if ordinal < 2
-                else [],
+                annotations=[
+                    *source_context_annotations(
+                        raw,
+                        source="recon3d",
+                        dataset="reactions",
+                        compartment=compartment if ordinal == 0 else "e" if ordinal == 1 else None,
+                    ),
+                    *(
+                        [annotation("stoichiometry", str(ordinal + 1), source="recon3d")]
+                        if ordinal < 2
+                        else []
+                    ),
+                ],
             )
             duplicate = next(
                 (
@@ -213,6 +181,7 @@ def test_rebuild_preserves_event_scopes_unknown_enzymes_and_transaction(tmp_path
     manifest, event, molecule, catalyst, gene = fixture(tmp_path)
     schema = "cosmos_" + uuid.uuid4().hex
     loader.load_release(tmp_path, manifest, postgres_dsn, schema=schema)
+    (tmp_path / "resources").rename(tmp_path / "unavailable_resources")
     namespace = sql.Identifier(schema)
     with psycopg.connect(postgres_dsn) as conn:
         stats = rebuild_reactions(conn, schema)
@@ -287,31 +256,8 @@ def test_rebuild_preserves_event_scopes_unknown_enzymes_and_transaction(tmp_path
         )
 
 
-def test_rhea_context_never_matches_a_numeric_identifier_from_another_namespace():
-    raw = dict(
-        participant_role="reactant||product",
-        participant_chebi="CHEBI:123||CHEBI:123",
-        participant_compartment="in||out",
-    )
-    row = dict(
-        resource="rhea",
-        row_id="reactions:1",
-        upstream_id="reactions:1:member:1",
-        predicate="has_output",
-        evidence_record=dict(annotations=[]),
-        participant_record=dict(namespace="pubchem", identifier="123", identifiers=[]),
-    )
-    assert participant_context(row, raw)["compartment"] is None
-    row["participant_record"]["identifiers"] = [dict(ns="chebi", id="123")]
-    assert participant_context(row, raw)["compartment"] == "out"
-    row["resource"] = "metatlas"
-    row["participant_record"]["identifiers"] = [dict(ns="human_gem_metabolite", id="MAM001")]
-    raw = dict(reactants="MAM001:c:1", products="MAM001:e:2")
-    assert participant_context(row, raw)["compartment"] == "e"
-
-
 @pytest.mark.integration
-def test_alias_ambiguity_raw_payload_and_ontology_membership_gate(tmp_path, postgres_dsn):
+def test_alias_ambiguity_annotation_context_and_ontology_membership_gate(tmp_path, postgres_dsn):
     source = "rhea"
     first = entity("AAAA", "small_molecule", "inchikey", aliases=[("chebi", "42")])
     second = entity("BBBB", "small_molecule", "inchikey", aliases=[("chebi", "42")])
@@ -340,7 +286,14 @@ def test_alias_ambiguity_raw_payload_and_ontology_membership_gate(tmp_path, post
             source=source,
             row_id="reactions:1",
             upstream_id="reactions:1:member:0",
-            annotations=[annotation_value],
+            annotations=[
+                annotation_value,
+                *source_context_annotations(
+                    raw,
+                    source=source,
+                    compartment="c",
+                ),
+            ],
         ),
         relation(
             event,
@@ -349,6 +302,7 @@ def test_alias_ambiguity_raw_payload_and_ontology_membership_gate(tmp_path, post
             source=source,
             row_id="reactions:1",
             upstream_id="reactions:1:member:1",
+            annotations=source_context_annotations(raw, source=source, compartment="c"),
         ),
         relation(
             event,
@@ -357,6 +311,7 @@ def test_alias_ambiguity_raw_payload_and_ontology_membership_gate(tmp_path, post
             source=source,
             row_id="reactions:1",
             upstream_id="reactions:1:member:2",
+            annotations=source_context_annotations(raw, source=source, compartment="e"),
         ),
     ]
     ontology = relation(
@@ -370,6 +325,7 @@ def test_alias_ambiguity_raw_payload_and_ontology_membership_gate(tmp_path, post
     loaded = loader.load_release(
         tmp_path, write_release(tmp_path, [source]), postgres_dsn, schema=schema
     )
+    (tmp_path / "resources").rename(tmp_path / "unavailable_resources")
     namespace = sql.Identifier(schema)
     with psycopg.connect(postgres_dsn) as conn:
         assert rebuild_reactions(conn, schema)["participants"] == 3
@@ -381,11 +337,15 @@ def test_alias_ambiguity_raw_payload_and_ontology_membership_gate(tmp_path, post
         assert stored == {"annotations": [annotation_value]}
         context_row = conn.execute(
             sql.SQL(
-                "SELECT direction,raw_direction,diagnostics,payload_json FROM {}.reaction_context"
+                "SELECT direction,raw_direction,diagnostics,source_record_sha256 FROM {}.reaction_context"
             ).format(namespace)
         ).fetchone()
         assert context_row[:3] == (None, "UNKNOWN", ["unsupported_direction_assertion"])
-        assert context_row[3] == raw_payloads[0]["payload_json"]
+        expected_hash = source_context_annotations(raw)[0]["value"].removeprefix(
+            SOURCE_RECORD_SHA256_PREFIX
+        )
+        assert context_row[3] == expected_hash
+        assert conn.execute("SELECT to_regclass(%s)", (schema + ".payloads",)).fetchone() == (None,)
         stats = rebuild(conn, schema)
         assert stats["build_id"] == loaded.manifest_sha256
         assert stats["release_id"] == "2026.09"
@@ -415,8 +375,22 @@ def test_missing_row_ids_are_not_combined_and_unapproved_sources_stay_out(tmp_pa
     product = entity("43")
     event = entity("RX3", "molecular_activity", "reactome")
     relations = [
-        relation(event, "has_input", molecule, source=source, row_id=None),
-        relation(event, "has_output", product, source=source, row_id=None),
+        relation(
+            event,
+            "has_input",
+            molecule,
+            source=source,
+            row_id=None,
+            annotations=source_context_annotations({}, source=source),
+        ),
+        relation(
+            event,
+            "has_output",
+            product,
+            source=source,
+            row_id=None,
+            annotations=source_context_annotations({}, source=source),
+        ),
     ]
     write_resource(tmp_path, source, [molecule, product, event], relations)
     schema = "cosmos_" + uuid.uuid4().hex
@@ -428,7 +402,7 @@ def test_missing_row_ids_are_not_combined_and_unapproved_sources_stay_out(tmp_pa
 
 
 @pytest.mark.integration
-def test_conflicting_source_payloads_fail_atomically(tmp_path, postgres_dsn):
+def test_conflicting_source_record_hashes_fail_atomically(tmp_path, postgres_dsn):
     manifest, *_ = fixture(tmp_path)
     schema = "cosmos_" + uuid.uuid4().hex
     loader.load_release(tmp_path, manifest, postgres_dsn, schema=schema)
@@ -440,12 +414,13 @@ def test_conflicting_source_payloads_fail_atomically(tmp_path, postgres_dsn):
         expected = conn.execute(
             sql.SQL("SELECT COUNT(*) FROM {}.reaction_context").format(namespace)
         ).fetchone()
-        with pytest.raises(ValueError, match="Conflicting payloads"):
+        with pytest.raises(ValueError, match="Conflicting source record"):
             with conn.transaction():
                 conn.execute(
-                    sql.SQL("UPDATE {}.payloads SET payload_json='{{}}' WHERE ordinal=0").format(
-                        namespace
-                    )
+                    sql.SQL("""UPDATE {s}.annotations SET value=%s
+                        WHERE annotation_id=(SELECT MIN(annotation_id) FROM {s}.annotations
+                            WHERE owner_kind='evidence' AND term=%s)""").format(s=namespace),
+                    (SOURCE_RECORD_SHA256_PREFIX + "0" * 64, SOURCE_RECORD_REFERENCE),
                 )
                 rebuild_reactions(conn, schema)
         assert (

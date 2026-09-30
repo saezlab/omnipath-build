@@ -1,6 +1,6 @@
 """Query supported network recipes without inventing biological classifications.
 
-Binary collapse uses the published statement key. Full source records, qualifiers,
+Binary collapse uses the published statement key. Published records, qualifiers,
 measurements and selected evidence occurrences travel with each result. Reaction
 transport is a separate derived assertion with its supporting statements attached.
 """
@@ -9,12 +9,12 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from copy import deepcopy
-import json
-import re
 from typing import Any
 import uuid
 
 from psycopg import sql
+
+from omnipath_core.source_attributes import PARTICIPANT_ROLE
 
 from ._definitions import NETWORKS
 
@@ -29,7 +29,7 @@ LIMITATIONS = {
     ],
     "liana": [
         "The current Biolink records do not publish a ligand_receptor biological class; the adapter selects ConnectomeDB2025 interacts_with assertions.",
-        "Ligand/receptor orientation is reported only when explicit payload identifiers match both endpoints unambiguously; other pairs retain published endpoint order.",
+        "Ligand/receptor orientation requires explicit endpoint role annotations within one evidence occurrence; missing or contradictory roles retain published endpoint order.",
         "Binary collapse retains published statement keys instead of merging by endpoints.",
     ],
     "reactions": [],
@@ -91,11 +91,12 @@ def _binary_rows(conn, schema: str, name: str, organism: str | None):
         SELECT r.resource, r.version, r.relation_key, r.record_json,
                subject.record_json, object.record_json,
                COALESCE((SELECT jsonb_agg(jsonb_build_object(
-                   'ordinal', p.ordinal, 'source', p.source,
-                   'row_id', p.row_id, 'payload_json', p.payload_json
-               ) ORDER BY p.ordinal) FROM {s}.payloads p
-                 WHERE (p.resource, p.version, p.relation_key) =
-                       (r.resource, r.version, r.relation_key)), '[]'::jsonb)
+                   'evidence_ordinal', a.evidence_ordinal,
+                   'scope', a.scope, 'value', a.value
+               ) ORDER BY a.evidence_ordinal, a.ordinal) FROM {s}.annotations a
+                 WHERE (a.resource, a.version, a.owner_key) =
+                       (r.resource, r.version, r.relation_key)
+                   AND a.owner_kind = 'evidence' AND a.term = %s), '[]'::jsonb)
         FROM {s}.relations r
         JOIN {s}.entities subject ON (subject.resource, subject.version, subject.entity_key) =
                                     (r.resource, r.version, r.subject_entity_key)
@@ -105,70 +106,47 @@ def _binary_rows(conn, schema: str, name: str, organism: str | None):
           AND (%s::text IS NULL OR r.taxon = %s OR subject.taxon = %s OR object.taxon = %s)
         ORDER BY r.relation_key, r.resource, r.version
     """).format(s=sql.Identifier(schema), scope=scope)
-    params.extend([organism] * 4)
+    params = [PARTICIPANT_ROLE, *params, *([organism] * 4)]
     yield from _row_stream(conn, statement, params)
 
 
-def _alias_key(namespace: str, identifier: Any) -> tuple[str, str]:
-    identifier = str(identifier).strip()
-    if namespace == "hgnc":
-        identifier = identifier.removeprefix("HGNC:")
-    return namespace, identifier
-
-
-def _aliases(entity: dict) -> set[tuple[str, str]]:
-    result = {_alias_key(entity["namespace"], entity["identifier"])}
-    result.update(_alias_key(item["ns"], item["id"]) for item in entity.get("identifiers") or [])
-    return result
-
-
-def _role_ids(payload: dict, role: str) -> set[tuple[str, str]]:
-    result = set()
-    value = payload.get(f"{role} ENSEMBL ID")
-    if value:
-        result.add(_alias_key("ensg", value))
-    value = str(payload.get(f"{role} Species ID") or "").strip()
-    if match := re.fullmatch(r"HGNC:(\d+)", value):
-        result.add(("hgnc", match[1]))
-    value = str(payload.get(f"{role} Symbols") or "").strip()
-    if match := re.match(r"^([^,(]+)", value):
-        result.add(("genesymbol", match[1].strip()))
-    return result
-
-
-def _explicit_roles(subject: dict, object: dict, payloads: list[dict]) -> dict | None:
-    aliases = {_entity["entity_key"]: _aliases(_entity) for _entity in (subject, object)}
+def _explicit_roles(subject: dict, object: dict, annotations: list[dict]) -> dict | None:
+    """Use a complete role pair from one published evidence occurrence only."""
+    occurrences = {}
+    for item in annotations:
+        scopes = occurrences.setdefault(item["evidence_ordinal"], {})
+        scopes.setdefault(item.get("scope"), set()).add(item.get("value"))
     orientations = set()
     supporting = []
-    for item in payloads:
-        try:
-            payload = json.loads(item["payload_json"] or "null")
-        except (TypeError, ValueError):
+    for ordinal, scopes in sorted(occurrences.items()):
+        before, after = scopes.get("subject", set()), scopes.get("object", set())
+        if before == {"ligand"} and after == {"receptor"}:
+            orientations.add((subject["entity_key"], object["entity_key"]))
+        elif before == {"receptor"} and after == {"ligand"}:
+            orientations.add((object["entity_key"], subject["entity_key"]))
+        else:
             continue
-        if not isinstance(payload, dict):
-            continue
-        candidates = [
-            {key for key, identifiers in aliases.items() if identifiers & _role_ids(payload, role)}
-            for role in ("Ligand", "Receptor")
-        ]
-        if any(len(matches) != 1 for matches in candidates):
-            continue
-        orientations.add(tuple(next(iter(matches)) for matches in candidates))
-        supporting.append(item["ordinal"])
+        supporting.append(ordinal)
     if len(orientations) != 1:
         return None
     ligand, receptor = next(iter(orientations))
     return {
         "ligand_entity_id": ligand,
         "receptor_entity_id": receptor,
-        "payload_ordinals": supporting,
+        "evidence_ordinals": supporting,
     }
 
 
 def _binary_record(row: tuple, name: str) -> dict:
-    resource, version, key, published, subject, object, payloads = row
+    resource, version, key, published, subject, object, role_annotations = row
     statement = deepcopy(published)
+    evidence_ordinals = list(range(len(statement.get("evidence") or [])))
     if resource == "chembl":
+        evidence_ordinals = [
+            i
+            for i, e in enumerate(statement.get("evidence") or [])
+            if e.get("dataset") == "mechanisms"
+        ]
         statement["evidence"] = [
             e for e in statement.get("evidence") or [] if e.get("dataset") == "mechanisms"
         ]
@@ -182,8 +160,6 @@ def _binary_record(row: tuple, name: str) -> dict:
             if a.get("dataset") == "mechanisms"
             or (a.get("scope") == "relation" and a.get("term", "").endswith("_qualifier"))
         ]
-        occurrences = {(e.get("source"), e.get("row_id")) for e in statement["evidence"]}
-        payloads = [p for p in payloads if (p.get("source"), p.get("row_id")) in occurrences]
     result = {
         "kind": "published_statement",
         "resource": resource,
@@ -192,10 +168,10 @@ def _binary_record(row: tuple, name: str) -> dict:
         "statement": statement,
         "subject": subject,
         "object": object,
-        "payloads": payloads,
+        "evidence_ordinals": evidence_ordinals,
     }
     if name == "liana":
-        result["roles"] = _explicit_roles(subject, object, payloads)
+        result["roles"] = _explicit_roles(subject, object, role_annotations)
     if name == "metalinksdb":
         result["intercell"] = {
             "subject": subject.get("annotations") or [],

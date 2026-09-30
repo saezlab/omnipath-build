@@ -9,6 +9,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from copy import deepcopy
 from dataclasses import dataclass
+import hashlib
 import json
 from pathlib import Path
 from typing import Any, Literal
@@ -16,7 +17,7 @@ from typing import Any, Literal
 import duckdb
 
 
-TableName = Literal["entities", "identifiers", "annotations", "relations", "evidence", "payloads"]
+TableName = Literal["entities", "identifiers", "annotations", "relations", "evidence"]
 
 
 @dataclass(frozen=True)
@@ -25,7 +26,7 @@ class ProjectedRecord:
 
     ``record_json`` and ``quantity`` remain nested Python dictionaries, and
     ``sources`` remains a list or null. The loader adapts them to its JSON/array
-    columns. ``payload_json`` is the original text, including whitespace.
+    columns. Raw source payloads are validated separately and are never projected.
     """
 
     table: TableName
@@ -88,7 +89,7 @@ def iter_resource_records(
     Annotations identify their owner with ``owner_kind`` and the exact source
     ``owner_key``. Only evidence annotations set ``evidence_ordinal``; others use
     null. Entity annotations have null ``scope`` because their schema lacks that
-    field. Standalone entity payloads retain their null ``relation_key``.
+    field. Raw payloads do not become PostgreSQL records.
     """
     _validate_batch_size(batch_size)
     directory = Path(directory)
@@ -157,16 +158,62 @@ def iter_resource_records(
                 evidence["annotations"], "evidence", row["relation_key"], ordinal
             )
 
+
+@dataclass(frozen=True)
+class PayloadReference:
+    """Transient pointer metadata from one validated source payload, without its body."""
+
+    ordinal: int
+    owner_kind: Literal["entity", "relation"]
+    owner_key: str
+    source: str | None
+    row_id: str | None
+    source_record_sha256: str | None
+    source_record_type: str | None
+
+
+def iter_validated_payloads(
+    directory: str | Path, *, batch_size: int = 1024
+) -> Iterator[PayloadReference]:
+    """Validate published raw JSON in bounded batches without returning or storing it.
+
+    Original Parquets remain authoritative. The loader checks each returned
+    pointer against copied owners, checks reaction provenance against the exact
+    source text digest and parsed shape, and checks the consumed count against
+    the manifest; no source payload table is created in PostgreSQL.
+    """
+    _validate_batch_size(batch_size)
+    directory = Path(directory)
     for ordinal, row in enumerate(
         iter_rows(directory / "evidence_payloads.parquet", batch_size=batch_size)
     ):
         pointers = [field for field in ("relation_key", "entity_key") if row[field] is not None]
         if len(pointers) != 1:
             raise ValueError(f"Payload {ordinal} must refer to exactly one entity or relation")
-        _validate_key(row[pointers[0]], pointers[0])
+        owner = pointers[0]
+        _validate_key(row[owner], owner)
+        digest = shape = None
         if row["payload_json"] is not None:
             try:
-                json.loads(row["payload_json"], parse_constant=_reject_nonfinite)
+                parsed = json.loads(row["payload_json"], parse_constant=_reject_nonfinite)
+                # An overflowing JSON exponent also becomes a nonfinite float.
+                _validate_json(parsed, f"payload {ordinal}")
             except (TypeError, ValueError) as exc:
                 raise ValueError(f"Invalid payload_json at payload {ordinal}: {exc}") from exc
-        yield record("payloads", {"ordinal": ordinal, **row})
+            digest = hashlib.sha256(row["payload_json"].encode("utf-8")).hexdigest()
+            shape = (
+                "object"
+                if isinstance(parsed, dict)
+                else "array"
+                if isinstance(parsed, list)
+                else "scalar"
+            )
+        yield PayloadReference(
+            ordinal,
+            "entity" if owner == "entity_key" else "relation",
+            row[owner],
+            row["source"],
+            row["row_id"],
+            digest,
+            shape,
+        )

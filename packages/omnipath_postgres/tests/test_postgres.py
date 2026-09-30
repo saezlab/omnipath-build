@@ -19,7 +19,6 @@ from test_projection import (
     ENTITY_C,
     RELATION,
     QUANTITY,
-    RAW_PAYLOAD,
     fixture_rows,
     write_fixture,
 )
@@ -79,9 +78,7 @@ def exists(dsn, schema):
         return conn.execute("SELECT 1 FROM pg_namespace WHERE nspname=%s", (schema,)).fetchone()
 
 
-def test_measurements_qualifiers_duplicate_occurrences_and_payload_roundtrip(
-    tmp_path, postgres_dsn
-):
+def test_measurements_qualifiers_duplicate_occurrences_without_raw_storage(tmp_path, postgres_dsn):
     original = fixture_rows()
     resource(tmp_path, rows=original)
     schema = destination()
@@ -94,19 +91,25 @@ def test_measurements_qualifiers_duplicate_occurrences_and_payload_roundtrip(
         "relations": 1,
         "evidence": 2,
         "annotations": 9,
-        "payloads": 2,
     }
     actual = query(postgres_dsn, schema, "SELECT entity_key, record_json FROM {s}.entities")
     assert dict(actual) == {row["entity_key"]: row for row in original[0]}
     assert (
         query(postgres_dsn, schema, "SELECT record_json FROM {s}.relations")[0][0] == original[1][0]
     )
-    assert query(
-        postgres_dsn, schema, "SELECT payload_json FROM {s}.payloads ORDER BY ordinal"
-    ) == [
-        (RAW_PAYLOAD,),
-        ('{"standalone": true}',),
+    assert result.validated_payload_rows == {"signor": 2}
+    assert query(postgres_dsn, schema, "SELECT to_regclass(%s)", (schema + ".payloads",)) == [
+        (None,)
     ]
+    assert (
+        query(
+            postgres_dsn,
+            schema,
+            "SELECT column_name FROM information_schema.columns WHERE table_schema=%s AND column_name='payload_json'",
+            (schema,),
+        )
+        == []
+    )
     assert query(
         postgres_dsn, schema, "SELECT row_id, upstream_id FROM {s}.evidence ORDER BY ordinal"
     ) == [
@@ -237,7 +240,8 @@ def test_self_loop_counted_once_and_empty_resource_loads(tmp_path, postgres_dsn)
 
 
 @pytest.mark.parametrize(
-    "failure", ["endpoint", "payload", "evidence_count", "shared_entity", "shared_relation"]
+    "failure",
+    ["endpoint", "payload", "payload_owner", "evidence_count", "shared_entity", "shared_relation"],
 )
 def test_late_validation_failure_rolls_back_entire_schema(tmp_path, postgres_dsn, failure):
     rows = deepcopy(fixture_rows())
@@ -246,6 +250,8 @@ def test_late_validation_failure_rolls_back_entire_schema(tmp_path, postgres_dsn
         rows[1][0]["object_entity_key"] = "absent"
     elif failure == "payload":
         rows[2][1]["payload_json"] = "{invalid"
+    elif failure == "payload_owner":
+        rows[2][1]["entity_key"] = "missing payload owner"
     elif failure == "evidence_count":
         rows[1][0]["evidence_count"] = 99
     elif failure.startswith("shared"):
@@ -304,7 +310,10 @@ def test_repeated_destination_preserves_committed_release(tmp_path, postgres_dsn
     assert query(postgres_dsn, schema, "SELECT manifest_sha256 FROM {s}.release_metadata") == [
         (first.manifest_sha256,)
     ]
-    assert query(postgres_dsn, schema, "SELECT count(*) FROM {s}.payloads") == [(2,)]
+    assert query(postgres_dsn, schema, "SELECT count(*) FROM {s}.evidence") == [(2,)]
+    assert query(postgres_dsn, schema, "SELECT to_regclass(%s)", (schema + ".payloads",)) == [
+        (None,)
+    ]
 
 
 def test_existing_twenty_record_signor_artifact(tmp_path, postgres_dsn):
@@ -320,7 +329,8 @@ def test_existing_twenty_record_signor_artifact(tmp_path, postgres_dsn):
     assert result.counts["entities"] == 2
     assert result.counts["relations"] == 2
     assert result.counts["evidence"] == 20
-    assert result.counts["payloads"] == 20
+    assert result.validated_payload_rows["signor"] == 20
+    assert "payloads" not in result.counts
     original = pq.read_table(root / "resources/signor/0.1.1/relations.parquet").to_pylist()
     assert dict(
         query(postgres_dsn, schema, "SELECT relation_key, record_json FROM {s}.relations")

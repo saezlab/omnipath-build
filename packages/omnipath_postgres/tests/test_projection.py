@@ -2,6 +2,7 @@
 
 from collections import Counter, defaultdict
 from copy import deepcopy
+import hashlib
 from pathlib import Path
 
 import pyarrow as pa
@@ -159,10 +160,10 @@ def test_every_projected_table_matches_the_loader_copy_contract(tmp_path):
     assert seen == set(COLUMNS)
 
 
-def test_exact_identities_nested_source_and_raw_payload_text(tmp_path):
+def test_exact_identities_and_nested_source_without_raw_payload_projection(tmp_path):
     # Quotes and a partition-like folder exercise parameterization and hive disablement.
     directory = tmp_path / "resource='fixture'"
-    entities, relations, payloads = write_fixture(directory)
+    entities, relations, _ = write_fixture(directory)
     tables = collect(directory)
     assert [row["entity_key"] for row in tables["entities"]] == [ENTITY_A, ENTITY_B, ENTITY_C]
     assert [row["record_json"] for row in tables["entities"]] == entities
@@ -171,11 +172,29 @@ def test_exact_identities_nested_source_and_raw_payload_text(tmp_path):
     for name, value in relations[0].items():
         if name not in {"annotations", "evidence"}:
             assert flat_relation[name] == value
-    assert tables["payloads"][0]["payload_json"] == RAW_PAYLOAD
-    assert tables["payloads"][0]["relation_key"] == RELATION
-    assert tables["payloads"][1]["entity_key"] == ENTITY_C
-    assert tables["payloads"][1]["relation_key"] is None
-    assert tables["payloads"][1]["row_id"] == payloads[1]["row_id"]
+    assert "payloads" not in tables
+    references = list(projection.iter_validated_payloads(directory, batch_size=1))
+    assert references == [
+        projection.PayloadReference(
+            0,
+            "relation",
+            RELATION,
+            "reported-source",
+            "00001",
+            hashlib.sha256(RAW_PAYLOAD.encode()).hexdigest(),
+            "object",
+        ),
+        projection.PayloadReference(
+            1,
+            "entity",
+            ENTITY_C,
+            "entity-source",
+            "entity-only",
+            hashlib.sha256(b'{"standalone": true}').hexdigest(),
+            "object",
+        ),
+    ]
+    assert not any(hasattr(reference, "payload_json") for reference in references)
 
 
 def test_quantities_at_every_scope_and_duplicate_occurrences_are_retained(tmp_path):
@@ -220,7 +239,11 @@ def test_null_lists_null_sources_and_null_payload_are_not_coerced(tmp_path):
     assert tables["entities"][2]["record_json"]["identifiers"] == []
     assert tables["relations"][0]["sources"] is None
     assert tables["relations"][0]["record_json"]["sources"] is None
-    assert tables["payloads"][1]["payload_json"] is None
+    references = list(projection.iter_validated_payloads(tmp_path))
+    assert len(references) == 2
+    assert references[1].source_record_sha256 is None
+    assert references[1].source_record_type is None
+    assert "payloads" not in tables
 
 
 @pytest.mark.parametrize(
@@ -231,16 +254,18 @@ def test_payload_must_identify_exactly_one_nonempty_owner(tmp_path, entity_key, 
     payloads[0].update(entity_key=entity_key, relation_key=relation_key)
     write_fixture(tmp_path, payloads=payloads)
     with pytest.raises(ValueError, match="exactly one|nonempty"):
-        collect(tmp_path)
+        list(projection.iter_validated_payloads(tmp_path))
 
 
-@pytest.mark.parametrize("text", ['{"value": NaN}', '{"value": Infinity}', "{broken"])
+@pytest.mark.parametrize(
+    "text", ['{"value": NaN}', '{"value": Infinity}', '{"value": 1e999}', "{broken"]
+)
 def test_invalid_or_nonfinite_payload_json_is_rejected_without_repair(tmp_path, text):
     _, _, payloads = fixture_rows()
     payloads[0]["payload_json"] = text
     write_fixture(tmp_path, payloads=payloads)
     with pytest.raises(ValueError, match="Invalid payload_json"):
-        collect(tmp_path)
+        list(projection.iter_validated_payloads(tmp_path))
 
 
 def test_nonfinite_nested_measurement_is_rejected(tmp_path):
@@ -257,6 +282,8 @@ def test_invalid_batch_size_rejected_before_reading(tmp_path, batch_size):
         list(projection.iter_rows(tmp_path / "missing.parquet", batch_size=batch_size))
     with pytest.raises(ValueError, match="positive integer"):
         list(projection.iter_resource_records(tmp_path, "source", "1", batch_size=batch_size))
+    with pytest.raises(ValueError, match="positive integer"):
+        list(projection.iter_validated_payloads(tmp_path, batch_size=batch_size))
 
 
 def test_duckdb_reader_fetches_bounded_batches_and_closes_when_stopped(tmp_path, monkeypatch):
@@ -310,19 +337,35 @@ def test_existing_bounded_signor_smoke_preserves_all_twenty_occurrences():
     tables = collect(directory, batch_size=3)
     assert len(tables["entities"]) == 2
     assert len(tables["relations"]) == 2
-    assert len(tables["evidence"]) == len(tables["payloads"]) == 20
+    assert len(tables["evidence"]) == 20
+    assert len(list(projection.iter_validated_payloads(directory, batch_size=3))) == 20
+    assert "payloads" not in tables
     assert sorted(row["evidence_count"] for row in tables["relations"]) == [6, 14]
     assert {row["identifier"] for row in tables["entities"]} == {"P04637", "P0DP23"}
     assert {row["predicate"] for row in tables["relations"]} == {"affects"}
     assert {row["sign"] for row in tables["relations"]} == {-1, 1}
-    evidence = Counter(
-        (row["source"], row["row_id"], row["relation_key"]) for row in tables["evidence"]
+    evidence = Counter(row["relation_key"] for row in tables["evidence"])
+    references = Counter(
+        reference.owner_key for reference in projection.iter_validated_payloads(directory)
     )
-    payloads = Counter(
-        (row["source"], row["row_id"], row["relation_key"]) for row in tables["payloads"]
-    )
-    assert evidence == payloads
-    source_rows = pq.read_table(directory / "evidence_payloads.parquet").to_pylist()
-    assert [row["payload_json"] for row in tables["payloads"]] == [
-        row["payload_json"] for row in source_rows
-    ]
+    assert evidence == references
+
+
+@pytest.mark.parametrize(
+    "body,shape",
+    [
+        ("null", "scalar"),
+        ("false", "scalar"),
+        ("42", "scalar"),
+        ("[]", "array"),
+        ('{ "unicode": "α" }\n', "object"),
+    ],
+)
+def test_transient_hash_is_of_exact_source_text_and_shape_is_of_parsed_json(tmp_path, body, shape):
+    _, _, payloads = fixture_rows()
+    payloads[0]["payload_json"] = body
+    write_fixture(tmp_path, payloads=payloads)
+    reference = next(projection.iter_validated_payloads(tmp_path))
+    assert reference.source_record_sha256 == hashlib.sha256(body.encode("utf-8")).hexdigest()
+    assert reference.source_record_type == shape
+    assert not hasattr(reference, "payload_json")

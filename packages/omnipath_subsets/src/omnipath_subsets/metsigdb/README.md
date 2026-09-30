@@ -8,8 +8,9 @@ table's existing columns and row key, using published text entity keys.
 - Reactome and WikiPathways use typed chemical–pathway relations.
 - KEGG joins pathway–reaction and reaction–chemical relations. Its eleven
   overview maps retain the existing `overview_map` subtype.
-- MACdb uses chemical–trait associations and the published trait payload's
-  `Trait_Type`, retaining native trait IDs and labels.
+- MACdb uses chemical–trait associations and the published entity annotation
+  `macdb:trait_type`, retaining native trait IDs and labels. It selects the
+  smallest nonempty value within the exact resource, version and trait entity.
 - ClassyFire combines HMDB assignments with ChemOnt subclass ancestors. Direct
   assignments win; ancestors use the shortest depth, capped at 20 as in the old
   product. Part-of axioms do not imply class membership.
@@ -29,3 +30,5 @@ release-manifest hash.
 Missing inputs are reported as skipped. ClassyFire requires both HMDB and
 ChemOnt. A resource build's existing cap determines the input; subset extraction
 does not cap memberships again, so set sizes count the complete selected input.
+Rebuilds query PostgreSQL only; original source payloads remain in the versioned
+Parquets for API inspection and reference replay.

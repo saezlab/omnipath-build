@@ -17,8 +17,6 @@ _INDEXES = (
     ("identifiers_lookup_idx", "identifiers", "ns, lower(id) text_pattern_ops, entity_key"),
     ("evidence_source_dataset_row_idx", "evidence", "source, dataset, row_id"),
     ("annotations_term_owner_idx", "annotations", "term, owner_kind, owner_key"),
-    ("payloads_relation_source_row_idx", "payloads", "relation_key, source, row_id"),
-    ("payloads_entity_source_row_idx", "payloads", "entity_key, source, row_id"),
 )
 
 
