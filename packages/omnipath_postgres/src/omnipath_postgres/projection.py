@@ -16,6 +16,7 @@ from pathlib import Path
 import sys
 from typing import Any, Literal
 
+import pyarrow as pa
 import pyarrow.parquet as pq
 
 
@@ -25,6 +26,9 @@ TableName = Literal["entities", "identifiers", "annotations", "relations", "evid
 # decoded or converted into a complete SQL result before the first row is read.
 _MAX_PARQUET_BATCH_ROWS = 64
 _PARQUET_READ_BUFFER_BYTES = 64 * 1024
+# Raw payload dictionaries retain one native value per distinct text instead of
+# expanding that text for every owner; their scalar metadata batches stay small.
+_MAX_PAYLOAD_DICTIONARY_BATCH_ROWS = 1024
 
 # A raw source record may occur once for each of many owners. Retain only its
 # exact text and validation result, with conservative room for the digest,
@@ -256,38 +260,160 @@ class _PayloadValidationCache:
         return digest, shape
 
 
+class _DictionaryPayloadValidationCache:
+    """One current Arrow dictionary plus bounded per-index validation metadata."""
+
+    def __init__(self, dictionary: pa.Array) -> None:
+        self.dictionary = dictionary
+        self.entries: OrderedDict[int, tuple[str | None, str | None]] = OrderedDict()
+        self.max_entries = min(
+            _MAX_PAYLOAD_CACHE_ENTRIES, _MAX_PAYLOAD_CACHE_BYTES // _PAYLOAD_CACHE_ENTRY_OVERHEAD
+        )
+
+    def validate(self, index: int, ordinal: int) -> tuple[str | None, str | None]:
+        cached = self.entries.get(index)
+        if cached is not None:
+            self.entries.move_to_end(index)
+            return cached
+        # Convert and parse only referenced values, never the entire dictionary.
+        # The Python text/parsed body is released when this method returns.
+        text = self.dictionary[index].as_py()
+        result = (None, None) if text is None else _validate_payload_text(text, ordinal)
+        if self.max_entries > 0:
+            if len(self.entries) >= self.max_entries:
+                self.entries.popitem(last=False)
+            self.entries[index] = result
+        return result
+
+
+@dataclass(frozen=True)
+class _DictionaryPayloadValue:
+    cache: _DictionaryPayloadValidationCache
+    index: int
+
+
+def _iter_payload_rows(table_path: str | Path, *, batch_size: int) -> Iterator[dict[str, Any]]:
+    """Read raw owners with native payload dictionaries, without expanding bodies.
+
+    Parquet dictionaries can contain a multi-megabyte value repeated thousands
+    of times. Keep the dictionary and convert only each owner's scalar metadata.
+    PyArrow may copy equal dictionary buffers between batches, so compare their
+    exact native values once per batch. Reset at every row group, and retain only
+    the current dictionary plus at most 256 digest/shape results.
+    """
+    _validate_batch_size(batch_size)
+    parquet = pq.ParquetFile(
+        table_path,
+        memory_map=False,
+        pre_buffer=False,
+        buffer_size=_PARQUET_READ_BUFFER_BYTES,
+        read_dictionary=["payload_json"],
+    )
+    try:
+        raw_column = parquet.schema_arrow.get_field_index("payload_json")
+        if raw_column < 0:
+            raise ValueError("Raw payload Parquet is missing the payload_json column")
+        raw_type = parquet.schema_arrow.field(raw_column).type
+        batch_cap = (
+            _MAX_PAYLOAD_DICTIONARY_BATCH_ROWS
+            if pa.types.is_dictionary(raw_type)
+            else _MAX_PARQUET_BATCH_ROWS
+        )
+        for group in range(parquet.metadata.num_row_groups):
+            cache = None
+            batches = parquet.iter_batches(
+                row_groups=[group],
+                batch_size=min(batch_size, batch_cap),
+                use_threads=False,
+            )
+            try:
+                for batch in batches:
+                    column = batch.schema.get_field_index("payload_json")
+                    payloads = batch.column(column)
+                    metadata = batch.select(
+                        [index for index in range(batch.num_columns) if index != column]
+                    )
+                    if isinstance(payloads, pa.DictionaryArray):
+                        dictionary = payloads.dictionary
+                        if cache is None or not cache.dictionary.equals(dictionary):
+                            cache = _DictionaryPayloadValidationCache(dictionary)
+                        else:
+                            # Release the previous native dictionary when the
+                            # decoder supplies a new, exactly equal copy.
+                            cache.dictionary = dictionary
+                        for index in range(batch.num_rows):
+                            row = metadata.slice(index, 1).to_pylist()[0]
+                            raw_index = payloads.indices[index].as_py()
+                            row["payload_json"] = (
+                                None
+                                if raw_index is None
+                                else _DictionaryPayloadValue(cache, raw_index)
+                            )
+                            yield row
+                            del row
+                        del dictionary
+                    else:
+                        # Nullable or non-dictionary columns retain the same
+                        # exact-text validation path, one Python body at a time.
+                        cache = None
+                        for index in range(batch.num_rows):
+                            row = metadata.slice(index, 1).to_pylist()[0]
+                            row["payload_json"] = payloads[index].as_py()
+                            yield row
+                            del row
+                    del metadata, payloads, batch
+            finally:
+                batches.close()
+                cache = None
+    finally:
+        parquet.close()
+
+
 def iter_validated_payloads(
     directory: str | Path, *, batch_size: int = 1024
 ) -> Iterator[PayloadReference]:
-    """Validate published raw JSON in bounded batches without returning or storing it.
+    """Validate every raw occurrence without expanding repeated dictionary bodies.
 
     Original Parquets remain authoritative. The loader checks each returned
     pointer against copied owners, checks reaction provenance against the exact
     source text digest and parsed shape, and checks the consumed count against
-    the manifest; no source payload table is created in PostgreSQL. A per-call
-    LRU reuses validation only for identical text, bounded to 256 entries and
-    64 MiB of charged key/entry storage. Larger bodies are validated uncached.
+    the manifest; no source payload table is created in PostgreSQL.
+
+    Raw dictionary batches contain at most 1024 owners (generic nested-record
+    batches remain capped at 64). One current dictionary has at most 256 cached
+    index results and is discarded at row-group boundaries. Non-dictionary text
+    uses the per-call exact-text LRU, capped at 256 entries and 64 MiB of charged
+    key/entry storage. Parsed Python bodies are never retained in either cache.
     """
     _validate_batch_size(batch_size)
     directory = Path(directory)
     cache = _PayloadValidationCache()
-    for ordinal, row in enumerate(
-        iter_rows(directory / "evidence_payloads.parquet", batch_size=batch_size)
-    ):
-        pointers = [field for field in ("relation_key", "entity_key") if row[field] is not None]
-        if len(pointers) != 1:
-            raise ValueError(f"Payload {ordinal} must refer to exactly one entity or relation")
-        owner = pointers[0]
-        _validate_key(row[owner], owner)
-        digest = shape = None
-        if row["payload_json"] is not None:
-            digest, shape = cache.validate(row["payload_json"], ordinal)
-        yield PayloadReference(
-            ordinal,
-            "entity" if owner == "entity_key" else "relation",
-            row[owner],
-            row["source"],
-            row["row_id"],
-            digest,
-            shape,
-        )
+    rows = _iter_payload_rows(directory / "evidence_payloads.parquet", batch_size=batch_size)
+    try:
+        for ordinal, row in enumerate(rows):
+            pointers = [field for field in ("relation_key", "entity_key") if row[field] is not None]
+            if len(pointers) != 1:
+                raise ValueError(f"Payload {ordinal} must refer to exactly one entity or relation")
+            owner = pointers[0]
+            _validate_key(row[owner], owner)
+            digest = shape = None
+            if isinstance(row["payload_json"], _DictionaryPayloadValue):
+                value = row["payload_json"]
+                digest, shape = value.cache.validate(value.index, ordinal)
+                del value
+            elif row["payload_json"] is not None:
+                digest, shape = cache.validate(row["payload_json"], ordinal)
+            yield PayloadReference(
+                ordinal,
+                "entity" if owner == "entity_key" else "relation",
+                row[owner],
+                row["source"],
+                row["row_id"],
+                digest,
+                shape,
+            )
+            del row
+    finally:
+        close = getattr(rows, "close", None)
+        if close is not None:
+            close()

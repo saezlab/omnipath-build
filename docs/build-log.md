@@ -31,7 +31,7 @@ Keep entries factual and specific — numbers and log excerpts, not vibes.
 
 ---
 
-## 2026-09-30 — full resolved-Parquet release on nicesrv (running)
+## 2026-09-30 — full resolved-Parquet release on nicesrv, attempt 1 (cancelled)
 
 **Reason**: validate the complete release after moving all former PostgreSQL
 payload consumers to published annotations. The seven affected resources were
@@ -80,20 +80,34 @@ MetAtlas 76.459144 s, KEGG 388.689825 s, Reactome 101.476603 s,
 MACdb 34.849949 s, ConnectomeDB2025 61.983096 s. Per-dataset coverage, native
 prepare/finalize timings and source hashes are in `rebuilt-data/replay_report.json`.
 KEGG is the replay outlier. Final fixed-release preflight 10.144114 s.
-Database timings are pending; `postgres-build.json` and `postgres-build.log`
-record phase/source progress. Source projection/COPY and raw-validation intervals
+The first database attempt ran 2527.816089 s before deliberate cancellation.
+Release reading took 5.889342 s; completed COPY calls took 1611.889483 s.
+BindingDB projection was incomplete; indexes, derived tables and products did
+not run. `postgres-build-attempt1.json` and `postgres-build-attempt1.log`
+retain its phase/source progress. Source projection/COPY and raw-validation intervals
 are approximate (final partial batches and preliminary ANALYZE sit outside those
 intervals); loader totals and separate COPY call totals are authoritative.
 
-**Outcome**: in progress. Preflight expects 6,383,473 entities, 80,136,865
-identifiers, 18,339,902 relations, 22,887,251 evidence occurrences and 150,690,040
-annotations; 26,711,866 raw payload rows are validated and discarded.
-An earlier artifact-only raw check was OOM-killed while DuckDB materialized
-FooDB; it made no database writes. The bounded Arrow reader fixed that behavior,
-and the private artifact check resumes separately with a process memory cap.
-Database commit, independent full validation and PG-only rebuild results are
-pending. A failed/interrupted commit boundary must be inspected through release
-metadata rather than inferred from a missing completion flag.
+**Outcome**: cancelled before any base commit after 51,925,536 rows were copied
+inside the transaction. A concurrent artifact check identified a 42,831,695-byte
+FooDB dictionary value repeated 42,536 times; expanding 64 rows materialized
+2,741,228,480 bytes before Python validation. This would make later loading
+unsafe/slow. Only the private import and checker units were stopped to replace
+the raw reader with dictionary-preserving validation. Psycopg cancelled COPY and
+rolled back; a separate connection confirmed `full_20260930` absent, no import
+backend remaining, and both existing private schemas retained. Production
+container IDs/start times were unchanged. Disk returned from about 491 GiB free
+to 530 GiB. No source artifacts or pins changed.
+
+An earlier artifact-only check was OOM-killed while DuckDB materialized FooDB;
+it made no database writes. Two bounded Arrow attempts were deliberately stopped
+(the second to enable exact-text caching, the third for dictionary preservation).
+Completed checks from the first attempt are reusable because input hashes are
+unchanged. Retry and full validation remain pending. Preflight expects 6,383,473
+entities, 80,136,865 identifiers, 18,339,902 relations, 22,887,251 evidence
+occurrences and 150,690,040 annotations; 26,711,866 raw payload rows are validated
+and discarded. A failed/interrupted commit boundary must be inspected through
+release metadata rather than inferred from a missing completion flag.
 
 ## 2026-09-30 — capped annotation migration on nicesrv (completed)
 

@@ -85,7 +85,9 @@ def test_exact_repetitions_parse_and_hash_once_with_every_owner_preserved(
 
 def test_cache_is_scoped_to_one_reader_call(tmp_path, monkeypatch):
     text = '{"value":42}'
-    monkeypatch.setattr(projection, "iter_rows", lambda *args, **kwargs: iter([payload(text)] * 3))
+    monkeypatch.setattr(
+        projection, "_iter_payload_rows", lambda *args, **kwargs: iter([payload(text)] * 3)
+    )
     parsed, hashed, _ = count_validation(monkeypatch)
     first = list(projection.iter_validated_payloads(tmp_path))
     second = list(projection.iter_validated_payloads(tmp_path))
@@ -99,7 +101,9 @@ def test_semantically_equal_json_with_different_text_has_distinct_validation_and
 ):
     texts = ['{"unicode":"α"}', '{ "unicode": "α" }\n', '{"unicode":"\\u03b1"}']
     monkeypatch.setattr(
-        projection, "iter_rows", lambda *args, **kwargs: iter(payload(text) for text in texts * 2)
+        projection,
+        "_iter_payload_rows",
+        lambda *args, **kwargs: iter(payload(text) for text in texts * 2),
     )
     parsed, hashed, original_sha256 = count_validation(monkeypatch)
     references = list(projection.iter_validated_payloads(tmp_path))
@@ -125,7 +129,7 @@ def test_cache_hit_cannot_skip_owner_pointer_or_key_validation(
     tmp_path, monkeypatch, second, error
 ):
     monkeypatch.setattr(
-        projection, "iter_rows", lambda *args, **kwargs: iter([payload("{}"), second])
+        projection, "_iter_payload_rows", lambda *args, **kwargs: iter([payload("{}"), second])
     )
     parsed, _, _ = count_validation(monkeypatch)
     stream = projection.iter_validated_payloads(tmp_path)
@@ -210,7 +214,9 @@ def test_parsed_body_is_released_before_yielding_cached_metadata(tmp_path, monke
 
     monkeypatch.setattr(projection.json, "loads", loads)
     monkeypatch.setattr(
-        projection, "iter_rows", lambda *args, **kwargs: iter([payload("{}"), payload("{}")])
+        projection,
+        "_iter_payload_rows",
+        lambda *args, **kwargs: iter([payload("{}"), payload("{}")]),
     )
     stream = projection.iter_validated_payloads(tmp_path)
     try:
@@ -226,7 +232,9 @@ def test_parsed_body_is_released_before_yielding_cached_metadata(tmp_path, monke
 def test_json_shapes_and_null_raw_body_preserve_provenance(tmp_path, monkeypatch):
     texts = ["null", "true", "42", '"source"', "[]", "{}", None]
     monkeypatch.setattr(
-        projection, "iter_rows", lambda *args, **kwargs: iter(payload(text) for text in texts * 2)
+        projection,
+        "_iter_payload_rows",
+        lambda *args, **kwargs: iter(payload(text) for text in texts * 2),
     )
     parsed, _, original_sha256 = count_validation(monkeypatch)
     references = list(projection.iter_validated_payloads(tmp_path))
