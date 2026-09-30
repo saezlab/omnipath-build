@@ -1,0 +1,101 @@
+"""omnipath_core: Shared core library for OmniPath Parquet serving.
+
+Contains Silver and Serving PyArrow schemas, identity key hashing, and versioning utilities.
+Uses biolink-model directly as its controlled vocabulary standard.
+"""
+
+from .silver_schema import (
+    Identifier,
+    Annotation,
+    Association,
+    Membership,
+    EntityRef,
+    OntologyRelation,
+    Entity,
+    Relation,
+    IDENTIFIER_FIELDS,
+    ANNOTATION_FIELDS,
+    ENTITY_REF_FIELDS,
+    ONTOLOGY_RELATION_FIELDS,
+    ASSOCIATION_FIELDS,
+    BASE_ENTITY_FIELDS,
+    BASE_MEMBERSHIP_FIELDS,
+    NESTED_ENTITY_FIELDS,
+    MEMBERSHIP_FIELDS,
+    ENTITY_FIELDS,
+    ENTITY_SCHEMA as SILVER_ENTITY_SCHEMA,
+    RELATION_FIELDS as SILVER_RELATION_FIELDS,
+    RELATION_SCHEMA as SILVER_RELATION_SCHEMA,
+    format_term,
+)
+from .schema import (
+    ENTITY_SCHEMA,
+    RELATION_SCHEMA,
+    PAYLOAD_SCHEMA,
+    IDENTIFIER_STRUCT,
+    ANNOTATION_STRUCT,
+    EVIDENCE_STRUCT,
+)
+from .keys import canonical_json, stable_hash, entity_key, relation_key
+from .versioning import (
+    validate_version,
+    validate_source,
+    BuildManifest,
+    ManifestFile,
+    resource_dir,
+    manifest_path,
+    entities_path,
+    relations_path,
+    payloads_path,
+)
+from .naming import Namespace, normalize_namespace
+
+__all__ = [
+    # Silver schema
+    "Identifier",
+    "Annotation",
+    "Association",
+    "Membership",
+    "EntityRef",
+    "OntologyRelation",
+    "Entity",
+    "Relation",
+    "SILVER_ENTITY_SCHEMA",
+    "IDENTIFIER_FIELDS",
+    "ANNOTATION_FIELDS",
+    "ENTITY_REF_FIELDS",
+    "ONTOLOGY_RELATION_FIELDS",
+    "ASSOCIATION_FIELDS",
+    "BASE_ENTITY_FIELDS",
+    "BASE_MEMBERSHIP_FIELDS",
+    "NESTED_ENTITY_FIELDS",
+    "MEMBERSHIP_FIELDS",
+    "ENTITY_FIELDS",
+    "SILVER_RELATION_FIELDS",
+    "SILVER_RELATION_SCHEMA",
+    "format_term",
+    # Serving schema
+    "ENTITY_SCHEMA",
+    "RELATION_SCHEMA",
+    "PAYLOAD_SCHEMA",
+    "IDENTIFIER_STRUCT",
+    "ANNOTATION_STRUCT",
+    "EVIDENCE_STRUCT",
+    # Naming helpers
+    "Namespace",
+    "normalize_namespace",
+    # Keys & versioning
+    "canonical_json",
+    "stable_hash",
+    "entity_key",
+    "relation_key",
+    "validate_version",
+    "validate_source",
+    "BuildManifest",
+    "ManifestFile",
+    "resource_dir",
+    "manifest_path",
+    "entities_path",
+    "relations_path",
+    "payloads_path",
+]

@@ -1,184 +1,86 @@
-# omnipath-build
+# OmniPath build
 
-A general database builder on top of pypath.
+Build independently versioned, resolved Parquet resources from pypath `inputs_v2`.
+This migration carries over the prototype's schemas, Biolink mappings and entity
+resolution. PostgreSQL loading and product extraction will consume these resolved
+artifacts in later milestones.
+
+## Packages
+
+- `packages/omnipath_core`: shared schemas, vocabulary, identity and version metadata.
+- `packages/omnipath_resolver`: native resolution policy and reference kernels.
+- `packages/omnipath_build`: reference preparation, resource builds and publication.
+- `pypath/`: source parsers and mappings, on the `parquet-migration` branch.
+- `legacy/postgres/`: the previous PostgreSQL implementation and tests, retained
+  for migration into `omnipath_postgres` and `omnipath_subsets`.
+
+The active workspace excludes the legacy package so imports use the new pipeline.
+API, web and client packages are outside this first milestone.
 
 ## Setup
 
-```bash
-make setup
+Install Python 3.11 or newer, uv and a Rust toolchain, then run:
+
+```sh
+git submodule update --init --recursive
+uv sync --frozen --all-packages
 ```
 
-This project uses `uv` for dependency management.
+The lockfile resolves pypath from this repository's submodule and shared core from
+this workspace. No sibling prototype checkout is needed. Submodule updates use
+committed revisions; they do not advance remote branches.
 
-## DuckDB Direct Pipeline
+## Bounded offline milestone check
 
-The `omnipath_build` pipeline streams `inputs_v2` sources into DuckDB evidence
-tables, canonicalizes them in DuckDB, and copies the projected evidence and
-canonical rows into PostgreSQL.
-
-For the data model, phase boundaries, refresh semantics, and common workflows,
-see [docs/pipeline.md](docs/pipeline.md).
-
-For tuning the build's Postgres memory and parallelism (and how to size it for
-your deployment, including the lab's docker memory cap), see
-[docs/build-tuning.md](docs/build-tuning.md).
-
-The default database URL is:
-
-```bash
-postgresql://omnipath:omnipath@localhost:55432/omnipath
+```sh
+make sample
 ```
 
-Override it with `DATABASE_URL=...` when needed.
+The sample uses a small local SIGNOR fixture and a synthetic compact reference.
+It exercises the real parser, RelationBuilder, native resolver, Parquet pipeline,
+immutable version publication and DuckDB inspection without downloading datasets.
+It processes at most 20 source records and writes artifacts plus an inspection
+report under `data/migration-smoke/`. For another run, choose a new immutable
+version with `make sample VERSION=0.1.1`.
 
-### Build Resolver Files
+## Resource builds
 
-Build local resolver parquet files:
+For a real source, supply a prepared reference from the prototype resolver:
 
-```bash
-make resolver
+```sh
+OMNIPATH_LIBRARY_DIR=/path/to/reference/library \
+  make build SOURCE=signor VERSION=0.1.0 MAX_RECORDS=20 DATA_ROOT=data
 ```
 
-Limit resolver builds for smoke tests:
+`MAX_RECORDS` defaults to 20 and applies per dataset. Some upstream parsers may
+prepare a complete download before yielding records; the record cap limits
+processing, not download size. The offline sample avoids this preparation.
+Successful builds publish under `data/resources/<source>/<version>/`, with the
+three Parquet tables, resolution diagnostics and a build manifest. Published
+resource versions cannot be overwritten.
 
-```bash
-make resolver MAX_RECORDS=100000
+See the [resource pipeline](packages/omnipath_build/README.md),
+[reference resolver](docs/reference-resolver.md) and
+[orchestration guide](packages/omnipath_build/ORCHESTRATION.md).
+
+## Checks
+
+```sh
+make check
+cargo build --release --locked \
+  --manifest-path packages/omnipath_resolver/rust/reference/Cargo.toml \
+  --features parquet-input --bins
+make test
+make test-pypath
 ```
 
-Use a single PubChem SDF shard during development:
+The reference binary supports the imported offline fixture tests. Unit tests use
+local fixtures; integration tests require explicit opt-in.
 
-```bash
-make resolver PUBCHEM_URL=https://example.org/pubchem.sdf.gz
-```
+## Migration provenance
 
-### Prepare Database
-
-Create schema and supporting indexes:
-
-```bash
-make db-setup
-```
-
-Start from a clean schema. This defers secondary evidence indexes until
-canonicalization, so ingest is faster:
-
-```bash
-make db-setup DROP_EXISTING=1
-```
-
-Use another schema:
-
-```bash
-make db-setup SCHEMA=omnipath_test DROP_EXISTING=1
-```
-
-Drop and recreate the target schema without loading resolver tables:
-
-```bash
-make db-reset
-```
-
-### Load And Canonicalize
-
-Load any sources that are not already present. The DuckDB/PostgreSQL loader
-projects evidence, canonicalizes it, and copies the result into PostgreSQL:
-
-```bash
-make load
-```
-
-Load one source if it is not already present:
-
-```bash
-make load SOURCE=bindingdb
-```
-
-Load multiple missing sources:
-
-```bash
-make load SOURCES=uniprot,bindingdb,intact
-```
-
-Use a shared staging worker pool:
-
-```bash
-make load LOAD_JOBS=5
-```
-
-`LOAD_JOBS` is used by the staged loader as one shared pool. Workers are
-assigned across sources first; when preparse shards are available, idle workers
-can stage shards from the same source while PostgreSQL COPY continues to run
-serially.
-
-Large staged loads keep simple preparse parquet shards under
-`pypath-data/<source>/preparse/`. These shards are reused by default and are
-rebuilt when `FORCE_REFRESH=1` is set.
-
-Refresh existing source content by deleting it first, then loading current
-parser output:
-
-```bash
-make reload SOURCE=bindingdb
-```
-
-Run `make derive` after loading the selected sources to refresh query indexes,
-derived count/search tables, and bitmaps.
-
-### Full Scratch Build
-
-Build resolver files, recreate the database schema, load all sources through
-the DuckDB/PostgreSQL pipeline, and derive query tables:
-
-```bash
-make all DROP_EXISTING=1
-```
-
-If resolver files already exist, run:
-
-```bash
-make db-setup DROP_EXISTING=1
-make load
-make derive
-```
-
-### Test Runs
-
-Limit source rows per dataset:
-
-```bash
-make load SOURCE=bindingdb MAX_RECORDS=200000 SCHEMA=omnipath_test
-```
-
-The default load batch size is `BATCH_SIZE=50000`, which is safer
-for full loads.
-
-### Maintenance
-
-Reset omnipath_build content tables without dropping resolver tables:
-
-```bash
-make reset-content
-```
-
-Run the Python tests:
-
-```bash
-uv run pytest tests -q
-```
-
-Check table sizes when PostgreSQL runs in Docker:
-
-```bash
-docker exec -i omnipathv2-main-mmvxvb-omnipathv2-postgres-1 \
-  psql -U omnipath -d omnipath -v ON_ERROR_STOP=1 <<'SQL'
-SELECT
-  table_name,
-  pg_size_pretty(pg_total_relation_size(format('%I.%I', table_schema, table_name)::regclass)) AS total_size,
-  pg_size_pretty(pg_relation_size(format('%I.%I', table_schema, table_name)::regclass)) AS table_size,
-  pg_size_pretty(pg_indexes_size(format('%I.%I', table_schema, table_name)::regclass)) AS indexes_size
-FROM information_schema.tables
-WHERE table_schema = 'public'
-  AND table_type = 'BASE TABLE'
-ORDER BY pg_total_relation_size(format('%I.%I', table_schema, table_name)::regclass) DESC;
-SQL
-```
+The three workspace packages were imported from
+`omnipath-metabo-dev-prototype` at revision
+`86f978e39bd1f7a40180714acf03747f3426e87c`.
+The pypath migration branch starts from `silver_schema_improvement` at
+`51aedf4a0f37ef66dce31274d614866a0f04ebb2`.

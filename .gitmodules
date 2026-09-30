@@ -1,7 +1,7 @@
 [submodule "pypath"]
 	path = pypath
 	url = https://github.com/saezlab/pypath
-	branch = master
+	branch = parquet-migration
 [submodule "download-manager"]
 	path = download-manager
 	url = https://github.com/saezlab/dlmachine.git

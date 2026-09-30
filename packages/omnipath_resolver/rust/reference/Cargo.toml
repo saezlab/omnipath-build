@@ -1,0 +1,20 @@
+[package]
+name = "anchor-resolution-serving"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "OmniPath reference construction and batch replay policy"
+
+[features]
+default = []
+parquet-input = ["dep:parquet", "dep:arrow-array", "dep:arrow-schema"]
+
+[dependencies]
+parquet = { version = "59.3", optional = true }
+arrow-array = { version = "59.3", optional = true }
+arrow-schema = { version = "59.3", optional = true }
+
+[[bin]]
+name = "anchor-components"
+path = "src/bin/components.rs"
+required-features = ["parquet-input"]

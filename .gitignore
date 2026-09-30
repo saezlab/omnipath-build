@@ -49,3 +49,16 @@ new_incremental_test/
 data_rewrite/
 data_cellcell/
 .playwright-mcp
+# Workspace package outputs
+**/*.egg-info/
+**/build/
+.ruff_cache/
+
+# Required source dictionaries, not generated reference data
+!packages/omnipath_build/src/omnipath_build/reference/data/
+!packages/omnipath_build/src/omnipath_build/reference/data/*.zstd
+
+# Native extension build outputs
+*.so
+*.dylib
+*.pyd

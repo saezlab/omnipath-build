@@ -1,0 +1,312 @@
+"""Tests for streaming identifier hub Parquet exports."""
+
+from __future__ import annotations
+
+import gzip
+import io
+import json
+import tempfile
+import unittest
+import zipfile
+from pathlib import Path
+
+import pyarrow.parquet as pq
+
+from omnipath_build.hubs.export import HUB_NAMES, export_hubs
+from omnipath_build.hubs.sources import emit_bigg, emit_from_records, emit_metanetx
+from omnipath_build.hubs.sources.uniprot import emit as emit_uniprot
+from omnipath_build.hubs.stream import iter_decoded_lines
+from omnipath_build.hubs.writer import HubParquetWriter
+
+
+class TestHubWriter(unittest.TestCase):
+    def test_caps_output_rows(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "hub.parquet"
+            writer = HubParquetWriter(path, max_records=3)
+            for index in range(10):
+                writer.add("chebi", str(index), "15377", "0", "chebi")
+            self.assertEqual(writer.close(), 3)
+            table = pq.read_table(path)
+            self.assertEqual(table.num_rows, 3)
+            self.assertEqual(
+                table.column_names,
+                ["source_type", "source_id", "hub_id", "taxonomy_id", "backend"],
+            )
+
+
+class TestHubExplode(unittest.TestCase):
+    def test_inputs_v2_style_record_maps_xrefs_to_own_hub(self):
+        records = [
+            {
+                "chebi_id": "CHEBI:15377",
+                "inchikey": "XLYOFNOQVPJJNP-UHFFFAOYSA-N",
+                "pubchem_compound": ["962", "22247451"],
+                "alt_ids": ["CHEBI:44819"],
+            }
+        ]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "chebi.parquet"
+            writer = HubParquetWriter(path, max_records=20)
+            emit_from_records(
+                writer,
+                records,
+                hub_column="chebi_id",
+                hub_type="chebi",
+                backend="chebi",
+                columns={
+                    "inchikey": "inchikey",
+                    "pubchem": "pubchem_compound",
+                },
+                extra=lambda row: {"chebi": row.get("alt_ids") or []},
+            )
+            writer.close()
+            rows = pq.read_table(path).to_pylist()
+            self.assertIn(
+                {
+                    "source_type": "chebi",
+                    "source_id": "CHEBI:15377",
+                    "hub_id": "CHEBI:15377",
+                    "taxonomy_id": "0",
+                    "backend": "chebi",
+                },
+                rows,
+            )
+            self.assertIn(
+                {
+                    "source_type": "inchikey",
+                    "source_id": "XLYOFNOQVPJJNP-UHFFFAOYSA-N",
+                    "hub_id": "CHEBI:15377",
+                    "taxonomy_id": "0",
+                    "backend": "chebi",
+                },
+                rows,
+            )
+            self.assertIn(
+                {
+                    "source_type": "pubchem",
+                    "source_id": "962",
+                    "hub_id": "CHEBI:15377",
+                    "taxonomy_id": "0",
+                    "backend": "chebi",
+                },
+                rows,
+            )
+            self.assertIn(
+                {
+                    "source_type": "chebi",
+                    "source_id": "CHEBI:44819",
+                    "hub_id": "CHEBI:15377",
+                    "taxonomy_id": "0",
+                    "backend": "chebi",
+                },
+                rows,
+            )
+
+
+class TestIdCleaning(unittest.TestCase):
+    def test_drops_placeholder_values(self):
+        from omnipath_build.hubs.schema import as_values
+
+        self.assertEqual(as_values("none"), [])
+        self.assertEqual(as_values("InChI=none"), [])
+        self.assertEqual(as_values(["962", "none", ""]), ["962"])
+
+
+class TestMetanetxStream(unittest.TestCase):
+    def test_property_export_adds_structures_and_deduplicates_identity(self):
+        properties = [
+            "#ID\tname\treference\tformula\tcharge\tmass\tInChI\tInChIKey\tSMILES",
+            "MNXM2\twater\tchebi:15377\tH2O\t0\t18.0\tInChI=1S/H2O/h1H2\tXLYOFNOQVPJJNP-UHFFFAOYSA-N\tO",
+            "WATER\twater\tchebi:15377\tH2O\t0\t18\tInChI=1S/H2O/h1H2\tXLYOFNOQVPJJNP-UHFFFAOYSA-N\tO",
+            "MNXMunknown\tclass\t\tR\t0\t\t\tNA\t-",
+        ]
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "metanetx.parquet"
+            writer = HubParquetWriter(path)
+            emit_metanetx(
+                writer, lines=["bigg.metabolite:h2o\tMNXM2\twater"], property_lines=properties
+            )
+            writer.close()
+            rows = pq.read_table(path).to_pylist()
+            water = [r for r in rows if r["hub_id"] == "MNXM2"]
+            self.assertEqual(sum(r["source_type"] == "metanetx" for r in water), 1)
+            self.assertEqual(
+                {r["source_type"] for r in water},
+                {"metanetx", "name", "inchi", "inchikey", "smiles", "bigg"},
+            )
+            self.assertTrue(
+                any(r["hub_id"] == "WATER" and r["source_type"] == "inchikey" for r in rows)
+            )
+            self.assertFalse(
+                any(
+                    r["source_type"] in {"inchi", "inchikey", "smiles"}
+                    for r in rows
+                    if r["hub_id"] == "MNXMunknown"
+                )
+            )
+
+    def test_maps_every_xref_onto_metanetx_id(self):
+        sample = (
+            "# comment\n"
+            "chebi:15377\tMNXM2\twater\n"
+            "kegg.compound:C00001\tMNXM2\twater\n"
+            "bigg.metabolite:h2o\tMNXM2\twater\n"
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "metanetx.parquet"
+            writer = HubParquetWriter(path, max_records=20)
+            emit_metanetx(writer, lines=sample.splitlines())
+            writer.close()
+            rows = pq.read_table(path).to_pylist()
+            self.assertEqual({row["hub_id"] for row in rows}, {"MNXM2"})
+            self.assertTrue(
+                {"metanetx", "chebi", "kegg", "bigg"} <= {row["source_type"] for row in rows}
+            )
+            self.assertTrue(all(row["hub_id"] == "MNXM2" for row in rows))
+
+
+class TestBiggStream(unittest.TestCase):
+    def test_maps_every_xref_onto_bigg_id(self):
+        sample = (
+            "bigg_id\tuniversal_bigg_id\tname\tmodel_list\tdatabase_links\n"
+            "h2o\th2o\tWater\tiJO1366\t"
+            "CHEBI: http://identifiers.org/chebi/CHEBI:15377; "
+            "KEGG Compound: http://identifiers.org/kegg.compound/C00001; "
+            "MetaNetX (MNX) Chemical: http://identifiers.org/metanetx.chemical/MNXM2\n"
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "bigg.parquet"
+            writer = HubParquetWriter(path, max_records=20)
+            emit_bigg(writer, lines=sample.splitlines(keepends=True))
+            writer.close()
+            rows = pq.read_table(path).to_pylist()
+            self.assertEqual({row["hub_id"] for row in rows}, {"h2o"})
+            self.assertTrue(
+                {"bigg", "chebi", "kegg", "metanetx", "name"}
+                <= {row["source_type"] for row in rows}
+            )
+
+
+class TestUniprotIdmappingStream(unittest.TestCase):
+    SAMPLE = (
+        "P04637\tUniProtKB-ID\tP53_HUMAN\n"
+        "P04637\tGene_Name\tTP53\n"
+        "P04637\tGeneID\t7157\n"
+        "P04637\tPDB\t1TUP\n"
+        "P04637\tEMBL\tX02469\n"
+        "P04637\tEMBL-CDS\tCAA26306.1\n"
+        "P04637\tDrugBank\tDB00921\n"
+        "P04637\tEnsembl\tENSG00000141510.18\n"
+        "P04637\tEnsembl_PRO\tENSP00000269305.4\n"
+        "P04637\tHGNC\t11998\n"
+        "P04637\tNCBI_TaxID\t9606\n"
+        "P38398\tGene_Name\tBRCA1\n"
+        "P38398\tPDB\t1JM7\n"
+        "P38398\tNCBI_TaxID\t9606\n"
+    )
+
+    def test_keeps_protein_reference_types_and_drops_structure_xrefs(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "uniprot.parquet"
+            writer = HubParquetWriter(path, max_records=500)
+            emit_uniprot(writer, lines=self.SAMPLE.splitlines(keepends=True))
+            writer.close()
+            rows = pq.read_table(path).to_pylist()
+            types = {row["source_type"] for row in rows}
+            self.assertTrue(
+                {"uniprot", "uniprot_entry", "genesymbol", "entrez", "ensg", "ensp", "hgnc"}
+                <= types
+            )
+            self.assertFalse(types & {"pdb", "embl", "embl_id", "drugbank"})
+            keyed = {(row["source_type"], row["source_id"]): row for row in rows}
+            self.assertEqual(keyed[("ensg", "ENSG00000141510")]["taxonomy_id"], "9606")
+            self.assertEqual(keyed[("uniprot", "P04637")]["hub_id"], "P04637")
+            self.assertEqual(keyed[("genesymbol", "BRCA1")]["hub_id"], "P38398")
+            self.assertNotIn(("ensg", "ENSG00000141510.18"), keyed)
+
+    def test_stops_at_max_records_without_secondary_lookup(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "uniprot.parquet"
+            writer = HubParquetWriter(path, max_records=3)
+            emit_uniprot(writer, lines=self.SAMPLE.splitlines(keepends=True))
+            self.assertEqual(writer.close(), 3)
+
+
+class TestDictionaries(unittest.TestCase):
+    def test_writes_dictionary_parquets(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            counts = export_hubs(
+                tmpdir,
+                hubs=[],
+                max_records=1,
+                include_dictionaries=True,
+            )
+            self.assertGreater(counts["id_type"], 10)
+            self.assertGreater(counts["organism"], 1)
+            manifest = json.loads((Path(tmpdir) / "manifest.json").read_text())
+            self.assertIn("export_id", manifest)
+            self.assertTrue((Path(tmpdir) / "id_type.parquet").exists())
+
+
+class TestStreamDecode(unittest.TestCase):
+    def test_gzip_lines_stop_without_reading_the_rest(self):
+        payload = gzip.compress(b"one\ntwo\nthree\nfour\n")
+        lines = iter_decoded_lines(io.BytesIO(payload))
+        self.assertEqual(next(lines).rstrip("\n"), "one")
+        self.assertEqual(next(lines).rstrip("\n"), "two")
+        lines.close()
+
+    def test_zip_first_member_lines(self):
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr("inner.txt", "alpha\nbeta\n")
+        lines = [line.rstrip("\n") for line in iter_decoded_lines(io.BytesIO(buf.getvalue()))]
+        self.assertEqual(lines, ["alpha", "beta"])
+
+    def test_plain_text_lines(self):
+        lines = [line.rstrip("\n") for line in iter_decoded_lines(io.BytesIO(b"alpha\nbeta\n"))]
+        self.assertEqual(lines, ["alpha", "beta"])
+
+
+class TestExportProgress(unittest.TestCase):
+    def test_dictionary_export_emits_stage_events(self):
+        events: list[dict] = []
+        with tempfile.TemporaryDirectory() as tmpdir:
+            export_hubs(
+                tmpdir,
+                hubs=[],
+                max_records=1,
+                include_dictionaries=True,
+                build_library=False,
+                on_progress=events.append,
+            )
+        stages = [(event["stage"], event["status"]) for event in events]
+        self.assertIn(("dictionaries", "running"), stages)
+        self.assertIn(("dictionaries", "done"), stages)
+        self.assertIn(("manifest", "done"), stages)
+
+
+class TestHubRegistry(unittest.TestCase):
+    def test_one_emitter_per_source(self):
+        self.assertEqual(
+            list(HUB_NAMES),
+            [
+                "entrez",
+                "uniprot",
+                "ensg",
+                "chebi",
+                "pubchem",
+                "refmet",
+                "ramp",
+                "ramp_gene",
+                "chembl",
+                "hmdb",
+                "lipidmaps",
+                "swisslipids",
+                "bigg",
+                "metanetx",
+                "mirbase",
+                "taxon_species",
+            ],
+        )

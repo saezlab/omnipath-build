@@ -1,0 +1,278 @@
+{
+  "bindingdb": {
+    "website": "https://www.bindingdb.org/",
+    "license": "Creative Commons Attribution 3.0 International license",
+    "license_url": "https://creativecommons.org/licenses/by/3.0/",
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/bindingdb.py"
+  },
+  "brenda": {
+    "website": "https://www.brenda-enzymes.org/index.php",
+    "license": "Creative Commons Attribution 4.0 International license",
+    "license_url": "https://creativecommons.org/licenses/by/4.0/",
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/brenda.py"
+  },
+  "cellchat": {
+    "website": "https://github.com/jinworks/CellChat",
+    "license": "GNU General Public License v3.0",
+    "license_url": "https://www.gnu.org/licenses/gpl-3.0.html",
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/cellchat.py"
+  },
+  "cellinker": {
+    "website": "https://www.cellknowledge.com.cn/cellinker/",
+    "license": "License not specified or unclear",
+    "license_url": null,
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/cellinker.py"
+  },
+  "cellphonedb": {
+    "website": "https://www.cellphonedb.org/",
+    "license": "MIT License - permissive free software license",
+    "license_url": "https://opensource.org/licenses/MIT",
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/cellphonedb.py"
+  },
+  "chebi": {
+    "website": "https://www.ebi.ac.uk/chebi/",
+    "license": "Creative Commons Attribution 4.0 International license",
+    "license_url": "https://creativecommons.org/licenses/by/4.0/",
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/chebi.py"
+  },
+  "chembl": {
+    "website": "https://www.ebi.ac.uk/chembl/",
+    "license": "Creative Commons Attribution-ShareAlike 3.0 Unported license",
+    "license_url": "https://creativecommons.org/licenses/by-sa/3.0/",
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/chembl.py"
+  },
+  "chemont": {
+    "website": "http://classyfire.wishartlab.com/",
+    "license": "Free for academic use, restrictions may apply for commercial use",
+    "license_url": null,
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/chemont.py"
+  },
+  "connectomedb2025": {
+    "website": "https://connectomedb.org/",
+    "license": "MIT License - permissive free software license",
+    "license_url": "https://opensource.org/licenses/MIT",
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/connectomedb.py"
+  },
+  "corum": {
+    "website": "https://mips.helmholtz-muenchen.de/corum/",
+    "license": "Creative Commons Attribution-NonCommercial 4.0 International license",
+    "license_url": "https://creativecommons.org/licenses/by-nc/4.0/",
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/corum.py"
+  },
+  "drugcentral": {
+    "website": "https://drugcentral.org/",
+    "license": "Creative Commons Attribution-ShareAlike 4.0 International license",
+    "license_url": "https://creativecommons.org/licenses/by-sa/4.0/",
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/drugcentral.py"
+  },
+  "foodb": {
+    "website": "https://foodb.ca/",
+    "license": "Creative Commons Attribution-NonCommercial 4.0 International license",
+    "license_url": "https://creativecommons.org/licenses/by-nc/4.0/",
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/foodb.py"
+  },
+  "go": {
+    "website": "https://geneontology.org/",
+    "license": "Creative Commons Attribution 4.0 International license",
+    "license_url": "https://creativecommons.org/licenses/by/4.0/",
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/go.py"
+  },
+  "guidetopharma": {
+    "website": "https://www.guidetopharmacology.org/",
+    "license": "Creative Commons Attribution-ShareAlike 4.0 International license",
+    "license_url": "https://creativecommons.org/licenses/by-sa/4.0/",
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/guidetopharma.py"
+  },
+  "hmdb": {
+    "website": "https://hmdb.ca/",
+    "license": "Creative Commons Attribution-NonCommercial 4.0 International license",
+    "license_url": "https://creativecommons.org/licenses/by-nc/4.0/",
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/hmdb.py"
+  },
+  "hpo": {
+    "website": "https://hpo.jax.org/",
+    "license": "HPO License - free for academic and non-profit use",
+    "license_url": "https://hpo.jax.org/app/license",
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/hpo.py"
+  },
+  "icellnet": {
+    "website": "https://github.com/soumelis-lab/ICELLNET",
+    "license": "License not specified or unclear",
+    "license_url": null,
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/icellnet.py"
+  },
+  "imm1415": {
+    "website": "http://bigg.ucsd.edu/models/iMM1415",
+    "license": "BiGG Models license - free for academic and non-profit use",
+    "license_url": "http://bigg.ucsd.edu/license#license",
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/imm1415.py"
+  },
+  "intact": {
+    "website": "https://www.ebi.ac.uk/intact/",
+    "license": "Creative Commons Attribution 4.0 International license",
+    "license_url": "https://creativecommons.org/licenses/by/4.0/",
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/intact.py"
+  },
+  "kegg": {
+    "website": "https://www.genome.jp/kegg/reaction/",
+    "license": "KEGG license - free for academic use, commercial use requires a license",
+    "license_url": "https://www.kegg.jp/kegg/legal.html",
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/kegg.py"
+  },
+  "lipidmaps": {
+    "website": "https://lipidmaps.org/",
+    "license": "Creative Commons Attribution 4.0 International license",
+    "license_url": "https://creativecommons.org/licenses/by/4.0/",
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/lipidmaps.py"
+  },
+  "macdb": {
+    "website": "https://ngdc.cncb.ac.cn/macdb/",
+    "license": "Free for academic use, restrictions may apply for commercial use",
+    "license_url": null,
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/macdb.py"
+  },
+  "mebocost": {
+    "website": "https://github.com/kaifuchenlab/MEBOCOST",
+    "license": "BSD 3-Clause License",
+    "license_url": "https://opensource.org/license/bsd-3-clause",
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/mebocost.py"
+  },
+  "metatlas": {
+    "website": "https://github.com/SysBioChalmers/Human-GEM",
+    "license": "Creative Commons Attribution 4.0 International license",
+    "license_url": "https://creativecommons.org/licenses/by/4.0/",
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/metatlas.py"
+  },
+  "mirbase": {
+    "website": "https://www.mirbase.org/",
+    "license": "Public domain - copyright waived in favor of the general public",
+    "license_url": "",
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/mirbase.py"
+  },
+  "mondo": {
+    "website": "https://mondo.monarchinitiative.org/",
+    "license": "Creative Commons Attribution 4.0 International license",
+    "license_url": "https://creativecommons.org/licenses/by/4.0/",
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/mondo.py"
+  },
+  "mrclinksdb": {
+    "website": "https://www.cellknowledge.com.cn/mrclinkdb/",
+    "license": "License not specified or unclear",
+    "license_url": null,
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/mrclinksdb.py"
+  },
+  "neuronchat": {
+    "website": "https://github.com/Wei-BioMath/NeuronChat",
+    "license": "GNU General Public License v3.0",
+    "license_url": "https://www.gnu.org/licenses/gpl-3.0.html",
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/neuronchat.py"
+  },
+  "nichenet": {
+    "website": "https://zenodo.org/records/7074291",
+    "license": "Creative Commons Attribution 4.0 International license",
+    "license_url": "https://creativecommons.org/licenses/by/4.0/",
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/nichenet.py"
+  },
+  "omnipath_ontology": {
+    "website": "https://omnipathdb.org/",
+    "license": "Creative Commons Attribution 4.0 International license",
+    "license_url": "https://creativecommons.org/licenses/by/4.0/",
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/omnipath_ontology.py"
+  },
+  "pfocr": {
+    "website": "https://pfocr.wikipathways.org/",
+    "license": "Creative Commons Zero 1.0 Universal - public domain dedication",
+    "license_url": "https://creativecommons.org/publicdomain/zero/1.0/",
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/pfocr.py"
+  },
+  "phenol_explorer": {
+    "website": "http://phenol-explorer.eu/",
+    "license": "Free for academic use, restrictions may apply for commercial use",
+    "license_url": null,
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/phenol_explorer.py"
+  },
+  "psi_mi": {
+    "website": "https://github.com/HUPO-PSI/psi-mi-CV",
+    "license": "Creative Commons Attribution 4.0 International license",
+    "license_url": "https://creativecommons.org/licenses/by/4.0/",
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/psi_mi.py"
+  },
+  "ptfi": {
+    "website": "https://ptfidiscover.markerlab.com/",
+    "license": "License not specified or unclear",
+    "license_url": null,
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/ptfi.py"
+  },
+  "rampdb": {
+    "website": "https://rampdb.nih.gov/",
+    "license": "GNU General Public License v2.0",
+    "license_url": "https://www.gnu.org/licenses/old-licenses/gpl-2.0.en.html",
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/rampdb.py"
+  },
+  "reactome": {
+    "website": "https://reactome.org/",
+    "license": "Creative Commons Zero 1.0 Universal - public domain dedication",
+    "license_url": "https://creativecommons.org/publicdomain/zero/1.0/",
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/reactome.py"
+  },
+  "recon3d": {
+    "website": "https://www.vmh.life/",
+    "license": "BiGG Models license - free for academic and non-profit use",
+    "license_url": "http://bigg.ucsd.edu/license#license",
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/recon3d.py"
+  },
+  "refmet": {
+    "website": "https://www.metabolomicsworkbench.org/databases/refmet/",
+    "license": "Free for academic use, restrictions may apply for commercial use",
+    "license_url": null,
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/refmet.py"
+  },
+  "rhea": {
+    "website": "https://www.rhea-db.org/",
+    "license": "Creative Commons Attribution 4.0 International license",
+    "license_url": "https://creativecommons.org/licenses/by/4.0/",
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/rhea.py"
+  },
+  "signor": {
+    "website": "https://signor.uniroma2.it/",
+    "license": "Creative Commons Attribution 4.0 International license",
+    "license_url": "https://creativecommons.org/licenses/by/4.0/",
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/signor.py"
+  },
+  "slctables": {
+    "website": "https://slc.bioparadigms.org/",
+    "license": "License not specified or unclear",
+    "license_url": null,
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/slctables.py"
+  },
+  "stitch": {
+    "website": "https://stitch.embl.de/",
+    "license": "Creative Commons Attribution 4.0 International license",
+    "license_url": "https://creativecommons.org/licenses/by/4.0/",
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/stitch.py"
+  },
+  "swisslipids": {
+    "website": "https://www.swisslipids.org/",
+    "license": "Creative Commons Attribution 4.0 International license",
+    "license_url": "https://creativecommons.org/licenses/by/4.0/",
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/swisslipids.py"
+  },
+  "tcdb": {
+    "website": "https://www.tcdb.org/",
+    "license": "Creative Commons Attribution-ShareAlike 3.0 Unported license",
+    "license_url": "https://creativecommons.org/licenses/by-sa/3.0/",
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/tcdb.py"
+  },
+  "uniprot": {
+    "website": "https://www.uniprot.org/",
+    "license": "Creative Commons Attribution 4.0 International license",
+    "license_url": "https://creativecommons.org/licenses/by/4.0/",
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/uniprot.py"
+  },
+  "wikipathways": {
+    "website": "https://www.wikipathways.org/",
+    "license": "Creative Commons Zero 1.0 Universal - public domain dedication",
+    "license_url": "https://creativecommons.org/publicdomain/zero/1.0/",
+    "input_module_url": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/wikipathways.py"
+  }
+}

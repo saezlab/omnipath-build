@@ -1,0 +1,426 @@
+#!/usr/bin/env python3
+"""Replay source-attributed stored raw payloads through existing input mappers.
+
+Each distinct evidence bundle stays separate; results can be compared per bundle
+and per original entity key without mixing identifiers from different rows.
+"""
+
+import argparse
+import concurrent.futures
+import hashlib
+import json
+import time
+import os
+from pathlib import Path
+from functools import lru_cache
+import duckdb
+import pyarrow as pa
+import pyarrow.parquet as pq
+
+NS = (
+    "inchikey",
+    "pubchem",
+    "chebi",
+    "chembl",
+    "hmdb",
+    "lipidmaps",
+    "swisslipids",
+    "bigg",
+    "metanetx",
+    "uniprot",
+    "uniprot-sec",
+    "uniprot_entry",
+    "entrez",
+    "ensg",
+    "enst",
+    "ensp",
+    "hgnc",
+    "refseq",
+    "refseq_protein",
+    "genesymbol",
+    "genesymbol-syn",
+    "inchi",
+    "kegg",
+    "cas",
+    "drugbank",
+    "goslin",
+    "refmet",
+    "genbank",
+    "ramp",
+    "ramp_gene",
+    "kegg_gene",
+)
+CODES = {n: i + 1 for i, n in enumerate(NS)}
+QSCHEMA = pa.schema(
+    [
+        (n, pa.string())
+        for n in (
+            "input_id",
+            "source",
+            "entity_key",
+            "entity_type",
+            "namespace",
+            "identifier",
+        )
+    ]
+    + [("target", pa.uint64())]
+)
+OSCHEMA = pa.schema([(n, pa.string()) for n in ("source", "entity_key", "entity_type", "library")])
+DSCHEMA = pa.schema(
+    [
+        (n, pa.string())
+        for n in (
+            "source",
+            "entity_key",
+            "row_id",
+            "input_id",
+            "smiles",
+            "inchikey",
+            "inchi",
+            "status",
+            "message",
+            "rdkit_version",
+            "inchi_version",
+            "policy",
+        )
+    ]
+)
+VSCHEMA = pa.schema(
+    [(n, pa.string()) for n in ("input_id", "ns", "identifier", "scope", "anchor")]
+    + [
+        ("target", pa.uint64()),
+        ("route", pa.uint64()),
+        ("ordinal", pa.uint64()),
+        ("primary", pa.bool_()),
+        ("lookup_key", pa.binary()),
+    ]
+)
+
+
+def log(event, **kw):
+    print(
+        json.dumps({"time": time.strftime("%FT%TZ", time.gmtime()), "event": event, **kw}),
+        flush=True,
+    )
+
+
+def key(kind, route, ns, scope, value):
+    return (
+        bytes([1, kind, route])
+        + CODES[ns].to_bytes(2, "big")
+        + (b"\x01" + int(scope).to_bytes(4, "big") if scope else b"\x00")
+        + value.encode()
+    )
+
+
+@lru_cache(maxsize=64)
+def source_modules(source):
+    """Use build discovery's resource aliases and dataset module locations."""
+    from omnipath_build.discovery import discover_datasets
+
+    _, datasets, _ = discover_datasets(source)
+    return {d.dataset_name: d.qualified_module for d in datasets}
+
+
+def preparation_fingerprint(source):
+    import importlib
+    from omnipath_build.canonical import match, policy, identifiers, structures
+    from omnipath_build import silver
+    from omnipath_build.extract import observations
+
+    paths = {Path(__file__).resolve()}
+    for module in [match, policy, identifiers, structures, silver, observations]:
+        paths.add(Path(module.__file__).resolve())
+    for name in source_modules(source).values():
+        module = importlib.import_module(name)
+        path = Path(module.__file__).resolve()
+        paths.add(path)
+        paths.update(Path(p).resolve() for p in getattr(module, "preparation_inputs", lambda: [])())
+        parser = path.parent / "parsers" / path.name
+        if parser.is_file():
+            paths.add(parser)
+    hashes = sorted(hashlib.sha256(p.read_bytes()).hexdigest() for p in paths)
+    from omnipath_build.reference.goslin_cache import cache_fingerprint
+    from omnipath_build.reference.goslin_identifiers import normalize
+
+    return hashlib.sha256(
+        json.dumps([hashes, structures.fingerprint(), cache_fingerprint(normalize)]).encode()
+    ).hexdigest()
+
+
+_LIPID_CACHE = None
+_LIPID_PENDING = []
+
+
+def flush_lipid_cache():
+    if _LIPID_PENDING:
+        _LIPID_CACHE.store(_LIPID_PENDING)
+        _LIPID_PENDING.clear()
+
+
+@lru_cache(maxsize=16384)
+def lipid_name_result(name):
+    """Reuse the same Goslin normalizer and persistent cache as the reference."""
+    global _LIPID_CACHE
+    from omnipath_build.reference.goslin_cache import NormalizationCache
+    from omnipath_build.reference.goslin_identifiers import normalize
+
+    if _LIPID_CACHE is None:
+        _LIPID_CACHE = NormalizationCache(
+            os.environ.get("OMNIPATH_GOSLIN_CACHE", "data/reference/.goslin-cache"), normalize
+        )
+    cached = _LIPID_CACHE.lookup([name])
+    if cached:
+        return cached[0]
+    result = normalize(name)
+    _LIPID_PENDING.append(result)
+    if len(_LIPID_PENDING) >= 512:
+        flush_lipid_cache()
+    return result
+
+
+def lipid_fallback_votes(normalized, observed, library):
+    """Use exact lipid descriptors only when no stronger identifier can vote."""
+    # A native RefMet ID can describe an underspecified lipid; it does not
+    # replace a structural descriptor (and older reference versions lack it).
+    if library != "chemical" or any(v.ns != "refmet" for v in normalized):
+        return normalized
+    from omnipath_build.canonical.match import Vote
+
+    names = set(observed.get("name", []) + observed.get("synonym", []))
+    parsed = [lipid_name_result(n) for n in sorted(names) if n.strip()]
+    parsed = [p for p in parsed if p["status"] == "parsed"]
+    if not parsed:
+        return normalized
+    specificity = max(p["specificity"] for p in parsed)
+    return normalized + [
+        Vote("goslin", value, None, "id", False)
+        for value in sorted({p["goslin"] for p in parsed if p["specificity"] == specificity})
+    ]
+
+
+def observation_bundle(input_id, obs, normalized, observed, library, source="runtime"):
+    """Encode normalized evidence for both serving builds and offline replay."""
+    from omnipath_build.canonical.policy import INCHIKEY_RE
+
+    target = 1 if library == "chemical" else 2
+    normalized = lipid_fallback_votes(normalized, observed, library)
+    symbol_scoped = target == 2 and any(v.kind == "symbol" for v in normalized)
+    bundle = set()
+    for v in normalized:
+        if v.ns not in CODES:
+            raise ValueError("Unhandled eligible namespace " + v.ns)
+        scope = (v.taxon or "") if symbol_scoped else ""
+        route = 2 if target == 2 and v.ns in {"entrez", "ramp_gene", "kegg_gene"} else 1
+        anchor = v.id if target == 1 and v.ns == "inchikey" and INCHIKEY_RE.fullmatch(v.id) else ""
+        bundle.add((v.ns, v.id, scope, route, anchor, v.primary))
+    query = dict(
+        input_id=input_id,
+        source=source,
+        entity_key=input_id,
+        entity_type=obs.entity_type,
+        namespace=str(obs.namespace),
+        identifier=obs.identifier,
+        target=target,
+    )
+    rows = [
+        dict(
+            input_id=input_id,
+            ns=ns,
+            identifier=value,
+            scope=scope,
+            anchor=anchor,
+            target=target,
+            route=route,
+            ordinal=j,
+            primary=primary,
+            lookup_key=key(target, route, ns, scope, value),
+        )
+        for j, (ns, value, scope, route, anchor, primary) in enumerate(sorted(bundle))
+    ]
+    return query, rows
+
+
+def extract(task):
+    source, index, records, directory = task
+    from omnipath_build.two_phase import load_mapper
+    from omnipath_build.silver import SilverExtractor
+    from omnipath_build.canonical.match import votes_for
+    from omnipath_build.canonical.policy import get_policy
+
+    queries = {}
+    votes = {}
+    observations = {}
+    derivations = []
+    for row_id, payload in records:
+        ds = row_id.rsplit(":", 1)[0]
+        raw = json.loads(payload)
+        mapped = load_mapper(source_modules(source)[ds], ds)(raw)
+        if mapped is None:
+            continue
+        ex = SilverExtractor(source, ds)
+        ex.process_record(mapped, raw, row_id, 0)
+        for eid, obs in ex.entities.items():
+            policy = get_policy(obs.entity_type)
+            observations[eid] = dict(
+                source=source,
+                entity_key=eid,
+                entity_type=obs.entity_type,
+                library=policy.library,
+            )
+            if policy.library is None:
+                continue
+            normalized, observed = votes_for(obs, policy)
+            query, rows = observation_bundle(eid, obs, normalized, observed, policy.library, source)
+            signature = [{k: v for k, v in row.items() if k != "lookup_key"} for row in rows]
+            sig = hashlib.sha256(
+                json.dumps([query, signature], sort_keys=True).encode()
+            ).hexdigest()
+            query["input_id"] = sig
+            queries[sig] = query
+            for row in rows:
+                row["input_id"] = sig
+            votes[sig] = rows
+            derivations.extend(
+                dict(source=source, entity_key=eid, row_id=row_id, input_id=sig, **d)
+                for d in obs.structure_derivations
+            )
+    flush_lipid_cache()
+    out = Path(directory)
+    pq.write_table(
+        pa.Table.from_pylist(derivations, schema=DSCHEMA),
+        out / f"d-{index}.parquet",
+        compression="zstd",
+    )
+    pq.write_table(
+        pa.Table.from_pylist(list(queries.values()), schema=QSCHEMA),
+        out / f"q-{index}.parquet",
+        compression="zstd",
+    )
+    pq.write_table(
+        pa.Table.from_pylist([v for vs in votes.values() for v in vs], schema=VSCHEMA),
+        out / f"v-{index}.parquet",
+        compression="zstd",
+    )
+    pq.write_table(
+        pa.Table.from_pylist(list(observations.values()), schema=OSCHEMA),
+        out / f"o-{index}.parquet",
+        compression="zstd",
+    )
+    return len(records), len(queries)
+
+
+def prepare(args):
+    out = Path(args.output)
+    out.mkdir(parents=True, exist_ok=True)
+    for source in args.sources:
+        dest = out / source
+        dest.mkdir(exist_ok=True)
+        parts = dest / "parts"
+        parts.mkdir(exist_ok=True)
+        if (dest / "prepared.json").exists():
+            prior = json.loads((dest / "prepared.json").read_text())
+            if (
+                prior.get("preparation_fingerprint") != preparation_fingerprint(source)
+                or prior["version"] != args.version
+            ):
+                raise RuntimeError(
+                    "Prepared input code/version changed; choose a fresh output directory"
+                )
+            continue
+        src = Path(args.data) / "resources" / source / args.version / "evidence_payloads.parquet"
+        pending = set()
+        seen = set()
+        batch = []
+        submitted = 0
+        finished = 0
+        start = time.monotonic()
+        tick = start
+        with concurrent.futures.ProcessPoolExecutor(max_workers=args.workers) as pool:
+
+            def drain(block=False):
+                nonlocal pending, finished, tick
+                done, pending = concurrent.futures.wait(
+                    pending,
+                    timeout=1 if block else 0,
+                    return_when=concurrent.futures.FIRST_COMPLETED,
+                )
+                for f in done:
+                    finished += f.result()[0]
+                if time.monotonic() - tick >= 10:
+                    log(
+                        "extract_progress",
+                        source=source,
+                        rows=finished,
+                        unique_raw_rows=len(seen),
+                        seconds=round(time.monotonic() - start),
+                    )
+                    tick = time.monotonic()
+
+            for b in pq.ParquetFile(src, read_dictionary=["payload_json"]).iter_batches(
+                batch_size=2048, columns=["row_id", "payload_json"]
+            ):
+                # Deduplicate on the narrow ID column before converting bulky
+                # repeated payload strings to Python objects.
+                selected = []
+                for index, row_id in enumerate(b.column("row_id").to_pylist()):
+                    if row_id not in seen:
+                        seen.add(row_id)
+                        selected.append(index)
+                for r in b.take(pa.array(selected, type=pa.int64())).to_pylist():
+                    batch.append((r["row_id"], r["payload_json"]))
+                    if len(batch) == 2048:
+                        while len(pending) >= args.workers * 2:
+                            drain(True)
+                        pending.add(pool.submit(extract, (source, submitted, batch, str(parts))))
+                        batch = []
+                        submitted += 1
+                        drain()
+                drain()
+            if batch:
+                pending.add(pool.submit(extract, (source, submitted, batch, str(parts))))
+            while pending:
+                drain(True)
+        c = duckdb.connect()
+        c.execute("SET memory_limit='4GB'")
+        c.execute("SET threads=6")
+        c.execute("SET preserve_insertion_order=false")
+        c.execute(f"SET temp_directory='{dest}/spill'")
+        for prefix, name, schema in [
+            ("q", "queries", QSCHEMA),
+            ("v", "votes", VSCHEMA),
+            ("o", "observations", OSCHEMA),
+            ("d", "structure-derivations", DSCHEMA),
+        ]:
+            if not any(parts.glob(f"{prefix}-*.parquet")):
+                pq.write_table(
+                    pa.Table.from_pylist([], schema=schema),
+                    parts / f"{prefix}-empty.parquet",
+                )
+            c.execute(
+                f"COPY (SELECT DISTINCT * FROM read_parquet('{parts}/{prefix}-*.parquet')) TO '{dest}/{name}.parquet' (FORMAT PARQUET,COMPRESSION ZSTD)"
+            )
+        summary = {
+            "source": source,
+            "preparation_fingerprint": preparation_fingerprint(source),
+            "version": args.version,
+            "payload_rows": len(seen),
+            "entity_keys": c.execute(
+                f"SELECT count(DISTINCT entity_key) FROM read_parquet('{dest}/queries.parquet')"
+            ).fetchone()[0],
+            "evidence_bundles": pq.ParquetFile(dest / "queries.parquet").metadata.num_rows,
+            "seconds": time.monotonic() - start,
+        }
+        (dest / "prepared.json").write_text(json.dumps(summary, indent=2))
+        log("extract_done", **summary)
+        c.close()
+
+
+if __name__ == "__main__":
+    p = argparse.ArgumentParser()
+    p.add_argument("--data", required=True)
+    p.add_argument("--output", required=True)
+    p.add_argument("--version", default="2026.9.8.1")
+    p.add_argument("--sources", nargs="+", default=["brenda", "bindingdb"])
+    p.add_argument("--workers", type=int, default=6)
+    prepare(p.parse_args())
