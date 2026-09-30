@@ -41,7 +41,7 @@ The new regression shows that unanalysed resource/version index probes filter
 both custom and generic plans put all three scoped keys in the index condition.
 Cache warming affects timings; predicate placement is the primary evidence.
 
-**Parameters**: loader `15500f7`; native replay remains `300d06b`, pypath
+**Parameters**: loader `3c9bab3` (owner statistics `15500f7`); native replay remains `300d06b`, pypath
 `e27d72e095f53b1a0fd76d63bbe059c10f8a48d8`. Unchanged private release
 `2026.9.30.4`, manifest SHA-256
 `06f55112b371055b9b539c27eb7886d403b0131098393d1bafe4723ce006c03e`;
@@ -65,8 +65,20 @@ rebuilds products with private Parquets unavailable, rolling that rebuild back.
 
 **Phase durations**: pending in `postgres-build.json`/`.log`. The private
 monitor also records per-resource owner-statistics duration. The changed loader
-passed all 393 PostgreSQL/subset tests in 23.00 s; Ruff, diff checks and independent
+passed all 396 PostgreSQL/subset tests in 21.86 s; Ruff, diff checks and independent
 review passed. The separate 39-resource raw validation remains successful.
+
+A read-only screen covered all 46 selected resources: canonical identifiers and
+labels had maximum 1240 UTF-8 bytes; 2442 alias index candidates exceeded a
+2000-byte composite-field screen. The unbounded alias index failed in a local
+disposable PG16 cluster on these actual values (3704-byte entry versus 2704-byte
+limit). The index now uses the first 256 lowered characters with text_pattern_ops;
+all stored TEXT and nested/view values remain complete. The same 2442 values
+passed actual index creation in 0.013856 s and exact full-value comparison.
+Candidate-file SHA-256: d510c11aee16ac89e3170cfccac08e941d910e58f2b843ad7ad63e702d84827b.
+Shared-prefix and four-byte Unicode regressions preserve complete lookup results.
+This preflight prevented a late full-transaction index failure; no source rebuild
+or query API change was needed.
 
 **Outcome**: in progress. Expected base rows: 6,383,473 entities; 80,136,865
 identifiers; 18,339,902 relations; 22,887,251 evidence; 150,690,040 annotations.
