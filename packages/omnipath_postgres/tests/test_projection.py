@@ -286,47 +286,44 @@ def test_invalid_batch_size_rejected_before_reading(tmp_path, batch_size):
         list(projection.iter_validated_payloads(tmp_path, batch_size=batch_size))
 
 
-def test_duckdb_reader_fetches_bounded_batches_and_closes_when_stopped(tmp_path, monkeypatch):
-    class Connection:
-        description = [("entity_key",)]
-        closed = False
+def test_parquet_reader_streams_single_python_rows_and_closes_when_stopped(tmp_path, monkeypatch):
+    events = []
 
-        def __init__(self):
-            self.sizes = []
-            self.position = 0
+    class Batch:
+        num_rows = 2
 
-        def __enter__(self):
-            return self
+        def slice(self, offset, size):
+            assert size == 1
+            events.append(("convert", offset))
+            return pa.RecordBatch.from_pylist([{"entity_key": f"exact-{offset}"}])
 
-        def __exit__(self, *_args):
-            self.closed = True
+    class Parquet:
+        def __init__(self, path, **kwargs):
+            assert path == tmp_path / "resource=ignored" / "file'with'quotes.parquet"
+            assert kwargs == {"memory_map": False, "pre_buffer": False, "buffer_size": 65536}
 
-        def execute(self, query, params):
-            assert "read_parquet(?, hive_partitioning=false)" in query
-            assert params == [str(tmp_path / "file'with'quotes.parquet")]
+        def iter_batches(self, *, batch_size, use_threads):
+            assert batch_size == 64
+            assert use_threads is False
+            try:
+                events.append("decode")
+                yield Batch()
+                raise AssertionError("Do not decode the next batch after an early stop")
+            finally:
+                events.append("decoder_closed")
 
-        def fetchmany(self, size):
-            self.sizes.append(size)
-            rows = [
-                (f"exact-{index}",) for index in range(self.position, min(self.position + size, 5))
-            ]
-            self.position += len(rows)
-            return rows
+        def close(self):
+            events.append("file_closed")
 
-        def fetchall(self):
-            raise AssertionError("Reading the complete input is forbidden")
-
-    connection = Connection()
-    monkeypatch.setattr(projection.duckdb, "connect", lambda **_kwargs: connection)
-    rows = projection.iter_rows(tmp_path / "file'with'quotes.parquet", batch_size=2)
-    assert connection.sizes == []
+    monkeypatch.setattr(projection.pq, "ParquetFile", Parquet)
+    rows = projection.iter_rows(
+        tmp_path / "resource=ignored" / "file'with'quotes.parquet", batch_size=1024
+    )
+    assert events == []
     assert next(rows) == {"entity_key": "exact-0"}
-    assert next(rows) == {"entity_key": "exact-1"}
-    assert connection.sizes == [2]
-    assert next(rows) == {"entity_key": "exact-2"}
-    assert connection.sizes == [2, 2]
+    assert events == ["decode", ("convert", 0)]
     rows.close()
-    assert connection.closed
+    assert events == ["decode", ("convert", 0), "decoder_closed", "file_closed"]
 
 
 @pytest.mark.integration

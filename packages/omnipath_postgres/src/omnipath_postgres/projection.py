@@ -14,10 +14,15 @@ import json
 from pathlib import Path
 from typing import Any, Literal
 
-import duckdb
+import pyarrow.parquet as pq
 
 
 TableName = Literal["entities", "identifiers", "annotations", "relations", "evidence"]
+
+# COPY batches may be larger, but wide nested evidence/raw records must not be
+# decoded or converted into a complete SQL result before the first row is read.
+_MAX_PARQUET_BATCH_ROWS = 64
+_PARQUET_READ_BUFFER_BYTES = 64 * 1024
 
 
 @dataclass(frozen=True)
@@ -55,21 +60,41 @@ def _reject_nonfinite(value: str) -> None:
 
 
 def iter_rows(table_path: str | Path, *, batch_size: int = 1024) -> Iterator[dict[str, Any]]:
-    """Read one Parquet file through DuckDB, retaining at most one fetched batch.
+    """Stream one Parquet file with buffered I/O and at most 64 decoded rows.
 
-    Paths are parameterized and hive partition inference is disabled, so source
-    fields and string keys are returned exactly as stored in the file. Close the
-    generator if stopping early to release its connection immediately.
+    A direct file reader preserves the published schema without hive partition
+    inference. Disable column-chunk prefetch and use fixed-size input buffers;
+    unbuffered Parquet reads can retain an entire compressed column chunk. Only
+    one row is converted to Python at a time. Unlike ``execute().fetchmany()``,
+    this does not materialize a SQL result containing the whole source file.
+
+    Memory still depends on the largest individual record, Parquet page and
+    dictionary. Close the generator if stopping early to release its file and
+    decoder immediately.
     """
     _validate_batch_size(batch_size)
-    with duckdb.connect(config={"threads": "1", "memory_limit": "256MB"}) as connection:
-        connection.execute(
-            "SELECT * FROM read_parquet(?, hive_partitioning=false)", [str(table_path)]
+    parquet = pq.ParquetFile(
+        table_path,
+        memory_map=False,
+        pre_buffer=False,
+        buffer_size=_PARQUET_READ_BUFFER_BYTES,
+    )
+    try:
+        batches = parquet.iter_batches(
+            batch_size=min(batch_size, _MAX_PARQUET_BATCH_ROWS), use_threads=False
         )
-        columns = tuple(column[0] for column in connection.description)
-        while batch := connection.fetchmany(batch_size):
-            for row in batch:
-                yield dict(zip(columns, row, strict=True))
+        try:
+            for batch in batches:
+                for index in range(batch.num_rows):
+                    yield batch.slice(index, 1).to_pylist()[0]
+                # Release the previous batch before asking the decoder for another.
+                del batch
+        finally:
+            # Closing the generator also frees its C++ reader when the consumer
+            # stops while still inside a decoded batch.
+            batches.close()
+    finally:
+        parquet.close()
 
 
 def iter_resource_records(
