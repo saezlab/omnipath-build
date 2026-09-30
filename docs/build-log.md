@@ -31,6 +31,37 @@ Keep entries factual and specific — numbers and log excerpts, not vibes.
 
 ---
 
+## 2026-09-30 — full resolved-Parquet release on nicesrv, attempt 2 (running)
+
+**Reason**: retry the complete fixed release after correcting repeated raw payload
+expansion. The first attempt rolled back before committing; no artifacts changed.
+
+**Parameters**: loader `a71fcf7`, same release `2026.9.30.4`, canonical manifest
+SHA-256 `06f55112b371055b9b539c27eb7886d403b0131098393d1bafe4723ce006c03e`,
+schema `full_20260930`, `batch_size=1024`, database/role `omnipath_migration` on
+localhost 5440. Same `uv run --frozen --no-sync python .../postgres-build.py`,
+46 resource pins, 3 GiB process/4 GiB container memory limits, two CPUs,
+256 MiB process swap, 64 GiB disk reserve and session settings as attempt 1.
+The unit is `omnipath-migration-full-postgres-attempt2-20260930.service`.
+Raw reading retains one native dictionary and at most 256 index validation
+results; dictionary batches have at most 1024 scalar owners. Plain raw and nested
+record batches remain capped at 64. Every occurrence still receives pointer/key,
+owner and count checks; SHA/type validation reuses only exact dictionary values.
+No raw body is stored in PostgreSQL. All three products are built after base commit.
+
+**Phase durations**: pending, recorded in the private `postgres-build.json` and
+`.log`. Before restart, the actual 42,536-row FooDB block passed in 1.010 s,
+with peak RSS 472,936 KiB and one JSON parse/SHA call for its 42,831,695-byte text.
+All 297 disposable PostgreSQL/subset tests passed (14.22 s); independent review,
+Ruff and diff checks passed. The parallel artifact-only raw check resumes using
+the same dictionary reader and its own 3 GiB/one CPU cap.
+
+**Outcome**: in progress; base commit, full read-only verification and the
+transactional PG-only product rebuild are pending. Native replay scope remains
+all 300,008 originally published records across the seven affected resources.
+The 39 unchanged pins remain independent copies. Existing production and private
+schemas are preserved.
+
 ## 2026-09-30 — full resolved-Parquet release on nicesrv, attempt 1 (cancelled)
 
 **Reason**: validate the complete release after moving all former PostgreSQL
