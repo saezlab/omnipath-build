@@ -31,6 +31,36 @@ Keep entries factual and specific — numbers and log excerpts, not vibes.
 
 ---
 
+## 2026-09-30 — DuckDB bulk projection/COPY comparison on nicesrv (running)
+
+**Reason**: confirm the restored SQL projection/COPY path is faithful and measure
+its cost against the Python implementation before restarting the full release.
+
+**Parameters**: code `91317a3`, private `bulk-benchmark.py` in
+`/root/projects/omnipath-migration/full-release-20260930`, invoked with
+`uv run --frozen --no-sync python`. The first 50,000 published BindingDB entities
+(version `2026.9.8.1`) are written once to a temporary Parquet subset; relations
+are empty in both paths. SQL and Python consume identical files. Both load all
+five target tables with complete entity JSON, identifier and annotation
+occurrences and the same PostgreSQL schema/primary keys/immediate foreign keys.
+SQL uses one DuckDB thread, 512 MB working memory, 16 MB CSV rotation threshold
+and 1 MiB byte forwarding. Python uses the previous reference projector,
+1024-row COPY batches and parent flushing. All writes use one private transaction
+on database/role `omnipath_migration`, localhost 5440, with separate new schemas
+`bulk_sql_benchmark_20260930` and `bulk_python_benchmark_20260930`; the transaction
+is rolled back after exact bidirectional EXCEPT ALL checks on every projected
+column. No source parser, resolution, download or product/index derivation.
+Process cap: 3 GiB RAM / 256 MiB swap / two CPUs; isolated PG cap: 4 GiB/two CPUs.
+
+**Phase durations**: pending in `bulk-benchmark.json`/`.log`. SQL runs first once;
+Python benefits from any warmed cache. Process peak RSS is cumulative and cannot
+compare the two methods' memory independently. This is a projection/transport
+comparison, not a full-release performance estimate.
+
+**Outcome**: pending. The corrected loader passed 389 PostgreSQL/subset tests
+(19.57 s) plus a separate actual multi-file CSV rotation regression (1.63 s).
+Independent code/benchmark review, Ruff and diff checks passed.
+
 ## 2026-09-30 — full resolved-Parquet release on nicesrv, attempt 2 (cancelled)
 
 **Reason**: retry the complete fixed release after correcting repeated raw payload
