@@ -31,6 +31,70 @@ Keep entries factual and specific — numbers and log excerpts, not vibes.
 
 ---
 
+## 2026-09-30 — full resolved-Parquet release on nicesrv (running)
+
+**Reason**: validate the complete release after moving all former PostgreSQL
+payload consumers to published annotations. The seven affected resources were
+rebuilt without a record cap; 39 unchanged resources retain their original pins.
+
+**Parameters**: loader code `c2dfc11`, native replay code `300d06b`, pypath
+`e27d72e095f53b1a0fd76d63bbe059c10f8a48d8`. Private release `2026.9.30.4`,
+canonical manifest SHA-256
+`06f55112b371055b9b539c27eb7886d403b0131098393d1bafe4723ce006c03e`.
+Exact resource pins, file checksums and preflight counts are retained in
+`/root/projects/omnipath-migration/full-release-20260930/release.json` and
+`final-preflight.json`. Data root: that directory's `data/`.
+
+The private `launch-replay.py` ran `scripts/replay_resource.py` against the seven
+original published resource directories, with version `2026.9.30.4`, immutable
+reference `/root/projects/full_parquet/data/reference/.library-compact-20260912`,
+private cached Human-GEM TSV, `--resource-ram-gb 3 --batch-workers 1
+--duckdb-threads 1 --memory-limit 512MB --min-free-disk-gb 64`. No `--max-records`
+argument. The process group had a 6 GiB memory / 512 MiB swap cap and two CPUs.
+All 300,008 published source records, original row IDs and exact raw text passed
+replay verification. Unpublished rows discarded by historical builds are outside
+this replay's coverage. The 39 reused versions are independent file copies.
+
+Database invocation, from the isolated migration checkout:
+
+```sh
+uv run --frozen --no-sync python \
+  /root/projects/omnipath-migration/full-release-20260930/postgres-build.py
+```
+
+The script calls `load_release(..., schema='full_20260930', batch_size=1024)`
+then `build_subsets(..., products=('metsigdb','network_views','cosmos'))` in a
+separate transaction after the base release commits. Database/role
+`omnipath_migration`, localhost port 5440, isolated container
+`omnipath-migration-postgres` (2 CPUs / 4 GiB RAM). Import process: 3 GiB memory,
+256 MiB swap, two CPUs, minimum disk reserve 64 GiB on the same filesystem as its
+Docker volume. Session: `work_mem=16MB`, `maintenance_work_mem=128MB`,
+`max_parallel_workers_per_gather=1`, `jit=off`. Buffered Arrow decoding uses at
+most 64 rows; exact-text validation cache at most 256 entries / 64 MiB charged
+storage. COPY foreign keys are immediate within the one atomic base transaction.
+No source deletion, download, reference preparation, reparse or entity resolution
+runs in PostgreSQL. Existing schemas and production services are preserved.
+
+**Phase durations**: full native replay Rhea 329.122207 s, Recon3D 62.496945 s,
+MetAtlas 76.459144 s, KEGG 388.689825 s, Reactome 101.476603 s,
+MACdb 34.849949 s, ConnectomeDB2025 61.983096 s. Per-dataset coverage, native
+prepare/finalize timings and source hashes are in `rebuilt-data/replay_report.json`.
+KEGG is the replay outlier. Final fixed-release preflight 10.144114 s.
+Database timings are pending; `postgres-build.json` and `postgres-build.log`
+record phase/source progress. Source projection/COPY and raw-validation intervals
+are approximate (final partial batches and preliminary ANALYZE sit outside those
+intervals); loader totals and separate COPY call totals are authoritative.
+
+**Outcome**: in progress. Preflight expects 6,383,473 entities, 80,136,865
+identifiers, 18,339,902 relations, 22,887,251 evidence occurrences and 150,690,040
+annotations; 26,711,866 raw payload rows are validated and discarded.
+An earlier artifact-only raw check was OOM-killed while DuckDB materialized
+FooDB; it made no database writes. The bounded Arrow reader fixed that behavior,
+and the private artifact check resumes separately with a process memory cap.
+Database commit, independent full validation and PG-only rebuild results are
+pending. A failed/interrupted commit boundary must be inspected through release
+metadata rather than inferred from a missing completion flag.
+
 ## 2026-09-30 — capped annotation migration on nicesrv (completed)
 
 **Reason**: verify that all former PostgreSQL product payload readers can use
