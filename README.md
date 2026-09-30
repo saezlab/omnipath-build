@@ -12,12 +12,14 @@ product adapters derive MetSigDB, network presets and COSMOS from that loaded re
 - `packages/omnipath_build`: reference preparation, resource builds and publication.
 - `packages/omnipath_postgres`: pinned release loading, query indexes, ontology closure and reaction contexts.
 - `packages/omnipath_subsets`: MetSigDB, network presets and COSMOS adapters.
+- `packages/omnipath_api`: DuckDB queries, resource inspection and exports over Parquet.
+- `packages/omnipath_web`: SvelteKit explorer and API proxy.
 - `pypath/`: source parsers and mappings, on the `parquet-migration` branch.
 - `legacy/postgres/`: the previous PostgreSQL implementation and tests, retained
   for comparison while validating downstream compatibility.
 
 The active workspace excludes the legacy package so imports use the new pipeline.
-API, web and client packages remain later milestones.
+The Parquet API and web explorer are integrated. The Python client remains a later milestone.
 
 ## Setup
 
@@ -87,6 +89,34 @@ and web query benchmarks remain.
 
 See the [PostgreSQL package](packages/omnipath_postgres/README.md).
 
+## Parquet API and web explorer
+
+```sh
+pnpm --dir packages/omnipath_web install --frozen-lockfile
+OMNIPATH_DATA_ROOT=data/migration-smoke ./run_all.sh
+```
+
+This starts the local API on port 8085 and explorer on port 5173, using the
+existing bounded sample. Alternatively, run `make api DATA_ROOT=data/migration-smoke`
+and `make web` in separate terminals.
+
+The API default is Latest: each resource's newest published Parquet version.
+Resources update independently. Optional named Parquet snapshots retain their
+existing pins. PostgreSQL monthly snapshots are built separately and do not
+control which versions the API or explorer serves. Existing versioning behavior
+is preserved; see [versioning](VERSIONING.md).
+
+The explorer includes search, filtering, details, evidence, ontology navigation,
+selection and exports. Serving defaults to read-only; resource builds require
+the separately configured worker. Starting this stack runs no source builds or
+PostgreSQL loads.
+
+See the [API](packages/omnipath_api/README.md) and
+[explorer](packages/omnipath_web/README.md). Use `make test-api` for API fixtures;
+web checks are listed in the explorer README. See the
+[serving milestone](docs/parquet-serving-milestone.md) for verification and the
+real fixture browser check.
+
 ## Products from a loaded release
 
 ```sh
@@ -147,5 +177,6 @@ local fixtures; integration tests require explicit opt-in.
 The three workspace packages were imported from
 `omnipath-metabo-dev-prototype` at revision
 `86f978e39bd1f7a40180714acf03747f3426e87c`.
+The API and web explorer were imported from the same prototype revision.
 The pypath migration branch starts from `silver_schema_improvement` at
 `51aedf4a0f37ef66dce31274d614866a0f04ebb2`.

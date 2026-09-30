@@ -5,6 +5,7 @@ members = [
     "packages/omnipath_build",
     "packages/omnipath_postgres",
     "packages/omnipath_subsets",
+    "packages/omnipath_api",
 ]
 
 [tool.uv.sources]
@@ -13,6 +14,7 @@ omnipath-resolver = { workspace = true }
 omnipath-build = { workspace = true }
 omnipath-postgres = { workspace = true }
 omnipath-subsets = { workspace = true }
+omnipath-api = { workspace = true }
 pypath-omnipath = { path = "pypath", editable = true }
 cachedir = { path = "cache-manager", editable = true }
 dlmachine = { path = "download-manager", editable = true }
@@ -39,4 +41,5 @@ testpaths = [
     "packages/omnipath_build/tests",
     "packages/omnipath_postgres/tests",
     "packages/omnipath_subsets/tests",
+    "packages/omnipath_api/tests",
 ]

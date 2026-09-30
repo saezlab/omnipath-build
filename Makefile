@@ -1,4 +1,4 @@
-.PHONY: setup test test-pypath test-postgres check build sample load-postgres test-subsets build-subsets
+.PHONY: setup test test-pypath test-postgres check build sample load-postgres test-subsets build-subsets test-api api web
 
 export PKG_INFRA_CONFIG ?= $(CURDIR)/config/pkg_infra_quiet.yaml
 
@@ -42,3 +42,15 @@ build-subsets:
 
 test-subsets:
 	OMNIPATH_TEST_POSTGRES=1 uv run --frozen pytest packages/omnipath_postgres/tests packages/omnipath_subsets/tests -q
+
+# Parquet serving is independent of PostgreSQL snapshot release scheduling.
+API_PORT ?= 8085
+WEB_PORT ?= 5173
+api:
+	uv run --frozen omnipath-api --host 127.0.0.1 --port $(API_PORT) --data-root $(DATA_ROOT)
+
+web:
+	API_SERVICE_URL=http://127.0.0.1:$(API_PORT) pnpm --dir packages/omnipath_web dev --host 127.0.0.1 --port $(WEB_PORT)
+
+test-api:
+	uv run --frozen pytest packages/omnipath_api/tests -q

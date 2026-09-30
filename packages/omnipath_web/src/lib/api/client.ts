@@ -1,0 +1,335 @@
+import { releaseFetch } from '$lib/api/release';
+import type { SearchFilters } from '$lib/types/search';
+import type { InteractionDetailsData } from '$lib/types/interactions';
+import type { components } from './types.generated';
+import {
+  entityFromWire,
+  entitySearchFromWire,
+  relationSearchFromWire,
+  ontologyTermFromWire,
+} from './adapters';
+import type {
+  Declared,
+  WireEntities,
+  WireEntitySearch,
+  WireRelationSearch,
+  WireFacet,
+  WireCursor,
+  WireOntologyTerm,
+} from './contracts';
+
+export type SelectionScopeResponse = components['schemas']['SelectionScopeResponse'];
+export type EntityDetailsResponse = components['schemas']['EntityDetailsResponse'];
+export type EntityFilterOptions = components['schemas']['EntityFilterOptions'];
+export type RelationFilterOptions = components['schemas']['RelationFilterOptions'];
+export type ResourcesResponse = components['schemas']['ResourcesResponse'];
+export type StatsSource = components['schemas']['StatsSource'];
+export type StatsEntityType = components['schemas']['StatsEntityType'];
+export type StatsInteractionType = components['schemas']['StatsInteractionType'];
+export type TermsResponse = components['schemas']['TermsResponse'];
+export type BuildManifest = components['schemas']['BuildManifest'];
+
+export type EntitySearchCursor = WireCursor;
+export type SelectionScopeMode = 'union' | 'intersection';
+export type SelectionScopeRequest = Partial<
+  Declared<components['schemas']['SelectionScopeRequest']>
+>;
+
+export async function fetchSelectionScope(
+  params: SelectionScopeRequest,
+): Promise<SelectionScopeResponse> {
+  const res = await releaseFetch('/app-api/selection/scope', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(params),
+  });
+  if (!res.ok) throw new Error('Failed to resolve selection scope');
+  return res.json() as Promise<SelectionScopeResponse>;
+}
+
+export async function fetchEntityExamples(signal?: AbortSignal) {
+  const response = await releaseFetch('/app-api/entities/examples', { signal });
+  if (!response.ok) throw new Error('Failed to load examples');
+  return entitySearchFromWire((await response.json()) as WireEntitySearch);
+}
+
+export async function fetchEntitiesSearch(
+  params: {
+    query?: string;
+    limit?: number;
+    cursor?: EntitySearchCursor | null;
+    filters?: SearchFilters;
+  },
+  signal?: AbortSignal,
+) {
+  const hasLargeFilters =
+    params.filters &&
+    ((params.filters.entity_pks?.length ?? 0) > 50 ||
+      (params.filters.annotation_term_ids?.length ?? 0) > 10);
+
+  if (hasLargeFilters) {
+    const res = await releaseFetch('/app-api/entities/search', {
+      method: 'POST',
+      signal,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        query: params.query || '',
+        limit: params.limit ?? 20,
+        cursor: params.cursor,
+        filters: params.filters,
+      }),
+    });
+    if (!res.ok) throw new Error('Failed to fetch entities');
+    return entitySearchFromWire((await res.json()) as WireEntitySearch);
+  }
+
+  const url = new URL('/app-api/entities/search', window.location.origin);
+  if (params.query) url.searchParams.set('q', params.query);
+  if (params.limit) url.searchParams.set('limit', String(params.limit));
+  if (params.cursor != null) url.searchParams.set('cursor', JSON.stringify(params.cursor));
+  if (params.filters && Object.keys(params.filters).length > 0) {
+    url.searchParams.set('filters', JSON.stringify(params.filters));
+  }
+
+  const res = await releaseFetch(url, { signal });
+  if (!res.ok) throw new Error('Failed to fetch entities');
+  return entitySearchFromWire((await res.json()) as WireEntitySearch);
+}
+
+export async function fetchEntityFilterOptions() {
+  const res = await releaseFetch('/app-api/entities/filter-options');
+  if (!res.ok) throw new Error('Failed to fetch entity filter options');
+  return res.json() as Promise<EntityFilterOptions>;
+}
+
+export async function fetchRelationsSearch(
+  params: {
+    filters?: SearchFilters;
+    limit?: number;
+    offset?: number;
+  },
+  signal?: AbortSignal,
+) {
+  const res = await releaseFetch('/app-api/relations/search', {
+    method: 'POST',
+    signal,
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(params),
+  });
+  if (!res.ok) throw new Error('Failed to fetch relations');
+  return relationSearchFromWire((await res.json()) as WireRelationSearch);
+}
+
+export async function fetchRelationFilterOptions() {
+  const res = await releaseFetch('/app-api/relations/filter-options');
+  if (!res.ok) throw new Error('Failed to fetch relation filter options');
+  return res.json() as Promise<RelationFilterOptions>;
+}
+
+export async function fetchRelationEvidence(relationPk: string | number) {
+  const res = await releaseFetch(`/app-api/relations/${relationPk}/evidence`);
+  if (!res.ok) throw new Error('Failed to fetch relation evidence');
+  return res.json() as Promise<{ evidence: InteractionDetailsData['evidence'] }>;
+}
+
+export async function fetchEntitiesByPublicIds(publicIds: string[]) {
+  const res = await releaseFetch('/app-api/entities/by-public-ids', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ public_ids: publicIds }),
+  });
+  if (!res.ok) throw new Error('Failed to fetch entities by public ids');
+  const data = (await res.json()) as WireEntities;
+  return { ...data, entities: (data.entities ?? []).map(entityFromWire) };
+}
+
+export async function fetchEntitiesByPks(pks: Array<string | number>) {
+  const res = await releaseFetch('/app-api/entities/by-pks', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ pks }),
+  });
+  if (!res.ok) throw new Error('Failed to fetch entities by pks');
+  const data = (await res.json()) as WireEntities;
+  return { ...data, entities: (data.entities ?? []).map(entityFromWire) };
+}
+
+export async function fetchOntologySearch(
+  params: {
+    query?: string;
+    prefixes?: string[];
+    ontologyIds?: string[];
+    limit?: number;
+    offset?: number;
+  },
+  signal?: AbortSignal,
+) {
+  const url = new URL('/app-api/ontology/search', window.location.origin);
+  if (params.query) url.searchParams.set('q', params.query);
+  if (params.limit != null) url.searchParams.set('limit', String(params.limit));
+  if (params.offset != null) url.searchParams.set('offset', String(params.offset));
+  if (params.prefixes?.length) url.searchParams.set('prefixes', params.prefixes.join(','));
+  if (params.ontologyIds?.length) url.searchParams.set('ontologyIds', params.ontologyIds.join(','));
+
+  const res = await releaseFetch(url, { signal });
+  if (!res.ok) throw new Error('Failed to fetch ontology terms');
+  return ((await res.json()) as WireOntologyTerm[]).map(ontologyTermFromWire);
+}
+
+export async function fetchScopedOntologySearch(
+  params: {
+    entityPks?: Array<string | number>;
+    termIds?: string[];
+    selectionScope?: SelectionScopeRequest;
+    query?: string;
+    prefixes?: string[];
+    ontologyIds?: string[];
+    limit?: number;
+    offset?: number;
+  },
+  signal?: AbortSignal,
+) {
+  const res = await releaseFetch('/app-api/ontology/scoped-search', {
+    method: 'POST',
+    signal,
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      entityPks: params.entityPks || [],
+      termIds: params.termIds || [],
+      selectionScope: params.selectionScope,
+      query: params.query || '',
+      prefixes: params.prefixes,
+      ontologyIds: params.ontologyIds,
+      limit: params.limit ?? 24,
+      offset: params.offset ?? 0,
+    }),
+  });
+  if (!res.ok) throw new Error('Failed to fetch scoped ontology terms');
+  return ((await res.json()) as WireOntologyTerm[]).map(ontologyTermFromWire);
+}
+
+export async function fetchOntologyPrefixes() {
+  const res = await releaseFetch('/app-api/ontology/prefixes');
+  if (!res.ok) throw new Error('Failed to fetch ontology prefixes');
+  return res.json() as Promise<{ prefixes: string[] }>;
+}
+
+export async function fetchScopedOntologyPrefixCounts(params: {
+  entityPks?: Array<string | number>;
+  annotationTermIds?: string[];
+  query?: string;
+}) {
+  const res = await releaseFetch('/app-api/ontology/prefix-counts', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(params),
+  });
+  if (!res.ok) throw new Error('Failed to fetch scoped ontology prefix counts');
+  return res.json() as Promise<Array<{ prefix: string; scopedCount: number }>>;
+}
+
+export async function fetchScopedOntologyIdCounts(
+  params: {
+    entityPks?: Array<string | number>;
+    annotationTermIds?: string[];
+    selectionScope?: SelectionScopeRequest;
+    query?: string;
+  },
+  signal?: AbortSignal,
+) {
+  const res = await releaseFetch('/app-api/ontology/ontology-id-counts', {
+    method: 'POST',
+    signal,
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(params),
+  });
+  if (!res.ok) throw new Error('Failed to fetch scoped ontology id counts');
+  return res.json() as Promise<Array<{ ontologyId: string; scopedCount: number }>>;
+}
+
+export async function fetchTerms(termIds: string[]) {
+  const res = await releaseFetch('/app-api/terms', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ term_ids: termIds }),
+  });
+  if (!res.ok) throw new Error('Failed to fetch terms');
+  return res.json() as Promise<{ terms: Record<string, unknown | null> }>;
+}
+
+export async function fetchScopedEntityFacetCounts(
+  params: {
+    entityIds?: Array<string | number>;
+    annotationTermIds?: string[];
+    entityTypes?: string[];
+    sources?: string[];
+    ncbi_tax_id?: string[];
+    query?: string;
+    facetLimit?: number;
+  },
+  signal?: AbortSignal,
+) {
+  const res = await releaseFetch('/app-api/entities/scoped-facets', {
+    method: 'POST',
+    signal,
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(params),
+  });
+  if (!res.ok) throw new Error('Failed to fetch scoped entity facet counts');
+  return res.json() as Promise<WireFacet[]>;
+}
+
+export async function fetchScopedRelationFacetCounts(
+  params: {
+    entityIds?: Array<string | number>;
+    endpointMode?: 'any' | 'both';
+    mode?: SelectionScopeMode;
+    annotationTermIds?: string[];
+    predicates?: string[];
+    relation_categories?: string[];
+    object_aspect_qualifier?: string[];
+    object_direction_qualifier?: string[];
+    causal_mechanism_qualifier?: string[];
+    interactionTypes?: string[];
+    sources?: string[];
+    taxonomyIds?: string[];
+    taxonomyLimit?: number;
+    taxonomyQuery?: string;
+  },
+  signal?: AbortSignal,
+) {
+  const res = await releaseFetch('/app-api/relations/scoped-facets', {
+    method: 'POST',
+    signal,
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(params),
+  });
+  if (!res.ok) throw new Error('Failed to fetch scoped relation facet counts');
+  return res.json() as Promise<WireFacet[]>;
+}
+
+// Statistics transport aliases come from generated OpenAPI schemas.
+
+async function fetchStats<T>(path: string): Promise<T> {
+  const res = await releaseFetch(`/api/stats/${path}`);
+  if (!res.ok) throw new Error(`Failed to fetch stats/${path}`);
+  return res.json() as Promise<T>;
+}
+
+export const fetchStatsSources = () => fetchStats<StatsSource[]>('sources');
+export const fetchStatsEntityTypes = () => fetchStats<StatsEntityType[]>('entity-types');
+export const fetchStatsInteractionTypes = () =>
+  fetchStats<StatsInteractionType[]>('interaction-types');
+export const fetchStatsIdentifierTypes = () =>
+  fetchStats<Array<{ identifierType: string; count: number }>>('identifier-types');
+export const fetchStatsChemicalClasses = () =>
+  fetchStats<Array<{ chemicalClass: string; count: number }>>('chemical-classes');
+export const fetchStatsMetabolicDomains = () =>
+  fetchStats<Array<{ metabolicDomain: string; count: number }>>('metabolic-domains');
+export const fetchStatsBuildManifest = () => fetchStats<BuildManifest>('build-manifest');
+export const fetchStatsCoverageProfile = () =>
+  fetchStats<Array<{ nResources: number; nEntities: number }>>('coverage-profile');
+export const fetchStatsResourceOverlap = (contentKind = 'entity') =>
+  fetchStats<Array<{ sourceA: string; sourceB: string; overlap: number }>>(
+    `resource-overlap?contentKind=${encodeURIComponent(contentKind)}`,
+  );
