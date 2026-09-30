@@ -415,3 +415,85 @@ def test_offline_guard_preserves_cached_human_gem_xref_mapper(tmp_path, monkeypa
         )
     finally:
         _metabolite_xrefs.cache_clear()
+
+
+def test_ordered_spool_has_buffered_reads_and_closes_on_early_stop(tmp_path, monkeypatch):
+    rows = rows_at(tmp_path, [payload("reactions:10"), payload("reactions:2")])
+    native_reader = pq.ParquetFile
+    options, readers = [], []
+
+    class Reader:
+        def __init__(self, path, **kwargs):
+            options.append(kwargs)
+            self.reader = native_reader(path, **kwargs)
+            self.closed = False
+            readers.append(self)
+
+        def iter_batches(self, **kwargs):
+            assert kwargs == {"batch_size": 32, "use_threads": False}
+            yield from self.reader.iter_batches(**kwargs)
+
+        def close(self):
+            self.closed = True
+            self.reader.close()
+
+    monkeypatch.setattr(replay.pq, "ParquetFile", Reader)
+    iterator = rows.iterator("reactions")()
+    try:
+        assert next(iterator) == {"value": "μ"}
+        assert rows.current[1] == "2"
+        assert list(tmp_path.glob("ordered-*.parquet"))
+        iterator.close()
+        assert rows.current is None
+        assert readers[0].closed
+        assert not list(tmp_path.glob("ordered-*.parquet"))
+        assert options == [{"memory_map": False, "pre_buffer": False, "buffer_size": 64 * 1024}]
+    finally:
+        iterator.close()
+        rows.close()
+
+
+def test_compressed_large_records_use_sql_sink_not_materialized_raw_result(tmp_path):
+    import psutil
+
+    process = psutil.Process()
+    text = json.dumps({"value": "μ", "blob": "x" * (4 * 1024**2)}, ensure_ascii=False, indent=2)
+    ids = (100, 2, 9, 20, 7, 3, 41, 8)
+    path = tmp_path / "large.parquet"
+    pq.write_table(
+        pa.Table.from_pylist([payload(f"reactions:{i}", text) for i in ids], schema=PAYLOAD_SCHEMA),
+        path,
+        compression="zstd",
+    )
+    assert path.stat().st_size < 1024**2
+    rows = replay.ReplayRows(path, "rhea", ["reactions"], tmp_path, memory_limit="128MB")
+    original_connection = rows.conn
+    statements = []
+
+    class SinkOnly:
+        def execute(self, query, parameters):
+            assert query.startswith("COPY (")  # A raw SELECT.execute() regresses the memory fix.
+            statements.append(query)
+            return original_connection.execute(query, parameters)
+
+        def close(self):
+            original_connection.close()
+
+    rows.conn = SinkOnly()
+    iterator = rows.iterator("reactions")()
+    try:
+        before = process.memory_info().rss
+        first = next(iterator)
+        assert process.memory_info().rss - before < 192 * 1024**2
+        assert first == json.loads(text)
+        assert rows.current[1] == "2"
+        assert rows.current[3] == text
+        assert (
+            hashlib.sha256(rows.current[3].encode()).hexdigest()
+            == hashlib.sha256(text.encode()).hexdigest()
+        )
+        assert len(statements) == 1
+    finally:
+        iterator.close()
+        rows.close()
+    assert not list(tmp_path.glob("ordered-*.parquet"))

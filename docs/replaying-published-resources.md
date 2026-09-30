@@ -35,8 +35,12 @@ multi-handle paths that bypass Python sockets. Local file reads remain available
 The default has **no record limit**. `--max-records 20` is an optional per-dataset
 cap for local tests; a capped result is a sample, not a full resource replacement.
 The build reservation and replay deduplication memory limit are separate budgets.
-DuckDB deduplicates with disk spill in a private temporary directory; Python
-reads at most 32 payload records at a time. Preparation uses native record and
+DuckDB deduplicates with disk spill in a private temporary directory. An
+ordered Parquet spool is written through a SQL COPY sink, so the raw SQL result
+is never materialized for fetchmany. Python reads buffered batches of at most
+32 records with column prefetch and memory mapping disabled, converting one
+record at a time. Memory still depends on the largest record, page and dictionary.
+The spool is removed when its iterator finishes or closes. Preparation uses native record and
 byte batch limits. Reserve enough disk space for original artifacts, the private
 DuckDB database/spill, observation shards and final Parquets.
 

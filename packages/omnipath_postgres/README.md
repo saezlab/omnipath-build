@@ -1,6 +1,6 @@
 # OmniPath PostgreSQL
 
-Load an explicit release of already resolved Parquet resources. The loader uses DuckDB to stream rows into PostgreSQL and never runs entity resolution or source parsers.
+Load an explicit release of already resolved Parquet resources. The loader streams buffered Parquet batches into PostgreSQL without running entity resolution or source parsers. Direct Arrow decoding avoids retaining a full DuckDB result before the first row is consumed.
 
 Create a release manifest with exact resource versions:
 

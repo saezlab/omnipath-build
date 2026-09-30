@@ -110,7 +110,9 @@ class ReplayRows:
         self.source, self.datasets, self.cap = source, list(datasets), cap
         self.consumed = Counter({dataset: 0 for dataset in datasets})
         self.current = None
-        self.conn = duckdb.connect(str(Path(workdir) / "replay.duckdb"))
+        self.workdir = Path(workdir)
+        self.started_datasets = set()
+        self.conn = duckdb.connect(str(self.workdir / "replay.duckdb"))
         try:
             self.conn.execute("SET memory_limit=?", [memory_limit])
             self.conn.execute("SET threads=1")
@@ -166,29 +168,53 @@ class ReplayRows:
 
     def iterator(self, dataset):
         def raw(**_kwargs):
-            require(self.consumed[dataset] == 0, f"Dataset replayed twice: {dataset}")
-            cursor = self.conn.cursor()
+            require(dataset not in self.started_datasets, f"Dataset replayed twice: {dataset}")
+            self.started_datasets.add(dataset)
+            name = hashlib.sha256(dataset.encode()).hexdigest()[:24]
+            spool = self.workdir / f"ordered-{name}.parquet"
             try:
-                query = """SELECT original_index,payload_json FROM replay_rows WHERE dataset=?
+                query = """SELECT original_index,payload_json FROM replay_rows WHERE dataset=$dataset
                     ORDER BY length(ltrim(original_index,'0')),ltrim(original_index,'0'),original_index"""
-                parameters = [dataset]
+                parameters = {"dataset": dataset, "spool": str(spool)}
                 if self.cap is not None:
-                    query += " LIMIT ?"
-                    parameters.append(self.cap)
-                cursor.execute(query, parameters)
-                while records := cursor.fetchmany(32):
-                    for index, payload in records:
-                        record = json.loads(payload)
-                        require(
-                            isinstance(record, dict),
-                            f"Raw source object required: {dataset}:{index}",
-                        )
-                        self.current = (dataset, index, record, payload)
-                        self.consumed[dataset] += 1
-                        yield record
+                    query += " LIMIT $cap"
+                    parameters["cap"] = self.cap
+                # A COPY sink avoids materializing the full raw SQL result in
+                # the connection before fetchmany. The sort can spill privately.
+                self.conn.execute(
+                    "COPY (" + query + ") TO $spool (FORMAT PARQUET, COMPRESSION ZSTD, "
+                    "ROW_GROUP_SIZE_BYTES '8MB')",
+                    parameters,
+                )
+                parquet = pq.ParquetFile(
+                    spool, memory_map=False, pre_buffer=False, buffer_size=64 * 1024
+                )
+                try:
+                    batches = parquet.iter_batches(batch_size=32, use_threads=False)
+                    try:
+                        for batch in batches:
+                            for index in range(batch.num_rows):
+                                item = batch.slice(index, 1).to_pylist()[0]
+                                original_index, payload = (
+                                    item["original_index"],
+                                    item["payload_json"],
+                                )
+                                record = json.loads(payload)
+                                require(
+                                    isinstance(record, dict),
+                                    f"Raw source object required: {dataset}:{original_index}",
+                                )
+                                self.current = (dataset, original_index, record, payload)
+                                self.consumed[dataset] += 1
+                                yield record
+                            del batch
+                    finally:
+                        batches.close()
+                finally:
+                    parquet.close()
             finally:
                 self.current = None
-                cursor.close()
+                spool.unlink(missing_ok=True)
 
         return raw
 
