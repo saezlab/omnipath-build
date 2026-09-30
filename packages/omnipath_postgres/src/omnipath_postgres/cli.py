@@ -5,6 +5,7 @@ from dataclasses import asdict
 import json
 import os
 
+import duckdb
 import psycopg
 
 from .loader import load_release
@@ -16,7 +17,15 @@ def main(argv=None) -> int:
     parser.add_argument("--data-root", required=True, help="Directory containing resources/")
     parser.add_argument("--database-url", default=os.environ.get("OMNIPATH_DATABASE_URL"))
     parser.add_argument("--schema", default="omnipath", help="New destination schema")
-    parser.add_argument("--batch-size", type=int, default=1024)
+    parser.add_argument(
+        "--batch-size", type=int, default=1024, help="Raw validation batch (capped at 1024)"
+    )
+    parser.add_argument("--duckdb-threads", type=int, default=1)
+    parser.add_argument("--memory-limit", default="512MB", help="DuckDB working-memory limit")
+    parser.add_argument(
+        "--temp-directory",
+        help="Filesystem for CSV staging and DuckDB spills; defaults next to manifest",
+    )
     args = parser.parse_args(argv)
     if not args.database_url:
         parser.error("Set OMNIPATH_DATABASE_URL or pass --database-url")
@@ -27,8 +36,11 @@ def main(argv=None) -> int:
             args.database_url,
             schema=args.schema,
             batch_size=args.batch_size,
+            duckdb_threads=args.duckdb_threads,
+            memory_limit=args.memory_limit,
+            temp_directory=args.temp_directory,
         )
-    except (ValueError, OSError, psycopg.Error) as exc:
+    except (ValueError, OSError, psycopg.Error, duckdb.Error) as exc:
         parser.exit(1, f"Release load failed: {exc}\n")
     print(json.dumps(asdict(result), indent=2))
     return 0

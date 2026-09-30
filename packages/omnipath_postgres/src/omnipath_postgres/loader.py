@@ -7,6 +7,9 @@ import json
 from pathlib import Path
 import re
 from time import perf_counter
+from tempfile import TemporaryDirectory
+
+import duckdb
 
 import psycopg
 from psycopg import sql
@@ -21,89 +24,17 @@ from omnipath_core.source_attributes import (
 
 from .derived import rebuild_derived
 from .indexes import create_indexes
-from .projection import PayloadReference, iter_resource_records, iter_validated_payloads
+from .projection import PayloadReference, iter_validated_payloads
+from .bulk import copy_projected_table as _copy_projected_table
+from .duckdb_projection import (
+    PROJECTION_COLUMNS as COLUMNS,
+    projection_query,
+    validate_resource,
+)
 from .releases import PinnedRelease, load_release as read_release, verify_release
 from .schema import create_schema
 
 
-COLUMNS = {
-    "entities": (
-        "resource",
-        "version",
-        "entity_key",
-        "entity_type",
-        "namespace",
-        "identifier",
-        "taxon",
-        "label",
-        "has_hierarchy",
-        "parent_count",
-        "child_count",
-        "record_json",
-    ),
-    "identifiers": (
-        "resource",
-        "version",
-        "entity_key",
-        "ordinal",
-        "ns",
-        "id",
-        "is_canonical",
-        "source",
-    ),
-    "relations": (
-        "resource",
-        "version",
-        "relation_key",
-        "statement_kind",
-        "subject_entity_key",
-        "subject_label",
-        "subject_type",
-        "predicate",
-        "object_entity_key",
-        "object_label",
-        "object_type",
-        "taxon",
-        "is_directed",
-        "sign",
-        "category",
-        "interaction_class",
-        "sources",
-        "evidence_count",
-        "record_json",
-    ),
-    "evidence": (
-        "resource",
-        "version",
-        "relation_key",
-        "ordinal",
-        "source",
-        "dataset",
-        "row_id",
-        "upstream_id",
-        "record_json",
-    ),
-    "annotations": (
-        "resource",
-        "version",
-        "owner_kind",
-        "owner_key",
-        "evidence_ordinal",
-        "ordinal",
-        "term",
-        "value",
-        "quantity",
-        "source",
-        "dataset",
-        "scope",
-    ),
-}
-JSON_COLUMNS = frozenset({"record_json", "sources", "quantity"})
-_COPY_PARENTS = {
-    "identifiers": ("entities",),
-    "relations": ("entities",),
-    "evidence": ("relations",),
-}
 _HASH_JOIN_COLUMNS = {
     "entities": ("resource", "version", "entity_key", "entity_type"),
     "relations": (
@@ -146,47 +77,6 @@ def validate_schema(schema: str) -> None:
         or schema.lower().startswith("pg_")
     ):
         raise ValueError("Destination must be a new, non-system PostgreSQL schema identifier")
-
-
-def _json(value) -> str:
-    return json.dumps(value, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
-
-
-def _copy(conn, schema: str, table: str, rows: list[dict]) -> None:
-    columns = COLUMNS[table]
-    statement = sql.SQL("COPY {}.{} ({}) FROM STDIN").format(
-        sql.Identifier(schema),
-        sql.Identifier(table),
-        sql.SQL(", ").join(map(sql.Identifier, columns)),
-    )
-    with conn.cursor() as cur, cur.copy(statement) as copy:
-        for row in rows:
-            if row.keys() != set(columns):
-                raise ValueError(f"Unexpected projection columns for {table}")
-            copy.write_row(
-                tuple(
-                    Jsonb(row[column], dumps=_json)
-                    if column in JSON_COLUMNS and row[column] is not None
-                    else row[column]
-                    for column in columns
-                )
-            )
-
-
-def _flush_copy_buffer(conn, schema: str, buffers: dict[str, list[dict]], table: str) -> None:
-    """Copy buffered parents before children while keeping immediate FKs valid.
-
-    A resource's entity file precedes its relation file, and each projection
-    yields the parent row before its identifier/evidence rows. A child may fill
-    its batch before the parent buffer does, so flush that partial parent batch
-    first. Annotation ownership is still checked by final integrity queries.
-    """
-    if not buffers[table]:
-        return
-    for parent in _COPY_PARENTS.get(table, ()):
-        _flush_copy_buffer(conn, schema, buffers, parent)
-    _copy(conn, schema, table, buffers[table])
-    buffers[table].clear()
 
 
 def _validate_payload_owners(
@@ -416,18 +306,46 @@ def load_release(
     *,
     schema: str = "omnipath",
     batch_size: int = 1024,
+    duckdb_threads: int = 1,
+    memory_limit: str = "512MB",
+    temp_directory: str | Path | None = None,
 ) -> LoadResult:
     """Load an exact release into a fresh schema; any failure rolls back all writes."""
     validate_schema(schema)
     if isinstance(batch_size, bool) or not isinstance(batch_size, int) or batch_size < 1:
         raise ValueError("batch_size must be a positive integer")
+    if (
+        isinstance(duckdb_threads, bool)
+        or not isinstance(duckdb_threads, int)
+        or duckdb_threads < 1
+    ):
+        raise ValueError("duckdb_threads must be a positive integer")
+    if not isinstance(memory_limit, str) or not re.fullmatch(
+        r"[1-9][0-9]*(?:\.[0-9]+)?\s*(?:KB|MB|GB|KiB|MiB|GiB)", memory_limit
+    ):
+        raise ValueError("memory_limit must be a positive size such as 512MB")
     timings = {}
     started = perf_counter()
     release = read_release(data_root, manifest_path)
     timings["validate_files"] = perf_counter() - started
     counts = dict.fromkeys(COLUMNS, 0)
     validated_payload_rows = {}
-    with psycopg.connect(database_url, autocommit=True) as conn, conn.transaction():
+    spool_parent = (
+        Path(temp_directory) if temp_directory is not None else Path(manifest_path).parent
+    )
+    with (
+        TemporaryDirectory(prefix=".postgres-stage-", dir=spool_parent) as spool,
+        duckdb.connect(
+            config={
+                "threads": duckdb_threads,
+                "memory_limit": memory_limit,
+                "temp_directory": str(Path(spool) / "spill"),
+                "preserve_insertion_order": False,
+            }
+        ) as con,
+        psycopg.connect(database_url, autocommit=True) as conn,
+        conn.transaction(),
+    ):
         with conn.cursor() as cur:
             # Serialize competing attempts at the same destination, without touching other releases.
             cur.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", (schema,))
@@ -441,39 +359,41 @@ def load_release(
         # for the entire release. All writes still share one outer transaction.
         with conn.cursor() as cur:
             cur.execute("SET CONSTRAINTS ALL IMMEDIATE")
-        buffers = {table: [] for table in COLUMNS}
         for resource in release.resources:
-            before = counts.copy()
-            has_activity = has_participant_relation = False
-            for record in iter_resource_records(
-                resource.directory, resource.source, resource.version, batch_size=batch_size
-            ):
-                if record.table == "entities":
-                    has_activity |= record.values["entity_type"] == "molecular_activity"
-                elif record.table == "relations":
-                    has_participant_relation |= record.values[
-                        "statement_kind"
-                    ] == "relation" and record.values["predicate"] in (
-                        "has_input",
-                        "has_output",
-                        "enabled_by",
-                    )
-                buffers[record.table].append(record.values)
-                counts[record.table] += 1
-                if len(buffers[record.table]) >= batch_size:
-                    _flush_copy_buffer(conn, schema, buffers, record.table)
+            tick = perf_counter()
+            validation = validate_resource(con, resource.directory)
+            timings[f"validate_projection_{resource.source}"] = perf_counter() - tick
             for table, filename in (
                 ("entities", "entities.parquet"),
                 ("relations", "relations.parquet"),
             ):
-                if counts[table] - before[table] != resource.files[filename].rows:
+                if validation.counts[table] != resource.files[filename].rows:
                     raise ValueError(
                         f"Projected row count differs from manifest: {resource.source}/{filename}"
                     )
-            # Owner validation sees every row, with COPY FKs already checked.
-            for table in buffers:
-                _flush_copy_buffer(conn, schema, buffers, table)
-            check_reaction_payloads = has_activity and has_participant_relation
+            # Whole parent tables precede their children. DuckDB's CSV sink avoids
+            # returning expanded rows through Python; bounded files make each
+            # immediate-FK COPY statement independent of total resource size.
+            for table in COLUMNS:
+                result = _copy_projected_table(
+                    conn,
+                    schema,
+                    table,
+                    con,
+                    projection_query(resource.directory, resource.source, resource.version, table),
+                    COLUMNS[table],
+                    spool,
+                )
+                if result.rows != validation.counts[table]:
+                    raise ValueError(
+                        f"COPY count differs from source arrays: {resource.source}/{table}"
+                    )
+                counts[table] += result.rows
+                timings[f"stage_{resource.source}_{table}"] = result.stage_seconds
+                timings[f"copy_{resource.source}_{table}"] = result.copy_seconds
+            check_reaction_payloads = (
+                validation.has_activity and validation.has_participant_relation
+            )
             if check_reaction_payloads:
                 # Autovacuum cannot see rows in this transaction. Supply current
                 # statistics before repeated batch joins into newly copied data.

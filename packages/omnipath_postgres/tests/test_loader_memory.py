@@ -4,6 +4,7 @@ from copy import deepcopy
 import uuid
 
 import psycopg
+from psycopg import sql
 import pytest
 
 from omnipath_postgres import loader
@@ -13,15 +14,37 @@ from test_reactions import reaction_fixture
 pytestmark = pytest.mark.integration
 
 
-def test_child_batch_can_fill_before_its_buffered_parent(tmp_path, postgres_dsn):
-    # Two identifiers and two evidence rows fill batches while their one parent
-    # remains partial; immediate FK checks require that parent to be copied first.
+def test_parent_tables_are_complete_before_copying_children(tmp_path, postgres_dsn, monkeypatch):
     rows = fixture_rows()
     resource(tmp_path, rows=rows)
+    original = loader._copy_projected_table
+    started = []
+
+    def observed(conn, schema, table, con, statement, columns, spool_directory):
+        started.append(table)
+        # Check visibility on the actual load connection, before each child COPY.
+        parents = {
+            "identifiers": ("entities", 3),
+            "relations": ("entities", 3),
+            "evidence": ("relations", 1),
+            "annotations": ("evidence", 2),
+        }
+        if table in parents:
+            parent, count = parents[table]
+            actual = conn.execute(
+                sql.SQL("SELECT count(*) FROM {}.{}").format(
+                    sql.Identifier(schema), sql.Identifier(parent)
+                )
+            ).fetchone()
+            assert actual == (count,)
+        return original(conn, schema, table, con, statement, columns, spool_directory)
+
+    monkeypatch.setattr(loader, "_copy_projected_table", observed)
     schema = "copy_memory_" + uuid.uuid4().hex
     result = loader.load_release(
         tmp_path, release(tmp_path), postgres_dsn, schema=schema, batch_size=2
     )
+    assert started == ["entities", "identifiers", "relations", "evidence", "annotations"]
     assert result.counts["identifiers"] == result.counts["evidence"] == 2
     assert dict(query(postgres_dsn, schema, "SELECT entity_key,record_json FROM {s}.entities")) == {
         row["entity_key"]: row for row in rows[0]
@@ -29,7 +52,7 @@ def test_child_batch_can_fill_before_its_buffered_parent(tmp_path, postgres_dsn)
     assert query(postgres_dsn, schema, "SELECT record_json FROM {s}.relations") == [(rows[1][0],)]
 
 
-def test_foreign_keys_fail_before_the_remaining_resource_is_consumed(
+def test_endpoint_failure_prevents_child_copy_and_raw_validation(
     tmp_path, postgres_dsn, monkeypatch
 ):
     rows = fixture_rows()
@@ -38,20 +61,22 @@ def test_foreign_keys_fail_before_the_remaining_resource_is_consumed(
     rows[1].append(second)
     rows[1][0]["object_entity_key"] = "absent endpoint"
     resource(tmp_path, rows=rows)
-    original = loader.iter_resource_records
-    consumed = []
+    original = loader._copy_projected_table
+    started = []
 
-    def observed(*args, **kwargs):
-        for record in original(*args, **kwargs):
-            if record.table == "relations":
-                consumed.append(record.values["relation_key"])
-            yield record
+    def observed(conn, schema, table, *args):
+        started.append(table)
+        return original(conn, schema, table, *args)
 
-    monkeypatch.setattr(loader, "iter_resource_records", observed)
+    def unexpected(*args, **kwargs):
+        pytest.fail("An invalid endpoint must fail before raw validation")
+
+    monkeypatch.setattr(loader, "_copy_projected_table", observed)
+    monkeypatch.setattr(loader, "iter_validated_payloads", unexpected)
     schema = "copy_memory_" + uuid.uuid4().hex
     with pytest.raises(psycopg.errors.ForeignKeyViolation):
         loader.load_release(tmp_path, release(tmp_path), postgres_dsn, schema=schema, batch_size=1)
-    assert consumed == [rows[1][0]["relation_key"]]
+    assert started == ["entities", "identifiers", "relations"]
     assert not exists(postgres_dsn, schema)
 
 

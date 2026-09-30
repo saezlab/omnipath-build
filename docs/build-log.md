@@ -31,7 +31,7 @@ Keep entries factual and specific — numbers and log excerpts, not vibes.
 
 ---
 
-## 2026-09-30 — full resolved-Parquet release on nicesrv, attempt 2 (running)
+## 2026-09-30 — full resolved-Parquet release on nicesrv, attempt 2 (cancelled)
 
 **Reason**: retry the complete fixed release after correcting repeated raw payload
 expansion. The first attempt rolled back before committing; no artifacts changed.
@@ -49,18 +49,28 @@ record batches remain capped at 64. Every occurrence still receives pointer/key,
 owner and count checks; SHA/type validation reuses only exact dictionary values.
 No raw body is stored in PostgreSQL. All three products are built after base commit.
 
-**Phase durations**: pending, recorded in the private `postgres-build.json` and
-`.log`. Before restart, the actual 42,536-row FooDB block passed in 1.010 s,
-with peak RSS 472,936 KiB and one JSON parse/SHA call for its 42,831,695-byte text.
-All 297 disposable PostgreSQL/subset tests passed (14.22 s); independent review,
-Ruff and diff checks passed. The parallel artifact-only raw check resumes using
-the same dictionary reader and its own 3 GiB/one CPU cap.
+**Phase durations**: cancelled at the user's efficiency concern after
+1040.683043 s; release reading 5.792572 s, completed COPY calls 699.742567 s.
+28,084,290 copied rows are enumerated in `postgres-build-attempt2.json`; indexes,
+derived tables and subsets did not run. Before restart, the actual 42,536-row
+FooDB block passed in 1.010 s with peak RSS 472,936 KiB and one JSON parse/SHA
+call for its 42,831,695-byte text. All 297 disposable PostgreSQL/subset tests
+passed (14.22 s); independent review, Ruff and diff checks passed.
 
-**Outcome**: in progress; base commit, full read-only verification and the
-transactional PG-only product rebuild are pending. Native replay scope remains
-all 300,008 originally published records across the seven affected resources.
-The 39 unchanged pins remain independent copies. Existing production and private
-schemas are preserved.
+The separate artifact-only check completed all 39 reused resources, covering
+23,561,803 raw rows, in 284.930287 s (completed first-attempt checks reused;
+inputs and hashes unchanged). FooDB's 4,211,723 occurrences took 48.381147 s.
+The corrected check peaked at 594 MiB inside its 3 GiB/one CPU cap.
+
+**Outcome**: deliberately cancelled to restore the intended DuckDB SQL projection
+and bulk COPY pipeline. The Python row-expansion implementation was inefficient
+at full scale. Psycopg cancelled active COPY; a fresh private connection confirmed
+`full_20260930` absent, no import backend remaining and both earlier private
+schemas retained. The queued verifier was stopped before it began SQL checks.
+`attempt2-rollback.json` records the rollback. The full artifacts and successful
+raw validation remain available; native replay scope is all 300,008 originally
+published records across seven resources, with 39 unchanged pins. Nothing was
+published to production.
 
 ## 2026-09-30 — full resolved-Parquet release on nicesrv, attempt 1 (cancelled)
 
