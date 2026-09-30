@@ -31,7 +31,7 @@ Keep entries factual and specific — numbers and log excerpts, not vibes.
 
 ---
 
-## 2026-09-30 — full resolved-Parquet release on nicesrv, attempt 4 (running)
+## 2026-09-30 — full resolved-Parquet release on nicesrv, attempt 4 (failed)
 
 **Reason**: retry the unchanged full release after supplying narrow planner
 statistics before every source-owner check. The third attempt copied BindingDB
@@ -63,10 +63,16 @@ release metadata still share one transaction; all three products follow after
 base commit. A queued verifier then checks the complete release read-only and
 rebuilds products with private Parquets unavailable, rolling that rebuild back.
 
-**Phase durations**: pending in `postgres-build.json`/`.log`. The private
-monitor also records per-resource owner-statistics duration. The changed loader
-passed all 396 PostgreSQL/subset tests in 21.86 s; Ruff, diff checks and independent
-review passed. The separate 39-resource raw validation remains successful.
+**Phase durations**: 7864.979847 s total; release read 5.886399 s; typed SQL
+validation 76.155310 s; successful CSV staging 702.586871 s; PostgreSQL COPY
+4773.493333 s; raw audits 2286.706690 s for 12,431,857 occurrences; narrow owner
+statistics 13.223463 s. Fourteen resources completed all five tables and audits.
+The copy total was 161,266,864 rows in 4,726 CSV files / 84,911,231,452 bytes.
+ChEMBL's raw audit took 845.336509 s and FooDB's took 925.231693 s. All completed
+tables matched their expected counts. No final indexes, derived tables, products
+or full verification ran. The changed loader passed all 396 PostgreSQL/subset
+tests in 21.86 s; Ruff, diff checks and independent review passed. The separate
+39-resource raw validation remains successful.
 
 A read-only screen covered all 46 selected resources: canonical identifiers and
 labels had maximum 1240 UTF-8 bytes; 2442 alias index candidates exceeded a
@@ -80,12 +86,23 @@ Shared-prefix and four-byte Unicode regressions preserve complete lookup results
 This preflight prevented a late full-transaction index failure; no source rebuild
 or query API change was needed.
 
-**Outcome**: in progress. Expected base rows: 6,383,473 entities; 80,136,865
-identifiers; 18,339,902 relations; 22,887,251 evidence; 150,690,040 annotations.
-All 26,711,866 raw occurrences are validated and discarded. The seven uncapped
-native replays cover all 300,008 originally published source records; 39 other
-pins are reused. Existing private schemas and production remain protected.
-No production publication.
+**Outcome**: failed while staging HMDB entities, before any HMDB table copied.
+HMDB SQL validation passed in 8.789128 s; its CSV projection then needed a
+128 MiB allocation with 394.0 MiB already used against the 488.2 MiB effective
+DuckDB allowance. `OutOfMemoryException` unwound the outer transaction.
+At 2026-09-30T18:45:03.288337Z, a fresh private connection confirmed
+`full_20260930` absent, no import/verifier backends, and both `pilot_20260930`
+and `annotation_sample_20260930` preserved. Thus no base load committed.
+Archived private evidence: `postgres-build-attempt4.json`/`.log`,
+`attempt4-rollback.json`, and `verification-wait-attempt4.log`.
+
+The seven uncapped native replays still cover all 300,008 originally published
+source records; 39 other pins are reused. No Parquets or production services
+were changed by this failed import. Before retrying, test the exact projections
+at a larger bounded DuckDB limit. Future loads use `420c407`'s approved default
+`validate_source_records=False`; optional raw-audit counts will be empty while
+artifact checks, normalized integrity and reaction-annotation checks stay
+mandatory. This failed attempt itself retained the original deep audits.
 
 ## 2026-09-30 — full resolved-Parquet release on nicesrv, attempt 3 (cancelled)
 
