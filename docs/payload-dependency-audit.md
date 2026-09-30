@@ -21,7 +21,7 @@ Reader: `packages/omnipath_postgres/src/omnipath_postgres/reactions.py`.
 COSMOS and reaction/transport network views consume its derived tables; they do
 not independently parse source payloads.
 
-| Raw fields read | Current purpose | Annotation replacement |
+| Raw fields read | Former purpose | Annotation replacement |
 | --- | --- | --- |
 | `direction`, `conversion_direction` | Original direction assertion, effective orientation, reversibility and diagnostics | Source-event direction attributes on individual evidence occurrences |
 | `participant_role`, `participant_chebi`, `participant_compartment` | Verify membership position, role and identifier before attaching a compartment | Correctly paired participant compartment annotation; preserve source member identity and occurrence attribution |
@@ -143,7 +143,8 @@ The code changes are implemented and reviewed. The native bounded replay on
 nicesrv rebuilt seven resources successfully, consuming 20 original records per
 resource (140 total). It used the existing immutable resolution reference and
 private output paths, without source downloads. The new PostgreSQL import and
-PG-only product checks are recorded in the migration validation report when run.
+PG-only product checks passed; counts and limits are recorded in the
+[validation report](source-attributes-validation.md).
 
 The exact rebuild scope for a future full release is Rhea, Recon3D, MetAtlas
 (Human-GEM), KEGG, Reactome, MACdb and ConnectomeDB2025. The first three expose

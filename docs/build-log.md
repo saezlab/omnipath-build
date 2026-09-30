@@ -31,7 +31,7 @@ Keep entries factual and specific — numbers and log excerpts, not vibes.
 
 ---
 
-## 2026-09-30 — capped annotation migration on nicesrv (in progress)
+## 2026-09-30 — capped annotation migration on nicesrv (completed)
 
 **Reason**: verify that all former PostgreSQL product payload readers can use
 published annotations, so raw source bodies can stay exclusively in Parquet.
@@ -70,11 +70,27 @@ validated, including exact SHA/type checks, then discarded.
 
 **Phase durations**: native resource builds: Rhea 5.66 s, Recon3D 3.20 s,
 MetAtlas 4.16 s, KEGG 4.63 s, Reactome 4.19 s, MACdb 3.01 s,
-ConnectomeDB2025 3.21 s. Database load/check timings will be recorded on completion.
+ConnectomeDB2025 3.21 s. Database code `4c896eb`; validate_files 0.011331 s,
+copy_and_validate 2.239933 s,
+indexes_and_derived 0.548047 s,
+recheck_files 0.007211 s; load/commit
+2.823386 s. Per-resource projection/COPY: connectomedb2025 0.043 s; kegg 0.537 s; macdb 0.045 s; metatlas 0.097 s; reactome 0.148 s; recon3d 0.045 s; rhea 0.260 s.
+Index creation and initial derivation were measured together by the loader;
+no source delete, preparse or canonicalization phase ran in PostgreSQL.
+PG-only product rebuild 0.944530 s; full load/check script
+5.039105 s. KEGG was the sample's copy outlier (largest fan-out).
 
 **Outcome**: all seven capped native builds passed strict manifest/schema/hash
-inspection. Database loading and Parquet-unavailable product rebuild checks are
-pending. These private capped versions must not replace full production artifacts.
+inspection. The new schema committed successfully; every projected row matched Parquet
+(1,482 entities, 19,781 identifiers, 1,974 relations, 2,226 evidence occurrences,
+5,772 annotations). All 2,232 raw rows were verified then discarded. Reaction,
+COSMOS, MetSigDB and network checks passed with the Parquet directory hidden;
+source artifacts were subsequently restored and revalidated. MetaLinksDB had no
+eligible server sample rows; populated cases passed separate integration fixtures.
+Original pilot metadata, all 21 original resource artifacts and production
+container identities/start times were preserved. These private capped versions
+must not replace full production artifacts. See the
+[validation report](source-attributes-validation.md) for counts and scope limits.
 
 
 ## 2026-09-30 — nicesrv resolved-Parquet pilot, attempt 2
