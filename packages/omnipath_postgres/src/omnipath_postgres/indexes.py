@@ -14,7 +14,11 @@ _INDEXES = (
     ("relations_subject_idx", "relations", "subject_entity_key"),
     ("relations_object_idx", "relations", "object_entity_key"),
     ("relations_predicate_category_idx", "relations", "predicate, category"),
-    ("identifiers_lookup_idx", "identifiers", "ns, lower(id) text_pattern_ops, entity_key"),
+    (
+        "identifiers_lookup_idx",
+        "identifiers",
+        'ns, "left"(lower(id), 256) text_pattern_ops, entity_key',
+    ),
     ("evidence_source_dataset_row_idx", "evidence", "source, dataset, row_id"),
     ("annotations_term_owner_idx", "annotations", "term, owner_kind, owner_key"),
 )
