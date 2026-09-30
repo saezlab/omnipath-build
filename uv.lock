@@ -19,6 +19,7 @@ members = [
     "omnipath-core",
     "omnipath-postgres",
     "omnipath-resolver",
+    "omnipath-subsets",
 ]
 
 [manifest.dependency-groups]
@@ -1466,6 +1467,23 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [{ name = "pyarrow", specifier = ">=14" }]
+
+[[package]]
+name = "omnipath-subsets"
+version = "0.1.0"
+source = { editable = "packages/omnipath_subsets" }
+dependencies = [
+    { name = "omnipath-core" },
+    { name = "omnipath-postgres" },
+    { name = "psycopg", extra = ["binary"] },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "omnipath-core", editable = "packages/omnipath_core" },
+    { name = "omnipath-postgres", editable = "packages/omnipath_postgres" },
+    { name = "psycopg", extras = ["binary"], specifier = ">=3.2,<4" },
+]
 
 [[package]]
 name = "openpyxl"

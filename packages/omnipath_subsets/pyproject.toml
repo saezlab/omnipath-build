@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "omnipath-subsets"
+version = "0.1.0"
+description = "Release-pinned MetSigDB, network presets and COSMOS products"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "omnipath-core>=0.1.0,<0.2.0",
+    "omnipath-postgres>=0.1.0,<0.2.0",
+    "psycopg[binary]>=3.2,<4",
+]
+
+[project.scripts]
+omnipath-subsets = "omnipath_subsets.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.uv.sources]
+omnipath-core = { workspace = true }
+omnipath-postgres = { workspace = true }

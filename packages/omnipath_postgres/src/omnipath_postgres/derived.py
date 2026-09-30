@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from psycopg import sql
 
+from .ontology import rebuild_ontology
+from .reactions import rebuild_reactions
+
 
 def rebuild_derived(conn, schema: str) -> None:
     """Rebuild identifier lookup and endpoint counts in the caller's transaction.
@@ -74,3 +77,57 @@ def rebuild_derived(conn, schema: str) -> None:
                 ON {}.entity_relation_counts (search_count DESC, entity_id ASC)
             """).format(namespace)
         )
+
+    rebuild_ontology(conn, schema)
+    with conn.cursor() as cur:
+        cur.execute(
+            sql.SQL("""
+            CREATE TABLE IF NOT EXISTS {s}.entity_source_count (
+                entity_id text PRIMARY KEY, source_count bigint NOT NULL, source_list text[] NOT NULL
+            )
+        """).format(s=namespace)
+        )
+        cur.execute(sql.SQL("TRUNCATE {}.entity_source_count").format(namespace))
+        cur.execute(
+            sql.SQL("""
+            INSERT INTO {s}.entity_source_count
+            SELECT entity_key, COUNT(DISTINCT resource),
+                ARRAY_AGG(DISTINCT resource ORDER BY resource)
+            FROM {s}.entities GROUP BY entity_key
+        """).format(s=namespace)
+        )
+        cur.execute(
+            sql.SQL("""
+            CREATE TABLE IF NOT EXISTS {s}.resource_overlap_summary (
+                source_a text, source_b text, content_kind text, overlap bigint NOT NULL,
+                PRIMARY KEY (source_a, source_b, content_kind)
+            )
+        """).format(s=namespace)
+        )
+        cur.execute(sql.SQL("TRUNCATE {}.resource_overlap_summary").format(namespace))
+        for table, key, kind in (
+            ("entities", "entity_key", "entity"),
+            ("relations", "relation_key", "relation"),
+        ):
+            graph_filter = (
+                " AND a.statement_kind='relation' AND b.statement_kind='relation'"
+                if kind == "relation"
+                else ""
+            )
+            cur.execute(
+                sql.SQL("""
+                INSERT INTO {s}.resource_overlap_summary
+                SELECT a.resource, b.resource, %s, COUNT(DISTINCT a.{key})
+                FROM {s}.{table} a JOIN {s}.{table} b ON a.{key}=b.{key}
+                    AND a.resource < b.resource {graph_filter}
+                GROUP BY a.resource,b.resource
+            """).format(
+                    s=namespace,
+                    table=sql.Identifier(table),
+                    key=sql.Identifier(key),
+                    graph_filter=sql.SQL(graph_filter),
+                ),
+                (kind,),
+            )
+
+    rebuild_reactions(conn, schema)

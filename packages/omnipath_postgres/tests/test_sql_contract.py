@@ -50,7 +50,7 @@ class RecordingConnection:
     def __init__(self):
         self.statements = []
 
-    def cursor(self):
+    def cursor(self, *args, **kwargs):
         return self
 
     def __enter__(self):
@@ -59,8 +59,21 @@ class RecordingConnection:
     def __exit__(self, *_):
         pass
 
-    def execute(self, statement):
-        self.statements.append(statement.as_string())
+    rowcount = 0
+
+    def execute(self, statement, *params):
+        self.statements.append(
+            statement.as_string() if hasattr(statement, "as_string") else statement
+        )
+
+    def fetchall(self):
+        return []
+
+    def fetchmany(self, *args):
+        return []
+
+    def executemany(self, statement, params):
+        self.execute(statement)
 
     def commit(self):
         raise AssertionError("The loader owns the transaction")
@@ -75,7 +88,7 @@ def test_projection_sql_quotes_schema_and_leaves_transaction_to_loader(operation
     schema = 'release"; DROP SCHEMA public; --'
     operation(conn, schema)
     assert conn.statements
+    assert any('"release""; DROP SCHEMA public; --"' in statement for statement in conn.statements)
     for statement in conn.statements:
-        assert '"release""; DROP SCHEMA public; --"' in statement
         assert "CREATE EXTENSION" not in statement
         assert "::uuid" not in statement

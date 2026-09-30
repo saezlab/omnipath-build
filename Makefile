@@ -1,4 +1,4 @@
-.PHONY: setup test test-pypath test-postgres check build sample load-postgres
+.PHONY: setup test test-pypath test-postgres check build sample load-postgres test-subsets build-subsets
 
 export PKG_INFRA_CONFIG ?= $(CURDIR)/config/pkg_infra_quiet.yaml
 
@@ -21,8 +21,8 @@ test-postgres:
 	OMNIPATH_TEST_POSTGRES=1 uv run --frozen pytest packages/omnipath_postgres/tests -q
 
 check:
-	uv run --frozen ruff check packages scripts
-	uv run --frozen ruff format --check packages scripts
+	uv run --frozen ruff check packages scripts conftest.py
+	uv run --frozen ruff format --check packages scripts conftest.py
 
 build:
 	uv run --frozen omnipath-build build $(SOURCE) --version $(VERSION) --max-records $(MAX_RECORDS) --output-dir $(DATA_ROOT)
@@ -34,3 +34,11 @@ sample:
 POSTGRES_SCHEMA ?= omnipath
 load-postgres:
 	uv run --frozen omnipath-postgres $(RELEASE_MANIFEST) --data-root $(DATA_ROOT) --schema $(POSTGRES_SCHEMA)
+
+# Build products against one loaded, immutable release.
+SUBSET_PRODUCTS ?= metsigdb network_views cosmos
+build-subsets:
+	uv run --frozen omnipath-subsets build --schema $(POSTGRES_SCHEMA) --products $(SUBSET_PRODUCTS)
+
+test-subsets:
+	OMNIPATH_TEST_POSTGRES=1 uv run --frozen pytest packages/omnipath_postgres/tests packages/omnipath_subsets/tests -q

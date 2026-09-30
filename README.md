@@ -3,20 +3,21 @@
 Build independently versioned, resolved Parquet resources from pypath `inputs_v2`.
 This migration carries over the prototype's schemas, Biolink mappings and entity
 resolution. PostgreSQL loads pinned releases of these resolved artifacts;
-product extraction and downstream compatibility are the next milestones.
+product adapters derive MetSigDB, network presets and COSMOS from that loaded release.
 
 ## Packages
 
 - `packages/omnipath_core`: shared schemas, vocabulary, identity and version metadata.
 - `packages/omnipath_resolver`: native resolution policy and reference kernels.
 - `packages/omnipath_build`: reference preparation, resource builds and publication.
-- `packages/omnipath_postgres`: pinned release loading, query indexes and basic derived tables.
+- `packages/omnipath_postgres`: pinned release loading, query indexes, ontology closure and reaction contexts.
+- `packages/omnipath_subsets`: MetSigDB, network presets and COSMOS adapters.
 - `pypath/`: source parsers and mappings, on the `parquet-migration` branch.
 - `legacy/postgres/`: the previous PostgreSQL implementation and tests, retained
-  for remaining derived-table and downstream product migration.
+  for comparison while validating downstream compatibility.
 
 The active workspace excludes the legacy package so imports use the new pipeline.
-API, web, subsets and client packages are outside these initial milestones.
+API, web and client packages remain later milestones.
 
 ## Setup
 
@@ -61,8 +62,8 @@ make load-postgres RELEASE_MANIFEST=release.json \
 ```
 
 The loader verifies artifact schemas and checksums, streams the resolved records
-through DuckDB and copies them into PostgreSQL. Tables, indexes, basic derived
-counts and release metadata commit together; a failed load leaves no partial
+through DuckDB and copies them into PostgreSQL. Tables, indexes, ontology and
+reaction derivations, counts and release metadata commit together; a failed load leaves no partial
 schema. Existing schemas cannot be overwritten. Loading does not run parsers
 or identifier resolution.
 
@@ -78,12 +79,34 @@ start a temporary Unix-socket-only cluster and shut it down afterward.
 
 Full published keys, duplicate evidence occurrences, quantities, qualifiers,
 original payload text and per-resource records are preserved. Canonical views
-combine identical keys, aggregate evidence and expose consensus taxa. Basic
-identifier lookup and direct relation counts are implemented. Ontology expansion,
-the remaining legacy derived tables and downstream product compatibility require
-the next milestone.
+combine identical keys, aggregate evidence and expose consensus taxa. Identifier
+lookup, graph relation counts, ontology closure, source counts,
+resource overlap and source-scoped reaction participants are implemented.
+Representative small fixtures validate the adapters; full product comparisons
+and web query benchmarks remain.
 
 See the [PostgreSQL package](packages/omnipath_postgres/README.md).
+
+## Products from a loaded release
+
+```sh
+make build-subsets POSTGRES_SCHEMA=release_2026_09
+# Or choose one product:
+make build-subsets POSTGRES_SCHEMA=release_2026_09 SUBSET_PRODUCTS=metsigdb
+make test-subsets
+```
+
+Products read published entities, aliases and evidence from PostgreSQL. A build
+records the release ID and exact manifest digest; all selected products commit
+together. A failed rebuild preserves the previous product tables.
+
+MetSigDB uses published chemical entities, including fallback identities. It
+does not repeat the legacy matched-only filter or change Parquet. COSMOS keeps
+source reaction events separate. Network presets preserve qualified statement
+keys and report missing resources and compatibility limits.
+
+See the [subset package](packages/omnipath_subsets/README.md) and
+[milestone notes](docs/parquet-subsets-milestone.md).
 
 ## Resource builds
 

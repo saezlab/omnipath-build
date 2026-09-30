@@ -23,6 +23,13 @@ _TABLES = {
         input_manifest_sha256 text NOT NULL,
         loaded_at timestamptz NOT NULL DEFAULT now()
     """,
+    "entity_ontology_relation": """
+        resource text NOT NULL, version text NOT NULL, relation_id text NOT NULL,
+        subject_entity_id text NOT NULL, object_entity_id text NOT NULL,
+        predicate text NOT NULL, child_entity_id text NOT NULL,
+        parent_entity_id text NOT NULL, hierarchy_kind text NOT NULL,
+        PRIMARY KEY (resource, version, relation_id)
+    """,
     "entities": """
         resource text NOT NULL,
         version text NOT NULL,
@@ -176,16 +183,29 @@ def create_schema(conn, schema: str) -> None:
                     FROM {s}.entities
                     GROUP BY entity_key
                 )
+                , hierarchy AS (
+                    SELECT entity_id, SUM(parents)::bigint AS parents, SUM(children)::bigint AS children
+                    FROM (
+                        SELECT child_entity_id AS entity_id, COUNT(DISTINCT parent_entity_id) AS parents,
+                            0::bigint AS children FROM {s}.entity_ontology_relation GROUP BY child_entity_id
+                        UNION ALL
+                        SELECT parent_entity_id, 0::bigint, COUNT(DISTINCT child_entity_id)
+                        FROM {s}.entity_ontology_relation GROUP BY parent_entity_id
+                    ) counts GROUP BY entity_id
+                )
                 SELECT c.entity_key AS entity_id, c.entity_key, c.entity_type,
-                    c.namespace, c.identifier, r.taxon, c.label, c.has_hierarchy,
-                    c.parent_count, c.child_count, r.resource_records
+                    c.namespace, c.identifier, r.taxon, c.label,
+                    (COALESCE(h.parents,0)+COALESCE(h.children,0)>0) AS has_hierarchy,
+                    COALESCE(h.parents,0) AS parent_count, COALESCE(h.children,0) AS child_count,
+                    r.resource_records
                 FROM chosen c
                 JOIN resources r USING (entity_key)
+                LEFT JOIN hierarchy h ON h.entity_id=c.entity_key
             """).format(s=namespace)
         )
         cur.execute(
             sql.SQL("""
-                CREATE VIEW {s}.relation AS
+                CREATE VIEW {s}.statement AS
                 WITH chosen AS (
                     SELECT DISTINCT ON (relation_key) *
                     FROM {s}.relations
@@ -219,5 +239,11 @@ def create_schema(conn, schema: str) -> None:
                 FROM chosen c
                 JOIN resources r USING (relation_key)
                 LEFT JOIN source_sets ss USING (relation_key)
+            """).format(s=namespace)
+        )
+        cur.execute(
+            sql.SQL("""
+                CREATE VIEW {s}.relation AS
+                SELECT * FROM {s}.statement WHERE statement_kind='relation'
             """).format(s=namespace)
         )

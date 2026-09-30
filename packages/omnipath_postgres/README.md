@@ -16,10 +16,16 @@ uv run --frozen omnipath-postgres release.json \
   --data-root data/migration-smoke --schema release_2026_09
 ```
 
-The data root contains resources/<source>/<version>/. The loader validates schemas, row counts, sizes and SHA-256 checksums before connecting. It loads tables, indexes, derived counts and release metadata in one transaction and rechecks the selected files before committing. Any failure rolls back the new schema. Existing destination schemas are rejected.
+The data root contains resources/<source>/<version>/. The loader validates schemas, row counts, sizes and SHA-256 checksums before connecting. It loads tables, indexes, derived tables and release metadata in one transaction and rechecks the selected files before committing. Any failure rolls back the new schema. Existing destination schemas are rejected.
 
-Full published text keys are retained. Per-resource tables keep complete nested entity and relation records, identifier occurrences, evidence, annotations and quantities. Payload JSON retains its original text. Canonical entity and relation views combine identical keys across resources, retaining resource provenance and aggregating evidence. Different relation keys remain separate even when endpoints and predicates match.
+Full published text keys are retained. Per-resource tables keep complete nested entity and relation records, identifier occurrences, evidence, annotations and quantities. Payload JSON retains its original text. Canonical entity and statement views combine identical keys across resources, retaining resource provenance and aggregating evidence. The relation view selects graph statements; ontology statements stay available through the statement view and ontology tables. Different relation keys remain separate even when endpoints and predicates match.
 
-The identifier lookup, endpoint indexes, direct relation counts and typed quantity view adapt useful parts of the previous PostgreSQL implementation. Ontology expansion and compatibility with MetSigDB, network views, COSMOS and the existing web backend require the next validation milestone.
+The identifier lookup, endpoint indexes, direct graph relation counts and typed quantity view adapt useful parts of the previous PostgreSQL implementation. Source counts and resource overlap retain release-visible provenance.
+
+Recognized ontology predicates become directional subclass or part-of edges. Closure tables retain shortest paths both within each resource and across the release, handle cycles and omit self ancestry. Entity hierarchy counts describe the loaded release; original resource records retain their published counts.
+
+Reaction derivation groups explicit input, output and catalyst relations by source event. It preserves exact payload text and typed coefficient annotations, verifies participant roles and aliases before attaching raw compartments, and records unknown or conflicting context. Source parsers and entity resolution are not rerun.
+
+See the [subset adapters](../omnipath_subsets/README.md) for MetSigDB, network presets and COSMOS. Full product comparisons and web backend benchmarks remain.
 
 PostgreSQL 14 or newer is required; no optional database extensions are needed. For an isolated integration check, install PostgreSQL binaries and run make test-postgres. Tests start a temporary Unix-socket-only cluster, load small local fixtures and shut it down afterward.
