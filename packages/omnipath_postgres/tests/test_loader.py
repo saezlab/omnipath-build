@@ -81,3 +81,14 @@ def test_finish_rejects_invalid_schema_before_connecting(monkeypatch, schema):
     monkeypatch.setattr(loader.psycopg, "connect", unexpected)
     with pytest.raises(ValueError, match="schema"):
         loader.finish_release("unused", schema=schema)
+
+
+@pytest.mark.parametrize("defer_constraints", [None, 0, 1, "true", [], {}])
+def test_rejects_nonboolean_constraint_mode_before_io(monkeypatch, defer_constraints):
+    def unexpected(*args, **kwargs):
+        pytest.fail("Invalid constraint selection must not read or connect")
+
+    monkeypatch.setattr(loader, "read_release", unexpected)
+    monkeypatch.setattr(loader.psycopg, "connect", unexpected)
+    with pytest.raises(ValueError, match="defer_constraints must be a boolean"):
+        loader.load_release("missing", "missing", "unused", defer_constraints=defer_constraints)

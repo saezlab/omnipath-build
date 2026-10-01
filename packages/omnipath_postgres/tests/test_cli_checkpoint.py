@@ -16,6 +16,7 @@ from omnipath_postgres import cli
         ["--memory-limit", "1GB"],
         ["--temp-directory", "tmp"],
         ["--checkpoint-base"],
+        ["--defer-constraints"],
     ],
 )
 def test_finish_rejects_inapplicable_options_without_connecting(monkeypatch, extra):

@@ -33,6 +33,11 @@ def main(argv=None) -> int:
         help="Finish an unpublished base checkpoint from PostgreSQL alone",
     )
     parser.add_argument(
+        "--defer-constraints",
+        action="store_true",
+        help="Build and validate base keys/FKs after COPY",
+    )
+    parser.add_argument(
         "--batch-size",
         type=int,
         default=None,
@@ -66,6 +71,7 @@ def main(argv=None) -> int:
                 )
             )
             or args.validate_source_records
+            or args.defer_constraints
         ):
             parser.error(
                 "--finish accepts only database/schema selection; loading and source-audit options do not apply"
@@ -87,6 +93,7 @@ def main(argv=None) -> int:
                 temp_directory=args.temp_directory,
                 validate_source_records=args.validate_source_records,
                 checkpoint_base=args.checkpoint_base,
+                defer_constraints=args.defer_constraints,
             )
     except (ValueError, OSError, psycopg.Error, duckdb.Error) as exc:
         parser.exit(1, f"Release load failed: {exc}\n")

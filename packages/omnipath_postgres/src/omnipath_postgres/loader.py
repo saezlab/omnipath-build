@@ -34,7 +34,7 @@ from .duckdb_projection import (
     validate_resource,
 )
 from .releases import PinnedRelease, load_release as read_release, verify_release
-from .schema import create_schema
+from .schema import add_base_constraints, create_schema
 
 
 _OWNER_LOOKUP_COLUMNS = {
@@ -306,6 +306,46 @@ def _metadata(conn, schema: str, release: PinnedRelease) -> None:
             )
 
 
+def _audit_resource_records(
+    conn, schema, resource, check_reaction_payloads, batch_size, timings, *, analyze=True
+):
+    """Audit one pinned resource in bounded batches, after its lookup keys exist."""
+    if analyze:
+        # Autovacuum cannot see this transaction's copied rows. Every
+        # resource needs current scoped-key statistics before batched owner
+        # lookups; otherwise fresh tables can produce repeated broad scans.
+        # Reaction checks add their scalar join/filter columns in the same
+        # sample. Nonreactions never preliminarily scan evidence/annotations
+        # or wide record_json/quantity fields.
+        lookup_columns = _HASH_JOIN_COLUMNS if check_reaction_payloads else _OWNER_LOOKUP_COLUMNS
+        tick = perf_counter()
+        _analyze_tables(conn, schema, lookup_columns, columns=lookup_columns)
+        timings[f"analyze_payload_lookup_{resource.source}"] = perf_counter() - tick
+    references = []
+    validated_count = 0
+    # Bound transient digest batches even when COPY uses larger batches.
+    payload_batch_size = min(batch_size, 1024)
+    for reference in iter_validated_payloads(resource.directory, batch_size=payload_batch_size):
+        references.append(reference)
+        validated_count += 1
+        if len(references) >= payload_batch_size:
+            _validate_payload_owners(conn, schema, resource.source, resource.version, references)
+            if check_reaction_payloads:
+                _validate_reaction_payloads(
+                    conn, schema, resource.source, resource.version, references
+                )
+            references.clear()
+    if references:
+        _validate_payload_owners(conn, schema, resource.source, resource.version, references)
+        if check_reaction_payloads:
+            _validate_reaction_payloads(conn, schema, resource.source, resource.version, references)
+    if validated_count != resource.files["evidence_payloads.parquet"].rows:
+        raise ValueError(
+            f"Validated row count differs from manifest: {resource.source}/evidence_payloads.parquet"
+        )
+    return validated_count
+
+
 def _lock_destination(conn, schema: str) -> None:
     # Session ownership spans the base commit and derivation transaction. It
     # uses the original key, so older transaction-locking loaders also serialize.
@@ -564,6 +604,7 @@ def load_release(
     temp_directory: str | Path | None = None,
     validate_source_records: bool = False,
     checkpoint_base: bool = False,
+    defer_constraints: bool = False,
 ) -> LoadResult:
     """Load an exact release into a fresh schema; atomic by default.
 
@@ -572,12 +613,19 @@ def load_release(
     without rereading Parquet or repeating COPY. release_metadata remains empty
     until derivation succeeds, so a staged schema is not a published release.
 
+    With defer_constraints=True, base heaps retain NOT NULL/CHECK during COPY;
+    exact keys, annotation uniqueness and all seven validated FKs are installed
+    afterwards, before integrity checks, checkpoint or derivation. Requested raw
+    audits run after these lookup keys exist.
+
     Source bodies are discarded. Their immutable file/schema/count checks remain
     mandatory; parsing and owner/hash cross-checks run only for an explicit
     ``validate_source_records`` audit. Stored projections and provenance
     annotations are validated in both modes.
     """
     validate_schema(schema)
+    if type(defer_constraints) is not bool:
+        raise ValueError("defer_constraints must be a boolean")
     if type(checkpoint_base) is not bool:
         raise ValueError("checkpoint_base must be a boolean")
     if not isinstance(validate_source_records, bool):
@@ -600,6 +648,7 @@ def load_release(
     timings["validate_files"] = perf_counter() - started
     counts = dict.fromkeys(COLUMNS, 0)
     validated_payload_rows = {}
+    deferred_audits = []
     spool_parent = (
         Path(temp_directory) if temp_directory is not None else Path(manifest_path).parent
     )
@@ -622,10 +671,14 @@ def load_release(
                 if cur.fetchone():
                     raise ValueError(f"Destination schema already exists: {schema}")
             started = perf_counter()
-            create_schema(conn, schema)
+            if defer_constraints:
+                create_schema(conn, schema, defer_constraints=True)
+            else:
+                create_schema(conn, schema)
             _metadata(conn, schema, release)
-            # Validate each COPY statement instead of retaining FK trigger events
-            # for the entire release. All writes still share one outer transaction.
+            # Default mode validates each COPY statement. Deferred mode has no
+            # base PK/FK/index work during COPY; column checks remain active.
+            # Both paths share the same base transaction and final constraints.
             with conn.cursor() as cur:
                 cur.execute("SET CONSTRAINTS ALL IMMEDIATE")
             for resource in release.resources:
@@ -666,49 +719,35 @@ def load_release(
                     check_reaction_payloads = (
                         validation.has_activity and validation.has_participant_relation
                     )
-                    # Autovacuum cannot see this transaction's copied rows. Every
-                    # resource needs current scoped-key statistics before batched owner
-                    # lookups; otherwise fresh tables can produce repeated broad scans.
-                    # Reaction checks add their scalar join/filter columns in the same
-                    # sample. Nonreactions never preliminarily scan evidence/annotations
-                    # or wide record_json/quantity fields.
+                    if defer_constraints:
+                        deferred_audits.append((resource, check_reaction_payloads))
+                    else:
+                        validated_payload_rows[resource.source] = _audit_resource_records(
+                            conn, schema, resource, check_reaction_payloads, batch_size, timings
+                        )
+            if defer_constraints:
+                tick = perf_counter()
+                add_base_constraints(conn, schema)
+                timings["base_constraints"] = perf_counter() - tick
+                if deferred_audits:
                     lookup_columns = (
-                        _HASH_JOIN_COLUMNS if check_reaction_payloads else _OWNER_LOOKUP_COLUMNS
+                        _HASH_JOIN_COLUMNS
+                        if any(flag for _, flag in deferred_audits)
+                        else _OWNER_LOOKUP_COLUMNS
                     )
                     tick = perf_counter()
                     _analyze_tables(conn, schema, lookup_columns, columns=lookup_columns)
-                    timings[f"analyze_payload_lookup_{resource.source}"] = perf_counter() - tick
-                    references = []
-                    validated_count = 0
-                    # Bound transient digest batches even when COPY uses larger batches.
-                    payload_batch_size = min(batch_size, 1024)
-                    for reference in iter_validated_payloads(
-                        resource.directory, batch_size=payload_batch_size
-                    ):
-                        references.append(reference)
-                        validated_count += 1
-                        if len(references) >= payload_batch_size:
-                            _validate_payload_owners(
-                                conn, schema, resource.source, resource.version, references
-                            )
-                            if check_reaction_payloads:
-                                _validate_reaction_payloads(
-                                    conn, schema, resource.source, resource.version, references
-                                )
-                            references.clear()
-                    if references:
-                        _validate_payload_owners(
-                            conn, schema, resource.source, resource.version, references
+                    timings["analyze_deferred_audit_lookup"] = perf_counter() - tick
+                    for resource, check_reaction_payloads in deferred_audits:
+                        validated_payload_rows[resource.source] = _audit_resource_records(
+                            conn,
+                            schema,
+                            resource,
+                            check_reaction_payloads,
+                            batch_size,
+                            timings,
+                            analyze=False,
                         )
-                        if check_reaction_payloads:
-                            _validate_reaction_payloads(
-                                conn, schema, resource.source, resource.version, references
-                            )
-                    if validated_count != resource.files["evidence_payloads.parquet"].rows:
-                        raise ValueError(
-                            f"Validated row count differs from manifest: {resource.source}/evidence_payloads.parquet"
-                        )
-                    validated_payload_rows[resource.source] = validated_count
             # COPY into new tables does not provide column statistics. Collect them
             # before integrity joins and derivations, which run before autovacuum can
             # see this transaction's rows. Wide reaction joins especially need them.

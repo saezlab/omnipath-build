@@ -19,6 +19,18 @@ uv run --frozen omnipath-postgres release.json \
 The data root contains resources/<source>/<version>/. The loader validates schemas, row counts, sizes and SHA-256 checksums before connecting. By default, it loads tables, indexes, derived tables and release metadata in one transaction and rechecks the selected files before committing. Any failure rolls back the new schema. Existing destination schemas are rejected. Parent tables are copied before child tables. Foreign keys are immediate, and each CSV chunk gets its own COPY statement inside the same transaction, so pending checks do not grow with the whole release. CSV rotation targets 16 MB; the last vector or a large record can exceed that threshold. Typed projection and integrity checks on all loaded records remain mandatory. Raw source records are not consumed by the normal PostgreSQL load.
 
 
+For bulk loads, add `--defer-constraints` (Python: `defer_constraints=True`).
+COPY writes fresh base tables with their NOT NULL/CHECK constraints and annotation
+ID sequence active, then creates the same primary keys and annotation uniqueness
+index and validates all seven foreign keys. Narrow join-key statistics are
+collected before FK validation. This work completes before normalized integrity
+checks, checkpoint commit or derivation; any invalid base rolls back the schema.
+The optional raw source-record audit runs after its lookup keys exist. The load
+result records the key/statistics/FK phase as `base_constraints`. Combine this
+flag with `--checkpoint-base` to preserve the fully validated base for derivation
+retries: `omnipath-postgres release.json --data-root data --schema release_2026_09
+--defer-constraints --checkpoint-base`.
+
 For long loads, add `--checkpoint-base` (Python: `checkpoint_base=True`). The
 loader commits the copied base tables and indexes after integrity and final file
 checks, then derives and publishes in a separate transaction. A derivation

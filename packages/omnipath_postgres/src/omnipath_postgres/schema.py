@@ -5,7 +5,7 @@ from __future__ import annotations
 from psycopg import sql
 
 
-_TABLES = {
+_TABLE_COLUMNS = {
     "resource_versions": """
         resource text NOT NULL,
         version text NOT NULL,
@@ -60,9 +60,7 @@ _TABLES = {
         has_hierarchy boolean,
         parent_count bigint,
         child_count bigint,
-        record_json jsonb NOT NULL,
-        PRIMARY KEY (resource, version, entity_key),
-        FOREIGN KEY (resource, version) REFERENCES {s}.resource_versions (resource, version) DEFERRABLE INITIALLY DEFERRED
+        record_json jsonb NOT NULL
     """,
     "relations": """
         resource text NOT NULL,
@@ -83,13 +81,7 @@ _TABLES = {
         interaction_class text,
         sources jsonb,
         evidence_count bigint,
-        record_json jsonb NOT NULL,
-        PRIMARY KEY (resource, version, relation_key),
-        FOREIGN KEY (resource, version) REFERENCES {s}.resource_versions (resource, version) DEFERRABLE INITIALLY DEFERRED,
-        FOREIGN KEY (resource, version, subject_entity_key)
-            REFERENCES {s}.entities (resource, version, entity_key) DEFERRABLE INITIALLY DEFERRED,
-        FOREIGN KEY (resource, version, object_entity_key)
-            REFERENCES {s}.entities (resource, version, entity_key) DEFERRABLE INITIALLY DEFERRED
+        record_json jsonb NOT NULL
     """,
     "identifiers": """
         resource text NOT NULL,
@@ -99,10 +91,7 @@ _TABLES = {
         ns text,
         id text,
         is_canonical boolean,
-        source text,
-        PRIMARY KEY (resource, version, entity_key, ordinal),
-        FOREIGN KEY (resource, version, entity_key)
-            REFERENCES {s}.entities (resource, version, entity_key) DEFERRABLE INITIALLY DEFERRED
+        source text
     """,
     "evidence": """
         resource text NOT NULL,
@@ -113,13 +102,10 @@ _TABLES = {
         dataset text,
         row_id text,
         upstream_id text,
-        record_json jsonb NOT NULL,
-        PRIMARY KEY (resource, version, relation_key, ordinal),
-        FOREIGN KEY (resource, version, relation_key)
-            REFERENCES {s}.relations (resource, version, relation_key) DEFERRABLE INITIALLY DEFERRED
+        record_json jsonb NOT NULL
     """,
     "annotations": """
-        annotation_id bigserial PRIMARY KEY,
+        annotation_id bigserial,
         resource text NOT NULL,
         version text NOT NULL,
         owner_kind text NOT NULL CHECK (owner_kind IN ('entity', 'relation', 'evidence')),
@@ -135,13 +121,155 @@ _TABLES = {
         CHECK (
             (owner_kind = 'evidence' AND evidence_ordinal IS NOT NULL AND evidence_ordinal >= 0)
             OR (owner_kind IN ('entity', 'relation') AND evidence_ordinal IS NULL)
-        ),
-        FOREIGN KEY (resource, version) REFERENCES {s}.resource_versions (resource, version) DEFERRABLE INITIALLY DEFERRED
+        )
     """,
 }
 
 
-def create_schema(conn, schema: str) -> None:
+_BASE_PRIMARY_KEYS = {
+    "entities": "PRIMARY KEY (resource, version, entity_key)",
+    "relations": "PRIMARY KEY (resource, version, relation_key)",
+    "identifiers": "PRIMARY KEY (resource, version, entity_key, ordinal)",
+    "evidence": "PRIMARY KEY (resource, version, relation_key, ordinal)",
+    "annotations": "PRIMARY KEY (annotation_id)",
+}
+_BASE_FOREIGN_KEYS = {
+    "entities": (
+        (
+            "entities_resource_version_fkey",
+            "FOREIGN KEY (resource, version) REFERENCES {s}.resource_versions (resource, version) DEFERRABLE INITIALLY DEFERRED",
+        ),
+    ),
+    "relations": (
+        (
+            "relations_resource_version_fkey",
+            "FOREIGN KEY (resource, version) REFERENCES {s}.resource_versions (resource, version) DEFERRABLE INITIALLY DEFERRED",
+        ),
+        (
+            "relations_resource_version_subject_entity_key_fkey",
+            "FOREIGN KEY (resource, version, subject_entity_key) REFERENCES {s}.entities (resource, version, entity_key) DEFERRABLE INITIALLY DEFERRED",
+        ),
+        (
+            "relations_resource_version_object_entity_key_fkey",
+            "FOREIGN KEY (resource, version, object_entity_key) REFERENCES {s}.entities (resource, version, entity_key) DEFERRABLE INITIALLY DEFERRED",
+        ),
+    ),
+    "identifiers": (
+        (
+            "identifiers_resource_version_entity_key_fkey",
+            "FOREIGN KEY (resource, version, entity_key) REFERENCES {s}.entities (resource, version, entity_key) DEFERRABLE INITIALLY DEFERRED",
+        ),
+    ),
+    "evidence": (
+        (
+            "evidence_resource_version_relation_key_fkey",
+            "FOREIGN KEY (resource, version, relation_key) REFERENCES {s}.relations (resource, version, relation_key) DEFERRABLE INITIALLY DEFERRED",
+        ),
+    ),
+    "annotations": (
+        (
+            "annotations_resource_version_fkey",
+            "FOREIGN KEY (resource, version) REFERENCES {s}.resource_versions (resource, version) DEFERRABLE INITIALLY DEFERRED",
+        ),
+    ),
+}
+# Keep the complete default definitions available to existing contract consumers.
+_TABLES = {
+    name: definition
+    + (
+        ",\n"
+        + ",\n".join(
+            [
+                f"CONSTRAINT {name}_pkey {_BASE_PRIMARY_KEYS[name]}",
+                *[
+                    f"CONSTRAINT {constraint} {foreign_key}"
+                    for constraint, foreign_key in _BASE_FOREIGN_KEYS[name]
+                ],
+            ]
+        )
+        if name in _BASE_PRIMARY_KEYS
+        else ""
+    )
+    for name, definition in _TABLE_COLUMNS.items()
+}
+
+
+def _annotation_owner_index(cur, namespace):
+    cur.execute(
+        sql.SQL("""
+            CREATE UNIQUE INDEX annotations_owner_ordinal_idx
+            ON {}.annotations (
+                resource, version, owner_kind, owner_key,
+                COALESCE(evidence_ordinal, -1), ordinal
+            )
+        """).format(namespace)
+    )
+
+
+def add_base_constraints(conn, schema: str) -> None:
+    """Install and validate the exact base keys/FKs after COPY; never commit.
+
+    Referenced keys exist before any FK is added. NOT VALID avoids row trigger
+    queues for existing data; explicit VALIDATE checks every FK before checkpoint
+    or derivation. Column NOT NULL/CHECK constraints remained active during COPY.
+    """
+    namespace = sql.Identifier(schema)
+    with conn.cursor() as cur:
+        for table, definition in _BASE_PRIMARY_KEYS.items():
+            cur.execute(
+                sql.SQL("ALTER TABLE {}.{} ADD CONSTRAINT {} {}").format(
+                    namespace,
+                    sql.Identifier(table),
+                    sql.Identifier(table + "_pkey"),
+                    sql.SQL(definition),
+                )
+            )
+        _annotation_owner_index(cur, namespace)
+        for table, constraints in _BASE_FOREIGN_KEYS.items():
+            for name, definition in constraints:
+                cur.execute(
+                    sql.SQL("ALTER TABLE {}.{} ADD CONSTRAINT {} {} NOT VALID").format(
+                        namespace,
+                        sql.Identifier(table),
+                        sql.Identifier(name),
+                        sql.SQL(definition).format(s=namespace),
+                    )
+                )
+        # COPY and index creation do not provide column distributions, and
+        # autovacuum cannot see this transaction's rows. Validate using current
+        # narrow join-key statistics; leave wide JSON/quantity to later ANALYZE.
+        validation_columns = {
+            "resource_versions": ("resource", "version"),
+            "entities": ("resource", "version", "entity_key"),
+            "relations": (
+                "resource",
+                "version",
+                "relation_key",
+                "subject_entity_key",
+                "object_entity_key",
+            ),
+            "identifiers": ("resource", "version", "entity_key"),
+            "evidence": ("resource", "version", "relation_key"),
+            "annotations": ("resource", "version"),
+        }
+        for table, columns in validation_columns.items():
+            cur.execute(
+                sql.SQL("ANALYZE {}.{} ({})").format(
+                    namespace,
+                    sql.Identifier(table),
+                    sql.SQL(",").join(map(sql.Identifier, columns)),
+                )
+            )
+        for table, constraints in _BASE_FOREIGN_KEYS.items():
+            for name, _ in constraints:
+                cur.execute(
+                    sql.SQL("ALTER TABLE {}.{} VALIDATE CONSTRAINT {}").format(
+                        namespace, sql.Identifier(table), sql.Identifier(name)
+                    )
+                )
+
+
+def create_schema(conn, schema: str, *, defer_constraints: bool = False) -> None:
     """Create a fresh release schema inside the caller's transaction.
 
     An existing schema is an error. Full resource rows remain authoritative;
@@ -149,23 +277,20 @@ def create_schema(conn, schema: str) -> None:
     without modifying source records.
     The caller validates generic annotation owners before loading.
     """
+    if type(defer_constraints) is not bool:
+        raise ValueError("defer_constraints must be a boolean")
     namespace = sql.Identifier(schema)
     with conn.cursor() as cur:
         cur.execute(sql.SQL("CREATE SCHEMA {}").format(namespace))
         for name, definition in _TABLES.items():
+            if defer_constraints and name in _BASE_PRIMARY_KEYS:
+                definition = _TABLE_COLUMNS[name]
             columns = sql.SQL(definition).format(s=namespace)
             cur.execute(
                 sql.SQL("CREATE TABLE {}.{} ({})").format(namespace, sql.Identifier(name), columns)
             )
-        cur.execute(
-            sql.SQL("""
-                CREATE UNIQUE INDEX annotations_owner_ordinal_idx
-                ON {}.annotations (
-                    resource, version, owner_kind, owner_key,
-                    COALESCE(evidence_ordinal, -1), ordinal
-                )
-            """).format(namespace)
-        )
+        if not defer_constraints:
+            _annotation_owner_index(cur, namespace)
         cur.execute(
             sql.SQL("""
                 CREATE VIEW {s}.entity AS
