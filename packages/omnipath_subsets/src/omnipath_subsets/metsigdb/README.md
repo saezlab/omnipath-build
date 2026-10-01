@@ -26,6 +26,8 @@ chosen entity keys, and reads aliases across all pinned resources using
 resource/version/entity predicates that match the existing identifier primary
 key. Duplicate aliases and entities without projection aliases retain the same
 membership and aggregation behavior.
+The projected aggregate is materialized for reuse within each resource
+query, so membership joins do not repeatedly recompute alias aggregates.
 
 Projection reuses published aliases. HMDB accessions use at least seven digits;
 the structure key is the connectivity block of a valid published InChIKey.

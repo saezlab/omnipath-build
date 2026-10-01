@@ -164,7 +164,7 @@ WITH source_edges AS (
     FROM evidenced
     ORDER BY set_source_id, metabolite_entity_id, depth, numeric_row_id NULLS LAST,
         row_id NULLS LAST, relation_key, set_entity_id
-), projected AS (
+), projected AS MATERIALIZED (
     SELECT e.entity_id,
         COALESCE(NULLIF(e.label, ''), e.identifier) AS metabolite_label,
         e.entity_type AS metabolite_entity_type,

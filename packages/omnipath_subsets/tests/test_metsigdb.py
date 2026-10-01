@@ -1,5 +1,6 @@
 """The existing five MetSigDB products over small published, resolved releases."""
 
+from collections import Counter
 from copy import deepcopy
 import json
 import uuid
@@ -9,7 +10,7 @@ from psycopg import sql
 import pytest
 
 from omnipath_postgres import loader
-from omnipath_subsets.metsigdb import rebuild
+from omnipath_subsets.metsigdb import build as metsigdb_build, rebuild
 from omnipath_subsets.metsigdb.mapping import RESOURCES, KEGG_OVERVIEW_MAPS
 from omnipath_core.source_attributes import TRAIT_TYPE
 from release_fixture import (
@@ -288,6 +289,105 @@ def test_all_products_projection_published_eligibility_and_provenance(metsig_rel
     assert provenance[1]["row_id"] == "2"
     assert provenance[1]["evidence_ordinal"] == 1
     assert provenance[1]["version"] == "1.0.0"
+
+
+@pytest.mark.integration
+def test_materialized_projection_preserves_complete_results_for_all_rules(metsig_release):
+    fixture = metsig_release
+    # Removing only the optimization gives the exact previous SELECT, including
+    # all provenance, window counts, contexts and identifier expressions.
+    inline_source = metsigdb_build._SOURCE.replace("projected AS MATERIALIZED (", "projected AS (")
+    publication_select = metsigdb_build._PUBLISH[
+        metsigdb_build._PUBLISH.index("SELECT %(resource)s") :
+    ]
+    namespace = sql.Identifier(fixture["schema"])
+    counts = {}
+    with psycopg.connect(fixture["dsn"]) as conn:
+        conn.execute("SET TRANSACTION READ ONLY")
+        manifests = conn.execute(
+            sql.SQL("SELECT manifest_json FROM {s}.resource_versions").format(s=namespace)
+        ).fetchall()
+        assert all(
+            sum(item["rows"] for item in manifest["files"].values()) <= 20
+            for (manifest,) in manifests
+        )
+        for rule in RESOURCES:
+            params = metsigdb_build._params(
+                rule, fixture["loaded"].resources, fixture["loaded"].manifest_sha256
+            )
+            before = conn.execute(
+                sql.SQL(inline_source + publication_select).format(s=namespace), params
+            ).fetchall()
+            after = conn.execute(
+                sql.SQL(metsigdb_build._SOURCE + publication_select).format(s=namespace), params
+            ).fetchall()
+            # A multiset comparison includes every returned column and retains
+            # duplicate multiplicity; equal counts alone would miss regressions.
+            assert Counter(json.dumps(row, sort_keys=True) for row in before) == Counter(
+                json.dumps(row, sort_keys=True) for row in after
+            ), rule.name
+            counts[rule.name] = len(after)
+    assert counts == {"Reactome": 2, "WikiPathways": 1, "KEGG": 2, "MACdb": 2, "ClassyFire": 3}
+
+
+@pytest.mark.integration
+def test_materialized_projection_aggregates_once_under_nested_loop_rescans(metsig_release):
+    fixture = metsig_release
+    namespace = sql.Identifier(fixture["schema"])
+    params = metsigdb_build._params(
+        RESOURCES[0], fixture["loaded"].resources, fixture["loaded"].manifest_sha256
+    )
+    # This correlated SELECT forces the projection to be rescanned for each
+    # chosen membership. OFFSET 0 keeps the lateral join from being pulled up, so the
+    # regression does not depend on the planner's preferred join order.
+    probe = """
+        SELECT c.set_source_id, p.* FROM chosen c
+        CROSS JOIN LATERAL (
+            SELECT * FROM complete_projection WHERE entity_id=c.metabolite_entity_id OFFSET 0
+        ) p
+    """
+
+    def plan_nodes(node):
+        yield node
+        for child in node.get("Plans", ()):
+            yield from plan_nodes(child)
+
+    with psycopg.connect(fixture["dsn"]) as conn:
+        conn.execute("SET TRANSACTION READ ONLY")
+        conn.execute("SET LOCAL enable_hashjoin = off")
+        conn.execute("SET LOCAL enable_mergejoin = off")
+        conn.execute("SET LOCAL enable_material = off")
+        conn.execute("SET LOCAL enable_memoize = off")
+        conn.execute("SET LOCAL max_parallel_workers_per_gather = 0")
+        explain = "EXPLAIN (ANALYZE, VERBOSE, FORMAT JSON, COSTS OFF, TIMING OFF, SUMMARY OFF) "
+        inline_source = metsigdb_build._SOURCE.replace(
+            "projected AS MATERIALIZED (", "projected AS ("
+        )
+        before = conn.execute(
+            sql.SQL(explain + inline_source + probe).format(s=namespace), params
+        ).fetchone()[0][0]["Plan"]
+        after = conn.execute(
+            sql.SQL(explain + metsigdb_build._SOURCE + probe).format(s=namespace), params
+        ).fetchone()[0][0]["Plan"]
+    before_nodes = list(plan_nodes(before))
+    after_nodes = list(plan_nodes(after))
+    assert before["Node Type"] == after["Node Type"] == "Nested Loop"
+    inline_aggregates = [
+        node
+        for node in before_nodes
+        if node["Node Type"] == "Aggregate"
+        and any("max(" in output.lower() for output in node.get("Output", ()))
+    ]
+    assert len(inline_aggregates) == 1, inline_aggregates
+    assert inline_aggregates[0]["Actual Loops"] == 2
+    producers = [node for node in after_nodes if node.get("Subplan Name") == "CTE projected"]
+    assert len(producers) == 1
+    assert producers[0]["Node Type"] == "Aggregate"
+    assert producers[0]["Actual Loops"] == 1
+    assert producers[0]["Actual Rows"] == 2
+    scans = [node for node in after_nodes if node.get("CTE Name") == "projected"]
+    assert len(scans) == 1
+    assert scans[0]["Actual Loops"] == 2
 
 
 @pytest.mark.integration
