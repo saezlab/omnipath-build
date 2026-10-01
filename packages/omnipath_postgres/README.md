@@ -63,4 +63,16 @@ Reaction derivation groups explicit input, output and catalyst relations by sour
 
 See the [subset adapters](../omnipath_subsets/README.md) for MetSigDB, network presets and COSMOS. Full product comparisons and web backend benchmarks remain.
 
+A build finishes when the requested load, derivations and subset products
+commit successfully. There is no mandatory post-build verification phase or
+automatic rebuild-and-rollback check. The loader's artifact validation, COPY
+counts, constraints and integrity checks still run as part of building the
+database.
+
+`scripts/verify_postgres_release.py` is an optional exhaustive audit, invoked
+explicitly when needed. Manual sample reviews should record their selection and
+coverage separately from an exhaustive result. Normal PostgreSQL-only derivation
+and subset rebuild commands remain available; removing a verification gate does
+not remove rebuild functionality.
+
 PostgreSQL 14 or newer is required; no optional database extensions are needed. For an isolated integration check, install PostgreSQL binaries and run make test-postgres. Tests start a temporary Unix-socket-only cluster, load small local fixtures and shut it down afterward.
