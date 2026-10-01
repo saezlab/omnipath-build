@@ -1170,3 +1170,12 @@ The existing15-minute overnight heartbeat now follows only attempt4. No mandator
 - Separate evidence-owned and surviving statement-owned paths preserve the frozen query's exact null-safe suppression, raw wildcard matching, scope normalization, synthetic evidence and final four-column DISTINCT. The staged result is reused for counts/COPY. No main schema/index/scientific algorithm or source artifact changed.
 - Independent full-row/decoded-expectation fixture: 13 passed in3.77s; combined projection/quantity suite:38 passed in8.58s over nine synthetic records. Loader/checkpoint/product adapter suite:60 passed in1.48s, including real DuckDB CSV and disposable PostgreSQL checkpoint visibility. Ruff passed; independent review found no remaining row-semantic issue. Progress field `event` initially collided with real loader `_emit`; renamed to `state` and tested through that exact callback.
 - Exact full-release memory behavior is pending the next load. An exceptionally large complete owner cannot be split without a separate reviewed semantic approach; the fix does not claim a fixed bound independent of owner skew.
+
+
+## 2026-10-01 — Main alignment full attempt5 launched
+
+- Runtime `afd4ccb9b8f722d5dee885d567a7f378a9a1e88e`, reviewed 128-group narrow annotation-link fix; unit `omnipath-migration-main-aligned-attempt5-20261001.service`, invocation `279b6708d46c450d98ef3d105f4c5ac9`. Started **2026-10-01T22:58:29.704298+00:00**.
+- Fresh schema `aligned_full_20261001` on private PostgreSQL18 loopback5441; unchanged46-resource release2026.9.30.4, manifest `06f55112b371055b9b539c27eb7886d403b0131098393d1bafe4723ce006c03e`. No artifact, cache, reference or resolver changes.
+- Verified743committed runtime files, source manifest SHA256 `796cfb701cc383eecb42fc0cd5ab688a01849d510b0f3e23067c923890311c19`; archive SHA256 `31f88ba48b6adb2b21b73a2a3a72d0332fb4c21bd5e4fb6b7f3520815be61354`. Helper SHA256 `44e773253b3bc7db11e2a2e56408edc2398396c95dd594bc301ac583862a8146`.
+- DuckDB1thread/4GB; builderMemoryMax7GiB/CPUQuota200%/Nice10. Base and complete-product checkpoints enabled; no mandatory verifier/rebuild/rollback job. Preflight free538,317,246,464bytes, hostMemAvailable12,989,360KiB; exact protected service IDs/start times and both original/completed aligned pilot pairs preserved.
+- At22:58:44UTC authoritative service state was active/running in validate_and_stage. Actual completion/phase times/storage and representative manual samples remain pending. Monitor target and15-minute heartbeat updated to this unit/revision.
