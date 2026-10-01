@@ -31,6 +31,13 @@ membership and aggregation behavior.
 The projected aggregate is materialized for reuse within each resource
 query, so membership joins do not repeatedly recompute alias aggregates.
 
+ClassyFire uses a guarded full join for its final membership/projection match
+to prevent underestimated row counts from causing repeated projection scans.
+Its final filter retains exactly the inner-join rows, including duplicate
+multiplicity and null-key exclusion. Other products retain their publication
+queries. This planner workaround has a regression check for projection scans;
+no session planner settings or staging tables are used.
+
 Projection reuses published aliases. HMDB accessions use at least seven digits;
 the structure key is the connectivity block of a valid published InChIKey.
 Taxonomy comes from the source's set entity. Provenance records the exact source

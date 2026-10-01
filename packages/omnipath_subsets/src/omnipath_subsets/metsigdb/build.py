@@ -239,9 +239,31 @@ LEFT JOIN LATERAL (
 """
 
 
+# Underestimated ClassyFire CTE cardinalities can cause a nested loop to rescan
+# the projection for every membership. FULL JOIN permits a hash/merge match;
+# the non-strict final filter retains exactly the inner-join rows. COALESCE
+# rejects unmatched NULL-key rows without rejecting either outer side alone.
+_CLASSYFIRE_PUBLISH = (
+    _PUBLISH.replace(
+        "JOIN complete_projection p ON p.entity_id = c.metabolite_entity_id",
+        "FULL JOIN complete_projection p ON p.entity_id = c.metabolite_entity_id",
+        1,
+    )
+    + """
+WHERE c.metabolite_entity_id IS NOT DISTINCT FROM p.entity_id
+    AND COALESCE(c.metabolite_entity_id, p.entity_id) IS NOT NULL
+"""
+)
+
+
 def _source_for_rule(rule: ResourceRule) -> str:
     """Inline typed source edges only for the KEGG reaction join."""
     return _KEGG_SOURCE if rule.extraction == "kegg" else _SOURCE
+
+
+def _publish_for_rule(rule: ResourceRule) -> str:
+    """Preserve inner-match rows while avoiding ClassyFire projection rescans."""
+    return _CLASSYFIRE_PUBLISH if rule.extraction == "classyfire" else _PUBLISH
 
 
 def _params(rule: ResourceRule, versions: dict[str, str], build_id: str) -> dict:
@@ -332,7 +354,10 @@ def rebuild(
                 )
                 continue
             params = _params(rule, versions, build_id)
-            cur.execute(sql.SQL(_source_for_rule(rule) + _PUBLISH).format(s=namespace), params)
+            cur.execute(
+                sql.SQL(_source_for_rule(rule) + _publish_for_rule(rule)).format(s=namespace),
+                params,
+            )
             cur.execute(
                 sql.SQL(
                     "SELECT COUNT(*), COUNT(DISTINCT set_source_id) FROM {}.metsigdb_membership WHERE resource=%s"

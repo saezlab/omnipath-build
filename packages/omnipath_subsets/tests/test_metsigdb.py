@@ -296,9 +296,6 @@ def test_materialized_projection_preserves_complete_results_for_all_rules(metsig
     fixture = metsig_release
     # Removing only the optimization gives the exact previous SELECT, including
     # all provenance, window counts, contexts and identifier expressions.
-    publication_select = metsigdb_build._PUBLISH[
-        metsigdb_build._PUBLISH.index("SELECT %(resource)s") :
-    ]
     namespace = sql.Identifier(fixture["schema"])
     counts = {}
     with psycopg.connect(fixture["dsn"]) as conn:
@@ -312,6 +309,8 @@ def test_materialized_projection_preserves_complete_results_for_all_rules(metsig
         )
         for rule in RESOURCES:
             selected_source = metsigdb_build._source_for_rule(rule)
+            publication = metsigdb_build._publish_for_rule(rule)
+            publication_select = publication[publication.index("SELECT %(resource)s") :]
             inline_source = selected_source.replace("projected AS MATERIALIZED (", "projected AS (")
             params = metsigdb_build._params(
                 rule, fixture["loaded"].resources, fixture["loaded"].manifest_sha256
@@ -615,6 +614,166 @@ def test_kegg_inlining_preserves_candidate_paths_and_chosen_provenance(tmp_path,
         assert provenance["relation_key"] == chemical_output["relation_key"]
         assert provenance["via_reaction"] == first_reaction_key
         assert provenance["via_relation"] == set_relation["relation_key"]
+
+
+@pytest.mark.integration
+def test_classyfire_only_publication_preserves_complete_results_for_all_rules(metsig_release):
+    fixture = metsig_release
+    namespace = sql.Identifier(fixture["schema"])
+    original_select = metsigdb_build._PUBLISH[
+        metsigdb_build._PUBLISH.index("SELECT %(resource)s") :
+    ]
+    counts = {}
+    with psycopg.connect(fixture["dsn"]) as conn:
+        conn.execute("SET TRANSACTION READ ONLY")
+        manifests = conn.execute(
+            sql.SQL("SELECT manifest_json FROM {s}.resource_versions").format(s=namespace)
+        ).fetchall()
+        assert all(
+            sum(item["rows"] for item in manifest["files"].values()) <= 20
+            for (manifest,) in manifests
+        )
+        for rule in RESOURCES:
+            publication = metsigdb_build._publish_for_rule(rule)
+            if rule.extraction == "classyfire":
+                assert publication != metsigdb_build._PUBLISH
+            else:
+                assert publication == metsigdb_build._PUBLISH
+            selected_source = metsigdb_build._source_for_rule(rule)
+            selected_select = publication[publication.index("SELECT %(resource)s") :]
+            params = metsigdb_build._params(
+                rule, fixture["loaded"].resources, fixture["loaded"].manifest_sha256
+            )
+            before = conn.execute(
+                sql.SQL(selected_source + original_select).format(s=namespace), params
+            ).fetchall()
+            after = conn.execute(
+                sql.SQL(selected_source + selected_select).format(s=namespace), params
+            ).fetchall()
+            assert Counter(json.dumps(row, sort_keys=True) for row in before) == Counter(
+                json.dumps(row, sort_keys=True) for row in after
+            ), rule.name
+            counts[rule.name] = len(after)
+    assert counts == {"Reactome": 2, "WikiPathways": 1, "KEGG": 2, "MACdb": 2, "ClassyFire": 3}
+
+
+@pytest.mark.integration
+def test_classyfire_full_join_scans_projection_once(metsig_release):
+    fixture = metsig_release
+    namespace = sql.Identifier(fixture["schema"])
+    rule = next(rule for rule in RESOURCES if rule.extraction == "classyfire")
+    params = metsigdb_build._params(
+        rule, fixture["loaded"].resources, fixture["loaded"].manifest_sha256
+    )
+    source = metsigdb_build._source_for_rule(rule)
+    original_select = metsigdb_build._PUBLISH[
+        metsigdb_build._PUBLISH.index("SELECT %(resource)s") :
+    ]
+    publication = metsigdb_build._publish_for_rule(rule)
+    selected_select = publication[publication.index("SELECT %(resource)s") :]
+
+    def plan_nodes(node):
+        yield node
+        for child in node.get("Plans", ()):
+            yield from plan_nodes(child)
+
+    # Use normal planner settings and the complete publication SELECT, rather
+    # than a join-order fence added only by the test.
+    with psycopg.connect(fixture["dsn"]) as conn:
+        conn.execute("SET TRANSACTION READ ONLY")
+        explain = "EXPLAIN (ANALYZE, FORMAT JSON, COSTS OFF, TIMING OFF, SUMMARY OFF) "
+        before = conn.execute(
+            sql.SQL(explain + source + original_select).format(s=namespace), params
+        ).fetchone()[0][0]["Plan"]
+        after = conn.execute(
+            sql.SQL(explain + source + selected_select).format(s=namespace), params
+        ).fetchone()[0][0]["Plan"]
+    before_scans = [node for node in plan_nodes(before) if node.get("CTE Name") == "projected"]
+    after_scans = [node for node in plan_nodes(after) if node.get("CTE Name") == "projected"]
+    assert len(before_scans) == len(after_scans) == 1
+    assert before_scans[0]["Actual Loops"] > 1
+    assert after_scans[0]["Actual Loops"] == 1
+    full_joins = [node for node in plan_nodes(after) if node.get("Join Type") == "Full"]
+    assert len(full_joins) == 1
+    assert full_joins[0]["Node Type"] in ("Hash Join", "Merge Join")
+    producers = [node for node in plan_nodes(after) if node.get("Subplan Name") == "CTE projected"]
+    assert len(producers) == 1
+    assert producers[0]["Actual Loops"] == 1
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    "with_chosen, with_projection", [(True, True), (True, False), (False, True), (False, False)]
+)
+def test_classyfire_publication_preserves_duplicates_and_filters_unmatched_null_keys(
+    metsig_release, with_chosen, with_projection
+):
+    fixture = metsig_release
+    namespace = sql.Identifier(fixture["schema"])
+    rule = next(rule for rule in RESOURCES if rule.extraction == "classyfire")
+    params = metsigdb_build._params(
+        rule, fixture["loaded"].resources, fixture["loaded"].manifest_sha256
+    )
+    params.update(with_chosen=with_chosen, with_projection=with_projection)
+    # Deliberately include keys impossible in the current published schema to
+    # prove the guarded full join remains an inner match if invariants change.
+    # Two chosen rows and two identical projection rows for 'match' must yield
+    # four rows; null-key and unmatched rows must not affect the window count.
+    source = """
+        WITH chosen AS (
+            SELECT * FROM (VALUES
+                ('set-1', 'match', 'class-1', 'Class one', 9606::bigint, 0, NULL::text,
+                    jsonb_build_object('row_id', '1', 'relation_key', 'relation-a')),
+                ('set-1', 'match', 'class-1', 'Class one', 9606::bigint, 0, NULL::text,
+                    jsonb_build_object('row_id', '2', 'relation_key', 'relation-b')),
+                ('set-1', 'left-only', 'class-1', 'Class one', 9606::bigint, 0, NULL::text,
+                    jsonb_build_object('row_id', '9', 'relation_key', 'left-only')),
+                ('set-1', NULL::text, 'class-1', 'Class one', 9606::bigint, 0, NULL::text,
+                    jsonb_build_object('row_id', '10', 'relation_key', 'left-null'))
+            ) c(set_source_id, metabolite_entity_id, set_entity_id, set_label, organism,
+                depth, via_class, provenance_record)
+            WHERE %(with_chosen)s
+        ), complete_projection AS (
+            SELECT * FROM (VALUES
+                ('match', 'Matched chemical', 'chemical_entity', NULL::text, NULL::text,
+                    NULL::text, NULL::text, NULL::text, NULL::text, NULL::text),
+                ('match', 'Matched chemical', 'chemical_entity', NULL::text, NULL::text,
+                    NULL::text, NULL::text, NULL::text, NULL::text, NULL::text),
+                ('right-only', 'Right-only chemical', 'chemical_entity', NULL::text, NULL::text,
+                    NULL::text, NULL::text, NULL::text, NULL::text, NULL::text),
+                (NULL::text, 'Null-key chemical', 'chemical_entity', NULL::text, NULL::text,
+                    NULL::text, NULL::text, NULL::text, NULL::text, NULL::text)
+            ) p(entity_id, metabolite_label, metabolite_entity_type, inchikey,
+                metabolite_structure_key, smiles, hmdb, pubchem, chebi, kegg)
+            WHERE %(with_projection)s
+        )
+    """
+    original_select = metsigdb_build._PUBLISH[
+        metsigdb_build._PUBLISH.index("SELECT %(resource)s") :
+    ]
+    publication = metsigdb_build._publish_for_rule(rule)
+    selected_select = publication[publication.index("SELECT %(resource)s") :]
+    with psycopg.connect(fixture["dsn"]) as conn:
+        conn.execute("SET TRANSACTION READ ONLY")
+        before = conn.execute(
+            sql.SQL(source + original_select).format(s=namespace), params
+        ).fetchall()
+        after = conn.execute(
+            sql.SQL(source + selected_select).format(s=namespace), params
+        ).fetchall()
+    assert Counter(json.dumps(row, sort_keys=True) for row in before) == Counter(
+        json.dumps(row, sort_keys=True) for row in after
+    )
+    if with_chosen and with_projection:
+        assert len(after) == 4
+        assert Counter((row[2], row[17], row[20]["relation_key"]) for row in after) == {
+            ("match", 4, "relation-a"): 2,
+            ("match", 4, "relation-b"): 2,
+        }
+        assert all(row[18] == {"assignment": "direct", "depth": 0} for row in after)
+        assert all(row[16] == 9606 for row in after)
+    else:
+        assert after == []
 
 
 @pytest.mark.integration

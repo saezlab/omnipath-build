@@ -19,6 +19,26 @@ in `subset_build_metadata`. A failure rolls back every selected rebuild,
 including changes to existing products. The Python entry point is
 `omnipath_subsets.build.build_subsets`.
 
+For long product builds, add `--checkpoint-products` (Python:
+`checkpoint_products=True`). Each product's tables and metadata commit together;
+a later failure or cancellation rolls back only the current product. A session
+advisory lock spans all commits, and each product checks the same single release
+ID and manifest digest before and after its work. Resume by selecting only the
+remaining products with `--products`; existing metadata is not skipped
+implicitly.
+
+```sh
+uv run --frozen omnipath-subsets build --schema release_2026_09 --checkpoint-products
+uv run --frozen omnipath-subsets build --schema release_2026_09 --checkpoint-products --products network_views cosmos
+```
+
+The optional Python `on_product_committed(product, result)` callback requires
+checkpoint mode and runs only after the durable commit. `result` is a
+`BuildResult` snapshot containing release identity and the stats/timings of
+products committed by this call. A callback failure stops further builds while
+preserving that commit; `subset_build_metadata` is authoritative if observer
+persistence fails.
+
 Each adapter exposes `rebuild(conn, schema)` for a caller-owned transaction.
 
 ## MetSigDB

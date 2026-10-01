@@ -17,11 +17,21 @@ def main(argv=None):
     build.add_argument("--database-url", default=os.environ.get("OMNIPATH_DATABASE_URL"))
     build.add_argument("--schema", default="omnipath")
     build.add_argument("--products", choices=PRODUCTS, nargs="+", default=PRODUCTS)
+    build.add_argument(
+        "--checkpoint-products",
+        action="store_true",
+        help="Commit each complete product separately; retry remaining products explicitly",
+    )
     args = parser.parse_args(argv)
     if not args.database_url:
         parser.error("Set OMNIPATH_DATABASE_URL or pass --database-url")
     try:
-        result = build_subsets(args.database_url, args.schema, products=args.products)
+        result = build_subsets(
+            args.database_url,
+            args.schema,
+            products=args.products,
+            checkpoint_products=args.checkpoint_products,
+        )
     except (ValueError, OSError, psycopg.Error) as exc:
         parser.exit(1, f"Subset build failed: {exc}\n")
     print(json.dumps(asdict(result), indent=2))
