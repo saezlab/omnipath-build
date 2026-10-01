@@ -1,65 +1,120 @@
 """Ontology search projections over published axioms, without entity resolution."""
 
+from uuid import uuid4
+
 from psycopg import sql
 
 from omnipath_core.biolink import hierarchy_direction, is_descendant
 
 
 def _closure(cur, schema, table, edge_query, *, scoped):
+    """Breadth-first shortest pairs, expanding only the previous round's delta."""
     namespace = sql.Identifier(schema)
     dimensions = ["resource", "version"] if scoped else []
     keys = [*dimensions, "hierarchy_kind", "descendant_entity_id", "ancestor_entity_id"]
     columns = sql.SQL(", ").join(map(sql.Identifier, [*keys, "depth"]))
     key_columns = sql.SQL(", ").join(map(sql.Identifier, keys))
+    adjacency_columns = [*dimensions, "hierarchy_kind", "child_entity_id", "parent_entity_id"]
+    # Unique names plus explicit pg_temp references avoid search_path collisions,
+    # including rebuilds of multiple destination schemas in the same transaction.
+    token = uuid4().hex
+    names = [f"omnipath_ontology_{role}_{token}" for role in ("adjacency", "frontier", "next")]
+    adjacency, frontier, following = [sql.Identifier("pg_temp", name) for name in names]
+    cur.execute(
+        sql.SQL(
+            "CREATE TEMP TABLE {} ON COMMIT DROP AS SELECT DISTINCT {} "
+            "FROM ({}) edges WHERE child_entity_id <> parent_entity_id"
+        ).format(
+            sql.Identifier(names[0]),
+            sql.SQL(", ").join(map(sql.Identifier, adjacency_columns)),
+            edge_query,
+        )
+    )
+    adjacency_index = [*dimensions, "hierarchy_kind", "child_entity_id"]
+    cur.execute(
+        sql.SQL("CREATE INDEX ON {} ({})").format(
+            adjacency, sql.SQL(", ").join(map(sql.Identifier, adjacency_index))
+        )
+    )
+    cur.execute(sql.SQL("ANALYZE {}").format(adjacency))
+    for name, temporary in zip(names[1:], (frontier, following)):
+        cur.execute(
+            sql.SQL("CREATE TEMP TABLE {} (LIKE {}.{}) ON COMMIT DROP").format(
+                sql.Identifier(name), namespace, sql.Identifier(table)
+            )
+        )
+        cur.execute(
+            sql.SQL("CREATE INDEX ON {} ({})").format(
+                temporary,
+                sql.SQL(", ").join(
+                    map(sql.Identifier, ["ancestor_entity_id", "hierarchy_kind", *dimensions])
+                ),
+            )
+        )
     cur.execute(sql.SQL("TRUNCATE {}.{}").format(namespace, sql.Identifier(table)))
     cur.execute(
         sql.SQL("""
-        INSERT INTO {s}.{table} ({columns})
-        SELECT {dimensions}hierarchy_kind, child_entity_id, parent_entity_id, 1
-        FROM ({edges}) edges
-        WHERE child_entity_id <> parent_entity_id
-        GROUP BY {dimensions}hierarchy_kind, child_entity_id, parent_entity_id
+        WITH inserted AS (
+            INSERT INTO {s}.{table} ({columns})
+            SELECT {dimensions}hierarchy_kind, child_entity_id, parent_entity_id, 1
+            FROM {adjacency}
+            ON CONFLICT ({key_columns}) DO NOTHING
+            RETURNING {columns}
+        )
+        INSERT INTO {frontier} ({columns}) SELECT {columns} FROM inserted
     """).format(
             s=namespace,
             table=sql.Identifier(table),
             columns=columns,
+            key_columns=key_columns,
             dimensions=sql.SQL("".join(f"{name}, " for name in dimensions)),
-            edges=edge_query,
+            adjacency=adjacency,
+            frontier=frontier,
         )
     )
-    # The initial pairs are new even when this table existed before a rebuild.
-    cur.execute(sql.SQL("ANALYZE {}.{}").format(namespace, sql.Identifier(table)))
-    # Relax shortest paths until no pair is added or shortened. This terminates
-    # on cycles without a depth cutoff or enumerating every possible path.
-    while True:
+    pending = cur.rowcount
+    # Every edge has length one. A frontier contains one distance level, so the
+    # first insertion of a scoped/kind/pair is its minimum depth. The output PK
+    # is the visited set; RETURNING carries only genuinely new pairs forward.
+    # Finite nonself pairs terminate cycles without an arbitrary depth limit.
+    while pending:
+        cur.execute(sql.SQL("ANALYZE {}").format(frontier))
+        cur.execute(sql.SQL("TRUNCATE {}").format(following))
         cur.execute(
             sql.SQL("""
-            INSERT INTO {s}.{table} AS existing ({columns})
-            SELECT {selected_dimensions}c.hierarchy_kind, c.descendant_entity_id,
-                e.parent_entity_id, MIN(c.depth + 1)
-            FROM {s}.{table} c
-            JOIN ({edges}) e ON e.child_entity_id = c.ancestor_entity_id
-                AND e.hierarchy_kind = c.hierarchy_kind {scope_join}
-            WHERE c.descendant_entity_id <> e.parent_entity_id
-            GROUP BY {selected_dimensions}c.hierarchy_kind, c.descendant_entity_id,
-                e.parent_entity_id
-            ON CONFLICT ({key_columns}) DO UPDATE SET depth = EXCLUDED.depth
-            WHERE EXCLUDED.depth < existing.depth
+            WITH inserted AS (
+                INSERT INTO {s}.{table} ({columns})
+                SELECT {selected_dimensions}c.hierarchy_kind, c.descendant_entity_id,
+                    e.parent_entity_id, MIN(c.depth + 1)
+                FROM {frontier} c
+                JOIN {adjacency} e ON e.child_entity_id = c.ancestor_entity_id
+                    AND e.hierarchy_kind = c.hierarchy_kind {scope_join}
+                WHERE c.descendant_entity_id <> e.parent_entity_id
+                GROUP BY {selected_dimensions}c.hierarchy_kind, c.descendant_entity_id,
+                    e.parent_entity_id
+                ON CONFLICT ({key_columns}) DO NOTHING
+                RETURNING {columns}
+            )
+            INSERT INTO {following} ({columns}) SELECT {columns} FROM inserted
         """).format(
                 s=namespace,
                 table=sql.Identifier(table),
                 columns=columns,
-                edges=edge_query,
+                adjacency=adjacency,
+                frontier=frontier,
+                following=following,
                 selected_dimensions=sql.SQL("".join(f"c.{name}, " for name in dimensions)),
                 scope_join=sql.SQL("".join(f" AND e.{name} = c.{name}" for name in dimensions)),
                 key_columns=key_columns,
             )
         )
-        if cur.rowcount == 0:
-            break
-        # Expansion changes cardinality and ancestor distributions. Refresh
-        # sampled statistics before planning the next traversal.
-        cur.execute(sql.SQL("ANALYZE {}.{}").format(namespace, sql.Identifier(table)))
+        pending = cur.rowcount
+        frontier, following = following, frontier
+    # Consumers need final statistics, but traversal never rescans or analyzes
+    # the growing full closure on each round. Drop working tables before the
+    # next scoped/global build; failures are covered by transaction rollback.
+    cur.execute(sql.SQL("ANALYZE {}.{}").format(namespace, sql.Identifier(table)))
+    cur.execute(sql.SQL("DROP TABLE {}, {}, {}").format(adjacency, frontier, following))
 
 
 def rebuild_ontology(conn, schema):
