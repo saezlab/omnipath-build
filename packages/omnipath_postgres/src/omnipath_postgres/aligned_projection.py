@@ -355,7 +355,7 @@ def _create_entity_projection(con: Any) -> None:
     # unknown. Every exact published occurrence remains in evidence/crosswalk.
     con.execute("""CREATE OR REPLACE TABLE ap_entity_canonical_input AS SELECT
         entity_key,entity_type,namespace,identifier,
-        CASE WHEN count(DISTINCT try_cast(taxon AS BIGINT))=1
+        CASE WHEN min(try_cast(taxon AS BIGINT))=max(try_cast(taxon AS BIGINT))
              THEN min(try_cast(taxon AS BIGINT)) ELSE NULL END taxonomy_id
         FROM ap_entity_raw GROUP BY entity_key,entity_type,namespace,identifier""")
     con.execute("""CREATE OR REPLACE TABLE ap_entity_natural_conflict AS
