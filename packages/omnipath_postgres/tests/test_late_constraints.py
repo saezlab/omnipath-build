@@ -448,5 +448,6 @@ def test_cli_forwards_bulk_load_and_checkpoint_options(monkeypatch, capsys):
         == 0
     )
     assert calls[0]["defer_constraints"] is True
-    assert calls[0]["checkpoint_base"] is True
+    assert calls[0]["base_only"] is False
+    assert tuple(calls[0]["products"]) == ("metsigdb", "network_views", "cosmos")
     capsys.readouterr()

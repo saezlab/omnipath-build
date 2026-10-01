@@ -110,6 +110,15 @@ def build_subsets(
     namespace = sql.Identifier(schema)
     results, timings = {}, {}
     with psycopg.connect(database_url, autocommit=True) as conn:
+        from .main_adapter import build_main_subsets, is_main_layout
+        if is_main_layout(conn, schema):
+            return build_main_subsets(
+                database_url,
+                schema,
+                products=products,
+                checkpoint_products=checkpoint_products,
+                on_product_committed=on_product_committed,
+            )
         if checkpoint_products:
             conn.execute("SELECT pg_advisory_lock(hashtextextended(%s, 0))", (schema,))
             identity = None

@@ -7,8 +7,13 @@ import os
 
 import duckdb
 import psycopg
+import psycopg2
 
-from .loader import finish_release, load_release
+from .aligned_loader import (
+    finish_main_release as finish_release,
+    load_main_release as load_release,
+    PRODUCTS,
+)
 
 
 def main(argv=None) -> int:
@@ -25,7 +30,7 @@ def main(argv=None) -> int:
     operation.add_argument(
         "--checkpoint-base",
         action="store_true",
-        help="Commit verified base/indexes before derivation, allowing PostgreSQL-only retry",
+        help="Accepted for compatibility: main layout always commits its base before derivation",
     )
     operation.add_argument(
         "--finish",
@@ -35,7 +40,7 @@ def main(argv=None) -> int:
     parser.add_argument(
         "--defer-constraints",
         action="store_true",
-        help="Build and validate base keys/FKs after COPY",
+        help="Accepted for compatibility: main layout creates and validates keys/FKs after COPY",
     )
     parser.add_argument(
         "--batch-size",
@@ -47,6 +52,18 @@ def main(argv=None) -> int:
         "--validate-source-records",
         action="store_true",
         help="Audit discarded raw source records and their owner/provenance references",
+    )
+    parser.add_argument(
+        "--base-only",
+        action="store_true",
+        help="Stop after committing main base tables, constraints and indexes",
+    )
+    parser.add_argument(
+        "--products",
+        nargs="+",
+        choices=PRODUCTS,
+        default=PRODUCTS,
+        help="Select downstream products; completed products are retained on --finish",
     )
     parser.add_argument("--duckdb-threads", type=int)
     parser.add_argument("--memory-limit", help="DuckDB working-memory limit")
@@ -72,6 +89,7 @@ def main(argv=None) -> int:
             )
             or args.validate_source_records
             or args.defer_constraints
+            or args.base_only
         ):
             parser.error(
                 "--finish accepts only database/schema selection; loading and source-audit options do not apply"
@@ -80,22 +98,27 @@ def main(argv=None) -> int:
         parser.error("Loading requires release_manifest and --data-root")
     try:
         if args.finish:
-            result = finish_release(args.database_url, schema=args.schema)
+            result = finish_release(
+                args.database_url, schema=args.schema, products=tuple(args.products)
+            )
         else:
+            if args.validate_source_records or args.batch_size is not None:
+                parser.error(
+                    "Main layout consumes resolved relational Parquets; raw record auditing belongs to artifact preparation"
+                )
             result = load_release(
                 args.data_root,
                 args.release_manifest,
                 args.database_url,
                 schema=args.schema,
-                batch_size=1024 if args.batch_size is None else args.batch_size,
                 duckdb_threads=1 if args.duckdb_threads is None else args.duckdb_threads,
-                memory_limit="512MB" if args.memory_limit is None else args.memory_limit,
+                memory_limit="1GB" if args.memory_limit is None else args.memory_limit,
                 temp_directory=args.temp_directory,
-                validate_source_records=args.validate_source_records,
-                checkpoint_base=args.checkpoint_base,
-                defer_constraints=args.defer_constraints,
+                base_only=args.base_only,
+                products=tuple(args.products),
+                defer_constraints=True,
             )
-    except (ValueError, OSError, psycopg.Error, duckdb.Error) as exc:
+    except (ValueError, OSError, psycopg.Error, psycopg2.Error, duckdb.Error) as exc:
         parser.exit(1, f"Release load failed: {exc}\n")
     print(json.dumps(asdict(result), indent=2))
     return 0

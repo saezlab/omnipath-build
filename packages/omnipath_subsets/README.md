@@ -39,9 +39,15 @@ products committed by this call. A callback failure stops further builds while
 preserving that commit; `subset_build_metadata` is authoritative if observer
 persistence fails.
 
-Each adapter exposes `rebuild(conn, schema)` for a caller-owned transaction.
+Aligned schemas use main's scientific builders and product contracts. The build command detects the layout and stores both `subset_build_metadata` and `parquet_phase` in the product transaction. Explicit selection rebuilds that product; use the PostgreSQL `--finish` command when completed products should be skipped automatically.
 
-## MetSigDB
+The historical modules below expose `rebuild(conn, schema)` for a caller-owned transaction and remain readers for historical resource-record schemas. They do not define the aligned database contract. Use `from omnipath_subsets.network_views import main` for main's exact `NETWORKS`, `apply_all` and `register_network` exports (psycopg2). Historical `query`/`iter_records` reject an aligned schema explicitly; its normalized fact tables are consumed by the separate main serving layer. Main's product implementation is in `omnipath_postgres.main_compat`; see its [compatibility notes](../omnipath_postgres/src/omnipath_postgres/main_compat/README.md).
+
+## Historical schema adapters
+
+The following query examples and details apply to the earlier resource-record layout. New aligned builds use main's tables, source folds, participant grouping and indexes.
+
+### MetSigDB
 
 `metsigdb_membership` covers Reactome, WikiPathways, KEGG, MACdb and ClassyFire.
 Native set IDs, labels, published chemical aliases, selected evidence and exact
@@ -53,7 +59,7 @@ The Parquet files stay unchanged. Their serving schema cannot recover the old
 matched-only flag; alias provenance does not provide an equivalent filter.
 See the [MetSigDB policy and extraction details](src/omnipath_subsets/metsigdb/README.md).
 
-## Network presets
+### Network presets
 
 `network_registry` stores the current MetaLinksDB, LIANA and Reactions recipes.
 These are query presets, matching the maintained legacy registry; they do not
@@ -84,7 +90,7 @@ Network outputs retain compiled statements, selected evidence, measurements and
 qualifiers. They omit raw records. `evidence_ordinals` identify the original
 published occurrences, including LIANA role support and ChEMBL mechanism selection.
 
-## COSMOS
+### COSMOS
 
 `cosmos_edge` preserves the product's metabolic pseudo-nodes, connectors and
 reversible halves. Pseudo-nodes never enter the shared entity tables.

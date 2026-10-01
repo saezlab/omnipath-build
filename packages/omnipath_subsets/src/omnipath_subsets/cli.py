@@ -6,6 +6,7 @@ import json
 import os
 
 import psycopg
+import psycopg2
 
 from .build import PRODUCTS, build_subsets
 
@@ -32,7 +33,7 @@ def main(argv=None):
             products=args.products,
             checkpoint_products=args.checkpoint_products,
         )
-    except (ValueError, OSError, psycopg.Error) as exc:
+    except (ValueError, OSError, psycopg.Error, psycopg2.Error) as exc:
         parser.exit(1, f"Subset build failed: {exc}\n")
     print(json.dumps(asdict(result), indent=2))
     return 0

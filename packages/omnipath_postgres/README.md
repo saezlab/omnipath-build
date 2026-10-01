@@ -1,78 +1,41 @@
 # OmniPath PostgreSQL
 
-Load an explicit release of already resolved Parquet resources. DuckDB projects nested Parquet records into the five PostgreSQL base tables and serializes their JSON columns in SQL. It writes bounded CSV chunks, which Python forwards as bytes through PostgreSQL COPY. The loader does not convert projected rows into Python objects or rerun entity resolution or source parsers.
-
-Create a release manifest with exact resource versions:
+Load an explicit release of already resolved Parquet resources into the current main branch's physical relational model. Entity resolution, resource parsing, Parquet schemas and independent resource updates stay upstream. PostgreSQL keeps its separately selected release and monthly publication schedule.
 
 ```json
 {"schema_version": 1, "version": "2026.09", "resources": {"signor": "0.1.1"}}
 ```
 
-Load it into a new schema:
-
 ```sh
 export OMNIPATH_DATABASE_URL='postgresql:///omnipath'
 uv run --frozen omnipath-postgres release.json \
-  --data-root data/migration-smoke --schema release_2026_09
+  --data-root data --schema release_2026_09
 ```
 
-The data root contains resources/<source>/<version>/. The loader validates schemas, row counts, sizes and SHA-256 checksums before connecting. By default, it loads tables, indexes, derived tables and release metadata in one transaction and rechecks the selected files before committing. Any failure rolls back the new schema. Existing destination schemas are rejected. Parent tables are copied before child tables. Foreign keys are immediate, and each CSV chunk gets its own COPY statement inside the same transaction, so pending checks do not grow with the whole release. CSV rotation targets 16 MB; the last vector or a large record can exceed that threshold. Typed projection and integrity checks on all loaded records remain mandatory. Raw source records are not consumed by the normal PostgreSQL load.
+The data root contains `resources/<source>/<version>/`. Loading requires a new destination schema. The CLI and package-level `load_release` use the main layout: UUID canonical `entity` and `relation` tables, numeric vocabulary/source/dataset dictionaries, global identifier and annotation dictionaries, source-partitioned evidence and links, and main's constraints and indexes. Small additive tables retain exact published keys, resource versions, qualified claims, repeated occurrences, taxonomy and typed quantities. Full source bodies and nested record JSON stay out of PostgreSQL.
 
+DuckDB prepares relational tables once in an on-disk database and writes CSV chunks. Python forwards their bytes through PostgreSQL COPY without converting biological rows into Python objects. Source artifacts are read but never rewritten. Main keys, foreign keys and deferred indexes are restored and validated before the base checkpoint is advertised. Artifact schemas, sizes, row counts and SHA256 checksums and COPY counts remain build checks.
 
-For bulk loads, add `--defer-constraints` (Python: `defer_constraints=True`).
-COPY writes fresh base tables with their NOT NULL/CHECK constraints and annotation
-ID sequence active, then creates the same primary keys and annotation uniqueness
-index and validates all seven foreign keys. Narrow join-key statistics are
-collected before FK validation. This work completes before normalized integrity
-checks, checkpoint commit or derivation; any invalid base rolls back the schema.
-The optional raw source-record audit runs after its lookup keys exist. The load
-result records the key/statistics/FK phase as `base_constraints`. Combine this
-flag with `--checkpoint-base` to preserve the fully validated base for derivation
-retries: `omnipath-postgres release.json --data-root data --schema release_2026_09
---defer-constraints --checkpoint-base`.
+Main's downstream implementations provide search and ontology tables, chemical structure groups, classifications, interactions and resource facts, labels, bitmap filters, overlap summaries, resource metadata, MetSigDB, network presets and COSMOS. Biolink readers adapt predicates, scopes and quantities; the original main table and index contracts remain the reference. The [column map](../../docs/postgres-parquet-column-map.md) and [parity checklist](../../docs/postgres-main-parity-checklist.md) document unavailable original resolver/occurrence facts and deliberate adaptations. Published identities are explicitly marked `published`; they are never falsely marked as originally matched. MetSigDB uses the previously agreed published-chemical policy.
 
-For long loads, add `--checkpoint-base` (Python: `checkpoint_base=True`). The
-loader commits the copied base tables and indexes after integrity and final file
-checks, then derives and publishes in a separate transaction. A derivation
-failure preserves this base checkpoint. `release_metadata` remains empty until
-derivation succeeds; product builders and network streams reject unpublished
-schemas. Direct SQL access to a staging schema is still possible.
-
-Retry only derivation from PostgreSQL, with no Parquet files or another COPY:
+The verified base commits before downstream work. Each complete product commits together with its phase record; a failed product rolls back its unfinished work. Completed products are retained on a retry:
 
 ```sh
+# Stop after base tables, constraints and indexes.
+uv run --frozen omnipath-postgres release.json --data-root data \
+  --schema release_2026_09 --base-only
+
+# Finish derivations and remaining products from PostgreSQL; no repeated COPY.
 uv run --frozen omnipath-postgres --finish --schema release_2026_09
+
+# Resume only selected products; completed ones are skipped.
+uv run --frozen omnipath-postgres --finish --schema release_2026_09 --products cosmos
 ```
 
-The Python equivalent is `finish_release(database_url, schema=...)`. Retry checks
-stored release/resource hashes, version pins, audit metadata, base counts and
-index definitions. It rejects an already published release. These are checkpoint
-consistency checks; they do not attest arbitrary external edits to row contents.
+The Python API accepts `base_only=True` and `products=('cosmos',)`. `finish_release(database_url, schema=...)` uses stored pins and durable phase records. A schema session advisory lock spans commits and prevents overlapping builds. `--checkpoint-base` and `--defer-constraints` remain accepted for CLI compatibility; both behaviors are already enabled in the main layout. An interrupted unvalidated COPY is not a resumable base.
 
-DuckDB defaults to one thread and 512 MB working memory, configurable with --duckdb-threads and --memory-limit. CSV staging and spills use a private temporary directory next to the release manifest; --temp-directory selects another filesystem. Only one output table is staged at a time, and its files are removed after COPY or failure. The load result reports per-resource SQL-validation, staging and COPY times. --batch-size controls only the optional source-record audit, capped at 1024.
+DuckDB defaults to one thread and 1 GB memory. Use `--duckdb-threads`, `--memory-limit` and `--temp-directory` to choose working limits and staging storage. Temporary CSVs and DuckDB files are removed after loading or failure. Returned timings separate artifact checks, projection, CSV staging, COPY, constraints and durable phases.
 
-Full published text keys are retained. Per-resource tables keep complete nested entity and relation records, identifier occurrences, evidence, annotations and quantities. Full raw source payloads remain in the immutable Parquets and are not stored in PostgreSQL. Their schemas, file checksums, sizes and footer row counts remain part of the pinned artifact checks. The normal loader trusts published resource builds and does not decode discarded raw bodies. Use `--validate-source-records` (Python: `validate_source_records=True`) for an additional audit of raw JSON, source-owner pointers and reaction source hashes. This audit uses dictionary-preserving Arrow reads and narrow PostgreSQL lookup statistics; every occurrence receives its own pointer and owner checks. `counts` reports stored records; `validate_source_records` reports the selected audit mode and `validated_payload_rows` reports only rows actually checked. That mapping is empty for the default load. Canonical entity and statement views combine identical keys across resources, retaining resource provenance and aggregating evidence. The relation view selects graph statements; ontology statements stay available through the statement view and ontology tables. Different relation keys remain separate even when endpoints and predicates match.
+Use PostgreSQL 18 with main's [PostgreSQL image](../../postgres/Dockerfile) or an equivalent image providing `roaringbitmap` and `pg_trgm`. The development parity tests compare actual catalog definitions and duplicate-sensitive scientific fixtures with the frozen main source. They are bounded development checks; loading has no mandatory exhaustive verification, rebuild-and-rollback run or automatic safety phase.
 
-The identifier lookup, endpoint indexes, direct graph relation counts and typed quantity view adapt useful parts of the previous PostgreSQL implementation. Source counts and resource overlap retain release-visible provenance.
-
-Identifier values remain complete TEXT values in the base table, nested records and `entity_identifier_lookup` view. The nonunique alias-search index uses `(ns, "left"(lower(id), 256) text_pattern_ops, entity_key)` so very long identifiers fit PostgreSQL's B-tree entry limit. Exact indexed searches combine `"left"(lower(id), 256) = "left"(lower(:id), 256)` with `lower(id) = lower(:id)` to distinguish shared prefixes. For literal prefix searches, construct the bounded LIKE pattern from the first 256 characters of the lowered, **unescaped** prefix text, then escape LIKE metacharacters and append `%`. Apply a second predicate against `lower(id)` using the full lowered, escaped prefix followed by `%`. The lookup view and product queries retain complete IDs.
-
-Recognized ontology predicates become directional subclass or part-of edges. Closure tables retain shortest paths both within each resource and across the release, handle cycles and omit self ancestry. Entity hierarchy counts describe the loaded release; original resource records retain their published counts.
-
-Reaction derivation groups explicit input, output and catalyst relations by source event. It reads evidence-owned source attributes for direction, compartment and coefficients, preserves typed and symbolic stoichiometry, and records unknown or conflicting context. Each eligible occurrence must carry a source-record SHA-256 reference; the derivation rejects missing or conflicting hashes instead of silently dropping legacy payload-only context. During the optional source-record audit, a matching nonnull raw source row is checked against the evidence attributes for its exact text SHA and any declared source-record type. Matches use relation key, source and row ID within the pinned resource version, including null values. Missing raw rows remain allowed; missing type metadata stays an explicit diagnostic. Source-record type metadata keeps unsupported input shapes visible. Rebuilds read only PostgreSQL annotations and evidence, including after Parquet files are unavailable. Source parsers and entity resolution are not rerun.
-
-See the [subset adapters](../omnipath_subsets/README.md) for MetSigDB, network presets and COSMOS. Full product comparisons and web backend benchmarks remain.
-
-A build finishes when the requested load, derivations and subset products
-commit successfully. There is no mandatory post-build verification phase or
-automatic rebuild-and-rollback check. The loader's artifact validation, COPY
-counts, constraints and integrity checks still run as part of building the
-database.
-
-`scripts/verify_postgres_release.py` is an optional exhaustive audit, invoked
-explicitly when needed. Manual sample reviews should record their selection and
-coverage separately from an exhaustive result. Normal PostgreSQL-only derivation
-and subset rebuild commands remain available; removing a verification gate does
-not remove rebuild functionality.
-
-PostgreSQL 14 or newer is required; no optional database extensions are needed. For an isolated integration check, install PostgreSQL binaries and run make test-postgres. Tests start a temporary Unix-socket-only cluster, load small local fixtures and shut it down afterward.
+The historical resource-record implementation remains in internal modules for older schema tests and compatibility during migration; it is not the default CLI or package API. Existing historical schemas require their historical readers. See [the alignment plan](../../docs/postgres-main-parity-plan.md) for the migration boundary.

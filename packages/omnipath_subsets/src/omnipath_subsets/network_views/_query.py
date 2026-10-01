@@ -259,9 +259,24 @@ def _transports(context: dict, event: dict, members: list[dict]) -> Iterator[dic
 
 
 def iter_records(conn, schema: str, name: str, *, organism=None) -> Iterator[dict]:
-    """Stream scoped records inside the caller's transaction using server cursors."""
+    """Stream historical scoped records in the caller's transaction.
+
+    Main's metadata-only presets have a separate serving consumer and do not
+    use this historical published-statement fold or response contract.
+    """
     _definition(name)
     organism = _organism(organism)
+    with conn.cursor() as cursor:
+        cursor.execute("SELECT EXISTS(SELECT 1 FROM information_schema.tables "
+                       "WHERE table_schema=%s AND table_name='parquet_release')", (schema,))
+        aligned = cursor.fetchone()[0]
+    if aligned:
+        raise NotImplementedError(
+            "network_views.query/iter_records serve the historical published-statement layout. "
+            "The main layout registers presets over normalized interaction fact tables and "
+            "requires its separate serving consumer. Use network_views.main for main preset "
+            "definitions and registry builders; no historical record_json query is run."
+        )
     _require_published_release(conn, schema)
     if name != "reactions":
         for row in _binary_rows(conn, schema, name, organism):
