@@ -98,6 +98,8 @@ Current harness covers:
 
 11. Actual synthetic Parquet quantities differing only in numeric value, unit, prefix, comparator, binary relation or source field, including absent versus all-null quantity and duplicate occurrences; complete copied ontology terms/axioms, known scopes, non-hierarchy predicates, source-owned labels/synonyms and frozen-main shortest closure over fifteen entity/statement records.
 
+12. A bounded nine-record Parquet fixture compares the complete four-column relation annotation link multiset with the frozen pre-batching query, plus independent decoded expectations. It covers nullable versus empty source/dataset attribution, evidence ordinal ownership, normalized and custom scopes, publisher evidence-union suppression, synthetic claims, resource/version isolation and NULL-term observations. Batches of 1/2/7/128 complete-owner groups introduce no duplicate links; the real loader observer callback is exercised.
+
 Compare duplicate-sensitive full rows and content identities. Preserve distinctions between NULL and FALSE, source-local and merged claims, and participant sets versus multisets. Equal counts or an empty oracle result are not acceptance.
 
 For the real release, sample supported examples from multiple resources after projection and each downstream product. Use bounded aggregate queries and query plans, inspect FK/index validity and release metadata, and record observed storage and timings. If a fixture or real sample exposes a mismatch, fix the mapping before the full build. Do not rerun already committed products to diagnose a later phase.

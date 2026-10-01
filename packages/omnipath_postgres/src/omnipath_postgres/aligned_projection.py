@@ -518,6 +518,97 @@ def _pg_array(expression: str) -> str:
                  chr(34),chr(92)||chr(34))||chr(34) END), ','),'') || '}}' END"""
 
 
+def _prepare_relation_evidence_annotation_copy(
+    connection: Any,
+    *,
+    shard_count: int = 128,
+    on_progress: Callable[[Mapping[str, Any]], None] | None = None,
+) -> None:
+    """Materialize exact annotation links without one release-wide anti-join.
+
+    Persist only primitive link inputs, clustered by a complete owner's shard.
+    Values, quantities and arrays already have their own tables and never enter
+    these joins. A published evidence UUID belongs to one resource/version/owner,
+    so four-column deduplication within an owner-complete shard is also global.
+    """
+    if isinstance(shard_count, bool) or not isinstance(shard_count, int) or shard_count < 1:
+        raise ValueError("shard_count must be a positive integer")
+
+    def report(stage: str, state: str, **details: Any) -> None:
+        if on_progress is not None:
+            on_progress({"stage": stage, "state": state,
+                         "shard_count": shard_count, **details})
+
+    report("annotation_input", "start")
+    connection.execute(f"""CREATE OR REPLACE TABLE ap_annotation_link_input AS
+        SELECT resource,version,owner_key,evidence_ordinal,annotation_key,source,dataset,
+            CASE WHEN scope='evidence' THEN 'relation'
+                 ELSE coalesce(scope,'relation') END normalized_scope,
+            owner_kind='evidence' is_evidence,term IS NOT NULL is_typed,
+            (hash(resource,version,owner_key)%{shard_count})::INTEGER owner_shard
+        FROM ap_annotation_occurrence
+        WHERE owner_kind IN ('relation','evidence')
+        ORDER BY owner_shard""")
+    report("annotation_input", "done")
+    report("evidence_input", "start")
+    connection.execute(f"""CREATE OR REPLACE TABLE ap_evidence_link_input AS
+        SELECT resource,version,relation_key owner_key,ordinal,source_id,
+            relation_evidence_id,source,dataset,synthetic,
+            (hash(resource,version,relation_key)%{shard_count})::INTEGER owner_shard
+        FROM ap_evidence ORDER BY owner_shard""")
+    report("evidence_input", "done")
+    connection.execute("""CREATE OR REPLACE TABLE ap_copy_relation_evidence_annotation (
+        source_id BIGINT,relation_evidence_id UUID,annotation_key UUID,
+        annotation_scope_id SMALLINT)""")
+    for shard in range(shard_count):
+        report("shard", "start", shard=shard)
+        connection.execute(f"""INSERT INTO ap_copy_relation_evidence_annotation
+            WITH annotations AS MATERIALIZED (
+                SELECT resource,version,owner_key,evidence_ordinal,annotation_key,
+                    source,dataset,normalized_scope,is_evidence,is_typed
+                FROM ap_annotation_link_input WHERE owner_shard={shard}
+            ), evidence AS MATERIALIZED (
+                SELECT resource,version,owner_key,ordinal,source_id,
+                    relation_evidence_id,source,dataset,synthetic
+                FROM ap_evidence_link_input WHERE owner_shard={shard}
+            ), observed AS MATERIALIZED (
+                SELECT DISTINCT resource,version,owner_key,annotation_key,
+                    source,dataset,normalized_scope
+                FROM annotations WHERE is_evidence
+            ), true_statement_annotation AS (
+                SELECT a.resource,a.version,a.owner_key,a.annotation_key,
+                    a.source,a.dataset,a.normalized_scope
+                FROM annotations a WHERE NOT a.is_evidence AND a.is_typed
+                  AND NOT EXISTS (
+                    SELECT 1 FROM observed o
+                    WHERE o.resource=a.resource AND o.version=a.version
+                      AND o.owner_key=a.owner_key AND o.annotation_key=a.annotation_key
+                      AND o.source IS NOT DISTINCT FROM a.source
+                      AND o.dataset IS NOT DISTINCT FROM a.dataset
+                      AND o.normalized_scope=a.normalized_scope
+                  )
+            )
+            SELECT e.source_id,e.relation_evidence_id,a.annotation_key,
+                sc.id::SMALLINT annotation_scope_id
+            FROM annotations a JOIN evidence e
+              ON a.resource=e.resource AND a.version=e.version AND a.owner_key=e.owner_key
+             AND a.evidence_ordinal=e.ordinal
+            JOIN ap_vocab_annotation_scope sc ON sc.name=a.normalized_scope
+            WHERE a.is_evidence AND a.is_typed
+            UNION
+            SELECT e.source_id,e.relation_evidence_id,a.annotation_key,
+                sc.id::SMALLINT annotation_scope_id
+            FROM true_statement_annotation a JOIN evidence e
+              ON a.resource=e.resource AND a.version=e.version AND a.owner_key=e.owner_key
+             AND (e.synthetic OR
+                  ((a.source IS NULL OR a.source=e.source)
+                   AND (a.dataset IS NULL OR a.dataset=e.dataset)))
+            JOIN ap_vocab_annotation_scope sc ON sc.name=a.normalized_scope""")
+        report("shard", "done", shard=shard)
+    connection.execute("DROP TABLE ap_annotation_link_input")
+    connection.execute("DROP TABLE ap_evidence_link_input")
+
+
 def _queries() -> tuple[CopyQuery, ...]:
     result: list[CopyQuery] = []
     def add(table: str, columns: str, query: str) -> None:
@@ -702,7 +793,13 @@ def prepare_aligned_release(
         report("prepare_copy", table=item.table)
         names = ",".join('"' + column + '"' for column in item.columns)
         staged = f"ap_copy_{item.table}"
-        connection.execute(f"CREATE OR REPLACE TABLE {staged} ({names}) AS {item.query}")
+        if item.table == "relation_evidence_annotation":
+            _prepare_relation_evidence_annotation_copy(
+                connection,
+                on_progress=lambda details: report("prepare_annotation_links", **details),
+            )
+        else:
+            connection.execute(f"CREATE OR REPLACE TABLE {staged} ({names}) AS {item.query}")
         counts[item.table] = int(connection.execute(f"SELECT count(*) FROM {staged}").fetchone()[0])
         queries.append(CopyQuery(item.table, item.columns, f"SELECT {names} FROM {staged}"))
         report("copy_prepared", table=item.table, rows=counts[item.table])
