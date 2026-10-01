@@ -269,7 +269,14 @@ def _prepare_dimensions(con: Any, existing: Mapping[str, Iterable[tuple]]) -> di
                                          (3, "ambiguous"), (4, "unsupported"),
                                          (PUBLISHED_STATUS_ID, "published"))}
     for table, query in required_sql.items():
-        required = [row[0] for row in con.execute(query).fetchall() if row[0] is not None]
+        # Only vocabulary names cross into Python. Some source SELECTs contain
+        # millions of biological rows; deduplicating in _dimension after
+        # fetchall would first allocate those repeated names in Python memory.
+        names_query = (
+            f"SELECT DISTINCT dimension_name FROM ({query}) "
+            "required(dimension_name) WHERE dimension_name IS NOT NULL"
+        )
+        required = [row[0] for row in con.execute(names_query).fetchall()]
         result[table] = _dimension(con, table, required, existing.get(table, seeds.get(table, ())))
     for table in ("vocab_entity_role", "vocab_resolution_status"):
         result[table] = _dimension(con, table, (row[1] for row in seeds[table]),

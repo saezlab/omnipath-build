@@ -9,6 +9,7 @@ import duckdb
 import pytest
 
 from omnipath_postgres.aligned_projection import (
+    _prepare_dimensions,
     companion_ddl,
     prepare_aligned_release,
 )
@@ -369,6 +370,87 @@ def test_dimensions_reuse_existing_database_ids_and_input_order_is_irrelevant(tm
         first = sorted(rows(con, plan, "entity"), key=lambda row: row["entity_id"])
         second = prepare_aligned_release(con, (selected(tmp_path / "two"),), dimension_rows=existing)
         assert sorted(rows(con, second, "entity"), key=lambda row: row["entity_id"]) == first
+
+
+def test_dimension_collection_fetches_only_distinct_names_and_preserves_existing_ids():
+    class ObservedConnection:
+        prefix = "SELECT DISTINCT dimension_name FROM ("
+        suffix = ") required(dimension_name) WHERE dimension_name IS NOT NULL"
+
+        def __init__(self, connection, *, emulate_previous=False):
+            self.connection = connection
+            self.emulate_previous = emulate_previous
+            self.name_fetches = []
+            self.dataset_fetches = []
+
+        def execute(self, statement):
+            self.name_query = statement.startswith(self.prefix)
+            self.dataset_query = statement.startswith("SELECT resource,")
+            if self.name_query and self.emulate_previous:
+                assert statement.endswith(self.suffix)
+                statement = statement[len(self.prefix):-len(self.suffix)]
+            self.connection.execute(statement)
+            return self
+
+        def executemany(self, *args):
+            return self.connection.executemany(*args)
+
+        def fetchall(self):
+            result = self.connection.fetchall()
+            if self.name_query:
+                self.name_fetches.append(result)
+            if self.dataset_query:
+                self.dataset_fetches.append(result)
+            return result
+
+    # Ten thousand repeated rows per staged input exercise the former Python
+    # allocation issue without a resource build or a full publication fixture.
+    with duckdb.connect() as con:
+        con.execute("""CREATE TABLE ap_entity_raw AS SELECT
+            CASE WHEN range%2=0 THEN 'one' ELSE 'two' END resource,
+            CASE WHEN range%2=0 THEN 'protein' ELSE 'small_molecule' END entity_type,
+            CASE WHEN range%2=0 THEN 'uniprot' ELSE 'chebi' END namespace
+            FROM range(10000)""")
+        con.execute("""CREATE TABLE ap_statement_raw AS SELECT
+            CASE WHEN range%2=0 THEN 'one' ELSE 'two' END resource,
+            CASE WHEN range%2=0 THEN 'affects' ELSE 'interacts_with' END predicate,
+            CASE WHEN range%2=0 THEN 'interaction' ELSE NULL END category
+            FROM range(10000)""")
+        con.execute("""CREATE TABLE ap_identifier_raw AS SELECT
+            struct_pack(ns:=CASE WHEN range%2=0 THEN 'uniprot' ELSE NULL END) item
+            FROM range(10000)""")
+        con.execute("""CREATE TABLE ap_evidence_raw AS SELECT
+            CASE WHEN range%2=0 THEN 'one' ELSE 'two' END resource,
+            struct_pack(source:=CASE WHEN range%2=0 THEN 'declared' ELSE NULL END,
+                        dataset:=CASE WHEN range%2=0 THEN 'observations' ELSE NULL END) item
+            FROM range(10000)""")
+        con.execute("""CREATE TABLE ap_annotation_raw AS SELECT
+            CASE range%4 WHEN 0 THEN 'relation' WHEN 1 THEN 'object'
+                         WHEN 2 THEN 'evidence' ELSE NULL END AS "scope" FROM range(10000)""")
+        existing = {"data_source": ((41, "one"), (70, "unobserved-source")),
+                    "vocab_relation_predicate": ((1001, "affects"),),
+                    "vocab_entity_type": ((501, "protein"),),
+                    "dataset": ((123, 41, "omnipath:published_entities"),)}
+        previous = ObservedConnection(con, emulate_previous=True)
+        expected = _prepare_dimensions(previous, existing)
+        bounded = ObservedConnection(con)
+        actual = _prepare_dimensions(bounded, existing)
+        assert actual == expected
+        assert len(bounded.name_fetches) == 6
+        assert all(len(result) <= 3 and len(set(result)) == len(result)
+                   and all(row[0] is not None for row in result)
+                   for result in bounded.name_fetches)
+        assert sum(map(len, previous.name_fetches)) > 30000
+        assert sum(map(len, bounded.name_fetches)) == 14
+        # The dataset UNION already has pair grain; source IDs and dataset IDs
+        # remain identical, including seeded names absent from the raw input.
+        assert len(bounded.dataset_fetches) == len(previous.dataset_fetches) == 1
+        assert sorted(bounded.dataset_fetches[0]) == sorted(previous.dataset_fetches[0])
+        assert len(bounded.dataset_fetches[0]) == 5
+        assert (41, "one") in actual["data_source"]
+        assert (70, "unobserved-source") in actual["data_source"]
+        assert (1001, "affects") in actual["vocab_relation_predicate"]
+        assert (123, 41, "omnipath:published_entities") in actual["dataset"]
 
 
 def test_companion_ddl_quotes_schema_and_contains_no_full_record_json():
