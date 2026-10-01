@@ -6,6 +6,7 @@ import psycopg
 from psycopg import sql
 import pytest
 
+from omnipath_postgres import ontology
 from omnipath_postgres.loader import load_release
 from release_fixture import annotation, entity, relation, write_release, write_resource
 
@@ -135,3 +136,138 @@ def test_release_wide_closure_bridges_resources_without_changing_scoped_closure(
         "SELECT source_count,source_list FROM {s}.entity_source_count WHERE entity_id=%s",
         (a["entity_key"],),
     ) == [(2, ["first", "second"])]
+
+
+def test_first_build_plans_with_traversal_indexes_and_current_statistics(
+    tmp_path, postgres_dsn, monkeypatch
+):
+    # Fourteen source rows grow to 105 shortest pairs. Inspect the real planner
+    # while expansion is happening, before the loader's final ANALYZE can mask
+    # missing statistics or indexes on a fresh schema.
+    nodes = [entity(f"CHEMONT:{i}", "ontology_class", "chemont") for i in range(15)]
+    edges = [
+        relation(
+            child,
+            "subclass_of",
+            parent,
+            source="chemont",
+            row_id=str(i),
+            statement_kind="ontology",
+        )
+        for i, (child, parent) in enumerate(zip(nodes, nodes[1:]))
+    ]
+    write_resource(tmp_path, "chemont", nodes, edges)
+    schema = "test_" + uuid.uuid4().hex
+    observed = {"ontology_closure": [], "ontology_ancestor": []}
+    closure = ontology._closure
+
+    def plan_nodes(plan):
+        yield plan
+        for child in plan.get("Plans", []):
+            yield from plan_nodes(child)
+
+    class PlanningCursor:
+        def __init__(self, cur, table, scoped):
+            self.cur, self.table, self.scoped = cur, table, scoped
+
+        def __getattr__(self, name):
+            return getattr(self.cur, name)
+
+        def execute(self, query, *args, **kwargs):
+            if " AS existing " in query.as_string(self.cur):
+                self.inspect_planning()
+            return self.cur.execute(query, *args, **kwargs)
+
+        def inspect_planning(self):
+            cur, table = self.cur, self.table
+            cur.execute(
+                "SELECT reltuples FROM pg_class WHERE oid=%s::regclass",
+                (f"{schema}.{table}",),
+            )
+            estimated_rows = cur.fetchone()[0]
+            cur.execute(
+                sql.SQL("SELECT COUNT(*) FROM {}.{}").format(
+                    sql.Identifier(schema), sql.Identifier(table)
+                )
+            )
+            actual_rows = cur.fetchone()[0]
+            cur.execute(
+                "SELECT reltuples FROM pg_class WHERE oid IN "
+                "(%s::regclass, 'omnipath_hierarchy_predicates'::regclass) ORDER BY reltuples",
+                (f"{schema}.entity_ontology_relation",),
+            )
+            edge_and_predicate_rows = [row[0] for row in cur.fetchall()]
+            cur.execute(
+                sql.SQL("""
+                EXPLAIN (FORMAT JSON)
+                SELECT c.depth FROM {s}.{table} c
+                JOIN {s}.entity_ontology_relation e
+                    ON e.child_entity_id=c.ancestor_entity_id
+                    AND e.hierarchy_kind=c.hierarchy_kind {scope}
+            """).format(
+                    s=sql.Identifier(schema),
+                    table=sql.Identifier(table),
+                    scope=sql.SQL(
+                        "AND e.resource=c.resource AND e.version=c.version" if self.scoped else ""
+                    ),
+                )
+            )
+            plan = cur.fetchone()[0][0]["Plan"]
+            planned_scan_rows = [
+                node["Plan Rows"] for node in plan_nodes(plan) if node.get("Relation Name") == table
+            ]
+            observed[table].append(
+                (estimated_rows, actual_rows, edge_and_predicate_rows, planned_scan_rows)
+            )
+            if len(observed[table]) == 1:
+                # Force a selective index probe only for this EXPLAIN, then
+                # restore normal costing for the actual closure expansion.
+                cur.execute("SET LOCAL enable_seqscan=off")
+                try:
+                    cur.execute(
+                        sql.SQL("""
+                        EXPLAIN (FORMAT JSON)
+                        SELECT * FROM {s}.entity_ontology_relation WHERE child_entity_id=%s
+                    """).format(s=sql.Identifier(schema)),
+                        (nodes[0]["entity_key"],),
+                    )
+                    edge_plan = cur.fetchone()[0][0]["Plan"]
+                    assert any(
+                        node.get("Index Name") == "ontology_edge_child_idx"
+                        for node in plan_nodes(edge_plan)
+                    )
+                    cur.execute(
+                        sql.SQL("""
+                        EXPLAIN (FORMAT JSON)
+                        SELECT * FROM {s}.{table}
+                        WHERE ancestor_entity_id=%s AND hierarchy_kind='subclass'
+                    """).format(s=sql.Identifier(schema), table=sql.Identifier(table)),
+                        (nodes[1]["entity_key"],),
+                    )
+                    ancestor_plan = cur.fetchone()[0][0]["Plan"]
+                    assert any(
+                        node.get("Index Name") == f"{table}_ancestor_idx"
+                        for node in plan_nodes(ancestor_plan)
+                    )
+                finally:
+                    cur.execute("SET LOCAL enable_seqscan=on")
+
+    def inspect_closure(cur, schema, table, edge_query, *, scoped):
+        return closure(PlanningCursor(cur, table, scoped), schema, table, edge_query, scoped=scoped)
+
+    monkeypatch.setattr(ontology, "_closure", inspect_closure)
+    load_release(tmp_path, write_release(tmp_path, ["chemont"]), postgres_dsn, schema=schema)
+    for table, rounds in observed.items():
+        assert len(rounds) > 2
+        assert rounds[0][1] == 14
+        assert rounds[-1][1] == 105
+        for estimated, actual, edge_and_predicate, planned in rounds:
+            assert estimated == actual
+            assert edge_and_predicate == [1, 14]
+            assert planned == [actual]
+        assert rows(
+            postgres_dsn,
+            schema,
+            f"SELECT depth FROM {{s}}.{table} WHERE descendant_entity_id=%s AND ancestor_entity_id=%s",
+            (nodes[0]["entity_key"], nodes[-1]["entity_key"]),
+        ) == [(14,)]

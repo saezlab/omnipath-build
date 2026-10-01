@@ -27,6 +27,8 @@ def _closure(cur, schema, table, edge_query, *, scoped):
             edges=edge_query,
         )
     )
+    # The initial pairs are new even when this table existed before a rebuild.
+    cur.execute(sql.SQL("ANALYZE {}.{}").format(namespace, sql.Identifier(table)))
     # Relax shortest paths until no pair is added or shortened. This terminates
     # on cycles without a depth cutoff or enumerating every possible path.
     while True:
@@ -55,6 +57,9 @@ def _closure(cur, schema, table, edge_query, *, scoped):
         )
         if cur.rowcount == 0:
             break
+        # Expansion changes cardinality and ancestor distributions. Refresh
+        # sampled statistics before planning the next traversal.
+        cur.execute(sql.SQL("ANALYZE {}.{}").format(namespace, sql.Identifier(table)))
 
 
 def rebuild_ontology(conn, schema):
@@ -87,6 +92,7 @@ def rebuild_ontology(conn, schema):
             cur.executemany(
                 "INSERT INTO omnipath_hierarchy_predicates VALUES (%s,%s,%s)", directions
             )
+        cur.execute("ANALYZE omnipath_hierarchy_predicates")
         cur.execute(
             sql.SQL("""
             CREATE TABLE IF NOT EXISTS {s}.entity_ontology_relation (
@@ -135,6 +141,31 @@ def rebuild_ontology(conn, schema):
                     primary=sql.SQL(primary),
                 )
             )
+        # Traversal must have usable indexes on the first build, not only
+        # after a previous closure has already completed.
+        for table, name, expression in (
+            ("entity_ontology_relation", "ontology_edge_parent_idx", "parent_entity_id"),
+            ("entity_ontology_relation", "ontology_edge_child_idx", "child_entity_id"),
+            (
+                "ontology_closure",
+                "ontology_closure_ancestor_idx",
+                "ancestor_entity_id, hierarchy_kind",
+            ),
+            (
+                "ontology_ancestor",
+                "ontology_ancestor_ancestor_idx",
+                "ancestor_entity_id, hierarchy_kind",
+            ),
+        ):
+            cur.execute(
+                sql.SQL("CREATE INDEX IF NOT EXISTS {} ON {}.{} ({})").format(
+                    sql.Identifier(name),
+                    namespace,
+                    sql.Identifier(table),
+                    sql.SQL(expression),
+                )
+            )
+        cur.execute(sql.SQL("ANALYZE {}.entity_ontology_relation").format(namespace))
         edges = sql.SQL("SELECT * FROM {}.entity_ontology_relation").format(namespace)
         _closure(cur, schema, "ontology_closure", edges, scoped=True)
         _closure(cur, schema, "ontology_ancestor", edges, scoped=False)
@@ -201,26 +232,9 @@ def rebuild_ontology(conn, schema):
             CREATE OR REPLACE VIEW {s}.ontology_terms AS SELECT * FROM {s}.entity_ontology_term
         """).format(s=namespace)
         )
-        for table, name, expression in (
-            ("entity_ontology_relation", "ontology_edge_parent_idx", "parent_entity_id"),
-            ("entity_ontology_relation", "ontology_edge_child_idx", "child_entity_id"),
-            (
-                "ontology_closure",
-                "ontology_closure_ancestor_idx",
-                "ancestor_entity_id, hierarchy_kind",
-            ),
-            (
-                "ontology_ancestor",
-                "ontology_ancestor_ancestor_idx",
-                "ancestor_entity_id, hierarchy_kind",
-            ),
-            ("entity_ontology_term", "ontology_term_search_idx", "lower(term_id) text_pattern_ops"),
-        ):
-            cur.execute(
-                sql.SQL("CREATE INDEX IF NOT EXISTS {} ON {}.{} ({})").format(
-                    sql.Identifier(name),
-                    namespace,
-                    sql.Identifier(table),
-                    sql.SQL(expression),
-                )
-            )
+        cur.execute(
+            sql.SQL(
+                "CREATE INDEX IF NOT EXISTS ontology_term_search_idx "
+                "ON {}.entity_ontology_term (lower(term_id) text_pattern_ops)"
+            ).format(namespace)
+        )
