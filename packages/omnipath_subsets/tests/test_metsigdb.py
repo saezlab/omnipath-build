@@ -291,6 +291,203 @@ def test_all_products_projection_published_eligibility_and_provenance(metsig_rel
 
 
 @pytest.mark.integration
+def test_projection_uses_canonical_winner_and_all_pinned_aliases(metsig_release):
+    fixture = metsig_release
+    chemical_key = fixture["chemical"]["entity_key"]
+    fallback_key = fixture["fallback"]["entity_key"]
+    namespace = sql.Identifier(fixture["schema"])
+    with psycopg.connect(fixture["dsn"]) as conn:
+        # ChemOnt sorts before all membership sources. Its row is the canonical
+        # winner even for products extracted from other resources.
+        conn.execute(
+            sql.SQL("""
+                INSERT INTO {s}.entities
+                SELECT 'chemont', version, entity_key, entity_type, namespace, identifier,
+                    taxon, 'Cross-source canonical label', has_hierarchy, parent_count,
+                    child_count, record_json
+                FROM {s}.entities WHERE resource='hmdb' AND entity_key=%s
+            """).format(s=namespace),
+            (chemical_key,),
+        )
+        # Two identical raw aliases have distinct ordinals. Neither duplicates
+        # nor pins without aliases may multiply memberships or set sizes.
+        conn.execute(
+            sql.SQL("""
+                INSERT INTO {s}.identifiers
+                    (resource, version, entity_key, ordinal, ns, id, is_canonical, source)
+                VALUES ('chemont', '1.0.0', %s, 0, 'pubchem', '999999', false, 'fixture'),
+                    ('chemont', '1.0.0', %s, 1, 'pubchem', '999999', false, 'fixture')
+            """).format(s=namespace),
+            (chemical_key, chemical_key),
+        )
+        conn.execute(
+            sql.SQL("""
+                INSERT INTO {s}.identifiers
+                SELECT resource, version, entity_key,
+                    (SELECT MAX(ordinal) + 1 FROM {s}.identifiers duplicate
+                        WHERE duplicate.resource=i.resource AND duplicate.version=i.version
+                            AND duplicate.entity_key=i.entity_key),
+                    ns, id, is_canonical, source
+                FROM {s}.identifiers i
+                WHERE i.resource='hmdb' AND i.entity_key=%s AND i.is_canonical
+                ORDER BY i.ordinal LIMIT 1
+            """).format(s=namespace),
+            (fallback_key,),
+        )
+        conn.execute(
+            sql.SQL("""
+                UPDATE {s}.identifiers SET is_canonical=true
+                WHERE entity_key=%s AND ns='inchikey' AND id='ZZ-invalid-key'
+            """).format(s=namespace),
+            (fallback_key,),
+        )
+    result = run(fixture)
+    assert {name: stat["memberships"] for name, stat in result["resources"].items()} == {
+        "Reactome": 2,
+        "WikiPathways": 1,
+        "KEGG": 2,
+        "MACdb": 2,
+        "ClassyFire": 3,
+    }
+    assert rows(
+        fixture,
+        """SELECT DISTINCT metabolite_label, metabolite_entity_type, inchikey,
+            metabolite_structure_key, hmdb, pubchem, chebi, kegg, smiles
+            FROM {s}.metsigdb_membership WHERE metabolite_entity_id=%s""",
+        (chemical_key,),
+    ) == [
+        (
+            "Cross-source canonical label",
+            "chemical_entity",
+            "AAAAAAAAAAAAAA-BBBBBBBBBB-C",
+            "AAAAAAAAAAAAAA",
+            "HMDB0000008",
+            "999999",
+            "CHEBI:1",
+            "C00001",
+            "CCO",
+        )
+    ]
+    assert rows(
+        fixture,
+        """SELECT DISTINCT inchikey, metabolite_structure_key
+            FROM {s}.metsigdb_membership WHERE metabolite_entity_id=%s""",
+        (fallback_key,),
+    ) == [("CCCCCCCCCCCCCC-DDDDDDDDDD-E", "CCCCCCCCCCCCCC")]
+    assert rows(
+        fixture,
+        """SELECT DISTINCT resource, set_size FROM {s}.metsigdb_membership
+            WHERE resource <> 'ClassyFire' ORDER BY resource""",
+    ) == [("KEGG", 2), ("MACdb", 2), ("Reactome", 2), ("WikiPathways", 1)]
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("remaining_namespace", [None, "name"])
+def test_chemicals_without_projection_aliases_keep_memberships(metsig_release, remaining_namespace):
+    fixture = metsig_release
+    chemical_key = fixture["chemical"]["entity_key"]
+    namespace = sql.Identifier(fixture["schema"])
+    with psycopg.connect(fixture["dsn"]) as conn:
+        conn.execute(
+            sql.SQL("DELETE FROM {s}.identifiers WHERE entity_key=%s").format(s=namespace),
+            (chemical_key,),
+        )
+        if remaining_namespace is not None:
+            conn.execute(
+                sql.SQL("""
+                    INSERT INTO {s}.identifiers
+                        (resource, version, entity_key, ordinal, ns, id, is_canonical, source)
+                    VALUES ('hmdb', '1.0.0', %s, 0, %s, 'Ignored projection alias', false, 'fixture')
+                """).format(s=namespace),
+                (chemical_key, remaining_namespace),
+            )
+    run(fixture)
+    assert rows(
+        fixture,
+        """SELECT DISTINCT resource FROM {s}.metsigdb_membership
+            WHERE metabolite_entity_id=%s ORDER BY resource""",
+        (chemical_key,),
+    ) == [("ClassyFire",), ("KEGG",), ("MACdb",), ("Reactome",), ("WikiPathways",)]
+    assert rows(
+        fixture,
+        """SELECT DISTINCT metabolite_label, metabolite_entity_type, inchikey,
+            metabolite_structure_key, smiles, hmdb, pubchem, chebi, kegg
+            FROM {s}.metsigdb_membership WHERE metabolite_entity_id=%s""",
+        (chemical_key,),
+    ) == [("Metabolite A", "chemical_entity", None, None, None, None, None, None, None)]
+
+
+@pytest.mark.integration
+def test_set_label_fallback_preserves_source_taxon_and_scoped_names(metsig_release):
+    fixture = metsig_release
+    namespace = sql.Identifier(fixture["schema"])
+    with psycopg.connect(fixture["dsn"]) as conn:
+        # The canonical fallback label comes from ChemOnt, but organism must
+        # still come from the Reactome entity used by the membership relation.
+        conn.execute(
+            sql.SQL("""
+                INSERT INTO {s}.entities
+                SELECT 'chemont', version, entity_key, entity_type, namespace, identifier,
+                    '10090', 'Canonical fallback pathway', has_hierarchy, parent_count,
+                    child_count, record_json
+                FROM {s}.entities WHERE resource='reactome' AND identifier='R-HSA-1'
+            """).format(s=namespace)
+        )
+        conn.execute(
+            sql.SQL("""
+                UPDATE {s}.entities SET label=identifier
+                WHERE resource='reactome' AND identifier='R-HSA-1'
+                    OR resource='wikipathways' AND identifier='WP1'
+            """).format(s=namespace)
+        )
+        # Both canonical rows have a label equal to the native identifier, so
+        # WikiPathways must use its own smallest name alias. A smaller alias
+        # from another pin must not participate in this set-label fallback.
+        conn.execute(
+            sql.SQL("""
+                INSERT INTO {s}.entities
+                SELECT 'chemont', version, entity_key, entity_type, namespace, identifier,
+                    '9606', label, has_hierarchy, parent_count, child_count, record_json
+                FROM {s}.entities WHERE resource='wikipathways' AND identifier='WP1'
+            """).format(s=namespace)
+        )
+        conn.execute(
+            sql.SQL("""
+                INSERT INTO {s}.identifiers
+                    (resource, version, entity_key, ordinal, ns, id, is_canonical, source)
+                SELECT resource, version, entity_key, next_ordinal + name.ordinal,
+                    'name', name.id, false, 'fixture'
+                FROM (
+                    SELECT e.resource, e.version, e.entity_key,
+                        COALESCE((SELECT MAX(i.ordinal) + 1 FROM {s}.identifiers i
+                            WHERE i.resource=e.resource AND i.version=e.version
+                                AND i.entity_key=e.entity_key), 0) AS next_ordinal
+                    FROM {s}.entities e
+                    WHERE e.resource IN ('chemont', 'wikipathways') AND e.identifier='WP1'
+                ) entity_names
+                CROSS JOIN (VALUES (0, 'A scoped pathway name'),
+                    (1, 'Z scoped pathway name')) AS name(ordinal, id)
+            """).format(s=namespace)
+        )
+        conn.execute(
+            sql.SQL("""
+                UPDATE {s}.identifiers SET id='0 wrong-resource name'
+                WHERE resource='chemont' AND ns='name'
+            """).format(s=namespace)
+        )
+    run(fixture)
+    assert rows(
+        fixture,
+        """SELECT DISTINCT resource, set_label, organism, set_size
+            FROM {s}.metsigdb_membership
+            WHERE resource IN ('Reactome', 'WikiPathways') ORDER BY resource""",
+    ) == [
+        ("Reactome", "Canonical fallback pathway", 9606, 2),
+        ("WikiPathways", "A scoped pathway name", 10090, 1),
+    ]
+
+
+@pytest.mark.integration
 def test_native_sets_taxon_and_structured_subtypes(metsig_release):
     fixture = metsig_release
     run(fixture)

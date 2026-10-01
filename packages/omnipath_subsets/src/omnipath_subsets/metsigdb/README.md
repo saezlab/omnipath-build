@@ -21,6 +21,12 @@ matched-only filter: resolver-labelled aliases occur on both matched and
 fallback entities. `eligibility_policy='legacy_matched'` therefore raises before
 writes. This policy changes no Parquet schemas or resolution behavior.
 
+Projection selects canonical entity fields in resource/version order only for
+chosen entity keys, and reads aliases across all pinned resources using
+resource/version/entity predicates that match the existing identifier primary
+key. Duplicate aliases and entities without projection aliases retain the same
+membership and aggregation behavior.
+
 Projection reuses published aliases. HMDB accessions use at least seven digits;
 the structure key is the connectivity block of a valid published InChIKey.
 Taxonomy comes from the source's set entity. Provenance records the exact source

@@ -48,8 +48,10 @@ CREATE TABLE IF NOT EXISTS {s}.metsigdb_membership (
 )
 """
 
-# All joins remain resource/version scoped. Typed endpoints handle the symmetric
-# associated_with edge regardless of its canonical orientation in Parquet.
+# Membership joins remain resource/version scoped. Typed endpoints handle the
+# symmetric associated_with edge regardless of its canonical orientation.
+# Canonical rows are selected only for relevant entities; projected aliases span
+# all release pins. Duplicate aliases and empty pins do not change MAX values.
 _SOURCE = """
 WITH source_edges AS (
     SELECT r.*, se.entity_type AS subject_entity_type, oe.entity_type AS object_entity_type
@@ -122,7 +124,12 @@ WITH source_edges AS (
     JOIN {s}.entities se ON se.entity_key = x.set_entity_id
         AND se.resource = CASE WHEN x.depth > 0 THEN %(hierarchy_source)s ELSE %(source)s END
         AND se.version = CASE WHEN x.depth > 0 THEN %(hierarchy_version)s ELSE %(version)s END
-    JOIN {s}.entity ce ON ce.entity_id = x.set_entity_id
+    JOIN LATERAL (
+        SELECT entity_key AS entity_id, label, identifier
+        FROM {s}.entities canonical
+        WHERE canonical.entity_key = x.set_entity_id
+        ORDER BY canonical.resource, canonical.version LIMIT 1
+    ) ce ON true
     LEFT JOIN LATERAL (
         SELECT MIN(i.id) AS id FROM {s}.identifiers i
         WHERE i.resource = se.resource AND i.version = se.version
@@ -174,9 +181,17 @@ WITH source_edges AS (
         MAX(i.id) FILTER (WHERE i.ns = 'pubchem') AS pubchem,
         MAX(i.id) FILTER (WHERE i.ns = 'chebi') AS chebi,
         MAX(i.id) FILTER (WHERE i.ns = 'kegg') AS kegg
-    FROM {s}.entity e
-    JOIN (SELECT DISTINCT metabolite_entity_id FROM chosen) c ON c.metabolite_entity_id = e.entity_id
-    LEFT JOIN {s}.entity_identifier_lookup i ON i.entity_id = e.entity_id
+    FROM (SELECT DISTINCT metabolite_entity_id FROM chosen) c
+    JOIN LATERAL (
+        SELECT entity_key AS entity_id, label, identifier, entity_type
+        FROM {s}.entities canonical
+        WHERE canonical.entity_key = c.metabolite_entity_id
+        ORDER BY canonical.resource, canonical.version LIMIT 1
+    ) e ON true
+    LEFT JOIN {s}.resource_versions rv ON true
+    LEFT JOIN {s}.identifiers i ON i.resource = rv.resource AND i.version = rv.version
+        AND i.entity_key = e.entity_id
+        AND i.ns IN ('inchikey', 'smiles', 'hmdb', 'pubchem', 'chebi', 'kegg')
     GROUP BY e.entity_id, e.label, e.identifier, e.entity_type
 ), complete_projection AS (
     SELECT *, split_part(inchikey, '-', 1) AS metabolite_structure_key FROM projected
