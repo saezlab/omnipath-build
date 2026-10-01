@@ -1092,3 +1092,11 @@ Focused local regression suite:393passed/326skipped in5.06s; server-only tests a
 Reports are retained under `/root/projects/omnipath-migration/main-alignment-20261001`:pilot-main-base.json,pilot-main-finished.json,pilot2-main-finished.json,pilot2-selected-product.json. Exact main reference9f9bb709c764 and pypath CV dependency33f37fbaab59 are pinned independently from the migration pypath. Genuine unavailable original inputs are declared in build_manifest/build_capability and the column map.
 
 Final frozen main-oracle rerun: 15 passed in 3.27s, including BIGINT source IDs and executed view/function definitions. Ruff and patch whitespace checks passed.
+
+## 2026-10-01: full main-compatible release load started
+
+Runtime commit `d0a1c80c33699353a589e06b957ad49960f01ef2` is pushed on `parquet-migration`. A615-file source snapshot was verified byte-for-byte on nicesrv; its manifest SHA256 is66c69d10b3d4113fd9e00ba1e102443788af970b08d0886eba362dce0fbdd4b2. Copied main SQL retains two inherited whitespace warnings; the implementation's Ruff checks passed.
+
+The full build started at2026-10-01T20:25:13.932388+00:00, using unchanged release2026.9.30.4 (46resources, canonical SHA25606f55112b371055b9b539c27eb7886d403b0131098393d1bafe4723ce006c03e) in new schema`aligned_full_20261001`, isolated mainPG18 at loopback5441. Parameters: DuckDB2threads/2GB, on-disk projection and CSV staging, late main keys/FKs/indexes, durable base and complete-product commits. Systemd unit`omnipath-migration-main-aligned-20261001.service` caps the builder at5GiB/2CPU and runs atNice10. No mandatory verification, rollback-rebuild or safety job is queued.
+
+Preflight confirmed all615runtime files, mainPG18 image/loopback binding, public extension namespaces, no competing active private backend, both prior pilot schemas in privatePG16 and all four running protected services. Free disk560,904,417,280bytes. Initial monitor at20:27UTC showed healthy DuckDBvalidate_and_stage, matching release pins and no committed base yet. Memory was approximately2.34GBanonymous plus reclaimable file cache; zero OOM events. The existing15-minute check is active for this new run and reports meaningful changes only. Full timings, product results and final storage are pending.
