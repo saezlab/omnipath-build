@@ -16,7 +16,26 @@ uv run --frozen omnipath-postgres release.json \
   --data-root data/migration-smoke --schema release_2026_09
 ```
 
-The data root contains resources/<source>/<version>/. The loader validates schemas, row counts, sizes and SHA-256 checksums before connecting. It loads tables, indexes, derived tables and release metadata in one transaction and rechecks the selected files before committing. Any failure rolls back the new schema. Existing destination schemas are rejected. Parent tables are copied before child tables. Foreign keys are immediate, and each CSV chunk gets its own COPY statement inside the same transaction, so pending checks do not grow with the whole release. CSV rotation targets 16 MB; the last vector or a large record can exceed that threshold. Typed projection and integrity checks on all loaded records remain mandatory. Raw source records are not consumed by the normal PostgreSQL load.
+The data root contains resources/<source>/<version>/. The loader validates schemas, row counts, sizes and SHA-256 checksums before connecting. By default, it loads tables, indexes, derived tables and release metadata in one transaction and rechecks the selected files before committing. Any failure rolls back the new schema. Existing destination schemas are rejected. Parent tables are copied before child tables. Foreign keys are immediate, and each CSV chunk gets its own COPY statement inside the same transaction, so pending checks do not grow with the whole release. CSV rotation targets 16 MB; the last vector or a large record can exceed that threshold. Typed projection and integrity checks on all loaded records remain mandatory. Raw source records are not consumed by the normal PostgreSQL load.
+
+
+For long loads, add `--checkpoint-base` (Python: `checkpoint_base=True`). The
+loader commits the copied base tables and indexes after integrity and final file
+checks, then derives and publishes in a separate transaction. A derivation
+failure preserves this base checkpoint. `release_metadata` remains empty until
+derivation succeeds; product builders and network streams reject unpublished
+schemas. Direct SQL access to a staging schema is still possible.
+
+Retry only derivation from PostgreSQL, with no Parquet files or another COPY:
+
+```sh
+uv run --frozen omnipath-postgres --finish --schema release_2026_09
+```
+
+The Python equivalent is `finish_release(database_url, schema=...)`. Retry checks
+stored release/resource hashes, version pins, audit metadata, base counts and
+index definitions. It rejects an already published release. These are checkpoint
+consistency checks; they do not attest arbitrary external edits to row contents.
 
 DuckDB defaults to one thread and 512 MB working memory, configurable with --duckdb-threads and --memory-limit. CSV staging and spills use a private temporary directory next to the release manifest; --temp-directory selects another filesystem. Only one output table is staged at a time, and its files are removed after COPY or failure. The load result reports per-resource SQL-validation, staging and COPY times. --batch-size controls only the optional source-record audit, capped at 1024.
 

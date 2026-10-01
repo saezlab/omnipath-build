@@ -60,8 +60,22 @@ _JSON_COLUMNS = {
 }
 
 
+def _require_published_release(conn, schema: str) -> None:
+    """An unpublished base checkpoint must never register or serve networks."""
+    message = "Network views require exactly one published release in the target schema"
+    with conn.cursor() as cur:
+        table = sql.Identifier(schema, "release_metadata")
+        cur.execute("SELECT to_regclass(%s)", (table.as_string(cur),))
+        if cur.fetchone()[0] is None:
+            raise ValueError(message)
+        cur.execute(sql.SQL("SELECT release_id FROM {} LIMIT 2").format(table))
+        if len(cur.fetchall()) != 1:
+            raise ValueError(message)
+
+
 def register(conn, schema: str, definitions) -> None:
-    """Upsert presets in the loaded release schema without committing."""
+    """Upsert presets in a published release schema without committing."""
+    _require_published_release(conn, schema)
     namespace = sql.Identifier(schema)
     with conn.cursor() as cur:
         cur.execute(

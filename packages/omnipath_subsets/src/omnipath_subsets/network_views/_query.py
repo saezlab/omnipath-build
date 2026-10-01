@@ -17,6 +17,7 @@ from psycopg import sql
 from omnipath_core.source_attributes import PARTICIPANT_ROLE
 
 from ._definitions import NETWORKS
+from ._registry import _require_published_release
 
 CHEMICAL_TYPES = ("chemical_entity", "small_molecule")
 PROTEIN_TYPES = ("protein", "gene", "macromolecular_complex", "protein_family")
@@ -261,6 +262,7 @@ def iter_records(conn, schema: str, name: str, *, organism=None) -> Iterator[dic
     """Stream scoped records inside the caller's transaction using server cursors."""
     _definition(name)
     organism = _organism(organism)
+    _require_published_release(conn, schema)
     if name != "reactions":
         for row in _binary_rows(conn, schema, name, organism):
             yield _binary_record(row, name)

@@ -60,3 +60,24 @@ def test_rejects_nonboolean_source_audit_before_io(monkeypatch, validate_source_
         loader.load_release(
             "missing", "missing", "unused", validate_source_records=validate_source_records
         )
+
+
+@pytest.mark.parametrize("checkpoint_base", [None, 0, 1, "true", [], {}])
+def test_rejects_nonboolean_checkpoint_before_io(monkeypatch, checkpoint_base):
+    def unexpected(*args, **kwargs):
+        pytest.fail("Invalid checkpoint selection must not read or connect")
+
+    monkeypatch.setattr(loader, "read_release", unexpected)
+    monkeypatch.setattr(loader.psycopg, "connect", unexpected)
+    with pytest.raises(ValueError, match="checkpoint_base must be a boolean"):
+        loader.load_release("missing", "missing", "unused", checkpoint_base=checkpoint_base)
+
+
+@pytest.mark.parametrize("schema", ["public", "pg_temp", "bad-name", None])
+def test_finish_rejects_invalid_schema_before_connecting(monkeypatch, schema):
+    def unexpected(*args, **kwargs):
+        pytest.fail("Invalid finish destination must not connect")
+
+    monkeypatch.setattr(loader.psycopg, "connect", unexpected)
+    with pytest.raises(ValueError, match="schema"):
+        loader.finish_release("unused", schema=schema)

@@ -275,7 +275,6 @@ def _rows(conn, schema):
 def rebuild(conn, schema: str) -> dict:
     """Rebuild COSMOS in the caller's transaction and return JSON-ready counts."""
     started = time.monotonic()
-    _ensure_tables(conn, schema)
     stats = {"skipped_parties": 0, "headers_without_event": 0}
     with conn.cursor() as cur:
         cur.execute(
@@ -287,6 +286,7 @@ def rebuild(conn, schema: str) -> dict:
         if len(releases) != 1:
             raise ValueError("COSMOS requires exactly one loaded release")
         release_id, build_id = releases[0]
+        _ensure_tables(conn, schema)
         insert_edge = sql.SQL("INSERT INTO {}.cosmos_edge ({}) VALUES ({})").format(
             sql.Identifier(schema),
             sql.SQL(",").join(map(sql.Identifier, EDGE_COLUMNS)),

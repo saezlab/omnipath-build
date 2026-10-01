@@ -8,19 +8,34 @@ import os
 import duckdb
 import psycopg
 
-from .loader import load_release
+from .loader import finish_release, load_release
 
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("release_manifest", help="Explicit release JSON with resource version pins")
-    parser.add_argument("--data-root", required=True, help="Directory containing resources/")
+    parser.add_argument(
+        "release_manifest", nargs="?", help="Explicit release JSON with resource version pins"
+    )
+    parser.add_argument("--data-root", help="Directory containing resources/")
     parser.add_argument("--database-url", default=os.environ.get("OMNIPATH_DATABASE_URL"))
-    parser.add_argument("--schema", default="omnipath", help="New destination schema")
+    parser.add_argument(
+        "--schema", default="omnipath", help="New destination schema or checkpoint to finish"
+    )
+    operation = parser.add_mutually_exclusive_group()
+    operation.add_argument(
+        "--checkpoint-base",
+        action="store_true",
+        help="Commit verified base/indexes before derivation, allowing PostgreSQL-only retry",
+    )
+    operation.add_argument(
+        "--finish",
+        action="store_true",
+        help="Finish an unpublished base checkpoint from PostgreSQL alone",
+    )
     parser.add_argument(
         "--batch-size",
         type=int,
-        default=1024,
+        default=None,
         help="Optional source-record audit batch (capped at 1024)",
     )
     parser.add_argument(
@@ -28,8 +43,8 @@ def main(argv=None) -> int:
         action="store_true",
         help="Audit discarded raw source records and their owner/provenance references",
     )
-    parser.add_argument("--duckdb-threads", type=int, default=1)
-    parser.add_argument("--memory-limit", default="512MB", help="DuckDB working-memory limit")
+    parser.add_argument("--duckdb-threads", type=int)
+    parser.add_argument("--memory-limit", help="DuckDB working-memory limit")
     parser.add_argument(
         "--temp-directory",
         help="Filesystem for CSV staging and DuckDB spills; defaults next to manifest",
@@ -37,18 +52,42 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
     if not args.database_url:
         parser.error("Set OMNIPATH_DATABASE_URL or pass --database-url")
+    if args.finish:
+        if (
+            any(
+                value is not None
+                for value in (
+                    args.release_manifest,
+                    args.data_root,
+                    args.batch_size,
+                    args.duckdb_threads,
+                    args.memory_limit,
+                    args.temp_directory,
+                )
+            )
+            or args.validate_source_records
+        ):
+            parser.error(
+                "--finish accepts only database/schema selection; loading and source-audit options do not apply"
+            )
+    elif args.release_manifest is None or args.data_root is None:
+        parser.error("Loading requires release_manifest and --data-root")
     try:
-        result = load_release(
-            args.data_root,
-            args.release_manifest,
-            args.database_url,
-            schema=args.schema,
-            batch_size=args.batch_size,
-            duckdb_threads=args.duckdb_threads,
-            memory_limit=args.memory_limit,
-            temp_directory=args.temp_directory,
-            validate_source_records=args.validate_source_records,
-        )
+        if args.finish:
+            result = finish_release(args.database_url, schema=args.schema)
+        else:
+            result = load_release(
+                args.data_root,
+                args.release_manifest,
+                args.database_url,
+                schema=args.schema,
+                batch_size=1024 if args.batch_size is None else args.batch_size,
+                duckdb_threads=1 if args.duckdb_threads is None else args.duckdb_threads,
+                memory_limit="512MB" if args.memory_limit is None else args.memory_limit,
+                temp_directory=args.temp_directory,
+                validate_source_records=args.validate_source_records,
+                checkpoint_base=args.checkpoint_base,
+            )
     except (ValueError, OSError, psycopg.Error, duckdb.Error) as exc:
         parser.exit(1, f"Release load failed: {exc}\n")
     print(json.dumps(asdict(result), indent=2))

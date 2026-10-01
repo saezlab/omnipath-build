@@ -23,6 +23,24 @@ _TABLES = {
         input_manifest_sha256 text NOT NULL,
         loaded_at timestamptz NOT NULL DEFAULT now()
     """,
+    "base_checkpoint": """
+        singleton boolean PRIMARY KEY DEFAULT true CHECK (singleton),
+        format_version integer NOT NULL CHECK (format_version = 1),
+        release_id text NOT NULL,
+        manifest_json jsonb NOT NULL,
+        manifest_text text NOT NULL,
+        manifest_sha256 text NOT NULL,
+        input_manifest_sha256 text NOT NULL,
+        resources jsonb NOT NULL,
+        resource_metadata jsonb NOT NULL,
+        counts jsonb NOT NULL,
+        base_indexes jsonb NOT NULL,
+        validate_source_records boolean NOT NULL,
+        validated_payload_rows jsonb NOT NULL,
+        phase_seconds jsonb NOT NULL,
+        base_completed_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+        completed_at timestamptz
+    """,
     "entity_ontology_relation": """
         resource text NOT NULL, version text NOT NULL, relation_id text NOT NULL,
         subject_entity_id text NOT NULL, object_entity_id text NOT NULL,
