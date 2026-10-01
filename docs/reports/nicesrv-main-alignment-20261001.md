@@ -2,7 +2,7 @@
 
 The Parquet outputs, upstream resolution/reference/cache, independent resource updates and separate monthly PostgreSQL release schedule are unchanged. The active PostgreSQL implementation now reuses main9f9bb709c764's physical schema, dictionaries, source partitions, keys/indexes, downstream derivations and product implementations, with explicit Biolink and published-identity adapters. Nested record JSON and raw source payloads are excluded.
 
-The current deployed commit is bbe8ea40f90f60d5a5bfaad0c99de2baac856fc5, pushed on parquet-migration. The frozen main reference remains untracked at main-reference/9f9bb709c764. The exact pypath CV oracle is privately pinned to main's gitlink33f37fbaab59993d24f5c32bb4b3e7587085bcf4; migration pypath is unchanged.
+The current deployed commit is 2942d38385c1319f41a4ee1d5559c65604fb0893, pushed on parquet-migration. The frozen main reference remains untracked at main-reference/9f9bb709c764. The exact pypath CV oracle is privately pinned to main's gitlink33f37fbaab59993d24f5c32bb4b3e7587085bcf4; migration pypath is unchanged.
 
 ## Completed pilot milestone
 
@@ -12,11 +12,13 @@ Local focused suite:393passed,326explicit server tests skipped,5.06s. Guarded pr
 
 ## Full load in progress
 
-Attempt2 started at 2026-10-01T20:53:47.904529+00:00 as omnipath-migration-main-aligned-attempt2-20261001.service. Destination aligned_full_20261001 is in the new private PostgreSQL18 at127.0.0.1:5441; release2026.9.30.4,46resources, canonical SHA25606f55112b371055b9b539c27eb7886d403b0131098393d1bafe4723ce006c03e. DuckDB2threads/2GB, builder5GiB/2CPU, complete base and product checkpoints. The616runtime files were verified before launch; source manifest SHA2569ccb45f39eb83dd577ef55b508a2ff300a398d685733a2001611a2edec841060. No verifier or rollback-rebuild job is queued.
+Attempt3 started at 2026-10-01T21:19:23.787442+00:00 as omnipath-migration-main-aligned-attempt3-20261001.service. Destination aligned_full_20261001 is in the new private PostgreSQL18 at127.0.0.1:5441; release2026.9.30.4,46resources, canonical SHA25606f55112b371055b9b539c27eb7886d403b0131098393d1bafe4723ce006c03e. DuckDB2threads/2GB, builder5GiB/2CPU, complete base and product checkpoints. The616runtime files were verified before launch; source manifest SHA256be1269009cf961a20a1bd9b11dfe628e6420ef85edc024d53cba5e94d408fedc. No verifier or rollback-rebuild job is queued.
 
 The first attempt stopped beforeCOPY after576.513767s because35shared ChEMBL/DrugCentral statement keys had differing scalar taxonomy. A read-only aggregate audit confirmed no other field differed: the prototype publishes taxonomy as a resource-specific consensus and excludes it from statement identity. The narrow validation correction retains both source-owned taxonomy claims and rejects actual endpoint/predicate/kind conflicts. No Parquet changed. The failed setup-only schema is preserved as aligned_full_20261001_attempt1_empty, with its reports under attempt1-d0a1c80.
 
-At21:03:07UTC attempt2 had passed shared-statement validation and reached DuckDB dimensions; no committed base yet. Preflight free disk557,452,517,376bytes; current free disk538,289,545,216bytes. The15-minute overnight monitor is active. Full completion, representative product samples, phase durations and final storage remain pending.
+Attempt2 passed statement validation but was stopped in dimensions at21:13:08UTC after1160.390526s, beforeCOPY. The collector fetched millions of repeated vocabulary names into Python and caused severe memory/disk pressure under its5GiB limit. SQL now deduplicates before fetching; a bounded fixture proves identical seeded vocabulary/dataset values and IDs, reducing35,006names to14. The focused disposable local PostgreSQL16 suite passed129tests in4.70s. Its empty schema is retained as aligned_full_20261001_attempt2_empty, with reports under attempt2-bbe8ea4-dimension-memory. No copied checkpoint was lost.
+
+At21:19:46UTC attempt3 was active in validate_and_stage; no committed base yet. Preflight free disk538,289,389,568bytes. The15-minute overnight monitor follows the corrected attempt. Full completion, representative product samples, phase durations and final storage remain pending.
 
 The authorized cleanup removed only the old private full_20260930 schema, freeing192.47GiB. Its DDL/report backups remain under /root/projects/omnipath-migration/main-alignment-20261001. Both original pilot schemas, all artifacts/cache/reference and production/prototype services were preserved. New PostgreSQL18 uses a separate container and volume.
 
