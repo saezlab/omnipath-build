@@ -430,3 +430,178 @@ def test_conflicting_source_record_hashes_fail_atomically(tmp_path, postgres_dsn
             == expected
         )
         assert rebuild(conn, schema)["edges"] == 12
+
+
+class WriteTransport:
+    """Use real PostgreSQL with either the previous serial transport or batches."""
+
+    def __init__(self, conn, *, serial=False, fail_edge_batch=None):
+        self.conn = conn
+        self.serial = serial
+        self.fail_edge_batch = fail_edge_batch
+        self.batches = {"label": [], "edge": []}
+        self.fetches = 0
+
+    def cursor(self, *args, **kwargs):
+        return WriteCursor(self, self.conn.cursor(*args, **kwargs), named=bool(kwargs.get("name")))
+
+
+class WriteCursor:
+    def __init__(self, transport, cursor, *, named):
+        self.transport, self.cursor, self.named = transport, cursor, named
+
+    def __enter__(self):
+        self.cursor.__enter__()
+        return self
+
+    def __exit__(self, *args):
+        return self.cursor.__exit__(*args)
+
+    def __getattr__(self, name):
+        return getattr(self.cursor, name)
+
+    def fetchmany(self, size):
+        assert self.named
+        # A small real server-cursor FETCH forces write batches between reads.
+        assert self.transport.conn.pgconn.pipeline_status == psycopg.pq.PipelineStatus.OFF
+        self.transport.fetches += 1
+        return self.cursor.fetchmany(2)
+
+    def executemany(self, statement, parameters):
+        rows = [list(row) for row in parameters]
+        kind = "label" if "cosmos_label" in statement.as_string(self.transport.conn) else "edge"
+        self.transport.batches[kind].append(rows)
+        if kind == "edge" and len(self.transport.batches[kind]) == self.transport.fail_edge_batch:
+            from omnipath_subsets.cosmos import EDGE_COLUMNS
+
+            # Fail inside a real executemany pipeline after an earlier batch wrote.
+            rows[-1][EDGE_COLUMNS.index("mor")] = 0
+        if self.transport.serial:
+            for row in rows:
+                self.cursor.execute(statement, row)
+        else:
+            self.cursor.executemany(statement, rows)
+        assert self.transport.conn.pgconn.pipeline_status == psycopg.pq.PipelineStatus.OFF
+
+
+def cosmos_snapshot(conn, schema):
+    namespace = sql.Identifier(schema)
+    edges = conn.execute(
+        sql.SQL("SELECT * FROM {}.cosmos_edge ORDER BY cosmos_edge_id").format(namespace)
+    ).fetchall()
+    labels = conn.execute(
+        sql.SQL("SELECT * FROM {}.cosmos_label ORDER BY entity_id,wanted_namespace").format(
+            namespace
+        )
+    ).fetchall()
+    return edges, labels
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("batch_size", [2, 5, 1000])
+def test_batched_writes_match_serial_rows_order_labels_and_counts(
+    tmp_path, postgres_dsn, monkeypatch, batch_size
+):
+    from omnipath_subsets import cosmos
+
+    manifest, *_ = fixture(tmp_path)
+    schema = "cosmos_batch_" + uuid.uuid4().hex
+    loaded = loader.load_release(tmp_path, manifest, postgres_dsn, schema=schema)
+    with psycopg.connect(postgres_dsn) as conn:
+        # Size one performs one label attempt per occurrence, and the adapter
+        # issues one execute per edge/label: the previous serial writer behavior.
+        monkeypatch.setattr(cosmos, "_WRITE_BATCH_SIZE", 1)
+        serial = WriteTransport(conn, serial=True)
+        before_stats = rebuild(serial, schema)
+        before = cosmos_snapshot(conn, schema)
+        monkeypatch.setattr(cosmos, "_WRITE_BATCH_SIZE", batch_size)
+        batched = WriteTransport(conn)
+        after_stats = rebuild(batched, schema)
+        assert cosmos_snapshot(conn, schema) == before  # Includes every edge column and auto-ID.
+        assert {k: v for k, v in after_stats.items() if k != "seconds"} == {
+            k: v for k, v in before_stats.items() if k != "seconds"
+        }
+        assert after_stats["build_id"] == loaded.manifest_sha256
+        assert after_stats["edges"] == 12 and after_stats["reverse_edges"] == 3
+        assert after_stats["orphan_reactions"] == 2 and after_stats["connectors"] == 4
+        assert (
+            after_stats["chemical_labels_translated"] == after_stats["gene_labels_translated"] == 1
+        )
+        assert [row[0] for row in before[0]] == list(range(1, 13))
+        assert serial.fetches >= 5 and batched.fetches >= 5
+        serial_attempts = sum(map(len, serial.batches["label"]))
+        batched_attempts = sum(map(len, batched.batches["label"]))
+        assert serial_attempts == 7 and batched_attempts < serial_attempts
+        assert all(
+            len(rows) <= batch_size for batches in batched.batches.values() for rows in batches
+        )
+        assert sum(map(len, batched.batches["edge"])) == 12
+        if batch_size == 2:
+            assert batched_attempts == 3  # Repeated chemical is attempted again after the flush.
+        if batch_size == 5:
+            assert [len(rows) for rows in batched.batches["edge"]] == [5, 5, 2]
+        conn.rollback()
+    with psycopg.connect(postgres_dsn) as observer:
+        assert observer.execute(
+            "SELECT to_regclass(%s)", (schema + ".cosmos_edge",)
+        ).fetchone() == (None,)
+
+
+@pytest.mark.integration
+def test_pending_label_dedup_keeps_first_occurrence_within_and_across_batches(
+    tmp_path, postgres_dsn, monkeypatch
+):
+    from copy import deepcopy
+    from omnipath_subsets import cosmos
+
+    manifest, *_ = fixture(tmp_path)
+    schema = "cosmos_first_" + uuid.uuid4().hex
+    loader.load_release(tmp_path, manifest, postgres_dsn, schema=schema)
+    with psycopg.connect(postgres_dsn) as conn:
+        records = list(cosmos._rows(conn, schema))
+        chemicals = [row for row in records if row["role"] in ("reactant", "product")]
+        # Deliberately conflicting carried labels isolate the legacy first-write
+        # rule. Source SQL remains unchanged; real PG checks ON CONFLICT behavior.
+        for ordinal, row in enumerate(chemicals):
+            row.update(
+                namespace="inchikey",
+                identifier="fallback",
+                aliases=[dict(ns="chebi", id=str(42 + ordinal), ambiguous=False)],
+            )
+        monkeypatch.setattr(cosmos, "_rows", lambda conn, schema: iter(deepcopy(records)))
+        monkeypatch.setattr(cosmos, "_WRITE_BATCH_SIZE", 1)
+        serial = WriteTransport(conn, serial=True)
+        before_stats = rebuild(serial, schema)
+        before = cosmos_snapshot(conn, schema)
+        monkeypatch.setattr(cosmos, "_WRITE_BATCH_SIZE", 2)
+        batched = WriteTransport(conn)
+        after_stats = rebuild(batched, schema)
+        assert cosmos_snapshot(conn, schema) == before
+        assert {k: v for k, v in after_stats.items() if k != "seconds"} == {
+            k: v for k, v in before_stats.items() if k != "seconds"
+        }
+        chemical_label = next(row for row in before[1] if row[1] == "chebi")
+        assert chemical_label[2:] == ("CHEBI:42", "chebi", "mapped")
+        assert [len(rows) for rows in batched.batches["label"]] == [2, 1]
+        assert after_stats["chemical_labels_mapped"] == 1
+
+
+@pytest.mark.integration
+def test_failed_batch_rolls_back_existing_cosmos_tables(tmp_path, postgres_dsn, monkeypatch):
+    from omnipath_subsets import cosmos
+
+    manifest, *_ = fixture(tmp_path)
+    schema = "cosmos_rollback_" + uuid.uuid4().hex
+    loader.load_release(tmp_path, manifest, postgres_dsn, schema=schema)
+    with psycopg.connect(postgres_dsn) as conn:
+        rebuild(conn, schema)
+        before = cosmos_snapshot(conn, schema)
+    monkeypatch.setattr(cosmos, "_WRITE_BATCH_SIZE", 2)
+    with psycopg.connect(postgres_dsn, autocommit=True) as conn:
+        transport = WriteTransport(conn, fail_edge_batch=2)
+        with pytest.raises(psycopg.errors.CheckViolation):
+            with conn.transaction():
+                rebuild(transport, schema)
+        assert len(transport.batches["edge"]) == 2
+        assert conn.pgconn.pipeline_status == psycopg.pq.PipelineStatus.OFF
+        assert cosmos_snapshot(conn, schema) == before

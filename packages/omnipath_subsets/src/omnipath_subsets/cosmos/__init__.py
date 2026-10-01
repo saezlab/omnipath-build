@@ -19,6 +19,7 @@ from psycopg.rows import dict_row
 
 
 REACTION_SOURCES = ("kegg", "rhea", "metatlas", "recon3d")
+_WRITE_BATCH_SIZE = 1000
 EDGE_COLUMNS = (
     "build_id",
     "source_label",
@@ -292,6 +293,10 @@ def rebuild(conn, schema: str) -> dict:
             sql.SQL(",").join(map(sql.Identifier, EDGE_COLUMNS)),
             sql.SQL(",").join(sql.Placeholder() for _ in EDGE_COLUMNS),
         )
+        insert_label = sql.SQL(
+            "INSERT INTO {}.cosmos_label VALUES (%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING"
+        ).format(sql.Identifier(schema))
+        edge_rows, label_rows = [], {}
         reaction_index = 0
         for _, records in groupby(_rows(conn, schema), key=lambda row: row["context_id"]):
             parties = list(records)
@@ -317,14 +322,28 @@ def rebuild(conn, schema: str) -> dict:
             for party in eligible:
                 wanted = "uniprot" if party["role"] == "enzyme" else "chebi"
                 label = published_label(party, wanted)
-                cur.execute(
-                    sql.SQL(
-                        "INSERT INTO {}.cosmos_label VALUES (%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING"
-                    ).format(sql.Identifier(schema)),
+                # Retain the serial writer's first-occurrence conflict behavior.
+                # The pending map is bounded; repeats after a flush are handled by
+                # the existing primary key/ON CONFLICT rather than a global cache.
+                label_rows.setdefault(
+                    (party["entity_id"], wanted),
                     (party["entity_id"], wanted, label.identifier, label.namespace, label.status),
                 )
+                if len(label_rows) >= _WRITE_BATCH_SIZE:
+                    cur.executemany(insert_label, label_rows.values())
+                    label_rows.clear()
             for edge in project_context(context, eligible, build_id, reaction_index):
-                cur.execute(insert_edge, [edge[column] for column in EDGE_COLUMNS])
+                edge_rows.append([edge[column] for column in EDGE_COLUMNS])
+                if len(edge_rows) >= _WRITE_BATCH_SIZE:
+                    # executemany's automatic pipeline ends inside this call,
+                    # before the server cursor's next FETCH. Input edge order,
+                    # and therefore generated cosmos_edge_id order, is retained.
+                    cur.executemany(insert_edge, edge_rows)
+                    edge_rows.clear()
+        if label_rows:
+            cur.executemany(insert_label, label_rows.values())
+        if edge_rows:
+            cur.executemany(insert_edge, edge_rows)
         cur.execute(
             sql.SQL("""
             SELECT COUNT(*) AS edges,COUNT(DISTINCT interaction_id) AS reactions,
