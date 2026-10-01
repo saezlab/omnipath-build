@@ -183,6 +183,50 @@ def test_shared_entities_and_qualified_statements_collapse_only_main_graph_tripl
         assert {r["scope"] for r in rows(con, plan, "parquet_annotation_occurrence")} >= {"object", "relation", "evidence"}
 
 
+def test_shared_statement_key_preserves_each_resources_taxonomy_consensus_and_evidence(tmp_path):
+    entities, relations, _ = fixture_rows()
+    for source, taxon in (("one", "9606"), ("two", "10090")):
+        scoped = deepcopy(relations)
+        scoped[0]["taxon"] = taxon
+        taxon_annotation = annotation("in_taxon", value="NCBITaxon:" + taxon, scope="relation")
+        taxon_annotation["source"] = source
+        scoped[0]["annotations"].append(deepcopy(taxon_annotation))
+        for evidence in scoped[0]["evidence"]:
+            evidence["source"] = source
+            evidence["annotations"].append(deepcopy(taxon_annotation))
+        write_fixture(tmp_path / source, entities=entities, relations=scoped)
+    with duckdb.connect() as con:
+        plan = prepare_aligned_release(con, (selected(tmp_path / "one", "one"), selected(tmp_path / "two", "two")))
+        claims = rows(con, plan, "parquet_statement")
+        assert {(r["resource"], r["taxon"]) for r in claims} == {("one", "9606"), ("two", "10090")}
+        assert len({r["relation_key"] for r in claims}) == 1
+        assert len({r["relation_id"] for r in claims}) == 1
+        assert plan.counts["relation_evidence"] == 4
+        assert {(r["resource"], r["source"]) for r in rows(con, plan, "parquet_evidence")} == {
+            ("one", "one"), ("two", "two"),
+        }
+        values = {r["annotation_key"]: r["value"] for r in rows(con, plan, "annotation")}
+        assert {(r["resource"], values[r["annotation_key"]])
+                for r in rows(con, plan, "parquet_annotation_occurrence") if r["term"] == "in_taxon"} == {
+            ("one", "NCBITaxon:9606"), ("two", "NCBITaxon:10090"),
+        }
+
+
+@pytest.mark.parametrize("field,value", [
+    ("subject_entity_key", ENTITY_B),
+    ("object_entity_key", ENTITY_A),
+    ("predicate", "interacts_with"),
+    ("statement_kind", "ontology_axiom"),
+])
+def test_shared_statement_key_with_conflicting_identity_core_still_fails(tmp_path, field, value):
+    entities, relations, _ = fixture_rows()
+    write_fixture(tmp_path / "one", entities=entities, relations=relations)
+    relations[0][field] = value
+    write_fixture(tmp_path / "two", entities=entities, relations=relations)
+    with duckdb.connect() as con, pytest.raises(ValueError, match="statement identity has conflicting"):
+        prepare_aligned_release(con, (selected(tmp_path / "one", "one"), selected(tmp_path / "two", "two")))
+
+
 def test_distinct_published_entities_are_not_silently_merged_for_main_unique_index(tmp_path):
     entities, relations, _ = fixture_rows()
     duplicate = deepcopy(entities[0])

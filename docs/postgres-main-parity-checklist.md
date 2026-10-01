@@ -78,7 +78,7 @@ The focused checks are optional development verification, not a restored mandato
 Local static and oracle checks:
 
 ```sh
-uv run --frozen --no-sync pytest packages/omnipath_postgres/tests/test_main_parity_contract.py -q
+uv run --frozen --no-sync pytest packages/omnipath_postgres/tests/test_main_parity_contract.py packages/omnipath_postgres/tests/test_main_metsigdb_parity.py -q
 ```
 
 For the bounded PostgreSQL checks, the parent task sets `OMNIPATH_MAIN_PARITY_DSN` privately to the **new isolated migration PostgreSQL**, then runs the same command. Do not use production or the prototype database. The fixture creates and removes only random `parity_main_*` / `parity_port_*` schemas. It compares the exact frozen main algorithm against the adapted backend over declared resolved SQL facts, with no parser or original resolver involved.
@@ -93,9 +93,12 @@ Current harness covers:
 6. Complete COSMOS edge rows and statistics over shared chemistry, explicit member/event direction mappings, orphan events, reversibility, connectors, transport and existing chemical aliases, with external mappings disabled. Catalogue definitions are compared again after scientific derive to cover late interaction indexes and statistics.
 7. Exact main ontology term/definition/synonym/alias output, two sources for one ontology, source-scoped shortest ClassyFire closure with preserved non-hierarchy axioms, and primary gene-symbol ranking by attestations, length and alphabetic order.
 8. MiRBase maturation orientation/class with wrong-source and wrong-namespace guards, plus a shared Biolink graph triple retaining both source-specific MIR maturation and a generic claim. Source IDs above the smallint range test the main bigint identity contract.
+9. All five MetSigDB extraction/publication algorithms over exactly 20 synthetic source rows: complete membership columns and provenance, duplicate record selection, both pathway orientations, KEGG input/output deduplication and overview maps, MACdb structured subtype, source-scoped ClassyFire hierarchy and direct-assignment precedence, set taxonomy/name selection, chemical identifier display and structure groups. The same fixture checks exact executed product DDL/indexes, idempotent publication and resource-local stale removal under an unchanged build stamp. Main matched occurrences are compared with published status 5; only the approved chemical eligibility/type vocabulary is normalized.
 
 Compare duplicate-sensitive full rows and content identities. Preserve distinctions between NULL and FALSE, source-local and merged claims, and participant sets versus multisets. Equal counts or an empty oracle result are not acceptance.
 
 For the real release, sample supported examples from multiple resources after projection and each downstream product. Use bounded aggregate queries and query plans, inspect FK/index validity and release metadata, and record observed storage and timings. If a fixture or real sample exposes a mismatch, fix the mapping before the full build. Do not rerun already committed products to diagnose a later phase.
 
-Remaining independent coverage should include the Parquet projection of differing structured measurement identities, the full ontology projection from Parquet and a full main preset/MetSigDB/network-view oracle. COSMOS external identifier translation is tested separately by the existing main tests; this fixture intentionally exercises the supported offline fallback. These remaining gaps must be reported; the existing migration tests alone do not prove full main fidelity.
+Remaining independent coverage should include the Parquet projection of differing structured measurement identities, the full ontology projection from Parquet and a full main preset/network-view oracle. COSMOS external identifier translation is tested separately by the existing main tests; this fixture intentionally exercises the supported offline fallback. These remaining gaps must be reported; the existing migration tests alone do not prove full main fidelity.
+
+The separate MetSigDB oracle invokes unchanged `load_resource` extraction/publication and the exact frozen source hashes. It creates no resource artifacts and does not invoke the full-build coordinator, resolver or external mappings. Its SQL fixture is optional focused verification; the running pinned release build has no additional mandatory verification phase.

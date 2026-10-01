@@ -318,10 +318,16 @@ def _validate_canonical_inputs(con: Any) -> None:
     _checked(con, """SELECT resource,version,relation_key FROM ap_statement_raw
         GROUP BY resource,version,relation_key HAVING count(*)>1""",
         "Duplicate published statement identity within one resource")
+    # The publisher hashes endpoints, predicate, kind and Biolink qualifiers.
+    # Its scalar taxon is a per-resource consensus, not part of that key (see
+    # writer._relations_sql). Keep that consensus and the exact in_taxon claims
+    # scoped to resource/version; globally equating them rejects valid sources.
+    # Retain the existing derived-field checks until a demonstrated publisher
+    # version difference warrants a separately reviewed presentation policy.
     _checked(con, """SELECT relation_key FROM ap_statement_raw GROUP BY relation_key
         HAVING count(DISTINCT to_json(struct_pack(subject:=subject_entity_key,
             object:=object_entity_key,predicate:=predicate,kind:=statement_kind,
-            taxon:=taxon,directed:=is_directed,sign:=sign,category:=category,
+            directed:=is_directed,sign:=sign,category:=category,
             interaction_class:=interaction_class)))>1""",
         "A published statement identity has conflicting scientific fields")
     _checked(con, """SELECT e.entity_key FROM ap_entity_raw e
