@@ -198,6 +198,13 @@ WITH source_edges AS (
 )
 """
 
+# KEGG reuses typed edges in reaction joins. Inlining lets their predicates
+# reach the indexed base tables instead of rescanning a wide CTE.
+_KEGG_SOURCE = _SOURCE.replace(
+    "WITH source_edges AS (", "WITH source_edges AS NOT MATERIALIZED (", 1
+)
+
+
 _PUBLISH = """
 INSERT INTO {s}.metsigdb_membership (
     resource, set_source_id, metabolite_entity_id, metabolite_label, metabolite_entity_type,
@@ -230,6 +237,11 @@ LEFT JOIN LATERAL (
         AND a.term = %(trait_type_term)s
 ) subtype ON true
 """
+
+
+def _source_for_rule(rule: ResourceRule) -> str:
+    """Inline typed source edges only for the KEGG reaction join."""
+    return _KEGG_SOURCE if rule.extraction == "kegg" else _SOURCE
 
 
 def _params(rule: ResourceRule, versions: dict[str, str], build_id: str) -> dict:
@@ -320,7 +332,7 @@ def rebuild(
                 )
                 continue
             params = _params(rule, versions, build_id)
-            cur.execute(sql.SQL(_SOURCE + _PUBLISH).format(s=namespace), params)
+            cur.execute(sql.SQL(_source_for_rule(rule) + _PUBLISH).format(s=namespace), params)
             cur.execute(
                 sql.SQL(
                     "SELECT COUNT(*), COUNT(DISTINCT set_source_id) FROM {}.metsigdb_membership WHERE resource=%s"

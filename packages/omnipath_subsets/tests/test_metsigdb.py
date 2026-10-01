@@ -296,7 +296,6 @@ def test_materialized_projection_preserves_complete_results_for_all_rules(metsig
     fixture = metsig_release
     # Removing only the optimization gives the exact previous SELECT, including
     # all provenance, window counts, contexts and identifier expressions.
-    inline_source = metsigdb_build._SOURCE.replace("projected AS MATERIALIZED (", "projected AS (")
     publication_select = metsigdb_build._PUBLISH[
         metsigdb_build._PUBLISH.index("SELECT %(resource)s") :
     ]
@@ -312,6 +311,8 @@ def test_materialized_projection_preserves_complete_results_for_all_rules(metsig
             for (manifest,) in manifests
         )
         for rule in RESOURCES:
+            selected_source = metsigdb_build._source_for_rule(rule)
+            inline_source = selected_source.replace("projected AS MATERIALIZED (", "projected AS (")
             params = metsigdb_build._params(
                 rule, fixture["loaded"].resources, fixture["loaded"].manifest_sha256
             )
@@ -319,7 +320,7 @@ def test_materialized_projection_preserves_complete_results_for_all_rules(metsig
                 sql.SQL(inline_source + publication_select).format(s=namespace), params
             ).fetchall()
             after = conn.execute(
-                sql.SQL(metsigdb_build._SOURCE + publication_select).format(s=namespace), params
+                sql.SQL(selected_source + publication_select).format(s=namespace), params
             ).fetchall()
             # A multiset comparison includes every returned column and retains
             # duplicate multiplicity; equal counts alone would miss regressions.
@@ -388,6 +389,232 @@ def test_materialized_projection_aggregates_once_under_nested_loop_rescans(metsi
     scans = [node for node in after_nodes if node.get("CTE Name") == "projected"]
     assert len(scans) == 1
     assert scans[0]["Actual Loops"] == 2
+
+
+@pytest.mark.integration
+def test_kegg_only_inlining_preserves_complete_results_for_all_rules(metsig_release):
+    fixture = metsig_release
+    namespace = sql.Identifier(fixture["schema"])
+    publication_select = metsigdb_build._PUBLISH[
+        metsigdb_build._PUBLISH.index("SELECT %(resource)s") :
+    ]
+    counts = {}
+    with psycopg.connect(fixture["dsn"]) as conn:
+        conn.execute("SET TRANSACTION READ ONLY")
+        manifests = conn.execute(
+            sql.SQL("SELECT manifest_json FROM {s}.resource_versions").format(s=namespace)
+        ).fetchall()
+        assert all(
+            sum(item["rows"] for item in manifest["files"].values()) <= 20
+            for (manifest,) in manifests
+        )
+        for rule in RESOURCES:
+            selected_source = metsigdb_build._source_for_rule(rule)
+            if rule.extraction == "kegg":
+                assert selected_source != metsigdb_build._SOURCE
+            else:
+                assert selected_source == metsigdb_build._SOURCE
+            params = metsigdb_build._params(
+                rule, fixture["loaded"].resources, fixture["loaded"].manifest_sha256
+            )
+            before = conn.execute(
+                sql.SQL(metsigdb_build._SOURCE + publication_select).format(s=namespace), params
+            ).fetchall()
+            after = conn.execute(
+                sql.SQL(selected_source + publication_select).format(s=namespace), params
+            ).fetchall()
+            assert Counter(json.dumps(row, sort_keys=True) for row in before) == Counter(
+                json.dumps(row, sort_keys=True) for row in after
+            ), rule.name
+            counts[rule.name] = len(after)
+    assert counts == {"Reactome": 2, "WikiPathways": 1, "KEGG": 2, "MACdb": 2, "ClassyFire": 3}
+
+
+@pytest.mark.integration
+def test_kegg_inlining_preserves_candidate_paths_and_chosen_provenance(tmp_path, postgres_dsn):
+    first_chemical = entity("CHEBI:1", "chemical_entity", label="Chemical one")
+    second_chemical = entity("CHEBI:2", "small_molecule", label="Chemical two")
+    protein = entity("P00001", "protein", "uniprot", label="Excluded protein")
+    first_reaction = entity("R00001", "molecular_activity", "kegg_reaction")
+    second_reaction = entity("R00002", "molecular_activity", "kegg_reaction")
+    first_pathway = entity("rn00001", "pathway", "kegg_pathway", label="First pathway")
+    second_pathway = entity("rn00002", "pathway", "kegg_pathway", label="Second pathway")
+    entities = [
+        first_chemical,
+        second_chemical,
+        protein,
+        first_reaction,
+        second_reaction,
+        first_pathway,
+        second_pathway,
+    ]
+    # Both pathway orientations, multiple reactions and input/output paths yield
+    # duplicate membership candidates with distinct, retained provenance.
+    forward = relation(first_reaction, "part_of", first_pathway, source="kegg", row_id="101")
+    reverse = relation(second_pathway, "has_part", first_reaction, source="kegg", row_id="102")
+    other_path = relation(second_reaction, "part_of", first_pathway, source="kegg", row_id="103")
+    chemical_input = relation(
+        first_reaction,
+        "has_input",
+        first_chemical,
+        source="kegg",
+        row_id="10",
+        annotations=source_context_annotations({}, source="kegg"),
+    )
+    chemical_output = relation(
+        first_reaction,
+        "has_output",
+        first_chemical,
+        source="kegg",
+        row_id="2",
+        annotations=source_context_annotations({}, source="kegg"),
+    )
+    participant = relation(
+        first_reaction,
+        "has_participant",
+        second_chemical,
+        source="kegg",
+        row_id="3",
+        annotations=source_context_annotations({}, source="kegg"),
+    )
+    other_output = relation(
+        second_reaction,
+        "has_output",
+        first_chemical,
+        source="kegg",
+        row_id="4",
+        annotations=source_context_annotations({}, source="kegg"),
+    )
+    excluded = relation(
+        first_reaction,
+        "has_input",
+        protein,
+        source="kegg",
+        row_id="5",
+        annotations=source_context_annotations({}, source="kegg"),
+    )
+    relations = [
+        forward,
+        reverse,
+        other_path,
+        chemical_input,
+        chemical_output,
+        participant,
+        other_output,
+        excluded,
+    ]
+    assert len(entities) + len(relations) == 15
+    write_resource(tmp_path, "kegg", entities, relations)
+    schema = "met_" + uuid.uuid4().hex
+    loaded = loader.load_release(
+        tmp_path, write_release(tmp_path, ["kegg"]), postgres_dsn, schema=schema
+    )
+    fixture = dict(dsn=postgres_dsn, schema=schema)
+    namespace = sql.Identifier(schema)
+    rule = next(rule for rule in RESOURCES if rule.extraction == "kegg")
+    params = metsigdb_build._params(rule, loaded.resources, loaded.manifest_sha256)
+    publication_select = metsigdb_build._PUBLISH[
+        metsigdb_build._PUBLISH.index("SELECT %(resource)s") :
+    ]
+    with psycopg.connect(postgres_dsn) as conn:
+        conn.execute("SET TRANSACTION READ ONLY")
+        before = conn.execute(
+            sql.SQL(metsigdb_build._SOURCE + "SELECT * FROM kegg_pairs").format(s=namespace), params
+        ).fetchall()
+        after = conn.execute(
+            sql.SQL(metsigdb_build._source_for_rule(rule) + "SELECT * FROM kegg_pairs").format(
+                s=namespace
+            ),
+            params,
+        ).fetchall()
+        before_publication = conn.execute(
+            sql.SQL(metsigdb_build._SOURCE + publication_select).format(s=namespace), params
+        ).fetchall()
+        after_publication = conn.execute(
+            sql.SQL(metsigdb_build._source_for_rule(rule) + publication_select).format(s=namespace),
+            params,
+        ).fetchall()
+    first_key = first_chemical["entity_key"]
+    second_key = second_chemical["entity_key"]
+    first_set = first_pathway["entity_key"]
+    second_set = second_pathway["entity_key"]
+    first_reaction_key = first_reaction["entity_key"]
+    expected = [
+        (
+            first_set,
+            first_key,
+            chemical_input["relation_key"],
+            first_reaction_key,
+            forward["relation_key"],
+        ),
+        (
+            first_set,
+            first_key,
+            chemical_output["relation_key"],
+            first_reaction_key,
+            forward["relation_key"],
+        ),
+        (
+            first_set,
+            second_key,
+            participant["relation_key"],
+            first_reaction_key,
+            forward["relation_key"],
+        ),
+        (
+            second_set,
+            first_key,
+            chemical_input["relation_key"],
+            first_reaction_key,
+            reverse["relation_key"],
+        ),
+        (
+            second_set,
+            first_key,
+            chemical_output["relation_key"],
+            first_reaction_key,
+            reverse["relation_key"],
+        ),
+        (
+            second_set,
+            second_key,
+            participant["relation_key"],
+            first_reaction_key,
+            reverse["relation_key"],
+        ),
+        (
+            first_set,
+            first_key,
+            other_output["relation_key"],
+            second_reaction["entity_key"],
+            other_path["relation_key"],
+        ),
+    ]
+    assert Counter(before) == Counter(after) == Counter(expected)
+    assert Counter((row[0], row[1]) for row in after) == {
+        (first_set, first_key): 3,
+        (second_set, first_key): 2,
+        (first_set, second_key): 1,
+        (second_set, second_key): 1,
+    }
+    assert Counter(json.dumps(row, sort_keys=True) for row in before_publication) == Counter(
+        json.dumps(row, sort_keys=True) for row in after_publication
+    )
+    assert len(after_publication) == 4
+    result = run(fixture)  # Exercise rebuild's query selection, not only private SQL constants.
+    assert result["resources"]["KEGG"]["memberships"] == 4
+    chosen = rows(
+        fixture,
+        """SELECT set_source_id, set_size, provenance_record FROM {s}.metsigdb_membership
+            WHERE metabolite_entity_id=%s ORDER BY set_source_id""",
+        (first_key,),
+    )
+    assert [(set_id, size) for set_id, size, _ in chosen] == [("rn00001", 2), ("rn00002", 2)]
+    for (set_id, _, provenance), set_relation in zip(chosen, (forward, reverse), strict=True):
+        assert provenance["row_id"] == "2", set_id
+        assert provenance["relation_key"] == chemical_output["relation_key"]
+        assert provenance["via_reaction"] == first_reaction_key
+        assert provenance["via_relation"] == set_relation["relation_key"]
 
 
 @pytest.mark.integration

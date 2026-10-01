@@ -8,6 +8,8 @@ table's existing columns and row key, using published text entity keys.
 - Reactome and WikiPathways use typed chemical–pathway relations.
 - KEGG joins pathway–reaction and reaction–chemical relations. Its eleven
   overview maps retain the existing `overview_map` subtype.
+  Its typed source edges use `NOT MATERIALIZED` so reaction joins can use
+  indexed base-table lookups. Other products keep the default source-edge CTE.
 - MACdb uses chemical–trait associations and the published entity annotation
   `macdb:trait_type`, retaining native trait IDs and labels. It selects the
   smallest nonempty value within the exact resource, version and trait entity.
