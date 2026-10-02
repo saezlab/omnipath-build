@@ -6,7 +6,7 @@ are unchanged. This document describes the aligned PostgreSQL projection; it
 does not claim that unavailable original resolver diagnostics were recovered.
 
 `aligned_projection.prepare_aligned_release(duckdb_connection, pinned_release,
-dimension_rows=...)` stages typed input, validates canonical conflicts, prepares
+dimension_rows=..., retain_published_provenance=False)` stages typed input, validates canonical conflicts, prepares
 main dictionaries and returns ordered `CopyQuery(table, columns, query)` records.
 The caller owns PostgreSQL DDL, source partitions, transactions and streaming
 COPY. Existing dimension IDs are reused. New names receive deterministic IDs
@@ -55,9 +55,13 @@ on-disk DuckDB. Python receives only dimension rows and aggregate diagnostics.
 | `entity_ontology_term` | Unchanged main derivation from source-owned ontology edges, relational identifiers and annotations. It selects term IDs, labels, definitions, aliases and synonyms with main's existing priorities and builds the existing search fields/indexes. |
 | `entity_annotation_relation` | No invented resolved annotation target. Published entity-valued associations already represented as statements remain graph relations. Additional old annotation-resolution bridges require a demonstrably unambiguous retained target; unavailable links are reported instead of guessed. |
 
-## Narrow companion columns
+## Quantity metadata and optional inspection copies
 
-`companion_ddl(schema)` exports the six additive table definitions:
+Default loads create `annotation_quantity` alongside the fourteen main COPY tables. This metadata is required by main's measurement readers. The five `parquet_*` tables below are optional inspection copies: pass `retain_published_provenance=True` to the projector/loader and `companion_ddl`, or use `--retain-published-provenance` for a fresh CLI load. Both modes produce identical normalized scientific tables.
+
+References above to original occurrence provenance mean the pinned immutable Parquets by default, plus these PostgreSQL copies when enabled. Main evidence ownership, taxonomy, qualifiers and measurements remain relational; original keys, raw spelling, repetition, order and list-presence flags are inspection details. No downstream scientific reader consumes the five optional tables.
+
+Available companion definitions:
 
 - `parquet_entity`: resource/version/published key → compact entity and aggregate
   evidence UUIDs, original namespace/identifier/type/taxon, label, hierarchy
@@ -80,8 +84,13 @@ on-disk DuckDB. Python receives only dimension rows and aggregate diagnostics.
   absent quantity does not.
 
 There are no complete nested records, `record_json`, or raw evidence bodies in
-these PostgreSQL outputs. Null and empty lists remain distinguishable. The
-unchanged original Parquets retain source inspection data.
+these PostgreSQL outputs. Null and empty lists remain distinguishable in the
+unchanged original Parquets and, when enabled, their inspection copies.
+
+Loaded counts describe only copied tables. Compatibility metadata separately
+records published input counts and whether provenance lives in pinned Parquets
+alone or also in PostgreSQL. PostgreSQL-only finish preserves older twenty-table
+checkpoints and their stored counts; it does not remove existing inspection copies.
 
 ## Audited compatibility boundary
 

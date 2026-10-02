@@ -100,7 +100,8 @@ def test_quantity_parquet_projection_retains_complete_structured_rows_and_identi
                                         "published_value": published_value}
     with duckdb.connect() as connection:
         plan = prepare_aligned_release(connection, (SimpleNamespace(
-            directory=tmp_path, source="quantity_fixture", version="quantity-v1"),))
+            directory=tmp_path, source="quantity_fixture", version="quantity-v1"),),
+            retain_published_provenance=True)
         assert {row["annotation_key"]: row for row in _rows(connection, plan, "annotation")} == expected_annotations
         assert {row["annotation_key"]: row for row in _rows(connection, plan, "annotation_quantity")} == expected_quantities
         evidence = _rows(connection, plan, "parquet_evidence")

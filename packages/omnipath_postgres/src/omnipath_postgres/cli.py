@@ -59,6 +59,11 @@ def main(argv=None) -> int:
         help="Stop after committing main base tables, constraints and indexes",
     )
     parser.add_argument(
+        "--retain-published-provenance",
+        action="store_true",
+        help="Also load exact published crosswalks and repeated occurrences for inspection",
+    )
+    parser.add_argument(
         "--products",
         nargs="+",
         choices=PRODUCTS,
@@ -90,6 +95,7 @@ def main(argv=None) -> int:
             or args.validate_source_records
             or args.defer_constraints
             or args.base_only
+            or args.retain_published_provenance
         ):
             parser.error(
                 "--finish accepts only database/schema selection; loading and source-audit options do not apply"
@@ -117,6 +123,7 @@ def main(argv=None) -> int:
                 base_only=args.base_only,
                 products=tuple(args.products),
                 defer_constraints=True,
+                retain_published_provenance=args.retain_published_provenance,
             )
     except (ValueError, OSError, psycopg.Error, psycopg2.Error, duckdb.Error) as exc:
         parser.exit(1, f"Release load failed: {exc}\n")

@@ -204,7 +204,7 @@ def _defer_constraints(conn, schema, tables):
                 )
             )
         cur.execute(
-            """SELECT t.relname,i.relname,pg_get_indexdef(i.oid)
+            """SELECT t.relname,i.relname,pg_get_indexdef(i.oid),t.relkind
             FROM pg_index x JOIN pg_class i ON i.oid=x.indexrelid
             JOIN pg_class t ON t.oid=x.indrelid JOIN pg_namespace n ON n.oid=t.relnamespace
             WHERE n.nspname=%s AND t.relname=ANY(%s)
@@ -214,13 +214,19 @@ def _defer_constraints(conn, schema, tables):
             [schema, list(tables)],
         )
         indexes = cur.fetchall()
-        for table, name, definition in indexes:
+        for table, name, definition, table_kind in indexes:
             cur.execute(
                 sql.SQL("DROP INDEX {}.{} CASCADE").format(
                     sql.Identifier(schema), sql.Identifier(name)
                 )
             )
-        plan = {"constraints": constraints, "indexes": indexes}
+        plan = {
+            "constraints": constraints,
+            "indexes": [(table, name, definition) for table, name, definition, _kind in indexes],
+            "partitioned_index_definitions": [
+                definition for _table, _name, definition, kind in indexes if kind == "p"
+            ],
+        }
         cur.execute(
             sql.SQL("UPDATE {}.parquet_release SET constraint_plan=%s WHERE singleton").format(
                 sql.Identifier(schema)
@@ -241,6 +247,10 @@ def _restore_constraints(conn, schema, plan):
                 + sql.SQL(definition)
             )
         for table, name, definition in plan["indexes"]:
+            if definition in plan.get("partitioned_index_definitions", ()):
+                # pg_get_indexdef serializes a partitioned root as ON ONLY.
+                # Main's original DDL builds a valid root and its child indexes.
+                definition = definition.replace(" ON ONLY ", " ON ", 1)
             cur.execute(definition)
     # Validation and exact indexes are present before the base is advertised.
 
@@ -279,6 +289,91 @@ def _copy(conn, schema, item, con, spool):
         if copied != staged:
             raise ValueError(f"COPY count differs for {item.table}: {copied}/{staged}")
         return BulkCopyResult(staged, stage_seconds, perf_counter() - start, len(files), size)
+
+
+def _ensure_molecular_type_index(conn, schema):
+    """Restore main's exact molecular-type index, including an invalid root.
+
+    Main's deferred helper omits this index. Older captured ON ONLY replay can
+    leave its parent invalid with no attached children. Complete that state
+    additively, preserving rows, the parent OID and any already attached work.
+    """
+    validate_schema(schema)
+    index_name = "entity_evidence_resolution_molecular_type_idx"
+    with conn.cursor() as cur:
+        cur.execute(
+            sql.SQL(
+                "CREATE INDEX IF NOT EXISTS "
+                "entity_evidence_resolution_molecular_type_idx "
+                "ON {}.entity_evidence_resolution (molecular_type_id)"
+            ).format(sql.Identifier(schema))
+        )
+        cur.execute(
+            """SELECT ix.oid,i.indrelid,i.indisvalid,ix.relkind
+            FROM pg_index i JOIN pg_class ix ON ix.oid=i.indexrelid
+            JOIN pg_namespace ns ON ns.oid=ix.relnamespace
+            WHERE ns.nspname=%s AND ix.relname=%s""",
+            [schema, index_name],
+        )
+        parent_oid, table_oid, valid, index_kind = cur.fetchone()
+        if not valid:
+            if index_kind != "I":
+                raise ValueError("Molecular-type index is invalid and not a partitioned root")
+            cur.execute(
+                """SELECT child.oid,ns.nspname,child.relname
+                FROM pg_inherits inh JOIN pg_class child ON child.oid=inh.inhrelid
+                JOIN pg_namespace ns ON ns.oid=child.relnamespace
+                WHERE inh.inhparent=%s ORDER BY child.relname""",
+                [table_oid],
+            )
+            partitions = cur.fetchall()
+            for child_oid, child_schema, child_name in partitions:
+                if child_schema != schema:
+                    raise ValueError("Molecular-type source partition is outside the target schema")
+                cur.execute(
+                    """SELECT 1 FROM pg_inherits inh
+                    JOIN pg_index attached ON attached.indexrelid=inh.inhrelid
+                    WHERE inh.inhparent=%s AND attached.indrelid=%s""",
+                    [parent_oid, child_oid],
+                )
+                if cur.fetchone() is not None:
+                    continue
+                matching = """SELECT ix.relname
+                    FROM pg_index i JOIN pg_class ix ON ix.oid=i.indexrelid
+                    JOIN pg_attribute col ON col.attrelid=i.indrelid
+                         AND col.attname='molecular_type_id'
+                    JOIN pg_index parent ON parent.indexrelid=%s
+                    WHERE i.indrelid=%s AND i.indisvalid AND i.indisready
+                      AND NOT i.indisunique AND i.indnkeyatts=1 AND i.indnatts=1
+                      AND i.indkey[0]=col.attnum AND i.indclass=parent.indclass
+                      AND i.indcollation=parent.indcollation AND i.indoption=parent.indoption
+                      AND i.indpred IS NULL AND i.indexprs IS NULL
+                      AND NOT EXISTS (SELECT 1 FROM pg_inherits inh WHERE inh.inhrelid=ix.oid)
+                    ORDER BY ix.relname"""
+                cur.execute(matching, [parent_oid, child_oid])
+                candidates = cur.fetchall()
+                if not candidates:
+                    # Let PostgreSQL choose exactly the child name it would
+                    # choose when building main's original partitioned index.
+                    cur.execute(
+                        sql.SQL("CREATE INDEX ON {}.{} (molecular_type_id)").format(
+                            sql.Identifier(schema), sql.Identifier(child_name),
+                        )
+                    )
+                    cur.execute(matching, [parent_oid, child_oid])
+                    candidates = cur.fetchall()
+                if len(candidates) != 1:
+                    raise ValueError("Molecular-type partition has no unique matching index")
+                cur.execute(
+                    sql.SQL("ALTER INDEX {}.{} ATTACH PARTITION {}.{}").format(
+                        sql.Identifier(schema), sql.Identifier(index_name),
+                        sql.Identifier(schema), sql.Identifier(candidates[0][0]),
+                    )
+                )
+            cur.execute("SELECT indisvalid FROM pg_index WHERE indexrelid=%s", [parent_oid])
+            if not cur.fetchone()[0]:
+                raise ValueError("Molecular-type partitioned index remains invalid")
+    conn.commit()
 
 
 def _analyze(conn, schema):
@@ -442,8 +537,14 @@ def load_main_release(
     base_only=False,
     products=PRODUCTS,
     observer=None,
+    retain_published_provenance=False,
 ):
-    """Create a fresh main layout, commit its validated base, then finish it."""
+    """Create main tables and required quantities, then finish a validated base.
+
+    Exact published audit copies are opt-in; all original details remain in the
+    immutable release Parquets. Existing checkpoints keep their stored layout
+    and counts when passed to :func:`finish_main_release`.
+    """
     validate_schema(schema)
     if type(duckdb_threads) is not int or duckdb_threads < 1:
         raise ValueError("duckdb_threads must be a positive integer")
@@ -453,6 +554,8 @@ def load_main_release(
         raise ValueError("memory_limit must be a positive size such as 512MB")
     if type(defer_constraints) is not bool or type(base_only) is not bool:
         raise ValueError("defer_constraints and base_only must be booleans")
+    if type(retain_published_provenance) is not bool:
+        raise ValueError("retain_published_provenance must be a boolean")
     if not isinstance(products, (tuple, list)) or any(not isinstance(p, str) for p in products):
         raise ValueError("Products must be unique known products")
     if len(set(products)) != len(products) or any(p not in PRODUCTS for p in products):
@@ -485,13 +588,16 @@ def load_main_release(
                     release,
                     dimension_rows=_read_dimensions(conn, schema),
                     progress=lambda fields: _emit(observer, "projection_progress", **fields),
+                    retain_published_provenance=retain_published_provenance,
                 )
                 projection_seconds = perf_counter() - start
                 _write_dimensions(conn, schema, plan.dimensions)
                 for _, source in plan.sources:
                     ensure_source_partitions(conn, schema=schema, source=source)
                 with conn.cursor() as cur:
-                    for statement in companion_ddl(schema):
+                    for statement in companion_ddl(
+                        schema, retain_published_provenance=retain_published_provenance,
+                    ):
                         cur.execute(statement)
                 conn.commit()
                 constraint_plan = (
@@ -518,6 +624,7 @@ def load_main_release(
                 # Ensure helpers can commit only after every captured key/FK was restored.
                 conn.commit()
                 ensure_deferred_indexes(conn, schema=schema, progress=True)
+                _ensure_molecular_type_index(conn, schema)
                 create_secondary_indexes(conn, schema=schema)
                 _analyze(conn, schema)
                 verify_release(release)

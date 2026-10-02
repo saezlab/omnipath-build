@@ -6,7 +6,8 @@ PostgreSQL schema, transactions, partitions and COPY.  Only the small dimension
 dictionaries cross the Python boundary; biological rows stay in DuckDB SQL.
 
 Main's canonical relation is an endpoint/predicate triple.  Published qualified
-statements remain distinct in ``parquet_statement`` and their evidence links.
+statements retain their evidence links. Exact published crosswalks and array
+occurrences remain in pinned Parquets, with optional PostgreSQL audit copies.
 Entity occurrences absent from the published contract are explicitly represented
 as aggregate evidence, with status ``published`` rather than an invented match.
 """
@@ -28,6 +29,10 @@ PUBLISHED_FALLBACK_NAMESPACE = "omnipath:unresolved_entity_key"
 ONTOLOGY_CV_NAMESPACE = "Cv Term Accession:OM:0204"
 ONTOLOGY_NAME_NAMESPACE = "Name:OM:0202"
 ONTOLOGY_SYNONYM_NAMESPACE = "Synonym:OM:0203"
+PUBLISHED_PROVENANCE_TABLES = (
+    "parquet_entity", "parquet_statement", "parquet_evidence",
+    "parquet_identifier_occurrence", "parquet_annotation_occurrence",
+)
 
 # Known outer CURIE prefixes only. Intrinsic identifier prefixes (CHEMBL,
 # HMDB, SLM, C/R in KEGG IDs) remain part of the resulting identifier. Neither
@@ -118,14 +123,19 @@ COMPANION_DDL = {
 }
 
 
-def companion_ddl(schema: str) -> tuple[str, ...]:
-    """Return safely quoted CREATE TABLE statements for narrow companion tables."""
+def companion_ddl(
+    schema: str, *, retain_published_provenance: bool = False,
+) -> tuple[str, ...]:
+    """Create required quantity metadata and explicitly requested audit copies."""
+    if type(retain_published_provenance) is not bool:
+        raise ValueError("retain_published_provenance must be a boolean")
     if not isinstance(schema, str) or not schema or "\x00" in schema:
         raise ValueError("schema must be nonempty text without NUL")
     quoted = '"' + schema.replace('"', '""') + '"'
     return tuple(
         f'CREATE TABLE {quoted}."{name}" ({definition})'
         for name, definition in COMPANION_DDL.items()
+        if retain_published_provenance or name not in PUBLISHED_PROVENANCE_TABLES
     )
 
 
@@ -723,7 +733,7 @@ def _prepare_relation_evidence_annotation_copy(
     connection.execute("DROP TABLE ap_evidence_link_input")
 
 
-def _queries() -> tuple[CopyQuery, ...]:
+def _queries(*, retain_published_provenance: bool = False) -> tuple[CopyQuery, ...]:
     result: list[CopyQuery] = []
     def add(table: str, columns: str, query: str) -> None:
         result.append(CopyQuery(table, tuple(columns.split()), query))
@@ -824,29 +834,30 @@ def _queries() -> tuple[CopyQuery, ...]:
         NULL::VARCHAR AS ontology_prefix,NULL::VARCHAR AS label,NULL::VARCHAR AS definition,
         NULL::VARCHAR AS ontology_id,NULL::VARCHAR AS synonyms,NULL::VARCHAR AS synonyms_text,
         NULL::VARCHAR AS sources WHERE false""")
-    add("parquet_entity", "resource version entity_key entity_id entity_evidence_id label namespace "
-        "identifier entity_type taxon has_hierarchy parent_count child_count identifiers_present "
-        "annotations_present", """SELECT resource,version,entity_key,entity_id,entity_evidence_id,
-        label,namespace,identifier,entity_type,taxon,has_hierarchy,parent_count,child_count,
-        identifiers IS NOT NULL,annotations IS NOT NULL FROM ap_entity_occurrence""")
-    add("parquet_statement", "resource version relation_key relation_id statement_kind "
-        "subject_entity_id object_entity_id predicate_id subject_label subject_type object_label "
-        "object_type taxon is_directed sign category interaction_class evidence_count sources "
-        "evidence_present annotations_present", f"""SELECT resource,version,relation_key,relation_id,
-        statement_kind,subject_entity_id,object_entity_id,predicate_id,subject_label,subject_type,
-        object_label,object_type,taxon,is_directed,sign,category,interaction_class,evidence_count,
-        {_pg_array('sources')},evidence IS NOT NULL,annotations IS NOT NULL FROM ap_statement""")
-    add("parquet_evidence", "resource version relation_key ordinal source_id relation_evidence_id "
-        "source dataset original_row_id upstream_id annotations_present synthetic",
-        """SELECT resource,version,relation_key,ordinal,source_id,relation_evidence_id,
-        source,dataset,original_row_id,upstream_id,annotations_present,synthetic FROM ap_evidence""")
-    add("parquet_identifier_occurrence", "resource version entity_key ordinal identifier_id "
-        "ns identifier is_canonical source", """SELECT resource,version,entity_key,ordinal,
-        identifier_id,item.ns,item.id,item.is_canonical,item.source FROM ap_identifier_occurrence""")
-    add("parquet_annotation_occurrence", "resource version owner_kind owner_key evidence_ordinal "
-        "ordinal annotation_key term untyped_value source dataset scope", """
-        SELECT resource,version,owner_kind,owner_key,evidence_ordinal,ordinal,annotation_key,
-        term,CASE WHEN term IS NULL THEN value END,source,dataset,scope FROM ap_annotation_occurrence""")
+    if retain_published_provenance:
+        add("parquet_entity", "resource version entity_key entity_id entity_evidence_id label namespace "
+            "identifier entity_type taxon has_hierarchy parent_count child_count identifiers_present "
+            "annotations_present", """SELECT resource,version,entity_key,entity_id,entity_evidence_id,
+            label,namespace,identifier,entity_type,taxon,has_hierarchy,parent_count,child_count,
+            identifiers IS NOT NULL,annotations IS NOT NULL FROM ap_entity_occurrence""")
+        add("parquet_statement", "resource version relation_key relation_id statement_kind "
+            "subject_entity_id object_entity_id predicate_id subject_label subject_type object_label "
+            "object_type taxon is_directed sign category interaction_class evidence_count sources "
+            "evidence_present annotations_present", f"""SELECT resource,version,relation_key,relation_id,
+            statement_kind,subject_entity_id,object_entity_id,predicate_id,subject_label,subject_type,
+            object_label,object_type,taxon,is_directed,sign,category,interaction_class,evidence_count,
+            {_pg_array('sources')},evidence IS NOT NULL,annotations IS NOT NULL FROM ap_statement""")
+        add("parquet_evidence", "resource version relation_key ordinal source_id relation_evidence_id "
+            "source dataset original_row_id upstream_id annotations_present synthetic",
+            """SELECT resource,version,relation_key,ordinal,source_id,relation_evidence_id,
+            source,dataset,original_row_id,upstream_id,annotations_present,synthetic FROM ap_evidence""")
+        add("parquet_identifier_occurrence", "resource version entity_key ordinal identifier_id "
+            "ns identifier is_canonical source", """SELECT resource,version,entity_key,ordinal,
+            identifier_id,item.ns,item.id,item.is_canonical,item.source FROM ap_identifier_occurrence""")
+        add("parquet_annotation_occurrence", "resource version owner_kind owner_key evidence_ordinal "
+            "ordinal annotation_key term untyped_value source dataset scope", """
+            SELECT resource,version,owner_kind,owner_key,evidence_ordinal,ordinal,annotation_key,
+            term,CASE WHEN term IS NULL THEN value END,source,dataset,scope FROM ap_annotation_occurrence""")
     add("annotation_quantity", "annotation_key has_numeric_value has_unit has_unit_prefix "
         "has_binary_relation source_field comparator published_value", "SELECT * FROM ap_annotation_quantity")
     return tuple(result)
@@ -858,6 +869,7 @@ def prepare_aligned_release(
     *,
     dimension_rows: Mapping[str, Iterable[tuple]] | None = None,
     progress: Callable[[Mapping[str, Any]], None] | None = None,
+    retain_published_provenance: bool = False,
 ) -> AlignedCopyPlan:
     """Prepare streaming COPY SELECTs, keeping main's strict identity contracts.
 
@@ -867,9 +879,17 @@ def prepare_aligned_release(
     sequences. Data sources in the result tell it which source partitions to
     create. ``counts`` are exact prepared COPY row counts, not estimates.
 
-    SQL work is cancellable through DuckDB.  Nothing mutates a PostgreSQL schema
+    By default, exact published crosswalks and repeated array occurrences stay
+    in the pinned Parquets. ``retain_published_provenance=True`` additionally
+    prepares the five PostgreSQL audit tables; normalized scientific tables and
+    quantity metadata are identical in both modes.
+
+    SQL work is cancellable through DuckDB. Nothing mutates a PostgreSQL schema
     or an input artifact. Full raw payload Parquets are never scanned here.
     """
+    if type(retain_published_provenance) is not bool:
+        raise ValueError("retain_published_provenance must be a boolean")
+
     def report(phase: str, **details: Any) -> None:
         if progress is not None:
             progress({"phase": phase, **details})
@@ -896,7 +916,7 @@ def prepare_aligned_release(
     # Caller-owned on-disk DuckDB keeps this bounded by its memory limit.
     queries = []
     counts = {}
-    for item in _queries():
+    for item in _queries(retain_published_provenance=retain_published_provenance):
         report("prepare_copy", table=item.table)
         names = ",".join('"' + column + '"' for column in item.columns)
         staged = f"ap_copy_{item.table}"
@@ -916,7 +936,25 @@ def prepare_aligned_release(
          "entity_evidence": "one explicit aggregate per published resource/entity",
          "original_entity_occurrences_available": False,
          "original_resolution_diagnostics_available": False,
-         "relation_identity": "main triple; qualified published statement crosswalk retained",
+         "relation_identity": (
+             "main triple; published statement crosswalk retained in PostgreSQL"
+             if retain_published_provenance else
+             "main triple; published statement identity retained in pinned Parquets"
+         ),
+         "retain_published_provenance": retain_published_provenance,
+         "published_provenance_location": (
+             "postgresql_and_pinned_parquet" if retain_published_provenance else "pinned_parquet"
+         ),
+         "published_input_counts": {
+             name: int(connection.execute(f"SELECT count(*) FROM {table}").fetchone()[0])
+             for name, table in (
+                 ("entity_rows", "ap_entity_raw"),
+                 ("statement_rows", "ap_statement_raw"),
+                 ("evidence_occurrences", "ap_evidence_raw"),
+                 ("identifier_occurrences", "ap_identifier_raw"),
+                 ("annotation_occurrences", "ap_annotation_raw"),
+             )
+         },
          "raw_payloads_loaded": False, "record_json_loaded": False,
          "safe_bare_identifier_alias_pairs": int(connection.execute(
              "SELECT count(*) FROM ap_identifier_alias").fetchone()[0]),

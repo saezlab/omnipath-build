@@ -28,7 +28,7 @@ def rows(con, plan, table):
 def test_main_base_and_narrow_companions_preserve_published_occurrences(tmp_path):
     write_fixture(tmp_path)
     with duckdb.connect() as con:
-        plan = prepare_aligned_release(con, (selected(tmp_path),))
+        plan = prepare_aligned_release(con, (selected(tmp_path),), retain_published_provenance=True)
         assert plan.counts["entity"] == 3
         assert plan.counts["identifier_evidence"] == 4
         assert plan.counts["entity_evidence"] == 3
@@ -58,7 +58,7 @@ def test_safe_bare_aliases_preserve_canonical_values_and_original_occurrences(tm
     ]
     write_fixture(tmp_path, entities=entities, relations=relations)
     with duckdb.connect() as con:
-        plan = prepare_aligned_release(con, (selected(tmp_path),))
+        plan = prepare_aligned_release(con, (selected(tmp_path),), retain_published_provenance=True)
         occurrence = next(r for r in rows(con, plan, "parquet_entity") if r["entity_key"] == ENTITY_A)
         canonical = next(r for r in rows(con, plan, "entity") if r["entity_id"] == occurrence["entity_id"])
         assert canonical["canonical_identifier"] == occurrence["identifier"] == "CHEBI:15377"
@@ -97,7 +97,7 @@ def test_aliases_only_strip_known_outer_prefixes_with_valid_suffixes(tmp_path):
                                    for ns, value, _ in inputs]
     write_fixture(tmp_path, entities=entities, relations=relations)
     with duckdb.connect() as con:
-        plan = prepare_aligned_release(con, (selected(tmp_path),))
+        plan = prepare_aligned_release(con, (selected(tmp_path),), retain_published_provenance=True)
         actual = con.execute("""SELECT original.value,alias.alias_value
             FROM ap_identifier_alias alias JOIN ap_identifier original
             ON original.identifier_id=alias.original_identifier_id""").fetchall()
@@ -119,7 +119,7 @@ def test_quantity_identity_includes_prefix_comparator_and_preserves_original_val
     relations[0]["annotations"] = [a1, deepcopy(a1), a2]
     write_fixture(tmp_path, entities=entities, relations=relations)
     with duckdb.connect() as con:
-        plan = prepare_aligned_release(con, (selected(tmp_path),))
+        plan = prepare_aligned_release(con, (selected(tmp_path),), retain_published_provenance=True)
         values = [r for r in rows(con, plan, "annotation") if r["term"] == "has_quantitative_value"]
         assert len(values) == 2
         assert {r["value"] for r in values} == {"12.5"}
@@ -142,7 +142,7 @@ def test_aggregated_statement_annotations_do_not_contaminate_other_evidence_rows
     relations[0]["annotations"] = [deepcopy(a) for a in [forward, reverse, compartment1, compartment2]]
     write_fixture(tmp_path, entities=entities, relations=relations)
     with duckdb.connect() as con:
-        plan = prepare_aligned_release(con, (selected(tmp_path),))
+        plan = prepare_aligned_release(con, (selected(tmp_path),), retain_published_provenance=True)
         values = {r["annotation_key"]: r["value"] for r in rows(con, plan, "annotation")}
         ownership = {r["relation_evidence_id"]: r["ordinal"] for r in rows(con, plan, "parquet_evidence")}
         actual = {0: set(), 1: set()}
@@ -158,7 +158,7 @@ def test_true_statement_annotation_respects_declared_source_and_dataset(tmp_path
     relations[0]["annotations"] = [annotation("description", value="source owned", scope="relation")]
     write_fixture(tmp_path, entities=entities, relations=relations)
     with duckdb.connect() as con:
-        plan = prepare_aligned_release(con, (selected(tmp_path),))
+        plan = prepare_aligned_release(con, (selected(tmp_path),), retain_published_provenance=True)
         links = rows(con, plan, "relation_evidence_annotation")
         assert len(links) == 1
         evidence = {r["relation_evidence_id"]: r for r in rows(con, plan, "parquet_evidence")}
@@ -173,7 +173,7 @@ def test_shared_entities_and_qualified_statements_collapse_only_main_graph_tripl
     write_fixture(tmp_path / "one", entities=entities, relations=relations + [r2])
     write_fixture(tmp_path / "two", entities=entities, relations=relations)
     with duckdb.connect() as con:
-        plan = prepare_aligned_release(con, (selected(tmp_path / "one", "a"), selected(tmp_path / "two", "b")))
+        plan = prepare_aligned_release(con, (selected(tmp_path / "one", "a"), selected(tmp_path / "two", "b")), retain_published_provenance=True)
         assert plan.counts["entity"] == 3
         assert plan.counts["parquet_entity"] == 6
         assert plan.counts["relation"] == 1
@@ -197,7 +197,7 @@ def test_shared_statement_key_preserves_each_resources_taxonomy_consensus_and_ev
             evidence["annotations"].append(deepcopy(taxon_annotation))
         write_fixture(tmp_path / source, entities=entities, relations=scoped)
     with duckdb.connect() as con:
-        plan = prepare_aligned_release(con, (selected(tmp_path / "one", "one"), selected(tmp_path / "two", "two")))
+        plan = prepare_aligned_release(con, (selected(tmp_path / "one", "one"), selected(tmp_path / "two", "two")), retain_published_provenance=True)
         claims = rows(con, plan, "parquet_statement")
         assert {(r["resource"], r["taxon"]) for r in claims} == {("one", "9606"), ("two", "10090")}
         assert len({r["relation_key"] for r in claims}) == 1
@@ -225,7 +225,7 @@ def test_shared_statement_key_with_conflicting_identity_core_still_fails(tmp_pat
     relations[0][field] = value
     write_fixture(tmp_path / "two", entities=entities, relations=relations)
     with duckdb.connect() as con, pytest.raises(ValueError, match="statement identity has conflicting"):
-        prepare_aligned_release(con, (selected(tmp_path / "one", "one"), selected(tmp_path / "two", "two")))
+        prepare_aligned_release(con, (selected(tmp_path / "one", "one"), selected(tmp_path / "two", "two")), retain_published_provenance=True)
 
 
 def test_distinct_published_entities_are_not_silently_merged_for_main_unique_index(tmp_path):
@@ -234,7 +234,7 @@ def test_distinct_published_entities_are_not_silently_merged_for_main_unique_ind
     duplicate["entity_key"] = "distinct-published-key-same-main-natural-tuple"
     write_fixture(tmp_path, entities=entities + [duplicate], relations=relations)
     with duckdb.connect() as con, pytest.raises(ValueError, match="natural-key uniqueness"):
-        prepare_aligned_release(con, (selected(tmp_path),))
+        prepare_aligned_release(con, (selected(tmp_path),), retain_published_provenance=True)
 
 
 def test_shared_published_key_with_conflicting_canonical_fields_is_rejected(tmp_path):
@@ -243,7 +243,7 @@ def test_shared_published_key_with_conflicting_canonical_fields_is_rejected(tmp_
     entities[0]["identifier"] = "DIFFERENT"
     write_fixture(tmp_path / "two", entities=entities, relations=relations)
     with duckdb.connect() as con, pytest.raises(ValueError, match="conflicting canonical"):
-        prepare_aligned_release(con, (selected(tmp_path / "one", "a"), selected(tmp_path / "two", "b")))
+        prepare_aligned_release(con, (selected(tmp_path / "one", "a"), selected(tmp_path / "two", "b")), retain_published_provenance=True)
 
 
 def test_shared_identity_taxonomy_conflicts_keep_each_source_occurrence(tmp_path):
@@ -252,7 +252,7 @@ def test_shared_identity_taxonomy_conflicts_keep_each_source_occurrence(tmp_path
     entities[0]["taxon"] = "10090"
     write_fixture(tmp_path / "two", entities=entities, relations=relations)
     with duckdb.connect() as con:
-        plan = prepare_aligned_release(con, (selected(tmp_path / "one", "a"), selected(tmp_path / "two", "b")))
+        plan = prepare_aligned_release(con, (selected(tmp_path / "one", "a"), selected(tmp_path / "two", "b")), retain_published_provenance=True)
         published = [r for r in rows(con, plan, "parquet_entity") if r["entity_key"] == ENTITY_A]
         canonical = {r["entity_id"]: r for r in rows(con, plan, "entity")}
         assert {r["taxon"] for r in published} == {"9606", "10090"}
@@ -266,7 +266,7 @@ def test_writer_empty_unknown_taxon_is_not_fabricated_or_rejected(tmp_path):
     entities[0]["taxon"] = ""
     write_fixture(tmp_path, entities=entities, relations=relations)
     with duckdb.connect() as con:
-        plan = prepare_aligned_release(con, (selected(tmp_path),))
+        plan = prepare_aligned_release(con, (selected(tmp_path),), retain_published_provenance=True)
         published = next(r for r in rows(con, plan, "parquet_entity") if r["entity_key"] == ENTITY_A)
         canonical = next(r for r in rows(con, plan, "entity") if r["entity_id"] == published["entity_id"])
         assert published["taxon"] == ""
@@ -280,7 +280,7 @@ def test_source_scoped_names_keep_distinct_uuid_and_main_unique_canonical_tuple(
     duplicate["entity_key"] = "source-scoped-name-two"
     write_fixture(tmp_path, entities=entities + [duplicate], relations=relations)
     with duckdb.connect() as con:
-        plan = prepare_aligned_release(con, (selected(tmp_path),))
+        plan = prepare_aligned_release(con, (selected(tmp_path),), retain_published_provenance=True)
         canonical = {r["entity_id"]: r for r in rows(con, plan, "entity")}
         published = [r for r in rows(con, plan, "parquet_entity") if r["namespace"] == "name"]
         assert len({r["entity_id"] for r in published}) == 2
@@ -303,7 +303,7 @@ def test_base_ontology_terms_stays_empty_and_relational_inputs_preserve_synonyms
     relations[0].update(statement_kind="ontology_axiom", predicate="subclass_of")
     write_fixture(tmp_path, entities=entities, relations=relations)
     with duckdb.connect() as con:
-        plan = prepare_aligned_release(con, (selected(tmp_path, "go"),))
+        plan = prepare_aligned_release(con, (selected(tmp_path, "go"),), retain_published_provenance=True)
         assert plan.counts["ontology_terms"] == 0
         assert rows(con, plan, "ontology_terms") == []
         assert "first synonym" in {row["identifier"] for row in rows(con, plan, "parquet_identifier_occurrence")}
@@ -317,7 +317,7 @@ def test_source_owned_row_context_surrogates_and_original_strings_are_recoverabl
     relations[0]["evidence"][1]["source"] = "different-source"
     write_fixture(tmp_path, entities=entities, relations=relations)
     with duckdb.connect() as con:
-        plan = prepare_aligned_release(con, (selected(tmp_path),))
+        plan = prepare_aligned_release(con, (selected(tmp_path),), retain_published_provenance=True)
         evidence = rows(con, plan, "relation_evidence")
         provenance = rows(con, plan, "parquet_evidence")
         assert len({r["source_id"] for r in evidence}) == 2
@@ -334,7 +334,7 @@ def test_null_empty_lists_and_all_null_structs_are_retained_without_fabricated_d
     relations[0]["sources"] = ["quoted,'\\\"", None, "", "quoted,'\\\""]
     write_fixture(tmp_path, entities=entities, relations=relations)
     with duckdb.connect() as con:
-        plan = prepare_aligned_release(con, (selected(tmp_path),))
+        plan = prepare_aligned_release(con, (selected(tmp_path),), retain_published_provenance=True)
         assert plan.counts["relation_evidence"] == 1
         assert rows(con, plan, "parquet_evidence")[0]["synthetic"] is True
         occurrence = rows(con, plan, "parquet_identifier_occurrence")[-1]
@@ -352,7 +352,7 @@ def test_ontology_axioms_do_not_enter_main_graph_relation(tmp_path):
     relations[0].update(statement_kind="ontology_axiom", predicate="subclass_of")
     write_fixture(tmp_path, entities=entities, relations=relations)
     with duckdb.connect() as con:
-        plan = prepare_aligned_release(con, (selected(tmp_path),))
+        plan = prepare_aligned_release(con, (selected(tmp_path),), retain_published_provenance=True)
         assert plan.counts["relation"] == 0
         assert plan.counts["entity_ontology_relation"] == 1
         assert rows(con, plan, "parquet_statement")[0]["relation_id"] is None
@@ -364,11 +364,11 @@ def test_dimensions_reuse_existing_database_ids_and_input_order_is_irrelevant(tm
     existing = {"data_source": ((91, "fixture"), (123, "reported-source")),
                 "vocab_relation_predicate": ((1001, "affects"),)}
     with duckdb.connect() as con:
-        plan = prepare_aligned_release(con, (selected(tmp_path / "one"),), dimension_rows=existing)
+        plan = prepare_aligned_release(con, (selected(tmp_path / "one"),), dimension_rows=existing, retain_published_provenance=True)
         assert dict((name, identifier) for identifier, name in plan.sources)["reported-source"] == 123
         assert rows(con, plan, "relation")[0]["predicate_id"] == 1001
         first = sorted(rows(con, plan, "entity"), key=lambda row: row["entity_id"])
-        second = prepare_aligned_release(con, (selected(tmp_path / "two"),), dimension_rows=existing)
+        second = prepare_aligned_release(con, (selected(tmp_path / "two"),), dimension_rows=existing, retain_published_provenance=True)
         assert sorted(rows(con, second, "entity"), key=lambda row: row["entity_id"]) == first
 
 
@@ -454,7 +454,7 @@ def test_dimension_collection_fetches_only_distinct_names_and_preserves_existing
 
 
 def test_companion_ddl_quotes_schema_and_contains_no_full_record_json():
-    ddl = companion_ddl('schema"quoted')
+    ddl = companion_ddl('schema"quoted', retain_published_provenance=True)
     assert len(ddl) == 6
     assert all('"schema""quoted"' in statement for statement in ddl)
     assert not any("record_json" in statement or "jsonb" in statement for statement in ddl)

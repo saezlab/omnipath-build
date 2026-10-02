@@ -42,7 +42,7 @@ def test_invalid_memory_limit_before_io(monkeypatch, limit):
         aligned_loader.load_main_release("missing", "missing", "unused", memory_limit=limit)
 
 
-@pytest.mark.parametrize("field", ["defer_constraints", "base_only"])
+@pytest.mark.parametrize("field", ["defer_constraints", "base_only", "retain_published_provenance"])
 @pytest.mark.parametrize("value", [None, 0, 1, "true"])
 def test_nonboolean_modes_before_io(monkeypatch, field, value):
     monkeypatch.setattr(aligned_loader, "read_release", forbid_io)

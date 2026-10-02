@@ -695,7 +695,7 @@ def test_scalar_label_lookup_fallback_is_owned_truthful_and_has_no_new_occurrenc
         write_fixture(directory, entities=entities, relations=statements, payloads=[])
         selected.append(SimpleNamespace(source=source, version="label-v1", directory=directory))
     with duckdb.connect() as duck:
-        plan = aligned_projection.prepare_aligned_release(duck, selected)
+        plan = aligned_projection.prepare_aligned_release(duck, selected, retain_published_provenance=True)
         names = Counter(duck.execute("""SELECT link.entity_id,i.value
             FROM ap_copy_entity_identifier link JOIN ap_identifier i USING(identifier_id)
             JOIN ap_vocab_identifier_type ns ON ns.id=i.identifier_type_id

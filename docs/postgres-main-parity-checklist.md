@@ -102,6 +102,8 @@ Current harness covers:
 
 13. The real SilverExtractor/ParquetWriter ontology literal, source family independent of resolved namespace, and the exact fresh-main empty ontology_terms base. Complete serving rows match frozen main over eligible bare/IRI/CURIE identifiers, original definitions and multiple ontology roots. Negative source/type/namespace and existing chemical/protein CV cases retain main priorities; scalar Name fallback requires a meaningful globally absent name/synonym and excludes identifier-valued labels. Computed lookups add no occurrence or authority evidence.
 
+14. Default fifteen-table versus retained twenty-table loads over eighteen synthetic entity/statement records: complete normalized DuckDB and PostgreSQL rows, nonempty serving derivation, typed quantities, source-scoped evidence and exact main constraints/indexes. Optional copies retain duplicate/order/raw inspection facts; default mode does not prepare their final tables, DDL or COPY. Published input counts are separate from copied counts. An older retained checkpoint finishes without re-projection or COPY.
+
 Compare duplicate-sensitive full rows and content identities. Preserve distinctions between NULL and FALSE, source-local and merged claims, and participant sets versus multisets. Equal counts or an empty oracle result are not acceptance.
 
 For the real release, sample supported examples from multiple resources after projection and each downstream product. Use bounded aggregate queries and query plans, inspect FK/index validity and release metadata, and record observed storage and timings. If a fixture or real sample exposes a mismatch, fix the mapping before the full build. Do not rerun already committed products to diagnose a later phase.
