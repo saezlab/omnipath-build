@@ -2,7 +2,7 @@
 
 The Parquet outputs, upstream resolution/reference/cache, independent resource updates and separate monthly PostgreSQL release schedule are unchanged. The active PostgreSQL implementation now reuses main9f9bb709c764's physical schema, dictionaries, source partitions, keys/indexes, downstream derivations and product implementations, with explicit Biolink and published-identity adapters. Nested record JSON and raw source payloads are excluded.
 
-The current deployed commit is 8ae7e8ba12113232e2484cde596847cf0bf8f7b9, pushed on parquet-migration. The frozen main reference remains untracked at main-reference/9f9bb709c764. The exact pypath CV oracle is privately pinned to main's gitlink33f37fbaab59993d24f5c32bb4b3e7587085bcf4; migration pypath is unchanged.
+The current deployed runtime commit is `7bb2ce7dc9c85bd0ebf6ab26a841470181887ca4`, pushed on `parquet-migration`; later documentation commits do not change the running runtime. The frozen main reference remains untracked at main-reference/9f9bb709c764. The exact pypath CV oracle is privately pinned to main's gitlink33f37fbaab59993d24f5c32bb4b3e7587085bcf4; migration pypath is unchanged.
 
 ## Completed pilot milestone
 
@@ -74,3 +74,22 @@ At **04:35:24UTC**, the original PID509418 was still active in constraint restor
 The **base checkpoint is now committed**: its PostgreSQL record has completed_at **2026-10-02T05:14:09.308667UTC**, and the observer entered shared derivations at 05:14:15.514200UTC. Independent reads at 05:10 confirmed committed imported rows before the ready marker; the later read at 05:23 confirmed status **base**, all 15 loaded counts and the durable phase record. Remaining work can use PostgreSQL-only finish; COPY must not be repeated.
 
 Actual recorded durations are **6.563978s artifact validation**, **3220.882356s initial DuckDB projection**, **309.928782s COPY**, **83.141180s CSV staging** and **2263.296688s captured constraint/index restoration**. The **3022.195104s base phase** starts after projection and includes COPY, CSV staging, restoration, remaining query indexes, analysis and checkpoint work; its components must not be added to it again. At05:23 the catalogue had **1,870 indexes, all valid/ready**, and **7,424 constraints, all validated**. A separate 05:12 catalogue sample compared all 114 captured constraints and six captured index definitions exactly, with no missing or mismatched objects. The molecular-type root had all 47 children attached and valid/ready, proving the deferred-root correction on the full release. These observations establish the committed base, not complete derivations or products. Shared derivations, complete product checkpoints, final bounded scientific samples, final storage and total runtime remain pending.
+
+
+## Current checkpoint: shared science and two products complete
+
+The shared derivations committed at **2026-10-02T07:14:37.561622UTC**, taking **7222.042703s** (2h00m22s). MetSigDB committed at **07:20:28.333959UTC**, taking **350.714549s** (5m51s). Network presets committed at **07:20:28.364609UTC**, taking **0.023042s**. These are after-commit observer timestamps. The phase table's `completed_at` uses transaction-start `now()`; its row proves durability but should not be treated as the actual commit timestamp. COPY, base, shared science, MetSigDB and the network registry will not be repeated.
+
+MetSigDB has **3,598,709 memberships**. A separate bounded metadata read confirmed all five source results and both completed product identities match the pinned release/manifest.
+
+| Source | Memberships | Sets | Metabolites | Source seconds |
+| --- | ---: | ---: | ---: | ---: |
+| Reactome | 24,301 | 2,272 | 2,178 | 20.3 |
+| WikiPathways | 11,513 | 963 | 4,101 | 13.8 |
+| KEGG | 92,179 | 806 | 6,177 | 67.9 |
+| MACdb | 20,291 | 269 | 5,389 | 22.8 |
+| ClassyFire | 3,450,425 | 2,863 | 145,793 | 224.5 |
+
+Per-source seconds are rounded; use the complete product duration for totals. The network build creates main's preset registry; separate serving filters/folding are outside this result.
+
+**COSMOS remains active**, starting **07:20:28.366038UTC**. At **07:31:40UTC** the original attempt7 unit/PID was still running without a terminal error. Its backend was reading a temporary spill file. Release status network_views and durable base/derived/metsigdb/network_views markers were independently visible. The schema snapshot was **97,908,023,296bytes** and free disk **439,253,340,160bytes**, before COSMOS publication. Final COSMOS checkpoint, reasonable scientific samples, storage and total timing remain pending. Any retry must select only COSMOS through PostgreSQL-only finish.
