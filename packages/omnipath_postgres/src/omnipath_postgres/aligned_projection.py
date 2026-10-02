@@ -25,6 +25,9 @@ PUBLISHED_STATUS_ID = 5
 ENTITY_DATASET = "omnipath:published_entities"
 CLAIM_DATASET = "omnipath:published_statement"
 PUBLISHED_FALLBACK_NAMESPACE = "omnipath:unresolved_entity_key"
+ONTOLOGY_CV_NAMESPACE = "Cv Term Accession:OM:0204"
+ONTOLOGY_NAME_NAMESPACE = "Name:OM:0202"
+ONTOLOGY_SYNONYM_NAMESPACE = "Synonym:OM:0203"
 
 # Known outer CURIE prefixes only. Intrinsic identifier prefixes (CHEMBL,
 # HMDB, SLM, C/R in KEGG IDs) remain part of the resulting identifier. Neither
@@ -241,6 +244,29 @@ def _dimension(con: Any, table: str, required: Iterable[str], existing: Iterable
     return result
 
 
+def _ontology_cv_eligible(alias: str) -> str:
+    # The former generic ontology mapper used CV_TERM_ACCESSION. Keep only
+    # explicit provider/type namespaces whose current published spelling lost
+    # that lookup gate; identifiers and canonical identities stay unchanged.
+    return f"""(
+        ({alias}.entity_type='ontology_class' AND lower({alias}.resource) IN
+            ('go','hpo','mondo','chemont','psi_mi','omnipath_ontology','brenda'))
+        OR ({alias}.entity_type='pathway' AND lower({alias}.resource)='kegg'
+            AND {alias}.namespace IN ('kegg_pathway','kegg_pathway_category'))
+        OR ({alias}.entity_type='ontology_class' AND lower({alias}.resource)='uniprot'
+            AND {alias}.namespace='uniprot_keyword')
+    ) AND {alias}.namespace NOT IN
+        ('name','synonym','Name:OM:0202','Synonym:OM:0203',
+         'omnipath:unresolved_entity_key')"""
+
+
+def _ontology_name_eligible(alias: str) -> str:
+    return f"""{alias}.entity_type IN
+        ('ontology_class','pathway','chemical_entity','small_molecule')
+        AND lower({alias}.resource) IN
+            (SELECT resource FROM ap_ontology_source_scope)"""
+
+
 def _prepare_dimensions(con: Any, existing: Mapping[str, Iterable[tuple]]) -> dict[str, tuple]:
     aliases = _namespace_names()
     con.execute("CREATE OR REPLACE TABLE ap_namespace_alias (raw VARCHAR,name VARCHAR)")
@@ -248,6 +274,13 @@ def _prepare_dimensions(con: Any, existing: Mapping[str, Iterable[tuple]]) -> di
         con.executemany("INSERT INTO ap_namespace_alias VALUES (?,?)", sorted(aliases.items()))
     con.execute("CREATE OR REPLACE TABLE ap_ontology_scope (resource VARCHAR,namespace VARCHAR,ontology_id VARCHAR)")
     con.executemany("INSERT INTO ap_ontology_scope VALUES (?,?,?)", ONTOLOGY_SCOPES)
+    # The audited providers attach one explicit ontology root to each ontology
+    # record. Resolution can replace a source namespace (e.g. ChEBI) with an
+    # InChIKey, so that canonical namespace cannot select the record's family.
+    # Ambiguous future declarations get no source-only fallback.
+    con.execute("""CREATE OR REPLACE TABLE ap_ontology_source_scope AS
+        SELECT resource,min(ontology_id) ontology_id FROM ap_ontology_scope
+        GROUP BY resource HAVING min(ontology_id)=max(ontology_id)""")
     required_sql = {
         "data_source": """SELECT resource FROM ap_entity_raw UNION SELECT resource FROM
             ap_statement_raw UNION SELECT item.source FROM ap_evidence_raw
@@ -256,7 +289,11 @@ def _prepare_dimensions(con: Any, existing: Mapping[str, Iterable[tuple]]) -> di
             LEFT JOIN ap_namespace_alias a ON a.raw=e.namespace
             UNION SELECT coalesce(a.name,i.item.ns) FROM ap_identifier_raw i
             LEFT JOIN ap_namespace_alias a ON a.raw=i.item.ns WHERE i.item.ns IS NOT NULL
-            UNION SELECT {_literal(PUBLISHED_FALLBACK_NAMESPACE)}""",
+            UNION SELECT {_literal(PUBLISHED_FALLBACK_NAMESPACE)}
+            UNION SELECT {_literal(ONTOLOGY_CV_NAMESPACE)} FROM ap_entity_raw e
+                  WHERE {_ontology_cv_eligible('e')}
+            UNION SELECT {_literal(ONTOLOGY_NAME_NAMESPACE)} FROM ap_entity_raw e
+                  WHERE {_ontology_name_eligible('e')}""",
         "vocab_entity_type": "SELECT entity_type FROM ap_entity_raw WHERE entity_type IS NOT NULL",
         "vocab_relation_predicate": "SELECT predicate FROM ap_statement_raw WHERE predicate IS NOT NULL",
         "vocab_relation_category": "SELECT coalesce(category,'omnipath:unspecified') FROM ap_statement_raw",
@@ -433,9 +470,11 @@ def _create_statement_projection(con: Any) -> None:
     con.execute(f"""CREATE OR REPLACE VIEW ap_statement AS SELECT r.*,
         s.entity_id subject_entity_id,o.entity_id object_entity_id,rp.id predicate_id,
         rc.id relation_category_id,
-        coalesce(os.ontology_id,'omnipath:published-scope:'||r.resource||':'||s.namespace)
+        coalesce(source_scope.ontology_id,os.ontology_id,
+                 'omnipath:published-scope:'||r.resource||':'||s.namespace)
             ontology_id,
-        os.ontology_id IS NOT NULL ontology_scope_recovered,
+        (source_scope.ontology_id IS NOT NULL OR os.ontology_id IS NOT NULL)
+            ontology_scope_recovered,
         CASE WHEN r.statement_kind='relation' THEN
             {_uuid(_key(_literal('canonical-relation'),'s.entity_id','rp.name','o.entity_id'))}
         END relation_id
@@ -447,7 +486,10 @@ def _create_statement_projection(con: Any) -> None:
         JOIN ap_vocab_relation_predicate rp ON rp.name=r.predicate
         JOIN ap_vocab_relation_category rc ON rc.name=coalesce(r.category,'omnipath:unspecified')
         LEFT JOIN ap_ontology_scope os ON os.resource=lower(r.resource) AND os.namespace=s.namespace
-        AND (s.namespace<>'reactome' OR s.entity_type='pathway')""")
+        AND (s.namespace<>'reactome' OR s.entity_type='pathway')
+        LEFT JOIN ap_ontology_source_scope source_scope
+          ON source_scope.resource=lower(r.resource)
+         AND r.statement_kind IN ('ontology','ontology_axiom')""")
     con.execute("""CREATE OR REPLACE TABLE ap_relation AS SELECT relation_id,
         subject_entity_id,predicate_id,object_entity_id,
         CASE WHEN count(DISTINCT relation_category_id)=1 THEN min(relation_category_id)
@@ -485,6 +527,78 @@ def _create_statement_projection(con: Any) -> None:
         HAVING count(DISTINCT coalesce(try_cast(original_row_id AS BIGINT)::VARCHAR,
                                       original_row_id))>1""",
         "Original source row identities collide in the main bigint row representation")
+
+
+def _create_ontology_lookup_aliases(con: Any) -> None:
+    """Add narrow ontology reader aliases without inventing source occurrences.
+
+    Ownership comes from actual known-source ontology edges. Only primitive
+    positive owners are staged; global name/value exclusions first restrict the
+    published identifier scan to their entity keys. Neither raw arrays nor
+    evidence/annotation payloads enter this stage.
+    """
+    con.execute("""CREATE OR REPLACE TABLE ap_ontology_lookup_owner AS
+        SELECT e.resource,e.version,e.entity_key,e.entity_type,e.namespace,
+               e.identifier,e.label
+        FROM ap_entity_raw e SEMI JOIN (
+            SELECT resource,version,subject_entity_key AS entity_key
+            FROM ap_statement_raw WHERE statement_kind IN ('ontology','ontology_axiom')
+            UNION
+            SELECT resource,version,object_entity_key AS entity_key
+            FROM ap_statement_raw WHERE statement_kind IN ('ontology','ontology_axiom')
+        ) edges USING(resource,version,entity_key)
+        WHERE lower(e.resource) IN (SELECT resource FROM ap_ontology_source_scope)""")
+    cv_namespace = _literal(ONTOLOGY_CV_NAMESPACE)
+    name_namespace = _literal(ONTOLOGY_NAME_NAMESPACE)
+    con.execute(f"""CREATE OR REPLACE TABLE ap_ontology_lookup_alias AS
+        SELECT resource,version,entity_key,{cv_namespace} AS namespace_name,
+               identifier AS alias_value,
+               {_uuid(_key(_literal('identifier'),cv_namespace,'identifier'))} alias_identifier_id
+        FROM ap_ontology_lookup_owner e
+        WHERE {_ontology_cv_eligible('e')} AND identifier<>''""")
+    # A scalar published label is useful only if it is a genuine missing name.
+    # Respect every source's original names and synonyms for the same identity.
+    con.execute(f"""CREATE OR REPLACE TABLE ap_ontology_name_candidate AS
+        SELECT e.resource,e.version,e.entity_key,e.label
+        FROM ap_ontology_lookup_owner e
+        WHERE {_ontology_name_eligible('e')}
+          AND e.label IS NOT NULL AND e.label<>''
+          AND e.label<>e.identifier AND e.label<>e.entity_key""")
+    con.execute(f"""CREATE OR REPLACE TABLE ap_ontology_original_named AS
+        SELECT DISTINCT i.entity_key
+        FROM ap_identifier_raw i SEMI JOIN ap_ontology_name_candidate c
+             ON c.entity_key=i.entity_key
+        LEFT JOIN ap_namespace_alias ns ON ns.raw=i.item.ns
+        WHERE i.item.id IS NOT NULL AND i.item.id<>''
+          AND coalesce(ns.name,i.item.ns) IN
+              ({name_namespace},{_literal(ONTOLOGY_SYNONYM_NAMESPACE)})""")
+    con.execute("""DELETE FROM ap_ontology_name_candidate c
+        USING ap_ontology_original_named n WHERE n.entity_key=c.entity_key""")
+    # An accession presented as a scalar label must not become a Name alias.
+    # This check is global across source occurrences, not just the owning edge.
+    con.execute("""CREATE OR REPLACE TABLE ap_ontology_original_label_value AS
+        SELECT DISTINCT i.entity_key,i.item.id AS value
+        FROM ap_identifier_raw i SEMI JOIN ap_ontology_name_candidate c
+             ON c.entity_key=i.entity_key
+        WHERE i.item.id IS NOT NULL""")
+    con.execute(f"""INSERT INTO ap_ontology_lookup_alias
+        SELECT c.resource,c.version,c.entity_key,{name_namespace},c.label,
+               {_uuid(_key(_literal('identifier'),name_namespace,'c.label'))}
+        FROM ap_ontology_name_candidate c
+        ANTI JOIN ap_ontology_original_label_value original
+             ON original.entity_key=c.entity_key AND original.value=c.label""")
+    # Deduplicate the small alias set, then insert only missing UUIDs. Do not
+    # regroup the release-wide identifier dictionary to add these lookup rows.
+    con.execute("""INSERT INTO ap_identifier
+        SELECT aliases.alias_identifier_id,it.id,aliases.alias_value,NULL::VARCHAR
+        FROM (SELECT DISTINCT alias_identifier_id,namespace_name,alias_value
+              FROM ap_ontology_lookup_alias) aliases
+        JOIN ap_vocab_identifier_type it ON it.name=aliases.namespace_name
+        ANTI JOIN ap_identifier original
+             ON original.identifier_id=aliases.alias_identifier_id""")
+    for table in ('ap_ontology_lookup_owner','ap_ontology_name_candidate',
+                  'ap_ontology_original_named','ap_ontology_original_label_value'):
+        con.execute(f'DROP TABLE {table}')
 
 
 def _create_annotation_projection(con: Any) -> None:
@@ -642,7 +756,10 @@ def _queries() -> tuple[CopyQuery, ...]:
         SELECT * FROM published_links
         UNION SELECT links.source_id,links.entity_id,a.alias_identifier_id
         FROM published_links links JOIN ap_identifier_alias a
-             ON a.original_identifier_id=links.identifier_id""")
+             ON a.original_identifier_id=links.identifier_id
+        UNION SELECT e.source_id,e.entity_id,a.alias_identifier_id
+        FROM ap_ontology_lookup_alias a JOIN ap_entity_occurrence e
+             USING(resource,version,entity_key)""")
     # Computed lookup aliases do not claim source evidence and consequently do
     # not acquire main's authority/reference role from an occurrence join.
     add("entity_evidence_identifier", "source_id entity_evidence_id identifier_id", """
@@ -697,28 +814,16 @@ def _queries() -> tuple[CopyQuery, ...]:
     add("entity_ontology_relation", "source_id subject_entity_id predicate_id object_entity_id ontology_id",
         """SELECT DISTINCT ds.id,r.subject_entity_id,r.predicate_id,r.object_entity_id,r.ontology_id
         FROM ap_statement r JOIN ap_data_source ds ON ds.name=r.resource
-        WHERE r.statement_kind='ontology_axiom'""")
+        WHERE r.statement_kind IN ('ontology','ontology_axiom')""")
+    # Current main's fresh EvidenceProjector never populates ontology_terms_raw.
+    # Preserve its base table/COPY contract; the main shared derivation produces
+    # serving entity_ontology_term from ontology edges, identifiers and annotations.
     add("ontology_terms", "source_id term_entity_id term_id ontology_prefix label definition "
-        "ontology_id synonyms synonyms_text sources", f"""
-        WITH syn AS (
-            SELECT resource,version,entity_key,list(item.id ORDER BY ordinal) synonyms
-            FROM ap_identifier_occurrence WHERE item.ns='synonym' AND item.id IS NOT NULL
-            GROUP BY resource,version,entity_key
-        )
-        SELECT e.source_id,e.entity_id,e.identifier,e.namespace,
-               coalesce(e.label,e.identifier),first(a.value ORDER BY a.ordinal)
-                   FILTER(WHERE a.term='description'),
-               os.ontology_id,{_pg_array('coalesce(syn.synonyms,[]::VARCHAR[])')},
-               coalesce(array_to_string(syn.synonyms,' '),''),{_pg_array('list_value(e.resource)')}
-        FROM ap_entity_occurrence e
-        JOIN ap_ontology_scope os ON os.resource=lower(e.resource) AND os.namespace=e.namespace
-        LEFT JOIN syn ON syn.resource=e.resource AND syn.version=e.version AND syn.entity_key=e.entity_key
-        LEFT JOIN ap_annotation_occurrence a
-        ON a.resource=e.resource AND a.version=e.version AND a.owner_kind='entity'
-           AND a.owner_key=e.entity_key
-        WHERE (e.namespace<>'reactome' OR e.entity_type='pathway')
-        GROUP BY e.source_id,e.entity_id,e.identifier,e.namespace,e.label,e.resource,
-                 os.ontology_id,syn.synonyms""")
+        "ontology_id synonyms synonyms_text sources", """SELECT
+        NULL::BIGINT AS source_id,NULL::UUID AS term_entity_id,NULL::VARCHAR AS term_id,
+        NULL::VARCHAR AS ontology_prefix,NULL::VARCHAR AS label,NULL::VARCHAR AS definition,
+        NULL::VARCHAR AS ontology_id,NULL::VARCHAR AS synonyms,NULL::VARCHAR AS synonyms_text,
+        NULL::VARCHAR AS sources WHERE false""")
     add("parquet_entity", "resource version entity_key entity_id entity_evidence_id label namespace "
         "identifier entity_type taxon has_hierarchy parent_count child_count identifiers_present "
         "annotations_present", """SELECT resource,version,entity_key,entity_id,entity_evidence_id,
@@ -782,6 +887,8 @@ def prepare_aligned_release(
     _create_entity_projection(connection)
     report("statements_and_evidence")
     _create_statement_projection(connection)
+    report("ontology_lookup_aliases")
+    _create_ontology_lookup_aliases(connection)
     report("annotation_dictionary")
     _create_annotation_projection(connection)
     # Materialize each final SELECT once. DISTINCT link reductions and shared
@@ -813,8 +920,14 @@ def prepare_aligned_release(
          "raw_payloads_loaded": False, "record_json_loaded": False,
          "safe_bare_identifier_alias_pairs": int(connection.execute(
              "SELECT count(*) FROM ap_identifier_alias").fetchone()[0]),
+         "ontology_cv_lookup_alias_pairs": int(connection.execute(
+             "SELECT count(*) FROM ap_ontology_lookup_alias WHERE namespace_name=?",
+             [ONTOLOGY_CV_NAMESPACE]).fetchone()[0]),
+         "ontology_published_name_lookup_alias_pairs": int(connection.execute(
+             "SELECT count(*) FROM ap_ontology_lookup_alias WHERE namespace_name=?",
+             [ONTOLOGY_NAME_NAMESPACE]).fetchone()[0]),
          "unknown_ontology_scope_statements": int(connection.execute(
-             "SELECT count(*) FROM ap_statement WHERE statement_kind='ontology_axiom' "
+             "SELECT count(*) FROM ap_statement WHERE statement_kind IN ('ontology','ontology_axiom') "
              "AND NOT ontology_scope_recovered").fetchone()[0]),
          "source_scoped_name_fallback_entities": int(connection.execute(
              "SELECT count(*) FROM ap_entity e JOIN ap_vocab_identifier_type it "
@@ -822,9 +935,9 @@ def prepare_aligned_release(
              [PUBLISHED_FALLBACK_NAMESPACE]).fetchone()[0]),
          "shared_identity_taxonomy_conflicts": int(connection.execute(
              "SELECT count(*) FROM (SELECT entity_key FROM ap_entity_raw GROUP BY entity_key "
-             "HAVING count(DISTINCT nullif(taxon,''))>1) q").fetchone()[0]),
+             "HAVING min(nullif(taxon,''))<>max(nullif(taxon,''))) q").fetchone()[0]),
          "shared_identity_taxonomy_null_and_known": int(connection.execute(
              "SELECT count(*) FROM (SELECT entity_key FROM ap_entity_raw GROUP BY entity_key "
-             "HAVING count(DISTINCT nullif(taxon,''))=1 AND bool_or(nullif(taxon,'') IS NULL)) q").fetchone()[0]),
+             "HAVING min(nullif(taxon,''))=max(nullif(taxon,'')) AND bool_or(nullif(taxon,'') IS NULL)) q").fetchone()[0]),
          "published_resolution_status_id": PUBLISHED_STATUS_ID},
     )

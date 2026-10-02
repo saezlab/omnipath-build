@@ -295,7 +295,7 @@ def test_source_scoped_names_keep_distinct_uuid_and_main_unique_canonical_tuple(
             assert occurrence["entity_key"] in aliases
 
 
-def test_ontology_terms_use_source_namespace_contract_and_preserve_synonyms(tmp_path):
+def test_base_ontology_terms_stays_empty_and_relational_inputs_preserve_synonyms(tmp_path):
     entities, relations, _ = fixture_rows()
     entities[0].update(namespace="go", identifier="GO:0000001", entity_type="ontology_class")
     entities[0]["identifiers"] = [dict(ns="synonym", id="first synonym", is_canonical=False, source="go")]
@@ -304,9 +304,9 @@ def test_ontology_terms_use_source_namespace_contract_and_preserve_synonyms(tmp_
     write_fixture(tmp_path, entities=entities, relations=relations)
     with duckdb.connect() as con:
         plan = prepare_aligned_release(con, (selected(tmp_path, "go"),))
-        assert plan.counts["ontology_terms"] == 1
-        assert rows(con, plan, "ontology_terms")[0]["ontology_id"] == "gene_ontology"
-        assert "first synonym" in rows(con, plan, "ontology_terms")[0]["synonyms"]
+        assert plan.counts["ontology_terms"] == 0
+        assert rows(con, plan, "ontology_terms") == []
+        assert "first synonym" in {row["identifier"] for row in rows(con, plan, "parquet_identifier_occurrence")}
         assert rows(con, plan, "entity_ontology_relation")[0]["ontology_id"] == "gene_ontology"
 
 

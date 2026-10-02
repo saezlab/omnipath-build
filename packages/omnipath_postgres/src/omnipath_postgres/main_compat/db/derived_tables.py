@@ -819,19 +819,36 @@ def _populate_entity_ontology_terms(
                 oee.ontology_id,
                 e.canonical_identifier,
                 cit.name AS canonical_identifier_type,
-                ARRAY_AGG(DISTINCT ds.name ORDER BY ds.name) AS sources
+                et.name AS entity_type,
+                ARRAY_AGG(DISTINCT ds.name ORDER BY ds.name) AS sources,
+                BOOL_OR(
+                  (
+                    (et.name = 'ontology_class' AND lower(ds.name) IN
+                      ('go','hpo','mondo','chemont','psi_mi','omnipath_ontology','brenda'))
+                    OR (et.name = 'pathway' AND lower(ds.name) = 'kegg'
+                      AND cit.name IN ('kegg_pathway','kegg_pathway_category'))
+                    OR (et.name = 'ontology_class' AND lower(ds.name) = 'uniprot'
+                      AND cit.name = 'uniprot_keyword')
+                  )
+                  AND cit.name NOT IN
+                    ('name','synonym','Name:OM:0202','Synonym:OM:0203',
+                     'omnipath:unresolved_entity_key')
+                ) AS cv_namespace_compatible
               FROM ontology_edge_entity oee
               JOIN {}.entity e
                 ON e.entity_id = oee.term_entity_id
               JOIN {}.vocab_identifier_type cit
                 ON cit.identifier_type_id = e.canonical_identifier_type_id
+              JOIN {}.vocab_entity_type et
+                ON et.entity_type_id = e.entity_type_id
               JOIN {}.data_source ds
                 ON ds.source_id = oee.source_id
               GROUP BY
                 oee.term_entity_id,
                 oee.ontology_id,
                 e.canonical_identifier,
-                cit.name
+                cit.name,
+                et.name
             ),
             identifier_rows AS MATERIALIZED (
               SELECT DISTINCT
@@ -848,6 +865,15 @@ def _populate_entity_ontology_terms(
               WHERE i.value IS NOT NULL
                 AND i.value <> ''
             ),
+            cv_lookup_proof AS MATERIALIZED (
+              SELECT ir.term_entity_id, ir.value
+              FROM identifier_rows ir
+              WHERE ir.identifier_type = 'Cv Term Accession:OM:0204'
+                AND ir.term_entity_id IN (
+                  SELECT eligible.term_entity_id FROM term_base eligible
+                  WHERE eligible.cv_namespace_compatible
+                )
+            ),
             term_id_candidates AS MATERIALIZED (
               SELECT
                 tb.term_entity_id,
@@ -855,9 +881,13 @@ def _populate_entity_ontology_terms(
                 tb.canonical_identifier AS value,
                 0 AS priority
               FROM term_base tb
+              LEFT JOIN cv_lookup_proof proof
+                ON proof.term_entity_id = tb.term_entity_id
+               AND proof.value = tb.canonical_identifier
               WHERE tb.canonical_identifier <> ''
                 AND (
-                  tb.canonical_identifier_type = 'Chebi:MI:0474'
+                  proof.term_entity_id IS NOT NULL
+                  OR tb.canonical_identifier_type = 'Chebi:MI:0474'
                   OR lower(tb.canonical_identifier_type) LIKE '%cv term%'
                   OR lower(tb.canonical_identifier_type) LIKE '%reactome%'
                   OR lower(tb.canonical_identifier_type) LIKE '%wikipathways%'
@@ -924,11 +954,15 @@ def _populate_entity_ontology_terms(
                AND eea.entity_evidence_id = eer.entity_evidence_id
               JOIN {}.annotation a
                 ON a.annotation_key = eea.annotation_key
+              LEFT JOIN cv_lookup_proof proof
+                ON proof.term_entity_id = tb.term_entity_id
+               AND proof.value = ie.value
               WHERE a.term = {}
                 AND a.value IS NOT NULL
                 AND a.value <> ''
                 AND (
-                  it.name = 'Chebi:MI:0474'
+                  proof.term_entity_id IS NOT NULL
+                  OR it.name = 'Chebi:MI:0474'
                   OR lower(it.name) LIKE '%cv term%'
                   OR lower(it.name) LIKE '%reactome%'
                   OR lower(it.name) LIKE '%wikipathways%'
@@ -1026,6 +1060,7 @@ def _populate_entity_ontology_terms(
               ON cc.term_entity_id = tb.term_entity_id
             """
         ).format(
+            schema_id,
             schema_id,
             schema_id,
             schema_id,

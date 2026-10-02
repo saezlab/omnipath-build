@@ -263,19 +263,14 @@ def test_actual_ontology_parquets_copy_and_frozen_main_derivation_agree(tmp_path
         connection.commit()
         assert plan.compatibility["unknown_ontology_scope_statements"] == 0
         assert plan.counts["relation"] == 0
-    # Compare the complete copied search-term rows as well as the downstream
-    # frozen-main derivation. This catches array COPY, labels and scope errors
-    # that a derived term with fallback metadata could otherwise conceal.
+    # Fresh main leaves the base ontology_terms table empty. Its complete
+    # serving catalogue below derives from relational ontology/identifier data.
     with connection.cursor() as cursor:
         cursor.execute(sql.SQL("""SELECT source_id,term_entity_id::text,term_id,
             ontology_prefix,label,definition,ontology_id,synonyms,synonyms_text,sources
             FROM {}.ontology_terms""").format(sql.Identifier(adapted)))
         copied_terms = Counter(json.dumps(row) for row in cursor.fetchall())
-    assert copied_terms == Counter(json.dumps([
-        SOURCE_IDS[source], str(_entity_id(by_name[name]["entity_key"])), canonical,
-        source, label or canonical, description, ONTOLOGY_IDS[source], list(synonyms),
-        " ".join(synonyms), [source],
-    ]) for source, name, canonical, label, description, synonyms in TERMS)
+    assert copied_terms == Counter()
     expected = reference_contract._ontology_rows(connection, main, oracle.derive,
                                                  reference_contract.MAIN / "omnipath_build")
     actual = reference_contract._ontology_rows(connection, adapted, port.derive,

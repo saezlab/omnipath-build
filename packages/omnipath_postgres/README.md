@@ -18,6 +18,8 @@ DuckDB prepares relational tables once in an on-disk database and writes CSV chu
 
 Main's downstream implementations provide search and ontology tables, chemical structure groups, classifications, interactions and resource facts, labels, bitmap filters, overlap summaries, resource metadata, MetSigDB, network presets and COSMOS. Biolink readers adapt predicates, scopes and quantities; the original main table and index contracts remain the reference. The [column map](../../docs/postgres-parquet-column-map.md) and [parity checklist](../../docs/postgres-main-parity-checklist.md) document unavailable original resolver/occurrence facts and deliberate adaptations. Published identities are explicitly marked `published`; they are never falsely marked as originally matched. MetSigDB uses the previously agreed published-chemical policy.
 
+Main's legacy `ontology_terms` base table stays empty on fresh builds, as in the current main projector. The existing `entity_ontology_term` derivation builds serving terms from ontology edges, relational identifiers and annotations. Published ontology statements use the actual `ontology` kind and known input-provider ontology families; resolving a chemical to InChIKey does not change its source ontology.
+
 The verified base commits before downstream work. Each complete product commits together with its phase record; a failed product rolls back its unfinished work. Completed products are retained on a retry:
 
 ```sh
