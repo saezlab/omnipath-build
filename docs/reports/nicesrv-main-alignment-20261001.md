@@ -4,6 +4,32 @@ The Parquet outputs, upstream resolution/reference/cache, independent resource u
 
 The current deployed runtime commit is `7bb2ce7dc9c85bd0ebf6ab26a841470181887ca4`, pushed on `parquet-migration`; later documentation commits do not change the running runtime. The frozen main reference remains untracked at main-reference/9f9bb709c764. The exact pypath CV oracle is privately pinned to main's gitlink33f37fbaab59993d24f5c32bb4b3e7587085bcf4; migration pypath is unchanged.
 
+## Completed full release — 2 October 2026
+
+The full build completed successfully at **09:48:10 Berlin time (07:48:10UTC)** on the original attempt7 runtime, taking **15493.664462s (4h18m14s)**. PostgreSQL release **2026.9.30.4** in **aligned_full_20261001**, private PostgreSQL18 at loopback **5441**, is complete. The builder exited successfully, all five phase records and all three product identities are committed, and no builder backend remains. No COSMOS restart or new server deployment was needed.
+
+| Phase | Seconds | Duration |
+| --- | ---: | --- |
+| Artifact validation | 6.563978 | 7s |
+| DuckDB projection | 3220.882356 | 53m41s |
+| PostgreSQL base, including COPY and indexes | 3022.195104 | 50m22s |
+| Shared derivations | 7222.042703 | 2h00m22s |
+| MetSigDB | 350.714549 | 5m51s |
+| Network preset registry | 0.023042 | under 1s |
+| COSMOS | 1662.485741 | 27m42s |
+
+COPY **309.928782s**, CSV staging **83.141180s**, and captured key/index restoration **2263.296688s** are components of the base phase; do not add them again to the table's totals. The wall time includes the remaining orchestration overhead. Shared operation timings and the earlier failed attempts remain recorded below and in build-log.md.
+
+MetSigDB contains **3,598,709 memberships** across five nonempty sources. COSMOS published **2,432,572 reaction edges** and **530,195 connector edges**, covering **47,292 reactions**, including **20,033 reversible** and **31,158 orphan reactions**. Main's network registry contains metalinksdb, liana and reactions.
+
+The reasonable final sample produced **26 aggregate results without query errors**, followed by 100-row samples of reversed, orphan and transport edges. Entity, relation and source-claim references, ontology labels/definitions, interaction facts, reaction parties, scalar annotations, structured quantities, each MetSigDB source and COSMOS references checked out. Every sampled reverse edge had a reversible assertion and forward half; every sampled orphan used a reaction pseudo-enzyme without a fabricated gene entity; transport samples retained compartments. The empty small_molecule probe is expected: reading only the published entity_type column confirmed chemicals are chemical_entity, with no small_molecule category, across all 6,383,473 source entity rows. Nullable source facts were preserved.
+
+Final catalogue: **2,317 indexes, all valid/ready; 7,548 constraints, all validated; 725 physical tables; 98,933,350,400bytes (92.14GiB)**. At 08:08:32UTC free disk was **438,284,460,032bytes**. All 46 resource versions and build-manifest hashes match the pinned release. All four protected services retain their baseline container identities/start times and are running; both original pilots, both complete aligned pilots and all six retained failed-attempt schemas remain present. No further cleanup was performed.
+
+The completed runtime remains **7bb2ce7dc9c85bd0ebf6ab26a841470181887ca4**. A separate future COSMOS lookup optimization computes membership-direction claims once and replaces the OR endpoint join with disjoint equality branches. Independent local PostgreSQL tests passed **3 in 1.31s**, main-science regressions passed **2 in 4.70s**, Ruff and independent review passed. The final planner-only check shows one three-column producer reused by two scans. Full-release speed is unmeasured, and fixture insertion-order parity is not a universal SQL ordering guarantee. This change was not deployed to the completed run.
+
+The [completion evidence](nicesrv-main-aligned-completion-20261002.json) records actual commit events, counts, metadata identities, samples, storage, preservation and runtime provenance. The declared Biolink/published-input boundaries remain unchanged. No mandatory exhaustive verifier, rebuild/rollback or safety phase was introduced.
+
 ## Completed pilot milestone
 
 Two tiny synthetic Parquet pilots exercised DuckDB staging,20COPYtables, restored main constraints/indexes, main shared derivations and all three product commits. Initial failures exposed manifest cost shaping and bitmap extension placement; both were corrected and resumed from PostgreSQL without repeated COPY. The second completed pilot verified that product contents, subset_build_metadata and parquet_phase become visible together; selected-product rebuild retained the others. See build-log.md for actual phase timings and private report paths. Product science is established by nonempty independent fixtures, rather than the empty products in this tiny orchestration pilot.

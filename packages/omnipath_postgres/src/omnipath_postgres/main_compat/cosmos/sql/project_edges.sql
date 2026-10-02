@@ -89,6 +89,20 @@ reaction_header AS (
       AND role.name IN ('reactant', 'product')
   )
 ),
+membership_direction AS MATERIALIZED (
+  -- Resolve source-owned direction claims once, before the two endpoint joins.
+  -- Keep every matching claim row: equal values from different evidence owners
+  -- are still separate rows, just as they were under the original OR-join.
+  SELECT evidence.subject_entity_id,evidence.object_entity_id,direction.value
+  FROM relation_evidence evidence
+  JOIN vocab_relation_predicate predicate ON predicate.relation_predicate_id=evidence.predicate_id
+  JOIN relation_evidence_annotation stated
+    ON stated.source_id=evidence.source_id
+   AND stated.relation_evidence_id=evidence.relation_evidence_id
+  JOIN annotation direction ON direction.annotation_key=stated.annotation_key
+  WHERE direction.term=%(direction_term)s
+    AND predicate.name IN ('has_input','has_output','enabled_by','catalyzes')
+),
 reaction_direction AS (
   -- Published event-level and source-owned membership claims remain explicit;
   -- do not fabricate an entity occurrence to transfer direction onto it.
@@ -109,15 +123,16 @@ reaction_direction AS (
     UNION ALL
     SELECT reaction.reaction_entity_id,direction.value
     FROM reaction_header reaction
-    JOIN relation_evidence evidence ON evidence.subject_entity_id=reaction.reaction_entity_id
-                                   OR evidence.object_entity_id=reaction.reaction_entity_id
-    JOIN vocab_relation_predicate predicate ON predicate.relation_predicate_id=evidence.predicate_id
-    JOIN relation_evidence_annotation stated
-      ON stated.source_id=evidence.source_id
-     AND stated.relation_evidence_id=evidence.relation_evidence_id
-    JOIN annotation direction ON direction.annotation_key=stated.annotation_key
-    WHERE direction.term=%(direction_term)s
-      AND predicate.name IN ('has_input','has_output','enabled_by','catalyzes')
+    JOIN membership_direction direction
+      ON direction.subject_entity_id=reaction.reaction_entity_id
+    UNION ALL
+    -- Keep the endpoint branches disjoint: a self-loop was one OR-match,
+    -- while an object match with a NULL subject still belongs in this branch.
+    SELECT reaction.reaction_entity_id,direction.value
+    FROM reaction_header reaction
+    JOIN membership_direction direction
+      ON direction.object_entity_id=reaction.reaction_entity_id
+    WHERE direction.subject_entity_id IS DISTINCT FROM reaction.reaction_entity_id
   ) claims GROUP BY reaction_entity_id
 ),
 indexed_reaction AS (
