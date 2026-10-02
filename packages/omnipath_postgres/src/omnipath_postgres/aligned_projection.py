@@ -29,6 +29,7 @@ PUBLISHED_FALLBACK_NAMESPACE = "omnipath:unresolved_entity_key"
 ONTOLOGY_CV_NAMESPACE = "Cv Term Accession:OM:0204"
 ONTOLOGY_NAME_NAMESPACE = "Name:OM:0202"
 ONTOLOGY_SYNONYM_NAMESPACE = "Synonym:OM:0203"
+STANDARD_INCHI_NAMESPACE = "Standard Inchi:MI:2010"
 PUBLISHED_PROVENANCE_TABLES = (
     "parquet_entity", "parquet_statement", "parquet_evidence",
     "parquet_identifier_occurrence", "parquet_annotation_occurrence",
@@ -223,7 +224,8 @@ def _namespace_names() -> dict[str, str]:
         "ensg": "ENSEMBL", "ensp": "ENSEMBL", "enst": "ENSEMBL",
         "chebi": "CHEBI", "hmdb": "HMDB", "lipidmaps": "LIPIDMAPS",
         "swisslipids": "SWISSLIPIDS", "pubchem": "PUBCHEM_COMPOUND",
-        "inchikey": "STANDARD_INCHI_KEY", "chembl": "CHEMBL_COMPOUND",
+        "inchikey": "STANDARD_INCHI_KEY", "smiles": "SMILES",
+        "chembl": "CHEMBL_COMPOUND",
         "kegg": "KEGG_COMPOUND", "kegg_reaction": "KEGG_REACTION",
         "cas": "CAS", "name": "NAME",
         "synonym": "SYNONYM", "cv_term": "CV_TERM_ACCESSION", "ramp": "RAMP_ID",
@@ -236,6 +238,16 @@ def _namespace_names() -> dict[str, str]:
         for name, member in members.items()
         if hasattr(IdentifierNamespaceCv, member)
     }
+
+
+def _generic_identifier_included(namespace: str, value: str) -> str:
+    """Main omits Standard InChI from generic identifiers, regardless of size.
+
+    Raw published occurrences remain untouched. This is an exact namespace
+    adapter for ingest.common.include_identifier, not a general length filter.
+    """
+    return f"""{namespace} IS NOT NULL AND {value} IS NOT NULL
+        AND {namespace} NOT IN ('inchi',{_literal(STANDARD_INCHI_NAMESPACE)})"""
 
 
 def _dimension(con: Any, table: str, required: Iterable[str], existing: Iterable[tuple]) -> tuple:
@@ -468,9 +480,9 @@ def _create_entity_projection(con: Any) -> None:
               UNION SELECT namespace_name,alias_value FROM ap_identifier_alias) i
         LEFT JOIN ap_namespace_alias a ON a.raw=i.ns
         JOIN ap_vocab_identifier_type it ON it.name=coalesce(a.name,i.ns)
-        WHERE i.identifier IS NOT NULL""")
+        WHERE {_generic_identifier_included("coalesce(a.name,i.ns)", "i.identifier")}""")
     con.execute(f"""CREATE OR REPLACE VIEW ap_identifier_occurrence AS SELECT i.*,
-        CASE WHEN item.ns IS NOT NULL AND item.id IS NOT NULL THEN
+        CASE WHEN {_generic_identifier_included("coalesce(a.name,i.item.ns)", "i.item.id")} THEN
             {_uuid(_key(_literal('identifier'),'coalesce(a.name,i.item.ns)','i.item.id'))}
         END identifier_id
         FROM ap_identifier_raw i LEFT JOIN ap_namespace_alias a ON a.raw=i.item.ns""")
@@ -759,10 +771,12 @@ def _queries(*, retain_published_provenance: bool = False) -> tuple[CopyQuery, .
         UNION SELECT DISTINCT e.source_id,e.entity_id,
             {_uuid(_key(_literal('identifier'),'coalesce(a.name,e.namespace)','e.identifier'))}
         FROM ap_entity_occurrence e LEFT JOIN ap_namespace_alias a ON a.raw=e.namespace
+        WHERE {_generic_identifier_included("coalesce(a.name,e.namespace)", "e.identifier")}
         UNION SELECT DISTINCT occurrence.source_id,e.entity_id,
             {_uuid(_key(_literal('identifier'),'it.name','e.canonical_identifier'))}
         FROM ap_entity_occurrence occurrence JOIN ap_entity e ON e.entity_id=occurrence.entity_id
-        JOIN ap_vocab_identifier_type it ON it.id=e.canonical_identifier_type_id)
+        JOIN ap_vocab_identifier_type it ON it.id=e.canonical_identifier_type_id
+        WHERE {_generic_identifier_included("it.name", "e.canonical_identifier")})
         SELECT * FROM published_links
         UNION SELECT links.source_id,links.entity_id,a.alias_identifier_id
         FROM published_links links JOIN ap_identifier_alias a
@@ -956,6 +970,13 @@ def prepare_aligned_release(
              )
          },
          "raw_payloads_loaded": False, "record_json_loaded": False,
+         "generic_identifier_policy": "main_standard_inchi_excluded",
+         "excluded_standard_inchi_identifier_occurrences": int(connection.execute(
+             "SELECT count(*) FROM ap_identifier_raw WHERE item.ns IN ('inchi',?) "
+             "AND item.id IS NOT NULL", [STANDARD_INCHI_NAMESPACE]).fetchone()[0]),
+         "excluded_standard_inchi_dictionary_values": int(connection.execute(
+             "SELECT count(*) FROM ap_identifier_input WHERE ns IN ('inchi',?) "
+             "AND identifier IS NOT NULL", [STANDARD_INCHI_NAMESPACE]).fetchone()[0]),
          "safe_bare_identifier_alias_pairs": int(connection.execute(
              "SELECT count(*) FROM ap_identifier_alias").fetchone()[0]),
          "ontology_cv_lookup_alias_pairs": int(connection.execute(

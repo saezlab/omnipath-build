@@ -104,6 +104,8 @@ Current harness covers:
 
 14. Default fifteen-table versus retained twenty-table loads over eighteen synthetic entity/statement records: complete normalized DuckDB and PostgreSQL rows, nonempty serving derivation, typed quantities, source-scoped evidence and exact main constraints/indexes. Optional copies retain duplicate/order/raw inspection facts; default mode does not prepare their final tables, DDL or COPY. Published input counts are separate from copied counts. An older retained checkpoint finishes without re-projection or COPY.
 
+15. Exact SHA-verified main Standard InChI inclusion rule over five synthetic source records, default/retained dictionary and links, unchanged canonical identities/quantities and complete excluded audit occurrences with NULL dictionary references. Accepted long names/synonyms/SMILES/unknown strings remain intact; actual local COPY and complete MetSigDB publication exercise the exact `Smiles:MI:0239` namespace and declared eligibility adaptation.
+
 Compare duplicate-sensitive full rows and content identities. Preserve distinctions between NULL and FALSE, source-local and merged claims, and participant sets versus multisets. Equal counts or an empty oracle result are not acceptance.
 
 For the real release, sample supported examples from multiple resources after projection and each downstream product. Use bounded aggregate queries and query plans, inspect FK/index validity and release metadata, and record observed storage and timings. If a fixture or real sample exposes a mismatch, fix the mapping before the full build. Do not rerun already committed products to diagnose a later phase.
