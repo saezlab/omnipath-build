@@ -31,7 +31,843 @@ Keep entries factual and specific — numbers and log excerpts, not vibes.
 
 ---
 
-## 2026-09-30 — full resolved-Parquet release on nicesrv, attempt 5 (pending)
+
+
+## 2026-10-01 — batched COSMOS writes, COSMOS-only retry attempt 13 (complete; bounded manual review passed)
+
+**Reason**: user-authorized lightweight optimization after bounded backend
+samples showed repeated single-row inserts and client waits. COSMOS now batches
+edge and label writes through `executemany`, with buffers capped at 1,000 rows
+or distinct label keys. Pending labels keep their first occurrence; the existing
+database conflict rule handles repeats across batches. The named read cursor
+fetches outside each automatic write pipeline. Projection, insertion order,
+schemas, indexes, statistics SQL and product transaction boundaries are unchanged.
+Full-release performance improvement remains unmeasured.
+
+**Parameters**: runtime `8a163fb5a548ebd8a31c4b80db16b0c0e48da5b2`, branch
+`parquet-migration`, pushed to GitHub and fast-forwarded into the clean dedicated
+nicesrv checkout. pypath remains `e27d72e095f53b1a0fd76d63bbe059c10f8a48d8`.
+Release `2026.9.30.4`, schema `full_20260930`, 46 fixed pins, manifest SHA-256
+`06f55112b371055b9b539c27eb7886d403b0131098393d1bafe4723ce006c03e`.
+Invocation: `/root/.local/bin/uv run --frozen --no-sync --directory
+/root/projects/omnipath-migration/omnipath-build python
+/root/projects/omnipath-migration/full-release-20260930/omnipath-cosmos-retry-attempt13.py
+8a163fb5a548ebd8a31c4b80db16b0c0e48da5b2`.
+Calls only `build_subsets(..., products=('cosmos',), checkpoint_products=True,
+on_product_committed=product_committed)`.
+
+Attempt12's completed MetSigDB and network views remain committed at runtime
+`8cf850e72da9cdb55d321fa2c22adf5c4f568428`, with durations **1602.020031 s** and
+**0.014368 s**. Their exact metadata/checkpoint are retained separately under
+`subset_retry.retained_products`; only newly committed COSMOS belongs to this
+retry's `committed_products`. The combined checkpoint is updated after actual
+COSMOS commit. Attempt8's base/runtime provenance remains
+`05a02a56eaf06980d420a2010d11079dd026f0dd`; cancelled retries9/10/11/12 remain in
+history and archives. No resource build, resolution, COPY, shared derivation,
+MetSigDB or network-view rebuild occurs.
+
+Private PG5440: work_mem 16 MB, maintenance_work_mem 128 MB, gather 1, JIT off;
+container 4 GiB / CPU 2 / WAL 8 GB. Builder/verifier MemoryMax 3 GiB, swap
+256 MiB, CPUQuota 200%, Nice 10, stop timeout 90 s, disk floor 64 GiB.
+Build unit `omnipath-migration-subsets-attempt13-20261001.service`, invocation
+`c9b85a02f07d4126a126a6cb70e8296d`; queued verifier
+`omnipath-migration-full-verification-attempt13-20261001.service`, invocation
+`3351c3a8caf14604ac301dfdf3bf7ee0`.
+Retry helper SHA-256
+`9c2eb1f0dc4614b0affe57c31e1aea2df9bf6da9391132a38771cd6f7b83d64f`;
+startup helper SHA-256
+`16a2b7af503ff6bf229ce9a253932b3314f1da78ce3880f1098280e1578f86a3`;
+monitor SHA-256
+`b33c1e53039bfd4634b739107c8b9373afecf94ea93a24ce3b3e242d39089f64`;
+verifier SHA-256
+`9ee43a4fcadf71445693785c0f73460317240f13b35f66ed624e0e7594d323f2`;
+final safety helper SHA-256
+`0b02c1372e21767c36dbef3dc68788ae0b0db2c188cdc7a354934ebb5811b326`.
+
+**Phase durations**: started **2026-10-01T16:05:40.901768+00:00** (18:05 CEST).
+The first monitor snapshot showed COSMOS running at retry elapsed **130.7 s**,
+the two retained products committed and verification waiting. Cumulative
+executed build time before attempt13 is **30471.239039 s**, excluding gaps,
+probes and tests. The previous cancelled COSMOS transaction and its rollback
+checks are recorded in the attempt12 entry below; archive report SHA-256 is
+`91e6b596d9aa0e4808e8e19c9608d836372dccced3d6105eab3264e34f83b8dc`.
+
+**Validation/outcome**: focused COSMOS/release-guard tests passed (16 tests,
+3.29 s). **609 relevant PostgreSQL/subsets/core tests passed in 35.45 s**, with
+one existing Starlette deprecation warning. Real PostgreSQL tests compare
+complete edges including generated IDs/order, labels and non-timing statistics
+against serial transport, exercise named-cursor fetch/write interleaving and
+first-label behavior within/across batches, and confirm rollback after an error
+in a later batch. Ruff, formatting and diff checks passed. Root source/test
+review and independent restart-helper review passed.
+
+**COSMOS committed; scheduled check at 16:25 UTC**: COSMOS completed and
+committed at **2026-10-01T16:14:15.095977+00:00** (18:14 CEST), with exact product
+duration **514.173461 s** (8 min 34 s). Retry wall-clock time was **514.195215 s**;
+the coordinator's nested phase wrapper reports 514.172231 s. A fresh read-only
+private PostgreSQL check confirmed all three `subset_build_metadata` records
+match the release, manifest and combined report statistics. MetSigDB/network
+views retain their original attempt12 timings and provenance. Successful product
+durations sum to **2116.207860 s** across the two retries. Cumulative executed
+attempt8-through-attempt13 time is **30985.434254 s**, including cancelled
+subset work and excluding gaps/probes/tests. The preceding COSMOS attempt was
+cancelled after approximately1341.07 s without completing; it does not provide
+a completed serial-build baseline or a precise speedup ratio.
+
+The builder is inactive after success; the verifier is active in full-release
+verification. Private data remains restored at this snapshot. PostgreSQL-only
+rollback verification and final safety remain pending. The 15-minute monitor
+continues to follow attempt13, including retained versus new product provenance.
+Completion requires both verification reports and the read-only
+`omnipath-full-final-safety-attempt13.py` checks to pass, including all three
+product metadata/report matches, restored private data and protected-service
+baseline matches. This was the pre-review snapshot; final acceptance is recorded below.
+
+
+**Final outcome — user-requested manual review, 1 October 2026, 19:50 CEST**:
+the user removed mandatory post-build verification, the rebuild-and-rollback
+check and the historical final-safety gate. Normal build/rebuild commands and
+loader validation/constraints are retained. The optional exhaustive verifier
+was stopped at **2026-10-01T17:48:07.285832+00:00**, after **5605.098408 s** in
+full verification (**5605.846723 s** coordinator wall time). Its final status is
+cancelled/KeyboardInterrupt, preserved as a failed optional audit rather than
+rewritten as a successful exhaustive result. The queued rollback rebuild never
+ran. Stop time was **0.339353 s**. Archive
+`attempt13-verification-stopped-20261001` preserves the successful build report
+(SHA-256 `f5acf91dc233ceaf98e0ec56d32d18b12216f7ac23b8e8d487cabfa932e6b351`),
+cancelled verification report (SHA-256
+`11417ca33ad63732ab2a1cc659e8f041c109957b60a7fb89dfd704ba2c6e3757`),
+and log (SHA-256
+`26c6926bbf63b78f770d0b06f3f87e1c4f8c1d97abef9fa305e9ec98de63b798`).
+Fresh private metadata snapshots before/after stopping confirmed every committed
+product and the base checkpoint unchanged, both pilots preserved, private data
+restored and no remaining verifier backend.
+
+A one-off read-only sample then **passed in29.085445 s**, at unchanged runtime
+`8a163fb5a548ebd8a31c4b80db16b0c0e48da5b2`. Unit
+`omnipath-migration-manual-sample-20261001.service`, invocation
+`164d447d1ed2449980ca78a0440639c2`. Parameters: frozen/no-sync existing UV
+environment, literal private PG5440, repeatable-read/read-only transaction,
+60 s per-statement timeout, work_mem16 MB/JIT off, MemoryMax2 GiB/swap256 MiB,
+CPUQuota100%, Nice10. The sample read at most20 entity and20 relation records
+per resource, spread over first/middle/last row-group fronts where available,
+without scanning the remaining records. Selected normalized rows were capped
+at20 per table/resource. Existing loader integrity results and complete index/
+constraint catalog definitions were checked; source parsers, resolver, resource
+builds, raw payloads, COPY and derivation were not run.
+
+Coverage: **46 resources;920 entities;840 relations;920 identifiers;840 evidence
+occurrences;893 annotation occurrences;130 typed measurement projections;
+145 ontology edge orientation checks;15 reaction contexts/84 participants**.
+Reaction checks included53 stored coefficient assertions and49 compartments,
+direction/type/source/hash links, member ordinals and diagnostics. Product checks
+covered **100 MetSigDB memberships across all five sources**, five actual set
+sizes,20 COSMOS edges spread through the edge-ID range, and three small network
+query pages (LIANA, MetalinksDB, reactions). Product metadata matched release
+`2026.9.30.4`, its exact manifest and the original combined build statistics.
+This is a bounded value/provenance sample, not an exhaustive value comparison,
+closure proof, fresh full-table recount or legacy scientific-parity claim.
+
+The manual service completed in30.382 s, CPU time12.894 s, observed peak memory
+approximately1.9 GiB with zero swap. The script SHA-256 is
+`168b8905e4365bcbba5124b99d17ff79f99460e83e43f55dbfcd7187d5cdd187`;
+sample report SHA-256 is
+`87fb2b1edcc653031f0041e5a28d4393db9feadec88380594941b14e348a0ef9`.
+The one-off completion snapshot at **2026-10-01T17:50:49.778349+00:00** confirmed
+all four protected services match baseline identity/start/running state, private
+data is restored, and no build/verifier/sample session remains. It is not a new
+mandatory phase. `migration-completion-20261001.json` records acceptance as a
+successful committed build with the requested bounded manual review. The canonical
+server status helper reports removed gates explicitly; the historical named
+attempt13 helpers and reports remain intact. The scheduled monitor is **paused**.
+
+All46 resources, base tables/late constraints/query indexes, shared derivations
+and three subset products remain committed. Exact successful product timings
+are MetSigDB1602.020031 s, network views0.014368 s and COSMOS514.173461 s.
+Recorded attempt8-through-attempt13 build time is30985.434254 s including
+cancelled build work, excluding gaps/probes/tests and the optional verification.
+The private PostgreSQL build milestone is complete under the user's revised
+acceptance criteria; production/prototype services remain unchanged.
+
+
+Public workflow documentation was committed and pushed on parquet-migration
+as f890899 (Document optional post-build audits). Only the PostgreSQL README
+was included; private build logs/reports remain local. Server runtime remains
+8a163fb5a548ebd8a31c4b80db16b0c0e48da5b2; the documentation commit changes no
+loader, derivation or subset implementation.
+
+
+## 2026-10-01 — ClassyFire final join and product commits, subset-only retry attempt 12 (COSMOS cancelled; MetSigDB and network views retained)
+
+**Reason**: user-authorized ClassyFire final-join optimization and commits after
+each complete product (MetSigDB, network views, COSMOS). A SELECT-only probe
+capped at 20 direct assignment edges produced 105 memberships with 20 projected
+chemicals. The original publication join rescanned the projection 105 times;
+the guarded full join used a hash match and one scan, with identical complete
+row multisets. This does not measure full publication time. The variant is
+ClassyFire-only; the two-sided non-null guard preserves inner-match semantics
+for duplicate, unmatched and null keys without reducing the full join.
+
+**Parameters**: revision `8cf850e72da9cdb55d321fa2c22adf5c4f568428`, branch
+`parquet-migration`, pushed to GitHub and fast-forwarded into the clean dedicated
+server checkout. pypath remains `e27d72e095f53b1a0fd76d63bbe059c10f8a48d8`.
+Release `2026.9.30.4`, schema `full_20260930`, 46 fixed pins, canonical manifest
+SHA-256 `06f55112b371055b9b539c27eb7886d403b0131098393d1bafe4723ce006c03e`.
+Invocation: `/root/.local/bin/uv run --frozen --no-sync --directory
+/root/projects/omnipath-migration/omnipath-build python
+/root/projects/omnipath-migration/full-release-20260930/omnipath-subset-retry-attempt12.py
+8cf850e72da9cdb55d321fa2c22adf5c4f568428`.
+Calls only `build_subsets(..., products=('metsigdb','network_views','cosmos'),
+checkpoint_products=True, on_product_committed=product_committed)`.
+
+Each complete product's tables and `subset_build_metadata` commit together;
+a later failure or cancellation rolls back only the current product. One schema
+session advisory lock spans all product transactions and callbacks. The exact
+single release ID/digest is checked before and after each product, with a table
+lock protecting the release marker inside the transaction. The callback records
+`committed_products` and a `subset_checkpoint` only after actual commit.
+`product_prepared` and per-source completion events are not publication commits.
+Explicitly select remaining products to resume; database metadata is authoritative
+if observer reporting fails after a commit. Default API/CLI behavior stays atomic
+unless the checkpoint flag is enabled; it is enabled in this run.
+
+Other four publication queries, KEGG-only `source_edges AS NOT MATERIALIZED`,
+all `projected AS MATERIALIZED` aggregates and normal planner settings remain
+unchanged. No identifier resolution, resource build, COPY or shared derivation
+is repeated. Base/runtime provenance remains attempt8
+`05a02a56eaf06980d420a2010d11079dd026f0dd`; cancelled attempts9/10/11 are retained
+in `subset_retry_history` and their immutable report/log archives.
+
+Private PG5440: work_mem 16 MB, maintenance_work_mem 128 MB, gather 1, JIT off;
+container 4 GiB / CPU 2 / WAL 8 GB. Builder/verifier MemoryMax 3 GiB, swap
+256 MiB, CPUQuota 200%, Nice 10, stop timeout 90 s, disk floor 64 GiB.
+Build unit `omnipath-migration-subsets-attempt12-20261001.service`, invocation
+`4a1002cea5fb4a09814513532fdcf64a`; queued verifier
+`omnipath-migration-full-verification-attempt12-20261001.service`, invocation
+`49aacc10a680461bbf2bff259a9d673a`.
+Retry helper SHA-256
+`7519837fbfde4915502c84a4280d163f7929574f7ba94b98e2105b26043702ec`;
+startup helper SHA-256
+`904647f5182e0d7e6ff3c59bf03f4a242849e861522c13cb2284609177bdec2e`;
+monitor SHA-256
+`ef69166c97c409243b45b5b51a74804c280f909a22933c5b60d30fbe1252d5d0`;
+verifier SHA-256
+`2876b92cb07b50000eca5b3598af287670a600a5dc8d2ed9c139f1544c2367c5`;
+final safety helper SHA-256
+`17d267e28a4bf57c1409adbdcec9bb2c158c02f551939dfc57edf53358c4693a`.
+
+**Phase durations**: started **2026-10-01T15:12:44.561620+00:00** (17:12 CEST).
+At the startup snapshot, Reactome finished in **24.239005 s** and WikiPathways
+in **32.004826 s**; KEGG is running. Source timings run to the next source start;
+the last source includes MetSigDB index/statistics work. Exact product durations
+will be reported separately. No complete product had committed at this snapshot;
+ClassyFire, all product commits and both verification phases remain pending.
+Cumulative executed build time retained before attempt12 is **27528.094099 s**,
+excluding gaps, probes and tests.
+
+**Latest scheduled check (15:30 UTC)**: KEGG source completed in
+151.292255 s and MACdb in 49.254894 s; Reactome/WikiPathways remain
+24.239005/32.004826 s. ClassyFire started at retry elapsed 256.833 s and is
+still running. A bounded private backend snapshot found an active query at
+899.9 s, waiting on DataFileRead, with zero lock blockers. No complete product
+has committed; both units are active and verification remains queued. The
+committed base is retained; disk reserve was 329.0 GiB at the monitor snapshot.
+This is progress/wait-state monitoring, not a full-plan diagnosis or a completed
+ClassyFire performance result.
+
+**Durable product progress (1 October, 17:39 CEST)**: MetSigDB committed at
+2026-10-01T15:39:26.611509+00:00, exact product duration **1602.020031 s**
+(26 min 42 s). Network views committed at 15:39:26.630790+00:00 in
+**0.014368 s**. A fresh read-only private PostgreSQL check confirmed both
+product metadata records match the release, manifest and reported stats.
+COSMOS started at retry elapsed 1602.071 s and is running; both verification
+steps are still queued. All five MetSigDB source stages completed:
+Reactome24.239005 / WikiPathways32.004826 / KEGG151.292255 / MACdb49.254894 /
+ClassyFire1345.211318 s. The ClassyFire coordinator time includes final
+MetSigDB index/statistics work; it is not a query-only timing. The private data
+root is present and the hidden-verification directory absent. MetSigDB and
+network views are now preserved independently if COSMOS later fails.
+
+**COSMOS cancellation**: after the user authorized batching writes and reducing
+duplicate label attempts, reviewed helper `omnipath-stop-cosmos-attempt12.py`
+SHA-256 `47fb89a70bdf191ead8602770f8c3d2bfb3ef57f511564b637ebb50163835085`
+stopped the queued verifier, then only the current COSMOS transaction. Safety
+confirmation at **2026-10-01T16:01:48.061377+00:00** (18:01 CEST) showed both
+MetSigDB/network views product metadata/stats and partial checkpoint unchanged,
+completed base/shared derivations with46 pins, both pilot schemas preserved,
+four protected services unchanged, no importer/verifier backend and absent
+uncommitted COSMOS tables after rollback. Private data remained restored.
+Attempt12 elapsed **2943.144940 s**, including approximately **1341.07 s**
+(22 min21 s) of cancelled COSMOS work. Retained product timings remain
+MetSigDB1602.020031 s and network views0.014368 s. Cumulative executed build time
+is **30471.239039 s**, excluding gaps/probes/tests. Archive
+`attempt12-before-subset-retry-20261001` preserves reports/logs; report SHA-256
+`91e6b596d9aa0e4808e8e19c9608d836372dccced3d6105eab3264e34f83b8dc`.
+Only COSMOS will be selected for the replacement run; no import, resource build,
+shared derivation, MetSigDB or network-view rebuild is required.
+
+**Validation/outcome**: 24 focused MetSigDB tests passed in 4.63 s; 25 focused
+orchestration tests passed in 4.46 s. **604 relevant PostgreSQL/subsets/core tests
+passed in 39.65 s**, with one existing Starlette deprecation warning. Regression
+coverage includes complete five-source result multisets, real PostgreSQL projection
+scan plans, duplicate/null/unmatched/empty-side semantics, current-product rollback
+on errors/interrupts/SQL cancellation, earlier commit durability, release changes,
+schema-lock retention/release, callback timing/snapshot isolation and explicitly
+resuming only remaining products. Ruff, formatting and diff checks passed.
+Root source review and independent stop/retry/startup/final-safety review passed.
+
+The attempt11 cancellation and archive are recorded below. At startup, safety confirmed
+all four protected services matched their baseline identities/start times/running
+states and private data remained restored. Both attempt12 units were active and
+verification was queued. They were subsequently stopped as recorded above;
+COSMOS and the existing verifications continue under attempt13. Production
+services remain untouched.
+
+
+## 2026-10-01 — indexed KEGG joins, subset-only retry attempt 11 (cancelled; base and derivations retained)
+
+**Reason**: user-authorized fix after a read-only diagnosis of KEGG's
+reaction-to-pathway pairing. PostgreSQL estimated one chemical edge and two
+pathway edges; actual counts were 52,622 and 111,787. The nested loop repeatedly
+filtered the 641,065-row materialized source-edge result, implying about
+5.9 billion pair comparisons. The exact 20-chemical-edge join probe took
+12.402 s and read 3,725,268 temporary blocks (about 28.4 GiB). These are logical
+temporary reads, not distinct bytes read from physical storage.
+
+The KEGG-only `source_edges AS NOT MATERIALIZED` variant lets predicates and
+reaction-key joins reach the existing base-table indexes. A full pairing-only
+probe produced all 481,870 candidates in 13.709 s, with zero temporary reads
+or writes and parameterized `relations_subject_idx` lookups. An earlier cold
+probe hit its 15 s limit; the successful repeat used a 30 s limit. A diagnostic
+hash join counted the same candidates in 4.582 s, but discouraging nested loops
+for the whole publication query would sort about 26 million global identifiers.
+The deployed variant keeps normal planner settings and indexed alias lookups.
+These probes do not measure complete MetSigDB publication.
+
+**Parameters**: tested revision `f14e703d2c7ee6ac083bcd7b05ee43a20f665624`,
+branch `parquet-migration`; only KEGG selects the new source-edge variant.
+The other four source queries and all `projected AS MATERIALIZED` aggregates
+are retained. Release `2026.9.30.4`, schema `full_20260930`, 46 exact pins,
+manifest SHA-256 `06f55112b371055b9b539c27eb7886d403b0131098393d1bafe4723ce006c03e`.
+Base and shared derivations retain `05a02a56eaf06980d420a2010d11079dd026f0dd`;
+pypath stays at `e27d72e095f53b1a0fd76d63bbe059c10f8a48d8`.
+Invocation: `/root/.local/bin/uv run --frozen --no-sync --directory
+/root/projects/omnipath-migration/omnipath-build python
+/root/projects/omnipath-migration/full-release-20260930/omnipath-subset-retry-attempt11.py
+f14e703d2c7ee6ac083bcd7b05ee43a20f665624`.
+Calls only `build_subsets` for MetSigDB, network views and COSMOS in one
+transaction. Retains the committed COPY, keys/indexes and shared derivations;
+does not rebuild resources or resolve identifiers. Private PG5440,
+work_mem 16 MB, maintenance_work_mem 128 MB, gather 1, JIT off;
+container 4 GiB / CPU 2 / WAL 8 GB. Builder/verifier MemoryMax 3 GiB,
+swap 256 MiB, CPUQuota 200%, Nice 10, stop timeout 90 s, disk floor 64 GiB.
+
+Build unit `omnipath-migration-subsets-attempt11-20261001.service`, invocation
+`d4f9044fbd8e428b9afedc8dd5998292`; queued verifier
+`omnipath-migration-full-verification-attempt11-20261001.service`, invocation
+`3bf00cfa022f496d8b27370b456eeaf3`. Retry helper SHA-256
+`7ac5a26fbea6c59c07611f14765c2f8b22a21014cd442fa8f53222524a14776f`;
+guarded startup SHA-256
+`d78130fa1586c8bc5e6115a0b2cd0d87e82c4d6fe379818c5733def5fe881347`.
+Canonical provenance preserves attempts 9 and 10 under `subset_retry_history`,
+their archived reports and the original attempt8 base phases/counts.
+
+**Phase durations**: started **2026-10-01T14:00:26.937680+00:00** (16:00 CEST).
+Reactome completed in 25.955178 s; WikiPathways in 30.160086 s;
+KEGG in 187.541608 s; MACdb in 50.380578 s. The retry was cancelled at
+**2026-10-01T15:07:55.557006+00:00** after **4048.619120 s** total retry work
+(67 min 29 s), including approximately 62 min 35 s in unfinished ClassyFire.
+No complete product committed. Completed source work rolled back with the
+single subset transaction; base and shared derivations stayed committed.
+Source coordinator times run through the next source start; product timings
+are unavailable because MetSigDB did not finish. Cumulative executed build time
+is 27528.094099 s, excluding gaps and diagnostic/test runs.
+
+**Cancellation**: user authorized a ClassyFire-only final join optimization
+and commits after each complete product for the replacement run. Reviewed helper
+`omnipath-stop-subsets-attempt11.py` SHA-256
+`f5a91e215667920dedc8ee1681cf07d32dff5e07a2b8c1b400b65e928dfcd35a`
+stopped the waiting verifier first, then only the private subset builder.
+Safety confirmation at **2026-10-01T15:07:55.819329+00:00** verified both pilot
+schemas, the completed base checkpoint, release metadata and 46 pins, four
+protected service identities/start times/running states, zero remaining
+importer/verifier backends and absent subset metadata. Private Parquet data
+remained restored. Archive `attempt11-before-subset-retry-20261001` retains
+the report and logs; report SHA-256
+`9417f5d768738f03f2aec9779a0dbd3d1f925676a7016ac43bccfaecfec393cb`.
+No COPY, shared derivation, resource build or production service change occurred.
+
+**Validation/outcome**: 18 focused tests passed in 3.63 s; 579 relevant
+PostgreSQL/subsets/core tests passed in 30.10 s (existing Starlette deprecation
+only). Complete SELECT row multisets match across all five source rules.
+The additional KEGG fixture has 15 original entity/relation records and covers
+both pathway orientations, two reactions, duplicate candidate memberships,
+input/output/participant paths, excluded proteins and all relation/via
+provenance. Seven exact candidate tuples yield four unchanged published rows;
+numeric source row 2 remains the selected evidence. Root source review,
+independent cancellation/retry/startup/final-safety review, Ruff and diff checks
+passed. The tested commit was pushed and the clean dedicated server checkout
+fast-forwarded; pypath stayed fixed.
+
+Attempt10 cancellation was confirmed **2026-10-01T13:56:12.027050+00:00** after
+2426.650620 s total retry work (about 39 min 28 s in unfinished KEGG).
+Reactome/WikiPathways subset work rolled back with the same subset transaction.
+Completed base checkpoint, release metadata, all 46 pins, both pilot schemas and
+all four protected service identity/start/running states were retained; no old
+importer/verifier backend remained. Archive `attempt10-before-subset-retry-20261001`,
+report SHA-256 `46ec0919f335fa1fb9642491867d1e3245c810ef7f733d7c75918d87556fe3cb`.
+Cumulative executed build time before retry11 was 23479.474979 s, excluding
+gaps and diagnostic/test runs. Attempt11 is stopped. The replacement subset-only run and its product checkpoints
+will be recorded separately; full/PG-only verification and final safety are pending.
+
+
+## 2026-10-01 — materialized MetSigDB projection, subset-only retry attempt 10 (cancelled; base and derivations retained)
+
+**Reason**: user-authorized follow-up after live CPU/plan diagnosis found repeated
+identifier aggregation under the final nested loop. The estimated membership
+count was1 versus24301 actual Reactome memberships/2178 metabolites. A bounded
+SELECT-only probe of20 outer memberships/20 projected chemicals showed aggregate
+loops20 while underlying alias retrieval ran once and sorted input was reused.
+Forcing `projected AS MATERIALIZED` reduced aggregate executions to1. Probe
+outputs were0 because independently sampled chemicals/memberships did not overlap;
+the probes establish executor behavior, not result parity or full-scale speed.
+
+**Parameters**: tested revision `79b64a1c6ec8f983047629be1424af52d852b2a1`,
+branch `parquet-migration`; production SQL change is only `projected AS MATERIALIZED`.
+Same release `2026.9.30.4`, schema `full_20260930`,46 exact pins and canonical
+manifest SHA-256 `06f55112b371055b9b539c27eb7886d403b0131098393d1bafe4723ce006c03e`.
+Base/derivation revision remains `05a02a56eaf06980d420a2010d11079dd026f0dd`;
+pypath remains `e27d72e095f53b1a0fd76d63bbe059c10f8a48d8`.
+Invocation: `/root/.local/bin/uv run --frozen --no-sync --directory
+/root/projects/omnipath-migration/omnipath-build python
+/root/projects/omnipath-migration/full-release-20260930/omnipath-subset-retry-attempt10.py
+79b64a1c6ec8f983047629be1424af52d852b2a1`. Calls only `build_subsets` for
+MetSigDB, network views and COSMOS, atomically. No Parquet/resource build,
+resolution, COPY, key/index recreation, `finish_release` or shared derivation.
+Private PG5440; work_mem16MB, maintenance128MB, gather1, JIT off;
+container4GiB/CPU2/WAL8GB; build/verifier MemoryMax3GiB, swap256MiB,
+CPUQuota200%, Nice10, stop90s, diskfloor64GiB. Same artifact/cache/reference selection.
+
+Build unit `omnipath-migration-subsets-attempt10-20261001.service`, invocation
+`cabf4b1221dd4a83b6326939bf8ca265`; queued verifier
+`omnipath-migration-full-verification-attempt10-20261001.service`, invocation
+`b369dd1c4adf4dc597083a0037713bbe`. Retry helper SHA-256
+`43dc6eb71b87c8fc4ff5c6835928532056c70af43aa566612e7f3aedbda4465a`.
+Canonical report retains all base8 fields and the cancelled9 metadata under
+`subset_retry_history`; new retry10 has its own HEAD/start/timings and archive hash.
+
+**Phase durations**: started **2026-10-01T13:15:45.151003+00:00** (15:15 CEST).
+Reactome completed in25.152219 s; WikiPathways33.578872 s. KEGG was cancelled
+after about39min28s, with total retry time2426.650620s; only subset work rolled back.
+Source timers include publication/counts through the next source start. Final
+ClassyFire also includes index/statistics work; product phase_seconds capture
+complete builder timings. Remaining sources/products, commit and verification
+remain pending. These measured source completions are a full-scale improvement
+over the previous unfinished first query, without claiming a completed migration.
+
+**Validation/outcome**: focused16 passed in3.78s; relevant PostgreSQL/subsets/core
+577 passed in30.38s (existing Starlette deprecation only). Complete publication
+SELECT multisets match across all five fixture rules; every synthetic source has
+at most20 original records. Forced nested-loop regression observes old projection
+aggregate loops2, materialized producer1, reusable CTE scans2. Root SQL review,
+independent coordination review, Ruff/format/diff checks passed. No other SQL
+expressions, eligibility, identifiers, labels, taxonomy, set sizes, qualifiers or
+provenance were changed.
+
+Attempt9 cancellation was verified **2026-10-01T13:13:23.747845+00:00**, after
+4095.859603 s of unfinished Reactome work. Only its subset transaction rolled
+back; completed checkpoint/release/all46 pins, copied counts, base indexes,
+shared derivations and both prior pilot schemas remain. No old importer/verifier
+backend remained; all four protected container identity/start/running states
+matched baseline. Archive `attempt9-before-subset-retry-20261001`, report SHA-256
+`f79a6ebf133f6cc2d51043da58c3b081dcb096fd6d963aa5228e2e9f41ace5bc`.
+The original8 archive/hash is retained and checked recursively. Fresh retry
+HEAD/import-path/clean-checkout guards passed. Attempt10 was archived on cancellation;
+the15-minute monitor and queued verification now follow attempt11, recorded above.
+
+
+## 2026-10-01 — MetSigDB optimization and subset-only retry on nicesrv, attempt 9 (cancelled; base and derivations retained)
+
+**Reason**: user-authorized change after SELECT-only diagnosis showed global
+canonical-entity sorts and identifier deduplication during MetSigDB enrichment.
+Select canonical fields only for chosen entity keys, and look up aliases across
+the release pins using the existing resource/version/entity identifier PK.
+No additional index, Parquet change, resource build or identifier resolution.
+
+**Parameters**: tested subset revision
+`48c6e14325ff831173d95a8eaba1a8d8ba5b920c`, branch `parquet-migration`;
+unchanged release `2026.9.30.4`, schema `full_20260930`, exact46 pins and manifest
+SHA-256 `06f55112b371055b9b539c27eb7886d403b0131098393d1bafe4723ce006c03e`.
+Retained base/derivation runtime is
+`05a02a56eaf06980d420a2010d11079dd026f0dd`, pypath remains
+`e27d72e095f53b1a0fd76d63bbe059c10f8a48d8`. Invocation:
+`/root/.local/bin/uv run --frozen --no-sync --directory
+/root/projects/omnipath-migration/omnipath-build python
+/root/projects/omnipath-migration/full-release-20260930/omnipath-subset-retry-attempt9.py
+48c6e14325ff831173d95a8eaba1a8d8ba5b920c`. Calls only
+`build_subsets(dsn, 'full_20260930', products=('metsigdb','network_views','cosmos'))`;
+the three products publish in one transaction. No `load_release`, `finish_release`,
+COPY, schema/key recreation or shared derivation is invoked. Private PG5440,
+work_mem16MB, maintenance_work_mem128MB, gather1, JIT off; private PostgreSQL
+4GiB/CPU2, WAL8GB and durability settings unchanged. Both systemd units retain
+MemoryMax3GiB, swap256MiB, CPUQuota200%, Nice10, stop90s and64GiB disk reserve.
+
+Build unit `omnipath-migration-subsets-attempt9-20261001.service`, invocation
+`33cd80deaf204fb5867a95dd52dbb9c5`; queued verification unit
+`omnipath-migration-full-verification-attempt9-20261001.service`, invocation
+`f770be27ddd94bf1b4fee698625ca9fe`. Retry coordinator SHA-256
+`a6510f1a2bc60116ccfa39768b3ddec5f879c75a5829efbe5d0a95d11fc8806c`.
+The canonical report retains original attempt8 timings/code/counts, and records
+the new revision and progress separately under `subset_retry` attempt9.
+
+**Phase durations**: started **2026-10-01T12:05:07.590585+00:00** (14:05 CEST).
+Cancelled **2026-10-01T13:13:23.747845+00:00**, after4095.859603 s without
+completing the first Reactome source. Only the subset transaction rolled back.
+The prior attempt8 timings/counts/derivations and its archive remain retained;
+cumulative executed build time before retry10 was21052.824359 s, excluding
+between-run gaps. This run supplied the repeated-aggregation diagnosis recorded
+in the newer attempt10 entry; product publication and verification did not run.
+
+**Validation/outcome**: focused MetSigDB integration14 passed in3.52s; PostgreSQL,
+subsets and core suite575 passed in30.61s, with one existing Starlette deprecation.
+Root SQL review, independent coordinator review, Ruff/format/diff checks passed.
+Regressions cover canonical winners, aliases from another pin, duplicate aliases,
+valid canonical InChIKey preference, aliasless/name-only chemicals, scoped set
+names and source taxon. An initially wider packages suite was interrupted in an
+unrelated reference-builder test after226 passed in270.92s; it is not a complete
+suite result. No real upstream resources were rebuilt.
+
+Cancellation verified the completed base checkpoint/release,46 pins, no remaining
+importer/verifier backends, absence of committed subset metadata, both prior pilot
+schemas and all four protected containers unchanged at
+**2026-10-01T12:03:12.509258+00:00**. The original report/log are archived privately
+under `attempt8-before-subset-retry-20261001`; original report SHA-256
+`3f55e0fda4b231e703486e24c6bf5bdfc01cbddd4d222399009acb95edd9766f`.
+Runtime import-path/HEAD and clean-checkout guards passed at retry initialization.
+Full-release comparison and PostgreSQL-only rebuild/rollback remain queued, followed
+by `omnipath-full-final-safety-attempt9.py`; completion and full-scale speed claims
+remain pending. The existing15-minute heartbeat now tracks the newer attempt10 units.
+
+
+## 2026-10-01 — full resolved-Parquet release on nicesrv, attempt 8 (base/derivations committed; subsets cancelled)
+
+**Reason**: user-authorized restart after attempt 7's confirmed rollback. Move
+five copied-table PKs, annotation-owner uniqueness and all seven FKs after COPY,
+fully validating before base checkpoint; increase only private PG's WAL budget.
+Reuse every selected artifact, cache, reference and exact resource version.
+
+**Parameters**: exact checkout `05a02a56eaf06980d420a2010d11079dd026f0dd`,
+late constraints `05a02a5`, checkpoint loader `552e1d0`, frontier ontology
+`4fe91d1`, replay `300d06b`, pypath
+`e27d72e095f53b1a0fd76d63bbe059c10f8a48d8`. Same46 pins/release `2026.9.30.4`,
+schema `full_20260930`, canonical manifest SHA-256
+`06f55112b371055b9b539c27eb7886d403b0131098393d1bafe4723ce006c03e`.
+Invocation: `uv run --frozen --no-sync --directory
+/root/projects/omnipath-migration/omnipath-build python
+/root/projects/omnipath-migration/full-release-20260930/postgres-sql-build.py`.
+`load_release(..., batch_size=1024, duckdb_threads=1, memory_limit='1024MB',
+validate_source_records=False, checkpoint_base=True, defer_constraints=True,
+temp_directory=state)` then all three products. CSV16MB/COPY1MiB unchanged;
+work_mem16MB, maintenance_work_mem128MB, max_parallel_workers_per_gather1,
+JIT off. Private PostgreSQL16 remains4GiB/CPU2; max_wal_size8192MB loaded via
+reload with no durability setting change/restart. Importer/verifier each
+MemoryMax3GiB, swap256MiB, CPUQuota200%, Nice10, stop90s, diskfloor64GiB.
+Import unit `omnipath-migration-full-postgres-sql-attempt8-20260930.service`,
+invocation `5c27deab85d34cba864863a9cd15d82e`; verifier unit
+`omnipath-migration-full-verification-sql-attempt8-20260930.service`, invocation
+`ed7534f2519a430db493997e366dde4e`. Coordinator SHA-256
+`af3cc87924c76da1b14db113151eb31364bab2903d7db394e04fc850b4ae5de4`.
+
+Column NOT NULL/CHECKs and annotation sequence remain active during COPY. The
+exact PKs and owner uniqueness are created afterward, narrow join-key statistics
+collected, and every FK validated before integrity/query indexes/file recheck and
+base commit. Derivation publishes in a separate transaction; a committed base
+allows PostgreSQL-only finish without repeated COPY. Requested raw audits remain
+available and run after lookup keys in deferred mode. 527 regression tests passed
+in28.39s; exact real-PG catalog/data comparisons, all key/FK negative cases,
+checkpoint retries, style and independent review passed.
+
+**Phase durations**: started **2026-10-01T07:20:35.203142+00:00**. All46
+resources/all230 projections completed: typed validation130.514596 s,
+CSV staging1039.734568 s, COPY2325.139185 s. Late keys/FKs and join-key
+statistics1284.842577 s; normalized integrity1430.471222 s; ordinary query
+indexes840.228613 s; final release/file recheck6.527422 s. Base checkpoint
+committed at elapsed7078.557093 s. Source-scoped ontology448.249527 s,
+global ancestor351.502475 s, ontology total1346.177070 s (nested in shared
+derivation2951.443228 s); final full statistics12.403613 s. Post-checkpoint
+finish total3196.274258 s includes checkpoint validation. Shared derivations
+and release metadata committed successfully before subsets_start at
+elapsed10274.893 s. User-authorized cancellation during first MetSigDB source
+was confirmed2026-10-01T12:03:12.509258+00:00; original total16956.964756 s,
+including6682.071756 s of uncompleted subset work. Base counts/indexes and
+shared derivations were retained; only the subset transaction rolled back.
+
+**Outcome**: base and shared derivations committed; subset-only retry is recorded
+in attempt9 above. Fresh private prelaunch at
+2026-10-01T07:20:09.881190+00:00 verified exact clean checkout/pypath, WAL8192MB
+without pending restart, full schema absent/prior two schemas preserved, no
+previous import/verifier backends, data ready and529.051GiB free. Docker identity,
+start timestamp and running state matched the baseline for all four protected
+services. This is a prelaunch observation; final post-build checks remain pending.
+Committed checkpoint counts are unchanged:6383473 entities,80136865 identifiers,
+18339902 relations,22887251 evidence,150690040 annotations. No full-release
+performance conclusion yet; full comparison and PG-only rebuild/rollback are
+queued after build success.
+
+## 2026-10-01 — deferred-constraint local fixture validation (completed)
+
+**Reason**: confirm that post-COPY key/FK construction gives the same valid final
+schema and rejects invalid data before restarting the private full import.
+No downloads, resolver runs or real resource builds.
+
+**Parameters**: disposable local PostgreSQL16; two synthetic resources, each
+20 published raw records; DuckDB512MB/one thread, raw audit false,
+checkpoint_base true; three immediate and three deferred loads. Frozen Python
+helper `/private/tmp/omnipath-late-constraints-benchmark.py`; aggregate report
+`/private/tmp/omnipath-late-constraints-benchmark.json`. Unit tests separately
+exercise audit on/off, checkpoint on/off, empty/multiple resources and quoting.
+
+**Phase durations**: six fixture wall times 0.291240, 0.073713, 0.067253,
+0.068565, 0.066102 and 0.065055 s. Deferred key/statistics/FK phases were
+0.003733, 0.003721 and 0.003710 s. Each retained 6 entities,4 identifiers,
+2 relations,40 evidence and90 annotations. Detailed phase placement is in the
+local aggregate report; potential overlap with regression tests and disabled
+fixture fsync mean these times do not establish comparative or durable throughput.
+
+**Outcome**: all fixture counts matched; disposable files/cluster removed.
+136 focused tests passed in6.16s and the broader PostgreSQL/subset suite passed
+**527 tests in28.39s** (one existing Starlette deprecation warning).
+Real-PG catalog comparisons include every PK/FK/check/default/index definition,
+NOT NULL/sequence, FK actions/deferrability/validation and annotation uniqueness.
+Negative cases cover all five PKs/all seven FK categories; checkpoint retry works
+without files/DuckDB/COPY. Ruff/format, whitespace checks and independent review
+passed. Full-release performance remains unmeasured for this change.
+
+## 2026-10-01 — full resolved-Parquet release on nicesrv, attempt 7 (cancelled)
+
+**Reason**: user-authorized restart after attempt 6's confirmed rollback, using
+frontier ontology traversal and a persistent validated base/index checkpoint.
+Once this checkpoint commits, late derivation failures can use PostgreSQL-only
+`finish_release` / `--finish` without repeating COPY. No resource rebuilds,
+reference preparation, resolution or version changes.
+
+**Parameters**: exact checkout `552e1d0efdf8e5e969080fada2ff17bc923b6c21`,
+checkpoint loader `552e1d0`, ontology frontier `4fe91d1`, replay `300d06b`,
+pypath `e27d72e095f53b1a0fd76d63bbe059c10f8a48d8`. Same 46 pins, release
+`2026.9.30.4`, schema `full_20260930`, canonical release-manifest SHA-256
+`06f55112b371055b9b539c27eb7886d403b0131098393d1bafe4723ce006c03e`.
+Invocation: `uv run --frozen --no-sync --directory
+/root/projects/omnipath-migration/omnipath-build python
+/root/projects/omnipath-migration/full-release-20260930/postgres-sql-build.py`.
+`load_release(..., batch_size=1024, duckdb_threads=1, memory_limit='1024MB',
+validate_source_records=False, checkpoint_base=True, temp_directory=state)`
+then all three products. CSV16MB rotation / COPY1 MiB byte blocks; work_mem16MB,
+maintenance_work_mem128MB, max_parallel_workers_per_gather1, JIT off.
+Importer/verifier each MemoryMax3GiB, swap256MiB, CPUQuota200%, Nice10,
+stop timeout90s; existing private PostgreSQL16 stays at4GiB/CPU2. Disk floor64GiB.
+Import unit `omnipath-migration-full-postgres-sql-attempt7-20260930.service`,
+invocation `526ba7385eb4456794247340583c4c66`; verifier unit
+`omnipath-migration-full-verification-sql-attempt7-20260930.service`, invocation
+`945a61a9ce784be89b7efb15358a31f4`. Coordinator code SHA-256
+`ce6c28b559ab1e834f5efb140f34dc0cde012a189145141abfd85ef0322b61f0`.
+
+Base commits only after mandatory file recheck, normalized integrity and indexes;
+a session advisory lock spans commits. Derivation publishes `release_metadata`
+in its own transaction. A persistent marker captures exact pins/hashes, audit
+metadata, counts and base index definitions. Default loads remain atomic.
+Network registration/streaming and COSMOS reject unpublished schemas before
+mutation/serving. All486 PostgreSQL/subset tests passed in31.81s, Ruff/format
+checks passed, and independent review passed after fixing quoted mixed-case
+checkpoint lookup. Resume tests remove input files and forbid DuckDB/COPY.
+
+**Phase durations**: started **2026-10-01T06:20:06.778982+00:00** and
+cancelled after **1936.394977 s** (32m16s), before the base checkpoint. Release
+read completed in 6.325272 s. Partial COPY counters were 2,808,540 entities;
+25,497,190 identifiers; 2,172,554 relations; 3,279,000 evidence; 27,245,121
+annotations, totaling 61,002,405 rows. These are historical uncommitted counters;
+no derivation or verification completed. Completed-table CSV staging totaled
+245.901000 s and COPY 1566.713974 s; typed validation, including ChEMBL's completed
+validation, totaled 46.993674 s. Six resources completed all five COPY tables.
+Their staging/COPY seconds were BindingDB 231.736932/1400.387034 (largest),
+BRENDA 1.120558/15.785462, CellChat 0.862258/8.024571,
+Cellinker 1.035992/12.741105, CellPhoneDB 0.109843/1.041236 and
+ChEBI 11.035417/128.734566. ChEMBL staging was interrupted before a table result
+was recorded, so its partial work is excluded from these timing totals.
+
+**Outcome**: user-authorized cancellation to move five base primary keys,
+annotation-owner uniqueness and all seven foreign keys after COPY, with complete
+validation before the base checkpoint. Both private attempt-7 units stopped.
+Fresh `attempt7-rollback.json` at 2026-10-01T06:54:51.539126+00:00 confirms the
+full schema absent, both pilot schemas preserved, no importer/verifier backends,
+private data present and hidden data absent. Reports/logs/coordinator were archived
+server-locally under unique tag `20261001T070135325182Z-e0503e02`.
+All 46 resource artifacts, cache, reference and version pins remain reusable.
+
+A separate private-only configuration change at
+2026-10-01T06:56:28.286142+00:00 increased `max_wal_size` from 1024MB to 8192MB
+via `ALTER SYSTEM` and reload. The applied value has no pending restart;
+`fsync`, `synchronous_commit` and `wal_level` were unchanged. No container restart
+or production database change was made. Deferred-constraint code and tests are
+being prepared for attempt 8; no full-scale speedup has yet been measured.
+
+## 2026-10-01 — PostgreSQL ontology frontier microbenchmark (completed)
+
+**Reason**: replace cumulative closure expansion with breadth-first frontiers,
+then confirm unchanged results and measure the contained algorithmic improvement.
+No DuckDB, schema, resolver, resource or running-server changes.
+
+**Parameters**: local disposable PostgreSQL 16 cluster, Unix socket only,
+shared_buffers 32MB, work_mem 16MB, JIT disabled, statement timeout 60s.
+Direct `_closure` calls compare baseline revision `4a643f2` with the frontier
+implementation on one synthetic 120-node chain: first 60 links in resource
+`first`, remaining 59 in `second`, version `v1`, kind `subclass`, six physical
+copies per link (714 rows). Timed calls include adjacency/frontier setup,
+traversal, statistics and cleanup; equality is checked outside the timer.
+Invocation: `OMNIPATH_TEST_POSTGRES=1 uv run --frozen --no-sync python
+/private/tmp/omnipath-frontier-benchmark.py`. This is a function benchmark,
+not a resource build. The recorded run occurred after the regression suite
+finished; an earlier concurrent run was used only as an initial smoke check.
+
+**Phase durations**: scoped closure: baseline 0.555150 s, frontier 0.049972 s,
+3,600 identical pairs (about 11x faster). Global closure: baseline 1.437431 s,
+frontier 0.083676 s, 7,140 identical pairs (about 17x faster).
+
+**Outcome**: exact pair/depth equality in both scopes. Seven focused integration
+tests passed in 2.60 s; all 424 PostgreSQL/subset tests passed in 27.26 s;
+Ruff lint/format, whitespace checks and independent review passed.
+The tests include independent Floyd–Warshall equality, cycles, shortcuts,
+depth 25, kinds, resource/version isolation, cross-resource paths, duplicate
+provenance, repeated/empty rebuilds, search-path decoys and interruption rollback.
+One 14-link planner regression verifies frontiers of 14 through 1 pairs:
+105 total expansions, with current temporary-table statistics and usable indexes.
+This single synthetic graph does not measure full-release time or peak memory.
+One deduplicated indexed adjacency table and two frontiers add working storage;
+final closure size is unchanged. Attempt 6 continues on its original revision.
+
+## 2026-10-01 — full resolved-Parquet release on nicesrv, attempt 6 (cancelled)
+
+**Reason**: retry the unchanged release after attempt 5's clean rollback, with
+ontology traversal indexes and sampled statistics available before closure
+expansion. Cancellation followed code review of late index creation and missing
+fresh edge/closure statistics. The optional actual-release probe did not obtain
+EXPLAIN, so no confirmed stall, production plan or full-scale speedup is claimed.
+
+**Parameters**: exact checkout `4a643f2750bf1ae35e54700c394ad5cb0ae9a054`;
+loader `420c407`, ontology `4a643f2`, native replay `300d06b`, pypath
+`e27d72e095f53b1a0fd76d63bbe059c10f8a48d8`. Unchanged release `2026.9.30.4`,
+all 46 pins and schema `full_20260930`; canonical release-manifest SHA-256
+`06f55112b371055b9b539c27eb7886d403b0131098393d1bafe4723ce006c03e`.
+Invocation: `uv run --frozen --no-sync python
+/root/projects/omnipath-migration/full-release-20260930/postgres-sql-build.py`.
+`load_release(..., batch_size=1024, duckdb_threads=1, memory_limit='1024MB',
+validate_source_records=False, temp_directory=state)` then all three products.
+CSV/COPY settings, session settings and resource bounds remain those of attempt 5.
+The coordinator adds only source-scoped/release-wide ontology timing wrappers;
+SHA-256 `f34108ae832110cdfa8946517abe98ee424789bf15a12ffd6962ead28902c554`.
+Import unit `omnipath-migration-full-postgres-sql-attempt6-20260930.service`,
+invocation `25bfa2dc65804317a4774393b6e98dc0`; queued verifier unit
+`omnipath-migration-full-verification-sql-attempt6-20260930.service`, invocation
+`76eb4fdaa2764ebba962a0264138e55c`.
+
+Existing edge and ancestor indexes now precede both closures; populated edge,
+seeded closure and changed closure statistics are refreshed. Schemas, index
+expressions, shortest-pair and cycle semantics remain unchanged. All 420
+PostgreSQL/subset tests passed in 23.40 s and independent review passed. Mandatory
+artifact, normalized-integrity and reaction-annotation checks remain enabled.
+
+**Phase durations**: started 2026-10-01T01:07:23.133303Z. A single read-only
+aggregate snapshot at 2026-10-01T03:44:07.208111Z records all 46 resources / 230
+tables copied: typed validation 126.211743 s, CSV staging 1015.314059 s and COPY
+8138.151367 s. Completed final phases were release read 6.537909 s and schema
+analyze 4.268968 s. A later aggregate snapshot at
+2026-10-01T05:17:39.873059Z confirms loaded-data validation completed in
+1441.182233 s and indexes in 840.957112 s. Source-scoped ontology closure began
+at elapsed 12250.685 s and remains active in the 05:38 UTC monitor snapshot.
+The largest source COPY totals were ChEMBL
+2172.242730 s (staging 354.214143 s), BindingDB 1424.617466 s (staging 228.086378 s)
+and FooDB 793.982437 s (staging 94.331009 s). Scoped/global ontology,
+other derivation, product and verification timings remain pending.
+
+**Outcome**: COPY complete for 278,437,531 rows: 6,383,473 entities; 80,136,865
+identifiers; 18,339,902 relations; 22,887,251 evidence; 150,690,040 annotations.
+CSV output totaled 7,807 chunks / 139,158,600,874 bytes. These are completed
+projection/COPY metrics, not committed or independently verified final PostgreSQL
+counts. Loaded-data validation and index creation passed; commit/rollback,
+derivations, products and full verification remain pending. No source builds or
+version changes.
+
+**Final outcome**: user-authorized cancellation to restart with frontier traversal
+and a persistent base checkpoint. Attempt 6 ran for **17745.644952 s**; its
+source-scoped closure completed in **5340.111027 s**, then global closure began
+at elapsed 17590.798 s and was interrupted before completion. No base transaction
+committed. Fresh read-only `attempt6-rollback.json` at
+2026-10-01T06:05:52.096952+00:00 confirms `full_20260930` absent, both prior pilot
+schemas preserved, no importer/verifier backends, private data present and hidden
+data absent. Stopped only the two private attempt-6 units. Reports/logs/coordinator
+were archived under unique tag `20261001T060641395642Z-0cb8cf39`; free disk was
+529.052 GiB after rollback. All resource artifacts and pins remain reusable.
+The earlier 05:38 snapshot above is historical; attempt 6 is no longer running.
+
+## 2026-10-01 — bounded actual-release ontology plan probe on nicesrv (incomplete)
+
+**Reason**: inspect fresh-table plans before and after ontology traversal index/statistics
+ordering change `4a643f2`, while attempt 5 was running unchanged. This diagnostic did
+not reload entities or resources and never connected to the import or production database.
+
+**Parameters**: private release `2026.9.30.4`, all 46 exact pins; canonical manifest
+SHA-256 `06f55112b371055b9b539c27eb7886d403b0131098393d1bafe4723ce006c03e`.
+Read-only frozen runtime `/root/projects/omnipath-migration/omnipath-build`, HEAD
+`c27a37f03d95d99d19f19f468f389d06234cc172` / loader `420c407`.
+`uv run --no-cache --frozen --no-sync --directory <frozen-runtime> python
+<exclusive-private-directory>/probe.py --workdir=<exclusive-private-directory>
+--unit=<exclusive-probe-unit>.service --container=<exclusive-probe-container>`;
+the final classification used `--phase=bootstrap` and read no Parquets.
+Production DuckDB relation projection, filtered to ontology statements, plus the
+production Biolink direction/hierarchy-kind rules; DuckDB 1.5.6, one thread,
+512MB working memory, helper cgroup at most 1 GiB / 50% CPU. PostgreSQL was a new
+no-network, no-published-port container from existing image
+`sha256:52f87503b2fe5ad2e0d209b1a55830db42eb3ecd3eaf1b583accb0091ab30bff`.
+PG/controller limits were 512/384 MiB and 40%/10% CPU; shared buffers32MB,
+work_mem8MB, maintenance32MB, gather0, jit off. The graph cap was 3,000,000 edges;
+combined CSV/PG-data/temp cap2 GiB, disk floor64 GiB, operation limit600 s,
+readiness limit60 s, preparation statement limit90 s and candidate limit10 s.
+Only one expansion round per case was permitted. The minimal bootstrap also had
+an outer systemd limit90 s. No image/package downloads, checkout updates or raw-payload reads.
+
+The intended baseline was empty-edge `ANALYZE`, edge population, then fresh seeded
+source/release closures without traversal indexes or refreshed statistics. The new
+case would create the unchanged traversal indexes before expansion and analyze
+populated edges and each seeded/changed closure. Neither case reached edge COPY.
+
+**Phase durations**: initial wrong-runtime import failed safely in 0.088385 s.
+Three exact edge extractions took 6.233286, 6.171601 and 6.121330 s; each produced
+987,393 edges from 12 resources: 972,599 subclass and 14,794 part-of edges.
+All three CSVs were 361,977,795 bytes with SHA-256
+`0d722a8e7aca0d5375c1b5b1df306fe2eb25af7b438bf14e400f610aaa00594d`.
+Their isolated bootstrap attempts ended at 29.393892, 69.794769 and 69.691341 s,
+including extraction and cleanup. The final no-Parquet bootstrap check took
+62.703720 s. Total elapsed across attempts was 231.672107 s. No source build,
+entity load, successful edge COPY, closure EXPLAIN or closure timing occurred.
+
+**Outcome**: incomplete; stopped after the minimal bootstrap failed. The helper
+corrected an image UID70/socket-owner mismatch and a 110-byte host socket address,
+using a held 29-byte descriptor alias. With explicit server/client port5432,
+correct PGDATA bind and the expected `.s.PGSQL.5432` present, libpq recorded six
+initial missing-file errors followed by 234 connection-refused errors; the
+container log had one readiness marker and no permission/FATAL/OOM markers.
+OS errno was not exposed separately. This does not establish a closure performance
+result or speedup. All created probe containers and private work directories were
+removed. Both mounts were binds; no anonymous volumes were created, and final
+cleanup also requested removal of owned anonymous volumes. Sampled peak private
+files were 402,056,150 bytes; minimum free disk was 359,774,490,624 bytes.
+Attempt 5, full/pilot schemas, protected services, source artifacts and checkouts
+were untouched. The secret-free aggregate report is retained locally at
+`/private/tmp/omnipath-ontology-plan-probe-summary.json`; per-attempt reports remain
+in the exclusive server directories, ending with
+`/root/projects/omnipath-migration/full-release-20260930/ontology-plan-probe-Oc6omQEk/report.json`.
+Aggregate upload was blocked by automatic approval review as private-metadata egress.
+
+## 2026-09-30 — full resolved-Parquet release on nicesrv, attempt 5 (cancelled, rolled back)
 
 **Reason**: retry the fixed release after HMDB entity staging exceeded attempt
 4's 512MB DuckDB allowance. All 46 resources / 230 exact production rotated-CSV
@@ -63,12 +899,27 @@ before and after loading, normalized integrity, owner constraints, reaction
 annotation checks and atomic rollback remain mandatory. All 419 PostgreSQL/subset
 tests passed in 23.56 s, including identical stored output in both modes.
 
-**Phase durations**: pending in the new `postgres-build.json`/`.log`.
+**Phase durations**: started 2026-09-30T19:22:54.217010Z at checkout
+`c27a37f03d95d99d19f19f468f389d06234cc172`; total 19,498.681013 s before cancellation
+and rollback. All 46 resources / 230 tables completed: typed validation 129.240034 s,
+CSV staging 1078.313069 s and COPY 8485.646031 s; 7,807 chunks /
+139,158,600,874 CSV bytes. Completed final phases: release read 5.939686 s,
+schema analyze 3.841620 s, loaded-data validation 1455.021736 s and indexes
+832.696578 s. Derivation was unfinished; no subset or full-verification result.
 
-**Outcome**: pending. Expected base rows: 6,383,473 entities; 80,136,865 identifiers;
-18,339,902 relations; 22,887,251 evidence; 150,690,040 annotations. No resource
-rebuilds or source-version changes for this retry. The full read-only and
-PostgreSQL-only product rebuild checks remain queued behind base/product commit.
+**Outcome**: cancelled and rolled back after all 278,437,531 expected rows copied:
+6,383,473 entities; 80,136,865 identifiers; 18,339,902 relations; 22,887,251 evidence;
+150,690,040 annotations. Cancellation followed the reviewed late ontology traversal
+index/statistics issue. The optional production-edge probe did not reach EXPLAIN;
+a stall or production query plan was not confirmed, and no speedup was measured.
+At 2026-10-01T00:54:31.617812Z, `attempt5-rollback.json` confirmed `full_20260930`
+absent, both old schemas (`pilot_20260930`, `annotation_sample_20260930`) preserved,
+no import/verifier backends, private data restored and no hidden-for-verification
+directory. No base load committed. Unique archives end
+`20261001T005431618899Z-c9f49013`: `postgres-build-attempt5-archive-<suffix>.json` /
+`.log` and `verification-wait-attempt4-attempt5-archive-<suffix>.log`.
+No resource rebuilds or source-version changes occurred. These checkpoint
+observations precede attempt 6.
 
 ## 2026-09-30 — full resolved-Parquet release on nicesrv, attempt 4 (failed)
 
@@ -1068,6 +1919,7 @@ clear SC-001/002/003/004/005's targets, not just a nice-to-have — the
 unresolved counts are in the right range to match WP2's already-documented
 candidate-ambiguity problem.
 
+
 ## 2026-10-01: main alignment setup and authorized old-schema cleanup
 
 The user authorized using nicesrv and removing only the previous approximately 190 GiB full migration build to make room for alignment with main. No Parquet outputs, resolution reference or cache were changed. A guarded drop removed `full_20260930` from private PostgreSQL16 at loopback5440; both prior pilot schemas and all four production/prototype containers remained intact. The schema occupied206,661,582,848bytes (192.47GiB). Free filesystem space rose to562,186,121,216bytes. A schema-only DDL backup and copied release/build/sample reports are retained in `/root/projects/omnipath-migration/main-alignment-20261001`; cleanup receipt records four matching protected container IDs/start times.
@@ -1093,6 +1945,7 @@ Reports are retained under `/root/projects/omnipath-migration/main-alignment-202
 
 Final frozen main-oracle rerun: 15 passed in 3.27s, including BIGINT source IDs and executed view/function definitions. Ruff and patch whitespace checks passed.
 
+
 ## 2026-10-01: full main-compatible release load started
 
 Runtime commit `d0a1c80c33699353a589e06b957ad49960f01ef2` is pushed on `parquet-migration`. A615-file source snapshot was verified byte-for-byte on nicesrv; its manifest SHA256 is66c69d10b3d4113fd9e00ba1e102443788af970b08d0886eba362dce0fbdd4b2. Copied main SQL retains two inherited whitespace warnings; the implementation's Ruff checks passed.
@@ -1100,6 +1953,7 @@ Runtime commit `d0a1c80c33699353a589e06b957ad49960f01ef2` is pushed on `parquet-
 The full build started at2026-10-01T20:25:13.932388+00:00, using unchanged release2026.9.30.4 (46resources, canonical SHA25606f55112b371055b9b539c27eb7886d403b0131098393d1bafe4723ce006c03e) in new schema`aligned_full_20261001`, isolated mainPG18 at loopback5441. Parameters: DuckDB2threads/2GB, on-disk projection and CSV staging, late main keys/FKs/indexes, durable base and complete-product commits. Systemd unit`omnipath-migration-main-aligned-20261001.service` caps the builder at5GiB/2CPU and runs atNice10. No mandatory verification, rollback-rebuild or safety job is queued.
 
 Preflight confirmed all615runtime files, mainPG18 image/loopback binding, public extension namespaces, no competing active private backend, both prior pilot schemas in privatePG16 and all four running protected services. Free disk560,904,417,280bytes. Initial monitor at20:27UTC showed healthy DuckDBvalidate_and_stage, matching release pins and no committed base yet. Memory was approximately2.34GBanonymous plus reclaimable file cache; zero OOM events. The existing15-minute check is active for this new run and reports meaningful changes only. Full timings, product results and final storage are pending.
+
 
 ## 2026-10-01: full attempt1 diagnosis and taxonomy validation correction
 

@@ -62,3 +62,4 @@ data_cellcell/
 *.so
 *.dylib
 *.pyd
+main-reference/
