@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .locations import is_remote, join_location
+
 
 PROJECTION_COLUMNS = {
     "entities": (
@@ -109,7 +111,8 @@ def _literal(value: str) -> str:
 
 
 def _scan(directory: str | Path, filename: str) -> str:
-    path = str((Path(directory) / filename).absolute())
+    location = join_location(directory, filename)
+    path = location if is_remote(location) else str(location.absolute())
     return f"read_parquet({_literal(path)}, hive_partitioning=false)"
 
 
@@ -243,7 +246,13 @@ def _nonfinite_quantities(array: str) -> str:
     )
 
 
-def validate_resource(con: Any, directory: str | Path) -> ResourceValidation:
+def validate_resource(
+    con: Any,
+    directory: str | Path,
+    *,
+    entities_scan: str | None = None,
+    relations_scan: str | None = None,
+) -> ResourceValidation:
     """Validate source shapes and return only scalar counts/activity flags.
 
     Two aggregate scans inspect the published typed structs without converting
@@ -252,8 +261,8 @@ def validate_resource(con: Any, directory: str | Path) -> ResourceValidation:
     would crash the reference projector and are rejected. Each present numeric
     quantity must be finite before SQL JSON serialization.
     """
-    entities = _scan(directory, "entities.parquet")
-    relations = _scan(directory, "relations.parquet")
+    entities = entities_scan or _scan(directory, "entities.parquet")
+    relations = relations_scan or _scan(directory, "relations.parquet")
     entity = con.execute(f"""SELECT count(*)::BIGINT,
         COALESCE(sum(COALESCE(array_length(e.identifiers),0)),0)::BIGINT,
         COALESCE(sum(COALESCE(array_length(e.annotations),0)),0)::BIGINT,

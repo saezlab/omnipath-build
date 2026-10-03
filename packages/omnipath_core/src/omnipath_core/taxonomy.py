@@ -96,6 +96,7 @@ def prepare_reference(root: Path, manifest: dict) -> dict:
     try:
         with os.fdopen(fd, "wb") as stream:
             stream.write(content)
+        os.chmod(filename, 0o644)
         try:
             os.link(filename, target)
         except FileExistsError:

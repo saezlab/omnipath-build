@@ -12,13 +12,15 @@ from dataclasses import asdict, dataclass, is_dataclass
 import json
 import re
 from pathlib import Path
-from tempfile import TemporaryDirectory
+from tempfile import TemporaryDirectory, gettempdir
 from time import perf_counter
 
 import duckdb
 import psycopg2
 from psycopg2 import sql
 from psycopg2.extras import Json
+
+from .locations import is_remote
 
 from .aligned_projection import companion_ddl, prepare_aligned_release
 from .bulk import BulkCopyResult
@@ -357,7 +359,8 @@ def _ensure_molecular_type_index(conn, schema):
                     # choose when building main's original partitioned index.
                     cur.execute(
                         sql.SQL("CREATE INDEX ON {}.{} (molecular_type_id)").format(
-                            sql.Identifier(schema), sql.Identifier(child_name),
+                            sql.Identifier(schema),
+                            sql.Identifier(child_name),
                         )
                     )
                     cur.execute(matching, [parent_oid, child_oid])
@@ -366,8 +369,10 @@ def _ensure_molecular_type_index(conn, schema):
                     raise ValueError("Molecular-type partition has no unique matching index")
                 cur.execute(
                     sql.SQL("ALTER INDEX {}.{} ATTACH PARTITION {}.{}").format(
-                        sql.Identifier(schema), sql.Identifier(index_name),
-                        sql.Identifier(schema), sql.Identifier(candidates[0][0]),
+                        sql.Identifier(schema),
+                        sql.Identifier(index_name),
+                        sql.Identifier(schema),
+                        sql.Identifier(candidates[0][0]),
                     )
                 )
             cur.execute("SELECT indisvalid FROM pg_index WHERE indexrelid=%s", [parent_oid])
@@ -563,7 +568,8 @@ def load_main_release(
     start = perf_counter()
     release = read_release(data_root, manifest_path)
     artifact_seconds = perf_counter() - start
-    spool = Path(temp_directory or Path(manifest_path).parent / "main-staging")
+    staging_parent = Path(gettempdir()) if is_remote(manifest_path) else Path(manifest_path).parent
+    spool = Path(temp_directory or staging_parent / "main-staging")
     spool.mkdir(parents=True, exist_ok=True)
     with closing(psycopg2.connect(database_url)) as conn:
         _lock(conn, schema)
@@ -596,7 +602,8 @@ def load_main_release(
                     ensure_source_partitions(conn, schema=schema, source=source)
                 with conn.cursor() as cur:
                     for statement in companion_ddl(
-                        schema, retain_published_provenance=retain_published_provenance,
+                        schema,
+                        retain_published_provenance=retain_published_provenance,
                     ):
                         cur.execute(statement)
                 conn.commit()

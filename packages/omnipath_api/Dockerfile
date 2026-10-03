@@ -1,30 +1,23 @@
-# Build distributions once; serving and optional workers use the same lockfile.
+# Build only the serving packages; resource building belongs to the worker image.
 FROM ghcr.io/astral-sh/uv:0.7.6 AS uv
-FROM rust:1.97.1-slim-bookworm AS wheels
+FROM python:3.12-slim-bookworm AS wheels
 COPY --from=uv /uv /usr/local/bin/uv
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends python3 python3-dev python3-venv build-essential \
-    && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 COPY pyproject.toml uv.lock ./
 COPY packages ./packages
 COPY deploy/build-constraints.txt ./deploy/build-constraints.txt
 RUN uv export --frozen --package omnipath-api --no-dev --no-emit-workspace --no-hashes -o /api-requirements.txt \
-    && uv export --frozen --all-packages --no-dev --no-emit-workspace --no-hashes -o /worker-requirements.txt \
-    && uv build --all-packages --wheel --build-constraints deploy/build-constraints.txt --out-dir /wheels \
-    && cargo build --release --locked --manifest-path packages/omnipath_resolver/rust/reference/Cargo.toml --features parquet-input --bins
+    && uv build --package omnipath-core --wheel --build-constraints deploy/build-constraints.txt --out-dir /wheels \
+    && uv build --package omnipath-api --wheel --build-constraints deploy/build-constraints.txt --out-dir /wheels
 
-FROM python:3.12-slim-bookworm AS runtime
+FROM python:3.12-slim-bookworm AS api
 COPY --from=uv /uv /usr/local/bin/uv
 RUN apt-get update \
     && apt-get install -y --no-install-recommends curl libgomp1 \
     && rm -rf /var/lib/apt/lists/*
-ENV PYTHONUNBUFFERED=1
-ENV OMNIPATH_READ_ONLY=true
+ENV PYTHONUNBUFFERED=1 OMNIPATH_READ_ONLY=true
 WORKDIR /app
-
-FROM runtime AS api
-COPY --from=wheels /wheels/omnipath_core-*.whl /wheels/omnipath_api-*.whl /wheels/
+COPY --from=wheels /wheels /wheels
 COPY --from=wheels /api-requirements.txt /requirements.txt
 COPY --from=wheels /src/deploy/build-constraints.txt /build-constraints.txt
 RUN uv pip install --system --no-cache --no-deps --build-constraints /build-constraints.txt -r /requirements.txt /wheels/*.whl \
@@ -33,16 +26,3 @@ EXPOSE 8085
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
     CMD curl -fsS http://127.0.0.1:8085/api/health >/dev/null
 CMD ["python", "-m", "omnipath_api.cli", "--host", "0.0.0.0", "--port", "8085", "--data-root", "/data"]
-
-FROM runtime AS worker
-ENV PYPATH_DOWNLOAD_DATADIR=/data/pypath-data
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends git \
-    && rm -rf /var/lib/apt/lists/*
-COPY --from=wheels /wheels /wheels
-COPY --from=wheels /worker-requirements.txt /requirements.txt
-COPY --from=wheels /src/deploy/build-constraints.txt /build-constraints.txt
-COPY --from=wheels /src/packages/omnipath_resolver/rust/reference/target/release/anchor-components /usr/local/bin/anchor-components
-RUN uv pip install --system --no-cache --no-deps --build-constraints /build-constraints.txt -r /requirements.txt /wheels/*.whl \
-    && rm -rf /wheels /requirements.txt /build-constraints.txt
-CMD ["python", "-m", "omnipath_api.jobs.worker", "--data-root", "/data"]

@@ -63,6 +63,7 @@ def setup(tmp_path, monkeypatch):
         store.publish(
             {"schema_version": 1, "version": version, "resources": {"signor": resource_version}}
         )
+    assert (tmp_path / "releases/2026.09.json").stat().st_mode & 0o777 == 0o644
     engine = ParquetServingEngine(tmp_path)
     with TestClient(create_app(engine=engine)) as client:
         client.headers["x-admin-secret"] = "test-release-password"

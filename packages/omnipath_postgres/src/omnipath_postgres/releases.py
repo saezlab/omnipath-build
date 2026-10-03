@@ -1,6 +1,6 @@
 """Validate an explicit OmniPath release before loading its resolved Parquets.
 
-Only shared schemas and PyArrow are used here. No resource discovery, entity
+Only shared schemas, PyArrow and read-only file/HTTP access are used here. No resource discovery, entity
 resolution, source parsing or database connection occurs during validation.
 """
 
@@ -21,6 +21,16 @@ import pyarrow.parquet as pq
 
 from omnipath_core.schema import ENTITY_SCHEMA, PAYLOAD_SCHEMA, RELATION_SCHEMA
 from omnipath_core.versioning import validate_source, validate_version
+
+from .locations import (
+    HTTPRangeFile,
+    Location,
+    is_remote,
+    join_location,
+    open_http,
+    read_bytes,
+    validate_url,
+)
 
 
 FILE_SCHEMAS = MappingProxyType(
@@ -45,7 +55,7 @@ class ParquetArtifact:
     """An artifact attested by streamed content hash and Parquet metadata."""
 
     name: str
-    path: Path
+    path: Location
     sha256: str
     size_bytes: int
     rows: int
@@ -64,23 +74,23 @@ class ResourceSelection:
     version: str
     schema_version: int
     serving_schema_version: int
-    directory: Path
-    manifest_path: Path
+    directory: Location
+    manifest_path: Location
     manifest: Mapping[str, Any]
     manifest_json: str
     manifest_sha256: str
     files: Mapping[str, ParquetArtifact]
 
     @property
-    def entities_path(self) -> Path:
+    def entities_path(self) -> Location:
         return self.files["entities.parquet"].path
 
     @property
-    def relations_path(self) -> Path:
+    def relations_path(self) -> Location:
         return self.files["relations.parquet"].path
 
     @property
-    def payloads_path(self) -> Path:
+    def payloads_path(self) -> Location:
         return self.files["evidence_payloads.parquet"].path
 
 
@@ -96,8 +106,8 @@ class PinnedRelease:
     version: str
     schema_version: int
     resources: tuple[ResourceSelection, ...]
-    data_root: Path
-    manifest_path: Path
+    data_root: Location
+    manifest_path: Location
     manifest: Mapping[str, Any]
     canonical_json: str
     sha256: str
@@ -127,9 +137,9 @@ def _constant(value: str) -> None:
     raise ReleaseValidationError(f"Non-finite JSON number is not permitted: {value}")
 
 
-def _read_json(path: Path) -> tuple[dict[str, Any], str, str]:
+def _read_json(path: Location) -> tuple[dict[str, Any], str, str]:
     try:
-        content = path.read_bytes()
+        content = read_bytes(path)
         text = content.decode("utf-8")
         value = json.loads(text, object_pairs_hook=_object, parse_constant=_constant)
     except (OSError, UnicodeError, ValueError) as exc:
@@ -164,8 +174,15 @@ def _digest(value: Any, context: str) -> str:
     return value
 
 
-def _artifact_path(root: Path, path: Path) -> Path:
+def _artifact_path(root: Location, path: Location) -> Location:
     """Require literal pinned paths, rejecting escaping or mutable symlinks."""
+    if is_remote(root):
+        if not is_remote(path) or not path.startswith(root.rstrip("/") + "/"):
+            raise ReleaseValidationError(f"Artifact escapes data root: {path}")
+        try:
+            return validate_url(path)
+        except ValueError as exc:
+            raise ReleaseValidationError(str(exc)) from exc
     try:
         resolved = path.resolve(strict=True)
     except (OSError, RuntimeError) as exc:
@@ -180,13 +197,48 @@ def _artifact_path(root: Path, path: Path) -> Path:
 
 
 def _verify_parquet(
-    path: Path,
+    path: Location,
     expected_digest: str,
     *,
     schema: pa.Schema | None = None,
     size_bytes: int | None = None,
     rows: int | None = None,
 ) -> ParquetArtifact:
+    if is_remote(path):
+        try:
+            with HTTPRangeFile(path) as handle:
+                parquet = pq.ParquetFile(handle)
+                actual_rows = parquet.metadata.num_rows
+                actual_size = handle.size
+                if schema is not None and not parquet.schema_arrow.equals(schema):
+                    raise ReleaseValidationError(
+                        f"Parquet schema does not match serving contract: {path}"
+                    )
+                if rows is not None and actual_rows != rows:
+                    raise ReleaseValidationError(
+                        f"Parquet row count differs from build manifest: {path}"
+                    )
+                if size_bytes is not None and actual_size != size_bytes:
+                    raise ReleaseValidationError(
+                        f"Artifact size differs from build manifest: {path}"
+                    )
+            checksum = hashlib.sha256()
+            received = 0
+            with open_http(path) as response:
+                for chunk in iter(lambda: response.read(1024 * 1024), b""):
+                    checksum.update(chunk)
+                    received += len(chunk)
+            if received != actual_size or checksum.hexdigest() != expected_digest:
+                raise ReleaseValidationError(
+                    f"Artifact checksum or size differs from manifest: {path}"
+                )
+        except (OSError, ValueError, pa.ArrowException) as exc:
+            raise ReleaseValidationError(
+                f"Cannot read release Parquet artifact {path}: {exc}"
+            ) from exc
+        return ParquetArtifact(
+            path.rsplit("/", 1)[-1], path, expected_digest, actual_size, actual_rows
+        )
     try:
         with path.open("rb") as handle:
             before = os.fstat(handle.fileno())
@@ -223,9 +275,9 @@ def _verify_parquet(
     return ParquetArtifact(path.name, path, expected_digest, before.st_size, actual_rows)
 
 
-def _resource(root: Path, source: str, version: str) -> ResourceSelection:
-    directory = root / "resources" / source / version
-    path = _artifact_path(root, directory / "build_manifest.json")
+def _resource(root: Location, source: str, version: str) -> ResourceSelection:
+    directory = join_location(root, "resources", source, version)
+    path = _artifact_path(root, join_location(directory, "build_manifest.json"))
     manifest, text, checksum = _read_json(path)
     if manifest.get("resource") != source or manifest.get("version") != version:
         raise ReleaseValidationError(
@@ -249,7 +301,7 @@ def _resource(root: Path, source: str, version: str) -> ResourceSelection:
             raise ReleaseValidationError(f"Invalid artifact metadata for {source}/{version}/{name}")
         _fields(metadata, {"sha256", "size_bytes", "rows"}, set(), "artifact metadata")
         artifacts[name] = _verify_parquet(
-            _artifact_path(root, directory / name),
+            _artifact_path(root, join_location(directory, name)),
             _digest(metadata["sha256"], f"Checksum of {name}"),
             schema=schema,
             size_bytes=_integer(metadata["size_bytes"], f"Size of {name}"),
@@ -269,7 +321,7 @@ def _resource(root: Path, source: str, version: str) -> ResourceSelection:
     )
 
 
-def _references(root: Path, value: Any) -> Mapping[str, ParquetArtifact]:
+def _references(root: Location, value: Any) -> Mapping[str, ParquetArtifact]:
     if not isinstance(value, dict):
         raise ReleaseValidationError("Release references must be an object")
     _fields(value, set(), {"taxonomy"}, "release references")
@@ -303,7 +355,9 @@ def _references(root: Path, value: Any) -> Mapping[str, ParquetArtifact]:
     ):
         raise ReleaseValidationError("Taxonomy missing_taxon_ids must contain numeric strings")
     artifact = _verify_parquet(
-        _artifact_path(root, root / "references" / "taxonomy" / digest / "taxonomy.parquet"),
+        _artifact_path(
+            root, join_location(root, "references", "taxonomy", digest, "taxonomy.parquet")
+        ),
         digest,
         rows=count,
     )
@@ -314,14 +368,18 @@ def load_release(data_root: str | Path, manifest_path: str | Path) -> PinnedRele
     """Validate and return the exact resource artifacts pinned by a release file.
 
     The manifest may be supplied from outside ``data_root``. Every referenced
-    artifact must be a regular, literal path beneath the resolved data root.
+    artifact must be a regular local path or a literal HTTPS path beneath the data root.
     Mutable selections (including ``latest`` and ``working``) are rejected;
     there is no fallback to discovered resource versions or missing manifests.
     Validation reads only JSON, Parquet metadata and bounded hash chunks.
     """
-    root = Path(data_root).resolve()
-    path = Path(manifest_path).absolute()
-    if path.is_symlink():
+    root = (
+        validate_url(data_root).rstrip("/") if is_remote(data_root) else Path(data_root).resolve()
+    )
+    path = (
+        validate_url(manifest_path) if is_remote(manifest_path) else Path(manifest_path).absolute()
+    )
+    if not is_remote(path) and path.is_symlink():
         raise ReleaseValidationError("Release manifest must not be a mutable symlink")
     manifest, original_json, original_digest = _read_json(path)
     _fields(
@@ -355,7 +413,7 @@ def load_release(data_root: str | Path, manifest_path: str | Path) -> PinnedRele
         schema_version,
         resources,
         root,
-        path.resolve(),
+        path if is_remote(path) else path.resolve(),
         _immutable(manifest),
         canonical_json,
         hashlib.sha256(canonical_json.encode("utf-8")).hexdigest(),
@@ -365,7 +423,13 @@ def load_release(data_root: str | Path, manifest_path: str | Path) -> PinnedRele
     )
 
 
-def _verify_manifest(path: Path, expected: str) -> None:
+def _verify_manifest(path: Location, expected: str) -> None:
+    if is_remote(path):
+        if hashlib.sha256(read_bytes(path)).hexdigest() != expected:
+            raise ReleaseValidationError(
+                f"Pinned manifest changed since release validation: {path}"
+            )
+        return
     if path.is_symlink():
         raise ReleaseValidationError(f"Pinned manifest became a mutable symlink: {path}")
     try:

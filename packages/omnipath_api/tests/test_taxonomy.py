@@ -85,6 +85,14 @@ def test_release_names_entities_facets_and_cached_relations(tmp_path):
         manifests.append(
             store.publish(dict(schema_version=1, version=version, resources={"test": "1"}))
         )
+    for manifest in manifests:
+        taxonomy = (
+            tmp_path
+            / "references/taxonomy"
+            / manifest["references"]["taxonomy"]["version"]
+            / "taxonomy.parquet"
+        )
+        assert taxonomy.stat().st_mode & 0o777 == 0o644
     assert (
         manifests[0]["references"]["taxonomy"]["version"]
         != manifests[1]["references"]["taxonomy"]["version"]

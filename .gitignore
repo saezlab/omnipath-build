@@ -63,3 +63,5 @@ data_cellcell/
 *.dylib
 *.pyd
 main-reference/
+# Private deployment settings (the example remains tracked)
+/deploy/*.env

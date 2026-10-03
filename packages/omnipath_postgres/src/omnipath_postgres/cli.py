@@ -18,10 +18,10 @@ from .aligned_loader import (
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("release_manifest", nargs="?", help="Pinned release JSON file or HTTPS URL")
     parser.add_argument(
-        "release_manifest", nargs="?", help="Explicit release JSON with resource version pins"
+        "--data-root", help="Local directory or HTTPS base URL containing resources/"
     )
-    parser.add_argument("--data-root", help="Directory containing resources/")
     parser.add_argument("--database-url", default=os.environ.get("OMNIPATH_DATABASE_URL"))
     parser.add_argument(
         "--schema", default="omnipath", help="New destination schema or checkpoint to finish"
@@ -74,7 +74,7 @@ def main(argv=None) -> int:
     parser.add_argument("--memory-limit", help="DuckDB working-memory limit")
     parser.add_argument(
         "--temp-directory",
-        help="Filesystem for CSV staging and DuckDB spills; defaults next to manifest",
+        help="Local working filesystem; defaults next to a local manifest or in OS temporary storage for HTTPS",
     )
     args = parser.parse_args(argv)
     if not args.database_url:

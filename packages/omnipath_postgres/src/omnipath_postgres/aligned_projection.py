@@ -159,8 +159,6 @@ def _key(*expressions: str) -> str:
 
 
 def _create_inputs(con: Any, resources: tuple[ResourceSelection, ...]) -> None:
-    for resource in resources:
-        validate_resource(con, resource.directory)
     con.execute("""CREATE OR REPLACE MACRO ap_uuid(value) AS (
         (substr(md5(value),1,8)||'-'||substr(md5(value),9,4)||'-'||
          substr(md5(value),13,4)||'-'||substr(md5(value),17,4)||'-'||
@@ -174,6 +172,11 @@ def _create_inputs(con: Any, resources: tuple[ResourceSelection, ...]) -> None:
             for resource in resources
         ]
         con.execute(f"CREATE OR REPLACE TABLE {table} AS " + " UNION ALL ".join(selects))
+    # Validate the captured local inputs once; never scan remote Parquets again here.
+    validate_resource(
+        con, resources[0].directory,
+        entities_scan="ap_entity_raw", relations_scan="ap_statement_raw",
+    )
 
 
 def _create_flat_inputs(con: Any) -> None:

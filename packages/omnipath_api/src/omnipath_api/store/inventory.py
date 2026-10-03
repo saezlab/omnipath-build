@@ -56,6 +56,7 @@ def _write_json(path: Path, data: dict[str, Any]) -> None:
             handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
+        os.chmod(tmp, 0o644)
         os.link(tmp, path)
     finally:
         tmp.unlink(missing_ok=True)
