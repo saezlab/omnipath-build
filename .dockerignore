@@ -4,7 +4,9 @@
 **/__pycache__
 **/*.egg-info
 **/target
-**/build
+/build
+/packages/*/build
+/pypath/build
 **/.pytest_cache
 **/.ruff_cache
 **/.svelte-kit
@@ -20,3 +22,6 @@ legacy
 logs
 out
 bronze
+
+local-artifacts
+docs/history/notebooks

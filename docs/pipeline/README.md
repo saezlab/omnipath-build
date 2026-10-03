@@ -1,6 +1,8 @@
+> Historical pre-Parquet pipeline. These commands are retained for context; use the [current architecture](../architecture.md) and [root workflow](../../README.md).
+
 # Pipeline Steps
 
-This folder documents the current `omnipath_build` pipeline in execution order.
+This folder records the previous `omnipath_build` pipeline in execution order.
 Each numbered file focuses on one phase and points to the code that owns it.
 
 ## Ordered Steps

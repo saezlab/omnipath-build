@@ -1,3 +1,5 @@
+> Historical pre-Parquet pipeline. These commands are retained for context; use the [current architecture](../architecture.md) and [root workflow](../../README.md).
+
 # 3. Database Schema
 
 Schema setup creates the PostgreSQL objects needed for evidence, canonical graph

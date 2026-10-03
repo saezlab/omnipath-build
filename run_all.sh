@@ -8,7 +8,7 @@ api_port="${1:-8085}"
 web_port="${2:-5173}"
 data_root="${OMNIPATH_DATA_ROOT:-data}"
 
-uv run --frozen omnipath-api --host 127.0.0.1 --port "$api_port" --data-root "$data_root" &
+uv run --frozen --package omnipath-api omnipath-api --host 127.0.0.1 --port "$api_port" --data-root "$data_root" &
 api_pid=$!
 cleanup() {
     kill "$api_pid" 2>/dev/null || true
@@ -19,4 +19,4 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 API_SERVICE_URL="http://127.0.0.1:$api_port" \
-    pnpm --dir packages/omnipath_web dev --host 127.0.0.1 --port "$web_port"
+    pnpm --dir packages/web dev --host 127.0.0.1 --port "$web_port"

@@ -1,3 +1,5 @@
+> Historical pre-Parquet pipeline. These commands are retained for context; use the [current architecture](../architecture.md) and [root workflow](../../README.md).
+
 # 4. Source Discovery
 
 Source discovery finds runnable `pypath.inputs_v2` datasets without maintaining a

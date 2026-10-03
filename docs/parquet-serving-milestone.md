@@ -57,7 +57,7 @@ full-release compatibility.
 
 ```sh
 uv sync --frozen --all-packages
-pnpm --dir packages/omnipath_web install --frozen-lockfile
+pnpm --dir packages/web install --frozen-lockfile
 OMNIPATH_DATA_ROOT=data/migration-smoke ./run_all.sh
 ```
 

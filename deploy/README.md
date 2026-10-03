@@ -69,9 +69,24 @@ The current nicesrv deployment and exact rollback commands are recorded in
 The worker is excluded from normal startup. `make worker-up` explicitly builds
 and starts it with a writable data mount. Before using it, provision the reference
 library at `/data/reference/library` and configure build limits/queues according
-to the [API guide](../packages/omnipath_api/README.md) and
-[resource orchestration guide](../packages/omnipath_build/ORCHESTRATION.md).
+to the [API guide](../packages/api/README.md) and
+[resource orchestration guide](../packages/build/ORCHESTRATION.md).
 Stopping the worker does not stop read-only serving.
 
 The existing PostgreSQL promotion scripts in this directory are a separate
 workflow; serving commands never invoke them.
+
+## Query and database budgets
+
+The API pool bounds simultaneous queries and retained DuckDB connections.
+`API_QUERY_CONCURRENCY`, `API_QUERY_THREADS` and `API_QUERY_MEMORY` set its
+per-process query budget; `API_MEMORY_LIMIT` and `API_CPUS` bound the container.
+The default two databases each have a 1 GB DuckDB limit inside a 4 GB container.
+Additional Arrow/Python buffers need headroom. These are conservative starting
+values, not a full-release throughput benchmark.
+
+A development PostgreSQL instance is a separate explicit operation:
+copy `postgres-dev.env.example` to a private ignored `.env` file, choose a
+password, then use root `make postgres-up POSTGRES_ENV=deploy/postgres.env`.
+Its port binds only to loopback. `postgres-server.env.example` contains larger
+starting settings for a dedicated server, without changing any live deployment.

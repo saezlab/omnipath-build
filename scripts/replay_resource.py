@@ -531,7 +531,7 @@ def main(argv=None):
     )
     parser.add_argument("--min-free-disk-gb", type=int, default=1)
     args = parser.parse_args(argv)
-    from omnipath_build.canonical.library import pin_library
+    from omnipath_resolver.canonical.library import pin_library
     from omnipath_core.versioning import validate_version
 
     version = validate_version(args.version)

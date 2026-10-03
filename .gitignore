@@ -51,12 +51,12 @@ data_cellcell/
 .playwright-mcp
 # Workspace package outputs
 **/*.egg-info/
-**/build/
+/packages/*/build/
 .ruff_cache/
 
 # Required source dictionaries, not generated reference data
-!packages/omnipath_build/src/omnipath_build/reference/data/
-!packages/omnipath_build/src/omnipath_build/reference/data/*.zstd
+!packages/build/omnipath_build/reference/data/
+!packages/build/omnipath_build/reference/data/*.zstd
 
 # Native extension build outputs
 *.so
@@ -65,3 +65,6 @@ data_cellcell/
 main-reference/
 # Private deployment settings (the example remains tracked)
 /deploy/*.env
+
+# Locally preserved exploratory artifacts; provenance is in docs/history
+/local-artifacts/

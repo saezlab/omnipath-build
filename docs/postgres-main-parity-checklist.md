@@ -78,7 +78,7 @@ The focused checks are optional development verification, not a restored mandato
 Local static and oracle checks:
 
 ```sh
-uv run --frozen --no-sync pytest packages/omnipath_postgres/tests/test_main_parity_contract.py packages/omnipath_postgres/tests/test_main_metsigdb_parity.py -q
+uv run --frozen --no-sync pytest packages/postgres/tests/test_main_parity_contract.py packages/postgres/tests/test_main_metsigdb_parity.py -q
 ```
 
 For the bounded PostgreSQL checks, the parent task sets `OMNIPATH_MAIN_PARITY_DSN` privately to the **new isolated migration PostgreSQL**, then runs the same command. Do not use production or the prototype database. The fixture creates and removes only random `parity_main_*` / `parity_port_*` schemas. It compares the exact frozen main algorithm against the adapted backend over declared resolved SQL facts, with no parser or original resolver involved.

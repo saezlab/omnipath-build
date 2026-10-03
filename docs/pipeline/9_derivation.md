@@ -1,3 +1,5 @@
+> Historical pre-Parquet pipeline. These commands are retained for context; use the [current architecture](../architecture.md) and [root workflow](../../README.md).
+
 # 9. Derivation
 
 Derivation rebuilds query-facing artifacts after selected sources have been

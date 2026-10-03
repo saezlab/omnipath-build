@@ -1,3 +1,5 @@
+> Historical pre-Parquet pipeline. These commands are retained for context; use the [current architecture](../architecture.md) and [root workflow](../../README.md).
+
 # 5. DuckDB Projection
 
 Projection streams pypath source records into DuckDB evidence tables.

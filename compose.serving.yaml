@@ -4,12 +4,18 @@ services:
     image: ${API_IMAGE:-omnipath-api:local}
     build:
       context: .
-      dockerfile: packages/omnipath_api/Dockerfile
+      dockerfile: packages/api/Dockerfile
       target: api
     restart: unless-stopped
     environment:
       OMNIPATH_PUBLIC_DATA_URL: ${PUBLIC_DATA_URL:-http://localhost:8080}
       OMNIPATH_READ_ONLY: "true"
+      OMNIPATH_QUERY_CONCURRENCY: ${API_QUERY_CONCURRENCY:-2}
+      OMNIPATH_QUERY_WAIT_SECONDS: ${API_QUERY_WAIT_SECONDS:-30}
+      OMNIPATH_DUCKDB_MEMORY_LIMIT: ${API_QUERY_MEMORY:-1GB}
+      OMNIPATH_DUCKDB_THREADS: ${API_QUERY_THREADS:-2}
+    mem_limit: ${API_MEMORY_LIMIT:-4g}
+    cpus: ${API_CPUS:-4}
     volumes:
       - ${DATA_DIR:-./data}:/data:ro
     ports:
@@ -19,7 +25,7 @@ services:
     image: ${WEB_IMAGE:-omnipath-web:local}
     build:
       context: .
-      dockerfile: packages/omnipath_web/Dockerfile
+      dockerfile: packages/web/Dockerfile
       args:
         PUBLIC_ENVIRONMENT: ${PUBLIC_ENVIRONMENT:-production}
         PUBLIC_DOMAIN: ${PUBLIC_DOMAIN:-localhost}
@@ -57,7 +63,7 @@ services:
     image: ${WORKER_IMAGE:-omnipath-worker:local}
     build:
       context: .
-      dockerfile: packages/omnipath_build/Dockerfile
+      dockerfile: packages/build/Dockerfile
       target: worker
     restart: unless-stopped
     environment:

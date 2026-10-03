@@ -1,3 +1,5 @@
+> Historical pre-Parquet pipeline. These commands are retained for context; use the [current architecture](../architecture.md) and [root workflow](../../README.md).
+
 # 7. PostgreSQL Copy
 
 The copy phase moves projected evidence and canonical graph rows from DuckDB

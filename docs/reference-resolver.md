@@ -125,6 +125,6 @@ implemented and tested end to end on fixtures; this full generation was created
 by converting the completed reference build, so a fresh full-scale run of the
 direct compiler is not yet measured.
 
-Detailed measurements are retained in
-[the dated full-build report](reports/full-two-index-benchmark-20260912.md) and
-[the fanout audit](reports/identifier-fanout-20260912.md).
+The original detailed benchmark and fanout reports are not included in this
+repository snapshot. The figures above are historical observations, not measurements
+of a newly compiled reference. Current operations are recorded in [the build log](build-log.md).

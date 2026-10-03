@@ -22,61 +22,61 @@ help:
 
 setup: setup-python setup-web
 setup-python:
-	git submodule update --init --recursive
+	git submodule update --init pypath
 	uv sync --frozen --all-packages
 	$(MAKE) native-reference
 native-reference:
-	cargo build --release --locked --manifest-path packages/omnipath_resolver/rust/reference/Cargo.toml --features parquet-input --bin anchor-components
+	cargo build --release --locked --manifest-path packages/resolver/rust/reference/Cargo.toml --features parquet-input --bin anchor-components
 setup-web:
-	pnpm --dir packages/omnipath_web install --frozen-lockfile
+	pnpm --dir packages/web install --frozen-lockfile
 
 test:
 	uv run --frozen pytest -m 'not integration'
 test-pypath:
 	uv run --frozen pytest pypath/test/test_tabular_execution.py pypath/test/test_signor_identifiers.py pypath/test/test_inputs_v2_chemical_migration.py pypath/test/test_interaction_profiles.py pypath/test/test_measurement_review_fixes.py pypath/test/test_model_rule_review_fixes.py -q
 test-postgres:
-	OMNIPATH_TEST_POSTGRES=1 uv run --frozen pytest packages/omnipath_postgres/tests -q
+	OMNIPATH_TEST_POSTGRES=1 uv run --frozen pytest packages/postgres/tests -q
 test-subsets:
-	OMNIPATH_TEST_POSTGRES=1 uv run --frozen pytest packages/omnipath_postgres/tests packages/omnipath_subsets/tests -q
+	OMNIPATH_TEST_POSTGRES=1 uv run --frozen pytest packages/postgres/tests packages/subsets/tests -q
 test-api:
-	uv run --frozen pytest packages/omnipath_api/tests -q
+	uv run --frozen pytest packages/api/tests -q
 check:
 	uv run --frozen ruff check packages scripts conftest.py
 	uv run --frozen ruff format --check packages scripts conftest.py
 check-web:
-	pnpm --dir packages/omnipath_web check
-	pnpm --dir packages/omnipath_web test
+	pnpm --dir packages/web check
+	pnpm --dir packages/web test
 
 # Resource processing is bounded unless explicitly overridden.
 build:
-	uv run --frozen omnipath-build build "$(SOURCE)" --version "$(VERSION)" --max-records $(MAX_RECORDS) --output-dir "$(DATA_ROOT)"
+	uv run --frozen --package omnipath-build omnipath-build build "$(SOURCE)" --version "$(VERSION)" --max-records $(MAX_RECORDS) --output-dir "$(DATA_ROOT)"
 sample:
-	uv run --frozen python scripts/migration_smoke.py --output-dir "$(DATA_ROOT)/migration-smoke" --version "$(VERSION)" --max-records $(MAX_RECORDS)
+	uv run --frozen --package omnipath-build python scripts/migration_smoke.py --output-dir "$(DATA_ROOT)/migration-smoke" --version "$(VERSION)" --max-records $(MAX_RECORDS)
 hubs: native-reference
-	uv run --frozen omnipath-build export-hubs $(HUB_ARGS)
+	uv run --frozen --package omnipath-build omnipath-build export-hubs $(HUB_ARGS)
 reference: native-reference
-	uv run --frozen omnipath-build build-library $(REFERENCE_ARGS)
+	uv run --frozen --package omnipath-build omnipath-build build-library $(REFERENCE_ARGS)
 publish-release:
 	@test -n "$(RELEASE_MANIFEST)" || (echo 'Set RELEASE_MANIFEST to an explicit pinned JSON file'; exit 2)
-	uv run --frozen python -m omnipath_api.publish_release "$(RELEASE_MANIFEST)" --data-root "$(DATA_ROOT)"
+	uv run --frozen --package omnipath-api python -m omnipath_api.publish_release "$(RELEASE_MANIFEST)" --data-root "$(DATA_ROOT)"
 serving-indexes:
-	uv run --frozen python -m omnipath_api.serving_index --data-root "$(DATA_ROOT)" $(INDEX_ARGS)
+	uv run --frozen --package omnipath-api python -m omnipath_api.serving_index --data-root "$(DATA_ROOT)" $(INDEX_ARGS)
 
 api:
-	uv run --frozen omnipath-api --host 127.0.0.1 --port $(API_PORT) --data-root "$(DATA_ROOT)"
+	uv run --frozen --package omnipath-api omnipath-api --host 127.0.0.1 --port $(API_PORT) --data-root "$(DATA_ROOT)"
 web:
-	API_SERVICE_URL=http://127.0.0.1:$(API_PORT) pnpm --dir packages/omnipath_web dev --host 127.0.0.1 --port $(WEB_PORT)
+	API_SERVICE_URL=http://127.0.0.1:$(API_PORT) pnpm --dir packages/web dev --host 127.0.0.1 --port $(WEB_PORT)
 dev:
 	OMNIPATH_DATA_ROOT="$(DATA_ROOT)" ./run_all.sh $(API_PORT) $(WEB_PORT)
 
 load-postgres:
 	@test -n "$(RELEASE_MANIFEST)" || (echo 'Set RELEASE_MANIFEST to a pinned JSON file or HTTPS URL'; exit 2)
-	uv run --frozen omnipath-postgres "$(RELEASE_MANIFEST)" --data-root "$(DATA_ROOT)" --schema "$(POSTGRES_SCHEMA)" $(POSTGRES_ARGS)
+	uv run --frozen --package omnipath-postgres omnipath-postgres "$(RELEASE_MANIFEST)" --data-root "$(DATA_ROOT)" --schema "$(POSTGRES_SCHEMA)" $(POSTGRES_ARGS)
 finish-postgres:
-	uv run --frozen omnipath-postgres --finish --schema "$(POSTGRES_SCHEMA)" $(POSTGRES_ARGS)
+	uv run --frozen --package omnipath-postgres omnipath-postgres --finish --schema "$(POSTGRES_SCHEMA)" $(POSTGRES_ARGS)
 # Use the aligned PostgreSQL pipeline; durable completed phases are skipped.
 build-subsets:
-	uv run --frozen omnipath-postgres --finish --schema "$(POSTGRES_SCHEMA)" --products $(SUBSET_PRODUCTS)
+	uv run --frozen --package omnipath-postgres omnipath-postgres --finish --schema "$(POSTGRES_SCHEMA)" --products $(SUBSET_PRODUCTS)
 
 serving-build:
 	$(COMPOSE) build api web
@@ -91,3 +91,31 @@ serving-stop:
 # Only this explicit target starts resource-job processing.
 worker-up:
 	$(COMPOSE) --profile build up -d --build worker
+
+.PHONY: setup-serving setup-build setup-postgres test-native check-generated generate test-wheels postgres-up rebuild-subsets
+setup-serving:
+	uv sync --frozen --package omnipath-api
+	$(MAKE) setup-web
+setup-build:
+	git submodule update --init pypath
+	uv sync --frozen --package omnipath-build
+	$(MAKE) native-reference
+setup-postgres:
+	git submodule update --init pypath
+	uv sync --frozen --package omnipath-postgres
+test-native:
+	cargo test --locked --manifest-path packages/resolver/rust/reference/Cargo.toml --features parquet-input
+check-generated:
+	uv run --frozen python scripts/generate_openapi.py --check
+	uv run --frozen python scripts/sync_biolink.py --check
+generate:
+	uv run --frozen python scripts/generate_openapi.py
+	uv run --frozen python scripts/sync_biolink.py
+	pnpm --dir packages/web generate:types
+test-wheels:
+	uv run --frozen python scripts/check_wheels.py
+POSTGRES_ENV ?= deploy/postgres.env
+postgres-up:
+	docker compose --env-file "$(POSTGRES_ENV)" -f docker-compose.postgres18.yml up -d --build --wait
+rebuild-subsets:
+	uv run --frozen --package omnipath-subsets omnipath-subsets build --schema "$(POSTGRES_SCHEMA)" --products $(SUBSET_PRODUCTS) --checkpoint-products

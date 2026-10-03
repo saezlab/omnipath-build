@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 
 const require = createRequire(
-  new URL("../packages/omnipath_web/package.json", import.meta.url),
+  new URL("../packages/web/package.json", import.meta.url),
 );
 const { chromium, expect } = require("@playwright/test");
 const base = process.env.OMNIPATH_WEB_URL || "http://127.0.0.1:5173";

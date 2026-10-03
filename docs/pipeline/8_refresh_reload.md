@@ -1,3 +1,5 @@
+> Historical pre-Parquet pipeline. These commands are retained for context; use the [current architecture](../architecture.md) and [root workflow](../../README.md).
+
 # 8. Refresh And Reload
 
 Refresh behavior is source-scoped. A normal load is additive; reload deletes one

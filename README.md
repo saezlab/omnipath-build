@@ -14,7 +14,7 @@ make setup
 make help
 ```
 
-Setup uses the locked dependencies and committed submodule revisions, and compiles
+Setup uses the locked dependencies and the committed pypath submodule revision, and compiles
 the native reference helper (`make native-reference` to compile it separately). A serving
 container needs no resolver, reference rebuild or sibling prototype checkout.
 
@@ -54,9 +54,9 @@ OMNIPATH_LIBRARY_DIR=/path/to/reference/library \
 The limit applies per dataset; a source parser may still download its full input.
 Versions are immutable. Prepare hubs and the reference only when needed, using
 `make hubs HUB_ARGS="..."` and `make reference REFERENCE_ARGS="..."`; see the
-[resource pipeline](packages/omnipath_build/README.md),
+[resource pipeline](packages/build/README.md),
 [reference guide](docs/reference-resolver.md) and
-[orchestration guide](packages/omnipath_build/ORCHESTRATION.md).
+[orchestration guide](packages/build/ORCHESTRATION.md).
 
 A named snapshot lists exact resource versions:
 
@@ -106,25 +106,50 @@ make finish-postgres POSTGRES_SCHEMA=release_2026_09
 make build-subsets POSTGRES_SCHEMA=release_2026_09 SUBSET_PRODUCTS=cosmos
 ```
 
-See the [PostgreSQL guide](packages/omnipath_postgres/README.md) for schema,
-checkpoint and product details. The historical `omnipath-subsets` CLI is for the
-older resource-record schemas; current main-layout builds use PostgreSQL's
-integrated product pipeline.
+See the [PostgreSQL guide](packages/postgres/README.md) for schema,
+checkpoint and product details. The [subsets package](packages/subsets/README.md)
+owns MetSigDB, network views and COSMOS. Both commands use its shared runner:
+`make build-subsets` resumes unfinished products; `make rebuild-subsets` explicitly
+rebuilds the selected products, committing each complete product. Historical
+record-layout code is isolated under explicit compatibility namespaces.
 
 ## Packages and checks
 
 | Package | Responsibility |
 | --- | --- |
-| [core](packages/omnipath_core/README.md) | Schemas, vocabulary, IDs and versions |
-| [resolver](packages/omnipath_resolver/README.md) | Reference indexes and identifier matching |
-| [build](packages/omnipath_build/README.md) | Reference preparation and resource publication |
-| [postgres](packages/omnipath_postgres/README.md) | Main relational layout, indexes, derivations and products |
-| [api](packages/omnipath_api/README.md) | Parquet queries, inspection and exports |
-| [web](packages/omnipath_web/README.md) | Explorer and API proxy |
+| [core](packages/core/README.md) | Schemas, vocabulary, IDs and versions |
+| [resolver](packages/resolver/README.md) | Reference indexes and identifier matching |
+| [build](packages/build/README.md) | Reference preparation and resource publication |
+| [postgres](packages/postgres/README.md) | Parquet projection, relational layout, indexes and shared derivations |
+| [subsets](packages/subsets/README.md) | MetSigDB, network views, COSMOS and durable product publication |
+| [api](packages/api/README.md) | Parquet queries, inspection and exports |
+| [web](packages/web/README.md) | Explorer and API proxy |
 
 The root Makefile delegates to package commands; implementation stays inside
 packages. `make check`, `make test`, `make check-web` and `make test-api` cover
-local checks. PostgreSQL fixtures require explicit `make test-postgres`.
+local checks. `make test-native` checks Rust policy; `make check-generated` checks
+generated contracts; `make test-wheels` checks isolated installations. PostgreSQL
+fixtures require explicit `make test-postgres` and create a disposable local cluster.
+CI runs developer checks without imposing a production verification phase.
 The [versioning policy](VERSIONING.md) describes independent publication schedules.
 The Python client remains a later milestone; `legacy/` is excluded from the
 active workspace.
+
+## Architecture and dependency policy
+
+Python projects use `packages/<short-name>/omnipath_<name>/`, with explicit
+package discovery and wheel checks. Rust and Svelte keep their own `src` folders.
+See [current architecture](docs/architecture.md) and [refactoring log](docs/reviews/refactoring-progress-20261003.md).
+
+Only pypath is a runtime source submodule. The lockfile selects published cachedir
+and dlmachine releases; their optional checkouts and omnipath-utils are not installed
+or copied into images. The cachedir workaround remains scoped to the pinned release
+until its upstream fix is available in a selected version. Proxy settings are honored
+as supplied by the launcher; library calls do not rewrite the process environment.
+
+Role-specific setup: `make setup-serving`, `make setup-build`, or
+`make setup-postgres`. The full `make setup` remains available for maintainers.
+For a local database, copy `deploy/postgres-dev.env.example` to a private
+`deploy/postgres.env`, set a password, then run
+`make postgres-up POSTGRES_ENV=deploy/postgres.env`. The default bind is loopback.
+Large server examples are separate and must be sized to that host.

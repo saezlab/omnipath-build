@@ -17,7 +17,8 @@
             uv
             gnumake
             git
-            meilisearch
+            nodejs_22
+            pnpm
             cargo
             rustc
             stdenv.cc.cc.lib

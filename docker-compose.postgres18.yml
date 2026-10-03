@@ -13,9 +13,9 @@ services:
     environment:
       POSTGRES_DB: omnipath
       POSTGRES_USER: omnipath
-      POSTGRES_PASSWORD: omnipath
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in a private environment file}
     ports:
-      - "55432:5432"
+      - "127.0.0.1:${POSTGRES_PORT:-55432}:5432"
     # Docker defaults /dev/shm to 64MB, which is too small for the parallel-query
     # dynamic-shared-memory segments the metabo post-build (e.g. the Goslin lipid
     # labelling query) allocates — it failed with "could not resize shared memory
@@ -32,20 +32,20 @@ services:
       - -c
       - checkpoint_timeout=15min
       - -c
-      - shared_buffers=${POSTGRES_SHARED_BUFFERS:-4GB}
+      - shared_buffers=${POSTGRES_SHARED_BUFFERS:-256MB}
       - -c
-      - effective_cache_size=${POSTGRES_EFFECTIVE_CACHE_SIZE:-128GB}
+      - effective_cache_size=${POSTGRES_EFFECTIVE_CACHE_SIZE:-1GB}
       - -c
-      - work_mem=${POSTGRES_WORK_MEM:-128MB}
+      - work_mem=${POSTGRES_WORK_MEM:-16MB}
       - -c
-      - maintenance_work_mem=${POSTGRES_MAINTENANCE_WORK_MEM:-2GB}
+      - maintenance_work_mem=${POSTGRES_MAINTENANCE_WORK_MEM:-256MB}
       # Parallelism caps (need to be container-level; the build raises the
-      # per-gather/maintenance GUCs per session but is bounded by these). Sized
-      # for beauty (64 cores); lower on small hosts via the env vars.
+      # per-gather/maintenance GUCs per session but is bounded by these). Developer defaults; use deploy/postgres-server.env.example
+      # as a starting point for a separately sized server.
       - -c
-      - max_worker_processes=${POSTGRES_MAX_WORKER_PROCESSES:-24}
+      - max_worker_processes=${POSTGRES_MAX_WORKER_PROCESSES:-4}
       - -c
-      - max_parallel_workers=${POSTGRES_MAX_PARALLEL_WORKERS:-16}
+      - max_parallel_workers=${POSTGRES_MAX_PARALLEL_WORKERS:-4}
       - -c
       - effective_io_concurrency=${POSTGRES_EFFECTIVE_IO_CONCURRENCY:-200}
     healthcheck:

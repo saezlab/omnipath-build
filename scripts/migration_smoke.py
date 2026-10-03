@@ -74,7 +74,7 @@ def compact_reference(path: Path, fixture: dict) -> Path:
     """
     from omnipath_build.reference.compact_index import FORMAT, CompactWriter, atomic_json
     from omnipath_build.reference.full_index import partition
-    from omnipath_build.reference.replay_resources import CODES, key
+    from omnipath_resolver.observations import CODES, key
 
     if path.exists():
         require(path.is_dir() and not path.is_symlink(), f"Unsafe fixture reference path: {path}")
@@ -86,7 +86,7 @@ def compact_reference(path: Path, fixture: dict) -> Path:
                 f"Refusing to replace a non-fixture reference: {path}",
             )
             if previous.get("reference_fingerprint") == digest(FIXTURE):
-                from omnipath_build.reference.full_index_runtime import FullRuntime
+                from omnipath_resolver.index import FullRuntime
 
                 try:
                     runtime = FullRuntime(path)

@@ -26,6 +26,7 @@ members = [
 [manifest.dependency-groups]
 dev = [
     { name = "httpx", specifier = ">=0.27.0" },
+    { name = "psycopg", extras = ["binary"], specifier = ">=3.2,<4" },
     { name = "pytest", specifier = ">=8.0.0" },
     { name = "ruff", specifier = "==0.11.13" },
 ]
@@ -1446,7 +1447,7 @@ wheels = [
 [[package]]
 name = "omnipath-api"
 version = "0.1.0"
-source = { editable = "packages/omnipath_api" }
+source = { editable = "packages/api" }
 dependencies = [
     { name = "duckdb" },
     { name = "fastapi" },
@@ -1472,8 +1473,8 @@ requires-dist = [
     { name = "duckdb", specifier = ">=1.5,<2" },
     { name = "fastapi", specifier = ">=0.115.0" },
     { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.27.0" },
-    { name = "omnipath-build", marker = "extra == 'build'", editable = "packages/omnipath_build" },
-    { name = "omnipath-core", editable = "packages/omnipath_core" },
+    { name = "omnipath-build", marker = "extra == 'build'", editable = "packages/build" },
+    { name = "omnipath-core", editable = "packages/core" },
     { name = "pyarrow", specifier = ">=14.0.0" },
     { name = "pydantic", specifier = ">=2.0.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
@@ -1486,7 +1487,7 @@ provides-extras = ["dev", "build"]
 [[package]]
 name = "omnipath-build"
 version = "0.1.0"
-source = { editable = "packages/omnipath_build" }
+source = { editable = "packages/build" }
 dependencies = [
     { name = "duckdb" },
     { name = "lmdb" },
@@ -1515,8 +1516,8 @@ requires-dist = [
     { name = "duckdb", specifier = ">=1.5,<2" },
     { name = "lmdb", specifier = ">=1.8.1,<2" },
     { name = "msgpack", specifier = ">=1.1,<2" },
-    { name = "omnipath-core", editable = "packages/omnipath_core" },
-    { name = "omnipath-resolver", editable = "packages/omnipath_resolver" },
+    { name = "omnipath-core", editable = "packages/core" },
+    { name = "omnipath-resolver", editable = "packages/resolver" },
     { name = "psutil", specifier = ">=5.9" },
     { name = "pyarrow", specifier = ">=14.0.0" },
     { name = "pygoslin", specifier = ">=2,<3" },
@@ -1532,7 +1533,7 @@ provides-extras = ["goslin-native"]
 [[package]]
 name = "omnipath-core"
 version = "0.1.0"
-source = { editable = "packages/omnipath_core" }
+source = { editable = "packages/core" }
 dependencies = [
     { name = "biolink-model" },
     { name = "linkml-runtime" },
@@ -1551,55 +1552,83 @@ requires-dist = [
 [[package]]
 name = "omnipath-postgres"
 version = "0.1.0"
-source = { editable = "packages/omnipath_postgres" }
+source = { editable = "packages/postgres" }
 dependencies = [
     { name = "duckdb" },
     { name = "omnipath-core" },
-    { name = "psycopg", extra = ["binary"] },
+    { name = "omnipath-subsets" },
     { name = "psycopg2-binary" },
     { name = "pyarrow" },
     { name = "pypath-omnipath" },
     { name = "pyyaml" },
 ]
 
-[package.metadata]
-requires-dist = [
-    { name = "duckdb", specifier = ">=1.5,<2" },
-    { name = "omnipath-core", editable = "packages/omnipath_core" },
-    { name = "psycopg", extras = ["binary"], specifier = ">=3.2,<4" },
-    { name = "psycopg2-binary", specifier = ">=2.9,<3" },
-    { name = "pyarrow", specifier = ">=14" },
-    { name = "pypath-omnipath", editable = "pypath" },
-    { name = "pyyaml", specifier = ">=6,<7" },
-]
-
-[[package]]
-name = "omnipath-resolver"
-version = "0.1.0"
-source = { editable = "packages/omnipath_resolver" }
-dependencies = [
-    { name = "pyarrow" },
-]
-
-[package.metadata]
-requires-dist = [{ name = "pyarrow", specifier = ">=14" }]
-
-[[package]]
-name = "omnipath-subsets"
-version = "0.1.0"
-source = { editable = "packages/omnipath_subsets" }
-dependencies = [
-    { name = "omnipath-core" },
-    { name = "omnipath-postgres" },
+[package.optional-dependencies]
+record-layout = [
     { name = "psycopg", extra = ["binary"] },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "omnipath-core", editable = "packages/omnipath_core" },
-    { name = "omnipath-postgres", editable = "packages/omnipath_postgres" },
-    { name = "psycopg", extras = ["binary"], specifier = ">=3.2,<4" },
+    { name = "duckdb", specifier = ">=1.5,<2" },
+    { name = "omnipath-core", editable = "packages/core" },
+    { name = "omnipath-subsets", editable = "packages/subsets" },
+    { name = "psycopg", extras = ["binary"], marker = "extra == 'record-layout'", specifier = ">=3.2,<4" },
+    { name = "psycopg2-binary", specifier = ">=2.9,<3" },
+    { name = "pyarrow", specifier = ">=14" },
+    { name = "pypath-omnipath", editable = "pypath" },
+    { name = "pyyaml", specifier = ">=6,<7" },
 ]
+provides-extras = ["record-layout"]
+
+[[package]]
+name = "omnipath-resolver"
+version = "0.1.0"
+source = { editable = "packages/resolver" }
+dependencies = [
+    { name = "biolink-model" },
+    { name = "lmdb" },
+    { name = "msgpack" },
+    { name = "omnipath-core" },
+    { name = "pyarrow" },
+    { name = "pygoslin" },
+    { name = "rdkit" },
+    { name = "zstandard" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "biolink-model", specifier = "==4.4.4" },
+    { name = "lmdb", specifier = ">=1.8.1,<2" },
+    { name = "msgpack", specifier = ">=1.1,<2" },
+    { name = "omnipath-core", editable = "packages/core" },
+    { name = "pyarrow", specifier = ">=14" },
+    { name = "pygoslin", specifier = ">=2,<3" },
+    { name = "rdkit", specifier = ">=2025.3,<2027" },
+    { name = "zstandard", specifier = ">=0.25,<1" },
+]
+
+[[package]]
+name = "omnipath-subsets"
+version = "0.1.0"
+source = { editable = "packages/subsets" }
+dependencies = [
+    { name = "omnipath-core" },
+    { name = "psycopg2-binary" },
+]
+
+[package.optional-dependencies]
+record-layout = [
+    { name = "psycopg", extra = ["binary"] },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "omnipath-core", editable = "packages/core" },
+    { name = "psycopg", extras = ["binary"], marker = "extra == 'record-layout'", specifier = ">=3.2,<4" },
+    { name = "psycopg2-binary", specifier = ">=2.9,<3" },
+]
+provides-extras = ["record-layout"]
 
 [[package]]
 name = "openpyxl"

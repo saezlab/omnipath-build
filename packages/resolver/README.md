@@ -1,0 +1,46 @@
+# Entity resolver
+
+`omnipath_resolver` owns complete runtime matching: the `EntityResolver` facade,
+`LibraryMatcher`, identifier normalization, biological decision policy, compact
+index reads, enrichment, and the shared namespace/key encoding. It depends on core
+and declared matching libraries; it does not import `omnipath_build`, source
+parsers, replay commands, or reference compilers.
+
+```python
+from omnipath_resolver import EntityResolver, RawEntityObservation
+
+resolver = EntityResolver(library_dir="data/reference/library")
+try:
+    observation = RawEntityObservation(
+        entity_key="input", entity_type="protein", namespace="uniprot",
+        identifier="P04637", taxon="9606",
+    )
+    targets = resolver.resolve_entity_targets({"input": observation})
+finally:
+    resolver.close()
+```
+
+`RawEntityObservation`, `ResolvedEntityInfo`, and `ResolvedEntityTarget` are public
+input/result contracts. `resolve_entities` provides scalar matching;
+`resolve_entity_targets` preserves valid gene-to-protein fan-out. Readers pin one
+complete immutable reference generation. Without a library, observations retain
+their native identities. Runtime resolution reads index records and does not scan
+or create Parquet references.
+
+Full InChIKeys take precedence for chemicals. Protein accessions remain separate.
+Gene identifiers may map to several protein entities; matching preserves valid
+fan-out and prefers reviewed products where required. Taxon-qualified symbols
+retain their organism scope. Conflicting evidence remains unresolved.
+
+`omnipath_build.reference` owns hub conversion, reference construction, offline
+replay and index compilation. Writers reuse resolver's lossless wire codecs and
+key encoding. The Rust `parquet-input` feature is enabled only for the build-time
+`anchor-components` binary, never by the Python extension dependency. Rust sources
+remain in `src/`; Python uses the flat `omnipath_resolver/` package.
+
+```sh
+uv sync --frozen --all-packages
+cargo test --locked --manifest-path packages/resolver/Cargo.toml
+cargo test --locked --manifest-path packages/resolver/rust/reference/Cargo.toml --features parquet-input
+uv run pytest packages/resolver/tests packages/build/tests/test_resolver.py packages/build/tests/test_compact_index.py
+```

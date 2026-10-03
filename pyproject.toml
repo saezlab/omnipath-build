@@ -1,11 +1,11 @@
 [tool.uv.workspace]
 members = [
-    "packages/omnipath_core",
-    "packages/omnipath_resolver",
-    "packages/omnipath_build",
-    "packages/omnipath_postgres",
-    "packages/omnipath_subsets",
-    "packages/omnipath_api",
+    "packages/core",
+    "packages/resolver",
+    "packages/build",
+    "packages/postgres",
+    "packages/subsets",
+    "packages/api",
 ]
 
 [tool.uv.sources]
@@ -16,12 +16,11 @@ omnipath-postgres = { workspace = true }
 omnipath-subsets = { workspace = true }
 omnipath-api = { workspace = true }
 pypath-omnipath = { path = "pypath", editable = true }
-cachedir = { path = "cache-manager", editable = true }
-dlmachine = { path = "download-manager", editable = true }
 
 [dependency-groups]
 dev = [
     "pytest>=8.0.0",
+    "psycopg[binary]>=3.2,<4", # historical compatibility fixtures only
     "httpx>=0.27.0",
     "ruff==0.11.13",
 ]
@@ -29,7 +28,7 @@ dev = [
 [tool.ruff]
 target-version = "py311"
 line-length = 100
-extend-exclude = ["legacy", "data", "logs", "pypath_log", "pypath-data", "**/build/**", "**/target/**"]
+extend-exclude = ["legacy", "data", "logs", "pypath_log", "pypath-data", "packages/*/build/**", "**/target/**", "**/oracle_cv_terms/**"]
 
 [tool.ruff.lint]
 select = ["E4", "E7", "E9", "F"]
@@ -37,9 +36,10 @@ select = ["E4", "E7", "E9", "F"]
 [tool.pytest.ini_options]
 markers = ["integration: requires an explicitly configured local dataset or external service"]
 testpaths = [
-    "packages/omnipath_core/tests",
-    "packages/omnipath_build/tests",
-    "packages/omnipath_postgres/tests",
-    "packages/omnipath_subsets/tests",
-    "packages/omnipath_api/tests",
+    "packages/core/tests",
+    "packages/resolver/tests",
+    "packages/build/tests",
+    "packages/postgres/tests",
+    "packages/subsets/tests",
+    "packages/api/tests",
 ]

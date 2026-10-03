@@ -41,10 +41,14 @@ from omnipath_core.source_attributes import (
     SOURCE_RECORD_SHA256_PREFIX,
     SOURCE_RECORD_TYPE,
 )
-from omnipath_postgres.indexes import _INDEXES
-from omnipath_postgres.loader import COLUMNS, validate_schema
-from omnipath_postgres.projection import iter_rows
-from omnipath_postgres.reactions import _source_type, direction_context, participant_context
+from omnipath_postgres.compatibility.record_layout.indexes import _INDEXES
+from omnipath_postgres.compatibility.record_layout.loader import COLUMNS, validate_schema
+from omnipath_postgres.compatibility.record_layout.projection import iter_rows
+from omnipath_postgres.compatibility.record_layout.reactions import (
+    _source_type,
+    direction_context,
+    participant_context,
+)
 from omnipath_postgres.releases import load_release as load_pinned_release, verify_release
 
 
@@ -904,8 +908,8 @@ def _derived_checks(conn, schema):
 
 
 def _products(conn, schema, release_id, digest, pins):
-    from omnipath_subsets.metsigdb.mapping import RESOURCES
-    from omnipath_subsets.network_views import NETWORKS
+    from omnipath_subsets.compatibility.record_layout.metsigdb.mapping import RESOURCES
+    from omnipath_subsets.compatibility.record_layout.network_views import NETWORKS
 
     metadata = _query(
         conn,
@@ -1134,8 +1138,8 @@ def verify_postgres_release(
 def pg_only_rebuild(database_url, *, schema):
     """Exercise real PG-only builders/queries, then roll back every mutation."""
     validate_schema(schema)
-    from omnipath_postgres.reactions import rebuild_reactions
-    from omnipath_subsets import cosmos, metsigdb, network_views
+    from omnipath_postgres.compatibility.record_layout.reactions import rebuild_reactions
+    from omnipath_subsets.compatibility.record_layout import cosmos, metsigdb, network_views
 
     with psycopg.connect(database_url, autocommit=True) as conn:
         conn.execute("BEGIN")
