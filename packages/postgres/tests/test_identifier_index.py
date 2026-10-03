@@ -11,7 +11,6 @@ from omnipath_postgres.compatibility.record_layout.indexes import _INDEXES
 from omnipath_postgres.compatibility.record_layout.loader import load_release
 from test_postgres import query, release, resource
 from test_projection import ENTITY_A, ENTITY_B, fixture_rows
-from test_verify_postgres_release import audit
 
 pytestmark = pytest.mark.integration
 NS = "published_alias"
@@ -88,8 +87,14 @@ def test_long_unicode_identifiers_survive_load_view_and_exact_catalog_definition
     assert fixture["first"] in [item["id"] for item in records[ENTITY_A]["identifiers"]]
     assert fixture["second"] == records[ENTITY_B]["identifiers"][0]["id"]
     with psycopg.connect(dsn) as conn:
-        catalog = audit._catalog(conn, schema)
-        assert catalog["required_query_indexes"] == len(_INDEXES)
+        indexes = conn.execute(
+            "SELECT i.relname,x.indisvalid,x.indisready FROM pg_index x "
+            "JOIN pg_class i ON i.oid=x.indexrelid "
+            "JOIN pg_namespace n ON n.oid=i.relnamespace WHERE n.nspname=%s",
+            (schema,),
+        ).fetchall()
+        valid_indexes = {name for name, valid, ready in indexes if valid and ready}
+        assert {name for name, _table, _expression in _INDEXES} <= valid_indexes
         definition = conn.execute(
             "SELECT pg_get_indexdef(indexrelid) FROM pg_index WHERE indexrelid=%s::regclass",
             (schema + ".identifiers_lookup_idx",),

@@ -111,7 +111,8 @@ checkpoint and product details. The [subsets package](packages/subsets/README.md
 owns MetSigDB, network views and COSMOS. Both commands use its shared runner:
 `make build-subsets` resumes unfinished products; `make rebuild-subsets` explicitly
 rebuilds the selected products, committing each complete product. Historical
-record-layout code is isolated under explicit compatibility namespaces.
+PostgreSQL record-layout code is isolated under its compatibility namespace;
+subsets contains only the current product implementations.
 
 ## Packages and checks
 

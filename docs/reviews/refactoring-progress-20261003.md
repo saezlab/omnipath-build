@@ -61,3 +61,22 @@ No resource/reference rebuild, full PostgreSQL build, production deployment or m
 The implementation is local. No resource/reference rebuild, PostgreSQL rebuild, deployment, remote service change, Git history rewrite or mandatory production verification phase was introduced. API budget defaults are configurable starting values, with synthetic concurrent-query parity coverage; full-release throughput/load benchmarks remain an operational sizing task. The bounded HTTPS measurement tool and actual validation traffic counters are ready for a chosen representative resource; verification policy remains unchanged.
 
 Published cachedir/dlmachine pins are retained. Their optional source checkouts remain available to developers but are not selected or copied into the runtime image. The known cachedir compatibility patch stays until a selected upstream release contains the fix; no dependency release was silently replaced. Optional large-file splitting, a new Python client and removal of pypath's metadata dependency are outside this cleanup.
+
+## Follow-up: remove historical subsets (2026-10-03)
+
+At the user's request, removed `omnipath_subsets.compatibility` and its optional
+psycopg3 dependency, historical-only product tests, and the obsolete full-release
+verification/rebuild script and its tests. Current product implementations, SQL,
+shared runner, checkpoint behavior and independent frozen parity references remain
+unchanged. Renamed current runner tests to match their actual owner. The retained
+PostgreSQL identifier-index regression queries the catalog directly instead of
+importing the deleted audit script. Updated the package guide to describe only the
+current products. The separate historical PostgreSQL loader is outside this cleanup.
+
+Validation: **601 passed, 11 existing opt-in skips** in 43.59 seconds across the
+PostgreSQL/subsets suite and API migration-serving fixture, using a disposable local
+PostgreSQL cluster. Full test collection: **1,083 tests**, no dangling imports.
+The isolated subsets wheel passes with neither the compatibility namespace nor
+psycopg3 installed. Ruff, formatting, dependency lock and whitespace checks pass.
+Current scientific implementations, all product SQL and the PostgreSQL runtime
+have no diff. No deployment or persistent database changes.

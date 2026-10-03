@@ -2143,3 +2143,17 @@ Recorded timings: artifact validation 6.563978s; initial DuckDB projection 3220.
 Implemented short project folders and flat Python packages, while preserving public distribution/import names. Runtime matching belongs to resolver; PostgreSQL owns projection/shared derivation; subsets owns scientific products and one checkpoint runner. Production entry points use the current normalized layout, with historical record-layout APIs explicitly isolated. Shared publication contracts, installed-file provenance, reproducible vocabulary generation, bounded API queries, role-specific packaging and source-only developer checks are in place.
 
 Validation: combined Python run871 passed/32 skipped/323 deselected; complete disposable PostgreSQL/subsets suite747 passed/11 skipped; final API147 passed, plus2 worker/publisher environment checks; native29 and web26 tests passed. Clean source-oracle and isolated wheel checks pass; all12 product SQL files and scientific algorithms remain unchanged. Full details and intermediate findings are in [the implementation record](reviews/refactoring-progress-20261003.md). No live service, published data or server database changed.
+
+## 2026-10-03 — Remove historical subset compatibility
+
+Removed `omnipath_subsets.compatibility`, its optional driver extra, the obsolete
+full-release verification/rebuild script, and their dedicated tests. Current
+MetSigDB, network views, COSMOS, SQL and checkpoint runner are unchanged. Retained
+current scientific parity and transaction tests; moved publication guard coverage
+to the current runner tests and detached the older PostgreSQL identifier-index
+regression from the removed audit script. Updated package and architecture docs.
+
+Validation: 601 passed, 11 existing opt-in skips in 43.59 seconds against disposable
+PostgreSQL plus the API migration-serving fixture. All 1,083 remaining tests collect;
+isolated subsets wheel, Ruff, formatting and lock checks pass. No deployment,
+resource build, server access or persistent database changes.

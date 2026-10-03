@@ -1,10 +1,10 @@
-"""Main product adapter publication boundaries without server credentials."""
+"""Current product runner publication boundaries without server credentials."""
 
 from copy import deepcopy
 
 import pytest
 
-from omnipath_subsets import runner as main_adapter
+from omnipath_subsets import runner
 from omnipath_subsets.build import BuildResult
 from omnipath_subsets import scientific as pipeline
 
@@ -109,10 +109,10 @@ class Cursor:
 @pytest.fixture
 def environment(monkeypatch):
     database = Database()
-    monkeypatch.setattr(main_adapter.psycopg2, "connect", database.connect)
+    monkeypatch.setattr(runner.psycopg2, "connect", database.connect)
     tuning = []
     monkeypatch.setattr(
-        main_adapter,
+        runner,
         "_fresh_worker",
         lambda connection, products: tuning.append((connection, tuple(products))),
     )
@@ -122,7 +122,7 @@ def environment(monkeypatch):
 def builder(*, failed_product=None, failure=RuntimeError, change_identity=False):
     def run(connection, product, **kwargs):
         # The imported scientific builder may commit internally. Its production
-        # adapter suppresses those commits until tables+publication markers agree.
+        # runner suppresses those commits until tables+publication markers agree.
         wrapped = pipeline.CommitDeferredConnection(connection)
         current = connection.pending["contents"].get(product, 0)
         connection.pending["contents"][product] = current + 1
@@ -141,7 +141,7 @@ def test_checkpoint_callbacks_observe_durable_products_metadata_and_held_importe
     environment, monkeypatch
 ):
     database, tuning = environment
-    monkeypatch.setattr(main_adapter, "run_product", builder())
+    monkeypatch.setattr(runner, "run_product", builder())
     observed = []
 
     def committed(product, result):
@@ -152,7 +152,7 @@ def test_checkpoint_callbacks_observe_durable_products_metadata_and_held_importe
         observed.append((product, tuple(result.products)))
         result.products[product]["rows"] = -100
 
-    result = main_adapter.build_subsets(
+    result = runner.build_subsets(
         "unused",
         "target",
         products=("metsigdb", "cosmos"),
@@ -178,11 +178,9 @@ def test_checkpoint_failure_retains_previous_product_and_rolls_back_only_current
     environment, monkeypatch, failure
 ):
     database, _ = environment
-    monkeypatch.setattr(
-        main_adapter, "run_product", builder(failed_product="cosmos", failure=failure)
-    )
+    monkeypatch.setattr(runner, "run_product", builder(failed_product="cosmos", failure=failure))
     with pytest.raises(failure, match="deliberate"):
-        main_adapter.build_subsets(
+        runner.build_subsets(
             "unused", "target", products=("metsigdb", "cosmos"), checkpoint_products=True
         )
     assert database.state["contents"] == {"metsigdb": 1}
@@ -194,9 +192,9 @@ def test_checkpoint_failure_retains_previous_product_and_rolls_back_only_current
 
 def test_default_mode_rolls_back_all_selected_products_on_later_failure(environment, monkeypatch):
     database, tuning = environment
-    monkeypatch.setattr(main_adapter, "run_product", builder(failed_product="cosmos"))
+    monkeypatch.setattr(runner, "run_product", builder(failed_product="cosmos"))
     with pytest.raises(RuntimeError, match="deliberate"):
-        main_adapter.build_subsets(
+        runner.build_subsets(
             "unused", "target", products=("metsigdb", "cosmos"), checkpoint_products=False
         )
     assert database.state["contents"] == {}
@@ -209,13 +207,13 @@ def test_callback_failure_preserves_current_commit_and_does_not_start_next_produ
     environment, monkeypatch
 ):
     database, _ = environment
-    monkeypatch.setattr(main_adapter, "run_product", builder())
+    monkeypatch.setattr(runner, "run_product", builder())
 
     def failed(*_):
         raise OSError("observer persistence failed")
 
     with pytest.raises(OSError, match="observer"):
-        main_adapter.build_subsets(
+        runner.build_subsets(
             "unused",
             "target",
             products=("metsigdb", "cosmos"),
@@ -236,8 +234,8 @@ def test_selected_rebuild_updates_only_explicit_product_and_keeps_other_checkpoi
         {product: "old phase" for product in database.state["contents"]}
     )
     database.state["metadata"] = {product: "old metadata" for product in database.state["contents"]}
-    monkeypatch.setattr(main_adapter, "run_product", builder())
-    result = main_adapter.build_subsets(
+    monkeypatch.setattr(runner, "run_product", builder())
+    result = runner.build_subsets(
         "unused", "target", products=("cosmos",), checkpoint_products=True
     )
     assert result.products == {"cosmos": {"rows": 31}}
@@ -249,13 +247,13 @@ def test_selected_rebuild_updates_only_explicit_product_and_keeps_other_checkpoi
 
 def test_release_change_between_transactions_stops_before_next_product(environment, monkeypatch):
     database, _ = environment
-    monkeypatch.setattr(main_adapter, "run_product", builder())
+    monkeypatch.setattr(runner, "run_product", builder())
 
     def mutate(*_):
         database.state["identity"] = ("changed", "changed-digest")
 
     with pytest.raises(ValueError, match="release changed"):
-        main_adapter.build_subsets(
+        runner.build_subsets(
             "unused",
             "target",
             products=("metsigdb", "cosmos"),
@@ -270,11 +268,9 @@ def test_product_mutating_release_identity_rolls_back_its_tables_and_metadata(
     environment, monkeypatch
 ):
     database, _ = environment
-    monkeypatch.setattr(main_adapter, "run_product", builder(change_identity=True))
+    monkeypatch.setattr(runner, "run_product", builder(change_identity=True))
     with pytest.raises(ValueError, match="release changed"):
-        main_adapter.build_subsets(
-            "unused", "target", products=("cosmos",), checkpoint_products=True
-        )
+        runner.build_subsets("unused", "target", products=("cosmos",), checkpoint_products=True)
     assert database.state["identity"] == ("release", "digest")
     assert database.state["contents"] == {}
     assert database.state["metadata"] == {}
@@ -284,14 +280,12 @@ def test_missing_shared_checkpoint_rejects_product_before_build(environment, mon
     database, _ = environment
     del database.state["phases"]["derived"]
     monkeypatch.setattr(
-        main_adapter,
+        runner,
         "run_product",
         lambda *_args, **_kwargs: pytest.fail("Incomplete base must not build products"),
     )
     with pytest.raises(ValueError, match="shared derivations"):
-        main_adapter.build_subsets(
-            "unused", "target", products=("cosmos",), checkpoint_products=True
-        )
+        runner.build_subsets("unused", "target", products=("cosmos",), checkpoint_products=True)
 
 
 def test_lock_collision_rejects_before_worker_is_created(environment):
@@ -299,9 +293,7 @@ def test_lock_collision_rejects_before_worker_is_created(environment):
     previous_owner = object()
     database.owner = previous_owner
     with pytest.raises(ValueError, match="Another migration owns"):
-        main_adapter.build_subsets(
-            "unused", "target", products=("cosmos",), checkpoint_products=True
-        )
+        runner.build_subsets("unused", "target", products=("cosmos",), checkpoint_products=True)
     assert len(database.connections) == 1
     assert database.owner is previous_owner
 
@@ -309,8 +301,8 @@ def test_lock_collision_rejects_before_worker_is_created(environment):
 def test_public_api_is_the_current_runner_without_layout_discovery():
     from omnipath_subsets import build
 
-    assert build.build_subsets is main_adapter.build_subsets
-    assert not hasattr(main_adapter, "is_main_layout")
+    assert build.build_subsets is runner.build_subsets
+    assert not hasattr(runner, "is_main_layout")
 
 
 def test_finish_resume_skips_existing_products_and_emits_events_after_commit(
@@ -319,10 +311,10 @@ def test_finish_resume_skips_existing_products_and_emits_events_after_commit(
     database, tuning = environment
     database.state["phases"]["metsigdb"] = {"old": True}
     database.state["contents"]["metsigdb"] = 10
-    monkeypatch.setattr(main_adapter, "run_product", builder())
+    monkeypatch.setattr(runner, "run_product", builder())
     events = []
     owner = database.connect("unused")
-    main_adapter.acquire_schema_lock(owner, "target")
+    runner.acquire_schema_lock(owner, "target")
 
     def observer(event, **fields):
         assert database.owner is owner
@@ -331,7 +323,7 @@ def test_finish_resume_skips_existing_products_and_emits_events_after_commit(
         events.append((event, fields["phase"]))
 
     try:
-        result = main_adapter.run_products(
+        result = runner.run_products(
             "unused",
             "target",
             owner=owner,
@@ -350,9 +342,9 @@ def test_finish_resume_skips_existing_products_and_emits_events_after_commit(
 
 def test_finish_observer_failure_preserves_commit_and_stops_next_product(environment, monkeypatch):
     database, _ = environment
-    monkeypatch.setattr(main_adapter, "run_product", builder())
+    monkeypatch.setattr(runner, "run_product", builder())
     owner = database.connect("unused")
-    main_adapter.acquire_schema_lock(owner, "target")
+    runner.acquire_schema_lock(owner, "target")
 
     def observer(event, **fields):
         if event == "phase_committed":
@@ -360,7 +352,7 @@ def test_finish_observer_failure_preserves_commit_and_stops_next_product(environ
 
     try:
         with pytest.raises(OSError, match="persistence"):
-            main_adapter.run_products(
+            runner.run_products(
                 "unused",
                 "target",
                 owner=owner,
@@ -374,3 +366,56 @@ def test_finish_observer_failure_preserves_commit_and_stops_next_product(environ
         assert database.owner is owner
     finally:
         owner.close()
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"products": []},
+        {"products": ["unknown"]},
+        {"products": ["metsigdb", "metsigdb"]},
+        {"products": "cosmos"},
+        {"products": [None]},
+        {"checkpoint_products": 1},
+        {"checkpoint_products": None},
+        {"checkpoint_products": "true"},
+        {"checkpoint_products": True, "on_product_committed": "callback"},
+        {"on_product_committed": lambda product, result: None},
+    ],
+)
+def test_invalid_selection_fails_before_connecting(monkeypatch, options):
+    def unexpected(*args, **kwargs):
+        pytest.fail("Invalid subset selection must not connect")
+
+    monkeypatch.setattr(runner.psycopg2, "connect", unexpected)
+    with pytest.raises(ValueError):
+        runner.build_subsets("unused", "test_release", **options)
+
+
+@pytest.mark.parametrize("product", runner.PRODUCTS)
+@pytest.mark.parametrize("release_rows", [[], [("release", "digest"), ("other", "digest")]])
+def test_unpublished_or_ambiguous_release_preserves_existing_products(
+    environment, monkeypatch, product, release_rows
+):
+    database, _ = environment
+    database.state["contents"][product] = "published product"
+    database.state["metadata"][product] = "published metadata"
+    before = deepcopy(database.state)
+    execute = Cursor.execute
+
+    def unpublished(self, statement, parameters=None):
+        execute(self, statement, parameters)
+        if "SELECT version,manifest_sha256" in str(statement):
+            self.rows = release_rows
+
+    monkeypatch.setattr(Cursor, "execute", unpublished)
+    monkeypatch.setattr(
+        runner,
+        "run_product",
+        lambda *_args, **_kwargs: pytest.fail("Unpublished release must not build products"),
+    )
+    with pytest.raises(ValueError, match="exactly one loaded release"):
+        runner.build_subsets("unused", "target", products=(product,), checkpoint_products=True)
+    assert database.state == before
+    assert len(database.connections) == 1
+    assert database.owner is None

@@ -1617,18 +1617,11 @@ dependencies = [
     { name = "psycopg2-binary" },
 ]
 
-[package.optional-dependencies]
-record-layout = [
-    { name = "psycopg", extra = ["binary"] },
-]
-
 [package.metadata]
 requires-dist = [
     { name = "omnipath-core", editable = "packages/core" },
-    { name = "psycopg", extras = ["binary"], marker = "extra == 'record-layout'", specifier = ">=3.2,<4" },
     { name = "psycopg2-binary", specifier = ">=2.9,<3" },
 ]
-provides-extras = ["record-layout"]
 
 [[package]]
 name = "openpyxl"

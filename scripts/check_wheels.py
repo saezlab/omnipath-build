@@ -136,7 +136,13 @@ def check(directory, packages, *, offline=False):
         forbidden = {
             "core": ("omnipath_build", "omnipath_postgres", "omnipath_api"),
             "resolver": ("omnipath_build", "pypath", "duckdb"),
-            "subsets": ("omnipath_postgres", "omnipath_build", "pypath"),
+            "subsets": (
+                "omnipath_postgres",
+                "omnipath_build",
+                "pypath",
+                "psycopg",
+                "omnipath_subsets.compatibility",
+            ),
             "postgres": ("omnipath_build", "omnipath_resolver", "psycopg"),
             "api": ("omnipath_build", "omnipath_resolver", "pypath"),
         }.get(package, ())

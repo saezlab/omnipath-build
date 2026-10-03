@@ -25,6 +25,3 @@ omnipath-core = { workspace = true }
 
 [tool.setuptools.package-data]
 omnipath_subsets = ["**/*.sql", "**/*.yaml"]
-
-[project.optional-dependencies]
-record-layout = ["psycopg[binary]>=3.2,<4"]
