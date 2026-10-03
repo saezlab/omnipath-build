@@ -7,6 +7,10 @@ The production reference is one compact, immutable generation built from one set
 
 Identifiers with more than ten candidates are absent from the runtime index and recorded with their candidates in `ambiguous.parquet`. Resource resolution reads the identifier index, runs the shared Rust decision policy, and reads accepted entity records. Alias enrichment is already stored on disk.
 
+From the repository root, `make setup` installs dependencies and compiles the
+`anchor-components` helper. To compile only that helper, use `make native-reference`;
+it does not build a reference or process resources. The worker image includes it.
+
 ```sh
 export PYPATH_DOWNLOAD_DATADIR="$PWD/data/pypath-data"
 omnipath-build export-hubs --output-dir data/reference/hubs --max-records 0 --no-library

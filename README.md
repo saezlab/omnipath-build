@@ -14,7 +14,8 @@ make setup
 make help
 ```
 
-Setup uses the locked dependencies and committed submodule revisions. A serving
+Setup uses the locked dependencies and committed submodule revisions, and compiles
+the native reference helper (`make native-reference` to compile it separately). A serving
 container needs no resolver, reference rebuild or sibling prototype checkout.
 
 ## Run existing data

@@ -61,6 +61,9 @@ published afterward. Keep older versions. Nginx forbids symlinks; copying the
 entire cache/reference tree is unnecessary. For an existing PostgreSQL snapshot,
 retain its original release JSON bytes if publishing the same manifest over HTTPS.
 
+The current nicesrv deployment and exact rollback commands are recorded in
+[nicesrv.md](nicesrv.md).
+
 ## Optional build worker
 
 The worker is excluded from normal startup. `make worker-up` explicitly builds

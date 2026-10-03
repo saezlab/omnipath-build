@@ -1,4 +1,4 @@
-.PHONY: help setup setup-python setup-web test test-pypath test-postgres test-subsets test-api check check-web build sample hubs reference publish-release serving-indexes api web dev load-postgres finish-postgres build-subsets serving-build serving-up serving-status serving-logs serving-stop worker-up
+.PHONY: help setup setup-python setup-web native-reference test test-pypath test-postgres test-subsets test-api check check-web build sample hubs reference publish-release serving-indexes api web dev load-postgres finish-postgres build-subsets serving-build serving-up serving-status serving-logs serving-stop worker-up
 
 export PKG_INFRA_CONFIG ?= $(CURDIR)/config/pkg_infra_quiet.yaml
 SOURCE ?= signor
@@ -15,7 +15,7 @@ COMPOSE_ENV ?=
 COMPOSE = docker compose $(if $(COMPOSE_ENV),--env-file "$(COMPOSE_ENV)") $(COMPOSE_FILES)
 
 help:
-	@echo 'setup | sample | build | hubs | reference | publish-release | serving-indexes'
+	@echo 'setup | native-reference | sample | build | hubs | reference | publish-release | serving-indexes'
 	@echo 'dev | api | web | serving-build | serving-up | serving-status | serving-logs | serving-stop'
 	@echo 'load-postgres | finish-postgres | build-subsets | test | check | check-web'
 	@echo 'See README.md for variables and deploy/README.md for container deployment.'
@@ -24,6 +24,9 @@ setup: setup-python setup-web
 setup-python:
 	git submodule update --init --recursive
 	uv sync --frozen --all-packages
+	$(MAKE) native-reference
+native-reference:
+	cargo build --release --locked --manifest-path packages/omnipath_resolver/rust/reference/Cargo.toml --features parquet-input --bin anchor-components
 setup-web:
 	pnpm --dir packages/omnipath_web install --frozen-lockfile
 
@@ -49,9 +52,9 @@ build:
 	uv run --frozen omnipath-build build "$(SOURCE)" --version "$(VERSION)" --max-records $(MAX_RECORDS) --output-dir "$(DATA_ROOT)"
 sample:
 	uv run --frozen python scripts/migration_smoke.py --output-dir "$(DATA_ROOT)/migration-smoke" --version "$(VERSION)" --max-records $(MAX_RECORDS)
-hubs:
+hubs: native-reference
 	uv run --frozen omnipath-build export-hubs $(HUB_ARGS)
-reference:
+reference: native-reference
 	uv run --frozen omnipath-build build-library $(REFERENCE_ARGS)
 publish-release:
 	@test -n "$(RELEASE_MANIFEST)" || (echo 'Set RELEASE_MANIFEST to an explicit pinned JSON file'; exit 2)
