@@ -13,9 +13,9 @@ COPY cache-manager ./cache-manager
 COPY download-manager ./download-manager
 COPY omnipath-utils ./omnipath-utils
 COPY deploy/build-constraints.txt ./deploy/build-constraints.txt
-RUN uv export --frozen --package omnipath-api --no-dev --no-emit-workspace --no-hashes -o /api-requirements.txt \
-    && uv export --frozen --all-packages --no-dev --no-emit-workspace --no-hashes -o /worker-requirements.txt \
+RUN uv export --frozen --all-packages --no-dev --no-emit-workspace --no-emit-package pypath-omnipath --no-hashes -o /worker-requirements.txt \
     && uv build --all-packages --wheel --build-constraints deploy/build-constraints.txt --out-dir /wheels \
+    && uv build pypath --wheel --build-constraints deploy/build-constraints.txt --out-dir /wheels \
     && cargo build --release --locked --manifest-path packages/omnipath_resolver/rust/reference/Cargo.toml --features parquet-input --bins
 
 FROM python:3.12-slim-bookworm AS runtime
@@ -28,6 +28,7 @@ ENV OMNIPATH_READ_ONLY=true
 WORKDIR /app
 
 FROM runtime AS worker
+ENV OMNIPATH_READ_ONLY=false
 ENV PYPATH_DOWNLOAD_DATADIR=/data/pypath-data
 RUN apt-get update \
     && apt-get install -y --no-install-recommends git \
