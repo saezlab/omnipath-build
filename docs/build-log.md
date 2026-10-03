@@ -2157,3 +2157,29 @@ Validation: 601 passed, 11 existing opt-in skips in 43.59 seconds against dispos
 PostgreSQL plus the API migration-serving fixture. All 1,083 remaining tests collect;
 isolated subsets wheel, Ruff, formatting and lock checks pass. No deployment,
 resource build, server access or persistent database changes.
+
+## 2026-10-03 — Refresh nicesrv serving with API resource limits
+
+Deployed API/web from commit `2b04935098e256880e83eed33eb27c6e5f82dfab` in the
+archived source `/root/projects/omnipath-releases/20261003-serving-2b04935/source`.
+Project `omnipath-serving-20261003-2b04935` uses loopback ports 8285/8282/8280 and
+reuses `/root/projects/full_parquet/data` read-only. Container budget: API 4 GiB,
+4 CPUs; query pool two databases, each 1 GB/two threads, 30-second admission wait.
+The actual installed query settings and Docker limits were checked.
+
+Candidate tests compared complete small entity/relation results from SIGNOR,
+Rhea and ChEBI, relation evidence and one filtered CSV export with the preceding
+API. All matched. Eight requests from four concurrent clients passed. All 46
+Latest pins and release selections were preserved; explorer, web proxy, HTTPS
+health and byte-range file reads passed. The first routing probe ran while the
+new file container was still becoming healthy; it correctly did not confirm the
+new file route. After all services were healthy, fresh marked public requests
+were confirmed in the new API/file container logs before stopping the old stack.
+
+The three previous serving containers were stopped and retained for rollback.
+All 30 other pre-existing containers retained their IDs, images, start times and
+states. All new services were healthy with no restarts or OOM events; API memory
+was 232.5 MiB after smoke checks. Public checks passed again after old services
+stopped. No resource/reference/PostgreSQL build, data publication or worker start.
+This is bounded functional validation, not a full-load performance benchmark.
+See `docs/reports/nicesrv-serving-limits-20261003.json` and `deploy/nicesrv.md`.

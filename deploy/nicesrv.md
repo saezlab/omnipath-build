@@ -1,23 +1,24 @@
 # nicesrv serving deployment — 3 October 2026
 
-The API, explorer and HTTPS file service now run from consolidated `omnipath-build`
-images. The [deployment report](../docs/reports/nicesrv-consolidated-serving-20261003.json)
-records the checks, image IDs and exact resource versions.
+The API, explorer and HTTPS file service run from `omnipath-build` commit
+`2b04935`, including the bounded API query pool. The [current deployment report](../docs/reports/nicesrv-serving-limits-20261003.json)
+records the checks, image IDs and effective limits. The [initial cutover report](../docs/reports/nicesrv-consolidated-serving-20261003.json)
+preserves the earlier deployment history.
 
 - Explorer: https://omnipath-metabo-dev.schaul.click/explore
 - Files: https://data.omnipath-metabo-dev.schaul.click
 - Artifact root: `/root/projects/full_parquet/data`, mounted read-only at `/data`.
-- Serving source: `5e46fcafd4173ee48921e3964154fa3051ecf8c4`, archived under
-  `/root/projects/omnipath-releases/20261003-consolidated-5e46fca/source`.
+- Serving source: `2b04935098e256880e83eed33eb27c6e5f82dfab`, archived under
+  `/root/projects/omnipath-releases/20261003-serving-2b04935/source`.
 - Maintained checkout: `/root/projects/omnipath-migration/omnipath-build`,
-  branch `parquet-migration`. Later worker/docs commits do not change these serving images.
-- Project: `omnipath-consolidated-20261003`; loopback API/web/files ports:
-  `8185` / `8182` / `8180`.
+  branch `parquet-migration`. Pulling this checkout does not update deployed images.
+- Project: `omnipath-serving-20261003-2b04935`; loopback API/web/files ports:
+  `8285` / `8282` / `8280`.
 
 Existing Parquets and serving indexes were reused in place. Latest still selects
 the same 46 resource versions. No resource, reference or PostgreSQL rebuild ran.
-Ten existing public manifest/taxonomy files were made readable by Nginx without
-changing their contents; the publishers now set the correct permissions.
+During the initial cutover, ten public manifest/taxonomy files were made readable
+by Nginx without changing their contents. This refresh changed no artifact permissions.
 
 ## Inspect or restart the current stack
 
@@ -26,7 +27,7 @@ and routing configuration explicit:
 
 ```sh
 ssh -T -o BatchMode=yes -o ForwardAgent=no -o ConnectTimeout=15 nicesrv
-deployment_root=/root/projects/omnipath-releases/20261003-consolidated-5e46fca
+deployment_root=/root/projects/omnipath-releases/20261003-serving-2b04935
 cd "$deployment_root/source"
 make serving-status COMPOSE_ENV="$deployment_root/serving.env" \
   COMPOSE_FILES='-f compose.serving.yaml -f deploy/compose.traefik.yaml'
@@ -41,14 +42,30 @@ The optional worker image `omnipath-worker:consolidated-c9de08f` was built and
 its help entrypoint checked. It is not processing jobs. Starting a worker remains
 an explicit, separate action with a writable artifact mount.
 
+## Effective API limits
+
+- Container: 4 GiB RAM and 4 CPUs.
+- Query pool: at most two concurrent/retained DuckDB databases.
+- Each database: 1 GB DuckDB memory (953.6 MiB) and two threads.
+- Capacity wait: up to 30 seconds, then HTTP 503 with a retry hint.
+
+These limits are explicit in this deployment's `serving.env`. They apply to the
+API; web and file containers retain their existing configuration. Small protein,
+chemical and reaction queries, evidence retrieval and a filtered CSV export
+matched the preceding API. Eight requests from four concurrent clients passed.
+The API used approximately 233 MiB after these checks; this is not a load benchmark.
+
 ## Rollback
 
-The three previous serving containers and their images remain available, stopped.
-From the deployment directory above:
+The previous `omnipath-consolidated-20261003` containers and images are retained,
+stopped. Start them, then remove the new stack's public routing labels:
 
 ```sh
-docker start full_parquet-api-1 full_parquet-web-1 full_parquet-data-1
-# Recreate the new stack without its public routing labels.
+ssh -T -o BatchMode=yes -o ForwardAgent=no -o ConnectTimeout=15 nicesrv
+docker start omnipath-consolidated-20261003-api-1 \
+  omnipath-consolidated-20261003-web-1 omnipath-consolidated-20261003-data-1
+deployment_root=/root/projects/omnipath-releases/20261003-serving-2b04935
+cd "$deployment_root/source"
 make serving-up COMPOSE_ENV="$deployment_root/serving.env" \
   COMPOSE_FILES='-f compose.serving.yaml'
 curl --fail --silent --output /dev/null \
@@ -57,9 +74,11 @@ curl --fail --silent --output /dev/null \
   https://data.omnipath-metabo-dev.schaul.click/releases/2026.9.6.4.json
 ```
 
-To route back to the consolidated stack, use `serving-up` with the HTTPS
-override, confirm public requests, then stop only the three old serving containers.
-Keep the artifact directory, PostgreSQL containers, volumes and other applications.
+The preceding deployment source and configuration remain at
+`/root/projects/omnipath-releases/20261003-consolidated-5e46fca`.
+To route back to the updated stack, use `serving-up` with the HTTPS override;
+its priority 110 exceeds the preceding stack's 100. Check public requests before
+stopping the preceding containers again. Keep PostgreSQL, artifacts and other apps.
 
 ## HTTPS PostgreSQL input
 
