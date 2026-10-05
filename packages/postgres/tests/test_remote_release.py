@@ -72,7 +72,7 @@ def published(tmp_path):
         json.dumps(
             {
                 "schema_version": 1,
-                "serving_schema_version": 3,
+                "serving_schema_version": 4,
                 "resource": "fixture",
                 "version": "1",
                 "files": files,

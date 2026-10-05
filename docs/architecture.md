@@ -14,10 +14,14 @@ resource updates. PostgreSQL chooses its own explicit release on its monthly sch
 | subsets | MetSigDB, network views, COSMOS and their shared transaction/checkpoint runner |
 | api | Inventory snapshots, bounded DuckDB queries, exports and optional job adapters |
 | web | Explorer, generated HTTP/vocabulary types and shipped documentation |
+| client | Python queries over local or remote published Parquets |
 
 The package dependency direction is postgres -> subsets -> core; subsets does
 not import PostgreSQL build internals. Build depends on resolver and core.
 Serving requires core and API only; a separately installed worker also uses build.
+The Python client runs independently of the API, builder and resolver. Optional
+serving projections are scoped to one resource version; gene and chemical
+grouping across resources happens at query time.
 Public Python names remain `omnipath_*`; outer project folders use short names.
 Only Python's extra `src` level was removed; Rust and Svelte use their usual layout.
 

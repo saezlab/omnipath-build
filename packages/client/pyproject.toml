@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "omnipath-client"
+version = "0.1.0"
+description = "DuckDB client for versioned OmniPath Parquet resources"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = ["duckdb>=1.5,<2", "httpx>=0.27,<1"]
+
+[project.optional-dependencies]
+pandas = ["pandas>=2"]
+arrow = ["pyarrow>=14"]
+test = ["pytest>=8", "pyarrow>=14"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["omnipath_client*"]
+
+[tool.setuptools.package-data]
+omnipath_client = ["py.typed"]

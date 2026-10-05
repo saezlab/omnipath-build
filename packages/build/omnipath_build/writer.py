@@ -7,7 +7,13 @@ import shutil
 import duckdb
 import pyarrow as pa
 import pyarrow.parquet as pq
-from omnipath_core.measurements import QUANTITY_STRUCT
+from omnipath_core.schema import (
+    ENTITY_SCHEMA,
+    RELATION_SCHEMA,
+    PAYLOAD_SCHEMA,
+    ENTITY_EVIDENCE_STRUCT,
+)
+from omnipath_core.molecular_forms import MOLECULAR_FORM_STRUCT, normalize_molecular_form
 from omnipath_core.display_names import preferred_name_sql
 
 from omnipath_core.biolink import (
@@ -19,130 +25,16 @@ from omnipath_core.biolink import (
     presentation_category,
     direction_sign_from_qualifiers,
 )
-from omnipath_core.keys import stable_hash
+from omnipath_core.keys import stable_hash, entity_key
 from omnipath_core.naming import normalize_namespace
 from .contracts import ObservationShard
 from omnipath_resolver import get_policy
+from omnipath_resolver.canonical.policy import PROTEIN_ENTITY_TYPES, RNA_ENTITY_TYPES
 from omnipath_resolver.canonical.library import pin_library
 from .duckdb_config import build_memory_limit, configure_memory, build_threads
 from .merge_policy import preferred_label
 
-ENTITY_SCHEMA = pa.schema(
-    [
-        ("entity_key", pa.string()),
-        ("entity_type", pa.string()),
-        ("namespace", pa.string()),
-        ("identifier", pa.string()),
-        ("taxon", pa.string()),
-        ("label", pa.string()),
-        ("has_hierarchy", pa.bool_()),
-        ("parent_count", pa.int64()),
-        ("child_count", pa.int64()),
-        (
-            "identifiers",
-            pa.list_(
-                pa.struct(
-                    [
-                        ("ns", pa.string()),
-                        ("id", pa.string()),
-                        ("is_canonical", pa.bool_()),
-                        ("source", pa.string()),
-                    ]
-                )
-            ),
-        ),
-        (
-            "annotations",
-            pa.list_(
-                pa.struct(
-                    [
-                        ("term", pa.string()),
-                        ("value", pa.string()),
-                        ("quantity", QUANTITY_STRUCT),
-                        ("source", pa.string()),
-                        ("dataset", pa.string()),
-                    ]
-                )
-            ),
-        ),
-    ]
-)
-
-RELATION_SCHEMA = pa.schema(
-    [
-        ("relation_key", pa.string()),
-        ("statement_kind", pa.string()),
-        ("subject_entity_key", pa.string()),
-        ("subject_label", pa.string()),
-        ("subject_type", pa.string()),
-        ("predicate", pa.string()),
-        ("object_entity_key", pa.string()),
-        ("object_label", pa.string()),
-        ("object_type", pa.string()),
-        ("taxon", pa.string()),
-        ("is_directed", pa.bool_()),
-        ("sign", pa.int32()),
-        ("category", pa.string()),
-        ("interaction_class", pa.string()),
-        ("sources", pa.list_(pa.string())),
-        ("evidence_count", pa.int64()),
-        (
-            "evidence",
-            pa.list_(
-                pa.struct(
-                    [
-                        ("source", pa.string()),
-                        ("dataset", pa.string()),
-                        ("row_id", pa.string()),
-                        ("upstream_id", pa.string()),
-                        (
-                            "annotations",
-                            pa.list_(
-                                pa.struct(
-                                    [
-                                        ("term", pa.string()),
-                                        ("value", pa.string()),
-                                        ("quantity", QUANTITY_STRUCT),
-                                        ("source", pa.string()),
-                                        ("dataset", pa.string()),
-                                        ("scope", pa.string()),
-                                    ]
-                                )
-                            ),
-                        ),
-                    ]
-                )
-            ),
-        ),
-        (
-            "annotations",
-            pa.list_(
-                pa.struct(
-                    [
-                        ("term", pa.string()),
-                        ("value", pa.string()),
-                        ("quantity", QUANTITY_STRUCT),
-                        ("source", pa.string()),
-                        ("dataset", pa.string()),
-                        ("scope", pa.string()),
-                    ]
-                )
-            ),
-        ),
-    ]
-)
-
 _PAYLOAD_CHUNK_BYTES = 64 * 1024 * 1024
-
-PAYLOAD_SCHEMA = pa.schema(
-    [
-        ("relation_key", pa.string()),
-        ("entity_key", pa.string()),
-        ("source", pa.string()),
-        ("row_id", pa.string()),
-        ("payload_json", pa.string()),
-    ]
-)
 
 
 def _sql_path(path: Path) -> str:
@@ -208,8 +100,13 @@ def _payload_dictionary(rows):
 
 
 ENTITY_INPUT = _schema(
-    "old_key entity_type namespace identifier taxon label node_id library scope",
-    [("scoped_name", pa.bool_()), ("scoped_symbol", pa.bool_())],
+    "old_key entity_type namespace identifier taxon label node_id library scope reference_entity_key",
+    [
+        ("scoped_name", pa.bool_()),
+        ("scoped_symbol", pa.bool_()),
+        ("gene_reference_keys", pa.list_(pa.string())),
+        ("molecular_form", MOLECULAR_FORM_STRUCT),
+    ],
 )
 IDS_INPUT = _schema("old_key target_ns target_id ns id source")
 ENTITY_ANN = _schema(
@@ -228,6 +125,59 @@ REL_ANN = _schema(
         ("quantity", ENTITY_SCHEMA.field("annotations").type.value_type.field("quantity").type),
     ],
 )
+ENTITY_EVIDENCE_INPUT = _schema(
+    "old_key",
+    [("item", ENTITY_EVIDENCE_STRUCT)],
+)
+
+
+def _form_specific_identifier(namespace, identifier):
+    """Keep occurrence-specific sequence IDs out of general alias collections."""
+    import re
+
+    if namespace in {"ensp", "enst", "ensembl_protein", "ensembl_transcript"}:
+        return True
+    if namespace in {"uniprot", "uniprot-sec"}:
+        return bool(re.search(r"-(?:[0-9]+|PRO_[0-9]+)$", identifier))
+    if namespace.startswith("refseq"):
+        return bool(re.match(r"(?:AP|NP|XP|YP|WP|ZP|NM|XM|NR|XR)_", identifier))
+    return False
+
+
+def _reference_key(namespace, identifier):
+    return f"{namespace}:{identifier}"
+
+
+def _resolution_annotations(targets):
+    """Retain exceptional genes and reported product provenance per occurrence."""
+    values = set()
+    for target in targets:
+        if (
+            getattr(target, "protein_namespace", None)
+            and getattr(target, "protein_identifier", None)
+            and getattr(target, "protein_node_id", None) is None
+        ):
+            values.add(("omnipath:protein_mapping_status", "reported"))
+        status = getattr(target, "gene_mapping_status", None)
+        if status not in {"ambiguous", "conflict"}:
+            continue
+        values.add(("omnipath:gene_mapping_status", status))
+        values.update(
+            ("omnipath:gene_mapping_candidate", candidate)
+            for candidate in getattr(target, "gene_candidates", ())
+        )
+    return [
+        dict(
+            term=term,
+            value=value,
+            quantity=None,
+            source="resolver",
+            dataset="molecular_reference"
+            if term == "omnipath:protein_mapping_status"
+            else "gene_reference",
+        )
+        for term, value in sorted(values)
+    ]
 
 
 class ParquetWriter:
@@ -284,15 +234,93 @@ class ParquetWriter:
 
     def append_observations(self, extractor, resolver, *, on_progress=None):
         resolved = resolver.resolve_entity_targets(extractor.entities, progress=False)
-        entities, identifiers, entity_anns = [], [], []
+        entities, identifiers, entity_anns, entity_evidence = [], [], [], []
         for old, raw in extractor.entities.items():
             for info in resolved[old]:
-                et = info.entity_type or entity_type(raw.entity_type)
+                # The reference namespace describes the grouping identity;
+                # it must not replace the source's molecular type.
+                et = entity_type(raw.entity_type)
                 policy = get_policy(et)
                 ns = normalize_namespace(info.canonical_namespace) or str(
                     info.canonical_namespace or "unknown"
                 )
                 taxon = info.taxon or raw.taxon or ""
+                reference_key = _reference_key(ns, info.canonical_identifier)
+                gene_keys = [reference_key] if ns == "entrez" else []
+                form = normalize_molecular_form(raw.molecular_form)
+                for product_type in ("protein", "transcript"):
+                    product_ns = getattr(info, f"{product_type}_namespace", None)
+                    product_id = getattr(info, f"{product_type}_identifier", None)
+                    if not product_ns or not product_id or et == "gene":
+                        continue
+                    if product_type == "protein" and et not in PROTEIN_ENTITY_TYPES:
+                        continue
+                    if product_type == "transcript" and et not in RNA_ENTITY_TYPES:
+                        continue
+                    product_ns = normalize_namespace(product_ns) or product_ns
+                    product_key = entity_key(product_type, product_ns, product_id)
+                    form = normalize_molecular_form(
+                        {**(form or {}), f"{product_type}_entity_key": product_key}
+                    )
+                    product_genes = list(
+                        getattr(info, "protein_gene_candidates", ())
+                        if product_type == "protein"
+                        else gene_keys
+                    )
+                    product_genes = sorted(set(product_genes))
+                    product_reference = (
+                        product_genes[0]
+                        if len(product_genes) == 1
+                        else _reference_key(product_ns, product_id)
+                    )
+                    product_old = stable_hash("product-reference", old, product_key)
+                    product_node = getattr(info, f"{product_type}_node_id", None)
+                    entities.append(
+                        dict(
+                            old_key=product_old,
+                            entity_type=product_type,
+                            namespace=product_ns,
+                            identifier=product_id,
+                            taxon=taxon,
+                            label=getattr(info, f"{product_type}_label", None)
+                            or (
+                                product_id
+                                if product_type == "protein" and product_node is None
+                                else info.label
+                            )
+                            or product_id,
+                            node_id=product_node,
+                            library=policy.library,
+                            scope="",
+                            scoped_name=False,
+                            scoped_symbol=False,
+                            reference_entity_key=product_reference,
+                            gene_reference_keys=product_genes,
+                            molecular_form=None,
+                        )
+                    )
+                    for alias_ns, values in (
+                        getattr(info, f"{product_type}_aliases", {}) or {}
+                    ).items():
+                        alias_ns = normalize_namespace(alias_ns) or alias_ns
+                        for value in values:
+                            if _form_specific_identifier(alias_ns, value) and (alias_ns, value) != (
+                                product_ns,
+                                product_id,
+                            ):
+                                continue
+                            identifiers.append(
+                                dict(
+                                    old_key=product_old,
+                                    target_ns=product_ns,
+                                    target_id=product_id,
+                                    ns=alias_ns,
+                                    id=value,
+                                    source="raw"
+                                    if product_type == "protein" and product_node is None
+                                    else "resolver",
+                                )
+                            )
                 entities.append(
                     dict(
                         old_key=old,
@@ -308,15 +336,24 @@ class ParquetWriter:
                         scoped_symbol=bool(taxon)
                         and not info.matched
                         and (ns in policy.symbol_namespaces or ns == "guidetopharma_target"),
+                        reference_entity_key=reference_key,
+                        gene_reference_keys=gene_keys,
+                        molecular_form=form,
                     )
                 )
                 for ident in raw.identifiers:
+                    ident_ns = normalize_namespace(ident.get("ns", "")) or str(ident.get("ns", ""))
+                    if _form_specific_identifier(ident_ns, ident["id"]) and (
+                        ident_ns,
+                        ident["id"],
+                    ) != (ns, info.canonical_identifier):
+                        continue
                     identifiers.append(
                         dict(
                             old_key=old,
                             target_ns=ns,
                             target_id=info.canonical_identifier,
-                            ns=normalize_namespace(ident.get("ns", "")) or str(ident.get("ns", "")),
+                            ns=ident_ns,
                             id=ident["id"],
                             source=ident.get("source", "raw"),
                         )
@@ -333,6 +370,8 @@ class ParquetWriter:
                             source="resolver",
                         )
                         for val in values
+                        if not _form_specific_identifier(ns_norm, val)
+                        or (ns_norm, val) == (ns, info.canonical_identifier)
                     )
             entity_anns.extend(
                 dict(
@@ -345,6 +384,14 @@ class ParquetWriter:
                 )
                 for a in raw.annotations
             )
+            diagnostics = _resolution_annotations(resolved[old])
+            entity_evidence.extend(
+                dict(
+                    old_key=old,
+                    item={**item, "annotations": [*(item.get("annotations") or []), *diagnostics]},
+                )
+                for item in raw.evidence
+            )
         self._input("input_entities", entities, ENTITY_INPUT)
         self._db.execute("""CREATE OR REPLACE TEMP TABLE entity_map AS
             WITH base AS (SELECT *, sha256(lower(trim(entity_type)) || chr(0) || lower(trim(namespace)) || chr(0) ||
@@ -354,7 +401,7 @@ class ParquetWriter:
                       ELSE base_key END AS entity_key FROM base""")
         self._append(
             "entities",
-            "SELECT entity_key, entity_type, namespace, identifier, taxon, label FROM entity_map",
+            "SELECT entity_key, entity_type, namespace, identifier, taxon, label, reference_entity_key, gene_reference_keys FROM entity_map",
         )
         self._append(
             "refs",
@@ -375,6 +422,14 @@ class ParquetWriter:
             """SELECT e.entity_key, a.term, a.value, a.quantity, a.source, a.dataset
             FROM input_entity_anns a JOIN entity_map e ON a.old_key=e.old_key""",
         )
+        self._input("input_entity_evidence", entity_evidence, ENTITY_EVIDENCE_INPUT)
+        self._append(
+            "entity_evidence",
+            """SELECT e.entity_key, struct_pack(source:=a.item.source,dataset:=a.item.dataset,
+                   row_id:=a.item.row_id,upstream_id:=a.item.upstream_id,annotations:=a.item.annotations,
+                   molecular_form:=e.molecular_form) AS item
+               FROM input_entity_evidence a JOIN entity_map e ON a.old_key=e.old_key""",
+        )
 
         relations, relation_anns = [], []
         for raw in extractor.relations:
@@ -388,6 +443,14 @@ class ParquetWriter:
                 }
                 for a in raw.annotations
             ]
+            for side, key in (
+                ("subject", raw.subject_entity_key),
+                ("object", raw.object_entity_key),
+            ):
+                anns.extend(
+                    {**annotation, "scope": side}
+                    for annotation in _resolution_annotations(resolved.get(key, ()))
+                )
             _, pred, _, qualified = statement_identity("", raw.predicate, "", anns)
             if raw.statement_kind not in {"relation", "ontology"}:
                 raise ValueError(f"Unknown statement kind: {raw.statement_kind}")
@@ -440,7 +503,9 @@ class ParquetWriter:
         self._input("input_relations", relations, REL_INPUT)
         self._db.execute("""CREATE OR REPLACE TEMP TABLE relation_map AS
             WITH endpoints AS (
-                SELECT r.*, coalesce(s.entity_key, r.subject) AS s, coalesce(o.entity_key,r.object) AS o
+                SELECT r.*, coalesce(s.entity_key, r.subject) AS s, coalesce(o.entity_key,r.object) AS o,
+                    s.reference_entity_key AS s_reference, o.reference_entity_key AS o_reference,
+                    s.molecular_form AS s_form, o.molecular_form AS o_form
                 FROM input_relations r LEFT JOIN entity_map s ON r.subject=s.old_key
                 LEFT JOIN entity_map o ON r.object=o.old_key
             ), oriented AS (
@@ -459,7 +524,12 @@ class ParquetWriter:
             subject_entity_key AS subject_label, 'protein' AS subject_type, predicate,
             object_entity_key, object_entity_key AS object_label, 'protein' AS object_type,
             asserted_taxon AS taxon, is_directed, sign, category, interaction_class,
-            event_id, source, dataset, row_id, upstream_id, qualified FROM relation_map""",
+            event_id, source, dataset, row_id, upstream_id, qualified,
+            CASE WHEN flipped THEN o_reference ELSE s_reference END AS subject_reference_entity_key,
+            CASE WHEN flipped THEN s_reference ELSE o_reference END AS object_reference_entity_key,
+            CASE WHEN flipped THEN o_form ELSE s_form END AS subject_molecular_form,
+            CASE WHEN flipped THEN s_form ELSE o_form END AS object_molecular_form
+            FROM relation_map""",
         )
         self._input("input_relation_anns", relation_anns, REL_ANN)
         self._append(
@@ -519,6 +589,7 @@ class ParquetWriter:
             "input_entities",
             "input_ids",
             "input_entity_anns",
+            "input_entity_evidence",
             "input_relations",
             "input_relation_anns",
             "input_payloads",
@@ -573,7 +644,12 @@ class ParquetWriter:
                                i.namespace=r.namespace AND i.identifier=r.identifier
                         FROM (SELECT DISTINCT * FROM refs WHERE entity_type=? AND library=?) r
                         JOIN reference_identifiers i ON i.entity_id=r.node_id
-                        WHERE list_contains(?,i.namespace)
+                        WHERE list_contains(?,i.namespace) AND (
+                            (i.namespace=r.namespace AND i.identifier=r.identifier) OR NOT (
+                                i.namespace IN ('ensp','enst','ensembl_protein','ensembl_transcript')
+                                OR (i.namespace IN ('uniprot','uniprot-sec') AND regexp_matches(i.identifier,'-(?:[0-9]+|PRO_[0-9]+)$'))
+                                OR (starts_with(i.namespace,'refseq') AND regexp_matches(i.identifier,'^(?:AP|NP|XP|YP|WP|ZP|NM|XM|NR|XR)_'))
+                            ))
                         UNION ALL SELECT entity_key,namespace,identifier,'resolver',true
                         FROM refs WHERE entity_type=? AND library=?""",
                         [et, library, allowed, et, library],
@@ -588,11 +664,15 @@ class ParquetWriter:
         from omnipath_core.biolink import hierarchy_direction
 
         self._db.execute("""CREATE TEMP TABLE entity_display AS
-        SELECT entity_key, min(entity_type) AS entity_type, min(namespace) AS namespace,
+        WITH grouped AS (SELECT entity_key, min(entity_type) AS entity_type, min(namespace) AS namespace,
             min(identifier) AS identifier, coalesce(min(nullif(taxon,'')),'') AS taxon,
             coalesce(first(nullif(label,'') ORDER BY CASE WHEN nullif(label,'') IS NULL THEN 2
-                WHEN label<>identifier AND NOT regexp_matches(label,'^[0-9]+$') THEN 0 ELSE 1 END,label), min(identifier)) AS label
-        FROM entities GROUP BY entity_key
+                WHEN label<>identifier AND NOT regexp_matches(label,'^[0-9]+$') THEN 0 ELSE 1 END,label), min(identifier)) AS label,
+            list_sort(list_distinct(flatten(list(gene_reference_keys)))) AS gene_reference_keys,
+            bool_or(reference_entity_key=namespace || ':' || identifier) AS has_native_reference
+        FROM entities GROUP BY entity_key)
+        SELECT * EXCLUDE(has_native_reference), CASE WHEN NOT has_native_reference AND len(gene_reference_keys)=1 THEN gene_reference_keys[1]
+            ELSE namespace || ':' || identifier END AS reference_entity_key FROM grouped
 """)
         directions = []
         for (predicate,) in self._db.execute(
@@ -706,6 +786,7 @@ class ParquetWriter:
                     "refs",
                     "identifiers",
                     "entity_annotations",
+                    "entity_evidence",
                     "relations",
                     "relation_annotations",
                 }:
@@ -746,6 +827,7 @@ class ParquetWriter:
                 "display",
                 "identifiers",
                 "entity_annotations",
+                "entity_evidence",
                 "relations",
                 "relation_annotations",
             ):
@@ -760,6 +842,7 @@ class ParquetWriter:
                     "display",
                     "identifiers",
                     "entity_annotations",
+                    "entity_evidence",
                     "relations",
                     "relation_annotations",
                 ):
@@ -815,13 +898,19 @@ def _entities_sql():
         SELECT entity_key, list(DISTINCT struct_pack(term:=term,value:=value,quantity:=quantity,source:=source,dataset:=dataset)
             ORDER BY struct_pack(term:=term,value:=value,quantity:=quantity,source:=source,dataset:=dataset)) AS annotations
         FROM b_entity_annotations GROUP BY entity_key
+    ), evidence AS (
+        SELECT entity_key, list(item ORDER BY item) AS evidence
+        FROM b_entity_evidence GROUP BY entity_key
     ) SELECT base.*,
-        grouped_ids.identifiers, coalesce(anns.annotations, []) AS annotations
-        FROM base JOIN grouped_ids USING(entity_key) LEFT JOIN anns USING(entity_key)"""
-    return f"""SELECT * REPLACE ({preferred_name_sql()} AS label,
+        grouped_ids.identifiers, coalesce(anns.annotations, []) AS annotations,
+        coalesce(evidence.evidence, []) AS evidence
+        FROM base JOIN grouped_ids USING(entity_key) LEFT JOIN anns USING(entity_key)
+        LEFT JOIN evidence USING(entity_key)"""
+    columns = ",".join('"' + field.name + '"' for field in ENTITY_SCHEMA)
+    return f"""SELECT {columns} FROM (SELECT * REPLACE ({preferred_name_sql()} AS label,
         CASE WHEN label IS NULL OR label = '' OR list_contains(list_transform(identifiers, x -> x.id), label)
         THEN identifiers ELSE list_append(identifiers, struct_pack(ns := 'name', id := label, is_canonical := false, source := '')) END AS identifiers)
-        FROM ({nested})"""
+        FROM ({nested}))"""
 
 
 def _relations_sql():
@@ -837,6 +926,7 @@ def _relations_sql():
         for n in scalar
     )
     ann = "struct_pack(term:=term,value:=value,quantity:=quantity,source:=source,dataset:=dataset,scope:=scope)"
+    columns = ",".join('"' + field.name + '"' for field in RELATION_SCHEMA)
     return f"""WITH base AS (
         SELECT relation_key, {scalars}, list(DISTINCT source ORDER BY source) AS sources
         FROM b_relations GROUP BY relation_key
@@ -845,7 +935,8 @@ def _relations_sql():
         FROM b_relation_annotations GROUP BY relation_key, event_id
     ), evidence AS (
         SELECT r.relation_key, struct_pack(source:=r.source,dataset:=r.dataset,row_id:=r.row_id,
-            upstream_id:=r.upstream_id,annotations:=coalesce(a.annotations,[])) AS item
+            upstream_id:=r.upstream_id,annotations:=coalesce(a.annotations,[]),
+            subject_molecular_form:=r.subject_molecular_form,object_molecular_form:=r.object_molecular_form) AS item
         FROM b_relations r LEFT JOIN occurrence_anns a USING(relation_key, event_id)
     ), grouped_evidence AS (
         SELECT relation_key, count(*) AS evidence_count, list(item ORDER BY item) AS evidence
@@ -853,5 +944,5 @@ def _relations_sql():
     ), anns AS (
         SELECT relation_key, list(DISTINCT {ann} ORDER BY {ann}) AS annotations
         FROM b_relation_annotations GROUP BY relation_key
-    ) SELECT base.*, grouped_evidence.evidence_count, grouped_evidence.evidence, coalesce(anns.annotations,[]) AS annotations
-        FROM base JOIN grouped_evidence USING(relation_key) LEFT JOIN anns USING(relation_key)"""
+    ) SELECT {columns} FROM (SELECT base.*, grouped_evidence.evidence_count, grouped_evidence.evidence, coalesce(anns.annotations,[]) AS annotations
+        FROM base JOIN grouped_evidence USING(relation_key) LEFT JOIN anns USING(relation_key))"""

@@ -2,7 +2,7 @@
   import * as Tooltip from '$lib/components/ui/tooltip/index.js';
   let {
     pressed = $bindable(false),
-    explanation = 'Group chemicals with the same connectivity (first 14 InChIKey letters). Groups merge matching entities’ names and annotations and are sorted by matched entity count. Other entities stay separate.',
+    explanation = 'Group genes and their products by gene reference, and chemicals by connectivity. Entities without an unambiguous grouping stay separate.',
   }: { pressed?: boolean; explanation?: string } = $props();
 </script>
 

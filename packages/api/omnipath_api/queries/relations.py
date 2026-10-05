@@ -15,7 +15,14 @@ from omnipath_core.biolink import (
 )
 
 from omnipath_api.serving_index import projected_paths
-from omnipath_api.store.connection import format_read_parquet
+from omnipath_api.molecular import (
+    columns,
+    read,
+    occurrences_expression,
+    form_match_sql,
+    has_form_filters,
+    matching_evidence,
+)
 from omnipath_api.models import normalize_filters
 
 
@@ -107,7 +114,9 @@ class RelationsQueries:
             params.append(int(min_ev))
 
         interaction_types = self._as_list(
-            filters.get("interaction_types") or filters.get("interactionTypes")
+            filters.get("interaction_types")
+            or filters.get("interactionTypes")
+            or filters.get("entity_types")
         )
         if interaction_types:
             norm_types = [biolink_entity_type(t) for t in interaction_types]
@@ -138,11 +147,20 @@ class RelationsQueries:
         filters = normalize_filters(filters)
         tokens = filters["entity_ids"] + filters["entity_pks"]
         scope = filters["scope_entity_ids"]
-        return self._build_relation_where(
+        where, params = self._build_relation_where(
             filters,
             self.resolve_entity_keys(tokens, resources) if tokens else None,
             self.resolve_entity_keys(scope, resources) if scope else None,
         )
+        if filters["reference_entity_keys"]:
+            where += " AND (subject_reference_entity_key IN (SELECT unnest(?::VARCHAR[])) OR object_reference_entity_key IN (SELECT unnest(?::VARCHAR[])))"
+            params.extend([filters["reference_entity_keys"], filters["reference_entity_keys"]])
+        if has_form_filters(filters):
+            expr = occurrences_expression(columns(self._resolve_relation_paths(resources)))
+            match, values = form_match_sql(filters)
+            where += f" AND len(list_filter({expr}, ev -> {match})) > 0"
+            params.extend(values)
+        return where, params
 
     def search_relations(
         self,
@@ -159,9 +177,9 @@ class RelationsQueries:
         if not paths:
             return {"rows": [], "total": 0, "elapsed_ms": 0.0, "files_scanned": 0}
 
-        read_expr = self._read_expr(
-            paths if include_details else projected_paths(self.data_root, "relations", paths)
-        )
+        scalar_paths = projected_paths(self.data_root, "relations", paths)
+        original_by_projection = dict(zip(scalar_paths, paths))
+        read_expr = self._read_expr(scalar_paths)
 
         filters = normalize_filters(filters)
         entity_tokens = filters["entity_ids"] + filters["entity_pks"]
@@ -169,11 +187,20 @@ class RelationsQueries:
         where_sql, params = self._resolve_relation_where(filters, resources)
 
         # Sort/count only lightweight rows, then read payload columns for the page's files.
-        page_read = format_read_parquet(
-            paths if include_details else projected_paths(self.data_root, "relations", paths),
+        page_read = read(
+            scalar_paths,
             filename=True,
             file_row_number=True,
         )
+        if has_form_filters(filters) and "molecular_occurrences" in columns(
+            projected_paths(self.data_root, "relations", paths)
+        ):
+            where_sql = where_sql.replace(
+                occurrences_expression(columns(paths)),
+                occurrences_expression(
+                    columns(projected_paths(self.data_root, "relations", paths))
+                ),
+            )
         page_sql = f"""
             WITH matched AS MATERIALIZED (
                 SELECT filename, file_row_number, category, predicate, subject_label, object_label
@@ -212,11 +239,12 @@ class RelationsQueries:
                 else ", list_filter(annotations, a -> a.term IN ('causal_mechanism_qualifier', 'object_aspect_qualifier', 'object_direction_qualifier')) AS annotations"
             )
             for filename, row_numbers in by_file.items():
-                detail_read = format_read_parquet([filename], file_row_number=True)
+                detail_path = original_by_projection[filename] if include_details else filename
+                detail_read = read([detail_path], file_row_number=True)
                 items = self._fetch_dicts(
                     f"""SELECT file_row_number, relation_key,
                     subject_entity_key, subject_label, subject_type, predicate,
-                    object_entity_key, object_label, object_type, taxon, is_directed, sign,
+                    object_entity_key, object_label, object_type, subject_reference_entity_key, object_reference_entity_key, taxon, is_directed, sign,
                     category, interaction_class, sources, evidence_count {extra_cols}
                     FROM {detail_read} WHERE file_row_number IN (SELECT unnest(?::BIGINT[]))""",
                     [row_numbers],
@@ -231,6 +259,10 @@ class RelationsQueries:
                 f"SELECT count(*) FROM {read_expr} WHERE {where_sql}", params
             ).fetchone()[0]
 
+        if include_details and has_form_filters(filters):
+            for row in rows:
+                row["evidence"] = matching_evidence(row.get("evidence"), filters)
+                row["evidence_count"] = len(row["evidence"])
         elapsed_ms = round((time.perf_counter() - t0) * 1000, 2)
 
         return {
@@ -263,7 +295,11 @@ class RelationsQueries:
     ) -> dict[str, Any]:
         t0 = time.perf_counter()
         result = self.search_relations(
-            filters=filters, resources=resources, limit=limit, offset=offset
+            filters=filters,
+            resources=resources,
+            limit=limit,
+            offset=offset,
+            include_details=has_form_filters(normalize_filters(filters)),
         )
         relations = [self._to_entity_relation(row) for row in result["rows"]]
         by_pk = self._endpoint_entities_by_pk(result["rows"], resources)

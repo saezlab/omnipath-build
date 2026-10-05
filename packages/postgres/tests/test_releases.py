@@ -31,7 +31,7 @@ def write_resource(root, source="signor", version="1.0.0"):
         }
     manifest = {
         "schema_version": 1,
-        "serving_schema_version": 3,
+        "serving_schema_version": 4,
         "resource": source,
         "version": version,
         "files": files,
@@ -66,7 +66,7 @@ def test_selection_is_pinned_deeply_immutable_and_preserves_build_manifest(relea
     assert resource.source == "signor"
     assert resource.version == "1.0.0"
     assert resource.schema_version == 1
-    assert resource.serving_schema_version == 3
+    assert resource.serving_schema_version == 4
     assert resource.directory == directory
     assert resource.manifest_json == (directory / "build_manifest.json").read_text()
     assert resource.manifest_sha256 == hashlib.sha256(resource.manifest_json.encode()).hexdigest()
@@ -164,7 +164,7 @@ def test_rejects_ambiguous_or_invalid_json(release, content):
         ("version", "2"),
         ("schema_version", 2),
         ("schema_version", True),
-        ("serving_schema_version", 4),
+        ("serving_schema_version", 3),
         ("serving_schema_version", None),
     ],
 )

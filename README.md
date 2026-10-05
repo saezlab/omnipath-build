@@ -125,6 +125,7 @@ subsets contains only the current product implementations.
 | [subsets](packages/subsets/README.md) | MetSigDB, network views, COSMOS and durable product publication |
 | [api](packages/api/README.md) | Parquet queries, inspection and exports |
 | [web](packages/web/README.md) | Explorer and API proxy |
+| [client](packages/client/README.md) | Python queries over local or remote Parquet |
 
 The root Makefile delegates to package commands; implementation stays inside
 packages. `make check`, `make test`, `make check-web` and `make test-api` cover
@@ -133,8 +134,8 @@ generated contracts; `make test-wheels` checks isolated installations. PostgreSQ
 fixtures require explicit `make test-postgres` and create a disposable local cluster.
 CI runs developer checks without imposing a production verification phase.
 The [versioning policy](VERSIONING.md) describes independent publication schedules.
-The Python client remains a later milestone; `legacy/` is excluded from the
-active workspace.
+The Python client queries the same published Parquets independently of the server.
+`legacy/` is excluded from the active workspace.
 
 ## Architecture and dependency policy
 

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import MolecularContext from './MolecularContext.svelte';
   import { entityFromWire } from '$lib/api/adapters';
   import { untrack } from 'svelte';
   import { page } from '$app/state';
@@ -125,6 +126,7 @@
         ? ['identifiers']
         : []),
       'relationships',
+      'molecular',
       ...(getOntologyHierarchy(current) ? ['ontology'] : []),
     ];
     if (available.length && !available.includes(activeTab)) activeTab = available[0];
@@ -211,6 +213,7 @@
           headers: { 'Content-Type': 'application/json' },
           signal,
           body: JSON.stringify({
+            strategy: fallback.groupStrategy || 'chemical_connectivity',
             group_key: publicId,
             query: fallback.groupQuery,
             filters: fallback.groupFilters,
@@ -298,6 +301,7 @@
             headers: { 'Content-Type': 'application/json' },
             signal: controller.signal,
             body: JSON.stringify({
+              strategy: group.groupStrategy || 'chemical_connectivity',
               group_key: group.entityPk,
               query: group.groupQuery,
               filters: group.groupFilters,
@@ -600,6 +604,9 @@
         >
         <div class="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted-foreground">
           <span>{getEntityTypeLabel(detailEntity)}</span>
+          {#if detailEntity.memberEntityTypes?.length}<span
+              >{detailEntity.memberEntityTypes.join(', ')} source records</span
+            >{/if}
           {#if detailEntity.groupMemberCount}<span
               >Grouped · {detailEntity.groupMemberCount} matched entities</span
             >{/if}
@@ -648,6 +655,9 @@
                   >{detailIdentifierTotal}</span
                 ></Tabs.Trigger
               >{/if}
+            <Tabs.Trigger value="molecular" class="flex-none"
+              >Products and molecular evidence</Tabs.Trigger
+            >
             <Tabs.Trigger value="relationships" class="flex-none"
               >Relationships {#if relationshipsLoaded}<span class="text-xs text-muted-foreground"
                   >{relationshipsTotal}</span
@@ -811,6 +821,9 @@
               </Table.Body>
             </Table.Root>
           {:else}<p class="text-muted-foreground">No identifiers are available.</p>{/if}
+        </Tabs.Content>
+        <Tabs.Content value="molecular" class="min-h-0 overflow-y-auto overscroll-contain p-6">
+          {#if activeTab === 'molecular'}<MolecularContext entityKey={detailEntity.entityPk} />{/if}
         </Tabs.Content>
         <Tabs.Content value="relationships" class="min-h-0 overflow-y-auto overscroll-contain p-6">
           {#if loadingRelationships}<p role="status" class="mb-3 text-sm text-muted-foreground">

@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import json
 from typing import Any
+from pathlib import Path
 
 
 from omnipath_api.annotations import (
@@ -22,63 +23,63 @@ def payload_query(payload_read_expr: str) -> str:
 class EvidenceQueries:
     """Evidence queries over the engine storage and shaping contract."""
 
-    def get_relation_evidence(
-        self, relation_pk: str, resources: list[str] | None = None
-    ) -> dict[str, Any]:
+    def get_relation_evidence(self, relation_pk, resources=None, filters=None):
+        from omnipath_api.molecular import matching_evidence, has_form_filters
+        from omnipath_api.models import normalize_filters
+        from omnipath_api.store.connection import format_read_parquet
+        import hashlib
+
         paths = self._resolve_relation_paths(resources)
         if not paths:
             return {"evidence": [], "annotations": []}
-        read_expr = self._read_expr(paths)
         rows = self._fetch_dicts(
-            f"SELECT relation_key, evidence, annotations FROM {read_expr} WHERE relation_key = ? LIMIT 1",
+            f"SELECT filename, file_row_number, evidence, annotations FROM {format_read_parquet(paths, filename=True, file_row_number=True)} WHERE relation_key = ? ORDER BY filename, file_row_number",
             [relation_pk],
         )
-        if not rows:
-            return {"evidence": [], "annotations": []}
-        row = rows[0]
-        nested_evidence = row.get("evidence") or []
-        annotations = row.get("annotations") or []
-        if not isinstance(nested_evidence, list):
-            nested_evidence = []
-        if not isinstance(annotations, list):
-            annotations = []
-
-        compiled_rel = split_compiled_annotations(annotations)
-
-        evidence_items = list(nested_evidence)
-        if not evidence_items:
-            evidence_items = [{"source": "unknown", "row_id": "0"}]
-
-        evidence_rows: list[dict[str, Any]] = []
-        for index, item in enumerate(evidence_items):
-            record = item if isinstance(item, dict) else {"value": item}
-            row_id = str(record.get("row_id") or index)
-            source_name = str(record.get("source") or "unknown")
-
-            item_anns = record.get("annotations")
-            if item_anns and isinstance(item_anns, list) and len(item_anns) > 0:
-                ev_compiled = split_compiled_annotations(item_anns)
-            else:
-                ev_compiled = compiled_rel
-
-            evidence_rows.append(
-                {
-                    "relationPk": relation_pk,
-                    "relationEvidencePk": f"{relation_pk}:{row_id}",
-                    "source": source_name,
-                    "dataset": record.get("dataset"),
-                    "upstreamId": record.get("upstream_id"),
-                    "subjectAttributes": ev_compiled["subject"],
-                    "objectAttributes": ev_compiled["object"],
-                    "recordAttributes": ev_compiled["relation"],
-                    "evidence": ev_compiled["relation"],
-                }
-            )
-
-        return {
-            "evidence": evidence_rows,
-            "annotations": compiled_rel["relation"],
-        }
+        filters = normalize_filters(filters)
+        out, annotations = [], []
+        for row in rows:
+            compiled = split_compiled_annotations(row.get("annotations") or [])
+            annotations.extend(compiled["relation"])
+            items = row.get("evidence") or []
+            for index, record in enumerate(items):
+                if has_form_filters(filters) and not matching_evidence([record], filters):
+                    continue
+                item_annotations = record.get("annotations")
+                parts = (
+                    split_compiled_annotations(item_annotations)
+                    if item_annotations is not None
+                    else compiled
+                )
+                identity = json.dumps(
+                    [
+                        str(Path(row["filename"]).relative_to(self.data_root)),
+                        row["file_row_number"],
+                        record.get("source"),
+                        record.get("dataset"),
+                        record.get("row_id"),
+                        index,
+                    ]
+                )
+                out.append(
+                    {
+                        "relationPk": relation_pk,
+                        "relationEvidencePk": relation_pk
+                        + ":"
+                        + hashlib.sha256(identity.encode()).hexdigest(),
+                        "source": record.get("source") or "unknown",
+                        "dataset": record.get("dataset"),
+                        "rowId": record.get("row_id"),
+                        "upstreamId": record.get("upstream_id"),
+                        "subjectMolecularForm": record.get("subject_molecular_form"),
+                        "objectMolecularForm": record.get("object_molecular_form"),
+                        "subjectAttributes": parts["subject"],
+                        "objectAttributes": parts["object"],
+                        "recordAttributes": parts["relation"],
+                        "evidence": parts["relation"],
+                    }
+                )
+        return {"evidence": out, "annotations": annotations}
 
     def get_relation_payloads(
         self, relation_pk: str, resources: list[str] | None = None

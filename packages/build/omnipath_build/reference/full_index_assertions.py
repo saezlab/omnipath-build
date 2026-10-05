@@ -125,6 +125,17 @@ def stage_assertions(compiler):
             identifier="regexp_replace(identifier,'\\.[0-9]+$','')",
             where="(namespace='refseq_protein' AND regexp_full_match(regexp_replace(identifier,'\\.[0-9]+$',''),'(AP|NP|XP|YP|WP|ZP)_[0-9]+')) OR (namespace='genbank' AND regexp_full_match(regexp_replace(identifier,'\\.[0-9]+$',''),'[A-Z]{3}[0-9]{5,}'))",
         )
+        add("gene_protein-entrez-forward", 2, 1, where="namespace IN ('ensg','enst','refseq')")
+        # Transcript versions identify the sequence occurrence. The stable RNA
+        # accession can still resolve its explicitly catalogued gene mapping.
+        for projection in ("gene_protein-uniprot-forward", "gene_protein-entrez-forward"):
+            add(
+                projection,
+                2,
+                1,
+                identifier="regexp_replace(identifier,'\\.[0-9]+$','')",
+                where="namespace='refseq' AND regexp_full_match(regexp_replace(identifier,'\\.[0-9]+$',''),'(NM|NR|XM|XR)_[0-9]+')",
+            )
         add("gene-resolution-forward", 2, 2, namespace="'entrez'")
         if "source-gene-resolution" in compiler.source["tables"]:
             add("source-gene-resolution", 2, 2)

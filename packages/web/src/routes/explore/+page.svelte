@@ -14,7 +14,7 @@
 
   let inputRef = $state<HTMLInputElement | null>(null);
   let draftQuery = $state('');
-  let groupResults = $state(false);
+  let groupResults = $state(true);
   let entityFilters = $state<SearchFilters>({});
   let interactionFilters = $state<SearchFilters>({});
   let selectionSheetOpen = $state(false);
@@ -126,7 +126,11 @@
   bind:searchInputRef={inputRef}
 >
   {#snippet searchActions()}
-    {#if tab === 'entity'}<GroupToggle bind:pressed={groupResults} />{/if}
+    {#if tab === 'entity'}<GroupToggle
+        bind:pressed={groupResults}
+        explanation="Group genes and their products by gene reference, and chemicals by connectivity. Source types and molecular evidence stay distinct. Entities without an unambiguous grouping stay separate."
+      />
+    {/if}
   {/snippet}
 
   {#snippet content()}

@@ -10,6 +10,7 @@ from collections.abc import Mapping, Sequence
 import hashlib
 from .extract.observations import RawEntityObservation, RawRelationObservation
 from .merge_policy import preferred_label
+from omnipath_resolver.canonical.policy import PROTEIN_ENTITY_TYPES, RNA_ENTITY_TYPES
 from typing import Any
 
 from omnipath_core import Relation
@@ -19,6 +20,10 @@ from omnipath_core.source_attributes import (
     SOURCE_RECORD_REFERENCE,
     SOURCE_RECORD_SHA256_PREFIX,
     SOURCE_RECORD_TYPE,
+)
+from omnipath_core.molecular_forms import (
+    molecular_form_from_identifiers,
+    normalize_molecular_form,
 )
 
 
@@ -113,6 +118,7 @@ def _coerce_entity(
         return {
             "type": ent_type,
             "identifiers": [{"type": ns, "value": ident}],
+            "molecular_form": _field(value, "molecular_form"),
         }
     return value
 
@@ -176,6 +182,30 @@ class SilverExtractor:
     ) -> str:
         entity_type = biolink_entity_type(_field(entity, "type"))
         ids = _extract_identifiers(entity)
+        molecular_form = normalize_molecular_form(
+            _field(entity, "molecular_form"), allow_resolved=False
+        )
+        if entity_type in PROTEIN_ENTITY_TYPES | RNA_ENTITY_TYPES:
+            # Only the principal source identifier establishes participant
+            # specificity. A catalogue's other cross-references are not evidence
+            # that each referenced transcript or isoform participated.
+            primary_form = molecular_form_from_identifiers(
+                list(_field(entity, "identifiers", ()) or ())[:1]
+            )
+            if primary_form:
+                # A supplied PTM/variant description does not erase the primary
+                # sequence identity. Explicit identity fields take precedence.
+                combined = {
+                    **primary_form,
+                    **{k: v for k, v in (molecular_form or {}).items() if v is not None},
+                }
+                sequences = []
+                for specific in (primary_form, molecular_form or {}):
+                    for identifier in specific.get("sequence_identifiers") or []:
+                        if identifier not in sequences:
+                            sequences.append(identifier)
+                combined["sequence_identifiers"] = sequences
+                molecular_form = normalize_molecular_form(combined, allow_resolved=False)
         if ids:
             namespace, identifier = ids[0]
         else:
@@ -189,10 +219,10 @@ class SilverExtractor:
         # Keep complete contextual requests apart until resolution. Combining
         # alternative identifiers first can change consensus with batch size.
         primary_key = entity_key(entity_type, namespace, identifier)
-        context = (taxon, sorted(set(ids)), identity_scope)
+        context = (taxon, sorted(set(ids)), identity_scope, molecular_form)
         key = (
             stable_hash(primary_key, context)
-            if taxon or identity_scope or len(set(ids)) > 1
+            if taxon or identity_scope or len(set(ids)) > 1 or molecular_form
             else primary_key
         )
 
@@ -204,6 +234,7 @@ class SilverExtractor:
                 identifier=identifier,
                 taxon=taxon,
                 identity_scope=identity_scope,
+                molecular_form=molecular_form,
             )
 
         ent_record = self.entities[key]
@@ -233,12 +264,13 @@ class SilverExtractor:
         # Only standalone entity records persist global entity annotations.
         # Participant contextual annotations attach to the relation scope instead.
         if persist_annotations:
+            occurrence_annotations = []
             for ann in _field(entity, "annotations", ()) or ():
                 raw_term = _field(ann, "term")
                 term = annotation_term(raw_term)
                 val = _field(ann, "value")
                 val_text = annotation_value(term, val) or ""
-                ent_record.annotations.append(
+                occurrence_annotations.append(
                     {
                         "term": term,
                         "value": val_text,
@@ -247,6 +279,17 @@ class SilverExtractor:
                         "dataset": self.dataset,
                     }
                 )
+            ent_record.annotations.extend(occurrence_annotations)
+            ent_record.evidence.append(
+                {
+                    "source": self.source,
+                    "dataset": self.dataset,
+                    "row_id": row_id,
+                    "upstream_id": row_id if not path else f"{row_id}:entity:{path}",
+                    "annotations": occurrence_annotations,
+                    "molecular_form": molecular_form,
+                }
+            )
 
         # Extract nested membership if present (e.g. complex members)
         for m_idx, membership in enumerate(_field(entity, "membership", ()) or ()):

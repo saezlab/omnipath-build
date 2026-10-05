@@ -121,6 +121,8 @@ def iter_resource_records(
 
     All records carry ``resource`` and ``version``. Entity and relation rows
     contain every scalar source column plus the complete nested ``record_json``.
+    Entity evidence, gene reference arrays and molecular forms stay nested in
+    ``record_json`` rather than becoming unsupported scalar COPY columns.
     Identifiers, annotations and evidence additionally get zero-based ordinals;
     repeated source array entries are retained rather than deduplicated.
 
@@ -164,7 +166,9 @@ def iter_resource_records(
         _validate_key(row["entity_key"], "entity_key")
         _validate_json(row, f"entity {row['entity_key']!r}")
         scalar = {
-            name: value for name, value in row.items() if name not in {"identifiers", "annotations"}
+            name: value
+            for name, value in row.items()
+            if name not in {"identifiers", "annotations", "evidence", "gene_reference_keys"}
         }
         yield record("entities", {**scalar, "record_json": row})
         for ordinal, identifier in enumerate(row["identifiers"] or ()):
@@ -188,7 +192,10 @@ def iter_resource_records(
                 {
                     "relation_key": row["relation_key"],
                     "ordinal": ordinal,
-                    **{name: value for name, value in evidence.items() if name != "annotations"},
+                    **{
+                        name: evidence[name]
+                        for name in ("source", "dataset", "row_id", "upstream_id")
+                    },
                     "record_json": evidence,
                 },
             )

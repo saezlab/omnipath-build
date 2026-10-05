@@ -1,6 +1,6 @@
 from __future__ import annotations
 from typing import Any
-from fastapi import HTTPException, Request
+from fastapi import HTTPException, Request, Query
 from fastapi.responses import Response
 
 from omnipath_api.models import (
@@ -13,7 +13,7 @@ from omnipath_api.models import (
     ScopedRelationFacetsRequest,
 )
 from fastapi import APIRouter
-from omnipath_api.routers.common import _call, _dump, _timed
+from omnipath_api.routers.common import _call, _dump, _timed, _parse_json_param
 
 router = APIRouter()
 
@@ -62,9 +62,13 @@ def scoped_relation_facets(
     response_model=RelationEvidenceResponse,
     tags=["relations"],
 )
-def relation_evidence(request: Request, relation_pk: str) -> dict[str, Any]:
+def relation_evidence(
+    request: Request, relation_pk: str, filters: str | None = Query(None)
+) -> dict[str, Any]:
     """Nested evidence and annotations for one relation."""
-    return _call(request, "get_relation_evidence", relation_pk)
+    return _call(
+        request, "get_relation_evidence", relation_pk, filters=_parse_json_param(filters, {})
+    )
 
 
 @router.get(

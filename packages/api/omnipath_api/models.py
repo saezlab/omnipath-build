@@ -31,6 +31,7 @@ class ErrorResponse(APIModel):
 class EntitySearchCursor(APIModel):
     relationCount: int = 0
     entityPk: str
+    entityType: str = ""
     phase: Literal["prefix", "contains", "nested"]
     matchRank: int
     sortLabel: str
@@ -43,6 +44,13 @@ class EntitySearchCursor(APIModel):
 class SearchFilters(APIModel):
     """One internal filter contract, accepting historical wire aliases once."""
 
+    reference_entity_keys: list[str] = Field(default_factory=list)
+    protein_entity_keys: list[str] = Field(default_factory=list)
+    transcript_entity_keys: list[str] = Field(default_factory=list)
+    isoform_identifiers: list[str] = Field(
+        default_factory=list, description="Exact namespace:id; unspecified forms do not match."
+    )
+    molecular_endpoint_mode: Literal["any", "both", "source", "target"] = "any"
     entity_ids: list[str] = Field(default_factory=list)
     entity_pks: list[str] = Field(default_factory=list)
     scope_entity_ids: list[str] = Field(default_factory=list)
@@ -121,8 +129,71 @@ class EntityIdentifier(APIModel):
     isCanonical: bool | None = None
 
 
+class MolecularIdentifier(APIModel):
+    ns: str
+    id: str
+
+
+class MolecularCoordinateReference(APIModel):
+    identifier: MolecularIdentifier | None = None
+    coordinate_system: str | None = None
+    position_base: int | None = None
+
+
+class MolecularModification(APIModel):
+    term: str | None = None
+    residue: str | None = None
+    position: int | None = None
+    end_position: int | None = None
+    coordinate_reference: MolecularCoordinateReference | None = None
+    description: str | None = None
+
+
+class MolecularVariant(APIModel):
+    identifier: MolecularIdentifier | None = None
+    reference: str | None = None
+    alternate: str | None = None
+    position: int | None = None
+    end_position: int | None = None
+    coordinate_reference: MolecularCoordinateReference | None = None
+    description: str | None = None
+
+
+class MolecularForm(APIModel):
+    """Occurrence context. Missing fields assert neither canonical isoform nor wild type."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def unspecified_lists(cls, value):
+        if isinstance(value, dict):
+            value = dict(value)
+            for field in ("sequence_identifiers", "modifications", "variants"):
+                if value.get(field) is None:
+                    value[field] = []
+        return value
+
+    protein_entity_key: str | None = None
+    transcript_entity_key: str | None = None
+    isoform_identifier: MolecularIdentifier | None = None
+    sequence_identifiers: list[MolecularIdentifier] = Field(default_factory=list)
+    modifications: list[MolecularModification] = Field(default_factory=list)
+    variants: list[MolecularVariant] = Field(default_factory=list)
+
+
+class EntityMolecularEvidence(APIModel):
+    source: str | None = None
+    dataset: str | None = None
+    row_id: str | None = None
+    upstream_id: str | None = None
+    annotations: list[dict[str, Any]] = Field(default_factory=list)
+    molecular_form: MolecularForm | None = None
+
+
 class EntitySummary(APIModel):
     entityPk: str
+    referenceEntityKey: str | None = None
+    geneReferenceKeys: list[str] = Field(default_factory=list)
+    molecularEvidence: list[EntityMolecularEvidence] = Field(default_factory=list)
     canonicalIdentifier: str | None = None
     canonicalIdentifierType: str | None = None
     entityType: str | None = None
@@ -183,7 +254,7 @@ class EntitySearchRequest(APIModel):
 
 
 class EntityGroupsRequest(APIModel):
-    strategy: Literal["chemical_connectivity"] = "chemical_connectivity"
+    strategy: Literal["auto", "chemical_connectivity", "gene_reference"] = "chemical_connectivity"
     query: str = ""
     filters: SearchFilters = Field(default_factory=SearchFilters)
     resources: list[str] | None = None
@@ -203,6 +274,7 @@ class EntityPksRequest(APIModel):
 
 
 class GroupRelationshipsRequest(APIModel):
+    strategy: Literal["auto", "chemical_connectivity", "gene_reference"] = "chemical_connectivity"
     member_keys: list[str] = Field(default_factory=list)
     group_key: str | None = None
     query: str = ""
@@ -244,6 +316,8 @@ class RelationSummary(APIModel):
     displayLabel: str | None = None
     relationPk: str
     subjectEntityPk: str | None = None
+    subjectReferenceEntityKey: str | None = None
+    objectReferenceEntityKey: str | None = None
     predicate: str | None = None
     objectEntityPk: str | None = None
     relationCategory: str | None = None
@@ -480,8 +554,23 @@ class ExportRequest(APIModel):
     format: Literal["parquet", "arrow", "csv", "tsv", "json"] = "parquet"
 
 
-class RelationEvidenceResponse(APIModel):
+class RelationMolecularEvidence(APIModel):
+    relationPk: str
+    relationEvidencePk: str
+    source: str
+    dataset: str | None = None
+    rowId: str | None = None
+    upstreamId: str | None = None
+    subjectMolecularForm: MolecularForm | None = None
+    objectMolecularForm: MolecularForm | None = None
+    subjectAttributes: list[dict[str, Any]] = Field(default_factory=list)
+    objectAttributes: list[dict[str, Any]] = Field(default_factory=list)
+    recordAttributes: list[dict[str, Any]] = Field(default_factory=list)
     evidence: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class RelationEvidenceResponse(APIModel):
+    evidence: list[RelationMolecularEvidence] = Field(default_factory=list)
     annotations: list[dict[str, Any]] = Field(default_factory=list)
 
 

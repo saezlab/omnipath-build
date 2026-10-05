@@ -12,7 +12,7 @@ import tempfile
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
-PACKAGES = ("core", "resolver", "build", "subsets", "postgres", "api")
+PACKAGES = ("core", "resolver", "build", "subsets", "postgres", "api", "client")
 DEPENDENCIES = {
     "core": (),
     "resolver": ("core",),
@@ -20,6 +20,7 @@ DEPENDENCIES = {
     "subsets": ("core",),
     "postgres": ("core", "subsets"),
     "api": ("core",),
+    "client": (),
 }
 
 
@@ -145,6 +146,7 @@ def check(directory, packages, *, offline=False):
             ),
             "postgres": ("omnipath_build", "omnipath_resolver", "psycopg"),
             "api": ("omnipath_build", "omnipath_resolver", "pypath"),
+            "client": ("omnipath_build", "omnipath_resolver", "pypath", "omnipath_core"),
         }.get(package, ())
         for name in forbidden:
             code += f"assert importlib.util.find_spec({name!r}) is None, {name!r}\n"

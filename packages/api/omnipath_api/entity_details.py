@@ -95,7 +95,14 @@ def page_details(entity, limit=20, offset=0):
     """Bound each nested collection in an entity response."""
     result = dict(entity)
     longest = 0
-    for field in ("identifiers", "entityAttributes", "sources", "resources", "sourceEntityPks"):
+    for field in (
+        "identifiers",
+        "entityAttributes",
+        "sources",
+        "resources",
+        "sourceEntityPks",
+        "molecularEvidence",
+    ):
         rows = entity.get(field) or []
         longest = max(longest, len(rows))
         result[field] = rows[offset : offset + limit]

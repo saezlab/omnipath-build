@@ -6,11 +6,12 @@ import re
 from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Any
+from omnipath_core.biolink import entity_type as normalize_entity_type
 from omnipath_core.naming import normalize_namespace
 from .identifiers import normalize_identifier, normalize_ns
 from .label import assign_label
 from .library import pin_library
-from .policy import LIBRARIES, EntityPolicy, CHEMICAL, get_policy
+from .policy import LIBRARIES, EntityPolicy, CHEMICAL, PROTEIN_ENTITY_TYPES, get_policy
 
 RESOLVED_BY_MATCHED = ("parquet",)
 
@@ -52,6 +53,17 @@ class Match:
 
     entity_type: str | None = None
     reference_library: str | None = None
+    protein_namespace: str | None = None
+    protein_identifier: str | None = None
+    protein_node_id: str | None = None
+    protein_label: str | None = None
+    protein_aliases: dict[str, list[str]] = field(default_factory=dict)
+    protein_taxon: str | None = None
+    protein_gene_candidates: tuple[str, ...] = ()
+    gene_mapping_status: str | None = None
+    gene_candidates: tuple[str, ...] = ()
+    transcript_namespace: str | None = None
+    transcript_identifier: str | None = None
 
     @property
     def matched(self) -> bool:
@@ -78,6 +90,15 @@ def votes_for(obs: Any, policy: EntityPolicy) -> tuple[list[Vote], dict[str, lis
                 observed[slug].append(text)
             return
         for ns, ident in pairs:
+            # Generic RefSeq namespaces still carry a typed accession. Use its
+            # explicit RNA/protein prefix for lookup, retaining versions in forms.
+            if ns in {"refseq", "refseq_protein"}:
+                if re.match(r"^(AP|NP|XP|YP|WP|ZP)_", ident):
+                    ns = "refseq_protein"
+                    ident = re.sub(r"\.[0-9]+$", "", ident)
+                elif re.match(r"^(NM|NR|XM|XR)_", ident):
+                    ns = "refseq"
+                    ident = re.sub(r"\.[0-9]+$", "", ident)
             if ident not in observed[ns]:
                 observed[ns].append(ident)
             if (ns, ident) in seen:
@@ -96,6 +117,14 @@ def votes_for(obs: Any, policy: EntityPolicy) -> tuple[list[Vote], dict[str, lis
                 item.get("id") or item.get("identifier") or "",
                 False,
             )
+    form = getattr(obs, "molecular_form", None) or {}
+    if policy.library == "gene_protein" and isinstance(form, dict):
+        specific = list(form.get("sequence_identifiers") or [])
+        if form.get("isoform_identifier"):
+            specific.append(form["isoform_identifier"])
+        for item in specific:
+            if isinstance(item, dict):
+                add(item.get("ns"), item.get("id"), False)
     if policy.library == CHEMICAL and not observed.get("inchikey") and observed.get("smiles"):
         from .structures import cached_derivation
 
@@ -156,17 +185,27 @@ class LibraryMatcher:
             key: [self._build(obs, policy, observed, None, "unmatched")]
             for key, (obs, policy, observed) in prepared.items()
         }
+        for key, matches in results.items():
+            for match in matches:
+                match.entity_type = prepared[key][0].entity_type
+                if prepared[key][1].library == "gene_protein":
+                    match.gene_mapping_status = "missing"
+                    _retain_asserted_protein(match, prepared[key][0])
+                    transcript = _asserted_transcript(prepared[key][0])
+                    if transcript:
+                        match.transcript_namespace, match.transcript_identifier = transcript
         if not queries:
             return results
         resolved, metrics = self.runtime.resolve(queries, votes)
-        accepted = {row["input_id"]: row["entities"] for row in resolved["results"]}
+        accepted = {row["input_id"]: row for row in resolved["results"]}
         for name, source in (
             ("lookup_seconds", "lookup_seconds"),
             ("kernel_seconds", "decision_seconds"),
             ("enrichment_seconds", "entity_fetch_seconds"),
         ):
             self.metrics[name] += metrics[source]
-        for key, ids in accepted.items():
+        for key, resolution in accepted.items():
+            ids = resolution["entities"]
             if ids:
                 obs, policy, observed = prepared[key]
                 matches = []
@@ -186,14 +225,36 @@ class LibraryMatcher:
                         tuple(aliases),
                     )
                     match = self._build(obs, policy, observed, node, "parquet")
-                    match.entity_type = (
-                        {1: "small_molecule", 2: "protein", 3: "gene"}[row["kind"]]
-                        if row["kind"] != 1
-                        else None
-                    )
+                    match.entity_type = obs.entity_type
                     match.reference_library = "chemical" if row["kind"] == 1 else "gene_protein"
                     matches.append(match)
                 results[key] = matches
+            obs, policy, observed = prepared[key]
+            for match in results[key]:
+                match.entity_type = obs.entity_type
+                if policy.library != "gene_protein":
+                    continue
+                match.gene_mapping_status = resolution.get("gene_mapping_status", "missing")
+                match.gene_candidates = tuple(resolution.get("gene_candidates", []))
+                transcript = _asserted_transcript(obs)
+                if transcript:
+                    match.transcript_namespace, match.transcript_identifier = transcript
+                product = resolution.get("protein_entity_id")
+                if product:
+                    row = resolved["records"][product]
+                    match.protein_namespace, match.protein_identifier = product.split(":", 1)
+                    match.protein_node_id = product
+                    match.protein_label = row["label"]
+                    match.protein_taxon = row["taxon"] or None
+                    match.protein_gene_candidates = tuple(
+                        "entrez:" + g for g in row.get("gene_ids", [])
+                    )
+                    aliases = defaultdict(list)
+                    for ns, value in row["identifiers"]:
+                        aliases[ns].append(value)
+                    match.protein_aliases = dict(aliases)
+                else:
+                    _retain_asserted_protein(match, obs)
         flush_lipid_cache()
         self.metrics["batches"] += 1
         self.metrics["observations"] += len(queries)
@@ -292,3 +353,92 @@ class LibraryMatcher:
         if self.runtime is not None:
             self.runtime.close()
             self.runtime = None
+
+
+def _asserted_transcript(obs):
+    """Retain participant transcript assertions on matched and unmatched inputs."""
+    candidates = set()
+    raw_id = str(getattr(obs, "identifier", "") or "").strip()
+    pairs = normalize_identifier(getattr(obs, "namespace", ""), raw_id)
+    if pairs:
+        ns = pairs[0][0]
+        if ns == "enst" or (ns == "refseq" and re.match(r"^(NM|NR|XM|XR)_", raw_id)):
+            candidates.add((ns, raw_id))
+    form = getattr(obs, "molecular_form", None) or {}
+    sequences = (form.get("sequence_identifiers") or []) if isinstance(form, dict) else []
+    for item in sequences:
+        if not isinstance(item, dict):
+            continue
+        identifier = str(item.get("id", ""))
+        pairs = normalize_identifier(item.get("ns", ""), identifier)
+        if not pairs:
+            continue
+        ns = pairs[0][0]
+        if ns == "enst" or (ns == "refseq" and re.match(r"^(NM|NR|XM|XR)_", identifier)):
+            candidates.add((ns, identifier))
+    return next(iter(candidates)) if len(candidates) == 1 else None
+
+
+def _asserted_protein(obs):
+    """Retain one explicitly reported product, without asserting catalogue status.
+
+    Only a protein participant's principal identifier and explicit form IDs
+    establish an occurrence. Other identifier aliases are not participant claims.
+    Exact versions, isoform suffixes and chain suffixes remain source identities;
+    a parent accession must be supplied or resolved independently.
+    Without a catalogue-selected product, an explicit entry plus an isoform
+    remains conservatively ambiguous, even when their accession bases agree.
+    Both assertions remain in the observation; no primary product is chosen.
+    """
+    if normalize_entity_type(obs.entity_type) not in PROTEIN_ENTITY_TYPES:
+        return None
+    candidates = set()
+
+    def add(namespace, identifier):
+        raw = str(identifier or "").strip()
+        pairs = normalize_identifier(namespace, raw)
+        if not pairs:
+            return
+        ns = pairs[0][0]
+        if ns == "uniprot":
+            pattern = (
+                r"(?:[OPQ][0-9][A-Z0-9]{3}[0-9]|[A-NR-Z][0-9](?:[A-Z][A-Z0-9]{2}[0-9]){1,2})"
+                r"(?:-\d+)?(?:-PRO_\d+)?"
+            )
+        elif ns == "ensp":
+            pattern = r"ENS[A-Z]*P\d+(?:\.\d+)?"
+        elif ns in {"refseq", "refseq_protein"}:
+            pattern = r"(?:AP|NP|XP|YP|WP|ZP)_[0-9]+(?:\.\d+)?"
+        else:
+            return
+        if re.fullmatch(pattern, raw):
+            candidates.add((ns, raw))
+
+    add(getattr(obs, "namespace", ""), getattr(obs, "identifier", ""))
+    form = getattr(obs, "molecular_form", None) or {}
+    if isinstance(form, dict):
+        identifiers = list(form.get("sequence_identifiers") or [])
+        if form.get("isoform_identifier"):
+            identifiers.append(form["isoform_identifier"])
+        for item in identifiers:
+            if isinstance(item, dict):
+                add(item.get("ns"), item.get("id"))
+    # A chain form also carries its enclosing isoform as specificity metadata.
+    # Retain the explicitly asserted chain rather than inventing its parent.
+    chain_parents = {
+        (ns, identifier.rsplit("-PRO_", 1)[0])
+        for ns, identifier in candidates
+        if ns == "uniprot" and "-PRO_" in identifier
+    }
+    candidates -= chain_parents
+    return next(iter(candidates)) if len(candidates) == 1 else None
+
+
+def _retain_asserted_protein(match, obs):
+    product = _asserted_protein(obs)
+    if product is None:
+        return
+    match.protein_namespace, match.protein_identifier = product
+    match.protein_label = getattr(obs, "label", None) or product[1]
+    match.protein_taxon = str(getattr(obs, "taxon", None) or "").strip() or None
+    match.protein_aliases = {product[0]: [product[1]]}

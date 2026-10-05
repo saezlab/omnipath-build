@@ -9,6 +9,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from omnipath_build import reference
+from omnipath_build.canonical.library import components_binary
 
 ROOT = Path(reference.__file__).resolve().parent
 BIN = Path(__file__).resolve().parents[3] / "resolver/rust/reference/target/release"
@@ -145,7 +146,7 @@ def test_build_and_resume(tmp_path):
         "--output",
         str(out),
         "--components",
-        str(BIN / "anchor-components"),
+        components_binary(),
         "--memory",
         "256MB",
         "--threads",
@@ -182,9 +183,8 @@ def test_build_and_resume(tmp_path):
         [str(out / "source-gene-resolution/protein_identifiers.parquet")],
     ).fetchall()
     assert source_products == [
-        ("ramp_gene", "RAMP_G_1", "uniprot:P00004"),
-        ("ramp_gene", "RAMP_G_1", "uniprot:P00005"),
-        ("ramp_gene", "RAMP_G_2", "uniprot:P00002"),
+        ("ramp_gene", "RAMP_G_1", "entrez:4"),
+        ("ramp_gene", "RAMP_G_2", "entrez:2"),
     ]
     assert (
         c.execute(
@@ -209,7 +209,8 @@ def test_build_and_resume(tmp_path):
         [str(out / "goslin-qc/anchor_counts.parquet")],
     ).fetchone() == (2,)
 
-    assert members["entrez:1"] == members["uniprot:P00001"] == "uniprot:P00001"
+    assert members["entrez:1"] == "entrez:1"
+    assert members["uniprot:P00001"] == "uniprot:P00001"
     assert members["entrez:2"] == "entrez:2" and members["entrez:3"] == "entrez:3"
     assert (
         c.execute(
@@ -227,21 +228,15 @@ def test_build_and_resume(tmp_path):
         [str(out / "gene_protein-entities/entities.parquet")],
     ).fetchone() == (None,)
     mapping = c.execute(
-        "select identifier,entity_id,admission from read_parquet(?) order by identifier,entity_id",
+        "select distinct identifier,entity_id from read_parquet(?) order by identifier,entity_id",
         [str(out / "gene-resolution/entrez_identifiers.parquet")],
     ).fetchall()
-    assert mapping == [
-        ("1", "uniprot:P00001", "unreviewed_gene_product"),
-        ("2", "uniprot:P00002", "reviewed_gene_product"),
-        ("3", "entrez:3", "entrez_only"),
-        ("4", "uniprot:P00004", "reviewed_gene_product"),
-        ("4", "uniprot:P00005", "reviewed_gene_product"),
-        ("5", "uniprot:P00007", "unreviewed_gene_product"),
-        ("5", "uniprot:P00008", "unreviewed_gene_product"),
-        ("6", "uniprot:P00009", "reviewed_gene_product"),
-        ("7", "uniprot:P00010", "reviewed_gene_product"),
-        ("7", "uniprot:P00011", "reviewed_gene_product"),
-    ]
+    assert mapping == [(str(i), "entrez:" + str(i)) for i in range(1, 8)]
+    genes = c.execute(
+        "SELECT entity_id FROM read_parquet(?) WHERE kind='gene' AND starts_with(entity_id,'entrez:')",
+        [str(out / "gene_protein-entities/entities.parquet")],
+    ).fetchall()
+    assert {r[0] for r in genes} == {"entrez:" + str(i) for i in range(1, 8)}
     assert json.loads((out / "manifest.json").read_text())["full_scope"]
     stamps = {str(p): p.stat().st_mtime_ns for p in out.glob("*/_SUCCESS.json")}
     subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)

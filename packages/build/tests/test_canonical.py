@@ -118,30 +118,30 @@ class TestGeneProteinMatching(LibraryTestCase):
         ]:
             m = self.one(obs("protein", ns, ident))
             self.assertEqual(
-                (m.canonical_namespace, m.canonical_identifier), ("uniprot", "P04637"), (ns, ident)
+                (m.canonical_namespace, m.canonical_identifier), ("entrez", "7157"), (ns, ident)
             )
             self.assertEqual(m.label, "TP53")
             self.assertEqual(m.resolved_by, "parquet")
             self.assertEqual(m.taxon, "9606")
             self.assertIn("7157", m.aliases["entrez"])
 
-    def test_gene_level_observations_resolve_to_protein_products(self):
+    def test_gene_reference_retains_source_type_without_product_fanout(self):
         for etype in ("gene", "rna_product"):
             m = self.one(obs(etype, "uniprot", "P04637"))
-            self.assertEqual((m.canonical_namespace, m.canonical_identifier), ("uniprot", "P04637"))
+            self.assertEqual((m.canonical_namespace, m.canonical_identifier), ("entrez", "7157"))
             self.assertEqual(m.label, "TP53")
         m = self.one(obs("protein", "entrez", "7157"))
-        self.assertEqual((m.canonical_namespace, m.canonical_identifier), ("uniprot", "P04637"))
+        self.assertEqual((m.canonical_namespace, m.canonical_identifier), ("entrez", "7157"))
 
     def test_symbol_needs_taxon_and_is_taxon_bound(self):
         human = self.one(obs("protein", "genesymbol", "TP53"))
-        self.assertEqual(human.canonical_identifier, "P04637")
+        self.assertEqual(human.canonical_identifier, "7157")
         self.assertEqual(human.resolved_by, "parquet")
         mouse = self.one(obs("protein", "genesymbol", "TP53", taxon="10090"))
-        self.assertEqual(mouse.canonical_identifier, "P02340")  # via synonym
+        self.assertEqual(mouse.canonical_identifier, "22059")  # via synonym
         self.assertEqual(mouse.label, "Trp53")
         synonym = self.one(obs("protein", "genesymbol", "P53"))
-        self.assertEqual(synonym.canonical_identifier, "P04637")
+        self.assertEqual(synonym.canonical_identifier, "7157")
         no_taxon = self.one(obs("protein", "genesymbol", "TP53", taxon=None))
         self.assertFalse(no_taxon.matched)
         self.assertEqual(
@@ -150,11 +150,12 @@ class TestGeneProteinMatching(LibraryTestCase):
 
     def test_stale_nonmatching_evidence_is_ignored_but_conflicts_stay_unresolved(self):
         stale = self.one(obs("protein", "uniprot", "P04637", [("genesymbol", "WRONG")]))
-        self.assertEqual(stale.canonical_identifier, "P04637")
+        self.assertEqual(stale.canonical_identifier, "7157")
         self.assertEqual(stale.resolved_by, "parquet")
         conflict = self.one(obs("protein", "uniprot", "P04637", [("entrez", "55")]))
         self.assertEqual(conflict.canonical_identifier, "P04637")
-        self.assertFalse(conflict.matched)
+        self.assertTrue(conflict.matched)
+        self.assertEqual(conflict.gene_mapping_status, "conflict")
         self.assertIn("55", conflict.aliases["entrez"])  # observed ids are kept as aliases
 
     def test_calmodulin_and_multi_reviewed(self):
@@ -164,13 +165,12 @@ class TestGeneProteinMatching(LibraryTestCase):
         )
         self.assertCountEqual(calm.aliases["entrez"], ["801", "805", "808"])
         gene = self.one(obs("gene", "entrez", "801"))
-        self.assertEqual(
-            (gene.canonical_namespace, gene.canonical_identifier), ("uniprot", "P0DP23")
-        )
-        self.assertEqual(gene.label, "CALM1")
+        self.assertEqual((gene.canonical_namespace, gene.canonical_identifier), ("entrez", "801"))
+        self.assertEqual(gene.label, "801")
         two = self.one(obs("protein", "uniprot", "P11111"))
-        self.assertEqual((two.canonical_namespace, two.canonical_identifier), ("uniprot", "P11111"))
-        self.assertEqual(two.aliases["uniprot"], ["P11111"])
+        self.assertEqual((two.canonical_namespace, two.canonical_identifier), ("entrez", "999"))
+        self.assertEqual(two.protein_identifier, "P11111")
+        self.assertEqual(two.protein_aliases["uniprot"], ["P11111"])
 
     def test_unmatched_keeps_native_identifier(self):
         m = self.one(obs("protein", "uniprot", "Q00000", [("name", "Some protein")]))

@@ -37,6 +37,17 @@ class ResolvedEntityInfo:
     taxon: str | None = None
     resolved_by: str = "unmatched"
     node_id: str | None = None
+    protein_namespace: str | None = None
+    protein_identifier: str | None = None
+    protein_node_id: str | None = None
+    protein_label: str | None = None
+    protein_aliases: dict[str, list[str]] = field(default_factory=dict)
+    protein_taxon: str | None = None
+    protein_gene_candidates: tuple[str, ...] = ()
+    gene_mapping_status: str | None = None
+    gene_candidates: tuple[str, ...] = ()
+    transcript_namespace: str | None = None
+    transcript_identifier: str | None = None
 
     @property
     def matched(self) -> bool:
@@ -58,6 +69,7 @@ def _target(info: ResolvedEntityInfo) -> ResolvedEntityTarget:
         taxon=info.taxon,
         resolved_by=info.resolved_by,
         node_id=info.node_id,
+        **_molecular_fields(info),
     )
 
 
@@ -165,4 +177,24 @@ def _to_info(match: Match) -> ResolvedEntityInfo:
         taxon=match.taxon,
         resolved_by=match.resolved_by,
         node_id=match.node_id,
+        **_molecular_fields(match),
     )
+
+
+def _molecular_fields(info):
+    return {
+        name: getattr(info, name)
+        for name in (
+            "protein_namespace",
+            "protein_identifier",
+            "protein_node_id",
+            "protein_label",
+            "protein_aliases",
+            "protein_taxon",
+            "protein_gene_candidates",
+            "gene_mapping_status",
+            "gene_candidates",
+            "transcript_namespace",
+            "transcript_identifier",
+        )
+    }

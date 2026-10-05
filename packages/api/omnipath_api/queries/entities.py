@@ -54,9 +54,20 @@ class EntitiesQueries:
                OR UPPER(identifier) IN ({placeholders})
                OR UPPER(label) IN ({placeholders})
                OR UPPER(namespace || '|' || identifier) IN ({placeholders})
+               OR UPPER(namespace || ':' || identifier) IN ({placeholders})
+               OR UPPER(reference_entity_key) IN ({placeholders})
                OR COALESCE(len(list_filter(identifiers, x -> upper(x.id) IN ({placeholders}))), 0) > 0
         """
-        params = other + other + upper_values + upper_values + upper_values + upper_values
+        params = (
+            other
+            + other
+            + upper_values
+            + upper_values
+            + upper_values
+            + upper_values
+            + upper_values
+            + upper_values
+        )
         rows = self._db.execute(sql, params).fetchall()
         found.extend(str(row[0]) for row in rows if row and row[0])
         return list(dict.fromkeys(found))
@@ -139,6 +150,7 @@ class EntitiesQueries:
                 ),
                 str(row.get("identifier") or ""),
                 str(row.get("taxon") or ""),
+                str(row.get("entity_type") or ""),
             )
             groups[key].append(row)
         return [self._merge_entity_row_group(members) for members in groups.values()]
@@ -197,6 +209,29 @@ class EntitiesQueries:
                     continue
                 seen_anns.add(key)
                 annotations.append(item)
+        merged["evidence"] = list(
+            {
+                json.dumps(item, sort_keys=True): item
+                for row in members
+                for item in row.get("evidence") or []
+            }.values()
+        )
+        merged["gene_reference_keys"] = sorted(
+            {ref for row in members for ref in row.get("gene_reference_keys") or []}
+        )
+        # Reference selection is independent of display-label ranking. A native
+        # fallback in any source copy must survive catalogue gene enrichment.
+        references = {
+            row.get("reference_entity_key") for row in members if row.get("reference_entity_key")
+        }
+        native = f"{merged.get('namespace')}:{merged.get('identifier')}"
+        merged["reference_entity_key"] = (
+            native
+            if native in references or len(references) > 1
+            else next(iter(references))
+            if references
+            else None
+        )
         merged["identifiers"] = identifiers
         merged["annotations"] = annotations
         merged["_source_entity_keys"] = [
@@ -225,28 +260,35 @@ class EntitiesQueries:
         """
         limit_sql = f"LIMIT {int(limit)}" if limit is not None else ""
         nested_cols = "" if slim else ", e.identifiers, e.annotations"
-        identities = f"""SELECT namespace, identifier, coalesce(taxon, '') AS taxon,
+        identities = f"""SELECT namespace, identifier, entity_type, coalesce(taxon, '') AS taxon,
                                 {rank_sql} AS match_rank, coalesce(MIN(label), '') AS sort_label
             FROM {read_expr} WHERE {where_sql}
-            GROUP BY namespace, identifier, coalesce(taxon, '')
+            GROUP BY namespace, identifier, entity_type, coalesce(taxon, '')
             """
         query_params = list(rank_params or []) + list(params)
         after_sql = ""
         if after:
-            after_sql = (
-                "WHERE (match_rank, sort_label, namespace, identifier, taxon) > (?, ?, ?, ?, ?)"
-            )
+            after_sql = "WHERE (match_rank, sort_label, namespace, identifier, taxon, entity_type) > (?, ?, ?, ?, ?, ?)"
             query_params.extend(
-                after[key] for key in ("matchRank", "sortLabel", "namespace", "identifier", "taxon")
+                after[key]
+                for key in (
+                    "matchRank",
+                    "sortLabel",
+                    "namespace",
+                    "identifier",
+                    "taxon",
+                    "entityType",
+                )
             )
-        identities = f"SELECT * FROM ({identities}) identities {after_sql} ORDER BY match_rank, sort_label, namespace, identifier, taxon {limit_sql}"
+        identities = f"SELECT * FROM ({identities}) identities {after_sql} ORDER BY match_rank, sort_label, namespace, identifier, taxon, entity_type {limit_sql}"
         # SELECT placeholders precede WHERE placeholders in this query.
         sql = f"""WITH identities AS ({identities})
             SELECT e.entity_key, e.entity_type, e.namespace, e.identifier, e.taxon, e.label,
-                   e.has_hierarchy, e.parent_count, e.child_count{nested_cols}, i.match_rank AS _match_rank, i.sort_label AS _sort_label
+                   e.has_hierarchy, e.parent_count, e.child_count, e.reference_entity_key, e.gene_reference_keys{nested_cols}, i.match_rank AS _match_rank, i.sort_label AS _sort_label
             FROM {read_expr} e
             INNER JOIN identities i
-              ON e.namespace = i.namespace
+              ON e.entity_type IS NOT DISTINCT FROM i.entity_type
+             AND e.namespace = i.namespace
              AND e.identifier = i.identifier
              AND COALESCE(e.taxon, '') = i.taxon
             ORDER BY i.match_rank, i.sort_label, i.namespace, i.identifier, i.taxon, e.entity_key
@@ -366,6 +408,9 @@ class EntitiesQueries:
             placeholders = ", ".join("?" for _ in taxons)
             clauses.append(f"taxon IN ({placeholders})")
             params.extend(str(t) for t in taxons)
+        if filters["reference_entity_keys"]:
+            clauses.append("reference_entity_key IN (SELECT unnest(?::VARCHAR[]))")
+            params.append(filters["reference_entity_keys"])
         tokens = filters["entity_ids"] + filters["entity_pks"]
         if tokens:
             keys = self.resolve_entity_keys(tokens, resources or filters["sources"] or None)
@@ -401,20 +446,35 @@ class EntitiesQueries:
         clauses = ["label ILIKE ?"]
         params: list[Any] = [prefix]
         if self._looks_like_accession(q):
-            clauses.extend(["identifier ILIKE ?", "(namespace || '|' || identifier) ILIKE ?"])
-            params.extend([prefix, prefix])
+            clauses.extend(
+                [
+                    "identifier ILIKE ?",
+                    "(namespace || '|' || identifier) ILIKE ?",
+                    "reference_entity_key ILIKE ?",
+                    "(namespace || ':' || identifier) ILIKE ?",
+                ]
+            )
+            params.extend([prefix, prefix, prefix, prefix])
         return f"({' OR '.join(clauses)})", params
 
     def search_entity_groups(self, *, strategy="chemical_connectivity", **kwargs):
         from omnipath_api.queries.connectivity import search_groups
+        from omnipath_api.queries.gene_reference import search_groups as gene_groups
 
-        strategies = {"chemical_connectivity": search_groups}
+        if strategy == "auto":
+            return gene_groups(self, mixed=True, **kwargs)
+        strategies = {"chemical_connectivity": search_groups, "gene_reference": gene_groups}
         if strategy not in strategies:
             raise ValueError(f"Unknown grouping strategy: {strategy}")
         return strategies[strategy](self, **kwargs)
 
     def search_connectivity_groups(self, **kwargs):
         return self.search_entity_groups(strategy="chemical_connectivity", **kwargs)
+
+    def get_molecular_context(self, entity_id, resources=None, **kwargs):
+        from omnipath_api.queries.molecular_context import context
+
+        return context(self, entity_id, resources, **kwargs)
 
     def get_entity_examples(self):
         from omnipath_api.examples import get_examples
@@ -510,6 +570,7 @@ class EntitiesQueries:
                 "sortLabel": last["_sort_label"],
                 "namespace": last["namespace"],
                 "identifier": last["identifier"],
+                "entityType": last.get("entity_type") or "",
                 "taxon": last.get("taxon") or "",
                 "queryKey": query_key,
             }
@@ -539,6 +600,10 @@ class EntitiesQueries:
         cols = self._ENTITY_SCALAR_COLS
         if not slim:
             cols = f"{cols}, identifiers, annotations"
+            from omnipath_api.molecular import columns
+
+            if "evidence" in columns(paths):
+                cols += ", evidence"
         rows = self._fetch_dicts(
             f"SELECT {cols} FROM {read_expr} WHERE entity_key IN ({placeholders})",
             keys,

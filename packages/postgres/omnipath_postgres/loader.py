@@ -503,7 +503,7 @@ def load_release(
     observer=None,
     retain_published_provenance=False,
 ):
-    """Create main tables and required quantities, then finish a validated base.
+    """Create main tables and required molecular/quantity context, then finish a validated base.
 
     Exact published audit copies are opt-in; all original details remain in the
     immutable release Parquets. Existing checkpoints keep their stored layout

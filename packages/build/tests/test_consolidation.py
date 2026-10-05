@@ -108,10 +108,15 @@ class TestConsolidation(unittest.TestCase):
                 [],
             )
             resolver.close()
-            self.assertEqual(len(entities), 1)
-            ent = entities[0]
-            self.assertEqual(ent["namespace"], "uniprot")
-            self.assertEqual(ent["identifier"], "P04637")
+            self.assertEqual(len(entities), 2)
+            ent = next(e for e in entities if e["namespace"] == "entrez")
+            product = next(e for e in entities if e["namespace"] == "uniprot")
+            self.assertEqual(ent["identifier"], "7157")
+            self.assertEqual(ent["entity_type"], "protein")
+            self.assertEqual(product["identifier"], "P04637")
+            self.assertEqual(ent["reference_entity_key"], "entrez:7157")
+            self.assertEqual(product["reference_entity_key"], ent["reference_entity_key"])
+            self.assertNotEqual(product["entity_key"], ent["entity_key"])
             self.assertEqual(ent["label"], "TP53")
             self.assertEqual(ent["taxon"], "9606")
             pairs = {(item["ns"], item["id"]) for item in ent["identifiers"]}

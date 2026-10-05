@@ -607,8 +607,12 @@
             "title": "Resources"
           },
           "strategy": {
-            "const": "chemical_connectivity",
             "default": "chemical_connectivity",
+            "enum": [
+              "auto",
+              "chemical_connectivity",
+              "gene_reference"
+            ],
             "title": "Strategy",
             "type": "string"
           }
@@ -711,6 +715,75 @@
         "title": "EntityIdentifier",
         "type": "object"
       },
+      "EntityMolecularEvidence": {
+        "additionalProperties": true,
+        "properties": {
+          "annotations": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Annotations",
+            "type": "array"
+          },
+          "dataset": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dataset"
+          },
+          "molecular_form": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MolecularForm"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "row_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Row Id"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source"
+          },
+          "upstream_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Upstream Id"
+          }
+        },
+        "title": "EntityMolecularEvidence",
+        "type": "object"
+      },
       "EntityPksRequest": {
         "additionalProperties": true,
         "properties": {
@@ -786,6 +859,11 @@
         "properties": {
           "entityPk": {
             "title": "Entitypk",
+            "type": "string"
+          },
+          "entityType": {
+            "default": "",
+            "title": "Entitytype",
             "type": "string"
           },
           "identifier": {
@@ -1170,6 +1248,13 @@
             ],
             "title": "Entitytype"
           },
+          "geneReferenceKeys": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Genereferencekeys",
+            "type": "array"
+          },
           "hasHierarchy": {
             "default": false,
             "title": "Hashierarchy",
@@ -1197,6 +1282,13 @@
               }
             ],
             "title": "Label"
+          },
+          "molecularEvidence": {
+            "items": {
+              "$ref": "#/components/schemas/EntityMolecularEvidence"
+            },
+            "title": "Molecularevidence",
+            "type": "array"
           },
           "ontologyHierarchy": {
             "anyOf": [
@@ -1236,6 +1328,17 @@
               }
             ],
             "title": "Primarynamespace"
+          },
+          "referenceEntityKey": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Referenceentitykey"
           },
           "relationCount": {
             "default": 0,
@@ -1485,6 +1588,16 @@
               }
             ],
             "title": "Resources"
+          },
+          "strategy": {
+            "default": "chemical_connectivity",
+            "enum": [
+              "auto",
+              "chemical_connectivity",
+              "gene_reference"
+            ],
+            "title": "Strategy",
+            "type": "string"
           }
         },
         "title": "GroupRelationshipsRequest",
@@ -1531,6 +1644,279 @@
           "status"
         ],
         "title": "HealthResponse",
+        "type": "object"
+      },
+      "MolecularCoordinateReference": {
+        "additionalProperties": true,
+        "properties": {
+          "coordinate_system": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Coordinate System"
+          },
+          "identifier": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MolecularIdentifier"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "position_base": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Position Base"
+          }
+        },
+        "title": "MolecularCoordinateReference",
+        "type": "object"
+      },
+      "MolecularForm": {
+        "additionalProperties": true,
+        "description": "Occurrence context. Missing fields assert neither canonical isoform nor wild type.",
+        "properties": {
+          "isoform_identifier": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MolecularIdentifier"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "modifications": {
+            "items": {
+              "$ref": "#/components/schemas/MolecularModification"
+            },
+            "title": "Modifications",
+            "type": "array"
+          },
+          "protein_entity_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Protein Entity Key"
+          },
+          "sequence_identifiers": {
+            "items": {
+              "$ref": "#/components/schemas/MolecularIdentifier"
+            },
+            "title": "Sequence Identifiers",
+            "type": "array"
+          },
+          "transcript_entity_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Transcript Entity Key"
+          },
+          "variants": {
+            "items": {
+              "$ref": "#/components/schemas/MolecularVariant"
+            },
+            "title": "Variants",
+            "type": "array"
+          }
+        },
+        "title": "MolecularForm",
+        "type": "object"
+      },
+      "MolecularIdentifier": {
+        "additionalProperties": true,
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "ns": {
+            "title": "Ns",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ns",
+          "id"
+        ],
+        "title": "MolecularIdentifier",
+        "type": "object"
+      },
+      "MolecularModification": {
+        "additionalProperties": true,
+        "properties": {
+          "coordinate_reference": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MolecularCoordinateReference"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "end_position": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "End Position"
+          },
+          "position": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Position"
+          },
+          "residue": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Residue"
+          },
+          "term": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Term"
+          }
+        },
+        "title": "MolecularModification",
+        "type": "object"
+      },
+      "MolecularVariant": {
+        "additionalProperties": true,
+        "properties": {
+          "alternate": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Alternate"
+          },
+          "coordinate_reference": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MolecularCoordinateReference"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "end_position": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "End Position"
+          },
+          "identifier": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MolecularIdentifier"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "position": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Position"
+          },
+          "reference": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reference"
+          }
+        },
+        "title": "MolecularVariant",
         "type": "object"
       },
       "OntologyChild": {
@@ -1848,8 +2234,7 @@
           },
           "evidence": {
             "items": {
-              "additionalProperties": true,
-              "type": "object"
+              "$ref": "#/components/schemas/RelationMolecularEvidence"
             },
             "title": "Evidence",
             "type": "array"
@@ -1887,6 +2272,115 @@
           }
         },
         "title": "RelationFilterOptions",
+        "type": "object"
+      },
+      "RelationMolecularEvidence": {
+        "additionalProperties": true,
+        "properties": {
+          "dataset": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dataset"
+          },
+          "evidence": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Evidence",
+            "type": "array"
+          },
+          "objectAttributes": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Objectattributes",
+            "type": "array"
+          },
+          "objectMolecularForm": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MolecularForm"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "recordAttributes": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Recordattributes",
+            "type": "array"
+          },
+          "relationEvidencePk": {
+            "title": "Relationevidencepk",
+            "type": "string"
+          },
+          "relationPk": {
+            "title": "Relationpk",
+            "type": "string"
+          },
+          "rowId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rowid"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          },
+          "subjectAttributes": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Subjectattributes",
+            "type": "array"
+          },
+          "subjectMolecularForm": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MolecularForm"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "upstreamId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Upstreamid"
+          }
+        },
+        "required": [
+          "relationPk",
+          "relationEvidencePk",
+          "source"
+        ],
+        "title": "RelationMolecularEvidence",
         "type": "object"
       },
       "RelationPayloadsResponse": {
@@ -2069,6 +2563,17 @@
             ],
             "title": "Objectentitypk"
           },
+          "objectReferenceEntityKey": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Objectreferenceentitykey"
+          },
           "participantTypes": {
             "items": {
               "type": "string"
@@ -2124,6 +2629,17 @@
               }
             ],
             "title": "Subjectentitypk"
+          },
+          "subjectReferenceEntityKey": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subjectreferenceentitykey"
           }
         },
         "required": [
@@ -2870,6 +3386,14 @@
             ],
             "title": "Is Directed"
           },
+          "isoform_identifiers": {
+            "description": "Exact namespace:id; unspecified forms do not match.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Isoform Identifiers",
+            "type": "array"
+          },
           "min_evidence_count": {
             "anyOf": [
               {
@@ -2881,6 +3405,17 @@
               }
             ],
             "title": "Min Evidence Count"
+          },
+          "molecular_endpoint_mode": {
+            "default": "any",
+            "enum": [
+              "any",
+              "both",
+              "source",
+              "target"
+            ],
+            "title": "Molecular Endpoint Mode",
+            "type": "string"
           },
           "object_aspect_qualifier": {
             "items": {
@@ -2901,6 +3436,20 @@
               "type": "string"
             },
             "title": "Predicates",
+            "type": "array"
+          },
+          "protein_entity_keys": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Protein Entity Keys",
+            "type": "array"
+          },
+          "reference_entity_keys": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Reference Entity Keys",
             "type": "array"
           },
           "relation_categories": {
@@ -2960,6 +3509,13 @@
               "type": "string"
             },
             "title": "Taxonomy Ids",
+            "type": "array"
+          },
+          "transcript_entity_keys": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Transcript Entity Keys",
             "type": "array"
           }
         },
@@ -4078,7 +4634,7 @@
     },
     "/entities/groups": {
       "post": {
-        "description": "Group matching entities using an explicit grouping strategy.\n\nCounts and member pagination are scoped to the current query and filters.\nChemical connectivity uses the first 14 InChIKey characters. Other entities\nand compounds with no unambiguous key remain separate singleton results.",
+        "description": "Group matching entities using an explicit grouping strategy.\n\nCounts and member pagination are scoped to the current query and filters.\nAuto groups chemicals by the first 14 InChIKey characters and biological\nentities by a shared gene reference, in one ordered page. Missing or\nconflicting references remain separate singleton results. Explicit gene\nreference and chemical connectivity strategies remain available.",
         "operationId": "connectivity_groups_entities_groups_post",
         "requestBody": {
           "content": {
@@ -4469,6 +5025,109 @@
           }
         },
         "summary": "Get Entity",
+        "tags": [
+          "entities"
+        ]
+      }
+    },
+    "/entities/{entity_id}/molecular-context": {
+      "get": {
+        "operationId": "molecular_context_entities__entity_id__molecular_context_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "entity_id",
+            "required": true,
+            "schema": {
+              "title": "Entity Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "view",
+            "required": false,
+            "schema": {
+              "default": "reference",
+              "enum": [
+                "reference",
+                "product"
+              ],
+              "title": "View",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "isoform_identifier",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Isoform Identifier"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "summary": "Molecular Context",
         "tags": [
           "entities"
         ]
@@ -5470,6 +6129,22 @@
             "schema": {
               "title": "Relation Pk",
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "filters",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Filters"
             }
           }
         ],

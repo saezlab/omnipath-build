@@ -9,6 +9,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 import pyarrow.parquet as pq
 import pytest
+from omnipath_core import SERVING_SCHEMA_VERSION
 
 from omnipath_api.engine import ParquetServingEngine
 from omnipath_api.releases import ReleaseStore
@@ -115,7 +116,7 @@ def test_migrated_schema_search_details_evidence_filters_and_exports(tmp_path):
     published = resource_version(tmp_path)
     directory = published["directory"]
     manifest = json.loads((directory / "build_manifest.json").read_text())
-    assert manifest["serving_schema_version"] == 3
+    assert manifest["serving_schema_version"] == SERVING_SCHEMA_VERSION
     before = {}
     for filename, schema in (
         ("entities.parquet", ENTITY_SCHEMA),

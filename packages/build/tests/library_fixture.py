@@ -96,14 +96,39 @@ def write_hubs(hubs: Path) -> None:
             ("genesymbol", "pol", "P12345", "0"),
         ],
     )
+    # A gene with many explicitly catalogued products still has one gene identity.
+    table = pq.read_table(hubs / "uniprot.parquet")
+    extra = [
+        {
+            "source_type": ns,
+            "source_id": value,
+            "hub_id": f"P{80000 + i}",
+            "taxonomy_id": "9606",
+            "backend": "uniprot",
+        }
+        for i in range(25)
+        for ns, value in (
+            ("uniprot", f"P{80000 + i}"),
+            ("entrez", "777"),
+            ("genesymbol", "MANYPRODUCTS"),
+            ("ensg", "ENSG00000000777"),
+            ("hgnc", "777"),
+        )
+    ]
+    pq.write_table(
+        pa.concat_tables([table, pa.Table.from_pylist(extra, schema=HUB_SCHEMA)]),
+        hubs / "uniprot.parquet",
+    )
     _hub(
         hubs,
         "entrez",
         [
             ("entrez", "7157", "7157", "9606"),
             ("ensg", "ENSG00000141510", "7157", "9606"),
+            ("entrez", "777", "777", "9606"),
             ("entrez", "55", "55", "9606"),
             ("ensg", "ENSG00000000055", "55", "9606"),
+            ("refseq", "NR_000055.1", "55", "9606"),
         ],
         backend="gene2ensembl",
     )

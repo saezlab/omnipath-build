@@ -32,7 +32,7 @@ class Shards:
 
 
 class FullRuntime:
-    def __init__(self, path, *, reference_fingerprint=None):
+    def __init__(self, path, *, reference_fingerprint=None, _load_gene_roles=True):
         path = Path(path)
         manifest = json.loads((path / "manifest.json").read_text())
         from .index_codec import FORMAT as COMPACT_FORMAT, load_codecs
@@ -64,6 +64,11 @@ class FullRuntime:
         self.identifiers = Shards(path / "identifiers")
         self.entities = Shards(path / "entities")
         self.codes = {code: ns for ns, code in CODES.items()}
+        self.gene_roles = None
+        if _load_gene_roles:
+            from .gene_role_index import GeneRoleRuntime, gene_roles_required
+
+            self.gene_roles = GeneRoleRuntime(path, required=gene_roles_required(manifest))
 
     def lookup(self, key):
         if (
@@ -81,6 +86,10 @@ class FullRuntime:
         identifier = key[offset:].decode()
         if not identifier:
             raise ValueError("Empty identifier")
+        if self.gene_roles is not None:
+            supported = self.gene_roles.lookup(key, ns, identifier)
+            if supported is not None:
+                return supported
         raw = self.identifiers.get(partition(identifier), key)
         if raw is not None:
             return self.codecs["identifiers"].decode(raw) if self.codecs else json.loads(raw)
@@ -95,14 +104,20 @@ class FullRuntime:
         if raw is None:
             raise ValueError("Candidate references absent entity: " + entity_id)
         value = self.codecs["entities"].decode(raw) if self.codecs else json.loads(raw)
-        return value["record"]
+        record = value["record"]
+        return self.gene_roles.record(entity_id, record) if self.gene_roles is not None else record
 
     def close(self):
         self.identifiers.close()
         self.entities.close()
+        if self.gene_roles is not None:
+            self.gene_roles.close()
 
     def resolve(self, queries, votes, *, decision_batch_size=4096):
-        from omnipath_resolver._omnipath_resolver import resolve_precomputed_batch
+        from omnipath_resolver._omnipath_resolver import (
+            resolve_precomputed_batch,
+            resolve_molecular_batch,
+        )
 
         start = time.perf_counter()
         keys = sorted({v["lookup_key"] for v in votes})
@@ -127,28 +142,49 @@ class FullRuntime:
                     v["anchor"],
                     v["route"],
                     v["ordinal"],
-                    value["gene"],
+                    value["gene"] or v.get("gene_only", False),
                     value["products"],
                 )
             )
         batches = [(q["input_id"], q["target"], grouped[q["input_id"]]) for q in queries]
         fetched = time.perf_counter()
         result = []
+        molecular = {}
         for offset in range(0, len(batches), decision_batch_size):
-            result.extend(
-                resolve_precomputed_batch(
-                    batches[offset : offset + decision_batch_size],
-                    postings,
-                    list(metadata.values()),
+            chunk = batches[offset : offset + decision_batch_size]
+            chemical = [q for q in chunk if q[1] == 1]
+            biological = [q for q in chunk if q[1] == 2]
+            if chemical:
+                result.extend(
+                    resolve_precomputed_batch(
+                        chemical, postings, [tuple(m[:6]) for m in metadata.values()]
+                    )
                 )
-            )
+            if biological:
+                facts = [
+                    tuple(m[:6]) + (list(m[6]) if len(m) > 6 else [],) for m in metadata.values()
+                ]
+                for row in resolve_molecular_batch(biological, postings, facts):
+                    result.append(row[:4])
+                    molecular[row[0]] = dict(
+                        protein_entity_id=row[4], gene_candidates=row[5], gene_mapping_status=row[6]
+                    )
         decided = time.perf_counter()
         accepted = {eid for _, _, ids, _ in result for eid in ids}
+        accepted.update(
+            v["protein_entity_id"] for v in molecular.values() if v["protein_entity_id"]
+        )
         records = {eid: self.record(eid) for eid in accepted}
         finished = time.perf_counter()
         return dict(
             results=[
-                dict(input_id=i, outcome=o, entities=sorted(ids), candidate_count=n)
+                dict(
+                    input_id=i,
+                    outcome=o,
+                    entities=sorted(ids),
+                    candidate_count=n,
+                    **molecular.get(i, {}),
+                )
                 for i, o, ids, n in result
             ],
             records=records,

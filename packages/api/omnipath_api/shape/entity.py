@@ -133,6 +133,9 @@ def shape_entity_summary(row: dict[str, Any], resource_hint: str | None = None) 
 
     result = {
         "entityPk": entity_pk,
+        "referenceEntityKey": row.get("reference_entity_key"),
+        "geneReferenceKeys": row.get("gene_reference_keys") or [],
+        "molecularEvidence": row.get("evidence") or [],
         "resolutionStatus": "resolved",
         "sourceEntityPks": source_pks,
         "entityFacetHints": {

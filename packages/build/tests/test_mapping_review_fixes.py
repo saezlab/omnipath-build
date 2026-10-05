@@ -229,7 +229,22 @@ def test_ensembl_protein_and_transcript_lookup_from_built_library(tmp_path):
         out = observations(records)
         resolved = resolver.resolve_entities(out.entities, progress=False)
         assert len(resolved) == 4
-        assert all(r.matched and r.canonical_identifier == "P04637" for r in resolved.values())
+        assert all(
+            r.matched and (r.canonical_namespace, r.canonical_identifier) == ("entrez", "7157")
+            for r in resolved.values()
+        )
+        assert all(r.entity_type == "protein" for r in out.entities.values())
+        by_namespace = {out.entities[key].namespace: value for key, value in resolved.items()}
+        for namespace in ("ensp", "ensembl", "refseq_protein"):
+            product = by_namespace[namespace]
+            assert (product.protein_namespace, product.protein_identifier) == ("uniprot", "P04637")
+            assert product.protein_gene_candidates == ("entrez:7157",)
+        transcript = by_namespace["enst"]
+        assert transcript.protein_identifier is None
+        assert (transcript.transcript_namespace, transcript.transcript_identifier) == (
+            "enst",
+            "ENST00000269305",
+        )
     finally:
         resolver.close()
 

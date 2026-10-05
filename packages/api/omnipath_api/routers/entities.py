@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import Any
+from typing import Any, Literal
 from fastapi import HTTPException, Query, Request
 from fastapi.responses import Response
 
@@ -99,8 +99,10 @@ def connectivity_groups(request: Request, payload: EntityGroupsRequest):
     """Group matching entities using an explicit grouping strategy.
 
     Counts and member pagination are scoped to the current query and filters.
-    Chemical connectivity uses the first 14 InChIKey characters. Other entities
-    and compounds with no unambiguous key remain separate singleton results.
+    Auto groups chemicals by the first 14 InChIKey characters and biological
+    entities by a shared gene reference, in one ordered page. Missing or
+    conflicting references remain separate singleton results. Explicit gene
+    reference and chemical connectivity strategies remain available.
     """
     return _call(request, "search_entity_groups", **_dump(payload))
 
@@ -154,6 +156,7 @@ def group_relationships(request: Request, payload: GroupRelationshipsRequest):
         groups = _call(
             request,
             "search_entity_groups",
+            strategy=payload.strategy,
             group_key=payload.group_key,
             query=payload.query,
             filters=_dump(payload)["filters"],
@@ -174,6 +177,29 @@ def group_relationships(request: Request, payload: GroupRelationshipsRequest):
     member_set = set(keys)
     for row in result["relationships"]:
         row["groupOutgoing"] = row["relation"]["subjectEntityPk"] in member_set
+    return result
+
+
+@router.get("/entities/{entity_id}/molecular-context", tags=["entities"])
+def molecular_context(
+    request: Request,
+    entity_id: str,
+    view: Literal["reference", "product"] = "reference",
+    isoform_identifier: str | None = None,
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+):
+    result = _call(
+        request,
+        "get_molecular_context",
+        entity_id,
+        view=view,
+        isoform_identifier=isoform_identifier,
+        limit=limit,
+        offset=offset,
+    )
+    if result is None:
+        raise HTTPException(status_code=404, detail="Entity not found")
     return result
 
 

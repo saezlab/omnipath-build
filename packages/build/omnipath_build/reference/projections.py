@@ -87,6 +87,22 @@ def specification(reference):
     add("gene-products", "gene-products/gene_products.parquet", "entrez_id")
     add("gene-products-forward", "gene-products/gene_products.parquet", "protein_entity_id")
 
+    products = root / "gene-products/gene_products.parquet"
+    claims = root / "claims-uniprot/identifier_claims.parquet"
+    if products.is_file() and claims.is_file():
+        specs.append(
+            (
+                "gene_protein-gene-forward",
+                "gene-products/gene_products.parquet",
+                "entity_id",
+                f"""SELECT 'entrez:' || p.entrez_id _key,'entrez:' || p.entrez_id entity_id,
+                c.namespace,c.identifier FROM {scan(products)} p
+                JOIN {scan(claims)} c ON c.entity_id=p.protein_entity_id
+                WHERE c.namespace IN ('genesymbol','genesymbol-syn','hgnc','ensg')
+                AND (SELECT count(DISTINCT other.entrez_id) FROM {scan(products)} other WHERE other.protein_entity_id=p.protein_entity_id)=1""",
+            )
+        )
+
     for domain, hubs in (
         ("chemical", tuple(h for h in chemical_hubs if h not in {"pubchem", "kegg"})),
         ("gene_protein", ("uniprot", "entrez", "ramp_gene")),

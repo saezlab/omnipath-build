@@ -9,6 +9,7 @@ The serving contract consists of three nested Parquet tables per resource versio
 from __future__ import annotations
 
 from omnipath_core.measurements import QUANTITY_STRUCT
+from omnipath_core.molecular_forms import MOLECULAR_FORM_STRUCT
 import pyarrow as pa
 
 IDENTIFIER_STRUCT = pa.struct(
@@ -48,6 +49,19 @@ EVIDENCE_STRUCT = pa.struct(
         ("row_id", pa.string()),
         ("upstream_id", pa.string()),
         ("annotations", pa.list_(ANNOTATION_STRUCT)),
+        ("subject_molecular_form", MOLECULAR_FORM_STRUCT),
+        ("object_molecular_form", MOLECULAR_FORM_STRUCT),
+    ]
+)
+
+ENTITY_EVIDENCE_STRUCT = pa.struct(
+    [
+        ("source", pa.string()),
+        ("dataset", pa.string()),
+        ("row_id", pa.string()),
+        ("upstream_id", pa.string()),
+        ("annotations", pa.list_(ENTITY_ANNOTATION_STRUCT)),
+        ("molecular_form", MOLECULAR_FORM_STRUCT),
     ]
 )
 
@@ -64,6 +78,9 @@ ENTITY_SCHEMA = pa.schema(
         ("child_count", pa.int64()),
         ("identifiers", pa.list_(IDENTIFIER_STRUCT)),
         ("annotations", pa.list_(ENTITY_ANNOTATION_STRUCT)),
+        ("reference_entity_key", pa.string()),
+        ("gene_reference_keys", pa.list_(pa.string())),
+        ("evidence", pa.list_(ENTITY_EVIDENCE_STRUCT)),
     ]
 )
 
@@ -87,6 +104,8 @@ RELATION_SCHEMA = pa.schema(
         ("evidence_count", pa.int64()),
         ("evidence", pa.list_(EVIDENCE_STRUCT)),
         ("annotations", pa.list_(ANNOTATION_STRUCT)),
+        ("subject_reference_entity_key", pa.string()),
+        ("object_reference_entity_key", pa.string()),
     ]
 )
 

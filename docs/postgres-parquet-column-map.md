@@ -1,8 +1,8 @@
 # Published Parquet to main PostgreSQL mapping
 
 Baseline: current main `9f9bb709c764e2721a0bcd881cf7ef0eb22bed9a`.
-The existing Parquet files, entity keys, statement keys and upstream resolution
-are unchanged. This document describes the aligned PostgreSQL projection; it
+The loader preserves published Parquet files, entity keys, statement keys and
+upstream resolution. This document describes the aligned PostgreSQL projection; it
 does not claim that unavailable original resolver diagnostics were recovered.
 
 `aligned_projection.prepare_aligned_release(duckdb_connection, pinned_release,
@@ -55,9 +55,25 @@ on-disk DuckDB. Python receives only dimension rows and aggregate diagnostics.
 | `entity_ontology_term` | Unchanged main derivation from source-owned ontology edges, relational identifiers and annotations. It selects term IDs, labels, definitions, aliases and synonyms with main's existing priorities and builds the existing search fields/indexes. |
 | `entity_annotation_relation` | No invented resolved annotation target. Published entity-valued associations already represented as statements remain graph relations. Additional old annotation-resolution bridges require a demonstrably unambiguous retained target; unavailable links are reported instead of guessed. |
 
+## Required molecular context
+
+Serving schema 4 adds three required companions alongside the normalized main
+tables. They are copied with or without `retain_published_provenance`:
+
+| PostgreSQL table | Published input and treatment |
+| --- | --- |
+| `entity_reference_context` | Resource/version/entity key and main entity UUID, exact `reference_entity_key` and ordered `gene_reference_keys`. A virtual gene reference need not have an entity row. |
+| `statement_reference_context` | Resource/version/relation key and both endpoint reference keys. |
+| `molecular_evidence_context` | One row per ordered relation or standalone entity evidence occurrence. Nested `occurrence_json` keeps the paired forms, specific identifiers, features, coordinates and annotations together; relation occurrences link to the existing relation-evidence UUID. Nulls, empty lists and repetition survive. |
+
+The loader performs no additional resolution, product selection or state
+combination expansion. Source types and normalized graph triples retain their
+existing identity rules. COSMOS keeps canonical GeneID catalysts as GeneID
+instead of selecting one of their protein aliases.
+
 ## Quantity metadata and optional inspection copies
 
-Default loads create `annotation_quantity` alongside the fourteen main COPY tables. This metadata is required by main's measurement readers. The five `parquet_*` tables below are optional inspection copies: pass `retain_published_provenance=True` to the projector/loader and `companion_ddl`, or use `--retain-published-provenance` for a fresh CLI load. Both modes produce identical normalized scientific tables.
+Default loads create the three molecular companions and `annotation_quantity` alongside the fourteen main COPY tables. Quantity metadata is required by main's measurement readers. The five `parquet_*` tables below are optional inspection copies: pass `retain_published_provenance=True` to the projector/loader and `companion_ddl`, or use `--retain-published-provenance` for a fresh CLI load. Both modes produce identical normalized scientific and required context tables.
 
 References above to original occurrence provenance mean the pinned immutable Parquets by default, plus these PostgreSQL copies when enabled. Main evidence ownership, taxonomy, qualifiers and measurements remain relational; original keys, raw spelling, repetition, order and list-presence flags are inspection details. No downstream scientific reader consumes the five optional tables.
 
@@ -83,9 +99,10 @@ Available companion definitions:
   dictionary annotation identity. A present all-null quantity has a row; an
   absent quantity does not.
 
-There are no complete nested records, `record_json`, or raw evidence bodies in
-these PostgreSQL outputs. Null and empty lists remain distinguishable in the
-unchanged original Parquets and, when enabled, their inspection copies.
+The molecular companion stores nested published evidence occurrences. Complete
+entity/relation `record_json` and raw source bodies remain outside this aligned
+projection. Null and empty lists remain distinguishable in molecular context,
+the unchanged original Parquets and, when enabled, their inspection copies.
 
 Loaded counts describe only copied tables. Compatibility metadata separately
 records published input counts and whether provenance lives in pinned Parquets

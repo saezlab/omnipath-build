@@ -55,6 +55,13 @@ skip products already committed for the loaded monthly release.
   apply the stored recipe.
 - **COSMOS:** metabolite/enzyme edges projected from the shared reaction tables,
   including reversible reactions and labels drawn from published identifiers.
+  GeneID-centered catalysts keep their GeneID label and `entrez` namespace,
+  including records whose source reported a protein. UniProt catalogue aliases
+  of a gene do not select a protein participant or create extra reaction nodes.
+  Canonical UniProt product identities keep their UniProt labels. The optional
+  legacy utils translation also preserves GeneID and accepts other catalyst
+  mappings only when exactly one UniProt target answers. Connectors use the
+  same identifier and namespace as their reaction node.
 
 All three products use the current PostgreSQL schema. The earlier resource-record
 subset implementations and their verification command have been removed.

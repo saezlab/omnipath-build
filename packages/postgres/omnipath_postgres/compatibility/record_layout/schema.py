@@ -60,6 +60,7 @@ _TABLE_COLUMNS = {
         has_hierarchy boolean,
         parent_count bigint,
         child_count bigint,
+        reference_entity_key text,
         record_json jsonb NOT NULL
     """,
     "relations": """
@@ -81,6 +82,8 @@ _TABLE_COLUMNS = {
         interaction_class text,
         sources jsonb,
         evidence_count bigint,
+        subject_reference_entity_key text,
+        object_reference_entity_key text,
         record_json jsonb NOT NULL
     """,
     "identifiers": """

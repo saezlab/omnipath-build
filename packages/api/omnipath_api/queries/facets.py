@@ -14,6 +14,7 @@ from omnipath_api.serving_index import projected_paths
 
 from omnipath_api.queries.constants import RELATION_QUALIFIER_FILTERS
 from omnipath_api.models import normalize_filters
+from omnipath_api.molecular import read
 
 logger = logging.getLogger(__name__)
 
@@ -253,8 +254,14 @@ class FacetsQueries:
         where_clauses, params = self._entity_filter_clauses(filters, resources=scope)
         where_clauses.insert(0, "1=1")
         if query:
-            where_clauses.append("(label ILIKE ? OR identifier ILIKE ?)")
-            params.extend([f"%{query}%", f"%{query}%"])
+            # Keep facet scans scalar while accepting the same stored references
+            # and native CURIE spellings as entity search.
+            where_clauses.append(
+                "(label ILIKE ? OR identifier ILIKE ? OR reference_entity_key ILIKE ? "
+                "OR (namespace || ':' || identifier) ILIKE ? "
+                "OR (namespace || '|' || identifier) ILIKE ?)"
+            )
+            params.extend([f"%{query}%"] * 5)
         return " AND ".join(where_clauses), params, paths
 
     def _compute_entity_facets(
@@ -285,8 +292,8 @@ class FacetsQueries:
         source_counts = (
             dict(
                 self._db.execute(
-                    f"SELECT filename, count(*) FROM read_parquet(?, filename=true, union_by_name=true) WHERE {source_where} GROUP BY filename",
-                    [source_projection, *source_params],
+                    f"SELECT filename, count(*) FROM {read(source_projection, filename=True)} WHERE {source_where} GROUP BY filename",
+                    source_params,
                 ).fetchall()
             )
             if source_paths

@@ -47,6 +47,7 @@ def compiler_hash():
         "index_rewrite.py",
         "identifier_admission.py",
         "projections.py",
+        "gene_role_index.py",
     ]:
         digest.update(name.encode())
         digest.update((root / name).read_bytes())
@@ -86,6 +87,7 @@ class DirectCompiler(Compiler):
             dictionaries=dictionary_specs,
             checkpoint_layout="compiler",
             builder="direct-compact-v1",
+            gene_role_component_required=True,
             compiler_sha256=compiler_hash(),
         )
         super().__init__(
@@ -302,6 +304,11 @@ def build_direct_compact(
     atomic_json(
         output / "assignment-manifest.json",
         json.loads((Path(reference) / "manifest.json").read_text()),
+    )
+    from .gene_role_index import build_gene_role_index
+
+    build_gene_role_index(
+        reference, output, memory=memory, threads=threads, min_free_gib=min_free_gib
     )
     compiler.cleanup_scratch()
     return json.loads((output / "manifest.json").read_text())

@@ -35,6 +35,21 @@ from .schema import (
     IDENTIFIER_STRUCT,
     ANNOTATION_STRUCT,
     EVIDENCE_STRUCT,
+    ENTITY_EVIDENCE_STRUCT,
+)
+from .molecular_forms import (
+    SequenceIdentifier,
+    CoordinateReference,
+    MolecularModification,
+    MolecularVariant,
+    MolecularForm,
+    SEQUENCE_IDENTIFIER_STRUCT,
+    COORDINATE_REFERENCE_STRUCT,
+    MODIFICATION_STRUCT,
+    VARIANT_STRUCT,
+    MOLECULAR_FORM_STRUCT,
+    normalize_molecular_form,
+    molecular_form_from_identifiers,
 )
 from .keys import canonical_json, stable_hash, entity_key, relation_key
 from .versioning import (
@@ -88,6 +103,19 @@ __all__ = [
     "IDENTIFIER_STRUCT",
     "ANNOTATION_STRUCT",
     "EVIDENCE_STRUCT",
+    "ENTITY_EVIDENCE_STRUCT",
+    "SequenceIdentifier",
+    "CoordinateReference",
+    "MolecularModification",
+    "MolecularVariant",
+    "MolecularForm",
+    "SEQUENCE_IDENTIFIER_STRUCT",
+    "COORDINATE_REFERENCE_STRUCT",
+    "MODIFICATION_STRUCT",
+    "VARIANT_STRUCT",
+    "MOLECULAR_FORM_STRUCT",
+    "normalize_molecular_form",
+    "molecular_form_from_identifiers",
     # Naming helpers
     "Namespace",
     "normalize_namespace",

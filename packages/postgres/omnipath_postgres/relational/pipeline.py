@@ -98,7 +98,7 @@ def _availability(conn, schema):
             "capability": "gene_anchored_identity",
             "available": False,
             "provider": "published Parquet",
-            "reason": "Published protein/gene identities are retained without recanonicalization",
+            "reason": "Source-typed identities remain unchanged; supported gene references are stored separately in entity_reference_context",
         },
         {
             "capability": "metabolic_domain_source_priority",

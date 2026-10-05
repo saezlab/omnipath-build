@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import shutil
 import time
-from collections import defaultdict
+from collections import OrderedDict
 
 import lmdb
 
@@ -13,7 +13,8 @@ from .full_index import log, partition, quote, read_value, validate_enriched
 from omnipath_resolver.observations import CODES, key
 
 SYMBOLS = "('genesymbol','genesymbol-syn')"
-FACT = "json_array(id::UBIGINT,entity_id,kind,anchor,quarantined,reviewed)"
+GENE_NAMESPACE_CODES = {CODES[ns] for ns in ("hgnc", "ensg", "enst", "refseq")}
+FACT = "json_array(id::UBIGINT,entity_id,kind,anchor,quarantined,reviewed,gene_ids)"
 
 
 def dump(value):
@@ -90,6 +91,7 @@ class Products:
         self.projections = None
         self.entity_shards = None
         self.entity_codec = None
+        self.gene_cache = OrderedDict()
 
     def get(self, namespace, identifier):
         part = partition(identifier)
@@ -103,6 +105,40 @@ class Products:
             self.opened[part][1], ("_product_" + namespace + ":" + identifier).encode()
         )
         return json.loads(raw) if raw else []
+
+    def gene(self, entity_id):
+        if entity_id in self.gene_cache:
+            self.gene_cache.move_to_end(entity_id)
+            return self.gene_cache[entity_id]
+        if self.entity_shards is None:
+            from omnipath_resolver.index import Shards
+            from .compact_index import FORMAT, load_codecs
+
+            self.entity_shards = Shards(self.root / "entities")
+            contract = json.loads((self.root / "build-contract.json").read_text())
+            if contract["format"] == FORMAT:
+                self.entity_codec = load_codecs(self.root, contract["dictionaries"])["entities"]
+        raw = self.entity_shards.get(partition(entity_id), entity_id.encode())
+        if raw is None:
+            return None
+        value = self.entity_codec.decode(raw) if self.entity_codec else json.loads(raw)
+        m = value["meta"]
+        result = (
+            [
+                m["id"],
+                entity_id,
+                m["kind"],
+                m["anchor"],
+                m["quarantined"],
+                m["reviewed"],
+                [entity_id[7:]],
+            ],
+            value["record"]["taxon"],
+        )
+        if len(self.gene_cache) >= 16384:
+            self.gene_cache.popitem(last=False)
+        self.gene_cache[entity_id] = result
+        return result
 
     def projected(self, namespace, identifier):
         # Entrez ENSG fallback precedes isoform projection in the old policy;
@@ -165,9 +201,9 @@ def identifier_partition(compiler, part, products):
                 WHERE (tag<>'chemical_fallback' OR NOT EXISTS(
                     SELECT 1 FROM raw n WHERE n.target=r.target AND n.route=r.route
                     AND n.namespace=r.namespace AND n.identifier=r.identifier AND n.tag='native'))
-                AND id IS NOT NULL AND (kind=target OR (target=2 AND route=2 AND kind=3))""")
+                AND id IS NOT NULL AND (kind=target OR (target=2 AND kind=3))""")
             c.execute(f"""CREATE TEMP TABLE regular AS SELECT DISTINCT target,route,namespace,identifier,
-                id,entity_id,kind,anchor,quarantined,reviewed,taxon
+                id,entity_id,kind,anchor,quarantined,reviewed,taxon,gene_ids
                 FROM admitted WHERE namespace NOT IN {SYMBOLS}""")
             # Store the unscoped and each present taxon list. Absent taxa are true misses.
             c.execute("""CREATE TEMP VIEW scoped AS
@@ -184,8 +220,8 @@ def identifier_partition(compiler, part, products):
             # A key's candidate list is never split by these memory boundaries.
             c.execute(f"""CREATE TEMP TABLE ordered AS
                 SELECT {key_sql} AS lookup_key,{FACT} AS candidate,id,
-                    target=2 AND namespace IN ('hgnc','ensg') AS gene,
-                    target=2 AND namespace IN ('hgnc','ensg') AS products
+                    target=2 AND (route=2 OR namespace IN ('hgnc','ensg','enst','refseq')) AS gene,
+                    false AS products
                 FROM scoped ORDER BY lookup_key,id""")
             c.execute("DROP VIEW scoped")
             c.execute("DROP TABLE regular")
@@ -201,7 +237,18 @@ def identifier_partition(compiler, part, products):
                     GROUP BY lookup_key ORDER BY lookup_key"""
                 for batch in c.execute(q).to_arrow_reader(batch_size=8192):
                     compiler.guard()
-                    writer.put(list(zip(batch.column(0).to_pylist(), batch.column(1).to_pylist())))
+                    values = []
+                    for lookup_key, raw in zip(
+                        batch.column(0).to_pylist(), batch.column(1).to_pylist()
+                    ):
+                        if lookup_key[1] == 2 and (
+                            lookup_key[2] == 2
+                            or int.from_bytes(lookup_key[3:5], "big") in GENE_NAMESPACE_CODES
+                        ):
+                            value = json.loads(raw)
+                            raw = dump(collapse_gene_posting(value, products))
+                        values.append((lookup_key, raw))
+                    writer.put(values)
             c.execute("DROP TABLE ordered")
             # For symbols, all gene projection is paid once here, including
             # verification that the expansion does not bridge different genes.
@@ -219,31 +266,16 @@ def identifier_partition(compiler, part, products):
             for batch in c.execute(q).to_arrow_reader(batch_size=4096):
                 for ns, ident, taxon, raw in zip(*(batch.column(i).to_pylist() for i in range(4))):
                     rows = json.loads(raw)
-                    genes = {g for r in rows for g in r["genes"]}
-                    ensg = {g for r in rows for g in r["ensg"]}
-                    bridge = None
-                    if len(genes) == 1 and all(r["genes"] for r in rows):
-                        bridge = ("entrez", next(iter(genes)))
-                    elif len(ensg) == 1 and len(genes) <= 1 and all(r["ensg"] for r in rows):
-                        bridge = ("ensg", next(iter(ensg)))
                     selected = [r["candidate"] for r in rows]
-                    expanded = []
-                    if bridge:
-                        expanded = [r for r in products.get(*bridge) if r["taxon"] == taxon]
-                        if (
-                            bridge[0] == "ensg"
-                            and len({g for r in expanded for g in r["genes"]}) > 1
-                        ):
-                            expanded = []
-                        if expanded:
-                            selected = [r["candidate"] for r in expanded]
-                            bridges += 1
+                    # Symbols identify genes. A catalogue product is never an
+                    # asserted protein participant of a symbol-only observation.
                     buffer.append(
                         (
                             key(2, 1, ns, taxon, ident),
                             dump(
-                                dict(
-                                    candidates=sorted(selected), gene=True, products=bool(expanded)
+                                collapse_gene_posting(
+                                    dict(candidates=sorted(selected), gene=True, products=False),
+                                    products,
                                 )
                             ),
                         )
@@ -251,7 +283,7 @@ def identifier_partition(compiler, part, products):
                 compiler.guard()
                 writer.put(buffer)
                 buffer.clear()
-            # NCBI Ensembl gene aliases fill only absent UniProt/native mappings.
+            # NCBI gene aliases can identify noncoding genes without a protein.
             claims = compiler.relation(c, "claims-entrez", part)
             q = f"""SELECT i.identifier,min(i.record_id) FROM {claims} i
                 WHERE i.namespace='ensg' AND NOT EXISTS(SELECT 1 FROM raw r
@@ -260,22 +292,18 @@ def identifier_partition(compiler, part, products):
             fallbacks = 0
             for batch in c.execute(q).to_arrow_reader(batch_size=4096):
                 for ident, record in zip(batch.column(0).to_pylist(), batch.column(1).to_pylist()):
-                    if not record.startswith("entrez:"):
-                        raise ValueError("Unexpected Entrez record key")
-                    rows = products.projected("entrez", record[7:])
-                    scopes = defaultdict(list)
-                    for row in rows:
-                        scopes[""].append(row["candidate"])
-                        if row["taxon"]:
-                            scopes[row["taxon"]].append(row["candidate"])
-                    for scope, candidates in scopes.items():
+                    row = products.gene(record)
+                    if row is None:
+                        continue
+                    candidate, taxon = row
+                    for scope in {"", taxon or ""}:
                         buffer.append(
                             (
                                 key(2, 1, "ensg", scope, ident),
-                                dump(dict(candidates=sorted(candidates), gene=True, products=True)),
+                                dump(dict(candidates=[candidate], gene=True, products=False)),
                             )
                         )
-                    fallbacks += bool(rows)
+                    fallbacks += 1
                 compiler.guard()
                 writer.put(buffer)
                 buffer.clear()
@@ -292,3 +320,30 @@ def identifier_partition(compiler, part, products):
     except BaseException:
         writer.env.close()
         raise
+
+
+def collapse_gene_posting(value, products):
+    """Apply the ambiguity cutoff to genes, never a gene's product count.
+
+    Only complete, nonquarantined explicit mappings may replace candidates.
+    Unknown product links retain the conservative native decision semantics.
+    """
+    if not value["gene"] or not value["candidates"]:
+        return value
+    genes = set()
+    for candidate in value["candidates"]:
+        if candidate[4]:
+            return value
+        if candidate[2] == 3 and candidate[1].startswith("entrez:"):
+            genes.add(candidate[1])
+        elif len(candidate) > 6 and candidate[6]:
+            genes.update("entrez:" + gene for gene in candidate[6])
+        else:
+            return value
+    selected = {}
+    for gene in sorted(genes):
+        row = products.gene(gene)
+        if row is None or row[0][2] != 3 or row[0][4]:
+            return value
+        selected[row[0][0]] = row[0]
+    return dict(gene=True, products=False, candidates=[selected[k] for k in sorted(selected)])

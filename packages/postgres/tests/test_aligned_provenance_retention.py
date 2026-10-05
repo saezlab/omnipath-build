@@ -53,6 +53,9 @@ NORMALIZED_TABLES = {
     "entity_ontology_relation",
     "ontology_terms",
     "annotation_quantity",
+    "entity_reference_context",
+    "statement_reference_context",
+    "molecular_evidence_context",
 }
 RETAINED_COPY_ORDER = (
     "entity",
@@ -69,6 +72,9 @@ RETAINED_COPY_ORDER = (
     "relation_evidence_annotation",
     "entity_ontology_relation",
     "ontology_terms",
+    "entity_reference_context",
+    "statement_reference_context",
+    "molecular_evidence_context",
     "parquet_entity",
     "parquet_statement",
     "parquet_evidence",
@@ -295,14 +301,14 @@ def test_projection_retention_requires_a_boolean_before_artifact_io(monkeypatch,
         aligned_projection.companion_ddl("fixture", retain_published_provenance=value)
 
 
-def test_default_companion_ddl_creates_only_required_quantity_table():
+def test_default_companion_ddl_creates_required_molecular_and_quantity_tables():
     default = aligned_projection.companion_ddl('schema"quoted')
     retained = aligned_projection.companion_ddl('schema"quoted', retain_published_provenance=True)
-    assert len(default) == 1
-    assert default[0] == retained[-1]
-    assert '"schema""quoted"."annotation_quantity"' in default[0]
-    assert len(retained) == 6
-    assert all(table not in default[0] for table in AUDIT_TABLES)
+    assert len(default) == 4
+    assert default[-1] == retained[-1]
+    assert '"schema""quoted"."annotation_quantity"' in default[-1]
+    assert len(retained) == 9
+    assert all(table not in statement for statement in default for table in AUDIT_TABLES)
 
 
 @pytest.mark.parametrize("retain", [False, True])
@@ -367,7 +373,7 @@ def _pinned_fixture(root):
             json.dumps(
                 dict(
                     schema_version=1,
-                    serving_schema_version=3,
+                    serving_schema_version=4,
                     resource=resource.source,
                     version=version,
                     files=files,

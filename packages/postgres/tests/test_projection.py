@@ -52,6 +52,9 @@ def entity(key, identifier, *, namespace="uniprot", taxon="9606", entity_type="p
         "child_count": 0,
         "identifiers": [],
         "annotations": [],
+        "reference_entity_key": None,
+        "gene_reference_keys": None,
+        "evidence": None,
     }
 
 
@@ -73,6 +76,8 @@ def fixture_rows():
         "dataset": "reported-dataset",
         "row_id": "00001",
         "upstream_id": "SRC-42",
+        "subject_molecular_form": None,
+        "object_molecular_form": None,
         "annotations": [
             annotation(quantity=deepcopy(QUANTITY)),
             annotation("publications", value="PMID:123456"),
@@ -82,6 +87,8 @@ def fixture_rows():
         "relation_key": RELATION,
         "statement_kind": "relation",
         "subject_entity_key": ENTITY_A,
+        "subject_reference_entity_key": None,
+        "object_reference_entity_key": None,
         "subject_label": "Subject α",
         "subject_type": "protein",
         "predicate": "affects",

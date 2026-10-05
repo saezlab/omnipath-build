@@ -25,6 +25,9 @@ import psycopg2.extensions
 _logger = logging.getLogger("omnipath_postgres.relational.db.schema")
 
 CONTENT_TABLES: tuple[str, ...] = (
+    "molecular_evidence_context",
+    "statement_reference_context",
+    "entity_reference_context",
     # Published datasets over the core content come first: they are keyed on
     # entity ids the truncate below invalidates, and they carry no foreign key
     # that would make a stale row announce itself.

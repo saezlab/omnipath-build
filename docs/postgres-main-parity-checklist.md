@@ -68,7 +68,7 @@ These are input limitations to measure and disclose, rather than reasons to chan
 - `OntologyRelation.ontology_id` is absent from the published ontology row. The twelve audited current providers each declare one explicit ontology family for their ontology records; recover that input contract independently of a resolved endpoint namespace. Unknown providers keep a visible fallback/capability gap. The legacy base `ontology_terms` table stays empty, matching fresh main; main derives serving `entity_ontology_term` from normalized edges, identifiers and annotations.
 - Ontology descriptions include both source definitions and comments. A readable description can populate the supported main field, but the exact original definition/comment distinction is unavailable.
 - Some original classification inputs are not published: HMDB's exact superclass/class rank priority and the old Recon3D/metatlas subsystem fields need a documented fallback or a capability gap. Generic `has_topic` EC references do not replace these concepts.
-- Gene anchor/state details, authoritative old resolver coverage/conflict diagnostics and external lipid utility results cannot be asserted merely because the main tables exist. Preserve supported published facts and mark unavailable capabilities with reasons.
+- Published gene references and molecular occurrences are retained in the required context companions. Their presence does not recover original main resolver/state diagnostics or external lipid utility results. Preserve supported published facts and mark unavailable capabilities with reasons.
 - Main's existing pair/reaction identity collision behavior remains part of this parity target. Fixing that design is separate work.
 
 ## Bounded verification
@@ -102,9 +102,17 @@ Current harness covers:
 
 13. The real SilverExtractor/ParquetWriter ontology literal, source family independent of resolved namespace, and the exact fresh-main empty ontology_terms base. Complete serving rows match frozen main over eligible bare/IRI/CURIE identifiers, original definitions and multiple ontology roots. Negative source/type/namespace and existing chemical/protein CV cases retain main priorities; scalar Name fallback requires a meaningful globally absent name/synonym and excludes identifier-valued labels. Computed lookups add no occurrence or authority evidence.
 
-14. Default fifteen-table versus retained twenty-table loads over eighteen synthetic entity/statement records: complete normalized DuckDB and PostgreSQL rows, nonempty serving derivation, typed quantities, source-scoped evidence and exact main constraints/indexes. Optional copies retain duplicate/order/raw inspection facts; default mode does not prepare their final tables, DDL or COPY. Published input counts are separate from copied counts. An older retained checkpoint finishes without re-projection or COPY.
+14. Default eighteen-table versus retained twenty-three-table loads over eighteen synthetic entity/statement records: complete normalized DuckDB and PostgreSQL rows, nonempty serving derivation, typed quantities, source-scoped evidence, required molecular companions and exact main constraints/indexes. Optional copies retain duplicate/order/raw inspection facts; default mode does not prepare their final tables, DDL or COPY. Published input counts are separate from copied counts. An older retained checkpoint finishes without re-projection or COPY.
 
 15. Exact SHA-verified main Standard InChI inclusion rule over five synthetic source records, default/retained dictionary and links, unchanged canonical identities/quantities and complete excluded audit occurrences with NULL dictionary references. Accepted long names/synonyms/SMILES/unknown strings remain intact; actual local COPY and complete MetSigDB publication exercise the exact `Smiles:MI:0239` namespace and declared eligibility adaptation.
+
+16. Serving-schema-4 fixtures retain virtual gene references, ordered gene links,
+paired subject/object forms, specific product/isoform identifiers, feature
+coordinates, repeated evidence and standalone observations in DuckDB and actual
+PostgreSQL JSONB COPY, including default loads without optional audit tables.
+Content reset clears the companions. COSMOS keeps GeneID catalyst and connector
+labels in both published-alias and optional utils paths; genuine UniProt products,
+chemical compartments, reversible edges and chemical-only MetSigDB stay covered.
 
 Compare duplicate-sensitive full rows and content identities. Preserve distinctions between NULL and FALSE, source-local and merged claims, and participant sets versus multisets. Equal counts or an empty oracle result are not acceptance.
 

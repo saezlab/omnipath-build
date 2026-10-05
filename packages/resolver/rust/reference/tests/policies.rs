@@ -365,7 +365,7 @@ fn supplied_structure_overrides_conflicting_cross_reference() {
             ("one", Role::PrimaryAnchor(chem('A', 'B'))),
             ("three", Role::Identity),
         ],
-        Policy::omnipath(),
+        legacy_projection_policy(),
     );
     assert_eq!(r.outcome, Outcome::Unique);
     assert_eq!(r.accepted_ids(), &[1]);
@@ -379,7 +379,7 @@ fn different_supplied_connectivity_remains_conflicting() {
             ("one", Role::PrimaryAnchor(chem('A', 'B'))),
             ("three", Role::PrimaryAnchor(chem('D', 'C'))),
         ],
-        Policy::omnipath(),
+        legacy_projection_policy(),
     );
     assert_eq!(r.outcome, Outcome::ConflictingEvidence);
 }
@@ -399,28 +399,33 @@ fn entrez_only_fallback_is_explicit_and_route_restricted() {
         },
     );
     let q = query(Kind::Protein, vec![("orphan", Role::GeneToProtein)]);
-    let r = resolve_batch(&p, &m, std::slice::from_ref(&q), &Policy::omnipath())
-        .unwrap()
-        .remove(0);
+    let r = resolve_batch(
+        &p,
+        &m,
+        std::slice::from_ref(&q),
+        &legacy_projection_policy(),
+    )
+    .unwrap()
+    .remove(0);
     assert_eq!(r.outcome, Outcome::EntrezOnlyFallback);
     assert_eq!(r.accepted_ids(), &[6]);
     let strict = Policy {
         allow_entrez_only_fallback: false,
-        ..Policy::omnipath()
+        ..legacy_projection_policy()
     };
     assert!(resolve_batch(&p, &m, std::slice::from_ref(&q), &strict).is_err());
     let wrong_route = query(Kind::Protein, vec![("orphan", Role::Identity)]);
-    assert!(resolve_batch(&p, &m, &[wrong_route], &Policy::omnipath()).is_err());
+    assert!(resolve_batch(&p, &m, &[wrong_route], &legacy_projection_policy()).is_err());
     let conflicting = query(
         Kind::Protein,
         vec![("orphan", Role::GeneToProtein), ("protein", Role::Identity)],
     );
-    let r = resolve_batch(&p, &m, &[conflicting], &Policy::omnipath())
+    let r = resolve_batch(&p, &m, &[conflicting], &legacy_projection_policy())
         .unwrap()
         .remove(0);
     assert_eq!(r.outcome, Outcome::ConflictingEvidence);
     m.0.get_mut(&6).unwrap().quarantined = true;
-    let r = resolve_batch(&p, &m, &[q], &Policy::omnipath())
+    let r = resolve_batch(&p, &m, &[q], &legacy_projection_policy())
         .unwrap()
         .remove(0);
     assert_eq!(r.outcome, Outcome::QuarantinedCandidate);
@@ -473,13 +478,13 @@ fn reviewed_gene_preference_is_after_intersection() {
             ],
         ),
     ];
-    let r = resolve_batch(&p, &m, &qs, &Policy::omnipath()).unwrap();
+    let r = resolve_batch(&p, &m, &qs, &legacy_projection_policy()).unwrap();
     assert_eq!(r[0].accepted_ids(), &[4]);
     assert_eq!(r[1].accepted_ids(), &[5]); // agreement must not be destroyed by preference
     assert_eq!(r[2].outcome, Outcome::Ambiguous); // explicit protein aliases unchanged
     assert_eq!(r[3].outcome, Outcome::Ambiguous); // missing gene evidence cannot rank proteins
     m.0.get_mut(&5).unwrap().reviewed = true;
-    let r = resolve_batch(&p, &m, &qs[..1], &Policy::omnipath()).unwrap();
+    let r = resolve_batch(&p, &m, &qs[..1], &legacy_projection_policy()).unwrap();
     assert_eq!(r[0].outcome, Outcome::Ambiguous); // two reviewed proteins are not arbitrarily collapsed
 }
 
@@ -497,7 +502,7 @@ fn stable_gene_id_can_project_multiple_reviewed_products() {
             },
         )],
     );
-    let r = resolve_batch(&p, &m, &[q], &Policy::omnipath()).unwrap();
+    let r = resolve_batch(&p, &m, &[q], &legacy_projection_policy()).unwrap();
     assert_eq!(r[0].outcome, Outcome::MultipleGeneProducts);
     assert_eq!(r[0].accepted_ids(), &[4, 5]);
 }
@@ -507,7 +512,7 @@ fn omnipath_requires_unique_chemical_even_when_connectivity_matches() {
     let r = run(
         Kind::Chemical,
         vec![("a", Role::Identity)],
-        Policy::omnipath(),
+        legacy_projection_policy(),
     );
     assert_eq!(r.outcome, Outcome::Ambiguous);
 }
@@ -529,7 +534,37 @@ fn proven_symbol_gene_preserves_explicit_protein_intersection() {
             ("explicit_unreviewed", Role::Identity),
         ],
     );
-    let r = resolve_batch(&p, &m, &[q], &Policy::omnipath()).unwrap();
+    let r = resolve_batch(&p, &m, &[q], &legacy_projection_policy()).unwrap();
     assert_eq!(r[0].outcome, Outcome::Unique);
     assert_eq!(r[0].accepted_ids(), &[5]);
+}
+
+fn legacy_projection_policy() -> Policy {
+    Policy {
+        allow_gene_to_protein: true,
+        allow_entrez_only_fallback: true,
+        allow_gene_to_protein_multiple: true,
+        ..Policy::omnipath()
+    }
+}
+
+#[test]
+fn omnipath_never_asserts_products_from_gene_roles() {
+    let (p, m) = fixture();
+    let qs = [
+        query(Kind::Protein, vec![("gene", Role::GeneToProtein)]),
+        query(
+            Kind::Protein,
+            vec![(
+                "gene",
+                Role::GeneIdentity {
+                    multiple_products: true,
+                },
+            )],
+        ),
+    ];
+    for r in resolve_batch(&p, &m, &qs, &Policy::omnipath()).unwrap() {
+        assert_eq!(r.outcome, Outcome::NotFound);
+        assert!(r.accepted_ids().is_empty());
+    }
 }

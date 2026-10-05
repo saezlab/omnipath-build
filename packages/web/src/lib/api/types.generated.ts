@@ -309,8 +309,10 @@ export interface paths {
          * @description Group matching entities using an explicit grouping strategy.
          *
          *     Counts and member pagination are scoped to the current query and filters.
-         *     Chemical connectivity uses the first 14 InChIKey characters. Other entities
-         *     and compounds with no unambiguous key remain separate singleton results.
+         *     Auto groups chemicals by the first 14 InChIKey characters and biological
+         *     entities by a shared gene reference, in one ordered page. Missing or
+         *     conflicting references remain separate singleton results. Explicit gene
+         *     reference and chemical connectivity strategies remain available.
          */
         post: operations["connectivity_groups_entities_groups_post"];
         delete?: never;
@@ -395,6 +397,23 @@ export interface paths {
          * @description Fetch one entity by its exact entity key. No identifier or text fallback.
          */
         get: operations["get_entity_entities__entity_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/entities/{entity_id}/molecular-context": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Molecular Context */
+        get: operations["molecular_context_entities__entity_id__molecular_context_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1227,9 +1246,9 @@ export interface components {
             /**
              * Strategy
              * @default chemical_connectivity
-             * @constant
+             * @enum {string}
              */
-            strategy: "chemical_connectivity";
+            strategy: "auto" | "chemical_connectivity" | "gene_reference";
         } & {
             [key: string]: unknown;
         };
@@ -1251,6 +1270,24 @@ export interface components {
             source?: string | null;
             /** Type */
             type?: string | null;
+        } & {
+            [key: string]: unknown;
+        };
+        /** EntityMolecularEvidence */
+        EntityMolecularEvidence: {
+            /** Annotations */
+            annotations?: {
+                [key: string]: unknown;
+            }[];
+            /** Dataset */
+            dataset?: string | null;
+            molecular_form?: components["schemas"]["MolecularForm"] | null;
+            /** Row Id */
+            row_id?: string | null;
+            /** Source */
+            source?: string | null;
+            /** Upstream Id */
+            upstream_id?: string | null;
         } & {
             [key: string]: unknown;
         };
@@ -1283,6 +1320,11 @@ export interface components {
         EntitySearchCursor: {
             /** Entitypk */
             entityPk: string;
+            /**
+             * Entitytype
+             * @default
+             */
+            entityType: string;
             /** Identifier */
             identifier: string;
             /** Matchrank */
@@ -1413,6 +1455,8 @@ export interface components {
             entityPk: string;
             /** Entitytype */
             entityType?: string | null;
+            /** Genereferencekeys */
+            geneReferenceKeys?: string[];
             /**
              * Hashierarchy
              * @default false
@@ -1427,6 +1471,8 @@ export interface components {
             identifiersTotal: number;
             /** Label */
             label?: string | null;
+            /** Molecularevidence */
+            molecularEvidence?: components["schemas"]["EntityMolecularEvidence"][];
             /** Ontologyhierarchy */
             ontologyHierarchy?: {
                 [key: string]: unknown;
@@ -1440,6 +1486,8 @@ export interface components {
             primaryIdentifier?: string | null;
             /** Primarynamespace */
             primaryNamespace?: string | null;
+            /** Referenceentitykey */
+            referenceEntityKey?: string | null;
             /**
              * Relationcount
              * @default 0
@@ -1532,6 +1580,12 @@ export interface components {
             query: string;
             /** Resources */
             resources?: string[] | null;
+            /**
+             * Strategy
+             * @default chemical_connectivity
+             * @enum {string}
+             */
+            strategy: "auto" | "chemical_connectivity" | "gene_reference";
         } & {
             [key: string]: unknown;
         };
@@ -1551,6 +1605,77 @@ export interface components {
             status: string;
             /** Timestamp */
             timestamp?: number | null;
+        } & {
+            [key: string]: unknown;
+        };
+        /** MolecularCoordinateReference */
+        MolecularCoordinateReference: {
+            /** Coordinate System */
+            coordinate_system?: string | null;
+            identifier?: components["schemas"]["MolecularIdentifier"] | null;
+            /** Position Base */
+            position_base?: number | null;
+        } & {
+            [key: string]: unknown;
+        };
+        /**
+         * MolecularForm
+         * @description Occurrence context. Missing fields assert neither canonical isoform nor wild type.
+         */
+        MolecularForm: {
+            isoform_identifier?: components["schemas"]["MolecularIdentifier"] | null;
+            /** Modifications */
+            modifications?: components["schemas"]["MolecularModification"][];
+            /** Protein Entity Key */
+            protein_entity_key?: string | null;
+            /** Sequence Identifiers */
+            sequence_identifiers?: components["schemas"]["MolecularIdentifier"][];
+            /** Transcript Entity Key */
+            transcript_entity_key?: string | null;
+            /** Variants */
+            variants?: components["schemas"]["MolecularVariant"][];
+        } & {
+            [key: string]: unknown;
+        };
+        /** MolecularIdentifier */
+        MolecularIdentifier: {
+            /** Id */
+            id: string;
+            /** Ns */
+            ns: string;
+        } & {
+            [key: string]: unknown;
+        };
+        /** MolecularModification */
+        MolecularModification: {
+            coordinate_reference?: components["schemas"]["MolecularCoordinateReference"] | null;
+            /** Description */
+            description?: string | null;
+            /** End Position */
+            end_position?: number | null;
+            /** Position */
+            position?: number | null;
+            /** Residue */
+            residue?: string | null;
+            /** Term */
+            term?: string | null;
+        } & {
+            [key: string]: unknown;
+        };
+        /** MolecularVariant */
+        MolecularVariant: {
+            /** Alternate */
+            alternate?: string | null;
+            coordinate_reference?: components["schemas"]["MolecularCoordinateReference"] | null;
+            /** Description */
+            description?: string | null;
+            /** End Position */
+            end_position?: number | null;
+            identifier?: components["schemas"]["MolecularIdentifier"] | null;
+            /** Position */
+            position?: number | null;
+            /** Reference */
+            reference?: string | null;
         } & {
             [key: string]: unknown;
         };
@@ -1674,9 +1799,7 @@ export interface components {
                 [key: string]: unknown;
             }[];
             /** Evidence */
-            evidence?: {
-                [key: string]: unknown;
-            }[];
+            evidence?: components["schemas"]["RelationMolecularEvidence"][];
         } & {
             [key: string]: unknown;
         };
@@ -1690,6 +1813,41 @@ export interface components {
             };
             /** Sources */
             sources?: string[];
+        } & {
+            [key: string]: unknown;
+        };
+        /** RelationMolecularEvidence */
+        RelationMolecularEvidence: {
+            /** Dataset */
+            dataset?: string | null;
+            /** Evidence */
+            evidence?: {
+                [key: string]: unknown;
+            }[];
+            /** Objectattributes */
+            objectAttributes?: {
+                [key: string]: unknown;
+            }[];
+            objectMolecularForm?: components["schemas"]["MolecularForm"] | null;
+            /** Recordattributes */
+            recordAttributes?: {
+                [key: string]: unknown;
+            }[];
+            /** Relationevidencepk */
+            relationEvidencePk: string;
+            /** Relationpk */
+            relationPk: string;
+            /** Rowid */
+            rowId?: string | null;
+            /** Source */
+            source: string;
+            /** Subjectattributes */
+            subjectAttributes?: {
+                [key: string]: unknown;
+            }[];
+            subjectMolecularForm?: components["schemas"]["MolecularForm"] | null;
+            /** Upstreamid */
+            upstreamId?: string | null;
         } & {
             [key: string]: unknown;
         };
@@ -1763,6 +1921,8 @@ export interface components {
             isDirected: boolean;
             /** Objectentitypk */
             objectEntityPk?: string | null;
+            /** Objectreferenceentitykey */
+            objectReferenceEntityKey?: string | null;
             /** Participanttypes */
             participantTypes?: string[];
             /** Predicate */
@@ -1780,6 +1940,8 @@ export interface components {
             sources?: string[];
             /** Subjectentitypk */
             subjectEntityPk?: string | null;
+            /** Subjectreferenceentitykey */
+            subjectReferenceEntityKey?: string | null;
         } & {
             [key: string]: unknown;
         };
@@ -2026,14 +2188,29 @@ export interface components {
             interaction_types?: string[];
             /** Is Directed */
             is_directed?: boolean | null;
+            /**
+             * Isoform Identifiers
+             * @description Exact namespace:id; unspecified forms do not match.
+             */
+            isoform_identifiers?: string[];
             /** Min Evidence Count */
             min_evidence_count?: number | null;
+            /**
+             * Molecular Endpoint Mode
+             * @default any
+             * @enum {string}
+             */
+            molecular_endpoint_mode: "any" | "both" | "source" | "target";
             /** Object Aspect Qualifier */
             object_aspect_qualifier?: string[];
             /** Object Direction Qualifier */
             object_direction_qualifier?: string[];
             /** Predicates */
             predicates?: string[];
+            /** Protein Entity Keys */
+            protein_entity_keys?: string[];
+            /** Reference Entity Keys */
+            reference_entity_keys?: string[];
             /** Relation Categories */
             relation_categories?: string[];
             /**
@@ -2052,6 +2229,8 @@ export interface components {
             sources?: string[];
             /** Taxonomy Ids */
             taxonomy_ids?: string[];
+            /** Transcript Entity Keys */
+            transcript_entity_keys?: string[];
         } & {
             [key: string]: unknown;
         };
@@ -3096,6 +3275,51 @@ export interface operations {
             };
         };
     };
+    molecular_context_entities__entity_id__molecular_context_get: {
+        parameters: {
+            query?: {
+                view?: "reference" | "product";
+                isoform_identifier?: string | null;
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path: {
+                entity_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     entity_relationships_entities__entity_id__relationships_get: {
         parameters: {
             query?: {
@@ -3824,7 +4048,9 @@ export interface operations {
     };
     relation_evidence_relations__relation_pk__evidence_get: {
         parameters: {
-            query?: never;
+            query?: {
+                filters?: string | null;
+            };
             header?: never;
             path: {
                 relation_pk: string;

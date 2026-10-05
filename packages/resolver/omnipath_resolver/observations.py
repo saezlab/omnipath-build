@@ -1,6 +1,8 @@
 """Stable namespace encoding and normalized observation evidence policy."""
 
 from __future__ import annotations
+
+from omnipath_core.biolink import entity_type as normalize_entity_type
 import os
 from functools import lru_cache
 
@@ -101,7 +103,7 @@ def lipid_fallback_votes(normalized, observed, library):
 
 def observation_bundle(input_id, obs, normalized, observed, library, source="runtime"):
     """Encode normalized evidence for both serving builds and offline replay."""
-    from .canonical.policy import INCHIKEY_RE
+    from .canonical.policy import INCHIKEY_RE, RNA_ENTITY_TYPES
 
     target = 1 if library == "chemical" else 2
     normalized = lipid_fallback_votes(normalized, observed, library)
@@ -138,4 +140,7 @@ def observation_bundle(input_id, obs, normalized, observed, library, source="run
         )
         for j, (ns, value, scope, route, anchor, primary) in enumerate(sorted(bundle))
     ]
+    if target == 2 and normalize_entity_type(obs.entity_type) in RNA_ENTITY_TYPES:
+        for row in rows:
+            row["gene_only"] = True
     return query, rows

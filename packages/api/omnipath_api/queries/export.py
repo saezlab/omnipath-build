@@ -42,7 +42,29 @@ class ExportQueries:
         read_expr = self._read_expr(paths)
 
         where_sql, params = self._resolve_relation_where(filters, resources)
-        sql = f"SELECT * FROM {read_expr} WHERE {where_sql}"
+        from omnipath_api.molecular import columns, form_match_sql, has_form_filters
+        from omnipath_api.models import normalize_filters
+
+        filters = normalize_filters(filters)
+        select = "*"
+        projection_params = []
+        if has_form_filters(filters):
+            match, projection_params = form_match_sql(filters, occurrence="to_json(ev)")
+            select = f"* EXCLUDE(evidence, evidence_count), list_filter(evidence, ev -> {match}) AS evidence"
+        selected = f"SELECT {select} FROM {read_expr} WHERE {where_sql}"
+        params = [*projection_params, *params]
+        entity_paths = self._resolve_entity_paths(resources)
+        if entity_paths and "evidence" in columns(paths):
+            entity_read = self._read_expr(entity_paths)
+            keys = " UNION ALL ".join(
+                f"SELECT json_extract_string(to_json(ev), '$.{side}_molecular_form.{field}') AS entity_key FROM selected, UNNEST(evidence) AS occurrences(ev)"
+                for side in ("subject", "object")
+                for field in ("protein_entity_key", "transcript_entity_key")
+            )
+            count = ", len(evidence) AS evidence_count" if has_form_filters(filters) else ""
+            sql = f"WITH selected AS ({selected}), product_keys AS ({keys}) SELECT selected.*{count}, (SELECT list(e) FROM {entity_read} e WHERE e.entity_key IN (SELECT entity_key FROM product_keys)) AS referenced_product_records FROM selected"
+        else:
+            sql = selected
 
         if format == "parquet":
             with tempfile.NamedTemporaryFile(suffix=".parquet", delete=False) as tmp:

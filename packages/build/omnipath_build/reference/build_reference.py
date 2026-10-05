@@ -16,7 +16,7 @@ import sys
 import time
 from pathlib import Path
 
-VERSION = "anchor-reference-v5"
+VERSION = "gene-product-reference-v6"
 CHEMICAL = (
     "chebi",
     "pubchem",
@@ -71,34 +71,30 @@ def gene_products_query(graph):
         SELECT e.target_id entrez_id,e.source_anchor protein_entity_id,s.taxon,s.reviewed
         FROM {scan(graph / "assessed_edges.parquet")} e
         JOIN {scan(graph / "endpoints.parquet")} s ON s.record_id=e.source_record
+        LEFT JOIN {scan(graph / "endpoints.parquet")} t ON t.record_id=e.target_record
         WHERE e.semantics='gene_product' AND e.source_anchor_count=1
+        AND (t.taxon IS NULL OR t.taxon IN ('','0') OR s.taxon IN ('','0') OR s.taxon=t.taxon)
         UNION
         SELECT s.local_id entrez_id,e.target_anchor protein_entity_id,t.taxon,t.reviewed
         FROM {scan(graph / "assessed_edges.parquet")} e
         JOIN {scan(graph / "endpoints.parquet")} s ON s.record_id=e.source_record
         JOIN {scan(graph / "endpoints.parquet")} t ON t.record_id=e.target_record
-        WHERE s.hub='entrez' AND t.hub='uniprot' AND e.target_anchor_count=1)
+        WHERE s.hub='entrez' AND t.hub='uniprot' AND e.target_anchor_count=1
+        AND (s.taxon IN ('','0') OR t.taxon IN ('','0') OR s.taxon=t.taxon))
         SELECT *, reviewed OR NOT bool_or(reviewed) OVER(PARTITION BY entrez_id) projection_eligible
         FROM products"""
 
 
 def gene_resolution_query(entities, products):
-    """One build-time mapping, used in both lookup and identifier enrichment.
-
-    Keep native memberships and all products for audit; this serving projection
-    never merges protein anchors or duplicates a mapped gene as another target.
-    """
-    return f"""SELECT DISTINCT 'entrez' namespace,p.entrez_id identifier,
-        p.protein_entity_id entity_id,
-        CASE WHEN p.reviewed THEN 'reviewed_gene_product' ELSE 'unreviewed_gene_product' END admission,
-        p.protein_entity_id record_id
-        FROM {scan(products / "gene_products.parquet")} p
-        WHERE p.projection_eligible
-        UNION ALL
-        SELECT DISTINCT i.namespace,i.identifier,i.entity_id,'entrez_only' admission,i.record_id
-        FROM {scan(entities / "identity_identifiers.parquet")} i
-        ANTI JOIN {scan(products / "gene_products.parquet")} p ON p.entrez_id=i.identifier
-        WHERE i.namespace='entrez'"""
+    """Gene identifiers resolve to gene identity, independently of products."""
+    return f"""SELECT DISTINCT 'entrez' namespace,i.identifier,
+        'entrez:' || i.identifier entity_id,'gene_identity' admission,
+        'entrez:' || i.identifier record_id
+        FROM {scan(entities / "identity_identifiers.parquet")} i WHERE i.namespace='entrez'
+        UNION
+        SELECT DISTINCT 'entrez',p.entrez_id,'entrez:' || p.entrez_id,
+        'explicit_gene_product','entrez:' || p.entrez_id
+        FROM {scan(products / "gene_products.parquet")} p"""
 
 
 def worker(job_path):
@@ -423,7 +419,7 @@ class Build:
                     f"""SELECT {quote(name + ":")} || {ident} source_record,
                     source_type target_hub,{value} target_id, source_type || ':' || {value} target_record,
                     {quote(name + ":")} || file_row_number::VARCHAR assertion_id,
-                    CASE WHEN {quote(name)}='uniprot' AND source_type='entrez' THEN 'gene_product' ELSE 'identity_xref' END semantics
+                    CASE WHEN ({quote(name)}='uniprot' AND source_type='entrez') OR ({quote(name)}='entrez' AND source_type='uniprot') THEN 'gene_product' ELSE 'identity_xref' END semantics
                     FROM read_parquet({quote(p)},file_row_number=true)
                     WHERE source_type IN ({",".join(map(quote, native_targets))}) AND source_id IS NOT NULL AND trim(source_id)<>'' AND hub_id IS NOT NULL AND trim(hub_id)<>''
                     AND NOT(source_type={quote(name)} AND {value}={ident})""",
@@ -472,7 +468,7 @@ class Build:
                     out / "assessed_edges.parquet",
                 ),
                 self.copy(
-                    f"SELECT a.vertex::UBIGINT a,b.vertex::UBIGINT b,e.assertion_id FROM {scan(out / 'edges.parquet')} e JOIN {scan(out / 'vertices.parquet')} a ON e.source_record=a.record_id JOIN {scan(out / 'vertices.parquet')} b ON e.target_record=b.record_id",
+                    f"SELECT a.vertex::UBIGINT a,b.vertex::UBIGINT b,e.assertion_id FROM {scan(out / 'edges.parquet')} e JOIN {scan(out / 'vertices.parquet')} a ON e.source_record=a.record_id JOIN {scan(out / 'vertices.parquet')} b ON e.target_record=b.record_id WHERE e.semantics<>'gene_product'",
                     out / "keyless_edges.parquet",
                 ),
             ],
@@ -504,9 +500,9 @@ class Build:
                 ),
                 self.copy(
                     f"""SELECT v.component,e.assertion_id,e.source_record,e.target_record,e.semantics,e.target_anchor boundary_anchor,e.target_anchor_count boundary_claims,e.target_record boundary_record
-                FROM {scan(out / "vertices.parquet")} v JOIN {scan(graph / "assessed_edges.parquet")} e ON v.record_id=e.source_record WHERE e.target_anchor_count>0
+                FROM {scan(out / "vertices.parquet")} v JOIN {scan(graph / "assessed_edges.parquet")} e ON v.record_id=e.source_record WHERE e.target_anchor_count>0 AND e.semantics<>'gene_product'
                 UNION ALL SELECT v.component,e.assertion_id,e.source_record,e.target_record,e.semantics,e.source_anchor,e.source_anchor_count,e.source_record
-                FROM {scan(out / "vertices.parquet")} v JOIN {scan(graph / "assessed_edges.parquet")} e ON v.record_id=e.target_record WHERE e.source_anchor_count>0""",
+                FROM {scan(out / "vertices.parquet")} v JOIN {scan(graph / "assessed_edges.parquet")} e ON v.record_id=e.target_record WHERE e.source_anchor_count>0 AND e.semantics<>'gene_product'""",
                     out / "boundaries.parquet",
                 ),
                 self.copy(
@@ -538,8 +534,8 @@ class Build:
                 "members-" + name,
                 lambda out, p=p: [
                     self.copy(
-                        f"""SELECT r.*,coalesce(a.entity_id,CASE WHEN r.anchor_count=1 THEN r.anchor ELSE r.record_id END) entity_id,
-                coalesce(a.decision,CASE WHEN r.anchor_count=1 THEN 'anchored' ELSE 'multiple_anchor_claims' END) decision,a.component
+                        f"""SELECT r.*,CASE WHEN r.hub='entrez' THEN r.record_id ELSE coalesce(a.entity_id,CASE WHEN r.anchor_count=1 THEN r.anchor ELSE r.record_id END) END entity_id,
+                CASE WHEN r.hub='entrez' THEN 'gene_identity' ELSE coalesce(a.decision,CASE WHEN r.anchor_count=1 THEN 'anchored' ELSE 'multiple_anchor_claims' END) END decision,a.component
                 FROM {scan(p / "records.parquet")} r LEFT JOIN {scan(decisions / "assignments.parquet")} a USING(record_id)""",
                         out / "members.parquet",
                     )
@@ -593,11 +589,12 @@ class Build:
             lambda out: [
                 self.copy(
                     f"""SELECT * FROM {scan(entity_groups / "parts" / "*.parquet")}
+                {f"UNION ALL SELECT 'entrez:' || p.entrez_id entity_id,'gene' kind,NULL::VARCHAR primary_anchor,min(p.taxon) taxon,false quarantined FROM ({gene_products_query(graph)}) p ANTI JOIN {scan(entity_groups / 'parts' / '*.parquet')} e ON e.entity_id='entrez:' || p.entrez_id GROUP BY p.entrez_id" if domain == "gene_protein" else ""}
                 UNION ALL SELECT DISTINCT anchor entity_id,'chemical' kind,anchor primary_anchor,NULL taxon,false quarantined FROM ({multi_union}) x ANTI JOIN ({member_union}) m ON m.entity_id=x.anchor""",
                     out / "entities.parquet",
                 ),
                 self.copy(
-                    f"SELECT hub namespace,local_id identifier,entity_id,record_id FROM ({member_union}) UNION ALL SELECT 'inchikey',substr(entity_id,10),entity_id,NULL FROM {scan(out / 'entities.parquet')} WHERE starts_with(entity_id,'inchikey:'){goslin_aliases}",
+                    f"SELECT hub namespace,local_id identifier,entity_id,record_id FROM ({member_union}) UNION ALL SELECT 'inchikey',substr(entity_id,10),entity_id,NULL FROM {scan(out / 'entities.parquet')} WHERE starts_with(entity_id,'inchikey:') UNION ALL SELECT 'entrez',substr(entity_id,8),entity_id,entity_id FROM {scan(out / 'entities.parquet')} WHERE starts_with(entity_id,'entrez:'){goslin_aliases}",
                     out / "identity_identifiers.parquet",
                 ),
                 self.copy(
@@ -694,9 +691,8 @@ class Build:
                 lambda out: [
                     "CREATE TABLE source_keys AS " + source_keys,
                     f"CREATE TABLE candidates AS SELECT DISTINCT k.namespace,k.identifier,i.entity_id,k.taxon FROM source_keys k JOIN {scan(self.out / 'claims-uniprot' / 'identifier_claims.parquet')} i ON k.source_value=i.identifier AND (k.ns=i.namespace OR (k.ns='uniprot' AND i.namespace='uniprot-sec')) WHERE k.ns<>'entrez' UNION SELECT DISTINCT k.namespace,k.identifier,i.entity_id,k.taxon FROM source_keys k JOIN {scan(self.out / 'gene-resolution' / 'entrez_identifiers.parquet')} i ON k.source_value=i.identifier WHERE k.ns='entrez'",
-                    f"CREATE TABLE proteins AS SELECT DISTINCT r.anchor,r.taxon,r.reviewed FROM {scan(self.out / 'records-uniprot' / 'records.parquet')} r SEMI JOIN candidates c ON r.anchor=c.entity_id WHERE r.anchor_count=1",
                     self.copy(
-                        "WITH matches AS (SELECT DISTINCT c.namespace,c.identifier,c.entity_id,p.reviewed FROM candidates c JOIN proteins p ON c.entity_id=p.anchor WHERE c.taxon IN ('','0') OR c.taxon=p.taxon), preferred AS (SELECT *,bool_or(reviewed) OVER(PARTITION BY namespace,identifier) has_reviewed FROM matches) SELECT namespace,identifier,entity_id,CASE WHEN reviewed THEN 'reviewed_source_gene_product' ELSE 'unreviewed_source_gene_product' END admission,namespace || ':' || identifier record_id FROM preferred WHERE reviewed OR NOT has_reviewed",
+                        f"SELECT DISTINCT c.namespace,c.identifier,CASE WHEN starts_with(c.entity_id,'entrez:') THEN c.entity_id ELSE 'entrez:' || p.entrez_id END entity_id,'explicit_source_gene' admission,c.namespace || ':' || c.identifier record_id FROM candidates c LEFT JOIN {scan(self.out / 'gene-products' / 'gene_products.parquet')} p ON c.entity_id=p.protein_entity_id WHERE starts_with(c.entity_id,'entrez:') OR (p.entrez_id IS NOT NULL AND (c.taxon IN ('','0') OR c.taxon=p.taxon))",
                         out / "protein_identifiers.parquet",
                     ),
                     self.copy(
@@ -736,7 +732,7 @@ class Build:
             "outputs": outputs,
             "stages": self.completed,
             "attributes": "Retained in immutable input hub assertions; locate by hub and assertion row number.",
-            "gene_resolution_policy": "Entrez projects to all reviewed primary UniProts when present, otherwise all unreviewed products; native Entrez identity is used only when no protein product exists. See gene-resolution/entrez_identifiers.parquet; memberships and all gene-product evidence remain unchanged.",
+            "gene_resolution_policy": "NCBI Gene identity is independent of primary UniProt product identity; explicit gene-product links never expand gene observations onto proteins.",
             "identity_policy": "Full anchors equal; anchorless components see all boundary anchors; differing anchors never merge. Ambiguous components retain native record identities.",
         }
         temp = self.out / "manifest.json.tmp"
@@ -752,6 +748,10 @@ def derive_gene_resolution(args):
     manifest = json.loads((source / "manifest.json").read_text())
     if manifest.get("status") != "complete":
         raise RuntimeError("Parent reference is not complete")
+    if manifest.get("version") != VERSION:
+        raise RuntimeError(
+            "Gene-product identity requires a fresh reference build; legacy identity components cannot be derived safely"
+        )
     out.mkdir(parents=True, exist_ok=False)
     for child in source.iterdir():
         if child.is_dir() and child.name not in ("gene-resolution", "gene-products"):
@@ -764,7 +764,7 @@ def derive_gene_resolution(args):
     identity = dict(
         parent_fingerprint=manifest["fingerprint"],
         script_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
-        policy="reviewed-first-entrez-v1",
+        policy="gene-product-identity-v2",
     )
     job = dict(
         name="gene-resolution",
@@ -784,7 +784,7 @@ def derive_gene_resolution(args):
         fingerprint=digest(identity),
         parent_reference=str(source),
         derivation=identity,
-        gene_resolution_policy="All reviewed primary UniProts, else all unreviewed products, else native Entrez-only identity.",
+        gene_resolution_policy="Gene identity independent of products; no gene-to-protein observation projection.",
     )
     manifest["stages"] = [s for s in manifest["stages"] if s != "gene-resolution"] + [
         "gene-resolution"

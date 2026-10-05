@@ -23,7 +23,7 @@ import pyarrow.parquet as pq
 from omnipath_api.store.inventory import ReleaseStore, InventorySnapshot
 from omnipath_api.store.query_cache import QueryCache
 from omnipath_api.store.query_pool import QueryPool
-from omnipath_api.store.connection import format_read_parquet, get_connection
+from omnipath_api.store.connection import get_connection
 
 
 from omnipath_api.queries.resources import ResourcesQueries
@@ -57,7 +57,7 @@ class ParquetServingEngine(
     _ENTITY_KEY_RE = re.compile(r"^[0-9a-fA-F]{64}$")
     _ENTITY_SCALAR_COLS = (
         "entity_key, entity_type, namespace, identifier, taxon, label, "
-        "has_hierarchy, parent_count, child_count"
+        "has_hierarchy, parent_count, child_count, reference_entity_key, gene_reference_keys"
     )
 
     def __init__(
@@ -432,7 +432,9 @@ class ParquetServingEngine(
 
     @staticmethod
     def _read_expr(paths: list[str]) -> str:
-        return format_read_parquet(paths, union_by_name=True)
+        from omnipath_api.molecular import read
+
+        return read(paths, union_by_name=True)
 
     @staticmethod
     def _jsonify(value: Any) -> Any:

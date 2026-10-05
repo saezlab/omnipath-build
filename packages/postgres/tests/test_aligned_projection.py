@@ -579,6 +579,7 @@ def test_dimension_collection_fetches_only_distinct_names_and_preserves_existing
 
 def test_companion_ddl_quotes_schema_and_contains_no_full_record_json():
     ddl = companion_ddl('schema"quoted', retain_published_provenance=True)
-    assert len(ddl) == 6
+    assert len(ddl) == 9
     assert all('"schema""quoted"' in statement for statement in ddl)
-    assert not any("record_json" in statement or "jsonb" in statement for statement in ddl)
+    assert not any("record_json" in statement for statement in ddl)
+    assert sum("jsonb" in statement for statement in ddl) == 2

@@ -36,6 +36,8 @@ export type Entity = Partial<
   RequiredValues<WireEntity, 'canonicalIdentifier' | 'canonicalIdentifierType' | 'sources'> & {
     displayName?: string;
     identifiersNextCursor?: string | null;
+    groupStrategy?: 'chemical_connectivity' | 'gene_reference';
+    memberEntityTypes?: string[];
     groupMemberKeys?: string[];
     groupMemberCount?: number;
     groupResources?: string[];

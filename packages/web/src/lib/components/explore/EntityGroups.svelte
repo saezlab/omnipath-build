@@ -20,7 +20,7 @@
     query,
     filters,
     renderMember,
-    strategy = 'chemical_connectivity',
+    strategy = 'auto',
   }: {
     strategy?: string;
     query: string;

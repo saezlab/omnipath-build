@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import Any, List, NamedTuple
 from biolink_model.datamodel.model import QuantityValue
 from .measurements import Measurement
+from .molecular_forms import MolecularForm, MOLECULAR_FORM_STRUCT
 import pyarrow as pa
 
 __all__ = [
@@ -96,6 +97,7 @@ class EntityRef(NamedTuple):
     type: str
     identifier_type: str
     identifier: str
+    molecular_form: MolecularForm | dict | None = None
 
     def __repr__(self) -> str:
         type_name = _format_term(self.type)
@@ -163,6 +165,7 @@ class Entity(NamedTuple):
     membership: List[Membership] | None = None
     ontology_relations: List[OntologyRelation] | None = None
     associations: List[Association] | None = None
+    molecular_form: MolecularForm | dict | None = None
 
     def __repr__(self) -> str:
         return self.pretty()
@@ -319,6 +322,7 @@ ENTITY_REF_FIELDS = [
     pa.field("type", pa.string()),
     pa.field("identifier_type", pa.string()),
     pa.field("identifier", pa.string()),
+    pa.field("molecular_form", MOLECULAR_FORM_STRUCT),
 ]
 
 ONTOLOGY_RELATION_FIELDS = [
@@ -338,6 +342,7 @@ BASE_ENTITY_FIELDS = [
     pa.field("annotations", pa.list_(pa.struct(ANNOTATION_FIELDS))),
     pa.field("ontology_relations", pa.list_(pa.struct(ONTOLOGY_RELATION_FIELDS))),
     pa.field("associations", pa.list_(pa.struct(ASSOCIATION_FIELDS))),
+    pa.field("molecular_form", MOLECULAR_FORM_STRUCT),
 ]
 
 BASE_MEMBERSHIP_FIELDS = [
@@ -368,6 +373,7 @@ ENTITY_FIELDS = [
     pa.field("membership", pa.list_(pa.struct(MEMBERSHIP_FIELDS))),
     pa.field("ontology_relations", pa.list_(pa.struct(ONTOLOGY_RELATION_FIELDS))),
     pa.field("associations", pa.list_(pa.struct(ASSOCIATION_FIELDS))),
+    pa.field("molecular_form", MOLECULAR_FORM_STRUCT),
 ]
 
 ENTITY_SCHEMA = pa.schema(ENTITY_FIELDS)

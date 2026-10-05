@@ -21,6 +21,8 @@ def shape_relation_summary(row: dict[str, Any]) -> dict[str, Any]:
     return {
         "relationPk": str(row.get("relation_key") or ""),
         "subjectEntityPk": str(row.get("subject_entity_key") or ""),
+        "subjectReferenceEntityKey": row.get("subject_reference_entity_key"),
+        "objectReferenceEntityKey": row.get("object_reference_entity_key"),
         "predicate": str(row.get("predicate") or ""),
         "displayLabel": interaction_label(str(row.get("predicate") or ""), row.get("annotations")),
         "objectEntityPk": str(row.get("object_entity_key") or ""),

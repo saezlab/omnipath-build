@@ -135,8 +135,13 @@ def test_ambiguous_symbols_resolve_independently_of_batch(tmp_path):
         source.append((taxon, {"subject": subject, "predicate": "affects", "object": entity("P2")}))
     expected = run_rows(tmp_path / "all", source, 2, library)
     assert run_rows(tmp_path / "split", source[::-1], 1, library) == expected
-    assert {e["identifier"] for e in expected[0]} == {"P04637", "P02340", "P2"}
-    # Authoritative gene evidence prefers the reviewed human product.
+    assert {e["identifier"] for e in expected[0]} == {"7157", "22059", "P2"}
+    assert all(e["entity_type"] == "protein" for e in expected[0])
+    assert {(e["identifier"], e["taxon"]) for e in expected[0] if e["namespace"] == "entrez"} == {
+        ("7157", "9606"),
+        ("22059", "10090"),
+    }
+    assert all(r["evidence"][0]["subject_molecular_form"] is None for r in expected[1])
 
 
 def test_nested_membership_keeps_occurrences_and_payload_links(tmp_path):
@@ -320,5 +325,28 @@ def test_gene_and_protein_identity_for_same_node(tmp_path):
     expected = run_rows(tmp_path / "baseline", source, 1, library)
     assert run_rows(tmp_path / "new", source[::-1], 2, library) == expected
     assert {(e["entity_type"], e["namespace"], e["identifier"]) for e in expected[0]} == {
-        ("protein", "uniprot", "P04637")
+        ("gene", "entrez", "7157"),
+        ("protein", "entrez", "7157"),
+        ("protein", "uniprot", "P04637"),
     }
+    entities, relations, payloads = expected
+    assert {e["reference_entity_key"] for e in entities} == {"entrez:7157"}
+    assert all(e["gene_reference_keys"] == ["entrez:7157"] for e in entities)
+    by_key = {e["entity_key"]: e for e in entities}
+    relation = relations[0]
+    assert relation["subject_type"] == "gene" and relation["object_type"] == "protein"
+    assert relation["subject_entity_key"] != relation["object_entity_key"]
+    assert relation["evidence"][0]["subject_molecular_form"] is None
+    product = relation["evidence"][0]["object_molecular_form"]["protein_entity_key"]
+    assert by_key[product]["identifier"] == "P04637"
+    gene = next(e for e in entities if e["entity_type"] == "gene")
+    assert gene["evidence"][0]["molecular_form"] is None
+    protein = by_key[relation["object_entity_key"]]
+    assert protein["evidence"][0]["molecular_form"]["protein_entity_key"] == product
+    assert len(payloads) == 3
+    assert all(
+        p["relation_key"] == relation["relation_key"]
+        if p["relation_key"]
+        else p["entity_key"] in by_key
+        for p in payloads
+    )

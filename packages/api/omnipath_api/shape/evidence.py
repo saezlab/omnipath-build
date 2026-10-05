@@ -29,4 +29,7 @@ def shape_evidence_item(item: dict[str, Any]) -> dict[str, Any]:
         "rowId": str(item.get("row_id") or ""),
         "upstreamId": str(item.get("upstream_id") or ""),
         "annotations": annotations,
+        "subjectMolecularForm": item.get("subject_molecular_form"),
+        "objectMolecularForm": item.get("object_molecular_form"),
+        "molecularForm": item.get("molecular_form"),
     }

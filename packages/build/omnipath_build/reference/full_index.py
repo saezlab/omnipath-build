@@ -189,7 +189,7 @@ class Compiler:
                         c.execute("CREATE TEMP TABLE ensembl(entity_id VARCHAR,ensg_ids VARCHAR[])")
                     metadata = self.output / "metadata" / f"{domain}-{part}.parquet"
                     c.execute(
-                        f"COPY (SELECT e.*,COALESCE(g.gene_ids,[]::VARCHAR[]) gene_ids,COALESCE(s.ensg_ids,[]::VARCHAR[]) ensg_ids FROM entities e LEFT JOIN genes g USING(entity_id) LEFT JOIN ensembl s USING(entity_id)) TO {quote(metadata)} (FORMAT PARQUET,COMPRESSION ZSTD)"
+                        f"COPY (SELECT e.*,CASE WHEN starts_with(e.entity_id,'entrez:') THEN [substr(e.entity_id,8)] ELSE COALESCE(g.gene_ids,[]::VARCHAR[]) END gene_ids,COALESCE(s.ensg_ids,[]::VARCHAR[]) ensg_ids FROM entities e LEFT JOIN genes g USING(entity_id) LEFT JOIN ensembl s USING(entity_id)) TO {quote(metadata)} (FORMAT PARQUET,COMPRESSION ZSTD)"
                     )
                     priority = (
                         "CASE namespace WHEN 'name' THEN 0 WHEN 'chebi' THEN 1 WHEN 'pubchem' THEN 2 ELSE 9 END"
@@ -219,10 +219,10 @@ class Compiler:
                                 WHEN 'chebi' THEN CASE WHEN starts_with(upper(g.preferred.val),'CHEBI') THEN g.preferred.val ELSE 'CHEBI:'||g.preferred.val END
                                 WHEN 'pubchem' THEN 'CID:'||g.preferred.val ELSE g.preferred.val END,
                                 substr(e.entity_id,strpos(e.entity_id,':')+1)),
-                            identifiers:=COALESCE(g.identifiers,[]::VARCHAR[][])),
+                            identifiers:=COALESCE(g.identifiers,[]::VARCHAR[][]),gene_ids:=COALESCE(links.gene_ids,[]::VARCHAR[])),
                         meta:=struct_pack(id:=e.id,entity_id:=e.entity_id,kind:=e.kind,anchor:=e.anchor,
                             quarantined:=e.quarantined,reviewed:=e.reviewed)))) AS v
-                        FROM entities e LEFT JOIN grouped g USING(entity_id) ORDER BY e.entity_id"""
+                        FROM entities e LEFT JOIN grouped g USING(entity_id) LEFT JOIN genes links USING(entity_id) ORDER BY e.entity_id"""
                     count = 0
                     reader = c.execute(query).to_arrow_reader(batch_size=16384)
                     for batch in reader:

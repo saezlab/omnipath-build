@@ -1,4 +1,5 @@
 <script lang="ts">
+  import MolecularForm from '$lib/components/entity/MolecularForm.svelte';
   import EntityBadge from '$lib/components/entity/EntityBadge.svelte';
   import EntityDetailsDialog from '$lib/components/entity/EntityDetailsDialog.svelte';
   import type { EntityLike } from '$lib/domain/display';
@@ -18,13 +19,21 @@
   import { measurementPresentation } from '$lib/utils/measurements';
   import { groupPublications, isPublicationTerm } from '$lib/utils/publications';
   import { annotationLabel, safeSourceUrl } from '$lib/utils/annotation-presentation';
+  import { observationSummary, type ProductSummary } from '$lib/utils/molecular-presentation';
 
   interface Props {
     selectedInteraction: InteractionDetailsData | InteractionListRow | null;
     evidenceLoading?: boolean;
+    products?: readonly ProductSummary[];
+    onSelectProduct?: (key: string) => void;
   }
 
-  let { selectedInteraction, evidenceLoading = false }: Props = $props();
+  let {
+    selectedInteraction,
+    evidenceLoading = false,
+    products = [],
+    onSelectProduct,
+  }: Props = $props();
 
   let entityDetailsOpen = $state(false);
   let detailsEntity = $state<EntityLike | null>(null);
@@ -192,6 +201,8 @@
       return {
         key: `${row.source || 'unknown'}-${index}`,
         source: row.source,
+        subjectMolecularForm: row.subjectMolecularForm,
+        objectMolecularForm: row.objectMolecularForm,
         pubmedIds: Array.from(
           new Set([
             ...subjectSplit.pubmedIds,
@@ -214,6 +225,21 @@
   const evidenceRows = $derived(buildEvidenceRows(evidence));
   const subjectEntity = $derived(selectedInteraction?.subjectEntity);
   const objectEntity = $derived(selectedInteraction?.objectEntity);
+  const loadedSummary = $derived(
+    selectedInteraction
+      ? observationSummary(
+          selectedInteraction.relation,
+          !evidenceLoading && 'evidence' in selectedInteraction
+            ? selectedInteraction.evidence
+            : undefined,
+        )
+      : undefined,
+  );
+  const knownProducts = $derived([
+    ...products,
+    ...(subjectEntity ? [subjectEntity] : []),
+    ...(objectEntity ? [objectEntity] : []),
+  ]);
 </script>
 
 {#snippet annotationRows(title: string, annotations: ParsedAnnotation[])}
@@ -302,13 +328,13 @@
         <div>
           <dt class="text-xs text-muted-foreground">Source observations</dt>
           <dd class="mt-1 tabular-nums">
-            {selectedInteraction.relation.evidenceCount.toLocaleString()}
+            {loadedSummary?.evidenceCount.toLocaleString()}
           </dd>
         </div>
         <div>
           <dt class="text-xs text-muted-foreground">Sources</dt>
           <dd class="mt-1 break-words">
-            {selectedInteraction.relation.sources.join(', ') || 'Unknown'}
+            {loadedSummary?.sources.join(', ') || 'Unknown'}
           </dd>
         </div>
         <div>
@@ -334,6 +360,24 @@
                 >Observation {index + 1} of {evidenceRows.length}</span
               >
             </header>
+            <div class="grid gap-4 sm:grid-cols-2">
+              <section>
+                <h4 class="mb-2 text-sm font-medium">Subject molecular form</h4>
+                <MolecularForm
+                  form={row.subjectMolecularForm}
+                  products={knownProducts}
+                  {onSelectProduct}
+                />
+              </section>
+              <section>
+                <h4 class="mb-2 text-sm font-medium">Object molecular form</h4>
+                <MolecularForm
+                  form={row.objectMolecularForm}
+                  products={knownProducts}
+                  {onSelectProduct}
+                />
+              </section>
+            </div>
             {@render annotationRows('Relation measurements and context', row.relationAnnotations)}
             {#if row.subjectAnnotations.length || row.objectAnnotations.length}
               <div class="space-y-5">

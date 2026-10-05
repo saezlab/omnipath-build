@@ -23,3 +23,5 @@ class RawEntityObservation:
     annotations: list[dict[str, Any]] = field(default_factory=list)
     identity_scope: str | None = None
     structure_derivations: list[dict[str, Any]] = field(default_factory=list)
+    molecular_form: dict[str, Any] | None = None
+    evidence: list[dict[str, Any]] = field(default_factory=list)

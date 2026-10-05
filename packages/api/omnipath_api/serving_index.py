@@ -15,14 +15,15 @@ import shutil
 import tempfile
 import time
 
-from omnipath_api.store.connection import format_read_parquet, get_connection
+from omnipath_api.store.connection import get_connection
+from omnipath_api.molecular import read, columns, occurrences_expression
 
-VERSION = "v1"
-ENTITY_COLUMNS = "entity_key, entity_type, namespace, identifier, taxon, label, has_hierarchy, parent_count, child_count"
+VERSION = "v2"
+ENTITY_COLUMNS = "entity_key, entity_type, namespace, identifier, taxon, label, has_hierarchy, parent_count, child_count, reference_entity_key, gene_reference_keys"
 RELATION_COLUMNS = (
     "relation_key, subject_entity_key, subject_label, subject_type, predicate, "
     "object_entity_key, object_label, object_type, taxon, is_directed, sign, "
-    "category, interaction_class, sources, evidence_count"
+    "category, interaction_class, sources, evidence_count, subject_reference_entity_key, object_reference_entity_key"
 )
 TERMS = ("object_aspect_qualifier", "object_direction_qualifier", "causal_mechanism_qualifier")
 
@@ -94,7 +95,7 @@ def build_indexes(engine, *, threads=4, memory_limit="2GB", min_free_disk=20 * 1
                 build(
                     "entities",
                     [entities],
-                    f"SELECT {ENTITY_COLUMNS} FROM {format_read_parquet([entities])} ORDER BY label, entity_key",
+                    f"SELECT {ENTITY_COLUMNS} FROM {read([entities])} ORDER BY label, entity_key",
                 )
                 terms = ",".join("'" + term + "'" for term in TERMS)
                 # Preserve exactly one row per source relation, including rows with
@@ -103,9 +104,10 @@ def build_indexes(engine, *, threads=4, memory_limit="2GB", min_free_disk=20 * 1
                     "relations",
                     [relations],
                     f"""SELECT {RELATION_COLUMNS},
+                    list_transform({occurrences_expression(columns([relations]))}, e -> json_object('subject_molecular_form', json_object('protein_entity_key', json_extract_string(e, '$.subject_molecular_form.protein_entity_key'), 'transcript_entity_key', json_extract_string(e, '$.subject_molecular_form.transcript_entity_key'), 'isoform_identifier', json_extract(e, '$.subject_molecular_form.isoform_identifier')), 'object_molecular_form', json_object('protein_entity_key', json_extract_string(e, '$.object_molecular_form.protein_entity_key'), 'transcript_entity_key', json_extract_string(e, '$.object_molecular_form.transcript_entity_key'), 'isoform_identifier', json_extract(e, '$.object_molecular_form.isoform_identifier')))) AS molecular_occurrences,
                     list_distinct(list_transform(list_filter(annotations, a -> a.scope='relation' AND a.term IN ({terms})),
                         a -> struct_pack(term := a.term, value := a.value, scope := a.scope))) AS annotations
-                    FROM {format_read_parquet([relations])}""",
+                    FROM {read([relations])}""",
                 )
         finally:
             db.close()

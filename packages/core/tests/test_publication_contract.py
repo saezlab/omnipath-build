@@ -19,7 +19,7 @@ from omnipath_core import (
 def publication():
     return {
         "schema_version": 1,
-        "serving_schema_version": 3,
+        "serving_schema_version": SERVING_SCHEMA_VERSION,
         "resource": "signor",
         "version": "2.7",
         "created_at": "2026-10-03T00:00:00+00:00",
@@ -35,7 +35,7 @@ def test_public_models_round_trip_current_filename_keyed_manifest():
     parsed = validate_build_manifest(data)
     assert isinstance(parsed, BuildManifest)
     assert parsed.schema_version == BUILD_SCHEMA_VERSION == 1
-    assert parsed.serving_schema_version == SERVING_SCHEMA_VERSION == 3
+    assert parsed.serving_schema_version == SERVING_SCHEMA_VERSION == 4
     assert parsed.files["entities.parquet"] == ManifestFile(size_bytes=123, rows=0, sha256="a" * 64)
     assert parsed.to_dict() == data
     assert BuildManifest.from_dict(data, strict_fields=True) == parsed

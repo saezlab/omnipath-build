@@ -192,15 +192,15 @@ impl Policy {
     pub fn omnipath() -> Self {
         Self {
             allow_same_connectivity_multiple: false,
-            allow_gene_to_protein: true,
-            allow_entrez_only_fallback: true,
-            allow_gene_to_protein_multiple: true,
+            allow_gene_to_protein: false,
+            allow_entrez_only_fallback: false,
+            allow_gene_to_protein_multiple: false,
             ..Self::default()
         }
     }
     fn enabled(&self, role: &Role) -> bool {
         match role {
-            Role::GeneToProtein => self.allow_gene_to_protein,
+            Role::GeneToProtein | Role::GeneIdentity { .. } => self.allow_gene_to_protein,
             Role::Connectivity => self.allow_connectivity_queries,
             _ => true,
         }

@@ -50,12 +50,27 @@ def resolve_complexes(db, payload_path, metrics):
         return
     # Dataset-row definitions keep contradictory complete compositions apart.
     rows = db.execute("""SELECT r.subject_entity_key, r.source, r.dataset, r.row_id,
-            r.object_entity_key, r.event_id
+            r.object_entity_key, r.event_id, r.object_molecular_form
         FROM relations r JOIN (SELECT DISTINCT entity_key FROM entities
             WHERE entity_type='macromolecular_complex') c ON c.entity_key=r.subject_entity_key
         WHERE r.predicate IN ('has_member', 'has_part') AND contains(r.upstream_id, ':member:')""").fetchall()
     groups, events = defaultdict(set), defaultdict(set)
-    for parent, source, dataset, row, member, event in rows:
+    for parent, source, dataset, row, member, event, form in rows:
+        # Gene grouping must not make complexes containing different products
+        # or explicitly different member forms identical. This describes the
+        # observed complex; it does not create reusable state-combination nodes.
+        if form:
+            product = form.get("protein_entity_key") or form.get("transcript_entity_key")
+            details = {
+                key: value
+                for key, value in form.items()
+                if key not in {"protein_entity_key", "transcript_entity_key"} and value is not None
+            }
+            member = (
+                stable_hash("molecular-member", product or member, details)
+                if details
+                else (product or member)
+            )
         groups[parent, source, dataset, row].add(member)
         events[parent, event].add(member)
     definitions = defaultdict(list)
@@ -87,9 +102,10 @@ def resolve_complexes(db, payload_path, metrics):
             ELSE sha256(new_s || chr(0) || predicate || chr(0) || new_o || chr(0) ||
                 CASE WHEN qualified='()' THEN '' ELSE qualified || chr(0) END) END AS new_key
         FROM endpoints""")
-    db.execute("""UPDATE entities SET entity_key=m.new_key, namespace='complex', identifier=m.identifier
+    db.execute("""UPDATE entities SET entity_key=m.new_key, namespace='complex', identifier=m.identifier,
+        reference_entity_key='complex:' || m.identifier
         FROM complex_identity_map m WHERE entities.entity_key=m.old_key""")
-    for table in ("identifiers", "entity_annotations", "refs"):
+    for table in ("identifiers", "entity_annotations", "entity_evidence", "refs"):
         db.execute(
             f"UPDATE {table} SET entity_key=m.new_key FROM complex_identity_map m WHERE {table}.entity_key=m.old_key"
         )
@@ -99,8 +115,16 @@ def resolve_complexes(db, payload_path, metrics):
     db.execute(
         "INSERT INTO identifiers SELECT DISTINCT new_key, 'complex', identifier, 'canonical', true FROM complex_identity_map"
     )
-    db.execute("""UPDATE relations SET relation_key=m.new_key, subject_entity_key=m.new_s, object_entity_key=m.new_o
+    db.execute("""UPDATE relations SET relation_key=m.new_key, subject_entity_key=m.new_s, object_entity_key=m.new_o,
+        subject_molecular_form=CASE WHEN m.flipped THEN object_molecular_form ELSE subject_molecular_form END,
+        object_molecular_form=CASE WHEN m.flipped THEN subject_molecular_form ELSE object_molecular_form END,
+        subject_reference_entity_key=CASE WHEN m.flipped THEN object_reference_entity_key ELSE subject_reference_entity_key END,
+        object_reference_entity_key=CASE WHEN m.flipped THEN subject_reference_entity_key ELSE object_reference_entity_key END
         FROM complex_relation_map m WHERE relations.relation_key=m.old_key""")
+    db.execute("""UPDATE relations SET subject_reference_entity_key='complex:' || m.identifier
+        FROM complex_identity_map m WHERE relations.subject_entity_key=m.new_key""")
+    db.execute("""UPDATE relations SET object_reference_entity_key='complex:' || m.identifier
+        FROM complex_identity_map m WHERE relations.object_entity_key=m.new_key""")
     db.execute("""UPDATE relation_annotations SET relation_key=m.new_key,
         scope=CASE WHEN m.flipped THEN CASE scope WHEN 'subject' THEN 'object' WHEN 'object' THEN 'subject' ELSE scope END ELSE scope END
         FROM complex_relation_map m WHERE relation_annotations.relation_key=m.old_key""")

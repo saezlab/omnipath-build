@@ -6,7 +6,8 @@ PostgreSQL schema, transactions, partitions and COPY.  Only the small dimension
 dictionaries cross the Python boundary; biological rows stay in DuckDB SQL.
 
 Main's canonical relation is an endpoint/predicate triple.  Published qualified
-statements retain their evidence links. Exact published crosswalks and array
+statements retain their evidence links. Molecular references and occurrence
+context are required PostgreSQL companions. Other published crosswalks and array
 occurrences remain in pinned Parquets, with optional PostgreSQL audit copies.
 Entity occurrences absent from the published contract are explicitly represented
 as aggregate evidence, with status ``published`` rather than an invented match.
@@ -92,6 +93,20 @@ class AlignedCopyPlan:
 # These are additive provenance/quantity tables, not replacement main tables.
 # DDL takes a quoted schema token supplied by the loader, not user input.
 COMPANION_DDL = {
+    "entity_reference_context": """resource text NOT NULL, version text NOT NULL,
+        entity_key text NOT NULL, entity_id uuid NOT NULL,
+        reference_entity_key text, gene_reference_keys jsonb,
+        PRIMARY KEY(resource, version, entity_key)""",
+    "statement_reference_context": """resource text NOT NULL, version text NOT NULL,
+        relation_key text NOT NULL, subject_reference_entity_key text,
+        object_reference_entity_key text,
+        PRIMARY KEY(resource, version, relation_key)""",
+    "molecular_evidence_context": """resource text NOT NULL, version text NOT NULL,
+        owner_kind text NOT NULL CHECK(owner_kind IN ('entity','relation')),
+        owner_key text NOT NULL, ordinal bigint NOT NULL CHECK(ordinal >= 0),
+        relation_evidence_id uuid, source text, dataset text, row_id text,
+        upstream_id text, occurrence_json jsonb NOT NULL,
+        PRIMARY KEY(resource, version, owner_kind, owner_key, ordinal)""",
     "parquet_entity": """resource text NOT NULL, version text NOT NULL,
         entity_key text NOT NULL, entity_id uuid NOT NULL,
         entity_evidence_id uuid NOT NULL, label text, namespace text,
@@ -135,7 +150,7 @@ def companion_ddl(
     *,
     retain_published_provenance: bool = False,
 ) -> tuple[str, ...]:
-    """Create required quantity metadata and explicitly requested audit copies."""
+    """Create required molecular/quantity context and requested audit copies."""
     if type(retain_published_provenance) is not bool:
         raise ValueError("retain_published_provenance must be a boolean")
     if not isinstance(schema, str) or not schema or "\x00" in schema:
@@ -998,6 +1013,35 @@ def _queries(*, retain_published_provenance: bool = False) -> tuple[CopyQuery, .
         NULL::VARCHAR AS ontology_id,NULL::VARCHAR AS synonyms,NULL::VARCHAR AS synonyms_text,
         NULL::VARCHAR AS sources WHERE false""",
     )
+    # Reference keys are published identities, including virtual gene anchors.
+    # No resolution, target-row requirement, or state interpretation belongs here.
+    add(
+        "entity_reference_context",
+        "resource version entity_key entity_id reference_entity_key gene_reference_keys",
+        """SELECT resource,version,entity_key,entity_id,reference_entity_key,
+        CASE WHEN gene_reference_keys IS NULL THEN NULL ELSE to_json(gene_reference_keys)::VARCHAR END
+        FROM ap_entity_occurrence""",
+    )
+    add(
+        "statement_reference_context",
+        "resource version relation_key subject_reference_entity_key object_reference_entity_key",
+        """SELECT resource,version,relation_key,subject_reference_entity_key,
+        object_reference_entity_key FROM ap_statement_raw""",
+    )
+    add(
+        "molecular_evidence_context",
+        "resource version owner_kind owner_key ordinal relation_evidence_id "
+        "source dataset row_id upstream_id occurrence_json",
+        """SELECT r.resource,r.version,'relation',r.relation_key,r.ordinal,
+        e.relation_evidence_id,r.item.source,r.item.dataset,r.item.row_id,r.item.upstream_id,
+        to_json(r.item)::VARCHAR FROM ap_evidence_raw r
+        JOIN ap_evidence e USING(resource,version,relation_key,ordinal)
+        UNION ALL
+        SELECT resource,version,'entity',entity_key,ordinal,NULL::UUID,
+        item.source,item.dataset,item.row_id,item.upstream_id,to_json(item)::VARCHAR
+        FROM (SELECT resource,version,entity_key,unnest(evidence) item,
+              (generate_subscripts(evidence,1)-1)::BIGINT ordinal FROM ap_entity_raw)""",
+    )
     if retain_published_provenance:
         add(
             "parquet_entity",
@@ -1067,8 +1111,8 @@ def prepare_aligned_release(
 
     By default, exact published crosswalks and repeated array occurrences stay
     in the pinned Parquets. ``retain_published_provenance=True`` additionally
-    prepares the five PostgreSQL audit tables; normalized scientific tables and
-    quantity metadata are identical in both modes.
+    prepares the five PostgreSQL audit tables; normalized scientific tables,
+    mandatory molecular context and quantity metadata are identical in both modes.
 
     SQL work is cancellable through DuckDB. Nothing mutates a PostgreSQL schema
     or an input artifact. Full raw payload Parquets are never scanned here.
@@ -1131,6 +1175,7 @@ def prepare_aligned_release(
                 if retain_published_provenance
                 else "main triple; published statement identity retained in pinned Parquets"
             ),
+            "molecular_context_location": "postgresql_and_pinned_parquet",
             "retain_published_provenance": retain_published_provenance,
             "published_provenance_location": (
                 "postgresql_and_pinned_parquet" if retain_published_provenance else "pinned_parquet"

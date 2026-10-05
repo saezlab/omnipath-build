@@ -15,7 +15,11 @@ def test_conflicting_authoritative_identities_remain_unresolved(tmp_path):
     # conflicting PubChem evidence verifies ownership, not real-world chemistry.
     _hub(hubs, "pubchem", [("inchikey", ASPIRIN, "962", "0")])
     build_library(hubs, library)
-    assert json.loads((library / "current" / "manifest.json").read_text())["complete"] is True
+    manifest = json.loads((library / "current" / "manifest.json").read_text())
+    assignment = json.loads((library / "current" / "assignment-manifest.json").read_text())
+    assert manifest["complete"] is True
+    assert assignment["full_scope"] is True
+    assert assignment["fingerprint"] == manifest["reference_fingerprint"]
     matcher = LibraryMatcher(library)
     observation = RawEntityObservation(
         entity_key="bindingdb-example",

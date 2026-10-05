@@ -13,7 +13,7 @@ import re
 from typing import Any
 
 BUILD_SCHEMA_VERSION = 1
-SERVING_SCHEMA_VERSION = 3
+SERVING_SCHEMA_VERSION = 4
 RELEASE_SCHEMA_VERSION = 1
 RESOURCE_FILES = ("entities.parquet", "relations.parquet", "evidence_payloads.parquet")
 
@@ -90,7 +90,7 @@ class ManifestFile:
 
 @dataclass(frozen=True)
 class BuildManifest:
-    """Current resource publication: schema 1, serving schema 3, three file entries.
+    """Current resource publication: schema 1, serving schema 4, three file entries.
 
     Additional publisher metadata is retained verbatim in ``metadata`` and emitted
     at the JSON root. It does not introduce a nested ``metadata`` output field.

@@ -35,24 +35,32 @@ The source row limit applies separately to each dataset.
 ### 2. Resolve identities
 
 `EntityResolver` in each worker locates the same immutable reference library and records resolution statistics.
-`canonical/match.py` implements the single `LibraryMatcher` algorithm:
+`omnipath_resolver.canonical.match` implements the single `LibraryMatcher` algorithm:
 
 1. Normalize identifiers using the entity policy. Allowed identifiers become
    votes; symbol votes require a taxon. Names and arbitrary annotations do not vote.
-2. Read complete candidate postings from the compact identifier index.
-3. Choose the unique node common to every vote that found candidates.
-4. If consensus fails, accept a unique hit from the primary identifier.
-5. Otherwise retain the normalized native identity as unmatched.
+2. Read complete candidate postings. An independent gene component admits
+   direct gene claims and aliases from explicitly, uniquely linked products;
+   its cutoff counts distinct supported genes rather than catalogue proteins.
+3. Resolve gene identity and any asserted protein identity separately, checking
+   their explicit links and source-supplied GeneIDs. Gene evidence cannot select
+   or expand onto catalogue proteins. Distinct primary UniProt entries remain
+   distinct even when they share a gene.
+4. Preserve the source type, product ambiguity, conflicts and specific sequence
+   versions. Missing catalogue products retain the exact reported product where
+   supplied; unknown information does not assert a canonical or unmodified form.
+5. Chemical observations use the existing identity decision policy.
 
-Every observation is still normalized and joined to cached candidates. A repeated
-primary identifier does not override new conflicting secondary identifiers.
-Protein and gene observations can match the same reference node while retaining
-different canonical entity identities. Policies also govern label selection and
-which reference aliases may be attached. See [canonicalization](../resolver/omnipath_resolver/canonical/README.md).
+A repeated primary identifier does not override conflicting secondary evidence.
+Protein and gene observations can share an NCBI Gene reference while retaining
+separate typed entity keys. See [canonicalization](../resolver/omnipath_resolver/canonical/README.md).
 
-The build requests `defer_aliases=True`: resolution returns observed aliases and
-a reference node link. Complete reference aliases and labels are already stored
-in the compact entity index and are attached later by the finalizer.
+The build requests `defer_aliases=True`: the finalizer attaches reference aliases
+and labels from the base entity index plus the verified gene-record component.
+Sequence-specific identifiers remain on their molecular occurrence rather than
+entering a generic entity's alias collection. Component identity is included in
+build provenance. The first reader in each process verifies its checksums;
+subsequent readers reuse proofs only while file identity and timestamps match.
 
 ### 3. Append flat observations
 

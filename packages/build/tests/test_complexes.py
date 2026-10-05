@@ -97,7 +97,51 @@ def test_members_use_resolved_accessions(tmp_path):
         ("primary", complex_entity("A", [entity("P04637")])),
         ("secondary", complex_entity("B", [entity("Q15086")])),
     ]
-    entities, _, _ = run_rows(tmp_path / "out", rows, 1, library)
+    expected = run_rows(tmp_path / "out", rows, 1, library)
+    assert run_rows(tmp_path / "all", rows[::-1], len(rows), library) == expected
+    entities, relations, payloads = expected
     complexes = [e for e in entities if e["entity_type"] == "macromolecular_complex"]
     assert len(complexes) == 1
     assert {"A", "B"} <= {i["id"] for i in complexes[0]["identifiers"]}
+    by_key = {e["entity_key"]: e for e in entities}
+    assert len(relations) == 1 and relations[0]["evidence_count"] == 2
+    assert relations[0]["object_reference_entity_key"] == "entrez:7157"
+    for evidence in relations[0]["evidence"]:
+        product = by_key[evidence["object_molecular_form"]["protein_entity_key"]]
+        assert (product["namespace"], product["identifier"]) == ("uniprot", "P04637")
+    assert len(payloads) == 2
+
+
+def test_same_gene_products_and_gene_only_members_have_distinct_compositions(tmp_path):
+    from library_fixture import build_fixture_library
+
+    library = build_fixture_library(tmp_path / "library")
+    gene = {"type": "gene", "identifiers": [{"type": "entrez", "value": "7157"}]}
+    rows = [
+        ("primary", complex_entity("A", [entity("P04637")])),
+        ("other_product", complex_entity("B", [entity("A0A0U1RQF1")])),
+        ("gene_only", complex_entity("C", [gene])),
+    ]
+    expected = run_rows(tmp_path / "out", rows, len(rows), library)
+    assert run_rows(tmp_path / "split", rows[::-1], 1, library) == expected
+    entities, relations, payloads = expected
+    complexes = [e for e in entities if e["entity_type"] == "macromolecular_complex"]
+    assert len(complexes) == 3
+    by_key = {e["entity_key"]: e for e in entities}
+    products = set()
+    for relation in relations:
+        assert relation["predicate"] == "has_member"
+        assert relation["subject_entity_key"] in by_key and relation["object_entity_key"] in by_key
+        assert relation["object_reference_entity_key"] == "entrez:7157"
+        form = relation["evidence"][0]["object_molecular_form"]
+        if relation["object_type"] == "gene":
+            assert form is None
+        else:
+            products.add(by_key[form["protein_entity_key"]]["identifier"])
+        assert relation["evidence_count"] == 1
+    assert products == {"P04637", "A0A0U1RQF1"}
+    relation_keys = {r["relation_key"] for r in relations}
+    assert all(
+        p["relation_key"] in relation_keys if p["relation_key"] else p["entity_key"] in by_key
+        for p in payloads
+    )

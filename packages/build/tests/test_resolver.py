@@ -47,7 +47,7 @@ class TestEntityResolver(unittest.TestCase):
                 progress=False,
             )
             self.assertEqual(
-                (out["p"].canonical_namespace, out["p"].canonical_identifier), ("uniprot", "P04637")
+                (out["p"].canonical_namespace, out["p"].canonical_identifier), ("entrez", "7157")
             )
             self.assertEqual(out["p"].label, "TP53")
             self.assertTrue(out["p"].matched)

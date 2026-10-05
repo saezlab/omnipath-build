@@ -17,6 +17,7 @@ resolution-markers = [
 members = [
     "omnipath-api",
     "omnipath-build",
+    "omnipath-client",
     "omnipath-core",
     "omnipath-postgres",
     "omnipath-resolver",
@@ -1529,6 +1530,38 @@ requires-dist = [
     { name = "zstandard", specifier = ">=0.25,<1" },
 ]
 provides-extras = ["goslin-native"]
+
+[[package]]
+name = "omnipath-client"
+version = "0.1.0"
+source = { editable = "packages/client" }
+dependencies = [
+    { name = "duckdb" },
+    { name = "httpx" },
+]
+
+[package.optional-dependencies]
+arrow = [
+    { name = "pyarrow" },
+]
+pandas = [
+    { name = "pandas" },
+]
+test = [
+    { name = "pyarrow" },
+    { name = "pytest" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "duckdb", specifier = ">=1.5,<2" },
+    { name = "httpx", specifier = ">=0.27,<1" },
+    { name = "pandas", marker = "extra == 'pandas'", specifier = ">=2" },
+    { name = "pyarrow", marker = "extra == 'arrow'", specifier = ">=14" },
+    { name = "pyarrow", marker = "extra == 'test'", specifier = ">=14" },
+    { name = "pytest", marker = "extra == 'test'", specifier = ">=8" },
+]
+provides-extras = ["pandas", "arrow", "test"]
 
 [[package]]
 name = "omnipath-core"

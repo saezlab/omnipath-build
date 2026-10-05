@@ -22,14 +22,15 @@ finally:
 
 `RawEntityObservation`, `ResolvedEntityInfo`, and `ResolvedEntityTarget` are public
 input/result contracts. `resolve_entities` provides scalar matching;
-`resolve_entity_targets` preserves valid gene-to-protein fan-out. Readers pin one
+`resolve_entity_targets` keeps gene reference and asserted product identity separate. Readers pin one
 complete immutable reference generation. Without a library, observations retain
 their native identities. Runtime resolution reads index records and does not scan
 or create Parquet references.
 
 Full InChIKeys take precedence for chemicals. Protein accessions remain separate.
-Gene identifiers may map to several protein entities; matching preserves valid
-fan-out and prefers reviewed products where required. Taxon-qualified symbols
+Gene identifiers and symbols identify genes without selecting catalogue proteins.
+Primary UniProt product identity uses explicit source evidence and supported gene
+links; reviewed status does not disambiguate products. Taxon-qualified symbols
 retain their organism scope. Conflicting evidence remains unresolved.
 
 `omnipath_build.reference` owns hub conversion, reference construction, offline

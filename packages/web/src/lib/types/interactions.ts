@@ -10,6 +10,8 @@ export type InteractionDetailsData = InteractionListRow & {
   evidence: Array<{
     relationPk: string;
     source: string;
+    subjectMolecularForm?: import('$lib/types/molecular').MolecularFormRecord | null;
+    objectMolecularForm?: import('$lib/types/molecular').MolecularFormRecord | null;
     subjectAttributes: unknown;
     recordAttributes: unknown;
     evidence: unknown;

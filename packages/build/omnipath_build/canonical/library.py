@@ -28,12 +28,14 @@ def components_binary():
     binary = explicit or shutil.which("anchor-components")
     if not binary:
         # Source checkout convenience; installed workers carry the binary on PATH.
-        candidate = (
-            Path(__file__).resolve().parents[3]
-            / "resolver/rust/reference/target/release/anchor-components"
-        )
-        if candidate.is_file():
-            binary = str(candidate)
+        resolver = Path(__file__).resolve().parents[3] / "resolver"
+        for candidate in (
+            resolver / "target/release/anchor-components",
+            resolver / "rust/reference/target/release/anchor-components",
+        ):
+            if candidate.is_file():
+                binary = str(candidate)
+                break
     if not binary or not Path(binary).is_file():
         raise RuntimeError(
             "anchor-components is required; install the build-worker image or set OMNIPATH_COMPONENTS_BINARY"

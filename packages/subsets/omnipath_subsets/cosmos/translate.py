@@ -1,6 +1,8 @@
 """Put the COSMOS labels into the namespaces the formalism reads.
 
-COSMOS wants UniProt on the gene side and ChEBI on the metabolite side. The
+COSMOS prefers UniProt on the catalyst side and ChEBI on the metabolite side.
+GeneID-centered catalysts retain their gene identifier: a gene-to-product
+association does not establish which protein participated in a reaction. The
 build canonicalises an entity to whichever identifier its resources agreed on,
 which for a metabolic graph is ChEBI a third of the time, an InChIKey or a
 model-local accession the rest, and on the enzyme side an Entrez gene as often
@@ -62,7 +64,8 @@ NAMESPACE_TABLE = "_cos_namespace"
 # both small.
 BATCH_SIZE = 10_000
 
-# The namespaces COSMOS asks for, one per side of an edge.
+# The namespaces COSMOS prefers, one per side of an edge. Gene references
+# retain their canonical namespace even if protein aliases are published.
 GENE_NAMESPACE = "uniprot"
 CHEMICAL_NAMESPACE = "chebi"
 
@@ -493,10 +496,14 @@ def _lookup_key(entity: LabelEntity) -> tuple[str, str, int] | None:
     type, and the taxonomy to ask under. Chemical mappings are published
     without an organism and the utils build stores them under taxonomy zero, so
     the chemical side always asks under zero whatever the build's entity
-    happens to say. The gene side asks under the entity's own taxonomy, because
-    an Entrez gene names a different protein in a different organism and a
-    mapping keyed on the wrong one would be wrong rather than merely absent.
+    happens to say. Catalyst lookups ask under the entity's own taxonomy,
+    because identifier mappings can be organism-specific. Canonical GeneID
+    references do not request a protein lookup.
     """
+    # GeneID is a gene reference even when the source reported a protein.
+    # Its product catalogue cannot select the reaction's protein participant.
+    if entity.side == "gene" and namespace_name(entity.id_type) == "entrez":
+        return None
     utils_type = UTILS_ID_TYPES.get(entity.id_type or "")
     if utils_type is None:
         return None
@@ -537,19 +544,19 @@ def _translate_gene(
 ) -> TranslatedLabel:
     """One catalyst's label identifier.
 
-    A UniProt accession is already the target and passes through. An Entrez
-    gene is looked up, and where several accessions answer the lowest is taken
-    rather than two nodes minted: a COSMOS gene node is one enzyme in one
-    reaction, and splitting it would state that the reaction runs twice.
-    Anything that does not answer keeps what the build holds.
+    A canonical UniProt accession passes through. A canonical GeneID remains
+    a gene reference, irrespective of the source-reported entity type or the
+    number of known protein products. Other identifiers translate only when
+    exactly one accession answers; ambiguous answers keep the build identity.
     """
-    if namespace_name(entity.id_type) == GENE_NAMESPACE:
-        return TranslatedLabel(entity.identifier, GENE_NAMESPACE, mapped=False)
+    declared = namespace_name(entity.id_type)
+    if declared in (GENE_NAMESPACE, "entrez"):
+        return TranslatedLabel(entity.identifier, declared, mapped=False)
 
     key = _lookup_key(entity)
     if key is not None:
         hit = mappings.get(key, {}).get(_lookup_identifier(entity))
-        if hit is not None:
+        if hit is not None and hit[1] == 1:
             return TranslatedLabel(hit[0], GENE_NAMESPACE, mapped=True)
     return _fallback(entity)
 
@@ -751,7 +758,12 @@ def _stage_namespaces(cur: psycopg2.extensions.cursor) -> None:
 
 
 def _published_labels(cur, entities):
-    """Read aliases of the already-published identity; no resolver lookup."""
+    """Read published aliases without turning a GeneID into a protein product.
+
+    Protein catalogue aliases describe products of a gene, not the participant
+    selected by a reaction. A GeneID canonical identity therefore keeps its
+    label even when the entity's reported type is protein.
+    """
     labels = translate_identifiers(entities, None)
     by_id = {entity.entity_id: entity for entity in entities}
     for start in range(0, len(entities), BATCH_SIZE):
@@ -770,6 +782,8 @@ def _published_labels(cur, entities):
             key = str(entity_id)
             entity = by_id[key]
             namespace = namespace_name(id_type)
+            if entity.side == "gene" and namespace_name(entity.id_type) == "entrez":
+                continue
             if key in chosen or namespace != TARGET_NAMESPACE[entity.side]:
                 continue
             chosen.add(key)

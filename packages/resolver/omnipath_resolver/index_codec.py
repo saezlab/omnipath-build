@@ -15,7 +15,11 @@ def pack(kind, obj):
         r, m = obj["record"], obj["meta"]
         if (
             set(obj) != {"record", "meta"}
-            or set(r) != {"entity_id", "kind", "anchor", "taxon", "label", "identifiers"}
+            or set(r)
+            not in (
+                {"entity_id", "kind", "anchor", "taxon", "label", "identifiers"},
+                {"entity_id", "kind", "anchor", "taxon", "label", "identifiers", "gene_ids"},
+            )
             or set(m) != {"id", "entity_id", "kind", "anchor", "quarantined", "reviewed"}
         ):
             raise ValueError("Unexpected entity schema")
@@ -32,16 +36,21 @@ def pack(kind, obj):
             m["quarantined"],
             m["reviewed"],
         ]
+        if "gene_ids" in r:
+            value.append(r["gene_ids"])
     elif kind == "identifiers":
         if set(obj) != {"gene", "products", "candidates"}:
             raise ValueError("Unexpected identifier schema")
         cs = []
-        for num, eid, k, anchor, q, r in obj["candidates"]:
+        for candidate in obj["candidates"]:
+            num, eid, k, anchor, q, r = candidate[:6]
+            genes = candidate[6] if len(candidate) > 6 else []
             if type(q) is not bool or type(r) is not bool:
                 raise ValueError("Candidate flags must be booleans")
             same = anchor == eid
             cs.append(
                 [num, eid, k, None if same else anchor, int(q) | (int(r) << 1) | (int(same) << 2)]
+                + ([genes] if len(candidate) > 6 else [])
             )
         if type(obj["gene"]) is not bool or type(obj["products"]) is not bool:
             raise ValueError("Evidence flags must be booleans")
@@ -54,9 +63,18 @@ def pack(kind, obj):
 def unpack(kind, raw):
     v = msgpack.unpackb(raw, raw=False)
     if kind == "entities":
-        eid, k, a, t, label, ids, num, q, r = v
+        eid, k, a, t, label, ids, num, q, r = v[:9]
+        genes = v[9] if len(v) > 9 else []
         return dict(
-            record=dict(entity_id=eid, kind=k, anchor=a, taxon=t, label=label, identifiers=ids),
+            record=dict(
+                entity_id=eid,
+                kind=k,
+                anchor=a,
+                taxon=t,
+                label=label,
+                identifiers=ids,
+                **({"gene_ids": genes} if len(v) > 9 else {}),
+            ),
             meta=dict(id=num, entity_id=eid, kind=k, anchor=a, quarantined=q, reviewed=r),
         )
     if kind != "identifiers":
@@ -68,7 +86,16 @@ def unpack(kind, raw):
         gene=bool(flags & 1),
         products=bool(flags & 2),
         candidates=[
-            [num, eid, k, eid if f & 4 else a, bool(f & 1), bool(f & 2)] for num, eid, k, a, f in cs
+            [
+                c[0],
+                c[1],
+                c[2],
+                c[1] if c[4] & 4 else c[3],
+                bool(c[4] & 1),
+                bool(c[4] & 2),
+                *([c[5]] if len(c) > 5 else []),
+            ]
+            for c in cs
         ],
     )
 

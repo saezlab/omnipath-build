@@ -57,6 +57,9 @@ def reference_provenance(library_dir: str | Path | None) -> dict | None:
     manifest = root / "manifest.json"
     if manifest.is_file():
         value = json.loads(manifest.read_text())
+        from omnipath_resolver.gene_role_index import component_identity, gene_roles_required
+
+        gene_roles = component_identity(root, required=gene_roles_required(value))
         return {
             "path": str(root),
             "generation": value.get("generation"),
@@ -66,6 +69,7 @@ def reference_provenance(library_dir: str | Path | None) -> dict | None:
             "ambiguous": value.get("ambiguous"),
             "manifest": file_fingerprint(manifest),
             "files": value.get("files", {}),
+            "gene_role_component": gene_roles,
         }
     return {
         "path": str(root),

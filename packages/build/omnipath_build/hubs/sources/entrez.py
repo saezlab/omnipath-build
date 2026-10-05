@@ -27,7 +27,18 @@ def emit(writer: HubParquetWriter) -> None:
         if not entrez:
             continue
         key = (taxon, entrez)
-        field_map = {"ensg": ensg, "ensp": ensp}
+        # gene2ensembl includes noncoding transcripts as direct gene links.
+        # Preserve RefSeq versions as sequence identities in the hub contract.
+        enst = "" if fields[4] in {"", "-"} else fields[4].split(".", 1)[0]
+        rna = "" if fields[3] in {"", "-"} else fields[3].strip()
+        protein = "" if fields[5] in {"", "-"} else fields[5].strip()
+        field_map = {
+            "ensg": ensg,
+            "enst": enst,
+            "ensp": ensp,
+            "refseq": rna,
+            "refseq_protein": protein,
+        }
         if key in seen:
             for source_type, raw in field_map.items():
                 for value in as_values(raw):

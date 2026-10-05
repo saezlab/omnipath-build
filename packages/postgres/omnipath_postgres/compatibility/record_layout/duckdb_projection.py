@@ -28,6 +28,7 @@ PROJECTION_COLUMNS = {
         "has_hierarchy",
         "parent_count",
         "child_count",
+        "reference_entity_key",
         "record_json",
     ),
     "identifiers": (
@@ -59,6 +60,8 @@ PROJECTION_COLUMNS = {
         "interaction_class",
         "sources",
         "evidence_count",
+        "subject_reference_entity_key",
+        "object_reference_entity_key",
         "record_json",
     ),
     "evidence": (

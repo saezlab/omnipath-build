@@ -37,6 +37,7 @@
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
+            strategy: result.groupStrategy || 'chemical_connectivity',
             group_key: result.entityPk,
             query: result.groupQuery,
             filters: result.groupFilters,
@@ -188,6 +189,9 @@
             {/if}
           {/if}
         </div>
+        {#if result.memberEntityTypes?.length}<p class="mt-1 text-xs text-muted-foreground">
+            Gene reference · {result.memberEntityTypes.join(', ')} records
+          </p>{/if}
         {#if unresolved}
           <span
             class="mt-2 inline-flex shrink-0 items-center gap-1 rounded-md border border-amber-300/80 bg-amber-100/70 px-1.5 py-1 text-[10px] font-medium leading-none text-amber-800 dark:border-amber-700/70 dark:bg-amber-950/60 dark:text-amber-200"

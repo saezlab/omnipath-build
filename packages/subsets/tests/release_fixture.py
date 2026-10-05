@@ -6,6 +6,7 @@ import json
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+from omnipath_core import SERVING_SCHEMA_VERSION
 from omnipath_core.keys import entity_key, relation_key
 from omnipath_core.schema import ENTITY_SCHEMA, RELATION_SCHEMA, PAYLOAD_SCHEMA
 from omnipath_core.source_attributes import (
@@ -168,7 +169,7 @@ def write_resource(root, source, entities, relations=(), payloads=(), version="1
         json.dumps(
             dict(
                 schema_version=1,
-                serving_schema_version=3,
+                serving_schema_version=SERVING_SCHEMA_VERSION,
                 resource=source,
                 version=version,
                 max_records=20,

@@ -37,7 +37,7 @@ def resource(root, source="signor", version="1.0.0", *, rows=None):
     write_fixture(directory, entities=rows[0], relations=rows[1], payloads=rows[2])
     manifest = {
         "schema_version": 1,
-        "serving_schema_version": 3,
+        "serving_schema_version": 4,
         "resource": source,
         "version": version,
         "max_records": 20,

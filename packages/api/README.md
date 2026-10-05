@@ -2,6 +2,32 @@
 
 Embedded DuckDB analytical engine and REST API for querying nested Parquet files from a local artifact directory (including a read-only mounted directory). PostgreSQL input separately supports HTTPS.
 
+## Validating rebuilt molecular outputs
+
+From the repository root, validate freshly built resource versions without a
+running API server:
+
+```bash
+PYTHONPATH=packages/api/src:packages/core/src:packages/build/src:packages/resolver/src \
+  .venv/bin/python scripts/validate_molecular_outputs.py \
+  --data-root /path/to/data --resources signor intact \
+  --output /tmp/molecular-validation.json
+```
+
+Use `signor/VERSION` and `intact/VERSION` to select exact builds; a bare name
+selects its latest available version. The validator checks actual Arrow types,
+typed entity identity, relation endpoints, supported scalar gene references,
+reusable product closure, evidence counts, and payload ownership. Independent
+DuckDB baselines are compared with TestClient product/isoform filters, paired
+evidence, gene navigation, and Parquet exports. Temporary links isolate each
+selected resource and reuse existing disposable serving indexes; the source
+outputs are read only. The JSON report includes sizes, selected examples and
+query timings. Missing biological cases are marked unavailable. Exports larger
+than `--max-export-relations` (default 10,000) are also marked unavailable.
+Exit status is nonzero when a check fails. These checks establish consistency
+of the built output and API; they do not claim comparison to absent upstream
+source records.
+
 ## Key Features
 
 - **Embedded DuckDB Engine**: Out-of-core columnar streaming, predicate pushdown, and dynamic facet aggregation.
@@ -45,7 +71,7 @@ Open interactive API docs from the web app (**API Docs** in the sidebar) or dire
 ## Explorer serving indexes
 
 Resource Parquets remain authoritative and immutable. Disposable files under
-`<data-root>/.serving/v1/` accelerate scalar entity scans, and qualifier facets. Per-resource projections contain scalar entity fields or
+`<data-root>/.serving/v2/` accelerate scalar entity scans, and qualifier facets. Per-resource projections contain scalar entity fields or
 relation fields with distinct relation-scoped qualifier values; evidence and other
 annotations remain in the original resources. There is no shared browse index. Search, filters and pagination use the normal
 query path.
@@ -220,3 +246,42 @@ Arrow or export buffers. Compose defaults to a 4 GB, four-CPU container as a
 backstop; change its `API_*` budget variables together for the workload. Direct
 Python callers should wrap concurrent operations in `engine.query_scope()`.
 Use representative concurrent searches, facets and exports when sizing a deployment.
+
+## Gene references and molecular evidence
+
+Entity summaries expose `referenceEntityKey` and `geneReferenceKeys` separately
+from `entityPk`. The record key and main `entityType` remain source typed.
+`POST /entities/groups` accepts `strategy: "auto"` to apply gene-reference and
+chemical-connectivity grouping together. Explicit strategies remain available
+for API clients; group summaries
+include `memberEntityTypes` and typed member keys. Missing references remain
+separate records. Only supported `entrez:` scalar references form gene groups;
+native fallback references and ambiguous catalogue gene links stay separate.
+Source type filters apply to the members before grouping.
+
+Relation summaries expose `subjectReferenceEntityKey` and
+`objectReferenceEntityKey`. `SearchFilters.reference_entity_keys` browses the
+shared gene references. `protein_entity_keys`, `transcript_entity_keys` and
+`isoform_identifiers` select exact molecular context; `molecular_endpoint_mode`
+is `any`, `source`, `target` or `both`. All identity constraints must match the
+same endpoint in the same evidence occurrence. Filtered evidence and exports
+retain only matching occurrences, with their paired subject/object forms.
+`GET /relations/{key}/evidence` accepts these filters as a JSON query parameter
+and collects evidence across all selected resource files with stable occurrence
+keys. Entity summaries retain standalone `molecularEvidence`.
+
+`GET /entities/{key}/molecular-context` separates catalogue-linked products from
+observed forms and matching relations. A `gene:entrez:ID` group opens the gene
+view; a reusable product key selects evidence explicitly naming that product.
+`isoform_identifier=uniprot:P04637-2` selects that exact reported isoform.
+Forms and standalone observations are paged; `observedForms` describes the
+current relation page. Missing molecular fields stay unspecified, including
+when reading older Parquets.
+
+Filtered single-table exports retain the original nested evidence and add
+`referenced_product_records`, containing reusable product records needed to
+interpret the selected forms. Rebuild disposable serving projections with
+`python -m omnipath_api.serving_index --data-root data`: version `v2` stores
+nullable gene references and compact paired product/isoform identities.
+Requests use existing matching projections and hydrate evidence only for the
+selected page; immutable resource Parquets are never rewritten by serving.

@@ -39,6 +39,13 @@ The directory includes the three serving Parquets, resolution statistics and a
 `build_manifest.json` containing the resource version, schema version, timestamp,
 row counts and file checksums. A per-version lock prevents concurrent overwrites.
 
+The build manifest stays at `schema_version = 1`, with filename-keyed entries
+for the same three Parquets. Molecular-context outputs use
+`serving_schema_version = 4`. This changes the record contract, not the manifest
+layout or the independent publication schedules. PostgreSQL loads of the new
+contract preserve gene references and molecular occurrences in additional
+context tables; existing monthly snapshots require a new load to obtain them.
+
 ## Publish a pinned OmniPath release
 
 Create a manifest, for example `release.json`:

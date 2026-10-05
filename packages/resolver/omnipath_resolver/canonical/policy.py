@@ -17,7 +17,7 @@ import re
 from dataclasses import dataclass
 from typing import Callable
 from biolink_model.datamodel import model
-from omnipath_core.biolink import entity_type as biolink_entity_type
+from omnipath_core.biolink import entity_type as biolink_entity_type, schema as biolink_schema
 
 INCHIKEY_RE = re.compile(r"^[A-Z]{14}-[A-Z]{10}-[A-Z]$")
 
@@ -46,14 +46,18 @@ class EntityPolicy:
 _NONE: frozenset[str] = frozenset()
 
 
+RNA_ENTITY_TYPES = frozenset(
+    biolink_entity_type(name)
+    for name in biolink_schema().class_descendants("transcript", reflexive=True)
+)
+PROTEIN_ENTITY_TYPES = frozenset(
+    biolink_entity_type(name)
+    for name in biolink_schema().class_descendants("protein", reflexive=True)
+)
+
 GENE_PROTEIN_POLICY = EntityPolicy(
     entity_class=GENE_PROTEIN,
-    entity_types=frozenset(
-        {
-            biolink_entity_type(cls)
-            for cls in (model.Protein, model.Gene, model.RNAProduct, model.Transcript)
-        }
-    ),
+    entity_types=RNA_ENTITY_TYPES | PROTEIN_ENTITY_TYPES | {biolink_entity_type(model.Gene)},
     library=GENE_PROTEIN,
     match_namespaces=frozenset(
         {
