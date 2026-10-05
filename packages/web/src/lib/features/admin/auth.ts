@@ -1,35 +1,38 @@
 const STORAGE_KEY = 'omnipath-admin-password';
 
-export function getAdminPassword(): string {
-  if (typeof localStorage === 'undefined') return '';
-  const local = localStorage.getItem(STORAGE_KEY);
-  if (local) return local;
-  if (typeof sessionStorage !== 'undefined') {
-    const session = sessionStorage.getItem(STORAGE_KEY);
-    if (session) {
-      localStorage.setItem(STORAGE_KEY, session);
-      sessionStorage.removeItem(STORAGE_KEY);
-      return session;
-    }
+// The admin secret lives only for the browser session; never persist it.
+function forgetLegacyCopy(): void {
+  try {
+    if (typeof localStorage !== 'undefined') localStorage.removeItem(STORAGE_KEY);
+  } catch {
+    // Storage can be unavailable (private mode, blocked site data).
   }
-  return '';
+}
+
+export function getAdminPassword(): string {
+  forgetLegacyCopy();
+  try {
+    return typeof sessionStorage === 'undefined' ? '' : sessionStorage.getItem(STORAGE_KEY) || '';
+  } catch {
+    return '';
+  }
 }
 
 export function setAdminPassword(value: string): void {
-  if (typeof localStorage !== 'undefined') {
-    localStorage.setItem(STORAGE_KEY, value);
-  }
-  if (typeof sessionStorage !== 'undefined') {
-    sessionStorage.removeItem(STORAGE_KEY);
+  forgetLegacyCopy();
+  try {
+    if (typeof sessionStorage !== 'undefined') sessionStorage.setItem(STORAGE_KEY, value);
+  } catch {
+    // Without storage the secret must be re-entered; never fall back to localStorage.
   }
 }
 
 export function clearAdminPassword(): void {
-  if (typeof localStorage !== 'undefined') {
-    localStorage.removeItem(STORAGE_KEY);
-  }
-  if (typeof sessionStorage !== 'undefined') {
-    sessionStorage.removeItem(STORAGE_KEY);
+  forgetLegacyCopy();
+  try {
+    if (typeof sessionStorage !== 'undefined') sessionStorage.removeItem(STORAGE_KEY);
+  } catch {
+    // Nothing stored.
   }
 }
 

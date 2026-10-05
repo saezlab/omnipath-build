@@ -53,7 +53,7 @@ DuckDB defaults to one thread and 1 GB memory. Use `--duckdb-threads`, `--memory
 
 Use PostgreSQL 18 with main's [PostgreSQL image](../../postgres/Dockerfile) or an equivalent image providing `roaringbitmap` and `pg_trgm`. The development parity tests compare actual catalog definitions and duplicate-sensitive scientific fixtures with the frozen main source. They are bounded development checks; loading has no mandatory exhaustive verification, rebuild-and-rollback run or automatic safety phase.
 
-The historical resource-record implementation remains under `omnipath_postgres.compatibility.record_layout` for audited older-schema callers and tests; it is not the default CLI or package API. Existing historical schemas require their historical readers. See [the alignment plan](../../docs/postgres-main-parity-plan.md) for the migration boundary.
+The earlier resource-record loader (`omnipath_postgres.compatibility.record_layout`) has been removed together with its tests; schemas built by it are not readable by this package. See [the alignment plan](../../docs/postgres-main-parity-plan.md) for the migration boundary.
 
 The canonical loader is `omnipath_postgres.loader`; shared schema and derivations
 live in `omnipath_postgres.relational`. MetSigDB, network presets and COSMOS are

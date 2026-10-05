@@ -33,8 +33,8 @@ rebuilds selected products. PostgreSQL finish resumes unfinished phases/products
 Both use one runner with release identity checks and a schema lock across product
 commits. Products publish their tables and metadata atomically.
 
-Frozen legacy source is an independent test oracle. The earlier PostgreSQL loader
-remains under `omnipath_postgres.compatibility.record_layout`; subsets has only the
+Frozen legacy source is an independent test oracle. The earlier record-layout
+PostgreSQL loader has been removed; PostgreSQL and subsets contain only the
 current implementation. Normal commands use the current layout.
 Developer fixture tests and wheel checks are separate from production execution;
 there is no mandatory full-release rebuild/rollback verification phase.

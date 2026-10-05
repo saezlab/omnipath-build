@@ -56,7 +56,7 @@ export async function proxyRequest(
   const cookies = (incoming.get('cookie') || '')
     .split(';')
     .map((cookie) => cookie.trim())
-    .filter((cookie) => /^(omnipath_release|omnipath_admin)=/.test(cookie));
+    .filter((cookie) => /^omnipath_release=/.test(cookie));
   if (cookies.length) headers.set('cookie', cookies.join('; '));
   headers.set('accept-encoding', 'identity');
   let method = request.method;

@@ -24,7 +24,7 @@ def require_admin(request: Request) -> None:
         raise HTTPException(
             status_code=503, detail="Administration is disabled: configure an admin secret"
         )
-    provided = request.headers.get("x-admin-secret") or request.cookies.get("omnipath_admin") or ""
+    provided = request.headers.get("x-admin-secret") or ""
     if not provided or not hmac.compare_digest(provided.encode(), secret.encode()):
         raise HTTPException(status_code=401, detail="Admin password required")
     if request.method not in {"GET", "HEAD", "OPTIONS"} and config.read_only:

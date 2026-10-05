@@ -1,6 +1,8 @@
 """Release pinning must hold across queries, downloads and concurrent clients."""
 
+import hashlib
 import io
+import json
 import os
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
@@ -250,3 +252,42 @@ def test_admin_publish_and_explicit_build_version(setup):
         ).status_code
         == 409
     )
+
+
+def _with_manifest(root, source, version, **fields):
+    write_resource(root, source, version, source)
+    path = root / "resources" / source / version / "build_manifest.json"
+    path.write_text(json.dumps({"resource": source, "version": version, **fields}))
+    return path
+
+
+def test_publish_pins_build_manifest_bytes(tmp_path):
+    path = _with_manifest(tmp_path, "signor", "1", max_records=None)
+    store = ReleaseStore(tmp_path)
+    with pytest.warns(UserWarning, match="taxonomy"):
+        published = store.publish(
+            {"schema_version": 1, "version": "1", "resources": {"signor": "1"}}
+        )
+    assert published["resource_manifests"] == {
+        "signor": hashlib.sha256(path.read_bytes()).hexdigest()
+    }
+    with pytest.raises(ValueError, match="do not match"):
+        store.publish(
+            {
+                "schema_version": 1,
+                "version": "2",
+                "resources": {"signor": "1"},
+                "resource_manifests": {"signor": "0" * 64},
+            }
+        )
+
+
+@pytest.mark.parametrize("fields", [{"max_records": 20}, {"datasets": ["interactions"]}])
+def test_publish_refuses_unmarked_sample_builds(tmp_path, fields):
+    _with_manifest(tmp_path, "signor", "1", **fields)
+    store = ReleaseStore(tmp_path)
+    release = {"schema_version": 1, "version": "1", "resources": {"signor": "1"}}
+    with pytest.raises(ValueError, match="sample builds"):
+        store.publish(release)
+    with pytest.warns(UserWarning, match="taxonomy"):
+        assert store.publish({**release, "partial_resources": True})["partial_resources"] is True

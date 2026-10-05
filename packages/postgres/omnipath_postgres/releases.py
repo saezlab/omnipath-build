@@ -24,6 +24,7 @@ from omnipath_core.versioning import (
     RELEASE_SCHEMA_VERSION as RELEASE_SCHEMA_VERSION,
     RESOURCE_FILES,
     SERVING_SCHEMA_VERSION as SERVING_SCHEMA_VERSION,
+    partial_build_reason,
     validate_build_manifest,
     validate_release_manifest,
 )
@@ -253,13 +254,30 @@ def _verify_parquet(
     return ParquetArtifact(path.name, path, expected_digest, before.st_size, actual_rows)
 
 
-def _resource(root: Location, source: str, version: str) -> ResourceSelection:
+def _resource(
+    root: Location,
+    source: str,
+    version: str,
+    *,
+    expected_manifest: str | None = None,
+    allow_partial: bool = False,
+) -> ResourceSelection:
     directory = join_location(root, "resources", source, version)
     path = _artifact_path(root, join_location(directory, "build_manifest.json"))
     manifest, text, checksum = _read_json(path)
     if manifest.get("resource") != source or manifest.get("version") != version:
         raise ReleaseValidationError(
             f"Build manifest does not match pinned resource {source}/{version}"
+        )
+    if expected_manifest is not None and checksum != expected_manifest:
+        raise ReleaseValidationError(
+            f"Build manifest content differs from the release pin: {source}/{version}"
+        )
+    reason = partial_build_reason(manifest)
+    if reason and not allow_partial:
+        raise ReleaseValidationError(
+            f"Release pins a sample build {source}/{version} ({reason}); "
+            'mark the release "partial_resources": true to load it'
         )
     try:
         publication = validate_build_manifest(manifest)
@@ -335,7 +353,17 @@ def load_release(data_root: str | Path, manifest_path: str | Path) -> PinnedRele
     canonical_json = json.dumps(
         manifest, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False
     )
-    resources = tuple(_resource(root, source, selections[source]) for source in sorted(selections))
+    pins = manifest.get("resource_manifests", {})
+    resources = tuple(
+        _resource(
+            root,
+            source,
+            selections[source],
+            expected_manifest=pins.get(source),
+            allow_partial=manifest.get("partial_resources") is True,
+        )
+        for source in sorted(selections)
+    )
     references = _references(root, manifest.get("references", {}))
     return PinnedRelease(
         version,

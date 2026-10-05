@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
+import contextlib
 import json
 import time
 from pathlib import Path
@@ -20,6 +21,7 @@ from omnipath_resolver.goslin_cache import NormalizationCache
 
 from omnipath_resolver.goslin import normalize
 
+BATCH_NAMES = 128
 SOURCES = ("swisslipids", "lipidmaps", "hmdb", "chebi", "refmet")
 SCHEMA = pa.schema(
     [(n, pa.string()) for n in ("name", "goslin", "level", "status")]
@@ -116,7 +118,16 @@ def build(hubs, output, workers=6, memory="4GB", cache_dir=None):
         with pq.ParquetWriter(output / "normalized.parquet", SCHEMA, compression="zstd") as writer:
             for batch in pq.ParquetFile(output / "cached.parquet").iter_batches():
                 writer.write_batch(batch)
-            with concurrent.futures.ProcessPoolExecutor(max_workers=workers) as pool:
+            # A single batch gains nothing from worker processes, which would each
+            # re-import the parser; parse it here (same function, same results).
+            single_batch = (
+                pq.ParquetFile(output / "pending-names.parquet").metadata.num_rows <= BATCH_NAMES
+            )
+            with (
+                contextlib.nullcontext()
+                if single_batch
+                else concurrent.futures.ProcessPoolExecutor(max_workers=workers)
+            ) as pool:
                 pending = set()
 
                 def drain(block=False):
@@ -150,8 +161,14 @@ def build(hubs, output, workers=6, memory="4GB", cache_dir=None):
                         tick = time.monotonic()
 
                 for b in pq.ParquetFile(output / "pending-names.parquet").iter_batches(
-                    batch_size=128
+                    batch_size=BATCH_NAMES
                 ):
+                    if single_batch:
+                        results = parse_batch(b.column("name").to_pylist())
+                        cache.store(results)
+                        writer.write_table(pa.Table.from_pylist(results, schema=SCHEMA))
+                        done += len(results)
+                        continue
                     while len(pending) >= workers * 2:
                         drain(True)
                     pending.add(pool.submit(parse_batch, b.column("name").to_pylist()))

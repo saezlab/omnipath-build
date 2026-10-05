@@ -223,7 +223,13 @@ def validate_release_manifest(
     """
     value = _object(value, "Release manifest")
     required = {"schema_version", "version", "resources"}
-    _fields(value, required, {"created_at", "references"}, "Release", strict=strict_fields)
+    _fields(
+        value,
+        required,
+        {"created_at", "references", "resource_manifests", "partial_resources"},
+        "Release",
+        strict=strict_fields,
+    )
     _schema_version(value["schema_version"], RELEASE_SCHEMA_VERSION, "Release schema version")
     version = validate_version(value["version"])
     resources = _object(value["resources"], "Release resources")
@@ -234,6 +240,15 @@ def validate_release_manifest(
         resource_version_validator(resource_version)
     if "created_at" in value and not isinstance(value["created_at"], str):
         raise ValueError("Release created_at must be a string")
+    if "resource_manifests" in value:
+        # Content pins: SHA-256 of each pinned resource's build_manifest.json bytes.
+        digests = _object(value["resource_manifests"], "Release resource_manifests")
+        if digests.keys() != resources.keys():
+            raise ValueError("Release resource_manifests must pin exactly the selected resources")
+        for source, digest in digests.items():
+            _digest(digest, f"Build manifest checksum for {source}")
+    if "partial_resources" in value and type(value["partial_resources"]) is not bool:
+        raise ValueError("Release partial_resources must be a boolean")
     references = value.get("references")
     if "references" in value:
         references = _object(references, "Release references")
@@ -273,6 +288,15 @@ def validate_release_manifest(
             if key not in required | {"created_at", "references"}
         },
     )
+
+
+def partial_build_reason(manifest: Mapping[str, Any]) -> str | None:
+    """Explain why a build manifest describes a sample rather than a complete resource."""
+    if manifest.get("max_records") is not None:
+        return f"capped at max_records={manifest['max_records']}"
+    if manifest.get("datasets") is not None:
+        return f"restricted to datasets {list(manifest['datasets'])}"
+    return None
 
 
 def resource_dir(data_root: str | Path, source: str, version: str) -> Path:

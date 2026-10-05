@@ -43,8 +43,10 @@ with Client() as op:
     # result.to_arrow_table()     # requires the arrow extra
 ```
 
-The default API is `https://omnipath-metabo-dev.schaul.click/api`. Set `api_url`
-for another deployment. File locations come from the catalog's `files[].url`;
+Without `api_url`, the client uses `OMNIPATH_API_URL` if set, otherwise the
+development deployment `https://omnipath-metabo-dev.schaul.click/api`. Remote
+reads stream Parquet ranges lazily and are not checksum-verified; offline
+snapshots (`download`) verify every file's SHA-256. File locations come from the catalog's `files[].url`;
 public HTTPS access needs no S3 credentials. DuckDB loads `httpfs` on first remote
 use and attempts installation if necessary. The initial extension installation
 requires network access to DuckDB's extension service.

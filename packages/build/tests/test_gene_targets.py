@@ -192,27 +192,14 @@ def test_protein_source_with_gene_identifier_does_not_assert_product(library):
         resolver.close()
 
 
-def test_product_review_status_does_not_expand_gene_observation(tmp_path):
-    import pyarrow as pa
-    import pyarrow.parquet as pq
-    from library_fixture import write_hubs
-    from omnipath_build.canonical.library import build_library
-
-    hubs = tmp_path / "hubs"
-    write_hubs(hubs)
-    table = pq.read_table(hubs / "uniprot.parquet")
-    rows = table.to_pylist()
-    for row in rows:
-        if row["hub_id"] == "P04637" and row["source_type"] == "uniprot_entry":
-            row["source_id"] = "P04637_HUMAN"  # Make both gene 7157 entries unreviewed.
-    pq.write_table(pa.Table.from_pylist(rows, schema=table.schema), hubs / "uniprot.parquet")
-    library = tmp_path / "library"
-    build_library(hubs, library)
+def test_product_review_status_does_not_expand_gene_observation(library):
+    # Gene 4242 only has unreviewed products (entry name P3333x_HUMAN carries the
+    # accession itself), both in the shared fixture hubs.
     resolver = EntityResolver(library)
     try:
-        targets = resolver.resolve_entity_targets({"g": obs("g", "gene", "entrez", "7157")})["g"]
+        targets = resolver.resolve_entity_targets({"g": obs("g", "gene", "entrez", "4242")})["g"]
         assert len(targets) == 1
-        assert targets[0].canonical_identifier == "7157"
+        assert targets[0].canonical_identifier == "4242"
         assert targets[0].entity_type == "gene"
         assert targets[0].protein_identifier is None
     finally:

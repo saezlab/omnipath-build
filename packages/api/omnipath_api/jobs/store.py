@@ -44,10 +44,19 @@ class JobStore:
         job.cancel_requested = bool(row[2])
         return job
 
+    @staticmethod
+    def _has_jobs(con):
+        # A writer creates the file before its table; readers may observe the gap.
+        return bool(
+            con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='jobs'").fetchone()
+        )
+
     def list(self):
         if not self.path.is_file():
             return []
         with self.connection() as con:
+            if not self._has_jobs(con):
+                return []
             return [
                 self._job(row)
                 for row in con.execute(
@@ -59,6 +68,8 @@ class JobStore:
         if not self.path.is_file():
             return None
         with self.connection() as con:
+            if not self._has_jobs(con):
+                return None
             row = con.execute(
                 "SELECT snapshot, status, cancel FROM jobs WHERE id=?", [job_id]
             ).fetchone()

@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import fnmatch
 import json
+import os
 import shutil
 import time
 from collections import OrderedDict
+from pathlib import Path
 
 import lmdb
 
@@ -22,7 +25,23 @@ def dump(value):
 
 
 def source(compiler, c, part):
-    paths = sorted((compiler.output / "enriched-assertions").glob(f"*/shard={part}/*.parquet"))
+    # Equivalent to sorted(glob("*/shard={part}/*.parquet")), which rescans every
+    # entity directory's subtree for each of the 512 calls; probe just the one shard
+    # directory per entity partition, without pathlib's per-call overhead.
+    paths = []
+    root = compiler.output / "enriched-assertions"
+    if root.is_dir():
+        with os.scandir(root) as entities:
+            for entity in entities:
+                try:
+                    shard = os.scandir(os.path.join(entity.path, f"shard={part}"))
+                except (FileNotFoundError, NotADirectoryError):
+                    continue
+                with shard:
+                    paths.extend(
+                        Path(f.path) for f in shard if fnmatch.fnmatchcase(f.name, "*.parquet")
+                    )
+    paths.sort()
     if paths:
         return f"read_parquet([{','.join(quote(p) for p in paths)}],hive_partitioning=false)"
     c.execute("""CREATE TEMP TABLE empty_assertions(target UTINYINT,route UTINYINT,

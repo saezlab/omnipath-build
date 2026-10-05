@@ -16,7 +16,7 @@ from omnipath_postgres import loader as aligned_loader, projection as aligned_pr
 from omnipath_subsets.metsigdb import build as metsigdb_build
 from omnipath_subsets.metsigdb.mapping import PROJECTION_IDENTIFIERS
 import test_main_parity_contract as reference_contract
-from test_projection import QUANTITY, annotation, entity, fixture_rows, write_fixture
+from published_fixture import QUANTITY, annotation, entity, fixture_rows, write_fixture
 
 
 oracle = reference_contract.oracle

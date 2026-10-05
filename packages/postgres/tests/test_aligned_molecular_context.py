@@ -12,8 +12,7 @@ from omnipath_core.versioning import SERVING_SCHEMA_VERSION
 from omnipath_postgres.projection import companion_ddl, prepare_aligned_release
 from omnipath_postgres.relational.db.schema import CONTENT_TABLES
 from test_aligned_projection import selected
-from test_duckdb_projection import assert_equivalent
-from test_projection import ENTITY_A, ENTITY_B, RELATION, fixture_rows, write_fixture
+from published_fixture import ENTITY_A, ENTITY_B, RELATION, fixture_rows, write_fixture
 
 
 CONTEXT_TABLES = {
@@ -138,12 +137,6 @@ def test_molecular_context_preserves_exact_pairings_standalone_and_virtual_keys(
         assert plan.counts["relation"] == 1
         assert "state" not in plan.counts
         assert "gene_protein_representative" not in plan.counts
-
-
-def test_record_layout_keeps_nested_context_only_in_json_and_matches_sql(tmp_path):
-    fixture(tmp_path)
-    with duckdb.connect() as connection:
-        assert_equivalent(connection, tmp_path)
 
 
 def test_context_is_mandatory_and_resettable_for_serving_four():

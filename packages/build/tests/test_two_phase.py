@@ -103,7 +103,9 @@ def test_worker_counts_preserve_outputs_statistics_and_row_limits(tmp_path, data
 
 def test_two_phase_worker_failure_does_not_publish(tmp_path, dataset, monkeypatch):
     monkeypatch.setattr(dataset.raw_dataset, "raw", lambda **kwargs: iter([{"i": 1, "fail": True}]))
-    with pytest.raises(RuntimeError, match="deliberate mapper failure"):
+    with pytest.raises(
+        RuntimeError, match=r"fixture:items input row 0 .*deliberate mapper failure"
+    ):
         build_resource(
             "fixture",
             version="1",

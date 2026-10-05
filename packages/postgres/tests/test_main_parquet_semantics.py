@@ -23,7 +23,7 @@ import pytest
 from omnipath_postgres import loader as aligned_loader
 from omnipath_postgres.projection import companion_ddl, prepare_aligned_release
 import test_main_parity_contract as reference_contract
-from test_projection import annotation, entity, fixture_rows, write_fixture
+from published_fixture import annotation, entity, fixture_rows, write_fixture
 
 
 oracle = reference_contract.oracle

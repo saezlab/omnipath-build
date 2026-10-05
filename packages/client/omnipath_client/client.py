@@ -25,6 +25,7 @@ from .contracts import (
 from .contracts import validate_url as _url
 from .errors import ClientError
 
+# Development deployment; override with ``api_url`` or the OMNIPATH_API_URL variable.
 DEFAULT_API_URL = "https://omnipath-metabo-dev.schaul.click/api"
 
 
@@ -72,13 +73,14 @@ class Client:
 
     def __init__(
         self,
-        api_url: str = DEFAULT_API_URL,
+        api_url: str | None = None,
         *,
         release: str = "latest",
         timeout: float = 30,
         memory_limit: str = "2GB",
         http_client: httpx.Client | None = None,
     ) -> None:
+        api_url = api_url or os.environ.get("OMNIPATH_API_URL") or DEFAULT_API_URL
         self.api_url = _url(api_url).rstrip("/")
         if not isinstance(release, str) or not release.strip():
             raise ValueError("release must not be empty")

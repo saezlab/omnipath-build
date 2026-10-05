@@ -13,7 +13,7 @@ from omnipath_postgres.projection import (
     companion_ddl,
     prepare_aligned_release,
 )
-from test_projection import ENTITY_A, ENTITY_B, QUANTITY, annotation, fixture_rows, write_fixture
+from published_fixture import ENTITY_A, ENTITY_B, QUANTITY, annotation, fixture_rows, write_fixture
 
 
 def selected(path, source="fixture", version="1"):

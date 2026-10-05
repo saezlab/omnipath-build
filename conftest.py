@@ -9,8 +9,18 @@ import tempfile
 import pytest
 
 
+def _worker_port() -> int:
+    """Per-xdist-worker port: gw0 -> 55479, gw1 -> 55480, ... (controller/serial -> 55479)."""
+    worker = os.environ.get("PYTEST_XDIST_WORKER", "gw0")
+    return 55479 + int(worker.removeprefix("gw") or 0)
+
+
 @pytest.fixture(scope="session")
 def postgres_dsn():
+    # Session scope is per xdist worker process: every worker initialises its own cluster in a
+    # private mkdtemp directory (the server is reachable only through a unix socket inside that
+    # directory), so parallel integration runs never share data or sockets.
+    port = _worker_port()
     if os.environ.get("OMNIPATH_TEST_POSTGRES") != "1":
         pytest.skip("Set OMNIPATH_TEST_POSTGRES=1 to start a disposable PostgreSQL cluster")
     candidates = [
@@ -64,10 +74,19 @@ def postgres_dsn():
             "start",
             "-o",
             f"-F -c listen_addresses='' -c unix_socket_directories='{root}' "
-            "-p 55479 -c max_connections=20 -c shared_buffers=32MB",
+            f"-p {port} -c max_connections=20 -c shared_buffers=32MB",
         )
-        yield f"host={root} port=55479 user=omnipath_migration dbname=postgres"
+        yield f"host={root} port={port} user=omnipath_migration dbname=postgres"
     finally:
         if (cluster / "postmaster.pid").exists():
             run(str(binary / "pg_ctl"), "-D", str(cluster), "-m", "fast", "-w", "stop")
         shutil.rmtree(root)
+
+
+def pytest_collection_modifyitems(config, items):
+    # Database tests are integration tests whether or not they carry the marker,
+    # so `-m integration` selects them and `-m "not integration"` deselects them.
+    marker = pytest.mark.integration
+    for item in items:
+        if "postgres_dsn" in getattr(item, "fixturenames", ()):
+            item.add_marker(marker)

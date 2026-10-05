@@ -142,6 +142,42 @@ def test_rejects_unsupported_release_fields(release, field, value):
 
 
 @pytest.mark.parametrize(
+    "field,value",
+    [
+        ("resource_manifests", {}),
+        ("resource_manifests", {"signor": "not-a-digest"}),
+        ("partial_resources", "yes"),
+    ],
+)
+def test_rejects_malformed_content_pins(release, field, value):
+    root, path, _, manifest, _ = release
+    manifest[field] = value
+    write_json(path, manifest)
+    with pytest.raises(ReleaseValidationError):
+        load_release(root, path)
+
+
+def test_content_pin_must_match_build_manifest_bytes(release):
+    root, path, directory, manifest, _ = release
+    digest = hashlib.sha256((directory / "build_manifest.json").read_bytes()).hexdigest()
+    write_json(path, {**manifest, "resource_manifests": {"signor": digest}})
+    assert load_release(root, path).resources[0].manifest_sha256 == digest
+    write_json(path, {**manifest, "resource_manifests": {"signor": "0" * 64}})
+    with pytest.raises(ReleaseValidationError, match="differs from the release pin"):
+        load_release(root, path)
+
+
+@pytest.mark.parametrize("fields", [{"max_records": 20}, {"datasets": ["interactions"]}])
+def test_sample_builds_require_an_explicit_partial_release(release, fields):
+    root, path, directory, manifest, build_manifest = release
+    write_json(directory / "build_manifest.json", {**build_manifest, **fields})
+    with pytest.raises(ReleaseValidationError, match="sample build"):
+        load_release(root, path)
+    write_json(path, {**manifest, "partial_resources": True})
+    assert load_release(root, path).resources[0].source == "signor"
+
+
+@pytest.mark.parametrize(
     "content",
     [
         '{"schema_version":1,"version":"2026.09","resources":{"signor":"1.0.0","signor":"2"}}',

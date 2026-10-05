@@ -17,6 +17,8 @@ cases the matching rules must get right:
 
 from __future__ import annotations
 
+import fcntl
+import os
 from pathlib import Path
 import tempfile
 from functools import lru_cache
@@ -94,6 +96,20 @@ def write_hubs(hubs: Path) -> None:
             ("uniprot", "P12345", "P12345", "11676"),
             ("uniprot_entry", "POL_HV1H2", "P12345", "0"),
             ("genesymbol", "pol", "P12345", "0"),
+            # Ensembl/RefSeq protein and transcript aliases of TP53's reviewed accession.
+            ("ensp", "ENSP00000269305.4", "P04637", "0"),
+            ("enst", "ENST00000269305.8", "P04637", "0"),
+            ("refseq_protein", "NP_000537.3", "P04637", "0"),
+            # A gene whose only catalogued products are unreviewed (entry-name
+            # prefix equals the accession): review status must not expand it.
+            ("uniprot", "P33331", "P33331", "9606"),
+            ("uniprot_entry", "P33331_HUMAN", "P33331", "0"),
+            ("entrez", "4242", "P33331", "0"),
+            ("genesymbol", "UNREVGENE", "P33331", "0"),
+            ("uniprot", "P33332", "P33332", "9606"),
+            ("uniprot_entry", "P33332_HUMAN", "P33332", "0"),
+            ("entrez", "4242", "P33332", "0"),
+            ("genesymbol", "UNREVGENE", "P33332", "0"),
         ],
     )
     # A gene with many explicitly catalogued products still has one gene identity.
@@ -129,6 +145,7 @@ def write_hubs(hubs: Path) -> None:
             ("entrez", "55", "55", "9606"),
             ("ensg", "ENSG00000000055", "55", "9606"),
             ("refseq", "NR_000055.1", "55", "9606"),
+            ("entrez", "4242", "4242", "9606"),
         ],
         backend="gene2ensembl",
     )
@@ -215,18 +232,118 @@ def write_hubs(hubs: Path) -> None:
             _hub(hubs, name, [])
 
 
-@lru_cache(maxsize=1)
-def _template():
-    directory = tempfile.TemporaryDirectory(prefix="parquet-test-reference-")
-    root = Path(directory.name)
+def _write_external_cid_claim_hubs(hubs: Path) -> None:
+    """An external resource claims CID 962 for ASPIRIN while HMDB assigns it to WATER.
+
+    Deliberately conflicting PubChem evidence verifies ownership, not real-world
+    chemistry. The pubchem hub is empty in the shared hubs, so this lives in its
+    own cached template instead of the base one.
+    """
+    _hub(hubs, "pubchem", [("inchikey", ASPIRIN, "962", "0")])
+
+
+def _write_exact_structure_hubs(hubs: Path) -> None:
+    """Authoritative exact-structure identities for the chemical target tests.
+
+    PubChem CID 1 is WATER, ChEBI:1 a VARIANT of WATER's connectivity and
+    CHEMBL1 ASPIRIN, so exact structures stay distinct and conflicting
+    structures never project. These replace the shared chebi/chembl/pubchem
+    hubs (water and the ChEBI mixture disappear), so they need their own template.
+    """
+    _hub(hubs, "pubchem", [("pubchem", "1", "1", "0"), ("inchikey", WATER, "1", "0")])
+    _hub(
+        hubs,
+        "chebi",
+        [("chebi", "CHEBI:1", "CHEBI:1", "0"), ("inchikey", WATER[:-1] + "O", "CHEBI:1", "0")],
+    )
+    _hub(
+        hubs,
+        "chembl",
+        [("chembl", "CHEMBL1", "CHEMBL1", "0"), ("inchikey", ASPIRIN, "CHEMBL1", "0")],
+    )
+
+
+# Variant name -> hub mutation applied on top of the shared hubs. Only fixtures
+# that contradict the shared hubs need a variant; everything additive belongs in
+# write_hubs() so it shares the single base build.
+VARIANTS = {
+    "base": None,
+    "external-cid-claim": _write_external_cid_claim_hubs,
+    "exact-structures": _write_exact_structure_hubs,
+}
+
+
+SHARED_KEY_ENV = "OMNIPATH_TEST_SHARED_KEY"
+
+
+def shared_root() -> Path | None:
+    """Directory shared by every pytest-xdist worker of one run, else None.
+
+    The controller (see conftest.py) exports ``OMNIPATH_TEST_SHARED_KEY``;
+    workers started without it still carry ``PYTEST_XDIST_TESTRUNUID``. Outside
+    xdist there is neither, and templates stay per-process.
+    """
+    key = os.environ.get(SHARED_KEY_ENV) or os.environ.get("PYTEST_XDIST_TESTRUNUID")
+    if not key:
+        return None
+    return Path(tempfile.gettempdir()) / f"omnipath-test-reference-{key}"
+
+
+def _build_template(root: Path, variant: str) -> Path:
     write_hubs(root / "hubs")
+    if VARIANTS[variant]:
+        VARIANTS[variant](root / "hubs")
     reference = build_library(root / "hubs", root / "library").library_dir
-    return directory, reference
+    # Copies below hard-link these files, so an in-place write by a test would
+    # silently corrupt the shared template: make that fail loudly instead.
+    for path in reference.rglob("*"):
+        if path.is_file() and not path.is_symlink():
+            path.chmod(0o444)
+    return reference
 
 
-def build_fixture_library(root: Path) -> Path:
-    """Independent copies of one production-built reference per test process."""
-    _, reference = _template()
+@lru_cache(maxsize=None)
+def _template(variant: str = "base"):
+    """Build each variant once per process, or once per xdist run across workers.
+
+    Under xdist the first worker to need a variant builds it into the shared
+    directory while holding an exclusive ``flock``; the others block on the lock
+    and then reuse the finished build (marked by ``reference.txt``, written last,
+    so a build that died half way is discarded and redone).
+    """
+    shared = shared_root()
+    if shared is None:
+        directory = tempfile.TemporaryDirectory(prefix=f"parquet-test-reference-{variant}-")
+        return directory, _build_template(Path(directory.name), variant)
+    shared.mkdir(parents=True, exist_ok=True)
+    with open(shared / f"{variant}.lock", "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        root, marker = shared / variant, shared / variant / "reference.txt"
+        if not marker.exists():
+            shutil.rmtree(root, ignore_errors=True)
+            root.mkdir()
+            reference = _build_template(root, variant)
+            marker.write_text(str(reference))
+        return None, Path(marker.read_text())
+
+
+def _link_or_copy(source, destination, *, follow_symlinks=True):
+    try:
+        os.link(source, destination, follow_symlinks=follow_symlinks)
+    except OSError:  # e.g. a different filesystem
+        shutil.copy2(source, destination, follow_symlinks=follow_symlinks)
+
+
+def build_fixture_library(root: Path, variant: str = "base") -> Path:
+    """Independent copies of one production-built reference per test process.
+
+    Each variant is built once per process (lazily, on first use). Callers get
+    their own directory tree whose (read-only) files are hard links to the
+    template's, since copying ~4k files / 45 MB per test costs seconds. Tests may
+    add, unlink or rename files freely; rewriting a file in place raises
+    PermissionError instead of touching the shared template.
+    """
+    _, reference = _template(variant)
     destination = root / "library"
-    shutil.copytree(reference, destination)
+    shutil.copytree(reference, destination, copy_function=_link_or_copy)
     return destination

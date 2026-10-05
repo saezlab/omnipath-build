@@ -85,11 +85,18 @@ def prepare_worker(worker_id, tasks, results, root, source, library_dir, memory_
                         index, raw, payload = pickle.load(handle)
                     except EOFError:
                         break
-                    record = mapper(raw) if mapper else raw
-                    if record is not None:
-                        extractor.process_record(
-                            record, raw, f"{dataset}:{index}", index, payload_json=payload
-                        )
+                    try:
+                        record = mapper(raw) if mapper else raw
+                        if record is not None:
+                            extractor.process_record(
+                                record, raw, f"{dataset}:{index}", index, payload_json=payload
+                            )
+                    except Exception as exc:
+                        # Mappers fail loudly; say which input row to inspect.
+                        raise RuntimeError(
+                            f"{source}:{dataset} input row {index} ({module}) failed: "
+                            f"{type(exc).__name__}: {exc}"
+                        ) from exc
                     rows += 1
                     if (
                         len(extractor.entities) >= limits["entities"]

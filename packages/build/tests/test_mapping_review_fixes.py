@@ -1,11 +1,9 @@
 """Review regressions checked across parser, resolution and serving boundaries."""
 
 import duckdb
-import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from omnipath_build.canonical.library import build_library
 from omnipath_resolver.canonical.identifiers import normalize_identifier, normalize_id_sql
 from writer_fixture import write_observations
 from omnipath_resolver import EntityResolver
@@ -18,7 +16,7 @@ from pypath.inputs_v2 import cellchat, cellphonedb, chembl, rampdb, reactome, si
 from pypath.inputs_v2.base import ontology_term_to_entity
 from pypath.inputs_v2.parsers import chembl as chembl_parser
 from pypath.internals.ontology_schema import OntologyTerm
-from library_fixture import write_hubs
+from library_fixture import build_fixture_library
 
 
 def observations(records, source="review"):
@@ -189,29 +187,9 @@ def test_ontology_imports_keep_their_own_namespace():
 
 
 def test_ensembl_protein_and_transcript_lookup_from_built_library(tmp_path):
-    hubs = tmp_path / "hubs"
-    write_hubs(hubs)
-    old = pq.read_table(hubs / "uniprot.parquet")
-    extra = pa.Table.from_pylist(
-        [
-            {
-                "source_type": ns,
-                "source_id": ident,
-                "hub_id": "P04637",
-                "taxonomy_id": "9606",
-                "backend": "uniprot",
-            }
-            for ns, ident in [
-                ("ensp", "ENSP00000269305.4"),
-                ("enst", "ENST00000269305.8"),
-                ("refseq_protein", "NP_000537.3"),
-            ]
-        ],
-        schema=old.schema,
-    )
-    pq.write_table(pa.concat_tables([old, extra]), hubs / "uniprot.parquet")
-    library = tmp_path / "library"
-    build_library(hubs, library)
+    # ENSP/ENST/RefSeq-protein aliases of P04637 are rows of the shared fixture
+    # hubs, so this reads them through the production-built shared reference.
+    library = build_fixture_library(tmp_path / "reference")
     resolver = EntityResolver(library_dir=library)
     try:
         from omnipath_core.silver_schema import Entity, Identifier

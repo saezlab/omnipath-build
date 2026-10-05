@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import sqlite3
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
@@ -271,6 +272,14 @@ def test_durable_jobs_survive_api_restart_and_worker_is_separate(tmp_path):
     assert restarted.get_job(initial["id"])["status"] == "done"
 
 
+def test_cancel_after_completed_work_still_records_result(tmp_path):
+    service = AdminService(tmp_path, ops=WorkerOps())
+    job = Job("build_library", {}, [])
+    service.run_job(job, should_stop=lambda: True)
+    assert job.status == "done"
+    assert job.result == {"completed": True}
+
+
 def test_worker_lock_recovery_and_cancelled_queue(tmp_path):
     store = JobStore(tmp_path)
     job = Job("build_library", {}, [])
@@ -298,6 +307,15 @@ def test_queue_persistence_failure_is_not_success(tmp_path, monkeypatch):
     monkeypatch.setattr(service.job_store, "enqueue", fail)
     with pytest.raises(OSError, match="disk full"):
         service.start("build_library")
+
+
+def test_queue_readers_tolerate_file_created_before_its_table(tmp_path):
+    store = JobStore(tmp_path)
+    store.path.parent.mkdir(parents=True)
+    # The writer's connect() creates the file before CREATE TABLE runs.
+    sqlite3.connect(store.path).close()
+    assert store.list() == []
+    assert store.get("missing") is None
 
 
 def test_readonly_startup_and_queries_do_not_create_files(tmp_path):

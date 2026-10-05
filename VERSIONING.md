@@ -71,6 +71,13 @@ This validates the referenced Parquets and atomically creates
 `data/releases/2026.09.json`. Published release manifests cannot be overwritten.
 Latest remains the default when new releases are published.
 
+Publishing also records `resource_manifests`: the SHA-256 of each pinned
+resource's `build_manifest.json`. The PostgreSQL loader refuses a resource whose
+build manifest no longer matches its pin, so a release identity always names
+exact content. Sample builds (a `max_records` cap or a `datasets` subset) are
+refused by both the publisher and the loader unless the release explicitly sets
+`"partial_resources": true`.
+
 The equivalent admin API operation is `POST /api/admin/releases` (manifest as
 JSON body), using the
 existing admin authentication. Admin deletion refuses resource versions pinned

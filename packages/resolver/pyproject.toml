@@ -21,6 +21,18 @@ dependencies = [
 [tool.uv.sources]
 omnipath-core = { workspace = true }
 
+[tool.uv]
+# Editable maturin builds: rebuild the native extension when Rust sources change,
+# not only when this file does.
+cache-keys = [
+    { file = "pyproject.toml" },
+    { file = "Cargo.toml" },
+    { file = "Cargo.lock" },
+    { file = "src/**/*.rs" },
+    { file = "rust/reference/Cargo.toml" },
+    { file = "rust/reference/src/**/*.rs" },
+]
+
 [tool.maturin]
 features = ["extension-module"]
 module-name = "omnipath_resolver._omnipath_resolver"

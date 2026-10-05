@@ -10,6 +10,8 @@ from __future__ import annotations
 from contextlib import closing
 from dataclasses import asdict, dataclass, is_dataclass
 import json
+import logging
+import os
 import re
 from pathlib import Path
 from tempfile import TemporaryDirectory, gettempdir
@@ -387,6 +389,28 @@ def _analyze(conn, schema):
     conn.commit()
 
 
+def _drop_unfinished_schema(conn, schema):
+    """Best effort: a failed cleanup must not hide the original load error."""
+    try:
+        conn.rollback()
+        with conn.cursor() as cur:
+            cur.execute("SELECT to_regclass(%s)", [f'"{schema}".parquet_phase'])
+            if cur.fetchone()[0] is not None:
+                cur.execute(
+                    sql.SQL("SELECT 1 FROM {}.parquet_phase WHERE phase='base'").format(
+                        sql.Identifier(schema)
+                    )
+                )
+                if cur.fetchone() is not None:
+                    return  # A committed base is resumable with finish.
+            cur.execute(sql.SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(sql.Identifier(schema)))
+        conn.commit()
+    except Exception:
+        logging.getLogger(__name__).exception(
+            "Could not drop unfinished schema %s; drop it manually before retrying", schema
+        )
+
+
 def _checkpoint(conn, schema, phase, seconds, result, identity, observer):
     _identity(conn, schema, identity)
     with conn.cursor() as cur:
@@ -529,7 +553,11 @@ def load_release(
         release = read_release(data_root, manifest_path)
     artifact_seconds = perf_counter() - start
     _emit(observer, "artifact_validation_complete", **asdict(initial_transfer))
-    staging_parent = Path(gettempdir()) if is_remote(manifest_path) else Path(manifest_path).parent
+    staging_parent = (
+        Path(manifest_path).parent
+        if not is_remote(manifest_path) and os.access(Path(manifest_path).parent, os.W_OK)
+        else Path(gettempdir())
+    )
     spool = Path(temp_directory or staging_parent / "main-staging")
     spool.mkdir(parents=True, exist_ok=True)
     with closing(psycopg2.connect(database_url)) as conn:
@@ -540,93 +568,102 @@ def load_release(
                 raise ValueError(
                     "Aligned loading requires a new schema; use finish for a checkpoint"
                 )
-        ensure_schema(conn, schema=schema, indexes=False, progress=True)
-        _metadata_schema(conn, schema, release)
-        identity = (release.version, release.sha256)
-        with TemporaryDirectory(prefix="main-projection-", dir=spool) as directory:
-            with duckdb.connect(str(Path(directory) / "projection.duckdb")) as con:
-                con.execute("SET threads=?", [duckdb_threads])
-                con.execute("SET memory_limit=?", [memory_limit])
-                con.execute("SET temp_directory=?", [str(Path(directory) / "spill")])
-                _emit(observer, "phase_start", phase="projection")
-                start = perf_counter()
-                plan = prepare_aligned_release(
-                    con,
-                    release,
-                    dimension_rows=_read_dimensions(conn, schema),
-                    progress=lambda fields: _emit(observer, "projection_progress", **fields),
-                    retain_published_provenance=retain_published_provenance,
-                )
-                projection_seconds = perf_counter() - start
-                _write_dimensions(conn, schema, plan.dimensions)
-                for _, source in plan.sources:
-                    ensure_source_partitions(conn, schema=schema, source=source)
-                with conn.cursor() as cur:
-                    for statement in companion_ddl(
-                        schema,
+        try:
+            ensure_schema(conn, schema=schema, indexes=False, progress=True)
+            _metadata_schema(conn, schema, release)
+            identity = (release.version, release.sha256)
+            with TemporaryDirectory(prefix="main-projection-", dir=spool) as directory:
+                with duckdb.connect(str(Path(directory) / "projection.duckdb")) as con:
+                    con.execute("SET threads=?", [duckdb_threads])
+                    con.execute("SET memory_limit=?", [memory_limit])
+                    con.execute("SET temp_directory=?", [str(Path(directory) / "spill")])
+                    _emit(observer, "phase_start", phase="projection")
+                    start = perf_counter()
+                    plan = prepare_aligned_release(
+                        con,
+                        release,
+                        dimension_rows=_read_dimensions(conn, schema),
+                        progress=lambda fields: _emit(observer, "projection_progress", **fields),
                         retain_published_provenance=retain_published_provenance,
-                    ):
-                        cur.execute(statement)
-                conn.commit()
-                constraint_plan = (
-                    _defer_constraints(conn, schema, [q.table for q in plan.queries])
-                    if defer_constraints
-                    else {"constraints": [], "indexes": []}
-                )
-                start = perf_counter()
-                counts = {}
-                staging = copy_seconds = 0.0
-                for item in plan.queries:
-                    _emit(observer, "copy_start", table=item.table, rows=plan.counts[item.table])
-                    copied = _copy(conn, schema, item, con, spool)
-                    if copied.rows != plan.counts[item.table]:
-                        raise ValueError("Prepared projection changed during COPY")
-                    counts[item.table] = copied.rows
-                    staging += copied.stage_seconds
-                    copy_seconds += copied.copy_seconds
-                    _emit(observer, "copy_complete", table=item.table, **asdict(copied))
-                _emit(observer, "phase_start", phase="constraints")
-                constraints_start = perf_counter()
-                _restore_constraints(conn, schema, constraint_plan)
-                constraints_seconds = perf_counter() - constraints_start
-                # Ensure helpers can commit only after every captured key/FK was restored.
-                conn.commit()
-                ensure_deferred_indexes(conn, schema=schema, progress=True)
-                _ensure_molecular_type_index(conn, schema)
-                create_secondary_indexes(conn, schema=schema)
-                _analyze(conn, schema)
-                with measure_http_transfer() as final_transfer:
-                    verify_release(release)
-                _emit(observer, "artifact_revalidation_complete", **asdict(final_transfer))
-                with conn.cursor() as cur:
-                    cur.execute(
-                        sql.SQL(
-                            "UPDATE {}.parquet_release SET counts=%s,compatibility=%s,phase_seconds=%s WHERE singleton"
-                        ).format(sql.Identifier(schema)),
-                        [
-                            Json(counts),
-                            Json(dict(plan.compatibility)),
-                            Json(
-                                {
-                                    "artifact_validation": artifact_seconds,
-                                    "artifact_revalidation": final_transfer.seconds,
-                                    "projection": projection_seconds,
-                                    "csv_staging": staging,
-                                    "copy": copy_seconds,
-                                    "constraints": constraints_seconds,
-                                }
-                            ),
-                        ],
                     )
-                _checkpoint(
-                    conn,
-                    schema,
-                    "base",
-                    perf_counter() - start,
-                    {"counts": counts},
-                    identity,
-                    observer,
-                )
+                    projection_seconds = perf_counter() - start
+                    _write_dimensions(conn, schema, plan.dimensions)
+                    for _, source in plan.sources:
+                        ensure_source_partitions(conn, schema=schema, source=source)
+                    with conn.cursor() as cur:
+                        for statement in companion_ddl(
+                            schema,
+                            retain_published_provenance=retain_published_provenance,
+                        ):
+                            cur.execute(statement)
+                    conn.commit()
+                    constraint_plan = (
+                        _defer_constraints(conn, schema, [q.table for q in plan.queries])
+                        if defer_constraints
+                        else {"constraints": [], "indexes": []}
+                    )
+                    start = perf_counter()
+                    counts = {}
+                    staging = copy_seconds = 0.0
+                    for item in plan.queries:
+                        _emit(
+                            observer, "copy_start", table=item.table, rows=plan.counts[item.table]
+                        )
+                        copied = _copy(conn, schema, item, con, spool)
+                        if copied.rows != plan.counts[item.table]:
+                            raise ValueError("Prepared projection changed during COPY")
+                        counts[item.table] = copied.rows
+                        staging += copied.stage_seconds
+                        copy_seconds += copied.copy_seconds
+                        _emit(observer, "copy_complete", table=item.table, **asdict(copied))
+                    _emit(observer, "phase_start", phase="constraints")
+                    constraints_start = perf_counter()
+                    _restore_constraints(conn, schema, constraint_plan)
+                    constraints_seconds = perf_counter() - constraints_start
+                    # Ensure helpers can commit only after every captured key/FK was restored.
+                    conn.commit()
+                    ensure_deferred_indexes(conn, schema=schema, progress=True)
+                    _ensure_molecular_type_index(conn, schema)
+                    create_secondary_indexes(conn, schema=schema)
+                    _analyze(conn, schema)
+                    with measure_http_transfer() as final_transfer:
+                        verify_release(release)
+                    _emit(observer, "artifact_revalidation_complete", **asdict(final_transfer))
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            sql.SQL(
+                                "UPDATE {}.parquet_release SET counts=%s,compatibility=%s,phase_seconds=%s WHERE singleton"
+                            ).format(sql.Identifier(schema)),
+                            [
+                                Json(counts),
+                                Json(dict(plan.compatibility)),
+                                Json(
+                                    {
+                                        "artifact_validation": artifact_seconds,
+                                        "artifact_revalidation": final_transfer.seconds,
+                                        "projection": projection_seconds,
+                                        "csv_staging": staging,
+                                        "copy": copy_seconds,
+                                        "constraints": constraints_seconds,
+                                    }
+                                ),
+                            ],
+                        )
+                    _checkpoint(
+                        conn,
+                        schema,
+                        "base",
+                        perf_counter() - start,
+                        {"counts": counts},
+                        identity,
+                        observer,
+                    )
+        except BaseException:
+            # Nothing durable exists before the base checkpoint, and this call
+            # created the schema itself under the lock: remove it so a rerun works.
+            _drop_unfinished_schema(conn, schema)
+            raise
+
     if base_only:
         return LoadResult(
             release.version,

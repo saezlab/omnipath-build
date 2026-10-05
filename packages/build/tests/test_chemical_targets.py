@@ -2,8 +2,7 @@ import json
 
 import pytest
 
-from library_fixture import WATER, ASPIRIN, _hub, write_hubs
-from omnipath_build.canonical import build_library
+from library_fixture import WATER, ASPIRIN, build_fixture_library
 from omnipath_resolver.resolver import EntityResolver
 from omnipath_build.silver import RawEntityObservation, SilverExtractor
 from writer_fixture import write_observations
@@ -14,21 +13,13 @@ MISSING = "ZZZZZZZZZZZZZZ-UHFFFAOYSA-N"
 
 @pytest.fixture(scope="module")
 def chemical_library(tmp_path_factory):
-    root = tmp_path_factory.mktemp("chemical-target-reference")
-    hubs = root / "hubs"
-    write_hubs(hubs)
-    # Build authoritative identities through the same compiler and compact index
-    # as real resources; modifying retired Parquet exports cannot affect lookup.
-    _hub(hubs, "pubchem", [("pubchem", "1", "1", "0"), ("inchikey", WATER, "1", "0")])
-    _hub(
-        hubs, "chebi", [("chebi", "CHEBI:1", "CHEBI:1", "0"), ("inchikey", VARIANT, "CHEBI:1", "0")]
+    # Authoritative identities are built through the same compiler and compact
+    # index as real resources (shared "exact-structures" reference: PubChem
+    # CID 1 is WATER, ChEBI:1 a WATER-connectivity VARIANT, CHEMBL1 ASPIRIN);
+    # modifying retired Parquet exports cannot affect lookup.
+    return build_fixture_library(
+        tmp_path_factory.mktemp("chemical-target-reference"), "exact-structures"
     )
-    _hub(
-        hubs,
-        "chembl",
-        [("chembl", "CHEMBL1", "CHEMBL1", "0"), ("inchikey", ASPIRIN, "CHEMBL1", "0")],
-    )
-    return build_library(hubs, root / "library").library_dir
 
 
 @pytest.fixture

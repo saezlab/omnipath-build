@@ -7,6 +7,7 @@ computes only the reduced anchorless graph. No resource observations are inputs.
 
 from __future__ import annotations
 import argparse
+import contextlib
 import hashlib
 import json
 import os
@@ -14,6 +15,7 @@ import shutil
 import subprocess
 import sys
 import time
+import traceback
 from pathlib import Path
 
 VERSION = "gene-product-reference-v6"
@@ -97,6 +99,31 @@ def gene_resolution_query(entities, products):
         FROM {scan(products / "gene_products.parquet")} p"""
 
 
+# Interpreter start-up plus the DuckDB/PyArrow imports cost ~0.15 s per stage, which
+# dominates builds over a few KB of hubs. When the frozen hub inputs total at most
+# this many bytes every stage is trivially small, so it runs in this process instead
+# (same worker code, same worker.log). Real builds are far above it and keep one
+# subprocess per stage for memory isolation and resumability. Set the environment
+# variable to 0 to always use subprocesses.
+INLINE_STAGE_BYTES = 1 << 20
+
+
+def inline_stage_limit():
+    value = os.environ.get("OMNIPATH_REFERENCE_INLINE_STAGE_BYTES")
+    return INLINE_STAGE_BYTES if value is None else int(value)
+
+
+def run_worker_inline(job_path, output):
+    """Run the worker here with its output captured like a subprocess; return an exit code."""
+    with contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
+        try:
+            worker(job_path)
+        except Exception:
+            traceback.print_exc()
+            return 1
+    return 0
+
+
 def worker(job_path):
     import duckdb
 
@@ -169,6 +196,9 @@ class Build:
                 "bytes": st.st_size,
                 "mtime_ns": st.st_mtime_ns,
             }
+        self.inline_stages = (
+            sum(info["bytes"] for info in self.fingerprints.values()) <= inline_stage_limit()
+        )
         identity = {
             "version": VERSION,
             "runtime": runtime_provenance(),
@@ -297,31 +327,15 @@ class Build:
         start = time.monotonic()
         log("stage_start", stage=name)
         with (out / "worker.log").open("w") as output:
-            p = subprocess.Popen(
-                [
-                    sys.executable,
-                    str(Path(__file__).resolve()),
-                    "--worker",
-                    str(job_path),
-                ],
-                stdout=output,
-                stderr=subprocess.STDOUT,
-            )
-            while p.poll() is None:
-                time.sleep(1)
-                if int(time.monotonic() - start) % 10 == 0:
-                    size = sum(f.stat().st_size for f in out.rglob("*.parquet"))
-                    log(
-                        "stage_progress",
-                        stage=name,
-                        seconds=round(time.monotonic() - start),
-                        output_bytes=size,
-                    )
-            if p.returncode:
+            if getattr(self, "inline_stages", False):
+                code = run_worker_inline(job_path, output)
+            else:
+                code = self.run_worker_subprocess(name, job_path, out, output, start)
+            if code:
                 log(
                     "stage_failed",
                     stage=name,
-                    code=p.returncode,
+                    code=code,
                     tail=(out / "worker.log").read_text()[-4000:],
                 )
                 raise RuntimeError(f"{name} failed; completed stages are reusable")
@@ -343,6 +357,35 @@ class Build:
             counts=counts,
         )
         return out
+
+    def run_worker_subprocess(self, name, job_path, out, output, start):
+        """Run one stage in its own interpreter: bounded memory and resumable on failure."""
+        p = subprocess.Popen(
+            [
+                sys.executable,
+                str(Path(__file__).resolve()),
+                "--worker",
+                str(job_path),
+            ],
+            stdout=output,
+            stderr=subprocess.STDOUT,
+        )
+        while True:
+            # Return as soon as the worker exits; tiny stages need not wait a second.
+            try:
+                p.wait(timeout=1)
+                break
+            except subprocess.TimeoutExpired:
+                pass
+            if int(time.monotonic() - start) % 10 == 0:
+                size = sum(f.stat().st_size for f in out.rglob("*.parquet"))
+                log(
+                    "stage_progress",
+                    stage=name,
+                    seconds=round(time.monotonic() - start),
+                    output_bytes=size,
+                )
+        return p.returncode
 
     def copy(self, query, path):
         return f"COPY ({query}) TO {quote(path)} (FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 131072)"

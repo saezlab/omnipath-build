@@ -1,4 +1,4 @@
-.PHONY: help setup setup-python setup-web native-reference test test-pypath test-postgres test-subsets test-api check check-web build sample hubs reference publish-release serving-indexes api web dev load-postgres finish-postgres build-subsets serving-build serving-up serving-status serving-logs serving-stop worker-up
+.PHONY: help setup setup-python setup-web native-reference test test-pypath test-postgres test-subsets test-api check check-web build sample hubs reference publish-release serving-indexes api web dev load-postgres finish-postgres build-subsets serving-build serving-up serving-status serving-logs serving-stop worker-up docs
 
 export PKG_INFRA_CONFIG ?= $(CURDIR)/config/pkg_infra_quiet.yaml
 SOURCE ?= signor
@@ -7,6 +7,12 @@ MAX_RECORDS ?= 20
 DATA_ROOT ?= data
 POSTGRES_SCHEMA ?= omnipath
 POSTGRES_ARGS ?=
+# pytest-xdist: PYTEST_WORKERS=0 runs serially; PYTEST_WORKERS=auto uses every core. 4 is the
+# default because the build tests already fork worker processes and DuckDB threads of their own.
+# Integration targets get their own (smaller) pool: each worker starts a private PostgreSQL.
+PYTEST_WORKERS ?= 4
+PYTEST_PG_WORKERS ?= 2
+PYTEST_ARGS ?=
 SUBSET_PRODUCTS ?= metsigdb network_views cosmos
 API_PORT ?= 8085
 WEB_PORT ?= 5173
@@ -17,7 +23,7 @@ COMPOSE = docker compose $(if $(COMPOSE_ENV),--env-file "$(COMPOSE_ENV)") $(COMP
 help:
 	@echo 'setup | native-reference | sample | build | hubs | reference | publish-release | serving-indexes'
 	@echo 'dev | api | web | serving-build | serving-up | serving-status | serving-logs | serving-stop'
-	@echo 'load-postgres | finish-postgres | build-subsets | test | check | check-web'
+	@echo 'load-postgres | finish-postgres | build-subsets | test | check | check-web | docs'
 	@echo 'See README.md for variables and deploy/README.md for container deployment.'
 
 setup: setup-python setup-web
@@ -31,21 +37,41 @@ setup-web:
 	pnpm --dir packages/web install --frozen-lockfile
 
 test:
-	uv run --frozen pytest -m 'not integration'
+	uv run --frozen pytest -m 'not integration' -n $(PYTEST_WORKERS) $(PYTEST_ARGS)
+# Offline inputs_v2 tests maintained with this workspace (no downloads).
+PYPATH_TESTS = pypath/test/test_chembl_molecular_queries.py \
+	pypath/test/test_cv_terms.py \
+	pypath/test/test_download_timeouts.py \
+	pypath/test/test_input_source_context.py \
+	pypath/test/test_inputs_v2_chemical_migration.py \
+	pypath/test/test_inputs_v2_communication_migration.py \
+	pypath/test/test_inputs_v2_ontology_migration.py \
+	pypath/test/test_inputs_v2_pathway_migration.py \
+	pypath/test/test_interaction_profiles.py \
+	pypath/test/test_measurement_review_fixes.py \
+	pypath/test/test_model_rule_review_fixes.py \
+	pypath/test/test_molecular_catalogue_coverage.py \
+	pypath/test/test_molecular_forms.py \
+	pypath/test/test_molecular_sequence_coverage.py \
+	pypath/test/test_reactome_molecular_coverage.py \
+	pypath/test/test_resource_representation_review.py \
+	pypath/test/test_signor_identifiers.py \
+	pypath/test/test_tabular_execution.py
 test-pypath:
-	uv run --frozen pytest pypath/test/test_tabular_execution.py pypath/test/test_signor_identifiers.py pypath/test/test_inputs_v2_chemical_migration.py pypath/test/test_interaction_profiles.py pypath/test/test_measurement_review_fixes.py pypath/test/test_model_rule_review_fixes.py -q
+	uv run --frozen pytest $(PYPATH_TESTS) -q
 test-postgres:
-	OMNIPATH_TEST_POSTGRES=1 uv run --frozen pytest packages/postgres/tests -q
+	OMNIPATH_TEST_POSTGRES=1 uv run --frozen pytest packages/postgres/tests -q -n $(PYTEST_PG_WORKERS) $(PYTEST_ARGS)
 test-subsets:
-	OMNIPATH_TEST_POSTGRES=1 uv run --frozen pytest packages/postgres/tests packages/subsets/tests -q
+	OMNIPATH_TEST_POSTGRES=1 uv run --frozen pytest packages/postgres/tests packages/subsets/tests -q -n $(PYTEST_PG_WORKERS) $(PYTEST_ARGS)
 test-api:
-	uv run --frozen pytest packages/api/tests -q
+	uv run --frozen pytest packages/api/tests -q -n $(PYTEST_WORKERS) $(PYTEST_ARGS)
 check:
 	uv run --frozen ruff check packages scripts conftest.py
 	uv run --frozen ruff format --check packages scripts conftest.py
 check-web:
 	pnpm --dir packages/web check
 	pnpm --dir packages/web test
+	pnpm --dir packages/web lint
 
 # Resource processing is bounded unless explicitly overridden.
 build:
@@ -119,3 +145,7 @@ postgres-up:
 	docker compose --env-file "$(POSTGRES_ENV)" -f docker-compose.postgres18.yml up -d --build --wait
 rebuild-subsets:
 	uv run --frozen --package omnipath-subsets omnipath-subsets build --schema "$(POSTGRES_SCHEMA)" --products $(SUBSET_PRODUCTS) --checkpoint-products
+# Core documentation viewer (Markdown sources in core_documentation/).
+DOCS_PORT ?= 8090
+docs:
+	uv run --frozen python -m http.server $(DOCS_PORT) --bind 127.0.0.1 --directory core_documentation

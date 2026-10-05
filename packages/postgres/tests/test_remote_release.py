@@ -14,7 +14,7 @@ import pytest
 from omnipath_postgres.projection import prepare_aligned_release
 from omnipath_postgres.locations import HTTPRangeFile, validate_url
 from omnipath_postgres.releases import FILES, ReleaseValidationError, load_release, verify_release
-from test_projection import write_fixture
+from published_fixture import write_fixture
 
 
 @contextmanager
@@ -258,3 +258,37 @@ def test_bounded_measurement_cli_reports_projection_and_validation(published, ca
     )
     with pytest.raises(SystemExit):
         module.main()
+
+
+def test_failed_base_load_removes_its_schema_so_a_rerun_succeeds(
+    published, postgres_dsn, monkeypatch
+):
+    from contextlib import closing
+    import uuid
+    import psycopg2
+    from omnipath_postgres import loader
+
+    root, _, _ = published
+    schema = "failed_fixture_" + uuid.uuid4().hex
+
+    def exists():
+        with closing(psycopg2.connect(postgres_dsn)) as conn, conn.cursor() as cur:
+            cur.execute("SELECT EXISTS(SELECT 1 FROM pg_namespace WHERE nspname=%s)", [schema])
+            return cur.fetchone()[0]
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("deliberate constraint failure")
+
+    arguments = (root, root / "releases/2026.10.json", postgres_dsn)
+    options = dict(schema=schema, base_only=True, temp_directory=root / "spool")
+    with monkeypatch.context() as patch:
+        patch.setattr(loader, "_restore_constraints", fail)
+        with pytest.raises(RuntimeError, match="deliberate"):
+            loader.load_release(*arguments, **options)
+    assert not exists()
+    try:
+        assert loader.load_release(*arguments, **options).counts
+    finally:
+        with closing(psycopg2.connect(postgres_dsn)) as conn, conn.cursor() as cur:
+            cur.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+            conn.commit()

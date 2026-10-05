@@ -992,7 +992,16 @@ def test_isoform_selection_requires_explicit_product_view(molecular_engine):
 def test_actual_writer_native_product_with_gene_is_labeled_before_navigation(
     tmp_path, include_relation
 ):
-    from packages.build.tests.library_fixture import build_fixture_library
+    import sys
+    from pathlib import Path
+
+    # Import under the bare module name the build tests use, so both share one
+    # process-wide reference template (the "packages.build.tests." spelling would
+    # be a second module object with its own cache, i.e. a second library build).
+    build_tests = str(Path(__file__).resolve().parents[2] / "build" / "tests")
+    if build_tests not in sys.path:
+        sys.path.insert(0, build_tests)
+    from library_fixture import build_fixture_library
     from omnipath_resolver.resolver import EntityResolver
     from omnipath_build.silver import SilverExtractor
     from omnipath_build.writer import ParquetWriter

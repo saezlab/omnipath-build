@@ -45,7 +45,13 @@ def test_publisher_output_is_the_shared_and_pinned_reader_contract(tmp_path, mon
     import os
 
     assert os.environ["HTTP_PROXY"] == "http://configured-proxy.invalid:8080"
-    release_data = {"schema_version": 1, "version": "2026.10", "resources": {"signor": "2.7"}}
+    # The capped build is a sample; the release must say so to be loadable.
+    release_data = {
+        "schema_version": 1,
+        "version": "2026.10",
+        "resources": {"signor": "2.7"},
+        "partial_resources": True,
+    }
     release_path = tmp_path / "monthly.json"
     release_path.write_text(json.dumps(release_data))
     selected = reader.load_release(tmp_path, release_path)

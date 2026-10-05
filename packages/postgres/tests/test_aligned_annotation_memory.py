@@ -15,7 +15,7 @@ import duckdb
 import pytest
 
 from omnipath_postgres import loader as aligned_loader, projection as aligned_projection
-from test_projection import annotation, fixture_rows, write_fixture
+from published_fixture import annotation, fixture_rows, write_fixture
 
 
 OLD_LINK_SQL = """WITH true_statement_annotation AS (

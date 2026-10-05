@@ -172,7 +172,7 @@ def write_resource(root, source, entities, relations=(), payloads=(), version="1
                 serving_schema_version=SERVING_SCHEMA_VERSION,
                 resource=source,
                 version=version,
-                max_records=20,
+                max_records=None,
                 files=files,
             )
         )

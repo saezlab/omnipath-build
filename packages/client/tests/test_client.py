@@ -304,3 +304,16 @@ def test_snapshot_survives_move_and_rejects_symlinks(service, tmp_path):
     with Client.from_snapshot(moved) as offline:
         with pytest.raises(ClientError, match="escapes"):
             offline.entities()
+
+
+def test_api_url_falls_back_to_environment(monkeypatch):
+    from omnipath_client.client import DEFAULT_API_URL
+
+    monkeypatch.setenv("OMNIPATH_API_URL", "https://example.invalid/api/")
+    with Client() as client:
+        assert client.api_url == "https://example.invalid/api"
+    with Client("https://explicit.invalid/api") as client:
+        assert client.api_url == "https://explicit.invalid/api"
+    monkeypatch.delenv("OMNIPATH_API_URL")
+    with Client() as client:
+        assert client.api_url == DEFAULT_API_URL

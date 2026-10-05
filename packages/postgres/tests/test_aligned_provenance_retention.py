@@ -25,7 +25,7 @@ from omnipath_postgres.releases import FILE_SCHEMAS
 import test_main_parity_contract as reference_contract
 from test_aligned_ontology_memory import _serving_rows
 from test_main_parquet_semantics import _ontology_fixture
-from test_projection import QUANTITY, annotation, fixture_rows, write_fixture
+from published_fixture import QUANTITY, annotation, fixture_rows, write_fixture
 
 
 oracle = reference_contract.oracle

@@ -42,7 +42,7 @@
     ...(data?.relations.flatMap((row) => [row.subjectEntity, row.objectEntity]) || []),
   ]);
   $effect(() => {
-    entityKey;
+    void entityKey; // Reset local selection whenever the entity changes.
     selectedKey = '';
     view = 'reference';
     selectedIsoform = undefined;

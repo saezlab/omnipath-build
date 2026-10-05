@@ -2,21 +2,19 @@
 
 import json
 
-from library_fixture import ASPIRIN, _hub, write_hubs
-from omnipath_build.canonical.library import build_library
+from library_fixture import build_fixture_library
 from omnipath_resolver import LibraryMatcher
 from omnipath_build.silver import RawEntityObservation
 
 
 def test_conflicting_authoritative_identities_remain_unresolved(tmp_path):
-    hubs, library = tmp_path / "hubs", tmp_path / "library"
-    write_hubs(hubs)
-    # An external resource claims CID 962 for WATER in the fixture. Deliberately
-    # conflicting PubChem evidence verifies ownership, not real-world chemistry.
-    _hub(hubs, "pubchem", [("inchikey", ASPIRIN, "962", "0")])
-    build_library(hubs, library)
-    manifest = json.loads((library / "current" / "manifest.json").read_text())
-    assignment = json.loads((library / "current" / "assignment-manifest.json").read_text())
+    # The shared "external-cid-claim" reference (see library_fixture) has an
+    # external resource claim CID 962 for ASPIRIN although HMDB assigns it to
+    # WATER. Deliberately conflicting PubChem evidence verifies ownership, not
+    # real-world chemistry. It is a complete production build, copied per test.
+    library = build_fixture_library(tmp_path, "external-cid-claim")
+    manifest = json.loads((library / "manifest.json").read_text())
+    assignment = json.loads((library / "assignment-manifest.json").read_text())
     assert manifest["complete"] is True
     assert assignment["full_scope"] is True
     assert assignment["fingerprint"] == manifest["reference_fingerprint"]

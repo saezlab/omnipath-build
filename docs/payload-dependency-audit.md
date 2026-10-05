@@ -1,4 +1,4 @@
-> Historical audit of the earlier record-layout pipeline. Original paths below identify that version; retained readers now live under explicit compatibility namespaces. See [current architecture](architecture.md).
+> Historical audit of the earlier record-layout pipeline. Original paths below identify that version; those readers have since been removed. See [current architecture](architecture.md).
 
 # Evidence payload dependency audit
 

@@ -2,8 +2,11 @@
 
 from contextlib import closing
 import json
+import functools
 import os
 import shutil
+import tempfile
+from pathlib import Path
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -24,6 +27,25 @@ from omnipath_build.reference.replay_resources import CODES, key
 
 
 def fixture(root):
+    """Independent copy of one fixture reference built once per test process.
+
+    Writing the 256 LMDB partitions costs seconds; tests that corrupt, resume or
+    rebuild the index mutate only their own copy.
+    """
+    _, template_reference, template_base = _fixture_template()
+    reference, base = root / "assigned", root / "base"
+    shutil.copytree(template_reference, reference)
+    shutil.copytree(template_base, base)
+    return reference, base
+
+
+@functools.lru_cache(maxsize=1)
+def _fixture_template():
+    directory = tempfile.TemporaryDirectory(prefix="gene-role-fixture-")
+    return (directory, *_build_fixture(Path(directory.name)))
+
+
+def _build_fixture(root):
     base, reference = root / "base", root / "assigned"
     base.mkdir(parents=True)
     reference.mkdir()

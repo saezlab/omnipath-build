@@ -1,7 +1,8 @@
 # Build run log
 
-A running record of individual `make load` / `make reload` invocations against
-a real database — not build *tuning* (see [`build-tuning.md`](build-tuning.md))
+A running record of individual real builds and loads (historically `make load` /
+`make reload`; now `make build`, `make load-postgres`, `make finish-postgres`,
+`make build-subsets`) against real data or a real database — not build *tuning* (see [`build-tuning.md`](build-tuning.md))
 or pipeline *architecture* (see [`pipeline.md`](pipeline.md)), but the history
 of actual runs: why each one happened, what parameters it used, and how long
 its phases took. The goal is that nobody has to re-derive "why did we run

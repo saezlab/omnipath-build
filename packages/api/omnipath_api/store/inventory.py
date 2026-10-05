@@ -16,7 +16,11 @@ from typing import Any
 
 import pyarrow.parquet as pq
 
-from omnipath_core.versioning import RESOURCE_FILES, validate_release_manifest
+from omnipath_core.versioning import (
+    RESOURCE_FILES,
+    partial_build_reason,
+    validate_release_manifest,
+)
 
 FILES = RESOURCE_FILES
 
@@ -91,9 +95,43 @@ class ReleaseStore:
                     raise ValueError(f"Missing release artifact: {source}/{version}/{name}")
                 pq.read_metadata(path)
 
+    def resource_manifests(self, manifest: dict[str, Any]) -> dict[str, str] | None:
+        """Pin each resource's build manifest bytes; refuse unmarked sample builds.
+
+        Returns None for legacy stores where some resource has no build manifest.
+        """
+        digests, partial, legacy = {}, [], False
+        for source, version in sorted(manifest["resources"].items()):
+            path = self.root / "resources" / source / version / "build_manifest.json"
+            if not path.is_file():
+                legacy = True
+                continue
+            content = path.read_bytes()
+            digests[source] = hashlib.sha256(content).hexdigest()
+            reason = partial_build_reason(json.loads(content))
+            if reason:
+                partial.append(f"{source}/{version} ({reason})")
+        if partial and manifest.get("partial_resources") is not True:
+            raise ValueError(
+                "Release pins sample builds: "
+                + ", ".join(partial)
+                + '; rebuild them uncapped or set "partial_resources": true'
+            )
+        pinned = manifest.get("resource_manifests")
+        if legacy:
+            if pinned is not None:
+                raise ValueError("Cannot verify resource_manifests: a build manifest is missing")
+            return None
+        if pinned is not None and pinned != digests:
+            raise ValueError("Release resource_manifests do not match the local build manifests")
+        return digests
+
     def publish(self, manifest: dict[str, Any]) -> dict[str, Any]:
         manifest = dict(validate_manifest(manifest))
         self.validate_files(manifest)
+        digests = self.resource_manifests(manifest)
+        if digests is not None:
+            manifest["resource_manifests"] = digests
         # Legacy stores can still publish without a reference. Once provisioned,
         # every new release resolves its complete taxon set from the cached dump.
         if (

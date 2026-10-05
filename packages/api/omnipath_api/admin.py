@@ -513,15 +513,14 @@ class AdminService:
             result = self._execute(job, on_progress, should_cancel)
             with self._lock:
                 now = time.time()
-                if should_cancel():
-                    job.status = "cancelled"
-                    self._close_open_stages(job, "cancelled", "Cancelled", now)
-                    self._append_log(job, "Cancelled")
-                else:
-                    job.status = "done"
-                    job.result = _jsonable(result)
-                    self._close_open_stages(job, "done", "", now)
-                    self._append_log(job, "Job finished")
+                # Operations honour cancellation by raising BuildCancelled. A normal
+                # return means the work (e.g. a resource publication) completed.
+                if job.cancel_requested:
+                    self._append_log(job, "Cancel requested after the work had completed")
+                job.status = "done"
+                job.result = _jsonable(result)
+                self._close_open_stages(job, "done", "", now)
+                self._append_log(job, "Job finished")
                 job.finished_at = now
             self._persist_job_logs(job)
             self._persist_job_meta(job)

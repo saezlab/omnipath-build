@@ -20,7 +20,7 @@ from omnipath_core.schema import ENTITY_SCHEMA, RELATION_SCHEMA, PAYLOAD_SCHEMA
 
 def fixture_helpers():
     """Use the workspace's schema fixtures without modifying the import path."""
-    path = Path(__file__).resolve().parents[2] / "subsets/tests/release_fixture.py"
+    path = Path(__file__).with_name("release_fixture.py")
     spec = importlib.util.spec_from_file_location("migration_release_fixture", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)

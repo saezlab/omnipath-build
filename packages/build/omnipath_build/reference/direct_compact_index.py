@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import base64
 from concurrent.futures import ProcessPoolExecutor
+from functools import lru_cache
 import hashlib
 import json
 from pathlib import Path
@@ -244,11 +245,17 @@ class DirectCompiler(Compiler):
         return removed
 
 
+@lru_cache(maxsize=None)
+def _compiler(reference, output, memory, threads, reserve, dictionaries):
+    """One compiler per process and build: partitions need not rebuild it (and its
+    manifest/dictionary/checkpoint-validation state) 256 times per stage.
+    ``build_direct_compact`` clears this so a reused process never sees a stale build."""
+    return DirectCompiler(reference, output, memory, threads, reserve, dictionaries=dictionaries)
+
+
 def _partition_worker(arguments):
     reference, output, memory, threads, reserve, dictionaries, stage, part = arguments
-    compiler = DirectCompiler(
-        reference, output, memory, threads, reserve, dictionaries=dictionaries
-    )
+    compiler = _compiler(reference, output, memory, threads, reserve, dictionaries)
     if stage == "entities":
         return compiler.entity_partition(part)
     if stage == "enrich":
@@ -282,23 +289,30 @@ def build_direct_compact(
     from .candidate_limit import apply_limit
     from .full_index_assertions import stage_assertions
 
+    _compiler.cache_clear()
     output = Path(output).absolute()
     compiler = DirectCompiler(
         reference, output, memory, threads, min_free_gib, dictionaries=dictionaries
     )
     compiler.prepare_bulk()
     stage_assertions(compiler)
-    for stage in ("entities", "enrich", "products", "identifiers"):
-        jobs = [
+    jobs = {
+        stage: [
             (reference, output, memory, threads, min_free_gib, dictionaries, stage, f"{n:02x}")
             for n in range(256)
         ]
-        if workers == 1:
-            for job in jobs:
+        for stage in ("entities", "enrich", "products", "identifiers")
+    }
+    if workers == 1:
+        for stage_jobs in jobs.values():
+            for job in stage_jobs:
                 _partition_worker(job)
-        else:
-            with ProcessPoolExecutor(max_workers=workers) as pool:
-                list(pool.map(_partition_worker, jobs))
+    else:
+        # Stages stay strictly sequential; the worker processes are shared so each
+        # does not pay interpreter and DuckDB/PyArrow start-up again per stage.
+        with ProcessPoolExecutor(max_workers=workers) as pool:
+            for stage_jobs in jobs.values():
+                list(pool.map(_partition_worker, stage_jobs))
     compiler.publish()
     apply_limit(output, reference)
     atomic_json(
