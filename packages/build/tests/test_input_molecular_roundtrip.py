@@ -1,0 +1,153 @@
+"""Resource forms survive real resolution, Parquet reduction and direct serving."""
+
+import csv
+import io
+import json
+from types import SimpleNamespace
+
+import pyarrow.parquet as pq
+
+from library_fixture import build_fixture_library
+from omnipath_api.engine import ParquetServingEngine
+from omnipath_build.silver import SilverExtractor
+from omnipath_build.writer import ParquetWriter
+from omnipath_resolver.resolver import EntityResolver
+from pypath.inputs_v2 import bindingdb, brenda, chembl, mirbase, uniprot
+from pypath.inputs_v2.parsers import brenda as brenda_parser
+
+
+def opener(text):
+    return SimpleNamespace(result={"data": io.StringIO(text)})
+
+
+def catalogue_rows():
+    data = io.StringIO()
+    row = {
+        "Entry": "P04637",
+        "Organism (ID)": "9606",
+        "Sequence": "MASG",
+        "Sequence version": "4",
+        "Mutagenesis": 'MUTAGEN 2; /note="A->G,V: alternatives"',
+        "Modified residue": 'MOD_RES 3; /note="Phosphoserine"',
+    }
+    writer = csv.DictWriter(data, fieldnames=list(row), delimiter="\t")
+    writer.writeheader()
+    writer.writerow(row)
+    return [
+        uniprot.catalogue_features_schema(r)
+        for r in uniprot._catalogue_feature_rows(opener(data.getvalue()))
+    ]
+
+
+def test_molecular_inputs_roundtrip_without_combinatorial_entities(tmp_path):
+    folder = tmp_path / "resources" / "fixture" / "1"
+    rows = catalogue_rows()
+    for row in brenda_parser.iter_molecular_forms(
+        opener(
+            "ID\t1.1.1.1\nPR\t#1# Homo sapiens {P04637; source: UniProt} <1>\n"
+            "EN\t#1# A2G/S3D <1>\nEN\t#1# A2V <1>\n///\n"
+        )
+    ):
+        rows.append(brenda.molecular_forms_schema(row))
+    rows.append(
+        chembl.activities_schema(
+            {
+                "molecule_chembl_id": "CHEMBL1",
+                "target_chembl_id": "CHEMBLT1",
+                "target_type": "SINGLE PROTEIN",
+                "target_component_uniprot_accessions": "P04637",
+                "target_tax_id": "9606",
+                "variant_id": 12,
+                "variant_accession": "P04637",
+                "variant_isoform": 2,
+                "variant_version": 4,
+                "variant_mutation": "A2G/S3D",
+                "variant_sequence": "MGDG",
+            }
+        )
+    )
+    rows.append(
+        bindingdb._target(
+            {
+                "Target Name": "two source chains",
+                "Number of Protein Chains in Target (>1 implies a multichain complex)": "2",
+                "UniProt (SwissProt) Primary ID of Target Chain 1": "P04637-2",
+                "UniProt (SwissProt) Primary ID of Target Chain 2": "P04637-3",
+                "BindingDB Target Chain 1 Sequence": "MAAK",
+                "BindingDB Target Chain 2 Sequence": "MAAT",
+            }
+        )
+    )
+    rows.append(
+        mirbase.matures_schema(
+            {
+                "mirbase_mat": "MIMAT1",
+                "name": "a mature RNA",
+                "sequence": "ACGU",
+                "precursors": ["MI1"],
+                "precursor_regions": [{"position": 2, "end_position": 5}],
+            }
+        )
+    )
+    resolver = EntityResolver(build_fixture_library(tmp_path))
+    writer = ParquetWriter(folder, library_dir=resolver.library_dir)
+    try:
+        for number, record in enumerate(rows):
+            extractor = SilverExtractor("fixture", "molecular")
+            extractor.process_record(record, {"source_row": number}, str(number), number)
+            writer.append_observations(extractor, resolver)
+        entities_path, relations_path, _ = writer.close()[:3]
+    finally:
+        resolver.close()
+    entities = pq.read_table(entities_path).to_pylist()
+    (anchor,) = [
+        entity
+        for entity in entities
+        if entity["namespace"] == "entrez" and entity["entity_type"] == "protein"
+    ]
+    assert anchor["reference_entity_key"] == "entrez:7157"
+    assert not any(
+        identifier["ns"].endswith("_sequence_sha256") for identifier in anchor["identifiers"]
+    )
+    (product,) = [
+        entity
+        for entity in entities
+        if entity["namespace"] == "uniprot" and entity["identifier"] == "P04637"
+    ]
+    assert product["reference_entity_key"] == anchor["reference_entity_key"]
+    assert not any(
+        "-" in identifier["id"]
+        for identifier in anchor["identifiers"]
+        if identifier["ns"] == "uniprot"
+    )
+    alternatives = [
+        evidence["molecular_form"] for evidence in anchor["evidence"] if evidence["molecular_form"]
+    ]
+    assert len(alternatives) == 7
+    assert sorted(len(form["variants"] or []) for form in alternatives) == [0, 0, 0, 1, 1, 1, 2]
+    assert all(form["protein_entity_key"] == product["entity_key"] for form in alternatives)
+    relations = pq.read_table(relations_path).to_pylist()
+    mutant = next(relation for relation in relations if relation["predicate"] == "interacts_with")
+    form = mutant["evidence"][0]["object_molecular_form"]
+    assert form["protein_entity_key"] == product["entity_key"]
+    assert len(form["variants"]) == 2
+    assert {identifier["ns"] for identifier in form["sequence_identifiers"]} >= {
+        "uniprot",
+        "chembl_representative_sequence_sha256",
+    }
+    engine = ParquetServingEngine(tmp_path)
+    try:
+        served = engine.get_entity_core(anchor["entity_key"])["entity"]
+        assert len(served["molecularEvidence"]) == 7
+        evidence = engine.get_relation_evidence(mutant["relation_key"])["evidence"]
+        assert len(evidence) == 1
+        assert len(evidence[0]["objectMolecularForm"]["variants"]) == 2
+        context = engine.get_molecular_context(
+            product["entity_key"], view="product", isoform_identifier="uniprot:P04637-2"
+        )
+        assert context["relationsTotal"] == 2
+        assert all(
+            "uniprot:P04637-3" not in json.dumps(row["evidence"]) for row in context["relations"]
+        )
+    finally:
+        engine.close()

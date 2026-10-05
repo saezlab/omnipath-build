@@ -91,6 +91,9 @@ def preparation_fingerprint(source):
     from omnipath_resolver.canonical import match, policy, identifiers, structures
     from omnipath_resolver import observations as resolution_observations, contracts
     from omnipath_resolver import goslin, goslin_cache
+    from pypath.internals import tabular_builder
+    from pypath.inputs_v2 import _molecular_forms
+    from omnipath_core import molecular_forms
     from omnipath_build import silver
     from omnipath_build.extract import observations
 
@@ -101,6 +104,9 @@ def preparation_fingerprint(source):
         identifiers,
         structures,
         silver,
+        tabular_builder,
+        _molecular_forms,
+        molecular_forms,
         observations,
         resolution_observations,
         contracts,

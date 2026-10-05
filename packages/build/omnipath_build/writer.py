@@ -135,6 +135,10 @@ def _form_specific_identifier(namespace, identifier):
     """Keep occurrence-specific sequence IDs out of general alias collections."""
     import re
 
+    if namespace in {"chembl_variant", "uniprot_feature", "uniprot_sequence_version"}:
+        return True
+    if namespace.endswith("_sequence_sha256"):
+        return True
     if namespace in {"ensp", "enst", "ensembl_protein", "ensembl_transcript"}:
         return True
     if namespace in {"uniprot", "uniprot-sec"}:
