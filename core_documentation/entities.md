@@ -15,7 +15,7 @@ The current contract is `serving_schema_version = 4`; build manifests stay at
 ## Three questions, three fields
 
 An entity row answers three different questions. Keeping them apart is the
-central design choice of the schema ([D5](decisions.md#d5), [D6](decisions.md#d6)).
+central design choice of the schema.
 
 | Field | Question | Example |
 | --- | --- | --- |
@@ -46,8 +46,19 @@ reference_entity_key: entrez:7157
 evidence[0].molecular_form: null
 ```
 
-An absent molecular form means *unspecified*. It does not mean gene-level
-evidence, the canonical isoform, an unmodified protein or the wild type.
+> **Decision: keep the source's entity type.** `entity_type` stays what the
+> source reported. Resolving a protein to a gene reference does not change its
+> type to `gene`. We rejected moving the source type into a separate
+> `participant_type` field. *Why:* protein-level and gene-level knowledge are
+> different claims, and users need to see the difference. As a result, a
+> protein row and a gene row of the same gene are separate entities with the
+> same `reference_entity_key`. (5 October 2026)
+
+> **Decision: missing means unspecified.** An absent molecular form, isoform,
+> modification or variant means the source did not say. It never means
+> gene-level evidence, the canonical isoform, an unmodified protein or the wild
+> type. Older evidence without molecular context stays unknown. *Why:* treating
+> silence as a claim would create false results in form queries.
 
 ## Keys
 
@@ -82,8 +93,14 @@ Keys are deterministic SHA-256 hashes ([`keys.py`](../packages/core/omnipath_cor
 Product rows (primary UniProt proteins and specifically reported transcripts)
 are ordinary typed entity rows. Observations point to them through
 `molecular_form.protein_entity_key` or `transcript_entity_key`. We do **not**
-create an entity for each combination of isoform, modification and variant
-([D7](decisions.md#d7)).
+create an entity for each combination of isoform, modification and variant.
+
+> **Decision: no entity per molecular state.** Reusable protein and transcript
+> entities exist, but isoform/modification/variant combinations stay on the
+> occurrence. Modifications and variants are stored individually so they can be
+> queried. *Why:* the number of combinations is unbounded, and combining evidence
+> for X+Y with X+Z must not invent an X+Y+Z form. A state model can be
+> reconsidered if pathway state transitions need it. (4 October 2026)
 
 ## `relations.parquet`
 
@@ -109,6 +126,16 @@ Each evidence item is one source occurrence:
   relation flips its endpoints, the forms and annotation scopes flip with it.
 - Gene-level evidence is never copied onto proteins of that gene.
 - `row_id` links to `evidence_payloads.parquet` for the raw source record.
+
+> **Decision: evidence is a multiset with paired forms.** Every source
+> occurrence stays a separate evidence item, even when identical, and its
+> subject and object forms stay together. *Why:* counts and filters need the
+> real occurrences, and a union of forms across a relation would lose which
+> participants were observed together.
+
+> **Decision: conflicting taxa project to empty.** The scalar `taxon` is filled
+> only when the assertions agree; otherwise it is empty and each occurrence keeps
+> its own. *Why:* picking one species would hide a real conflict.
 
 ## Molecular form
 

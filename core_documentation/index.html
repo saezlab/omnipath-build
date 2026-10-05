@@ -8,7 +8,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@500;600&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&display=swap">
 <style>
-/* Layout: fixed reading-order rail on the left, one ~70ch column of prose; rail collapses to a top bar on phones. */
+/* Layout: a narrow rail with only the page links, one ~74ch column of prose; the rail becomes a wrapping top row on phones. */
 :root {
   --bg: #f5f6f4;
   --panel: #ffffff;
@@ -19,7 +19,7 @@
   --accent-soft: #e2f0ed;
   --code-bg: #eef1ef;
   --decision: #8a5a12;
-  --decision-soft: #f6ecd9;
+  --decision-soft: #f8f0e1;
   --font-display: "IBM Plex Sans Condensed", "Arial Narrow", system-ui, sans-serif;
   --font-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
@@ -29,13 +29,13 @@
   :root:not([data-theme="light"]) {
     --bg: #121615; --panel: #191e1d; --ink: #e3e8e6; --muted: #98a5a1; --line: #2b3331;
     --accent: #5cc4b4; --accent-soft: #1b3330; --code-bg: #1f2624;
-    --decision: #e0b066; --decision-soft: #352a17; color-scheme: dark;
+    --decision: #e0b066; --decision-soft: #2a2216; color-scheme: dark;
   }
 }
 :root[data-theme="dark"] {
   --bg: #121615; --panel: #191e1d; --ink: #e3e8e6; --muted: #98a5a1; --line: #2b3331;
   --accent: #5cc4b4; --accent-soft: #1b3330; --code-bg: #1f2624;
-  --decision: #e0b066; --decision-soft: #352a17; color-scheme: dark;
+  --decision: #e0b066; --decision-soft: #2a2216; color-scheme: dark;
 }
 
 * { box-sizing: border-box; }
@@ -46,45 +46,23 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 a { color: var(--accent); text-underline-offset: 2px; }
-a:focus-visible, button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
+a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
 
-.shell { display: grid; grid-template-columns: 264px minmax(0, 1fr); min-height: 100vh; }
+.shell { display: grid; grid-template-columns: 220px minmax(0, 1fr); min-height: 100vh; }
 
-/* Rail */
+/* Rail: page links only */
 .rail {
   position: sticky; top: env(safe-area-inset-top, 0px); align-self: start; height: 100vh; overflow-y: auto;
-  border-right: 1px solid var(--line); background: var(--panel);
-  padding: 28px 20px 24px; display: flex; flex-direction: column; gap: 22px;
+  border-right: 1px solid var(--line); background: var(--panel); padding: 28px 14px;
 }
-.brand { display: flex; flex-direction: column; gap: 2px; }
-.brand b { font: 600 19px/1.15 var(--font-display); letter-spacing: 0.01em; }
-.brand span { font-size: 12.5px; color: var(--muted); }
-.search { position: relative; }
-.search input {
-  width: 100%; font: inherit; font-size: 14px; color: var(--ink);
-  background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 7px 10px;
-}
-.search input::placeholder { color: var(--muted); }
 .nav { display: flex; flex-direction: column; gap: 2px; }
-.nav-label { font: 500 11px/1 var(--font-mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); margin: 0 0 8px 10px; }
-.nav a {
-  display: grid; grid-template-columns: 22px 1fr; align-items: baseline;
-  padding: 6px 10px; border-radius: 6px; color: var(--ink); text-decoration: none; font-size: 14.5px;
-}
-.nav a small { font: 400 11.5px/1 var(--font-mono); color: var(--muted); font-variant-numeric: tabular-nums; }
+.nav a { padding: 7px 12px; border-radius: 6px; color: var(--ink); text-decoration: none; font-size: 14.5px; }
 .nav a:hover { background: var(--bg); }
 .nav a[aria-current="page"] { background: var(--accent-soft); color: var(--accent); font-weight: 500; }
-.nav a[aria-current="page"] small { color: var(--accent); }
-.toc { display: flex; flex-direction: column; gap: 1px; margin: 4px 0 6px 32px; border-left: 1px solid var(--line); }
-.toc a { display: block; padding: 3px 10px; font-size: 13px; color: var(--muted); border-radius: 0; }
-.toc a:hover { color: var(--ink); background: none; }
-.rail-foot { margin-top: auto; font-size: 12px; color: var(--muted); line-height: 1.5; }
-.rail-foot code { font-size: 11.5px; }
 
 /* Content */
 main { padding-block: 48px 96px; padding-inline: clamp(16px, 5vw, 64px); min-width: 0; }
 .doc { max-width: 74ch; margin: 0 auto; min-width: 0; }
-.eyebrow { font: 500 11.5px/1 var(--font-mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); margin-bottom: 10px; }
 .doc h1 { font: 600 clamp(30px, 4vw, 38px)/1.1 var(--font-display); letter-spacing: -0.005em; margin: 0 0 18px; text-wrap: balance; }
 .doc h2 { font: 600 23px/1.25 var(--font-display); margin: 44px 0 12px; padding-top: 16px; border-top: 1px solid var(--line); text-wrap: balance; }
 .doc h3 { font: 600 17px/1.3 var(--font-body); margin: 28px 0 8px; text-wrap: balance; }
@@ -92,12 +70,12 @@ main { padding-block: 48px 96px; padding-inline: clamp(16px, 5vw, 64px); min-wid
 .doc p, .doc ul, .doc ol { margin: 0 0 14px; }
 .doc ul, .doc ol { padding-left: 22px; }
 .doc li { margin: 4px 0; }
+.doc li > p { margin: 0 0 8px; }
 .doc li::marker { color: var(--muted); }
 .doc strong { font-weight: 600; }
-.doc hr { border: 0; border-top: 1px solid var(--line); margin: 32px 0; }
 .doc :is(h2, h3) { scroll-margin-top: 24px; }
 .doc :is(h2, h3) .anchor { opacity: 0; margin-left: 6px; text-decoration: none; font-weight: 400; color: var(--muted); }
-.doc :is(h2, h3):hover .anchor { opacity: 1; }
+.doc :is(h2, h3):hover .anchor, .doc :is(h2, h3) .anchor:focus-visible { opacity: 1; }
 
 .doc code { font: 0.87em/1.5 var(--font-mono); background: var(--code-bg); padding: 1px 5px; border-radius: 4px; overflow-wrap: anywhere; }
 .doc pre { background: var(--code-bg); border-radius: 8px; padding: 14px 16px; overflow-x: auto; margin: 0 0 18px; }
@@ -113,15 +91,25 @@ main { padding-block: 48px 96px; padding-inline: clamp(16px, 5vw, 64px); min-wid
 .diagram { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 18px; margin: 0 0 20px; overflow-x: auto; text-align: center; }
 .diagram svg { max-width: 100%; height: auto; }
 
-/* Decision ids and glossary links */
-a.ref-decision { font: 500 0.82em/1 var(--font-mono); background: var(--decision-soft); color: var(--decision); text-decoration: none; padding: 2px 6px; border-radius: 4px; white-space: nowrap; }
+/* Decision blocks: a blockquote that starts with "Decision:" */
+.doc blockquote { margin: 0 0 18px; padding: 10px 16px; border-left: 3px solid var(--line); color: var(--muted); }
+.doc blockquote p:last-child { margin-bottom: 0; }
+.doc blockquote.decision {
+  color: var(--ink); background: var(--decision-soft); border: 0; border-radius: 8px;
+  padding: 14px 18px 14px 18px; position: relative;
+}
+.doc blockquote.decision::before {
+  content: "Decision"; display: block; margin-bottom: 4px;
+  font: 500 11px/1.4 var(--font-mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--decision);
+}
+.doc blockquote.decision > p:first-child > strong:first-child { color: var(--ink); }
+.doc blockquote.decision em { font-style: normal; font-weight: 600; color: var(--decision); }
+
+/* Glossary */
 a.ref-term { color: inherit; text-decoration: underline dotted var(--accent); text-decoration-thickness: 1.5px; text-underline-offset: 3px; }
-.doc.page-decisions h2 { display: flex; gap: 10px; align-items: baseline; }
-.doc.page-decisions h2 .did { font: 500 13px/1 var(--font-mono); background: var(--decision-soft); color: var(--decision); padding: 5px 7px; border-radius: 4px; flex: none; }
-.doc.page-glossary h3 { margin-top: 22px; color: var(--accent); font-size: 16px; }
+.doc.page-glossary h3 { margin: 22px 0 2px; color: var(--accent); font-size: 16px; }
 .doc.page-glossary h3 + p { margin-top: 0; }
 
-/* Popover */
 .pop {
   position: absolute; z-index: 20; max-width: min(380px, calc(100vw - 32px));
   background: var(--panel); color: var(--ink); border: 1px solid var(--line); border-radius: 8px;
@@ -132,16 +120,6 @@ a.ref-term { color: inherit; text-decoration: underline dotted var(--accent); te
 .pop p:last-child { margin: 0; }
 .pop code { font: 0.88em var(--font-mono); background: var(--code-bg); padding: 0 4px; border-radius: 3px; }
 
-/* Search results */
-.results { position: absolute; left: 0; right: 0; top: calc(100% + 6px); z-index: 30; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 8px 28px rgba(0,0,0,0.14); max-height: 60vh; overflow-y: auto; }
-.results a { display: block; padding: 9px 12px; text-decoration: none; color: var(--ink); border-bottom: 1px solid var(--line); }
-.results a:last-child { border-bottom: 0; }
-.results a:hover, .results a.active { background: var(--accent-soft); }
-.results small { display: block; font: 500 11px/1.3 var(--font-mono); color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
-.results span { display: block; font-size: 12.5px; color: var(--muted); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.results mark { background: var(--decision-soft); color: inherit; }
-.results .none { padding: 10px 12px; color: var(--muted); font-size: 13px; }
-
 .pager { display: flex; justify-content: space-between; gap: 16px; margin-top: 56px; padding-top: 20px; border-top: 1px solid var(--line); flex-wrap: wrap; }
 .pager a { text-decoration: none; display: flex; flex-direction: column; gap: 2px; }
 .pager a small { font: 500 11px/1 var(--font-mono); text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
@@ -150,37 +128,18 @@ a.ref-term { color: inherit; text-decoration: underline dotted var(--accent); te
 .notice { background: var(--decision-soft); border-radius: 8px; padding: 16px 18px; }
 .notice pre { margin: 10px 0 0; }
 
-.menu-btn { display: none; }
-
 @media (max-width: 860px) {
   .shell { grid-template-columns: 1fr; }
-  .rail { position: static; height: auto; border-right: 0; border-bottom: 1px solid var(--line); padding: 16px; gap: 14px; }
-  .rail-top { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
-  .menu-btn { display: inline-block; font: inherit; font-size: 13px; color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; cursor: pointer; }
-  .rail:not(.open) .nav, .rail:not(.open) .rail-foot { display: none; }
-  .toc { display: none; }
+  .rail { position: static; height: auto; border-right: 0; border-bottom: 1px solid var(--line); padding: 10px 16px; }
+  .nav { flex-direction: row; flex-wrap: wrap; gap: 4px; }
+  .nav a { padding: 5px 10px; font-size: 14px; }
   main { padding-block: 28px 64px; }
-}
-@media (prefers-reduced-motion: no-preference) {
-  .doc { animation: fade 160ms ease-out; }
-  @keyframes fade { from { opacity: 0.6; } to { opacity: 1; } }
 }
 </style>
 </head>
 <body>
 <div class="shell">
-  <aside class="rail" id="rail">
-    <div class="rail-top">
-      <div class="brand"><b>OmniPath core</b><span>Schema, resolution, PostgreSQL, subsets</span></div>
-      <button class="menu-btn" id="menu-btn" aria-expanded="false" aria-controls="nav">Pages</button>
-    </div>
-    <div class="search">
-      <input id="q" type="search" placeholder="Search pages and terms" autocomplete="off" aria-label="Search the documentation">
-      <div class="results" id="results" hidden></div>
-    </div>
-    <nav class="nav" id="nav" aria-label="Pages"></nav>
-    <div class="rail-foot">Source: Markdown files in <code>core_documentation/</code>. Edit them in the same pull request as the code.</div>
-  </aside>
+  <aside class="rail"><nav class="nav" id="nav" aria-label="Pages"></nav></aside>
   <main><article class="doc" id="doc" aria-live="polite"><p>Loading…</p></article></main>
 </div>
 <div class="pop" id="pop" role="tooltip" hidden></div>
@@ -191,24 +150,22 @@ a.ref-term { color: inherit; text-decoration: underline dotted var(--accent); te
 (() => {
   const PAGES = [
     { id: "overview", file: "overview.md", title: "Overview" },
+    { id: "glossary", file: "glossary.md", title: "Glossary" },
     { id: "entities", file: "entities.md", title: "Entities and relations" },
     { id: "resolution", file: "resolution.md", title: "Entity resolution" },
     { id: "postgres", file: "postgres.md", title: "PostgreSQL" },
     { id: "subsets", file: "subsets.md", title: "Subsets" },
-    { id: "decisions", file: "decisions.md", title: "Decisions" },
-    { id: "glossary", file: "glossary.md", title: "Glossary" },
   ];
   const REPO = "https://github.com/saezlab/omnipath-build/blob/main/";
   const byFile = Object.fromEntries(PAGES.map(p => [p.file, p]));
   const sources = {};
-  const terms = {};      // glossary slug -> {title, html}
-  const decisions = {};  // d1 -> {title, html}
-  const searchIndex = [];
+  const terms = {};  // glossary slug -> {title, html}
 
-  const $ = id => document.getElementById(id);
-  const docEl = $("doc"), navEl = $("nav"), popEl = $("pop");
+  const docEl = document.getElementById("doc");
+  const navEl = document.getElementById("nav");
+  const popEl = document.getElementById("pop");
 
-  const slug = s => s.toLowerCase().replace(/<[^>]+>/g, "").replace(/[^\w\s-]/g, "").trim().replace(/\s+/g, "-");
+  const slug = s => s.toLowerCase().replace(/[^\w\s-]/g, "").trim().replace(/\s+/g, "-");
   const esc = s => s.replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
   // Routes use "#page" or "#page~section" so they survive as a plain anchor.
@@ -218,33 +175,44 @@ a.ref-term { color: inherit; text-decoration: underline dotted var(--accent); te
   };
   const href = (pageId, section) => "#" + pageId + (section ? "~" + section : "");
 
-  function mermaidTheme() {
-    const t = document.documentElement.dataset.theme;
-    const dark = t ? t === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
-    return dark ? "dark" : "neutral";
-  }
-
   function render(md, pageId) {
-    const html = marked.parse(md, { gfm: true });
     const tpl = document.createElement("template");
-    tpl.innerHTML = html;
+    tpl.innerHTML = marked.parse(md, { gfm: true });
     const root = tpl.content;
 
-    // Headings get stable ids; an explicit <a id> placed before a heading wins.
-    root.querySelectorAll("h2, h3").forEach(h => {
-      const prev = h.previousElementSibling;
-      let id = slug(h.textContent);
-      const marker = prev && (prev.matches("a[id]") ? prev : prev.matches("p") && !prev.textContent.trim() ? prev.querySelector("a[id]") : null);
-      const explicit = marker ? marker.id : null;
-      if (explicit) { id = explicit; prev.remove(); }
-      h.id = id;
-      if (pageId === "decisions") {
-        const m = h.textContent.match(/^(D\d+)\.\s*(.*)$/);
-        if (m) h.innerHTML = `<span class="did">${m[1]}</span><span>${esc(m[2])}</span>`;
+    // Rewrite links first: sibling pages route in-app, repo paths go to GitHub.
+    root.querySelectorAll("a[href]").forEach(a => {
+      const raw = a.getAttribute("href");
+      if (/^(https?:|mailto:)/.test(raw)) { a.target = "_blank"; a.rel = "noopener"; return; }
+      if (raw.startsWith("#")) { a.href = href(pageId, raw.slice(1)); return; }
+      const [path, frag] = raw.split("#");
+      if (byFile[path]) {
+        const target = byFile[path].id;
+        a.href = href(target, frag || "");
+        if (target === "glossary" && frag) { a.classList.add("ref-term"); a.dataset.term = frag; }
+        return;
       }
+      if (path.startsWith("../")) {
+        a.href = REPO + path.replace(/^(\.\.\/)+/, "") + (frag ? "#" + frag : "");
+        a.target = "_blank"; a.rel = "noopener";
+      }
+    });
+
+    root.querySelectorAll("h2, h3").forEach(h => {
+      h.id = slug(h.textContent);
       const a = document.createElement("a");
-      a.className = "anchor"; a.href = href(pageId, id); a.textContent = "#"; a.setAttribute("aria-label", "Link to this section");
+      a.className = "anchor"; a.href = href(pageId, h.id); a.textContent = "#";
+      a.setAttribute("aria-label", "Link to this section");
       h.appendChild(a);
+    });
+
+    root.querySelectorAll("blockquote").forEach(q => {
+      const lead = q.querySelector("p > strong:first-child");
+      if (lead && /^Decision:/.test(lead.textContent)) {
+        q.classList.add("decision");
+        const text = lead.textContent.replace(/^Decision:\s*/, "");
+        lead.textContent = text.charAt(0).toUpperCase() + text.slice(1);
+      }
     });
 
     root.querySelectorAll("table").forEach(t => {
@@ -258,37 +226,18 @@ a.ref-term { color: inherit; text-decoration: underline dotted var(--accent); te
       div.dataset.src = code.textContent;
       code.parentElement.replaceWith(div);
     });
-
-    // Rewrite links: sibling pages route in-app, repo paths go to GitHub.
-    root.querySelectorAll("a[href]:not(.anchor)").forEach(a => {
-      const raw = a.getAttribute("href");
-      if (/^(https?:|mailto:)/.test(raw)) { a.target = "_blank"; a.rel = "noopener"; return; }
-      if (raw.startsWith("#")) { a.href = href(pageId, raw.slice(1)); return; }
-      const [path, frag] = raw.split("#");
-      if (byFile[path]) {
-        const target = byFile[path].id;
-        a.href = href(target, frag || "");
-        if (target === "glossary" && frag) { a.classList.add("ref-term"); a.dataset.term = frag; }
-        if (target === "decisions" && /^d\d+$/.test(frag || "")) { a.classList.add("ref-decision"); a.dataset.decision = frag; }
-        return;
-      }
-      if (path.startsWith("../")) {
-        a.href = REPO + path.replace(/^(\.\.\/)+/, "") + (frag ? "#" + frag : "");
-        a.target = "_blank"; a.rel = "noopener";
-      }
-    });
-    // In-page decision references on the decisions page itself.
-    if (pageId === "decisions") root.querySelectorAll('a[href^="#decisions~d"]:not(.anchor)').forEach(a => {
-      const d = a.getAttribute("href").split("~")[1];
-      if (/^d\d+$/.test(d)) { a.classList.add("ref-decision"); a.dataset.decision = d; }
-    });
     return root;
+  }
+
+  function isDark() {
+    const t = document.documentElement.dataset.theme;
+    return t ? t === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
   }
 
   async function drawDiagrams() {
     const nodes = [...docEl.querySelectorAll(".mermaid-src")];
     if (!nodes.length || !window.mermaid) return;
-    mermaid.initialize({ startOnLoad: false, theme: mermaidTheme(), fontFamily: "IBM Plex Sans, system-ui, sans-serif", flowchart: { htmlLabels: true, curve: "basis" } });
+    mermaid.initialize({ startOnLoad: false, theme: isDark() ? "dark" : "neutral", fontFamily: "IBM Plex Sans, system-ui, sans-serif", flowchart: { htmlLabels: true, curve: "basis" } });
     for (const [i, n] of nodes.entries()) {
       try {
         const { svg } = await mermaid.render("mmd-" + Date.now() + "-" + i, n.dataset.src);
@@ -299,167 +248,71 @@ a.ref-term { color: inherit; text-decoration: underline dotted var(--accent); te
     }
   }
 
-  // Glossary and decision entries for pop-ups and search.
-  function indexDefinitions() {
+  function indexGlossary() {
     const g = render(sources["glossary.md"], "glossary");
     g.querySelectorAll("h3").forEach(h => {
       const parts = []; let n = h.nextElementSibling;
       while (n && !/^H[1-3]$/.test(n.tagName)) { parts.push(n.outerHTML); n = n.nextElementSibling; }
       terms[h.id] = { title: h.firstChild.textContent, html: parts.join("") };
     });
-    const d = render(sources["decisions.md"], "decisions");
-    d.querySelectorAll("h2[id^=d]").forEach(h => {
-      const first = h.nextElementSibling;
-      decisions[h.id] = { title: h.textContent.replace(/#$/, "").replace(/^(D\d+)/, "$1 · "), html: first ? first.outerHTML : "" };
-    });
   }
 
-  function buildSearch() {
-    for (const p of PAGES) {
-      const frag = render(sources[p.file], p.id);
-      let current = { page: p, section: "", heading: p.title, text: "" };
-      const push = () => { if (current.text.trim() || current.section) searchIndex.push(current); };
-      [...frag.children].forEach(el => {
-        if (/^H[23]$/.test(el.tagName)) {
-          push();
-          current = { page: p, section: el.id, heading: el.textContent.replace(/#$/, ""), text: "" };
-        } else if (el.tagName !== "H1") {
-          current.text += " " + el.textContent;
-        }
-      });
-      push();
-    }
-  }
-
-  function search(q) {
-    const words = q.toLowerCase().split(/\s+/).filter(Boolean);
-    if (!words.length) return [];
-    return searchIndex.map(e => {
-      const h = e.heading.toLowerCase(), t = e.text.toLowerCase();
-      if (!words.every(w => h.includes(w) || t.includes(w))) return null;
-      let score = 0;
-      for (const w of words) score += (h.includes(w) ? 10 : 0) + (h.startsWith(w) ? 5 : 0) + (t.split(w).length - 1);
-      if (e.page.id === "glossary") score += 2;
-      return { e, score };
-    }).filter(Boolean).sort((a, b) => b.score - a.score).slice(0, 12);
-  }
-
-  function snippet(text, word) {
-    const t = text.replace(/\s+/g, " ").trim();
-    const i = t.toLowerCase().indexOf(word);
-    const start = Math.max(0, i - 40);
-    const s = (start ? "…" : "") + t.slice(start, start + 140);
-    return esc(s).replace(new RegExp("(" + word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + ")", "ig"), "<mark>$1</mark>");
-  }
-
-  function renderNav(active, headings) {
-    navEl.innerHTML = '<div class="nav-label">Pages</div>' + PAGES.map((p, i) => {
-      const cur = p.id === active;
-      let toc = "";
-      if (cur && headings.length && p.id !== "glossary" && p.id !== "decisions") {
-        toc = '<div class="toc">' + headings.map(h => `<a href="${href(p.id, h.id)}">${esc(h.text)}</a>`).join("") + "</div>";
-      }
-      return `<a href="${href(p.id)}"${cur ? ' aria-current="page"' : ""}><small>${String(i + 1).padStart(2, "0")}</small><span>${esc(p.title)}</span></a>${toc}`;
-    }).join("");
+  function renderNav(active) {
+    navEl.innerHTML = PAGES.map(p =>
+      `<a href="${href(p.id)}"${p.id === active ? ' aria-current="page"' : ""}>${esc(p.title)}</a>`
+    ).join("");
   }
 
   let lastPage = null;
-  async function show() {
+  function show() {
     const { page, section } = parseRoute();
     const p = byFile[page + ".md"];
     if (page !== lastPage) {
-      const frag = render(sources[p.file], p.id);
       docEl.className = "doc page-" + p.id;
-      docEl.replaceChildren();
-      const eyebrow = document.createElement("div");
-      eyebrow.className = "eyebrow";
-      eyebrow.textContent = String(PAGES.indexOf(p) + 1).padStart(2, "0") + " / " + String(PAGES.length).padStart(2, "0");
-      docEl.appendChild(eyebrow);
-      docEl.appendChild(frag);
+      docEl.replaceChildren(render(sources[p.file], p.id));
       const i = PAGES.indexOf(p), prev = PAGES[i - 1], next = PAGES[i + 1];
       const pager = document.createElement("nav");
       pager.className = "pager"; pager.setAttribute("aria-label", "Previous and next page");
       pager.innerHTML = (prev ? `<a href="${href(prev.id)}"><small>Previous</small>${esc(prev.title)}</a>` : "") +
                         (next ? `<a class="next" href="${href(next.id)}"><small>Next</small>${esc(next.title)}</a>` : "");
       docEl.appendChild(pager);
-      const headings = [...docEl.querySelectorAll("h2")].map(h => ({ id: h.id, text: h.textContent.replace(/#$/, "") }));
-      renderNav(p.id, headings);
+      renderNav(p.id);
       document.title = p.id === "overview" ? "OmniPath Core Docs" : p.title + " · OmniPath Core Docs";
       lastPage = page;
       drawDiagrams();
     }
     const target = section && document.getElementById(section);
     if (target) target.scrollIntoView({ block: "start" }); else window.scrollTo(0, 0);
-    $("rail").classList.remove("open");
-    $("menu-btn").setAttribute("aria-expanded", "false");
   }
 
-  // Pop-ups for glossary terms and decision chips.
-  let popFor = null, hideTimer = null;
+  // Glossary pop-ups on hover or keyboard focus.
+  let hideTimer = null;
   function showPop(a) {
-    const entry = a.dataset.term ? terms[a.dataset.term] : decisions[a.dataset.decision];
+    const entry = terms[a.dataset.term];
     if (!entry) return;
     clearTimeout(hideTimer);
-    popFor = a;
     popEl.innerHTML = `<b>${esc(entry.title)}</b>${entry.html}`;
     popEl.hidden = false;
     const r = a.getBoundingClientRect();
-    const w = popEl.offsetWidth;
-    const left = Math.min(Math.max(16, r.left + window.scrollX), window.scrollX + document.documentElement.clientWidth - w - 16);
+    const left = Math.min(Math.max(16, r.left + window.scrollX), window.scrollX + document.documentElement.clientWidth - popEl.offsetWidth - 16);
     let top = r.bottom + window.scrollY + 8;
     if (r.bottom + popEl.offsetHeight + 16 > window.innerHeight) top = r.top + window.scrollY - popEl.offsetHeight - 8;
     popEl.style.left = left + "px"; popEl.style.top = top + "px";
   }
-  function hidePop() { hideTimer = setTimeout(() => { popEl.hidden = true; popFor = null; }, 120); }
+  function hidePop() { hideTimer = setTimeout(() => { popEl.hidden = true; }, 120); }
   document.addEventListener("mouseover", e => {
-    const a = e.target.closest("a.ref-term, a.ref-decision");
-    if (a) showPop(a); else if (popFor && !e.target.closest("#pop")) hidePop();
+    const a = e.target.closest("a.ref-term");
+    if (a) showPop(a); else if (!popEl.hidden && !e.target.closest("#pop")) hidePop();
   });
-  document.addEventListener("focusin", e => { const a = e.target.closest("a.ref-term, a.ref-decision"); if (a) showPop(a); else hidePop(); });
+  document.addEventListener("focusin", e => { const a = e.target.closest("a.ref-term"); if (a) showPop(a); else hidePop(); });
   popEl.addEventListener("mouseenter", () => clearTimeout(hideTimer));
   popEl.addEventListener("mouseleave", hidePop);
-  document.addEventListener("keydown", e => { if (e.key === "Escape") { popEl.hidden = true; $("results").hidden = true; } });
+  document.addEventListener("keydown", e => { if (e.key === "Escape") popEl.hidden = true; });
 
-  // Search box.
-  const q = $("q"), results = $("results");
-  let active = -1;
-  function drawResults() {
-    const value = q.value.trim();
-    if (!value) { results.hidden = true; return; }
-    const found = search(value);
-    const w = value.toLowerCase().split(/\s+/)[0];
-    active = -1;
-    results.innerHTML = found.length ? found.map(({ e }) =>
-      `<a href="${href(e.page.id, e.section)}"><small>${esc(e.page.title)}</small>${esc(e.heading)}<span>${snippet(e.text, w)}</span></a>`
-    ).join("") : '<div class="none">No matches. Try a field name like <code>entity_key</code>.</div>';
-    results.hidden = false;
-  }
-  q.addEventListener("input", drawResults);
-  q.addEventListener("focus", drawResults);
-  q.addEventListener("keydown", e => {
-    const items = [...results.querySelectorAll("a")];
-    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
-      e.preventDefault();
-      active = (active + (e.key === "ArrowDown" ? 1 : -1) + items.length) % items.length;
-      items.forEach((it, i) => it.classList.toggle("active", i === active));
-    } else if (e.key === "Enter" && items.length) {
-      location.hash = items[Math.max(active, 0)].getAttribute("href");
-      results.hidden = true; q.blur();
-    }
-  });
-  results.addEventListener("click", () => { results.hidden = true; });
-  document.addEventListener("click", e => { if (!e.target.closest(".search")) results.hidden = true; });
-  document.addEventListener("keydown", e => {
-    if (e.key === "/" && document.activeElement !== q) { e.preventDefault(); q.focus(); }
-  });
-
-  $("menu-btn").addEventListener("click", () => {
-    const open = $("rail").classList.toggle("open");
-    $("menu-btn").setAttribute("aria-expanded", String(open));
-  });
-
-  matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { lastPage = null; show(); });
-  new MutationObserver(() => { lastPage = null; show(); }).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+  // Redraw diagrams in the right colors when the theme changes, keeping the scroll position.
+  const redraw = () => { if (!lastPage) return; const y = window.scrollY; lastPage = null; show(); window.scrollTo(0, y); };
+  matchMedia("(prefers-color-scheme: dark)").addEventListener("change", redraw);
+  new MutationObserver(redraw).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
 
   async function boot() {
     try {
@@ -469,8 +322,7 @@ a.ref-term { color: inherit; text-decoration: underline dotted var(--accent); te
       docEl.innerHTML = `<h1>Can't load the pages</h1><div class="notice">The viewer reads the Markdown files next to it, so it must be served over HTTP rather than opened as a file. From the repository root, run:<pre><code>make docs</code></pre>then open <a href="http://127.0.0.1:8090">http://127.0.0.1:8090</a>. The same pages also render on GitHub in <code>core_documentation/</code>.</div>`;
       return;
     }
-    indexDefinitions();
-    buildSearch();
+    indexGlossary();
     window.addEventListener("hashchange", show);
     show();
   }

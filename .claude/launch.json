@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "core-docs",
+      "runtimeExecutable": "make",
+      "runtimeArgs": ["docs"],
+      "port": 8090
+    }
+  ]
+}

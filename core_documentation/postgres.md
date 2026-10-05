@@ -3,8 +3,7 @@
 PostgreSQL holds a fixed monthly snapshot of one explicit
 [release](glossary.md#release). The loader projects already resolved Parquets
 into main's existing relational layout so that main's queries, indexes and
-products keep working. It performs no parsing and no entity resolution
-([D1](decisions.md#d1), [D12](decisions.md#d12)).
+products keep working. It performs no parsing and no entity resolution.
 
 ```sh
 make load-postgres RELEASE_MANIFEST=release.json DATA_ROOT=/path/or/https \
@@ -41,6 +40,12 @@ flowchart LR
 A schema advisory lock prevents overlapping builds on the same schema. A
 failure before the base checkpoint drops the schema the loader created.
 
+> **Decision: durable checkpoints, no mandatory verification run.** The base and
+> each later step commit on their own and are skipped on retry. Fixture and
+> parity tests are developer checks; production loads have no
+> rebuild-and-compare phase. *Why:* full loads are long, and resuming must not
+> redo finished work.
+
 ## How published data maps to tables
 
 | Published | PostgreSQL | Notes |
@@ -60,6 +65,16 @@ Resolution status in PostgreSQL is always `published` (status 5,
 mechanism `published_parquet`). The loader does not pretend to know the old
 `matched` / `ambiguous` resolver diagnostics, because the Parquets do not carry
 them.
+
+> **Decision: reproduce main's layout without re-resolving.** The loader fills
+> main's existing tables and indexes and adds context tables for references and
+> molecular forms. *Why:* main's queries and products keep working, and nothing
+> in the database claims more than the Parquets contain.
+
+> **Decision: raw payloads stay in Parquet.** Source payload JSON and nested
+> record JSON are not loaded. The optional `parquet_*` inspection tables have no
+> scientific reader. *Why:* the database stays the size of its scientific
+> content; the pinned Parquets remain the provenance record.
 
 Release bookkeeping lives in `parquet_release`, `parquet_phase` and
 `subset_build_metadata`.

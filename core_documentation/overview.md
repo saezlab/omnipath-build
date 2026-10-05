@@ -27,9 +27,14 @@ flowchart TB
 | Serve | API and explorer query Parquet through DuckDB; the client reads the same files | `api`, `web`, `client` | — |
 | Load | Pinned release → PostgreSQL relational schema → derived products | `postgres`, `subsets` | [PostgreSQL](postgres.md), [Subsets](subsets.md) |
 
-The [Parquet contract](glossary.md#parquet-contract) is the boundary between
-these stages. There is no shared database or cache between the builder, the API
-and PostgreSQL.
+> **Decision: the Parquet files are the contract between systems.** The three
+> Parquets per resource version are the only interface between builder, serving
+> and PostgreSQL. There is no shared database or cache.
+> *Why:* the systems can run on different servers and update on their own
+> schedules. See the [Parquet contract](glossary.md#parquet-contract).
+
+> **Decision: resolve once, at build time.** Entity resolution happens before
+> publication; nothing downstream resolves again. See [Entity resolution](resolution.md).
 
 ## Versions and schedules
 
@@ -49,6 +54,17 @@ The API follows Latest, or a release selected with `?release=2026.09`.
 PostgreSQL loads one explicit release on its own monthly schedule. Publishing a
 resource does not change PostgreSQL, and loading PostgreSQL does not change any
 Parquet.
+
+> **Decision: versions are immutable; releases pin them by content.** A resource
+> version is never overwritten. A release records the SHA-256 of each pinned
+> build manifest, and the PostgreSQL loader refuses a resource whose manifest no
+> longer matches. *Why:* resources can update at any time while analyses stay
+> reproducible, and a release name always means exact content.
+
+> **Decision: sample builds stay out of releases.** Builds with a record cap or a
+> dataset subset are refused by the publisher and the PostgreSQL loader unless
+> the release sets `"partial_resources": true`. *Why:* a capped test build must
+> never end up in a monthly snapshot by accident. (5 October 2026)
 
 ```text
 data/
@@ -77,8 +93,9 @@ Dependencies point one way: `build → resolver → core` and
 
 ## Where to go next
 
+- [Glossary](glossary.md): the vocabulary used throughout. Start with its key terms.
 - [Entities and relations](entities.md): what a row means.
 - [Entity resolution](resolution.md): how identifiers become entities.
 - [PostgreSQL](postgres.md) and [Subsets](subsets.md): the downstream path.
-- [Decisions](decisions.md): what we chose and why.
-- [Glossary](glossary.md): the vocabulary used throughout.
+
+Decisions are marked as **Decision** blocks on the page they belong to.
