@@ -293,9 +293,7 @@ def test_gene_products(q):
 def test_lipid_structures_rule5(q):
     # Both records with the name agree on one InChIKey. FA 20:0;5Me is carried by two different
     # keys and the species-level PC 34:1 never resolves to a structure.
-    assert q("SELECT * FROM $lipid_structures") == [
-        ("full_structure:FA 18:0;5Me", KE, "inchikey:" + KE)
-    ]
+    assert q("SELECT * FROM $lipid_structures") == [("full_structure:FA 18:0;5Me", KE)]
 
 
 def test_manifest_and_resume(built):

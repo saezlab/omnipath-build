@@ -319,11 +319,11 @@ def stage_structures(ctx, directory, indexes):
     ]
     levels = sql_list(STRUCTURE_LEVELS)
     query = (
-        f"""SELECT goslin,substr(min(anchor),10) inchikey,min(anchor) entity_id FROM ({' UNION ALL '.join(gl)})
+        f"""SELECT goslin,substr(min(anchor),10) inchikey FROM ({' UNION ALL '.join(gl)})
         WHERE split_part(goslin,':',1) IN {levels} GROUP BY goslin
         HAVING count(DISTINCT anchor) FILTER (WHERE anchor_count=1)=1 AND NOT bool_or(anchor_count>1) ORDER BY goslin"""
         if gl
-        else "SELECT NULL::VARCHAR goslin,NULL::VARCHAR inchikey,NULL::VARCHAR entity_id WHERE false"
+        else "SELECT NULL::VARCHAR goslin,NULL::VARCHAR inchikey WHERE false"
     )
     return dict(structures=ctx.copy(c, query, ctx.out / "lipid_structures.parquet"))
 
