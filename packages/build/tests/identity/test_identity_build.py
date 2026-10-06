@@ -394,3 +394,35 @@ def test_resume_reuses_stages(snapshot):
     again = build_identity(root / "hubs", root / "out", memory="1GB", threads=2, goslin_cache=root / "goslin", min_free_gib=0.01)
     assert again["counts"] == manifest["counts"]  # every stage came from its checkpoint
     assert json.loads((root / "out" / "work" / "records" / "_SUCCESS.json").read_text())["info"]["records"] == 65
+
+
+# ------------------------------------------- the runtime reads what the builder writes
+def test_identity_runtime_reads_the_built_snapshot(snapshot, tmp_path):
+    from omnipath_resolver.identity_runtime import IdentityRuntime
+    from omnipath_resolver.observations import key as lookup_key
+
+    root, _ = snapshot
+    runtime = IdentityRuntime(root / "out", cache_dir=tmp_path / "cache")
+    try:
+        def look(target, route, ns, identifier, scope=""):
+            k = lookup_key(target, route, ns, scope, identifier)
+            return [c[1] for c in runtime.lookup_many([k])[k]["candidates"]]
+
+        assert look(1, 1, "inchikey", KA) == ["inchikey:" + KA]
+        assert look(1, 1, "pubchem", "100") == ["inchikey:" + KA]
+        assert look(1, 1, "bigg", "b1") == ["bigg:b1"]  # native beats the fallback claim of b3
+        assert look(2, 1, "uniprot", "Q15086") == ["uniprot:P04637"]  # one secondary entry
+        assert sorted(look(2, 1, "uniprot", "Q16535")) == ["uniprot:P04637", "uniprot:P99999"]
+        assert look(2, 1, "uniprot", "P04637-2") == ["uniprot:P04637"]
+        assert look(2, 1, "genesymbol", "TP53", "9606") == ["entrez:7157"]  # exact beats synonym
+        assert len(look(2, 1, "genesymbol", "MANYSYM", "9606")) == 12
+        assert look(2, 2, "ramp_gene", "RAMP_G_1") == ["entrez:7157"]
+        records = runtime.record_many(["inchikey:" + KA, "entrez:7157", "uniprot:P04637", "goslin:sn_position:PC 16:0/18:1"])
+        assert records["inchikey:" + KA]["label"] == "Alpha"
+        assert records["inchikey:" + KA]["kind"] == 1 and records["inchikey:" + KA]["anchor"] == "inchikey:" + KA
+        assert records["entrez:7157"]["label"] == "TP53" and records["entrez:7157"]["kind"] == 3
+        assert ["genesymbol", "TP53"] in records["entrez:7157"]["identifiers"]
+        assert records["uniprot:P04637"]["label"] == "TP53" and records["uniprot:P04637"]["gene_ids"] == ["7157"]
+        assert records["goslin:sn_position:PC 16:0/18:1"]["label"] == "PC 16:0/18:1"
+    finally:
+        runtime.close()
