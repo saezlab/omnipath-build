@@ -3,25 +3,22 @@
 Hub index ``<hub dir>/kv/`` (written by ``omnipath-build build-hub-kv``)::
 
     manifest.json   format, hub, source index sha, shard counts, per-env statistics
-    id.<s>/         db ``id``:  utf8(ns) + b"\\0" + utf8(identifier) -> [[local_id, tag], ...]
-    rec.<s>/        db ``rec``: utf8(local_id) -> [taxon, anchor, anchor_count, reviewed,
-                    [[source_type, value], ...]]
+    id.<s>/         db ``id``:  part + ns + b"\\0" + identifier -> "local_id<F>tag<R>local_id<F>tag..."
+    rec.<s>/        db ``rec``: part + local_id -> "taxon<F>anchor<F>count<F>reviewed[<R>type<F>value...]"
 
-``id`` is sharded by the first hex digit of ``md5(identifier)`` (the by_id partition) and ``rec``
-by the first hex digit of ``md5('<hub>:<local_id>')`` (the by_record partition); a hub with a
-single shard of either uses shard 0 for everything.
+``part`` is the hub index partition (two hex digits of md5 of the identifier, or of
+``<hub>:<local_id>``) and the shard is its first digit (shard 0 when a hub has one shard). The
+prefix makes every partition's keys a contiguous ascending block, so the writer appends partition
+files as they are, with no global sort. <F> is ``FIELD`` (0x1f) and <R> is ``ROW`` (0x1e); values
+are UTF-8 and parsed with ``str.split``. Empty taxon/anchor mean none; reviewed is 1 or 0.
 
 Identity directory ``<identity dir>/kv/`` (written by ``omnipath-build build-identity-kv``), one
 environment with the dbs ``exc`` (record_id -> [entity_id, decision, quarantined]),
 ``exc_members`` (entity_id -> [record_id]), ``extra`` (entity_id -> [kind, taxon, quarantined,
 preferred_record]), ``gp_protein`` (protein entity -> [[entrez_id, taxon]]), ``gp_gene`` (entrez
 id -> [[protein entity, taxon]]), ``lipid`` (goslin name -> inchikey) and ``cand`` (record_id
--> [entity_id]: the anchors a quarantined or ambiguous record points to; empty when the
-decisions have no ``record_candidates.parquet``).
-
-Values are msgpack with a one-byte prefix: ``\\x00`` raw, ``\\x01`` zstd of the msgpack body
-(used above ``COMPRESS_OVER`` bytes). Keys are compared bytewise (LMDB default), which is how
-DuckDB orders VARCHAR, so the writers can stream sorted rows with ``append=True``.
+-> [entity_id]). These small stores keep msgpack values with a one-byte prefix: ``\\x00`` raw,
+``\\x01`` zstd (above ``COMPRESS_OVER`` bytes).
 """
 
 from __future__ import annotations
@@ -37,7 +34,8 @@ import zstandard
 
 KV_DIR = "kv"
 MANIFEST = "manifest.json"
-HUB_KV_FORMAT = "omnipath-hub-kv-v1"
+HUB_KV_FORMAT = "omnipath-hub-kv-v2"
+FIELD, ROW = "\x1f", "\x1e"
 DECISIONS_KV_FORMAT = "omnipath-identity-kv-v1"
 MAX_KEY = 511  # LMDB's default key size limit
 COMPRESS_OVER = 256
@@ -83,14 +81,6 @@ def unpack(raw: bytes):
     return msgpack.unpackb(body_of(raw), raw=False)
 
 
-def unpack_head(raw: bytes, count: int) -> list:
-    """The first ``count`` items of a stored msgpack list (the rest is skipped, not built)."""
-    unpacker = msgpack.Unpacker(raw=False)
-    unpacker.feed(body_of(raw))
-    unpacker.read_array_header()
-    return [unpacker.unpack() for _ in range(count)]
-
-
 # ----------------------------------------------------------------------- key helpers
 
 
@@ -109,13 +99,28 @@ def shard_of(value: str, shards: int) -> int:
 
 def id_key(ns: str, identifier: str) -> bytes | None:
     """Key of the ``id`` db, or None when it cannot be stored (longer than LMDB's key limit)."""
-    key = ns.encode() + b"\0" + identifier.encode()
+    key = partition(identifier).encode() + ns.encode() + b"\0" + identifier.encode()
     return key if len(key) <= MAX_KEY else None
 
 
-def rec_key(local_id: str) -> bytes | None:
-    key = local_id.encode()
-    return key if 0 < len(key) <= MAX_KEY else None
+def rec_key(hub: str, local_id: str) -> bytes | None:
+    if not local_id:
+        return None
+    key = partition(f"{hub}:{local_id}").encode() + local_id.encode()
+    return key if len(key) <= MAX_KEY else None
+
+
+def decode_ids(raw: bytes) -> list[tuple[str, str]]:
+    return [tuple(row.split(FIELD, 1)) for row in raw.decode().split(ROW)]
+
+
+def decode_head(raw: bytes) -> tuple:
+    taxon, anchor, count, reviewed = raw.split(ROW.encode(), 1)[0].decode().split(FIELD)
+    return (taxon or None, anchor or None, int(count or 0), reviewed == "1")
+
+
+def decode_rows(raw: bytes) -> list[tuple[str, str]]:
+    return [tuple(row.split(FIELD, 1)) for row in raw.decode().split(ROW)[1:]]
 
 
 def sha256_file(path) -> str:
@@ -222,13 +227,13 @@ class HubKv:
         with self._lock:
             for shard, keys in by_shard.items():
                 for key, raw in self._env("id", shard).get_many("id", keys).items():
-                    found[keys[key]] = [(lid, tag) for lid, tag in unpack(raw)]
+                    found[keys[key]] = decode_ids(raw)
         return found
 
     def _rec(self, local_ids, decode) -> dict:
         by_shard: dict[int, dict[bytes, str]] = {}
         for local_id in local_ids:
-            key = rec_key(local_id)
+            key = rec_key(self.hub, local_id)
             if key is not None:
                 shard = shard_of(f"{self.hub}:{local_id}", self.rec_shards)
                 by_shard.setdefault(shard, {})[key] = local_id
@@ -241,11 +246,11 @@ class HubKv:
 
     def heads(self, local_ids) -> dict[str, tuple]:
         """local_id -> (taxon, anchor, anchor_count, reviewed)."""
-        return self._rec(local_ids, lambda raw: tuple(unpack_head(raw, 4)))
+        return self._rec(local_ids, decode_head)
 
     def rows(self, local_ids) -> dict[str, list[tuple[str, str]]]:
         """local_id -> [(source_type, value)] (every by_record row of the record)."""
-        return self._rec(local_ids, lambda raw: [(st, v) for st, v in unpack(raw)[4]])
+        return self._rec(local_ids, decode_rows)
 
     def close(self):
         with self._lock:

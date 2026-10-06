@@ -27,7 +27,6 @@ def test_value_codec_prefix_and_compression():
     raw, packed = identity_kv.pack(small), identity_kv.pack(large)
     assert raw[:1] == identity_kv.RAW and packed[:1] == identity_kv.ZSTD
     assert identity_kv.unpack(raw) == small and identity_kv.unpack(packed) == large
-    assert identity_kv.unpack_head(packed, 2) == large[:2]
     with pytest.raises(ValueError):
         identity_kv.unpack(b"\x07abc")
 
@@ -85,7 +84,7 @@ def test_hub_kv_holds_every_parquet_row(tmp_path, shards, workers):
         for path in directory.glob("by_record/part=*/data.parquet"):
             for r in pq.read_table(path).to_pylist():
                 by_record.setdefault(r["local_id"], []).append((r["source_type"], r["value"]))
-        usable = [i for i in records if identity_kv.rec_key(i)]
+        usable = [i for i in records if identity_kv.rec_key("chebi", i)]
         heads, rows = kv.heads(usable), kv.rows(usable)
         for local in usable:
             r = records[local]
@@ -115,11 +114,26 @@ def test_hub_kv_refuses_a_changed_index(tmp_path):
 def test_writer_rejects_keys_out_of_order(tmp_path):
     from omnipath_build.identity.hubkv import Writer
 
+    import pyarrow as pa
+
     writer = Writer(tmp_path / "w", "id", 0)
-    writer.add(b"b", ["x"])
-    with pytest.raises(AssertionError, match="key order"):
-        writer.add(b"a", ["x"])
+    writer.add(pa.array(["b"]), pa.array(["x"]))
+    with pytest.raises(AssertionError, match="not ascending"):
+        writer.add(pa.array(["a"]), pa.array(["x"]))
+    with pytest.raises(AssertionError, match="order"):  # out of order inside one batch
+        writer.add(pa.array(["d", "c"]), pa.array(["x", "y"]))
     writer.env.close()
+
+
+def test_values_round_trip_separators():
+    from omnipath_resolver.identity_kv import decode_head, decode_ids, decode_rows
+
+    assert decode_ids("a\x1fnative\x1eb\x1fclaim".encode()) == [("a", "native"), ("b", "claim")]
+    assert decode_head("\x1f\x1f0\x1f0".encode()) == (None, None, 0, False)
+    value = "9606\x1funiprot:P1\x1f1\x1f1\x1ename\x1fp53\x1egenesymbol\x1fTP53".encode()
+    assert decode_head(value) == ("9606", "uniprot:P1", 1, True)
+    assert decode_rows(value) == [("name", "p53"), ("genesymbol", "TP53")]
+    assert decode_rows("\x1f\x1f0\x1f0".encode()) == []
 
 
 def test_identity_kv_is_complete_and_optional_candidates(tmp_path):
