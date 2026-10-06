@@ -230,14 +230,69 @@ def read_extract_info(root: str | Path, resource: str) -> dict[str, Any]:
     return json.loads(path.read_text()) if path.is_file() else {}
 
 
+DEFAULT_SAMPLE = 5000
+
+
+def sample_select_sql(queries_path: str | Path, per_library: int) -> str:
+    """SQL selecting the sampled input_ids: ``per_library`` per library.
+
+    Deterministic: observations are ranked by md5 of their fingerprint, so the same
+    observations are picked on every run and for every runtime; chemical and
+    gene_protein are sampled independently, hence both appear.
+    """
+    path = str(queries_path).replace("'", "''")
+    return (
+        "SELECT input_id FROM (SELECT input_id, row_number() OVER ("
+        "PARTITION BY library ORDER BY md5(input_id), input_id) AS rn "
+        f"FROM read_parquet('{path}')) WHERE rn <= {int(per_library)}"
+    )
+
+
+def _iter_sample_batches(directory: Path, batch_size: int, sample: int):
+    con = duckdb.connect()
+    try:
+        con.execute(
+            "CREATE TEMP TABLE keep AS " + sample_select_sql(directory / "queries.parquet", sample)
+        )
+        rows = (
+            con.execute(
+                f"SELECT q.* FROM read_parquet('{directory}/queries.parquet') q "
+                "JOIN keep USING (input_id) ORDER BY q.input_id"
+            )
+            .fetch_arrow_table()
+            .to_pylist()
+        )
+        table = con.execute(
+            f"SELECT v.* FROM read_parquet('{directory}/votes.parquet') v "
+            "JOIN keep USING (input_id) ORDER BY v.input_id, v.ordinal"
+        ).fetch_arrow_table()
+        votes: dict[str, list[dict[str, Any]]] = {}
+        for vote in table.to_pylist():
+            votes.setdefault(vote["input_id"], []).append(vote)
+    finally:
+        con.close()
+    for offset in range(0, len(rows), batch_size):
+        chunk = rows[offset : offset + batch_size]
+        yield chunk, [v for q in chunk for v in votes.get(q["input_id"], [])]
+
+
 def iter_resolve_batches(
-    directory: str | Path, batch_size: int = 5000, *, vote_chunk: int = 50_000
+    directory: str | Path,
+    batch_size: int = 5000,
+    *,
+    vote_chunk: int = 50_000,
+    sample: int | None = None,
 ) -> Iterator[tuple[list[dict[str, Any]], list[dict[str, Any]]]]:
     """Yield (queries, votes) batches; votes of exactly the batch's queries.
 
     Both files are sorted by ``input_id``, so one forward pass over each suffices.
+    With ``sample`` only that many observations per library are yielded (see
+    ``sample_select_sql``); a sample is small enough to be read at once.
     """
     directory = Path(directory)
+    if sample:
+        yield from _iter_sample_batches(directory, batch_size, sample)
+        return
     query_file = pq.ParquetFile(directory / "queries.parquet")
     vote_batches = pq.ParquetFile(directory / "votes.parquet").iter_batches(batch_size=vote_chunk)
     pending: list[dict[str, Any]] = []

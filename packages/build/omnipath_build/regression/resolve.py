@@ -94,6 +94,7 @@ def resolve_resource(
     resource: str,
     *,
     batch_size: int = 5000,
+    sample: int | None = None,
 ) -> dict[str, Any]:
     """Resolve one resource's stored observations in batches; write results Parquet."""
     source = resource_dir(observations, resource)
@@ -105,7 +106,9 @@ def resolve_resource(
     wall_start = time.perf_counter()
     totals = Counter()
     with pq.ParquetWriter(tmp, RESULT_SCHEMA, compression="zstd") as writer:
-        for number, (queries, votes) in enumerate(iter_resolve_batches(source, batch_size)):
+        for number, (queries, votes) in enumerate(
+            iter_resolve_batches(source, batch_size, sample=sample)
+        ):
             started = time.perf_counter()
             resolved, metrics = runtime.resolve(queries, votes)
             wall = time.perf_counter() - started
@@ -181,6 +184,7 @@ def resolve_all(
     cache_dir: str | Path | None = None,
     force: bool = False,
     runtime: Any = None,
+    sample: int | None = None,
 ) -> dict[str, Any]:
     """Resolve every selected resource; metrics.json accumulates across runs."""
     results = Path(results)
@@ -208,6 +212,7 @@ def resolve_all(
         ),
         observations=str(observations),
         batch_size=batch_size,
+        sample_per_resource_and_library=sample or None,
     )
     per_resource = metrics.setdefault("resources", {})
     try:
@@ -217,7 +222,7 @@ def resolve_all(
                 continue
             try:
                 per_resource[resource] = resolve_resource(
-                    runtime, observations, results, resource, batch_size=batch_size
+                    runtime, observations, results, resource, batch_size=batch_size, sample=sample
                 )
             except Exception as exc:
                 import traceback

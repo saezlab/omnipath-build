@@ -396,3 +396,54 @@ def test_diff_flags_missing_results_and_other_field_changes(tmp_path):
     }
     assert kinds[ids["X0"]] == "missing_result"
     assert kinds[ids["P1"]] == "resolved_to_none"
+
+
+def test_sample_is_deterministic_stratified_and_shared_by_resolve_and_diff(tmp_path):
+    observations = tmp_path / "obs"
+    obs = [(query(identifier=f"X{i}"), [vote("chebi", f"X{i}")]) for i in range(40)] + [
+        (
+            query(target=2, entity_type="protein", namespace="uniprot", identifier=f"P{i}"),
+            [vote("uniprot", f"P{i}", target=2)],
+        )
+        for i in range(25)
+    ]
+    write_observations(observations, "res", obs)
+    first = [
+        q["input_id"]
+        for qs, _ in store.iter_resolve_batches(observations / "res", 4, sample=10)
+        for q in qs
+    ]
+    again = [
+        q["input_id"]
+        for qs, _ in store.iter_resolve_batches(observations / "res", 7, sample=10)
+        for q in qs
+    ]
+    assert sorted(first) == sorted(again) and len(first) == 20  # 10 per library
+    libraries = {
+        q["input_id"]: q["library"]
+        for q in pq.read_table(observations / "res" / "queries.parquet").to_pylist()
+    }
+    assert sorted(libraries[i] for i in first).count("chemical") == 10
+    # a sample larger than a library keeps all of it
+    everything = [
+        q for qs, _ in store.iter_resolve_batches(observations / "res", 100, sample=30) for q in qs
+    ]
+    assert len(everything) == 30 + 25
+    # votes belong to exactly the sampled queries
+    for qs, votes in store.iter_resolve_batches(observations / "res", 4, sample=10):
+        assert {v["input_id"] for v in votes} == {q["input_id"] for q in qs}
+
+    table = {f"X{i}": [f"inchikey:{i}"] for i in range(40)}
+    table.update({f"P{i}": [f"uniprot:P{i}"] for i in range(25)})
+    changed = dict(table, **{f"X{i}": ["other"] for i in range(0, 40, 2)})
+    for name, mapping in (("a", table), ("b", changed)):
+        regression_resolve.resolve_all(
+            name, observations, tmp_path / name, runtime=FakeRuntime(mapping), sample=10
+        )
+    assert pq.read_table(tmp_path / "a" / "res" / "results.parquet").num_rows == 20
+    summary = regression_diff.compare(
+        observations, tmp_path / "a", tmp_path / "b", tmp_path / "out", sample=10
+    )
+    counts = {(c["library"], c["change_type"]): c["n"] for c in summary["change_types"]}
+    assert sum(counts.values()) == 20 and ("chemical", "missing_result") not in counts
+    assert "Sample: 10" in (tmp_path / "out" / "summary.md").read_text()

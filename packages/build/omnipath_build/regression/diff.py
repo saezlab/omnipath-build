@@ -19,7 +19,7 @@ from typing import Any
 
 import duckdb
 
-from .store import list_resources, resource_dir
+from .store import list_resources, resource_dir, sample_select_sql
 
 # change_type values that do not count as "accepted entities differ"
 NOT_ENTITY_CHANGES = ("same", "same_entities_other_fields", "missing_result")
@@ -48,7 +48,7 @@ SELECT '{resource}' AS resource, q.input_id, q.library, q.entity_type, q.namespa
   a.gene_mapping_status AS gene_status_a, b.gene_mapping_status AS gene_status_b,
   coalesce(list_sort(a.gene_candidates), []::VARCHAR[]) AS gene_candidates_a,
   coalesce(list_sort(b.gene_candidates), []::VARCHAR[]) AS gene_candidates_b
-FROM read_parquet('{queries}') q
+FROM (SELECT * FROM read_parquet('{queries}'){restrict}) q
 LEFT JOIN read_parquet('{a}') a ON a.input_id = q.input_id
 LEFT JOIN read_parquet('{b}') b ON b.input_id = q.input_id
 LEFT JOIN (
@@ -98,6 +98,7 @@ def compare(
     memory_limit: str = "2GB",
     threads: int = 2,
     examples: int = 3,
+    sample: int | None = None,
 ) -> dict[str, Any]:
     """Diff two result sets; writes the output files and returns the summary dict."""
     observations, a_dir, b_dir, output = map(Path, (observations, a_dir, b_dir, output))
@@ -140,6 +141,11 @@ def compare(
             a=_sql_path(files["a"]),
             b=_sql_path(files["b"]),
             occurrences=occurrences,
+            restrict=(
+                f" WHERE input_id IN ({sample_select_sql(files['queries'], sample)})"
+                if sample
+                else ""
+            ),
         )
         con.execute(
             f"CREATE OR REPLACE TEMP TABLE joined AS SELECT *, {_CHANGE_TYPE} AS change_type FROM ({joined})"
@@ -186,6 +192,7 @@ def compare(
         f"TO '{_sql_path(output / 'change_types.parquet')}' {copy}"
     )
     summary = _summary(con, examples, selected, skipped)
+    summary["sample_per_resource_and_library"] = sample or None
     con.close()
     db_path.unlink(missing_ok=True)
     (output / "summary.md").write_text(
@@ -259,6 +266,12 @@ def _table(header: list[str], rows: list[list[Any]]) -> list[str]:
 
 def render_markdown(summary: dict[str, Any], a: str, b: str) -> str:
     lines = ["# Resolution regression diff", "", f"- A: `{a}`", f"- B: `{b}`", ""]
+    if summary.get("sample_per_resource_and_library"):
+        lines += [
+            f"Sample: {summary['sample_per_resource_and_library']} observations per resource "
+            "and library (deterministic, md5 of the observation fingerprint).",
+            "",
+        ]
     if summary["skipped"]:
         lines += ["Skipped: " + "; ".join(f"{k} ({v})" for k, v in summary["skipped"].items()), ""]
 

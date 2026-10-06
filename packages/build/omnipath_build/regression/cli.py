@@ -6,6 +6,8 @@ import argparse
 import sys
 from typing import Any
 
+from .store import DEFAULT_SAMPLE
+
 
 def add_parser(subparsers: Any) -> argparse.ArgumentParser:
     parser = subparsers.add_parser(
@@ -36,6 +38,13 @@ def add_parser(subparsers: Any) -> argparse.ArgumentParser:
     resolve.add_argument("--resources", nargs="+", help="Default: every extracted resource")
     resolve.add_argument("--batch-size", type=int, default=5000)
     resolve.add_argument("--cache-dir", help="Identity runtime entity cache directory")
+    resolve.add_argument(
+        "--sample-per-resource",
+        type=int,
+        default=DEFAULT_SAMPLE,
+        help="Deterministic sample (md5 of the fingerprint) per resource and library; "
+        f"0 = everything (default: {DEFAULT_SAMPLE})",
+    )
     resolve.add_argument("--force", action="store_true", help="Redo resources with results")
 
     diff = sub.add_parser("diff", help="Compare two result sets")
@@ -45,6 +54,12 @@ def add_parser(subparsers: Any) -> argparse.ArgumentParser:
     diff.add_argument("--output", required=True)
     diff.add_argument("--resources", nargs="+")
     diff.add_argument("--examples", type=int, default=3, help="Examples per change type")
+    diff.add_argument(
+        "--sample-per-resource",
+        type=int,
+        default=DEFAULT_SAMPLE,
+        help="Must match the resolve runs; 0 = everything (default: %d)" % DEFAULT_SAMPLE,
+    )
     diff.add_argument("--memory-limit", default="2GB")
     return parser
 
@@ -80,6 +95,7 @@ def run(parsed: argparse.Namespace) -> int:
             batch_size=parsed.batch_size,
             cache_dir=parsed.cache_dir,
             force=parsed.force,
+            sample=parsed.sample_per_resource or None,
         )
         failed = [r for r, m in metrics["resources"].items() if "error" in m]
         for resource in failed:
@@ -96,6 +112,7 @@ def run(parsed: argparse.Namespace) -> int:
             resources=parsed.resources,
             memory_limit=parsed.memory_limit,
             examples=parsed.examples,
+            sample=parsed.sample_per_resource or None,
         )
         for resource, why in summary["skipped"].items():
             print(f"{resource}: skipped ({why})", file=sys.stderr)
