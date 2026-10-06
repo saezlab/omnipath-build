@@ -183,7 +183,38 @@ def main(args: list[str] | None = None) -> int:
     )
     library_parser.add_argument("--threads", type=int, default=None, help="DuckDB thread count")
 
+    identity_parser = subparsers.add_parser(
+        "build-identity",
+        help="Build the identity snapshot (records, entities, members, access table) from hubs",
+    )
+    identity_parser.add_argument("--hubs-dir", required=True, help="Directory of <hub>.parquet files")
+    identity_parser.add_argument("--output-dir", required=True, help="Snapshot directory")
+    identity_parser.add_argument("--memory", default="7GB", help="DuckDB memory limit (default 7GB)")
+    identity_parser.add_argument("--threads", type=int, default=6, help="DuckDB threads (default 6)")
+    identity_parser.add_argument("--goslin-cache", help="Persistent Goslin parse cache directory")
+    identity_parser.add_argument(
+        "--min-free-gib", type=float, default=50, help="Stop below this much free disk (GiB)"
+    )
+    identity_parser.add_argument(
+        "--drop-work", action="store_true", help="Delete intermediate work/ after success"
+    )
+
     parsed = parser.parse_args(args)
+
+    if parsed.command == "build-identity":
+        from .identity import build_identity
+
+        manifest = build_identity(
+            parsed.hubs_dir,
+            parsed.output_dir,
+            memory=parsed.memory,
+            threads=parsed.threads,
+            goslin_cache=parsed.goslin_cache,
+            min_free_gib=parsed.min_free_gib,
+            drop_work=parsed.drop_work,
+        )
+        print(json.dumps(manifest["timings"], indent=2))
+        return 0
 
     if parsed.command == "export-hubs":
         max_records = None if parsed.max_records == 0 else parsed.max_records
