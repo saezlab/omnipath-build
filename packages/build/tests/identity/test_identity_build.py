@@ -247,6 +247,9 @@ def test_exception_members_and_entities_extra(q):
         ("bigg:b3", "chemical", None, False, "bigg:b3"),
         ("goslin:full_structure:FA 18:0;5Me", "chemical", None, False, "swisslipids:SLM:5"),
         ("goslin:sn_position:PC 16:0/18:1", "chemical", None, False, "lipidmaps:LM1"),
+        # Lipid names only a quarantined record claims: entities so they can be candidates.
+        ("goslin:sn_position:PE 16:0/18:1", "chemical", None, False, None),
+        ("goslin:sn_position:PE 18:1/16:0", "chemical", None, False, None),
         ("hmdb:HMDB0000002", "chemical", None, True, "hmdb:HMDB0000002"),
         # The keys of a quarantined record still get entities (no record is anchored on them).
         ("inchikey:" + KB, "chemical", None, False, None),
@@ -306,3 +309,28 @@ def test_manifest_and_resume(built):
     assert again["fingerprint"] == snapshot["fingerprint"]
     assert (root / "identity" / snapshot["fingerprint"] / "manifest.json").is_file()
     assert json.loads((root / "identity" / snapshot["fingerprint"] / "manifest.json").read_text())["rules_sha256"]
+
+
+def test_record_candidates_for_unmerged_records(q):
+    # Records that point to several anchors are not merged but stay evidence for each anchor.
+    rows = q("SELECT record_id,entity_id FROM read_parquet('" + str(q.out / "record_candidates.parquet") + "') ORDER BY 1,2")
+    assert rows == sorted(rows)
+    by_record = {}
+    for record_id, entity_id in rows:
+        by_record.setdefault(record_id, []).append(entity_id)
+    # A record claiming two InChIKeys: both keys.
+    assert by_record["hmdb:HMDB0000002"] == ["inchikey:" + KB, "inchikey:" + KC]
+    # A lipid record claiming two names at its most specific level: both names.
+    assert len(by_record["lipidmaps:LMQ"]) == 2 and all(e.startswith("goslin:") for e in by_record["lipidmaps:LMQ"])
+    # A record cross-referencing two anchored records: both anchors.
+    assert by_record["bigg:b1"] == ["inchikey:" + KA, "inchikey:" + KD]
+    # A record reaching a quarantined record: that record's keys.
+    assert by_record["bigg:b2"] == ["inchikey:" + KB, "inchikey:" + KC]
+    # A ramp_gene record whose protein links two genes: both genes.
+    assert by_record["ramp_gene:RAMP_G_4"] == ["entrez:7158", "entrez:7159"]
+    # Rejected groups touch no anchor: no candidates.
+    assert "metanetx:MNXM20" not in by_record
+    # Every goslin candidate is an entity.
+    extra = {r[0] for r in q("SELECT entity_id FROM $entities_extra")}
+    lipid = {r[0] for r in q("SELECT entity_id FROM $exceptions WHERE decision='lipid_name'")}
+    assert {e for e in by_record["lipidmaps:LMQ"]} <= extra | lipid
