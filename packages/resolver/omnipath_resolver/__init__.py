@@ -4,6 +4,7 @@ from ._omnipath_resolver import resolve_precomputed_batch, resolve_molecular_bat
 from .contracts import RawEntityObservation
 from .canonical import LibraryMatcher, Match, get_policy
 from .index import FullRuntime
+from .identity_runtime import IdentityRuntime
 from .resolver import EntityResolver, ResolvedEntityInfo, ResolvedEntityTarget, locate_library_dir
 
 __all__ = [
@@ -14,6 +15,7 @@ __all__ = [
     "Match",
     "get_policy",
     "FullRuntime",
+    "IdentityRuntime",
     "EntityResolver",
     "ResolvedEntityInfo",
     "ResolvedEntityTarget",

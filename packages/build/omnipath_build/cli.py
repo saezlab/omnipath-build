@@ -199,7 +199,14 @@ def main(args: list[str] | None = None) -> int:
         "--drop-work", action="store_true", help="Delete intermediate work/ after success"
     )
 
+    from .regression import cli as regression_cli
+
+    regression_cli.add_parser(subparsers)
+
     parsed = parser.parse_args(args)
+
+    if parsed.command == "resolution-regression":
+        return regression_cli.run(parsed)
 
     if parsed.command == "build-identity":
         from .identity import build_identity

@@ -11,6 +11,7 @@ dependencies = [
     "omnipath-core>=0.1.0,<0.2",
     "biolink-model==4.4.4",
     "pyarrow>=14",
+    "duckdb>=1.5,<2",
     "lmdb>=1.8.1,<2",
     "msgpack>=1.1,<2",
     "zstandard>=0.25,<1",
