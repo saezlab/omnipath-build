@@ -114,3 +114,5 @@ class TwoPhaseConfig:
     entity_limit: int = 5000
     relation_limit: int = 5000
     byte_limit: int = 64 * 1024**2
+    # Finalizer threads; None uses every CPU (development runs without a hard memory limit).
+    final_threads: int | None = None

@@ -157,6 +157,7 @@ def build_two_phase(
 
     workers, cpus, ram_bytes = config.workers, config.cpus, config.ram_bytes
     final_memory, library_dir = config.final_memory, config.library_dir
+    final_threads = config.final_threads or cpus
     max_records, force_refresh = config.max_records, config.force_refresh
     max_batch_records, raw_batch_bytes = config.max_batch_records, config.raw_batch_bytes
     min_free_disk_bytes = config.min_free_disk_bytes
@@ -313,9 +314,13 @@ def build_two_phase(
                 p.join()
             prepared = time.monotonic()
             check_cancel(should_cancel)
-            notify("finalize", f"Finalizing {source}: {workers} shards, {cpus} SQL threads")
+            notify(
+                "finalize",
+                f"Finalizing {source}: {workers} shards, {final_threads} SQL threads, "
+                f"{final_memory} DuckDB memory",
+            )
             writer = ParquetWriter(target, library_dir=library_dir, memory_limit=final_memory)
-            writer.set_threads(cpus)
+            writer.set_threads(final_threads)
             try:
                 for i in sorted(finished):
                     drain()
@@ -373,7 +378,7 @@ def build_two_phase(
                 },
                 writer_metrics=writer.metrics,
                 duckdb_memory_limit=final_memory,
-                duckdb_threads=cpus,
+                duckdb_threads=final_threads,
                 build_execution="parallel-shards-v1",
                 batch_workers=workers,
                 batch_limits={

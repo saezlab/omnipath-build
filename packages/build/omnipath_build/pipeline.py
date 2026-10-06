@@ -219,12 +219,13 @@ def _build_resource(
 
     target_dir = Path(output_dir).resolve() / "resources" / source_slug / version
     from .two_phase import build_two_phase
-    from .duckdb_config import build_memory_limit
+    from .duckdb_config import build_memory_limit, finalize_budget
 
     ram = resource_ram_bytes or max(1024**3, batch_workers * 1024**3)
-    final_memory = (
-        f"{ram * 4 // 5}B" if resource_ram_bytes else build_memory_limit(duckdb_memory_limit)
-    )
+    if resource_ram_bytes:
+        final_memory, final_threads = finalize_budget(resource_ram_bytes, build_threads())
+    else:
+        final_memory, final_threads = build_memory_limit(duckdb_memory_limit), None
     result = build_two_phase(
         source_slug,
         discovered_list,
@@ -243,6 +244,7 @@ def _build_resource(
             entity_limit=min(batch_size, 5000),
             relation_limit=min(max_batch_relations, 5000),
             byte_limit=max_batch_bytes,
+            final_threads=final_threads,
         ),
         on_progress=on_progress,
         should_cancel=should_cancel,

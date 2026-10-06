@@ -55,3 +55,13 @@ def test_writer_applies_budget_to_all_finalization_connections(tmp_path, monkeyp
     )
     # One disk-backed connection handles all writer stages.
     assert applied == ["128.0 MiB"]
+
+
+def test_finalize_budget_leaves_headroom_under_a_hard_reservation():
+    from omnipath_build.duckdb_config import finalize_budget
+
+    gib = 1024**3
+    # IntAct was killed at 4 GiB with DuckDB allowed 80% and 6 threads.
+    assert finalize_budget(4 * gib, 6) == (f"{2 * gib}B", 4)
+    assert finalize_budget(16 * gib, 6) == (f"{8 * gib}B", 6)
+    assert finalize_budget(512 * 1024**2, 6) == (f"{256 * 1024**2}B", 1)
