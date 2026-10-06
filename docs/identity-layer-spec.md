@@ -125,7 +125,6 @@ projection) and the entity metadata denormalized onto each row.
 - Regression on nicesrv: extract observations once per resource (pre-resolution votes), resolve
   them with `FullRuntime` on the Oct 4 library and with `IdentityRuntime`; report counts per
   outcome and every differing observation, classified by the rule that explains it.
-- Every real build or load is logged in `docs/build-log.md` with parameters and phase timings.
 
 ## 6. nicesrv conventions
 
