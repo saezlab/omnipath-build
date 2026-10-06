@@ -764,6 +764,27 @@ def test_candidates_intersect_with_a_second_identifier(matcher):
     assert agreeing.matched and agreeing.node_id == f"inchikey:{TWO_C}"
 
 
+def test_coarse_cross_references_do_not_veto_specific_identifiers(matcher):
+    water, ethanol = f"inchikey:{WATER}", f"inchikey:{ETHANOL}"
+    out = run(
+        matcher,
+        # bigg:x1 is ethanol: a secondary BiGG id cannot veto the ChEBI id
+        vetoed=chemical([("bigg", "x1")], namespace="chebi", identifier="CHEBI:15377"),
+        agreeing=chemical([("kegg", "C00001")], namespace="chebi", identifier="CHEBI:15377"),
+        # alone it still resolves
+        alone=chemical([("bigg", "x1")]),
+        # the source's own identifier is no cross-reference: the conflict stands
+        primary=chemical([("chebi", "CHEBI:15377")], namespace="bigg", identifier="x1"),
+        # specific identifiers that disagree among themselves still abstain
+        specific=chemical([("smiles", "CCO"), ("bigg", "x1")], namespace="chebi", identifier="CHEBI:15377"),
+    )  # fmt: skip
+    assert out["vetoed"][0].node_id == water
+    assert out["agreeing"][0].node_id == water
+    assert out["alone"][0].node_id == ethanol
+    assert not out["primary"][0].matched
+    assert not out["specific"][0].matched
+
+
 def test_gene_label_falls_back_to_gene_info_name():
     from omnipath_resolver.identity_runtime import choose_label
 

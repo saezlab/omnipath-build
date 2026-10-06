@@ -36,6 +36,9 @@ KINDS = {"chemical": 1, "protein": 2, "gene": 3, "reaction": 4}
 REACTION_HUBS = ("rhea", "metanetx_reaction")
 RHEA_XREF_NAMESPACES = frozenset({"kegg_reaction", "reactome", "metacyc_reaction", "ecocyc_reaction", "macie"})
 MNX_XREF_NAMESPACES = frozenset({"bigg_reaction", "vmh_reaction", "seed_reaction", "sabiork_reaction"})
+# Coarse chemical cross-references: generic stereo or protonation states, model-specific ids.
+# A source's secondary one must not veto its specific identifiers (see ``resolve``).
+COARSE_CHEMICAL_NAMESPACES = frozenset({"kegg", "bigg", "metanetx"})
 GENE_NAMESPACES = frozenset({"hgnc", "ensg", "enst", "refseq", "genesymbol", "genesymbol-syn"})
 SYMBOL_NAMESPACES = frozenset({"genesymbol", "genesymbol-syn"})
 # Tags carried by access rows (spec section 3).
@@ -955,11 +958,6 @@ class IdentityRuntime:
             self.decisions = None
 
     def resolve(self, queries, votes, *, decision_batch_size=4096):
-        from omnipath_resolver._omnipath_resolver import (
-            resolve_precomputed_batch,
-            resolve_molecular_batch,
-        )
-
         start = time.perf_counter()
         keys = sorted({v["lookup_key"] for v in votes})
         selected = self.lookup_many(keys)
@@ -990,32 +988,24 @@ class IdentityRuntime:
             )
         batches = [(q["input_id"], q["target"], grouped[q["input_id"]]) for q in queries]
         fetched = time.perf_counter()
-        result = []
-        molecular = {}
-        for offset in range(0, len(batches), decision_batch_size):
-            chunk = batches[offset : offset + decision_batch_size]
-            # Reactions take the chemical decision path: same intersection, quarantine and
-            # unique/ambiguous outcome, with no structure anchors. The kernel only knows
-            # chemical candidates there, so reaction queries and entities are passed as such.
-            chemical = [(q[0], 1, q[2]) for q in chunk if q[1] in (1, 3)]
-            biological = [q for q in chunk if q[1] == 2]
-            if chemical:
-                result.extend(
-                    resolve_precomputed_batch(
-                        chemical,
-                        postings,
-                        [(m[0], m[1], 1 if m[2] == 4 else m[2], *m[3:6]) for m in metadata.values()],
-                    )
-                )
-            if biological:
-                facts = [
-                    tuple(m[:6]) + (list(m[6]) if len(m) > 6 else [],) for m in metadata.values()
-                ]
-                for row in resolve_molecular_batch(biological, postings, facts):
-                    result.append(row[:4])
-                    molecular[row[0]] = dict(
-                        protein_entity_id=row[4], gene_candidates=row[5], gene_mapping_status=row[6]
-                    )
+        result, molecular = self._decide(batches, postings, metadata, decision_batch_size)
+        # A chemical left unaccepted is decided again without its secondary coarse
+        # cross-references. Accepted results never change; the rest must still agree.
+        coarse = defaultdict(set)
+        for v in votes:
+            if v["target"] == 1 and v["ns"] in COARSE_CHEMICAL_NAMESPACES and not v.get("primary"):
+                coarse[v["input_id"]].add(v["ordinal"])
+        unaccepted = {i for i, _, ids, _ in result if not ids and coarse.get(i)}
+        retry = [
+            (i, t, [vote for vote in group if vote[3] not in coarse[i]])
+            for i, t, group in batches
+            if i in unaccepted
+        ]
+        retry = [b for b in retry if b[2]]
+        if retry:
+            second, _ = self._decide(retry, postings, metadata, decision_batch_size)
+            better = {row[0]: row for row in second if row[2]}
+            result = [better.get(row[0], row) for row in result]
         decided = time.perf_counter()
         accepted = {eid for _, _, ids, _ in result for eid in ids}
         accepted.update(
@@ -1044,3 +1034,38 @@ class IdentityRuntime:
             candidate_records=len(metadata),
             entity_records=len(records),
         )
+
+    @staticmethod
+    def _decide(batches, postings, metadata, decision_batch_size):
+        from omnipath_resolver._omnipath_resolver import (
+            resolve_precomputed_batch,
+            resolve_molecular_batch,
+        )
+
+        result = []
+        molecular = {}
+        for offset in range(0, len(batches), decision_batch_size):
+            chunk = batches[offset : offset + decision_batch_size]
+            # Reactions take the chemical decision path: same intersection, quarantine and
+            # unique/ambiguous outcome, with no structure anchors. The kernel only knows
+            # chemical candidates there, so reaction queries and entities are passed as such.
+            chemical = [(q[0], 1, q[2]) for q in chunk if q[1] in (1, 3)]
+            biological = [q for q in chunk if q[1] == 2]
+            if chemical:
+                result.extend(
+                    resolve_precomputed_batch(
+                        chemical,
+                        postings,
+                        [(m[0], m[1], 1 if m[2] == 4 else m[2], *m[3:6]) for m in metadata.values()],
+                    )
+                )
+            if biological:
+                facts = [
+                    tuple(m[:6]) + (list(m[6]) if len(m) > 6 else [],) for m in metadata.values()
+                ]
+                for row in resolve_molecular_batch(biological, postings, facts):
+                    result.append(row[:4])
+                    molecular[row[0]] = dict(
+                        protein_entity_id=row[4], gene_candidates=row[5], gene_mapping_status=row[6]
+                    )
+        return result, molecular
