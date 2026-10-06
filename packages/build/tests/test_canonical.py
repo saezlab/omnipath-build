@@ -200,6 +200,21 @@ class TestGeneProteinMatching(LibraryTestCase):
         self.assertEqual(m.label, "hsa-mir-1")
 
 
+class TestResolutionMemo(LibraryTestCase):
+    def test_recurring_observation_reuses_the_result(self):
+        first = self.matcher.targets({"a": obs("protein", "uniprot", "P04637", key="a")})["a"]
+        hits = self.matcher.metrics["memo_hits"]
+        # The same observation under another key, in a later batch.
+        again = self.matcher.targets({"b": obs("protein", "uniprot", "P04637", key="b")})["b"]
+        self.assertEqual(self.matcher.metrics["memo_hits"], hits + 1)
+        self.assertEqual(again, first)
+        self.assertIsNot(again[0], first[0])
+        # A different observation is resolved, not served from the memo.
+        other = self.matcher.targets({"c": obs("protein", "entrez", "7157", key="c")})["c"]
+        self.assertEqual(self.matcher.metrics["memo_hits"], hits + 1)
+        self.assertEqual(other[0].canonical_identifier, "7157")
+
+
 class TestChemicalMatching(LibraryTestCase):
     def test_every_identifier_of_water(self):
         for ns, ident in [

@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import copy
+import json
 import re
-from collections import defaultdict
+from collections import OrderedDict, defaultdict
 from dataclasses import dataclass, field
 from typing import Any
 from omnipath_core.biolink import entity_type as normalize_entity_type
@@ -73,6 +75,27 @@ class Match:
     @property
     def matched(self) -> bool:
         return self.node_id is not None
+
+
+def _observation_signature(obs: Any) -> str:
+    """Everything resolution reads from an observation; not its key, annotations or evidence."""
+    return json.dumps(
+        [
+            getattr(obs, name, None)
+            for name in (
+                "entity_type",
+                "namespace",
+                "identifier",
+                "taxon",
+                "label",
+                "identity_scope",
+                "identifiers",
+                "molecular_form",
+            )
+        ],
+        sort_keys=True,
+        default=str,
+    )
 
 
 def votes_for(obs: Any, policy: EntityPolicy) -> tuple[list[Vote], dict[str, list[str]]]:
@@ -150,9 +173,14 @@ class LibraryMatcher:
         self.library_dir = pin_library(library_dir)
         self.defer_aliases = defer_aliases
         self.memory_limit = memory_limit
+        # Resolution against a pinned reference depends only on the observation, so a
+        # worker reuses the result when the same observation recurs in later batches
+        # (FooDB repeats ~70k compounds across ~5M content rows).
+        self._memo: OrderedDict[str, tuple[list, list]] = OrderedDict()
         self.metrics = {
             "batches": 0,
             "observations": 0,
+            "memo_hits": 0,
             "lookup_seconds": 0.0,
             "kernel_seconds": 0.0,
             "enrichment_seconds": 0.0,
@@ -179,7 +207,17 @@ class LibraryMatcher:
 
         prepared = {}
         queries, votes = [], []
+        cached, signatures = {}, {}
         for key, obs in entities.items():
+            signature = _observation_signature(obs)
+            hit = self._memo.get(signature)
+            if hit is not None:
+                self._memo.move_to_end(signature)
+                matches, derivations = hit
+                obs.structure_derivations = copy.deepcopy(derivations)
+                cached[key] = copy.deepcopy(matches)
+                continue
+            signatures[key] = signature
             policy = get_policy(obs.entity_type)
             normalized, observed = votes_for(obs, policy)
             prepared[key] = (obs, policy, observed)
@@ -202,7 +240,7 @@ class LibraryMatcher:
                     if transcript:
                         match.transcript_namespace, match.transcript_identifier = transcript
         if not queries:
-            return results
+            return self._remember(results, cached, signatures, entities)
         resolved, metrics = self.runtime.resolve(queries, votes)
         accepted = {row["input_id"]: row for row in resolved["results"]}
         for name, source in (
@@ -265,6 +303,18 @@ class LibraryMatcher:
         flush_lipid_cache()
         self.metrics["batches"] += 1
         self.metrics["observations"] += len(queries)
+        return self._remember(results, cached, signatures, entities)
+
+    def _remember(self, results, cached, signatures, entities, limit=200_000):
+        for key, signature in signatures.items():
+            self._memo[signature] = (
+                copy.deepcopy(results[key]),
+                copy.deepcopy(entities[key].structure_derivations),
+            )
+        while len(self._memo) > limit:
+            self._memo.popitem(last=False)
+        self.metrics["memo_hits"] += len(cached)
+        results.update(cached)
         return results
 
     def match(self, entities):
