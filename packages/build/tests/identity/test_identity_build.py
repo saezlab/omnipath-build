@@ -207,11 +207,6 @@ EXPECTED_ENTITY_DEFINING = [
     ("metanetx:MNXM4", "metanetx:MNXM4", "structureless"),  # chains are not followed
     ("pubchem:101", "pubchem:101", "structureless"),
     ("ramp:RAMP_C_1", "ramp:RAMP_C_1", "ambiguous_native"),
-    ("ramp_gene:RAMP_G_1", "uniprot:P04637", "attached"),
-    ("ramp_gene:RAMP_G_2", "entrez:7157", "attached"),
-    ("ramp_gene:RAMP_G_3", "ramp_gene:RAMP_G_3", "structureless"),
-    ("ramp_gene:RAMP_G_4", "uniprot:P99999", "attached"),
-    ("ramp_gene:RAMP_G_5", "ramp_gene:RAMP_G_5", "ambiguous_native"),  # uniprot AND gene anchors
     ("swisslipids:SLM:1", "goslin:sn_position:PC 16:0/18:1", "lipid_name"),
     ("swisslipids:SLM:5", "goslin:full_structure:FA 18:0;5Me", "lipid_name"),
 ]
@@ -219,7 +214,7 @@ ROUTE2 = ("explicit_source_gene", "source_gene_only")
 
 
 def test_exceptions_are_the_non_trivial_decisions(q):
-    rows = q("SELECT record_id,entity_id,decision FROM $exceptions WHERE decision NOT IN ('explicit_source_gene','source_gene_only') ORDER BY 1,2,3")
+    rows = q("SELECT record_id,entity_id,decision FROM $exceptions WHERE NOT starts_with(record_id,'ramp_gene:') ORDER BY 1,2,3")
     assert rows == EXPECTED_ENTITY_DEFINING
     assert q("SELECT record_id,entity_id,decision,quarantined FROM $exceptions WHERE decision='quarantined' ORDER BY 1") == [
         ("hmdb:HMDB0000002", "hmdb:HMDB0000002", "quarantined", True),
@@ -244,7 +239,7 @@ def test_anchored_records_are_never_exceptions_unless_quarantined(q):
 
 def test_exception_members_and_entities_extra(q):
     assert q("SELECT entity_id,record_id FROM $exception_members ORDER BY 1,2") == sorted(
-        (e, r) for r, e, _ in EXPECTED_ENTITY_DEFINING
+        [(e, r) for r, e, _ in EXPECTED_ENTITY_DEFINING] + [(e, r) for r, e, _ in EXPECTED_RAMP_GENES]
     )
     assert q("SELECT * FROM $entities_extra ORDER BY entity_id") == [
         ("bigg:b1", "chemical", None, False, "bigg:b1"),
@@ -264,19 +259,23 @@ def test_exception_members_and_entities_extra(q):
         ("pubchem:101", "chemical", None, False, "pubchem:101"),
         ("ramp:RAMP_C_1", "chemical", None, False, "ramp:RAMP_C_1"),
         ("ramp_gene:RAMP_G_3", "gene", None, False, "ramp_gene:RAMP_G_3"),
-        ("ramp_gene:RAMP_G_5", "gene", None, False, "ramp_gene:RAMP_G_5"),
+        ("ramp_gene:RAMP_G_4", "gene", None, False, "ramp_gene:RAMP_G_4"),
     ]
+
+
+EXPECTED_RAMP_GENES = [
+    ("ramp_gene:RAMP_G_1", "entrez:7157", "explicit_source_gene"),  # via its UniProt source id
+    ("ramp_gene:RAMP_G_2", "entrez:7157", "explicit_source_gene"),  # via its NCBI Gene source id
+    ("ramp_gene:RAMP_G_3", "ramp_gene:RAMP_G_3", "source_gene_only"),
+    ("ramp_gene:RAMP_G_4", "ramp_gene:RAMP_G_4", "ambiguous_native"),  # P99999 links two genes
+    ("ramp_gene:RAMP_G_5", "entrez:7157", "explicit_source_gene"),  # uniprot and entrez agree
+]
 
 
 def test_ramp_gene_source_gene_mappings(q):
-    assert q("SELECT record_id,entity_id,decision FROM $exceptions WHERE decision IN ('explicit_source_gene','source_gene_only') ORDER BY 1,2") == [
-        ("ramp_gene:RAMP_G_1", "entrez:7157", "explicit_source_gene"),  # via its UniProt source id
-        ("ramp_gene:RAMP_G_2", "entrez:7157", "explicit_source_gene"),  # via its NCBI Gene source id
-        ("ramp_gene:RAMP_G_3", "ramp_gene:RAMP_G_3", "source_gene_only"),
-        ("ramp_gene:RAMP_G_4", "entrez:7158", "explicit_source_gene"),  # P99999 links two genes
-        ("ramp_gene:RAMP_G_4", "entrez:7159", "explicit_source_gene"),
-        ("ramp_gene:RAMP_G_5", "entrez:7157", "explicit_source_gene"),
-    ]
+    # Exactly one row per ramp_gene record.
+    assert q("SELECT record_id,entity_id,decision FROM $exceptions WHERE starts_with(record_id,'ramp_gene:') ORDER BY 1") == EXPECTED_RAMP_GENES
+    assert q("SELECT count(*) FROM (SELECT record_id FROM $exceptions GROUP BY 1 HAVING count(*)>1)") == [(0,)]
 
 
 def test_gene_products(q):

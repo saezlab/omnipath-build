@@ -256,7 +256,9 @@ def stage_gene_products(ctx, directory, indexes):
 def ramp_genes(ctx, c, indexes):
     """`ramp_gene` source ids resolve to genes through explicit UniProt/NCBI Gene source ids."""
     if "ramp_gene" not in indexes:
-        c.execute("CREATE TABLE ramp_rows(record_id VARCHAR,entity_id VARCHAR,decision VARCHAR)")
+        c.execute(
+            "CREATE TABLE ramp_rows AS SELECT record_id,entity_id,decision,hub,local_id,taxon,count0 FROM exceptions WHERE false"
+        )
         return dict(mappings=0)
     gp = quote(ctx.out / "gene_products_by_protein.parquet")
     c.execute(
@@ -299,11 +301,18 @@ def ramp_genes(ctx, c, indexes):
         WHERE starts_with(c.entity_id,'entrez:')
           OR (p.entrez_id IS NOT NULL AND (c.taxon IS NULL OR c.taxon IN ('','0') OR p.taxon IS NULL OR c.taxon=p.taxon))"""
     )
+    # One row per ramp_gene record: a single explicit gene wins over the generic decision; several
+    # genes, or only a protein, leave the record its own entity (as the old reference did).
     c.execute(
-        """CREATE TABLE ramp_rows AS SELECT record_id,entity_id,'explicit_source_gene' decision FROM mapped
-        UNION ALL SELECT e.record_id,e.entity_id,'source_gene_only' FROM exceptions e
-          ANTI JOIN mapped m ON m.record_id=e.record_id
-          WHERE e.hub='ramp_gene' AND NOT starts_with(e.entity_id,'uniprot:')"""
+        """CREATE TABLE ramp_rows AS
+        WITH m AS (SELECT record_id,min(entity_id) gene,count(DISTINCT entity_id) n FROM mapped GROUP BY 1)
+        SELECT x.record_id,
+          CASE WHEN m.n=1 THEN m.gene WHEN m.n>1 OR starts_with(x.entity_id,'uniprot:') THEN x.record_id
+               ELSE x.entity_id END entity_id,
+          CASE WHEN m.n=1 THEN 'explicit_source_gene' WHEN m.n>1 THEN 'ambiguous_native'
+               ELSE 'source_gene_only' END decision,
+          x.hub,x.local_id,x.taxon,x.count0
+        FROM exceptions x LEFT JOIN m USING(record_id) WHERE x.hub='ramp_gene'"""
     )
     return dict(mappings=c.execute("SELECT count(*) FROM mapped").fetchone()[0])
 
@@ -375,19 +384,23 @@ def quarantined_key_entities(ctx, c, indexes):
 def write_outputs(ctx, c, indexes):
     out = ctx.out
     quarantined_key_entities(ctx, c, indexes)
+    # Exactly one row per record: ramp_gene records take their source-gene decision.
     c.execute(
-        "CREATE TABLE exceptions_out AS SELECT record_id,entity_id,decision,decision='quarantined' quarantined FROM exceptions "
-        "UNION ALL SELECT record_id,entity_id,decision,false FROM ramp_rows"
+        """CREATE TABLE final AS SELECT record_id,entity_id,decision,hub,local_id,taxon,count0
+        FROM exceptions WHERE hub<>'ramp_gene' UNION ALL SELECT * FROM ramp_rows"""
     )
+    dup = c.execute("SELECT count(*) FROM (SELECT record_id FROM final GROUP BY 1 HAVING count(*)>1)").fetchone()[0]
+    if dup:
+        raise RuntimeError(f"{dup} records have more than one exception row")
     n = ctx.copy(
         c,
-        "SELECT * FROM exceptions_out ORDER BY record_id,decision,entity_id",
+        "SELECT record_id,entity_id,decision,decision='quarantined' quarantined FROM final ORDER BY record_id",
         out / "exceptions.parquet",
         ", ROW_GROUP_SIZE 65536",
     )
     ctx.copy(
         c,
-        "SELECT entity_id,record_id FROM exceptions ORDER BY entity_id,record_id",
+        "SELECT entity_id,record_id FROM final ORDER BY entity_id,record_id",
         out / "exception_members.parquet",
         ", ROW_GROUP_SIZE 65536",
     )
@@ -400,7 +413,7 @@ def write_outputs(ctx, c, indexes):
                  WHEN min(hub)='uniprot' THEN 'protein' ELSE 'chemical' END kind,
             min(taxon) FILTER (WHERE taxon IS NOT NULL) taxon,bool_or(decision='quarantined') quarantined,
             arg_min(record_id,struct_pack(r:={hub_rank()},l:=local_id)) preferred_record
-          FROM exceptions WHERE decision<>'attached' GROUP BY entity_id
+          FROM final WHERE NOT (starts_with(entity_id,'inchikey:') OR starts_with(entity_id,'uniprot:') OR starts_with(entity_id,'entrez:')) GROUP BY entity_id
           UNION ALL SELECT entity_id,'chemical',NULL,false,NULL FROM qkeys) ORDER BY entity_id""",
         out / "entities_extra.parquet",
     )
