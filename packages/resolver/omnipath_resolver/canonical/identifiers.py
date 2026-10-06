@@ -58,6 +58,11 @@ def normalize_id(ns: str, value: str | None) -> str:
     return text
 
 
+# KEGG names the genes of these organisms by their NCBI Gene ID: hsa:7157 is Entrez 7157.
+# No reference source carries KEGG gene IDs, so this is how a KEGG-only gene resolves.
+KEGG_NCBI_GENE_ORGANISMS = frozenset({"hsa", "mmu", "rno"})
+
+
 def normalize_identifier(ns: str | None, value: str | None) -> list[tuple[str, str]]:
     """All ``(ns, id)`` votes an observed identifier contributes (usually one)."""
     slug = normalize_ns(ns)
@@ -73,6 +78,10 @@ def normalize_identifier(ns: str | None, value: str | None) -> list[tuple[str, s
         m = _ISOFORM_RE.match(ident)
         if m:
             out.append((slug, m.group(1)))
+    if slug == "kegg_gene":
+        organism, _, number = ident.partition(":")
+        if organism.lower() in KEGG_NCBI_GENE_ORGANISMS and number.isdigit():
+            out.append(("entrez", number))
     return out
 
 

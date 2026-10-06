@@ -77,6 +77,14 @@ class TestPolicy(unittest.TestCase):
         )
         self.assertEqual(normalize_identifier("uniprot", ""), [])
         self.assertEqual(
+            normalize_identifier("kegg_gene", "mmu:16348"),
+            [("kegg_gene", "mmu:16348"), ("entrez", "16348")],
+        )
+        # Other organisms use their own gene names, not NCBI Gene IDs.
+        self.assertEqual(
+            normalize_identifier("kegg_gene", "dme:Dmel_CG1234"), [("kegg_gene", "dme:Dmel_CG1234")]
+        )
+        self.assertEqual(
             normalize_identifier("uniprot_trembl", "A0A0U1RQF1-2"),
             [("uniprot", "A0A0U1RQF1-2"), ("uniprot", "A0A0U1RQF1")],
         )
@@ -115,6 +123,7 @@ class TestGeneProteinMatching(LibraryTestCase):
             ("entrez", "7157"),
             ("ensg", "ENSG00000141510.15"),
             ("hgnc", "11998"),
+            ("kegg_gene", "hsa:7157"),
         ]:
             m = self.one(obs("protein", ns, ident))
             self.assertEqual(

@@ -27,7 +27,7 @@ from .observations import CODES
 
 FORMAT = "omnipath-identity-v2"
 # Bump when record assembly or label policy changes: cached records are discarded.
-RECORD_POLICY = "identity-record-v3"
+RECORD_POLICY = "identity-record-v4"
 CACHE_ENV = "OMNIPATH_IDENTITY_CACHE"
 
 KINDS = {"chemical": 1, "protein": 2, "gene": 3, "reaction": 4}
@@ -243,7 +243,7 @@ def choose_label(kind: int, entity_id: str, rows: list[tuple[str, str, str]]) ->
     """Label policy (spec rule 13).
 
     ``rows`` are ``(hub, source_type, value)`` for every member record. First available:
-    gene: NCBI Gene symbol; protein: primary gene name > entry name > accession;
+    gene: NCBI Gene symbol or gene_info name; protein: primary gene name > entry name > accession;
     chemical: lipid Goslin shorthand, else ChEBI > HMDB > ChEMBL > PubChem > other hub name
     > systematic name (InChIKey-shaped and over-long values skipped); else the id local part.
     """
@@ -256,7 +256,10 @@ def choose_label(kind: int, entity_id: str, rows: list[tuple[str, str, str]]) ->
         return [v for h, v in by_type.get(source_type, ()) if hubs is None or h in hubs]
 
     if kind == 3:
+        # Genes without a UniProt product (tRNAs, many non-coding genes) carry the NCBI
+        # symbol only as a gene_info name row.
         symbol = _short_first(_usable(values("genesymbol", {"entrez"}), 120))
+        symbol = symbol or _short_first(_usable(values("name", {"entrez"}), 120))
         return symbol or local
     if kind == 2:
         symbol = _short_first(_usable(values("genesymbol", {"uniprot"}), 120)) or _short_first(

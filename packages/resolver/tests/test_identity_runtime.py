@@ -762,3 +762,14 @@ def test_candidates_intersect_with_a_second_identifier(matcher):
     assert resolved["results"][0]["candidate_count"] == 2
     (agreeing,) = out["agreeing"]
     assert agreeing.matched and agreeing.node_id == f"inchikey:{TWO_C}"
+
+
+def test_gene_label_falls_back_to_gene_info_name():
+    from omnipath_resolver.identity_runtime import choose_label
+
+    # A tRNA gene has no UniProt product, so only gene_info's name row carries its symbol.
+    assert choose_label(3, "entrez:100189199", [("entrez", "name", "TRL-CAA6-1")]) == "TRL-CAA6-1"
+    # A product's symbol still wins.
+    rows = [("entrez", "genesymbol", "TP53"), ("entrez", "name", "tumor protein")]
+    assert choose_label(3, "entrez:7157", rows) == "TP53"
+    assert choose_label(3, "entrez:42", []) == "42"

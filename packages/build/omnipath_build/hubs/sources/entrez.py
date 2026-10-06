@@ -1,6 +1,15 @@
-"""Entrez hub from NCBI gene2ensembl.gz (gzip-streamed)."""
+"""Entrez hub from NCBI gene2ensembl.gz plus genes gene2ensembl does not list.
+
+gene2ensembl links an NCBI gene to Ensembl, so it lacks genes Ensembl does not annotate:
+tRNAs and many non-coding or predicted genes. Those come from the eukaryote gene_info
+files, as identity plus the NCBI symbol (a ``name`` row, used for the label only, so it
+adds no symbol lookups). Bacteria and viruses are left out: their proteins resolve through
+UniProt and they would multiply the hub.
+"""
 
 from __future__ import annotations
+
+from collections.abc import Iterable
 
 from ..common import explode_record
 from ..schema import as_values
@@ -8,11 +17,25 @@ from ..stream import iter_url_lines
 from ..writer import HubParquetWriter
 
 URL = "https://ftp.ncbi.nlm.nih.gov/gene/DATA/gene2ensembl.gz"
+GENE_INFO_URLS = tuple(
+    f"https://ftp.ncbi.nlm.nih.gov/gene/DATA/GENE_INFO/{group}.gene_info.gz"
+    for group in (
+        "Mammalia/All_Mammalia",
+        "Non-mammalian_vertebrates/All_Non-mammalian_vertebrates",
+        "Invertebrates/All_Invertebrates",
+        "Plants/All_Plants",
+        "Fungi/All_Fungi",
+    )
+)
 
 
-def emit(writer: HubParquetWriter) -> None:
+def emit(
+    writer: HubParquetWriter,
+    lines: Iterable[str] | None = None,
+    gene_info: Iterable[Iterable[str]] | None = None,
+) -> None:
     seen: set[tuple[str, str]] = set()
-    for line in iter_url_lines(URL):
+    for line in lines if lines is not None else iter_url_lines(URL):
         if writer.full:
             return
         if line.startswith("#"):
@@ -55,3 +78,28 @@ def emit(writer: HubParquetWriter) -> None:
             fields=field_map,
         ):
             return
+    sources = gene_info if gene_info is not None else (iter_url_lines(u) for u in GENE_INFO_URLS)
+    for source in sources:
+        for line in source:
+            if writer.full:
+                return
+            if line.startswith("#"):
+                continue
+            # tax_id, GeneID, Symbol, ...
+            fields = line.rstrip("\n").split("\t", 3)
+            if len(fields) < 3 or not fields[0].isdigit() or not fields[1].isdigit():
+                continue
+            key = (fields[0], fields[1])
+            if key in seen:
+                continue
+            seen.add(key)
+            symbol = "" if fields[2] in {"", "-", "NEWENTRY"} else fields[2].strip()
+            if not explode_record(
+                writer,
+                hub_id=fields[1],
+                hub_type="entrez",
+                backend="gene_info",
+                taxonomy_id=fields[0],
+                fields={"name": symbol},
+            ):
+                return

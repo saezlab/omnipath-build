@@ -178,7 +178,10 @@ class TestReactionHubs(unittest.TestCase):
             writer = HubParquetWriter(path)
             emit(writer, **sources)
             writer.close()
-            return {(r["source_type"], r["source_id"], r["hub_id"]) for r in pq.read_table(path).to_pylist()}
+            return {
+                (r["source_type"], r["source_id"], r["hub_id"])
+                for r in pq.read_table(path).to_pylist()
+            }
 
     def test_rhea_master_records_directional_ids_xrefs_and_equation(self):
         xrefs = (
@@ -188,8 +191,10 @@ class TestReactionHubs(unittest.TestCase):
             "10000\tUN\t10000\t3.5.1.50\tEC\n"
             "10000\tUN\t10000\tGO:0050126\tGO\n"
         )
-        reactions = "ENTRY       RHEA:10000\nDEFINITION  pentanamide + H2O = pentanoate + NH4(+)\n///\n" \
+        reactions = (
+            "ENTRY       RHEA:10000\nDEFINITION  pentanamide + H2O = pentanoate + NH4(+)\n///\n"
             "ENTRY       RHEA:10001\nDEFINITION  pentanamide + H2O => pentanoate + NH4(+)\n///\n"
+        )
         rows = self.rows(
             emit_rhea,
             directions=DIRECTIONS.splitlines(),
@@ -220,7 +225,9 @@ class TestReactionHubs(unittest.TestCase):
             "vmhreaction:MODEL\tMNXR2\t\n"
             "mnx:EMPTY\tEMPTY\t\n"
         )
-        rows = self.rows(emit_metanetx_reaction, lines=lines.splitlines(), directions=DIRECTIONS.splitlines())
+        rows = self.rows(
+            emit_metanetx_reaction, lines=lines.splitlines(), directions=DIRECTIONS.splitlines()
+        )
         self.assertEqual(
             rows,
             {
@@ -379,3 +386,34 @@ class TestHubRegistry(unittest.TestCase):
                 "taxon_species",
             ],
         )
+
+
+class TestEntrezHub(unittest.TestCase):
+    def test_gene_info_adds_genes_without_an_ensembl_link(self):
+        from omnipath_build.hubs.sources.entrez import emit as emit_entrez
+
+        gene2ensembl = [
+            "#tax_id\tGeneID\tEnsembl_gene_identifier\tRNA\tEnsembl_rna\tprotein\tEnsembl_protein",
+            "9606\t7157\tENSG00000141510.18\tNM_000546.6\tENST00000269305.9\tNP_000537.3\tENSP00000269305.4",
+        ]
+        gene_info = [
+            "#tax_id\tGeneID\tSymbol\tLocusTag",
+            "9606\t7157\tTP53\t-",
+            "9606\t100189199\tTRL-CAA6-1\t-",
+            "10090\t115487553\tGm25354\t-",
+        ]
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "entrez.parquet"
+            writer = HubParquetWriter(path)
+            emit_entrez(writer, lines=gene2ensembl, gene_info=[gene_info])
+            writer.close()
+            rows = pq.read_table(path).to_pylist()
+        records = {(r["hub_id"], r["taxonomy_id"]) for r in rows if r["source_type"] == "entrez"}
+        self.assertEqual(records, {("7157", "9606"), ("100189199", "9606"), ("115487553", "10090")})
+        # A gene gene2ensembl already lists is not added twice, and gets no name row.
+        self.assertEqual(
+            sum(r["hub_id"] == "7157" and r["source_type"] == "entrez" for r in rows), 1
+        )
+        self.assertFalse(any(r["hub_id"] == "7157" and r["source_type"] == "name" for r in rows))
+        names = {r["hub_id"]: r["source_id"] for r in rows if r["source_type"] == "name"}
+        self.assertEqual(names, {"100189199": "TRL-CAA6-1", "115487553": "Gm25354"})
