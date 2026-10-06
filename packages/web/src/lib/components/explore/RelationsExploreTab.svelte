@@ -3,7 +3,7 @@
   import WorkspacePanel from '$lib/components/workspace/WorkspacePanel.svelte';
   import { untrack } from 'svelte';
   import { page as currentPage } from '$app/state';
-  import { Filter, Minus, X } from '@lucide/svelte';
+  import { Filter, X } from '@lucide/svelte';
   import { Badge } from '$lib/components/ui/badge/index.js';
   import { Button } from '$lib/components/ui/button/index.js';
   import { Alert, AlertDescription } from '$lib/components/ui/alert/index.js';
@@ -14,18 +14,10 @@
     SheetTitle,
     SheetTrigger,
   } from '$lib/components/ui/sheet/index.js';
-  import {
-    Table,
-    TableBody,
-    TableCell,
-    TableHead,
-    TableHeader,
-    TableRow,
-  } from '$lib/components/ui/table/index.js';
-  import EntityBadge from '$lib/components/entity/EntityBadge.svelte';
   import EntityDetailsDialog from '$lib/components/entity/EntityDetailsDialog.svelte';
   import InteractionFilterSidebar from '$lib/components/interactions/InteractionFilterSidebar.svelte';
   import InteractionDetailsSheet from '$lib/components/interactions/InteractionDetailsSheet.svelte';
+  import RelationsTable from '$lib/components/interactions/RelationsTable.svelte';
   import { IsMobile } from '$lib/hooks/is-mobile.svelte';
   import { collectEntityKeys } from '$lib/features/explorer/paged-query';
   import {
@@ -33,16 +25,9 @@
     fetchEntitiesSearch,
     type EntitySearchCursor,
   } from '$lib/api/client';
-  import {
-    getEntityBadgeIdentifier,
-    getEntityDisplayName,
-    getEntityTypeLabel,
-    getRelationPredicateLabel,
-    type EntityLike,
-  } from '$lib/domain/display';
+  import type { EntityLike } from '$lib/domain/display';
   import type { SearchFilters } from '$lib/types/search';
   import type { InteractionListRow } from '$lib/types/interactions';
-  import { formatNumber } from '$lib/utils/format';
 
   interface Props {
     filters: SearchFilters;
@@ -336,108 +321,14 @@
       {#if loading}<p role="status" class="text-sm text-muted-foreground">
           Updating relations…
         </p>{/if}
-      <div class="flex flex-col">
-        <div class="relative border-b bg-background px-3 h-[57px] flex items-center">
-          <Table class="pr-28">
-            <TableHeader>
-              <TableRow>
-                <TableHead class="w-[35%] py-2">Source</TableHead>
-                <TableHead class="w-[50px] text-center py-2">Predicate</TableHead>
-                <TableHead class="w-[35%] py-2">Target</TableHead>
-                <TableHead class="w-[20%] text-center py-2 pr-28">Evidence</TableHead>
-              </TableRow>
-            </TableHeader>
-          </Table>
-        </div>
-
-        <div>
-          <Table>
-            <TableBody>
-              {#each results as row}
-                {@const sourceEntity = row.subjectEntity}
-                {@const targetEntity = row.objectEntity}
-                <TableRow
-                  onclick={() => handleRowClick(row)}
-                  class="cursor-pointer hover:bg-muted/50"
-                >
-                  <TableCell class="w-[35%] max-w-0">
-                    <button
-                      type="button"
-                      onclick={(event) => {
-                        event.stopPropagation();
-                        openEntityDetails(sourceEntity);
-                      }}
-                      class="block w-full cursor-pointer rounded-lg p-0.5 text-left transition-all hover:bg-primary/10 hover:ring-2 hover:ring-primary/35 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                    >
-                      <EntityBadge
-                        displayName={getEntityDisplayName(sourceEntity)}
-                        canonicalIdentifier={getEntityBadgeIdentifier(sourceEntity)}
-                        entityType={getEntityTypeLabel(sourceEntity)}
-                        resolutionStatus={sourceEntity.resolutionStatus}
-                      />
-                    </button>
-                  </TableCell>
-                  <TableCell class="w-[50px] text-center">
-                    <div class="flex justify-center">
-                      {#if row.relation.predicate.trim()}
-                        <span class="text-sm text-muted-foreground"
-                          >{row.relation.displayLabel ||
-                            getRelationPredicateLabel(
-                              row.relation.predicate,
-                              row.relation.sign,
-                            )}</span
-                        >
-                      {:else}
-                        <Minus class="h-4 w-4 text-muted-foreground" />
-                      {/if}
-                    </div>
-                  </TableCell>
-                  <TableCell class="w-[35%] max-w-0">
-                    <button
-                      type="button"
-                      onclick={(event) => {
-                        event.stopPropagation();
-                        openEntityDetails(targetEntity);
-                      }}
-                      class="block w-full cursor-pointer rounded-lg p-0.5 text-left transition-all hover:bg-primary/10 hover:ring-2 hover:ring-primary/35 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                    >
-                      <EntityBadge
-                        displayName={getEntityDisplayName(targetEntity)}
-                        canonicalIdentifier={getEntityBadgeIdentifier(targetEntity)}
-                        entityType={getEntityTypeLabel(targetEntity)}
-                        resolutionStatus={targetEntity.resolutionStatus}
-                      />
-                    </button>
-                  </TableCell>
-                  <TableCell class="w-[20%] text-center">
-                    <Badge variant="outline">
-                      {formatNumber(row.relation.evidenceCount || 0)}
-                    </Badge>
-                  </TableCell>
-                </TableRow>
-              {/each}
-              {#if hasMore}
-                <TableRow>
-                  <TableCell colspan={4} class="p-0">
-                    <div class="flex justify-center py-4" style="min-height: 40px;">
-                      <Button variant="outline" onclick={loadMore} disabled={loadingMore}>
-                        {#if loadingMore}
-                          <div
-                            class="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent mr-2"
-                          ></div>
-                          <span>Loading...</span>
-                        {:else}
-                          <span>Load more</span>
-                        {/if}
-                      </Button>
-                    </div>
-                  </TableCell>
-                </TableRow>
-              {/if}
-            </TableBody>
-          </Table>
-        </div>
-      </div>
+      <RelationsTable
+        rows={results}
+        {hasMore}
+        {loadingMore}
+        onLoadMore={loadMore}
+        onRowClick={handleRowClick}
+        onEntityClick={openEntityDetails}
+      />
     {:else if !loading && results.length === 0}
       <div class="p-6 flex-1 flex items-center justify-center">
         <p class="text-muted-foreground text-center">
@@ -453,7 +344,7 @@
 {#snippet desktopSidebar()}
   <ExplorerWorkspace
     name="relations"
-    panels={['results', 'filters', 'interaction_types', 'sources', 'ncbi_tax_id']}
+    panels={['results', 'filters', 'effect', 'interaction_types', 'sources', 'ncbi_tax_id']}
   >
     <WorkspacePanel id="results" title="Results">{@render searchPanel()}</WorkspacePanel>
     <InteractionFilterSidebar

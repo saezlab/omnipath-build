@@ -126,8 +126,14 @@ export async function fetchRelationFilterOptions() {
   return res.json() as Promise<RelationFilterOptions>;
 }
 
-export async function fetchRelationEvidence(relationPk: string | number) {
-  const res = await releaseFetch(`/app-api/relations/${relationPk}/evidence`);
+export async function fetchRelationEvidence(relationPk: string | number, filters?: SearchFilters) {
+  const query =
+    filters && Object.keys(filters).length
+      ? `?filters=${encodeURIComponent(JSON.stringify(filters))}`
+      : '';
+  const res = await releaseFetch(
+    `/app-api/relations/${encodeURIComponent(String(relationPk))}/evidence${query}`,
+  );
   if (!res.ok) throw new Error('Failed to fetch relation evidence');
   return res.json() as Promise<{ evidence: InteractionDetailsData['evidence'] }>;
 }

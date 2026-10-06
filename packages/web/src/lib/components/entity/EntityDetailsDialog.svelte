@@ -1,10 +1,11 @@
 <script lang="ts">
-  import MolecularContext from './MolecularContext.svelte';
+  import EntityRelationsTab from './EntityRelationsTab.svelte';
+  import IdentifierBadge from './IdentifierBadge.svelte';
   import { entityFromWire } from '$lib/api/adapters';
+  import { fetchEntitiesByPublicIds, fetchRelationsSearch } from '$lib/api/client';
   import { untrack } from 'svelte';
   import { page } from '$app/state';
   import { formatTaxonomy } from '$lib/utils/taxonomy';
-  import EntityRelationships, { type Relationship } from './EntityRelationships.svelte';
   import { measurementPresentation } from '$lib/utils/measurements';
   import {
     annotationLabel,
@@ -13,11 +14,23 @@
   } from '$lib/utils/annotation-presentation';
   import { releaseFetch } from '$lib/api/release';
   import { groupPublications, isPublicationTerm } from '$lib/utils/publications';
+  import { getEntityTypeEmoji, getEntityTypeStyle } from '$lib/utils/entity-types';
+  import { formatNumber } from '$lib/utils/format';
+  import {
+    ALL_SCOPE,
+    identifiersOrgHref,
+    keyIdentifiers,
+    relationScopes,
+    type MolecularContextLike,
+    type RelationScope,
+    type ScopeEntity,
+  } from '$lib/utils/entity-overview';
 
-  import { ExternalLink } from '@lucide/svelte';
+  import { ArrowLeft, ExternalLink } from '@lucide/svelte';
   import {
     Dialog,
     DialogContent,
+    DialogDescription,
     DialogHeader,
     DialogTitle,
   } from '$lib/components/ui/dialog/index.js';
@@ -31,8 +44,10 @@
     getEntityIdentifiers,
     getEntityPrimaryIdentifierBadge,
     getEntityPublicId,
+    getEntitySecondaryName,
     getEntitySmiles,
     getEntityTypeLabel,
+    getEntityTypeValue,
     getIdentifierTypeLabel,
     isChemicalEntity,
     isCvTermEntity,
@@ -82,18 +97,17 @@
 
   let { open = $bindable(false), entity }: Props = $props();
   let hydratedEntity = $state<EntityLike | null>(null);
-  let relationships = $state<Relationship[]>([]);
-  let relationshipsTotal = $state(0);
   let loadingDetails = $state(false);
   let detailsError = $state<string | null>(null);
 
   let identifierLimit = $state(20);
-  let loadingRelationships = $state(false);
-  let relationshipsError = $state<string | null>(null);
-  let relationshipsLoaded = $state(false);
-  let relationshipOffset = $state(0);
-  let loadedRelationshipRequest: string | null = null;
-  let relationshipNext = $state<string | null>(null);
+  let descriptionExpanded = $state(false);
+  let relationScopeList = $state<RelationScope[]>([]);
+  let relationScopeId = $state(ALL_SCOPE);
+  let relationTotals = $state<Record<string, number>>({});
+  // Entities visited from the relations table, so the header can offer a way back.
+  let history = $state<Array<{ entity: EntityLike; tab: string }>>([]);
+  let restoreTab: string | null = null;
   let detailAttempt = $state(0);
   const detailKey = $derived(
     JSON.stringify([
@@ -105,7 +119,7 @@
       detailAttempt,
     ]),
   );
-  let activeTab = $state('general');
+  let activeTab = $state('overview');
 
   $effect(() => {
     if (!open || !entity || loadingDetails) return;
@@ -114,19 +128,15 @@
       Array.isArray(current.entityAttributes) ? current.entityAttributes : [],
     );
     const available = [
-      ...(getDescriptionSections(current).length ||
-      (!current.groupMemberKeys && isChemicalEntity(current) && getEntitySmiles(current))
-        ? ['general']
+      'overview',
+      'relations',
+      ...(getEntityIdentifierTotal(current) || normalizeIdentifierEntries(current).length
+        ? ['identifiers']
         : []),
       ...(rows.some((row) => !isPublicationTerm(row.term) && !isNarrative(row.term))
         ? ['annotations']
         : []),
       ...(groupPublications(rows).length ? ['publications'] : []),
-      ...(getEntityIdentifierTotal(current) || normalizeIdentifierEntries(current).length
-        ? ['identifiers']
-        : []),
-      'relationships',
-      'molecular',
       ...(getOntologyHierarchy(current) ? ['ontology'] : []),
     ];
     if (available.length && !available.includes(activeTab)) activeTab = available[0];
@@ -257,15 +267,10 @@
     const [isOpen, publicId] = JSON.parse(detailKey);
     const fallback = untrack(() => $state.snapshot(entity));
     hydratedEntity = null;
-    relationships = [];
-    relationshipsTotal = 0;
-    relationshipsLoaded = false;
-    loadedRelationshipRequest = null;
-    relationshipsError = null;
-    relationshipOffset = 0;
-    relationshipNext = null;
     detailsError = null;
-    activeTab = 'general';
+    descriptionExpanded = false;
+    activeTab = restoreTab ?? 'overview';
+    restoreTab = null;
     identifierLimit = IDENTIFIER_PAGE_SIZE;
     loadingDetails = false;
     if (!isOpen || !fallback || !publicId) return;
@@ -284,58 +289,119 @@
     return () => controller.abort();
   });
 
+  function isGeneLike(entityLike: EntityLike): boolean {
+    const type = (getEntityTypeValue(entityLike) || '').toLowerCase();
+    return (
+      entityLike.groupStrategy === 'gene_reference' ||
+      Boolean(entityLike.geneReferenceKeys?.length) ||
+      type === 'gene' ||
+      type === 'protein'
+    );
+  }
+
+  async function loadRelationScopes(current: EntityLike, signal: AbortSignal) {
+    const scopeEntity: ScopeEntity = {
+      entityPk: getEntityPublicId(current),
+      label: getEntityDisplayName(current),
+    };
+    const memberKeys = current.groupMemberKeys ?? [];
+    let context: MolecularContextLike | null = null;
+    if (isGeneLike(current)) {
+      const response = await releaseFetch(
+        `/app-api/entities/${encodeURIComponent(scopeEntity.entityPk)}/molecular-context?view=reference&limit=1`,
+        { signal },
+      );
+      if (response.ok) context = await response.json();
+    }
+    const members =
+      !context?.referenceEntityKey && memberKeys.length > 1
+        ? (await fetchEntitiesByPublicIds(memberKeys.slice(0, 24))).entities.map((member) => ({
+            entityPk: member.entityPk,
+            // The record label tells members apart ("Beta-D-Glucose") where display names agree.
+            label: member.label || getEntityDisplayName(member),
+            canonicalIdentifier: member.canonicalIdentifier,
+          }))
+        : [];
+    return relationScopes(scopeEntity, { context, memberKeys, members });
+  }
+
+  // Structure groups only list their members once details load; gene groups scope by reference.
+  const scopeKey = $derived(
+    JSON.stringify([
+      detailKey,
+      entity && !isGeneLike(entity) ? ((hydratedEntity ?? entity).groupMemberKeys ?? null) : null,
+    ]),
+  );
+
   $effect(() => {
-    const [isOpen, publicId] = JSON.parse(detailKey);
-    const offset = relationshipOffset;
-    if (!isOpen || !publicId || activeTab !== 'relationships') return;
-    const requestKey = `${detailKey}:${offset}`;
-    if (loadedRelationshipRequest === requestKey) return;
+    const [key, loadedMemberKeys] = JSON.parse(scopeKey);
+    const [isOpen, publicId] = JSON.parse(key);
+    const snapshot = untrack(() => $state.snapshot(entity)) as EntityLike | null;
+    const current =
+      snapshot && loadedMemberKeys ? { ...snapshot, groupMemberKeys: loadedMemberKeys } : snapshot;
+    relationScopeList = [];
+    relationTotals = {};
+    relationScopeId = ALL_SCOPE;
+    if (!isOpen || !current || !publicId) return;
+    if (current.groupMemberCount && !current.groupMemberKeys?.length) return;
     const controller = new AbortController();
-    loadingRelationships = true;
-    relationshipsError = null;
-    const group = untrack(() => (entity?.groupMemberKeys ? entity : null));
-    untrack(() =>
-      group
-        ? releaseFetch('/app-api/entities/group-relationships', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            signal: controller.signal,
-            body: JSON.stringify({
-              strategy: group.groupStrategy || 'chemical_connectivity',
-              group_key: group.entityPk,
-              query: group.groupQuery,
-              filters: group.groupFilters,
-              resources: group.groupResources,
-              limit: 20,
-              offset,
-            }),
+    const countScopes = (scopes: RelationScope[]) => {
+      for (const scope of scopes.slice(0, 25)) {
+        fetchRelationsSearch({ filters: scope.filters, limit: 1, offset: 0 }, controller.signal)
+          .then((data) => {
+            if (!controller.signal.aborted)
+              relationTotals = { ...relationTotals, [scope.id]: Number(data.total ?? 0) };
           })
-        : releaseFetch(
-            `/app-api/entities/${encodeURIComponent(publicId)}/relationships?limit=20&offset=${offset}`,
-            { signal: controller.signal },
-          ),
-    )
-      .then(async (response) => {
-        if (!response.ok) throw new Error('Relationships could not be loaded.');
-        const payload = await response.json();
-        if (!controller.signal.aborted) {
-          relationships = offset
-            ? [...relationships, ...payload.relationships]
-            : payload.relationships;
-          relationshipsTotal = payload.relationshipsTotal;
-          relationshipNext = payload.nextCursor;
-          relationshipsLoaded = true;
-          loadedRelationshipRequest = requestKey;
-        }
-      })
-      .catch((error) => {
-        if (!controller.signal.aborted) relationshipsError = error.message;
-      })
-      .finally(() => {
-        if (!controller.signal.aborted) loadingRelationships = false;
+          .catch(() => {});
+      }
+    };
+    loadRelationScopes(current, controller.signal)
+      .catch(() =>
+        relationScopes(
+          { entityPk: publicId, label: getEntityDisplayName(current) },
+          { memberKeys: current.groupMemberKeys ?? [] },
+        ),
+      )
+      .then(({ scopes, initial }) => {
+        if (controller.signal.aborted) return;
+        relationScopeList = scopes;
+        relationScopeId = initial;
+        countScopes(scopes);
       });
     return () => controller.abort();
   });
+
+  $effect(() => {
+    if (!open) history = [];
+  });
+
+  function showEntity(next: EntityLike) {
+    if (entity) history = [...history, { entity, tab: activeTab }];
+    entity = next;
+  }
+
+  function goBack() {
+    const previous = history.at(-1);
+    if (!previous) return;
+    history = history.slice(0, -1);
+    restoreTab = previous.tab;
+    entity = previous.entity;
+  }
+
+  function showRelations(scopeId = ALL_SCOPE) {
+    relationScopeId = scopeId;
+    activeTab = 'relations';
+  }
+
+  function groupLabel(entityLike: EntityLike): string | null {
+    const count = entityLike.groupMemberCount;
+    if (!count) return null;
+    const kind = entityLike.groupStrategy === 'gene_reference' ? 'Gene group' : 'Structure group';
+    const types = entityLike.memberEntityTypes?.length
+      ? ` (${entityLike.memberEntityTypes.join(', ')})`
+      : '';
+    return `${kind} · ${count} ${count === 1 ? 'entity' : 'entities'}${types}`;
+  }
 
   function isNarrative(term: string) {
     return isNarrativeAnnotation(term);
@@ -446,7 +512,7 @@
           section: 'Identifier',
           type,
           value: identifier.value,
-          href: identifiersOrgHref(identifier.key, identifier.value),
+          href: identifiersOrgHref(identifierTypeText(identifier), identifier.value),
         });
       }
     }
@@ -495,49 +561,6 @@
       );
   }
 
-  function compactIdentifier(identifierType: string, value: string): string | null {
-    const trimmedValue = value.trim();
-    if (!trimmedValue) return null;
-    if (/^[A-Za-z][A-Za-z0-9_.-]*:\S+$/.test(trimmedValue)) return trimmedValue;
-
-    const text = `${identifierType} ${getIdentifierTypeLabel(identifierType)}`.toLowerCase();
-    const namespace = text.includes('uniprot')
-      ? 'uniprot'
-      : text.includes('chebi')
-        ? 'chebi'
-        : text.includes('chembl')
-          ? 'chembl.compound'
-          : text.includes('hmdb')
-            ? 'hmdb'
-            : text.includes('pubchem')
-              ? 'pubchem.compound'
-              : text.includes('ensembl')
-                ? 'ensembl'
-                : text.includes('hgnc')
-                  ? 'hgnc'
-                  : text.includes('entrez') || text.includes('ncbi gene')
-                    ? 'ncbigene'
-                    : text.includes('taxonomy') || text.includes('tax id')
-                      ? 'taxonomy'
-                      : text.includes('reactome')
-                        ? 'reactome'
-                        : text.includes('interpro')
-                          ? 'interpro'
-                          : null;
-
-    return namespace ? `${namespace}:${trimmedValue}` : null;
-  }
-
-  function identifiersOrgHref(identifierType: string, value: string): string | null {
-    const compactId = compactIdentifier(identifierType, value);
-    if (!compactId) return null;
-    const separatorIndex = compactId.indexOf(':');
-    if (separatorIndex === -1) return `https://identifiers.org/${encodeURIComponent(compactId)}`;
-    const namespace = compactId.slice(0, separatorIndex);
-    const localId = compactId.slice(separatorIndex + 1);
-    return `https://identifiers.org/${encodeURIComponent(namespace)}:${encodeURIComponent(localId)}`;
-  }
-
   function getOntologyHierarchy(entityLike: EntityLike): EntityOntologyHierarchyLike | null {
     const hierarchy = (entityLike as { ontologyHierarchy?: unknown }).ontologyHierarchy;
     if (hierarchy && typeof hierarchy === 'object') {
@@ -572,17 +595,34 @@
 
 <Dialog bind:open>
   <DialogContent
-    class="flex h-[min(700px,88dvh)] max-h-[88dvh] flex-col gap-0 overflow-hidden p-0 sm:max-w-5xl"
+    class="flex h-[min(720px,90dvh)] max-h-[90dvh] flex-col gap-0 overflow-hidden p-0 sm:max-w-5xl"
   >
     {#if entity}
       {@const detailEntity = hydratedEntity ?? entity}
+      {@const displayName = getEntityDisplayName(detailEntity)}
       {@const detailSections = getDescriptionSections(detailEntity)}
       {@const detailIdentifiers = normalizeIdentifierEntries(detailEntity)}
       {@const detailIdentifierRows = getIdentifierRows(detailIdentifiers.slice(0, identifierLimit))}
       {@const detailIdentifierGroups = getIdentifierGroups(detailIdentifierRows)}
       {@const detailIdentifierTotal = getEntityIdentifierTotal(detailEntity)}
       {@const detailSmiles = getEntitySmiles(detailEntity)}
-      {@const primaryIdentifierBadge = getEntityPrimaryIdentifierBadge(detailEntity)}
+      {@const headerIdentifiers = keyIdentifiers(
+        getEntityPrimaryIdentifierBadge(detailEntity),
+        detailIdentifiers,
+      )}
+      {@const secondaryName = getEntitySecondaryName(detailEntity)}
+      {@const subtitle =
+        secondaryName &&
+        secondaryName !== detailEntity.canonicalIdentifier &&
+        !detailIdentifiers.some(
+          (identifier) =>
+            identifier.value === secondaryName && identifierNameSection(identifier) === null,
+        )
+          ? secondaryName
+          : null}
+      {@const typeLabel = getEntityTypeLabel(detailEntity)}
+      {@const typeStyle = getEntityTypeStyle(getEntityTypeValue(detailEntity))}
+      {@const detailGroupLabel = groupLabel(detailEntity)}
       {@const detailTaxonomy = formatTaxonomy(detailEntity.taxonomyId, detailEntity.taxonomyName)}
       {@const ontologyHierarchy = getOntologyHierarchy(detailEntity)}
       {@const showChemicalStructure =
@@ -597,34 +637,86 @@
           (row) => !isPublicationTerm(row.term) && !isNarrative(row.term),
         ),
       )}
+      {@const relationTotal = relationTotals[ALL_SCOPE]}
+      {@const partScopes = relationScopeList.filter((scope) => scope.kind !== 'all')}
+      {@const longDescription = detailSections.some((section) =>
+        section.items.some((item) => item.length > 420),
+      )}
 
-      <DialogHeader class="shrink-0 px-6 pt-6 pb-4 pr-14 text-left">
-        <DialogTitle class="break-words text-xl leading-snug"
-          >{getEntityDisplayName(detailEntity)}</DialogTitle
-        >
-        <div class="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted-foreground">
-          <span>{getEntityTypeLabel(detailEntity)}</span>
-          {#if detailEntity.memberEntityTypes?.length}<span
-              >{detailEntity.memberEntityTypes.join(', ')} source records</span
-            >{/if}
-          {#if detailEntity.groupMemberCount}<span
-              >Grouped · {detailEntity.groupMemberCount} matched entities</span
-            >{/if}
-          {#if detailTaxonomy}<span>Taxon: {detailTaxonomy}</span>{/if}
-          <span class="break-all font-mono text-xs"
-            >{getIdentifierTypeLabel(primaryIdentifierBadge.key)}: {primaryIdentifierBadge.value}</span
+      <DialogHeader class="shrink-0 gap-3 px-6 pt-5 pb-4 pr-14 text-left">
+        {#if history.length}
+          <button
+            type="button"
+            class="inline-flex w-fit items-center gap-1 rounded-sm text-xs text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            onclick={goBack}
           >
+            <ArrowLeft class="size-3.5" />
+            Back to {getEntityDisplayName(history[history.length - 1].entity)}
+          </button>
+        {/if}
+        <div class="space-y-1">
+          <DialogTitle class="break-words text-2xl font-semibold leading-tight tracking-tight"
+            >{displayName}</DialogTitle
+          >
+          {#if subtitle}<DialogDescription class="break-words">{subtitle}</DialogDescription>{/if}
         </div>
+        <div class="flex flex-wrap items-center gap-1.5">
+          <span
+            class={`inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-xs font-medium ${typeStyle.chipClass}`}
+            ><span aria-hidden="true"
+              >{getEntityTypeEmoji(getEntityTypeValue(detailEntity) || '')}</span
+            >{typeLabel}</span
+          >
+          {#if detailGroupLabel}<span
+              class="rounded-md border px-2 py-0.5 text-xs font-medium text-muted-foreground"
+              >{detailGroupLabel}</span
+            >{/if}
+          {#if detailTaxonomy}<span
+              class="inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-xs font-medium text-muted-foreground"
+              ><span aria-hidden="true">🌿</span>{detailTaxonomy}</span
+            >{/if}
+        </div>
+        {#if headerIdentifiers.length}
+          <div class="flex flex-wrap gap-1.5">
+            {#each headerIdentifiers as identifier (`${identifier.key}:${identifier.value}`)}
+              {@const href = identifiersOrgHref(
+                `${identifier.key} ${getIdentifierTypeLabel(identifier.key)}`,
+                identifier.value,
+              )}
+              {#if href}
+                <a
+                  {href}
+                  target="_blank"
+                  rel="noreferrer"
+                  class="inline-flex max-w-full items-center gap-1 rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&:hover>span]:border-foreground/40"
+                  title="Open on identifiers.org"
+                >
+                  <IdentifierBadge
+                    identifierType={identifier.key}
+                    value={identifier.value}
+                    variant="subtle"
+                  />
+                </a>
+              {:else}
+                <IdentifierBadge
+                  identifierType={identifier.key}
+                  value={identifier.value}
+                  variant="subtle"
+                />
+              {/if}
+            {/each}
+          </div>
+        {/if}
       </DialogHeader>
-      {#if loadingDetails && !hydratedEntity}<p
-          role="status"
-          class="px-6 pb-3 text-sm text-muted-foreground"
+      {#if detailsError}
+        <div
+          role="alert"
+          class="mx-6 mb-3 flex flex-wrap items-center gap-3 rounded-md border border-destructive/40 px-3 py-2 text-sm text-destructive"
         >
-          Loading details…
-        </p>{/if}
-      {#if detailsError}<p role="alert" class="px-6 pb-3 text-sm text-destructive">
-          {detailsError}
-        </p>{/if}
+          <span>{detailsError}</span>
+          <Button variant="outline" size="sm" onclick={() => detailAttempt++}>Try again</Button>
+        </div>
+      {/if}
       <Tabs.Root bind:value={activeTab} class="min-h-0 flex-1 gap-0">
         <div class="shrink-0 overflow-x-auto border-b px-6">
           <Tabs.List
@@ -632,149 +724,134 @@
             class="h-11 justify-start gap-4 p-0"
             aria-label="Entity details"
           >
-            {#if detailSections.length || showChemicalStructure}<Tabs.Trigger
-                value="general"
-                class="flex-none">General</Tabs.Trigger
+            <Tabs.Trigger value="overview" class="flex-none">Overview</Tabs.Trigger>
+            <Tabs.Trigger value="relations" class="flex-none"
+              >Relations {#if relationTotal !== undefined}<span
+                  class="text-xs text-muted-foreground tabular-nums"
+                  >{formatNumber(relationTotal)}</span
+                >{/if}</Tabs.Trigger
+            >
+            {#if detailIdentifierRows.length > 0 || detailIdentifierTotal > 0}<Tabs.Trigger
+                value="identifiers"
+                class="flex-none"
+                >Identifiers <span class="text-xs text-muted-foreground tabular-nums"
+                  >{detailIdentifierTotal}</span
+                ></Tabs.Trigger
               >{/if}
             {#if detailNonPubmedAnnotations.length > 0}<Tabs.Trigger
                 value="annotations"
                 class="flex-none"
-                >Annotations <span class="text-xs text-muted-foreground"
+                >Annotations <span class="text-xs text-muted-foreground tabular-nums"
                   >{detailNonPubmedAnnotations.length}</span
                 ></Tabs.Trigger
               >{/if}
             {#if detailPublications.length > 0}<Tabs.Trigger value="publications" class="flex-none"
-                >Publications <span class="text-xs text-muted-foreground"
+                >Publications <span class="text-xs text-muted-foreground tabular-nums"
                   >{detailPublications.length}</span
                 ></Tabs.Trigger
               >{/if}
-            {#if detailIdentifierRows.length > 0 || detailIdentifierTotal > 0}<Tabs.Trigger
-                value="identifiers"
-                class="flex-none"
-                >Identifiers <span class="text-xs text-muted-foreground"
-                  >{detailIdentifierTotal}</span
-                ></Tabs.Trigger
-              >{/if}
-            <Tabs.Trigger value="molecular" class="flex-none"
-              >Products and molecular evidence</Tabs.Trigger
-            >
-            <Tabs.Trigger value="relationships" class="flex-none"
-              >Relationships {#if relationshipsLoaded}<span class="text-xs text-muted-foreground"
-                  >{relationshipsTotal}</span
-                >{/if}</Tabs.Trigger
-            >
             {#if ontologyHierarchy}<Tabs.Trigger value="ontology" class="flex-none"
                 >Ontology</Tabs.Trigger
               >{/if}
           </Tabs.List>
         </div>
-        <Tabs.Content value="general" class="min-h-0 overflow-y-auto overscroll-contain p-6">
-          <div class="space-y-6">
+        <Tabs.Content value="overview" class="min-h-0 overflow-y-auto overscroll-contain p-6">
+          <div
+            class={`grid gap-8 ${showChemicalStructure ? 'md:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]' : 'max-w-3xl'}`}
+          >
+            <div class="min-w-0 space-y-6">
+              {#if detailSections.length}
+                {#each detailSections as section}
+                  <section class="space-y-1.5">
+                    <h3 class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                      {section.label}
+                    </h3>
+                    {#each section.items as item}<p
+                        class={`break-words text-sm leading-6 ${descriptionExpanded ? '' : 'line-clamp-5'}`}
+                      >
+                        {item}
+                      </p>{/each}
+                    {#if section.source}<p class="text-xs text-muted-foreground">
+                        Source: {section.source}
+                      </p>{/if}
+                  </section>
+                {/each}
+                {#if longDescription}<Button
+                    variant="link"
+                    size="sm"
+                    class="h-auto px-0"
+                    onclick={() => (descriptionExpanded = !descriptionExpanded)}
+                    >{descriptionExpanded ? 'Show less' : 'Show more'}</Button
+                  >{/if}
+              {:else if loadingDetails && !hydratedEntity}
+                <p role="status" class="text-sm text-muted-foreground">Loading details…</p>
+              {:else}
+                <p class="text-sm text-muted-foreground">
+                  No description is available for this entity.
+                </p>
+              {/if}
+
+              {#if partScopes.length}
+                <section class="space-y-2">
+                  <h3 class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    {partScopes[0].kind === 'product' ? 'Products' : 'Grouped entities'}
+                    <span class="font-normal normal-case tracking-normal tabular-nums"
+                      >{partScopes.length}</span
+                    >
+                  </h3>
+                  <div class="divide-y overflow-hidden rounded-lg border">
+                    {#each partScopes as scope (scope.id)}
+                      <button
+                        type="button"
+                        class="flex w-full items-center justify-between gap-3 px-3 py-2 text-left text-sm transition-colors hover:bg-muted/50 focus-visible:bg-muted/50 focus-visible:outline-none"
+                        onclick={() => showRelations(scope.id)}
+                      >
+                        <span class="min-w-0">
+                          <span class="font-medium">{scope.title ?? scope.label}</span>
+                          {#if scope.identifier && scope.identifier !== scope.title}<span
+                              class="ml-2 break-all font-mono text-xs text-muted-foreground"
+                              >{scope.identifier}</span
+                            >{/if}
+                        </span>
+                        <span class="shrink-0 text-xs text-muted-foreground tabular-nums">
+                          {relationTotals[scope.id] !== undefined
+                            ? `${formatNumber(relationTotals[scope.id])} relations`
+                            : 'Relations'} →
+                        </span>
+                      </button>
+                    {/each}
+                  </div>
+                </section>
+              {/if}
+            </div>
+
             {#if showChemicalStructure}
-              <section class="rounded-lg border p-4">
-                <h3 class="text-sm font-medium">Chemical structure</h3>
-                <div class="flex justify-center overflow-x-auto">
-                  <MoleculeStructure
-                    smiles={detailSmiles}
-                    width={320}
-                    height={240}
-                    renderOnClick={false}
-                  />
-                </div>
+              <section
+                class="flex min-w-0 justify-center self-start overflow-x-auto rounded-lg border p-4"
+              >
+                <MoleculeStructure
+                  smiles={detailSmiles}
+                  width={300}
+                  height={220}
+                  renderOnClick={false}
+                />
               </section>
             {/if}
-            {#each detailSections as section}
-              <section class="space-y-2">
-                <h3 class="font-medium">{section.label}</h3>
-                {#each section.items as item}<p class="break-words text-sm leading-7">
-                    {item}
-                  </p>{/each}
-                {#if section.source}<p class="text-xs text-muted-foreground">
-                    Source: {section.source}
-                  </p>{/if}
-              </section>
-            {/each}
-            {#if !detailSections.length && !showChemicalStructure}<p
-                class="text-sm text-muted-foreground"
-              >
-                No description is available for this entity.
-              </p>{/if}
           </div>
         </Tabs.Content>
-        <Tabs.Content value="annotations" class="min-h-0 overflow-y-auto overscroll-contain p-6">
-          {#if detailNonPubmedAnnotations.length}
-            <Table.Root>
-              <Table.Header class="sticky top-0 z-10 bg-muted/80 backdrop-blur">
-                <Table.Row>
-                  <Table.Head class="w-48">Annotation</Table.Head>
-                  <Table.Head>Value</Table.Head>
-                  <Table.Head class="w-36">Source</Table.Head>
-                </Table.Row>
-              </Table.Header>
-              <Table.Body>
-                {#each detailNonPubmedAnnotations as annotation}
-                  <Table.Row>
-                    <Table.Cell class="whitespace-normal align-top font-medium text-foreground">
-                      {annotation.label}
-                    </Table.Cell>
-                    <Table.Cell
-                      class="max-w-lg whitespace-normal break-words align-top text-foreground"
-                    >
-                      {#if annotation.term.replace(/^biolink:/, '') === 'has_biological_sequence'}
-                        <details>
-                          <summary>Sequence ({annotation.value.length} residues)</summary>
-                          <pre
-                            class="whitespace-pre-wrap break-all text-xs">{annotation.value}</pre>
-                        </details>
-                      {:else}{formatAnnotationValue(annotation)}{/if}
-                    </Table.Cell>
-                    <Table.Cell class="whitespace-normal align-top text-muted-foreground">
-                      {annotation.source || 'Unknown'}
-                    </Table.Cell>
-                  </Table.Row>
-                {/each}
-              </Table.Body>
-            </Table.Root>
-          {:else}<p class="text-muted-foreground">
-              No annotations are available for this entity.
-            </p>{/if}
-        </Tabs.Content>
-        <Tabs.Content value="publications" class="min-h-0 overflow-y-auto overscroll-contain p-6">
-          {#if detailPublications.length}
-            <Table.Root>
-              <Table.Header class="sticky top-0 z-10 bg-muted/80 backdrop-blur">
-                <Table.Row>
-                  <Table.Head class="w-40">Publication</Table.Head>
-                  <Table.Head>Sources</Table.Head>
-                </Table.Row>
-              </Table.Header>
-              <Table.Body>
-                {#each detailPublications as publication}
-                  {@const publicationSources = publication.sources}
-                  <Table.Row>
-                    <Table.Cell class="align-top">
-                      {#if publication.url}
-                        <a
-                          href={publication.url}
-                          target="_blank"
-                          rel="noreferrer"
-                          class="inline-flex items-center gap-1 font-mono text-foreground underline decoration-muted-foreground/50 underline-offset-4 hover:decoration-foreground"
-                        >
-                          {publication.id}
-                          <ExternalLink class="size-3" />
-                        </a>
-                      {:else}{publication.id}{/if}
-                    </Table.Cell>
-                    <Table.Cell
-                      class="whitespace-normal break-words align-top text-muted-foreground"
-                    >
-                      {publicationSources.length ? publicationSources.join(', ') : 'Unknown'}
-                    </Table.Cell>
-                  </Table.Row>
-                {/each}
-              </Table.Body>
-            </Table.Root>
-          {:else}<p class="text-muted-foreground">No publications are available.</p>{/if}
+        <Tabs.Content value="relations" class="min-h-0 overflow-y-auto overscroll-contain p-6">
+          {#if activeTab === 'relations'}
+            {#if relationScopeList.length}
+              <EntityRelationsTab
+                scopes={relationScopeList}
+                bind:scopeId={relationScopeId}
+                totals={relationTotals}
+                onEntitySelect={showEntity}
+              />
+            {:else}
+              <p role="status" class="text-sm text-muted-foreground">Loading relations…</p>
+            {/if}
+          {/if}
         </Tabs.Content>
         <Tabs.Content value="identifiers" class="min-h-0 overflow-y-auto overscroll-contain p-6">
           {#if detailIdentifierRows.length}
@@ -821,32 +898,108 @@
               </Table.Body>
             </Table.Root>
           {:else}<p class="text-muted-foreground">No identifiers are available.</p>{/if}
+          {#if detailEntity.identifiersNextCursor || detailIdentifiers.length > identifierLimit}<div
+              class="mt-4 flex flex-wrap items-center gap-3"
+            >
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={loadingDetails}
+                onclick={() => {
+                  if (detailIdentifiers.length > identifierLimit)
+                    identifierLimit += IDENTIFIER_PAGE_SIZE;
+                  else void moreDetails();
+                }}>Load more identifiers</Button
+              >
+              <span class="text-xs text-muted-foreground"
+                >Showing {Math.min(identifierLimit, detailIdentifiers.length)} of {detailIdentifierTotal}</span
+              >
+            </div>{/if}
         </Tabs.Content>
-        <Tabs.Content value="molecular" class="min-h-0 overflow-y-auto overscroll-contain p-6">
-          {#if activeTab === 'molecular'}<MolecularContext entityKey={detailEntity.entityPk} />{/if}
+        <Tabs.Content value="annotations" class="min-h-0 overflow-y-auto overscroll-contain p-6">
+          {#if detailNonPubmedAnnotations.length}
+            <Table.Root>
+              <Table.Header class="sticky top-0 z-10 bg-muted/80 backdrop-blur">
+                <Table.Row>
+                  <Table.Head class="w-48">Annotation</Table.Head>
+                  <Table.Head>Value</Table.Head>
+                  <Table.Head class="w-36">Source</Table.Head>
+                </Table.Row>
+              </Table.Header>
+              <Table.Body>
+                {#each detailNonPubmedAnnotations as annotation}
+                  <Table.Row>
+                    <Table.Cell class="whitespace-normal align-top font-medium text-foreground">
+                      {annotation.label}
+                    </Table.Cell>
+                    <Table.Cell
+                      class="max-w-lg whitespace-normal break-words align-top text-foreground"
+                    >
+                      {#if annotation.term.replace(/^biolink:/, '') === 'has_biological_sequence'}
+                        <details>
+                          <summary>Sequence ({annotation.value.length} residues)</summary>
+                          <pre
+                            class="whitespace-pre-wrap break-all text-xs">{annotation.value}</pre>
+                        </details>
+                      {:else}{formatAnnotationValue(annotation)}{/if}
+                    </Table.Cell>
+                    <Table.Cell class="whitespace-normal align-top text-muted-foreground">
+                      {annotation.source || 'Unknown'}
+                    </Table.Cell>
+                  </Table.Row>
+                {/each}
+              </Table.Body>
+            </Table.Root>
+          {:else}<p class="text-muted-foreground">
+              No annotations are available for this entity.
+            </p>{/if}
+          {#if detailEntity.detailNextCursor}<div class="mt-4">
+              <Button variant="outline" size="sm" disabled={loadingDetails} onclick={moreDetails}
+                >{loadingDetails ? 'Loading…' : 'Load more'}</Button
+              >
+            </div>{/if}
         </Tabs.Content>
-        <Tabs.Content value="relationships" class="min-h-0 overflow-y-auto overscroll-contain p-6">
-          {#if loadingRelationships}<p role="status" class="mb-3 text-sm text-muted-foreground">
-              Loading relationships…
-            </p>{/if}
-          {#if relationshipsError}<p role="alert">{relationshipsError}</p>{/if}
-          {#if relationshipsLoaded && !relationships.length}<p>
-              No participant or composition relationships recorded.
-            </p>{/if}
-          <EntityRelationships
-            entityKey={detailEntity.entityPk}
-            entityKeys={detailEntity.groupMemberKeys}
-            rows={relationships}
-            total={relationshipsTotal}
-            onSelect={(selected) => {
-              entity = selected;
-            }}
-          />
-          {#if relationshipNext}<Button
-              disabled={loadingRelationships}
-              onclick={() => (relationshipOffset = Number(relationshipNext))}
-              >Load more relationships</Button
-            >{/if}
+        <Tabs.Content value="publications" class="min-h-0 overflow-y-auto overscroll-contain p-6">
+          {#if detailPublications.length}
+            <Table.Root>
+              <Table.Header class="sticky top-0 z-10 bg-muted/80 backdrop-blur">
+                <Table.Row>
+                  <Table.Head class="w-40">Publication</Table.Head>
+                  <Table.Head>Sources</Table.Head>
+                </Table.Row>
+              </Table.Header>
+              <Table.Body>
+                {#each detailPublications as publication}
+                  {@const publicationSources = publication.sources}
+                  <Table.Row>
+                    <Table.Cell class="align-top">
+                      {#if publication.url}
+                        <a
+                          href={publication.url}
+                          target="_blank"
+                          rel="noreferrer"
+                          class="inline-flex items-center gap-1 font-mono text-foreground underline decoration-muted-foreground/50 underline-offset-4 hover:decoration-foreground"
+                        >
+                          {publication.id}
+                          <ExternalLink class="size-3" />
+                        </a>
+                      {:else}{publication.id}{/if}
+                    </Table.Cell>
+                    <Table.Cell
+                      class="whitespace-normal break-words align-top text-muted-foreground"
+                    >
+                      {publicationSources.length ? publicationSources.join(', ') : 'Unknown'}
+                    </Table.Cell>
+                  </Table.Row>
+                {/each}
+              </Table.Body>
+            </Table.Root>
+          {:else}<p class="text-muted-foreground">No publications are available.</p>{/if}
+          {#if detailEntity.detailNextCursor}<div class="mt-4">
+              <Button variant="outline" size="sm" disabled={loadingDetails} onclick={moreDetails}
+                >{loadingDetails ? 'Loading…' : 'Load more'}</Button
+              >
+            </div>{/if}
         </Tabs.Content>
         {#if ontologyHierarchy}
           <Tabs.Content value="ontology" class="min-h-0 overflow-y-auto overscroll-contain p-6"
@@ -854,37 +1007,6 @@
           >
         {/if}
       </Tabs.Root>
-      {#if !hydratedEntity && !loadingDetails}
-        <div class="shrink-0 border-t px-6 py-3">
-          <Button variant="outline" onclick={() => detailAttempt++}
-            >Load identifiers and details</Button
-          >
-        </div>
-      {:else if detailEntity.detailNextCursor || detailIdentifiers.length > identifierLimit}
-        <div class="shrink-0 border-t px-6 py-3">
-          {#if activeTab === 'identifiers' && (detailEntity.identifiersNextCursor || detailIdentifiers.length > identifierLimit)}
-            <Button
-              variant="outline"
-              disabled={loadingDetails}
-              onclick={() => {
-                if (detailIdentifiers.length > identifierLimit)
-                  identifierLimit += IDENTIFIER_PAGE_SIZE;
-                else void moreDetails();
-              }}>Load more identifiers</Button
-            >
-            <span class="ml-3 text-xs text-muted-foreground"
-              >Showing {Math.min(identifierLimit, detailIdentifiers.length)} of {detailIdentifierTotal}</span
-            >
-          {:else}
-            <Button variant="outline" disabled={loadingDetails} onclick={moreDetails}
-              >Load more details</Button
-            >
-            <span class="ml-3 text-xs text-muted-foreground"
-              >Names and annotations load 20 at a time.</span
-            >
-          {/if}
-        </div>
-      {/if}
     {/if}
   </DialogContent>
 </Dialog>

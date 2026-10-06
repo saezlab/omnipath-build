@@ -1,6 +1,7 @@
 <script lang="ts">
   import MolecularForm from '$lib/components/entity/MolecularForm.svelte';
   import EntityBadge from '$lib/components/entity/EntityBadge.svelte';
+  import RelationLabel from './RelationLabel.svelte';
   import EntityDetailsDialog from '$lib/components/entity/EntityDetailsDialog.svelte';
   import type { EntityLike } from '$lib/domain/display';
   import { Search, ExternalLink } from '@lucide/svelte';
@@ -9,7 +10,6 @@
     getEntityDisplayName,
     getEntityTypeLabel,
     getIdentifierTypeLabel,
-    getRelationPredicateLabel,
   } from '$lib/domain/display';
   import type {
     InteractionDetailsData,
@@ -299,12 +299,7 @@
         </button>
         <div class="min-w-0 space-y-1 px-3 py-2 text-center sm:max-w-52">
           <p class="text-sm font-medium leading-snug">
-            {selectedInteraction.relation.displayLabel ||
-              getRelationPredicateLabel(
-                selectedInteraction.relation.predicate,
-                selectedInteraction.relation.sign,
-              ) ||
-              '—'}
+            <RelationLabel relation={selectedInteraction.relation} />
           </p>
           {#if selectedInteraction.relation.isDirected}<p class="text-xs text-muted-foreground">
               Directed

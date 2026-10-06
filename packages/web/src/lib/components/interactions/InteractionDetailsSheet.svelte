@@ -8,14 +8,20 @@
   import InteractionDetails from './InteractionDetails.svelte';
   import { fetchRelationEvidence } from '$lib/api/client';
   import type { InteractionDetailsData, InteractionListRow } from '$lib/types/interactions';
+  import type { SearchFilters } from '$lib/types/search';
+  import type { ProductSummary } from '$lib/utils/molecular-presentation';
 
   interface Props {
     open: boolean;
     onOpenChange: (open: boolean) => void;
     interaction: InteractionListRow | null;
+    /** Narrows the evidence to records matching these filters, e.g. one product. */
+    filters?: SearchFilters;
+    /** Known products, so molecular forms show their names instead of a bare reference. */
+    products?: readonly ProductSummary[];
   }
 
-  let { open, onOpenChange, interaction }: Props = $props();
+  let { open, onOpenChange, interaction, filters, products = [] }: Props = $props();
 
   let dialogOpen = $state(false);
   let evidence = $state<InteractionDetailsData['evidence']>([]);
@@ -38,7 +44,7 @@
     let cancelled = false;
     evidenceLoading = true;
     evidenceError = null;
-    fetchRelationEvidence(relationPk)
+    fetchRelationEvidence(relationPk, filters)
       .then((data) => {
         if (!cancelled) evidence = data.evidence;
       })
@@ -71,7 +77,7 @@
       {#if evidenceError}
         <div class="p-6 text-sm text-destructive">{evidenceError}</div>
       {:else}
-        <InteractionDetails selectedInteraction={details} {evidenceLoading} />
+        <InteractionDetails selectedInteraction={details} {evidenceLoading} {products} />
       {/if}
     </div>
   </DialogContent>
