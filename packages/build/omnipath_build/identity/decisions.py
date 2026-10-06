@@ -25,7 +25,9 @@ import pyarrow as pa
 
 from .common import (
     CHEMICAL,
+    EMPTY_KEYS,
     GOSLIN_HUBS,
+    INCHIKEY_RE,
     HUBS,
     PROTEIN,
     STRUCTURE_LEVELS,
@@ -105,12 +107,15 @@ def decide(ctx, c, indexes):
         if h in indexes
     ]
     c.execute(
-        "CREATE TABLE gl AS "
+        "CREATE TABLE gl_all AS "
         + (
-            f"SELECT record_id,count(DISTINCT goslin)::INTEGER n_gl,min(goslin) gl_min FROM ({' UNION ALL '.join(gl)}) GROUP BY 1"
+            f"SELECT DISTINCT record_id,goslin FROM ({' UNION ALL '.join(gl)})"
             if gl
-            else "SELECT NULL::VARCHAR record_id,0 n_gl,NULL::VARCHAR gl_min WHERE false"
+            else "SELECT NULL::VARCHAR record_id,NULL::VARCHAR goslin WHERE false"
         )
+    )
+    c.execute(
+        "CREATE TABLE gl AS SELECT record_id,count(*)::INTEGER n_gl,min(goslin) gl_min FROM gl_all GROUP BY 1"
     )
     # Records that are not anchored by their own InChIKey/accession, plus every cross-reference endpoint.
     parts = []
@@ -259,6 +264,7 @@ def ramp_genes(ctx, c, indexes):
         c.execute(
             "CREATE TABLE ramp_rows AS SELECT record_id,entity_id,decision,hub,local_id,taxon,count0 FROM exceptions WHERE false"
         )
+        c.execute("CREATE TABLE mapped(record_id VARCHAR,entity_id VARCHAR)")
         return dict(mappings=0)
     gp = quote(ctx.out / "gene_products_by_protein.parquet")
     c.execute(
@@ -353,14 +359,24 @@ def quarantined_key_entities(ctx, c, indexes):
         ]
         if sources:
             c.execute(
-                f"""CREATE TEMP TABLE k_{hub} AS SELECT DISTINCT value FROM {files(*sources)}
-                WHERE source_type='inchikey' AND local_id IN (SELECT local_id FROM q)"""
+                f"""CREATE TEMP TABLE k_{hub} AS SELECT DISTINCT {quote(hub + ':')} || local_id record_id,value
+                FROM {files(*sources)}
+                WHERE source_type='inchikey' AND local_id IN (SELECT local_id FROM q)
+                  AND regexp_matches(value,{quote(INCHIKEY_RE)}) AND value NOT IN {sql_list(EMPTY_KEYS)}"""
             )
-            keys.append(f"SELECT value FROM k_{hub}")
+            keys.append(f"SELECT record_id,value FROM k_{hub}")
+    c.execute(
+        "CREATE TABLE qrec AS "
+        + (
+            f"SELECT DISTINCT record_id,'inchikey:' || value entity_id FROM ({' UNION ALL '.join(keys)})"
+            if keys
+            else "SELECT NULL::VARCHAR record_id,NULL::VARCHAR entity_id WHERE false"
+        )
+    )
     if not keys:
         c.execute("CREATE TABLE qkeys(entity_id VARCHAR)")
         return
-    c.execute(f"CREATE TABLE cand_keys AS SELECT DISTINCT value k FROM ({' UNION ALL '.join(keys)})")
+    c.execute("CREATE TABLE cand_keys AS SELECT DISTINCT substr(entity_id,10) k FROM qrec")
     parts = [r[0] for r in c.execute("SELECT DISTINCT substr(md5(k),1,2) FROM cand_keys").fetchall()]
     anchored = []
     for hub in (h for h in CHEMICAL if h in indexes):
@@ -404,6 +420,34 @@ def write_outputs(ctx, c, indexes):
         out / "exception_members.parquet",
         ", ROW_GROUP_SIZE 65536",
     )
+    # Records that are not merged because they point to several anchors stay evidence for each
+    # of them: their identifiers post every such anchor and the other identifiers decide.
+    c.execute(
+        """CREATE TABLE rcand AS
+        WITH q AS (
+          SELECT record_id,entity_id FROM qrec
+          UNION SELECT g.record_id,'goslin:' || g.goslin FROM gl_all g
+            JOIN final f ON f.record_id=g.record_id AND f.decision='quarantined' AND f.count0=0),
+        amb AS (SELECT record_id FROM final WHERE decision='ambiguous_native')
+        SELECT * FROM q
+        UNION SELECT n.rec,o.anchor FROM nb n JOIN amb a ON a.record_id=n.rec
+          JOIN st o ON o.record_id=n.other AND o.anchor_count=1
+          WHERE NOT starts_with(n.rec,'ramp_gene:')
+        UNION SELECT n.rec,q.entity_id FROM nb n JOIN amb a ON a.record_id=n.rec
+          JOIN q ON q.record_id=n.other WHERE NOT starts_with(n.rec,'ramp_gene:')
+        UNION SELECT m.record_id,m.entity_id FROM mapped m JOIN amb a USING(record_id)"""
+    )
+    candidates = ctx.copy(
+        c,
+        "SELECT record_id,entity_id FROM rcand WHERE entity_id IS NOT NULL ORDER BY record_id,entity_id",
+        out / "record_candidates.parquet",
+        ", ROW_GROUP_SIZE 65536",
+    )
+    # Lipid names only quarantined records claim still need an entity to be candidates.
+    c.execute(
+        """CREATE TABLE qnames AS SELECT DISTINCT entity_id FROM rcand WHERE starts_with(entity_id,'goslin:')
+        AND entity_id NOT IN (SELECT entity_id FROM final WHERE decision='lipid_name')"""
+    )
     # Entities that cannot be derived from a record's anchor: not those an attached record joins.
     extra = ctx.copy(
         c,
@@ -414,10 +458,11 @@ def write_outputs(ctx, c, indexes):
             min(taxon) FILTER (WHERE taxon IS NOT NULL) taxon,bool_or(decision='quarantined') quarantined,
             arg_min(record_id,struct_pack(r:={hub_rank()},l:=local_id)) preferred_record
           FROM final WHERE NOT (starts_with(entity_id,'inchikey:') OR starts_with(entity_id,'uniprot:') OR starts_with(entity_id,'entrez:')) GROUP BY entity_id
-          UNION ALL SELECT entity_id,'chemical',NULL,false,NULL FROM qkeys) ORDER BY entity_id""",
+          UNION ALL SELECT entity_id,'chemical',NULL,false,NULL FROM qkeys
+          UNION ALL SELECT entity_id,'chemical',NULL,false,NULL FROM qnames) ORDER BY entity_id""",
         out / "entities_extra.parquet",
     )
-    return dict(exceptions=n, entities_extra=extra)
+    return dict(exceptions=n, entities_extra=extra, record_candidates=candidates)
 
 
 def build_identity(hub_index_root, output_dir, memory="7GB", threads=6, min_free_gib=50, keep_work=False):
