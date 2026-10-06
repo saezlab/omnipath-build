@@ -1,4 +1,4 @@
-"""Shared plumbing for the identity build: context, checkpointed stages, SQL fragments."""
+"""Shared plumbing for the hub-index and identity builds: stages, DuckDB, SQL fragments."""
 
 from __future__ import annotations
 
@@ -20,7 +20,6 @@ from omnipath_build.reference.build_reference import (  # noqa: F401  (re-export
     scan,
 )
 
-FORMAT = "omnipath-identity-v1"
 PARTS = tuple(f"{n:02x}" for n in range(256))
 HUBS = CHEMICAL + PROTEIN
 # Rule 4: preferred hub for the id of a grouped entity (earlier wins).
@@ -38,15 +37,9 @@ HUB_PREFERENCE = (
     "ramp",
     "ramp_gene",
 )
-# Structure/formula attributes are never identifiers or labels: they stay in the hub files.
-ATTRIBUTE_TYPES = ("smiles", "inchi", "formula")
-STRUCTURE_LEVELS = ("full_structure", "complete_structure")
+GOSLIN_HUBS = ("swisslipids", "lipidmaps", "hmdb", "chebi", "refmet")
 INCHIKEY_RE = "^[A-Z]{14}-[A-Z]{10}-[A-Z]$"
-ISOFORM_RE = "[A-Z0-9]+-[0-9]+"
-ACCESS_TARGETS = {1: "chemical", 2: "gene_protein"}
-# Precedence when the same (route, ns, identifier, entity) arrives with several tags.
-TAG_RANK = ("native", "regular", "secondary", "fallback", "symbol_synonym")
-
+STRUCTURE_LEVELS = ("full_structure", "complete_structure")
 
 
 def hub_rank(column="hub") -> str:
@@ -65,10 +58,20 @@ def part_of(value: str) -> str:
     return hashlib.md5(value.encode(), usedforsecurity=False).hexdigest()[:2]
 
 
-def rules_sha256() -> str:
+def code_sha256(*names) -> str:
+    """Hash of the named modules of this package (build code identity)."""
     digest = hashlib.sha256()
-    for path in sorted(Path(__file__).parent.glob("*.py")):
-        digest.update(path.name.encode() + b"\0" + path.read_bytes())
+    for name in sorted(names):
+        path = Path(__file__).with_name(name)
+        digest.update(name.encode() + b"\0" + path.read_bytes())
+    return digest.hexdigest()
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for chunk in iter(lambda: handle.read(8 * 1024 * 1024), b""):
+            digest.update(chunk)
     return digest.hexdigest()
 
 
@@ -90,42 +93,22 @@ def log(event, **fields):
 
 
 class Context:
-    """Paths, DuckDB settings and checkpoint bookkeeping of one snapshot build."""
+    """DuckDB settings and checkpointed stages of one build directory (`out`)."""
 
-    def __init__(
-        self,
-        hubs_dir,
-        out,
-        memory="7GB",
-        threads=6,
-        goslin_cache=None,
-        min_free_gib=50,
-    ):
-        self.out = Path(out).resolve()
+    def __init__(self, out, memory="7GB", threads=6, goslin_cache=None, min_free_gib=50):
+        self.out = Path(out)
         self.work = self.out / "work"
         self.work.mkdir(parents=True, exist_ok=True)
         self.memory, self.threads = memory, int(threads)
         self.min_free = min_free_gib * 1024**3
         self.goslin_cache = Path(goslin_cache) if goslin_cache else self.work / "goslin-cache"
-        self.hubs = {
-            h: Path(hubs_dir, h + ".parquet").resolve()
-            for h in HUBS
-            if Path(hubs_dir, h + ".parquet").is_file()
-        }
-        if not self.hubs:
-            raise RuntimeError(f"No hub parquet files in {hubs_dir}")
         self.timings: dict[str, float] = {}
         self.info: dict[str, dict] = {}
 
-    # ------------------------------------------------------------------ paths and guards
     def guard(self):
         if shutil.disk_usage(self.out).free < self.min_free:
             raise RuntimeError("Identity build stopped at the free-disk reserve")
 
-    def present(self, *hubs) -> list[str]:
-        return [h for h in hubs if h in self.hubs]
-
-    # --------------------------------------------------------------------------- duckdb
     def connect(self, name: str):
         self.guard()
         c = duckdb.connect()
@@ -159,7 +142,6 @@ class Context:
             "OVERWRITE_OR_IGNORE true, ROW_GROUP_SIZE 131072)"
         ).fetchone()[0]
 
-    # ------------------------------------------------------------------------- stages
     def stage(self, name: str, outputs, fn):
         """Run `fn(self, directory)` unless its _SUCCESS.json and listed outputs are present."""
         directory = self.work / name
@@ -182,15 +164,14 @@ class Context:
         shutil.rmtree(self.work / "spill" / name, ignore_errors=True)
         self.timings[name] = seconds
         self.info[name] = info
-        log("stage_done", stage=name, seconds=seconds, **{k: v for k, v in info.items() if k != "x"})
+        log("stage_done", stage=name, seconds=seconds, **info)
         return info
-
-
-def finish_part_loop(directory: Path, name: str):
-    """Mark one iteration of a part loop as done (idempotent checkpoint inside a stage)."""
-    (directory / "done").mkdir(exist_ok=True)
-    (directory / "done" / name).write_text("")
 
 
 def part_done(directory: Path, name: str) -> bool:
     return (directory / "done" / name).exists()
+
+
+def finish_part(directory: Path, name: str):
+    (directory / "done").mkdir(exist_ok=True)
+    (directory / "done" / name).write_text("")
