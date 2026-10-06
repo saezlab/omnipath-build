@@ -28,6 +28,19 @@ def log(event: str, **kw: Any) -> None:
     )
 
 
+def raise_open_file_limit() -> None:
+    """A classic library opens up to ~1000 LMDB shards; lift the soft fd limit."""
+    try:
+        import resource
+
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        wanted = hard if hard != resource.RLIM_INFINITY else 1 << 20
+        if soft != resource.RLIM_INFINITY and soft < wanted:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (wanted, hard))
+    except (ImportError, ValueError, OSError):
+        pass
+
+
 def load_runtime(path: str | Path, *, cache_dir: str | Path | None = None) -> tuple[Any, dict]:
     """Open the runtime a library or identity snapshot directory calls for.
 
@@ -36,6 +49,7 @@ def load_runtime(path: str | Path, *, cache_dir: str | Path | None = None) -> tu
     when the manifest format is ``omnipath-identity-v1``.
     """
     path = Path(path)
+    raise_open_file_limit()
     manifest = json.loads((path / "manifest.json").read_text())
     fmt = manifest.get("format")
     if fmt == IDENTITY_FORMAT:
