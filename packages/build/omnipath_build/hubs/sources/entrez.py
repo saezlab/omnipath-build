@@ -34,7 +34,9 @@ def emit(
     lines: Iterable[str] | None = None,
     gene_info: Iterable[Iterable[str]] | None = None,
 ) -> None:
-    seen: set[tuple[str, str]] = set()
+    # Only gene2ensembl genes are remembered, as integers: gene_info IDs are unique, and
+    # holding every gene_info ID as string pairs took the export past 8 GB.
+    seen: set[int] = set()
     for line in lines if lines is not None else iter_url_lines(URL):
         if writer.full:
             return
@@ -47,9 +49,9 @@ def emit(
         entrez = "" if fields[1] == "-" else fields[1].strip()
         ensg = "" if fields[2] in {"", "-"} else fields[2].split(".", 1)[0]
         ensp = "" if fields[6] in {"", "-"} else fields[6].split(".", 1)[0]
-        if not entrez:
+        if not entrez.isdigit():
             continue
-        key = (taxon, entrez)
+        key = int(entrez)
         # gene2ensembl includes noncoding transcripts as direct gene links.
         # Preserve RefSeq versions as sequence identities in the hub contract.
         enst = "" if fields[4] in {"", "-"} else fields[4].split(".", 1)[0]
@@ -89,10 +91,8 @@ def emit(
             fields = line.rstrip("\n").split("\t", 3)
             if len(fields) < 3 or not fields[0].isdigit() or not fields[1].isdigit():
                 continue
-            key = (fields[0], fields[1])
-            if key in seen:
+            if int(fields[1]) in seen:
                 continue
-            seen.add(key)
             symbol = "" if fields[2] in {"", "-", "NEWENTRY"} else fields[2].strip()
             if not explode_record(
                 writer,
