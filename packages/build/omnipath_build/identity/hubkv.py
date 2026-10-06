@@ -165,6 +165,9 @@ class Writer:
             self._put(pairs)
             self.last = pairs[-1][0]
             self.keys += len(pairs)
+        # Flush once per partition: dirty pages count against the memory cgroup, and with swap
+        # off they otherwise pile up until the kernel kills a worker.
+        self.env.sync(True)
 
     def _put(self, pairs) -> None:
         if shutil.disk_usage(self.path).free < self.min_free:
