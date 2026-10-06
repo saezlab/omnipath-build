@@ -190,6 +190,10 @@ def extract_resource(
     for stale in ("queries", "votes", "occurrences"):
         (directory / f"{stale}.parquet").unlink(missing_ok=True)
     directory.mkdir(parents=True, exist_ok=True)
+    # A process killed mid-run (e.g. out of memory) leaves this marker behind.
+    info["status"] = "running"
+    (directory / "extract.json").write_text(json.dumps(info, indent=2, default=str) + "\n")
+    info["status"] = "failed"
     writer = collector = None
     try:
         _, discovered, _ = discover_datasets(source, datasets=datasets, cache_dir=cache_dir)
