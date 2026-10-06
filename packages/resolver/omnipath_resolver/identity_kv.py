@@ -1,0 +1,285 @@
+"""LMDB point-lookup stores of the identity layer (spec 3a/3b), read by ``IdentityRuntime``.
+
+Hub index ``<hub dir>/kv/`` (written by ``omnipath-build build-hub-kv``)::
+
+    manifest.json   format, hub, source index sha, shard counts, per-env statistics
+    id.<s>/         db ``id``:  utf8(ns) + b"\\0" + utf8(identifier) -> [[local_id, tag], ...]
+    rec.<s>/        db ``rec``: utf8(local_id) -> [taxon, anchor, anchor_count, reviewed,
+                    [[source_type, value], ...]]
+
+``id`` is sharded by the first hex digit of ``md5(identifier)`` (the by_id partition) and ``rec``
+by the first hex digit of ``md5('<hub>:<local_id>')`` (the by_record partition); a hub with a
+single shard of either uses shard 0 for everything.
+
+Identity directory ``<identity dir>/kv/`` (written by ``omnipath-build build-identity-kv``), one
+environment with the dbs ``exc`` (record_id -> [entity_id, decision, quarantined]),
+``exc_members`` (entity_id -> [record_id]), ``extra`` (entity_id -> [kind, taxon, quarantined,
+preferred_record]), ``gp_protein`` (protein entity -> [[entrez_id, taxon]]), ``gp_gene`` (entrez
+id -> [[protein entity, taxon]]), ``lipid`` (goslin name -> inchikey) and ``cand`` (record_id
+-> [entity_id]: the anchors a quarantined or ambiguous record points to; empty when the
+decisions have no ``record_candidates.parquet``).
+
+Values are msgpack with a one-byte prefix: ``\\x00`` raw, ``\\x01`` zstd of the msgpack body
+(used above ``COMPRESS_OVER`` bytes). Keys are compared bytewise (LMDB default), which is how
+DuckDB orders VARCHAR, so the writers can stream sorted rows with ``append=True``.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import threading
+from pathlib import Path
+
+import lmdb
+import msgpack
+import zstandard
+
+KV_DIR = "kv"
+MANIFEST = "manifest.json"
+HUB_KV_FORMAT = "omnipath-hub-kv-v1"
+DECISIONS_KV_FORMAT = "omnipath-identity-kv-v1"
+MAX_KEY = 511  # LMDB's default key size limit
+COMPRESS_OVER = 256
+RAW, ZSTD = b"\x00", b"\x01"
+SHARD_COUNTS = (1, 16)
+DECISION_DBS = ("exc", "exc_members", "extra", "gp_protein", "gp_gene", "lipid", "cand")
+
+
+class KvMissing(RuntimeError):
+    """A key/value store the runtime needs is absent or does not match its source."""
+
+
+# ---------------------------------------------------------------------------- codec
+
+_local = threading.local()
+
+
+def _compressor():
+    if not hasattr(_local, "c"):
+        _local.c = zstandard.ZstdCompressor(level=3)
+        _local.d = zstandard.ZstdDecompressor()
+    return _local.c
+
+
+def pack(obj) -> bytes:
+    body = msgpack.packb(obj, use_bin_type=True)
+    if len(body) > COMPRESS_OVER:
+        return ZSTD + _compressor().compress(body)
+    return RAW + body
+
+
+def body_of(raw: bytes) -> bytes:
+    prefix = raw[:1]
+    if prefix == RAW:
+        return raw[1:]
+    if prefix == ZSTD:
+        _compressor()
+        return _local.d.decompress(raw[1:])
+    raise ValueError("Unsupported kv value prefix")
+
+
+def unpack(raw: bytes):
+    return msgpack.unpackb(body_of(raw), raw=False)
+
+
+def unpack_head(raw: bytes, count: int) -> list:
+    """The first ``count`` items of a stored msgpack list (the rest is skipped, not built)."""
+    unpacker = msgpack.Unpacker(raw=False)
+    unpacker.feed(body_of(raw))
+    unpacker.read_array_header()
+    return [unpacker.unpack() for _ in range(count)]
+
+
+# ----------------------------------------------------------------------- key helpers
+
+
+def partition(value: str) -> str:
+    return hashlib.md5(value.encode(), usedforsecurity=False).hexdigest()[:2]
+
+
+def shard_of(value: str, shards: int) -> int:
+    """Shard of ``value`` (an identifier, or a record id for ``rec``) among ``shards``."""
+    if shards == 1:
+        return 0
+    if shards != 16:
+        raise ValueError(f"Unsupported shard count {shards}")
+    return int(partition(value)[0], 16)
+
+
+def id_key(ns: str, identifier: str) -> bytes | None:
+    """Key of the ``id`` db, or None when it cannot be stored (longer than LMDB's key limit)."""
+    key = ns.encode() + b"\0" + identifier.encode()
+    return key if len(key) <= MAX_KEY else None
+
+
+def rec_key(local_id: str) -> bytes | None:
+    key = local_id.encode()
+    return key if 0 < len(key) <= MAX_KEY else None
+
+
+def sha256_file(path) -> str:
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+# ----------------------------------------------------------------------------- reading
+
+
+class Env:
+    """One read-only environment: a single long-lived read transaction, named dbs opened once."""
+
+    def __init__(self, path: Path, names):
+        path = Path(path)
+        if not (path / "data.mdb").is_file():
+            raise KvMissing(f"Missing LMDB store {path}")
+        self.path = path
+        self.env = lmdb.open(
+            str(path),
+            readonly=True,
+            lock=False,
+            readahead=False,
+            max_dbs=max(len(names), 1),
+            subdir=True,
+        )
+        self.txn = self.env.begin()
+        try:
+            self.dbs = {name: self.env.open_db(name.encode(), txn=self.txn, create=False) for name in names}
+        except lmdb.Error as exc:
+            self.close()
+            raise KvMissing(f"LMDB store {path} lacks a database: {exc}") from exc
+
+    def get_many(self, name: str, keys) -> dict:
+        """key -> raw value for the keys present (read in key order for page locality)."""
+        db, txn, found = self.dbs[name], self.txn, {}
+        for key in sorted(set(keys)):
+            raw = txn.get(key, db=db)
+            if raw is not None:
+                found[key] = raw
+        return found
+
+    def items(self, name: str):
+        yield from self.txn.cursor(db=self.dbs[name])
+
+    def close(self):
+        txn, env = getattr(self, "txn", None), getattr(self, "env", None)
+        self.txn = self.env = None
+        if txn is not None:
+            txn.abort()
+        if env is not None:
+            env.close()
+
+
+def _read_manifest(directory: Path, fmt: str, what: str, build_hint: str) -> dict:
+    path = directory / MANIFEST
+    if not path.is_file():
+        raise KvMissing(f"{what}: no key/value store at {directory} ({build_hint})")
+    manifest = json.loads(path.read_text())
+    if manifest.get("format") != fmt:
+        raise KvMissing(f"{what}: {path} has format {manifest.get('format')!r}, expected {fmt!r}")
+    return manifest
+
+
+class HubKv:
+    """``id`` and ``rec`` lookups of one hub index (environments are opened on first use)."""
+
+    def __init__(self, hub: str, index_dir: Path):
+        self.hub = hub
+        self.index_dir = Path(index_dir)
+        directory = self.index_dir / KV_DIR
+        hint = f"run: omnipath-build build-hub-kv --hub {hub} --hub-index-root <root>"
+        self.manifest = _read_manifest(directory, HUB_KV_FORMAT, f"hub index {hub}", hint)
+        source = self.index_dir / "manifest.json"
+        if source.is_file() and self.manifest.get("source_sha256") != sha256_file(source):
+            raise KvMissing(f"hub index {hub}: kv at {directory} was built from a different index")
+        self.id_shards = int(self.manifest["id_shards"])
+        self.rec_shards = int(self.manifest["rec_shards"])
+        for kind, count in (("id", self.id_shards), ("rec", self.rec_shards)):
+            for shard in range(count):
+                if not (directory / f"{kind}.{shard}" / "data.mdb").is_file():
+                    raise KvMissing(f"hub index {hub}: missing {kind}.{shard} under {directory}")
+        self.directory = directory
+        self._envs: dict[tuple[str, int], Env] = {}
+        self._lock = threading.RLock()
+
+    def _env(self, kind: str, shard: int) -> Env:
+        key = (kind, shard)
+        env = self._envs.get(key)
+        if env is None:
+            env = self._envs[key] = Env(self.directory / f"{kind}.{shard}", (kind,))
+        return env
+
+    def opened(self) -> set[tuple[str, int]]:
+        return set(self._envs)
+
+    def ids(self, pairs) -> dict[tuple[str, str], list[tuple[str, str]]]:
+        """(ns, identifier) -> [(local_id, tag)] for the pairs present."""
+        by_shard: dict[int, dict[bytes, tuple[str, str]]] = {}
+        for ns, identifier in pairs:
+            key = id_key(ns, identifier)
+            if key is not None:
+                by_shard.setdefault(shard_of(identifier, self.id_shards), {})[key] = (ns, identifier)
+        found = {}
+        with self._lock:
+            for shard, keys in by_shard.items():
+                for key, raw in self._env("id", shard).get_many("id", keys).items():
+                    found[keys[key]] = [(lid, tag) for lid, tag in unpack(raw)]
+        return found
+
+    def _rec(self, local_ids, decode) -> dict:
+        by_shard: dict[int, dict[bytes, str]] = {}
+        for local_id in local_ids:
+            key = rec_key(local_id)
+            if key is not None:
+                shard = shard_of(f"{self.hub}:{local_id}", self.rec_shards)
+                by_shard.setdefault(shard, {})[key] = local_id
+        found = {}
+        with self._lock:
+            for shard, keys in by_shard.items():
+                for key, raw in self._env("rec", shard).get_many("rec", keys).items():
+                    found[keys[key]] = decode(raw)
+        return found
+
+    def heads(self, local_ids) -> dict[str, tuple]:
+        """local_id -> (taxon, anchor, anchor_count, reviewed)."""
+        return self._rec(local_ids, lambda raw: tuple(unpack_head(raw, 4)))
+
+    def rows(self, local_ids) -> dict[str, list[tuple[str, str]]]:
+        """local_id -> [(source_type, value)] (every by_record row of the record)."""
+        return self._rec(local_ids, lambda raw: [(st, v) for st, v in unpack(raw)[4]])
+
+    def close(self):
+        with self._lock:
+            for env in self._envs.values():
+                env.close()
+            self._envs.clear()
+
+
+class DecisionsKv:
+    """The identity decisions' small stores (one environment, six dbs)."""
+
+    def __init__(self, identity_dir: Path, fingerprint: str | None = None):
+        self.directory = Path(identity_dir) / KV_DIR
+        hint = f"run: omnipath-build build-identity-kv --identity-dir {identity_dir}"
+        self.manifest = _read_manifest(self.directory, DECISIONS_KV_FORMAT, "identity decisions", hint)
+        if fingerprint and self.manifest.get("fingerprint") != fingerprint:
+            raise KvMissing(f"identity decisions: kv at {self.directory} belongs to another fingerprint")
+        self.env = Env(self.directory, DECISION_DBS)
+        self._lock = threading.RLock()
+
+    def get(self, name: str, keys) -> dict[str, object]:
+        """key -> decoded value for the string keys present."""
+        encoded = {}
+        for key in keys:
+            raw = key.encode()
+            if len(raw) <= MAX_KEY:
+                encoded[raw] = key
+        with self._lock:
+            return {encoded[k]: unpack(v) for k, v in self.env.get_many(name, encoded).items()}
+
+    def items(self, name: str):
+        with self._lock:
+            return [(k.decode(), unpack(v)) for k, v in self.env.items(name)]
+
+    def close(self):
+        with self._lock:
+            self.env.close()

@@ -20,6 +20,8 @@ from identity_snapshot import (
     OTHERS,
     SYSTEMATIC,
     TWO_A,
+    TWO_C,
+    TWO_D,
     WATER,
     build_snapshot,
     part,
@@ -36,6 +38,7 @@ from omnipath_resolver.identity_runtime import (
     is_identity_snapshot,
     open_runtime,
 )
+from omnipath_resolver.identity_kv import KvMissing
 from omnipath_resolver.index import FullRuntime
 from omnipath_resolver.observations import CODES, key, observation_bundle
 
@@ -43,9 +46,10 @@ CODE_NAMES = {code: ns for ns, code in CODES.items()}
 HUMAN, MOUSE = "9606", "10090"
 
 
-@pytest.fixture(scope="module")
-def snapshot(tmp_path_factory):
-    return build_snapshot(tmp_path_factory.mktemp("identity"))
+@pytest.fixture(scope="module", params=[1, 16], ids=["one-shard", "sixteen-shards"])
+def snapshot(tmp_path_factory, request):
+    """The same layout with one kv environment per store, and with 16 shards per large store."""
+    return build_snapshot(tmp_path_factory.mktemp("identity"), shards=request.param)
 
 
 @pytest.fixture
@@ -106,42 +110,63 @@ def test_hub_index_paths_relative_and_absolute(snapshot):
     rt = IdentityRuntime(snapshot, cache_dir=snapshot.parent / "c")
     try:
         assert rt.hub_dirs["uniprot"].is_absolute()  # written absolute
-        assert (rt.hub_dirs["chebi"] / "records.parquet").is_file()  # written relative
+        assert (rt.hub_dirs["chebi"] / "kv" / "manifest.json").is_file()  # written relative
     finally:
         rt.close()
 
 
-def test_only_the_hashed_partitions_are_read(snapshot, tmp_path, monkeypatch):
-    # Corrupt every by_id partition file but the two the keys hash to: reading any other fails.
+def test_runtime_reads_only_the_kv_stores(snapshot, tmp_path):
+    # Delete every Parquet file of the layout: the runtime must not need any of them.
     root = tmp_path / "tree"
     shutil.copytree(snapshot.parent.parent, root)
     copy = root / "identity" / snapshot.name
-    keep = {("chebi", part("CHEBI:15377")), ("hmdb", part("HMDB0002111"))}
-    broken = 0
-    for path in (root / "hubindex").glob("*/*/by_id/part=*/data.parquet"):
-        hub, p = path.parts[-5], path.parent.name.removeprefix("part=")
-        if (hub, p) not in keep:
-            path.write_bytes(b"not parquet")
-            broken += 1
-    assert broken
+    for path in root.rglob("*.parquet"):
+        path.unlink()
+    assert not list(root.rglob("*.parquet"))
     rt = IdentityRuntime(copy, cache_dir=tmp_path / "c")
-    files = []
-    original = rt._query
-    monkeypatch.setattr(
-        rt, "_query", lambda sql, f, *a, **k: (files.append(f), original(sql, f, *a, **k))[1]
-    )
+    try:
+        assert not hasattr(rt, "_db")
+        k = key(1, 1, "chebi", "", "CHEBI:15377")
+        assert ids(rt.lookup_many([k])[k]) == [f"inchikey:{WATER}"]
+        assert rt.record(f"inchikey:{WATER}")["label"] == "water"
+        assert rt.record("entrez:7157")["label"] == "TP53"
+    finally:
+        rt.close()
+
+
+def test_missing_kv_fails_clearly(snapshot, tmp_path):
+    root = tmp_path / "tree"
+    shutil.copytree(snapshot.parent.parent, root)
+    copy = root / "identity" / snapshot.name
+    shutil.rmtree(root / "hubindex" / "hmdb" / "0123456789ab" / "kv")
+    with pytest.raises(KvMissing, match="hmdb.*build-hub-kv"):
+        IdentityRuntime(copy, cache_dir=tmp_path / "c")
+    shutil.rmtree(copy / "kv")
+    with pytest.raises(KvMissing, match="build-identity-kv"):
+        IdentityRuntime(copy, cache_dir=tmp_path / "c")
+
+
+def test_stale_kv_is_refused(snapshot, tmp_path):
+    root = tmp_path / "tree"
+    shutil.copytree(snapshot.parent.parent, root)
+    copy = root / "identity" / snapshot.name
+    manifest = root / "hubindex" / "chebi" / "0123456789ab" / "manifest.json"
+    manifest.write_text(manifest.read_text() + " ")  # the index changed after its kv was built
+    with pytest.raises(KvMissing, match="different index"):
+        IdentityRuntime(copy, cache_dir=tmp_path / "c")
+
+
+def test_only_the_hashed_shards_are_opened(snapshot, tmp_path):
+    rt = IdentityRuntime(snapshot, cache_dir=tmp_path / "c")
     try:
         k1, k2 = key(1, 1, "chebi", "", "CHEBI:15377"), key(1, 1, "hmdb", "", "HMDB0002111")
         out = rt.lookup_many([k1, k2])
         assert ids(out[k1]) == [f"inchikey:{WATER}"] and ids(out[k2]) == [f"inchikey:{WATER}"]
-        by_id = [f for f in files if any("/by_id/" in p for p in f)]
-        assert len(by_id) == 2  # one by_id query per hub group (chebi, hmdb), not per key
-        read = {
-            (p.split("/by_id/")[0].split("/")[-2], p.split("part=")[1][:2])
-            for f in by_id
-            for p in f
-        }
-        assert read == keep
+        shards = rt.hub_kv["chebi"].id_shards
+        want = 0 if shards == 1 else int(part("CHEBI:15377")[0], 16)
+        assert rt.hub_kv["chebi"].opened() >= {("id", want)}
+        assert {s for kind, s in rt.hub_kv["chebi"].opened() if kind == "id"} == {want}
+        assert rt.hub_kv["pubchem"].opened() == set()  # hubs outside the key's domain stay closed
     finally:
         rt.close()
 
@@ -701,3 +726,39 @@ def test_gene_symbol_with_taxon(matcher):
     assert out["by_ensg"][0].node_id == "entrez:7157"
     assert not out["many"][0].matched  # twelve genes share the id: ambiguous, no cutoff
     assert out["ramp"][0].node_id == "entrez:7157"
+
+
+# ------------------------------------------------------ records pointing to several anchors
+
+
+def test_a_record_with_candidates_votes_for_each_of_them(runtime):
+    # pubchem:P2 is quarantined and claims two InChIKeys: it contributes both, not itself
+    out = look(runtime, 1, 1, "pubchem", "P2")
+    assert set(ids(out)) == {f"inchikey:{TWO_C}", f"inchikey:{TWO_D}"} and len(ids(out)) == 2
+    assert not any(c[4] for c in out["candidates"])  # the anchors are clean entities
+    assert all(c[3] == c[1] for c in out["candidates"])
+    # ...but it is never a member of those entities
+    members = runtime.record(f"inchikey:{TWO_C}")["identifiers"]
+    assert ["pubchem", "P2"] not in members and ["hmdb", "HMDB0088888"] in members
+    # a record without candidates is unchanged
+    assert ids(look(runtime, 1, 1, "chebi", "CHEBI:99999")) == ["chebi:CHEBI:99999"]
+
+
+def test_candidates_intersect_with_a_second_identifier(matcher):
+    alone = chemical([], namespace="pubchem", identifier="P2")
+    agreeing = chemical([("hmdb", "HMDB0088888")], namespace="pubchem", identifier="P2")
+    out = run(matcher, alone=alone, agreeing=agreeing)
+    assert not out["alone"][0].matched  # two anchors: Ambiguous
+    resolved, _ = matcher.runtime.resolve(
+        [dict(input_id="q", target=1)],
+        [
+            dict(
+                input_id="q", ns="pubchem", identifier="P2", scope="", anchor="", target=1,
+                route=1, ordinal=0, lookup_key=key(1, 1, "pubchem", "", "P2"),
+            )
+        ],
+    )  # fmt: skip
+    assert resolved["results"][0]["outcome"] == "Ambiguous"
+    assert resolved["results"][0]["candidate_count"] == 2
+    (agreeing,) = out["agreeing"]
+    assert agreeing.matched and agreeing.node_id == f"inchikey:{TWO_C}"

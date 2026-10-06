@@ -1,9 +1,11 @@
 """A small synthetic ``omnipath-identity-v2`` layout written straight from spec 3a and 3b.
 
 Per-hub indexes (``records``, ``by_id``, ``by_record``) plus the identity decisions
-(``exceptions``, ``entities_extra``, ``gene_products_*``, ``lipid_structures``). The builders
-(``omnipath_build.identity``) are not involved: the helpers below derive ``by_id`` rows from
-hub rows with the expansion rules of spec 3a, so each fixture record is one case for a rule.
+(``exceptions``, ``entities_extra``, ``gene_products_*``, ``lipid_structures``). The index and
+decision builders (``build_hub_index``, ``build_identity``) are not involved: the helpers below
+derive ``by_id`` rows from hub rows with the expansion rules of spec 3a, so each fixture record
+is one case for a rule. The runtime reads LMDB only, so the real kv writers
+(``build_hub_kv_dir``, ``build_identity_kv``) turn those Parquet files into the kv stores.
 """
 
 from __future__ import annotations
@@ -27,6 +29,7 @@ ONLY_PC = "CCCCCCCCCCCCCC-DDDDDDDDDD-N"
 OTHERS = "DDDDDDDDDDDDDD-EEEEEEEEEE-N"
 SYSTEMATIC = "EEEEEEEEEEEEEE-FFFFFFFFFF-N"
 TWO_A, TWO_B = "FFFFFFFFFFFFFF-GGGGGGGGGG-N", "FFFFFFFFFFFFFF-HHHHHHHHHH-N"
+TWO_C, TWO_D = "IIIIIIIIIIIIII-JJJJJJJJJJ-N", "IIIIIIIIIIIIII-KKKKKKKKKK-N"
 FINGERPRINT = "synthetic-v2-0001"
 LONG_NAME = "x" * 81
 
@@ -86,6 +89,8 @@ def hub_records():
     )
     rec("lipidmaps", "LM2", [("systematic_name", "sys-name"), ("inchikey", SYSTEMATIC)])
     rec("chebi", "CHEBI:99999", [("name", "multi"), ("inchikey", TWO_A), ("inchikey", TWO_B)])
+    rec("pubchem", "P2", [("name", "points to two anchors"), ("inchikey", TWO_C), ("inchikey", TWO_D)])
+    rec("hmdb", "HMDB0088888", [("name", "second anchor holder"), ("inchikey", TWO_C)])
     rec("chebi", "CHEBI:70001", [("name", "grouped-chebi")])
     rec("hmdb", "HMDB0070001", [("name", "grouped-hmdb")])
     for n in range(12):  # twelve structure-less records behind one cas number
@@ -140,6 +145,7 @@ def hub_records():
 EXCEPTIONS = [  # record_id, entity_id, decision, quarantined
     ("swisslipids:SLM:1", "goslin:species:PE 36:2", "lipid_name", False),
     ("chebi:CHEBI:99999", "chebi:CHEBI:99999", "quarantined", True),
+    ("pubchem:P2", "pubchem:P2", "quarantined", True),
     ("pubchem:7777", f"inchikey:{WATER}", "attached", False),
     ("chebi:CHEBI:70001", "chebi:CHEBI:70001", "grouped", False),
     ("hmdb:HMDB0070001", "chebi:CHEBI:70001", "grouped", False),
@@ -150,6 +156,7 @@ EXCEPTIONS = [  # record_id, entity_id, decision, quarantined
 EXTRAS = [  # entity_id, kind, taxon, quarantined, preferred_record
     ("goslin:species:PE 36:2", "chemical", None, False, "swisslipids:SLM:1"),
     ("chebi:CHEBI:99999", "chemical", None, True, "chebi:CHEBI:99999"),
+    ("pubchem:P2", "chemical", None, True, "pubchem:P2"),
     ("chebi:CHEBI:70001", "chemical", None, False, "chebi:CHEBI:70001"),
     ("chembl:CHEMBL999", "chemical", None, False, "chembl:CHEMBL999"),
     ("ramp_gene:RAMP_G_2", "gene", "9606", False, "ramp_gene:RAMP_G_2"),
@@ -162,6 +169,10 @@ GENE_PRODUCTS = [  # protein_entity_id, entrez_id, taxon
     ("uniprot:P0DP23", "808", "9606"),
     ("uniprot:P02340", "22059", "10090"),
     ("uniprot:Q77777", "999", "9606"),
+]
+CANDIDATES = [  # record_id, entity_id: a quarantined record points to the anchors it claims
+    ("pubchem:P2", f"inchikey:{TWO_C}"),
+    ("pubchem:P2", f"inchikey:{TWO_D}"),
 ]
 LIPID_STRUCTURES = [("full_structure:PE 18:0/18:1", f"inchikey:{LIPID3}")]  # rule 5: unique names
 
@@ -238,8 +249,13 @@ def write_hub_index(directory: Path, hub: str, records) -> None:
     )
 
 
-def build_snapshot(root: Path, *, fingerprint: str = FINGERPRINT) -> Path:
-    """Write hub indexes under ``root/hubindex`` and the identity directory; return the latter."""
+def build_snapshot(root: Path, *, fingerprint: str = FINGERPRINT, shards: int = 1) -> Path:
+    """Write hub indexes under ``root/hubindex`` and the identity directory; return the latter.
+
+    ``shards`` (1 or 16) is the id/rec shard count of every hub kv store.
+    """
+    from omnipath_build.identity import build_hub_kv_dir, build_identity_kv
+
     root = Path(root)
     hubs = hub_records()
     identity = root / "identity" / fingerprint
@@ -248,6 +264,7 @@ def build_snapshot(root: Path, *, fingerprint: str = FINGERPRINT) -> Path:
     for hub, records in hubs.items():
         directory = root / "hubindex" / hub / "0123456789ab"
         write_hub_index(directory, hub, records)
+        build_hub_kv_dir(directory, id_shards=shards, rec_shards=shards, memory="256MB", threads=1, min_free_gib=0.01)
         # relative to the identity directory, except uniprot (absolute): both must resolve
         indexes[hub] = (
             str(directory) if hub == "uniprot" else str(Path("../..") / directory.relative_to(root))
@@ -281,6 +298,12 @@ def build_snapshot(root: Path, *, fingerprint: str = FINGERPRINT) -> Path:
     table("gene_products_by_protein.parquet", gp_cols, gp, "protein_entity_id")
     table("gene_products_by_gene.parquet", gp_cols, gp, "entrez_id")
     table(
+        "record_candidates.parquet",
+        [("record_id", S), ("entity_id", S)],
+        [dict(record_id=r, entity_id=e) for r, e in CANDIDATES],
+        "record_id",
+    )
+    table(
         "lipid_structures.parquet",
         [("goslin", S), ("inchikey", S)],
         [dict(goslin=g, inchikey=k) for g, k in LIPID_STRUCTURES],
@@ -298,4 +321,5 @@ def build_snapshot(root: Path, *, fingerprint: str = FINGERPRINT) -> Path:
             )
         )
     )
+    build_identity_kv(identity, min_free_gib=0.001)
     return identity
