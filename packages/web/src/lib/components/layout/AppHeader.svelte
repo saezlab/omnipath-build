@@ -22,22 +22,12 @@
   import { getUiPreferences } from '$lib/stores/ui-preferences.svelte';
   import { getSelectionStore } from '$lib/stores/selection.svelte';
   import { cn } from '$lib/utils.js';
-  import {
-    Tooltip,
-    TooltipContent,
-    TooltipProvider,
-    TooltipTrigger,
-  } from '$lib/components/ui/tooltip/index.js';
 
   onMount(() => workspaceWidth.load());
   const selection = getSelectionStore();
   const navigationItems = $derived([
     { title: 'Explore', url: '/explore' },
-    {
-      title: 'Selection',
-      url: '/selection',
-      disabled: selection.totalSelectionCount === 0,
-    },
+    { title: 'Selection', url: '/selection', count: selection.totalSelectionCount },
     { title: 'Resources', url: '/resources' },
     { title: 'Skills', url: '/skills' },
     { title: 'API Docs', url: '/api/docs', external: true },
@@ -53,8 +43,6 @@
   function isPathActive(url: string) {
     return page.url.pathname === url || page.url.pathname.startsWith(`${url}/`);
   }
-
-  const emptySelectionHint = 'Nothing selected yet';
 
   function selectRelease(version: string) {
     const url = new URL(window.location.href);
@@ -85,36 +73,26 @@
     </div>
 
     <nav aria-label="Primary" class="hidden h-full min-w-0 items-center gap-1 lg:flex">
-      <TooltipProvider delayDuration={200}>
-        {#each navigationItems.filter((item) => !item.external) as item (item.title)}
-          {#if item.disabled}
-            <Tooltip>
-              <TooltipTrigger
-                class="flex h-full cursor-not-allowed items-center bg-transparent px-2.5 text-[13px] text-muted-foreground/50 shadow-none hover:bg-transparent"
-                aria-disabled="true"
-              >
-                {item.title}
-              </TooltipTrigger>
-              <TooltipContent side="bottom">{emptySelectionHint}</TooltipContent>
-            </Tooltip>
-          {:else}
-            <a
-              href={item.external ? item.url : releaseUrl(item.url)}
-              target={item.external ? '_blank' : undefined}
-              rel={item.external ? 'noopener noreferrer' : undefined}
-              aria-current={isPathActive(item.url) ? 'page' : undefined}
-              class={cn(
-                'flex h-full items-center px-2.5 text-[13px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
-                isPathActive(item.url)
-                  ? 'font-medium text-foreground'
-                  : 'text-muted-foreground hover:text-foreground',
-              )}
-            >
-              <span>{item.title}</span>
-            </a>
-          {/if}
-        {/each}
-      </TooltipProvider>
+      {#each navigationItems.filter((item) => !item.external) as item (item.title)}
+        <a
+          href={item.external ? item.url : releaseUrl(item.url)}
+          target={item.external ? '_blank' : undefined}
+          rel={item.external ? 'noopener noreferrer' : undefined}
+          aria-current={isPathActive(item.url) ? 'page' : undefined}
+          class={cn(
+            'flex h-full items-center px-2.5 text-[13px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
+            isPathActive(item.url)
+              ? 'font-medium text-foreground'
+              : 'text-muted-foreground hover:text-foreground',
+          )}
+        >
+          <span>{item.title}</span>
+          {#if item.count}<span
+              class="ml-1.5 inline-grid h-[18px] min-w-[18px] place-items-center rounded-full bg-primary px-1.5 text-[11px] font-semibold text-primary-foreground tabular-nums"
+              aria-label={`${item.count} selected`}>{item.count}</span
+            >{/if}
+        </a>
+      {/each}
     </nav>
 
     <div class="ml-auto flex items-center gap-2">
@@ -125,8 +103,12 @@
         class="hidden h-8 items-center gap-1 rounded-md px-2 text-xs text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring lg:inline-flex"
         >Documentation ↗</a
       >
+      <label for="release-select" class="hidden text-xs text-muted-foreground/70 sm:inline"
+        >Release</label
+      >
       <select
-        aria-label="OmniPath version"
+        id="release-select"
+        aria-label="OmniPath release"
         class="max-w-32 cursor-pointer rounded-md border border-transparent bg-transparent px-1.5 py-1 text-xs text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         value={page.data.selectedRelease || 'latest'}
         disabled={page.data.releasesUnavailable}
@@ -151,39 +133,27 @@
         <DropdownMenuContent align="end" class="w-56">
           <DropdownMenuLabel>Navigate</DropdownMenuLabel>
           <DropdownMenuSeparator />
-          <TooltipProvider delayDuration={200}>
-            {#each navigationItems as item (item.title)}
-              {#if item.disabled}
-                <Tooltip>
-                  <TooltipTrigger
-                    class="w-full bg-transparent p-0 text-left shadow-none hover:bg-transparent"
+          {#each navigationItems as item (item.title)}
+            <DropdownMenuItem>
+              {#snippet child({ props })}
+                <a
+                  href={item.external ? item.url : releaseUrl(item.url)}
+                  target={item.external ? '_blank' : undefined}
+                  rel={item.external ? 'noopener noreferrer' : undefined}
+                  aria-current={isPathActive(item.url) ? 'page' : undefined}
+                  class="flex w-full items-center gap-2"
+                  {...props}
+                >
+                  <span class={isPathActive(item.url) ? 'text-primary' : undefined}
+                    >{item.title}</span
                   >
-                    <DropdownMenuItem disabled>
-                      <span>{item.title}</span>
-                    </DropdownMenuItem>
-                  </TooltipTrigger>
-                  <TooltipContent side="left">{emptySelectionHint}</TooltipContent>
-                </Tooltip>
-              {:else}
-                <DropdownMenuItem>
-                  {#snippet child({ props })}
-                    <a
-                      href={item.external ? item.url : releaseUrl(item.url)}
-                      target={item.external ? '_blank' : undefined}
-                      rel={item.external ? 'noopener noreferrer' : undefined}
-                      aria-current={isPathActive(item.url) ? 'page' : undefined}
-                      class="flex w-full items-center gap-2"
-                      {...props}
-                    >
-                      <span class={isPathActive(item.url) ? 'text-primary' : undefined}
-                        >{item.title}</span
-                      >
-                    </a>
-                  {/snippet}
-                </DropdownMenuItem>
-              {/if}
-            {/each}
-          </TooltipProvider>
+                  {#if item.count}<span class="ml-auto text-xs text-muted-foreground tabular-nums"
+                      >{item.count}</span
+                    >{/if}
+                </a>
+              {/snippet}
+            </DropdownMenuItem>
+          {/each}
         </DropdownMenuContent>
       </DropdownMenu>
 

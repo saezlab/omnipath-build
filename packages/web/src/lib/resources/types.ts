@@ -38,7 +38,8 @@ export function resourceFromWire(resource: WireResource): ResourceRecord {
   return {
     ...resource,
     resource_id: id,
-    resource_name: resource.resource_name || resource.resource || id,
+    // Curated display names ("BindingDB") replace bare identifiers ("bindingdb").
+    resource_name: resource.display_name || resource.resource_name || resource.resource || id,
     version: resource.version ?? null,
     files: resource.files ?? [],
     entity_count: resource.entity_count ?? resource.entities_count ?? 0,

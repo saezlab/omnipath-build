@@ -3,7 +3,8 @@
   let {
     pressed = $bindable(false),
     explanation = 'Group genes and their products by gene reference, and chemicals by connectivity. Entities without an unambiguous grouping stay separate.',
-  }: { pressed?: boolean; explanation?: string } = $props();
+    class: className = 'h-9',
+  }: { pressed?: boolean; explanation?: string; class?: string } = $props();
 </script>
 
 <Tooltip.Provider delayDuration={200}>
@@ -11,7 +12,7 @@
     <Tooltip.Trigger
       type="button"
       aria-pressed={pressed}
-      class="inline-flex h-9 shrink-0 items-center gap-2 rounded-md px-2 text-xs text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      class="inline-flex {className} shrink-0 items-center gap-2 rounded-md px-2 text-xs text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       onclick={() => (pressed = !pressed)}
     >
       <span

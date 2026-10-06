@@ -99,10 +99,6 @@
         >
       </div>
     </div>
-    {#if resource.sample_build}<p class="build-note">
-        Sample: up to {resource.max_records} input records per dataset; supporting records may expand
-        these counts.
-      </p>{/if}
     {#if resource.dataset_subset?.length}<p class="build-note">
         Selected datasets: {resource.dataset_subset.join(', ')}
       </p>{/if}

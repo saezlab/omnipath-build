@@ -1,5 +1,5 @@
 <script lang="ts">
-  import EntityResultsGrid from '$lib/components/entity/EntityResultsGrid.svelte';
+  import EntityResultsList from '$lib/components/entity/EntityResultsList.svelte';
   import EntityResultCard from '$lib/components/entity/EntityResultCard.svelte';
   import ExplorerWorkspace from '$lib/components/workspace/ExplorerWorkspace.svelte';
   import WorkspacePanel from '$lib/components/workspace/WorkspacePanel.svelte';
@@ -19,6 +19,7 @@
     SheetTrigger,
   } from '$lib/components/ui/sheet/index.js';
   import EntityGroups from '$lib/components/explore/EntityGroups.svelte';
+  import GroupToggle from '$lib/components/explore/GroupToggle.svelte';
   import EntityDetailsDialog from '$lib/components/entity/EntityDetailsDialog.svelte';
   import {
     fetchEntityExamples,
@@ -32,6 +33,8 @@
   import type { EntityWithIdentifiers } from '$lib/types/entities';
   import { getEntityTypeEmoji } from '$lib/utils/entity-types';
   import { formatNumber } from '$lib/utils/format';
+  import { splitEmptyOptions } from '$lib/utils/facets';
+  import { truncateTitle } from '$lib/actions/truncate-title';
 
   interface Props {
     query: string;
@@ -45,7 +48,7 @@
 
   let {
     query,
-    groupResults = false,
+    groupResults = $bindable(false),
     filters,
     onFiltersChange,
     selectedEntityPks,
@@ -64,6 +67,9 @@
   }
 
   type EntityResult = EntityWithIdentifiers;
+
+  const GROUP_EXPLANATION =
+    'Group genes and their products by gene reference, and chemicals by connectivity. Source types and molecular evidence stay distinct. Entities without an unambiguous grouping stay separate.';
 
   let results = $state<EntityResult[]>([]);
   let searchGeneration = 0;
@@ -135,7 +141,7 @@
           if (c.facetName === 'entity_type') {
             types.push(mapEntityTypeOption(c.facetValue));
           } else if (c.facetName === 'source') {
-            sources.push({ value: c.facetValue, displayName: c.facetValue, icon: '📚' });
+            sources.push({ value: c.facetValue, displayName: c.facetValue });
           } else if (c.facetName === 'taxonomy_id') {
             taxonomies.push(mapTaxonomyOption(c.facetValue, c.facetLabel));
           }
@@ -275,7 +281,6 @@
     return {
       value,
       displayName: formatTaxonomy(value, name) || value,
-      icon: '🌿',
       id: value,
     };
   }
@@ -328,11 +333,12 @@
 
 {#if isMobile.current}
   <div class="flex h-full min-h-0 flex-col overflow-hidden">
-    <div class="border-b p-4">
+    <div class="flex items-center gap-2 border-b p-4">
+      {@render groupToggle()}
       <Sheet>
         <SheetTrigger>
           {#snippet child({ props })}
-            <Button {...props} variant="outline" class="w-full">
+            <Button {...props} variant="outline" class="flex-1">
               <Filter class="mr-2 size-4" />
               Filters
               {#if activeFilterCount > 0}
@@ -371,7 +377,9 @@
   </div>
 {:else}
   <ExplorerWorkspace name="entities" panels={['results', 'entity_types', 'sources', 'ncbi_tax_id']}>
-    <WorkspacePanel id="results" title="Results">{@render resultsPane()}</WorkspacePanel>
+    <WorkspacePanel id="results" title="Results" bodyClass="" actions={groupToggle}
+      >{@render resultsPane()}</WorkspacePanel
+    >
     <WorkspacePanel id="entity_types" title="Entity types"
       >{@render filterSection(
         'Entity Types',
@@ -451,6 +459,12 @@
   onClear?: () => void,
 )}
   {#if options.length > 0}
+    {@const split = splitEmptyOptions(
+      options,
+      (option) => scopedFacetCounts.get(`${facetNameForFilter(filterKey)}:${option.value}`),
+      (option) => selectedValues.includes(option.value),
+    )}
+    {@const listed = split.shown}
     <div>
       <div class="mb-3 flex items-center justify-between gap-2">
         <h4 class="text-[11px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
@@ -468,7 +482,7 @@
         {/if}
       </div>
       <div class="max-h-64 space-y-1 overflow-y-auto pr-2">
-        {#each options.slice(0, visibleLimit) as option}
+        {#each listed.slice(0, visibleLimit) as option}
           {@const selected = selectedValues.includes(option.value)}
           {@const count = scopedFacetCounts.get(`${facetNameForFilter(filterKey)}:${option.value}`)}
           <div class="flex items-center justify-between gap-2 py-0.5">
@@ -484,7 +498,7 @@
                 onCheckedChange={() => handleFilterToggle(filterKey, option.value)}
                 class={selected ? 'h-4 w-4 flex-shrink-0 border-primary' : 'h-4 w-4 flex-shrink-0'}
               />
-              <span class="truncate">
+              <span class="truncate" use:truncateTitle={option.displayName}>
                 {#if option.icon}<span class="mr-1.5">{option.icon}</span>{/if}
                 {option.displayName}
               </span>
@@ -496,7 +510,7 @@
             {/if}
           </div>
         {/each}
-        {#if options.length > visibleLimit}
+        {#if listed.length > visibleLimit}
           <Button variant="ghost" size="sm" class="mt-2 w-full text-xs" onclick={onLoadMore}>
             Load more
           </Button>
@@ -513,10 +527,18 @@
   {/if}
 {/snippet}
 
+{#snippet groupToggle()}
+  <GroupToggle
+    bind:pressed={groupResults}
+    explanation={GROUP_EXPLANATION}
+    class={isMobile.current ? 'h-9' : 'h-5'}
+  />
+{/snippet}
+
 {#snippet resultsPane()}
-  <div class="p-4">
+  <div>
     {#if showExamples}
-      <div class="mb-4">
+      <div class="px-4 pt-4 pb-3">
         <h2 class="text-lg font-semibold">Explore some examples</h2>
         <p class="text-sm text-muted-foreground">
           Start with a familiar molecule, protein or pathway, or search and filter the full
@@ -527,18 +549,20 @@
     {#if groupResults}
       <EntityGroups {query} filters={effectiveFilters} renderMember={resultCard} />
     {:else if loading && results.length === 0}
-      <EntityResultsGrid>
+      <EntityResultsList>
         {#each Array.from({ length: 6 }) as _, _i}
-          <div class="h-48 animate-pulse rounded-xl bg-muted/30"></div>
+          <div class="h-12 animate-pulse bg-muted/30"></div>
         {/each}
-      </EntityResultsGrid>
+      </EntityResultsList>
     {:else if results.length > 0}
-      {#if loading}<p role="status" class="text-sm text-muted-foreground">Updating results…</p>{/if}
-      <EntityResultsGrid>
+      {#if loading}<p role="status" class="px-4 py-2 text-sm text-muted-foreground">
+          Updating results…
+        </p>{/if}
+      <EntityResultsList>
         {#each results as result}
           {@render resultCard(result)}
         {/each}
-      </EntityResultsGrid>
+      </EntityResultsList>
       {#if hasMore && !showExamples}
         <div class="flex justify-center py-8">
           <Button variant="outline" onclick={loadMore} disabled={loadingMore}>
@@ -554,7 +578,7 @@
         </div>
       {/if}
     {:else}
-      <div class="flex flex-col items-center justify-center gap-2 py-16 text-center">
+      <div class="flex flex-col items-center justify-center gap-2 px-4 py-16 text-center">
         <div class="text-lg font-semibold">
           {showExamples ? 'Search this collection' : 'No entities found'}
         </div>

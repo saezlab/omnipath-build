@@ -226,12 +226,8 @@
       {/if}
     {/snippet}
 
-    {#snippet footerCta()}
-      {#if hasSelection}
-        <SelectionSheet
-          triggerClass="fixed bottom-6 right-6 z-40 h-12 rounded-full px-4 shadow-lg"
-        />
-      {/if}
+    {#snippet searchActions()}
+      {#if hasSelection}<SelectionSheet triggerClass="h-9 shrink-0" />{/if}
     {/snippet}
   </ExploreBrowserShell>
 {/if}

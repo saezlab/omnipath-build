@@ -3,7 +3,6 @@
   import { page } from '$app/stores';
   import { browser } from '$app/environment';
   import ExploreBrowserShell from '$lib/components/explore/ExploreBrowserShell.svelte';
-  import GroupToggle from '$lib/components/explore/GroupToggle.svelte';
   import EntitiesExploreTab from '$lib/components/explore/EntitiesExploreTab.svelte';
   import RelationsExploreTab from '$lib/components/explore/RelationsExploreTab.svelte';
   import SelectionSheet from '$lib/components/selection/SelectionSheet.svelte';
@@ -125,14 +124,6 @@
   {explanationText}
   bind:searchInputRef={inputRef}
 >
-  {#snippet searchActions()}
-    {#if tab === 'entity'}<GroupToggle
-        bind:pressed={groupResults}
-        explanation="Group genes and their products by gene reference, and chemicals by connectivity. Source types and molecular evidence stay distinct. Entities without an unambiguous grouping stay separate."
-      />
-    {/if}
-  {/snippet}
-
   {#snippet content()}
     {#if sourceScope.length}
       <div class="mb-3 flex flex-wrap items-center gap-2 text-sm">
@@ -147,7 +138,7 @@
     {#if tab === 'entity'}
       <EntitiesExploreTab
         {query}
-        {groupResults}
+        bind:groupResults
         filters={entityMatchFilters}
         onFiltersChange={(f) => updateFilters(f)}
       />
@@ -162,11 +153,7 @@
   {/snippet}
 
   {#snippet footerCta()}
-    {#if selection.totalSelectionCount > 0}
-      <SelectionSheet
-        bind:open={selectionSheetOpen}
-        triggerClass="fixed bottom-6 right-6 z-40 h-12 rounded-full px-4 shadow-lg"
-      />
-    {/if}
+    <!-- Opened with the "s" shortcut; the header's Selection link shows the count. -->
+    <SelectionSheet bind:open={selectionSheetOpen} showTrigger={false} />
   {/snippet}
 </ExploreBrowserShell>

@@ -6,7 +6,18 @@
     title,
     children,
     enabled = true,
-  }: { id: string; title: string; children: Snippet; enabled?: boolean } = $props();
+    bodyClass = 'p-3',
+    actions,
+  }: {
+    id: string;
+    title: string;
+    children: Snippet;
+    enabled?: boolean;
+    /** Padding of the panel body; lists that run edge to edge pass an empty class. */
+    bodyClass?: string;
+    /** Controls shown in the panel header, such as display options for its content. */
+    actions?: Snippet;
+  } = $props();
   const workspace = getContext<WorkspaceContext | undefined>(WORKSPACE);
   const rect = $derived(workspace?.rectangles[id]);
   let origin: { x: number; y: number } | null = null;
@@ -74,13 +85,14 @@
           }
         }}>{title}</button
       >
+      {#if actions}<div class="flex shrink-0 items-center">{@render actions()}</div>{/if}
       <button
         class="panel-action rounded px-2 hover:bg-muted"
         aria-label={`Collapse ${title} panel`}
         onclick={() => workspace.collapse(id)}>−</button
       >
     </header>
-    <div class="panel-body min-h-0 flex-1 overflow-auto p-3">{@render children()}</div>
+    <div class={`panel-body min-h-0 flex-1 overflow-auto ${bodyClass}`}>{@render children()}</div>
   </section>
 {:else}{@render children()}{/if}
 

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import EntityResultsList from '$lib/components/entity/EntityResultsList.svelte';
   import { entityFromWire } from '$lib/api/adapters';
   import type { WireEntity } from '$lib/api/contracts';
   import { untrack, type Snippet } from 'svelte';
@@ -116,17 +117,20 @@
   }
 </script>
 
-{#if error}<p role="alert" class="mb-3 text-destructive">{error}</p>{/if}
-{#if loading && !groups.length}<p role="status">Loading groups…</p>{/if}
-<div
-  class="grid gap-4"
-  style="grid-template-columns: repeat(auto-fit, minmax(min(100%, max(280px, calc((100% - 3rem) / 4))), 1fr));"
->
-  {#each groups as group (group.group_key)}
-    {@render renderMember(group.entity)}
-  {/each}
-</div>
-{#if !loading && !error && !groups.length}<p>No matching entities found.</p>{/if}
-{#if nextCursor}<Button class="mt-4" variant="outline" disabled={loading} onclick={moreGroups}
-    >Load more groups</Button
-  >{/if}
+{#if error}<p role="alert" class="p-4 text-destructive">{error}</p>{/if}
+{#if loading && !groups.length}<p role="status" class="p-4 text-sm text-muted-foreground">
+    Loading groups…
+  </p>{/if}
+{#if groups.length}
+  <EntityResultsList>
+    {#each groups as group (group.group_key)}
+      {@render renderMember(group.entity)}
+    {/each}
+  </EntityResultsList>
+{/if}
+{#if !loading && !error && !groups.length}<p class="p-4 text-sm text-muted-foreground">
+    No matching entities found.
+  </p>{/if}
+{#if nextCursor}<div class="flex justify-center py-6">
+    <Button variant="outline" disabled={loading} onclick={moreGroups}>Load more groups</Button>
+  </div>{/if}

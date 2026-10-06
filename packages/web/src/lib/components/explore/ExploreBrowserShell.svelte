@@ -55,7 +55,7 @@
   class={`relative flex w-full flex-col ${fitViewport ? 'h-full min-h-0 gap-2 overflow-hidden' : 'gap-4'}`}
 >
   <div class="sticky top-0 z-20 -mx-4 shrink-0 bg-background px-4 pt-2 pb-0 md:-mx-6 md:px-6">
-    <div class="mx-auto flex w-full max-w-4xl flex-wrap items-center gap-2 sm:flex-nowrap">
+    <div class="flex w-full flex-wrap items-center gap-2 sm:flex-nowrap">
       {#if tabs.length}
         <div
           class="flex w-full shrink-0 items-center gap-0.5 overflow-x-auto rounded-md bg-muted/40 p-0.5 sm:w-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
@@ -93,15 +93,17 @@
           aria-label={searchPlaceholder}
           class="h-9 min-w-0 flex-1 bg-transparent text-sm text-foreground placeholder:text-muted-foreground focus:outline-none"
         />
+        <button
+          type="button"
+          onclick={onSubmitSearch}
+          aria-label="Search"
+          title="Search (Enter)"
+          class="inline-flex h-6 shrink-0 items-center rounded border border-border/70 px-1.5 font-mono text-[11px] text-muted-foreground transition-colors hover:border-ring hover:text-foreground"
+        >
+          ↵
+        </button>
       </div>
       {#if searchActions}{@render searchActions()}{/if}
-      <button
-        type="button"
-        onclick={onSubmitSearch}
-        class="inline-flex h-9 shrink-0 items-center rounded-md bg-primary px-4 text-[13px] font-medium text-primary-foreground transition-colors hover:bg-primary/90"
-      >
-        Search
-      </button>
     </div>
   </div>
 

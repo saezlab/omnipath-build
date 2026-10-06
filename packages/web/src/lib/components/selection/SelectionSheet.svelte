@@ -16,9 +16,11 @@
   interface Props {
     open?: boolean;
     triggerClass?: string;
+    /** Without a trigger the sheet is opened through `open` only. */
+    showTrigger?: boolean;
   }
 
-  let { open = $bindable(false), triggerClass = '' }: Props = $props();
+  let { open = $bindable(false), triggerClass = '', showTrigger = true }: Props = $props();
 
   const selection = getSelectionStore();
   const scopeSettings = getSelectionScopeSettings();
@@ -35,17 +37,16 @@
 
 {#if totalSelectionCount > 0}
   <Sheet bind:open>
-    <SheetTrigger>
-      {#snippet child({ props })}
-        <Button {...props} size="lg" class={triggerClass}>
-          <span>Open Selection</span>
-          <Badge variant="secondary" class="ml-2 rounded-full px-2 py-0.5 text-xs">
-            {totalSelectionCount}
-          </Badge>
-          <ArrowRight class="ml-2 size-4" />
-        </Button>
-      {/snippet}
-    </SheetTrigger>
+    {#if showTrigger}
+      <SheetTrigger>
+        {#snippet child({ props })}
+          <Button {...props} variant="outline" class={triggerClass}>
+            <Settings2 class="size-4" />
+            Manage selection
+          </Button>
+        {/snippet}
+      </SheetTrigger>
+    {/if}
     <SheetContent side="right" class="w-[92vw] gap-0 overflow-hidden p-0 sm:max-w-xl">
       <SheetHeader class="border-b px-6 py-4 pr-12">
         <Button href={selectionHref} variant="outline" size="sm" class="w-fit gap-1.5">

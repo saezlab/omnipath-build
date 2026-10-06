@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { AlertTriangle, Box, Check, Link, Network, Plus } from '@lucide/svelte';
-  import IdentifierBadge from './IdentifierBadge.svelte';
+  import { Check, Link, LoaderCircle, Network, Plus } from '@lucide/svelte';
+  import { truncateTitle } from '$lib/actions/truncate-title';
   import EntityDetailsDialog from './EntityDetailsDialog.svelte';
   import { getSelectionStore } from '$lib/stores/selection.svelte';
   import {
@@ -97,44 +97,57 @@
     );
   }
 
-  function getIdentifierBadgeType(
-    entity: EntityResult,
-    value: string | undefined,
-  ): string | undefined {
-    const text = value?.trim() || '';
-    if (!text) return undefined;
-    const identifierType = getIdentifierDisplayTypeForValue(entity, text);
-    if (!identifierType || isPlainNameIdentifierType(identifierType)) return undefined;
-    return identifierType;
-  }
-
   function firstHint(values: string[] | undefined): string | undefined {
     return values?.map((value) => value.trim()).find(Boolean);
   }
 
-  function getSpecificEntityHint(entity: EntityResult): { label: string; value: string } | null {
-    if (isChemicalEntity(entity)) {
-      const specificity = firstHint(entity.entityFacetHints?.structuralSpecificities);
-      if (specificity) return { label: 'Specificity', value: specificity };
+  function chemicalHint(entity: EntityResult): string | undefined {
+    if (!isChemicalEntity(entity)) return undefined;
+    const hints = entity.entityFacetHints;
+    return (
+      firstHint(hints?.structuralSpecificities) ||
+      firstHint(hints?.chemicalClasses) ||
+      firstHint(hints?.metabolicDomains)
+    );
+  }
 
-      const chemicalClass = firstHint(entity.entityFacetHints?.chemicalClasses);
-      if (chemicalClass) return { label: 'Subclass', value: chemicalClass };
+  function isHashLike(value: string): boolean {
+    return /^[a-f0-9-]{24,}$/i.test(value) && /[a-f]/i.test(value);
+  }
 
-      const metabolicDomain = firstHint(entity.entityFacetHints?.metabolicDomains);
-      if (metabolicDomain) return { label: 'Domain', value: metabolicDomain };
+  /** The identifier shown after the name: the secondary identifier, else the canonical one. */
+  function rowIdentifier(
+    entity: EntityResult,
+    displayName: string,
+  ): { label: string; value: string } | null {
+    if (entity.groupStrategy === 'chemical_connectivity') return null;
+    for (const raw of [getEntitySecondaryName(entity), entity.canonicalIdentifier]) {
+      const value = raw?.trim();
+      if (!value || value === displayName || isHashLike(value)) continue;
+      const type = getIdentifierDisplayTypeForValue(entity, value);
+      if (type && isPlainNameIdentifierType(type)) continue;
+      const label = type ? getIdentifierTypeLabel(type) : '';
+      // "CHEBI:15954" already names its namespace.
+      const prefixed = label && value.toLowerCase().startsWith(`${label.toLowerCase()}:`);
+      return { label: prefixed ? '' : label, value };
     }
+    return null;
+  }
 
-    const taxonomy = formatTaxonomy(entity.taxonomyId, entity.taxonomyName);
-    return taxonomy ? { label: 'Taxon', value: taxonomy } : null;
+  function groupSummary(entity: EntityResult): string | undefined {
+    const count = entity.groupMemberCount ?? 0;
+    if (count < 2) return undefined;
+    return entity.groupStrategy === 'gene_reference' ? `${count} records` : `${count} forms`;
   }
 </script>
 
 {#snippet card()}
   {@const publicId = getEntityPublicId(result)}
   {@const displayName = getEntityDisplayName(result)}
-  {@const secondaryName = getEntitySecondaryName(result)}
-  {@const displayIdentifierType = getIdentifierBadgeType(result, displayName)}
-  {@const secondaryIdentifierType = getIdentifierBadgeType(result, secondaryName)}
+  {@const identifier = rowIdentifier(result, displayName)}
+  {@const identifierText = identifier
+    ? [identifier.label, identifier.value].filter(Boolean).join(' ')
+    : ''}
   {@const entityTypeLabel = getEntityTypeLabel(result)}
   {@const selected = result.groupMemberKeys
     ? selection.selectedEntities.filter((entity) => entity.groupKey === publicId).length ===
@@ -142,153 +155,107 @@
       (!result.groupMemberCursor &&
         result.groupMemberKeys.every((key) => selection.isSelected(key)))
     : selection.isSelected(publicId)}
-  {@const entityTypeIcon = getEntityTypeEmoji(entityTypeLabel)}
-  {@const entityTypeStyle = getEntityTypeStyle(entityTypeLabel)}
+  {@const typeKey = result.entityType || entityTypeLabel}
+  {@const entityTypeStyle = getEntityTypeStyle(typeKey)}
   {@const unresolved = isUnresolvedEntity(result)}
-  {@const ontologyHierarchy = getEntityOntologyTerm(result)}
-  {@const showOntologyHint = !!ontologyHierarchy}
-  {@const entitySpecificHint = getSpecificEntityHint(result)}
+  {@const showOntologyHint = !!getEntityOntologyTerm(result)}
+  {@const meta = [
+    entityTypeLabel,
+    formatTaxonomy(result.taxonomyId, result.taxonomyName),
+    groupSummary(result),
+    chemicalHint(result),
+    unresolved ? 'Unresolved' : null,
+  ].filter(Boolean) as string[]}
   <div
-    class={`w-full min-w-0 cursor-pointer overflow-hidden rounded-xl ${
+    class={`group/row grid w-full min-w-0 cursor-pointer grid-cols-[2rem_minmax(0,1fr)_auto] items-center gap-x-3 px-3 py-2 transition-colors outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring ${
       unresolved
-        ? 'bg-amber-50/35 dark:bg-amber-950/10'
-        : `bg-gradient-to-br ${entityTypeStyle.bgColor}`
-    }`}
+        ? 'bg-amber-500/[0.05] outline-1 -outline-offset-1 outline-dashed outline-amber-500/60 hover:bg-amber-500/[0.10]'
+        : entityTypeStyle.rowClass
+    } ${selected ? 'ring-1 ring-inset ring-green-600 dark:ring-green-500' : ''}`}
     role="button"
     tabindex="0"
+    aria-label={`${displayName}, ${meta.join(', ')}`}
     onclick={() => openDetails(result)}
     onkeydown={(event) => handleDetailsKeydown(event, result)}
   >
-    <div class="flex items-start gap-3 px-4 py-3">
-      <div class="min-w-0 flex-1 text-left">
-        <div class="flex min-w-0 items-baseline gap-2">
-          {#if displayIdentifierType}
-            <IdentifierBadge
-              identifierType={displayIdentifierType}
-              value={displayName}
-              variant="subtle"
-              class="max-w-[60%]"
-            />
-          {:else}
-            <h3 class="truncate text-base font-medium text-foreground" title={displayName}>
-              {displayName}
-            </h3>
-          {/if}
-          {#if secondaryName && secondaryName !== displayName}
-            {#if secondaryIdentifierType}
-              <IdentifierBadge
-                identifierType={secondaryIdentifierType}
-                value={secondaryName}
-                variant="compact"
-                class="max-w-[42%]"
-              />
-            {:else}
-              <p class="truncate text-sm text-muted-foreground" title={secondaryName}>
-                {secondaryName}
-              </p>
-            {/if}
-          {/if}
-        </div>
-        {#if result.memberEntityTypes?.length}<p class="mt-1 text-xs text-muted-foreground">
-            Gene reference · {result.memberEntityTypes.join(', ')} records
-          </p>{/if}
-        {#if unresolved}
-          <span
-            class="mt-2 inline-flex shrink-0 items-center gap-1 rounded-md border border-amber-300/80 bg-amber-100/70 px-1.5 py-1 text-[10px] font-medium leading-none text-amber-800 dark:border-amber-700/70 dark:bg-amber-950/60 dark:text-amber-200"
-            title="Unresolved entity"
-          >
-            <AlertTriangle class="size-3" />
-            Unresolved
-          </span>
-        {/if}
-      </div>
-      <div class="flex shrink-0 items-center gap-2">
-        <button
-          type="button"
-          disabled={selectingGroup}
-          onkeydown={(event) => event.stopPropagation()}
-          onclick={(event) => {
-            event.stopPropagation();
-            if (result.groupMemberKeys) {
-              void toggleGroup();
-            } else if (selected) {
-              selection.removeEntity(publicId);
-            } else {
-              selection.addEntity({
-                id: publicId,
-                entityId: publicId,
-                entityPk: result.entityPk,
-                name: displayName,
-                type: entityTypeLabel,
-                fullResult: result,
-              });
-            }
-          }}
-          class={`inline-flex h-8 min-w-20 items-center justify-center gap-1.5 rounded-md px-2.5 text-xs font-medium transition-colors ${
-            selected
-              ? 'bg-green-600 text-white hover:bg-green-700'
-              : 'bg-background/70 text-muted-foreground hover:bg-background hover:text-foreground'
-          }`}
-        >
-          {#if selectingGroup}
-            Adding…
-          {:else if selected}
-            <Check class="size-3.5" />
-            Selected
-          {:else}
-            <Plus class="size-3.5" />
-            Add
-          {/if}
-        </button>
-      </div>
-    </div>
-    <div class="flex min-w-0 flex-wrap gap-1.5 px-4 pb-3">
-      {#if result.groupMemberCount}
-        <span class="rounded-md border px-1.5 py-0.5 text-[10px] font-medium"
-          >Grouped · {result.groupMemberCount} matched {result.groupMemberCount === 1
-            ? 'entity'
-            : 'entities'}</span
-        >
-      {/if}
-      <span
-        class={`inline-flex min-w-0 max-w-full items-center gap-1 rounded-md border px-1.5 py-0.5 text-[10px] font-medium leading-none ${entityTypeStyle.chipClass}`}
-      >
-        {#if entityTypeIcon}
-          <span aria-hidden="true">{entityTypeIcon}</span>
-        {:else}
-          <Box class="size-3" />
-        {/if}
-        <span class="truncate">{entityTypeLabel}</span>
-      </span>
-      {#if entitySpecificHint}
+    <!-- Same emoji as the entity type filter. -->
+    <span
+      class={`grid size-8 place-items-center rounded-lg text-base leading-none ${
+        unresolved ? 'bg-amber-500/15' : entityTypeStyle.iconClass
+      }`}
+      aria-hidden="true">{getEntityTypeEmoji(typeKey)}</span
+    >
+    <div class="min-w-0">
+      <div class="flex min-w-0 items-baseline gap-2">
         <span
-          class={`inline-flex min-w-0 max-w-full items-center gap-1 rounded-md border px-1.5 py-0.5 text-[10px] font-medium leading-none ${entityTypeStyle.chipClass}`}
+          class="min-w-0 shrink truncate text-sm font-semibold text-foreground"
+          use:truncateTitle={displayName}>{displayName}</span
         >
-          {#if entitySpecificHint.label === 'Taxon'}
-            <span aria-hidden="true">🌿</span>
-          {/if}
-          <span>{entitySpecificHint.label}:</span>
-          <span class="truncate">{entitySpecificHint.value}</span>
+        {#if identifier}<span
+            class="min-w-[3ch] flex-1 truncate font-mono text-[11px] text-muted-foreground/80 max-sm:hidden"
+            use:truncateTitle={identifierText}>{identifierText}</span
+          >{/if}
+      </div>
+      <p class="truncate text-xs text-muted-foreground" use:truncateTitle={meta.join(' · ')}>
+        {meta.join(' · ')}
+      </p>
+    </div>
+    <div class="flex shrink-0 items-center gap-2">
+      {#if showOntologyHint}
+        <span title="Has an ontology hierarchy" class="text-muted-foreground">
+          <Network class="size-3.5" />
         </span>
       {/if}
       {#if (result.relationCount || 0) > 0}
         <span
-          class={`inline-flex min-w-0 max-w-full items-center gap-1 rounded-md border px-1.5 py-0.5 text-[10px] font-medium leading-none ${entityTypeStyle.chipClass}`}
-          title="Associated entities or relations"
+          class="inline-flex items-center gap-1 text-xs text-muted-foreground tabular-nums"
+          title="Relations"
         >
-          <Link class="size-3" />
-          <span>Relations:</span>
-          <span class="tabular-nums">{formatNumber(result.relationCount || 0)}</span>
+          <Link class="size-3.5" />
+          <span class="font-semibold text-foreground"
+            >{formatNumber(result.relationCount || 0)}</span
+          >
         </span>
       {/if}
-      {#if showOntologyHint}
-        <span
-          class={`inline-flex h-5 items-center justify-center rounded-md border px-1.5 text-[10px] font-medium leading-none ${entityTypeStyle.chipClass}`}
-          title="Click the card to see details and explore its position in the ontology"
-        >
-          <Network class="size-3" />
-        </span>
-      {/if}
+      <button
+        type="button"
+        disabled={selectingGroup}
+        aria-label={selected ? 'Remove from selection' : 'Add to selection'}
+        title={selected ? 'Remove from selection' : 'Add to selection'}
+        onkeydown={(event) => event.stopPropagation()}
+        onclick={(event) => {
+          event.stopPropagation();
+          if (result.groupMemberKeys) {
+            void toggleGroup();
+          } else if (selected) {
+            selection.removeEntity(publicId);
+          } else {
+            selection.addEntity({
+              id: publicId,
+              entityId: publicId,
+              entityPk: result.entityPk,
+              name: displayName,
+              type: entityTypeLabel,
+              fullResult: result,
+            });
+          }
+        }}
+        class={`grid size-7 place-items-center rounded-md transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+          selected
+            ? 'bg-green-600 text-white hover:bg-green-700'
+            : selectingGroup
+              ? 'text-muted-foreground'
+              : 'text-muted-foreground opacity-0 hover:bg-foreground/10 hover:text-foreground focus-visible:opacity-100 group-hover/row:opacity-100 group-focus-within/row:opacity-100 [@media(hover:none)]:opacity-100'
+        }`}
+      >
+        {#if selectingGroup}
+          <LoaderCircle class="size-4 animate-spin" />
+        {:else if selected}
+          <Check class="size-4" />
+        {:else}
+          <Plus class="size-4" />
+        {/if}
+      </button>
     </div>
   </div>
 {/snippet}

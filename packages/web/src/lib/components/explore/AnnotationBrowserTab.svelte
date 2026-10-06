@@ -1,5 +1,5 @@
 <script lang="ts">
-  import EntityResultsGrid from '$lib/components/entity/EntityResultsGrid.svelte';
+  import EntityResultsList from '$lib/components/entity/EntityResultsList.svelte';
   import { Filter } from '@lucide/svelte';
   import { Badge } from '$lib/components/ui/badge/index.js';
   import { Button } from '$lib/components/ui/button/index.js';
@@ -236,28 +236,28 @@
 {/snippet}
 
 {#snippet resultsPane()}
-  <div class="p-4">
+  <div>
     {#if error}
       <div
-        class="mb-3 rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive"
+        class="m-4 rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive"
       >
         {error}
       </div>
     {/if}
 
     {#if loading && results.length === 0}
-      <EntityResultsGrid>
+      <EntityResultsList>
         {#each Array.from({ length: 6 }) as _, _i}
-          <div class="h-48 animate-pulse rounded-2xl border bg-muted/30"></div>
+          <div class="h-12 animate-pulse bg-muted/30"></div>
         {/each}
-      </EntityResultsGrid>
+      </EntityResultsList>
     {:else if results.length > 0}
       <div class="space-y-4">
-        <EntityResultsGrid>
+        <EntityResultsList>
           {#each results as term}
             <EntityResultCard result={termEntity(term)} />
           {/each}
-        </EntityResultsGrid>
+        </EntityResultsList>
 
         {#if hasMore}
           <div class="flex justify-center py-4" style="min-height: 40px;">
@@ -275,7 +275,7 @@
         {/if}
       </div>
     {:else}
-      <Card class="border-dashed">
+      <Card class="m-4 border-dashed">
         <CardContent class="flex flex-col items-center justify-center gap-2 py-16 text-center">
           <div class="text-lg font-semibold">No ontology terms found</div>
           <p class="max-w-2xl text-sm text-muted-foreground">
@@ -329,7 +329,9 @@
   </div>
 {:else}
   <ExplorerWorkspace name="ontology" panels={['results', 'filters']}>
-    <WorkspacePanel id="results" title="Results">{@render resultsPane()}</WorkspacePanel>
+    <WorkspacePanel id="results" title="Results" bodyClass=""
+      >{@render resultsPane()}</WorkspacePanel
+    >
     <WorkspacePanel id="filters" title="Filters">{@render filterSidebarContent()}</WorkspacePanel>
   </ExplorerWorkspace>
 {/if}

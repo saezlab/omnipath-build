@@ -1,39 +1,7 @@
 <script lang="ts">
-  import {
-    FlaskConical,
-    Dna,
-    CircleDot,
-    Waypoints,
-    Waves,
-    Shapes,
-    HelpCircle,
-    Tags,
-    AlertTriangle,
-  } from '@lucide/svelte';
+  import { AlertTriangle } from '@lucide/svelte';
   import { getEntityTypeStyle } from '$lib/utils/entity-types';
-
-  const entityTypeIcons: Record<string, typeof CircleDot> = {
-    protein: CircleDot,
-    chemical: FlaskConical,
-    compound: FlaskConical,
-    metabolite: FlaskConical,
-    drug: FlaskConical,
-    lipid: FlaskConical,
-    gene: Dna,
-    mirna: Waves,
-    complex: Shapes,
-    pathway: Waypoints,
-    reaction: Waypoints,
-    cvterm: Tags,
-  };
-
-  function getEntityTypeIcon(entityType: string | undefined) {
-    if (!entityType) return HelpCircle;
-    const typeName = entityType.includes(':') ? entityType.split(':')[0] : entityType;
-    const normalized = typeName.toLowerCase().replace(/[\s_]/g, '');
-    const normalizedAlias = normalized === 'smallmolecule' ? 'chemical' : normalized;
-    return entityTypeIcons[normalizedAlias] || HelpCircle;
-  }
+  import { getEntityTypeIcon } from '$lib/utils/entity-type-icons';
 
   function isResolverBackedEntityType(entityType: string | undefined) {
     if (!entityType) return false;

@@ -37,6 +37,10 @@
     size: 'Largest size',
   };
   const sort = $derived(page.url.searchParams.get('sort') || 'name');
+  // Sample builds cap every dataset at the same size, so the note is shown once for the page.
+  const sampleLimit = $derived(
+    data.resources.find((resource) => resource.sample_build && resource.max_records)?.max_records,
+  );
   const tags = $derived(resourceTags(data.resources));
   const filtered = $derived(
     sortResources(filterResources(data.resources, query, selectedTags, licenses), sort),
@@ -260,6 +264,12 @@
     {/if}
   </section>
 
+  {#if sampleLimit}
+    <p class="sample-note" role="note">
+      This release is a sample build: up to {sampleLimit.toLocaleString('en')} input records per dataset.
+      Supporting records can make the counts larger.
+    </p>
+  {/if}
   <div class="results-line">
     <span aria-live="polite">{filtered.length} of {data.resources.length} resources</span><span
       >Ring: share of records · Center: download size</span
@@ -459,6 +469,14 @@
     text-decoration: underline;
     font-size: 12px;
     padding: 5px;
+  }
+  .sample-note {
+    margin: 16px 0 0;
+    padding: 8px 12px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    font-size: 12px;
+    color: var(--muted-foreground);
   }
   .results-line {
     display: flex;

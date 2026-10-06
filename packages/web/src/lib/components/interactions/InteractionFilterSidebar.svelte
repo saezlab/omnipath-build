@@ -11,6 +11,8 @@
   import { fetchScopedRelationFacetCounts } from '$lib/api/client';
   import { getIdentifierTypeLabel, getRelationPredicateLabel } from '$lib/domain/display';
   import { getEntityTypeEmoji } from '$lib/utils/entity-types';
+  import { splitEmptyOptions } from '$lib/utils/facets';
+  import { truncateTitle } from '$lib/actions/truncate-title';
   import { formatNumber } from '$lib/utils/format';
 
   interface Props {
@@ -37,11 +39,15 @@
     queryEntityIds,
   }: Props = $props();
 
+  // Qualifiers of "affects" relations: X increases the activity of Y through binding.
   const qualifierFilters = [
-    { key: 'object_aspect_qualifier', label: 'Object aspect' },
-    { key: 'object_direction_qualifier', label: 'Object direction' },
+    { key: 'object_direction_qualifier', label: 'Direction' },
+    { key: 'object_aspect_qualifier', label: 'Aspect' },
     { key: 'causal_mechanism_qualifier', label: 'Mechanism' },
   ] as const;
+  type QualifierKey = (typeof qualifierFilters)[number]['key'];
+  const MECHANISM_PREVIEW = 5;
+  let showAllMechanisms = $state(false);
   let qualifierOptions = $state<Record<string, string[]>>({});
   let predicatesByCategory = $state<Record<string, string[]>>({});
   let interactionTypeOptions = $state<string[]>([]);
@@ -230,6 +236,39 @@
     return scopedFacetCounts.get(`${filterName}:${value}`)?.count;
   }
 
+  /** Qualifier values with results, most frequent first; selected values always stay. */
+  function qualifierValues(key: QualifierKey): string[] {
+    const selected = filters[key] || [];
+    return splitEmptyOptions(
+      qualifierOptions[key] || [],
+      (value) => getCount(key, value) ?? 0,
+      (value) => selected.includes(value),
+    ).shown.sort((a, b) => (getCount(key, b) ?? 0) - (getCount(key, a) ?? 0));
+  }
+  const directionValues = $derived(qualifierValues('object_direction_qualifier'));
+  const aspectValues = $derived(qualifierValues('object_aspect_qualifier'));
+  const mechanismValues = $derived(qualifierValues('causal_mechanism_qualifier'));
+  const visibleMechanisms = $derived(
+    showAllMechanisms
+      ? mechanismValues
+      : mechanismValues.filter(
+          (value, index) =>
+            index < MECHANISM_PREVIEW || (filters.causal_mechanism_qualifier || []).includes(value),
+        ),
+  );
+  const hasEffectFilters = $derived(
+    directionValues.length + aspectValues.length + mechanismValues.length > 0,
+  );
+
+  // Sources with no relations for the current filters are hidden.
+  const sourceSplit = $derived(
+    splitEmptyOptions(
+      sourceOptions,
+      (option) => getCount('source', option),
+      (option) => (filters.sources || []).includes(option),
+    ),
+  );
+
   function formatPredicate(value: string): string {
     return getRelationPredicateLabel(value) || value;
   }
@@ -264,7 +303,7 @@
         onCheckedChange={onToggle}
         class="h-4 w-4 flex-shrink-0"
       />
-      <span class="truncate">
+      <span class="truncate" use:truncateTitle={label}>
         {#if icon}<span class="mr-1.5">{icon}</span>{/if}
         {label}
       </span>
@@ -335,29 +374,87 @@
             </div>
           </div>
         {/if}
-
-        {#each qualifierFilters as { key, label }}
-          {#if qualifierOptions[key]?.length}
+      </div>
+    </WorkspacePanel>
+    {#if hasEffectFilters}
+      <WorkspacePanel id="effect" title="Effect" enabled={!isMobile}>
+        <div class="space-y-4">
+          {#if isMobile}{@render sectionHeading('Effect')}{/if}
+          {#if directionValues.length}
             <div class="space-y-2">
-              {@render sectionHeading(label)}
-              <div class="space-y-1 max-h-64 overflow-y-auto pr-2">
-                {#each qualifierOptions[key] as value}
+              <p class="effect-heading" role="heading" aria-level="4">Direction</p>
+              <div class="flex flex-wrap gap-1.5" role="group" aria-label="Direction">
+                {#each directionValues as value}
+                  {@const pressed = (filters.object_direction_qualifier || []).includes(value)}
+                  <Button
+                    size="xs"
+                    variant={pressed ? 'secondary' : 'outline'}
+                    aria-pressed={pressed}
+                    onclick={() => handleArrayToggle('object_direction_qualifier', value)}
+                  >
+                    <span aria-hidden="true"
+                      >{value === 'increased' ? '↑' : value === 'decreased' ? '↓' : ''}</span
+                    >
+                    {formatCategory(value)}
+                    <span class="tabular-nums text-muted-foreground"
+                      >{formatNumber(getCount('object_direction_qualifier', value) ?? 0)}</span
+                    >
+                  </Button>
+                {/each}
+              </div>
+            </div>
+          {/if}
+          {#if aspectValues.length}
+            <div class="space-y-1.5">
+              <p class="effect-heading" role="heading" aria-level="4">Aspect</p>
+              <div class="space-y-1">
+                {#each aspectValues as value}
                   {@render filterOptionRow(
-                    key,
+                    'object_aspect_qualifier',
                     value,
                     formatCategory(value),
-                    filters[key] || [],
-                    () => handleArrayToggle(key, value),
+                    filters.object_aspect_qualifier || [],
+                    () => handleArrayToggle('object_aspect_qualifier', value),
                     undefined,
-                    getCount(key, value) ?? 0,
+                    getCount('object_aspect_qualifier', value) ?? 0,
                   )}
                 {/each}
               </div>
             </div>
           {/if}
-        {/each}
-      </div>
-    </WorkspacePanel>
+          {#if mechanismValues.length}
+            <div class="space-y-1.5">
+              <p class="effect-heading" role="heading" aria-level="4">Mechanism</p>
+              <div class="space-y-1">
+                {#each visibleMechanisms as value}
+                  {@render filterOptionRow(
+                    'causal_mechanism_qualifier',
+                    value,
+                    formatCategory(value),
+                    filters.causal_mechanism_qualifier || [],
+                    () => handleArrayToggle('causal_mechanism_qualifier', value),
+                    undefined,
+                    getCount('causal_mechanism_qualifier', value) ?? 0,
+                  )}
+                {/each}
+              </div>
+              {#if mechanismValues.length > visibleMechanisms.length || showAllMechanisms}
+                <Button
+                  variant="ghost"
+                  size="xs"
+                  class="h-auto px-0 text-xs text-muted-foreground"
+                  onclick={() => (showAllMechanisms = !showAllMechanisms)}
+                >
+                  {showAllMechanisms
+                    ? 'Show fewer'
+                    : `Show ${mechanismValues.length - visibleMechanisms.length} more`}
+                </Button>
+              {/if}
+            </div>
+          {/if}
+        </div>
+      </WorkspacePanel>
+    {/if}
     {#if interactionTypeOptions.length > 0}
       <WorkspacePanel id="interaction_types" title="Participant types" enabled={!isMobile}>
         <div class="space-y-2">
@@ -389,14 +486,14 @@
             Object.keys(predicatesByCategory).length === 0 && interactionTypeOptions.length === 0,
           )}{/if}
         <div class="space-y-1 max-h-64 overflow-y-auto pr-2">
-          {#each sourceOptions as option}
+          {#each sourceSplit.shown as option}
             {@render filterOptionRow(
               'sources',
               option,
               option,
               filters.sources || [],
               () => handleArrayToggle('sources', option),
-              '📚',
+              undefined,
               getCount('source', option),
             )}
           {/each}
@@ -426,7 +523,7 @@
                 formatTaxonomy(option, taxonomyNames[option]) || option,
                 filters.taxonomy_ids || [],
                 () => handleArrayToggle('taxonomy_ids', option),
-                '🌿',
+                undefined,
                 getCount('taxonomy_id', option),
               )}
             {/each}
@@ -449,3 +546,15 @@
 {/snippet}
 
 {@render content()}
+
+<style>
+  /* Group labels inside the Effect box. Not h4: WorkspacePanel hides h4 section titles. */
+  .effect-heading {
+    margin: 0;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--muted-foreground);
+  }
+</style>
