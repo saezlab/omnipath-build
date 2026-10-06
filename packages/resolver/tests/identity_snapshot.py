@@ -264,7 +264,7 @@ def build_snapshot(root: Path, *, fingerprint: str = FINGERPRINT, shards: int = 
     for hub, records in hubs.items():
         directory = root / "hubindex" / hub / "0123456789ab"
         write_hub_index(directory, hub, records)
-        build_hub_kv_dir(directory, id_shards=shards, rec_shards=shards, memory="256MB", threads=1)
+        build_hub_kv_dir(directory, id_shards=shards, rec_shards=shards, memory="256MB", threads=1, min_free_gib=0.01)
         # relative to the identity directory, except uniprot (absolute): both must resolve
         indexes[hub] = (
             str(directory) if hub == "uniprot" else str(Path("../..") / directory.relative_to(root))
@@ -321,5 +321,5 @@ def build_snapshot(root: Path, *, fingerprint: str = FINGERPRINT, shards: int = 
             )
         )
     )
-    build_identity_kv(identity)
+    build_identity_kv(identity, min_free_gib=0.001)
     return identity

@@ -23,7 +23,7 @@ def matcher(tmp_path_factory, monkeypatch_module):
             build_hub_index(hub, hubs, root / "hubindex", goslin_cache=root / "goslin", **ARGS)
             build_hub_kv(hub, root / "hubindex", memory="512MB", threads=2, min_free_gib=0.01)
     snapshot = build_identity(root / "hubindex", root / "identity", **ARGS)
-    build_identity_kv(root / "identity" / snapshot["fingerprint"])
+    build_identity_kv(root / "identity" / snapshot["fingerprint"], min_free_gib=0.001)
     monkeypatch_module.setenv("OMNIPATH_IDENTITY_CACHE", str(root / "cache"))
     m = LibraryMatcher(root / "identity" / snapshot["fingerprint"])
     yield m

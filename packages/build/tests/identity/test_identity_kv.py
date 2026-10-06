@@ -64,11 +64,11 @@ def tricky_records():
 def test_hub_kv_holds_every_parquet_row(tmp_path, shards, workers):
     directory = hub(tmp_path / "chebi" / "0123456789ab", tricky_records())
     manifest = build_hub_kv_dir(
-        directory, id_shards=shards, rec_shards=shards, memory="256MB", threads=1, workers=workers
+        directory, id_shards=shards, rec_shards=shards, memory="256MB", threads=1, workers=workers, min_free_gib=0.01
     )
     assert manifest["totals"]["rec"]["keys"] == len(tricky_records())
     assert manifest["totals"]["id"]["skipped_long_keys"] > 0  # the 300-character identifier
-    assert build_hub_kv_dir(directory) == manifest  # idempotent
+    assert build_hub_kv_dir(directory, min_free_gib=0.01) == manifest  # idempotent
     assert not (directory / "kv.building").exists()
     kv = HubKv("chebi", directory)
     try:
@@ -103,7 +103,7 @@ def test_hub_kv_holds_every_parquet_row(tmp_path, shards, workers):
 
 def test_hub_kv_refuses_a_changed_index(tmp_path):
     directory = hub(tmp_path / "chebi" / "0123456789ab", tricky_records())
-    build_hub_kv_dir(directory, memory="256MB", threads=1)
+    build_hub_kv_dir(directory, memory="256MB", threads=1, min_free_gib=0.01)
     HubKv("chebi", directory).close()
     (directory / "manifest.json").write_text('{"hub": "chebi", "changed": true}')
     with pytest.raises(KvMissing, match="different index"):
@@ -126,13 +126,13 @@ def test_identity_kv_is_complete_and_optional_candidates(tmp_path):
     from identity_snapshot import build_snapshot
 
     identity = build_snapshot(tmp_path)
-    manifest = build_identity_kv(identity)
-    assert build_identity_kv(identity) == manifest  # idempotent
+    manifest = build_identity_kv(identity, min_free_gib=0.001)
+    assert build_identity_kv(identity, min_free_gib=0.001) == manifest  # idempotent
     assert set(manifest["counts"]) == set(identity_kv.DECISION_DBS)
     assert manifest["counts"]["exc"] == pq.read_table(identity / "exceptions.parquet").num_rows
     assert manifest["counts"]["cand"] > 0
     (identity / "record_candidates.parquet").unlink()  # an older snapshot: empty db
-    assert build_identity_kv(identity, force=True)["counts"]["cand"] == 0
+    assert build_identity_kv(identity, force=True, min_free_gib=0.001)["counts"]["cand"] == 0
     kv = identity_kv.DecisionsKv(identity, manifest["fingerprint"])
     try:
         assert kv.get("exc", ["chebi:CHEBI:99999", "nope"]) == {
