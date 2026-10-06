@@ -183,7 +183,14 @@ def main(args: list[str] | None = None) -> int:
     )
     library_parser.add_argument("--threads", type=int, default=None, help="DuckDB thread count")
 
+    from .regression import cli as regression_cli
+
+    regression_cli.add_parser(subparsers)
+
     parsed = parser.parse_args(args)
+
+    if parsed.command == "resolution-regression":
+        return regression_cli.run(parsed)
 
     if parsed.command == "export-hubs":
         max_records = None if parsed.max_records == 0 else parsed.max_records
