@@ -843,38 +843,43 @@ class ParquetWriter:
             self._reference_identifiers()
             self._prepare_display()
             parts = {"entities": [], "relations": []}
-            for table in (
+            tables = (
                 "display",
                 "identifiers",
                 "entity_annotations",
                 "entity_evidence",
                 "relations",
                 "relation_annotations",
-            ):
+            )
+            # Buckets are key ranges (the key's first two characters), not hashes: each bucket
+            # is sorted on its own and the buckets are written in key order, so the output is
+            # sorted without one global sort of all rows, which no memory limit can bound.
+            for table in tables:
                 key = "relation_key" if table.startswith("relation") else "entity_key"
                 self._db.execute(
-                    f"CREATE TABLE sorted_{table} AS SELECT *, hash({key}) % 64 AS bucket FROM {table} ORDER BY bucket"
+                    f"CREATE TABLE sorted_{table} AS SELECT *, substr({key}, 1, 2) AS bucket FROM {table} ORDER BY bucket"
                 )
                 self._db.execute(f"DROP TABLE {table}")
                 self._db.execute(f"ALTER TABLE sorted_{table} RENAME TO {table}")
-            for bucket in range(64):
-                for table in (
-                    "display",
-                    "identifiers",
-                    "entity_annotations",
-                    "entity_evidence",
-                    "relations",
-                    "relation_annotations",
-                ):
+            union = " UNION ".join(f"SELECT DISTINCT bucket FROM {table}" for table in tables)
+            buckets = [row[0] for row in self._db.execute(f"{union} ORDER BY 1").fetchall()]
+            for index, bucket in enumerate(buckets):
+                literal = "'" + bucket.replace("'", "''") + "'"
+                for table in tables:
                     self._db.execute(
-                        f"CREATE OR REPLACE TEMP VIEW b_{table} AS SELECT * EXCLUDE(bucket) FROM {table} WHERE bucket={bucket}"
+                        f"CREATE OR REPLACE TEMP VIEW b_{table} AS SELECT * EXCLUDE(bucket) FROM {table} WHERE bucket={literal}"
                     )
-                for kind, query in (("entities", _entities_sql()), ("relations", _relations_sql())):
-                    path = self._work / f"{kind}-{bucket}.parquet"
+                for kind, key, query in (
+                    ("entities", "entity_key", _entities_sql()),
+                    ("relations", "relation_key", _relations_sql()),
+                ):
+                    path = self._work / f"{kind}-{index:05d}.parquet"
                     self._db.execute(
-                        f"COPY ({query}) TO '{_sql_path(path)}' (FORMAT PARQUET, COMPRESSION ZSTD)"
+                        f"COPY (SELECT * FROM ({query}) ORDER BY {key}) TO '{_sql_path(path)}' (FORMAT PARQUET, COMPRESSION ZSTD)"
                     )
                     parts[kind].append(path)
+            # Concatenating the sorted buckets in order needs insertion order kept.
+            self._db.execute("SET preserve_insertion_order=true")
             for kind, key, dest in (
                 ("entities", "entity_key", self.ent_path),
                 ("relations", "relation_key", self.rel_path),
@@ -888,8 +893,9 @@ class ParquetWriter:
                     else ""
                 )
                 self._db.execute(
-                    f"COPY (SELECT * FROM {scan} ORDER BY {key}) TO '{_sql_path(dest)}' (FORMAT PARQUET, COMPRESSION ZSTD{metadata})"
+                    f"COPY (SELECT * FROM {scan}) TO '{_sql_path(dest)}' (FORMAT PARQUET, COMPRESSION ZSTD{metadata})"
                 )
+            self._db.execute("SET preserve_insertion_order=false")
             self.metrics["temporary_chunk_bytes"] = sum(
                 p.stat().st_size for p in self._work.rglob("*") if p.is_file()
             )

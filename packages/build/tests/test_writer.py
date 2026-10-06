@@ -257,3 +257,19 @@ def test_preferred_chemical_label_keeps_other_names(tmp_path):
     rows, _, _ = run_rows(tmp_path, [("one", chemical)], 1)
     assert rows[0]["label"] == "Alanine"
     assert {"alanine-d7", "Alanine"} <= {i["id"] for i in rows[0]["identifiers"]}
+
+
+def test_outputs_are_sorted_by_key_across_buckets(tmp_path):
+    # Enough distinct keys to span many key-prefix buckets.
+    source = [
+        (str(i), {"subject": entity(f"P{i}"), "predicate": "affects", "object": entity(f"Q{i}")})
+        for i in range(120)
+    ]
+    run_rows(tmp_path, source, 7)
+    # Read the files as written; run_rows returns rows re-sorted for comparison.
+    entity_keys = pq.read_table(tmp_path / "entities.parquet")["entity_key"].to_pylist()
+    relation_keys = pq.read_table(tmp_path / "relations.parquet")["relation_key"].to_pylist()
+    assert len(entity_keys) == 240 and len(relation_keys) == 120
+    assert len({key[:2] for key in entity_keys}) > 10
+    assert entity_keys == sorted(entity_keys)
+    assert relation_keys == sorted(relation_keys)
