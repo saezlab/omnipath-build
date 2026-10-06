@@ -206,6 +206,24 @@ def main(args: list[str] | None = None) -> int:
     identity_parser.add_argument("--min-free-gib", type=float, default=50)
     identity_parser.add_argument("--keep-work", action="store_true")
 
+    hub_kv_parser = subparsers.add_parser(
+        "build-hub-kv",
+        help="Write the LMDB point-lookup store (<index dir>/kv) of an existing hub index",
+    )
+    hub_kv_parser.add_argument("--hub", required=True, help="Hub name, e.g. pubchem")
+    hub_kv_parser.add_argument("--hub-index-root", required=True, help="Hub index root directory")
+    hub_kv_parser.add_argument("--memory", default="5GB", help="DuckDB memory limit (split over workers)")
+    hub_kv_parser.add_argument("--threads", type=int, default=2, help="DuckDB threads per worker")
+    hub_kv_parser.add_argument("--workers", type=int, default=2, help="Shards built in parallel")
+    hub_kv_parser.add_argument("--min-free-gib", type=float, default=20)
+
+    identity_kv_parser = subparsers.add_parser(
+        "build-identity-kv",
+        help="Write the LMDB point-lookup store (<identity dir>/kv) of existing identity decisions",
+    )
+    identity_kv_parser.add_argument("--identity-dir", required=True, help="<output-dir>/<fingerprint>")
+    identity_kv_parser.add_argument("--force", action="store_true", help="Rebuild an existing kv store")
+
     from .regression import cli as regression_cli
 
     regression_cli.add_parser(subparsers)
@@ -231,8 +249,29 @@ def main(args: list[str] | None = None) -> int:
         print(json.dumps(manifest["timings"], indent=2))
         return 0
 
+    if parsed.command == "build-hub-kv":
+        from .identity import build_hub_kv
+
+        manifest = build_hub_kv(
+            parsed.hub,
+            parsed.hub_index_root,
+            memory=parsed.memory,
+            threads=parsed.threads,
+            workers=parsed.workers,
+            min_free_gib=parsed.min_free_gib,
+        )
+        print(json.dumps(dict(totals=manifest["totals"], seconds=manifest["seconds"]), indent=2))
+        return 0
+
+    if parsed.command == "build-identity-kv":
+        from .identity import build_identity_kv
+
+        manifest = build_identity_kv(parsed.identity_dir, force=parsed.force)
+        print(json.dumps(manifest, indent=2))
+        return 0
+
     if parsed.command == "build-identity":
-        from .identity import build_identity
+        from .identity import build_identity, build_identity_kv
 
         manifest = build_identity(
             parsed.hub_index_root,
@@ -242,6 +281,7 @@ def main(args: list[str] | None = None) -> int:
             min_free_gib=parsed.min_free_gib,
             keep_work=parsed.keep_work,
         )
+        build_identity_kv(Path(parsed.output_dir) / manifest["fingerprint"])
         print(json.dumps(manifest["timings"], indent=2))
         return 0
 

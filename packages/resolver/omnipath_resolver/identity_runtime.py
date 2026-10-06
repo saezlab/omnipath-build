@@ -1,18 +1,18 @@
 """On-demand resolution runtime over an ``omnipath-identity-v2`` directory.
 
 Same ``resolve()`` contract as :class:`omnipath_resolver.index.FullRuntime`. Nothing is
-materialized for the whole universe: postings are derived per batch from the per-hub
-``by_id`` rows (only the partitions the identifiers hash to), the small identity decisions
-(exceptions, extra entities, gene products) and the hub ``records`` tables; entity records are
-assembled on first use from the members' ``by_record`` rows and cached per identity
-fingerprint in SQLite. See ``docs/identity-layer-spec.md`` sections 3 and 4.
+materialized for the whole universe: postings are derived per batch from the per-hub ``id``
+store (the ``by_id`` rows), the small identity decisions (exceptions, extra entities, gene
+products) and the hub ``rec`` store (``records`` plus ``by_record`` rows); entity records are
+assembled on first use and cached per identity fingerprint in SQLite. Every point lookup reads
+LMDB only (``<hub index>/kv`` and ``<identity dir>/kv``, see ``identity_kv``); the Parquet files
+are build artifacts and are not opened. See ``docs/identity-layer-spec.md`` sections 3 and 4.
 """
 
 from __future__ import annotations
 
 from collections import defaultdict, namedtuple
 from functools import lru_cache
-import glob
 import hashlib
 import json
 import os
@@ -22,7 +22,7 @@ import sqlite3
 import threading
 import time
 
-from .index_storage import partition
+from .identity_kv import DecisionsKv, HubKv
 from .observations import CODES
 
 FORMAT = "omnipath-identity-v2"
@@ -296,8 +296,6 @@ class IdentityRuntime:
     """``FullRuntime``-compatible runtime over an identity directory and its hub indexes."""
 
     def __init__(self, path, *, cache_dir=None, memory_limit=None, threads=None):
-        import duckdb
-
         self.path = Path(path)
         manifest = json.loads((self.path / "manifest.json").read_text())
         if manifest.get("format") != FORMAT:
@@ -318,16 +316,14 @@ class IdentityRuntime:
             ).resolve()
         self.chemical_hubs = [h for h in CHEMICAL_HUBS if h in self.hub_dirs]
         self.codes = {code: ns for ns, code in CODES.items()}
-        config = {}
-        if memory_limit:
-            config["memory_limit"] = str(memory_limit)
-        threads = threads or int(os.environ.get("OMNIPATH_BUILD_DUCKDB_THREADS") or 0)
-        if threads:
-            config["threads"] = int(threads)
-        self._db = duckdb.connect(":memory:", config=config)
-        self._lock = threading.RLock()
-        self._partitions = {}
+        # ``memory_limit`` and ``threads`` are accepted for compatibility: LMDB needs neither.
         self._lipids = None
+        self.decisions = DecisionsKv(self.path, self.fingerprint)
+        try:
+            self.hub_kv = {hub: HubKv(hub, directory) for hub, directory in self.hub_dirs.items()}
+        except BaseException:
+            self.decisions.close()
+            raise
         self.cache_dir = Path(cache_dir) if cache_dir is not None else default_cache_dir(self.path)
         self._cache = self._open_cache()
 
@@ -384,146 +380,75 @@ class IdentityRuntime:
             raise
         self._cache.execute("COMMIT")
 
-    # ----------------------------------------------------------------- files
-
-    def _files(self, base, relative, parts):
-        """Parquet files under ``<base>/<relative>/part=XX/`` for the partitions (missing = empty)."""
-        files = []
-        for part in sorted(parts):
-            cache_key = (str(base), relative, part)
-            if cache_key not in self._partitions:
-                self._partitions[cache_key] = sorted(
-                    glob.glob(str(Path(base) / relative / f"part={part}" / "*.parquet"))
-                )
-            files.extend(self._partitions[cache_key])
-        return files
-
-    def _table(self, name):
-        path = self.path / name
-        return [str(path)] if path.is_file() else []
-
-    def _query(self, sql, files, tables, params=()):
-        """Run ``sql`` over the Parquet ``files`` (bound to ``?``) with temp arrow tables."""
-        import pyarrow as pa
-
-        if not files:  # every partition empty: nothing to read
-            return []
-        with self._lock:
-            cur = self._db.cursor()
-            try:
-                for name, columns in tables.items():
-                    cur.register(name, pa.table(columns))
-                return cur.execute(sql, [files, *params]).fetchall()
-            finally:
-                for name in tables:
-                    cur.unregister(name)
-                cur.close()
-
     # ------------------------------------------------- small indexed lookups
 
     def _exceptions(self, record_ids):
         """record_id -> (entity_id, decision, quarantined) for records with an exception."""
-        ids = sorted(set(record_ids))
+        ids = set(record_ids)
         if not ids:
             return {}
-        rows = self._query(
-            "SELECT e.record_id, e.entity_id, e.decision, e.quarantined"
-            " FROM read_parquet(?, union_by_name=true) e JOIN _want w ON e.record_id = w.id",
-            self._table("exceptions.parquet"),
-            {"_want": dict(id=ids)},
-        )
-        return {r: (e, d, bool(q)) for r, e, d, q in rows}
+        return {r: (e, d, bool(q)) for r, (e, d, q) in self.decisions.get("exc", ids).items()}
+
+    def _record_candidates(self, record_ids):
+        """record_id -> [entity_id]: the anchors a quarantined or ambiguous record points to."""
+        ids = set(record_ids)
+        if not ids:
+            return {}
+        return {r: list(e) for r, e in self.decisions.get("cand", ids).items()}
 
     def _exception_members(self, entity_ids):
-        ids = sorted(set(entity_ids))
+        ids = set(entity_ids)
         found = defaultdict(list)
         if ids:
-            for entity_id, record_id in self._query(
-                "SELECT e.entity_id, e.record_id"
-                " FROM read_parquet(?, union_by_name=true) e JOIN _want w ON e.entity_id = w.id",
-                self._table("exception_members.parquet"),
-                {"_want": dict(id=ids)},
-            ):
-                found[entity_id].append(record_id)
+            for entity_id, record_ids in self.decisions.get("exc_members", ids).items():
+                found[entity_id].extend(record_ids)
         return found
 
     def _extra(self, entity_ids):
         """entity_id -> (kind, taxon, quarantined) for entities not derivable from a record."""
-        ids = sorted(set(entity_ids))
+        ids = set(entity_ids)
         if not ids:
             return {}
-        rows = self._query(
-            "SELECT e.entity_id, e.kind, e.taxon, e.quarantined"
-            " FROM read_parquet(?, union_by_name=true) e JOIN _want w ON e.entity_id = w.id",
-            self._table("entities_extra.parquet"),
-            {"_want": dict(id=ids)},
-        )
-        return {e: (k, _taxon(t), bool(q)) for e, k, t, q in rows}
+        return {
+            e: (k, _taxon(t), bool(q))
+            for e, (k, t, q, _preferred) in self.decisions.get("extra", ids).items()
+        }
 
     def _records(self, hub, local_ids):
-        """local_id -> (taxon, anchor, anchor_count, reviewed) from a hub's records.parquet."""
-        ids = sorted(set(local_ids))
-        if not ids or hub not in self.hub_dirs:
+        """local_id -> (taxon, anchor, anchor_count, reviewed) from a hub's records."""
+        ids = set(local_ids)
+        if not ids or hub not in self.hub_kv:
             return {}
-        path = self.hub_dirs[hub] / "records.parquet"
-        rows = self._query(
-            "SELECT r.local_id, r.taxon, r.anchor, r.anchor_count, r.reviewed"
-            " FROM read_parquet(?, union_by_name=true) r JOIN _want w ON r.local_id = w.id",
-            [str(path)] if path.is_file() else [],
-            {"_want": dict(id=ids)},
-        )
-        return {lid: (_taxon(t), a, int(n or 0), bool(rv)) for lid, t, a, n, rv in rows}
+        return {
+            lid: (_taxon(t), a, int(n or 0), bool(rv))
+            for lid, (t, a, n, rv) in self.hub_kv[hub].heads(ids).items()
+        }
 
-    def _gene_products(self, name, column, ids):
-        ids = sorted(set(ids))
+    def _gene_products(self, name, ids):
+        ids = set(ids)
         if not ids:
             return {}
-        found = defaultdict(list)
-        for key, other, taxon in self._query(
-            f"SELECT g.{column}, g.{'entrez_id' if column == 'protein_entity_id' else 'protein_entity_id'},"
-            f" g.taxon FROM read_parquet(?, union_by_name=true) g JOIN _want w ON g.{column} = w.id",
-            self._table(name),
-            {"_want": dict(id=ids)},
-        ):
-            found[str(key)].append((str(other), _taxon(taxon)))
-        return found
+        return {
+            str(key): [(str(other), _taxon(taxon)) for other, taxon in links]
+            for key, links in self.decisions.get(name, ids).items()
+        }
 
     def _by_protein(self, protein_ids):
         """protein entity id -> [(entrez_id, taxon)]"""
-        return self._gene_products(
-            "gene_products_by_protein.parquet", "protein_entity_id", protein_ids
-        )
+        return self._gene_products("gp_protein", protein_ids)
 
     def _by_gene(self, entrez_ids):
         """entrez id -> [(protein entity id, taxon)]"""
-        return self._gene_products("gene_products_by_gene.parquet", "entrez_id", entrez_ids)
+        return self._gene_products("gp_gene", entrez_ids)
 
     def _lipid_structures(self):
         """Goslin full-structure name -> inchikey entity id (rule 5; unique names only)."""
         if self._lipids is None:
             self._lipids = {}
-            files = self._table("lipid_structures.parquet")
-            if files:
-                with self._lock:
-                    cur = self._db.cursor()
-                    try:
-                        table = cur.execute(
-                            "SELECT * FROM read_parquet(?)", [files[0]]
-                        ).to_arrow_table()
-                    finally:
-                        cur.close()
-                names = table.column_names
-                name_col = next((c for c in ("goslin", "identifier", "name") if c in names), None)
-                key_col = next((c for c in ("inchikey", "entity_id", "anchor") if c in names), None)
-                if name_col and key_col:
-                    for name, key in zip(
-                        table.column(name_col).to_pylist(), table.column(key_col).to_pylist()
-                    ):
-                        if name and key:
-                            key = str(key)
-                            self._lipids[name] = (
-                                key if key.startswith("inchikey:") else "inchikey:" + key
-                            )
+            for name, key in self.decisions.items("lipid"):
+                if name and key:
+                    key = str(key)
+                    self._lipids[name] = key if key.startswith("inchikey:") else "inchikey:" + key
         return self._lipids
 
     # ---------------------------------------------------------------- lookup
@@ -554,33 +479,26 @@ class IdentityRuntime:
 
     def _by_id(self, hubs, pairs):
         """by_id rows for ``(source ns, identifier)`` pairs: (pair index, hub, row fields...)."""
-        hubs = [h for h in hubs if h in self.hub_dirs]
-        files, owner = [], {}
+        index = defaultdict(list)
+        for i, pair in enumerate(pairs):
+            index[pair].append(i)
+        out = []
         for hub in hubs:
-            base = self.hub_dirs[hub]
-            found = self._files(base, "by_id", {partition(i) for _, i in pairs})
-            files.extend(found)
-            for f in found:
-                owner[f] = hub
-        if not files:
-            return []
-        rows = self._query(
-            "SELECT k.i, a.local_id, a.tag, a.anchor, a.anchor_count, a.filename"
-            " FROM read_parquet(?, union_by_name=true, filename=true) a"
-            " JOIN _src k ON a.identifier = k.identifier AND a.ns = k.ns",
-            files,
-            {
-                "_src": dict(
-                    i=list(range(len(pairs))),
-                    ns=[n for n, _ in pairs],
-                    identifier=[i for _, i in pairs],
-                )
-            },
-        )
-        return [
-            (i, owner[filename], local_id, tag, anchor, int(count or 0))
-            for i, local_id, tag, anchor, count, filename in rows
-        ]
+            kv = self.hub_kv.get(hub)
+            if kv is None:
+                continue
+            found = kv.ids(index)
+            if not found:
+                continue
+            heads = kv.heads({local_id for rows in found.values() for local_id, _ in rows})
+            for pair, rows in found.items():
+                for local_id, tag in rows:
+                    head = heads.get(local_id)
+                    if head is None:
+                        raise ValueError(f"Hub {hub} by_id row without a record: {local_id}")
+                    anchor, count = head[1], int(head[2] or 0)
+                    out.extend((i, hub, local_id, tag, anchor, count) for i in index[pair])
+        return out
 
     def _entity(self, hub, local_id, anchor, anchor_count, exceptions):
         """Entity of a record: its exception, else its anchor, else entrez id, else record id."""
@@ -622,19 +540,26 @@ class IdentityRuntime:
                     hits[key].append((hub, local_id, out, anchor, count, identifier))
 
         # 2. records -> entities (exceptions, anchors, entrez ids, record ids)
-        exceptions = self._exceptions(
-            f"{hub}:{local_id}" for rows in hits.values() for hub, local_id, *_ in rows
-        )
+        record_ids = {f"{hub}:{local_id}" for rows in hits.values() for hub, local_id, *_ in rows}
+        exceptions = self._exceptions(record_ids)
+        pointing = self._record_candidates(record_ids)
         candidates = defaultdict(list)  # key -> [(entity_id, tag, source hub)]
         quarantined = set()
         for key, rows in hits.items():
             for hub, local_id, tag, anchor, count, identifier in rows:
-                entity_id, flagged = self._entity(hub, local_id, anchor, count, exceptions)
-                if flagged:
-                    quarantined.add(entity_id)
-                if decoded[key][2] == "inchikey" and entity_id != "inchikey:" + identifier:
-                    continue  # an overridden record does not create its structure's entity
-                candidates[key].append((entity_id, tag, hub))
+                record_id = f"{hub}:{local_id}"
+                if record_id in pointing:
+                    # A quarantined or ambiguous record votes for each anchor it points to,
+                    # instead of for its own exception entity.
+                    entities = [(entity_id, False) for entity_id in pointing[record_id]]
+                else:
+                    entities = [self._entity(hub, local_id, anchor, count, exceptions)]
+                for entity_id, flagged in entities:
+                    if flagged:
+                        quarantined.add(entity_id)
+                    if decoded[key][2] == "inchikey" and entity_id != "inchikey:" + identifier:
+                        continue  # an overridden record does not create its structure's entity
+                    candidates[key].append((entity_id, tag, hub))
         for key, (cls, _, _) in plans.items():
             if cls == "entrez":
                 candidates[key].append(("entrez:" + decoded[key][4], NATIVE, "entrez"))
@@ -905,21 +830,16 @@ class IdentityRuntime:
 
     def _by_record(self, record_ids):
         """record id -> [(source_type, value)] from the hubs' by_record rows."""
-        by_hub = defaultdict(list)
+        by_hub = defaultdict(set)
         for record_id in set(record_ids):
             hub, _, local = record_id.partition(":")
-            if hub in self.hub_dirs:
-                by_hub[hub].append((record_id, local))
+            if hub in self.hub_kv:
+                by_hub[hub].add(local)
         rows = defaultdict(list)
-        for hub, items in by_hub.items():
-            files = self._files(self.hub_dirs[hub], "by_record", {partition(r) for r, _ in items})
-            for local_id, source_type, value in self._query(
-                "SELECT r.local_id, r.source_type, r.value"
-                " FROM read_parquet(?, union_by_name=true) r JOIN _want w ON r.local_id = w.id",
-                files,
-                {"_want": dict(id=sorted({local for _, local in items}))},
-            ):
-                rows[f"{hub}:{local_id}"].append((source_type, value))
+        for hub, locals_ in by_hub.items():
+            for local_id, pairs in self.hub_kv[hub].rows(locals_).items():
+                if pairs:
+                    rows[f"{hub}:{local_id}"].extend(pairs)
         return rows
 
     def _build_records(self, entity_ids):
@@ -984,13 +904,14 @@ class IdentityRuntime:
     # --------------------------------------------------------------- resolve
 
     def close(self):
-        with self._lock:
-            if self._cache is not None:
-                self._cache.close()
-                self._cache = None
-            if self._db is not None:
-                self._db.close()
-                self._db = None
+        if self._cache is not None:
+            self._cache.close()
+            self._cache = None
+        for kv in getattr(self, "hub_kv", {}).values():
+            kv.close()
+        if getattr(self, "decisions", None) is not None:
+            self.decisions.close()
+            self.decisions = None
 
     def resolve(self, queries, votes, *, decision_batch_size=4096):
         from omnipath_resolver._omnipath_resolver import (

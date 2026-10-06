@@ -1,11 +1,12 @@
-"""Builder output read by the runtime: fixture hubs -> hub indexes -> decisions -> LibraryMatcher."""
+"""Builder output read by the runtime: fixture hubs -> hub indexes -> hub kv -> decisions -> decisions kv
+-> LibraryMatcher (which reads LMDB only)."""
 
 from __future__ import annotations
 
 import pytest
 
 from identity_fixtures import key, write_hubs
-from omnipath_build.identity import build_hub_index, build_identity
+from omnipath_build.identity import build_hub_index, build_hub_kv, build_identity, build_identity_kv
 from omnipath_build.identity.common import HUBS
 from omnipath_resolver.canonical.match import LibraryMatcher
 from omnipath_resolver.contracts import RawEntityObservation
@@ -20,7 +21,9 @@ def matcher(tmp_path_factory, monkeypatch_module):
     for hub in HUBS:
         if (hubs / f"{hub}.parquet").exists():
             build_hub_index(hub, hubs, root / "hubindex", goslin_cache=root / "goslin", **ARGS)
+            build_hub_kv(hub, root / "hubindex", memory="512MB", threads=2, min_free_gib=0.01)
     snapshot = build_identity(root / "hubindex", root / "identity", **ARGS)
+    build_identity_kv(root / "identity" / snapshot["fingerprint"])
     monkeypatch_module.setenv("OMNIPATH_IDENTITY_CACHE", str(root / "cache"))
     m = LibraryMatcher(root / "identity" / snapshot["fingerprint"])
     yield m
