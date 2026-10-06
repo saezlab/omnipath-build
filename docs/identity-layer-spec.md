@@ -13,14 +13,18 @@ contract (`omnipath_core/schema.py`).
 
 | Today | Phase 1 |
 | --- | --- |
-| `build_reference.py` graph, components, decisions, claims | `omnipath_build/identity/` builds one identity snapshot from hubs in DuckDB |
-| LMDB compiler (`direct_compact_index`, `full_index*`, `candidate_limit`, `gene_role_index`) | none: the access table is plain partitioned Parquet |
+| `build_reference.py` graph, components, decisions, claims | (a) **hub index**, per hub, independent of the rules; (b) **identity decisions**, small, dependent on the rules |
+| LMDB compiler (`direct_compact_index`, `full_index*`, `candidate_limit`, `gene_role_index`) | none |
 | `FullRuntime` (LMDB) | `omnipath_resolver/identity_runtime.py: IdentityRuntime`, same `resolve()` contract |
-| entity records precomputed for 304M entities | built on first use, cached per snapshot fingerprint |
+| entity records precomputed for 304M entities | built on first use, cached per identity fingerprint |
 
-The Rust kernels (`resolve_precomputed_batch`, `resolve_molecular_batch`), `LibraryMatcher`,
-`observations.py` key encoding and the writer stay. `LibraryMatcher` picks the runtime from
-the snapshot manifest `format`.
+Design principle: nothing is materialized for the whole universe that follows trivially from a
+record. 295,964,650 hub records exist; only about 0.9M (0.31%) need a real decision. Every other
+record's entity is its own anchor (`inchikey:K`, `uniprot:X`) or its gene id (`entrez:N`). Hub
+data changes rebuild only that hub's index; rule changes rebuild only the decisions.
+
+The Rust kernels, `LibraryMatcher`, `observations.py` key encoding and the writer stay.
+`LibraryMatcher` picks the runtime from the manifest `format`.
 
 ## 2. Rules to implement (phase 1)
 
@@ -77,46 +81,85 @@ Entity records and labels:
     otherwise the entity id local part. Never a database ID formatted as a label
     (`CHEBI:…`, `CID:…`) while a name exists.
 
-## 3. Snapshot layout (`<root>/identity/<snapshot>/`)
+## 3. On-disk layout
+
+### 3a. Hub index (per hub; rebuilt only when that hub's Parquet changes)
+
+`/root/data/hubindex/<hub>/<sha12 of hub parquet>/`, built by
+`omnipath-build build-hub-index --hub NAME --hubs-dir DIR --output-root DIR`.
 
 ```
-manifest.json            format "omnipath-identity-v1", fingerprint, hubs {name: {sha256, bytes}},
-                         rules_sha256 (hash of omnipath_build/identity/*.py), counts, timings
-records.parquet          record_id, hub, local_id, anchor, anchor_kind, anchor_count, taxon,
-                         reviewed, entity_id, decision
-                         decision in: anchored, lipid_name, attached, grouped, structureless,
-                         ambiguous_native, quarantined, gene_identity
-entities/part=XX/        entity_id, kind ('chemical'|'protein'|'gene'), anchor, taxon,
-                         quarantined, preferred_record          (XX = md5(entity_id)[:2])
-members/part=XX/         entity_id, record_id                   (XX = md5(entity_id)[:2])
-record_rows/part=XX/     record_id, source_type, value           (XX = md5(record_id)[:2])
-                         every hub row of the record, normalized like today, incl. names
-access/target=T/part=XX/ route, ns, identifier, entity_id, kind, anchor, taxon, quarantined,
-                         reviewed, gene_ids (list<varchar>), tag
-                         (XX = md5(identifier)[:2], same as index_storage.partition;
-                          files sorted by ns, identifier, entity_id; row groups ~64k rows)
-gene_products.parquet    protein_entity_id, entrez_id, taxon
+manifest.json   hub, input {sha256, bytes}, code_sha256 (hash of the hub-index code),
+                counts, timings
+records.parquet one row per hub record, sorted by local_id, ~64k-row groups:
+                local_id, record_id ('<hub>:<local_id>'), taxon (NULL when unknown),
+                anchor ('inchikey:K' | 'uniprot:X' | NULL; set only when anchor_count = 1),
+                anchor_count, reviewed
+by_id/part=XX/  lookup rows, XX = md5(identifier)[:2], sorted by (ns, identifier, local_id):
+                ns, identifier, local_id, tag, taxon, anchor, anchor_count
+                (record columns denormalized from records.parquet; they change only with the hub)
+by_record/part=XX/ every normalized hub row incl. names, XX = md5(record_id)[:2],
+                sorted by local_id: local_id, source_type, value
 ```
 
-`tag` in: native, regular, fallback, secondary, symbol_synonym. The access table holds exactly
-the assertion relations of brief §2.3 (minus route 3 / product rows), with today's
-expansions (uniprot-sec under both namespaces, version-stripped refseq/genbank, isoform → parent
-projection) and the entity metadata denormalized onto each row.
+- Normalization exactly as today (`normalize_id_sql`, version stripping, refseq typing; brief §1.7).
+- `tag`: `native` (the record's own id), `claim` (a cross-reference or alias), `secondary`
+  (a `uniprot-sec` value repeated under ns `uniprot`), `symbol_synonym` (a `genesymbol-syn` value
+  repeated under ns `genesymbol`), `version_stripped` (refseq/genbank without version). These
+  are the data-level expansions of brief §2.3; which rows become candidates is decided at runtime.
+- Names, synonyms, smiles, inchi, formula are only in `by_record`, never in `by_id`.
+- Chemical hubs also get `goslin` rows (ns `goslin`, identifier `<level>:<name>`, the record's
+  most specific parsed name at species level or finer) in both `by_id` and `by_record`, parsed
+  with the persistent Goslin cache.
+
+### 3b. Identity decisions (rule-dependent, small)
+
+`/root/data/identity/<fingerprint>/`, built by
+`omnipath-build build-identity --hub-index-root DIR --output-dir DIR`.
+fingerprint = sha256 of (each hub index manifest sha) + rules code sha.
+
+```
+manifest.json            format "omnipath-identity-v2", fingerprint, hub_indexes {hub: dir},
+                         rules_sha256, counts, timings
+exceptions.parquet       sorted by record_id: record_id, entity_id, decision, quarantined
+                         every record whose entity is NOT its own anchor / entrez id:
+                         lipid_name, attached, grouped, structureless, ambiguous_native,
+                         quarantined, ramp_gene source-gene mappings (decision
+                         explicit_source_gene / source_gene_only, brief §2.3)
+exception_members.parquet sorted by entity_id: entity_id, record_id (same rows, other order)
+entities_extra.parquet   sorted by entity_id: entity_id, kind, taxon, quarantined, preferred_record
+                         only for entity ids not derivable from a record (goslin:…, group and
+                         structureless record ids, quarantined record ids)
+gene_products_by_protein.parquet  sorted by protein_entity_id: protein_entity_id, entrez_id, taxon
+gene_products_by_gene.parquet     the same rows sorted by entrez_id
+lipid_structures.parquet goslin full-structure name -> inchikey, only names with exactly one
+                         InChIKey across records (rule 5)
+```
+
+Entity of a record = its exception if present, else its `anchor` (anchor_count = 1), else
+`entrez:<local_id>` for an entrez record, else its record_id. Kind from the entity id prefix
+(`inchikey:` chemical, `uniprot:` protein, `entrez:` gene) or `entities_extra`.
 
 ## 4. Runtime contract
 
-`IdentityRuntime(path, cache_dir=None)`:
-- `lookup_many(keys: list[bytes]) -> dict[bytes, {"candidates": [...], "gene": bool, "products": False}]`
-  decoding keys with the existing layout (brief §1.1); one DuckDB query per batch, reading only
-  the partitions the keys hash to; precedence rules 8; scope filter rule 9.
+`IdentityRuntime(path, cache_dir=None)` opens a v2 identity directory and the hub indexes it names.
+
+- `lookup_many(keys)` per batch: decode keys (brief §1.1); read `by_id` rows for the keys from
+  the hubs of the key's domain (target 1: chemical hubs; target 2: uniprot, entrez, ramp_gene),
+  only the partitions the identifiers hash to; map records to entities (rule above, joining
+  `exceptions` for the batch's records); apply admission (which hub/ns/tag rows are lookup keys,
+  brief §2.2–2.3), isoform → parent projection, precedence (rule 8), scope (rule 9, entity
+  taxon = defining record's taxon or `entities_extra`/gene_products taxon), gene-level postings
+  (rule 10, via `gene_products_by_protein`: proteins linking to exactly one gene, taxa
+  compatible); return `{"candidates": [...], "gene": bool, "products": False}`.
 - candidate fact = `[num, entity_id, kind(1/2/3), anchor|None, quarantined, reviewed, gene_ids]`;
-  `num` = first 8 bytes of sha256(entity_id) as unsigned int >> 1; candidates sorted by num;
-  a num collision inside one batch raises.
-- `record_many(entity_ids) -> dict[str, record]`, cached in `<cache_dir>/<fingerprint>/entities.sqlite`
-  (WAL; concurrent readers; writes inside one transaction per batch).
-- `resolve(queries, votes)` = `FullRuntime.resolve` with `lookup_many`/`record_many`; same
-  return shape and metrics keys.
-- `lookup(key)` and `record(eid)` kept as single-item wrappers.
+  `num` = sha256(entity_id)[:8] big-endian >> 1; sorted by num; collision in a batch raises.
+- `record_many(entity_ids)`: members = for an anchored entity the records whose `by_id` row
+  (ns `inchikey`/`uniprot`, identifier K/X) has that anchor and no conflicting exception, plus
+  `exception_members`; for `entrez:N` the entrez record plus the genesymbol, genesymbol-syn,
+  hgnc and ensg rows of proteins linked to exactly that one gene; rows from `by_record`;
+  label per rule 13. Cached in `<cache_dir>/<fingerprint>/entities.sqlite` (WAL).
+- `resolve(queries, votes)` = `FullRuntime.resolve` with `lookup_many`/`record_many`.
 
 ## 5. Validation
 
@@ -131,7 +174,7 @@ projection) and the entity metadata denormalized onto each row.
 - Code: `/root/projects/resolution/<checkout>`; push branches to the private bare repo
   `ssh://nicesrv/root/git/omnipath-build.git` (never to GitHub without asking).
 - Data: hubs `/root/data/hubs/20260909`, pypath cache `PYPATH_DOWNLOAD_DATADIR=/root/data/pypath-cache`,
-  identity snapshots `/root/data/identity/`, regression output `/root/data/regression/`.
+  hub indexes `/root/data/hubindex/`, identity decisions `/root/data/identity/`, regression output `/root/data/regression/`.
 - Old library (oracle): `/root/projects/omnipath-releases/20261004-molecular-forms/reference/library`.
 - 8 CPUs, 15 GiB RAM, explore.omnipathdb.org runs on the same host: run heavy jobs with
   `systemd-run --scope -p MemoryMax=9G nice -n 10 …`, DuckDB `memory_limit` ≤ 7GB, ≤ 6 threads.
