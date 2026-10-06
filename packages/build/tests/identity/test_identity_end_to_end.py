@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import pytest
 
-from identity_fixtures import key, write_hubs
+from identity_fixtures import EQUATION, key, write_hubs
 from omnipath_build.identity import build_hub_index, build_hub_kv, build_identity, build_identity_kv
 from omnipath_build.identity.common import HUBS
 from omnipath_resolver.canonical.match import LibraryMatcher
@@ -104,3 +104,33 @@ def test_symbol_with_many_genes_is_ambiguous(matcher):
     assert match.node_id is None
     assert match.gene_mapping_status == "ambiguous"
     assert len(match.gene_candidates) == 12
+
+
+def reaction(matcher, namespace, identifier):
+    (match,) = resolve(matcher, "molecular_activity", namespace, identifier)
+    return match
+
+
+def test_reactions_resolve_to_rhea_master_reactions(matcher):
+    # A directional Rhea id resolves to its master; the label is Rhea's equation.
+    master = reaction(matcher, "rhea", "RHEA:10002")
+    assert master.node_id == "rhea:10000" and master.label == EQUATION
+    assert master.reference_library == "reaction"
+    # Rhea's own cross-references (Reactome versions stripped on both sides).
+    assert reaction(matcher, "kegg_reaction", "R00001").node_id == "rhea:10000"
+    assert reaction(matcher, "reactome", "R-HSA-1").node_id == "rhea:10000"
+    assert reaction(matcher, "reactome", "Reactome:R-HSA-1.7").node_id == "rhea:10000"
+    # Model reactions through MetaNetX, attached one step to the Rhea master.
+    assert reaction(matcher, "bigg_reaction", "AMIDASE").node_id == "rhea:10000"
+
+
+def test_reactions_without_rhea_and_precedence(matcher):
+    # No Rhea reaction: MetaNetX's reaction is the identity, for every model id it reconciles.
+    assert reaction(matcher, "bigg_reaction", "MODELONLY").node_id == "metanetx_reaction:MNXR2"
+    assert reaction(matcher, "vmh_reaction", "MODELONLY").node_id == "metanetx_reaction:MNXR2"
+    # Rhea's own cross-reference beats MetaNetX's for the same KEGG id.
+    assert reaction(matcher, "kegg_reaction", "R00002").node_id == "rhea:20000"
+    # A MetaNetX reaction naming two Rhea masters is evidence for both: alone it stays unresolved.
+    assert not reaction(matcher, "bigg_reaction", "TWOWAY").matched
+    # EC numbers are not identities.
+    assert not reaction(matcher, "ec", "3.5.1.50").matched

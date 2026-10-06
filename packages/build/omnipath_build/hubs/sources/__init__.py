@@ -14,9 +14,11 @@ from .entrez import emit as emit_entrez
 from .hmdb import emit as emit_hmdb
 from .lipidmaps import emit as emit_lipidmaps
 from .metanetx import emit as emit_metanetx
+from .metanetx_reaction import emit as emit_metanetx_reaction
 from .mirbase import emit as emit_mirbase
 from .pubchem import emit as emit_pubchem
 from .refmet import emit as emit_refmet
+from .rhea import emit as emit_rhea
 from .ramp import emit_chemical as emit_ramp, emit_gene as emit_ramp_gene
 from .swisslipids import emit as emit_swisslipids
 from .taxon_species import emit as emit_taxon_species
@@ -38,6 +40,8 @@ HUB_EMITTERS: dict[str, Callable[[HubParquetWriter], None]] = {
     "bigg": emit_bigg,
     "metanetx": emit_metanetx,
     "mirbase": emit_mirbase,
+    "rhea": emit_rhea,
+    "metanetx_reaction": emit_metanetx_reaction,
     "taxon_species": emit_taxon_species,
 }
 

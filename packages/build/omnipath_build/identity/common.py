@@ -21,7 +21,9 @@ from omnipath_build.reference.build_reference import (  # noqa: F401  (re-export
 )
 
 PARTS = tuple(f"{n:02x}" for n in range(256))
-HUBS = CHEMICAL + PROTEIN
+# Rhea master reactions are the anchors; MetaNetX reactions attach to them (proposal, Reactions).
+REACTION = ("rhea", "metanetx_reaction")
+HUBS = CHEMICAL + PROTEIN + REACTION
 # Rule 4: preferred hub for the id of a grouped entity (earlier wins).
 HUB_PREFERENCE = (
     "chebi",
@@ -36,6 +38,7 @@ HUB_PREFERENCE = (
     "refmet",
     "ramp",
     "ramp_gene",
+    "metanetx_reaction",
 )
 GOSLIN_HUBS = ("swisslipids", "lipidmaps", "hmdb", "chebi", "refmet")
 INCHIKEY_RE = "^[A-Z]{14}-[A-Z]{10}-[A-Z]$"

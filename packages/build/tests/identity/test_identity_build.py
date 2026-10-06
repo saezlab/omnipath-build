@@ -209,13 +209,19 @@ EXPECTED_ENTITY_DEFINING = [
     ("ramp:RAMP_C_1", "ramp:RAMP_C_1", "ambiguous_native"),
     ("swisslipids:SLM:1", "goslin:sn_position:PC 16:0/18:1", "lipid_name"),
     ("swisslipids:SLM:5", "goslin:full_structure:FA 18:0;5Me", "lipid_name"),
+    # Reactions: a MetaNetX reaction attaches to the one Rhea master it names; without one it is
+    # its own entity; naming two masters it is ambiguous (and evidence for both, record_candidates).
+    ("metanetx_reaction:MNXR1", "rhea:10000", "attached"),
+    ("metanetx_reaction:MNXR2", "metanetx_reaction:MNXR2", "structureless"),
+    ("metanetx_reaction:MNXR3", "metanetx_reaction:MNXR3", "structureless"),
+    ("metanetx_reaction:MNXR4", "metanetx_reaction:MNXR4", "ambiguous_native"),
 ]
 ROUTE2 = ("explicit_source_gene", "source_gene_only")
 
 
 def test_exceptions_are_the_non_trivial_decisions(q):
     rows = q("SELECT record_id,entity_id,decision FROM $exceptions WHERE NOT starts_with(record_id,'ramp_gene:') ORDER BY 1,2,3")
-    assert rows == EXPECTED_ENTITY_DEFINING
+    assert rows == sorted(EXPECTED_ENTITY_DEFINING)
     assert q("SELECT record_id,entity_id,decision,quarantined FROM $exceptions WHERE decision='quarantined' ORDER BY 1") == [
         ("hmdb:HMDB0000002", "hmdb:HMDB0000002", "quarantined", True),
         ("lipidmaps:LMQ", "lipidmaps:LMQ", "quarantined", True),
@@ -259,6 +265,9 @@ def test_exception_members_and_entities_extra(q):
         ("metanetx:MNXM20", "chemical", None, False, "metanetx:MNXM20"),
         ("metanetx:MNXM21", "chemical", None, False, "metanetx:MNXM21"),
         ("metanetx:MNXM4", "chemical", None, False, "metanetx:MNXM4"),
+        ("metanetx_reaction:MNXR2", "reaction", None, False, "metanetx_reaction:MNXR2"),
+        ("metanetx_reaction:MNXR3", "reaction", None, False, "metanetx_reaction:MNXR3"),
+        ("metanetx_reaction:MNXR4", "reaction", None, False, "metanetx_reaction:MNXR4"),
         ("pubchem:101", "chemical", None, False, "pubchem:101"),
         ("ramp:RAMP_C_1", "chemical", None, False, "ramp:RAMP_C_1"),
         ("ramp_gene:RAMP_G_3", "gene", None, False, "ramp_gene:RAMP_G_3"),

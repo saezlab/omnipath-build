@@ -129,9 +129,10 @@ def stage_parts(ctx, directory, hub):
         key = f"source_type='inchikey' AND {valid_key}"
         count_sql = f"count(DISTINCT CASE WHEN {key} THEN value END)::INTEGER"
         anchor_sql = f"min(CASE WHEN {key} THEN 'inchikey:' || value END)"
-    elif hub == "uniprot":
-        count_sql = "coalesce(bool_or(source_type='uniprot' AND value=local_id)::INTEGER,0)"
-        anchor_sql = "CASE WHEN bool_or(source_type='uniprot' AND value=local_id) THEN 'uniprot:' || local_id END"
+    elif hub in ("uniprot", "rhea"):  # the record's own accession / master reaction
+        own = f"source_type={quote(hub)} AND value=local_id"
+        count_sql = f"coalesce(bool_or({own})::INTEGER,0)"
+        anchor_sql = f"CASE WHEN bool_or({own}) THEN {quote(hub + ':')} || local_id END"
     else:
         count_sql, anchor_sql = "0", "NULL::VARCHAR"
     for p in PARTS:

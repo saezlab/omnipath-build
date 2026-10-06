@@ -38,8 +38,22 @@ NS = (
     "ramp",
     "ramp_gene",
     "kegg_gene",
+    # reactions (appended: existing codes must not move)
+    "rhea",
+    "kegg_reaction",
+    "reactome",
+    "metacyc_reaction",
+    "ecocyc_reaction",
+    "macie",
+    "bigg_reaction",
+    "vmh_reaction",
+    "seed_reaction",
+    "sabiork_reaction",
+    "metanetx_reaction",
 )
 CODES = {n: i + 1 for i, n in enumerate(NS)}
+# Key target byte per reference library.
+TARGETS = {"chemical": 1, "gene_protein": 2, "reaction": 3}
 
 _LIPID_CACHE = None
 _LIPID_PENDING = []
@@ -105,7 +119,7 @@ def observation_bundle(input_id, obs, normalized, observed, library, source="run
     """Encode normalized evidence for both serving builds and offline replay."""
     from .canonical.policy import INCHIKEY_RE, RNA_ENTITY_TYPES
 
-    target = 1 if library == "chemical" else 2
+    target = TARGETS[library]
     normalized = lipid_fallback_votes(normalized, observed, library)
     symbol_scoped = target == 2 and any(v.kind == "symbol" for v in normalized)
     bundle = set()

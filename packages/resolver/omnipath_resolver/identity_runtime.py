@@ -27,10 +27,15 @@ from .observations import CODES
 
 FORMAT = "omnipath-identity-v2"
 # Bump when record assembly or label policy changes: cached records are discarded.
-RECORD_POLICY = "identity-record-v2"
+RECORD_POLICY = "identity-record-v3"
 CACHE_ENV = "OMNIPATH_IDENTITY_CACHE"
 
-KINDS = {"chemical": 1, "protein": 2, "gene": 3}
+KINDS = {"chemical": 1, "protein": 2, "gene": 3, "reaction": 4}
+# Reactions (proposal "Reactions"): Rhea master reactions anchor; Rhea's own cross-references
+# beat MetaNetX's for the same id; model-reaction ids only exist in MetaNetX.
+REACTION_HUBS = ("rhea", "metanetx_reaction")
+RHEA_XREF_NAMESPACES = frozenset({"kegg_reaction", "reactome", "metacyc_reaction", "ecocyc_reaction", "macie"})
+MNX_XREF_NAMESPACES = frozenset({"bigg_reaction", "vmh_reaction", "seed_reaction", "sabiork_reaction"})
 GENE_NAMESPACES = frozenset({"hgnc", "ensg", "enst", "refseq", "genesymbol", "genesymbol-syn"})
 SYMBOL_NAMESPACES = frozenset({"genesymbol", "genesymbol-syn"})
 # Tags carried by access rows (spec section 3).
@@ -123,6 +128,12 @@ def _admit(cls, ns, hub, source_ns, tag, identifier, anchor, anchor_count):
         return "regular" if tag in ("claim", "native") else None  # cas, drugbank
     if cls == "ramp_gene":
         return "regular" if tag == "native" else None
+    if cls == "reaction":
+        if ns in REACTION_HUBS:  # a hub's own ids (Rhea: master and directional ids)
+            return NATIVE if hub == ns and source_ns == ns and tag in ("native", "claim") else None
+        if tag in CLAIM_TAGS:
+            return NATIVE if hub == "rhea" else FALLBACK
+        return None
     if cls == "gene":
         if ns in SYMBOL_NAMESPACES:
             return _symbol_tag(ns, source_ns, tag)
@@ -178,7 +189,7 @@ def decode_key(key: bytes, codes: dict[int, str]):
     if (
         len(key) < 7
         or key[0] != 1
-        or key[1] not in (1, 2)
+        or key[1] not in (1, 2, 3)
         or key[2] not in (1, 2)
         or key[5] not in (0, 1)
     ):
@@ -255,6 +266,12 @@ def choose_label(kind: int, entity_id: str, rows: list[tuple[str, str, str]]) ->
             return symbol
         entry = _short_first(_usable(values("uniprot_entry", {"uniprot"}), 120))
         return entry or local
+    if kind == 4:
+        names = by_type.get("name", ())
+        pick = _short_first(_usable([v for h, v in names if h == "rhea"], 300)) or _short_first(
+            _usable([v for _, v in names], 300)
+        )
+        return pick or local
     # chemical
     if entity_id.startswith("goslin:"):
         # goslin:<level>:<name> - the name is the most specific level it was anchored at
@@ -294,6 +311,9 @@ def _goslin_shorthand(values):
 
 class IdentityRuntime:
     """``FullRuntime``-compatible runtime over an identity directory and its hub indexes."""
+
+    # Reference libraries this runtime serves (the LMDB reference has no reactions).
+    libraries = ("gene_protein", "chemical", "reaction")
 
     def __init__(self, path, *, cache_dir=None, memory_limit=None, threads=None):
         self.path = Path(path)
@@ -455,6 +475,16 @@ class IdentityRuntime:
 
     def _plan(self, target, route, ns):
         """(class, source namespaces, hubs) a key reads, or None when it can never match."""
+        if target == 3:
+            if route != 1:
+                return None
+            if ns in REACTION_HUBS:
+                return "reaction", [ns], [ns]
+            if ns in RHEA_XREF_NAMESPACES:
+                return "reaction", [ns], [h for h in REACTION_HUBS if h in self.hub_dirs]
+            if ns in MNX_XREF_NAMESPACES:
+                return "reaction", [ns], ["metanetx_reaction"]
+            return None
         if target == 1:
             if route != 1:
                 return None
@@ -624,6 +654,8 @@ class IdentityRuntime:
                     continue
                 if target == 1 and m.kind != 1:
                     continue
+                if target == 3 and m.kind != 4:
+                    continue
                 rows.append(
                     (
                         entity_id,
@@ -716,7 +748,13 @@ class IdentityRuntime:
                 taxon = record[0] if record else min((t for _, t in link if t), default=None)
             elif entity_id in others:
                 hub, local = others[entity_id]
-                kind = 1 if hub in CHEMICAL_HUBS or hub in ("inchikey", "goslin") else 3
+                kind = (
+                    4
+                    if hub in REACTION_HUBS
+                    else 1
+                    if hub in CHEMICAL_HUBS or hub in ("inchikey", "goslin")
+                    else 3
+                )
                 exists = False
                 record = records.get(hub, {}).get(local)
                 if record:
@@ -953,12 +991,17 @@ class IdentityRuntime:
         molecular = {}
         for offset in range(0, len(batches), decision_batch_size):
             chunk = batches[offset : offset + decision_batch_size]
-            chemical = [q for q in chunk if q[1] == 1]
+            # Reactions take the chemical decision path: same intersection, quarantine and
+            # unique/ambiguous outcome, with no structure anchors. The kernel only knows
+            # chemical candidates there, so reaction queries and entities are passed as such.
+            chemical = [(q[0], 1, q[2]) for q in chunk if q[1] in (1, 3)]
             biological = [q for q in chunk if q[1] == 2]
             if chemical:
                 result.extend(
                     resolve_precomputed_batch(
-                        chemical, postings, [tuple(m[:6]) for m in metadata.values()]
+                        chemical,
+                        postings,
+                        [(m[0], m[1], 1 if m[2] == 4 else m[2], *m[3:6]) for m in metadata.values()],
                     )
                 )
             if biological:

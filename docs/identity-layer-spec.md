@@ -187,12 +187,22 @@ Decided 6 October 2026: these stay out of the first rebuild.
   anchors, official miRBase names as votes, a gene reference from the precursor's NCBI Gene.
   Today only the miRBase resource emits miRNAs (48,885 mature, 38,589 precursor), already as
   accessions.
-- **Reaction resolution** (proposal "Reactions"): Rhea master reaction as anchor; KEGG, MetaCyc,
-  EcoCyc, Reactome and M-CSA through Rhea's cross-references; BiGG, VMH and SEED through
-  MetaNetX. About 71k `molecular_activity` entities in rhea, reactome, metatlas, kegg and
-  recon3d would be affected; kegg already carries 13,692 Rhea cross-references and recon3d
-  10,956 MetaNetX reaction ids.
 - **Identifier tables from omnipath-utils**: utils lacks RaMP compound and gene ids, RefMet's
   and BiGG's own exports, lipid shorthand/systematic names, SEED and MetaCyc ids, and formulas;
   `uniprot-sec`, Entrez–Ensembl coverage across organisms and per-record provenance need a real
   export to confirm. Switch hub by hub once utils covers a hub completely.
+
+## 8. Reactions (implemented 6 October 2026)
+
+- Hubs `rhea` (one record per master reaction: its directional ids as `rhea` claims, Rhea's own
+  cross-references to KEGG, Reactome, MetaCyc, EcoCyc and M-CSA, EC numbers as attributes, the
+  master's `DEFINITION` as `name`) and `metanetx_reaction` (one record per MNXR with its Rhea,
+  KEGG, MetaCyc, BiGG, SEED, VMH and SABIO-RK ids; Rhea ids written as their masters).
+- A Rhea record is anchored on its master (`rhea:<id>`). A MetaNetX reaction attaches one step to
+  the single Rhea master it names; without one it is its own entity
+  (`metanetx_reaction:<MNXR>`); naming several it is ambiguous and evidence for each.
+- Library `reaction` for `molecular_activity`, key target 3. For one id, Rhea's own
+  cross-reference beats MetaNetX's (native over fallback). Reactome ids lose prefix and version.
+- Decisions use the existing chemical kernel path (intersection, quarantine, unique/ambiguous):
+  the runtime passes reaction queries and entities to it as chemical ones; no structure anchors.
+- Label: Rhea's equation, else the source's name.

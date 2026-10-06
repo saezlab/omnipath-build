@@ -14,6 +14,8 @@ import pyarrow.parquet as pq
 
 from omnipath_build.hubs.export import HUB_NAMES, export_hubs
 from omnipath_build.hubs.sources import emit_bigg, emit_from_records, emit_metanetx
+from omnipath_build.hubs.sources.metanetx_reaction import emit as emit_metanetx_reaction
+from omnipath_build.hubs.sources.rhea import emit as emit_rhea
 from omnipath_build.hubs.sources.uniprot import emit as emit_uniprot
 from omnipath_build.hubs.stream import iter_decoded_lines
 from omnipath_build.hubs.writer import HubParquetWriter
@@ -166,6 +168,71 @@ class TestMetanetxStream(unittest.TestCase):
             self.assertTrue(all(row["hub_id"] == "MNXM2" for row in rows))
 
 
+DIRECTIONS = "RHEA_ID_MASTER\tRHEA_ID_LR\tRHEA_ID_RL\tRHEA_ID_BI\n10000\t10001\t10002\t10003\n"
+
+
+class TestReactionHubs(unittest.TestCase):
+    def rows(self, emit, **sources):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "hub.parquet"
+            writer = HubParquetWriter(path)
+            emit(writer, **sources)
+            writer.close()
+            return {(r["source_type"], r["source_id"], r["hub_id"]) for r in pq.read_table(path).to_pylist()}
+
+    def test_rhea_master_records_directional_ids_xrefs_and_equation(self):
+        xrefs = (
+            "RHEA_ID\tDIRECTION\tMASTER_ID\tID\tDB\n"
+            "10000\tUN\t10000\tR00001\tKEGG_REACTION\n"
+            "10001\tLR\t10000\tR-HSA-1.3\tREACTOME\n"
+            "10000\tUN\t10000\t3.5.1.50\tEC\n"
+            "10000\tUN\t10000\tGO:0050126\tGO\n"
+        )
+        reactions = "ENTRY       RHEA:10000\nDEFINITION  pentanamide + H2O = pentanoate + NH4(+)\n///\n" \
+            "ENTRY       RHEA:10001\nDEFINITION  pentanamide + H2O => pentanoate + NH4(+)\n///\n"
+        rows = self.rows(
+            emit_rhea,
+            directions=DIRECTIONS.splitlines(),
+            xrefs=xrefs.splitlines(),
+            reactions=reactions.splitlines(),
+        )
+        self.assertEqual(
+            rows,
+            {
+                ("rhea", "10000", "10000"),
+                ("rhea", "10001", "10000"),
+                ("rhea", "10002", "10000"),
+                ("rhea", "10003", "10000"),
+                ("kegg_reaction", "R00001", "10000"),
+                ("reactome", "R-HSA-1.3", "10000"),
+                ("ec", "3.5.1.50", "10000"),
+                ("name", "pentanamide + H2O = pentanoate + NH4(+)", "10000"),  # master only, no GO
+            },
+        )
+
+    def test_metanetx_reactions_map_rhea_ids_to_masters(self):
+        lines = (
+            "#source\tID\tdescription\n"
+            "rhea:10002\tMNXR1\tpentanamide amidase\n"
+            "rh:10002\tMNXR1\tduplicate short prefix\n"
+            "bigg.reaction:AMIDASE\tMNXR1\t\n"
+            "biggR:AMIDASE\tMNXR1\tduplicate short prefix\n"
+            "vmhreaction:MODEL\tMNXR2\t\n"
+            "mnx:EMPTY\tEMPTY\t\n"
+        )
+        rows = self.rows(emit_metanetx_reaction, lines=lines.splitlines(), directions=DIRECTIONS.splitlines())
+        self.assertEqual(
+            rows,
+            {
+                ("metanetx_reaction", "MNXR1", "MNXR1"),
+                ("rhea", "10000", "MNXR1"),  # the directional id, written as its master
+                ("bigg_reaction", "AMIDASE", "MNXR1"),
+                ("metanetx_reaction", "MNXR2", "MNXR2"),
+                ("vmh_reaction", "MODEL", "MNXR2"),
+            },
+        )
+
+
 class TestBiggStream(unittest.TestCase):
     def test_maps_every_xref_onto_bigg_id(self):
         sample = (
@@ -307,6 +374,8 @@ class TestHubRegistry(unittest.TestCase):
                 "bigg",
                 "metanetx",
                 "mirbase",
+                "rhea",
+                "metanetx_reaction",
                 "taxon_species",
             ],
         )

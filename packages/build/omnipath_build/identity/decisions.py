@@ -30,6 +30,7 @@ from .common import (
     INCHIKEY_RE,
     HUBS,
     PROTEIN,
+    REACTION,
     STRUCTURE_LEVELS,
     Context,
     code_sha256,
@@ -85,10 +86,11 @@ def decide(ctx, c, indexes):
     """Rules 1-4: quarantine, lipid-name anchors, one-step attach, grouping."""
     chem = [h for h in CHEMICAL if h in indexes]
     prot = [h for h in PROTEIN if h in indexes]
+    reac = [h for h in REACTION if h in indexes]
     # Cross-references between records of one domain (uniprot<->entrez are gene links, not identity).
     edges = []
-    for hub in chem + prot:
-        domain = sql_list(CHEMICAL if hub in CHEMICAL else PROTEIN)
+    for hub in chem + prot + reac:
+        domain = sql_list(CHEMICAL if hub in CHEMICAL else PROTEIN if hub in PROTEIN else REACTION)
         gene_link = (
             "AND ns<>'entrez'" if hub == "uniprot" else "AND ns<>'uniprot'" if hub == "entrez" else ""
         )
@@ -119,7 +121,7 @@ def decide(ctx, c, indexes):
     )
     # Records that are not anchored by their own InChIKey/accession, plus every cross-reference endpoint.
     parts = []
-    for hub in chem + prot:
+    for hub in chem + prot + reac:
         if hub == "entrez":
             parts.append(
                 f"""SELECT 'entrez' hub,local_id,record_id,taxon,1 anchor_count,'entrez:' || local_id anchor
@@ -135,7 +137,7 @@ def decide(ctx, c, indexes):
     c.execute(
         """CREATE TABLE state AS SELECT r.hub,r.local_id,r.record_id,r.taxon,r.anchor_count count0,
           CASE WHEN r.anchor_count>0 THEN r.anchor_count ELSE coalesce(g.n_gl,0) END anchor_count,
-          CASE WHEN r.hub='entrez' THEN 'entrez' WHEN r.hub='uniprot' THEN CASE WHEN r.anchor_count=1 THEN 'uniprot' END
+          CASE WHEN r.hub='entrez' THEN 'entrez' WHEN r.hub IN ('uniprot','rhea') THEN CASE WHEN r.anchor_count=1 THEN r.hub END
                WHEN r.anchor_count>0 THEN 'inchikey' WHEN coalesce(g.n_gl,0)>0 THEN 'goslin' END anchor_kind,
           CASE WHEN r.anchor_count=1 THEN r.anchor WHEN r.anchor_count=0 AND coalesce(g.n_gl,0)=1 THEN 'goslin:' || g.gl_min END anchor
         FROM rs r LEFT JOIN gl g USING(record_id)"""
@@ -454,10 +456,10 @@ def write_outputs(ctx, c, indexes):
         f"""SELECT entity_id,kind,taxon,quarantined,preferred_record FROM (
           SELECT entity_id,
             CASE WHEN starts_with(entity_id,'goslin:') THEN 'chemical' WHEN min(hub)='ramp_gene' THEN 'gene'
-                 WHEN min(hub)='uniprot' THEN 'protein' ELSE 'chemical' END kind,
+                 WHEN min(hub)='uniprot' THEN 'protein' WHEN min(hub) IN ('rhea','metanetx_reaction') THEN 'reaction' ELSE 'chemical' END kind,
             min(taxon) FILTER (WHERE taxon IS NOT NULL) taxon,bool_or(decision='quarantined') quarantined,
             arg_min(record_id,struct_pack(r:={hub_rank()},l:=local_id)) preferred_record
-          FROM final WHERE NOT (starts_with(entity_id,'inchikey:') OR starts_with(entity_id,'uniprot:') OR starts_with(entity_id,'entrez:')) GROUP BY entity_id
+          FROM final WHERE NOT (starts_with(entity_id,'inchikey:') OR starts_with(entity_id,'uniprot:') OR starts_with(entity_id,'entrez:') OR starts_with(entity_id,'rhea:')) GROUP BY entity_id
           UNION ALL SELECT entity_id,'chemical',NULL,false,NULL FROM qkeys
           UNION ALL SELECT entity_id,'chemical',NULL,false,NULL FROM qnames) ORDER BY entity_id""",
         out / "entities_extra.parquet",

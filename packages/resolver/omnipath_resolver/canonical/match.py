@@ -13,6 +13,9 @@ from .label import assign_label
 from .library import pin_library
 from .policy import LIBRARIES, EntityPolicy, CHEMICAL, PROTEIN_ENTITY_TYPES, get_policy
 
+# Record kind -> reference library (1 chemical, 2 protein, 3 gene, 4 reaction).
+REFERENCE_LIBRARY = {1: "chemical", 4: "reaction"}
+
 RESOLVED_BY_MATCHED = ("parquet",)
 
 
@@ -163,7 +166,7 @@ class LibraryMatcher:
             if self.library_dir is not None and self.library_dir.exists()
             else None
         )
-        self.libraries = list(LIBRARIES) if self.runtime else []
+        self.libraries = list(getattr(self.runtime, "libraries", LIBRARIES)) if self.runtime else []
 
     def available(self, library):
         return library in self.libraries
@@ -230,7 +233,7 @@ class LibraryMatcher:
                     )
                     match = self._build(obs, policy, observed, node, "parquet")
                     match.entity_type = obs.entity_type
-                    match.reference_library = "chemical" if row["kind"] == 1 else "gene_protein"
+                    match.reference_library = REFERENCE_LIBRARY.get(row["kind"], "gene_protein")
                     matches.append(match)
                 results[key] = matches
             obs, policy, observed = prepared[key]

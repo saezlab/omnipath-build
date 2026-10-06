@@ -20,6 +20,7 @@ from omnipath_core.naming import normalize_namespace
 
 _ISOFORM_RE = re.compile(r"^([A-Z][0-9][A-Z0-9]{3}[0-9](?:[A-Z][A-Z0-9]{2}[0-9])?)-\d+$")
 _ENSG_VERSION_RE = re.compile(r"\.\d+$")
+_REACTOME_VERSION_RE = re.compile(r"\.[0-9]+$")
 
 
 def normalize_ns(ns: str | None) -> str:
@@ -49,6 +50,11 @@ def normalize_id(ns: str, value: str | None) -> str:
         return _ENSG_VERSION_RE.sub("", text)
     if ns == "chembl":
         return text.upper()
+    if ns == "rhea":
+        digits = re.sub(r"^RHEA:", "", text, flags=re.I).strip()
+        return digits if digits.isdigit() else text
+    if ns == "reactome":
+        return _REACTOME_VERSION_RE.sub("", re.sub(r"^reactome:", "", text, flags=re.I).strip())
     return text
 
 
@@ -92,5 +98,10 @@ def normalize_id_sql(ns_expr: str, id_expr: str) -> str:
       WHEN 'enst' THEN regexp_replace(trim({id_expr}), '\\.[0-9]+$', '')
       WHEN 'ensp' THEN regexp_replace(trim({id_expr}), '\\.[0-9]+$', '')
       WHEN 'chembl' THEN upper(trim({id_expr}))
+      WHEN 'rhea' THEN
+        CASE WHEN regexp_full_match(trim({id_expr}), '(?i)(rhea:)?[0-9]+')
+             THEN regexp_replace(trim({id_expr}), '(?i)^rhea:', '')
+             ELSE trim({id_expr}) END
+      WHEN 'reactome' THEN regexp_replace(regexp_replace(trim({id_expr}), '(?i)^reactome:', ''), '\\.[0-9]+$', '')
       ELSE trim({id_expr})
     END"""

@@ -597,7 +597,7 @@ def run(matcher, **observations):
 
 def test_matcher_chooses_identity_runtime(matcher):
     assert isinstance(matcher.runtime, IdentityRuntime)
-    assert matcher.libraries == ["gene_protein", "chemical"]
+    assert matcher.libraries == ["gene_protein", "chemical", "reaction"]
 
 
 def test_old_references_keep_the_old_runtime(tmp_path):

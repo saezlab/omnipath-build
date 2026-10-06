@@ -23,7 +23,25 @@ INCHIKEY_RE = re.compile(r"^[A-Z]{14}-[A-Z]{10}-[A-Z]$")
 
 GENE_PROTEIN = "gene_protein"
 CHEMICAL = "chemical"
+REACTION = "reaction"
 LIBRARIES: tuple[str, ...] = (GENE_PROTEIN, CHEMICAL)
+# The precomputed LMDB reference serves the first two; identity snapshots also serve reactions.
+IDENTITY_LIBRARIES: tuple[str, ...] = (GENE_PROTEIN, CHEMICAL, REACTION)
+REACTION_NAMESPACES = frozenset(
+    {
+        "rhea",
+        "kegg_reaction",
+        "reactome",
+        "metacyc_reaction",
+        "ecocyc_reaction",
+        "macie",
+        "bigg_reaction",
+        "vmh_reaction",
+        "seed_reaction",
+        "sabiork_reaction",
+        "metanetx_reaction",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -153,6 +171,18 @@ CHEMICAL_POLICY = EntityPolicy(
     ),
 )
 
+REACTION_POLICY = EntityPolicy(
+    entity_class=REACTION,
+    entity_types=frozenset({biolink_entity_type(model.MolecularActivity)}),
+    library=REACTION,
+    match_namespaces=REACTION_NAMESPACES,
+    symbol_namespaces=_NONE,
+    rewrites=(),
+    label_priority=("name",),
+    label_filters=(lambda s: len(s) <= 300,),
+    alias_namespaces=REACTION_NAMESPACES | {"name"},
+)
+
 CV_TERM_POLICY = EntityPolicy(
     entity_class="cv_term",
     entity_types=frozenset({biolink_entity_type(model.OntologyClass)}),
@@ -192,7 +222,7 @@ GENERIC_POLICY = EntityPolicy(
 )
 
 POLICIES: dict[str, EntityPolicy] = {}
-for _policy in (GENE_PROTEIN_POLICY, CHEMICAL_POLICY, CV_TERM_POLICY, COMPLEX_POLICY):
+for _policy in (GENE_PROTEIN_POLICY, CHEMICAL_POLICY, REACTION_POLICY, CV_TERM_POLICY, COMPLEX_POLICY):
     for _etype in _policy.entity_types:
         POLICIES[_etype] = _policy
 

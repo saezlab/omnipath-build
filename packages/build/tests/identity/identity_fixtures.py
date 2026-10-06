@@ -158,8 +158,36 @@ def protein_hubs():
     return [uniprot, entrez, ramp_gene]
 
 
+EQUATION = "pentanamide + H2O = pentanoate + NH4(+)"
+
+
+def reaction_hubs():
+    rhea, mnx = Hub("rhea"), Hub("metanetx_reaction")
+    # Master reactions are the anchors; directional ids are claims of the master's record.
+    rhea.record(
+        "10000",
+        ("rhea", "10001"),
+        ("rhea", "10002"),
+        ("rhea", "10003"),
+        ("kegg_reaction", "R00001"),
+        ("reactome", "R-HSA-1.3"),  # Rhea writes Reactome ids with a version
+        ("ec", "3.5.1.50"),  # an attribute, never an identity
+        ("name", EQUATION),
+    )
+    rhea.record("20000", ("kegg_reaction", "R00002"), ("metacyc_reaction", "RXN-1"))
+    # MetaNetX reactions: attach to the one Rhea master they name.
+    mnx.record("MNXR1", ("rhea", "10000"), ("bigg_reaction", "AMIDASE"), ("kegg_reaction", "R00001"))
+    # No Rhea reaction: a model reaction keeps MetaNetX's reconciled identity.
+    mnx.record("MNXR2", ("bigg_reaction", "MODELONLY"), ("vmh_reaction", "MODELONLY"))
+    # Same KEGG id as Rhea 20000 but no Rhea link: Rhea's own cross-reference wins.
+    mnx.record("MNXR3", ("kegg_reaction", "R00002"))
+    # Two Rhea masters: not merged, evidence for both.
+    mnx.record("MNXR4", ("rhea", "10000"), ("rhea", "20000"), ("bigg_reaction", "TWOWAY"))
+    return [rhea, mnx]
+
+
 def write_hubs(directory: Path):
     directory.mkdir(parents=True, exist_ok=True)
-    for hub in chemical_hubs() + protein_hubs():
+    for hub in chemical_hubs() + protein_hubs() + reaction_hubs():
         hub.write(directory)
     return directory
