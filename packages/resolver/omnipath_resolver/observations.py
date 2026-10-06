@@ -114,7 +114,15 @@ def observation_bundle(input_id, obs, normalized, observed, library, source="run
             raise ValueError("Unhandled eligible namespace " + v.ns)
         scope = (v.taxon or "") if symbol_scoped else ""
         route = 2 if target == 2 and v.ns in {"entrez", "ramp_gene", "kegg_gene"} else 1
-        anchor = v.id if target == 1 and v.ns == "inchikey" and INCHIKEY_RE.fullmatch(v.id) else ""
+        # Only a stated full InChIKey decides alone; one derived from SMILES is an ordinary vote.
+        anchor = (
+            v.id
+            if target == 1
+            and v.ns == "inchikey"
+            and not getattr(v, "derived", False)
+            and INCHIKEY_RE.fullmatch(v.id)
+            else ""
+        )
         bundle.add((v.ns, v.id, scope, route, anchor, v.primary))
     query = dict(
         input_id=input_id,

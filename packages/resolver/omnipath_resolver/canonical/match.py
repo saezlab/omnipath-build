@@ -23,6 +23,8 @@ class Vote:
     taxon: str | None
     kind: str  # "id" | "symbol"
     primary: bool
+    # Computed here (SMILES -> InChIKey), not stated by the source: never a primary anchor.
+    derived: bool = False
 
     @property
     def key(self) -> tuple[str, str, str | None]:
@@ -134,7 +136,7 @@ def votes_for(obs: Any, policy: EntityPolicy) -> tuple[list[Vote], dict[str, lis
         for result in derivations:
             if result["status"] == "derived" and ("inchikey", result["inchikey"]) not in seen:
                 seen.add(("inchikey", result["inchikey"]))
-                votes.append(Vote("inchikey", result["inchikey"], None, "id", False))
+                votes.append(Vote("inchikey", result["inchikey"], None, "id", False, derived=True))
     return votes, observed
 
 
@@ -152,10 +154,12 @@ class LibraryMatcher:
             "kernel_seconds": 0.0,
             "enrichment_seconds": 0.0,
         }
-        from ..index import FullRuntime
+        from ..identity_runtime import open_runtime
 
+        # Identity snapshots (manifest format omnipath-identity-v1) resolve on demand
+        # from Parquet; anything else is a compiled LMDB reference (FullRuntime).
         self.runtime = (
-            FullRuntime(self.library_dir)
+            open_runtime(self.library_dir, memory_limit=memory_limit)
             if self.library_dir is not None and self.library_dir.exists()
             else None
         )

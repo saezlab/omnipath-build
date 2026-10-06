@@ -1622,6 +1622,7 @@ version = "0.1.0"
 source = { editable = "packages/resolver" }
 dependencies = [
     { name = "biolink-model" },
+    { name = "duckdb" },
     { name = "lmdb" },
     { name = "msgpack" },
     { name = "omnipath-core" },
@@ -1634,6 +1635,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "biolink-model", specifier = "==4.4.4" },
+    { name = "duckdb", specifier = ">=1.5,<2" },
     { name = "lmdb", specifier = ">=1.8.1,<2" },
     { name = "msgpack", specifier = ">=1.1,<2" },
     { name = "omnipath-core", editable = "packages/core" },
