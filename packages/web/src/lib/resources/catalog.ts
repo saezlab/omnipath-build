@@ -51,18 +51,30 @@ export function filterResources(
   });
 }
 
-export function sortResources(resources: ResourceRecord[], sort: string): ResourceRecord[] {
+export type SortDirection = 'asc' | 'desc';
+
+/** Names read A–Z; counts and sizes read largest first. */
+export function defaultDirection(sort: string): SortDirection {
+  return sort === 'entities' || sort === 'relations' || sort === 'size' ? 'desc' : 'asc';
+}
+
+export function sortResources(
+  resources: ResourceRecord[],
+  sort: string,
+  direction: SortDirection = defaultDirection(sort),
+): ResourceRecord[] {
   const fields = {
     entities: 'entity_count',
     relations: 'interaction_count',
     size: 'total_size_bytes',
   } as const;
+  const field = fields[sort as keyof typeof fields];
+  const sign = direction === 'asc' ? 1 : -1;
   return [...resources].sort((a, b) => {
-    const field = fields[sort as keyof typeof fields];
-    return (
-      (field ? (b[field] || 0) - (a[field] || 0) : 0) ||
-      a.resource_name.localeCompare(b.resource_name)
-    );
+    const primary = field
+      ? ((a[field] || 0) - (b[field] || 0)) * sign
+      : a.resource_name.localeCompare(b.resource_name) * sign;
+    return primary || a.resource_name.localeCompare(b.resource_name);
   });
 }
 

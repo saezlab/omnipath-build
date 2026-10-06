@@ -77,6 +77,11 @@ test('vocabulary is deduplicated and sorting does not mutate API data', () => {
   const input = [resources[1], { ...resources[0], entity_count: 99 }];
   assert.equal(sortResources(input, 'entities')[0].resource_id, 'Alpha');
   assert.equal(sortResources(input, 'unknown')[0].resource_id, 'Alpha');
+  const byEntities = sortResources(input, 'entities').map((r) => r.resource_id);
+  assert.deepEqual(
+    sortResources(input, 'entities', 'asc').map((r) => r.resource_id),
+    [...byEntities].reverse(),
+  );
   assert.equal(input[0].resource_id, 'Beta');
   assert.equal(formatBytes(1024 ** 3), '1.0 GB');
   assert.equal(formatBytes(0), '0 B');
