@@ -343,6 +343,23 @@ class TestTracker(LibraryTestCase):
         self.assertEqual(s["not_applicable_entities"], 1)
         self.assertEqual(s["by_rule"]["gene_protein/parquet"], 1)
 
+    def test_structure_only_chemicals_and_pending_types(self):
+        tracker = ResolutionTracker()
+        items = {
+            # A full InChIKey the fixture library does not hold.
+            "s": obs("chemical_entity", "inchikey", "AAAAAAAAAAAAAA-BBBBBBBBBB-N", key="s"),
+            "m": obs("microrna", "mirbase", "MIMAT0000001", key="m"),
+        }
+        matches = self.matcher.match(items)
+        for key, o in items.items():
+            tracker.record(key, o.entity_type, get_policy(o.entity_type), matches[key])
+        s = tracker.summary()
+        self.assertEqual(s["structure_entities"], 1)
+        self.assertEqual(s["unresolved_entities"], 0)
+        self.assertEqual(s["not_applicable_entities"], 1)
+        self.assertEqual(s["lookup_entities"], 1)
+        self.assertEqual(s["by_entity_type"]["chemical_entity"]["structure"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

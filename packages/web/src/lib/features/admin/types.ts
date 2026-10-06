@@ -26,6 +26,8 @@ export type ResolutionStats = {
   scope?: string;
   input_entities: number;
   resolved_entities: number;
+  /** Chemicals identified by a valid InChIKey that the reference does not hold yet. */
+  structure_entities?: number;
   unresolved_entities: number;
   not_applicable_entities: number;
   lookup_entities?: number;

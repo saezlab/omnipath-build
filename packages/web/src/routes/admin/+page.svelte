@@ -127,7 +127,10 @@
       0,
       stats.lookup_entities ?? stats.input_entities - stats.not_applicable_entities,
     );
-    return `${stats.resolved_entities.toLocaleString()} resolved / ${lookupEntities.toLocaleString()} lookup · ${stats.unresolved_entities.toLocaleString()} unresolved`;
+    const structure = stats.structure_entities
+      ? ` · ${stats.structure_entities.toLocaleString()} by structure`
+      : '';
+    return `${stats.resolved_entities.toLocaleString()} resolved / ${lookupEntities.toLocaleString()} lookup${structure} · ${stats.unresolved_entities.toLocaleString()} unresolved`;
   }
 
   function resourceSubtitle(built: BuiltResource | null, versionCount: number): string {
