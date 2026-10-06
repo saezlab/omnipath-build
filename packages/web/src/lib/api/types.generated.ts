@@ -1927,6 +1927,13 @@ export interface components {
             participantTypes?: string[];
             /** Predicate */
             predicate?: string | null;
+            /**
+             * Qualifiers
+             * @description Effect qualifiers keyed by term: object_direction_qualifier, object_aspect_qualifier, causal_mechanism_qualifier.
+             */
+            qualifiers?: {
+                [key: string]: string;
+            };
             /** Relationcategory */
             relationCategory?: string | null;
             /** Relationpk */
@@ -2021,6 +2028,8 @@ export interface components {
              * @default
              */
             description: string;
+            /** Display Name */
+            display_name?: string | null;
             /** Downloaded At */
             downloaded_at?: string | null;
             /** Entities Count */

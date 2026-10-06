@@ -2592,6 +2592,14 @@
             ],
             "title": "Predicate"
           },
+          "qualifiers": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Effect qualifiers keyed by term: object_direction_qualifier, object_aspect_qualifier, causal_mechanism_qualifier.",
+            "title": "Qualifiers",
+            "type": "object"
+          },
           "relationCategory": {
             "anyOf": [
               {
@@ -2794,6 +2802,17 @@
             "default": "",
             "title": "Description",
             "type": "string"
+          },
+          "display_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Display Name"
           },
           "downloaded_at": {
             "anyOf": [

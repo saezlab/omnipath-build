@@ -34,6 +34,7 @@ def resource_metadata(source: str, manifest: dict) -> dict:
         license_use.update(curated.get("license_use", {}))
     return {
         **metadata,
+        "display_name": curated.get("name") or source,
         "description": curated.get("description", ""),
         "tags": [{"id": tag, **vocabulary[tag]} for tag in curated.get("tags", [])],
         "license_use": license_use,

@@ -327,6 +327,11 @@ class RelationSummary(APIModel):
     isDirected: bool = False
     sign: int = 0
     sources: list[str] = Field(default_factory=list)
+    qualifiers: dict[str, str] = Field(
+        default_factory=dict,
+        description="Effect qualifiers keyed by term: object_direction_qualifier, "
+        "object_aspect_qualifier, causal_mechanism_qualifier.",
+    )
 
 
 class RelationSearchRequest(APIModel):
@@ -489,6 +494,7 @@ class ResourceRecord(APIModel):
     dataset_subset: list[str] | None = None
     resource_id: str | None = None
     resource_name: str | None = None
+    display_name: str | None = None
     key: str | None = None
     resource: str | None = None
     version: str | None = None

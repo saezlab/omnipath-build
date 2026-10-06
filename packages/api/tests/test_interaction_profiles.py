@@ -8,6 +8,7 @@ from omnipath_core.interaction_profiles import (
     BINDING_QUALIFIERS,
     TRANSPORT_QUALIFIERS,
     interaction_label,
+    relation_qualifiers,
 )
 from omnipath_core import relation_key
 
@@ -60,6 +61,11 @@ def test_qualified_labels_survive_parquet_list_and_details(tmp_path):
         "transport": "Transports",
         "generic": None,
     }
+    assert {r["relationPk"]: r["qualifiers"] for r in response.json()["relations"]} == {
+        "binding": dict(BINDING_QUALIFIERS),
+        "transport": dict(TRANSPORT_QUALIFIERS),
+        "generic": {},
+    }
     filtered = client.post(
         "/relations/search", json={"filters": {"causal_mechanism_qualifier": ["binding"]}}
     ).json()
@@ -72,6 +78,20 @@ def test_qualified_labels_survive_parquet_list_and_details(tmp_path):
     assert relation_key("p", "affects", "c", rows[1]["annotations"]) != relation_key(
         "c", "affects", "p", rows[1]["annotations"]
     )
+
+
+def test_relation_qualifiers_keep_effect_terms_only():
+    annotations = [
+        dict(term="object_direction_qualifier", value="increased"),
+        dict(term="object_aspect_qualifier", value="activity"),
+        dict(term="object_aspect_qualifier", value="expression"),
+        dict(term="causal_mechanism_qualifier", value="binding", scope="evidence"),
+        dict(term="stoichiometry", value="1"),
+    ]
+    assert relation_qualifiers(annotations) == {
+        "object_direction_qualifier": "increased",
+        "object_aspect_qualifier": "activity",
+    }
 
 
 def test_transport_inhibition_is_not_labelled_transports():

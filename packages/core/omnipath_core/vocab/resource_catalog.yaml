@@ -1,5 +1,6 @@
 {
   "bindingdb": {
+    "name": "BindingDB",
     "description": "Measured binding affinities between small molecules and protein targets.",
     "tags": [
       "pharmacology",
@@ -17,6 +18,7 @@
     "curation_source": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/bindingdb.py"
   },
   "brenda": {
+    "name": "BRENDA",
     "description": "Protein enzyme-class annotations and the enzyme classification hierarchy.",
     "tags": [
       "metabolism",
@@ -33,6 +35,7 @@
     "curation_source": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/brenda.py"
   },
   "cellchat": {
+    "name": "CellChat",
     "description": "Ligand–receptor interactions, protein complexes and signaling cofactors from CellChatDB.",
     "tags": [
       "cell_cell_communication",
@@ -50,6 +53,7 @@
     "curation_source": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/cellchat.py"
   },
   "cellinker": {
+    "name": "Cellinker",
     "description": "Ligand–receptor and metabolite–protein interactions for intercellular communication.",
     "tags": [
       "cell_cell_communication",
@@ -67,6 +71,7 @@
     "curation_source": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/cellinker.py"
   },
   "cellphonedb": {
+    "name": "CellPhoneDB",
     "description": "Ligand–receptor interactions and multisubunit protein complexes.",
     "tags": [
       "cell_cell_communication",
@@ -84,6 +89,7 @@
     "curation_source": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/cellphonedb.py"
   },
   "chebi": {
+    "name": "ChEBI",
     "description": "Chemical entities, identifiers and the ChEBI ontology hierarchy.",
     "tags": [
       "metabolism",
@@ -101,6 +107,7 @@
     "curation_source": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/chebi.py"
   },
   "chembl": {
+    "name": "ChEMBL",
     "description": "Bioactive compounds, molecular targets and ligand–target activity measurements.",
     "tags": [
       "pharmacology",
@@ -118,6 +125,7 @@
     "curation_source": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/chembl.py"
   },
   "chemont": {
+    "name": "ChemOnt",
     "description": "Chemical classification concepts and their ontology hierarchy.",
     "tags": [
       "ontologies",
@@ -133,6 +141,7 @@
     "curation_source": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/chemont.py"
   },
   "connectomedb2025": {
+    "name": "connectomeDB2025",
     "description": "Cell communication interactions and their ligand and receptor complexes.",
     "tags": [
       "cell_cell_communication",
@@ -150,6 +159,7 @@
     "curation_source": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/connectomedb.py"
   },
   "corum": {
+    "name": "CORUM",
     "description": "Curated mammalian protein complexes and their subunits.",
     "tags": [
       "protein_complexes",
@@ -165,6 +175,7 @@
     "curation_source": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/corum.py"
   },
   "drugcentral": {
+    "name": "DrugCentral",
     "description": "Drug identities, molecular targets and source-defined target action annotations.",
     "tags": [
       "pharmacology",
@@ -181,6 +192,7 @@
     "curation_source": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/drugcentral.py"
   },
   "foodb": {
+    "name": "FooDB",
     "description": "Food constituents with chemical identifiers and concentration annotations.",
     "tags": [
       "nutrition",
@@ -197,6 +209,7 @@
     "curation_source": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/foodb.py"
   },
   "go": {
+    "name": "Gene Ontology",
     "description": "Gene Ontology concepts describing biological processes, functions and cellular components.",
     "tags": [
       "ontologies"
@@ -210,6 +223,7 @@
     "curation_source": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/go.py"
   },
   "guidetopharma": {
+    "name": "Guide to Pharmacology",
     "description": "Curated pharmacological ligands and their molecular targets.",
     "tags": [
       "pharmacology",
@@ -227,6 +241,7 @@
     "curation_source": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/guidetopharma.py"
   },
   "hmdb": {
+    "name": "HMDB",
     "description": "Human metabolite identities, chemical properties and biological annotations.",
     "tags": [
       "metabolism",
@@ -243,6 +258,7 @@
     "curation_source": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/hmdb.py"
   },
   "hpo": {
+    "name": "Human Phenotype Ontology",
     "description": "Human phenotype concepts and gene–phenotype associations.",
     "tags": [
       "disease_phenotype",
@@ -258,6 +274,7 @@
     "curation_source": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/hpo.py"
   },
   "icellnet": {
+    "name": "ICELLNET",
     "description": "Curated ligand–receptor interactions for cell communication analysis.",
     "tags": [
       "cell_cell_communication",
@@ -274,6 +291,7 @@
     "curation_source": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/icellnet.py"
   },
   "imm1415": {
+    "name": "iMM1415",
     "description": "Mouse metabolic model entities and metabolic network information.",
     "tags": [
       "metabolism",
@@ -289,6 +307,7 @@
     "curation_source": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/imm1415.py"
   },
   "intact": {
+    "name": "IntAct",
     "description": "Experimentally supported molecular interactions from IntAct.",
     "tags": [
       "physical_interactions",
@@ -305,6 +324,7 @@
     "curation_source": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/intact.py"
   },
   "kegg": {
+    "name": "KEGG",
     "description": "Metabolic reactions and their chemical participants from KEGG.",
     "tags": [
       "metabolism",
@@ -320,6 +340,7 @@
     "curation_source": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/kegg.py"
   },
   "lipidmaps": {
+    "name": "LIPID MAPS",
     "description": "Lipid structures, identifiers and chemical annotations from LIPID MAPS.",
     "tags": [
       "metabolism",
@@ -336,6 +357,7 @@
     "curation_source": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/lipidmaps.py"
   },
   "macdb": {
+    "name": "MACdb",
     "description": "Chemical–trait associations with study evidence and reported measurements.",
     "tags": [
       "metabolism",
@@ -353,6 +375,7 @@
     "curation_source": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/macdb.py"
   },
   "mebocost": {
+    "name": "MEBOCOST",
     "description": "Metabolite–sensor interactions assembled through text mining and manual curation.",
     "tags": [
       "cell_cell_communication",
@@ -372,6 +395,7 @@
     "curation_source": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/mebocost.py"
   },
   "metatlas": {
+    "name": "Metabolic Atlas",
     "description": "Human-GEM chemicals and metabolic reactions with stoichiometry and gene associations.",
     "tags": [
       "metabolism",
@@ -387,6 +411,7 @@
     "curation_source": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/metatlas.py"
   },
   "mirbase": {
+    "name": "miRBase",
     "description": "Precursor and mature microRNA identities with maturation relationships.",
     "tags": [
       "gene_regulation",
@@ -402,6 +427,7 @@
     "curation_source": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/mirbase.py"
   },
   "mondo": {
+    "name": "Mondo",
     "description": "Disease ontology concepts and explicit gene–disease associations.",
     "tags": [
       "disease_phenotype",
@@ -417,6 +443,7 @@
     "curation_source": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/mondo.py"
   },
   "mrclinksdb": {
+    "name": "MRClinksDB",
     "description": "Curated metabolite–receptor interactions with compound classification and literature evidence.",
     "tags": [
       "cell_cell_communication",
@@ -434,6 +461,7 @@
     "curation_source": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/mrclinksdb.py"
   },
   "neuronchat": {
+    "name": "NeuronChat",
     "description": "Neural communication molecules and their receptor interactions.",
     "tags": [
       "cell_cell_communication",
@@ -450,6 +478,7 @@
     "curation_source": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/neuronchat.py"
   },
   "nichenet": {
+    "name": "NicheNet",
     "description": "Ligand–receptor networks from NicheNet v2.",
     "tags": [
       "cell_cell_communication",
@@ -465,6 +494,7 @@
     "curation_source": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/nichenet.py"
   },
   "omnipath_ontology": {
+    "name": "OmniPath Ontology",
     "description": "Archived OmniPath controlled vocabulary concepts for interpreting historical data.",
     "tags": [
       "ontologies"
@@ -478,6 +508,7 @@
     "curation_source": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/omnipath_ontology.py"
   },
   "pfocr": {
+    "name": "PFOCR",
     "description": "Gene and chemical mentions extracted from published pathway figures.",
     "tags": [
       "literature_mentions",
@@ -492,6 +523,7 @@
     "curation_source": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/pfocr.py"
   },
   "phenol_explorer": {
+    "name": "Phenol-Explorer",
     "description": "Polyphenol constituents of foods with identifiers and concentration measurements.",
     "tags": [
       "nutrition",
@@ -508,6 +540,7 @@
     "curation_source": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/phenol_explorer.py"
   },
   "psi_mi": {
+    "name": "PSI-MI",
     "description": "PSI-MI controlled vocabulary for describing molecular interaction experiments.",
     "tags": [
       "ontologies"
@@ -521,6 +554,7 @@
     "curation_source": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/psi_mi.py"
   },
   "ptfi": {
+    "name": "PTFI",
     "description": "Food composition, compound classifications and concentration measurements from PTFI Discover.",
     "tags": [
       "nutrition",
@@ -538,6 +572,7 @@
     "curation_source": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/ptfi.py"
   },
   "rampdb": {
+    "name": "RaMP-DB",
     "description": "Lipid and metabolite annotations with reference identifiers.",
     "tags": [
       "metabolism",
@@ -555,6 +590,7 @@
     "curation_source": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/rampdb.py"
   },
   "reactome": {
+    "name": "Reactome",
     "description": "Biological pathways, biochemical activities and explicit regulatory controls.",
     "tags": [
       "signaling",
@@ -576,6 +612,7 @@
     "curation_source": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/reactome.py"
   },
   "recon3d": {
+    "name": "Recon3D",
     "description": "Human metabolic activities, chemical participants and model gene associations.",
     "tags": [
       "metabolism",
@@ -591,6 +628,7 @@
     "curation_source": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/recon3d.py"
   },
   "refmet": {
+    "name": "RefMet",
     "description": "Reference metabolite names, identifiers and chemical classifications.",
     "tags": [
       "metabolism",
@@ -607,6 +645,7 @@
     "curation_source": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/refmet.py"
   },
   "rhea": {
+    "name": "Rhea",
     "description": "Curated biochemical reactions with chemical inputs, outputs and enzyme associations.",
     "tags": [
       "metabolism",
@@ -624,6 +663,7 @@
     "curation_source": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/rhea.py"
   },
   "signor": {
+    "name": "SIGNOR",
     "description": "Causal signaling interactions, mechanisms and protein modification relationships.",
     "tags": [
       "signaling",
@@ -641,6 +681,7 @@
     "curation_source": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/signor.py"
   },
   "slctables": {
+    "name": "SLC tables",
     "description": "Solute carrier proteins, transporter families and reference annotations.",
     "tags": [
       "molecular_transport",
@@ -656,6 +697,7 @@
     "curation_source": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/slctables.py"
   },
   "stitch": {
+    "name": "STITCH",
     "description": "Chemical–protein interactions with action annotations and confidence evidence.",
     "tags": [
       "pharmacology",
@@ -676,6 +718,7 @@
     "curation_source": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/stitch.py"
   },
   "swisslipids": {
+    "name": "SwissLipids",
     "description": "Lipid identities, classifications and molecular annotations.",
     "tags": [
       "metabolism",
@@ -692,6 +735,7 @@
     "curation_source": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/swisslipids.py"
   },
   "tcdb": {
+    "name": "TCDB",
     "description": "Transporter protein classifications and transporter–substrate relationships.",
     "tags": [
       "molecular_transport",
@@ -708,6 +752,7 @@
     "curation_source": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/tcdb.py"
   },
   "uniprot": {
+    "name": "UniProt",
     "description": "Protein identities, functional annotations and reference identifier translations.",
     "tags": [
       "molecular_annotations",
@@ -723,6 +768,7 @@
     "curation_source": "https://github.com/saezlab/pypath/blob/silver_schema_improvement/pypath/inputs_v2/uniprot.py"
   },
   "wikipathways": {
+    "name": "WikiPathways",
     "description": "Biological pathways and source-defined diagram interactions.",
     "tags": [
       "signaling",
