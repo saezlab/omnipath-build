@@ -18,7 +18,7 @@ from omnipath_resolver.resolver import EntityResolver  # noqa: E402
 @pytest.fixture
 def snapshot(tmp_path, monkeypatch):
     monkeypatch.setenv("OMNIPATH_IDENTITY_CACHE", str(tmp_path / "cache"))
-    return build_snapshot(tmp_path / "snapshot")
+    return build_snapshot(tmp_path)
 
 
 def test_reference_records_are_fetched_in_batches(snapshot, tmp_path):
