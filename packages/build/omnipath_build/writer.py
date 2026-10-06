@@ -152,6 +152,22 @@ def _reference_key(namespace, identifier):
     return f"{namespace}:{identifier}"
 
 
+def _reference_records(runtime, entity_ids, batch_size=4096):
+    """(entity_id, record) pairs; batched when the runtime builds records on demand."""
+    if not hasattr(runtime, "record_many"):
+        for entity_id in entity_ids:
+            yield entity_id, runtime.record(entity_id)
+        return
+    batch = []
+    for entity_id in entity_ids:
+        batch.append(entity_id)
+        if len(batch) >= batch_size:
+            yield from runtime.record_many(batch).items()
+            batch = []
+    if batch:
+        yield from runtime.record_many(batch).items()
+
+
 def _resolution_annotations(targets):
     """Retain exceptional genes and reported product provenance per occurrence."""
     values = set()
@@ -602,10 +618,11 @@ class ParquetWriter:
         return counts
 
     def _reference_identifiers(self):
-        from omnipath_resolver.index import FullRuntime
+        from omnipath_resolver.identity_runtime import open_runtime
 
         policies = self._db.execute("SELECT DISTINCT entity_type, library FROM refs").fetchall()
-        runtime = FullRuntime(self.library_dir) if policies else None
+        # FullRuntime for a compiled LMDB reference, IdentityRuntime for an identity snapshot.
+        runtime = open_runtime(pin_library(self.library_dir)) if policies else None
         for library in dict.fromkeys(lib for _, lib in policies):
             quoted_library = "'" + library.replace("'", "''") + "'"
             entity_ids = (
@@ -619,8 +636,7 @@ class ParquetWriter:
             )
             try:
                 batch = []
-                for entity_id in entity_ids:
-                    record = runtime.record(entity_id)
+                for entity_id, record in _reference_records(runtime, entity_ids):
                     batch.extend(
                         {"entity_id": entity_id, "namespace": ns, "identifier": identifier}
                         for ns, identifier in record["identifiers"]
