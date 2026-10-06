@@ -183,6 +183,29 @@ def main(args: list[str] | None = None) -> int:
     )
     library_parser.add_argument("--threads", type=int, default=None, help="DuckDB thread count")
 
+    hub_index_parser = subparsers.add_parser(
+        "build-hub-index", help="Build the rule-independent index of one hub (identity layer)"
+    )
+    hub_index_parser.add_argument("--hub", required=True, help="Hub name, e.g. pubchem")
+    hub_index_parser.add_argument("--hubs-dir", required=True, help="Directory of <hub>.parquet files")
+    hub_index_parser.add_argument("--output-root", required=True, help="Hub index root directory")
+    hub_index_parser.add_argument("--memory", default="7GB", help="DuckDB memory limit")
+    hub_index_parser.add_argument("--threads", type=int, default=6, help="DuckDB threads")
+    hub_index_parser.add_argument("--goslin-cache", help="Persistent Goslin parse cache directory")
+    hub_index_parser.add_argument("--min-free-gib", type=float, default=50)
+    hub_index_parser.add_argument("--keep-work", action="store_true")
+
+    identity_parser = subparsers.add_parser(
+        "build-identity",
+        help="Build the identity decisions (exceptions, gene products, ...) from the hub indexes",
+    )
+    identity_parser.add_argument("--hub-index-root", required=True, help="Hub index root directory")
+    identity_parser.add_argument("--output-dir", required=True, help="Root of <fingerprint>/ snapshots")
+    identity_parser.add_argument("--memory", default="7GB", help="DuckDB memory limit")
+    identity_parser.add_argument("--threads", type=int, default=6, help="DuckDB threads")
+    identity_parser.add_argument("--min-free-gib", type=float, default=50)
+    identity_parser.add_argument("--keep-work", action="store_true")
+
     from .regression import cli as regression_cli
 
     regression_cli.add_parser(subparsers)
@@ -191,6 +214,36 @@ def main(args: list[str] | None = None) -> int:
 
     if parsed.command == "resolution-regression":
         return regression_cli.run(parsed)
+
+    if parsed.command == "build-hub-index":
+        from .identity import build_hub_index
+
+        manifest = build_hub_index(
+            parsed.hub,
+            parsed.hubs_dir,
+            parsed.output_root,
+            memory=parsed.memory,
+            threads=parsed.threads,
+            goslin_cache=parsed.goslin_cache,
+            min_free_gib=parsed.min_free_gib,
+            keep_work=parsed.keep_work,
+        )
+        print(json.dumps(manifest["timings"], indent=2))
+        return 0
+
+    if parsed.command == "build-identity":
+        from .identity import build_identity
+
+        manifest = build_identity(
+            parsed.hub_index_root,
+            parsed.output_dir,
+            memory=parsed.memory,
+            threads=parsed.threads,
+            min_free_gib=parsed.min_free_gib,
+            keep_work=parsed.keep_work,
+        )
+        print(json.dumps(manifest["timings"], indent=2))
+        return 0
 
     if parsed.command == "export-hubs":
         max_records = None if parsed.max_records == 0 else parsed.max_records
