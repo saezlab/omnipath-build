@@ -18,7 +18,7 @@ from .store import (
     resource_dir,
 )
 
-IDENTITY_FORMAT = "omnipath-identity-v1"
+IDENTITY_FORMAT = "omnipath-identity-v2"
 
 
 def log(event: str, **kw: Any) -> None:
@@ -46,7 +46,7 @@ def load_runtime(path: str | Path, *, cache_dir: str | Path | None = None) -> tu
 
     ``FullRuntime`` serves a classic LMDB library (its gene-role component lives
     inside the same directory). ``IdentityRuntime`` is imported lazily and used
-    when the manifest format is ``omnipath-identity-v1``.
+    when the manifest format is ``omnipath-identity-v2``.
     """
     path = Path(path)
     raise_open_file_limit()

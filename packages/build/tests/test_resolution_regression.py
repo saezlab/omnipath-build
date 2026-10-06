@@ -292,7 +292,7 @@ def test_load_runtime_dispatches_on_manifest_format(tmp_path, monkeypatch):
 
     snapshot = tmp_path / "snapshot"
     snapshot.mkdir()
-    (snapshot / "manifest.json").write_text(json.dumps({"format": "omnipath-identity-v1"}))
+    (snapshot / "manifest.json").write_text(json.dumps({"format": "omnipath-identity-v2"}))
 
     class Identity:
         def __init__(self, path, cache_dir=None):

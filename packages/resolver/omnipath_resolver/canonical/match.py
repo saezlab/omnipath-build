@@ -156,7 +156,7 @@ class LibraryMatcher:
         }
         from ..identity_runtime import open_runtime
 
-        # Identity snapshots (manifest format omnipath-identity-v1) resolve on demand
+        # Identity snapshots (manifest format omnipath-identity-v2) resolve on demand
         # from Parquet; anything else is a compiled LMDB reference (FullRuntime).
         self.runtime = (
             open_runtime(self.library_dir, memory_limit=memory_limit)

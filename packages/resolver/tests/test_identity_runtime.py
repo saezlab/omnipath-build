@@ -1,8 +1,10 @@
-"""IdentityRuntime over a synthetic omnipath-identity-v1 snapshot (spec section 4)."""
+"""IdentityRuntime over a synthetic omnipath-identity-v2 layout (spec sections 3a, 3b, 4)."""
 
 from __future__ import annotations
 
 import hashlib
+import json
+import shutil
 import sqlite3
 
 import pytest
@@ -12,10 +14,12 @@ from identity_snapshot import (
     ETHANOL,
     FINGERPRINT,
     LIPID,
+    LIPID3,
     NAMELESS,
     ONLY_PC,
     OTHERS,
     SYSTEMATIC,
+    TWO_A,
     WATER,
     build_snapshot,
     part,
@@ -41,7 +45,7 @@ HUMAN, MOUSE = "9606", "10090"
 
 @pytest.fixture(scope="module")
 def snapshot(tmp_path_factory):
-    return build_snapshot(tmp_path_factory.mktemp("identity") / "snapshot")
+    return build_snapshot(tmp_path_factory.mktemp("identity"))
 
 
 @pytest.fixture
@@ -65,20 +69,11 @@ def look(rt, target, route, ns, identifier, scope=""):
 
 def test_key_decoding_unscoped_and_scoped():
     assert decode_key(key(1, 1, "chebi", "", "CHEBI:1"), CODE_NAMES) == (
-        1,
-        1,
-        "chebi",
-        None,
-        "CHEBI:1",
-    )
+        1, 1, "chebi", None, "CHEBI:1"
+    )  # fmt: skip
     assert decode_key(key(2, 2, "entrez", "9606", "7157"), CODE_NAMES) == (
-        2,
-        2,
-        "entrez",
-        "9606",
-        "7157",
-    )
-    # an identifier that itself looks like a taxon block must not be mistaken for one
+        2, 2, "entrez", "9606", "7157"
+    )  # fmt: skip
     assert decode_key(key(2, 1, "genesymbol", "10090", "Trp53"), CODE_NAMES)[3:] == (
         "10090",
         "Trp53",
@@ -100,18 +95,32 @@ def test_manifest_format_selects_runtime(snapshot, tmp_path):
     assert not is_identity_snapshot(tmp_path)
     with pytest.raises(OSError):
         IdentityRuntime(tmp_path)  # no manifest
+    # the first-generation single-snapshot format is no longer served
+    (tmp_path / "manifest.json").write_text(json.dumps({"format": "omnipath-identity-v1"}))
+    assert not is_identity_snapshot(tmp_path)
+    with pytest.raises(ValueError):
+        IdentityRuntime(tmp_path)
+
+
+def test_hub_index_paths_relative_and_absolute(snapshot):
+    rt = IdentityRuntime(snapshot, cache_dir=snapshot.parent / "c")
+    try:
+        assert rt.hub_dirs["uniprot"].is_absolute()  # written absolute
+        assert (rt.hub_dirs["chebi"] / "records.parquet").is_file()  # written relative
+    finally:
+        rt.close()
 
 
 def test_only_the_hashed_partitions_are_read(snapshot, tmp_path, monkeypatch):
-    # Corrupt every access partition no requested key hashes to: a read of any of them fails.
-    copy = tmp_path / "copy"
-    import shutil
-
-    shutil.copytree(snapshot, copy)
-    wanted = {part("CHEBI:15377"), part("HMDB0002111")}
+    # Corrupt every by_id partition file but the two the keys hash to: reading any other fails.
+    root = tmp_path / "tree"
+    shutil.copytree(snapshot.parent.parent, root)
+    copy = root / "identity" / snapshot.name
+    keep = {("chebi", part("CHEBI:15377")), ("hmdb", part("HMDB0002111"))}
     broken = 0
-    for path in (copy / "access" / "target=1").glob("part=*/data.parquet"):
-        if path.parent.name.removeprefix("part=") not in wanted:
+    for path in (root / "hubindex").glob("*/*/by_id/part=*/data.parquet"):
+        hub, p = path.parts[-5], path.parent.name.removeprefix("part=")
+        if (hub, p) not in keep:
             path.write_bytes(b"not parquet")
             broken += 1
     assert broken
@@ -125,8 +134,14 @@ def test_only_the_hashed_partitions_are_read(snapshot, tmp_path, monkeypatch):
         k1, k2 = key(1, 1, "chebi", "", "CHEBI:15377"), key(1, 1, "hmdb", "", "HMDB0002111")
         out = rt.lookup_many([k1, k2])
         assert ids(out[k1]) == [f"inchikey:{WATER}"] and ids(out[k2]) == [f"inchikey:{WATER}"]
-        (only,) = files  # one query for the batch
-        assert {p.split("part=")[1].split("/")[0] for p in only} == wanted
+        by_id = [f for f in files if any("/by_id/" in p for p in f)]
+        assert len(by_id) == 2  # one by_id query per hub group (chebi, hmdb), not per key
+        read = {
+            (p.split("/by_id/")[0].split("/")[-2], p.split("part=")[1][:2])
+            for f in by_id
+            for p in f
+        }
+        assert read == keep
     finally:
         rt.close()
 
@@ -140,25 +155,34 @@ def test_miss_and_batch_shape(runtime):
     assert runtime.lookup_many([]) == {}
 
 
-# ------------------------------------------------------------------------ precedence
+# ------------------------------------------------------------------------ admission
+
+
+def test_native_claim_and_fallback_rows(runtime):
+    water = f"inchikey:{WATER}"
+    assert ids(look(runtime, 1, 1, "pubchem", "962")) == [water]  # native, own hub only
+    assert ids(look(runtime, 1, 1, "inchikey", WATER)) == [water]
+    assert ids(look(runtime, 1, 1, "cas", "7732-18-5")) == [water]  # claim, any chemical hub
+    assert ids(look(runtime, 1, 1, "kegg", "C00001")) == [water]  # lone fallback survives
+    # an xref of another hub is not a lookup key: HMDB ids are native only in the hmdb hub
+    assert look(runtime, 1, 1, "inchi", "InChI=1S/x")["candidates"] == []
 
 
 def test_native_beats_fallback(runtime):
-    assert ids(look(runtime, 1, 1, "bigg", "h2o")) == [f"inchikey:{WATER}"]
-    assert ids(look(runtime, 1, 1, "kegg", "C00001")) == [f"inchikey:{WATER}"]  # lone fallback
+    # bigg:x1 owns the id; bigg:y1 merely claims it (fallback)
+    assert ids(look(runtime, 1, 1, "bigg", "x1")) == [f"inchikey:{ETHANOL}"]
 
 
 def test_primary_accession_beats_secondary(runtime):
     assert ids(look(runtime, 2, 1, "uniprot", "Q99999")) == ["uniprot:Q99999"]
-    # a secondary accession resolves only to the entry it belongs to ...
     assert ids(look(runtime, 2, 1, "uniprot", "Q15086")) == ["uniprot:P04637"]
-    # ... and stays plural (ambiguous, no tie-break) when it maps to two entries
+    # a secondary accession of two entries stays plural (the kernel abstains)
     assert sorted(ids(look(runtime, 2, 1, "uniprot", "Q88888"))) == [
         "uniprot:P04637",
         "uniprot:P0DP23",
     ]
-    # the same claim under uniprot-sec has nothing to beat
-    assert sorted(ids(look(runtime, 2, 1, "uniprot-sec", "Q99999"))) == ["uniprot:P04637"]
+    assert ids(look(runtime, 2, 1, "uniprot-sec", "Q15086")) == ["uniprot:P04637"]
+    assert ids(look(runtime, 2, 1, "uniprot_entry", "P53_HUMAN")) == ["uniprot:P04637"]
 
 
 def test_exact_symbol_beats_synonym_within_taxon(runtime):
@@ -168,6 +192,13 @@ def test_exact_symbol_beats_synonym_within_taxon(runtime):
         # TP53 is exact for human and only a synonym for mouse: each taxon keeps its own
         assert ids(look(runtime, 2, 1, ns, "TP53", HUMAN)) == ["entrez:7157"]
         assert ids(look(runtime, 2, 1, ns, "TP53", MOUSE)) == ["entrez:22059"]
+
+
+def test_version_stripped_rows(runtime):
+    for identifier in ("NP_000537", "NP_000537.3"):
+        assert ids(look(runtime, 2, 1, "refseq_protein", identifier)) == ["uniprot:P04637"]
+    # the gene hub's own refseq_protein rows are product ids and never keys
+    assert ids(look(runtime, 2, 1, "refseq", "NM_000546")) == ["entrez:7157"]
 
 
 # ---------------------------------------------------------------------------- scope
@@ -181,6 +212,9 @@ def test_scope_filters_on_entity_taxon(runtime):
     assert ids(look(runtime, 2, 1, "ensg", "ENSG00000999999")) == ["entrez:555"]
     assert ids(look(runtime, 2, 1, "ensg", "ENSG00000999999", HUMAN)) == []
     assert ids(look(runtime, 2, 2, "entrez", "7157", MOUSE)) == []
+    # products are scoped by their protein's taxon
+    assert ids(look(runtime, 2, 1, "uniprot", "P02340", MOUSE)) == ["uniprot:P02340"]
+    assert ids(look(runtime, 2, 1, "uniprot", "P02340", HUMAN)) == []
 
 
 def test_symbols_exist_only_scoped(runtime):
@@ -206,6 +240,91 @@ def test_gene_flag(runtime):
     assert look(runtime, 1, 1, "chebi", "CHEBI:15377")["gene"] is False
 
 
+# --------------------------------------------------------- gene-level postings (rule 10)
+
+
+def test_gene_level_postings_are_genes_from_genes_and_single_gene_proteins(runtime):
+    # entrez record and linked protein both speak: one gene, not two candidates
+    assert ids(look(runtime, 2, 1, "hgnc", "HGNC:11998")) == ["entrez:7157"]
+    assert ids(look(runtime, 2, 1, "genesymbol", "TP53", HUMAN)) == ["entrez:7157"]
+    # a protein linking three genes is evidence for none of them
+    assert look(runtime, 2, 1, "hgnc", "HGNC:1442")["candidates"] == []
+    assert ids(look(runtime, 2, 1, "genesymbol", "CALM1", HUMAN)) == ["entrez:801"]
+    # a gene known only from gene_products is a valid target
+    assert ids(look(runtime, 2, 1, "genesymbol", "NOREC", HUMAN)) == ["entrez:999"]
+    gene = look(runtime, 2, 1, "genesymbol", "NOREC", HUMAN)["candidates"][0]
+    assert gene[2:] == [3, None, False, False, ["999"]]
+
+
+def test_more_than_ten_genes_are_all_kept(runtime):
+    value = look(runtime, 2, 1, "ensg", "ENSG00000000001")
+    assert sorted(ids(value)) == sorted(f"entrez:{3000 + n}" for n in range(12))
+    nums = [c[0] for c in value["candidates"]]
+    assert nums == sorted(nums)
+
+
+def test_product_postings_are_proteins_with_their_gene_ids(runtime):
+    (fact,) = look(runtime, 2, 1, "uniprot", "P0DP23")["candidates"]
+    assert fact[1:4] == ["uniprot:P0DP23", 2, "uniprot:P0DP23"]
+    assert fact[6] == ["801", "805", "808"]
+    (fact,) = look(runtime, 2, 1, "uniprot", "Q99999")["candidates"]
+    assert fact[6] == []
+
+
+def test_isoform_projects_to_its_primary_parent(runtime):
+    for ns, identifier in (("uniprot", "P04637-2"), ("ensp", "ENSP00000999999")):
+        assert ids(look(runtime, 2, 1, ns, identifier)) == ["uniprot:P04637"]
+    # no primary parent: the isoform entity stays as it is
+    assert ids(look(runtime, 2, 1, "ensp", "ENSP00000888888")) == ["uniprot:Q11111-2"]
+    (fact,) = look(runtime, 2, 1, "ensp", "ENSP00000888888")["candidates"]
+    assert fact[3] == "uniprot:Q11111-2"  # the dash keeps it from being a product
+
+
+def test_route_two_gene_identity(runtime):
+    assert ids(look(runtime, 2, 2, "entrez", "7157")) == ["entrez:7157"]
+    assert ids(look(runtime, 2, 2, "entrez", "999")) == ["entrez:999"]  # via gene_products only
+    assert look(runtime, 2, 2, "entrez", "424242")["candidates"] == []
+    # RaMP source genes map through the exceptions
+    assert ids(look(runtime, 2, 2, "ramp_gene", "RAMP_G_1")) == ["entrez:7157"]
+    assert ids(look(runtime, 2, 2, "ramp_gene", "RAMP_G_2")) == ["ramp_gene:RAMP_G_2"]
+    assert look(runtime, 2, 2, "kegg_gene", "hsa:1")["candidates"] == []
+
+
+# -------------------------------------------------- exceptions, quarantine, lipids
+
+
+def test_exceptions_override_anchors_and_add_members(runtime):
+    water = f"inchikey:{WATER}"
+    # the record carries WATER's key but its exception makes it its own entity
+    assert ids(look(runtime, 1, 1, "chembl", "CHEMBL999")) == ["chembl:CHEMBL999"]
+    assert ids(look(runtime, 1, 1, "inchikey", WATER)) == [water]  # not polluted by the override
+    assert ids(look(runtime, 1, 1, "pubchem", "7777")) == [water]  # attached by decision
+    assert ids(look(runtime, 1, 1, "hmdb", "HMDB0070001")) == ["chebi:CHEBI:70001"]  # grouped
+    assert ids(look(runtime, 1, 1, "chebi", "CHEBI:70001")) == ["chebi:CHEBI:70001"]
+
+
+def test_quarantine(runtime):
+    (bad,) = look(runtime, 1, 1, "chebi", "CHEBI:99999")["candidates"]
+    assert bad[1:] == ["chebi:CHEBI:99999", 1, None, True, False, []]
+    # a record claiming two keys creates neither key's entity
+    assert look(runtime, 1, 1, "inchikey", TWO_A)["candidates"] == []
+
+
+def test_lipid_names(runtime):
+    (lipid,) = look(runtime, 1, 1, "goslin", "species:PE 36:2")["candidates"]
+    assert lipid[1:4] == ["goslin:species:PE 36:2", 1, None]  # unanchored for the kernel
+    # species level: every record carrying the name speaks
+    assert sorted(ids(look(runtime, 1, 1, "goslin", "species:PC 34:1"))) == sorted(
+        [f"inchikey:{LIPID}", "inchikey:AAAAAAAAAAAAAA-MMMMMMMMMM-N"]
+    )
+    # full structure: two records disagree on the key, so the name keys no structure ...
+    assert look(runtime, 1, 1, "goslin", "full_structure:PC 16:0/18:1")["candidates"] == []
+    # ... and a name with exactly one key resolves to it
+    assert ids(look(runtime, 1, 1, "goslin", "full_structure:PE 18:0/18:1")) == [
+        f"inchikey:{LIPID3}"
+    ]
+
+
 # --------------------------------------------------------------------- candidate facts
 
 
@@ -225,11 +344,6 @@ def test_candidate_facts_and_num(runtime):
     assert gene[1:] == ["entrez:7157", 3, None, False, False, ["7157"]]
     (chem,) = look(runtime, 1, 1, "chebi", "CHEBI:15377")["candidates"]
     assert chem[1:4] == [f"inchikey:{WATER}", 1, f"inchikey:{WATER}"]
-    # lipid-name entities are unanchored for the kernel, quarantine flows through
-    (lipid,) = look(runtime, 1, 1, "goslin", "species:PE 36:2")["candidates"]
-    assert lipid[1:4] == ["goslin:species:PE 36:2", 1, None]
-    (bad,) = look(runtime, 1, 1, "chebi", "CHEBI:99999")["candidates"]
-    assert bad[4] is True
 
 
 def test_num_is_stable_unique_and_sorts_candidates(runtime):
@@ -275,38 +389,67 @@ def rec(runtime, eid):
     return runtime.record(eid)
 
 
-def test_record_shape_and_identifiers(runtime):
+def pairs(record):
+    return {tuple(p) for p in record["identifiers"]}
+
+
+def test_record_shape_and_members(runtime):
     r = rec(runtime, "uniprot:P04637")
     assert set(r) == {"entity_id", "kind", "anchor", "taxon", "label", "identifiers", "gene_ids"}
     assert (r["entity_id"], r["kind"], r["anchor"], r["taxon"]) == (
-        "uniprot:P04637",
-        2,
-        "uniprot:P04637",
-        "9606",
-    )
+        "uniprot:P04637", 2, "uniprot:P04637", "9606"
+    )  # fmt: skip
     assert r["gene_ids"] == ["7157"]
-    pairs = [tuple(p) for p in r["identifiers"]]
-    assert pairs == sorted(pairs)
+    listed = [tuple(p) for p in r["identifiers"]]
+    assert listed == sorted(listed)
     assert {
         ("uniprot", "P04637"),
         ("uniprot_entry", "P53_HUMAN"),
         ("genesymbol-syn", "P53"),
         ("uniprot-sec", "Q15086"),
         ("hgnc", "HGNC:11998"),
-    } <= set(pairs)
-    gene = rec(runtime, "entrez:7157")
-    assert (gene["kind"], gene["anchor"], gene["taxon"], gene["gene_ids"]) == (3, None, "9606", [])
+    } <= set(listed)
     chem = rec(runtime, f"inchikey:{WATER}")
-    pairs = {tuple(p) for p in chem["identifiers"]}
-    assert ("inchikey", WATER) in pairs and ("chebi", "CHEBI:15377") in pairs
-    assert ("name", "water") in pairs and ("hmdb", "HMDB0002111") in pairs
-    assert not any(ns in ("smiles", "synonym") for ns, _ in pairs)
+    found = pairs(chem)
+    assert ("inchikey", WATER) in found and ("chebi", "CHEBI:15377") in found
+    assert ("name", "water") in found and ("hmdb", "HMDB0002111") in found
+    assert ("pubchem", "7777") in found  # attached through exception_members
+    assert ("chembl", "CHEMBL999") not in found  # overridden by its exception
+    assert not any(ns in ("smiles", "synonym") for ns, _ in found)
     assert chem["kind"] == 1 and chem["anchor"] == f"inchikey:{WATER}" and chem["taxon"] is None
+    grouped = pairs(rec(runtime, "chebi:CHEBI:70001"))
+    assert {("chebi", "CHEBI:70001"), ("hmdb", "HMDB0070001")} <= grouped
+    assert pairs(rec(runtime, "chembl:CHEMBL999")) >= {
+        ("chembl", "CHEMBL999"),
+        ("name", "overridden"),
+    }
 
 
-def test_missing_entity_raises(runtime):
-    with pytest.raises(ValueError, match="absent entity"):
-        runtime.record_many(["inchikey:" + "Z" * 14 + "-UHFFFAOYSA-N"])
+def test_gene_record_gets_aliases_only_from_single_gene_proteins(runtime):
+    p53 = rec(runtime, "entrez:7157")
+    assert (p53["kind"], p53["anchor"], p53["taxon"], p53["gene_ids"]) == (3, None, "9606", [])
+    assert {
+        ("ensg", "ENSG00000141510"),
+        ("hgnc", "HGNC:11998"),
+        ("genesymbol-syn", "P53"),
+    } <= pairs(p53)
+    calm = pairs(rec(runtime, "entrez:801"))
+    assert ("genesymbol", "CALM1") in calm
+    assert ("hgnc", "HGNC:1442") not in calm  # that protein links three genes
+    # a gene known only from gene_products: no record rows, but linked protein aliases
+    only = rec(runtime, "entrez:999")
+    assert only["taxon"] == "9606" and ("genesymbol", "NOREC") in pairs(only)
+    assert only["label"] == "999"
+
+
+def test_record_taxon_extras_and_missing(runtime):
+    assert rec(runtime, "ramp_gene:RAMP_G_2")["taxon"] == "9606"
+    assert rec(runtime, "ramp_gene:RAMP_G_2")["kind"] == 3
+    assert rec(runtime, "entrez:555")["taxon"] is None
+    assert rec(runtime, "chebi:CHEBI:99999")["kind"] == 1
+    for missing in ("inchikey:" + "Z" * 14 + "-UHFFFAOYSA-N", "entrez:424242", "uniprot:ZZZZZZ"):
+        with pytest.raises(ValueError, match="absent entity"):
+            runtime.record_many([missing])
 
 
 @pytest.mark.parametrize(
@@ -322,6 +465,7 @@ def test_missing_entity_raises(runtime):
         (f"inchikey:{LIPID}", "PC 16:0/18:1"),  # most specific Goslin name beats a chemical name
         ("goslin:species:PE 36:2", "PE 36:2"),
         ("chebi:CHEBI:99999", "multi"),
+        ("chebi:CHEBI:70001", "grouped-chebi"),
         # gene: NCBI symbol, else the id
         ("entrez:7157", "TP53"),
         ("entrez:555", "555"),
@@ -329,6 +473,7 @@ def test_missing_entity_raises(runtime):
         ("uniprot:P04637", "TP53"),
         ("uniprot:A0A0U1RQF1", "A0A0U1RQF1_HUMAN"),  # only a genesymbol-syn: never a label
         ("uniprot:Q99999", "Q99999"),
+        ("uniprot:P04637-2", "P04637-2"),
     ],
 )
 def test_labels(runtime, entity, label):
@@ -431,7 +576,7 @@ def test_matcher_chooses_identity_runtime(matcher):
 
 
 def test_old_references_keep_the_old_runtime(tmp_path):
-    # no manifest of the new format: FullRuntime's own validation answers
+    # a manifest of another format: FullRuntime's own validation answers
     (tmp_path / "manifest.json").write_text('{"format": "omnipath-full-two-index-v1"}')
     with pytest.raises(ValueError, match="two-index"):
         open_runtime(tmp_path)
@@ -450,6 +595,9 @@ def test_chemical_stated_vs_derived_inchikey(matcher):
         alone=chemical([("smiles", "CCO")]),
         agreeing=chemical([("smiles", "O")], namespace="chebi", identifier="CHEBI:15377"),
         plain=chemical([], namespace="chebi", identifier="CHEBI:15377"),
+        attached=chemical([], namespace="pubchem", identifier="7777"),
+        override=chemical([], namespace="chembl", identifier="CHEMBL999"),
+        quarantined=chemical([], namespace="chebi", identifier="CHEBI:99999"),
     )
     (stated,) = out["stated"]
     assert stated.matched and stated.node_id == f"inchikey:{ETHANOL}" and stated.label == "ethanol"
@@ -460,7 +608,10 @@ def test_chemical_stated_vs_derived_inchikey(matcher):
     (agreeing,) = out["agreeing"]
     assert agreeing.node_id == water and agreeing.label == "water"
     assert out["plain"][0].node_id == water
-    assert "chebi" in out["plain"][0].aliases and "CHEBI:15377" in out["plain"][0].aliases["chebi"]
+    assert "CHEBI:15377" in out["plain"][0].aliases["chebi"]
+    assert out["attached"][0].node_id == water
+    assert out["override"][0].node_id == "chembl:CHEMBL999"
+    assert not out["quarantined"][0].matched  # a quarantined entity is never accepted
 
 
 def test_chemical_ambiguity_has_no_cutoff(matcher):
@@ -472,31 +623,18 @@ def test_chemical_ambiguity_has_no_cutoff(matcher):
         [dict(input_id="q", target=1)],
         [
             dict(
-                input_id="q",
-                ns="cas",
-                identifier="0-0-0",
-                scope="",
-                anchor="",
-                target=1,
-                route=1,
-                ordinal=0,
-                lookup_key=k,
+                input_id="q", ns="cas", identifier="0-0-0", scope="", anchor="", target=1,
+                route=1, ordinal=0, lookup_key=k,
             )
         ],
-    )
+    )  # fmt: skip
     assert resolved["results"][0]["outcome"] == "Ambiguous"
-    assert (
-        resolved["results"][0]["candidate_count"] == 12 and resolved["results"][0]["entities"] == []
-    )
+    assert resolved["results"][0]["candidate_count"] == 12
+    assert resolved["results"][0]["entities"] == []
     assert set(metrics) == {
-        "lookup_seconds",
-        "decision_seconds",
-        "entity_fetch_seconds",
-        "total_seconds",
-        "unique_keys",
-        "candidate_records",
-        "entity_records",
-    }
+        "lookup_seconds", "decision_seconds", "entity_fetch_seconds", "total_seconds",
+        "unique_keys", "candidate_records", "entity_records",
+    }  # fmt: skip
 
 
 def protein(identifier, identifiers=(), taxon=None, entity_type="protein", namespace="uniprot"):
@@ -518,6 +656,7 @@ def test_protein_with_geneid_resolves_to_gene_with_product(matcher):
         primary_wins=protein("Q99999"),
         shared=protein("Q88888"),
         conflict=protein("P04637", [("entrez", "801")]),
+        isoform=protein("P04637-2"),
     )
     (both,) = out["both"]
     assert both.node_id == "entrez:7157" and both.gene_mapping_status == "resolved"
@@ -532,6 +671,7 @@ def test_protein_with_geneid_resolves_to_gene_with_product(matcher):
     assert not shared.matched  # two entries claim Q88888 as secondary: abstain
     (conflict,) = out["conflict"]
     assert conflict.gene_mapping_status == "conflict" and conflict.node_id == "uniprot:P04637"
+    assert out["isoform"][0].protein_node_id == "uniprot:P04637"
 
 
 def test_gene_symbol_with_taxon(matcher):
@@ -544,6 +684,8 @@ def test_gene_symbol_with_taxon(matcher):
         scoped=protein("P04637", [("genesymbol", "TP53")], taxon=HUMAN),
         wrong_scope=protein("P04637", [("genesymbol", "TP53")], taxon=MOUSE),
         by_ensg=protein("ENSG00000141510", entity_type="gene", namespace="ensembl"),
+        many=protein("ENSG00000000001", entity_type="gene", namespace="ensembl"),
+        ramp=protein("RAMP_G_1", entity_type="gene", namespace="ramp"),
     )
     assert [m.node_id for m in out["human"]] == ["entrez:7157"]
     assert out["human"][0].label == "TP53" and out["human"][0].taxon == HUMAN
@@ -557,3 +699,5 @@ def test_gene_symbol_with_taxon(matcher):
     # (a miss never vetoes), so only the mouse synonym speaks
     assert out["wrong_scope"][0].node_id == "entrez:22059"
     assert out["by_ensg"][0].node_id == "entrez:7157"
+    assert not out["many"][0].matched  # twelve genes share the id: ambiguous, no cutoff
+    assert out["ramp"][0].node_id == "entrez:7157"

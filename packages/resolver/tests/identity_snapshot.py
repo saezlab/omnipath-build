@@ -1,13 +1,16 @@
-"""A small synthetic ``omnipath-identity-v1`` snapshot written straight to the spec layout.
+"""A small synthetic ``omnipath-identity-v2`` layout written straight from spec 3a and 3b.
 
-Only the Parquet layout of docs/identity-layer-spec.md section 3 is exercised: the builder
-(``omnipath_build.identity``) is not involved. Each fixture entity is one case for a rule.
+Per-hub indexes (``records``, ``by_id``, ``by_record``) plus the identity decisions
+(``exceptions``, ``entities_extra``, ``gene_products_*``, ``lipid_structures``). The builders
+(``omnipath_build.identity``) are not involved: the helpers below derive ``by_id`` rows from
+hub rows with the expansion rules of spec 3a, so each fixture record is one case for a rule.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+from collections import defaultdict
 from pathlib import Path
 
 import pyarrow as pa
@@ -17,191 +20,176 @@ WATER = "XLYOFNOQVPJJNP-UHFFFAOYSA-N"
 ASPIRIN = "BSYNRYMUTXBXSQ-UHFFFAOYSA-N"
 ETHANOL = "LFQSCWFLJHTTHZ-UHFFFAOYSA-N"
 LIPID = "AAAAAAAAAAAAAA-LLLLLLLLLL-N"
+LIPID2 = "AAAAAAAAAAAAAA-MMMMMMMMMM-N"
+LIPID3 = "AAAAAAAAAAAAAA-NNNNNNNNNN-N"
 NAMELESS = "BBBBBBBBBBBBBB-CCCCCCCCCC-N"
 ONLY_PC = "CCCCCCCCCCCCCC-DDDDDDDDDD-N"
 OTHERS = "DDDDDDDDDDDDDD-EEEEEEEEEE-N"
 SYSTEMATIC = "EEEEEEEEEEEEEE-FFFFFFFFFF-N"
-FINGERPRINT = "synthetic-0001"
+TWO_A, TWO_B = "FFFFFFFFFFFFFF-GGGGGGGGGG-N", "FFFFFFFFFFFFFF-HHHHHHHHHH-N"
+FINGERPRINT = "synthetic-v2-0001"
 LONG_NAME = "x" * 81
+
+CHEMICAL_HUBS = ("chebi", "hmdb", "chembl", "pubchem", "lipidmaps", "swisslipids", "bigg", "kegg")
+GENE_HUBS = ("uniprot", "entrez", "ramp_gene")
+# source types that are never lookup rows
+NOT_KEYS = {"name", "synonym", "lipid_shorthand", "systematic_name", "smiles", "inchi", "formula"}
 
 
 def part(value: str) -> str:
     return hashlib.md5(value.encode(), usedforsecurity=False).hexdigest()[:2]
 
 
-def spec():
-    """(entities, access, record_rows, gene_products) as plain python."""
-    entities = {}  # eid -> (kind, anchor, taxon, quarantined, [record ids])
-    rows = {}  # record id -> [(source_type, value)]
-    access = []  # (target, route, ns, identifier, eid, tag)
+def hub_records():
+    """hub -> {local_id: (taxon, reviewed, [(source_type, value)])}."""
+    h = {hub: {} for hub in CHEMICAL_HUBS + GENE_HUBS}
 
-    def chem(eid, records, anchor=True, quarantined=False):
-        kind_anchor = eid if anchor and eid.startswith("inchikey:") else None
-        entities[eid] = ("chemical", kind_anchor, None, quarantined, list(records))
+    def rec(hub, local, rows, taxon=None, reviewed=False):
+        h[hub][local] = (taxon, reviewed, rows)
 
-    def add(target, route, ns, identifier, eid, tag="regular"):
-        access.append((target, route, ns, identifier, eid, tag))
-
-    # ---- chemicals -------------------------------------------------------------------
-    rows["chebi:CHEBI:15377"] = [
-        ("chebi", "CHEBI:15377"),
-        ("name", "water"),
-        ("name", "Water molecule"),
-        ("synonym", "H2O"),
-        ("inchikey", WATER),
-        ("smiles", "O"),
-    ]
-    rows["hmdb:HMDB0002111"] = [("hmdb", "HMDB0002111"), ("name", "Water (hmdb)")]
-    rows["pubchem:962"] = [("pubchem", "962"), ("name", "PUBCHEM WATER")]
-    chem(f"inchikey:{WATER}", ["chebi:CHEBI:15377", "hmdb:HMDB0002111", "pubchem:962"])
-
-    rows["chebi:CHEBI:15365"] = [("chebi", "CHEBI:15365"), ("name", ASPIRIN)]  # name is a key
-    rows["hmdb:HMDB0001879"] = [("hmdb", "HMDB0001879"), ("name", LONG_NAME)]  # too long
-    rows["chembl:CHEMBL25"] = [("chembl", "CHEMBL25"), ("name", "ASPIRIN"), ("name", "aspirin2")]
-    rows["pubchem:2244"] = [("pubchem", "2244"), ("name", "aspirin-pc")]
-    chem(
-        f"inchikey:{ASPIRIN}",
-        ["chebi:CHEBI:15365", "hmdb:HMDB0001879", "chembl:CHEMBL25", "pubchem:2244"],
+    # ---- chemicals -----------------------------------------------------------------
+    rec("chebi", "CHEBI:15377", [
+        ("chebi", "CHEBI:15377"), ("name", "water"), ("name", "Water molecule"),
+        ("synonym", "H2O"), ("inchikey", WATER), ("smiles", "O"), ("kegg", "C00001"),
+    ])  # fmt: skip
+    rec(
+        "hmdb", "HMDB0002111", [("name", "Water (hmdb)"), ("inchikey", WATER), ("cas", "7732-18-5")]
     )
-
-    rows["chebi:CHEBI:16236"] = [("chebi", "CHEBI:16236"), ("name", "ethanol")]
-    chem(f"inchikey:{ETHANOL}", ["chebi:CHEBI:16236"])
-
-    rows["chebi:CHEBI:50000"] = [
-        ("chebi", "CHEBI:50000"),
-        ("name", "phosphatidylcholine"),
-        ("goslin", "species:PC 34:1"),
-        ("goslin", "full_structure:PC 16:0/18:1"),
-    ]
-    chem(f"inchikey:{LIPID}", ["chebi:CHEBI:50000"])
-
-    rows["swisslipids:SLM:1"] = [("swisslipids", "SLM:1"), ("name", "a long lipid name")]
-    entities["goslin:species:PE 36:2"] = ("chemical", None, None, False, ["swisslipids:SLM:1"])
-
-    chem(f"inchikey:{NAMELESS}", [])
-    rows["pubchem:5"] = [("pubchem", "5"), ("name", "pc-name")]
-    rows["lipidmaps:LM1"] = [("lipidmaps", "LM1"), ("name", "lm")]
-    chem(f"inchikey:{ONLY_PC}", ["pubchem:5", "lipidmaps:LM1"])
-    rows["swisslipids:SLM:2"] = [
-        ("swisslipids", "SLM:2"),
-        ("name", "zz"),
-        ("name", "b"),
-        ("name", "a"),
-    ]
-    chem(f"inchikey:{OTHERS}", ["swisslipids:SLM:2"])
-    rows["lipidmaps:LM2"] = [("lipidmaps", "LM2"), ("systematic_name", "sys-name")]
-    chem(f"inchikey:{SYSTEMATIC}", ["lipidmaps:LM2"])
-
-    rows["chebi:CHEBI:99999"] = [("chebi", "CHEBI:99999"), ("name", "multi")]
-    chem("chebi:CHEBI:99999", ["chebi:CHEBI:99999"], quarantined=True)
-
+    rec("pubchem", "962", [("name", "PUBCHEM WATER"), ("inchikey", WATER)])
+    rec("pubchem", "7777", [("name", "attached to water")])  # no key: attached by decision
+    rec("chembl", "CHEMBL999", [("inchikey", WATER), ("name", "overridden")])  # exception wins
+    rec("chebi", "CHEBI:15365", [("name", ASPIRIN), ("inchikey", ASPIRIN)])  # name is a key
+    rec("hmdb", "HMDB0001879", [("name", LONG_NAME), ("inchikey", ASPIRIN)])  # over 80 chars
+    rec("chembl", "CHEMBL25", [("name", "ASPIRIN"), ("name", "aspirin2"), ("inchikey", ASPIRIN)])
+    rec("pubchem", "2244", [("name", "aspirin-pc"), ("inchikey", ASPIRIN)])
+    rec("chebi", "CHEBI:16236", [("name", "ethanol"), ("inchikey", ETHANOL)])
+    rec("chebi", "CHEBI:50000", [
+        ("name", "phosphatidylcholine"), ("goslin", "species:PC 34:1"),
+        ("goslin", "full_structure:PC 16:0/18:1"), ("inchikey", LIPID),
+    ])  # fmt: skip
+    rec(
+        "lipidmaps",
+        "LM9",
+        [
+            ("goslin", "species:PC 34:1"),
+            ("goslin", "full_structure:PC 16:0/18:1"),
+            ("inchikey", LIPID2),
+        ],
+    )  # fmt: skip  (disagrees with CHEBI:50000 on the full-structure name)
+    rec("chebi", "CHEBI:50001", [("goslin", "full_structure:PE 18:0/18:1"), ("inchikey", LIPID3)])
+    rec("swisslipids", "SLM:1", [("name", "a long lipid name"), ("goslin", "species:PE 36:2")])
+    rec("hmdb", "HMDB0000001", [("inchikey", NAMELESS)])
+    rec("pubchem", "5", [("name", "pc-name"), ("inchikey", ONLY_PC)])
+    rec("lipidmaps", "LM1", [("name", "lm"), ("inchikey", ONLY_PC)])
+    rec(
+        "swisslipids", "SLM:2", [("name", "zz"), ("name", "b"), ("name", "a"), ("inchikey", OTHERS)]
+    )
+    rec("lipidmaps", "LM2", [("systematic_name", "sys-name"), ("inchikey", SYSTEMATIC)])
+    rec("chebi", "CHEBI:99999", [("name", "multi"), ("inchikey", TWO_A), ("inchikey", TWO_B)])
+    rec("chebi", "CHEBI:70001", [("name", "grouped-chebi")])
+    rec("hmdb", "HMDB0070001", [("name", "grouped-hmdb")])
     for n in range(12):  # twelve structure-less records behind one cas number
-        eid = f"pubchem:{1000 + n}"
-        rows[eid] = [("pubchem", str(1000 + n)), ("name", f"cas-twin-{n}")]
-        chem(eid, [eid])
-        add(1, 1, "cas", "0-0-0", eid)
-        add(1, 1, "pubchem", str(1000 + n), eid, "native")
-
-    water, aspirin, ethanol = f"inchikey:{WATER}", f"inchikey:{ASPIRIN}", f"inchikey:{ETHANOL}"
-    for ns, ident, eid in [
-        ("inchikey", WATER, water),
-        ("chebi", "CHEBI:15377", water),
-        ("hmdb", "HMDB0002111", water),
-        ("pubchem", "962", water),
-        ("inchikey", ASPIRIN, aspirin),
-        ("chebi", "CHEBI:15365", aspirin),
-        ("chembl", "CHEMBL25", aspirin),
-        ("pubchem", "2244", aspirin),
-        ("inchikey", ETHANOL, ethanol),
-        ("chebi", "CHEBI:16236", ethanol),
-        ("inchikey", LIPID, f"inchikey:{LIPID}"),
-        ("goslin", "species:PE 36:2", "goslin:species:PE 36:2"),
-        ("chebi", "CHEBI:99999", "chebi:CHEBI:99999"),
-    ]:
-        add(1, 1, ns, ident, eid, "native")
-    add(1, 1, "bigg", "h2o", water, "native")  # native beats fallback ...
-    add(1, 1, "bigg", "h2o", aspirin, "fallback")
-    add(1, 1, "kegg", "C00001", water, "fallback")  # ... but a lone fallback row survives
+        rec("pubchem", str(1000 + n), [("name", f"cas-twin-{n}"), ("cas", "0-0-0")])
+    rec("bigg", "x1", [("inchikey", ETHANOL)])
+    rec("bigg", "y1", [("bigg", "x1"), ("inchikey", ASPIRIN)])  # a claim: fallback behind x1
 
     # ---- genes and proteins --------------------------------------------------------------
-    def gene(n, taxon, symbol_rows):
-        rec = f"entrez:{n}"
-        rows[rec] = [("entrez", str(n)), *symbol_rows]
-        entities[rec] = ("gene", None, taxon, False, [rec])
-        add(2, 2, "entrez", str(n), rec, "native")
+    def gene(n, taxon, rows):
+        rec("entrez", str(n), [("entrez", str(n)), *rows], taxon)
 
-    def protein(acc, taxon, extra, genes=()):
-        rec = f"uniprot:{acc}"
-        rows[rec] = [("uniprot", acc), *extra]
-        entities[rec] = ("protein", rec, taxon, False, [rec])
-        add(2, 1, "uniprot", acc, rec, "native")
-        return [(rec, g) for g in genes]
-
-    gene(7157, "9606", [("genesymbol", "TP53"), ("genesymbol-syn", "P53"), ("genesymbol", "TP53L")])
+    gene(7157, "9606", [
+        ("genesymbol", "TP53"), ("genesymbol-syn", "P53"), ("ensg", "ENSG00000141510"),
+        ("refseq", "NM_000546"), ("refseq_protein", "NP_000537.3"), ("hgnc", "HGNC:11998"),
+    ])  # fmt: skip
     gene(801, "9606", [("genesymbol", "CALM1")])
     gene(805, "9606", [("genesymbol", "CALM2")])
     gene(808, "9606", [("genesymbol", "CALM3")])
-    gene(22059, "10090", [("genesymbol", "Trp53")])
-    gene(555, None, [])  # no taxon: visible only unscoped; label is the id
+    gene(22059, "10090", [("genesymbol", "Trp53"), ("genesymbol-syn", "TP53")])
+    gene(555, None, [("ensg", "ENSG00000999999")])  # no taxon: visible only unscoped
     gene(901, "9606", [("genesymbol", "ABC1")])
-    gene(902, "9606", [("genesymbol-syn", "XYZ")])
+    gene(902, "9606", [("genesymbol-syn", "ABC1"), ("genesymbol-syn", "XYZ")])
+    for n in range(12):  # one ENSG id shared by twelve genes: no cap, so no resolution
+        gene(3000 + n, "9606", [("ensg", "ENSG00000000001")])
 
-    links = []
-    links += protein(
-        "P04637",
-        "9606",
-        [
-            ("uniprot_entry", "P53_HUMAN"),
-            ("genesymbol", "TP53"),
-            ("genesymbol-syn", "P53"),
-            ("entrez", "7157"),
-            ("ensg", "ENSG00000141510"),
-            ("hgnc", "HGNC:11998"),
-            ("uniprot-sec", "Q15086"),
-        ],
-        ["7157"],
-    )
-    links += protein(
-        "A0A0U1RQF1",
-        "9606",
-        [("genesymbol-syn", "TPX"), ("uniprot_entry", "A0A0U1RQF1_HUMAN")],
-        ["7157"],
-    )
-    links += protein("Q99999", "9606", [])
-    links += protein("P0DP23", "9606", [("genesymbol", "CALM1")], ["801", "805", "808"])
-    links += protein("P02340", "10090", [("genesymbol", "Trp53")], ["22059"])
+    def protein(acc, taxon, rows, reviewed=False):
+        rec("uniprot", acc, [("uniprot", acc), *rows], taxon, reviewed)
 
-    p53, calm = "uniprot:P04637", "uniprot:P0DP23"
-    for ns, ident, eid, tag in [
-        ("uniprot", "Q15086", p53, "secondary"),
-        ("uniprot-sec", "Q15086", p53, "secondary"),
-        ("uniprot", "Q99999", "uniprot:Q99999", "native"),  # primary ...
-        ("uniprot", "Q99999", p53, "secondary"),  # ... beats a secondary claim
-        ("uniprot-sec", "Q99999", p53, "secondary"),
-        ("uniprot", "Q88888", p53, "secondary"),  # secondary of two entries: ambiguous
-        ("uniprot", "Q88888", calm, "secondary"),
-        ("uniprot_entry", "P53_HUMAN", p53, "regular"),
-        ("uniprot_entry", "A0A0U1RQF1_HUMAN", "uniprot:A0A0U1RQF1", "regular"),
-    ]:
-        add(2, 1, ns, ident, eid, tag)
-    for ns, ident, eid, taxon in [
-        ("ensg", "ENSG00000141510", "entrez:7157", "9606"),
-        ("hgnc", "HGNC:11998", "entrez:7157", "9606"),
-        ("refseq", "NM_000546", "entrez:7157", "9606"),
-        ("ensg", "ENSG00000999999", "entrez:555", None),
-    ]:
-        add(2, 1, ns, ident, eid, "regular")
-    # symbols: taxon filtering comes from the entity taxon, exact beats synonym per taxon
-    for ns in ("genesymbol", "genesymbol-syn"):
-        add(2, 1, ns, "TP53", "entrez:7157", "regular")
-        add(2, 1, ns, "TP53", "entrez:22059", "symbol_synonym")  # mouse: only a synonym
-        add(2, 1, ns, "ABC1", "entrez:901", "regular")
-        add(2, 1, ns, "ABC1", "entrez:902", "symbol_synonym")
-        add(2, 1, ns, "XYZ", "entrez:902", "symbol_synonym")
-        add(2, 1, ns, "Trp53", "entrez:22059", "regular")
-    add(2, 1, "genesymbol", "CALM1", "entrez:801", "regular")
+    protein("P04637", "9606", [
+        ("uniprot_entry", "P53_HUMAN"), ("genesymbol", "TP53"), ("genesymbol-syn", "P53"),
+        ("entrez", "7157"), ("ensg", "ENSG00000141510"), ("hgnc", "HGNC:11998"),
+        ("uniprot-sec", "Q15086"), ("uniprot-sec", "Q99999"), ("uniprot-sec", "Q88888"),
+        ("refseq_protein", "NP_000537.3"),
+    ], True)  # fmt: skip
+    protein("P04637-2", "9606", [("ensp", "ENSP00000999999")])  # isoform, parent exists
+    protein("Q11111-2", "9606", [("ensp", "ENSP00000888888")])  # isoform, parent absent
+    protein("A0A0U1RQF1", "9606", [
+        ("genesymbol-syn", "TPX"), ("uniprot_entry", "A0A0U1RQF1_HUMAN"), ("entrez", "7157"),
+    ])  # fmt: skip
+    protein("Q99999", "9606", [])
+    protein("P0DP23", "9606", [
+        ("genesymbol", "CALM1"), ("hgnc", "HGNC:1442"), ("uniprot-sec", "Q88888"),
+        ("entrez", "801"), ("entrez", "805"), ("entrez", "808"),
+    ], True)  # fmt: skip
+    protein("P02340", "10090", [("genesymbol", "Trp53"), ("entrez", "22059")], True)
+    protein("Q77777", "9606", [("entrez", "999"), ("genesymbol", "NOREC")])  # gene without record
+    rec("ramp_gene", "RAMP_G_1", [("ramp_gene", "RAMP_G_1")])
+    rec("ramp_gene", "RAMP_G_2", [("ramp_gene", "RAMP_G_2")], "9606")
+    return h
 
-    return entities, rows, access, links
+
+EXCEPTIONS = [  # record_id, entity_id, decision, quarantined
+    ("swisslipids:SLM:1", "goslin:species:PE 36:2", "lipid_name", False),
+    ("chebi:CHEBI:99999", "chebi:CHEBI:99999", "quarantined", True),
+    ("pubchem:7777", f"inchikey:{WATER}", "attached", False),
+    ("chebi:CHEBI:70001", "chebi:CHEBI:70001", "grouped", False),
+    ("hmdb:HMDB0070001", "chebi:CHEBI:70001", "grouped", False),
+    ("chembl:CHEMBL999", "chembl:CHEMBL999", "ambiguous_native", False),
+    ("ramp_gene:RAMP_G_1", "entrez:7157", "explicit_source_gene", False),
+    ("ramp_gene:RAMP_G_2", "ramp_gene:RAMP_G_2", "source_gene_only", False),
+]
+EXTRAS = [  # entity_id, kind, taxon, quarantined, preferred_record
+    ("goslin:species:PE 36:2", "chemical", None, False, "swisslipids:SLM:1"),
+    ("chebi:CHEBI:99999", "chemical", None, True, "chebi:CHEBI:99999"),
+    ("chebi:CHEBI:70001", "chemical", None, False, "chebi:CHEBI:70001"),
+    ("chembl:CHEMBL999", "chemical", None, False, "chembl:CHEMBL999"),
+    ("ramp_gene:RAMP_G_2", "gene", "9606", False, "ramp_gene:RAMP_G_2"),
+]
+GENE_PRODUCTS = [  # protein_entity_id, entrez_id, taxon
+    ("uniprot:P04637", "7157", "9606"),
+    ("uniprot:A0A0U1RQF1", "7157", "9606"),
+    ("uniprot:P0DP23", "801", "9606"),
+    ("uniprot:P0DP23", "805", "9606"),
+    ("uniprot:P0DP23", "808", "9606"),
+    ("uniprot:P02340", "22059", "10090"),
+    ("uniprot:Q77777", "999", "9606"),
+]
+LIPID_STRUCTURES = [("full_structure:PE 18:0/18:1", f"inchikey:{LIPID3}")]  # rule 5: unique names
+
+
+def anchor_of(hub, rows, local):
+    """(anchor, anchor_count) of a record, as the hub index would compute them."""
+    if hub in CHEMICAL_HUBS:
+        keys = sorted({v for st, v in rows if st == "inchikey"})
+        return (f"inchikey:{keys[0]}" if len(keys) == 1 else None), len(keys)
+    if hub == "uniprot":
+        return f"uniprot:{local}", 1
+    return None, 0
+
+
+def by_id_rows(hub, local, rows):
+    """Lookup rows of one record with the data-level expansions of spec 3a."""
+    out = [(hub, local, "native")]
+    for st, value in rows:
+        if st in NOT_KEYS or (st == hub and value == local):
+            continue
+        out.append((st, value, "claim"))
+        if st == "uniprot-sec":
+            out.append(("uniprot", value, "secondary"))
+        if st == "genesymbol-syn":
+            out.append(("genesymbol", value, "symbol_synonym"))
+        if st in ("refseq_protein", "genbank") and "." in value:
+            out.append((st, value.rsplit(".", 1)[0], "version_stripped"))
+    return out
 
 
 def _write(path: Path, table: pa.Table) -> None:
@@ -209,129 +197,105 @@ def _write(path: Path, table: pa.Table) -> None:
     pq.write_table(table, path, row_group_size=64 * 1024)
 
 
-def build_snapshot(root: Path, *, fingerprint: str = FINGERPRINT) -> Path:
-    """Write the snapshot under ``root`` and return its directory."""
-    root = Path(root)
-    entities, rows, access, links = spec()
-    eid_info = entities
+S = pa.string()
+RECORDS = pa.schema(
+    [("local_id", S), ("record_id", S), ("taxon", S), ("anchor", S), ("anchor_count", pa.int64()),
+     ("reviewed", pa.bool_())]
+)  # fmt: skip
+BY_ID = pa.schema(
+    [("ns", S), ("identifier", S), ("local_id", S), ("tag", S), ("taxon", S), ("anchor", S),
+     ("anchor_count", pa.int64())]
+)  # fmt: skip
+BY_RECORD = pa.schema([("local_id", S), ("source_type", S), ("value", S)])
 
-    # access rows with their denormalized entity metadata
-    tables = {}
-    gene_ids = {}
-    for rec, entrez in links:
-        gene_ids.setdefault(rec, []).append(entrez)
-    for target, route, ns, ident, eid, tag in access:
-        kind, anchor, taxon, quarantined, _ = eid_info[eid]
-        row = dict(
-            route=route,
-            ns=ns,
-            identifier=ident,
-            entity_id=eid,
-            kind=kind,
-            anchor=anchor,
-            taxon=taxon,
-            quarantined=quarantined,
-            reviewed=eid in ("uniprot:P04637",),
-            gene_ids=[eid.split(":", 1)[1]] if kind == "gene" else gene_ids.get(eid, []),
-            tag=tag,
-        )
-        tables.setdefault((target, part(ident)), []).append(row)
-    schema = pa.schema(
-        [
-            ("route", pa.int32()),
-            ("ns", pa.string()),
-            ("identifier", pa.string()),
-            ("entity_id", pa.string()),
-            ("kind", pa.string()),
-            ("anchor", pa.string()),
-            ("taxon", pa.string()),
-            ("quarantined", pa.bool_()),
-            ("reviewed", pa.bool_()),
-            ("gene_ids", pa.list_(pa.string())),
-            ("tag", pa.string()),
-        ]
-    )
-    for (target, p), items in tables.items():
-        items.sort(key=lambda r: (r["ns"], r["identifier"], r["entity_id"]))
+
+def write_hub_index(directory: Path, hub: str, records) -> None:
+    rows, by_id, by_record = [], defaultdict(list), defaultdict(list)
+    for local in sorted(records):
+        taxon, reviewed, items = records[local]
+        anchor, count = anchor_of(hub, items, local)
+        rows.append(dict(local_id=local, record_id=f"{hub}:{local}", taxon=taxon, anchor=anchor,
+                         anchor_count=count, reviewed=reviewed))  # fmt: skip
+        for ns, identifier, tag in by_id_rows(hub, local, items):
+            by_id[part(identifier)].append(dict(ns=ns, identifier=identifier, local_id=local,
+                tag=tag, taxon=taxon, anchor=anchor, anchor_count=count))  # fmt: skip
+        for st, value in items:
+            by_record[part(f"{hub}:{local}")].append(
+                dict(local_id=local, source_type=st, value=value)
+            )
+    _write(directory / "records.parquet", pa.Table.from_pylist(rows, schema=RECORDS))
+    for p, items in by_id.items():
+        items.sort(key=lambda r: (r["ns"], r["identifier"], r["local_id"]))
         _write(
-            root / f"access/target={target}/part={p}/data.parquet",
-            pa.Table.from_pylist(items, schema=schema),
+            directory / f"by_id/part={p}/data.parquet", pa.Table.from_pylist(items, schema=BY_ID)
+        )
+    for p, items in by_record.items():
+        items.sort(key=lambda r: r["local_id"])
+        _write(directory / f"by_record/part={p}/data.parquet",
+               pa.Table.from_pylist(items, schema=BY_RECORD))  # fmt: skip
+    (directory / "manifest.json").write_text(
+        json.dumps(dict(hub=hub, counts=dict(records=len(rows))))
+    )
+
+
+def build_snapshot(root: Path, *, fingerprint: str = FINGERPRINT) -> Path:
+    """Write hub indexes under ``root/hubindex`` and the identity directory; return the latter."""
+    root = Path(root)
+    hubs = hub_records()
+    identity = root / "identity" / fingerprint
+    identity.mkdir(parents=True)
+    indexes = {}
+    for hub, records in hubs.items():
+        directory = root / "hubindex" / hub / "0123456789ab"
+        write_hub_index(directory, hub, records)
+        # relative to the identity directory, except uniprot (absolute): both must resolve
+        indexes[hub] = (
+            str(directory) if hub == "uniprot" else str(Path("../..") / directory.relative_to(root))
         )
 
-    ent_parts, mem_parts, row_parts = {}, {}, {}
-    for eid, (kind, anchor, taxon, quarantined, members) in entities.items():
-        ent_parts.setdefault(part(eid), []).append(
-            dict(
-                entity_id=eid,
-                kind=kind,
-                anchor=anchor,
-                taxon=taxon,
-                quarantined=quarantined,
-                preferred_record=members[0] if members else None,
-            )
-        )
-        for record in members:
-            mem_parts.setdefault(part(eid), []).append(dict(entity_id=eid, record_id=record))
-    for record, values in rows.items():
-        for source_type, value in values:
-            row_parts.setdefault(part(record), []).append(
-                dict(record_id=record, source_type=source_type, value=value)
-            )
-    text = pa.string()
-    layouts = {
-        "entities": pa.schema(
-            [
-                ("entity_id", text),
-                ("kind", text),
-                ("anchor", text),
-                ("taxon", text),
-                ("quarantined", pa.bool_()),
-                ("preferred_record", text),
-            ]
-        ),
-        "members": pa.schema([("entity_id", text), ("record_id", text)]),
-        "record_rows": pa.schema([("record_id", text), ("source_type", text), ("value", text)]),
-    }
-    for name, groups, key in (
-        ("entities", ent_parts, "entity_id"),
-        ("members", mem_parts, "entity_id"),
-        ("record_rows", row_parts, "record_id"),
-    ):
-        for p, items in groups.items():
-            items.sort(key=lambda r: r[key])
-            _write(
-                root / f"{name}/part={p}/data.parquet",
-                pa.Table.from_pylist(items, schema=layouts[name]),
-            )
-    _write(
-        root / "gene_products.parquet",
-        pa.Table.from_pylist(
-            [
-                dict(
-                    protein_entity_id=rec,
-                    entrez_id=entrez,
-                    taxon=entities[rec][2],
-                )
-                for rec, entrez in links
-            ]
-        ),
+    def table(name, schema, rows, key):
+        rows = sorted(rows, key=lambda r: r[key])
+        _write(identity / name, pa.Table.from_pylist(rows, schema=pa.schema(schema)))
+
+    exc = [dict(record_id=r, entity_id=e, decision=d, quarantined=q) for r, e, d, q in EXCEPTIONS]
+    cols = [("record_id", S), ("entity_id", S), ("decision", S), ("quarantined", pa.bool_())]
+    table("exceptions.parquet", cols, exc, "record_id")
+    table("exception_members.parquet", [cols[1], cols[0], cols[2], cols[3]], exc, "entity_id")
+    table(
+        "entities_extra.parquet",
+        [
+            ("entity_id", S),
+            ("kind", S),
+            ("taxon", S),
+            ("quarantined", pa.bool_()),
+            ("preferred_record", S),
+        ],  # fmt: skip
+        [
+            dict(entity_id=e, kind=k, taxon=t, quarantined=q, preferred_record=p)
+            for e, k, t, q, p in EXTRAS
+        ],  # fmt: skip
+        "entity_id",
     )
-    _write(
-        root / "records.parquet",
-        pa.Table.from_pylist(
-            [dict(record_id=r, hub=r.split(":", 1)[0], local_id=r.split(":", 1)[1]) for r in rows]
-        ),
+    gp = [dict(protein_entity_id=p, entrez_id=g, taxon=t) for p, g, t in GENE_PRODUCTS]
+    gp_cols = [("protein_entity_id", S), ("entrez_id", S), ("taxon", S)]
+    table("gene_products_by_protein.parquet", gp_cols, gp, "protein_entity_id")
+    table("gene_products_by_gene.parquet", gp_cols, gp, "entrez_id")
+    table(
+        "lipid_structures.parquet",
+        [("goslin", S), ("inchikey", S)],
+        [dict(goslin=g, inchikey=k) for g, k in LIPID_STRUCTURES],
+        "goslin",
     )
-    (root / "manifest.json").write_text(
+    (identity / "manifest.json").write_text(
         json.dumps(
             dict(
-                format="omnipath-identity-v1",
+                format="omnipath-identity-v2",
                 fingerprint=fingerprint,
-                hubs={},
+                hub_indexes=indexes,
                 rules_sha256="0" * 64,
-                counts=dict(entities=len(entities), records=len(rows)),
+                counts={},
                 timings={},
             )
         )
     )
-    return root
+    return identity

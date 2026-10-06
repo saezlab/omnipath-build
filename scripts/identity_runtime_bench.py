@@ -3,8 +3,8 @@
 Usage:
     uv run python scripts/identity_runtime_bench.py SNAPSHOT [--keys FILE] [--batches 1000 5000 20000]
 
-SNAPSHOT is an ``<root>/identity/<snapshot>/`` directory (manifest format omnipath-identity-v1).
-Keys come from ``--keys FILE`` or, by default, a random sample drawn from the access table.
+SNAPSHOT is an ``<root>/identity/<fingerprint>/`` directory (manifest format omnipath-identity-v2).
+Keys come from ``--keys FILE`` or, by default, a random sample drawn from the hub indexes' by_id tables.
 FILE has one lookup key per line, either hex of the raw key bytes (``010101...``) or five
 tab-separated fields ``target route ns scope identifier`` (scope empty for unscoped).
 
@@ -47,30 +47,35 @@ def read_key_file(path: Path) -> list[bytes]:
 def sample_keys(
     snapshot: Path, count: int, partitions: int, scoped: bool, seed: int
 ) -> list[bytes]:
-    """Draw ``count`` keys from random access partitions (reservoir-sampled per file)."""
+    """Draw ``count`` keys from random ``by_id`` partition files of the hub indexes."""
     rng = random.Random(seed)
     import duckdb
 
-    files = sorted(glob.glob(str(snapshot / "access" / "target=*" / "part=*" / "*.parquet")))
+    manifest = json.loads((snapshot / "manifest.json").read_text())
+    files = []
+    for hub, directory in manifest["hub_indexes"].items():
+        directory = Path(directory)
+        directory = directory if directory.is_absolute() else snapshot / directory
+        files += [(hub, f) for f in sorted(glob.glob(str(directory / "by_id/part=*/*.parquet")))]
     if not files:
-        raise SystemExit(f"no access files under {snapshot}")
+        raise SystemExit(f"no by_id files under the hub indexes of {snapshot}")
     chosen = rng.sample(files, min(partitions, len(files)))
     per_file = -(-count * 2 // len(chosen))  # oversample, then trim after shuffling
     con = duckdb.connect()
     keys = set()
-    for path in chosen:
-        target = int(Path(path).parts[-3].removeprefix("target="))
+    for hub, path in chosen:
+        target = 2 if hub in ("uniprot", "entrez", "ramp_gene") else 1
         rows = con.execute(
-            f"SELECT CAST(route AS INTEGER), ns, identifier, CAST(taxon AS VARCHAR) "
-            f"FROM read_parquet(?) USING SAMPLE {per_file} ROWS (reservoir, {rng.randrange(1 << 30)})",
+            f"SELECT ns, identifier, CAST(taxon AS VARCHAR) FROM read_parquet(?) "
+            f"USING SAMPLE {per_file} ROWS (reservoir, {rng.randrange(1 << 30)})",
             [path],
         ).fetchall()
-        for route, ns, identifier, taxon in rows:
+        for ns, identifier, taxon in rows:
             if ns not in CODES:
                 continue
-            use_scope = scoped and taxon and taxon.isdigit() and taxon != "0"
-            if ns in ("genesymbol", "genesymbol-syn") and not use_scope:
-                use_scope = bool(taxon and taxon.isdigit() and taxon != "0")
+            route = 2 if target == 2 and ns in ("entrez", "ramp_gene", "kegg_gene") else 1
+            known = bool(taxon and taxon.isdigit() and taxon != "0")
+            use_scope = known and (scoped or ns in ("genesymbol", "genesymbol-syn"))
             keys.add(key(target, route, ns, taxon if use_scope else "", identifier))
     keys = sorted(keys)
     rng.shuffle(keys)
