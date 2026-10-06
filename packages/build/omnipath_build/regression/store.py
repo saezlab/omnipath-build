@@ -27,7 +27,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 FINGERPRINT_VERSION = 1
-LIBRARY_BY_TARGET = {1: "chemical", 2: "gene_protein"}
+LIBRARY_BY_TARGET = {1: "chemical", 2: "gene_protein", 3: "reaction"}
 
 QUERY_SCHEMA = pa.schema(
     [
