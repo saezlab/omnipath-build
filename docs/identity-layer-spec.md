@@ -178,3 +178,21 @@ Entity of a record = its exception if present, else its `anchor` (anchor_count =
 - Old library (oracle): `/root/projects/omnipath-releases/20261004-molecular-forms/reference/library`.
 - 8 CPUs, 15 GiB RAM, explore.omnipathdb.org runs on the same host: run heavy jobs with
   `systemd-run --scope -p MemoryMax=9G nice -n 10 …`, DuckDB `memory_limit` ≤ 7GB, ≤ 6 threads.
+
+## 7. Postponed work
+
+Decided 6 October 2026: these stay out of the first rebuild.
+
+- **miRNA resolution** (proposal section 1): miRBase precursor (`MI…`) and mature (`MIMAT…`)
+  anchors, official miRBase names as votes, a gene reference from the precursor's NCBI Gene.
+  Today only the miRBase resource emits miRNAs (48,885 mature, 38,589 precursor), already as
+  accessions.
+- **Reaction resolution** (proposal "Reactions"): Rhea master reaction as anchor; KEGG, MetaCyc,
+  EcoCyc, Reactome and M-CSA through Rhea's cross-references; BiGG, VMH and SEED through
+  MetaNetX. About 71k `molecular_activity` entities in rhea, reactome, metatlas, kegg and
+  recon3d would be affected; kegg already carries 13,692 Rhea cross-references and recon3d
+  10,956 MetaNetX reaction ids.
+- **Identifier tables from omnipath-utils**: utils lacks RaMP compound and gene ids, RefMet's
+  and BiGG's own exports, lipid shorthand/systematic names, SEED and MetaCyc ids, and formulas;
+  `uniprot-sec`, Entrez–Ensembl coverage across organisms and per-record provenance need a real
+  export to confirm. Switch hub by hub once utils covers a hub completely.
