@@ -61,8 +61,10 @@ def test_anchored_and_attached_chemicals(matcher):
     # Incoming cross-reference attaches too; a chain does not.
     assert chemical(matcher, "metanetx", "MNXM3").node_id == f"inchikey:{key('D')}"
     assert chemical(matcher, "metanetx", "MNXM4").node_id == "metanetx:MNXM4"
-    # Two different anchors: the record stays its own entity.
-    assert chemical(matcher, "bigg", "b1").node_id == "bigg:b1"
+    # Two different anchors: the record stays its own entity, and on its own it is evidence for
+    # each anchor it points to (record_candidates), so it does not resolve to either.
+    b1 = chemical(matcher, "bigg", "b1")
+    assert not b1.matched and b1.node_id is None
 
 
 def test_lipid_name_anchor(matcher):
