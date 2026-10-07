@@ -800,6 +800,8 @@ def test_conflicting_structures_and_protonation_states(matcher):
         charged=chemical([("chebi", "CHEBI:80001")], namespace="chebi", identifier="CHEBI:80002"),
         # without the neutral form among them, the primary id decides
         no_neutral=chemical([("chebi", "CHEBI:80003")], namespace="chebi", identifier="CHEBI:80002"),
+        # a coarse cross-reference naming another molecule does not block the neutral form
+        coarse=chemical([("chebi", "CHEBI:80002"), ("bigg", "x1")], namespace="chebi", identifier="CHEBI:80001"),
         # different molecules are no protonation states: still a conflict
         different=chemical([("chebi", "CHEBI:16236")], namespace="chebi", identifier="CHEBI:80001"),
     )  # fmt: skip
@@ -807,6 +809,7 @@ def test_conflicting_structures_and_protonation_states(matcher):
     assert out["neutral"][0].node_id == nadh
     assert out["charged"][0].node_id == nadh
     assert out["no_neutral"][0].node_id == nadh_2
+    assert out["coarse"][0].node_id == nadh
     assert not out["different"][0].matched
 
 

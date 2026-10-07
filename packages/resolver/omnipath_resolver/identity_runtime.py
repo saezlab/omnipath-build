@@ -1036,9 +1036,9 @@ class IdentityRuntime:
            must not veto the specific identifiers;
         2. on the source's own structure (a stated InChIKey or one derived from its SMILES),
            which decides when the source's identifiers contradict each other;
-        3. when every candidate is one molecule in different protonation states (InChIKeys
-           equal but for the last character): on the votes for its neutral form (``-N``) if
-           the source names it, else on the primary identifier.
+        3. when every candidate of the specific votes is one molecule in different protonation
+           states (InChIKeys equal but for the last character): on the votes for its neutral
+           form (``-N``) if the source names it, else on the primary identifier.
 
         Accepted results never change, and the narrower evidence must still be unique.
         """
@@ -1054,9 +1054,14 @@ class IdentityRuntime:
             return by_vote[(i, vote[3])]["ns"] == "inchikey"
 
         def candidates(i):
-            return {e for vote in groups[i][1] for e in entities.get(vote[0], ())}
+            """Candidates of the specific votes: coarse ones do not veto here either."""
+            return {
+                e for vote in groups[i][1] if specific(i, vote) for e in entities.get(vote[0], ())
+            }
 
         def protonation(i, vote):
+            if not specific(i, vote):
+                return False
             neutral = [e for e in candidates(i) if e.endswith("-N")]
             if neutral:
                 return neutral[0] in entities.get(vote[0], ())
