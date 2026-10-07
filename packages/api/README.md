@@ -1,6 +1,6 @@
 # OmniPath Parquet API
 
-Embedded DuckDB analytical engine and REST API for querying nested Parquet files from a local artifact directory (including a read-only mounted directory). PostgreSQL input separately supports HTTPS.
+Embedded DuckDB analytical engine and REST API for querying OmniPath's Parquet tables from a local artifact directory (including a read-only mounted directory). PostgreSQL input separately supports HTTPS.
 
 ## Validating rebuilt molecular outputs
 

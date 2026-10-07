@@ -16,7 +16,7 @@ def main(args: list[str] | None = None) -> int:
     """CLI entrypoint."""
     parser = argparse.ArgumentParser(
         prog="omnipath-api",
-        description="Serve OmniPath knowledge graphs directly from nested Parquet files via DuckDB.",
+        description="Serve OmniPath knowledge graphs directly from the resource Parquet tables via DuckDB.",
     )
     parser.add_argument(
         "--port",

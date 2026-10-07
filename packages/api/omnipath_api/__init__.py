@@ -1,7 +1,7 @@
 """OmniPath Full-Parquet Presentation and Serving Layer.
 
 Provides high-performance analytical queries, autocomplete, faceted filtering,
-and streaming binary exports directly from nested Parquet files via DuckDB.
+and streaming binary exports directly from the resource Parquet tables via DuckDB.
 """
 
 from .engine import ParquetServingEngine

@@ -1,4 +1,4 @@
-"""Molecular specificity, unknown coordinates and nested Parquet contracts."""
+"""Molecular specificity, unknown coordinates and Parquet table contracts."""
 
 import pyarrow as pa
 import pyarrow.parquet as pq

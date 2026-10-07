@@ -19,7 +19,7 @@ def main(args: list[str] | None = None) -> int:
     """CLI entrypoint."""
     parser = argparse.ArgumentParser(
         prog="omnipath-build",
-        description="Build nested Parquet files directly from inputs_v2 datasets.",
+        description="Build the resource Parquet tables directly from inputs_v2 datasets.",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 

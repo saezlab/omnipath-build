@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "omnipath-build"
 version = "0.1.0"
-description = "Direct, source-neutral pipeline turning inputs_v2 datasets into nested Parquet files"
+description = "Direct, source-neutral pipeline turning inputs_v2 datasets into the resource Parquet tables"
 authors = [{ name = "OmniPath Team" }]
 readme = "README.md"
 requires-python = ">=3.11"

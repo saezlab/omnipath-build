@@ -177,7 +177,7 @@ def serve(
 
     print("\n=======================================================", flush=True)
     print(f"OmniPath Parquet serving: http://{host}:{port}", flush=True)
-    print("Engine: DuckDB over nested Parquet", flush=True)
+    print("Engine: DuckDB over the resource Parquet tables", flush=True)
     print(f"Storage: {resolved_root}", flush=True)
     print(f"OpenAPI: http://{host}:{port}/api/docs", flush=True)
     print("Svelte API: /api/* and /app-api/*", flush=True)
