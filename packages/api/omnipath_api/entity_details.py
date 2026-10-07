@@ -1,7 +1,7 @@
 """Release-aware entity hydration and paged, resource-local relationship reads."""
 
 import json
-from omnipath_api.serving_index import adjacency_rows, signature
+from omnipath_api.serving_index import adjacency_rows, relation_rows_path, signature
 
 
 def cache_key(engine, kind, public_id, resources, *page):
@@ -63,8 +63,9 @@ def relationships(engine, public_id, resources=None, limit=50, offset=0):
         hydrated = {}
         for path in sorted({r["filename"] for r in rows}):
             numbers = [r["relation_row"] for r in rows if r["filename"] == path]
+            source = relation_rows_path(engine.data_root, path)
             for record in engine._fetch_dicts(
-                f"SELECT * FROM {read([path], union_by_name=True, file_row_number=True)} "
+                f"SELECT * FROM {read([source], union_by_name=True, file_row_number=True)} "
                 f"WHERE file_row_number IN ({','.join('?' for _ in numbers)})",
                 numbers,
             ):

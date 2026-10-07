@@ -18,7 +18,7 @@ import time
 from omnipath_api.store.connection import format_read_parquet, get_connection
 from omnipath_api.molecular import read, columns, occurrences_expression
 
-VERSION = "v3"
+VERSION = "v4"
 ENTITY_COLUMNS = "entity_key, entity_type, namespace, identifier, taxon, label, has_hierarchy, parent_count, child_count, reference_entity_key, gene_reference_keys"
 RELATION_COLUMNS = (
     "relation_key, subject_entity_key, subject_label, subject_type, predicate, "
@@ -68,6 +68,12 @@ def _split(root, kind, paths):
         target = index_path(root, kind, [path])
         (indexed.append((str(target), str(path))) if target.is_file() else plain.append(str(path)))
     return indexed, plain
+
+
+def relation_rows_path(root, path):
+    """The small-row-group copy of a relations file (same row order), or the file itself."""
+    target = index_path(root, "relation_rows", [path])
+    return str(target) if target.is_file() else str(path)
 
 
 def entity_group_rows(engine, paths):
@@ -136,7 +142,7 @@ def build_indexes(engine, *, threads=4, memory_limit="2GB", min_free_disk=20 * 1
     with tempfile.TemporaryDirectory(prefix="build-", dir=temp_root) as work:
         db.execute("SET temp_directory=?", [str(Path(work) / "spill")])
 
-        def build(kind, paths, query):
+        def build(kind, paths, query, row_group_size=32768):
             target = index_path(root, kind, paths)
             if target.exists():
                 return
@@ -146,7 +152,7 @@ def build_indexes(engine, *, threads=4, memory_limit="2GB", min_free_disk=20 * 1
             started = time.monotonic()
             staging = Path(work) / "output.parquet"
             db.execute(
-                f"COPY ({query}) TO ? (FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 32768)",
+                f"COPY ({query}) TO ? (FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE {int(row_group_size)})",
                 [str(staging)],
             )
             if signature(paths) != before:
@@ -176,6 +182,7 @@ def build_indexes(engine, *, threads=4, memory_limit="2GB", min_free_disk=20 * 1
                     "entities",
                     [entities],
                     f"SELECT {ENTITY_COLUMNS}, {derived} FROM {read([entities])} ORDER BY entity_key, label",
+                    row_group_size=4096,
                 )
                 terms = ",".join("'" + term + "'" for term in TERMS)
                 # Preserve exactly one row per source relation, including rows with
@@ -188,6 +195,14 @@ def build_indexes(engine, *, threads=4, memory_limit="2GB", min_free_disk=20 * 1
                     list_distinct(list_transform(list_filter(annotations, a -> a.scope='relation' AND a.term IN ({terms})),
                         a -> struct_pack(term := a.term, value := a.value, scope := a.scope))) AS annotations
                     FROM {read([relations])}""",
+                )
+                # The relations in their original row order with small row groups: a page of
+                # relations reads a few rows by number, not whole 100k-row groups.
+                build(
+                    "relation_rows",
+                    [relations],
+                    f"SELECT * FROM {format_read_parquet([relations])}",
+                    row_group_size=2048,
                 )
                 # Relations by endpoint, sorted by entity key, with each relation's row in
                 # the original file so a relation is counted once.
