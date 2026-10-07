@@ -8,7 +8,7 @@ from omnipath_core.interaction_profiles import (
     relation_qualifiers,
 )
 from omnipath_core import relation_key
-from table_fixture import rewrite_resource
+from omnipath_core.fixtures import rewrite_resource
 
 
 def test_qualified_labels_survive_parquet_list_and_details(tmp_path):

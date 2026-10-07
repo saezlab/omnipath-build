@@ -4,7 +4,7 @@ from pathlib import Path
 from omnipath_api.engine import ParquetServingEngine
 from omnipath_api.server import create_app
 from fastapi.testclient import TestClient
-from table_fixture import write_resource
+from omnipath_core.fixtures import write_resource
 
 
 def test_scoped_ontology_search_deduplicates_and_never_leaks_global_terms():

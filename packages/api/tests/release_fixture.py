@@ -7,7 +7,7 @@ import pyarrow.parquet as pq
 
 from omnipath_core import SERVING_SCHEMA_VERSION
 from omnipath_core.keys import entity_key, relation_key
-from table_fixture import write_resource as write_tables
+from omnipath_core.fixtures import write_resource as write_tables
 from omnipath_core.source_attributes import (
     CELLULAR_LOCATION,
     CONVERSION_DIRECTION,

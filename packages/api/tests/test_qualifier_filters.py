@@ -7,7 +7,7 @@ import pyarrow.parquet as pq
 import pytest
 
 from omnipath_api.engine import ParquetServingEngine
-from table_fixture import rewrite_resource
+from omnipath_core.fixtures import rewrite_resource
 
 
 @pytest.fixture

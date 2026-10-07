@@ -2,7 +2,7 @@ from fastapi.testclient import TestClient
 from omnipath_api.engine import ParquetServingEngine
 from omnipath_api.server import create_app
 from omnipath_api.store.inventory import ReleaseStore
-from table_fixture import nested_rows, rewrite_resource, write_resource
+from omnipath_core.fixtures import nested_rows, rewrite_resource, write_resource
 
 
 def resource(root, version, label):

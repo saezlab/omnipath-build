@@ -8,7 +8,7 @@ from pathlib import Path
 from omnipath_api.engine import ParquetServingEngine
 
 from serving_fixtures import key, write_dataset
-from table_fixture import write_resource
+from omnipath_core.fixtures import write_resource
 
 
 def _write_resource(root: Path, resource: str, version: str, *, n_relations: int = 1) -> Path:

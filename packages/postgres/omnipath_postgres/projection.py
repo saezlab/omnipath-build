@@ -19,7 +19,7 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from omnipath_postgres.parquet_queries import _literal, _scan, validate_resource
+from omnipath_postgres.parquet_queries import _literal, _scan, quantity_sql, validate_inputs
 from omnipath_postgres.releases import PinnedRelease, ResourceSelection
 
 
@@ -183,67 +183,91 @@ def _key(*expressions: str) -> str:
     return "to_json(list_value(" + ",".join(f"{item}::VARCHAR" for item in expressions) + "))"
 
 
+_ENTITY_COLUMNS = (
+    "entity_key, entity_type, namespace, identifier, taxon, label, has_hierarchy, "
+    "parent_count, child_count, reference_entity_key, gene_reference_keys, "
+    "identifier_count, annotation_count"
+)
+_RELATION_COLUMNS = (
+    "relation_key, statement_kind, subject_entity_key, subject_reference_entity_key, "
+    "subject_label, subject_type, predicate, object_entity_key, object_reference_entity_key, "
+    "object_label, object_type, taxon, is_directed, sign, category, interaction_class, "
+    "sources, evidence_count, annotation_count"
+)
+
+
 def _create_inputs(con: Any, resources: tuple[ResourceSelection, ...]) -> None:
+    """Stage each pinned resource's published tables, with resource and version.
+
+    Child rows carry their owner's key (entity_key / relation_key) instead of the
+    resource-local entity_id / relation_id, and an ``item`` struct of their fields.
+    """
     con.execute("""CREATE OR REPLACE MACRO ap_uuid(value) AS (
         (substr(md5(value),1,8)||'-'||substr(md5(value),9,4)||'-'||
          substr(md5(value),13,4)||'-'||substr(md5(value),17,4)||'-'||
          substr(md5(value),21,12))::UUID)""")
-    for table, filename in (
-        ("ap_entity_raw", "entities.parquet"),
-        ("ap_statement_raw", "relations.parquet"),
-    ):
-        selects = [
-            f"SELECT {_literal(resource.source)}::VARCHAR AS resource, "
-            f'{_literal(resource.version)}::VARCHAR AS "version", p.* '
-            f"FROM {_scan(resource.directory, filename)} p"
-            for resource in resources
-        ]
-        con.execute(f"CREATE OR REPLACE TABLE {table} AS " + " UNION ALL ".join(selects))
-    # Validate the captured local inputs once; never scan remote Parquets again here.
-    validate_resource(
-        con,
-        resources[0].directory,
-        entities_scan="ap_entity_raw",
-        relations_scan="ap_statement_raw",
+    quantity = quantity_sql()
+
+    def stage(table: str, select: Callable[[Callable[[str], str]], str]) -> None:
+        parts = []
+        for resource in resources:
+            def scan(name: str, resource: ResourceSelection = resource) -> str:
+                return _scan(resource.directory, f"{name}.parquet")
+
+            parts.append(
+                f"SELECT {_literal(resource.source)}::VARCHAR AS resource, "
+                f'{_literal(resource.version)}::VARCHAR AS "version", q.* '
+                f"FROM ({select(scan)}) q"
+            )
+        con.execute(f"CREATE OR REPLACE TABLE {table} AS " + " UNION ALL ".join(parts))
+
+    stage("ap_entity_raw", lambda scan: f"SELECT {_ENTITY_COLUMNS} FROM {scan('entity')}")
+    stage("ap_statement_raw", lambda scan: f"SELECT {_RELATION_COLUMNS} FROM {scan('relation')}")
+    stage(
+        "ap_identifier_raw",
+        lambda scan: f"""SELECT e.entity_key,
+            struct_pack(ns:=i.ns,id:=i.id,is_canonical:=i.is_canonical,source:=i.source) item,
+            i.ordinal::BIGINT ordinal
+            FROM {scan('entity_identifier')} i JOIN {scan('entity')} e USING(entity_id)""",
     )
-
-
-def _create_flat_inputs(con: Any) -> None:
-    con.execute("""CREATE OR REPLACE TABLE ap_identifier_raw AS
-        SELECT e.resource, e.version, e.entity_key,
-            unnest(e.identifiers) item,
-            (generate_subscripts(e.identifiers,1)-1)::BIGINT ordinal
-        FROM ap_entity_raw e""")
-    con.execute("""CREATE OR REPLACE TABLE ap_evidence_raw AS
-        SELECT r.resource, r.version, r.relation_key,
-            unnest(r.evidence) item,
-            (generate_subscripts(r.evidence,1)-1)::BIGINT ordinal
-        FROM ap_statement_raw r""")
-    con.execute("""CREATE OR REPLACE TABLE ap_annotation_raw AS
-        SELECT resource,version,'entity'::VARCHAR owner_kind,entity_key owner_key,
-            -1::BIGINT evidence_ordinal,
-            ordinal,
-            a.term,a.value,a.quantity,a.source,a.dataset,NULL::VARCHAR AS "scope"
-        FROM (SELECT resource,version,entity_key,
-                     (generate_subscripts(annotations,1)-1)::BIGINT ordinal,
-                     unnest(annotations) a
-              FROM ap_entity_raw)
-        UNION ALL
-        SELECT resource,version,'relation',relation_key,-1::BIGINT,
-            ordinal,
-            a.term,a.value,a.quantity,a.source,a.dataset,a.scope
-        FROM (SELECT resource,version,relation_key,
-                     (generate_subscripts(annotations,1)-1)::BIGINT ordinal,
-                     unnest(annotations) a
-              FROM ap_statement_raw)
-        UNION ALL
-        SELECT resource,version,'evidence',relation_key,evidence_ordinal,
-            ordinal,
+    stage(
+        "ap_evidence_raw",
+        lambda scan: f"""SELECT r.relation_key,
+            struct_pack(source:=v.source,dataset:=v.dataset,row_id:=v.row_id,
+                upstream_id:=v.upstream_id,annotations:=v.annotations,
+                subject_molecular_form:=v.subject_molecular_form,
+                object_molecular_form:=v.object_molecular_form) item,
+            v.ordinal::BIGINT ordinal
+            FROM {scan('relation_evidence')} v JOIN {scan('relation')} r USING(relation_id)""",
+    )
+    stage(
+        "ap_entity_evidence_raw",
+        lambda scan: f"""SELECT e.entity_key,
+            struct_pack(source:=v.source,dataset:=v.dataset,row_id:=v.row_id,
+                upstream_id:=v.upstream_id,annotations:=v.annotations,
+                molecular_form:=v.molecular_form) item,
+            v.ordinal::BIGINT ordinal
+            FROM {scan('entity_evidence')} v JOIN {scan('entity')} e USING(entity_id)""",
+    )
+    stage(
+        "ap_annotation_raw",
+        lambda scan: f"""SELECT 'entity'::VARCHAR owner_kind,e.entity_key owner_key,
+            -1::BIGINT evidence_ordinal,a.ordinal::BIGINT ordinal,a.term,a.value,
+            {quantity} quantity,a.source,a.dataset,NULL::VARCHAR AS "scope"
+            FROM {scan('entity_annotation')} a JOIN {scan('entity')} e USING(entity_id)
+            UNION ALL
+            SELECT 'relation',r.relation_key,-1::BIGINT,a.ordinal::BIGINT,a.term,a.value,
+            {quantity},a.source,a.dataset,a.scope
+            FROM {scan('relation_annotation')} a JOIN {scan('relation')} r USING(relation_id)""",
+    )
+    con.execute("""INSERT INTO ap_annotation_raw
+        SELECT resource,version,'evidence',relation_key,evidence_ordinal,ordinal,
             a.term,a.value,a.quantity,a.source,a.dataset,a.scope
         FROM (SELECT resource,version,relation_key,ordinal evidence_ordinal,
                      (generate_subscripts(item.annotations,1)-1)::BIGINT ordinal,
                      unnest(item.annotations) a
               FROM ap_evidence_raw)""")
+    validate_inputs(con)
 
 
 def _namespace_names() -> dict[str, str]:
@@ -647,7 +671,7 @@ def _create_statement_projection(con: Any) -> None:
         FROM ap_statement r
         JOIN ap_data_source ds ON ds.name=r.resource
         JOIN ap_dataset d ON d.source_id=ds.id AND d.name={_literal(CLAIM_DATASET)}
-        WHERE coalesce(len(r.evidence),0)=0""")
+        ANTI JOIN ap_evidence_raw e USING(resource,version,relation_key)""")
     _checked(
         con,
         """SELECT source_id,dataset_id,row_id FROM ap_evidence
@@ -1039,8 +1063,7 @@ def _queries(*, retain_published_provenance: bool = False) -> tuple[CopyQuery, .
         UNION ALL
         SELECT resource,version,'entity',entity_key,ordinal,NULL::UUID,
         item.source,item.dataset,item.row_id,item.upstream_id,to_json(item)::VARCHAR
-        FROM (SELECT resource,version,entity_key,unnest(evidence) item,
-              (generate_subscripts(evidence,1)-1)::BIGINT ordinal FROM ap_entity_raw)""",
+        FROM ap_entity_evidence_raw""",
     )
     if retain_published_provenance:
         add(
@@ -1050,7 +1073,7 @@ def _queries(*, retain_published_provenance: bool = False) -> tuple[CopyQuery, .
             "annotations_present",
             """SELECT resource,version,entity_key,entity_id,entity_evidence_id,
             label,namespace,identifier,entity_type,taxon,has_hierarchy,parent_count,child_count,
-            identifiers IS NOT NULL,annotations IS NOT NULL FROM ap_entity_occurrence""",
+            identifier_count>0,annotation_count>0 FROM ap_entity_occurrence""",
         )
         add(
             "parquet_statement",
@@ -1061,7 +1084,9 @@ def _queries(*, retain_published_provenance: bool = False) -> tuple[CopyQuery, .
             f"""SELECT resource,version,relation_key,relation_id,
             statement_kind,subject_entity_id,object_entity_id,predicate_id,subject_label,subject_type,
             object_label,object_type,taxon,is_directed,sign,category,interaction_class,evidence_count,
-            {_pg_array("sources")},evidence IS NOT NULL,annotations IS NOT NULL FROM ap_statement""",
+            {_pg_array("sources")},EXISTS (SELECT 1 FROM ap_evidence_raw e WHERE
+                e.resource=s.resource AND e.version=s.version AND e.relation_key=s.relation_key),
+            annotation_count>0 FROM ap_statement s""",
         )
         add(
             "parquet_evidence",
@@ -1127,8 +1152,6 @@ def prepare_aligned_release(
     resources = _resources(release)
     report("validate_and_stage", resources=len(resources))
     _create_inputs(connection, resources)
-    report("flatten_published_arrays")
-    _create_flat_inputs(connection)
     report("validate_canonical_inputs")
     _validate_canonical_inputs(connection)
     report("dimensions")

@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 from omnipath_api.engine import ParquetServingEngine
 from omnipath_api.server import create_app
 from omnipath_core.keys import entity_key
-from table_fixture import write_resource
+from omnipath_core.fixtures import write_resource
 
 CONNECTIVITY = "AAAAAAAAAAAAAA"
 INCHI_A = CONNECTIVITY + "-BBBBBBBBBB-C"

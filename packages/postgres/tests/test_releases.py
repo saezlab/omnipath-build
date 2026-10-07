@@ -9,6 +9,9 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
+from omnipath_core.fixtures import write_manifest
+from omnipath_core.fixtures import write_resource as write_tables
+from omnipath_core.versioning import SERVING_SCHEMA_VERSION
 from omnipath_postgres.releases import (
     FILE_SCHEMAS,
     ReleaseValidationError,
@@ -19,24 +22,10 @@ from omnipath_postgres.releases import (
 
 def write_resource(root, source="signor", version="1.0.0"):
     directory = root / "resources" / source / version
-    directory.mkdir(parents=True)
-    files = {}
-    for name, schema in FILE_SCHEMAS.items():
-        path = directory / name
-        pq.write_table(pa.Table.from_pylist([], schema=schema), path)
-        files[name] = {
-            "rows": 0,
-            "size_bytes": path.stat().st_size,
-            "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
-        }
-    manifest = {
-        "schema_version": 1,
-        "serving_schema_version": 4,
-        "resource": source,
-        "version": version,
-        "files": files,
-        "provenance": {"dependencies": {"pypath-omnipath": "fixture"}},
-    }
+    write_tables(directory)
+    manifest = write_manifest(
+        directory, source, version, provenance={"dependencies": {"pypath-omnipath": "fixture"}}
+    )
     write_json(directory / "build_manifest.json", manifest)
     return directory, manifest
 
@@ -66,13 +55,13 @@ def test_selection_is_pinned_deeply_immutable_and_preserves_build_manifest(relea
     assert resource.source == "signor"
     assert resource.version == "1.0.0"
     assert resource.schema_version == 1
-    assert resource.serving_schema_version == 4
+    assert resource.serving_schema_version == SERVING_SCHEMA_VERSION
     assert resource.directory == directory
     assert resource.manifest_json == (directory / "build_manifest.json").read_text()
     assert resource.manifest_sha256 == hashlib.sha256(resource.manifest_json.encode()).hexdigest()
-    assert resource.entities_path == directory / "entities.parquet"
-    assert resource.relations_path == directory / "relations.parquet"
-    assert resource.payloads_path == directory / "evidence_payloads.parquet"
+    assert resource.table_path("entity") == directory / "entity.parquet"
+    assert resource.table_path("relation") == directory / "relation.parquet"
+    assert resource.table_path("evidence_payloads") == directory / "evidence_payloads.parquet"
     assert all(artifact.rows == 0 for artifact in resource.files.values())
     with pytest.raises(FrozenInstanceError):
         resource.version = "2"
@@ -81,7 +70,7 @@ def test_selection_is_pinned_deeply_immutable_and_preserves_build_manifest(relea
     with pytest.raises(TypeError):
         resource.manifest["provenance"]["dependencies"]["pypath-omnipath"] = "changed"
     with pytest.raises(TypeError):
-        resource.files["entities.parquet"] = None
+        resource.files["entity.parquet"] = None
 
 
 def test_canonical_digest_ignores_json_order_and_whitespace(release):
@@ -200,7 +189,7 @@ def test_rejects_ambiguous_or_invalid_json(release, content):
         ("version", "2"),
         ("schema_version", 2),
         ("schema_version", True),
-        ("serving_schema_version", 3),
+        ("serving_schema_version", SERVING_SCHEMA_VERSION - 1),
         ("serving_schema_version", None),
     ],
 )
@@ -226,7 +215,7 @@ def test_rejects_wrong_resource_or_schema_versions(release, field, value):
 )
 def test_rejects_unverified_artifact_metadata(release, field, value, match):
     root, path, directory, _, manifest = release
-    manifest["files"]["entities.parquet"][field] = value
+    manifest["files"]["entity.parquet"][field] = value
     write_json(directory / "build_manifest.json", manifest)
     with pytest.raises(ReleaseValidationError, match=match):
         load_release(root, path)
@@ -234,7 +223,7 @@ def test_rejects_unverified_artifact_metadata(release, field, value, match):
 
 def test_rejects_schema_mismatch_even_with_updated_checksum(release):
     root, path, directory, _, manifest = release
-    artifact = directory / "entities.parquet"
+    artifact = directory / "entity.parquet"
     pq.write_table(pa.table({"wrong_column": ["wrong"]}), artifact)
     manifest["files"][artifact.name] = {
         "rows": 1,
@@ -248,7 +237,7 @@ def test_rejects_schema_mismatch_even_with_updated_checksum(release):
 
 @pytest.mark.parametrize(
     "name",
-    ["entities.parquet", "relations.parquet", "evidence_payloads.parquet", "build_manifest.json"],
+    ["entity.parquet", "relation.parquet", "evidence_payloads.parquet", "build_manifest.json"],
 )
 def test_rejects_missing_artifacts(release, name):
     root, path, directory, *_ = release
@@ -259,16 +248,16 @@ def test_rejects_missing_artifacts(release, name):
 
 def test_rejects_missing_and_extra_file_entries(release):
     root, path, directory, _, manifest = release
-    manifest["files"]["../entities.parquet"] = manifest["files"].pop("entities.parquet")
+    manifest["files"]["../entity.parquet"] = manifest["files"].pop("entity.parquet")
     write_json(directory / "build_manifest.json", manifest)
-    with pytest.raises(ReleaseValidationError, match="exactly the three"):
+    with pytest.raises(ReleaseValidationError, match="exactly the resource and serving tables"):
         load_release(root, path)
 
 
 @pytest.mark.parametrize("outside", [False, True])
 def test_rejects_symlinked_artifacts_inside_or_outside_root(release, outside):
     root, path, directory, *_ = release
-    artifact = directory / "entities.parquet"
+    artifact = directory / "entity.parquet"
     moved = (root.parent if outside else root) / "linked.parquet"
     artifact.rename(moved)
     artifact.symlink_to(moved)
@@ -298,7 +287,7 @@ def test_validation_reads_metadata_and_hash_chunks_without_materializing_rows(re
     monkeypatch.setattr(pq, "read_table", fail)
     monkeypatch.setattr(pq.ParquetFile, "read", fail)
     monkeypatch.setattr(pq.ParquetFile, "iter_batches", fail)
-    assert load_release(root, path).resources[0].files["entities.parquet"].rows == 0
+    assert load_release(root, path).resources[0].files["entity.parquet"].rows == 0
 
 
 def test_prototype_taxonomy_reference_is_pinned_and_verified(release):
@@ -360,7 +349,7 @@ def test_recheck_rejects_changed_resource_manifest(release):
 def test_recheck_rejects_rewritten_parquet(release):
     root, path, directory, *_ = release
     pinned = load_release(root, path)
-    artifact = directory / "entities.parquet"
+    artifact = directory / "entity.parquet"
     schema = FILE_SCHEMAS[artifact.name]
     pq.write_table(pa.Table.from_pylist([{"identifier": "new"}], schema=schema), artifact)
     with pytest.raises(

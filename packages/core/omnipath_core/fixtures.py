@@ -1,4 +1,4 @@
-"""Write a resource version's tables from readable nested fixture rows.
+"""Test fixtures: write a resource version's tables from readable nested rows.
 
 Fixtures describe entities with their identifiers, annotations and evidence, and
 relations with their annotations and evidence, as the API returns them; this writes
@@ -57,7 +57,7 @@ def write_resource(folder, entities=(), relations=(), payloads=None):
                 parent_count=entity.get("parent_count") or 0,
                 child_count=entity.get("child_count") or 0,
                 reference_entity_key=entity.get("reference_entity_key"),
-                gene_reference_keys=entity.get("gene_reference_keys") or [],
+                gene_reference_keys=entity.get("gene_reference_keys"),
                 group_connectivity=_connectivity(entity),
                 identifier_count=len(identifiers),
                 annotation_count=len(annotations),
@@ -144,7 +144,7 @@ def write_resource(folder, entities=(), relations=(), payloads=None):
                     **_flat_quantity(item),
                     source=item.get("source"),
                     dataset=item.get("dataset"),
-                    scope=item.get("scope") or "relation",
+                    scope=item.get("scope", "relation"),
                 )
             )
         for ordinal, item in enumerate(evidence):
@@ -187,13 +187,29 @@ def write_resource(folder, entities=(), relations=(), payloads=None):
 
 
 def write_manifest(folder, resource, version, **extra):
-    """A minimal build manifest naming the written tables."""
+    """A valid build manifest for the tables written in ``folder``; returns it."""
+    import hashlib
+
+    from omnipath_core.versioning import BUILD_SCHEMA_VERSION, SERVING_SCHEMA_VERSION
+
+    folder = Path(folder)
     files = {
-        path.name: {"rows": pq.read_metadata(path).num_rows, "sha256": "0" * 64, "size_bytes": path.stat().st_size}
-        for path in sorted(Path(folder).glob("*.parquet"))
+        path.name: dict(
+            rows=pq.read_metadata(path).num_rows,
+            size_bytes=path.stat().st_size,
+            sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+        )
+        for path in sorted(folder.glob("*.parquet"))
     }
-    manifest = dict(resource=resource, version=version, files=files, **extra)
-    (Path(folder) / "build_manifest.json").write_text(json.dumps(manifest))
+    manifest = dict(
+        schema_version=BUILD_SCHEMA_VERSION,
+        serving_schema_version=SERVING_SCHEMA_VERSION,
+        resource=resource,
+        version=version,
+        files=files,
+        **extra,
+    )
+    (folder / "build_manifest.json").write_text(json.dumps(manifest))
     return manifest
 
 

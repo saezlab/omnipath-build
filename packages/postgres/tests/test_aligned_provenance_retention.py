@@ -9,7 +9,6 @@ from collections import Counter
 from contextlib import closing
 from copy import deepcopy
 from datetime import datetime
-import hashlib
 import json
 from types import SimpleNamespace
 import uuid
@@ -21,7 +20,7 @@ import pyarrow.parquet as pq
 import pytest
 
 from omnipath_postgres import loader as aligned_loader, projection as aligned_projection
-from omnipath_postgres.releases import FILE_SCHEMAS
+from omnipath_core.fixtures import nested_rows, write_manifest
 import test_main_parity_contract as reference_contract
 from test_aligned_ontology_memory import _serving_rows
 from test_main_parquet_semantics import _ontology_fixture
@@ -152,7 +151,7 @@ def _fixture(root):
         sum(
             pq.ParquetFile(r.directory / name).metadata.num_rows
             for r in selected
-            for name in ("entities.parquet", "relations.parquet")
+            for name in ("entity.parquet", "relation.parquet")
         )
         == 18
     )
@@ -168,11 +167,11 @@ def _published_counts(selected):
         annotation_occurrences=0,
     )
     for resource in selected:
-        for entity in pq.read_table(resource.directory / "entities.parquet").to_pylist():
+        for entity in nested_rows(resource.directory / "entity.parquet"):
             counts["entity_rows"] += 1
             counts["identifier_occurrences"] += len(entity["identifiers"] or ())
             counts["annotation_occurrences"] += len(entity["annotations"] or ())
-        for statement in pq.read_table(resource.directory / "relations.parquet").to_pylist():
+        for statement in nested_rows(resource.directory / "relation.parquet"):
             counts["statement_rows"] += 1
             counts["annotation_occurrences"] += len(statement["annotations"] or ())
             for evidence in statement["evidence"] or ():
@@ -361,25 +360,11 @@ def _pinned_fixture(root):
         target.parent.mkdir(parents=True, exist_ok=True)
         resource.directory.rename(target)
         versions[resource.source] = version
-        files = {}
-        for name in FILE_SCHEMAS:
-            path = target / name
-            files[name] = dict(
-                rows=pq.ParquetFile(path).metadata.num_rows,
-                size_bytes=path.stat().st_size,
-                sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
-            )
-        (target / "build_manifest.json").write_text(
-            json.dumps(
-                dict(
-                    schema_version=1,
-                    serving_schema_version=4,
-                    resource=resource.source,
-                    version=version,
-                    files=files,
-                    provenance={"dependencies": {"pypath-omnipath": "fixture"}},
-                )
-            )
+        write_manifest(
+            target,
+            resource.source,
+            version,
+            provenance={"dependencies": {"pypath-omnipath": "fixture"}},
         )
     path = root / "release.json"
     path.write_text(json.dumps(dict(schema_version=1, version="2026.10.2", resources=versions)))

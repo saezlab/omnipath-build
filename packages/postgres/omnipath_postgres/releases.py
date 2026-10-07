@@ -18,7 +18,7 @@ from typing import Any
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from omnipath_core.schema import ENTITY_SCHEMA, PAYLOAD_SCHEMA, RELATION_SCHEMA
+from omnipath_core.schema import PUBLISHED_TABLES
 from omnipath_core.versioning import (
     BUILD_SCHEMA_VERSION as BUILD_SCHEMA_VERSION,
     RELEASE_SCHEMA_VERSION as RELEASE_SCHEMA_VERSION,
@@ -41,11 +41,7 @@ from .locations import (
 
 
 FILE_SCHEMAS = MappingProxyType(
-    {
-        "entities.parquet": ENTITY_SCHEMA,
-        "relations.parquet": RELATION_SCHEMA,
-        "evidence_payloads.parquet": PAYLOAD_SCHEMA,
-    }
+    {f"{table}.parquet": schema for table, schema in PUBLISHED_TABLES.items()}
 )
 FILES = RESOURCE_FILES
 
@@ -70,7 +66,7 @@ class ResourceSelection:
     """One exact resource version, with immutable metadata and verified paths.
 
     ``schema_version`` describes its build manifest; ``serving_schema_version``
-    describes the three Parquet tables. ``manifest_json`` preserves the source
+    describes its Parquet tables. ``manifest_json`` preserves the source
     manifest text, while ``manifest_sha256`` hashes its original UTF-8 bytes.
     """
 
@@ -85,17 +81,9 @@ class ResourceSelection:
     manifest_sha256: str
     files: Mapping[str, ParquetArtifact]
 
-    @property
-    def entities_path(self) -> Location:
-        return self.files["entities.parquet"].path
-
-    @property
-    def relations_path(self) -> Location:
-        return self.files["relations.parquet"].path
-
-    @property
-    def payloads_path(self) -> Location:
-        return self.files["evidence_payloads.parquet"].path
+    def table_path(self, table: str) -> Location:
+        """The verified path of one published table, e.g. ``entity``."""
+        return self.files[f"{table}.parquet"].path
 
 
 @dataclass(frozen=True)

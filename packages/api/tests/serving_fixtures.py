@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
-from table_fixture import write_resource
+from omnipath_core.fixtures import write_resource
 
 
 def key(value):

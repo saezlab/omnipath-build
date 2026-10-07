@@ -1,7 +1,7 @@
 """Ontology projection uses declared statement context, not resource/type lists."""
 
 from omnipath_api.engine import ParquetServingEngine
-from table_fixture import write_resource
+from omnipath_core.fixtures import write_resource
 
 
 def test_composition_is_not_an_ontology_but_axioms_are(tmp_path):

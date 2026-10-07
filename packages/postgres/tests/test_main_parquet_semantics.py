@@ -80,10 +80,9 @@ def test_quantity_parquet_projection_retains_complete_structured_rows_and_identi
         dict(base, source_field="KD"),
         dict(base, has_binary_relation="greater_than"),
         dict(base, has_numeric_value=13.5),
-        dict.fromkeys(base),
     ]
     # Same published text and term: structured fields alone distinguish the
-    # quantities. An all-null struct also differs from an absent quantity.
+    # quantities. (Published tables store a quantity as columns: all null is none.)
     published_value = "original published measurement"
     measurements = [
         annotation(

@@ -19,11 +19,11 @@ import uuid
 
 import duckdb
 import pyarrow as pa
-import pyarrow.parquet as pq
 import psycopg2
 from psycopg2 import sql
 import pytest
 
+from omnipath_core.fixtures import nested_rows
 from omnipath_build.silver import SilverExtractor
 from omnipath_build.writer import ParquetWriter
 from omnipath_postgres import loader as aligned_loader, projection as aligned_projection
@@ -416,8 +416,8 @@ def _writer_fixture(directory, source, namespace):
     writer = ParquetWriter(directory)
     writer.append_observations(extractor, _DeclaredTargets())
     writer.close()
-    entities = pq.read_table(directory / "entities.parquet").to_pylist()
-    statements = pq.read_table(directory / "relations.parquet").to_pylist()
+    entities = nested_rows(directory / "entity.parquet")
+    statements = nested_rows(directory / "relation.parquet")
     assert len(entities) + len(statements) == 8
     assert {row["statement_kind"] for row in statements} == {"ontology"}
     return SimpleNamespace(source=source, version="writer-v1", directory=directory), entities, facts
@@ -447,7 +447,7 @@ def test_real_publisher_ontology_kind_projects_edges_and_reports_unknown_scope(
         if legacy_kind:
             # The deprecated adapter spelling remains supported, while the
             # first parameter case checks unmodified real publisher outputs.
-            rows = pq.read_table(resource.directory / "relations.parquet").to_pylist()
+            rows = nested_rows(resource.directory / "relation.parquet")
             for row in rows:
                 row["statement_kind"] = "ontology_axiom"
             write_fixture(resource.directory, entities=entities, relations=rows, payloads=[])

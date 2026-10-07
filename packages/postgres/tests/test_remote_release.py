@@ -1,19 +1,18 @@
 """Remote pins retain validation and full relational projection parity."""
 
 from contextlib import contextmanager
-import hashlib
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 import json
 from pathlib import Path
 from threading import Thread
 
 import duckdb
-import pyarrow.parquet as pq
 import pytest
 
 from omnipath_postgres.projection import prepare_aligned_release
 from omnipath_postgres.locations import HTTPRangeFile, validate_url
 from omnipath_postgres.releases import FILES, ReleaseValidationError, load_release, verify_release
+from omnipath_core.fixtures import write_manifest
 from published_fixture import write_fixture
 
 
@@ -60,25 +59,7 @@ def published(tmp_path):
     directory = tmp_path / "resources/fixture/1"
     directory.mkdir(parents=True)
     write_fixture(directory)
-    files = {
-        name: {
-            "rows": pq.read_metadata(directory / name).num_rows,
-            "size_bytes": (directory / name).stat().st_size,
-            "sha256": hashlib.sha256((directory / name).read_bytes()).hexdigest(),
-        }
-        for name in FILES
-    }
-    (directory / "build_manifest.json").write_text(
-        json.dumps(
-            {
-                "schema_version": 1,
-                "serving_schema_version": 4,
-                "resource": "fixture",
-                "version": "1",
-                "files": files,
-            }
-        )
-    )
+    write_manifest(directory, "fixture", "1")
     release = tmp_path / "releases/2026.10.json"
     release.parent.mkdir()
     release.write_text(
@@ -94,7 +75,7 @@ def test_remote_validation_and_projection_match_local_complete_rows(published):
         remote = load_release(base, base + "/releases/2026.10.json")
         assert remote.sha256 == local.sha256
         assert remote.resources[0].manifest_sha256 == local.resources[0].manifest_sha256
-        assert remote.resources[0].entities_path.startswith(base)
+        assert remote.resources[0].table_path("entity").startswith(base)
         verify_release(remote)
         with duckdb.connect() as left, duckdb.connect() as right:
             a = prepare_aligned_release(left, local)
@@ -143,7 +124,7 @@ def test_remote_manifest_change_is_rejected(published):
 def test_missing_range_support_is_rejected(published):
     root, _, _ = published
     with endpoint(root, ranges=False) as base:
-        with HTTPRangeFile(base + "/resources/fixture/1/entities.parquet") as stream:
+        with HTTPRangeFile(base + "/resources/fixture/1/entity.parquet") as stream:
             with pytest.raises(OSError, match="byte ranges"):
                 stream.read(4)
 

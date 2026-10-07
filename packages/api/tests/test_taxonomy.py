@@ -10,7 +10,7 @@ from omnipath_core.taxonomy import taxon_names
 from omnipath_api.engine import ParquetServingEngine
 from omnipath_api.server import create_app
 from omnipath_api.store.inventory import ReleaseStore
-from table_fixture import rewrite_resource
+from omnipath_core.fixtures import rewrite_resource
 
 
 def dump(path, scientific="Arabidopsis thaliana"):

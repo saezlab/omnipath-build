@@ -3,7 +3,7 @@ import io
 import pyarrow.parquet as pq
 import pytest
 from omnipath_api.engine import ParquetServingEngine
-from table_fixture import nested_rows, rewrite_resource, write_resource
+from omnipath_core.fixtures import nested_rows, rewrite_resource, write_resource
 
 
 @pytest.fixture

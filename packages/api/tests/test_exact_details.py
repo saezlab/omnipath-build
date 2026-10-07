@@ -1,7 +1,7 @@
 from fastapi.testclient import TestClient
 from omnipath_api.engine import ParquetServingEngine
 from omnipath_api.server import create_app
-from table_fixture import rewrite_resource, write_resource
+from omnipath_core.fixtures import rewrite_resource, write_resource
 
 
 def test_details_never_resolve_accessions_aliases_or_text(tmp_path, monkeypatch):

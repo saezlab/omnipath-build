@@ -15,7 +15,7 @@ from omnipath_api.engine import ParquetServingEngine
 from omnipath_api.releases import ReleaseStore
 from omnipath_api.server import create_app
 from omnipath_core.versioning import RESOURCE_FILES
-from table_fixture import write_resource as write_tables
+from omnipath_core.fixtures import write_resource as write_tables
 
 
 def write_resource(root, source, version, label):

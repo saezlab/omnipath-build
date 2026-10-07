@@ -2,10 +2,7 @@
 
 from copy import deepcopy
 
-import pyarrow as pa
-import pyarrow.parquet as pq
-
-from omnipath_core.schema import ENTITY_SCHEMA, PAYLOAD_SCHEMA, RELATION_SCHEMA
+from omnipath_core.fixtures import write_resource
 
 ENTITY_A = "published::protein/A:'α"
 ENTITY_B = "published::protein/B"
@@ -57,7 +54,7 @@ def fixture_rows():
     identifier = {"ns": "uniprot", "id": "P04637", "is_canonical": True, "source": "source"}
     a["identifiers"] = [deepcopy(identifier), deepcopy(identifier)]
     quantity = annotation(quantity=deepcopy(QUANTITY))
-    quantity.pop("scope")  # ENTITY_SCHEMA intentionally has no scope field.
+    quantity.pop("scope")  # Entity annotations have no scope.
     scalar = annotation("description", value="A source description with α")
     scalar.pop("scope")
     a["annotations"] = [quantity, deepcopy(scalar), deepcopy(scalar)]
@@ -128,12 +125,5 @@ def write_fixture(directory, *, entities=None, relations=None, payloads=None):
         relations if relations is not None else defaults[1],
         payloads if payloads is not None else defaults[2],
     )
-    directory.mkdir(parents=True, exist_ok=True)
-    for name, schema, items in zip(
-        ("entities.parquet", "relations.parquet", "evidence_payloads.parquet"),
-        (ENTITY_SCHEMA, RELATION_SCHEMA, PAYLOAD_SCHEMA),
-        rows,
-        strict=True,
-    ):
-        pq.write_table(pa.Table.from_pylist(items, schema=schema), directory / name)
+    write_resource(directory, *rows)
     return rows

@@ -4,15 +4,15 @@ from copy import deepcopy
 import json
 
 import duckdb
-import pyarrow.parquet as pq
 import pytest
 
+from omnipath_core.fixtures import nested_rows
 from omnipath_core.molecular_forms import normalize_molecular_form
 from omnipath_core.versioning import SERVING_SCHEMA_VERSION
 from omnipath_postgres.projection import companion_ddl, prepare_aligned_release
 from omnipath_postgres.relational.db.schema import CONTENT_TABLES
 from test_aligned_projection import selected
-from published_fixture import ENTITY_A, ENTITY_B, RELATION, fixture_rows, write_fixture
+from published_fixture import ENTITY_A, ENTITY_B, ENTITY_C, RELATION, fixture_rows, write_fixture
 
 
 CONTEXT_TABLES = {
@@ -92,8 +92,10 @@ def rows(connection, plan, table):
 @pytest.mark.parametrize("retain", [False, True])
 def test_molecular_context_preserves_exact_pairings_standalone_and_virtual_keys(tmp_path, retain):
     selected, gene_a, gene_b = fixture(tmp_path)
-    originals = pq.read_table(tmp_path / "relations.parquet").to_pylist()[0]["evidence"]
-    standalone = pq.read_table(tmp_path / "entities.parquet").to_pylist()[2]["evidence"][0]
+    originals = nested_rows(tmp_path / "relation.parquet")[0]["evidence"]
+    standalone = next(
+        e for e in nested_rows(tmp_path / "entity.parquet") if e["entity_key"] == ENTITY_C
+    )["evidence"][0]
     with duckdb.connect() as connection:
         plan = prepare_aligned_release(connection, (selected,), retain_published_provenance=retain)
         assert CONTEXT_TABLES <= set(plan.counts)
@@ -140,7 +142,7 @@ def test_molecular_context_preserves_exact_pairings_standalone_and_virtual_keys(
 
 
 def test_context_is_mandatory_and_resettable_for_serving_four():
-    assert SERVING_SCHEMA_VERSION == 4
+    assert SERVING_SCHEMA_VERSION == 5
     assert CONTEXT_TABLES <= set(CONTENT_TABLES)
     ddl = companion_ddl("fixture")
     for table in CONTEXT_TABLES:
@@ -184,7 +186,7 @@ def test_local_context_copy_preserves_json_pairs_and_reset_clears_rows(tmp_path,
                 assert len(copied) == 4
                 assert copied[0][0] == "entity"
                 assert copied[0][2] is None
-                originals = pq.read_table(tmp_path / "relations.parquet").to_pylist()[0]["evidence"]
+                originals = nested_rows(tmp_path / "relation.parquet")[0]["evidence"]
                 assert [row[3] for row in copied[1:]] == originals
                 cursor.execute(
                     sql.SQL("""SELECT gene_reference_keys FROM {}.entity_reference_context

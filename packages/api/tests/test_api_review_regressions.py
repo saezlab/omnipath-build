@@ -20,7 +20,7 @@ from omnipath_api.jobs.worker import run_worker, worker_lock
 from omnipath_api.server import create_app
 from omnipath_api.settings import Settings
 from serving_fixtures import key, write_dataset
-from table_fixture import write_resource
+from omnipath_core.fixtures import write_resource
 
 
 @pytest.fixture
