@@ -7,7 +7,6 @@ evidence payloads as processing context directly for downstream canonicalization
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-import hashlib
 from .extract.observations import RawEntityObservation, RawRelationObservation
 from .merge_policy import preferred_label
 from omnipath_resolver.canonical.policy import PROTEIN_ENTITY_TYPES, RNA_ENTITY_TYPES
@@ -16,11 +15,6 @@ from typing import Any
 from omnipath_core import Relation
 from omnipath_core.naming import normalize_namespace
 from omnipath_core.measurements import quantity_dict
-from omnipath_core.source_attributes import (
-    SOURCE_RECORD_REFERENCE,
-    SOURCE_RECORD_SHA256_PREFIX,
-    SOURCE_RECORD_TYPE,
-)
 from omnipath_core.molecular_forms import (
     molecular_form_from_identifiers,
     normalize_molecular_form,
@@ -160,6 +154,10 @@ def _extract_taxon(entity: Any, ids: Sequence[tuple[str, str]]) -> str | None:
     return None
 
 
+# Annotation text that stands for a missing value.
+_NO_VALUE = frozenset({"", "nan", "none", "null"})
+
+
 class SilverExtractor:
     """Extracts Silver observations directly from inputs_v2 record streams."""
 
@@ -171,6 +169,31 @@ class SilverExtractor:
         self.payloads: list[dict[str, Any]] = []
         self.record_count = 0
         self.estimated_bytes = 0
+
+    def _annotations(self, owner: Any, scope: str | None) -> list[dict[str, Any]]:
+        """Annotation records of an entity, membership or relation, with ``scope``
+        (None for entity annotations). Annotations without a value are left out:
+        no quantity and no text, or a placeholder such as ``nan``."""
+        records = []
+        for ann in _field(owner, "annotations", ()) or ():
+            term = annotation_term(_field(ann, "term"))
+            value = _field(ann, "value")
+            quantity = quantity_dict(value)
+            # A quantity's fields are its own columns; its text value stays empty.
+            text = "" if quantity is not None else annotation_value(term, value) or ""
+            if quantity is None and text.strip().lower() in _NO_VALUE:
+                continue
+            record = {
+                "term": term,
+                "value": text,
+                "quantity": quantity,
+                "source": self.source,
+                "dataset": self.dataset,
+            }
+            if scope is not None:
+                record["scope"] = scope
+            records.append(record)
+        return records
 
     def _extract_entity(
         self,
@@ -264,21 +287,7 @@ class SilverExtractor:
         # Only standalone entity records persist global entity annotations.
         # Participant contextual annotations attach to the relation scope instead.
         if persist_annotations:
-            occurrence_annotations = []
-            for ann in _field(entity, "annotations", ()) or ():
-                raw_term = _field(ann, "term")
-                term = annotation_term(raw_term)
-                val = _field(ann, "value")
-                val_text = annotation_value(term, val) or ""
-                occurrence_annotations.append(
-                    {
-                        "term": term,
-                        "value": val_text,
-                        "quantity": quantity_dict(val),
-                        "source": self.source,
-                        "dataset": self.dataset,
-                    }
-                )
+            occurrence_annotations = self._annotations(entity, None)
             ent_record.annotations.extend(occurrence_annotations)
             ent_record.evidence.append(
                 {
@@ -305,20 +314,7 @@ class SilverExtractor:
             )
             is_parent = bool(_field(membership, "is_parent", False))
             parent_k, child_k = (m_key, key) if is_parent else (key, m_key)
-            m_anns: list[dict[str, Any]] = []
-            for ann in _field(membership, "annotations", ()) or ():
-                t = annotation_term(_field(ann, "term"))
-                v = _field(ann, "value")
-                m_anns.append(
-                    {
-                        "term": t,
-                        "value": annotation_value(t, v) or "",
-                        "quantity": quantity_dict(v),
-                        "source": self.source,
-                        "dataset": self.dataset,
-                        "scope": "relation",
-                    }
-                )
+            m_anns = self._annotations(membership, "relation")
             m_predicate = biolink_predicate(_field(membership, "predicate") or "has_member")
             m_rel_k = relation_key(parent_k, m_predicate, child_k, m_anns)
             self.relations.append(
@@ -472,53 +468,12 @@ class SilverExtractor:
             predicate = biolink_predicate(pred_raw)
 
             # Extract relation annotations
-            rel_anns: list[dict[str, Any]] = []
-            for ann in _field(record, "annotations", ()) or ():
-                raw_term = _field(ann, "term")
-                term = annotation_term(raw_term)
-                val = _field(ann, "value")
-                val_text = annotation_value(term, val) or ""
-                rel_anns.append(
-                    {
-                        "term": term,
-                        "value": val_text,
-                        "quantity": quantity_dict(val),
-                        "source": self.source,
-                        "dataset": self.dataset,
-                        "scope": "relation",
-                    }
-                )
-
-            # Participant annotations attach to relation scope
-            for ann in _field(subj_raw, "annotations", ()) or ():
-                raw_term = _field(ann, "term")
-                term = annotation_term(raw_term)
-                val = _field(ann, "value")
-                rel_anns.append(
-                    {
-                        "term": term,
-                        "value": annotation_value(term, val) or "",
-                        "quantity": quantity_dict(val),
-                        "source": self.source,
-                        "dataset": self.dataset,
-                        "scope": "subject",
-                    }
-                )
-
-            for ann in _field(obj_raw, "annotations", ()) or ():
-                raw_term = _field(ann, "term")
-                term = annotation_term(raw_term)
-                val = _field(ann, "value")
-                rel_anns.append(
-                    {
-                        "term": term,
-                        "value": annotation_value(term, val) or "",
-                        "quantity": quantity_dict(val),
-                        "source": self.source,
-                        "dataset": self.dataset,
-                        "scope": "object",
-                    }
-                )
+            # Participant annotations attach to relation scope.
+            rel_anns = [
+                *self._annotations(record, "relation"),
+                *self._annotations(subj_raw, "subject"),
+                *self._annotations(obj_raw, "object"),
+            ]
 
             rel_k = relation_key(subj_key, predicate, obj_key, rel_anns)
             record_ids = _extract_identifiers(record)
@@ -549,45 +504,6 @@ class SilverExtractor:
                         "payload_json": payload_str,
                     }
                 )
-        # Reaction products retain source-event provenance without storing the
-        # full raw record in PostgreSQL. These ordinary attributes do not enter
-        # statement identity, and each occurrence keeps its own source hash.
-        record_reference = None
-        record_type = (
-            "object"
-            if isinstance(raw_payload, Mapping)
-            else "array"
-            if isinstance(raw_payload, (list, tuple))
-            else "scalar"
-        )
-        for relation in self.relations[relation_start:]:
-            subject = self.entities[relation.subject_entity_key]
-            if subject.entity_type != "molecular_activity" or relation.predicate not in {
-                "has_input",
-                "has_output",
-                "enabled_by",
-            }:
-                continue
-            if record_reference is None:
-                record_reference = (
-                    SOURCE_RECORD_SHA256_PREFIX
-                    + hashlib.sha256(payload_str.encode("utf-8")).hexdigest()
-                )
-            for term, value in (
-                (SOURCE_RECORD_REFERENCE, record_reference),
-                (SOURCE_RECORD_TYPE, record_type),
-            ):
-                relation.annotations.append(
-                    {
-                        "term": term,
-                        "value": value,
-                        "quantity": None,
-                        "source": self.source,
-                        "dataset": self.dataset,
-                        "scope": "relation",
-                    }
-                )
-
         # Include derived membership/ontology/association statements as well.
         for rel_key in dict.fromkeys(r.relation_key for r in self.relations[relation_start:]):
             self.payloads.append(

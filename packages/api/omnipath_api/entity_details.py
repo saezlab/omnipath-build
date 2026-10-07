@@ -177,7 +177,6 @@ DESCRIPTIVE_TERMS = (
     "up:activity_regulation_annotation",
     "up:ptm_annotation",
     "up:mutagenesis_annotation",
-    "up:transmembrane_annotation",
 )
 _DESCRIPTIVE_RANK = {term: rank for rank, term in enumerate(DESCRIPTIVE_TERMS)}
 

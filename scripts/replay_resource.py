@@ -453,33 +453,24 @@ def replay_resource(
                     progress=True,
                 )
             coverage = rows.verify_output(result)
-            from omnipath_core.source_attributes import (
-                SOURCE_RECORD_REFERENCE,
-                SOURCE_RECORD_SHA256_PREFIX,
-            )
-
-            invalid_hash = rows.conn.execute(
+            invalid_record = rows.conn.execute(
                 """SELECT r.relation_key,ev.row_id FROM read_parquet(?) r
                    JOIN read_parquet(?) ev USING (relation_id)
                    LEFT JOIN selected_rows s ON s.row_id=ev.row_id
                    WHERE r.statement_kind='relation' AND r.subject_type='molecular_activity'
                      AND r.predicate IN ('has_input','has_output','enabled_by')
                      AND (s.row_id IS NULL OR ev.source IS DISTINCT FROM ?
-                       OR ev.dataset IS DISTINCT FROM s.dataset
-                       OR list_distinct(list_transform(list_filter(ev.annotations,a -> a.term=?),
-                                          a -> a.value)) IS DISTINCT FROM [concat(?,sha256(s.payload_json))])
+                       OR ev.dataset IS DISTINCT FROM s.dataset)
                    LIMIT 1""",
                 [
                     str(result["files"]["relation"]),
                     str(result["files"]["relation_evidence"]),
                     original["source"],
-                    SOURCE_RECORD_REFERENCE,
-                    SOURCE_RECORD_SHA256_PREFIX,
                 ],
             ).fetchone()
             require(
-                invalid_hash is None,
-                f"Reaction occurrence lost its exact original provenance: {invalid_hash}",
+                invalid_record is None,
+                f"Reaction occurrence lost its original source record: {invalid_record}",
             )
             coverage["source_record_index"] = rows.write_source_index(
                 root / "replay_source_records" / f"{original['source']}.parquet"

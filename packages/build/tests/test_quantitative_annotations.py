@@ -87,6 +87,8 @@ def test_bindingdb_ic50_reaches_final_typed_parquet(tmp_path):
     assert attrs["BAO:0000190"]["quantity_has_unit"] == "nM"
     assert attrs["BAO:0000190"]["quantity_comparator"] == "<="
     assert attrs["BAO:0000192"]["quantity_has_numeric_value"] == 20
+    # The quantity is not repeated as text.
+    assert attrs["BAO:0000190"]["value"] in (None, "")
     import duckdb
 
     # Typed quantities are plain columns: filterable without unnesting.

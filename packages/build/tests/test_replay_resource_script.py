@@ -13,7 +13,6 @@ import pyarrow.parquet as pq
 import pytest
 
 from omnipath_core.schema import PAYLOAD_SCHEMA
-from omnipath_core.source_attributes import SOURCE_RECORD_REFERENCE, SOURCE_RECORD_SHA256_PREFIX
 from scripts import replay_resource as replay
 
 
@@ -222,18 +221,11 @@ def test_real_native_mapper_worker_preserves_original_ids_hashes_and_zero_datase
     evidence = pq.read_table(compiled / "relation_evidence.parquet").to_pylist()
     assert {ev["row_id"] for ev in evidence} == {"reactions:2", "reactions:9"}
     expected = {
-        f"reactions:{i}": SOURCE_RECORD_SHA256_PREFIX + hashlib.sha256(text.encode()).hexdigest()
+        f"reactions:{i}": hashlib.sha256(text.encode()).hexdigest()
         for i, text in zip((2, 9), texts)
     }
-    for ev in evidence:
-        assert {a["value"] for a in ev["annotations"] if a["term"] == SOURCE_RECORD_REFERENCE} == {
-            expected[ev["row_id"]]
-        }
     index = pq.read_table(report["source_record_index"]["path"]).to_pylist()
-    assert {(row["row_id"], row["source_record_sha256"]) for row in index} == {
-        (row_id, value.removeprefix(SOURCE_RECORD_SHA256_PREFIX))
-        for row_id, value in expected.items()
-    }
+    assert {(row["row_id"], row["source_record_sha256"]) for row in index} == set(expected.items())
     manifest = json.loads((compiled / "build_manifest.json").read_text())
     assert manifest["datasets"] == ["reactions", "transport_reactions"]
     assert manifest["max_records"] is None

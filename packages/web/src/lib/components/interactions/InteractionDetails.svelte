@@ -18,7 +18,12 @@
   } from '$lib/types/interactions';
   import { measurementPresentation } from '$lib/utils/measurements';
   import { groupPublications, isPublicationTerm } from '$lib/utils/publications';
-  import { annotationLabel, safeSourceUrl } from '$lib/utils/annotation-presentation';
+  import {
+    annotationDefaultUnit,
+    annotationLabelFor,
+    collapseListedAnnotations,
+    safeSourceUrl,
+  } from '$lib/utils/annotation-presentation';
   import { observationSummary, type ProductSummary } from '$lib/utils/molecular-presentation';
 
   interface Props {
@@ -114,7 +119,7 @@
           value:
             measurement?.value ?? (typeof record.value === 'string' ? record.value : undefined),
           sourceField: measurement?.sourceField,
-          unit: measurement?.unit ?? unit?.term,
+          unit: measurement?.unit ?? unit?.term ?? annotationDefaultUnit(record.term),
           unitId: unit?.termId,
         },
       ];
@@ -139,7 +144,7 @@
       deduped.push(value);
     }
 
-    return deduped.sort((a, b) => {
+    return collapseListedAnnotations(deduped).sort((a, b) => {
       const byTerm = a.term.localeCompare(b.term);
       if (byTerm !== 0) return byTerm;
       return (a.value || '').localeCompare(b.value || '');
@@ -250,7 +255,7 @@
         {#each annotations as annotation}
           <div class="grid gap-1 py-2.5 sm:grid-cols-[minmax(0,1fr)_minmax(0,2fr)] sm:gap-6">
             <dt class="break-words text-sm text-muted-foreground">
-              {annotationLabel(annotation.sourceField || annotation.term)}
+              {annotationLabelFor(annotation.sourceField || annotation.term, annotation.value)}
               {#if annotation.termId && annotation.termId.toLowerCase() !== annotation.term.toLowerCase()}<span
                   class="mt-0.5 block font-mono text-[11px]">{annotation.termId}</span
                 >{/if}

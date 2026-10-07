@@ -8,7 +8,8 @@
   import { formatTaxonomy } from '$lib/utils/taxonomy';
   import { measurementPresentation } from '$lib/utils/measurements';
   import {
-    annotationLabel,
+    annotationDefaultUnit,
+    annotationLabelFor,
     plainText,
     isNarrativeAnnotation,
   } from '$lib/utils/annotation-presentation';
@@ -422,14 +423,18 @@
       const measurement = measurementPresentation(row);
       const term = typeof row.term === 'string' ? row.term.trim() : '';
       const value = measurement?.value ?? (typeof row.value === 'string' ? row.value.trim() : '');
-      const unit = measurement?.unit ?? (typeof row.unit === 'string' ? row.unit.trim() : '');
+      const unit =
+        measurement?.unit ??
+        (typeof row.unit === 'string' && row.unit.trim()
+          ? row.unit.trim()
+          : (annotationDefaultUnit(term) ?? ''));
       const source = typeof row.source === 'string' ? row.source.trim() : '';
-      const label = annotationLabel(measurement?.sourceField || term);
+      const label = annotationLabelFor(measurement?.sourceField || term, value);
       if (!term) return [];
 
       return [
         {
-          identity: JSON.stringify([term, row.value, row.quantity, unit, source, row.dataset]),
+          identity: JSON.stringify([term, row.value, row.quantity, unit]),
           term,
           label,
           value,
@@ -439,9 +444,13 @@
       ];
     });
 
+    // The same statement from several sources is one row listing its sources.
     const uniqueRows = new Map<string, AnnotationRow>();
     for (const row of rows) {
-      uniqueRows.set(row.identity, row);
+      const existing = uniqueRows.get(row.identity);
+      if (!existing) uniqueRows.set(row.identity, row);
+      else if (row.source && !existing.source.split(', ').includes(row.source))
+        existing.source = existing.source ? `${existing.source}, ${row.source}` : row.source;
     }
     return Array.from(uniqueRows.values());
   }
