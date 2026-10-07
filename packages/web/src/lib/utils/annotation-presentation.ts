@@ -50,6 +50,7 @@ const ontologyRelations: Record<string, string> = {
   'ro:0002387': 'Has potential to develop into',
   'mondo:0100332': 'Disease has primary infectious agent',
   'ro:0000086': 'Has quality',
+  'ro:0000087': 'Has role',
   'ro:0002254': 'Has developmental contribution from',
   'ro:0002170': 'Connected to',
   'ro:0020101': 'Vessel supplies blood to',
@@ -211,6 +212,14 @@ export function annotationLabel(term: string): string {
     .replace(/\s*\(nM\)$/i, '');
   return label.charAt(0).toUpperCase() + label.slice(1);
 }
+/** identifiers.org link for an annotation value that is an ontology term CURIE. */
+export function ontologyTermHref(value: string): string | null {
+  const match = /^(CHEBI|GO|SBO|HP|MONDO|UBERON|CL|PATO|ECO|MI|SO|ENVO|NCIT):(\d+)$/i.exec(
+    value.trim(),
+  );
+  return match ? `https://identifiers.org/${match[1].toUpperCase()}:${match[2]}` : null;
+}
+
 export function plainText(value: string): string {
   // Strip actual HTML tags only. A reaction operator such as <=> is data.
   return value

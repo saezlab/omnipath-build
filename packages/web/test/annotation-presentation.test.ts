@@ -2,9 +2,11 @@ import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
 import {
   annotationDefaultUnit,
+  annotationLabel,
   annotationLabelFor,
   collapseListedAnnotations,
   isNarrativeAnnotation,
+  ontologyTermHref,
 } from '../src/lib/utils/annotation-presentation.ts';
 
 test('has_topic is labelled by the vocabulary of its value', () => {
@@ -43,4 +45,11 @@ test('relation ontology CURIEs read as names', async () => {
     'Bounding layer of (RO:0002007)',
   );
   assert.equal(annotationValueText('description', 'RO:0002007'), 'RO:0002007');
+});
+
+test('ontology term values link to identifiers.org', () => {
+  assert.equal(ontologyTermHref('CHEBI:22587'), 'https://identifiers.org/CHEBI:22587');
+  assert.equal(ontologyTermHref('http://example.org/x'), null);
+  assert.equal(ontologyTermHref('Food part: leaf'), null);
+  assert.equal(annotationLabel('RO:0000087'), 'Has role');
 });

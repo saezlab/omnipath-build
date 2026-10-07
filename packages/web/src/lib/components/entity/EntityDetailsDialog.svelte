@@ -13,6 +13,7 @@
     annotationValueText,
     plainText,
     isNarrativeAnnotation,
+    ontologyTermHref,
   } from '$lib/utils/annotation-presentation';
   import { releaseFetch } from '$lib/api/release';
   import { groupPublications, isPublicationTerm } from '$lib/utils/publications';
@@ -683,7 +684,9 @@
         >{formatNumber(
           (Array.isArray(detailEntity.entityAttributes) ? detailEntity.entityAttributes : [])
             .length,
-        )} of {formatNumber(fieldTotal(detailEntity, 'entityAttributes'))} source annotations loaded</span
+          { compact: false },
+        )} of {formatNumber(fieldTotal(detailEntity, 'entityAttributes'), { compact: false })} source
+        annotations loaded</span
       >
     </div>{/if}
 {/snippet}
@@ -1045,7 +1048,10 @@
                 >{loadingField === 'identifiers' ? 'Loading…' : 'Load more identifiers'}</Button
               >
               <span class="text-xs text-muted-foreground tabular-nums"
-                >{formatNumber(detailIdentifiers.length)} of {formatNumber(detailIdentifierTotal)} loaded</span
+                >{formatNumber(detailIdentifiers.length, { compact: false })} of {formatNumber(
+                  detailIdentifierTotal,
+                  { compact: false },
+                )} loaded</span
               >
             </div>{/if}
         </Tabs.Content>
@@ -1103,6 +1109,13 @@
                               <pre
                                 class="whitespace-pre-wrap break-all text-xs">{annotation.value}</pre>
                             </details>
+                          {:else if ontologyTermHref(annotation.value)}<a
+                              href={ontologyTermHref(annotation.value)}
+                              target="_blank"
+                              rel="noreferrer"
+                              class="inline-flex items-center gap-1 font-mono text-xs underline decoration-muted-foreground/50 underline-offset-4 hover:decoration-foreground"
+                              >{annotation.value}<ExternalLink class="size-3 shrink-0" /></a
+                            >
                           {:else}{formatAnnotationValue(annotation, detailEntity)}{/if}
                         </Table.Cell>
                         <Table.Cell class="whitespace-normal align-top text-muted-foreground">
