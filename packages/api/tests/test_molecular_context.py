@@ -1248,3 +1248,28 @@ def test_referenced_product_metadata_only_follows_returned_trimmed_pairs_and_sta
         assert page["relations"] == []
         assert {product["entityPk"] for product in page["referencedProducts"]} == {key}
         assert {form["protein_entity_key"] for form in page["observedForms"]} == {key}
+
+
+def test_candidate_form_matching_equals_one_scan(molecular_engine):
+    # Narrowed searches match molecular forms on endpoint candidates; the single SQL scan
+    # (used above the candidate limit) gives the same pages and totals.
+    engine = molecular_engine
+    filter_sets = [
+        {"reference_entity_keys": ["entrez:1"], "protein_entity_keys": ["3" * 64]},
+        {"entity_pks": ["3" * 64], "isoform_identifiers": ["uniprot:P00001-2"]},
+        {"reference_entity_keys": ["entrez:1"], "protein_entity_keys": ["9" * 64]},
+    ]
+    for indexed in [False, True]:
+        if indexed:
+            build_indexes(engine, threads=2, min_free_disk=0)
+        for filters in filter_sets:
+            pages = []
+            for candidate_limit in (engine._FORM_CANDIDATE_LIMIT, -1):
+                engine._FORM_CANDIDATE_LIMIT = candidate_limit
+                pages.append(
+                    [engine.search_relations(filters, limit=1, offset=o) for o in (0, 1, 5)]
+                )
+            del engine._FORM_CANDIDATE_LIMIT
+            for two_phase, one_scan in zip(*pages):
+                assert two_phase["total"] == one_scan["total"]
+                assert two_phase["rows"] == one_scan["rows"]

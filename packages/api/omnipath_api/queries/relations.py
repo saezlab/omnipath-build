@@ -166,6 +166,60 @@ class RelationsQueries:
             params.extend(form[1])
         return where, params
 
+    # Above this many endpoint-matched relations, the form match stays one SQL scan.
+    _FORM_CANDIDATE_LIMIT = 20_000
+
+    def _form_page(self, page_read, where_sql, params, form, limit, offset):
+        """Page of relations matching a molecular form, among endpoint-matched candidates.
+
+        Reading nested occurrences decompresses that column for every row group a filter
+        touches; endpoint filters cannot skip row groups, but relation keys can (files are
+        sorted by them). So candidates come first, then each file's occurrences by key.
+        Returns rows with filename, file_row_number and matching_total, or None when the
+        candidates are too many for this path.
+        """
+        candidates = self._fetch_dicts(
+            f"""SELECT filename, file_row_number, relation_key, category, predicate,
+              subject_label, object_label FROM {page_read} WHERE {where_sql}
+            LIMIT {self._FORM_CANDIDATE_LIMIT + 1}""",
+            params,
+        )
+        if len(candidates) > self._FORM_CANDIDATE_LIMIT:
+            return None
+        by_file = defaultdict(list)
+        for item in candidates:
+            by_file[item["filename"]].append(item)
+        matched = []
+        for filename, items in by_file.items():
+            keys = sorted({item["relation_key"] for item in items})
+            expr = occurrences_expression(columns([filename]))
+            rows = {
+                r["file_row_number"]
+                for r in self._fetch_dicts(
+                    f"""SELECT file_row_number FROM {read([filename], file_row_number=True)}
+                    WHERE relation_key IN ({",".join("?" for _ in keys)})
+                    AND len(list_filter({expr}, ev -> {form[0]})) > 0""",
+                    [*keys, *form[1]],
+                )
+            }
+            matched.extend(item for item in items if item["file_row_number"] in rows)
+        # The SQL page's order: ascending, nulls last, ties by file and row.
+        matched.sort(
+            key=lambda item: (
+                *(
+                    (item[name] is None, item[name] or "")
+                    for name in ("category", "predicate", "subject_label", "object_label")
+                ),
+                item["filename"],
+                item["file_row_number"],
+            )
+        )
+        return [
+            dict(filename=item["filename"], file_row_number=item["file_row_number"],
+                 matching_total=len(matched))
+            for item in matched[offset : offset + limit]
+        ]  # fmt: skip
+
     def search_relations(
         self,
         filters: dict[str, Any] | None = None,
@@ -214,12 +268,13 @@ class RelationsQueries:
                 FROM candidates WHERE {form_sql}
             ), page AS (
                 SELECT filename, file_row_number, category, predicate, subject_label, object_label FROM matched
-                ORDER BY category, predicate, subject_label, object_label
+                ORDER BY category, predicate, subject_label, object_label, filename, file_row_number
                 LIMIT {int(limit)} OFFSET {int(offset)}
             ) SELECT page.*, totals.matching_total FROM page
             CROSS JOIN (SELECT count(*) AS matching_total FROM matched) totals
-            ORDER BY category, predicate, subject_label, object_label
+            ORDER BY category, predicate, subject_label, object_label, filename, file_row_number
         """
+        base_where, base_params = where_sql, list(params)
         page_params = [*params, *(form[1] if form else [])]
         if form:
             # Counts outside the paged query (and the unscoped browse) filter in one pass.
@@ -228,9 +283,13 @@ class RelationsQueries:
         if not narrowed:
             # Avoid materializing the entire collection for an unscoped browse.
             page_sql = f"""SELECT filename, file_row_number FROM {page_read}
-                WHERE {where_sql} ORDER BY category, predicate, subject_label, object_label
+                WHERE {where_sql} ORDER BY category, predicate, subject_label, object_label, filename, file_row_number
                 LIMIT {int(limit)} OFFSET {int(offset)}"""
-        page = self._fetch_dicts(page_sql, page_params)
+        page = None
+        if narrowed and form:
+            page = self._form_page(page_read, base_where, base_params, form, limit, offset)
+        if page is None:
+            page = self._fetch_dicts(page_sql, page_params)
         rows = []
         if page:
             if "matching_total" in page[0]:
