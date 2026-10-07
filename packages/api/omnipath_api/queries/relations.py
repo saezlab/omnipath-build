@@ -137,7 +137,9 @@ class RelationsQueries:
         )
         return {row["resource"]: row["ids"] for row in rows}
 
-    def _relation_selection(self, filters, resources=None, *, qualifiers=RELATION_QUALIFIER_FILTERS):
+    def _relation_selection(
+        self, filters, resources=None, *, qualifiers=RELATION_QUALIFIER_FILTERS
+    ):
         """SQL selecting the relation rows (with ``resource``) that match ``filters``.
 
         Endpoint filters select candidates from the endpoint table first, then read only
@@ -162,7 +164,9 @@ class RelationsQueries:
             sql, values = self._lookup_sql("relation_evidence", "relation_id", pairs, *form)
             pairs = [
                 (r["resource"], r["relation_id"])
-                for r in self._fetch_dicts(f"SELECT DISTINCT resource, relation_id FROM ({sql})", values)
+                for r in self._fetch_dicts(
+                    f"SELECT DISTINCT resource, relation_id FROM ({sql})", values
+                )
             ]
         return self._lookup_sql("relation", "relation_id", pairs, where, params)
 

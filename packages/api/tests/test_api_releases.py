@@ -140,15 +140,15 @@ def test_latest_numeric_order_and_new_resources(setup):
         os.utime(path, (2_000_000_000, 2_000_000_000))
     write_resource(store.root, "new_source", "1", "added")
     pending = write_resource(store.root, "signor", "3.0.0", "pending")
-    marker = pending / ".entities.chunks.parquet"
-    marker.touch()
+    table = pending / "relation_evidence.parquet"
+    table.rename(pending / "relation_evidence.partial")
     rows = client.get("/resources?shape=svelte").json()["resources"]
     assert {item["resource_id"]: item["version"] for item in rows} == {
         "signor": "2.0.0",
         "extra": "1.10.0",
         "new_source": "1",
     }
-    marker.unlink()
+    (pending / "relation_evidence.partial").rename(table)
     with engine.release_scope("latest"):
         assert engine.resolve_resource_info("signor")["version"] == "3.0.0"
     with engine.release_scope("2026.09"):

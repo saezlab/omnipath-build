@@ -107,7 +107,7 @@ def test_group_relationships_include_both_endpoints_once_and_paginate(tmp_path):
 
 def test_normal_entity_details_default_to_bounded_pages(tmp_path):
     resource(tmp_path, "1", "First")
-    path = tmp_path / "resources/test/1/entities.parquet"
+    path = tmp_path / "resources/test/1/entity.parquet"
     rows = nested_rows(path)
     rows[0]["annotations"] = [
         dict(term="description", value=f"Note {i}", source="test") for i in range(45)

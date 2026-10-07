@@ -1,8 +1,9 @@
 # Resource build pipeline
 
-The resource builder streams `pypath.inputs_v2` datasets into three Parquet
-serving tables. It uses one implementation: batched entity resolution and flat
-DuckDB working tables, followed by one final aggregation into nested records.
+The resource builder streams `pypath.inputs_v2` datasets into the normalized
+Parquet tables of `omnipath_core.schema`. It uses one implementation: batched
+entity resolution and flat DuckDB working tables, followed by one final aggregation
+into the published and serving tables.
 
 ## Data flow
 
@@ -99,8 +100,9 @@ from the entity index. It chooses global entity display metadata and counts dist
 parent/child edges, then attaches endpoint labels, types and taxon while relation
 rows are still flat. Ordinary membership relations do not create ontology counts.
 
-Rows are partitioned by `hash(key) % 64`. Each partition constructs the nested
-serving lists, and the final entity/relation files are sorted by their keys:
+Rows are bucketed by key prefix, in key order. Each bucket numbers its entities and
+relations (`entity_id`, `relation_id`) and writes their rows and child rows, so
+every table is sorted by its key or parent id:
 
 - Identifiers and entity/relation summary annotations are deduplicated with their
   provenance. Canonical flags are combined for otherwise identical identifiers.
@@ -112,21 +114,25 @@ serving lists, and the final entity/relation files are sorted by their keys:
 
 Aggregation remains necessary because observations and aliases repeat across
 batches. Doing it once over flat tables avoids repeatedly building, unpacking and
-merging nested Python objects. Partitioning limits aggregate working sets but
-cannot make an exceptionally large single entity or relation cost-free.
+merging nested Python objects. Bucketing limits aggregate working sets but
+cannot make an exceptionally large single entity or relation cost-free. The
+serving tables (`relation_endpoint`, `entity_group`, `entity_term`) are written
+last, each sorted by its lookup key.
 
 ## Output and publication
 
 ```text
 resources/<source>/<numeric-version>/
-├── entities.parquet
-├── relations.parquet
+├── entity.parquet, entity_identifier.parquet, entity_annotation.parquet,
+│   entity_evidence.parquet
+├── relation.parquet, relation_annotation.parquet, relation_evidence.parquet
 ├── evidence_payloads.parquet
+├── relation_endpoint.parquet, entity_group.parquet, entity_term.parquet
 ├── resolution_stats.json
 └── build_manifest.json
 ```
 
-Schemas are defined in `writer.py`. Statistics count unique observed entity keys
+Schemas are defined in `omnipath_core/schema.py`. Statistics count unique observed entity keys
 by entity type and matching rule; these are not final canonical entity counts.
 The manifest includes checksums, processing/schema versions, execution strategy
 (`parallel-shards-v1` for normal builds), batch limits, DuckDB settings and payload origins.

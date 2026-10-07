@@ -68,7 +68,6 @@ class ParquetServingEngine(
 ):
     """Out-of-core streaming query engine powered by DuckDB."""
 
-    _CHUNKS_FILE = ".entities.chunks.parquet"
     _ENTITY_KEY_RE = re.compile(r"^[0-9a-fA-F]{64}$")
     _ENTITY_SCALAR_COLS = (
         "entity_key, entity_type, namespace, identifier, taxon, label, "
@@ -141,8 +140,6 @@ class ParquetServingEngine(
     @classmethod
     def _version_is_ready(cls, ver_dir: Path) -> bool:
         """A published version has every resource and serving table."""
-        if (ver_dir / cls._CHUNKS_FILE).exists():
-            return False
         return all((ver_dir / name).is_file() for name in RESOURCE_FILES + SERVING_FILES)
 
     def _scan_inventory_fingerprint(self) -> tuple[tuple[Any, ...], ...]:
@@ -266,7 +263,8 @@ class ParquetServingEngine(
                     if not ver_dir.is_dir() or not self._version_is_ready(ver_dir):
                         continue
                     tables = {
-                        name: ver_dir / f"{name}.parquet" for name in (*PUBLISHED_TABLES, *SERVING_TABLES)
+                        name: ver_dir / f"{name}.parquet"
+                        for name in (*PUBLISHED_TABLES, *SERVING_TABLES)
                     }
                     ent_file, rel_file = tables["entity"], tables["relation"]
                     key = f"{res_name}/{ver_dir.name}"

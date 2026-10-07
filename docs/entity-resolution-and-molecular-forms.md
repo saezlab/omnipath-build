@@ -22,7 +22,7 @@ The implemented record layout and compatibility rules are specified in section 9
 - Resolve protein identity separately to primary UniProt, retaining it in the
   molecular form. Preserve specific transcript identity when available.
 - Standardize a structured `molecular_form` in `inputs_v2` and carry it through
-  the build into the evidence in `relations.parquet`.
+  the build into the relation evidence (`relation_evidence`).
 - Keep reusable protein references, but do not create an entity for every
   observed combination of isoforms, variants and modifications.
 - Present a gene-centered explorer from which users can inspect products,
@@ -188,13 +188,13 @@ stays unknown; it is not replaced with the selected primary protein.
 
 ## 5. Parquet outputs
 
-Retain the existing output family:
+The published tables (see `core_documentation/entities.md`):
 
-- `entities.parquet`: reusable entity/reference records, identifiers and
-  annotations.
-- `relations.parquet`: relations and their source evidence, including paired
-  subject/object molecular forms.
-- `evidence_payloads.parquet`: original source payloads for deeper inspection.
+- `entity` with `entity_identifier` and `entity_annotation`: reusable
+  entity/reference records, identifiers and annotations.
+- `relation` with `relation_annotation` and `relation_evidence`: relations and
+  their source evidence, including paired subject/object molecular forms.
+- `evidence_payloads`: original source payloads for deeper inspection.
 
 We previously agreed to keep reusable protein reference records, independently
 resolved to primary UniProt, with explicit gene–product links. Specific
@@ -364,7 +364,7 @@ release; older missing context must remain unknown.
   fallback reference and keep known catalogue gene links separately. Exceptional
   outcomes remain on the affected evidence as `omnipath:gene_mapping_status`
   and `omnipath:gene_mapping_candidate` annotations.
-- **Standalone observations:** `entities.parquet.evidence` retains each source
+- **Standalone observations:** `entity_evidence` retains each source
   occurrence, its annotations and resolved form. General entity identifiers
   exclude specific isoform/transcript/sequence aliases except when that identifier
   is itself the row's canonical identity.

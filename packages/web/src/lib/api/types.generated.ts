@@ -1336,40 +1336,20 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
-        /** EntitySearchCursor */
+        /**
+         * EntitySearchCursor
+         * @description Where a search continues: its match phase and the entities already returned.
+         */
         EntitySearchCursor: {
-            /** Entitypk */
-            entityPk: string;
-            /**
-             * Entitytype
-             * @default
-             */
-            entityType: string;
-            /** Identifier */
-            identifier: string;
-            /** Matchrank */
-            matchRank: number;
-            /** Namespace */
-            namespace: string;
+            /** Offset */
+            offset: number;
             /**
              * Phase
              * @enum {string}
              */
-            phase: "prefix" | "contains" | "nested";
+            phase: "all" | "key" | "prefix" | "contains";
             /** Querykey */
             queryKey: string;
-            /**
-             * Relationcount
-             * @default 0
-             */
-            relationCount: number;
-            /** Sortlabel */
-            sortLabel: string;
-            /**
-             * Taxon
-             * @default
-             */
-            taxon: string;
         } & {
             [key: string]: unknown;
         };

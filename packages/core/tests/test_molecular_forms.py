@@ -5,8 +5,9 @@ import pyarrow.parquet as pq
 import pytest
 
 from omnipath_core import (
-    ENTITY_SCHEMA,
-    RELATION_SCHEMA,
+    ENTITY_EVIDENCE_TABLE,
+    ENTITY_TABLE,
+    RELATION_EVIDENCE_TABLE,
     SILVER_ENTITY_SCHEMA,
     SILVER_RELATION_SCHEMA,
     Entity,
@@ -132,7 +133,7 @@ def test_source_type_is_independent_of_gene_reference():
                 "gene_reference_keys": [gene_reference],
             },
         ],
-        schema=ENTITY_SCHEMA,
+        schema=ENTITY_TABLE,
     )
     assert len(set(table["entity_key"].to_pylist())) == 2
     assert table["entity_type"].to_pylist() == ["protein", "gene"]
@@ -143,39 +144,29 @@ def test_occurrence_pairing_and_standalone_forms_round_trip(tmp_path):
     y = molecular_form_from_identifiers([Identifier("uniprot", "P38398-3")])
     relations = pa.Table.from_pylist(
         [
-            {
-                "relation_key": "r",
-                "evidence": [
-                    {"row_id": "xy", "subject_molecular_form": x, "object_molecular_form": y},
-                    {"row_id": "yx", "subject_molecular_form": y, "object_molecular_form": x},
-                ],
-            }
+            {"relation_id": 0, "ordinal": 0, "row_id": "xy",
+             "subject_molecular_form": x, "object_molecular_form": y},
+            {"relation_id": 0, "ordinal": 1, "row_id": "yx",
+             "subject_molecular_form": y, "object_molecular_form": x},
         ],
-        schema=RELATION_SCHEMA,
-    )
-    path = tmp_path / "relations.parquet"
+        schema=RELATION_EVIDENCE_TABLE,
+    )  # fmt: skip
+    path = tmp_path / "relation_evidence.parquet"
     pq.write_table(relations, path)
-    evidence = pq.read_table(path).to_pylist()[0]["evidence"]
+    evidence = pq.read_table(path).to_pylist()
     assert evidence[0]["subject_molecular_form"] == evidence[1]["object_molecular_form"]
     assert evidence[0]["object_molecular_form"] == evidence[1]["subject_molecular_form"]
     entities = pa.Table.from_pylist(
-        [
-            {
-                "entity_key": "e",
-                "evidence": [
-                    {"row_id": "standalone", "molecular_form": x},
-                ],
-            }
-        ],
-        schema=ENTITY_SCHEMA,
+        [{"entity_id": 0, "ordinal": 0, "row_id": "standalone", "molecular_form": x}],
+        schema=ENTITY_EVIDENCE_TABLE,
     )
-    path = tmp_path / "entities.parquet"
+    path = tmp_path / "entity_evidence.parquet"
     pq.write_table(entities, path)
-    assert pq.read_table(path).to_pylist()[0]["evidence"][0]["molecular_form"] == x
+    assert pq.read_table(path).to_pylist()[0]["molecular_form"] == x
     assert (
         SILVER_ENTITY_SCHEMA.field("molecular_form").type
-        == ENTITY_SCHEMA.field("evidence").type.value_type.field("molecular_form").type
+        == ENTITY_EVIDENCE_TABLE.field("molecular_form").type
     )
     assert SILVER_RELATION_SCHEMA.field("subject").type.field("molecular_form").type == (
-        RELATION_SCHEMA.field("evidence").type.value_type.field("subject_molecular_form").type
+        RELATION_EVIDENCE_TABLE.field("subject_molecular_form").type
     )

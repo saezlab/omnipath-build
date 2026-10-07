@@ -90,7 +90,12 @@ def write_resource(folder, entities=(), relations=(), payloads=None):
             )
         for ordinal, item in enumerate(evidence):
             tables["entity_evidence"].append(
-                dict(item, entity_id=entity_id, ordinal=ordinal, annotations=item.get("annotations") or [])
+                dict(
+                    item,
+                    entity_id=entity_id,
+                    ordinal=ordinal,
+                    annotations=item.get("annotations") or [],
+                )
             )
         reference = entity.get("reference_entity_key")
         groups = [("reference", reference)] if reference else []
@@ -233,7 +238,9 @@ def read_resource(folder):
             row.pop("ordinal")
             if "quantity_" + _QUANTITY[0] in row:
                 quantity = {q: row.pop("quantity_" + q) for q in _QUANTITY}
-                row["quantity"] = quantity if any(v is not None for v in quantity.values()) else None
+                row["quantity"] = (
+                    quantity if any(v is not None for v in quantity.values()) else None
+                )
             found.setdefault(owner, []).append(row)
         return found
 
@@ -244,7 +251,13 @@ def read_resource(folder):
     entities = []
     for row in rows("entity"):
         entity_id = row.pop("entity_id")
-        for derived in ("group_connectivity", "identifier_count", "annotation_count", "evidence_count", "relation_count"):
+        for derived in (
+            "group_connectivity",
+            "identifier_count",
+            "annotation_count",
+            "evidence_count",
+            "relation_count",
+        ):
             row.pop(derived)
         row["identifiers"] = nested["entity_identifier"].get(entity_id, [])
         row["annotations"] = nested["entity_annotation"].get(entity_id, [])

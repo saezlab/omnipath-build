@@ -8,7 +8,6 @@ from typing import Any
 from omnipath_api.store.connection import sql_literal
 
 
-
 logger = logging.getLogger(__name__)
 
 

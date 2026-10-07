@@ -1,16 +1,49 @@
 # Entities and relations
 
-Every resource version publishes the same three Parquet files. The schemas are
-defined once in [`omnipath_core/schema.py`](../packages/core/omnipath_core/schema.py)
+Every resource version publishes the same normalized Parquet tables. The schemas
+are defined once in [`omnipath_core/schema.py`](../packages/core/omnipath_core/schema.py)
 and [`molecular_forms.py`](../packages/core/omnipath_core/molecular_forms.py).
-The current contract is `serving_schema_version = 4`; build manifests stay at
+The current contract is `serving_schema_version = 5`; build manifests stay at
 `schema_version = 1`.
 
-| File | One row is | Holds |
+| Table | One row is | Refers to |
 | --- | --- | --- |
-| `entities.parquet` | one [entity](glossary.md#entity) | identity, identifiers, annotations, gene references, standalone evidence |
-| `relations.parquet` | one [statement](glossary.md#statement) | subject, predicate, object, qualifiers and every evidence occurrence |
-| `evidence_payloads.parquet` | one source row | the original source payload as JSON, linked by `row_id` |
+| `entity` | one [entity](glossary.md#entity): identity, label, type, taxon, references | |
+| `entity_identifier` | one identifier of an entity | `entity_id` |
+| `entity_annotation` | one entity-level attribute | `entity_id` |
+| `entity_evidence` | one standalone source occurrence of an entity | `entity_id` |
+| `relation` | one [statement](glossary.md#statement): subject, predicate, object, sign, qualifiers | |
+| `relation_annotation` | one statement-level attribute | `relation_id` |
+| `relation_evidence` | one source occurrence of a statement, with its molecular forms | `relation_id` |
+| `evidence_payloads` | one source row: the original payload as JSON | `relation_key` / `entity_key`, `row_id` |
+
+`entity_id` and `relation_id` number the rows of `entity.parquet` and
+`relation.parquet`, which are sorted by their keys; child tables refer to their
+parent by that id and keep the parent's order in `ordinal`. The 64-character
+`entity_key` and `relation_key` identify the same entity or statement across
+resources. Each table is sorted by its lookup column in 8,192-row groups, so a
+lookup reads only the row groups it needs.
+
+The API also reads three **serving tables** per resource version. They are derived
+lookup indexes, listed in the build manifest but not part of the downloads:
+
+| Table | One row per | Used for |
+| --- | --- | --- |
+| `relation_endpoint` | endpoint key (entity or reference key) of a relation | a key's relations |
+| `entity_group` | group of an entity: reference key, gene of a product, chemical connectivity | groups, gene and chemical pages |
+| `entity_term` | lowercase label or identifier of an entity | search |
+
+> **Decision: normalized tables with integer row ids.** Identifiers, annotations
+> and evidence are child tables instead of nested lists, and refer to their entity
+> or relation by its row number. *Why:* lookups by key read a few row groups
+> instead of whole nested rows, and integer references halved the release size
+> (7.7 instead of 14.6 GB). The logical tables are the ones a PostgreSQL load
+> uses. Compression stays at zstd's default level, with small row groups.
+> (7 October 2026)
+
+> **Decision: serving tables stay out of downloads.** Search terms, endpoint
+> lists and groups are derived from the published tables and are only needed to
+> serve the explorer quickly. (7 October 2026)
 
 ## Three questions, three fields
 
@@ -74,21 +107,34 @@ Keys are deterministic SHA-256 hashes ([`keys.py`](../packages/core/omnipath_cor
   qualifiers). Symmetric predicates without qualifiers sort their endpoints
   first. Ontology statements are hashed separately (`statement_kind = ontology`).
 
-## `entities.parquet`
+## `entity`
 
 | Column | Meaning |
 | --- | --- |
+| `entity_id` | Row number in this resource version's `entity.parquet` |
 | `entity_key` | Row identity (see above) |
 | `entity_type` | Biolink type reported by the source, e.g. `protein`, `gene`, `small_molecule` |
 | `namespace`, `identifier` | The canonical identifier of this row, e.g. `uniprot` / `P04637` or `inchikey` / … |
 | `taxon` | NCBI Taxonomy ID; empty when sources disagree |
-| `label` | Display name chosen deterministically |
-| `identifiers[]` | All admitted identifiers `{ns, id, is_canonical, source}` |
-| `annotations[]` | Entity-level attributes `{term, value, quantity, source, dataset}` |
+| `label` | Display name, chosen by the resolver |
 | `reference_entity_key` | Shared grouping reference, normally an NCBI Gene CURIE |
 | `gene_reference_keys[]` | Catalogue gene links of a product row (a protein can link to several genes) |
+| `group_connectivity` | First InChIKey block of an `inchikey:` reference: the chemical structure group |
 | `has_hierarchy`, `parent_count`, `child_count` | Ontology position, from distinct ontology edges |
-| `evidence[]` | Standalone source occurrences of this entity, each with its own `molecular_form` |
+| `identifier_count`, `annotation_count`, `evidence_count`, `relation_count` | Number of the entity's child rows and relations |
+
+Child tables, each with `entity_id` and `ordinal`:
+
+- `entity_identifier`: all admitted identifiers `{ns, id, is_canonical, source}`.
+- `entity_annotation`: entity-level attributes `{term, value, quantity_*, source, dataset}`;
+  a measurement's fields are the `quantity_*` columns.
+- `entity_evidence`: standalone source occurrences of this entity, each with its own
+  `molecular_form`.
+
+> **Decision: the resolver's label is the display name.** Entity resolution picks
+> one label per entity; the build and the API do not re-rank names afterwards.
+> A chemical structure group shows the preferred one of its members' labels.
+> (7 October 2026)
 
 Product rows (primary UniProt proteins and specifically reported transcripts)
 are ordinary typed entity rows. Observations point to them through
@@ -102,23 +148,26 @@ create an entity for each combination of isoform, modification and variant.
 > for X+Y with X+Z must not invent an X+Y+Z form. A state model can be
 > reconsidered if pathway state transitions need it. (4 October 2026)
 
-## `relations.parquet`
+## `relation`
 
 | Column | Meaning |
 | --- | --- |
+| `relation_id` | Row number in this resource version's `relation.parquet` |
 | `relation_key`, `statement_kind` | Identity; `relation` or `ontology` |
 | `subject_entity_key`, `predicate`, `object_entity_key` | The statement; predicate is a Biolink predicate |
 | `subject_type` / `object_type`, `*_label` | Endpoint type and label, copied for convenience |
 | `subject_reference_entity_key`, `object_reference_entity_key` | Endpoint gene references, used for grouping |
 | `taxon`, `is_directed`, `sign` | Scalar summary; `sign` is `1`, `-1` or `0` |
 | `category`, `interaction_class` | Presentation categories, e.g. `interaction` / `directed_inhibitory` |
-| `sources[]`, `evidence_count` | Contributing resources and number of occurrences |
-| `evidence[]` | Every occurrence (see below) |
-| `annotations[]` | Statement-level attributes with a `scope` of relation, subject or object |
+| `sources[]`, `evidence_count`, `annotation_count` | Contributing resources, number of occurrences and of annotations |
+| `object_aspect_qualifier[]`, `object_direction_qualifier[]`, `causal_mechanism_qualifier[]` | The statement's Biolink qualifiers, for filtering |
+
+`relation_annotation` holds the statement-level attributes, with a `scope` of
+relation, subject or object; `relation_evidence` holds every occurrence (below).
 
 ### Evidence
 
-Each evidence item is one source occurrence:
+Each `relation_evidence` row is one source occurrence:
 `{source, dataset, row_id, upstream_id, annotations[], subject_molecular_form, object_molecular_form}`.
 
 - Evidence is a **[multiset](glossary.md#evidence)**: identical occurrences stay separate.

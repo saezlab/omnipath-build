@@ -9,7 +9,7 @@ import pyarrow.parquet as pq
 import pytest
 
 from omnipath_build import pipeline
-from omnipath_core import PUBLISHED_TABLES, SERVING_TABLES, validate_build_manifest
+from omnipath_core import PUBLISHED_TABLES, RESOURCE_FILES, SERVING_TABLES, validate_build_manifest
 
 
 def test_publisher_output_is_the_shared_and_pinned_reader_contract(tmp_path, monkeypatch):
@@ -55,7 +55,10 @@ def test_publisher_output_is_the_shared_and_pinned_reader_contract(tmp_path, mon
     assert resource.manifest_json.encode() == manifest_bytes
     assert resource.manifest_sha256 == hashlib.sha256(manifest_bytes).hexdigest()
     assert resource.version == "2.7" and selected.version == "2026.10"
-    for name, metadata in parsed.files.items():
+    # The reader pins the published tables; serving tables are API lookup indexes.
+    assert set(resource.files) == set(RESOURCE_FILES)
+    for name in RESOURCE_FILES:
+        metadata = parsed.files[name]
         assert resource.files[name].rows == metadata.rows == 0
         assert resource.files[name].size_bytes == metadata.size_bytes
         assert resource.files[name].sha256 == metadata.sha256

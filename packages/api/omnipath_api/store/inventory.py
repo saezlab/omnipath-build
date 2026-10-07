@@ -87,8 +87,6 @@ class ReleaseStore:
             pq.read_metadata(path)
         for source, version in manifest["resources"].items():
             directory = self.root / "resources" / source / version
-            if (directory / ".entities.chunks.parquet").exists():
-                raise ValueError(f"Resource build is incomplete: {source}/{version}")
             for name in FILES:
                 path = directory / name
                 if not path.is_file():

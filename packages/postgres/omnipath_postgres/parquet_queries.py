@@ -7,11 +7,7 @@ from .locations import is_remote, join_location
 
 # Match Python str.strip(), including Unicode spaces and the four control
 # separators Python treats as whitespace. Identifier text itself is never trimmed.
-_KEY_WHITESPACE = (
-    " \t\n\r\v\f\x1c\x1d\x1e\x1f\x85\xa0 "
-    "           "
-    "    　"
-)
+_KEY_WHITESPACE = " \t\n\r\v\f\x1c\x1d\x1e\x1f\x85\xa0                　"
 
 
 def _literal(value: str) -> str:

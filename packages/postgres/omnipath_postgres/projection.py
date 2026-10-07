@@ -211,6 +211,7 @@ def _create_inputs(con: Any, resources: tuple[ResourceSelection, ...]) -> None:
     def stage(table: str, select: Callable[[Callable[[str], str]], str]) -> None:
         parts = []
         for resource in resources:
+
             def scan(name: str, resource: ResourceSelection = resource) -> str:
                 return _scan(resource.directory, f"{name}.parquet")
 
@@ -228,7 +229,7 @@ def _create_inputs(con: Any, resources: tuple[ResourceSelection, ...]) -> None:
         lambda scan: f"""SELECT e.entity_key,
             struct_pack(ns:=i.ns,id:=i.id,is_canonical:=i.is_canonical,source:=i.source) item,
             i.ordinal::BIGINT ordinal
-            FROM {scan('entity_identifier')} i JOIN {scan('entity')} e USING(entity_id)""",
+            FROM {scan("entity_identifier")} i JOIN {scan("entity")} e USING(entity_id)""",
     )
     stage(
         "ap_evidence_raw",
@@ -238,7 +239,7 @@ def _create_inputs(con: Any, resources: tuple[ResourceSelection, ...]) -> None:
                 subject_molecular_form:=v.subject_molecular_form,
                 object_molecular_form:=v.object_molecular_form) item,
             v.ordinal::BIGINT ordinal
-            FROM {scan('relation_evidence')} v JOIN {scan('relation')} r USING(relation_id)""",
+            FROM {scan("relation_evidence")} v JOIN {scan("relation")} r USING(relation_id)""",
     )
     stage(
         "ap_entity_evidence_raw",
@@ -247,18 +248,18 @@ def _create_inputs(con: Any, resources: tuple[ResourceSelection, ...]) -> None:
                 upstream_id:=v.upstream_id,annotations:=v.annotations,
                 molecular_form:=v.molecular_form) item,
             v.ordinal::BIGINT ordinal
-            FROM {scan('entity_evidence')} v JOIN {scan('entity')} e USING(entity_id)""",
+            FROM {scan("entity_evidence")} v JOIN {scan("entity")} e USING(entity_id)""",
     )
     stage(
         "ap_annotation_raw",
         lambda scan: f"""SELECT 'entity'::VARCHAR owner_kind,e.entity_key owner_key,
             -1::BIGINT evidence_ordinal,a.ordinal::BIGINT ordinal,a.term,a.value,
             {quantity} quantity,a.source,a.dataset,NULL::VARCHAR AS "scope"
-            FROM {scan('entity_annotation')} a JOIN {scan('entity')} e USING(entity_id)
+            FROM {scan("entity_annotation")} a JOIN {scan("entity")} e USING(entity_id)
             UNION ALL
             SELECT 'relation',r.relation_key,-1::BIGINT,a.ordinal::BIGINT,a.term,a.value,
             {quantity},a.source,a.dataset,a.scope
-            FROM {scan('relation_annotation')} a JOIN {scan('relation')} r USING(relation_id)""",
+            FROM {scan("relation_annotation")} a JOIN {scan("relation")} r USING(relation_id)""",
     )
     con.execute("""INSERT INTO ap_annotation_raw
         SELECT resource,version,'evidence',relation_key,evidence_ordinal,ordinal,

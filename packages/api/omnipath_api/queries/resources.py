@@ -36,7 +36,13 @@ class ResourcesQueries:
                         "entities_count": pq.read_metadata(tables["entity"]).num_rows,
                         "relations_count": pq.read_metadata(tables["relation"]).num_rows,
                         "entities_size_kb": round(
-                            sum(v for k, v in sizes.items() if k.startswith("entity_") or k == "entity") / 1024, 1
+                            sum(
+                                v
+                                for k, v in sizes.items()
+                                if k.startswith("entity_") or k == "entity"
+                            )
+                            / 1024,
+                            1,
                         ),
                         "relations_size_kb": round(
                             sum(v for k, v in sizes.items() if k.startswith("relation")) / 1024, 1

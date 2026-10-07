@@ -66,7 +66,9 @@ def _entity_evidence(engine, resources, pairs, isoform_identifier, limit, offset
     return _occurrences(engine, sql, params, keys, limit, offset)
 
 
-def _product_evidence(engine, resources, product_kind, entity_id, isoform_identifier, limit, offset):
+def _product_evidence(
+    engine, resources, product_kind, entity_id, isoform_identifier, limit, offset
+):
     # An asserted native product can be named by observations on a gene row
     # without having any catalogue gene links: every row's evidence is read.
     conditions = [f"molecular_form.{product_kind}_entity_key = ?"]
@@ -202,9 +204,7 @@ def context(
                 for r in engine._entity_rows("entity_key = ?", [entity_id], resources, nested=False)
             ]
         )
-        standalone = _entity_evidence(
-            engine, resources, pairs, isoform_identifier, limit, offset
-        )
+        standalone = _entity_evidence(engine, resources, pairs, isoform_identifier, limit, offset)
     standalone_more = len(standalone) > limit
     standalone = standalone[:limit]
     for record in standalone:

@@ -108,9 +108,7 @@ def test_exact_occurrence_filters_and_projection(molecular_engine):
     assert engine.search_relations(filters)["total"] == 2
     rows = engine.search_relations(filters, include_details=True)["rows"]
     assert all(len(r["evidence"]) == 1 for r in rows)
-    assert (
-        engine.search_relations(dict(filters, molecular_endpoint_mode="target"))["total"] == 0
-    )
+    assert engine.search_relations(dict(filters, molecular_endpoint_mode="target"))["total"] == 0
     assert (
         engine.search_relations(
             {"protein_entity_keys": ["3" * 64], "isoform_identifiers": ["uniprot:absent"]}
@@ -424,9 +422,7 @@ def test_non_product_source_types_keep_native_context(
     assert context["observedForms"] == []
     assert len(context["standaloneEvidence"]) == 2
     assert all(record["entityPk"] == key for record in context["standaloneEvidence"])
-    assert all(
-        row["subjectEntity"]["entityType"] == entity_type for row in context["relations"]
-    )
+    assert all(row["subjectEntity"]["entityType"] == entity_type for row in context["relations"])
     assert all(row["relation"]["subjectEntityPk"] == key for row in context["relations"])
     assert all(
         len(row["evidence"]) == 1 and row["evidence"][0]["subject_molecular_form"] is None
@@ -541,7 +537,12 @@ def test_shared_cursor_pages_both_streams_to_completion(molecular_engine, relati
     ]
     rewrite_resource(entity_path, entities=entities)
     relation = nested_rows(relation_path)[0]
-    rewrite_resource(relation_path, relations=[dict(relation, relation_key=f"relation-{index}") for index in range(relation_count)])
+    rewrite_resource(
+        relation_path,
+        relations=[
+            dict(relation, relation_key=f"relation-{index}") for index in range(relation_count)
+        ],
+    )
     other_folder = engine.data_root / "resources" / "b" / "1"
     other_entities = nested_rows(other_folder / "entity.parquet")
     for record in other_entities:
@@ -567,9 +568,7 @@ def test_shared_cursor_pages_both_streams_to_completion(molecular_engine, relati
 
 def test_shared_cursor_continues_standalone_after_cross_resource_relations_finish(molecular_engine):
     engine = molecular_engine
-    pages = [
-        engine.get_molecular_context("gene:entrez:1", limit=2, offset=i) for i in (0, 2, 4)
-    ]
+    pages = [engine.get_molecular_context("gene:entrez:1", limit=2, offset=i) for i in (0, 2, 4)]
     assert [len(page["relations"]) for page in pages] == [2, 0, 0]
     assert [len(page["standaloneEvidence"]) for page in pages] == [2, 2, 2]
     assert [page["nextCursor"] for page in pages] == ["2", "4", None]
@@ -636,9 +635,7 @@ def test_native_product_without_catalogue_links_finds_gene_standalone_occurrence
     assert len(context["standaloneEvidence"]) == 2
     assert context["nextCursor"] is None
     assert {record["entityPk"] for record in context["standaloneEvidence"]} == {main_gene}
-    assert all(
-        record["occurrence"]["row_id"] == "0" for record in context["standaloneEvidence"]
-    )
+    assert all(record["occurrence"]["row_id"] == "0" for record in context["standaloneEvidence"])
     assert len(engine.get_molecular_context(product, view="product")["standaloneEvidence"]) == 4
     assert len(engine.get_molecular_context("gene:entrez:7")["standaloneEvidence"]) == 8
 
@@ -865,9 +862,7 @@ def test_actual_writer_native_product_with_gene_is_labeled_before_navigation(
     assert product["geneReferenceKeys"] == []
     assert (
         product["entityPk"]
-        == context["standaloneEvidence"][0]["occurrence"]["molecular_form"][
-            "protein_entity_key"
-        ]
+        == context["standaloneEvidence"][0]["occurrence"]["molecular_form"]["protein_entity_key"]
     )
 
 
@@ -1017,9 +1012,7 @@ def test_referenced_product_metadata_only_follows_returned_trimmed_pairs_and_sta
         ]
         rewrite_resource(path, relations=rows)
     engine.reload_resources()
-    standalone = engine.get_molecular_context(
-        "gene:entrez:1", resources=["a"], limit=1, offset=2
-    )
+    standalone = engine.get_molecular_context("gene:entrez:1", resources=["a"], limit=1, offset=2)
     assert standalone["standaloneEvidence"] == []
     assert standalone["relations"] == []
     assert standalone["referencedProducts"] == []

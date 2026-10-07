@@ -3,7 +3,7 @@
 
 Run with the workspace Python environment. Resource selectors are names (latest
 available version) or NAME/VERSION. All SQL baselines read original Parquets;
-TestClient uses temporary symlinks, with any existing disposable serving indexes.
+TestClient uses temporary symlinks to the resource version's tables.
 Python client checks use a temporary hard-linked offline snapshot on the data
 root's filesystem and streaming checksums. Staging directories are removed on
 exit; immutable resource files are never written. Unsupported hardlinks report
@@ -36,11 +36,10 @@ import pyarrow.parquet as pq
 
 from omnipath_api.engine import ParquetServingEngine
 from omnipath_api.server import create_app
-from omnipath_api.serving_index import projected_paths
 from omnipath_api.settings import Settings
 from omnipath_client import Client
 from omnipath_core.molecular_forms import normalize_molecular_form
-from omnipath_core.schema import ENTITY_SCHEMA, PAYLOAD_SCHEMA, RELATION_SCHEMA
+from omnipath_core.schema import PUBLISHED_TABLES
 
 _UNIPROT_ACCESSION = "([OPQ][0-9][A-Z0-9]{3}[0-9]|[A-NR-Z][0-9]([A-Z][A-Z0-9]{2}[0-9]){1,2})"
 _UNIPROT_REPORTED_PRODUCT = _UNIPROT_ACCESSION + "(-[0-9]+)?(-PRO_[0-9]+)?"
@@ -63,10 +62,10 @@ def select_resource(root: Path, selector: str) -> Path:
     parts = selector.split("/")
     if len(parts) == 2:
         path = root / "resources" / parts[0] / parts[1]
-        if (path / "entities.parquet").exists():
+        if (path / "entity.parquet").exists():
             return path
     elif len(parts) == 1:
-        candidates = [p.parent for p in (root / "resources" / selector).glob("*/entities.parquet")]
+        candidates = [p.parent for p in (root / "resources" / selector).glob("*/entity.parquet")]
         if candidates:
             return max(candidates, key=_version_key)
     raise ValueError(f"No built Parquet resource for {selector!r} in {root}")
@@ -126,12 +125,10 @@ class Validator:
         *,
         examples: int,
         max_export_relations: int,
-        projection_mode: str = "auto",
     ):
         self.folder = folder.resolve()
         self.examples = examples
         self.max_export_relations = max_export_relations
-        self.projection_mode = projection_mode
         self.report: dict[str, Any] = {
             "resource": f"{folder.parent.name}/{folder.name}",
             "path": str(self.folder),
@@ -205,11 +202,7 @@ class Validator:
 
     def schemas(self) -> bool:
         valid = True
-        for name, expected in (
-            ("entities", ENTITY_SCHEMA),
-            ("relations", RELATION_SCHEMA),
-            ("evidence_payloads", PAYLOAD_SCHEMA),
-        ):
+        for name, expected in PUBLISHED_TABLES.items():
             path = self.folder / f"{name}.parquet"
             if not path.exists():
                 self.check(f"schema.{name}", False, reason="Missing contract table")
@@ -233,71 +226,82 @@ class Validator:
                 "schema": str(schema),
             }
             self.db.execute(f"CREATE VIEW {name} AS SELECT * FROM read_parquet({_literal(path)})")
+        if valid:
+            # One row per evidence occurrence: ``ev`` holds its fields.
+            self.db.execute("""CREATE VIEW occurrences AS SELECT r.relation_key,
+                r.subject_reference_entity_key, r.object_reference_entity_key, v.ordinal,
+                struct_pack(source := v.source, dataset := v.dataset, row_id := v.row_id,
+                    upstream_id := v.upstream_id, annotations := v.annotations,
+                    subject_molecular_form := v.subject_molecular_form,
+                    object_molecular_form := v.object_molecular_form) AS ev
+                FROM relation_evidence v JOIN relation r USING (relation_id)""")
+            self.db.execute("""CREATE VIEW entity_occurrences AS SELECT e.entity_key,
+                e.reference_entity_key, v.entity_id, v.ordinal,
+                struct_pack(source := v.source, dataset := v.dataset, row_id := v.row_id,
+                    upstream_id := v.upstream_id, annotations := v.annotations,
+                    molecular_form := v.molecular_form) AS ev
+                FROM entity_evidence v JOIN entity e USING (entity_id)""")
         return valid
 
     def structural(self):
-        # Projection UNNEST avoids correlated delimiter joins that retain large
-        # parent evidence arrays when these views are expanded through unions.
-        self.db.execute(
-            "CREATE VIEW occurrences AS SELECT relation_key, subject_reference_entity_key, object_reference_entity_key, unnest(evidence) AS ev FROM relations"
-        )
         self.db.execute("""CREATE VIEW forms AS
             SELECT 'relation' AS owner_type, relation_key AS owner_key, 'source' AS side,
                 subject_reference_entity_key AS reference_key, ev.subject_molecular_form AS form, ev.annotations FROM occurrences
             UNION ALL SELECT 'relation', relation_key, 'target', object_reference_entity_key,
                 ev.object_molecular_form, ev.annotations FROM occurrences
             UNION ALL SELECT 'entity', entity_key, 'standalone', reference_entity_key,
-                ev.molecular_form, ev.annotations FROM
-                (SELECT entity_key, reference_entity_key, unnest(evidence) AS ev FROM entities)""")
+                ev.molecular_form, ev.annotations FROM entity_occurrences""")
         self.sql(
             "molecular.product_references",
             """CREATE TEMP TABLE product_refs AS
             SELECT DISTINCT form.protein_entity_key AS entity_key, 'protein' AS kind FROM forms WHERE form.protein_entity_key IS NOT NULL
             UNION SELECT DISTINCT form.transcript_entity_key, 'transcript' FROM forms WHERE form.transcript_entity_key IS NOT NULL""",
         )
-        for table, key in (("entities", "entity_key"), ("relations", "relation_key")):
+        for table, key in (("entity", "entity_key"), ("relation", "relation_key")):
             self.zero(
                 f"{table}.unique_nonempty_keys",
                 f"SELECT count(*) - count(DISTINCT NULLIF({key}, '')) FROM {table}",
             )
         self.zero(
             "relations.endpoint_closure_and_source_type",
-            """SELECT count(*) FROM relations r
-            LEFT JOIN entities s ON s.entity_key=r.subject_entity_key LEFT JOIN entities o ON o.entity_key=r.object_entity_key
+            """SELECT count(*) FROM relation r
+            LEFT JOIN entity s ON s.entity_key=r.subject_entity_key LEFT JOIN entity o ON o.entity_key=r.object_entity_key
             WHERE s.entity_key IS NULL OR o.entity_key IS NULL OR s.entity_type IS DISTINCT FROM r.subject_type OR o.entity_type IS DISTINCT FROM r.object_type""",
         )
         self.zero(
             "molecular.product_closure_and_type",
-            """SELECT count(*) FROM product_refs p LEFT JOIN entities e USING(entity_key)
+            """SELECT count(*) FROM product_refs p LEFT JOIN entity e USING(entity_key)
             WHERE e.entity_key IS NULL OR (p.kind='protein' AND e.entity_type NOT IN ('protein','polypeptide'))
             OR (p.kind='transcript' AND e.entity_type NOT IN ('rna_product','transcript','rna','RNA'))""",
         )
         self.zero(
             "entities.supported_gene_references",
-            """SELECT count(*) FROM entities WHERE
+            """SELECT count(*) FROM entity WHERE
             (starts_with(reference_entity_key,'entrez:') AND (NOT regexp_full_match(reference_entity_key,'entrez:[0-9]+')
                 OR NOT coalesce(list_contains(gene_reference_keys,reference_entity_key),FALSE)))
             OR EXISTS (SELECT 1 FROM UNNEST(gene_reference_keys) AS keys(k) WHERE NOT coalesce(regexp_full_match(k,'entrez:[0-9]+'),FALSE))""",
         )
         self.zero(
             "entities.native_fallback_or_supported_gene",
-            """SELECT count(*) FROM entities WHERE reference_entity_key IS NULL OR
+            """SELECT count(*) FROM entity WHERE reference_entity_key IS NULL OR
             (NOT starts_with(reference_entity_key,'entrez:') AND reference_entity_key <> namespace || ':' || identifier)""",
         )
         self.zero(
             "relations.reference_consistency",
-            """SELECT count(*) FROM relations r JOIN entities s ON s.entity_key=r.subject_entity_key JOIN entities o ON o.entity_key=r.object_entity_key
+            """SELECT count(*) FROM relation r JOIN entity s ON s.entity_key=r.subject_entity_key JOIN entity o ON o.entity_key=r.object_entity_key
             WHERE r.subject_reference_entity_key IS DISTINCT FROM s.reference_entity_key OR r.object_reference_entity_key IS DISTINCT FROM o.reference_entity_key""",
         )
         self.zero(
             "relations.evidence_count",
-            "SELECT count(*) FROM relations WHERE evidence_count IS DISTINCT FROM coalesce(len(evidence),0)",
+            """SELECT count(*) FROM relation r LEFT JOIN (SELECT relation_id, count(*) AS n
+            FROM relation_evidence GROUP BY relation_id) v USING (relation_id)
+            WHERE r.evidence_count IS DISTINCT FROM coalesce(v.n, 0)""",
         )
         # These namespaces have unscoped reusable record identities. Name-only
         # source fallbacks may intentionally include context in their hashes.
         self.zero(
             "molecular.no_form_specific_product_keys",
-            """SELECT count(*) FROM entities e WHERE namespace IN ('entrez','uniprot','ensp','enst','refseq')
+            """SELECT count(*) FROM entity e WHERE namespace IN ('entrez','uniprot','ensp','enst','refseq')
             AND entity_key <> sha256(lower(trim(entity_type)) || chr(0) || lower(trim(namespace)) || chr(0) || trim(identifier) || chr(0))""",
         )
         self.zero(
@@ -309,7 +313,7 @@ class Validator:
                 SELECT form, annotations, side, form.transcript_entity_key, 'transcript'
                 FROM forms WHERE form.transcript_entity_key IS NOT NULL
             )
-            SELECT count(*) FROM pointed_forms f JOIN entities e ON e.entity_key=f.product_key
+            SELECT count(*) FROM pointed_forms f JOIN entity e ON e.entity_key=f.product_key
             WHERE e.namespace='uniprot'
             AND NOT coalesce(regexp_full_match(e.identifier,'{_UNIPROT_ACCESSION}'),FALSE)
             AND NOT coalesce(
@@ -326,14 +330,14 @@ class Validator:
         )
         self.check(
             "molecular.no_entity_level_form_enumeration",
-            "molecular_form" not in pq.read_schema(self.folder / "entities.parquet").names,
+            "molecular_form" not in pq.read_schema(self.folder / "entity.parquet").names,
             scope="Stable reusable product keys; exact reported native identifiers require occurrence provenance. Forms remain on occurrences. Does not compare to unavailable upstream input.",
         )
         self.zero(
             "payloads.owner_closure",
             """SELECT count(*) FROM evidence_payloads p
-            WHERE (p.relation_key IS NOT NULL AND NOT EXISTS(SELECT 1 FROM relations r WHERE r.relation_key=p.relation_key))
-            OR (p.entity_key IS NOT NULL AND NOT EXISTS(SELECT 1 FROM entities e WHERE e.entity_key=p.entity_key))""",
+            WHERE (p.relation_key IS NOT NULL AND NOT EXISTS(SELECT 1 FROM relation r WHERE r.relation_key=p.relation_key))
+            OR (p.entity_key IS NOT NULL AND NOT EXISTS(SELECT 1 FROM entity e WHERE e.entity_key=p.entity_key))""",
         )
         counts = self.sql(
             "molecular.coverage",
@@ -517,16 +521,13 @@ class Validator:
             standalone_params.append(isoform)
         standalone_count = self.sql(
             f"baseline.{example_name}.standalone_count",
-            f"SELECT count(*) FROM (SELECT unnest(evidence) AS ev FROM entities) WHERE {standalone_predicate}",
+            f"SELECT count(*) FROM entity_occurrences WHERE {standalone_predicate}",
             standalone_params,
         )[0][0]
         standalone_expected = self.sql(
             f"baseline.{example_name}.standalone",
-            f"""SELECT entity_key, ev FROM (
-                SELECT entity_key, file_row_number, unnest(evidence) AS ev,
-                    unnest(range(0,len(evidence))) AS occurrence_index
-                FROM read_parquet({_literal(self.folder / "entities.parquet")}, file_row_number=TRUE)
-            ) WHERE {standalone_predicate} ORDER BY file_row_number, occurrence_index LIMIT 5""",
+            f"""SELECT entity_key, ev FROM entity_occurrences
+            WHERE {standalone_predicate} ORDER BY entity_id, ordinal LIMIT 5""",
             standalone_params,
         )
         expected_standalone = Counter(
@@ -582,7 +583,7 @@ class Validator:
             (key, (type_, ns, identifier, ref))
             for key, type_, ns, identifier, ref in self.sql(
                 f"baseline.export.{name}.products",
-                "SELECT entity_key, entity_type, namespace, identifier, reference_entity_key FROM entities WHERE entity_key IN (SELECT UNNEST(?::VARCHAR[]))",
+                "SELECT entity_key, entity_type, namespace, identifier, reference_entity_key FROM entity WHERE entity_key IN (SELECT UNNEST(?::VARCHAR[]))",
                 [list(export_products)],
             )
         )
@@ -618,7 +619,7 @@ class Validator:
     def gene(self, client):
         candidates = self.sql(
             "baseline.gene_example",
-            "SELECT reference_entity_key FROM entities WHERE starts_with(reference_entity_key,'entrez:') GROUP BY reference_entity_key ORDER BY count(*) DESC, reference_entity_key LIMIT 1",
+            "SELECT reference_entity_key FROM entity WHERE starts_with(reference_entity_key,'entrez:') GROUP BY reference_entity_key ORDER BY count(*) DESC, reference_entity_key LIMIT 1",
         )
         if not candidates:
             self.unavailable(
@@ -628,7 +629,7 @@ class Validator:
         ref = candidates[0][0]
         expected = self.sql(
             "baseline.gene_members",
-            "SELECT entity_key, entity_type FROM entities WHERE reference_entity_key=?",
+            "SELECT entity_key, entity_type FROM entity WHERE reference_entity_key=?",
             [ref],
         )
         groups = self.request(
@@ -656,7 +657,7 @@ class Validator:
         ).json()
         expected_count = self.sql(
             "baseline.gene_relations",
-            "SELECT count(*) FROM relations WHERE subject_reference_entity_key=? OR object_reference_entity_key=?",
+            "SELECT count(*) FROM relation WHERE subject_reference_entity_key=? OR object_reference_entity_key=?",
             [ref, ref],
         )[0][0]
         self.check(
@@ -700,28 +701,7 @@ class Validator:
             folder.mkdir(parents=True)
             for path in self.folder.glob("*.parquet"):
                 (folder / path.name).symlink_to(path)
-            if self.projection_mode != "raw" and (root / ".serving").exists():
-                (isolated_root / ".serving").symlink_to((root / ".serving").resolve())
             engine = ParquetServingEngine(isolated_root)
-            self.report["serving_projections"] = {
-                kind: {
-                    "available": paths != raw_paths,
-                    "paths": [str(Path(path).resolve()) for path in paths],
-                }
-                for kind in ("entities", "relations")
-                for raw_paths in [[str(folder / f"{kind}.parquet")]]
-                for paths in [projected_paths(isolated_root, kind, raw_paths)]
-            }
-            if self.projection_mode != "auto":
-                available = [
-                    item["available"] for item in self.report["serving_projections"].values()
-                ]
-                valid = (
-                    all(available) if self.projection_mode == "projected" else not any(available)
-                )
-                self.check("api.projection_mode", valid, requested_mode=self.projection_mode)
-                if not valid:
-                    return
             with TestClient(
                 create_app(engine=engine, settings=Settings(read_only=True)),
                 headers={"x-omnipath-release": "latest"},
@@ -891,7 +871,7 @@ class Validator:
             )
             endpoints = self.sql(
                 f"baseline.client.{name}.typed_endpoints",
-                "SELECT subject_entity_key, object_entity_key, subject_type, object_type FROM relations WHERE relation_key=?",
+                "SELECT subject_entity_key, object_entity_key, subject_type, object_type FROM relation WHERE relation_key=?",
                 [key],
             )[0]
             self.check(
@@ -921,7 +901,7 @@ class Validator:
 
     def client_products(self, client, sample, keys, predicate, parameters, name):
         products = client.referenced_products(sample, resources=self.folder.parent.name)
-        closure = f"""FROM entities e WHERE EXISTS (SELECT 1 FROM occurrences
+        closure = f"""FROM entity e WHERE EXISTS (SELECT 1 FROM occurrences
             WHERE relation_key IN (SELECT UNNEST(?::VARCHAR[])) AND ({predicate}) AND
             (ev.subject_molecular_form.protein_entity_key=e.entity_key OR ev.subject_molecular_form.transcript_entity_key=e.entity_key
              OR ev.object_molecular_form.protein_entity_key=e.entity_key OR ev.object_molecular_form.transcript_entity_key=e.entity_key))"""
@@ -976,7 +956,7 @@ class Validator:
             )
             expected_count = self.sql(
                 f"baseline.client.reference.{endpoint}.count",
-                f"SELECT count(*) FROM relations WHERE {predicate}",
+                f"SELECT count(*) FROM relation WHERE {predicate}",
                 [reference] * len(sides),
             )[0][0]
             selected = client.related_reference(
@@ -990,7 +970,7 @@ class Validator:
             columns = "relation_key, subject_entity_key, object_entity_key, subject_type, object_type, subject_reference_entity_key, object_reference_entity_key"
             expected = self.sql(
                 f"baseline.client.reference.{endpoint}.sample",
-                f"SELECT {columns} FROM relations WHERE {predicate} ORDER BY relation_key LIMIT ?",
+                f"SELECT {columns} FROM relation WHERE {predicate} ORDER BY relation_key LIMIT ?",
                 [*([reference] * len(sides)), CLIENT_SAMPLE_LIMIT],
             )
             actual = self.client_timed(
@@ -1020,7 +1000,8 @@ class Validator:
             folder = snapshot / "resources" / self.folder.parent.name / self.folder.name
             folder.mkdir(parents=True)
             files = []
-            for name in ("entities.parquet", "relations.parquet"):
+            # The published tables the client reads (raw payloads stay out).
+            for name in [f"{t}.parquet" for t in PUBLISHED_TABLES if t != "evidence_payloads"]:
                 source, destination = self.folder / name, folder / name
                 try:
                     os.link(source, destination)
@@ -1151,17 +1132,13 @@ def validate_outputs(
     *,
     examples: int = 2,
     max_export_relations: int = 10000,
-    projection_mode: str = "auto",
 ) -> dict:
-    if projection_mode not in {"auto", "raw", "projected"}:
-        raise ValueError("projection_mode must be auto, raw or projected")
     root = data_root.resolve()
     report = {
         "created_at": datetime.now(timezone.utc).isoformat(),
         "data_root": str(root),
         "validator_sha256": _VALIDATOR_SHA256,
         "client_sha256": _CLIENT_SHA256,
-        "projection_mode": projection_mode,
         "resources": [],
         "limits": {"examples_per_kind": examples, "max_export_relations": max_export_relations},
     }
@@ -1184,7 +1161,6 @@ def validate_outputs(
                 folder,
                 examples=examples,
                 max_export_relations=max_export_relations,
-                projection_mode=projection_mode,
             ).run(root)
         )
     report["status"] = (
@@ -1200,7 +1176,6 @@ def main() -> int:
     parser.add_argument("--output", type=Path, required=True, help="JSON report destination")
     parser.add_argument("--examples", type=int, default=2)
     parser.add_argument("--max-export-relations", type=int, default=10000)
-    parser.add_argument("--projection-mode", choices=("auto", "raw", "projected"), default="auto")
     args = parser.parse_args()
     if args.examples < 1 or args.max_export_relations < 1:
         parser.error("--examples and --max-export-relations must be positive")
@@ -1209,7 +1184,6 @@ def main() -> int:
         args.resources,
         examples=args.examples,
         max_export_relations=args.max_export_relations,
-        projection_mode=args.projection_mode,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, indent=2) + "\n")
@@ -1217,7 +1191,7 @@ def main() -> int:
         checks = Counter(c["status"] for c in resource["checks"])
         sizes = resource.get("tables", {})
         print(
-            f"{resource['resource']}: {resource['status']}; {sizes.get('entities', {}).get('rows', '?')} entities, {sizes.get('relations', {}).get('rows', '?')} relations; {checks['passed']} passed, {checks['failed']} failed, {checks['unavailable']} unavailable; {resource.get('elapsed_seconds', 0):.2f}s"
+            f"{resource['resource']}: {resource['status']}; {sizes.get('entity', {}).get('rows', '?')} entities, {sizes.get('relation', {}).get('rows', '?')} relations; {checks['passed']} passed, {checks['failed']} failed, {checks['unavailable']} unavailable; {resource.get('elapsed_seconds', 0):.2f}s"
         )
         for check in resource["checks"]:
             if check["status"] == "failed":

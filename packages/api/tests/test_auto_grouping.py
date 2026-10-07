@@ -48,7 +48,11 @@ def mixed_engine(tmp_path):
         "native_gene": record("protein", "uniprot", "P00005", ref="uniprot:P00005", label="Native"),
         # Chemicals group by the connectivity of their InChIKey reference.
         "chemical_a": record(
-            "small_molecule", "inchikey", INCHI_A, ref="inchikey:" + INCHI_A, label="Needle chemical"
+            "small_molecule",
+            "inchikey",
+            INCHI_A,
+            ref="inchikey:" + INCHI_A,
+            label="Needle chemical",
         ),
         "chemical_b": record(
             "small_molecule", "inchikey", INCHI_B, ref="inchikey:" + INCHI_B, label="Stereo B"
@@ -63,9 +67,7 @@ def mixed_engine(tmp_path):
         ),
         # Even an accidental gene reference must never attach a chemical to a gene group.
         "chemical_gene_ref": record("small_molecule", "chebi", "1", ref="entrez:1"),
-        "conflicting_chemical": record(
-            "small_molecule", "pubchem", "2", ref="inchikey:" + INCHI_A
-        ),
+        "conflicting_chemical": record("small_molecule", "pubchem", "2", ref="inchikey:" + INCHI_A),
         "missing_chemical": record("small_molecule", "pubchem", "4"),
         "protein_with_inchikey": record("protein", "inchikey", INCHI_A, ref="inchikey:" + INCHI_A),
     }
@@ -155,7 +157,9 @@ def test_auto_combines_groups_and_preserves_all_singletons(mixed_engine):
     concrete_gene = next(g for g in gene_only if g["group_key"] == "gene:entrez:1")
     assert concrete_gene["member_count"] == 3
     malformed_chemical = next(
-        g for g in gene_only if g["entity"]["entityPk"] == records["chemical_gene_ref"]["entity_key"]
+        g
+        for g in gene_only
+        if g["entity"]["entityPk"] == records["chemical_gene_ref"]["entity_key"]
     )
     assert not malformed_chemical["is_group"]
 

@@ -68,28 +68,14 @@ uv run --frozen omnipath-api --host 127.0.0.1 --port 8085 --data-root data
 
 Open interactive API docs from the web app (**API Docs** in the sidebar) or directly at `http://127.0.0.1:8085/api/docs`.
 
-## Explorer serving indexes
+## Serving tables
 
-Resource Parquets remain authoritative and immutable. Disposable files under
-`<data-root>/.serving/v2/` accelerate scalar entity scans, and qualifier facets. Per-resource projections contain scalar entity fields or
-relation fields with distinct relation-scoped qualifier values; evidence and other
-annotations remain in the original resources. There is no shared browse index. Search, filters and pagination use the normal
-query path.
-
-Build the indexes explicitly after completing resource builds, in the same mount
-namespace as the API (input fingerprints include absolute path, size and mtime):
-
-```bash
-docker run --rm --cpus=4 --cpuset-cpus=0-5 --memory=6g --memory-swap=6g \
-  -v /absolute/path/to/data:/data omnipath-api:local \
-  python -m omnipath_api.serving_index --data-root /data \
-  --threads 4 --memory-limit 2GB
-```
-
-The command leaves existing matching files in place and atomically publishes new
-projections, with a 20 GiB free-disk guard. Missing/stale indexes fall back to
-original Parquets; requests never build them. Old disposable indexes can be removed
-when no longer needed. No global release publication or resource rebuild is needed.
+Each resource version is served from its published tables and three serving
+tables written by the build: `entity_term` (search), `relation_endpoint` (a key's
+relations) and `entity_group` (gene, product and chemical groups). They are part
+of the resource version, so the API needs no separate index build; downloads
+contain only the published tables. Lookups by key read each resource's files
+separately, so only the matching row groups are read.
 
 Facet results share concurrent identical requests and use an LRU cache limited to
 128 entries and 32 MiB of encoded results. Cache keys include normalized parameters,
@@ -118,13 +104,10 @@ the selected release; unavailable suggestions are skipped. The small response is
 cached in memory and atomically saved under `.presentation/examples-v1/`, keyed
 by entity input fingerprints, editorial suggestions, release and taxonomy references.
 A missing cache is prepared on demand; read-only data mounts use the memory cache.
-Changing one resource does not rebuild any other resource or serving projection.
 The presentation cache is optional and does not contain the full entity catalog.
 
 To warm the default page after deployment, request `/entities/examples` with
 `X-OmniPath-Release: latest`. Named releases prepare their own pages on first use.
-The obsolete `.serving/v1/browse/` directory is no longer read or written and can
-be removed. Per-resource entity and relation projections are retained.
 
 ### Entity details and relationships
 
@@ -227,8 +210,7 @@ matches no entities yields no rows; a short accession is resolved as an identifi
 
 Inventory discovery builds a complete immutable snapshot before publishing it in
 one replacement. Every engine operation in an HTTP request uses that same snapshot.
-Existing projections are optional; read-only serving creates neither indexes,
-example cache files nor queue files. DuckDB connections use the shared connection
+Read-only serving creates neither example cache files nor queue files. DuckDB connections use the shared connection
 factory and close when the application lifespan ends.
 
 ## Query resource budget
@@ -268,20 +250,17 @@ same endpoint in the same evidence occurrence. Filtered evidence and exports
 retain only matching occurrences, with their paired subject/object forms.
 `GET /relations/{key}/evidence` accepts these filters as a JSON query parameter
 and collects evidence across all selected resource files with stable occurrence
-keys. Entity summaries retain standalone `molecularEvidence`.
+keys. Entity details count standalone evidence (`molecularEvidenceTotal`); the items
+are paged from `GET /entities/{key}/evidence`.
 
 `GET /entities/{key}/molecular-context` separates catalogue-linked products from
 observed forms and matching relations. A `gene:entrez:ID` group opens the gene
 view; a reusable product key selects evidence explicitly naming that product.
 `isoform_identifier=uniprot:P04637-2` selects that exact reported isoform.
 Forms and standalone observations are paged; `observedForms` describes the
-current relation page. Missing molecular fields stay unspecified, including
-when reading older Parquets.
+current relation page. Missing molecular fields stay unspecified.
 
-Filtered single-table exports retain the original nested evidence and add
+Filtered exports return one row per relation with its annotations and evidence
+as lists (only matching occurrences under a molecular form filter) and add
 `referenced_product_records`, containing reusable product records needed to
-interpret the selected forms. Rebuild disposable serving projections with
-`python -m omnipath_api.serving_index --data-root data`: version `v2` stores
-nullable gene references and compact paired product/isoform identities.
-Requests use existing matching projections and hydrate evidence only for the
-selected page; immutable resource Parquets are never rewritten by serving.
+interpret the selected forms. Serving never rewrites resource Parquets.

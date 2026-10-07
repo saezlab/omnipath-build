@@ -13,17 +13,25 @@ import pyarrow.parquet as pq
 import pytest
 
 from omnipath_core.keys import entity_key
-from omnipath_core.schema import ENTITY_SCHEMA, PAYLOAD_SCHEMA, RELATION_SCHEMA
 from omnipath_client import Client
-from omnipath_api.engine import ParquetServingEngine
-from omnipath_api.serving_index import build_indexes, index_path
 from scripts.validate_molecular_outputs import Validator, validate_outputs
+from omnipath_core.fixtures import nested_rows, rewrite_resource, write_resource
+
+
+def entity(rows, entity_type, identifier, namespace=None):
+    """The fixture entity row of a type and identifier (tables are sorted by key)."""
+    return next(
+        row
+        for row in rows
+        if row["entity_type"] == entity_type
+        and row["identifier"] == identifier
+        and namespace in (None, row["namespace"])
+    )
 
 
 @pytest.fixture
 def outputs(tmp_path):
     folder = tmp_path / "resources" / "signor" / "1"
-    folder.mkdir(parents=True)
     rows = []
     for type_, ns, identifier, ref in [
         ("gene", "entrez", "7157", "entrez:7157"),
@@ -132,49 +140,12 @@ def outputs(tmp_path):
         evidence_count=len(evidence),
         annotations=[],
     )
-    for name, data, schema in (
-        ("entities", rows, ENTITY_SCHEMA),
-        ("relations", [relation], RELATION_SCHEMA),
-        ("evidence_payloads", [], PAYLOAD_SCHEMA),
-    ):
-        pq.write_table(pa.Table.from_pylist(data, schema=schema), folder / f"{name}.parquet")
+    write_resource(folder, rows, [relation])
     return tmp_path, folder
 
 
 def failures(report):
     return [c for r in report["resources"] for c in r["checks"] if c["status"] == "failed"]
-
-
-def test_explicit_raw_and_projected_modes_are_distinct_with_existing_indexes(outputs):
-    root, _ = outputs
-    build_indexes(ParquetServingEngine(root), threads=1, min_free_disk=0)
-    for mode in ("raw", "projected"):
-        report = validate_outputs(root, ["signor"], examples=1, projection_mode=mode)
-        assert not failures(report), failures(report)
-        assert report["projection_mode"] == mode
-        projections = report["resources"][0]["serving_projections"]
-        assert {item["available"] for item in projections.values()} == {mode == "projected"}
-
-
-@pytest.mark.parametrize("missing_kind", ["entities", "relations"])
-def test_projected_mode_requires_both_matching_indexes(outputs, missing_kind):
-    root, folder = outputs
-    build_indexes(ParquetServingEngine(root), threads=1, min_free_disk=0)
-    index_path(root, missing_kind, [str(folder / f"{missing_kind}.parquet")]).unlink()
-    report = validate_outputs(root, ["signor"], examples=1, projection_mode="projected")
-    assert any(c["name"] == "api.projection_mode" for c in failures(report))
-
-
-def test_projected_mode_rejects_stale_input_signature(outputs):
-    import os
-
-    root, folder = outputs
-    build_indexes(ParquetServingEngine(root), threads=1, min_free_disk=0)
-    path = folder / "relations.parquet"
-    before = path.stat()
-    os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns + 1_000_000))
-    report = validate_outputs(root, ["signor"], examples=1, projection_mode="projected")
-    assert any(c["name"] == "api.projection_mode" for c in failures(report))
 
 
 def test_progress_logging_omits_query_results_and_parameters(outputs, monkeypatch, capsys):
@@ -221,7 +192,7 @@ def test_validator_paired_forms_gene_navigation_export_and_unavailable_cases(out
     assert any(c["name"] == "api.gene_type_filter.protein" for c in resource["checks"])
     assert any(c["name"] == "api.gene_type_filter.gene" for c in resource["checks"])
     assert any(t["kind"] == "api" for t in resource["timings"])
-    assert resource["tables"]["entities"]["bytes"] > 0
+    assert resource["tables"]["entity"]["bytes"] > 0
     assert resource["client_snapshot"]["staging"] == "temporary_hardlinks"
     assert any(t["kind"] == "python_client" for t in resource["timings"])
     for endpoint in ("any", "source", "target", "both"):
@@ -249,20 +220,19 @@ def test_validator_paired_forms_gene_navigation_export_and_unavailable_cases(out
 
 def test_validator_detects_dangling_product_reference(outputs):
     root, folder = outputs
-    table = pq.read_table(folder / "relations.parquet")
-    rows = table.to_pylist()
+    rows = nested_rows(folder / "relation.parquet")
     rows[0]["evidence"][0]["subject_molecular_form"]["protein_entity_key"] = "missing-product"
-    pq.write_table(pa.Table.from_pylist(rows, schema=table.schema), folder / "relations.parquet")
+    rewrite_resource(folder, relations=rows)
     report = validate_outputs(root, ["signor/1"], examples=1)
     assert any(c["name"] == "molecular.product_closure_and_type" for c in failures(report))
 
 
 def test_validator_reports_schema_error_without_unstructured_api_fallback(outputs):
     root, folder = outputs
-    table = pq.read_table(folder / "entities.parquet").drop(["reference_entity_key"])
-    pq.write_table(table, folder / "entities.parquet")
+    table = pq.read_table(folder / "entity.parquet").drop(["reference_entity_key"])
+    pq.write_table(table, folder / "entity.parquet")
     report = validate_outputs(root, ["signor"], examples=1)
-    assert failures(report)[0]["name"] == "schema.entities"
+    assert failures(report)[0]["name"] == "schema.entity"
     assert any(
         c["name"] == "data_and_api_checks" and c["status"] == "unavailable"
         for c in report["resources"][0]["checks"]
@@ -271,17 +241,16 @@ def test_validator_reports_schema_error_without_unstructured_api_fallback(output
 
 def test_validator_detects_form_specific_product_hash(outputs):
     root, folder = outputs
-    table = pq.read_table(folder / "entities.parquet")
-    rows = table.to_pylist()
-    rows[2]["entity_key"] = "form-enumerated-key"
-    pq.write_table(pa.Table.from_pylist(rows, schema=table.schema), folder / "entities.parquet")
+    rows = nested_rows(folder / "entity.parquet")
+    entity(rows, "protein", "P04637")["entity_key"] = "form-enumerated-key"
+    rewrite_resource(folder, entities=rows)
     report = validate_outputs(root, ["signor"], examples=1)
     assert any(c["name"] == "molecular.no_form_specific_product_keys" for c in failures(report))
 
 
 def test_validator_checks_physical_arrow_type(outputs):
     root, folder = outputs
-    path = folder / "entities.parquet"
+    path = folder / "entity.parquet"
     table = pq.read_table(path)
     table = table.set_column(
         table.schema.get_field_index("reference_entity_key"),
@@ -290,7 +259,7 @@ def test_validator_checks_physical_arrow_type(outputs):
     )
     pq.write_table(table, path)
     report = validate_outputs(root, ["signor"], examples=1)
-    error = next(c for c in failures(report) if c["name"] == "schema.entities")
+    error = next(c for c in failures(report) if c["name"] == "schema.entity")
     assert any(
         "reference_entity_key: actual int64; expected string" in message
         for message in error["errors"]
@@ -302,10 +271,16 @@ def test_client_audit_detects_lost_exact_evidence_trimming(outputs, monkeypatch)
     original = Client.related_product
 
     def untrimmed(self, product, **kwargs):
+        # The selected relations, but with all of their evidence.
         selected = original(self, product, **kwargs)
-        return self.relations(kwargs["resources"]).filter(
-            f"relation_key IN (SELECT relation_key FROM ({selected.sql_query()}))"
-        )
+        evidence = self._table_sql("relation_evidence", kwargs["resources"])
+        return self._db().sql(f"""SELECT s.* EXCLUDE (evidence, evidence_count), m.evidence,
+            len(m.evidence) AS evidence_count FROM ({selected.sql_query()}) s JOIN (
+                SELECT _resource, relation_id, list(struct_pack(source, dataset, row_id,
+                    upstream_id, annotations, subject_molecular_form, object_molecular_form)
+                    ORDER BY ordinal) AS evidence
+                FROM ({evidence}) GROUP BY _resource, relation_id
+            ) m USING (_resource, relation_id)""")
 
     monkeypatch.setattr(Client, "related_product", untrimmed)
     report = validate_outputs(root, ["signor"], examples=1)
@@ -315,13 +290,11 @@ def test_client_audit_detects_lost_exact_evidence_trimming(outputs, monkeypatch)
 
 def add_matching_relation(outputs):
     _, folder = outputs
-    path = folder / "relations.parquet"
-    table = pq.read_table(path)
-    rows = table.to_pylist()
+    rows = nested_rows(folder / "relation.parquet")
     second = copy.deepcopy(rows[0])
     second["relation_key"] = "another-relation"
     rows.append(second)
-    pq.write_table(pa.Table.from_pylist(rows, schema=table.schema), path)
+    rewrite_resource(folder, relations=rows)
 
 
 @pytest.mark.parametrize("damage", ["invented_empty", "duplicate_key"])
@@ -386,7 +359,7 @@ def test_api_audit_requires_populated_unique_search_pages(outputs, monkeypatch, 
 @pytest.mark.parametrize("damage", ["empty_page", "duplicate_page", "untrimmed", "opposite_form"])
 def test_product_context_audit_checks_page_and_paired_occurrences(outputs, monkeypatch, damage):
     add_matching_relation(outputs)
-    raw_evidence = pq.read_table(outputs[1] / "relations.parquet").to_pylist()[0]["evidence"]
+    raw_evidence = nested_rows(outputs[1] / "relation.parquet")[0]["evidence"]
     original = Validator.request
 
     def corrupted(self, client, method, path, **kwargs):
@@ -422,13 +395,13 @@ def test_product_context_audit_checks_page_and_paired_occurrences(outputs, monke
 
 
 def test_standalone_context_audit_rejects_repeated_observation_with_same_form(outputs, monkeypatch):
-    path = outputs[1] / "entities.parquet"
-    rows = pq.read_table(path).to_pylist()
+    path = outputs[1] / "entity.parquet"
+    rows = nested_rows(path)
     source = next(row for row in rows if row["evidence"])
     second = copy.deepcopy(source["evidence"][0])
     second["row_id"] = "another-standalone"
     source["evidence"].append(second)
-    pq.write_table(pa.Table.from_pylist(rows, schema=ENTITY_SCHEMA), path)
+    rewrite_resource(path, entities=rows)
     original = Validator.request
 
     def corrupted(self, client, method, path, **kwargs):
@@ -590,107 +563,6 @@ def test_validator_base_expansions_and_example_queries_have_no_delimiter_joins(
     assert checked == base_queries | {"molecular.reusable_uniprot_products"}
 
 
-def test_streaming_occurrences_and_forms_preserve_nullable_duplicate_multisets(outputs):
-    _, folder = outputs
-    for name, schema, key in (
-        ("entities", ENTITY_SCHEMA, "entity_key"),
-        ("relations", RELATION_SCHEMA, "relation_key"),
-    ):
-        path = folder / f"{name}.parquet"
-        rows = pq.read_table(path).to_pylist()
-        source = next(row for row in rows if row["evidence"])
-        for index, evidence in enumerate(
-            (None, [], [None], [source["evidence"][0], source["evidence"][0]])
-        ):
-            row = copy.deepcopy(source)
-            if name == "entities":
-                row.update(
-                    namespace="fixture",
-                    identifier=str(index),
-                    entity_key=entity_key(row["entity_type"], "fixture", str(index)),
-                    reference_entity_key=f"fixture:{index}",
-                    gene_reference_keys=[],
-                )
-            else:
-                row[key] = f"nullable-relation-{index}"
-                row["evidence_count"] = len(evidence or [])
-            row["evidence"] = copy.deepcopy(evidence)
-            rows.append(row)
-        pq.write_table(pa.Table.from_pylist(rows, schema=schema), path)
-    validator = Validator(folder, examples=0, max_export_relations=0)
-    try:
-        assert validator.schemas()
-        validator.structural()
-        validator.db.execute("""CREATE VIEW previous_occurrences AS
-            SELECT relation_key, subject_reference_entity_key, object_reference_entity_key, ev
-            FROM relations, UNNEST(evidence) AS items(ev)""")
-        validator.db.execute("""CREATE VIEW previous_forms AS
-            SELECT 'relation' AS owner_type, relation_key AS owner_key, 'source' AS side,
-                subject_reference_entity_key AS reference_key, ev.subject_molecular_form AS form, ev.annotations
-                FROM previous_occurrences
-            UNION ALL SELECT 'relation', relation_key, 'target', object_reference_entity_key,
-                ev.object_molecular_form, ev.annotations FROM previous_occurrences
-            UNION ALL SELECT 'entity', entity_key, 'standalone', reference_entity_key,
-                ev.molecular_form, ev.annotations FROM entities, UNNEST(evidence) AS items(ev)""")
-        for view in ("occurrences", "forms"):
-            difference = validator.db.execute(f"""SELECT count(*) FROM (
-                (SELECT * FROM {view} EXCEPT ALL SELECT * FROM previous_{view})
-                UNION ALL (SELECT * FROM previous_{view} EXCEPT ALL SELECT * FROM {view})
-            )""").fetchone()[0]
-            assert difference == 0
-        assert validator.db.execute("SELECT count(*) FROM occurrences").fetchone()[0] == 6
-        assert validator.db.execute("SELECT count(*) FROM forms").fetchone()[0] == 16
-        assert all(check["status"] != "failed" for check in validator.report["checks"])
-    finally:
-        validator.db.close()
-
-
-def test_validator_large_parent_evidence_arrays_stay_bounded(outputs, tmp_path):
-    _, folder = outputs
-    path = folder / "entities.parquet"
-    rows = pq.read_table(path).to_pylist()
-    source = next(row for row in rows if row["evidence"])
-    parents, observations = 64, 256
-    for parent in range(parents):
-        row = copy.deepcopy(source)
-        identifier = str(parent)
-        row.update(
-            namespace="fixture",
-            identifier=identifier,
-            entity_key=entity_key(row["entity_type"], "fixture", identifier),
-            reference_entity_key=f"fixture:{identifier}",
-            gene_reference_keys=[],
-            evidence=[],
-        )
-        for observation in range(observations):
-            evidence = copy.deepcopy(source["evidence"][0])
-            evidence["row_id"] = f"{parent}:{observation}"
-            evidence["annotations"].append(
-                dict(term="fixture:payload", value=evidence["row_id"] + "x" * 512)
-            )
-            row["evidence"].append(evidence)
-        rows.append(row)
-    pq.write_table(pa.Table.from_pylist(rows, schema=ENTITY_SCHEMA), path)
-    validator = Validator(folder, examples=0, max_export_relations=0)
-    try:
-        spill = tmp_path / "bounded-duckdb-spill"
-        validator.db.execute("SET memory_limit='256MB'")
-        validator.db.execute("SET max_temp_directory_size='256MB'")
-        validator.db.execute("SET temp_directory=?", [str(spill)])
-        assert validator.schemas()
-        validator.structural()
-        assert validator.report["coverage"]["standalone_forms"] == parents * observations + 1
-        assert validator.report["coverage"]["paired_occurrences"] == 1
-        assert validator.report["coverage"]["distinct_referenced_products"] == 2
-        assert all(check["status"] != "failed" for check in validator.report["checks"])
-        assert any(
-            timing["operation"] == "molecular.product_references"
-            for timing in validator.report["timings"]
-        )
-    finally:
-        validator.db.close()
-
-
 def structural_checks(folder):
     validator = Validator(folder, examples=0, max_export_relations=0)
     try:
@@ -704,9 +576,9 @@ def structural_checks(folder):
 def reported_native_product(outputs, identifier="Q9Y6K9-2-PRO_000001"):
     """Use the writer's precise provenance format on every pointed occurrence."""
     _, folder = outputs
-    path = folder / "entities.parquet"
-    rows = pq.read_table(path).to_pylist()
-    product = rows[2]
+    path = folder / "entity.parquet"
+    rows = nested_rows(path)
+    product = entity(rows, "protein", "P04637")
     old_key = product["entity_key"]
     product["identifier"] = identifier
     product["entity_key"] = entity_key("protein", "uniprot", identifier)
@@ -732,14 +604,14 @@ def reported_native_product(outputs, identifier="Q9Y6K9-2-PRO_000001"):
     for row in rows:
         for occurrence in row["evidence"] or []:
             update(occurrence["molecular_form"], occurrence["annotations"], None)
-    pq.write_table(pa.Table.from_pylist(rows, schema=ENTITY_SCHEMA), path)
-    path = folder / "relations.parquet"
-    rows = pq.read_table(path).to_pylist()
+    rewrite_resource(path, entities=rows)
+    path = folder / "relation.parquet"
+    rows = nested_rows(path)
     for row in rows:
         for occurrence in row["evidence"]:
             for side in ("subject", "object"):
                 update(occurrence[side + "_molecular_form"], occurrence["annotations"], side)
-    pq.write_table(pa.Table.from_pylist(rows, schema=RELATION_SCHEMA), path)
+    rewrite_resource(path, relations=rows)
     return folder
 
 
@@ -768,10 +640,13 @@ def test_native_uniprot_suffix_cannot_borrow_other_occurrence_or_endpoint_proven
     outputs, owner, damage
 ):
     folder = reported_native_product(outputs)
-    path = folder / ("relations.parquet" if owner == "relation" else "entities.parquet")
-    table = pq.read_table(path)
-    rows = table.to_pylist()
-    occurrence = rows[0]["evidence"][0] if owner == "relation" else rows[1]["evidence"][0]
+    path = folder / ("relation.parquet" if owner == "relation" else "entity.parquet")
+    rows = nested_rows(path)
+    occurrence = (
+        rows[0]["evidence"][0]
+        if owner == "relation"
+        else entity(rows, "protein", "7157", "entrez")["evidence"][0]
+    )
     annotations = occurrence["annotations"]
     status = next(
         annotation
@@ -788,7 +663,7 @@ def test_native_uniprot_suffix_cannot_borrow_other_occurrence_or_endpoint_proven
             # Standalone annotations have no scope field in their schema.
             # Provenance on another entity occurrence cannot authorize this one.
             annotations.remove(status)
-            rows[3]["evidence"] = [
+            entity(rows, "protein", "1956", "entrez")["evidence"] = [
                 dict(source="signor", row_id="other", annotations=[status], molecular_form=None)
             ]
     elif damage == "wrong_source":
@@ -803,7 +678,7 @@ def test_native_uniprot_suffix_cannot_borrow_other_occurrence_or_endpoint_proven
     elif damage == "wrong_assertion":
         # An enclosing isoform is insufficient proof of an exact chain assertion.
         form["sequence_identifiers"] = [{"ns": "uniprot", "id": "Q9Y6K9-2"}]
-    pq.write_table(pa.Table.from_pylist(rows, schema=table.schema), path)
+    rewrite_resource(path, **({"relations": rows} if owner == "relation" else {"entities": rows}))
     check = structural_checks(folder)["molecular.reusable_uniprot_products"]
     assert check["status"] == "failed"
     assert check["invalid_count"] == 1
@@ -824,8 +699,8 @@ def test_both_product_fields_are_checked_without_extending_protein_provenance_to
     outputs,
 ):
     folder = reported_native_product(outputs)
-    entity_path = folder / "entities.parquet"
-    entities = pq.read_table(entity_path).to_pylist()
+    entity_path = folder / "entity.parquet"
+    entities = nested_rows(entity_path)
     transcript_key = entity_key("transcript", "uniprot", "Q9Y6K9-2")
     entities.append(
         dict(
@@ -838,11 +713,11 @@ def test_both_product_fields_are_checked_without_extending_protein_provenance_to
             evidence=[],
         )
     )
-    pq.write_table(pa.Table.from_pylist(entities, schema=ENTITY_SCHEMA), entity_path)
-    relation_path = folder / "relations.parquet"
-    relations = pq.read_table(relation_path).to_pylist()
+    rewrite_resource(entity_path, entities=entities)
+    relation_path = folder / "relation.parquet"
+    relations = nested_rows(relation_path)
     relations[0]["evidence"][0]["subject_molecular_form"]["transcript_entity_key"] = transcript_key
-    pq.write_table(pa.Table.from_pylist(relations, schema=RELATION_SCHEMA), relation_path)
+    rewrite_resource(relation_path, relations=relations)
     check = structural_checks(folder)["molecular.reusable_uniprot_products"]
     assert check["status"] == "failed"
     assert check["invalid_count"] == 1

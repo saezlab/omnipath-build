@@ -784,12 +784,12 @@
                 files={built
                   ? [
                       {
-                        name: 'entities.parquet',
+                        name: 'entity.parquet',
                         size_bytes: built.entities.size_bytes,
                         rows: built.entities.rows,
                       },
                       {
-                        name: 'relations.parquet',
+                        name: 'relation.parquet',
                         size_bytes: built.relations.size_bytes,
                         rows: built.relations.rows,
                       },

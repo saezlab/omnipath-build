@@ -29,12 +29,8 @@ from .silver_schema import (
     format_term,
 )
 from .schema import (
-    ENTITY_SCHEMA,
-    RELATION_SCHEMA,
     PAYLOAD_SCHEMA,
-    IDENTIFIER_STRUCT,
     ANNOTATION_STRUCT,
-    EVIDENCE_STRUCT,
     ENTITY_EVIDENCE_STRUCT,
     ROW_GROUP_SIZE,
     RELATION_QUALIFIERS,
@@ -111,12 +107,8 @@ __all__ = [
     "SILVER_RELATION_SCHEMA",
     "format_term",
     # Serving schema
-    "ENTITY_SCHEMA",
-    "RELATION_SCHEMA",
     "PAYLOAD_SCHEMA",
-    "IDENTIFIER_STRUCT",
     "ANNOTATION_STRUCT",
-    "EVIDENCE_STRUCT",
     "ENTITY_EVIDENCE_STRUCT",
     "ROW_GROUP_SIZE",
     "RELATION_QUALIFIERS",

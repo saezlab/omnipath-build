@@ -202,15 +202,12 @@ def inspect_resource(directory: Path) -> dict:
     """Check published schemas and checksums, then query a small DuckDB sample."""
     import duckdb
     import pyarrow.parquet as pq
-    from omnipath_core.schema import ENTITY_SCHEMA, PAYLOAD_SCHEMA, RELATION_SCHEMA
+    from omnipath_core.schema import PUBLISHED_TABLES
 
     manifest = json.loads((directory / "build_manifest.json").read_text())
     files = {}
-    for name, schema in (
-        ("entities.parquet", ENTITY_SCHEMA),
-        ("relations.parquet", RELATION_SCHEMA),
-        ("evidence_payloads.parquet", PAYLOAD_SCHEMA),
-    ):
+    for table, schema in PUBLISHED_TABLES.items():
+        name = f"{table}.parquet"
         path = directory / name
         parquet = pq.ParquetFile(path)
         expected = manifest["files"][name]
@@ -223,7 +220,7 @@ def inspect_resource(directory: Path) -> dict:
         relations = connection.execute(
             "SELECT subject_label,predicate,object_label,sign,evidence_count "
             "FROM read_parquet(?) ORDER BY subject_label,object_label LIMIT 20",
-            [str(directory / "relations.parquet")],
+            [str(directory / "relation.parquet")],
         )
         sample = [
             dict(zip((column[0] for column in relations.description), row))

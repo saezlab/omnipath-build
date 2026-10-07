@@ -7,6 +7,7 @@ from omnipath_core import (
     BUILD_SCHEMA_VERSION,
     RELEASE_SCHEMA_VERSION,
     RESOURCE_FILES,
+    SERVING_FILES,
     SERVING_SCHEMA_VERSION,
     BuildManifest,
     ManifestFile,
@@ -25,7 +26,8 @@ def publication():
         "created_at": "2026-10-03T00:00:00+00:00",
         "provenance": {"software": {"sha256": "b" * 64}},
         "files": {
-            name: {"rows": 0, "sha256": "a" * 64, "size_bytes": 123} for name in RESOURCE_FILES
+            name: {"rows": 0, "sha256": "a" * 64, "size_bytes": 123}
+            for name in RESOURCE_FILES + SERVING_FILES
         },
     }
 
@@ -35,12 +37,12 @@ def test_public_models_round_trip_current_filename_keyed_manifest():
     parsed = validate_build_manifest(data)
     assert isinstance(parsed, BuildManifest)
     assert parsed.schema_version == BUILD_SCHEMA_VERSION == 1
-    assert parsed.serving_schema_version == SERVING_SCHEMA_VERSION == 4
-    assert parsed.files["entities.parquet"] == ManifestFile(size_bytes=123, rows=0, sha256="a" * 64)
+    assert parsed.serving_schema_version == SERVING_SCHEMA_VERSION == 5
+    assert parsed.files["entity.parquet"] == ManifestFile(size_bytes=123, rows=0, sha256="a" * 64)
     assert parsed.to_dict() == data
     assert BuildManifest.from_dict(data, strict_fields=True) == parsed
     assert "metadata" not in parsed.to_dict()
-    assert "path" not in parsed.files["entities.parquet"].to_dict()
+    assert "path" not in parsed.files["entity.parquet"].to_dict()
 
 
 @pytest.mark.parametrize(
@@ -75,12 +77,12 @@ def test_build_rejects_old_or_ambiguous_shapes(field, value):
         ("sha256", "abc"),
         ("bytes", 123),
         ("num_rows", 0),
-        ("path", "entities.parquet"),
+        ("path", "entity.parquet"),
     ],
 )
 def test_file_contract_rejects_stale_fields_and_nonliteral_metadata(field, value):
     data = publication()
-    data["files"]["entities.parquet"][field] = value
+    data["files"]["entity.parquet"][field] = value
     with pytest.raises(ValueError):
         validate_build_manifest(data)
 

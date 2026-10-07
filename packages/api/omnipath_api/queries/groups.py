@@ -17,7 +17,6 @@ from omnipath_api.models import normalize_filters
 from omnipath_api.shape.display_name import display_name, preferred_name
 
 
-
 def _agreed(column):
     """The value all non-null copies share, else NULL (compared by hash)."""
     present = f"FILTER (WHERE {column} IS NOT NULL)"
@@ -48,7 +47,9 @@ def _candidate_keys(engine, group_key, scope):
     if kind is None:
         return []
     pairs = _group_members(engine, scope, [(value, kind)])
-    return sorted({r["entity_key"] for r in engine._lookup("entity", "entity_id", pairs, "entity_key")})
+    return sorted(
+        {r["entity_key"] for r in engine._lookup("entity", "entity_id", pairs, "entity_key")}
+    )
 
 
 def _member_rows(engine, page, scope):
@@ -97,9 +98,7 @@ def search_groups(engine, *, strategy="chemical_connectivity", **kwargs):
     if kwargs.get("include_details"):
         for group in groups:
             group["entity"] = page_details(group["entity"], detail_limit, detail_offset)
-    return dict(
-        result, groups=groups, elapsed_ms=round((time.perf_counter() - start) * 1000, 2)
-    )
+    return dict(result, groups=groups, elapsed_ms=round((time.perf_counter() - start) * 1000, 2))
 
 
 def _search_groups(
@@ -244,7 +243,9 @@ def _search_groups(
 
 def _union(summaries, field, identity):
     return list(
-        {identity(item): item for summary in summaries for item in summary.get(field) or []}.values()
+        {
+            identity(item): item for summary in summaries for item in summary.get(field) or []
+        }.values()
     )
 
 
@@ -269,9 +270,12 @@ def _chemical_card(engine, group, members, summaries, include_details):
         ontologyHierarchy=None,
     )
     if include_details:
-        entity["entityAttributes"] = _union(
-            summaries, "entityAttributes", lambda a: json.dumps(a, sort_keys=True, default=str)
-        ) or None
+        entity["entityAttributes"] = (
+            _union(
+                summaries, "entityAttributes", lambda a: json.dumps(a, sort_keys=True, default=str)
+            )
+            or None
+        )
     if len({m.get("taxon") for m in members}) > 1:
         entity.update(taxonomyId=None, taxonomyName=None, taxon=None)
     return entity

@@ -23,7 +23,7 @@ The API default: the highest numeric version of each resource, including newly
 added resources. Changes as builds are published.
 
 ### Entity
-One row of `entities.parquet`: a typed thing such as a protein, gene, chemical,
+One row of the `entity` table: a typed thing such as a protein, gene, chemical,
 complex or ontology class. Identified by its [entity key](#entity-key).
 
 ### Entity type
@@ -42,7 +42,7 @@ fields mean unspecified.
 
 ### Statement
 A subject–predicate–object claim with its qualifiers and evidence, stored as one
-row of `relations.parquet`. Its `statement_kind` is `relation` or `ontology`.
+row of the `relation` table. Its `statement_kind` is `relation` or `ontology`.
 
 ### Evidence
 One source occurrence supporting an entity or statement:
@@ -167,7 +167,7 @@ A hub record that claims more than one anchor. It stays its own entity and
 never joins others; matching abstains when it is the only candidate.
 
 ### Relation
-In Parquet, a row of `relations.parquet` (a [statement](#statement)). In
+In Parquet, a row of the `relation` table (a [statement](#statement)). In
 PostgreSQL, `relation` is main's graph triple (subject, predicate, object); several
 qualified statements can share one triple.
 

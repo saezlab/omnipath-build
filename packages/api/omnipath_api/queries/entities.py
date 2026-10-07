@@ -173,7 +173,11 @@ class EntitiesQueries:
 
         def count(row, field):
             nested = row.get(field)
-            return len(nested) if isinstance(nested, list) else int(row.get(f"{field[:-1]}_count") or 0)
+            return (
+                len(nested)
+                if isinstance(nested, list)
+                else int(row.get(f"{field[:-1]}_count") or 0)
+            )
 
         def rank(row: dict[str, Any]) -> tuple[Any, ...]:
             label = str(row.get("label") or "")
@@ -196,7 +200,9 @@ class EntitiesQueries:
 
         merged = dict(max(members, key=rank))
         merged["relation_count"] = sum(int(row.get("relation_count") or 0) for row in members)
-        merged["_resources"] = list(dict.fromkeys(row["resource"] for row in members if row.get("resource")))
+        merged["_resources"] = list(
+            dict.fromkeys(row["resource"] for row in members if row.get("resource"))
+        )
         merged["_source_entity_keys"] = list(
             dict.fromkeys(str(row["entity_key"]) for row in members if row.get("entity_key"))
         )
@@ -370,7 +376,9 @@ class EntitiesQueries:
         if phase == "prefix":
             return self._prefix_page(q, where, params, resources, count)
         text, values = self._phase_where(q, phase, resources)
-        order = "length(sort_label), sort_label, entity_key" if phase == "contains" else "entity_key"
+        order = (
+            "length(sort_label), sort_label, entity_key" if phase == "contains" else "entity_key"
+        )
         return self._fetch_dicts(
             f"""WITH matched AS (
                 SELECT * FROM {self._table("entity", resources)} WHERE ({where}) AND {text}

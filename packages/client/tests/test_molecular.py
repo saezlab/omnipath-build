@@ -41,9 +41,7 @@ def resource_snapshot(tmp_path, resources):
         relation, evidence = [], []
         for i, row in enumerate(relations):
             items = row.get("evidence") or []
-            relation.append(
-                {k: v for k, v in row.items() if k != "evidence"} | {"relation_id": i}
-            )
+            relation.append({k: v for k, v in row.items() if k != "evidence"} | {"relation_id": i})
             evidence += [
                 dict(item, relation_id=i, ordinal=n) for n, item in enumerate(items) if item
             ]

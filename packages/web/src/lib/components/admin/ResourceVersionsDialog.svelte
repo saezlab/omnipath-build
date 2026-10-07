@@ -318,7 +318,7 @@
               <div class="grid grid-cols-1 gap-2 sm:grid-cols-3">
                 <div class="flex flex-col rounded-lg border bg-background/60 px-3 py-2 text-xs">
                   <div class="flex items-center justify-between text-muted-foreground">
-                    <span>entities.parquet</span>
+                    <span>entity.parquet</span>
                     <span class="font-mono text-[11px]">{formatBytes(ver.entities.size_bytes)}</span
                     >
                   </div>
@@ -329,7 +329,7 @@
 
                 <div class="flex flex-col rounded-lg border bg-background/60 px-3 py-2 text-xs">
                   <div class="flex items-center justify-between text-muted-foreground">
-                    <span>relations.parquet</span>
+                    <span>relation.parquet</span>
                     <span class="font-mono text-[11px]"
                       >{formatBytes(ver.relations.size_bytes)}</span
                     >

@@ -10,15 +10,6 @@ from omnipath_core.measurements import QUANTITY_STRUCT
 from omnipath_core.molecular_forms import MOLECULAR_FORM_STRUCT
 import pyarrow as pa
 
-IDENTIFIER_STRUCT = pa.struct(
-    [
-        ("ns", pa.string()),
-        ("id", pa.string()),
-        ("is_canonical", pa.bool_()),
-        ("source", pa.string()),
-    ]
-)
-
 ANNOTATION_STRUCT = pa.struct(
     [
         ("term", pa.string()),
@@ -40,18 +31,6 @@ ENTITY_ANNOTATION_STRUCT = pa.struct(
     ]
 )
 
-EVIDENCE_STRUCT = pa.struct(
-    [
-        ("source", pa.string()),
-        ("dataset", pa.string()),
-        ("row_id", pa.string()),
-        ("upstream_id", pa.string()),
-        ("annotations", pa.list_(ANNOTATION_STRUCT)),
-        ("subject_molecular_form", MOLECULAR_FORM_STRUCT),
-        ("object_molecular_form", MOLECULAR_FORM_STRUCT),
-    ]
-)
-
 ENTITY_EVIDENCE_STRUCT = pa.struct(
     [
         ("source", pa.string()),
@@ -60,50 +39,6 @@ ENTITY_EVIDENCE_STRUCT = pa.struct(
         ("upstream_id", pa.string()),
         ("annotations", pa.list_(ENTITY_ANNOTATION_STRUCT)),
         ("molecular_form", MOLECULAR_FORM_STRUCT),
-    ]
-)
-
-ENTITY_SCHEMA = pa.schema(
-    [
-        ("entity_key", pa.string()),
-        ("entity_type", pa.string()),
-        ("namespace", pa.string()),
-        ("identifier", pa.string()),
-        ("taxon", pa.string()),
-        ("label", pa.string()),
-        ("has_hierarchy", pa.bool_()),
-        ("parent_count", pa.int64()),
-        ("child_count", pa.int64()),
-        ("identifiers", pa.list_(IDENTIFIER_STRUCT)),
-        ("annotations", pa.list_(ENTITY_ANNOTATION_STRUCT)),
-        ("reference_entity_key", pa.string()),
-        ("gene_reference_keys", pa.list_(pa.string())),
-        ("evidence", pa.list_(ENTITY_EVIDENCE_STRUCT)),
-    ]
-)
-
-RELATION_SCHEMA = pa.schema(
-    [
-        ("relation_key", pa.string()),
-        ("statement_kind", pa.string()),
-        ("subject_entity_key", pa.string()),
-        ("subject_label", pa.string()),
-        ("subject_type", pa.string()),
-        ("predicate", pa.string()),
-        ("object_entity_key", pa.string()),
-        ("object_label", pa.string()),
-        ("object_type", pa.string()),
-        ("taxon", pa.string()),
-        ("is_directed", pa.bool_()),
-        ("sign", pa.int32()),
-        ("category", pa.string()),
-        ("interaction_class", pa.string()),
-        ("sources", pa.list_(pa.string())),
-        ("evidence_count", pa.int64()),
-        ("evidence", pa.list_(EVIDENCE_STRUCT)),
-        ("annotations", pa.list_(ANNOTATION_STRUCT)),
-        ("subject_reference_entity_key", pa.string()),
-        ("object_reference_entity_key", pa.string()),
     ]
 )
 

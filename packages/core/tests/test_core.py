@@ -9,8 +9,8 @@ from biolink_model.datamodel.model import (
     MacromolecularComplex,
 )
 from omnipath_core import (
-    ENTITY_SCHEMA,
-    RELATION_SCHEMA,
+    ENTITY_TABLE,
+    RELATION_TABLE,
     PAYLOAD_SCHEMA,
     SILVER_ENTITY_SCHEMA,
     SILVER_RELATION_SCHEMA,
@@ -72,9 +72,9 @@ class TestOmnipathCore(unittest.TestCase):
         self.assertEqual(normalize_namespace("custom_db"), "custom_db")
 
     def test_serving_schemas(self):
-        self.assertIn("entity_key", ENTITY_SCHEMA.names)
-        self.assertIn("label", ENTITY_SCHEMA.names)
-        self.assertIn("relation_key", RELATION_SCHEMA.names)
+        self.assertIn("entity_key", ENTITY_TABLE.names)
+        self.assertIn("label", ENTITY_TABLE.names)
+        self.assertIn("relation_key", RELATION_TABLE.names)
         self.assertIn("payload_json", PAYLOAD_SCHEMA.names)
         self.assertIn("type", SILVER_ENTITY_SCHEMA.names)
         self.assertIn("predicate", SILVER_RELATION_SCHEMA.names)

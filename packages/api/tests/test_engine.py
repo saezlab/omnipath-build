@@ -220,17 +220,18 @@ class TestInventoryHotReload(unittest.TestCase):
             listed = {item["key"]: item["relations_count"] for item in engine.list_resources()}
             self.assertEqual(listed["uniprot/v2"], 3)
 
-    def test_skips_in_progress_version_with_chunk_sidecar(self):
+    def test_skips_version_with_a_missing_table(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             _write_resource(root, "uniprot", "v1", n_relations=1)
             engine = ParquetServingEngine(data_root=root)
             time.sleep(0.05)
             pending = _write_resource(root, "uniprot", "v2", n_relations=9)
-            (pending / ".entities.chunks.parquet").write_bytes(b"partial")
+            serving = pending / "entity_term.parquet"
+            serving.rename(pending / "entity_term.partial")
             infos = engine._selected_resource_infos(["uniprot"])
             self.assertEqual(infos[0]["version"], "v1")
-            (pending / ".entities.chunks.parquet").unlink()
+            (pending / "entity_term.partial").rename(serving)
             infos = engine._selected_resource_infos(["uniprot"])
             self.assertEqual(infos[0]["version"], "v2")
 

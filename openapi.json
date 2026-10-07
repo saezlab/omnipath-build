@@ -856,33 +856,19 @@
       },
       "EntitySearchCursor": {
         "additionalProperties": true,
+        "description": "Where a search continues: its match phase and the entities already returned.",
         "properties": {
-          "entityPk": {
-            "title": "Entitypk",
-            "type": "string"
-          },
-          "entityType": {
-            "default": "",
-            "title": "Entitytype",
-            "type": "string"
-          },
-          "identifier": {
-            "title": "Identifier",
-            "type": "string"
-          },
-          "matchRank": {
-            "title": "Matchrank",
+          "offset": {
+            "minimum": 0.0,
+            "title": "Offset",
             "type": "integer"
-          },
-          "namespace": {
-            "title": "Namespace",
-            "type": "string"
           },
           "phase": {
             "enum": [
+              "all",
+              "key",
               "prefix",
-              "contains",
-              "nested"
+              "contains"
             ],
             "title": "Phase",
             "type": "string"
@@ -890,29 +876,11 @@
           "queryKey": {
             "title": "Querykey",
             "type": "string"
-          },
-          "relationCount": {
-            "default": 0,
-            "title": "Relationcount",
-            "type": "integer"
-          },
-          "sortLabel": {
-            "title": "Sortlabel",
-            "type": "string"
-          },
-          "taxon": {
-            "default": "",
-            "title": "Taxon",
-            "type": "string"
           }
         },
         "required": [
-          "entityPk",
           "phase",
-          "matchRank",
-          "sortLabel",
-          "namespace",
-          "identifier",
+          "offset",
           "queryKey"
         ],
         "title": "EntitySearchCursor",

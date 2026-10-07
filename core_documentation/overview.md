@@ -69,9 +69,12 @@ Parquet.
 ```text
 data/
 ├── resources/<source>/<version>/
-│   ├── entities.parquet
-│   ├── relations.parquet
+│   ├── entity.parquet, entity_identifier.parquet, entity_annotation.parquet,
+│   │   entity_evidence.parquet                 # published tables
+│   ├── relation.parquet, relation_annotation.parquet, relation_evidence.parquet
 │   ├── evidence_payloads.parquet
+│   ├── relation_endpoint.parquet, entity_group.parquet, entity_term.parquet
+│   │                                           # serving tables (not downloaded)
 │   ├── resolution_stats.json
 │   └── build_manifest.json      # versions, row counts, sizes, checksums
 └── releases/<release>.json      # pins resource versions + manifest digests

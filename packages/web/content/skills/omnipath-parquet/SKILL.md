@@ -1,11 +1,11 @@
 ---
 name: omnipath-parquet
-description: Lists versioned OmniPath Parquet resources, downloads entities and relations by default, and explains the nested data model. Use when discovering datasets, downloading resource files, or analyzing downloaded OmniPath Parquet data.
+description: Lists versioned OmniPath Parquet resources, downloads their published tables, and explains the normalized data model. Use when discovering datasets, downloading resource files, or analyzing downloaded OmniPath Parquet data.
 ---
 
 # OmniPath Parquet Resources
 
-This serving stack stores one nested parquet release per resource. Use the HTTP API to list datasets and download files. Do not look for Postgres tables or retired zip-of-gold archives.
+This serving stack publishes one set of normalized Parquet tables per resource version. Use the HTTP API to list datasets and download files. Do not look for Postgres tables or retired zip-of-gold archives.
 
 ## Base URL
 
@@ -27,8 +27,13 @@ From the Svelte app, the same routes are public under `/api` (for example `http:
 
 ```text
 resources/<resource>/<version>/
-├── entities.parquet
-├── relations.parquet
+├── entity.parquet
+├── entity_identifier.parquet
+├── entity_annotation.parquet
+├── entity_evidence.parquet
+├── relation.parquet
+├── relation_annotation.parquet
+├── relation_evidence.parquet
 └── evidence_payloads.parquet
 ```
 
@@ -55,7 +60,7 @@ curl -sS "http://127.0.0.1:8085/api/resources/signor/files?include_evidence=true
 
 ## Download parquets
 
-Default zip is `entities.parquet` and `relations.parquet`. Evidence payloads are omitted unless you pass `include_evidence=true`.
+The default zip holds every table except `evidence_payloads.parquet`. Evidence payloads are omitted unless you pass `include_evidence=true`.
 
 ```bash
 curl -fsSL -o signor.zip "http://127.0.0.1:8085/api/resources/signor/download"
@@ -66,10 +71,10 @@ curl -fsSL -o signor-with-evidence.zip \
 One file:
 
 ```bash
-curl -fsSL -o signor-entities.parquet \
-  "http://127.0.0.1:8085/api/resources/signor/files/entities.parquet"
-curl -fsSL -o signor-relations.parquet \
-  "http://127.0.0.1:8085/api/resources/signor/files/relations.parquet"
+curl -fsSL -o signor-entity.parquet \
+  "http://127.0.0.1:8085/api/resources/signor/files/entity.parquet"
+curl -fsSL -o signor-relation.parquet \
+  "http://127.0.0.1:8085/api/resources/signor/files/relation.parquet"
 ```
 
 Evidence payloads are available by explicit filename, not by default listing:
@@ -88,47 +93,63 @@ curl -fsSL -o omnipath-resources.zip \
   "http://127.0.0.1:8085/api/resources/download"
 ```
 
-Allowed filenames: `entities.parquet`, `relations.parquet`, `evidence_payloads.parquet`.
+Allowed filenames: the eight table files in the layout above.
 
 ## Schema
 
-### `entities.parquet`
+`entity_id` and `relation_id` number the rows of `entity.parquet` and `relation.parquet` within one resource version. Child tables refer to their entity or relation by that id; `ordinal` keeps the original order. `entity_key` and `relation_key` identify the same entity or relation across resources.
 
-| column          | type         | meaning                                      |
-| --------------- | ------------ | -------------------------------------------- |
-| `entity_key`    | string       | Canonical entity identity                    |
-| `entity_type`   | string       | Normalized type (protein, small_molecule, …) |
-| `namespace`     | string       | Canonical identifier namespace               |
-| `identifier`    | string       | Canonical identifier                         |
-| `taxon`         | string       | NCBI taxonomy id when known                  |
-| `label`         | string       | Display name                                 |
-| `has_hierarchy` | bool         | Ontology-style parent/child present          |
-| `parent_count`  | int64        | Incoming hierarchy edges                     |
-| `child_count`   | int64        | Outgoing hierarchy edges                     |
-| `identifiers`   | list<struct> | `{ns, id, is_canonical, source}`             |
-| `annotations`   | list<struct> | `{term, value, quantity, source, dataset}`   |
+### `entity.parquet`
 
-### `relations.parquet`
+| column                 | type         | meaning                                                 |
+| ---------------------- | ------------ | ------------------------------------------------------- |
+| `entity_id`            | int32        | Row number in this file                                 |
+| `entity_key`           | string       | Canonical entity identity                               |
+| `entity_type`          | string       | Normalized type (protein, small_molecule, …)            |
+| `namespace`            | string       | Canonical identifier namespace                          |
+| `identifier`           | string       | Canonical identifier                                    |
+| `taxon`                | string       | NCBI taxonomy id when known                             |
+| `label`                | string       | Display name                                            |
+| `reference_entity_key` | string       | Shared reference, normally `entrez:<GeneID>`            |
+| `gene_reference_keys`  | list<string> | Catalogue gene links of a product                       |
+| `group_connectivity`   | string       | First InChIKey block (chemical structure group)         |
+| `has_hierarchy`        | bool         | Ontology-style parent/child present                     |
+| `parent_count`         | int64        | Incoming hierarchy edges                                |
+| `child_count`          | int64        | Outgoing hierarchy edges                                |
+| `*_count`              | int64        | Number of identifiers, annotations, evidence, relations |
 
-| column               | type         | meaning                                                 |
-| -------------------- | ------------ | ------------------------------------------------------- |
-| `relation_key`       | string       | Canonical relation identity                             |
-| `subject_entity_key` | string       | Subject `entity_key`                                    |
-| `subject_label`      | string       | Subject display name                                    |
-| `subject_type`       | string       | Subject entity type                                     |
-| `predicate`          | string       | Relation predicate                                      |
-| `object_entity_key`  | string       | Object `entity_key`                                     |
-| `object_label`       | string       | Object display name                                     |
-| `object_type`        | string       | Object entity type                                      |
-| `taxon`              | string       | Shared or primary taxon                                 |
-| `is_directed`        | bool         | Directed edge                                           |
-| `sign`               | int32        | `-1`, `0`, or `1`                                       |
-| `category`           | string       | `interaction`, `association`, `ontology`, …             |
-| `interaction_class`  | string       | Optional interaction class                              |
-| `sources`            | list<string> | Provenance sources                                      |
-| `evidence_count`     | int64        | Nested evidence rows                                    |
-| `evidence`           | list<struct> | `{source, dataset, row_id, upstream_id, annotations[]}` |
-| `annotations`        | list<struct> | `{term, value, quantity, source, dataset, scope}`       |
+Child tables of `entity` (each with `entity_id`, `ordinal`):
+
+- `entity_identifier`: `ns`, `id`, `is_canonical`, `source`
+- `entity_annotation`: `term`, `value`, `quantity_*` (measurement fields), `source`, `dataset`
+- `entity_evidence`: `source`, `dataset`, `row_id`, `upstream_id`, `annotations`, `molecular_form`
+
+### `relation.parquet`
+
+| column                          | type         | meaning                                     |
+| ------------------------------- | ------------ | ------------------------------------------- |
+| `relation_id`                   | int32        | Row number in this file                     |
+| `relation_key`                  | string       | Canonical relation identity                 |
+| `statement_kind`                | string       | `relation` or `ontology`                    |
+| `subject_entity_key`            | string       | Subject `entity_key`                        |
+| `subject_label`, `subject_type` | string       | Subject display name and type               |
+| `predicate`                     | string       | Relation predicate                          |
+| `object_entity_key`             | string       | Object `entity_key`                         |
+| `object_label`, `object_type`   | string       | Object display name and type                |
+| `*_reference_entity_key`        | string       | Endpoint references                         |
+| `taxon`                         | string       | Shared or primary taxon                     |
+| `is_directed`                   | bool         | Directed edge                               |
+| `sign`                          | int32        | `-1`, `0`, or `1`                           |
+| `category`                      | string       | `interaction`, `association`, `ontology`, … |
+| `interaction_class`             | string       | Optional interaction class                  |
+| `sources`                       | list<string> | Provenance sources                          |
+| `evidence_count`                | int64        | Number of `relation_evidence` rows          |
+| `*_qualifier`                   | list<string> | Biolink qualifiers                          |
+
+Child tables of `relation` (each with `relation_id`, `ordinal`):
+
+- `relation_annotation`: `term`, `value`, `quantity_*`, `source`, `dataset`, `scope`
+- `relation_evidence`: `source`, `dataset`, `row_id`, `upstream_id`, `annotations`, `subject_molecular_form`, `object_molecular_form`
 
 Join relation evidence payloads with `relation_key` + `source` + `row_id` within the same resource version. Entity payloads use `entity_key` instead of `relation_key`.
 
@@ -148,8 +169,8 @@ Join relation evidence payloads with `relation_key` + `source` + `row_id` within
 python - <<'PY'
 import duckdb
 con = duckdb.connect()
-print(con.execute("SELECT entity_type, count(*) n FROM 'signor-entities.parquet' GROUP BY 1 ORDER BY n DESC").fetchall())
-print(con.execute("SELECT predicate, count(*) n FROM 'signor-relations.parquet' GROUP BY 1 ORDER BY n DESC LIMIT 10").fetchall())
+print(con.execute("SELECT entity_type, count(*) n FROM 'signor-entity.parquet' GROUP BY 1 ORDER BY n DESC").fetchall())
+print(con.execute("SELECT predicate, count(*) n FROM 'signor-relation.parquet' GROUP BY 1 ORDER BY n DESC LIMIT 10").fetchall())
 PY
 ```
 
@@ -159,5 +180,5 @@ PY
 - Download individual files using `files[].url` when provided, or `/resources/{id}/files/{filename}`. Use `/resources/{id}/download` for ZIPs.
 - Pin a published release when reproducibility matters; retain the resolved resource versions and URLs.
 - Do not request `evidence_payloads.parquet` unless the task needs raw source records.
-- Do not invent extra tables. The contract is the three files above.
+- Join child tables to `entity` / `relation` by `entity_id` / `relation_id` within one resource version.
 - Filtered slices of relations (not whole resources) use `POST /export`.
