@@ -70,48 +70,47 @@ def _search_groups(
 
     types = chemical_types()
     type_sql = ",".join("?" for _ in types)
+    # One row per entity key, then one per group: the release-wide default page groups
+    # millions of keys, so each step aggregates once and avoids DISTINCT aggregates
+    # (min = max is "exactly one distinct non-null value" where all rows are non-null).
+    chemical = f"bool_or(coalesce(entity_type IN ({type_sql}), FALSE))" if mixed else "FALSE"
     cte = f"""WITH selected AS (
         SELECT DISTINCT {fields} FROM {read}
         WHERE {" AND ".join(clauses) or "TRUE"}
-    ), gene_assignments AS (
-        SELECT entity_key, CASE WHEN count(DISTINCT reference_entity_key)=1
+    ), keys AS (
+        SELECT entity_key, CASE WHEN min(reference_entity_key) = max(reference_entity_key)
             AND bool_and(coalesce(starts_with(reference_entity_key, 'entrez:'), FALSE))
             AND bool_and(coalesce(entity_type NOT IN ({type_sql}), FALSE))
-            THEN min(reference_entity_key) END AS grouping_reference
+            THEN min(reference_entity_key) END AS gene_reference,
+            {chemical} AS chemical
         FROM selected GROUP BY entity_key
     )"""
-    params = [*params, *types]
+    params = [*params, *types, *(types if mixed else [])]
     if mixed:
         # Connectivity is precomputed per row in the serving projection. Chemical keys
         # in this search scope include their resource copies, to detect conflicts.
-        cte += f""", chemical_keys AS (
-            SELECT DISTINCT entity_key FROM selected WHERE entity_type IN ({type_sql})
-        ), chemical_rows AS (
-            SELECT entity_key, group_ambiguous AS ambiguous_key, group_connectivity AS connectivity
-            FROM {entity_group_rows(engine, paths)} JOIN chemical_keys USING(entity_key)
-        ), chemical_assignments AS (
-            SELECT entity_key, CASE WHEN NOT bool_or(ambiguous_key)
-                AND count(DISTINCT connectivity) = 1 THEN min(connectivity) END AS connectivity
-            FROM chemical_rows GROUP BY entity_key
-        ), grouped AS (
-            SELECT selected.*,
-                CASE WHEN chemical_keys.entity_key IS NULL THEN grouping_reference END
-                    AS grouping_reference,
-                chemical_assignments.connectivity,
-                CASE WHEN chemical_keys.entity_key IS NOT NULL
-                    THEN coalesce('connectivity:' || connectivity, 'entity:' || selected.entity_key)
-                    ELSE coalesce('gene:' || grouping_reference, 'entity:' || selected.entity_key)
+        cte += f""", chemical_assignments AS (
+            SELECT entity_key, CASE WHEN NOT bool_or(group_ambiguous)
+                AND min(group_connectivity) = max(group_connectivity)
+                THEN min(group_connectivity) END AS connectivity
+            FROM {entity_group_rows(engine, paths)}
+            WHERE entity_key IN (SELECT entity_key FROM keys WHERE chemical)
+            GROUP BY entity_key
+        ), assigned AS (
+            SELECT k.entity_key,
+                CASE WHEN NOT k.chemical THEN k.gene_reference END AS grouping_reference,
+                c.connectivity,
+                CASE WHEN k.chemical
+                    THEN coalesce('connectivity:' || c.connectivity, 'entity:' || k.entity_key)
+                    ELSE coalesce('gene:' || k.gene_reference, 'entity:' || k.entity_key)
                 END AS group_key
-            FROM selected JOIN gene_assignments USING(entity_key)
-            LEFT JOIN chemical_keys USING(entity_key)
-            LEFT JOIN chemical_assignments USING(entity_key)
+            FROM keys k LEFT JOIN chemical_assignments c USING(entity_key)
         )"""
-        params = [*params, *types]
     else:
-        cte += """, grouped AS (
-            SELECT selected.*, grouping_reference, NULL::VARCHAR AS connectivity,
-                coalesce('gene:' || grouping_reference, 'entity:' || selected.entity_key) AS group_key
-            FROM selected JOIN gene_assignments USING(entity_key)
+        cte += """, assigned AS (
+            SELECT entity_key, gene_reference AS grouping_reference, NULL::VARCHAR AS connectivity,
+                coalesce('gene:' || gene_reference, 'entity:' || entity_key) AS group_key
+            FROM keys
         )"""
     extra, values = "TRUE", []
     if group_key:
@@ -132,13 +131,14 @@ def _search_groups(
         cte
         + f""", counts AS (
             SELECT group_key, min(grouping_reference) AS reference_entity_key,
-                min(connectivity) AS connectivity, count(DISTINCT entity_key) AS member_count
-            FROM grouped GROUP BY group_key
+                min(connectivity) AS connectivity, count(*) AS member_count
+            FROM assigned GROUP BY group_key
         ), page AS (
             SELECT * FROM counts WHERE {extra}
             ORDER BY member_count DESC, group_key LIMIT ?
         ) SELECT page.*, list(struct_pack({member_fields}) ORDER BY g.entity_key, g.label)
-            AS member_rows FROM page JOIN grouped g USING(group_key)
+            AS member_rows FROM page JOIN assigned a USING(group_key)
+            JOIN selected g USING(entity_key)
             GROUP BY ALL ORDER BY member_count DESC, group_key""",
         [*params, *values, 1 if group_key else limit + 1],
     )

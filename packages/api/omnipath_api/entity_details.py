@@ -56,14 +56,23 @@ def relationships(engine, public_id, resources=None, limit=50, offset=0):
         )
         if not rows:
             return empty
+        # One read over the matching files; each keeps only its own columns.
+        from omnipath_api.molecular import columns, read
+
+        files = sorted({r["filename"] for r in rows})
+        keys = sorted({r["relation_key"] for r in rows})
+        own = {path: columns([path]) for path in files}
         hydrated = {}
-        for path in sorted({r["filename"] for r in rows}):
-            keys = [r["relation_key"] for r in rows if r["filename"] == path]
-            records = engine._fetch_dicts(
-                f"SELECT * FROM {engine._read_expr([path])} WHERE relation_key IN ({','.join('?' for _ in keys)})",
-                keys,
-            )
-            hydrated.update({(path, r["relation_key"]): r for r in records})
+        for record in engine._fetch_dicts(
+            f"SELECT * FROM {read(files, union_by_name=True, filename=True)} "
+            f"WHERE relation_key IN ({','.join('?' for _ in keys)})",
+            keys,
+        ):
+            path = record.pop("filename")
+            names = own[path] | {"subject_reference_entity_key", "object_reference_entity_key"}
+            hydrated[(path, record["relation_key"])] = {
+                k: v for k, v in record.items() if k in names
+            }
         records = [hydrated[(r["filename"], r["relation_key"])] for r in rows]
         keys = sorted(
             {r[side] for r in records for side in ("subject_entity_key", "object_entity_key")}

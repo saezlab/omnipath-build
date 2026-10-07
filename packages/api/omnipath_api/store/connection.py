@@ -20,6 +20,8 @@ def get_connection(memory_limit: str = "4GB", *, threads: int = 2) -> duckdb.Duc
         )
         con.execute("SET threads = ?", [threads])
         con.execute("SET arrow_large_buffer_size=true")
+        # Footers of the immutable resource files are read once, not on every query.
+        con.execute("SET parquet_metadata_cache=true")
     except Exception:
         con.close()
         raise
