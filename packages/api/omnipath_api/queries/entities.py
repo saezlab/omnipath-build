@@ -371,20 +371,23 @@ class EntitiesQueries:
 
     def _search_page(self, query, phase, where, params, resources, count):
         """Entity rows of the first ``count`` matching entity keys, grouped by key in
-        match order: rank, then shorter terms (or labels), then key."""
+        match order: rank, then shorter terms (or labels), then more relations, then key."""
         q = (query or "").strip()
         if phase == "prefix":
             return self._prefix_page(q, where, params, resources, count)
         text, values = self._phase_where(q, phase, resources)
         order = (
-            "length(sort_label), sort_label, entity_key" if phase == "contains" else "entity_key"
+            "length(sort_label), relations DESC, sort_label, entity_key"
+            if phase == "contains"
+            else "entity_key"
         )
         return self._fetch_dicts(
             f"""WITH matched AS (
                 SELECT * FROM {self._table("entity", resources)} WHERE ({where}) AND {text}
             ), page AS (
                 SELECT entity_key, row_number() OVER (ORDER BY {order}) AS position
-                FROM (SELECT entity_key, coalesce(min(label), '') AS sort_label FROM matched GROUP BY entity_key)
+                FROM (SELECT entity_key, coalesce(min(label), '') AS sort_label,
+                    sum(relation_count) AS relations FROM matched GROUP BY entity_key)
                 ORDER BY position LIMIT ?
             ) SELECT matched.* FROM matched JOIN page USING (entity_key)
             ORDER BY page.position, matched.resource""",
@@ -413,18 +416,30 @@ class EntitiesQueries:
                 params=params,
             )
             by_hit = {(r["resource"], r["entity_id"]): r for r in rows}
-            ordered_rows = []
+            best, relations, matched = {}, defaultdict(int), defaultdict(list)
             for hit in found:
                 row = by_hit.get((hit["resource"], hit["entity_id"]))
-                if row is not None and (
+                if row is None or not (
                     hit["any_namespace"]
                     or str(row["namespace"] or "").lower() in (hit["namespaces"] or [])
                 ):
-                    ordered_rows.append(row)
-            keys = list(dict.fromkeys(r["entity_key"] for r in ordered_rows))
-            if len(keys) >= count or len(found) < limit:
-                wanted = set(keys[:count])
-                return [r for r in ordered_rows if r["entity_key"] in wanted]
+                    continue
+                key = row["entity_key"]
+                rank = (hit["match_rank"], hit["term_length"], hit["term"])
+                best[key] = min(best.get(key, rank), rank)
+                if row not in matched[key]:
+                    matched[key].append(row)
+                    relations[key] += int(row["relation_count"] or 0)
+            # Equally good matches: the more connected entity first.
+            keys = sorted(
+                best, key=lambda k: (best[k][0], best[k][1], -relations[k], best[k][2], k)
+            )
+            # Stop once the hits read cover every tie of the last key needed.
+            if len(found) < limit or (
+                len(keys) >= count
+                and (found[-1]["match_rank"], found[-1]["term_length"]) > best[keys[count - 1]][:2]
+            ):
+                return [row for key in keys[:count] for row in matched[key]]
             limit *= 4
 
     def search_entities_api(
