@@ -284,3 +284,13 @@ def test_scoped_pages_totals_details_and_shared_scope_cache(engine):
     page = engine.search_relations_api(filters, limit=6)
     page["rows"].clear()
     assert len(engine.search_relations_api(filters, limit=6)["rows"]) == 6
+
+
+def test_relation_rows_copy_keeps_row_order_in_small_groups(engine, tmp_path):
+    from omnipath_api.serving_index import copy_rows
+
+    source = engine._resolve_relation_paths()[0]
+    target = tmp_path / "copy.parquet"
+    copy_rows(source, target, 7)
+    assert pq.read_table(target).equals(pq.read_table(source))
+    assert pq.ParquetFile(target).metadata.num_row_groups == 5  # 30 rows in groups of 7

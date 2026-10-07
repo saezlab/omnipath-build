@@ -70,6 +70,19 @@ def _split(root, kind, paths):
     return indexed, plain
 
 
+def copy_rows(source, target, row_group_size):
+    """Copy a Parquet file in row order with smaller row groups, one batch at a time.
+
+    Streaming keeps memory bounded; DuckDB holds nested rows to preserve their order.
+    """
+    import pyarrow.parquet as pq
+
+    reader = pq.ParquetFile(source)
+    with pq.ParquetWriter(target, reader.schema_arrow, compression="zstd") as writer:
+        for batch in reader.iter_batches(batch_size=row_group_size):
+            writer.write_batch(batch, row_group_size=row_group_size)
+
+
 def relation_rows_path(root, path):
     """The small-row-group copy of a relations file (same row order), or the file itself."""
     target = index_path(root, "relation_rows", [path])
@@ -142,7 +155,7 @@ def build_indexes(engine, *, threads=4, memory_limit="2GB", min_free_disk=20 * 1
     with tempfile.TemporaryDirectory(prefix="build-", dir=temp_root) as work:
         db.execute("SET temp_directory=?", [str(Path(work) / "spill")])
 
-        def build(kind, paths, query, row_group_size=32768):
+        def build(kind, paths, query, row_group_size=32768, write=None):
             target = index_path(root, kind, paths)
             if target.exists():
                 return
@@ -151,10 +164,13 @@ def build_indexes(engine, *, threads=4, memory_limit="2GB", min_free_disk=20 * 1
             before = signature(paths)
             started = time.monotonic()
             staging = Path(work) / "output.parquet"
-            db.execute(
-                f"COPY ({query}) TO ? (FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE {int(row_group_size)})",
-                [str(staging)],
-            )
+            if write is not None:
+                write(staging)
+            else:
+                db.execute(
+                    f"COPY ({query}) TO ? (FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE {int(row_group_size)})",
+                    [str(staging)],
+                )
             if signature(paths) != before:
                 raise RuntimeError("Resource inventory changed during index construction; retry")
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -201,8 +217,8 @@ def build_indexes(engine, *, threads=4, memory_limit="2GB", min_free_disk=20 * 1
                 build(
                     "relation_rows",
                     [relations],
-                    f"SELECT * FROM {format_read_parquet([relations])}",
-                    row_group_size=2048,
+                    None,
+                    write=lambda staging: copy_rows(relations, staging, 2048),
                 )
                 # Relations by endpoint, sorted by entity key, with each relation's row in
                 # the original file so a relation is counted once.
