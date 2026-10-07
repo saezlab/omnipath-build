@@ -110,6 +110,7 @@ class Job:
     peak: int = 0
     fraction: float | None = None
     result: dict = field(default_factory=dict)
+    workers: int | None = None
 
 
 @dataclass
@@ -595,9 +596,9 @@ def orchestrate(
                 # Divide capacity when resource concurrency is explicitly requested.
                 # Preparation workers use the CPU budget, then exit before finalization.
                 resource_cpus = max(1, budget.cpus // budget.max_jobs)
-                batch_workers = max(
-                    1, min(resource_cpus // (2 ** (job.attempts - 1)), job.ram // (1024 * MIB))
-                )
+                if job.workers is None:
+                    job.workers = max(1, min(resource_cpus, job.ram // GIB))
+                batch_workers = job.workers
                 batch_share = job.ram // batch_workers
                 spec = {
                     "cpus": resource_cpus,
@@ -718,18 +719,17 @@ def orchestrate(
                         result["error"] = "Memory limit exceeded: " + str(
                             result.get("error", "worker stopped")
                         )
+                    # A retry doubles the memory and keeps the workers, so each worker's
+                    # share doubles; only at the budget cap are the workers halved instead.
                     next_ram = min(budget.ram, job.ram * 2)
-                    resource_cpus = max(1, budget.cpus // budget.max_jobs)
-                    current_workers = max(
-                        1, min(resource_cpus // (2 ** (job.attempts - 1)), job.ram // GIB)
-                    )
-                    next_workers = max(1, min(resource_cpus // (2**job.attempts), next_ram // GIB))
+                    workers = job.workers or 1
+                    next_workers = workers if next_ram > job.ram else max(1, workers // 2)
                     if (
                         oom
                         and job.attempts <= max_retries
-                        and (next_ram > job.ram or next_workers < current_workers)
+                        and (next_ram > job.ram or next_workers < workers)
                     ):
-                        job.ram = next_ram
+                        job.ram, job.workers = next_ram, next_workers
                         job.status, job.message = (
                             "queued",
                             f"Memory retry with {job.ram / GIB:.2f} GiB",

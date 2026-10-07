@@ -313,6 +313,29 @@ def test_memory_retry_reduces_workers_at_full_budget(tmp_path, monkeypatch):
     assert [spec["build"]["batch_workers"] for spec in specs] == [2, 1]
 
 
+def test_memory_retry_doubles_memory_and_keeps_workers(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "omnipath_build.orchestrator.cpu_allocation", lambda budget: (budget, [0, 1])
+    )
+    result = orchestrate(
+        ["retry"],
+        budget=Budget(4 * GIB, 2, jobs=1, worker_ram=2 * GIB),
+        version="1",
+        output_dir=tmp_path,
+        executor=LocalExecutor(),
+        poll_interval=0.02,
+        worker_command=WORKER,
+    )
+    (job,) = result["jobs"]
+    assert job["status"] == "success" and job["attempts"] == 2
+    specs = [
+        json.loads(p.read_text())
+        for p in sorted(Path(result["run_dir"]).glob("retry/attempt-*/spec.json"))
+    ]
+    assert [spec["build"]["batch_workers"] for spec in specs] == [2, 2]
+    assert [spec["build"]["resource_ram_bytes"] for spec in specs] == [2 * GIB, 4 * GIB]
+
+
 def test_disk_reserve_stops_workers_before_filesystem_is_full(tmp_path, monkeypatch):
     from omnipath_build import orchestrator as module
 
