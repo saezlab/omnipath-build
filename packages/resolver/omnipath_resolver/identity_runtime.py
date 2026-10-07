@@ -1026,8 +1026,9 @@ class IdentityRuntime:
            must not veto the specific identifiers;
         2. on the source's own structure (a stated InChIKey or one derived from its SMILES),
            which decides when the source's identifiers contradict each other;
-        3. on the primary identifier, when every candidate is one molecule in different
-           protonation states (InChIKeys equal but for the last character).
+        3. when every candidate is one molecule in different protonation states (InChIKeys
+           equal but for the last character): on the votes for its neutral form (``-N``) if
+           the source names it, else on the primary identifier.
 
         Accepted results never change, and the narrower evidence must still be unique.
         """
@@ -1042,18 +1043,28 @@ class IdentityRuntime:
         def structure(i, vote):
             return by_vote[(i, vote[3])]["ns"] == "inchikey"
 
-        def primary(i, vote):
+        def candidates(i):
+            return {e for vote in groups[i][1] for e in entities.get(vote[0], ())}
+
+        def protonation(i, vote):
+            neutral = [e for e in candidates(i) if e.endswith("-N")]
+            if neutral:
+                return neutral[0] in entities.get(vote[0], ())
             return bool(by_vote[(i, vote[3])].get("primary"))
 
         def protonation_states(i):
-            ids = {e for vote in groups[i][1] for e in entities.get(vote[0], ())}
+            ids = candidates(i)
             return (
                 len(ids) > 1
                 and all(e.startswith("inchikey:") for e in ids)
                 and len({e[:-1] for e in ids}) == 1
             )
 
-        for keep, eligible in ((specific, None), (structure, None), (primary, protonation_states)):
+        for keep, eligible in (
+            (specific, None),
+            (structure, None),
+            (protonation, protonation_states),
+        ):
             retry = []
             for i, _, ids, _ in result:
                 if ids or i not in groups or (eligible and not eligible(i)):

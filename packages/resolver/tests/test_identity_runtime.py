@@ -795,15 +795,18 @@ def test_conflicting_structures_and_protonation_states(matcher):
         matcher,
         # two SMILES that disagree are no structure to decide by
         structures=chemical([("smiles", "CCO"), ("smiles", "O")], namespace="chebi", identifier="CHEBI:15365"),
-        # one molecule in two protonation states: the source's primary id decides
+        # one molecule in two protonation states: the neutral form decides, whichever is primary
         neutral=chemical([("chebi", "CHEBI:80002")], namespace="chebi", identifier="CHEBI:80001"),
         charged=chemical([("chebi", "CHEBI:80001")], namespace="chebi", identifier="CHEBI:80002"),
+        # without the neutral form among them, the primary id decides
+        no_neutral=chemical([("chebi", "CHEBI:80003")], namespace="chebi", identifier="CHEBI:80002"),
         # different molecules are no protonation states: still a conflict
         different=chemical([("chebi", "CHEBI:16236")], namespace="chebi", identifier="CHEBI:80001"),
     )  # fmt: skip
     assert not out["structures"][0].matched
     assert out["neutral"][0].node_id == nadh
-    assert out["charged"][0].node_id == nadh_2
+    assert out["charged"][0].node_id == nadh
+    assert out["no_neutral"][0].node_id == nadh_2
     assert not out["different"][0].matched
 
 
