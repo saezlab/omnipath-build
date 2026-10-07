@@ -907,13 +907,24 @@ class ParquetWriter:
                 parts[name].append(path)
             offsets["entity"] += db.execute("SELECT count(*) FROM b_entity_ids").fetchone()[0]
             offsets["relation"] += db.execute("SELECT count(*) FROM b_relation_ids").fetchone()[0]
-        # Concatenating the sorted buckets in order needs insertion order kept.
+        # The rest reads the written tables; the working tables would only hold memory.
+        for table in working:
+            db.execute(f"DROP VIEW IF EXISTS b_{table}")
+            db.execute(f"DROP TABLE {table}")
+        for table in ("relation_counts", "b_entity_ids", "b_relation_ids"):
+            db.execute(f"DROP TABLE IF EXISTS {table}")
+        # Concatenating the sorted buckets in order needs insertion order kept; with
+        # several threads DuckDB buffers out-of-order batches of wide rows (ChEMBL's
+        # evidence exceeded 5 GiB), one thread streams them.
+        threads = db.execute("SELECT current_setting('threads')").fetchone()[0]
         db.execute("SET preserve_insertion_order=true")
+        db.execute("SET threads=1")
         for name, files in parts.items():
             db.execute(
                 f"COPY (SELECT * FROM {_read_parquet_sql(files)}) TO '{_sql_path(self.paths[name])}' {_COPY_OPTIONS}"
             )
         db.execute("SET preserve_insertion_order=false")
+        db.execute(f"SET threads={int(threads)}")
         relations = _read_parquet_sql([self.paths["relation"]])
         entities = _read_parquet_sql([self.paths["entity"]])
         identifiers = _read_parquet_sql([self.paths["entity_identifier"]])
