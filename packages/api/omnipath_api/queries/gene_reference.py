@@ -4,11 +4,23 @@ from collections import defaultdict
 import json
 
 from omnipath_api.models import normalize_filters
-from omnipath_api.serving_index import projected_paths
+from omnipath_api.serving_index import entity_group_rows, projected_paths
 from omnipath_api.shape.display_name import display_name, preferred_name
 
 
-def search_groups(
+def search_groups(engine, **kwargs):
+    """Cached per release and inventory: the explorer's first page is the same for everyone."""
+    from omnipath_api.entity_details import cache_key
+
+    filters = kwargs.get("filters") or {}
+    resources = kwargs.get("resources") or filters.get("sources")
+    key = cache_key(
+        engine, "entity-groups", json.dumps(kwargs, sort_keys=True, default=str), resources
+    )
+    return engine._detail_cache.get(key, lambda: _search_groups(engine, **kwargs))
+
+
+def _search_groups(
     engine,
     *,
     query="",
@@ -70,19 +82,13 @@ def search_groups(
     )"""
     params = [*params, *types]
     if mixed:
-        valid = "regexp_full_match(upper(identifier), '[A-Z]{14}-[A-Z]{10}-[A-Z]')"
-        aliases = "list_distinct(list_transform(list_filter(identifiers, x -> lower(x.ns) = 'inchikey' AND regexp_full_match(upper(x.id), '[A-Z]{14}-[A-Z]{10}-[A-Z]')), x -> left(upper(x.id), 14)))"
-        # The gene scan stays scalar. Inspect nested chemistry only for keys in
-        # this search scope, including their resource copies to detect conflicts.
+        # Connectivity is precomputed per row in the serving projection. Chemical keys
+        # in this search scope include their resource copies, to detect conflicts.
         cte += f""", chemical_keys AS (
             SELECT DISTINCT entity_key FROM selected WHERE entity_type IN ({type_sql})
         ), chemical_rows AS (
-            SELECT entity_key,
-                CASE WHEN namespace = 'inchikey' AND {valid} THEN FALSE
-                     ELSE coalesce(len({aliases}) > 1, FALSE) END AS ambiguous_key,
-                CASE WHEN namespace = 'inchikey' AND {valid} THEN left(upper(identifier), 14)
-                     WHEN len({aliases}) = 1 THEN ({aliases})[1] END AS connectivity
-            FROM {raw} JOIN chemical_keys USING(entity_key)
+            SELECT entity_key, group_ambiguous AS ambiguous_key, group_connectivity AS connectivity
+            FROM {entity_group_rows(engine, paths)} JOIN chemical_keys USING(entity_key)
         ), chemical_assignments AS (
             SELECT entity_key, CASE WHEN NOT bool_or(ambiguous_key)
                 AND count(DISTINCT connectivity) = 1 THEN min(connectivity) END AS connectivity

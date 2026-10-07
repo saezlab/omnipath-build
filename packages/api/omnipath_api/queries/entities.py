@@ -681,32 +681,31 @@ class EntitiesQueries:
         relationships: list[dict[str, Any]] = []
         relationships_total = 0
         if rel_paths:
-            read_expr = self._read_expr(rel_paths)
+            from omnipath_api.serving_index import adjacency_rows
+
             keys = [str(k) for k in (entity.get("sourceEntityPks") or []) if str(k).strip()]
             if entity.get("entityPk") and str(entity["entityPk"]) not in keys:
                 keys.append(str(entity["entityPk"]))
             if not keys:
                 keys = [str(entity.get("entityPk") or "")]
-            placeholders = ", ".join("?" for _ in keys)
-            count_row = self._db.execute(
-                f"""
-                SELECT count(*) FROM {read_expr}
-                WHERE subject_entity_key IN ({placeholders})
-                   OR object_entity_key IN ({placeholders})
-                """,
-                keys + keys,
-            ).fetchone()
-            interaction_count = int(count_row[0] if count_row else 0)
-            assoc_rows = self._fetch_dicts(
-                f"""
-                SELECT relation_key, predicate
-                FROM {read_expr}
-                WHERE (subject_entity_key IN ({placeholders}) OR object_entity_key IN ({placeholders}))
-                  AND category = 'association'
-                LIMIT 100
-                """,
-                keys + keys,
-            )
+            adjacency, params = adjacency_rows(self, rel_paths, keys)
+            # One relation counts once, also when both its endpoints are in ``keys``.
+            counts = self._fetch_dicts(
+                f"""SELECT count(*) AS n, count(*) FILTER (WHERE category = 'association') AS a
+                FROM (SELECT DISTINCT filename, relation_row, category FROM {adjacency})""",
+                params,
+            )[0]
+            interaction_count = int(counts["n"] or 0)
+            assoc_rows = []
+            if counts["a"]:
+                adjacency, params = adjacency_rows(
+                    self, rel_paths, keys, "category = 'association'"
+                )
+                assoc_rows = self._fetch_dicts(
+                    f"""SELECT DISTINCT filename, relation_row, relation_key, predicate
+                    FROM {adjacency} ORDER BY relation_key, filename, relation_row LIMIT 100""",
+                    params,
+                )
             annotations = [
                 {"relationPk": r["relation_key"], "predicate": r["predicate"]} for r in assoc_rows
             ]

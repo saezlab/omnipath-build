@@ -312,3 +312,17 @@ def test_auto_api_hydration_concrete_strategies_and_relationships(mixed_engine):
         assert not singleton["is_group"]
         assert singleton["entity"]["entityPk"] == records["native_gene"]["entity_key"]
         assert len(singleton["entity"]["entityAttributes"]) == 1
+
+
+def test_auto_groups_with_one_resource_unindexed(mixed_engine):
+    from omnipath_api.serving_index import index_path
+
+    engine, _ = mixed_engine
+    args = dict(strategy="auto", include_member_keys=True, limit=100)
+    expected = engine.search_entity_groups(**args)["groups"]
+    build_indexes(engine, threads=2, min_free_disk=0)
+    index_path(engine.data_root, "entities", [engine._resolve_entity_paths()[0]]).unlink(
+        missing_ok=True
+    )
+    engine._detail_cache.clear()
+    assert engine.search_entity_groups(**args)["groups"] == expected

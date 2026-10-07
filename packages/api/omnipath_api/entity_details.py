@@ -1,8 +1,7 @@
 """Release-aware entity hydration and paged, resource-local relationship reads."""
 
 import json
-from omnipath_api.serving_index import signature
-from omnipath_api.store.connection import format_read_parquet
+from omnipath_api.serving_index import adjacency_rows, signature
 
 
 def cache_key(engine, kind, public_id, resources, *page):
@@ -38,19 +37,22 @@ def relationships(engine, public_id, resources=None, limit=50, offset=0):
         empty = dict(relationships=[], relationshipsTotal=0, nextCursor=None)
         if not paths:
             return empty
-        read = format_read_parquet(paths, filename=True)
-        # Select scalar keys before reading nested annotations. Filename keeps
-        # source copies distinct and confines hydration to matching resources.
+        # Relation endpoints come from the per-resource adjacency projection, sorted
+        # by entity key; filename keeps source copies distinct and confines hydration.
         keys = list(dict.fromkeys(public_id if isinstance(public_id, list) else [public_id]))
         if not keys:
             return empty
-        placeholders = ",".join("?" for _ in keys)
+        adjacency, params = adjacency_rows(
+            engine,
+            paths,
+            keys,
+            "predicate IN ('has_input','has_output','enabled_by','has_member','has_part')",
+        )
         rows = engine._fetch_dicts(
             f"""SELECT filename, relation_key, predicate, count(*) OVER () AS total
-            FROM {read} WHERE (subject_entity_key IN ({placeholders}) OR object_entity_key IN ({placeholders}))
-            AND predicate IN ('has_input','has_output','enabled_by','has_member','has_part')
+            FROM (SELECT DISTINCT filename, relation_row, relation_key, predicate FROM {adjacency})
             ORDER BY predicate, relation_key, filename LIMIT ? OFFSET ?""",
-            [*keys, *keys, limit, offset],
+            [*params, limit, offset],
         )
         if not rows:
             return empty

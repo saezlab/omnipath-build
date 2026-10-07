@@ -141,3 +141,51 @@ def test_normal_entity_details_default_to_bounded_pages(tmp_path):
     third = client.get("/entities/a?includeRelationships=false&detail_offset=40").json()["entity"]
     assert len(third["entityAttributes"]) == 5
     assert third["detailNextCursor"] is None
+
+
+def test_relationships_and_counts_do_not_depend_on_projections(tmp_path):
+    from omnipath_api.serving_index import build_indexes, index_path
+
+    resource(tmp_path, "1", "First")
+    other = tmp_path / "resources/other/1"
+    other.mkdir(parents=True)
+    pq.write_table(
+        pq.read_table(tmp_path / "resources/test/1/entities.parquet"), other / "entities.parquet"
+    )
+    pq.write_table(
+        pa.Table.from_pylist(
+            [
+                # a self-loop has both endpoints in the entity and counts once
+                dict(relation_key=f"s{i}", subject_entity_key="a", object_entity_key="a",
+                     predicate="has_member", category="association", sources=["other"],
+                     evidence_count=1, annotations=[])
+                for i in range(2)
+            ],
+            schema=RELATION_SCHEMA,
+        ),
+        other / "relations.parquet",
+    )  # fmt: skip
+    pq.write_table(
+        pa.Table.from_pylist([], schema=PAYLOAD_SCHEMA), other / "evidence_payloads.parquet"
+    )
+    engine = ParquetServingEngine(tmp_path)
+
+    def read():
+        engine._detail_cache.clear()
+        engine._relationship_cache.clear()
+        pages = [engine.get_entity_relationships("a", limit=2, offset=o) for o in (0, 2, 4)]
+        return engine.get_entity_details("a"), pages
+
+    expected = read()
+    details, pages = expected
+    assert details["summary"]["interactionCount"] == 5
+    assert {a["relationPk"] for a in details["annotations"]} == {"s0", "s1"}
+    assert pages[0]["relationshipsTotal"] == 5
+    assert [r["relation"]["relationPk"] for p in pages for r in p["relationships"]] == [
+        "s0", "s1", "r0", "r1", "r2",
+    ]  # fmt: skip
+    build_indexes(engine, threads=2, memory_limit="128MB", min_free_disk=0)
+    assert read() == expected
+    # One indexed and one unindexed resource read the same.
+    index_path(tmp_path, "adjacency", [str(other / "relations.parquet")]).unlink()
+    assert read() == expected

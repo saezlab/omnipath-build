@@ -15,10 +15,10 @@ import shutil
 import tempfile
 import time
 
-from omnipath_api.store.connection import get_connection
+from omnipath_api.store.connection import format_read_parquet, get_connection
 from omnipath_api.molecular import read, columns, occurrences_expression
 
-VERSION = "v2"
+VERSION = "v3"
 ENTITY_COLUMNS = "entity_key, entity_type, namespace, identifier, taxon, label, has_hierarchy, parent_count, child_count, reference_entity_key, gene_reference_keys"
 RELATION_COLUMNS = (
     "relation_key, subject_entity_key, subject_label, subject_type, predicate, "
@@ -26,6 +26,17 @@ RELATION_COLUMNS = (
     "category, interaction_class, sources, evidence_count, subject_reference_entity_key, object_reference_entity_key"
 )
 TERMS = ("object_aspect_qualifier", "object_direction_qualifier", "causal_mechanism_qualifier")
+# A row's chemical connectivity (first InChIKey block) and whether its InChIKeys disagree.
+_VALID = "regexp_full_match(upper(identifier), '[A-Z]{14}-[A-Z]{10}-[A-Z]')"
+_ALIASES = (
+    "list_distinct(list_transform(list_filter(identifiers, x -> lower(x.ns) = 'inchikey'"
+    " AND regexp_full_match(upper(x.id), '[A-Z]{14}-[A-Z]{10}-[A-Z]')), x -> left(upper(x.id), 14)))"
+)
+GROUP_CONNECTIVITY = f"""CASE WHEN namespace = 'inchikey' AND {_VALID} THEN left(upper(identifier), 14)
+    WHEN len({_ALIASES}) = 1 THEN ({_ALIASES})[1] END"""
+GROUP_AMBIGUOUS = f"""CASE WHEN namespace = 'inchikey' AND {_VALID} THEN FALSE
+    ELSE coalesce(len({_ALIASES}) > 1, FALSE) END"""
+ADJACENCY_COLUMNS = "entity_key, relation_key, predicate, category, relation_row"
 
 
 def signature(paths):
@@ -48,6 +59,69 @@ def projected_paths(root, kind, paths):
         str(p) if (p := index_path(root, kind, [original])).is_file() else str(original)
         for original in paths
     ]
+
+
+def _split(root, kind, paths):
+    """(projection, original) pairs for indexed inputs, and the originals without one."""
+    indexed, plain = [], []
+    for path in paths:
+        target = index_path(root, kind, [path])
+        (indexed.append((str(target), str(path))) if target.is_file() else plain.append(str(path)))
+    return indexed, plain
+
+
+def entity_group_rows(engine, paths):
+    """Entity scalars with ``group_connectivity`` and ``group_ambiguous``.
+
+    Projections hold both precomputed; an input without one derives them from its
+    nested identifiers, so results do not depend on which inputs are indexed.
+    """
+    indexed, plain = _split(engine.data_root, "entities", paths)
+    parts = []
+    if indexed:
+        parts.append(
+            f"SELECT {ENTITY_COLUMNS}, group_connectivity, group_ambiguous "
+            f"FROM {engine._read_expr([p for p, _ in indexed])}"
+        )
+    if plain:
+        derived = (
+            f"{GROUP_CONNECTIVITY} AS group_connectivity, {GROUP_AMBIGUOUS} AS group_ambiguous"
+            if "identifiers" in columns(plain)
+            else "NULL::VARCHAR AS group_connectivity, FALSE AS group_ambiguous"
+        )
+        parts.append(f"SELECT {ENTITY_COLUMNS}, {derived} FROM {engine._read_expr(plain)}")
+    return "(" + " UNION ALL ".join(parts) + ")"
+
+
+def adjacency_rows(engine, paths, keys, where="TRUE", params=()):
+    """Relation endpoints of ``keys``: filename (the original relations file), entity_key,
+    relation_key, predicate, category and relation_row (its row in that file).
+
+    A relation whose subject and object are both in ``keys`` appears twice; count
+    distinct (filename, relation_row) for relations.
+    """
+    indexed, plain = _split(engine.data_root, "adjacency", paths)
+    marks = ",".join("?" for _ in keys)
+    parts, values = [], []
+    if indexed:
+        parts.append(
+            f"""SELECT m.filename, {ADJACENCY_COLUMNS}
+            FROM {format_read_parquet([p for p, _ in indexed], filename=True)} a
+            JOIN (SELECT unnest(?::VARCHAR[]) AS projection, unnest(?::VARCHAR[]) AS filename) m
+              ON a.filename = m.projection
+            WHERE entity_key IN ({marks}) AND {where}"""
+        )
+        values += [[p for p, _ in indexed], [o for _, o in indexed], *keys, *params]
+    if plain:
+        read = format_read_parquet(plain, filename=True, file_row_number=True)
+        for side in ("subject", "object"):
+            parts.append(
+                f"""SELECT filename, {side}_entity_key AS entity_key, relation_key, predicate,
+                  category, file_row_number AS relation_row
+                FROM {read} WHERE {side}_entity_key IN ({marks}) AND {where}"""
+            )
+            values += [*keys, *params]
+    return "(" + " UNION ALL ".join(parts) + ")", values
 
 
 def build_indexes(engine, *, threads=4, memory_limit="2GB", min_free_disk=20 * 1024**3):
@@ -92,10 +166,16 @@ def build_indexes(engine, *, threads=4, memory_limit="2GB", min_free_disk=20 * 1
         try:
             for info in inputs:
                 entities, relations = str(info["entities_path"]), str(info["relations_path"])
+                derived = (
+                    f"{GROUP_CONNECTIVITY} AS group_connectivity, {GROUP_AMBIGUOUS} AS group_ambiguous"
+                    if "identifiers" in columns([entities])
+                    else "NULL::VARCHAR AS group_connectivity, FALSE AS group_ambiguous"
+                )
+                # Sorted by key: lookups by entity key read only the matching row groups.
                 build(
                     "entities",
                     [entities],
-                    f"SELECT {ENTITY_COLUMNS} FROM {read([entities])} ORDER BY label, entity_key",
+                    f"SELECT {ENTITY_COLUMNS}, {derived} FROM {read([entities])} ORDER BY entity_key, label",
                 )
                 terms = ",".join("'" + term + "'" for term in TERMS)
                 # Preserve exactly one row per source relation, including rows with
@@ -108,6 +188,20 @@ def build_indexes(engine, *, threads=4, memory_limit="2GB", min_free_disk=20 * 1
                     list_distinct(list_transform(list_filter(annotations, a -> a.scope='relation' AND a.term IN ({terms})),
                         a -> struct_pack(term := a.term, value := a.value, scope := a.scope))) AS annotations
                     FROM {read([relations])}""",
+                )
+                # Relations by endpoint, sorted by entity key, with each relation's row in
+                # the original file so a relation is counted once.
+                endpoints = format_read_parquet([relations], file_row_number=True)
+                build(
+                    "adjacency",
+                    [relations],
+                    f"""SELECT * FROM (
+                      SELECT subject_entity_key AS entity_key, relation_key, predicate, category,
+                        file_row_number AS relation_row FROM {endpoints}
+                      UNION ALL
+                      SELECT object_entity_key, relation_key, predicate, category, file_row_number
+                      FROM {endpoints}
+                    ) WHERE entity_key IS NOT NULL ORDER BY entity_key, relation_row""",
                 )
         finally:
             db.close()
