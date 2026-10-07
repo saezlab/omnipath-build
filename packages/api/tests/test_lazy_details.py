@@ -1,66 +1,48 @@
-import pyarrow as pa
-import pyarrow.parquet as pq
 from fastapi.testclient import TestClient
 from omnipath_api.engine import ParquetServingEngine
 from omnipath_api.server import create_app
 from omnipath_api.store.inventory import ReleaseStore
-from omnipath_core.schema import ENTITY_SCHEMA, RELATION_SCHEMA, PAYLOAD_SCHEMA
+from table_fixture import nested_rows, rewrite_resource, write_resource
 
 
 def resource(root, version, label):
-    folder = root / "resources/test" / version
-    folder.mkdir(parents=True)
-    pq.write_table(
-        pa.Table.from_pylist(
-            [
-                dict(
-                    entity_key=k,
-                    entity_type="chemical_entity",
-                    namespace="test",
-                    identifier=k,
-                    label=label if k == "a" else "Other",
-                    identifiers=[],
-                    annotations=[],
-                )
-                for k in ["a", "b"]
-            ],
-            schema=ENTITY_SCHEMA,
-        ),
-        folder / "entities.parquet",
-    )
-    pq.write_table(
-        pa.Table.from_pylist(
-            [
-                dict(
-                    relation_key=f"r{i}",
-                    subject_entity_key="a",
-                    object_entity_key="b",
-                    predicate="has_part",
-                    category="membership",
-                    sources=["test"],
-                    evidence_count=1,
-                    annotations=[dict(term="note", value=f"{label}-{i}", source="test")],
-                )
-                for i in range(3)
-            ],
-            schema=RELATION_SCHEMA,
-        ),
-        folder / "relations.parquet",
-    )
-    pq.write_table(
-        pa.Table.from_pylist([], schema=PAYLOAD_SCHEMA), folder / "evidence_payloads.parquet"
-    )
+    entities = [
+        dict(
+            entity_key=k,
+            entity_type="chemical_entity",
+            namespace="test",
+            identifier=k,
+            label=label if k == "a" else "Other",
+        )
+        for k in ["a", "b"]
+    ]
+    relations = [
+        dict(
+            relation_key=f"r{i}",
+            subject_entity_key="a",
+            object_entity_key="b",
+            predicate="has_part",
+            category="membership",
+            sources=["test"],
+            evidence_count=1,
+            annotations=[dict(term="note", value=f"{label}-{i}", source="test")],
+        )
+        for i in range(3)
+    ]
+    write_resource(root / "resources/test" / version, entities, relations)
 
 
 def test_lazy_core_does_not_query_relations_and_reuses_cache(tmp_path, monkeypatch):
     resource(tmp_path, "1", "First")
     engine = ParquetServingEngine(tmp_path)
     client = TestClient(create_app(engine=engine))
-    monkeypatch.setattr(
-        engine,
-        "_resolve_relation_paths",
-        lambda *a: (_ for _ in ()).throw(AssertionError("relation scan")),
-    )
+    table = engine._table
+
+    def entity_tables_only(name, *args):
+        assert not name.startswith("relation"), "relation scan"
+        return table(name, *args)
+
+    monkeypatch.setattr(engine, "_table", entity_tables_only)
     first = client.get("/entities/a?includeRelationships=false")
     assert first.status_code == 200 and first.json()["entity"]["label"] == "First"
     monkeypatch.setattr(
@@ -126,11 +108,11 @@ def test_group_relationships_include_both_endpoints_once_and_paginate(tmp_path):
 def test_normal_entity_details_default_to_bounded_pages(tmp_path):
     resource(tmp_path, "1", "First")
     path = tmp_path / "resources/test/1/entities.parquet"
-    rows = pq.read_table(path).to_pylist()
+    rows = nested_rows(path)
     rows[0]["annotations"] = [
         dict(term="description", value=f"Note {i}", source="test") for i in range(45)
     ]
-    pq.write_table(pa.Table.from_pylist(rows, schema=ENTITY_SCHEMA), path)
+    rewrite_resource(path, entities=rows)
     client = TestClient(create_app(engine=ParquetServingEngine(tmp_path)))
     first = client.get("/entities/a?includeRelationships=false").json()["entity"]
     assert len(first["entityAttributes"]) == 20
@@ -143,31 +125,19 @@ def test_normal_entity_details_default_to_bounded_pages(tmp_path):
     assert third["detailNextCursor"] is None
 
 
-def test_relationships_and_counts_do_not_depend_on_projections(tmp_path):
-    from omnipath_api.serving_index import build_indexes, index_path
-
+def test_relationships_and_counts_span_resources(tmp_path):
     resource(tmp_path, "1", "First")
-    other = tmp_path / "resources/other/1"
-    other.mkdir(parents=True)
-    pq.write_table(
-        pq.read_table(tmp_path / "resources/test/1/entities.parquet"), other / "entities.parquet"
-    )
-    pq.write_table(
-        pa.Table.from_pylist(
-            [
-                # a self-loop has both endpoints in the entity and counts once
-                dict(relation_key=f"s{i}", subject_entity_key="a", object_entity_key="a",
-                     predicate="has_member", category="association", sources=["other"],
-                     evidence_count=1, annotations=[])
-                for i in range(2)
-            ],
-            schema=RELATION_SCHEMA,
-        ),
-        other / "relations.parquet",
+    write_resource(
+        tmp_path / "resources/other/1",
+        nested_rows(tmp_path / "resources/test/1/entity.parquet"),
+        [
+            # a self-loop has both endpoints in the entity and counts once
+            dict(relation_key=f"s{i}", subject_entity_key="a", object_entity_key="a",
+                 predicate="has_member", category="association", sources=["other"],
+                 evidence_count=1)
+            for i in range(2)
+        ],
     )  # fmt: skip
-    pq.write_table(
-        pa.Table.from_pylist([], schema=PAYLOAD_SCHEMA), other / "evidence_payloads.parquet"
-    )
     engine = ParquetServingEngine(tmp_path)
 
     def read():
@@ -184,8 +154,3 @@ def test_relationships_and_counts_do_not_depend_on_projections(tmp_path):
     assert [r["relation"]["relationPk"] for p in pages for r in p["relationships"]] == [
         "s0", "s1", "r0", "r1", "r2",
     ]  # fmt: skip
-    build_indexes(engine, threads=2, memory_limit="128MB", min_free_disk=0)
-    assert read() == expected
-    # One indexed and one unindexed resource read the same.
-    index_path(tmp_path, "adjacency", [str(other / "relations.parquet")]).unlink()
-    assert read() == expected

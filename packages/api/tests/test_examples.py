@@ -1,38 +1,21 @@
-import pyarrow as pa
-import pyarrow.parquet as pq
 from fastapi.testclient import TestClient
 
 from omnipath_api.engine import ParquetServingEngine
 from omnipath_api.server import create_app
 from omnipath_api.store.inventory import ReleaseStore
-from omnipath_core.schema import ENTITY_SCHEMA, RELATION_SCHEMA, PAYLOAD_SCHEMA
+from table_fixture import write_resource
 
 
 def write(root, version, label, key, kind="chemical_entity", taxon=None):
-    folder = root / "resources/test" / version
-    folder.mkdir(parents=True)
-    pq.write_table(
-        pa.Table.from_pylist(
-            [
-                dict(
-                    entity_key=key,
-                    label=label,
-                    entity_type=kind,
-                    namespace="inchikey" if kind == "chemical_entity" else "uniprot",
-                    identifier=key,
-                    taxon=taxon,
-                    identifiers=[],
-                    annotations=[],
-                )
-            ],
-            schema=ENTITY_SCHEMA,
-        ),
-        folder / "entities.parquet",
+    entity = dict(
+        entity_key=key,
+        label=label,
+        entity_type=kind,
+        namespace="inchikey" if kind == "chemical_entity" else "uniprot",
+        identifier=key,
+        taxon=taxon,
     )
-    pq.write_table(pa.Table.from_pylist([], schema=RELATION_SCHEMA), folder / "relations.parquet")
-    pq.write_table(
-        pa.Table.from_pylist([], schema=PAYLOAD_SCHEMA), folder / "evidence_payloads.parquet"
-    )
+    write_resource(root / "resources/test" / version, [entity])
 
 
 def test_examples_are_cached_release_specific_and_do_not_replace_search(tmp_path, monkeypatch):

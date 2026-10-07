@@ -1,11 +1,9 @@
-"""API display-name selection, before identifier pagination."""
+"""API display names: the resolver's label, with identifier fallbacks."""
 
 import re
 from omnipath_core.display_names import (
     NAME_NAMESPACES,
     CHEMICAL_TYPES,
-    name_rank,
-    name_rank_sql,
     preferred_name,
 )
 
@@ -20,9 +18,9 @@ def display_name(entity):
         if ns in NAME_NAMESPACES or ns.endswith(":name") or " entry name" in ns:
             names.append(item["identifier"])
     if kind in CHEMICAL_TYPES:
-        name = preferred_name(names)
-        if name and not name.isdigit() and not name.lower().startswith("inchi="):
-            return name
+        # The resolver's label, unless it is only a number or an InChI string.
+        if label and not label.isdigit() and not label.lower().startswith("inchi="):
+            return label
         fallbacks = [
             item["identifier"]
             for ns in ("chebi", "chembl", "hmdb", "pubchem")
@@ -32,7 +30,7 @@ def display_name(entity):
         return (
             next((value for value in fallbacks if not value.isdigit()), None)
             or next(iter(fallbacks), None)
-            or name
+            or label
             or entity.get("canonicalIdentifier")
             or entity["entityPk"]
         )
@@ -64,8 +62,6 @@ def display_name(entity):
 __all__ = [
     "display_name",
     "preferred_name",
-    "name_rank",
-    "name_rank_sql",
     "NAME_NAMESPACES",
     "CHEMICAL_TYPES",
 ]

@@ -7,7 +7,6 @@ import os
 import tempfile
 from pathlib import Path
 
-from omnipath_api.serving_index import projected_paths, signature
 
 logger = logging.getLogger(__name__)
 
@@ -29,9 +28,10 @@ SUGGESTIONS = [
 
 
 def get_examples(engine):
-    paths = engine._resolve_entity_paths()
+    infos = engine._selected_resource_infos()
     identity = [
-        signature(paths),
+        [info["key"] for info in infos],
+        engine._inventory_fingerprint,
         SUGGESTIONS,
         engine._release_scope.get(),
         engine._taxonomy_cache_version(),
@@ -48,14 +48,14 @@ def get_examples(engine):
         except (OSError, ValueError):
             logger.warning("Cannot load example cache %s", target, exc_info=True)
         entities = []
-        if paths:
+        if infos:
             wanted = [
                 (rank, label, kind, taxon)
                 for rank, (labels, kind, taxon) in enumerate(SUGGESTIONS)
                 for label in labels
             ]
             placeholders = ",".join("(?,?,?,?)" for _ in wanted)
-            read = engine._read_expr(projected_paths(engine.data_root, "entities", paths))
+            read = engine._table("entity")
             rows = engine._db.execute(
                 f"""WITH wanted(rank,label,kind,taxon) AS (VALUES {placeholders})
                 SELECT wanted.rank, e.entity_key FROM {read} e JOIN wanted

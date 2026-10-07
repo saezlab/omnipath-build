@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 import json
 from typing import Any
-from pathlib import Path
 
 
 from omnipath_api.annotations import (
@@ -16,26 +15,21 @@ from omnipath_api.annotations import (
 logger = logging.getLogger(__name__)
 
 
-def payload_query(payload_read_expr: str) -> str:
-    return f"SELECT source, row_id, payload_json FROM {payload_read_expr} WHERE relation_key = ?"
-
-
 class EvidenceQueries:
     """Evidence queries over the engine storage and shaping contract."""
 
     def get_relation_evidence(self, relation_pk, resources=None, filters=None):
         from omnipath_api.molecular import matching_evidence, has_form_filters
         from omnipath_api.models import normalize_filters
-        from omnipath_api.store.connection import format_read_parquet
         import hashlib
 
-        paths = self._resolve_relation_paths(resources)
-        if not paths:
-            return {"evidence": [], "annotations": []}
         rows = self._fetch_dicts(
-            f"SELECT filename, file_row_number, evidence, annotations FROM {format_read_parquet(paths, filename=True, file_row_number=True)} WHERE relation_key = ? ORDER BY filename, file_row_number",
+            f"SELECT resource, relation_id FROM {self._table('relation', resources)} "
+            "WHERE relation_key = ? ORDER BY resource",
             [relation_pk],
         )
+        self._children("relation_annotation", rows, "annotations")
+        self._children("relation_evidence", rows, "evidence")
         filters = normalize_filters(filters)
         out, annotations = [], []
         for row in rows:
@@ -53,8 +47,8 @@ class EvidenceQueries:
                 )
                 identity = json.dumps(
                     [
-                        str(Path(row["filename"]).relative_to(self.data_root)),
-                        row["file_row_number"],
+                        row["resource"],
+                        row["relation_id"],
                         record.get("source"),
                         record.get("dataset"),
                         record.get("row_id"),
@@ -85,12 +79,9 @@ class EvidenceQueries:
         self, relation_pk: str, resources: list[str] | None = None
     ) -> dict[str, Any]:
         """Fetch raw input JSON/string records from evidence_payloads.parquet for inspection."""
-        payload_paths = self._resolve_payload_paths(resources)
-        if not payload_paths:
-            return {"relationPk": relation_pk, "payloads": []}
-        payload_expr = self._read_expr(payload_paths)
         rows = self._fetch_dicts(
-            payload_query(payload_expr),
+            f"SELECT source, row_id, payload_json FROM {self._table('evidence_payloads', resources)} "
+            "WHERE relation_key = ?",
             [relation_pk],
         )
         out = []

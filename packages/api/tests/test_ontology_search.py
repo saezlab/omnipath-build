@@ -1,55 +1,42 @@
 import tempfile
 from pathlib import Path
 
-import pyarrow as pa
-import pyarrow.parquet as pq
-
 from omnipath_api.engine import ParquetServingEngine
 from omnipath_api.server import create_app
 from fastapi.testclient import TestClient
+from table_fixture import write_resource
 
 
 def test_scoped_ontology_search_deduplicates_and_never_leaks_global_terms():
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         for source in ("a", "b"):
-            folder = root / "resources" / source / "v1"
-            folder.mkdir(parents=True)
-            pq.write_table(
-                pa.Table.from_pylist(
-                    [
-                        dict(
-                            entity_key="p",
-                            identifier="P00533",
-                            label="EGFR",
-                            namespace="uniprot",
-                            entity_type="protein",
-                        ),
-                        dict(
-                            entity_key="t",
-                            identifier="GO:1",
-                            label="Signaling",
-                            namespace="go",
-                            entity_type="ontology_class",
-                        ),
-                        dict(
-                            entity_key="u",
-                            identifier="GO:2",
-                            label="Unrelated",
-                            namespace="go",
-                            entity_type="ontology_class",
-                        ),
-                    ]
-                ),
-                folder / "entities.parquet",
-            )
-            pq.write_table(
-                pa.Table.from_pylist(
-                    [
-                        dict(relation_key="r", subject_entity_key="p", object_entity_key="t"),
-                    ]
-                ),
-                folder / "relations.parquet",
+            write_resource(
+                root / "resources" / source / "v1",
+                [
+                    dict(
+                        entity_key="p",
+                        identifier="P00533",
+                        label="EGFR",
+                        namespace="uniprot",
+                        entity_type="protein",
+                    ),
+                    dict(
+                        entity_key="t",
+                        identifier="GO:1",
+                        label="Signaling",
+                        namespace="go",
+                        entity_type="ontology_class",
+                    ),
+                    dict(
+                        entity_key="u",
+                        identifier="GO:2",
+                        label="Unrelated",
+                        namespace="go",
+                        entity_type="ontology_class",
+                    ),
+                ],
+                [dict(relation_key="r", subject_entity_key="p", object_entity_key="t")],
             )
         engine = ParquetServingEngine(root)
         payload = dict(entityPks=["p"], scoped=True)

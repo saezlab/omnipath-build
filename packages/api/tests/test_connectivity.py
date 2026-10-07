@@ -1,15 +1,11 @@
-import pyarrow as pa
-import pyarrow.parquet as pq
 from fastapi.testclient import TestClient
 from omnipath_api.engine import ParquetServingEngine
 from omnipath_api.server import create_app
+from table_fixture import write_resource
 
 
-def write_source(root, name, rows):
-    directory = root / "resources" / name / "1"
-    directory.mkdir(parents=True)
-    pq.write_table(pa.Table.from_pylist(rows), directory / "entities.parquet")
-    pq.write_table(pa.table({"predicate": []}), directory / "relations.parquet")
+def write_source(root, name, rows, relations=()):
+    write_resource(root / "resources" / name / "1", rows, relations)
 
 
 def chemical(
@@ -17,11 +13,14 @@ def chemical(
     identifier,
     *,
     ns="inchikey",
-    aliases=(),
+    ref=None,
     label="Chemical",
     taxon="9606",
     kind="chemical_entity",
 ):
+    """A chemical; an InChIKey-identified one is its own reference unless ``ref`` says."""
+    if ref is None and ns == "inchikey":
+        ref = "inchikey:" + identifier
     return dict(
         entity_key=key,
         entity_type=kind,
@@ -29,10 +28,8 @@ def chemical(
         identifier=identifier,
         label=label,
         taxon=taxon,
-        has_hierarchy=False,
-        parent_count=0,
-        child_count=0,
-        identifiers=[{"ns": "name", "id": label}, *[{"ns": "inchikey", "id": v} for v in aliases]],
+        reference_entity_key=ref or None,
+        identifiers=[{"ns": "name", "id": label}],
     )
 
 
@@ -43,11 +40,11 @@ def test_connectivity_groups_scope_pagination_and_missing_keys(tmp_path):
     rows = [
         chemical("a", a),
         chemical("b", b),
-        chemical("c", "CID:1", ns="pubchem", aliases=[a]),
+        chemical("c", "CID:1", ns="pubchem", ref="inchikey:" + a),
         chemical("d", other),
         chemical("e", "missing", ns="pubchem"),
-        chemical("f", "bad-key"),
-        chemical("g", "conflict", ns="pubchem", aliases=[a, other], label="Conflict chemical"),
+        chemical("f", "bad-key", ref=""),
+        chemical("g", "conflict", ns="pubchem", ref="inchikey:" + other, label="Conflict chemical"),
         chemical("protein", a, kind="protein"),
     ]
     write_source(tmp_path, "one", rows)
@@ -55,7 +52,7 @@ def test_connectivity_groups_scope_pagination_and_missing_keys(tmp_path):
     write_source(
         tmp_path,
         "three",
-        [chemical("g", "conflict", ns="pubchem", aliases=[a], label="Conflict chemical")],
+        [chemical("g", "conflict", ns="pubchem", ref="inchikey:" + a, label="Conflict chemical")],
     )
     engine = ParquetServingEngine(data_root=tmp_path)
     result = engine.search_connectivity_groups(limit=1, member_limit=1)
@@ -164,7 +161,7 @@ def test_group_cards_skip_hydration_until_opened(tmp_path, monkeypatch):
     summary = client.post("/entities/groups", json={"filters": {"sources": ["one"]}}).json()[
         "groups"
     ][0]["entity"]
-    assert len(queries) == 2  # Scalar grouping plus name-only projection; no annotations.
+    assert len(queries) == 1  # One grouping query; no identifiers or annotations.
     assert summary["entityAttributes"] is None
     assert summary["groupDetailsLoaded"] is False
     assert len(summary["groupMemberKeys"]) == 5
@@ -207,15 +204,13 @@ def test_group_cache_reuses_results_and_invalidates_on_source_change(tmp_path, m
         )
         cached = engine.search_entity_groups()
         assert cached["groups"] == first["groups"]
-    folder = tmp_path / "resources/one/1/entities.parquet"
-    pq.write_table(
-        pa.Table.from_pylist(
-            [
-                chemical("a", "AAAAAAAAAAAAAA-BBBBBBBBBB-C"),
-                chemical("b", "AAAAAAAAAAAAAA-CCCCCCCCCC-D"),
-            ]
-        ),
-        folder,
+    write_source(
+        tmp_path,
+        "one",
+        [
+            chemical("a", "AAAAAAAAAAAAAA-BBBBBBBBBB-C"),
+            chemical("b", "AAAAAAAAAAAAAA-CCCCCCCCCC-D"),
+        ],
     )
     assert engine.search_entity_groups()["groups"][0]["member_count"] == 2
 
@@ -249,28 +244,21 @@ def test_group_detail_collections_are_paged(tmp_path):
 
 
 def test_group_relationships_resolve_members_beyond_preview(tmp_path):
-    from omnipath_core.schema import RELATION_SCHEMA
-
     write_source(
-        tmp_path, "one", [chemical(str(i), "AAAAAAAAAAAAAA-BBBBBBBBBB-C") for i in range(7)]
-    )
-    pq.write_table(
-        pa.Table.from_pylist(
-            [
-                dict(
-                    relation_key="r",
-                    subject_entity_key="6",
-                    object_entity_key="0",
-                    predicate="has_part",
-                    category="membership",
-                    sources=["one"],
-                    evidence_count=1,
-                    annotations=[],
-                )
-            ],
-            schema=RELATION_SCHEMA,
-        ),
-        tmp_path / "resources/one/1/relations.parquet",
+        tmp_path,
+        "one",
+        [chemical(str(i), "AAAAAAAAAAAAAA-BBBBBBBBBB-C") for i in range(7)],
+        [
+            dict(
+                relation_key="r",
+                subject_entity_key="6",
+                object_entity_key="0",
+                predicate="has_part",
+                category="membership",
+                sources=["one"],
+                evidence_count=1,
+            )
+        ],
     )
     client = TestClient(create_app(engine=ParquetServingEngine(data_root=tmp_path)))
     response = client.post(
@@ -281,23 +269,23 @@ def test_group_relationships_resolve_members_beyond_preview(tmp_path):
     assert response.json()["relationships"][0]["groupOutgoing"] is True
 
 
-def test_preferred_name_uses_all_group_names_before_pagination(tmp_path):
+def test_group_name_is_the_preferred_member_label_on_every_page(tmp_path):
     first = chemical("a", "QNAYBMKLOCPYGJ-UQEXSWPGSA-N", label="alanine-d7")
     second = chemical("b", "QNAYBMKLOCPYGJ-AAAAAAAAAA-N", label="L-Alanine")
     second["identifiers"] += [
         dict(ns="name", id=f"Long descriptive chemical name {i}") for i in range(40)
     ]
-    second["identifiers"].append(dict(ns="name", id="Alanine"))
     write_source(tmp_path, "one", [first, second])
     engine = ParquetServingEngine(data_root=tmp_path)
     group = engine.search_entity_groups(member_limit=1)["groups"][0]
-    assert group["entity"]["displayName"] == "Alanine"
-    assert len(group["entity"]["identifiers"]) == 2
+    assert group["entity"]["displayName"] == "L-Alanine"
+    # The members' canonical identifiers and labels.
+    assert len(group["entity"]["identifiers"]) == 4
     for offset in (0, 20, 40):
         entity = engine.search_entity_groups(
             group_key=group["group_key"], include_details=True, detail_offset=offset
         )["groups"][0]["entity"]
-        assert entity["displayName"] == "Alanine"
+        assert entity["displayName"] == "L-Alanine"
         assert len(entity["identifiers"]) <= 20
         assert entity["identifiersNextCursor"] == (
             str(offset + 20) if offset + 20 < entity["identifiersTotal"] else None

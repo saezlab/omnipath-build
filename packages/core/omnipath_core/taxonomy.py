@@ -59,7 +59,7 @@ def prepare_reference(root: Path, manifest: dict) -> dict:
         )
     ids: set[str] = set()
     for source, version in manifest["resources"].items():
-        for filename in ("entities.parquet", "relations.parquet"):
+        for filename in ("entity.parquet", "relation.parquet"):
             path = root / "resources" / source / version / filename
             for batch in pq.ParquetFile(path).iter_batches(columns=["taxon"]):
                 ids.update(

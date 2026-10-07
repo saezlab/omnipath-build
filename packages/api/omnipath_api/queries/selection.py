@@ -6,8 +6,6 @@ import logging
 from typing import Any
 
 
-from omnipath_api.serving_index import projected_paths
-
 
 logger = logging.getLogger(__name__)
 
@@ -32,26 +30,23 @@ class SelectionQueries:
         entity_pks = resolved or seeds
         include_associated = payload.get("includeAssociatedEntities") is not False
         if include_associated and entity_pks:
-            paths = self._resolve_relation_paths()
-            if paths:
-                read_expr = self._read_expr(projected_paths(self.data_root, "relations", paths))
-                placeholders = "SELECT unnest(?::VARCHAR[])"
-                extra = self._db.execute(
-                    f"""
-                    SELECT DISTINCT CASE
-                        WHEN subject_entity_key IN ({placeholders}) THEN object_entity_key
-                        ELSE subject_entity_key
-                    END
-                    FROM {read_expr}
-                    WHERE subject_entity_key IN ({placeholders}) OR object_entity_key IN ({placeholders})
-                    """,
-                    [entity_pks, entity_pks, entity_pks],
-                ).fetchall()
-                seen = set(entity_pks)
-                for row in extra:
-                    if row and row[0] and str(row[0]) not in seen:
-                        seen.add(str(row[0]))
-                        entity_pks.append(str(row[0]))
+            # Neighbours: the other endpoint of each relation of the seeds.
+            pairs = self._fetch_dicts(
+                f"""SELECT DISTINCT resource, relation_id FROM {self._table("relation_endpoint")}
+                WHERE key IN (SELECT unnest(?::VARCHAR[])) AND key_kind = 'entity'""",
+                [entity_pks],
+            )
+            seen = set(entity_pks)
+            for row in self._lookup(
+                "relation",
+                "relation_id",
+                [(r["resource"], r["relation_id"]) for r in pairs],
+                "subject_entity_key, object_entity_key",
+            ):
+                for key in (row["subject_entity_key"], row["object_entity_key"]):
+                    if key and key not in seen:
+                        seen.add(key)
+                        entity_pks.append(key)
         return {
             "entityPks": entity_pks,
             "seedEntityPks": seeds,

@@ -3,12 +3,11 @@
 import hashlib
 import json
 
-import pyarrow as pa
 import pyarrow.parquet as pq
 
 from omnipath_core import SERVING_SCHEMA_VERSION
 from omnipath_core.keys import entity_key, relation_key
-from omnipath_core.schema import ENTITY_SCHEMA, RELATION_SCHEMA, PAYLOAD_SCHEMA
+from table_fixture import write_resource as write_tables
 from omnipath_core.source_attributes import (
     CELLULAR_LOCATION,
     CONVERSION_DIRECTION,
@@ -152,16 +151,11 @@ def write_resource(root, source, entities, relations=(), payloads=(), version="1
     assert len({row["row_id"] for rel in relations for row in rel["evidence"]}) <= 20
     directory = root / "resources" / source / version
     directory.mkdir(parents=True)
+    write_tables(directory, entities, relations, payloads)
     files = {}
-    for name, schema, rows in (
-        ("entities.parquet", ENTITY_SCHEMA, entities),
-        ("relations.parquet", RELATION_SCHEMA, relations),
-        ("evidence_payloads.parquet", PAYLOAD_SCHEMA, payloads),
-    ):
-        path = directory / name
-        pq.write_table(pa.Table.from_pylist(list(rows), schema=schema), path)
-        files[name] = dict(
-            rows=len(rows),
+    for path in sorted(directory.glob("*.parquet")):
+        files[path.name] = dict(
+            rows=pq.read_metadata(path).num_rows,
             size_bytes=path.stat().st_size,
             sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
         )

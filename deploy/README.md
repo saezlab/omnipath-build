@@ -17,8 +17,8 @@ make serving-stop COMPOSE_ENV=deploy/serving.env
 ```
 
 API, web and files bind to loopback ports 8085, 8082 and 8080. Port variables can
-be changed in the environment file. Keep the artifact mount at `/data` to reuse
-existing serving-index fingerprints. The API and file service mount it read-only.
+be changed in the environment file. The API and file service mount the artifact
+directory at `/data`, read-only.
 Nginx exposes only complete versioned resource files, named releases and taxonomy
 Parquets. It hides raw caches, the full reference library and internal indexes.
 Public files must be readable by its worker (normally files 0644, directories

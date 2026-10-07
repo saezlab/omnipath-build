@@ -3,16 +3,14 @@
 import io
 import tarfile
 
-import pyarrow as pa
-import pyarrow.parquet as pq
 import pytest
 from fastapi.testclient import TestClient
 
-from omnipath_core.schema import ENTITY_SCHEMA, RELATION_SCHEMA
 from omnipath_core.taxonomy import taxon_names
 from omnipath_api.engine import ParquetServingEngine
 from omnipath_api.server import create_app
 from omnipath_api.store.inventory import ReleaseStore
+from table_fixture import rewrite_resource
 
 
 def dump(path, scientific="Arabidopsis thaliana"):
@@ -55,9 +53,7 @@ def test_release_names_entities_facets_and_cached_relations(tmp_path):
             annotations=[],
         )
     ]
-    pq.write_table(
-        pa.Table.from_pylist(entities, schema=ENTITY_SCHEMA), folder / "entities.parquet"
-    )
+    rewrite_resource(folder / "entity.parquet", entities=entities)
     relations = [
         dict(
             relation_key="relation",
@@ -72,10 +68,7 @@ def test_release_names_entities_facets_and_cached_relations(tmp_path):
             evidence_count=1,
         )
     ]
-    pq.write_table(
-        pa.Table.from_pylist(relations, schema=RELATION_SCHEMA), folder / "relations.parquet"
-    )
-    pq.write_table(pa.table({"payload_json": []}), folder / "evidence_payloads.parquet")
+    rewrite_resource(folder / "relation.parquet", relations=relations)
     archive = tmp_path / "references/taxonomy/taxdump.tar.gz"
     store = ReleaseStore(tmp_path)
     store.publish(dict(schema_version=1, version="0", resources={"test": "1"}))

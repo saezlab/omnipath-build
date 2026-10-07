@@ -15,7 +15,7 @@ from omnipath_api.engine import ParquetServingEngine
 from omnipath_api.releases import ReleaseStore
 from omnipath_api.server import create_app
 from omnipath_api.settings import Settings
-from omnipath_core.schema import ENTITY_SCHEMA, RELATION_SCHEMA, PAYLOAD_SCHEMA
+from omnipath_core.schema import PUBLISHED_TABLES
 
 
 def fixture_helpers():
@@ -118,11 +118,8 @@ def test_migrated_schema_search_details_evidence_filters_and_exports(tmp_path):
     manifest = json.loads((directory / "build_manifest.json").read_text())
     assert manifest["serving_schema_version"] == SERVING_SCHEMA_VERSION
     before = {}
-    for filename, schema in (
-        ("entities.parquet", ENTITY_SCHEMA),
-        ("relations.parquet", RELATION_SCHEMA),
-        ("evidence_payloads.parquet", PAYLOAD_SCHEMA),
-    ):
+    for table, schema in PUBLISHED_TABLES.items():
+        filename = f"{table}.parquet"
         path = directory / filename
         assert pq.read_schema(path).equals(schema)
         before[filename] = hashlib.sha256(path.read_bytes()).hexdigest()

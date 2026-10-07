@@ -99,18 +99,18 @@ class TestServerAPI(unittest.TestCase):
         self.assertTrue(catalog[0].get("files"))
 
         catalog_names = {item["name"] for item in catalog[0]["files"]}
-        self.assertIn("entities.parquet", catalog_names)
+        self.assertIn("entity.parquet", catalog_names)
         self.assertNotIn("evidence_payloads.parquet", catalog_names)
 
         listing = self.client.get(f"/resources/{resource_id}/files")
         self.assertEqual(listing.status_code, 200)
         files = listing.json()["files"]
         names = {item["name"] for item in files}
-        self.assertIn("entities.parquet", names)
+        self.assertIn("entity.parquet", names)
         self.assertNotIn("evidence_payloads.parquet", names)
         self.assertTrue(any(item.get("columns") for item in files))
 
-        parquet = self.client.get(f"/resources/{resource_id}/files/entities.parquet")
+        parquet = self.client.get(f"/resources/{resource_id}/files/entity.parquet")
         self.assertEqual(parquet.status_code, 200)
         self.assertTrue(parquet.content.startswith(b"PAR1"))
 

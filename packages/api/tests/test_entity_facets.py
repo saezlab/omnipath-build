@@ -1,19 +1,16 @@
 """Scalar facets retain usable counts when entities are searched by stored CURIEs."""
 
-import pyarrow as pa
-import pyarrow.parquet as pq
 import pytest
 from fastapi.testclient import TestClient
 
 from omnipath_api.engine import ParquetServingEngine
 from omnipath_api.server import create_app
-from omnipath_api.serving_index import build_indexes
 from omnipath_core.keys import entity_key
-from omnipath_core.schema import ENTITY_SCHEMA, RELATION_SCHEMA
+from table_fixture import write_resource
 
 
-@pytest.fixture(params=[False, True], ids=["raw", "projected"])
-def reference_facets_engine(tmp_path, request):
+@pytest.fixture
+def reference_facets_engine(tmp_path):
     for source, records in [
         (
             "a",
@@ -32,8 +29,6 @@ def reference_facets_engine(tmp_path, request):
             ],
         ),
     ]:
-        directory = tmp_path / "resources" / source / "1"
-        directory.mkdir(parents=True)
         entities = [
             dict(
                 entity_key=entity_key(kind, ns, identifier),
@@ -53,16 +48,8 @@ def reference_facets_engine(tmp_path, request):
             )
             for kind, ns, identifier, taxon, ref in records
         ]
-        pq.write_table(
-            pa.Table.from_pylist(entities, schema=ENTITY_SCHEMA), directory / "entities.parquet"
-        )
-        pq.write_table(
-            pa.Table.from_pylist([], schema=RELATION_SCHEMA), directory / "relations.parquet"
-        )
-    engine = ParquetServingEngine(tmp_path)
-    if request.param:
-        build_indexes(engine, threads=2, min_free_disk=0)
-    return engine
+        write_resource(tmp_path / "resources" / source / "1", entities)
+    return ParquetServingEngine(tmp_path)
 
 
 def counts(rows):
@@ -145,16 +132,3 @@ def test_reference_facets_keep_source_cross_filtering_and_other_filters(referenc
         ("source", "a"): 0,
         ("source", "b"): 1,
     }
-
-
-def test_native_curie_facets_support_legacy_parquets_without_references(reference_facets_engine):
-    engine = reference_facets_engine
-    for path in engine.data_root.glob("resources/*/*/entities.parquet"):
-        table = pq.read_table(path).drop(["reference_entity_key", "gene_reference_keys"])
-        pq.write_table(table, path)
-    engine.reload_resources()
-    facets = counts(engine.get_scoped_entity_facets({"query": "uniprot:Q16630"}))
-    assert facets[("entity_type", "protein")] == 1
-    assert facets[("source", "a")] == 1
-    assert facets[("source", "b")] == 0
-    assert counts(engine.get_scoped_entity_facets({"query": "entrez:11052"}))[("source", "a")] == 2

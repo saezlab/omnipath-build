@@ -2,23 +2,18 @@ import json
 from concurrent.futures import ThreadPoolExecutor
 from threading import Event
 
-import pyarrow as pa
-import pyarrow.parquet as pq
 import pytest
 from fastapi.testclient import TestClient
 
 from omnipath_api.engine import ParquetServingEngine
-from omnipath_api.serving_index import build_indexes, index_path, projected_paths
 from omnipath_api.store.query_cache import QueryCache
 from omnipath_api.server import create_app
-from omnipath_core.schema import ENTITY_SCHEMA, RELATION_SCHEMA
+from table_fixture import write_resource
 
 
 @pytest.fixture
 def engine(tmp_path):
     for source in ["a", "b"]:
-        folder = tmp_path / "resources" / source / "1"
-        folder.mkdir(parents=True)
         entities = [
             dict(
                 entity_key=f"{i:064x}",
@@ -65,72 +60,12 @@ def engine(tmp_path):
             )
             for i in range(30)
         ]
-        pq.write_table(
-            pa.Table.from_pylist(entities, schema=ENTITY_SCHEMA), folder / "entities.parquet"
-        )
-        pq.write_table(
-            pa.Table.from_pylist(rows, schema=RELATION_SCHEMA), folder / "relations.parquet"
-        )
+        write_resource(tmp_path / "resources" / source / "1", entities, rows)
     return ParquetServingEngine(tmp_path)
 
 
-def test_projection_equivalence_and_stale_fallback(engine):
-    facet_filters = [
-        {},
-        {"sources": ["a"]},
-        {"entityIds": [f"{2:064x}"]},
-        {"object_aspect_qualifier": ["activity"], "object_direction_qualifier": ["increased"]},
-        {"taxonomyIds": ["2", "5"]},
-    ]
-    expected_facets = [engine.get_scoped_relation_facets(f) for f in facet_filters]
-    searches = [
-        dict(query=""),
-        dict(query="Protein 02"),
-        dict(query="Alias2"),
-        dict(query="", filters={"entity_types": ["protein"]}),
-        dict(query="", cursor=engine.search_entities_api(limit=9)["nextCursor"]),
-        dict(query="", resources=["a"]),
-    ]
-
-    def search(k):
-        r = engine.search_entities_api(**k)
-        r.pop("elapsed_ms")
-        return r
-
-    expected_search = [search(k) for k in searches]
-    expected_entities = engine.get_scoped_entity_facets({"query": "Protein 02", "sources": ["a"]})
-    paths = engine._resolve_entity_paths()
-    before = {
-        str(p): (p.stat().st_size, p.stat().st_mtime_ns)
-        for p in engine.data_root.glob("resources/*/*/*.parquet")
-    }
-    build_indexes(engine, threads=2, memory_limit="128MB", min_free_disk=0)
-    assert before == {
-        str(p): (p.stat().st_size, p.stat().st_mtime_ns)
-        for p in engine.data_root.glob("resources/*/*/*.parquet")
-    }
-    engine._facet_cache.clear()
-    assert [engine.get_scoped_relation_facets(f) for f in facet_filters] == expected_facets
-    assert [search(k) for k in searches] == expected_search
-    assert (
-        engine.get_scoped_entity_facets({"query": "Protein 02", "sources": ["a"]})
-        == expected_entities
-    )
-    # Mixed indexed/unindexed inputs remain equivalent.
-    index_path(engine.data_root, "relations", [engine._resolve_relation_paths()[0]]).unlink()
-    engine._facet_cache.clear()
-    assert engine.get_scoped_relation_facets({}) == expected_facets[0]
-    # A changed input selects not the old projection.
-    path = paths[0]
-    table = pq.read_table(path)
-    pq.write_table(table, path)
-    assert projected_paths(engine.data_root, "entities", [path]) == [path]
-    assert not (engine.data_root / ".serving/v1/browse").exists()
-
-
 def test_live_query_policy_preserves_catalog_and_invalidates_cached_queries(engine):
-    # Warm projections and caches before changing policy.
-    build_indexes(engine, threads=2, memory_limit="128MB", min_free_disk=0)
+    # Warm caches before changing policy.
     before = engine.get_scoped_entity_facets({})
     assert len(engine._selected_resource_infos()) == 2
     policy = engine.data_root / "query_policy.json"
@@ -144,7 +79,7 @@ def test_live_query_policy_preserves_catalog_and_invalidates_cached_queries(engi
     assert [item["slug"] for item in engine.get_stats_sources()] == ["a"]
     catalog = {item["resource_id"]: item for item in engine.list_resource_catalog()}
     assert catalog["b"]["queryable"] is False
-    assert engine.get_resource_file_path("b", "entities.parquet").is_file()
+    assert engine.get_resource_file_path("b", "entity.parquet").is_file()
     client = TestClient(create_app(engine=engine))
     assert client.post("/entities/search", json={"resources": ["b"]}).status_code == 400
     assert any(
@@ -186,11 +121,11 @@ def test_facet_batching_matches_independent_counts(engine):
         {"query": "Protein", "ncbi_tax_id": ["2", "3"]},
     ]:
         rows = engine.get_scoped_entity_facets(payload)
-        where, params, paths = engine._entity_scoped_facet_where(payload)
+        where, params, scope = engine._entity_scoped_facet_where(payload)
         for facet, col in [("entity_type", "entity_type"), ("taxonomy_id", "taxon")]:
             expected = dict(
                 engine._db.execute(
-                    f"SELECT {col},count(*) FROM {engine._read_expr(paths)} WHERE {where} GROUP BY 1",
+                    f"SELECT {col},count(*) FROM {engine._table('entity', scope)} WHERE {where} GROUP BY 1",
                     params,
                 ).fetchall()
             )
@@ -204,7 +139,7 @@ def test_facet_batching_matches_independent_counts(engine):
         )
         for info in engine._selected_resource_infos():
             expected = engine._db.execute(
-                f"SELECT count(*) FROM {engine._read_expr([str(info['entities_path'])])} WHERE {source_where}",
+                f"SELECT count(*) FROM {engine._table('entity', [info['key']])} WHERE {source_where}",
                 source_params,
             ).fetchone()[0]
             assert (
@@ -262,13 +197,9 @@ def test_scoped_pages_totals_details_and_shared_scope_cache(engine):
 
     keys = [f"{i:064x}" for i in range(1, 15)]
     filters = {"scope_entity_ids": keys}
-    before = engine.search_relations(filters, limit=6, offset=2)
-    assert before["total"] == 28
-    expected = Counter(row["relation_key"] for row in before["rows"])
-    build_indexes(engine, threads=2, memory_limit="128MB", min_free_disk=0)
-    after = engine.search_relations(filters, limit=6, offset=2)
-    assert after["total"] == 28
-    assert Counter(row["relation_key"] for row in after["rows"]) == expected
+    page = engine.search_relations(filters, limit=6, offset=2)
+    assert page["total"] == 28
+    assert sum(Counter(row["relation_key"] for row in page["rows"]).values()) == 6
     assert engine.search_relations(filters, limit=6, offset=100)["total"] == 28
     assert (
         engine.search_relations({"scope_entity_ids": keys, "scope_endpoint_mode": "both"})["total"]
@@ -284,26 +215,3 @@ def test_scoped_pages_totals_details_and_shared_scope_cache(engine):
     page = engine.search_relations_api(filters, limit=6)
     page["rows"].clear()
     assert len(engine.search_relations_api(filters, limit=6)["rows"]) == 6
-
-
-def test_relation_rows_copy_keeps_row_order_in_small_groups(engine, tmp_path):
-    from omnipath_api.serving_index import copy_rows
-
-    source = engine._resolve_relation_paths()[0]
-    target = tmp_path / "copy.parquet"
-    copy_rows(source, target, 7)
-    assert pq.read_table(target).equals(pq.read_table(source))
-    assert pq.ParquetFile(target).metadata.num_row_groups == 5  # 30 rows in groups of 7
-
-
-def test_projections_are_found_when_the_data_directory_is_mounted_elsewhere(engine, tmp_path):
-    # Indexes are built on the host; the API container mounts the same files at /data.
-    build_indexes(engine, threads=2, memory_limit="128MB", min_free_disk=0)
-    moved = tmp_path.parent / (tmp_path.name + "-mounted")
-    tmp_path.rename(moved)
-    try:
-        mounted = ParquetServingEngine(moved)
-        paths = mounted._resolve_entity_paths()
-        assert all(".serving" in p for p in projected_paths(moved, "entities", paths))
-    finally:
-        moved.rename(tmp_path)

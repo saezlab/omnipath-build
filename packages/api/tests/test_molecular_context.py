@@ -1,11 +1,9 @@
 import json
 import io
-import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
-from omnipath_core.schema import ENTITY_SCHEMA, RELATION_SCHEMA
 from omnipath_api.engine import ParquetServingEngine
-from omnipath_api.serving_index import build_indexes
+from table_fixture import nested_rows, rewrite_resource, write_resource
 
 
 @pytest.fixture
@@ -13,7 +11,6 @@ def molecular_engine(tmp_path):
     gene, anchor, product, target = [str(i) * 64 for i in range(1, 5)]
     for source in ["a", "b"]:
         folder = tmp_path / "resources" / source / "1"
-        folder.mkdir(parents=True)
         entities = [
             dict(
                 entity_key=key,
@@ -77,12 +74,7 @@ def molecular_engine(tmp_path):
                 for form in forms
             ],
         )
-        pq.write_table(
-            pa.Table.from_pylist(entities, schema=ENTITY_SCHEMA), folder / "entities.parquet"
-        )
-        pq.write_table(
-            pa.Table.from_pylist([relation], schema=RELATION_SCHEMA), folder / "relations.parquet"
-        )
+        write_resource(folder, entities, [relation])
     return ParquetServingEngine(tmp_path)
 
 
@@ -113,21 +105,18 @@ def test_typed_identity_and_gene_group(molecular_engine):
 def test_exact_occurrence_filters_and_projection(molecular_engine):
     engine = molecular_engine
     filters = {"protein_entity_keys": ["3" * 64], "isoform_identifiers": ["uniprot:P00001-2"]}
-    for indexed in [False, True]:
-        if indexed:
-            build_indexes(engine, threads=2, min_free_disk=0)
-        assert engine.search_relations(filters)["total"] == 2
-        rows = engine.search_relations(filters, include_details=True)["rows"]
-        assert all(len(r["evidence"]) == 1 for r in rows)
-        assert (
-            engine.search_relations(dict(filters, molecular_endpoint_mode="target"))["total"] == 0
-        )
-        assert (
-            engine.search_relations(
-                {"protein_entity_keys": ["3" * 64], "isoform_identifiers": ["uniprot:absent"]}
-            )["total"]
-            == 0
-        )
+    assert engine.search_relations(filters)["total"] == 2
+    rows = engine.search_relations(filters, include_details=True)["rows"]
+    assert all(len(r["evidence"]) == 1 for r in rows)
+    assert (
+        engine.search_relations(dict(filters, molecular_endpoint_mode="target"))["total"] == 0
+    )
+    assert (
+        engine.search_relations(
+            {"protein_entity_keys": ["3" * 64], "isoform_identifiers": ["uniprot:absent"]}
+        )["total"]
+        == 0
+    )
     evidence = engine.get_relation_evidence("relation")["evidence"]
     assert len(evidence) == 6
     assert len({e["relationEvidencePk"] for e in evidence}) == 6
@@ -177,128 +166,6 @@ def test_opposite_endpoint_and_different_occurrences_do_not_combine(molecular_en
     )
 
 
-def test_legacy_context_is_unknown(molecular_engine):
-    engine = molecular_engine
-    for path in engine.data_root.glob("resources/*/*/entities.parquet"):
-        table = pq.read_table(path).drop(
-            ["reference_entity_key", "gene_reference_keys", "evidence"]
-        )
-        pq.write_table(table, path)
-    for path in engine.data_root.glob("resources/*/*/relations.parquet"):
-        table = pq.read_table(path).drop(
-            ["subject_reference_entity_key", "object_reference_entity_key"]
-        )
-        records = table.to_pylist()
-        for row in records:
-            for evidence in row["evidence"]:
-                evidence.pop("subject_molecular_form", None)
-                evidence.pop("object_molecular_form", None)
-        schema = pa.schema(
-            [
-                field
-                if field.name != "evidence"
-                else pa.field(
-                    "evidence",
-                    pa.list_(
-                        pa.struct(
-                            [
-                                f
-                                for f in field.type.value_type
-                                if f.name not in {"subject_molecular_form", "object_molecular_form"}
-                            ]
-                        )
-                    ),
-                )
-                for field in table.schema
-            ]
-        )
-        pq.write_table(pa.Table.from_pylist(records, schema=schema), path)
-    engine.reload_resources()
-    assert engine.get_entity_core("3" * 64)["entity"]["referenceEntityKey"] is None
-    assert engine.get_relation_evidence("relation")["evidence"][0]["subjectMolecularForm"] is None
-    assert engine.search_relations({"protein_entity_keys": ["3" * 64]})["total"] == 0
-    native = engine.get_molecular_context("2" * 64)
-    assert native["filters"] == {"entity_pks": ["2" * 64]}
-    assert native["relationsTotal"] == 2
-    assert native["observedForms"] == []
-    assert native["standaloneEvidence"] == []
-    exact = engine.get_molecular_context("3" * 64, view="product")
-    assert exact["relationsTotal"] == 0
-    assert exact["standaloneEvidence"] == []
-
-
-@pytest.mark.parametrize("without_forms", [False, True])
-def test_legacy_standalone_without_reference_stays_typed_and_product_view_stays_exact(
-    molecular_engine, without_forms
-):
-    from fastapi.testclient import TestClient
-    from omnipath_api.server import create_app
-
-    engine = molecular_engine
-    anchor, product = "2" * 64, "3" * 64
-    for path in engine.data_root.glob("resources/*/*/entities.parquet"):
-        table = pq.read_table(path).drop(["reference_entity_key", "gene_reference_keys"])
-        records = table.to_pylist()
-        # A different typed record's unknown observations must stay separate,
-        # and cannot join an exact product selection through its native key.
-        records[2]["evidence"] = [
-            dict(
-                source=path.parent.parent.name,
-                row_id="unknown",
-                molecular_form=None,
-                annotations=[],
-            )
-        ]
-        schema = table.schema
-        if without_forms:
-            schema = pa.schema(
-                [
-                    field
-                    if field.name != "evidence"
-                    else pa.field(
-                        "evidence",
-                        pa.list_(
-                            pa.struct(
-                                [
-                                    nested
-                                    for nested in field.type.value_type
-                                    if nested.name != "molecular_form"
-                                ]
-                            )
-                        ),
-                    )
-                    for field in schema
-                ]
-            )
-        pq.write_table(pa.Table.from_pylist(records, schema=schema), path)
-    engine.reload_resources()
-    reference = engine.get_molecular_context(anchor)
-    assert reference["referenceEntityKey"] is None
-    assert reference["filters"] == {"entity_pks": [anchor]}
-    assert len(reference["standaloneEvidence"]) == 6
-    assert {record["entityPk"] for record in reference["standaloneEvidence"]} == {anchor}
-    assert len(engine.get_molecular_context(product)["standaloneEvidence"]) == 2
-    exact = engine.get_molecular_context(
-        product, view="product", isoform_identifier="uniprot:P00001-2"
-    )
-    assert len(exact["standaloneEvidence"]) == (0 if without_forms else 2)
-    assert all(
-        record["entityPk"] == anchor
-        and record["occurrence"]["molecular_form"]["isoform_identifier"]["id"] == "P00001-2"
-        for record in exact["standaloneEvidence"]
-    )
-    with TestClient(create_app(engine=engine)) as client:
-        page = client.get(f"/entities/{anchor}/molecular-context", params={"limit": 2}).json()
-        assert len(page["standaloneEvidence"]) == 2 and page["nextCursor"] == "2"
-        assert page["referenceEntityKey"] is None
-        response = client.get(
-            f"/entities/{product}/molecular-context",
-            params={"view": "product", "isoform_identifier": "uniprot:P00001-2"},
-        )
-        assert response.status_code == 200
-        assert response.json()["standaloneEvidence"] == exact["standaloneEvidence"]
-
-
 def test_http_molecular_contract(molecular_engine):
     from fastapi.testclient import TestClient
     from omnipath_api.server import create_app
@@ -320,8 +187,8 @@ def test_http_molecular_contract(molecular_engine):
 
 def test_filters_do_not_combine_endpoints_or_occurrences(molecular_engine):
     engine = molecular_engine
-    for path in engine.data_root.glob("resources/*/*/relations.parquet"):
-        original = pq.read_table(path).to_pylist()[0]
+    for path in engine.data_root.glob("resources/*/*/relation.parquet"):
+        original = nested_rows(path)[0]
         split = dict(
             original,
             relation_key="split",
@@ -357,28 +224,21 @@ def test_filters_do_not_combine_endpoints_or_occurrences(molecular_engine):
                 ),
             ],
         )
-        pq.write_table(pa.Table.from_pylist([original, split], schema=RELATION_SCHEMA), path)
+        rewrite_resource(path, relations=[original, split])
     engine.reload_resources()
     filters = {"protein_entity_keys": ["3" * 64], "isoform_identifiers": ["uniprot:P00001-3"]}
-    for indexed in [False, True]:
-        if indexed:
-            build_indexes(engine, threads=2, min_free_disk=0)
-        assert {r["relation_key"] for r in engine.search_relations(filters)["rows"]} == {"relation"}
-        assert (
-            engine.search_relations(
-                {"reference_entity_keys": ["entrez:1"], "entity_types": ["rna_product"]}
-            )["total"]
-            == 0
-        )
-        assert engine.search_relations({"entity_ids": ["entrez:1"]})["total"] == 4
+    assert {r["relation_key"] for r in engine.search_relations(filters)["rows"]} == {"relation"}
+    assert (
+        engine.search_relations(
+            {"reference_entity_keys": ["entrez:1"], "entity_types": ["rna_product"]}
+        )["total"]
+        == 0
+    )
+    assert engine.search_relations({"entity_ids": ["entrez:1"]})["total"] == 4
 
 
-def test_mixed_projection_and_paging_preserve_exact_evidence(molecular_engine):
-    from omnipath_api.serving_index import index_path
-
+def test_paging_preserves_exact_evidence(molecular_engine):
     engine = molecular_engine
-    build_indexes(engine, threads=2, min_free_disk=0)
-    index_path(engine.data_root, "relations", [engine._resolve_relation_paths()[0]]).unlink()
     filters = {"protein_entity_keys": ["3" * 64], "isoform_identifiers": ["uniprot:P00001-2"]}
     result = engine.search_relations(filters, limit=1, include_details=True)
     assert result["total"] == 2
@@ -419,57 +279,48 @@ def test_fallback_references_do_not_become_gene_groups(molecular_engine):
             gene_reference_keys=["entrez:8", "entrez:9"],
         ),
     ]
-    for path in engine.data_root.glob("resources/*/*/entities.parquet"):
-        pq.write_table(
-            pa.Table.from_pylist(pq.read_table(path).to_pylist() + records, schema=ENTITY_SCHEMA),
-            path,
-        )
+    for path in engine.data_root.glob("resources/*/*/entity.parquet"):
+        rewrite_resource(path, entities=nested_rows(path) + records)
     engine.reload_resources()
-    for indexed in [False, True]:
-        if indexed:
-            build_indexes(engine, threads=2, min_free_disk=0)
-        groups = engine.search_entity_groups(strategy="gene_reference", limit=20)["groups"]
-        by_key = {g["entity"]["entityPk"]: g for g in groups}
-        assert "gene:entrez:1" in by_key
-        for record in records:
-            singleton = by_key[record["entity_key"]]
-            assert singleton["is_group"] is False
-            assert singleton["entity"]["entityType"] == record["entity_type"]
-            assert singleton["entity"]["referenceEntityKey"] == record["reference_entity_key"]
-            assert singleton["entity"]["canonicalIdentifierType"] == record["namespace"]
+    groups = engine.search_entity_groups(strategy="gene_reference", limit=20)["groups"]
+    by_key = {g["entity"]["entityPk"]: g for g in groups}
+    assert "gene:entrez:1" in by_key
+    for record in records:
+        singleton = by_key[record["entity_key"]]
+        assert singleton["is_group"] is False
+        assert singleton["entity"]["entityType"] == record["entity_type"]
+        assert singleton["entity"]["referenceEntityKey"] == record["reference_entity_key"]
+        assert singleton["entity"]["canonicalIdentifierType"] == record["namespace"]
 
 
 def test_product_context_keeps_native_fallback_without_losing_exact_observations(molecular_engine):
     engine = molecular_engine
     # One source keeps the native fallback while another has a supported gene
     # reference for the same reusable product. Both have real anchor evidence.
-    path = engine._resolve_entity_paths(["a"])[0]
-    records = pq.read_table(path).to_pylist()
+    path = next(iter(engine._table_paths("entity", ["a"]).values()))
+    records = nested_rows(path)
     product = next(row for row in records if row["entity_key"] == "3" * 64)
     product["reference_entity_key"] = "uniprot:P00001"
     product["label"] = "ZZZ fallback"  # Reference choice must not follow display rank.
-    pq.write_table(pa.Table.from_pylist(records, schema=ENTITY_SCHEMA), path)
+    rewrite_resource(path, entities=records)
     engine.reload_resources()
-    for indexed in [False, True]:
-        if indexed:
-            build_indexes(engine, threads=2, min_free_disk=0)
-        summary = engine.get_entity_core("3" * 64)["entity"]
-        assert summary["referenceEntityKey"] == "uniprot:P00001"
-        assert summary["geneReferenceKeys"] == ["entrez:1"]
-        context = engine.get_molecular_context(
-            "3" * 64, view="product", isoform_identifier="uniprot:P00001-2"
-        )
-        assert context["referenceEntityKey"] == "uniprot:P00001"
-        assert context["relationsTotal"] == 2
-        assert len(context["standaloneEvidence"]) == 2
-        assert len(context["observedForms"]) == 1
-        groups = engine.search_entity_groups(strategy="gene_reference", limit=20, member_limit=10)[
-            "groups"
-        ]
-        singleton = next(group for group in groups if group["entity"]["entityPk"] == "3" * 64)
-        assert singleton["is_group"] is False
-        assert singleton["entity"]["entityType"] == "protein"
-        assert singleton["entity"]["referenceEntityKey"] == "uniprot:P00001"
+    summary = engine.get_entity_core("3" * 64)["entity"]
+    assert summary["referenceEntityKey"] == "uniprot:P00001"
+    assert summary["geneReferenceKeys"] == ["entrez:1"]
+    context = engine.get_molecular_context(
+        "3" * 64, view="product", isoform_identifier="uniprot:P00001-2"
+    )
+    assert context["referenceEntityKey"] == "uniprot:P00001"
+    assert context["relationsTotal"] == 2
+    assert len(context["standaloneEvidence"]) == 2
+    assert len(context["observedForms"]) == 1
+    groups = engine.search_entity_groups(strategy="gene_reference", limit=20, member_limit=10)[
+        "groups"
+    ]
+    singleton = next(group for group in groups if group["entity"]["entityPk"] == "3" * 64)
+    assert singleton["is_group"] is False
+    assert singleton["entity"]["entityType"] == "protein"
+    assert singleton["entity"]["referenceEntityKey"] == "uniprot:P00001"
 
 
 @pytest.mark.parametrize(
@@ -492,7 +343,7 @@ def test_non_product_source_types_keep_native_context(
     key, reference = "5" * 64, f"{namespace}:{identifier}"
     other_key = "6" * 64
     other_type = "gene" if entity_type != "gene" else "physical_entity"
-    for path in engine.data_root.glob("resources/*/*/entities.parquet"):
+    for path in engine.data_root.glob("resources/*/*/entity.parquet"):
         source = path.parent.parent.name
         record = dict(
             entity_key=key,
@@ -527,14 +378,9 @@ def test_non_product_source_types_keep_native_context(
                 )
             ],
         )
-        pq.write_table(
-            pa.Table.from_pylist(
-                pq.read_table(path).to_pylist() + [record, other], schema=ENTITY_SCHEMA
-            ),
-            path,
-        )
-    for path in engine.data_root.glob("resources/*/*/relations.parquet"):
-        rows = pq.read_table(path).to_pylist()
+        rewrite_resource(path, entities=nested_rows(path) + [record, other])
+    for path in engine.data_root.glob("resources/*/*/relation.parquet"):
+        rows = nested_rows(path)
         source = path.parent.parent.name
         native = dict(
             rows[0],
@@ -570,25 +416,22 @@ def test_non_product_source_types_keep_native_context(
                 )
             ],
         )
-        pq.write_table(pa.Table.from_pylist(rows + [native, other], schema=RELATION_SCHEMA), path)
+        rewrite_resource(path, relations=rows + [native, other])
     engine.reload_resources()
-    for indexed in [False, True]:
-        if indexed:
-            build_indexes(engine, threads=2, min_free_disk=0)
-        context = engine.get_molecular_context(key)
-        assert context["filters"] == {"entity_pks": [key]}
-        assert context["relationsTotal"] == 2
-        assert context["observedForms"] == []
-        assert len(context["standaloneEvidence"]) == 2
-        assert all(record["entityPk"] == key for record in context["standaloneEvidence"])
-        assert all(
-            row["subjectEntity"]["entityType"] == entity_type for row in context["relations"]
-        )
-        assert all(row["relation"]["subjectEntityPk"] == key for row in context["relations"])
-        assert all(
-            len(row["evidence"]) == 1 and row["evidence"][0]["subject_molecular_form"] is None
-            for row in context["relations"]
-        )
+    context = engine.get_molecular_context(key)
+    assert context["filters"] == {"entity_pks": [key]}
+    assert context["relationsTotal"] == 2
+    assert context["observedForms"] == []
+    assert len(context["standaloneEvidence"]) == 2
+    assert all(record["entityPk"] == key for record in context["standaloneEvidence"])
+    assert all(
+        row["subjectEntity"]["entityType"] == entity_type for row in context["relations"]
+    )
+    assert all(row["relation"]["subjectEntityPk"] == key for row in context["relations"])
+    assert all(
+        len(row["evidence"]) == 1 and row["evidence"][0]["subject_molecular_form"] is None
+        for row in context["relations"]
+    )
     with TestClient(create_app(engine=engine)) as client:
         response = client.get(f"/entities/{key}/molecular-context")
         assert response.status_code == 200
@@ -617,7 +460,7 @@ def test_compatible_product_type_and_namespace_keep_exact_context(
         {product_kind + "_entity_key": product_key},
         {product_kind + "_entity_key": other_key},
     ]
-    for path in engine.data_root.glob("resources/*/*/entities.parquet"):
+    for path in engine.data_root.glob("resources/*/*/entity.parquet"):
         source = path.parent.parent.name
         records = [
             dict(
@@ -640,12 +483,9 @@ def test_compatible_product_type_and_namespace_keep_exact_context(
             dict(source=source, row_id=str(index), annotations=[], molecular_form=form)
             for index, form in enumerate(forms)
         ]
-        pq.write_table(
-            pa.Table.from_pylist(pq.read_table(path).to_pylist() + records, schema=ENTITY_SCHEMA),
-            path,
-        )
-    for path in engine.data_root.glob("resources/*/*/relations.parquet"):
-        rows = pq.read_table(path).to_pylist()
+        rewrite_resource(path, entities=nested_rows(path) + records)
+    for path in engine.data_root.glob("resources/*/*/relation.parquet"):
+        rows = nested_rows(path)
         source = path.parent.parent.name
         product_relation = dict(
             rows[0],
@@ -666,28 +506,23 @@ def test_compatible_product_type_and_namespace_keep_exact_context(
                 for index, form in enumerate(forms)
             ],
         )
-        pq.write_table(
-            pa.Table.from_pylist(rows + [product_relation], schema=RELATION_SCHEMA), path
-        )
+        rewrite_resource(path, relations=rows + [product_relation])
     engine.reload_resources()
-    for indexed in [False, True]:
-        if indexed:
-            build_indexes(engine, threads=2, min_free_disk=0)
-        context = engine.get_molecular_context(product_key, view="product")
-        assert context["filters"] == {product_kind + "_entity_keys": [product_key]}
-        assert context["relationsTotal"] == 2
-        assert len(context["standaloneEvidence"]) == 2
-        assert len(context["observedForms"]) == 1
-        assert all(
-            len(row["evidence"]) == 1
-            and row["evidence"][0]["subject_molecular_form"][product_kind + "_entity_key"]
-            == product_key
-            for row in context["relations"]
-        )
-        assert all(
-            record["occurrence"]["molecular_form"][product_kind + "_entity_key"] == product_key
-            for record in context["standaloneEvidence"]
-        )
+    context = engine.get_molecular_context(product_key, view="product")
+    assert context["filters"] == {product_kind + "_entity_keys": [product_key]}
+    assert context["relationsTotal"] == 2
+    assert len(context["standaloneEvidence"]) == 2
+    assert len(context["observedForms"]) == 1
+    assert all(
+        len(row["evidence"]) == 1
+        and row["evidence"][0]["subject_molecular_form"][product_kind + "_entity_key"]
+        == product_key
+        for row in context["relations"]
+    )
+    assert all(
+        record["occurrence"]["molecular_form"][product_kind + "_entity_key"] == product_key
+        for record in context["standaloneEvidence"]
+    )
 
 
 @pytest.mark.parametrize("relation_count", [0, 2, 31])
@@ -697,33 +532,22 @@ def test_shared_cursor_pages_both_streams_to_completion(molecular_engine, relati
 
     engine = molecular_engine
     folder = engine.data_root / "resources" / "a" / "1"
-    entity_path, relation_path = folder / "entities.parquet", folder / "relations.parquet"
-    entities = pq.read_table(entity_path).to_pylist()
+    entity_path, relation_path = folder / "entity.parquet", folder / "relation.parquet"
+    entities = nested_rows(entity_path)
     # Nullable/repeated occurrence metadata must not make pagination unstable.
     entities[1]["evidence"] = [
         dict(source="a", row_id=str(index), molecular_form=None, annotations=[])
         for index in range(27)
     ]
-    pq.write_table(pa.Table.from_pylist(entities, schema=ENTITY_SCHEMA), entity_path)
-    relation = pq.read_table(relation_path).to_pylist()[0]
-    pq.write_table(
-        pa.Table.from_pylist(
-            [dict(relation, relation_key=f"relation-{index}") for index in range(relation_count)],
-            schema=RELATION_SCHEMA,
-        ),
-        relation_path,
-    )
+    rewrite_resource(entity_path, entities=entities)
+    relation = nested_rows(relation_path)[0]
+    rewrite_resource(relation_path, relations=[dict(relation, relation_key=f"relation-{index}") for index in range(relation_count)])
     other_folder = engine.data_root / "resources" / "b" / "1"
-    other_entities = pq.read_table(other_folder / "entities.parquet").to_pylist()
+    other_entities = nested_rows(other_folder / "entity.parquet")
     for record in other_entities:
         record["evidence"] = []
-    pq.write_table(
-        pa.Table.from_pylist(other_entities, schema=ENTITY_SCHEMA),
-        other_folder / "entities.parquet",
-    )
-    pq.write_table(
-        pa.Table.from_pylist([], schema=RELATION_SCHEMA), other_folder / "relations.parquet"
-    )
+    rewrite_resource(other_folder / "entity.parquet", entities=other_entities)
+    rewrite_resource(other_folder / "relation.parquet", relations=[])
     engine.reload_resources()
     with TestClient(create_app(engine=engine)) as client:
         endpoint = "/entities/gene:entrez:1/molecular-context"
@@ -743,20 +567,17 @@ def test_shared_cursor_pages_both_streams_to_completion(molecular_engine, relati
 
 def test_shared_cursor_continues_standalone_after_cross_resource_relations_finish(molecular_engine):
     engine = molecular_engine
-    for indexed in [False, True]:
-        if indexed:
-            build_indexes(engine, threads=2, min_free_disk=0)
-        pages = [
-            engine.get_molecular_context("gene:entrez:1", limit=2, offset=i) for i in (0, 2, 4)
-        ]
-        assert [len(page["relations"]) for page in pages] == [2, 0, 0]
-        assert [len(page["standaloneEvidence"]) for page in pages] == [2, 2, 2]
-        assert [page["nextCursor"] for page in pages] == ["2", "4", None]
-        assert [
-            (record["occurrence"]["source"], record["occurrence"]["row_id"])
-            for page in pages
-            for record in page["standaloneEvidence"]
-        ] == [(source, str(index)) for source in ("a", "b") for index in range(3)]
+    pages = [
+        engine.get_molecular_context("gene:entrez:1", limit=2, offset=i) for i in (0, 2, 4)
+    ]
+    assert [len(page["relations"]) for page in pages] == [2, 0, 0]
+    assert [len(page["standaloneEvidence"]) for page in pages] == [2, 2, 2]
+    assert [page["nextCursor"] for page in pages] == ["2", "4", None]
+    assert [
+        (record["occurrence"]["source"], record["occurrence"]["row_id"])
+        for page in pages
+        for record in page["standaloneEvidence"]
+    ] == [(source, str(index)) for source in ("a", "b") for index in range(3)]
 
 
 @pytest.mark.parametrize("namespace,identifier", [("uniprot", "UNKNOWN"), ("ensp", "ENSP000001.2")])
@@ -772,7 +593,7 @@ def test_native_product_without_catalogue_links_finds_gene_standalone_occurrence
         {"protein_entity_key": other_product, "isoform_identifier": isoform},
         None,
     ]
-    for path in engine.data_root.glob("resources/*/*/entities.parquet"):
+    for path in engine.data_root.glob("resources/*/*/entity.parquet"):
         source = path.parent.parent.name
         records = [
             dict(
@@ -800,32 +621,26 @@ def test_native_product_without_catalogue_links_finds_gene_standalone_occurrence
                 ],
             )
         )
-        pq.write_table(
-            pa.Table.from_pylist(pq.read_table(path).to_pylist() + records, schema=ENTITY_SCHEMA),
-            path,
-        )
+        rewrite_resource(path, entities=nested_rows(path) + records)
     engine.reload_resources()
-    for indexed in [False, True]:
-        if indexed:
-            build_indexes(engine, threads=2, min_free_disk=0)
-        context = engine.get_molecular_context(
-            product, view="product", isoform_identifier=f"{namespace}:{isoform['id']}"
-        )
-        assert context["filters"] == {
-            "protein_entity_keys": [product],
-            "isoform_identifiers": [f"{namespace}:{isoform['id']}"],
-        }
-        assert context["referenceEntityKey"] == f"{namespace}:{identifier}"
-        assert context["catalogueProducts"] == []
-        assert context["relationsTotal"] == 0
-        assert len(context["standaloneEvidence"]) == 2
-        assert context["nextCursor"] is None
-        assert {record["entityPk"] for record in context["standaloneEvidence"]} == {main_gene}
-        assert all(
-            record["occurrence"]["row_id"] == "0" for record in context["standaloneEvidence"]
-        )
-        assert len(engine.get_molecular_context(product, view="product")["standaloneEvidence"]) == 4
-        assert len(engine.get_molecular_context("gene:entrez:7")["standaloneEvidence"]) == 8
+    context = engine.get_molecular_context(
+        product, view="product", isoform_identifier=f"{namespace}:{isoform['id']}"
+    )
+    assert context["filters"] == {
+        "protein_entity_keys": [product],
+        "isoform_identifiers": [f"{namespace}:{isoform['id']}"],
+    }
+    assert context["referenceEntityKey"] == f"{namespace}:{identifier}"
+    assert context["catalogueProducts"] == []
+    assert context["relationsTotal"] == 0
+    assert len(context["standaloneEvidence"]) == 2
+    assert context["nextCursor"] is None
+    assert {record["entityPk"] for record in context["standaloneEvidence"]} == {main_gene}
+    assert all(
+        record["occurrence"]["row_id"] == "0" for record in context["standaloneEvidence"]
+    )
+    assert len(engine.get_molecular_context(product, view="product")["standaloneEvidence"]) == 4
+    assert len(engine.get_molecular_context("gene:entrez:7")["standaloneEvidence"]) == 8
 
 
 @pytest.mark.parametrize(
@@ -859,14 +674,15 @@ def test_actual_writer_native_source_and_exact_product_views(
     writer = ParquetWriter(tmp_path / "resources" / "fixture" / "1")
     try:
         writer.append_observations(extractor, resolver)
-        entity_path, relation_path, *_ = writer.close()
+        files = writer.close()["files"]
+        entity_path, relation_path = files["entity"], files["relation"]
     finally:
         resolver.close()
-    (row,) = pq.read_table(relation_path).to_pylist()
+    (row,) = nested_rows(relation_path)
     main_key = row["subject_entity_key"]
     field = product_type + "_entity_key"
     product_key = row["evidence"][0]["subject_molecular_form"][field]
-    entities = {entity["entity_key"]: entity for entity in pq.read_table(entity_path).to_pylist()}
+    entities = {entity["entity_key"]: entity for entity in nested_rows(entity_path)}
     assert entities[main_key]["entity_type"] == source_type
     assert entities[product_key]["entity_type"] == product_type
     assert entities[product_key]["identifier"] == identifier
@@ -876,20 +692,17 @@ def test_actual_writer_native_source_and_exact_product_views(
     else:
         assert main_key == product_key
     engine = ParquetServingEngine(tmp_path)
-    for indexed in [False, True]:
-        if indexed:
-            build_indexes(engine, threads=2, min_free_disk=0)
-        source_context = engine.get_molecular_context(main_key)
-        assert source_context["filters"] == {"entity_pks": [main_key]}
-        assert source_context["relationsTotal"] == 1
-        assert source_context["relations"][0]["subjectEntity"]["entityType"] == source_type
-        assert len(source_context["standaloneEvidence"]) == 1
-        assert source_context["standaloneEvidence"][0]["entityPk"] == main_key
-        product_context = engine.get_molecular_context(product_key, view="product")
-        assert product_context["filters"] == {product_type + "_entity_keys": [product_key]}
-        assert product_context["relationsTotal"] == 1
-        assert len(product_context["standaloneEvidence"]) == 1
-        assert product_context["standaloneEvidence"][0]["entityPk"] == main_key
+    source_context = engine.get_molecular_context(main_key)
+    assert source_context["filters"] == {"entity_pks": [main_key]}
+    assert source_context["relationsTotal"] == 1
+    assert source_context["relations"][0]["subjectEntity"]["entityType"] == source_type
+    assert len(source_context["standaloneEvidence"]) == 1
+    assert source_context["standaloneEvidence"][0]["entityPk"] == main_key
+    product_context = engine.get_molecular_context(product_key, view="product")
+    assert product_context["filters"] == {product_type + "_entity_keys": [product_key]}
+    assert product_context["relationsTotal"] == 1
+    assert len(product_context["standaloneEvidence"]) == 1
+    assert product_context["standaloneEvidence"][0]["entityPk"] == main_key
     with TestClient(create_app(engine=engine)) as client:
         assert client.get(f"/entities/{main_key}/molecular-context").json()["filters"] == {
             "entity_pks": [main_key]
@@ -918,8 +731,8 @@ def test_shared_native_product_key_does_not_turn_legacy_evidence_into_exact_prod
 ):
     engine = molecular_engine
     key = "3" * 64
-    for path in engine.data_root.glob("resources/*/*/entities.parquet"):
-        records = pq.read_table(path).to_pylist()
+    for path in engine.data_root.glob("resources/*/*/entity.parquet"):
+        records = nested_rows(path)
         source = path.parent.parent.name
         for record in records:
             record["evidence"] = []
@@ -933,9 +746,9 @@ def test_shared_native_product_key_does_not_turn_legacy_evidence_into_exact_prod
                 molecular_form={"protein_entity_key": key} if source == "a" else None,
             )
         ]
-        pq.write_table(pa.Table.from_pylist(records, schema=ENTITY_SCHEMA), path)
-    for path in engine.data_root.glob("resources/*/*/relations.parquet"):
-        records = pq.read_table(path).to_pylist()
+        rewrite_resource(path, entities=records)
+    for path in engine.data_root.glob("resources/*/*/relation.parquet"):
+        records = nested_rows(path)
         source = path.parent.parent.name
         records[0]["subject_entity_key"] = key
         records[0]["subject_reference_entity_key"] = "uniprot:P00001"
@@ -947,20 +760,17 @@ def test_shared_native_product_key_does_not_turn_legacy_evidence_into_exact_prod
             )
         ]
         records[0]["evidence_count"] = 1
-        pq.write_table(pa.Table.from_pylist(records, schema=RELATION_SCHEMA), path)
+        rewrite_resource(path, relations=records)
     engine.reload_resources()
-    for indexed in [False, True]:
-        if indexed:
-            build_indexes(engine, threads=2, min_free_disk=0)
-        reference = engine.get_molecular_context(key)
-        assert reference["filters"] == {"entity_pks": [key]}
-        assert reference["relationsTotal"] == 2
-        assert len(reference["standaloneEvidence"]) == 2
-        product = engine.get_molecular_context(key, view="product")
-        assert product["relationsTotal"] == 1
-        assert len(product["standaloneEvidence"]) == 1
-        assert product["standaloneEvidence"][0]["occurrence"]["source"] == "a"
-        assert product["relations"][0]["evidence"][0]["source"] == "a"
+    reference = engine.get_molecular_context(key)
+    assert reference["filters"] == {"entity_pks": [key]}
+    assert reference["relationsTotal"] == 2
+    assert len(reference["standaloneEvidence"]) == 2
+    product = engine.get_molecular_context(key, view="product")
+    assert product["relationsTotal"] == 1
+    assert len(product["standaloneEvidence"]) == 1
+    assert product["standaloneEvidence"][0]["occurrence"]["source"] == "a"
+    assert product["relations"][0]["evidence"][0]["source"] == "a"
 
 
 def test_isoform_selection_requires_explicit_product_view(molecular_engine):
@@ -1042,26 +852,23 @@ def test_actual_writer_native_product_with_gene_is_labeled_before_navigation(
     finally:
         resolver.close()
     engine = ParquetServingEngine(tmp_path)
-    for indexed in [False, True]:
-        if indexed:
-            build_indexes(engine, threads=2, min_free_disk=0)
-        context = engine.get_molecular_context("gene:entrez:7157")
-        assert context["relationsTotal"] == int(include_relation)
-        assert context["catalogueProducts"] == []
-        assert len(context["standaloneEvidence"]) == 1
-        assert len(context["referencedProducts"]) == 1
-        assert len(context["observedForms"]) == 1
-        product = context["referencedProducts"][0]
-        assert context["observedForms"][0]["protein_entity_key"] == product["entityPk"]
-        assert product["canonicalIdentifier"] == product["label"] == "Q9Y6K9"
-        assert product["entityType"] == "protein"
-        assert product["geneReferenceKeys"] == []
-        assert (
-            product["entityPk"]
-            == context["standaloneEvidence"][0]["occurrence"]["molecular_form"][
-                "protein_entity_key"
-            ]
-        )
+    context = engine.get_molecular_context("gene:entrez:7157")
+    assert context["relationsTotal"] == int(include_relation)
+    assert context["catalogueProducts"] == []
+    assert len(context["standaloneEvidence"]) == 1
+    assert len(context["referencedProducts"]) == 1
+    assert len(context["observedForms"]) == 1
+    product = context["referencedProducts"][0]
+    assert context["observedForms"][0]["protein_entity_key"] == product["entityPk"]
+    assert product["canonicalIdentifier"] == product["label"] == "Q9Y6K9"
+    assert product["entityType"] == "protein"
+    assert product["geneReferenceKeys"] == []
+    assert (
+        product["entityPk"]
+        == context["standaloneEvidence"][0]["occurrence"]["molecular_form"][
+            "protein_entity_key"
+        ]
+    )
 
 
 def test_referenced_product_hydration_is_one_bounded_deduplicated_scalar_batch(
@@ -1091,8 +898,8 @@ def test_referenced_product_hydration_is_one_bounded_deduplicated_scalar_batch(
         gene_reference_keys=[],
         evidence=[],
     )
-    for path in engine.data_root.glob("resources/*/*/entities.parquet"):
-        entities = pq.read_table(path).to_pylist()
+    for path in engine.data_root.glob("resources/*/*/entity.parquet"):
+        entities = nested_rows(path)
         entities[1]["evidence"] = [
             dict(
                 source=path.parent.parent.name,
@@ -1103,11 +910,9 @@ def test_referenced_product_hydration_is_one_bounded_deduplicated_scalar_batch(
                 },
             )
         ] * 2
-        pq.write_table(
-            pa.Table.from_pylist(entities + records + [transcript], schema=ENTITY_SCHEMA), path
-        )
-    for path in engine.data_root.glob("resources/*/*/relations.parquet"):
-        rows = pq.read_table(path).to_pylist()
+        rewrite_resource(path, entities=entities + records + [transcript])
+    for path in engine.data_root.glob("resources/*/*/relation.parquet"):
+        rows = nested_rows(path)
         rows[0]["evidence"] = [
             dict(
                 source=path.parent.parent.name,
@@ -1117,19 +922,19 @@ def test_referenced_product_hydration_is_one_bounded_deduplicated_scalar_batch(
             for record in records
         ]
         rows[0]["evidence_count"] = len(records)
-        pq.write_table(pa.Table.from_pylist(rows, schema=RELATION_SCHEMA), path)
+        rewrite_resource(path, relations=rows)
     engine.reload_resources()
-    original = engine.get_entities_by_pks
+    original = engine._fetch_entities_by_keys
     calls = []
 
     def lookup(keys, resources=None, *, slim=False):
         calls.append((keys, resources, slim))
         return original(keys, resources, slim=slim)
 
-    monkeypatch.setattr(engine, "get_entities_by_pks", lookup)
+    monkeypatch.setattr(engine, "_fetch_entities_by_keys", lookup)
     context = engine.get_molecular_context("gene:entrez:1", resources=["a"], limit=1)
-    assert len(calls) == 2  # One existing endpoint batch and one additional product batch.
-    keys, resources, slim = calls[1]
+    assert len(calls) == 1  # Endpoints come with their relations; one product batch.
+    keys, resources, slim = calls[0]
     assert resources == ["a"] and slim
     assert len(keys) == len(set(keys)) == 100
     assert keys[:2] == [records[0]["entity_key"], transcript["entity_key"]]
@@ -1163,16 +968,16 @@ def test_referenced_product_metadata_only_follows_returned_trimmed_pairs_and_sta
     def form(key, iso="Q9Y6K4-2"):
         return dict(protein_entity_key=key, isoform_identifier={"ns": "uniprot", "id": iso})
 
-    for path in engine.data_root.glob("resources/*/*/entities.parquet"):
-        entities = pq.read_table(path).to_pylist()
+    for path in engine.data_root.glob("resources/*/*/entity.parquet"):
+        entities = nested_rows(path)
         for entity in entities:
             entity["evidence"] = []
         entities[1]["evidence"] = [
             dict(source=path.parent.parent.name, molecular_form=form(key)) for key in keys[:2]
         ]
-        pq.write_table(pa.Table.from_pylist(entities + native, schema=ENTITY_SCHEMA), path)
-    for path in engine.data_root.glob("resources/*/*/relations.parquet"):
-        original = pq.read_table(path).to_pylist()[0]
+        rewrite_resource(path, entities=entities + native)
+    for path in engine.data_root.glob("resources/*/*/relation.parquet"):
+        original = nested_rows(path)[0]
         source = path.parent.parent.name
         rows = [
             dict(
@@ -1210,36 +1015,33 @@ def test_referenced_product_metadata_only_follows_returned_trimmed_pairs_and_sta
                 evidence_count=1,
             ),
         ]
-        pq.write_table(pa.Table.from_pylist(rows, schema=RELATION_SCHEMA), path)
+        rewrite_resource(path, relations=rows)
     engine.reload_resources()
-    for indexed in [False, True]:
-        if indexed:
-            build_indexes(engine, threads=2, min_free_disk=0)
-        standalone = engine.get_molecular_context(
-            "gene:entrez:1", resources=["a"], limit=1, offset=2
-        )
-        assert standalone["standaloneEvidence"] == []
-        assert standalone["relations"] == []
-        assert standalone["referencedProducts"] == []
-        standalone_first = engine.get_molecular_context("gene:entrez:1", resources=["a"], limit=1)
-        assert len(standalone_first["standaloneEvidence"]) == 1
-        context = engine.get_molecular_context(
-            keys[0], resources=["a"], view="product", isoform_identifier="uniprot:Q9Y6K4-2", limit=1
-        )
-        assert context["relationsTotal"] == 2 and len(context["relations"]) == 1
-        assert len(context["standaloneEvidence"]) == 1
-        assert len(context["relations"][0]["evidence"]) == 1
-        expected = {
-            form["protein_entity_key"]
-            for row in context["relations"]
-            for ev in row["evidence"]
-            for form in (ev["subject_molecular_form"], ev["object_molecular_form"])
-        }
-        assert {product["entityPk"] for product in context["referencedProducts"]} == expected
-        assert keys[1] not in expected
+    standalone = engine.get_molecular_context(
+        "gene:entrez:1", resources=["a"], limit=1, offset=2
+    )
+    assert standalone["standaloneEvidence"] == []
+    assert standalone["relations"] == []
+    assert standalone["referencedProducts"] == []
+    standalone_first = engine.get_molecular_context("gene:entrez:1", resources=["a"], limit=1)
+    assert len(standalone_first["standaloneEvidence"]) == 1
+    context = engine.get_molecular_context(
+        keys[0], resources=["a"], view="product", isoform_identifier="uniprot:Q9Y6K4-2", limit=1
+    )
+    assert context["relationsTotal"] == 2 and len(context["relations"]) == 1
+    assert len(context["standaloneEvidence"]) == 1
+    assert len(context["relations"][0]["evidence"]) == 1
+    expected = {
+        form["protein_entity_key"]
+        for row in context["relations"]
+        for ev in row["evidence"]
+        for form in (ev["subject_molecular_form"], ev["object_molecular_form"])
+    }
+    assert {product["entityPk"] for product in context["referencedProducts"]} == expected
+    assert keys[1] not in expected
     # A lookahead observation must not hydrate products from the next page.
-    for path in engine.data_root.glob("resources/*/*/relations.parquet"):
-        pq.write_table(pa.Table.from_pylist([], schema=RELATION_SCHEMA), path)
+    for path in engine.data_root.glob("resources/*/*/relation.parquet"):
+        rewrite_resource(path, relations=[])
     engine.reload_resources()
     for offset, key in enumerate(keys[:2]):
         page = engine.get_molecular_context(
@@ -1248,28 +1050,3 @@ def test_referenced_product_metadata_only_follows_returned_trimmed_pairs_and_sta
         assert page["relations"] == []
         assert {product["entityPk"] for product in page["referencedProducts"]} == {key}
         assert {form["protein_entity_key"] for form in page["observedForms"]} == {key}
-
-
-def test_candidate_form_matching_equals_one_scan(molecular_engine):
-    # Narrowed searches match molecular forms on endpoint candidates; the single SQL scan
-    # (used above the candidate limit) gives the same pages and totals.
-    engine = molecular_engine
-    filter_sets = [
-        {"reference_entity_keys": ["entrez:1"], "protein_entity_keys": ["3" * 64]},
-        {"entity_pks": ["3" * 64], "isoform_identifiers": ["uniprot:P00001-2"]},
-        {"reference_entity_keys": ["entrez:1"], "protein_entity_keys": ["9" * 64]},
-    ]
-    for indexed in [False, True]:
-        if indexed:
-            build_indexes(engine, threads=2, min_free_disk=0)
-        for filters in filter_sets:
-            pages = []
-            for candidate_limit in (engine._FORM_CANDIDATE_LIMIT, -1):
-                engine._FORM_CANDIDATE_LIMIT = candidate_limit
-                pages.append(
-                    [engine.search_relations(filters, limit=1, offset=o) for o in (0, 1, 5)]
-                )
-            del engine._FORM_CANDIDATE_LIMIT
-            for two_phase, one_scan in zip(*pages):
-                assert two_phase["total"] == one_scan["total"]
-                assert two_phase["rows"] == one_scan["rows"]

@@ -5,9 +5,7 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
-import pyarrow as pa
-import pyarrow.parquet as pq
-from omnipath_core.schema import ENTITY_SCHEMA, RELATION_SCHEMA
+from table_fixture import write_resource
 
 
 def key(value):
@@ -64,25 +62,10 @@ def write_dataset(root):
         )
     ]
     for source in ["signor", "uniprot", "chebi"]:
-        target = Path(root) / "resources" / source / "1"
-        target.mkdir(parents=True, exist_ok=True)
-        pq.write_table(
-            pa.Table.from_pylist(entities if source != "chebi" else [], schema=ENTITY_SCHEMA),
-            target / "entities.parquet",
-        )
-        pq.write_table(
-            pa.Table.from_pylist(relations if source == "signor" else [], schema=RELATION_SCHEMA),
-            target / "relations.parquet",
-        )
-        pq.write_table(
-            pa.table(
-                {
-                    "relation_key": [key("relation")],
-                    "source": ["signor"],
-                    "row_id": ["1"],
-                    "payload_json": ["{}"],
-                }
-            ),
-            target / "evidence_payloads.parquet",
+        write_resource(
+            Path(root) / "resources" / source / "1",
+            entities if source != "chebi" else [],
+            relations if source == "signor" else [],
+            [dict(relation_key=key("relation"), source="signor", row_id="1", payload_json="{}")],
         )
     return Path(root)

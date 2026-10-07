@@ -3,77 +3,83 @@
 import json
 from typing import Literal
 
-from omnipath_api.molecular import columns, matching_evidence, read
-from omnipath_api.serving_index import entity_rows_paths, evidence_rows, projected_paths
+from omnipath_api.molecular import matching_evidence
 
-_ISOFORM = (
-    "json_extract_string(to_json(ev), '$.molecular_form.isoform_identifier.ns') || ':' || "
-    "json_extract_string(to_json(ev), '$.molecular_form.isoform_identifier.id') = ?"
-)
+_ISOFORM = "molecular_form.isoform_identifier.ns || ':' || molecular_form.isoform_identifier.id = ?"
 
 
-def _matching_rows(engine, paths, where, values):
-    """(original entity file, entity key) of rows matching ``where``, from the projections."""
-    projected = projected_paths(engine.data_root, "entities", paths)
-    original = dict(zip(projected, paths))
+def _group_members(engine, resources, group_key, kind):
+    """(resource, entity_id) of the entities in one group of ``entity_group``."""
     rows = engine._fetch_dicts(
-        f"SELECT DISTINCT filename, entity_key FROM {read(projected, filename=True)} WHERE {where}",
-        values,
+        f"SELECT DISTINCT resource, entity_id FROM {engine._table('entity_group', resources)} "
+        "WHERE group_key = ? AND kind = ? ORDER BY resource, entity_id",
+        [group_key, kind],
     )
-    return [(original[r["filename"]], r["entity_key"]) for r in rows]
+    return [(r["resource"], r["entity_id"]) for r in rows]
 
 
-def _product_rows(engine, paths, reference):
-    """Catalogue product rows of a gene: keys from the projections, rows without evidence."""
-    where = "list_contains(gene_reference_keys, ?) AND namespace <> 'entrez'"
-    keys = sorted({key for _, key in _matching_rows(engine, paths, where, [reference])})
+def _product_rows(engine, resources, reference):
+    """Catalogue product rows of a gene: the entities linked to it, except Entrez records."""
+    rows = engine._lookup(
+        "entity",
+        "entity_id",
+        _group_members(engine, resources, reference, "gene"),
+        extra="AND namespace <> 'entrez'",
+    )
+    return engine._with_entity_children(rows)
+
+
+def _occurrences(engine, sql, params, keys, limit, offset):
+    """A page of entity evidence rows as {entityPk, occurrence}, by resource and position."""
+    rows = engine._fetch_dicts(
+        f"SELECT * FROM ({sql}) ORDER BY resource, entity_id, ordinal LIMIT ? OFFSET ?",
+        [*params, limit + 1, offset],
+    )
+    if keys is None:
+        keys = {
+            (r["resource"], r["entity_id"]): r["entity_key"]
+            for r in engine._lookup(
+                "entity", "entity_id", [(r["resource"], r["entity_id"]) for r in rows],
+                "entity_id, entity_key",
+            )
+        }  # fmt: skip
+    result = []
+    for row in rows:
+        entity = keys[(row.pop("resource"), row.pop("entity_id"))]
+        row.pop("ordinal")
+        result.append({"entityPk": entity, "occurrence": row})
+    return result
+
+
+def _entity_evidence(engine, resources, pairs, isoform_identifier, limit, offset):
+    """Evidence items of the given entity rows, optionally of one isoform."""
+    keys = {
+        (r["resource"], r["entity_id"]): r["entity_key"]
+        for r in engine._lookup("entity", "entity_id", pairs, "entity_id, entity_key")
+    }
     if not keys:
         return []
-    sources = entity_rows_paths(engine.data_root, paths)
-    fields = "* EXCLUDE (evidence)" if "evidence" in columns(sources) else "*"
-    return engine._fetch_dicts(
-        f"SELECT {fields} FROM {read(sources)} WHERE entity_key IN ({','.join('?' for _ in keys)}) "
-        f"AND {where}",
-        [*keys, reference],
-    )
-
-
-def _entity_evidence(engine, paths, selector, isoform_identifier, limit, offset):
-    """Evidence items of the rows whose ``column`` equals ``value``, from entity_evidence."""
-    column, value = selector
-    pairs = _matching_rows(engine, paths, f"{column} = ?", [value])
-    if not pairs:
-        return []
-    rows, params = evidence_rows(engine, paths, sorted({key for _, key in pairs}))
-    if rows is None:
-        return []
-    predicates, values = ["TRUE"], []
+    condition, values = "TRUE", []
     if isoform_identifier:
-        predicates, values = [_ISOFORM], [isoform_identifier]
-    return engine._fetch_dicts(
-        f"""SELECT r.entity_key AS entityPk, ev AS occurrence
-        FROM (SELECT *, item AS ev FROM {rows}) r
-        JOIN (SELECT unnest(?::VARCHAR[]) AS f, unnest(?::VARCHAR[]) AS k) p
-          ON r.filename = p.f AND r.entity_key = p.k
-        WHERE {" AND ".join(predicates)}
-        ORDER BY r.filename, r.entity_key, r.evidence_index LIMIT ? OFFSET ?""",
-        [*params, [f for f, _ in pairs], [k for _, k in pairs], *values, limit + 1, offset],
-    )
+        condition, values = _ISOFORM, [isoform_identifier]
+    sql = f"""SELECT * FROM {engine._table("entity_evidence", resources)}
+        WHERE (resource, entity_id) IN (SELECT unnest(?::VARCHAR[]), unnest(?::INTEGER[]))
+        AND {condition}"""
+    params = [[r for r, _ in keys], [i for _, i in keys], *values]
+    return _occurrences(engine, sql, params, keys, limit, offset)
 
 
-def _product_evidence(engine, paths, product_kind, entity_id, isoform_identifier, limit, offset):
+def _product_evidence(engine, resources, product_kind, entity_id, isoform_identifier, limit, offset):
     # An asserted native product can be named by observations on a gene row
     # without having any catalogue gene links: every row's evidence is read.
-    field = product_kind + "_entity_key"
-    predicates = [f"json_extract_string(to_json(ev), '$.molecular_form.{field}') = ?"]
+    conditions = [f"molecular_form.{product_kind}_entity_key = ?"]
     values = [entity_id]
     if isoform_identifier:
-        predicates.append(_ISOFORM)
+        conditions.append(_ISOFORM)
         values.append(isoform_identifier)
-    return engine._fetch_dicts(
-        f"SELECT entity_key AS entityPk, ev AS occurrence FROM {read(paths, filename=True, file_row_number=True)}, UNNEST(evidence) WITH ORDINALITY AS occurrences(ev, occurrence_index) WHERE {' AND '.join(predicates)} ORDER BY filename, file_row_number, occurrence_index LIMIT ? OFFSET ?",
-        [*values, limit + 1, offset],
-    )
+    sql = f"""SELECT * FROM {engine._table("entity_evidence", resources)}
+        WHERE {" AND ".join(conditions)}"""
+    return _occurrences(engine, sql, values, None, limit, offset)
 
 
 def _product_kind(summary):
@@ -114,11 +120,10 @@ def _referenced_products(engine, relations, standalone, known_keys, resources):
                     break
             if full:
                 break
-    return (
-        engine.get_entities_by_pks(list(keys), resources, slim=True).get("entities") or []
-        if keys
-        else []
-    )
+    if not keys:
+        return []
+    rows = engine._fetch_entities_by_keys(list(keys), resources, slim=True)
+    return [engine._to_entity_summary(row) for row in rows]
 
 
 def context(
@@ -154,16 +159,7 @@ def context(
     if isoform_identifier:
         filters["isoform_identifiers"] = [isoform_identifier]
     page = engine.search_relations(filters, resources, limit, offset, include_details=True)
-    by_pk = engine._endpoint_entities_by_pk(page["rows"], resources)
-    relations = [
-        {
-            "relation": engine._to_entity_relation(row),
-            "subjectEntity": engine._hydrated_endpoint(row, "subject", by_pk),
-            "objectEntity": engine._hydrated_endpoint(row, "object", by_pk),
-            "evidence": row.get("evidence") or [],
-        }
-        for row in page["rows"]
-    ]
+    relations = engine._relation_items(page["rows"], evidence=lambda row: row["evidence"])
     forms = {}
     for row in page["rows"]:
         for evidence in row.get("evidence") or []:
@@ -188,46 +184,42 @@ def context(
                     continue
                 if form:
                     forms.setdefault(json.dumps(form, sort_keys=True), form)
-    products, standalone = [], []
-    standalone_more = False
-    paths = engine._resolve_entity_paths(resources)
-    if paths:
-        if reference:
-            products = [
-                engine._to_entity_summary(r)
-                for r in engine._merge_duplicate_entity_rows(
-                    _product_rows(engine, paths, reference)
-                )
+    products = []
+    if reference:
+        products = [
+            engine._to_entity_summary(r)
+            for r in engine._merge_by_key(_product_rows(engine, resources, reference))
+        ]
+    # Standalone evidence can predate stored references; native typed-key
+    # selection still applies, and product view keeps its exact form filter.
+    if is_product:
+        standalone = _product_evidence(
+            engine, resources, product_kind, entity_id, isoform_identifier, limit, offset
+        )
+    else:
+        pairs = (
+            _group_members(engine, resources, reference, "reference")
+            if gene_reference
+            else [
+                (r["resource"], r["entity_id"])
+                for r in engine._entity_rows("entity_key = ?", [entity_id], resources, nested=False)
             ]
-        # Standalone evidence can predate stored references; native typed-key
-        # selection still applies, and product view keeps its exact form filter.
-        if "evidence" in columns(paths):
-            if is_product:
-                standalone = _product_evidence(
-                    engine, paths, product_kind, entity_id, isoform_identifier, limit, offset
-                )
-            else:
-                standalone = _entity_evidence(
-                    engine,
-                    paths,
-                    ("reference_entity_key", reference)
-                    if gene_reference
-                    else ("entity_key", entity_id),
-                    isoform_identifier,
-                    limit,
-                    offset,
-                )
-            standalone_more = len(standalone) > limit
-            standalone = standalone[:limit]
-            for record in standalone:
-                form = record["occurrence"].get("molecular_form")
-                if form:
-                    forms.setdefault(json.dumps(form, sort_keys=True), form)
+        )
+        standalone = _entity_evidence(
+            engine, resources, pairs, isoform_identifier, limit, offset
+        )
+    standalone_more = len(standalone) > limit
+    standalone = standalone[:limit]
+    for record in standalone:
+        form = record["occurrence"].get("molecular_form")
+        if form:
+            forms.setdefault(json.dumps(form, sort_keys=True), form)
     referenced_products = _referenced_products(
         engine,
         relations,
         standalone,
-        set(by_pk) | {product["entityPk"] for product in products},
+        {r[side]["entityPk"] for r in relations for side in ("subjectEntity", "objectEntity")}
+        | {product["entityPk"] for product in products},
         resources,
     )
     return {

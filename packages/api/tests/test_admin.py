@@ -229,8 +229,8 @@ class TestAdminAPI(unittest.TestCase):
     def test_status_includes_resource_resolution_stats(self):
         version_dir = self.data_root / "resources" / "uniprot" / "v1"
         version_dir.mkdir(parents=True)
-        pq.write_table(pa.table({"entity_id": [1]}), version_dir / "entities.parquet")
-        pq.write_table(pa.table({"relation_id": [1]}), version_dir / "relations.parquet")
+        pq.write_table(pa.table({"entity_id": [1]}), version_dir / "entity.parquet")
+        pq.write_table(pa.table({"relation_id": [1]}), version_dir / "relation.parquet")
         pq.write_table(pa.table({"payload_id": [1]}), version_dir / "evidence_payloads.parquet")
         (version_dir / "resolution_stats.json").write_text(
             json.dumps(

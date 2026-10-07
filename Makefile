@@ -1,4 +1,4 @@
-.PHONY: help setup setup-python setup-web native-reference test test-pypath test-postgres test-subsets test-api check check-web build sample hubs reference publish-release serving-indexes api web dev load-postgres finish-postgres build-subsets serving-build serving-up serving-status serving-logs serving-stop worker-up docs
+.PHONY: help setup setup-python setup-web native-reference test test-pypath test-postgres test-subsets test-api check check-web build sample hubs reference publish-release api web dev load-postgres finish-postgres build-subsets serving-build serving-up serving-status serving-logs serving-stop worker-up docs
 
 export PKG_INFRA_CONFIG ?= $(CURDIR)/config/pkg_infra_quiet.yaml
 SOURCE ?= signor
@@ -21,7 +21,7 @@ COMPOSE_ENV ?=
 COMPOSE = docker compose $(if $(COMPOSE_ENV),--env-file "$(COMPOSE_ENV)") $(COMPOSE_FILES)
 
 help:
-	@echo 'setup | native-reference | sample | build | hubs | reference | publish-release | serving-indexes'
+	@echo 'setup | native-reference | sample | build | hubs | reference | publish-release'
 	@echo 'dev | api | web | serving-build | serving-up | serving-status | serving-logs | serving-stop'
 	@echo 'load-postgres | finish-postgres | build-subsets | test | check | check-web | docs'
 	@echo 'See README.md for variables and deploy/README.md for container deployment.'
@@ -85,8 +85,6 @@ reference: native-reference
 publish-release:
 	@test -n "$(RELEASE_MANIFEST)" || (echo 'Set RELEASE_MANIFEST to an explicit pinned JSON file'; exit 2)
 	uv run --frozen --package omnipath-api python -m omnipath_api.publish_release "$(RELEASE_MANIFEST)" --data-root "$(DATA_ROOT)"
-serving-indexes:
-	uv run --frozen --package omnipath-api python -m omnipath_api.serving_index --data-root "$(DATA_ROOT)" $(INDEX_ARGS)
 
 api:
 	uv run --frozen --package omnipath-api omnipath-api --host 127.0.0.1 --port $(API_PORT) --data-root "$(DATA_ROOT)"

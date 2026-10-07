@@ -29,15 +29,10 @@ class ErrorResponse(APIModel):
 
 
 class EntitySearchCursor(APIModel):
-    relationCount: int = 0
-    entityPk: str
-    entityType: str = ""
-    phase: Literal["prefix", "contains", "nested"]
-    matchRank: int
-    sortLabel: str
-    namespace: str
-    identifier: str
-    taxon: str = ""
+    """Where a search continues: its match phase and the entities already returned."""
+
+    phase: Literal["all", "key", "prefix", "contains"]
+    offset: int = Field(ge=0)
     queryKey: str
 
 

@@ -1,9 +1,7 @@
-"""Canonical PyArrow schemas defining the contract for OmniPath Parquet serving files.
+"""Canonical PyArrow schemas of the OmniPath Parquet tables.
 
-The serving contract consists of three nested Parquet tables per resource version:
-- entities.parquet: ENTITY_SCHEMA
-- relations.parquet: RELATION_SCHEMA
-- evidence_payloads.parquet: PAYLOAD_SCHEMA
+Each resource version publishes the normalized tables in ``PUBLISHED_TABLES`` and
+serves lookups from the ``SERVING_TABLES``; see the section below.
 """
 
 from __future__ import annotations

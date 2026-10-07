@@ -48,19 +48,15 @@ class StatsQueries:
         ]
 
     def get_stats_entity_types(self) -> list[dict[str, Any]]:
-        paths = self._resolve_entity_paths()
-        if not paths:
+        if not self._selected_resource_infos():
             return []
-        read_expr = self._read_expr(paths)
-        rows = self._db.execute(entity_types_query(read_expr)).fetchall()
+        rows = self._db.execute(entity_types_query(self._table("entity"))).fetchall()
         return [{"entityType": row[0], "count": int(row[1])} for row in rows if row[0]]
 
     def get_stats_interaction_types(self) -> list[dict[str, Any]]:
-        paths = self._resolve_relation_paths()
-        if not paths:
+        if not self._selected_resource_infos():
             return []
-        read_expr = self._read_expr(paths)
-        rows = self._db.execute(interaction_types_query(read_expr)).fetchall()
+        rows = self._db.execute(interaction_types_query(self._table("relation"))).fetchall()
         return [
             {"interactionType": row[0], "interactionClass": row[1], "count": int(row[2])}
             for row in rows

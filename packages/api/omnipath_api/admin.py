@@ -421,8 +421,8 @@ class AdminService:
             for ver_dir in sorted(res_dir.iterdir()):
                 if not ver_dir.is_dir():
                     continue
-                entities = _parquet_info(ver_dir / "entities.parquet", "entities")
-                relations = _parquet_info(ver_dir / "relations.parquet", "relations")
+                entities = _parquet_info(ver_dir / "entity.parquet", "entities")
+                relations = _parquet_info(ver_dir / "relation.parquet", "relations")
                 payloads = _parquet_info(ver_dir / "evidence_payloads.parquet", "evidence_payloads")
                 if not entities["exists"] and not relations["exists"]:
                     continue

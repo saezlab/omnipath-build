@@ -1,9 +1,6 @@
-import pyarrow as pa
-import pyarrow.parquet as pq
 from fastapi.testclient import TestClient
 from omnipath_api.server import create_app
 from omnipath_api.engine import ParquetServingEngine
-from omnipath_core.schema import RELATION_SCHEMA, ENTITY_SCHEMA
 from omnipath_core.interaction_profiles import (
     BINDING_QUALIFIERS,
     TRANSPORT_QUALIFIERS,
@@ -11,6 +8,7 @@ from omnipath_core.interaction_profiles import (
     relation_qualifiers,
 )
 from omnipath_core import relation_key
+from table_fixture import rewrite_resource
 
 
 def test_qualified_labels_survive_parquet_list_and_details(tmp_path):
@@ -28,9 +26,7 @@ def test_qualified_labels_survive_parquet_list_and_details(tmp_path):
         )
         for k, t in [("protein", "protein"), ("chemical", "chemical_entity")]
     ]
-    pq.write_table(
-        pa.Table.from_pylist(entities, schema=ENTITY_SCHEMA), folder / "entities.parquet"
-    )
+    rewrite_resource(folder / "entity.parquet", entities=entities)
     rows = []
     for key, predicate, qualifiers in [
         ("binding", "interacts_with", BINDING_QUALIFIERS),
@@ -51,7 +47,7 @@ def test_qualified_labels_survive_parquet_list_and_details(tmp_path):
                 annotations=[dict(term=t, value=v, scope="relation") for t, v in qualifiers],
             )
         )
-    pq.write_table(pa.Table.from_pylist(rows, schema=RELATION_SCHEMA), folder / "relations.parquet")
+    rewrite_resource(folder / "relation.parquet", relations=rows)
     engine = ParquetServingEngine(data_root=tmp_path)
     client = TestClient(create_app(engine=engine))
     response = client.post("/relations/search", json={})

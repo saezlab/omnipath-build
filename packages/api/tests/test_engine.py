@@ -5,24 +5,25 @@ import time
 import unittest
 from pathlib import Path
 
-import pyarrow as pa
-import pyarrow.parquet as pq
 from omnipath_api.engine import ParquetServingEngine
 
-from serving_fixtures import write_dataset
+from serving_fixtures import key, write_dataset
+from table_fixture import write_resource
 
 
 def _write_resource(root: Path, resource: str, version: str, *, n_relations: int = 1) -> Path:
     target = root / "resources" / resource / version
-    target.mkdir(parents=True, exist_ok=True)
-    pq.write_table(
-        pa.table({"identifier": ["P1"], "label": ["Prot"]}),
-        target / "entities.parquet",
-    )
-    pq.write_table(
-        pa.table({"predicate": ["associated_with"] * n_relations}),
-        target / "relations.parquet",
-    )
+    entity = dict(entity_key=key("P1"), identifier="P1", label="Prot", namespace="uniprot")
+    relations = [
+        dict(
+            relation_key=key(f"r{i}"),
+            subject_entity_key=entity["entity_key"],
+            object_entity_key=entity["entity_key"],
+            predicate="associated_with",
+        )
+        for i in range(n_relations)
+    ]
+    write_resource(target, [entity], relations)
     (target / "resolution_stats.json").write_text("{}\n", encoding="utf-8")
     return target
 
@@ -41,8 +42,8 @@ class TestParquetServingEngine(unittest.TestCase):
         self.assertGreater(len(resources), 0, "Expected at least one resource indexed")
 
     def test_02_search_entities(self):
-        result = self.engine.search_entities(query="TP53", limit=10)
-        self.assertIn("rows", result)
+        result = self.engine.search_entities_api(query="TP53", limit=10)
+        self.assertEqual(result["entities"][0]["label"], "TP53")
         self.assertIn("elapsed_ms", result)
 
     def test_03_search_relations(self):
@@ -81,9 +82,9 @@ class TestParquetServingEngine(unittest.TestCase):
         self.assertGreater(len(data), 0)
 
     def test_07_svelte_entity_search(self):
-        sample = self.engine.search_entities(limit=1)
-        self.assertTrue(sample.get("rows"))
-        test_query = sample["rows"][0]["label"]
+        sample = self.engine.search_entities_api(limit=1)
+        self.assertTrue(sample["entities"])
+        test_query = sample["entities"][0]["label"]
         result = self.engine.search_entities_api(query=test_query, limit=10)
         self.assertIn("entities", result)
         self.assertGreater(len(result["entities"]), 0)
@@ -102,9 +103,9 @@ class TestParquetServingEngine(unittest.TestCase):
         self.assertIn("entityPk", result["rows"][0]["subjectEntity"])
 
     def test_entity_search_is_scalar_first(self):
-        sample = self.engine.search_entities(limit=1)
-        self.assertTrue(sample.get("rows"))
-        query = str(sample["rows"][0]["label"] or sample["rows"][0]["identifier"])
+        sample = self.engine.search_entities_api(limit=1)
+        self.assertTrue(sample["entities"])
+        query = sample["entities"][0]["label"]
         result = self.engine.search_entities_api(query=query, limit=5)
         self.assertTrue(result["entities"])
         first = result["entities"][0]
@@ -134,9 +135,6 @@ class TestParquetServingEngine(unittest.TestCase):
         all_results = self.engine.search_entities_api(query="ADA", limit=5)
         self.assertTrue(all_results["entities"])
         for resource in ("signor", "uniprot", "chebi"):
-            paths = self.engine._resolve_entity_paths([resource])
-            if not paths:
-                continue
             scoped = self.engine.search_entities_api(
                 query="ADA", limit=5, filters={"sources": [resource]}
             )
@@ -189,13 +187,13 @@ class TestParquetServingEngine(unittest.TestCase):
         self.assertIn("annotations", evidence)
 
     def test_11_ontology_hierarchy(self):
-        rows = self.engine.search_entities(query="KW-0001", limit=100)["rows"]
-        matching = [row for row in rows if row.get("identifier") == "KW-0001"]
+        rows = self.engine.search_entities_api(query="KW-0001", limit=100)["entities"]
+        matching = [row for row in rows if row["canonicalIdentifier"] == "KW-0001"]
         self.assertTrue(matching)
-        details = self.engine.get_entity_details(matching[0]["entity_key"])
+        details = self.engine.get_entity_details(matching[0]["entityPk"])
         self.assertIsNotNone(details)
         ent = details["entity"]
-        self.assertEqual(ent["entityPk"], matching[0]["entity_key"])
+        self.assertEqual(ent["entityPk"], matching[0]["entityPk"])
         hierarchy = ent.get("ontologyHierarchy")
         self.assertIsNotNone(hierarchy)
         self.assertEqual(hierarchy["termId"], "KW-0001")
@@ -211,16 +209,14 @@ class TestInventoryHotReload(unittest.TestCase):
             _write_resource(root, "uniprot", "v1", n_relations=1)
             engine = ParquetServingEngine(data_root=root)
             self.assertEqual(engine._latest_by_resource["uniprot"]["version"], "v1")
-            self.assertEqual(
-                engine._resolve_relation_paths(["uniprot"])[0].endswith("/v1/relations.parquet"),
-                True,
-            )
+            (path,) = engine._table_paths("relation", ["uniprot"]).values()
+            self.assertTrue(path.endswith("/v1/relation.parquet"))
 
             time.sleep(0.05)
             _write_resource(root, "uniprot", "v2", n_relations=3)
             infos = engine._selected_resource_infos(["uniprot"])
             self.assertEqual(infos[0]["version"], "v2")
-            self.assertTrue(str(infos[0]["relations_path"]).endswith("/v2/relations.parquet"))
+            self.assertTrue(str(infos[0]["tables"]["relation"]).endswith("/v2/relation.parquet"))
             listed = {item["key"]: item["relations_count"] for item in engine.list_resources()}
             self.assertEqual(listed["uniprot/v2"], 3)
 
@@ -241,14 +237,11 @@ class TestInventoryHotReload(unittest.TestCase):
     def test_picks_up_in_place_overwrite(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            target = _write_resource(root, "uniprot", "v1", n_relations=1)
+            _write_resource(root, "uniprot", "v1", n_relations=1)
             engine = ParquetServingEngine(data_root=root)
             self.assertEqual(engine.list_resources()[0]["relations_count"], 1)
             time.sleep(0.05)
-            pq.write_table(
-                pa.table({"predicate": ["associated_with"] * 4}),
-                target / "relations.parquet",
-            )
+            _write_resource(root, "uniprot", "v1", n_relations=4)
             self.assertEqual(engine.list_resources()[0]["relations_count"], 4)
 
 

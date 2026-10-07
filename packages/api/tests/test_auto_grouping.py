@@ -1,17 +1,14 @@
-"""Automatic grouping over actual raw and scalar-projected mixed Parquet data."""
+"""Automatic grouping over mixed resource tables."""
 
 import json
 
-import pyarrow as pa
-import pyarrow.parquet as pq
 import pytest
 from fastapi.testclient import TestClient
 
 from omnipath_api.engine import ParquetServingEngine
 from omnipath_api.server import create_app
-from omnipath_api.serving_index import build_indexes
 from omnipath_core.keys import entity_key
-from omnipath_core.schema import ENTITY_SCHEMA, RELATION_SCHEMA
+from table_fixture import write_resource
 
 CONNECTIVITY = "AAAAAAAAAAAAAA"
 INCHI_A = CONNECTIVITY + "-BBBBBBBBBB-C"
@@ -38,8 +35,8 @@ def record(kind, ns, identifier, *, ref=None, label=None, aliases=(), taxon="960
     )
 
 
-@pytest.fixture(params=[False, True], ids=["raw", "projected"])
-def mixed_engine(tmp_path, request):
+@pytest.fixture
+def mixed_engine(tmp_path):
     rows = {
         "gene": record("gene", "entrez", "1", ref="entrez:1", label="Needle gene"),
         "protein": record("protein", "uniprot", "P00001", ref="entrez:1", label="Gene product"),
@@ -49,38 +46,33 @@ def mixed_engine(tmp_path, request):
         "conflicting_gene": record("protein", "uniprot", "P00003", ref="entrez:1"),
         "missing_gene": record("protein", "uniprot", "P00004", ref=None),
         "native_gene": record("protein", "uniprot", "P00005", ref="uniprot:P00005", label="Native"),
-        # Even an accidental gene reference must never attach a chemical to a gene group.
+        # Chemicals group by the connectivity of their InChIKey reference.
         "chemical_a": record(
-            "small_molecule", "inchikey", INCHI_A, ref="entrez:1", label="Needle chemical"
+            "small_molecule", "inchikey", INCHI_A, ref="inchikey:" + INCHI_A, label="Needle chemical"
         ),
-        "chemical_b": record("small_molecule", "inchikey", INCHI_B, label="Stereo B"),
+        "chemical_b": record(
+            "small_molecule", "inchikey", INCHI_B, ref="inchikey:" + INCHI_B, label="Stereo B"
+        ),
         "chemical_c": record(
             "small_molecule",
             "pubchem",
             "1",
+            ref="inchikey:" + INCHI_A,
             label="Alias chemical",
-            aliases=[("inchikey", INCHI_A), ("name", "Alanine")],
+            aliases=[("name", "Alanine")],
         ),
+        # Even an accidental gene reference must never attach a chemical to a gene group.
+        "chemical_gene_ref": record("small_molecule", "chebi", "1", ref="entrez:1"),
         "conflicting_chemical": record(
-            "small_molecule", "pubchem", "2", aliases=[("inchikey", INCHI_A)]
-        ),
-        "ambiguous_chemical": record(
-            "small_molecule",
-            "pubchem",
-            "3",
-            aliases=[("inchikey", INCHI_A), ("inchikey", INCHI_OTHER)],
+            "small_molecule", "pubchem", "2", ref="inchikey:" + INCHI_A
         ),
         "missing_chemical": record("small_molecule", "pubchem", "4"),
-        "invalid_chemical": record(
-            "small_molecule", "inchikey", "invalid", aliases=[("inchikey", "bad-key")]
-        ),
-        "protein_with_inchikey": record("protein", "inchikey", INCHI_A),
+        "protein_with_inchikey": record("protein", "inchikey", INCHI_A, ref="inchikey:" + INCHI_A),
     }
     copies = [
         dict(rows["conflicting_gene"], reference_entity_key="entrez:2"),
         dict(rows["missing_gene"], reference_entity_key="entrez:1"),
-        dict(rows["conflicting_chemical"], identifiers=[dict(ns="inchikey", id=INCHI_OTHER)]),
-        dict(rows["ambiguous_chemical"], identifiers=[dict(ns="inchikey", id=INCHI_A)]),
+        dict(rows["conflicting_chemical"], reference_entity_key="inchikey:" + INCHI_OTHER),
         dict(
             rows["chemical_c"],
             annotations=[
@@ -94,11 +86,6 @@ def mixed_engine(tmp_path, request):
         ("outside", "native_gene", "target"),
     ]
     for source, entities in [("a", list(rows.values())), ("b", copies)]:
-        directory = tmp_path / "resources" / source / "1"
-        directory.mkdir(parents=True)
-        pq.write_table(
-            pa.Table.from_pylist(entities, schema=ENTITY_SCHEMA), directory / "entities.parquet"
-        )
         relation_rows = [
             dict(
                 relation_key=name,
@@ -112,19 +99,11 @@ def mixed_engine(tmp_path, request):
                 category="membership",
                 taxon="9606",
                 sources=[source],
-                annotations=[],
-                evidence=[],
-                evidence_count=0,
             )
             for name, subject, object_ in (relations if source == "a" else [])
         ]
-        pq.write_table(
-            pa.Table.from_pylist(relation_rows, schema=RELATION_SCHEMA),
-            directory / "relations.parquet",
-        )
+        write_resource(tmp_path / "resources" / source / "1", entities, relation_rows)
     engine = ParquetServingEngine(tmp_path)
-    if request.param:
-        build_indexes(engine, threads=2, min_free_disk=0)
     return engine, rows
 
 
@@ -140,7 +119,8 @@ def test_auto_combines_groups_and_preserves_all_singletons(mixed_engine):
     assert chemical["entity"]["groupStrategy"] == "chemical_connectivity"
     assert chemical["entity"]["canonicalIdentifierType"] == "connectivity"
     assert chemical["entity"]["entityType"] == "small_molecule"
-    assert chemical["entity"]["displayName"] == "Alanine"
+    # The preferred one of the members' resolver labels.
+    assert chemical["entity"]["displayName"] == "Stereo B"
     assert chemical["entity"]["entityAttributes"] is None
     assert gene["entity"]["groupStrategy"] == "gene_reference"
     assert gene["entity"]["memberEntityTypes"] == ["gene", "protein", "rna_product"]
@@ -175,7 +155,7 @@ def test_auto_combines_groups_and_preserves_all_singletons(mixed_engine):
     concrete_gene = next(g for g in gene_only if g["group_key"] == "gene:entrez:1")
     assert concrete_gene["member_count"] == 3
     malformed_chemical = next(
-        g for g in gene_only if g["entity"]["entityPk"] == records["chemical_a"]["entity_key"]
+        g for g in gene_only if g["entity"]["entityPk"] == records["chemical_gene_ref"]["entity_key"]
     )
     assert not malformed_chemical["is_group"]
 
@@ -312,20 +292,6 @@ def test_auto_api_hydration_concrete_strategies_and_relationships(mixed_engine):
         assert not singleton["is_group"]
         assert singleton["entity"]["entityPk"] == records["native_gene"]["entity_key"]
         assert len(singleton["entity"]["entityAttributes"]) == 1
-
-
-def test_auto_groups_with_one_resource_unindexed(mixed_engine):
-    from omnipath_api.serving_index import index_path
-
-    engine, _ = mixed_engine
-    args = dict(strategy="auto", include_member_keys=True, limit=100)
-    expected = engine.search_entity_groups(**args)["groups"]
-    build_indexes(engine, threads=2, min_free_disk=0)
-    index_path(engine.data_root, "entities", [engine._resolve_entity_paths()[0]]).unlink(
-        missing_ok=True
-    )
-    engine._detail_cache.clear()
-    assert engine.search_entity_groups(**args)["groups"] == expected
 
 
 def test_warming_fills_the_cache_the_explorer_reads(mixed_engine):

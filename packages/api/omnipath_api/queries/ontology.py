@@ -8,8 +8,6 @@ from typing import Any
 from omnipath_api.store.connection import sql_literal
 
 
-from omnipath_api.serving_index import projected_paths
-
 
 logger = logging.getLogger(__name__)
 
@@ -21,12 +19,7 @@ class OntologyQueries:
         """Normalize only hierarchical predicates into child-to-parent edges."""
         from omnipath_core.biolink import hierarchy_direction
 
-        # Old files have no declaration of statement context. Do not infer one
-        # from resource names, entity types, or predicates; rebuild those files.
-        columns = {
-            row["column_name"] for row in self._fetch_dicts(f"DESCRIBE SELECT * FROM {rel_read}")
-        }
-        context = "statement_kind = 'ontology'" if "statement_kind" in columns else "FALSE"
+        context = "statement_kind = 'ontology'"
         cases = []
         allowed = []
         for row in self._fetch_dicts(f"SELECT DISTINCT predicate FROM {rel_read} WHERE {context}"):
@@ -87,13 +80,11 @@ class OntologyQueries:
         if not term_ids:
             return {"root": None}
         seed_id = str(term_ids[0]).strip()
-        ent_paths = self._resolve_entity_paths(resources)
-        rel_paths = self._resolve_relation_paths(resources)
-        if not ent_paths or not rel_paths:
+        if not self._selected_resource_infos(resources):
             return {"root": {"id": seed_id, "name": seed_id, "children": [], "distance": 0}}
 
-        ent_read = self._read_expr(ent_paths)
-        rel_read = self._hierarchy_read(self._read_expr(rel_paths))
+        ent_read = self._table("entity", resources)
+        rel_read = self._hierarchy_read(self._table("relation", resources))
 
         seed_ent = self._ontology_seed(ent_read, seed_id, ontology_id)
         if seed_ent is None:
@@ -241,16 +232,14 @@ class OntologyQueries:
         if not 1 <= limit <= 1000 or offset < 0:
             raise ValueError("Invalid ontology child page")
         empty = {"termId": term_id, "children": [], "total": 0, "nextCursor": None}
-        ent_paths = self._resolve_entity_paths(resources)
-        rel_paths = self._resolve_relation_paths(resources)
-        if not ent_paths or not rel_paths:
+        if not self._selected_resource_infos(resources):
             return empty
-        ent_read = self._read_expr(ent_paths)
+        ent_read = self._table("entity", resources)
         seed = self._ontology_seed(ent_read, term_id, ontology_id)
         if seed is None:
             return empty
         rel_read = self._scoped_hierarchy(
-            ent_read, self._hierarchy_read(self._read_expr(rel_paths)), seed["namespace"]
+            ent_read, self._hierarchy_read(self._table("relation", resources)), seed["namespace"]
         )
         children_sql = f"""SELECT e.entity_key, min(e.identifier) AS identifier, min(e.label) AS label, min(e.namespace) AS namespace
             FROM {ent_read} e WHERE e.entity_key IN
@@ -282,8 +271,7 @@ class OntologyQueries:
         }
 
     def _compute_ontology_items(self, payload, resources=None):
-        entity_paths = self._resolve_entity_paths(resources)
-        if not entity_paths:
+        if not self._selected_resource_infos(resources):
             return []
         scope = payload.get("selectionScope")
         scoped = (
@@ -299,23 +287,16 @@ class OntologyQueries:
             terms = resolved["ontologyTermIds"]
         if scoped and not keys and not terms:
             return []
-        entities = self._read_expr(projected_paths(self.data_root, "entities", entity_paths))
-        relation_paths = self._resolve_relation_paths(resources)
-        params = []
-        edges = "SELECT NULL::VARCHAR term_key, NULL::VARCHAR entity_key, NULL::VARCHAR relation_key WHERE FALSE"
-        if relation_paths:
-            relations = self._read_expr(
-                projected_paths(self.data_root, "relations", relation_paths)
-            )
-            # Each endpoint can carry the ontology term; count unique neighbours and relations.
-            predicate = "WHERE entity_key IN (SELECT unnest(?::VARCHAR[]))" if scoped else ""
-            edges = f"""SELECT * FROM (
-                SELECT object_entity_key term_key, subject_entity_key entity_key, relation_key FROM {relations}
-                UNION ALL
-                SELECT subject_entity_key term_key, object_entity_key entity_key, relation_key FROM {relations}
-            ) {predicate}"""
-            if scoped:
-                params.append(keys)
+        entities = self._table("entity", resources)
+        relations = self._table("relation", resources)
+        # Each endpoint can carry the ontology term; count unique neighbours and relations.
+        predicate = "WHERE entity_key IN (SELECT unnest(?::VARCHAR[]))" if scoped else ""
+        edges = f"""SELECT * FROM (
+            SELECT object_entity_key term_key, subject_entity_key entity_key, relation_key FROM {relations}
+            UNION ALL
+            SELECT subject_entity_key term_key, object_entity_key entity_key, relation_key FROM {relations}
+        ) {predicate}"""
+        params = [keys] if scoped else []
         where = ""
         if scoped:
             where = "WHERE a.term_key IS NOT NULL OR t.entity_key IN (SELECT unnest(?::VARCHAR[])) OR t.identifier IN (SELECT unnest(?::VARCHAR[]))"
@@ -392,19 +373,16 @@ class OntologyQueries:
         terms_map: dict[str, Any] = {}
         if not term_ids:
             return {"terms": {}}
-        ent_paths = self._resolve_entity_paths(resources)
-        if not ent_paths:
+        if not self._selected_resource_infos(resources):
             return {"terms": {t: None for t in term_ids}}
-        ent_read = self._read_expr(ent_paths)
         placeholders = ", ".join("?" for _ in term_ids)
         rows = self._fetch_dicts(
-            f"""
-            SELECT entity_key, label, identifier, namespace, annotations
-            FROM {ent_read}
-            WHERE identifier IN ({placeholders}) OR entity_key IN ({placeholders})
-            """,
+            f"""SELECT resource, entity_id, entity_key, label, identifier, namespace
+            FROM {self._table("entity", resources)}
+            WHERE identifier IN ({placeholders}) OR entity_key IN ({placeholders})""",
             term_ids + term_ids,
         )
+        self._children("entity_annotation", rows, "annotations")
         for r in rows:
             ident = str(r.get("identifier") or "")
             label = str(r.get("label") or ident)

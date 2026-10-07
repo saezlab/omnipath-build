@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import time
-from collections import defaultdict
 from typing import Any
 
 
@@ -14,62 +13,26 @@ from omnipath_core.biolink import (
     annotation_value,
 )
 
-from omnipath_api.serving_index import projected_paths
-from omnipath_api.molecular import (
-    columns,
-    read,
-    occurrences_expression,
-    form_match_sql,
-    has_form_filters,
-    matching_evidence,
-)
+from omnipath_api.molecular import form_match_sql, has_form_filters, matching_evidence
 from omnipath_api.models import normalize_filters
+from omnipath_api.store.connection import sql_literal
 
 
 from omnipath_api.queries.constants import RELATION_QUALIFIER_FILTERS
 
 logger = logging.getLogger(__name__)
 
+# Relation pages are ordered by these columns, then by resource and position.
+RELATION_ORDER = "category, predicate, subject_label, object_label, resource, relation_id"
+
 
 class RelationsQueries:
     """Relations queries over the engine storage and shaping contract."""
 
-    def _build_relation_where(
-        self,
-        filters: dict[str, Any] | None,
-        resolved_keys: list[str] | None = None,
-        resolved_scope_keys: list[str] | None = None,
-    ) -> tuple[str, list[Any]]:
-        filters = normalize_filters(filters)
-        where_clauses = ["1=1"]
+    def _relation_where(self, filters, *, qualifiers=RELATION_QUALIFIER_FILTERS):
+        """Conditions on the relation table's own columns, and their parameters."""
+        where_clauses = ["TRUE"]
         params: list[Any] = []
-        entity_tokens = filters["entity_ids"] + filters["entity_pks"]
-        scope_tokens = filters["scope_entity_ids"]
-
-        def endpoint_clause(keys: list[str], mode: str) -> None:
-            if not keys:
-                where_clauses.append("FALSE")
-                return
-            subject = "subject_entity_key IN (SELECT unnest(?::VARCHAR[]))"
-            obj = "object_entity_key IN (SELECT unnest(?::VARCHAR[]))"
-            if mode in {"source", "source_only"}:
-                where_clauses.append(subject)
-                params.append(keys)
-            elif mode in {"target", "target_only"}:
-                where_clauses.append(obj)
-                params.append(keys)
-            else:
-                where_clauses.append(f"({subject} {'AND' if mode == 'both' else 'OR'} {obj})")
-                params.extend([keys, keys])
-
-        if entity_tokens:
-            if resolved_keys is None:
-                raise ValueError("Entity filters must be resolved before SQL construction")
-            endpoint_clause(resolved_keys, filters["gene_mode"])
-        if scope_tokens:
-            if resolved_scope_keys is None:
-                raise ValueError("Scope filters must be resolved before SQL construction")
-            endpoint_clause(resolved_scope_keys, filters["scope_endpoint_mode"])
 
         categories = self._as_list(filters.get("categories") or filters.get("relation_categories"))
         if categories:
@@ -84,17 +47,11 @@ class RelationsQueries:
             where_clauses.append(f"predicate IN ({placeholders})")
             params.extend(norm_predicates)
 
-        for term in RELATION_QUALIFIER_FILTERS:
+        for term in qualifiers:
             values = self._as_list(filters.get(term))
             if values:
-                values = [annotation_value(term, value) for value in values]
-                placeholders = ", ".join("?" for _ in values)
-                where_clauses.append(
-                    "len(list_filter(annotations, a -> "
-                    f"a.term = ? AND a.scope = 'relation' "
-                    f"AND a.value IN ({placeholders}))) > 0"
-                )
-                params.extend([term, *values])
+                where_clauses.append(f"list_has_any({term}, ?::VARCHAR[])")
+                params.append([annotation_value(term, value) for value in values])
 
         if "is_directed" in filters and filters["is_directed"] is not None:
             where_clauses.append("is_directed = ?")
@@ -137,88 +94,91 @@ class RelationsQueries:
 
         sources = self._as_list(filters.get("sources"))
         if sources:
-            source_clauses = ["list_contains(COALESCE(sources, []::VARCHAR[]), ?)" for _ in sources]
-            where_clauses.append("(" + " OR ".join(source_clauses) + ")")
-            params.extend(str(s) for s in sources)
+            where_clauses.append("list_has_any(sources, ?::VARCHAR[])")
+            params.append([str(s) for s in sources])
 
         return " AND ".join(where_clauses), params
 
-    def _resolve_relation_where(self, filters, resources=None, *, split=False):
-        """WHERE clause and parameters. With ``split``, the molecular form condition comes
-        back separately as (match over ``ev``, values), so it can run on fewer rows."""
-        filters = normalize_filters(filters)
+    def _endpoint_candidates(self, filters, resources=None):
+        """{resource: relation ids} of relations matching the endpoint filters (entity
+        keys, scope keys and reference keys, each with its endpoint mode), from the
+        endpoint table; None without endpoint filters."""
+        endpoint = self._table("relation_endpoint", resources)
+        sets, params = [], []
+
+        def add(keys, kind, mode):
+            side, having = "TRUE", ""
+            if mode in {"source", "source_only"}:
+                side = "side = 'subject'"
+            elif mode in {"target", "target_only"}:
+                side = "side = 'object'"
+            elif mode == "both":
+                having = "HAVING bool_or(side = 'subject') AND bool_or(side = 'object')"
+            sets.append(
+                f"""SELECT resource, relation_id FROM {endpoint}
+                WHERE key IN (SELECT unnest(?::VARCHAR[])) AND key_kind = ? AND {side}
+                GROUP BY resource, relation_id {having}"""
+            )
+            params.extend([keys, kind])
+
         tokens = filters["entity_ids"] + filters["entity_pks"]
-        scope = filters["scope_entity_ids"]
-        where, params = self._build_relation_where(
-            filters,
-            self.resolve_entity_keys(tokens, resources) if tokens else None,
-            self.resolve_entity_keys(scope, resources) if scope else None,
-        )
+        if tokens:
+            add(self.resolve_entity_keys(tokens, resources), "entity", filters["gene_mode"])
+        if filters["scope_entity_ids"]:
+            keys = self.resolve_entity_keys(filters["scope_entity_ids"], resources)
+            add(keys, "entity", filters["scope_endpoint_mode"])
         if filters["reference_entity_keys"]:
-            where += " AND (subject_reference_entity_key IN (SELECT unnest(?::VARCHAR[])) OR object_reference_entity_key IN (SELECT unnest(?::VARCHAR[])))"
-            params.extend([filters["reference_entity_keys"], filters["reference_entity_keys"]])
-        form = form_match_sql(filters) if has_form_filters(filters) else None
-        if split:
-            return where, params, form
-        if form:
-            expr = occurrences_expression(columns(self._resolve_relation_paths(resources)))
-            where += f" AND len(list_filter({expr}, ev -> {form[0]})) > 0"
-            params.extend(form[1])
-        return where, params
-
-    # Above this many endpoint-matched relations, the form match stays one SQL scan.
-    _FORM_CANDIDATE_LIMIT = 20_000
-
-    def _form_page(self, page_read, where_sql, params, form, limit, offset):
-        """Page of relations matching a molecular form, among endpoint-matched candidates.
-
-        Reading nested occurrences decompresses that column for every row group a filter
-        touches; endpoint filters cannot skip row groups, but relation keys can (files are
-        sorted by them). So candidates come first, then each file's occurrences by key.
-        Returns rows with filename, file_row_number and matching_total, or None when the
-        candidates are too many for this path.
-        """
-        candidates = self._fetch_dicts(
-            f"""SELECT filename, file_row_number, relation_key, category, predicate,
-              subject_label, object_label FROM {page_read} WHERE {where_sql}
-            LIMIT {self._FORM_CANDIDATE_LIMIT + 1}""",
+            add(filters["reference_entity_keys"], "reference", "any")
+        if not sets:
+            return None
+        rows = self._fetch_dicts(
+            f"""SELECT resource, list(relation_id ORDER BY relation_id) AS ids
+            FROM ({" INTERSECT ".join(sets)}) GROUP BY resource""",
             params,
         )
-        if len(candidates) > self._FORM_CANDIDATE_LIMIT:
-            return None
-        by_file = defaultdict(list)
-        for item in candidates:
-            by_file[item["filename"]].append(item)
-        matched = []
-        for filename, items in by_file.items():
-            keys = sorted({item["relation_key"] for item in items})
-            expr = occurrences_expression(columns([filename]))
-            rows = {
-                r["file_row_number"]
-                for r in self._fetch_dicts(
-                    f"""SELECT file_row_number FROM {read([filename], file_row_number=True)}
-                    WHERE relation_key IN ({",".join("?" for _ in keys)})
-                    AND len(list_filter({expr}, ev -> {form[0]})) > 0""",
-                    [*keys, *form[1]],
+        return {row["resource"]: row["ids"] for row in rows}
+
+    def _relation_selection(self, filters, resources=None, *, qualifiers=RELATION_QUALIFIER_FILTERS):
+        """SQL selecting the relation rows (with ``resource``) that match ``filters``.
+
+        Endpoint filters select candidates from the endpoint table first, then read only
+        those relations (and their evidence, for molecular forms) per resource.
+        """
+        filters = normalize_filters(filters)
+        where, params = self._relation_where(filters, qualifiers=qualifiers)
+        form = form_match_sql(filters) if has_form_filters(filters) else None
+        candidates = self._endpoint_candidates(filters, resources)
+        if candidates is None:
+            sql = f"SELECT * FROM {self._table('relation', resources)} WHERE {where}"
+            if form:
+                sql += (
+                    " AND (resource, relation_id) IN (SELECT resource, relation_id FROM "
+                    f"{self._table('relation_evidence', resources)} WHERE {form[0]})"
                 )
-            }
-            matched.extend(item for item in items if item["file_row_number"] in rows)
-        # The SQL page's order: ascending, nulls last, ties by file and row.
-        matched.sort(
-            key=lambda item: (
-                *(
-                    (item[name] is None, item[name] or "")
-                    for name in ("category", "predicate", "subject_label", "object_label")
-                ),
-                item["filename"],
-                item["file_row_number"],
+                params += form[1]
+            return sql, params
+        parts, values = [], []
+        for info in self._selected_resource_infos(resources):
+            ids = candidates.get(info["key"])
+            if not ids:
+                continue
+            tables = info["tables"]
+            part = (
+                f"SELECT *, ?::VARCHAR AS resource FROM read_parquet({sql_literal(str(tables['relation']))}) "
+                f"WHERE relation_id IN (SELECT unnest(?::INTEGER[])) AND {where}"
             )
-        )
-        return [
-            dict(filename=item["filename"], file_row_number=item["file_row_number"],
-                 matching_total=len(matched))
-            for item in matched[offset : offset + limit]
-        ]  # fmt: skip
+            values += [info["key"], ids, *params]
+            if form:
+                part += (
+                    " AND relation_id IN (SELECT relation_id FROM "
+                    f"read_parquet({sql_literal(str(tables['relation_evidence']))}) "
+                    f"WHERE relation_id IN (SELECT unnest(?::INTEGER[])) AND {form[0]})"
+                )
+                values += [ids, *form[1]]
+            parts.append(part)
+        if not parts:
+            return f"SELECT * FROM {self._table('relation', resources)} WHERE FALSE", []
+        return " UNION ALL ".join(parts), values
 
     def search_relations(
         self,
@@ -228,121 +188,32 @@ class RelationsQueries:
         offset: int = 0,
         include_details: bool = False,
     ) -> dict[str, Any]:
-        """Search and extract filtered interaction networks without unneeded evidence payload overhead."""
+        """A page of matching relations; with details, their annotations and evidence."""
         t0 = time.perf_counter()
-        filters = filters or {}
-        paths = self._resolve_relation_paths(resources)
-        if not paths:
-            return {"rows": [], "total": 0, "elapsed_ms": 0.0, "files_scanned": 0}
-
-        scalar_paths = projected_paths(self.data_root, "relations", paths)
-        original_by_projection = dict(zip(scalar_paths, paths))
-        read_expr = self._read_expr(scalar_paths)
-
         filters = normalize_filters(filters)
-        entity_tokens = filters["entity_ids"] + filters["entity_pks"]
-        scope_tokens = filters["scope_entity_ids"]
-        where_sql, params, form = self._resolve_relation_where(filters, resources, split=True)
-
-        # Sort/count only lightweight rows, then read payload columns for the page's files.
-        page_read = read(
-            scalar_paths,
-            filename=True,
-            file_row_number=True,
+        selection, params = self._relation_selection(filters, resources)
+        rows = self._fetch_dicts(
+            f"SELECT * FROM ({selection}) ORDER BY {RELATION_ORDER} LIMIT ? OFFSET ?",
+            [*params, int(limit), int(offset)],
         )
-        projected_names = columns(scalar_paths)
-        occurrences = occurrences_expression(
-            projected_names if "molecular_occurrences" in projected_names else columns(paths)
-        )
-        # Endpoint and reference filters narrow the scan first; the molecular form match
-        # over nested occurrences then runs on those rows only.
-        narrowed = bool(scope_tokens or entity_tokens or filters["reference_entity_keys"])
-        form_sql = f"len(list_filter(occurrences, ev -> {form[0]})) > 0" if form else "TRUE"
-        page_sql = f"""
-            WITH candidates AS MATERIALIZED (
-                SELECT filename, file_row_number, category, predicate, subject_label,
-                  object_label{f", {occurrences} AS occurrences" if form else ""}
-                FROM {page_read} WHERE {where_sql}
-            ), matched AS MATERIALIZED (
-                SELECT filename, file_row_number, category, predicate, subject_label, object_label
-                FROM candidates WHERE {form_sql}
-            ), page AS (
-                SELECT filename, file_row_number, category, predicate, subject_label, object_label FROM matched
-                ORDER BY category, predicate, subject_label, object_label, filename, file_row_number
-                LIMIT {int(limit)} OFFSET {int(offset)}
-            ) SELECT page.*, totals.matching_total FROM page
-            CROSS JOIN (SELECT count(*) AS matching_total FROM matched) totals
-            ORDER BY category, predicate, subject_label, object_label, filename, file_row_number
-        """
-        base_where, base_params = where_sql, list(params)
-        page_params = [*params, *(form[1] if form else [])]
-        if form:
-            # Counts outside the paged query (and the unscoped browse) filter in one pass.
-            where_sql += f" AND len(list_filter({occurrences}, ev -> {form[0]})) > 0"
-            params = page_params
-        if not narrowed:
-            # Avoid materializing the entire collection for an unscoped browse.
-            page_sql = f"""SELECT filename, file_row_number FROM {page_read}
-                WHERE {where_sql} ORDER BY category, predicate, subject_label, object_label, filename, file_row_number
-                LIMIT {int(limit)} OFFSET {int(offset)}"""
-        page = None
-        if narrowed and form:
-            page = self._form_page(page_read, base_where, base_params, form, limit, offset)
-        if page is None:
-            page = self._fetch_dicts(page_sql, page_params)
-        rows = []
-        if page:
-            if "matching_total" in page[0]:
-                total = int(page[0]["matching_total"])
-            elif offset == 0 and len(page) < limit:
-                total = len(page)
-            else:
-                total = self._db.execute(
-                    f"SELECT count(*) FROM {read_expr} WHERE {where_sql}", params
-                ).fetchone()[0]
-            by_file = defaultdict(list)
-            for item in page:
-                by_file[item["filename"]].append(item["file_row_number"])
-            found = {}
-            extra_cols = (
-                ", evidence, annotations"
-                if include_details
-                else ", list_filter(annotations, a -> a.term IN ('causal_mechanism_qualifier', 'object_aspect_qualifier', 'object_direction_qualifier')) AS annotations"
-            )
-            for filename, row_numbers in by_file.items():
-                detail_path = original_by_projection[filename] if include_details else filename
-                detail_read = read([detail_path], file_row_number=True)
-                items = self._fetch_dicts(
-                    f"""SELECT file_row_number, relation_key,
-                    subject_entity_key, subject_label, subject_type, predicate,
-                    object_entity_key, object_label, object_type, subject_reference_entity_key, object_reference_entity_key, taxon, is_directed, sign,
-                    category, interaction_class, sources, evidence_count {extra_cols}
-                    FROM {detail_read} WHERE file_row_number IN (SELECT unnest(?::BIGINT[]))""",
-                    [row_numbers],
-                )
-                for item in items:
-                    found[(filename, item.pop("file_row_number"))] = item
-            rows = [found[(item["filename"], item["file_row_number"])] for item in page]
-        elif offset == 0:
-            total = 0
+        if rows and (offset or len(rows) == limit) or not rows and offset:
+            total = self._fetch_dicts(f"SELECT count(*) AS n FROM ({selection})", params)[0]["n"]
         else:
-            total = self._db.execute(
-                f"SELECT count(*) FROM {read_expr} WHERE {where_sql}", params
-            ).fetchone()[0]
-
-        if include_details and has_form_filters(filters):
-            for row in rows:
-                row["evidence"] = matching_evidence(row.get("evidence"), filters)
-                row["evidence_count"] = len(row["evidence"])
-        elapsed_ms = round((time.perf_counter() - t0) * 1000, 2)
-
+            total = offset + len(rows)
+        if include_details:
+            self._children("relation_annotation", rows, "annotations")
+            self._children("relation_evidence", rows, "evidence")
+            if has_form_filters(filters):
+                for row in rows:
+                    row["evidence"] = matching_evidence(row["evidence"], filters)
+                    row["evidence_count"] = len(row["evidence"])
         return {
             "rows": rows,
-            "total": total,
+            "total": int(total),
             "limit": limit,
             "offset": offset,
-            "elapsed_ms": elapsed_ms,
-            "files_scanned": len(paths),
+            "elapsed_ms": round((time.perf_counter() - t0) * 1000, 2),
+            "files_scanned": len(self._selected_resource_infos(resources)),
         }
 
     def search_relations_api(self, filters=None, resources=None, limit=20, offset=0):
@@ -372,49 +243,22 @@ class RelationsQueries:
             offset=offset,
             include_details=has_form_filters(normalize_filters(filters)),
         )
-        relations = [self._to_entity_relation(row) for row in result["rows"]]
-        by_pk = self._endpoint_entities_by_pk(result["rows"], resources)
-        rows = [
-            {
-                "relation": relation,
-                "subjectEntity": self._hydrated_endpoint(row, "subject", by_pk),
-                "objectEntity": self._hydrated_endpoint(row, "object", by_pk),
-            }
-            for row, relation in zip(result["rows"], relations)
-        ]
-        next_offset = offset + len(relations)
-        next_cursor = str(next_offset) if next_offset < int(result["total"]) else None
+        rows = self._relation_items(result["rows"])
+        next_offset = offset + len(rows)
         return {
-            "relations": relations,
+            "relations": [row["relation"] for row in rows],
             "rows": rows,
             "total": result["total"],
-            "nextCursor": next_cursor,
+            "nextCursor": str(next_offset) if next_offset < int(result["total"]) else None,
             "elapsed_ms": round((time.perf_counter() - t0) * 1000, 2),
         }
 
     def get_relation_by_pk(
         self, relation_pk: str, resources: list[str] | None = None
     ) -> dict[str, Any] | None:
-        paths = self._resolve_relation_paths(resources)
-        if not paths:
-            return None
-        read_expr = self._read_expr(paths)
         rows = self._fetch_dicts(
-            f"""
-            SELECT *
-            FROM {read_expr}
-            WHERE relation_key = ?
-            LIMIT 1
-            """,
+            f"SELECT * FROM {self._table('relation', resources)} WHERE relation_key = ? "
+            "ORDER BY resource LIMIT 1",
             [relation_pk],
         )
-        if not rows:
-            return None
-        row = rows[0]
-        by_pk = self._endpoint_entities_by_pk([row], resources)
-        relation = self._to_entity_relation(row)
-        return {
-            "relation": relation,
-            "subjectEntity": self._hydrated_endpoint(row, "subject", by_pk),
-            "objectEntity": self._hydrated_endpoint(row, "object", by_pk),
-        }
+        return self._relation_items(rows)[0] if rows else None

@@ -9,12 +9,10 @@ from typing import Any
 
 
 from omnipath_api.store.query_cache import normalized
-from omnipath_api.serving_index import projected_paths
 
 
 from omnipath_api.queries.constants import RELATION_QUALIFIER_FILTERS
 from omnipath_api.models import normalize_filters
-from omnipath_api.molecular import read
 
 logger = logging.getLogger(__name__)
 
@@ -29,19 +27,10 @@ class FacetsQueries:
     ) -> dict[str, Any]:
         """Compute aggregated facet counts in a single vectorized pass."""
         t0 = time.perf_counter()
-        paths = self._resolve_relation_paths(resources)
-        if not paths:
-            return {"categories": {}, "predicates": {}, "signs": {}, "elapsed_ms": 0.0}
-
-        read_expr = self._read_expr(paths)
-
-        where_sql, params = self._resolve_relation_where(filters, resources)
-
-        # Single-pass multi-grouping aggregation (scans Parquet only once)
+        selection, params = self._relation_selection(filters, resources)
         facet_sql = f"""
             SELECT category, predicate, sign, count(*) AS n
-            FROM {read_expr}
-            WHERE {where_sql}
+            FROM ({selection})
             GROUP BY category, predicate, sign
         """
         rows = self._db.execute(facet_sql, params).fetchall()
@@ -79,7 +68,7 @@ class FacetsQueries:
             kind,
             self._inventory_fingerprint,
             self._taxonomy_cache_version(),
-            tuple(sorted(str(i["entities_path"]) for i in infos)),
+            tuple(sorted(i["key"] for i in infos)),
             json.dumps(
                 normalized({"payload": payload or {}, "resources": resources}), sort_keys=True
             ),
@@ -137,14 +126,13 @@ class FacetsQueries:
             elif outer is None:
                 filter_payload[key] = value
         filters = normalize_filters(filter_payload)
-        paths = self._resolve_relation_paths(resources or filters.get("sources"))
-        if not paths:
+        if not self._selected_resource_infos(resources or filters.get("sources") or None):
             return []
-        read_expr = self._read_expr(projected_paths(self.data_root, "relations", paths))
-        common_filters = {**filters, **{term: [] for term in RELATION_QUALIFIER_FILTERS}}
-        common_where, common_params = self._resolve_relation_where(common_filters, resources)
-        qualifier_filters = {term: filters[term] for term in RELATION_QUALIFIER_FILTERS}
-        where_sql, params = self._build_relation_where(qualifier_filters)
+        # Each qualifier facet counts under the other qualifier filters, not its own.
+        matched, common_params = self._relation_selection(filters, resources, qualifiers=())
+        where_sql, params = self._relation_where(
+            {term: filters[term] for term in RELATION_QUALIFIER_FILTERS}
+        )
         queries = [
             f"""SELECT 'base' kind, to_json(struct_pack(
             category:=category, predicate:=predicate, subject_type:=subject_type, object_type:=object_type,
@@ -153,29 +141,19 @@ class FacetsQueries:
             GROUP BY category, predicate, subject_type, object_type, taxon, sign, sources"""
         ]
         query_params = list(params)
-        qualifier_groups = {}
         for term in RELATION_QUALIFIER_FILTERS:
-            qualifier_where, qualifier_params = self._build_relation_where(
-                {**qualifier_filters, term: []}
+            qualifier_where, qualifier_params = self._relation_where(
+                {other: filters[other] for other in RELATION_QUALIFIER_FILTERS if other != term}
             )
-            qualifier_groups.setdefault((qualifier_where, tuple(qualifier_params)), []).append(term)
-        for (qualifier_where, qualifier_params), terms in qualifier_groups.items():
-            placeholders = ", ".join("?" for _ in terms)
             queries.append(f"""SELECT 'qualifier' kind,
-                to_json(struct_pack(term:=annotation.term, value:=annotation.value, n:=count(DISTINCT relation_key))) payload
-                FROM (SELECT relation_key,
-                    UNNEST(list_filter(annotations, a -> a.scope='relation' AND a.term IN ({placeholders}))) annotation
-                    FROM matched WHERE {qualifier_where}) q
-                GROUP BY annotation.term, annotation.value""")
-            query_params.extend([*terms, *qualifier_params])
+                to_json(struct_pack(term:='{term}', value:=value, n:=count(DISTINCT relation_key))) payload
+                FROM (SELECT relation_key, unnest({term}) AS value FROM matched WHERE {qualifier_where})
+                GROUP BY value""")
+            query_params.extend(qualifier_params)
         materialization = "MATERIALIZED" if filters["entity_ids"] else "NOT MATERIALIZED"
         combined = self._db.execute(
-            f"""WITH matched AS {materialization} (
-            SELECT category, predicate, subject_type, object_type, taxon, sign, sources, relation_key,
-                list_filter(annotations, a -> a.scope='relation' AND a.term IN
-                    ('causal_mechanism_qualifier','object_aspect_qualifier','object_direction_qualifier')) annotations
-            FROM {read_expr} WHERE {common_where}
-        ) {" UNION ALL ".join(queries)}""",
+            f"""WITH matched AS {materialization} ({matched})
+            {" UNION ALL ".join(queries)}""",
             [*common_params, *query_params],
         ).fetchall()
         grouped = [
@@ -248,21 +226,11 @@ class FacetsQueries:
         scope = (
             filters["sources"] if apply_sources and filters["sources"] else payload.get("resources")
         )
-        paths = self._resolve_entity_paths(scope)
         if not apply_sources:
             filters["sources"] = []
         where_clauses, params = self._entity_filter_clauses(filters, resources=scope)
-        where_clauses.insert(0, "1=1")
-        if query:
-            # Keep facet scans scalar while accepting the same stored references
-            # and native CURIE spellings as entity search.
-            where_clauses.append(
-                "(label ILIKE ? OR identifier ILIKE ? OR reference_entity_key ILIKE ? "
-                "OR (namespace || ':' || identifier) ILIKE ? "
-                "OR (namespace || '|' || identifier) ILIKE ?)"
-            )
-            params.extend([f"%{query}%"] * 5)
-        return " AND ".join(where_clauses), params, paths
+        where, params = self._entity_match_where(query, where_clauses, params, scope)
+        return where, params, scope
 
     def _compute_entity_facets(
         self,
@@ -272,40 +240,34 @@ class FacetsQueries:
         payload = dict(payload or {})
         if resources:
             payload["resources"] = resources
-        where_sql, params, paths = self._entity_scoped_facet_where(payload, apply_sources=True)
-        if not paths:
+        where_sql, params, scope = self._entity_scoped_facet_where(payload, apply_sources=True)
+        if not self._selected_resource_infos(scope):
             return []
-        read_expr = self._read_expr(projected_paths(self.data_root, "entities", paths))
         groups = self._db.execute(
             f"""SELECT CASE WHEN GROUPING(entity_type)=0 THEN 'entity_type' ELSE 'taxonomy_id' END,
                        coalesce(entity_type, taxon), count(*)
-                FROM {read_expr} WHERE {where_sql}
+                FROM {self._table("entity", scope)} WHERE {where_sql}
                 GROUP BY GROUPING SETS ((entity_type), (taxon))""",
             params,
         ).fetchall()
+        # Source counts ignore the source filter, so other sources stay selectable.
         source_where, source_params, _ = self._entity_scoped_facet_where(
             payload, apply_sources=False
         )
         infos = self._selected_resource_infos(None)
-        source_paths = [str(info["entities_path"]) for info in infos]
-        source_projection = projected_paths(self.data_root, "entities", source_paths)
-        source_counts = (
-            dict(
-                self._db.execute(
-                    f"SELECT filename, count(*) FROM {read(source_projection, filename=True)} WHERE {source_where} GROUP BY filename",
-                    source_params,
-                ).fetchall()
-            )
-            if source_paths
-            else {}
+        source_counts = dict(
+            self._db.execute(
+                f"SELECT resource, count(*) FROM {self._table('entity')} WHERE {source_where} GROUP BY resource",
+                source_params,
+            ).fetchall()
         )
         source_items = [
             dict(
                 facetName="source",
                 facetValue=info["resource"],
-                scopedCount=source_counts.get(path, 0),
+                scopedCount=source_counts.get(info["key"], 0),
             )
-            for info, path in zip(infos, source_projection)
+            for info in infos
         ]
         limit = int(payload.get("facetLimit") or 50)
         items = [
@@ -321,10 +283,9 @@ class FacetsQueries:
         return self._label_taxonomy_facets(typed + sources)
 
     def get_entity_filter_options(self, resources: list[str] | None = None) -> dict[str, Any]:
-        paths = self._resolve_entity_paths(resources)
-        if not paths:
+        if not self._selected_resource_infos(resources):
             return {"entity_types": [], "sources": [], "taxonomy_ids": []}
-        read_expr = self._read_expr(paths)
+        read_expr = self._table("entity", resources)
         types = [
             r[0]
             for r in self._db.execute(

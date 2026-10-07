@@ -8,7 +8,6 @@ import sqlite3
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
-import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 from fastapi.testclient import TestClient
@@ -21,7 +20,7 @@ from omnipath_api.jobs.worker import run_worker, worker_lock
 from omnipath_api.server import create_app
 from omnipath_api.settings import Settings
 from serving_fixtures import key, write_dataset
-from omnipath_core.schema import ENTITY_SCHEMA, RELATION_SCHEMA
+from table_fixture import write_resource
 
 
 @pytest.fixture
@@ -58,7 +57,7 @@ def test_short_accession_label_and_public_id_resolve_consistently(engine, token)
 
 @pytest.mark.parametrize(
     "query,phase",
-    [("", "prefix"), ("Match", "prefix"), ("Inside", "contains"), ("ALIAS", "nested")],
+    [("", "all"), ("Match", "prefix"), ("Inside", "contains"), ("ALIAS", "prefix")],
 )
 def test_entity_cursor_traverses_complete_sort_order(tmp_path, query, phase):
     directory = tmp_path / "resources" / "test" / "1"
@@ -81,10 +80,7 @@ def test_entity_cursor_traverses_complete_sort_order(tmp_path, query, phase):
             ["Match", "Match A", "Match B", "X Inside A", "X Inside B", "X Inside C"]
         )
     ]
-    pq.write_table(pa.Table.from_pylist(rows, schema=ENTITY_SCHEMA), directory / "entities.parquet")
-    pq.write_table(
-        pa.Table.from_pylist([], schema=RELATION_SCHEMA), directory / "relations.parquet"
-    )
+    write_resource(directory, rows, [])
     engine = ParquetServingEngine(tmp_path)
     try:
         expected = engine.search_entities_api(query, limit=100)["entities"]
@@ -153,14 +149,14 @@ def test_admin_is_disabled_without_secret_and_readonly_blocks_every_mutation(eng
 def test_inventory_generation_stays_pinned_through_reload(engine, tmp_path):
     old = engine.inventory_snapshot()
     with engine.release_scope("latest", snapshot=old):
-        before = engine._resolve_entity_paths()
+        before = engine._table_paths("entity")
         target = tmp_path / "resources" / "uniprot" / "2"
         import shutil
 
         shutil.copytree(target.parent / "1", target)
         with ThreadPoolExecutor(1) as pool:
             pool.submit(engine.reload_resources).result()
-        assert engine._resolve_entity_paths() == before
+        assert engine._table_paths("entity") == before
         assert "uniprot/2" not in engine.resources
     assert "uniprot/2" in engine.resources
     with pytest.raises(TypeError):
@@ -193,7 +189,6 @@ def test_request_reuses_snapshot_for_multiple_engine_calls(engine, tmp_path):
 
 def test_ontology_scope_ambiguity_and_all_child_pages(tmp_path):
     target = tmp_path / "resources/test/1"
-    target.mkdir(parents=True)
     rows = [
         dict(
             entity_key=f"{namespace}:{i}",
@@ -206,6 +201,7 @@ def test_ontology_scope_ambiguity_and_all_child_pages(tmp_path):
     ]
     relations = [
         dict(
+            relation_key=f"{namespace}:{i}:0",
             subject_entity_key=f"{namespace}:{i}",
             subject_label=f"Term {i}",
             object_entity_key=f"{namespace}:0",
@@ -218,6 +214,7 @@ def test_ontology_scope_ambiguity_and_all_child_pages(tmp_path):
     ]
     relations.append(
         dict(
+            relation_key="two:1:one:0",
             subject_entity_key="two:1",
             subject_label="Other",
             object_entity_key="one:0",
@@ -226,8 +223,7 @@ def test_ontology_scope_ambiguity_and_all_child_pages(tmp_path):
             statement_kind="ontology",
         )
     )
-    pq.write_table(pa.Table.from_pylist(rows), target / "entities.parquet")
-    pq.write_table(pa.Table.from_pylist(relations), target / "relations.parquet")
+    write_resource(target, rows, relations)
     engine = ParquetServingEngine(tmp_path)
     try:
         with pytest.raises(ValueError, match="Ambiguous"):

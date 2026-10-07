@@ -23,21 +23,23 @@ class ResourcesQueries:
         """Return list of indexed resources with table statistics."""
         self._refresh_inventory_if_stale()
         out = []
-        for key, paths in sorted(self._visible_resources().items()):
+        for key, info in sorted(self._visible_resources().items()):
+            tables = info["tables"]
             try:
-                rel_meta = pq.read_metadata(paths["relations_path"])
-                ent_meta = pq.read_metadata(paths["entities_path"])
+                sizes = {name: Path(path).stat().st_size for name, path in tables.items()}
                 out.append(
                     {
                         "key": key,
-                        "resource": paths["resource"],
-                        "queryable": paths["resource"] not in self._disabled_query_resources(),
-                        "version": paths["version"],
-                        "entities_count": ent_meta.num_rows,
-                        "relations_count": rel_meta.num_rows,
-                        "entities_size_kb": round(paths["entities_path"].stat().st_size / 1024, 1),
+                        "resource": info["resource"],
+                        "queryable": info["resource"] not in self._disabled_query_resources(),
+                        "version": info["version"],
+                        "entities_count": pq.read_metadata(tables["entity"]).num_rows,
+                        "relations_count": pq.read_metadata(tables["relation"]).num_rows,
+                        "entities_size_kb": round(
+                            sum(v for k, v in sizes.items() if k.startswith("entity_") or k == "entity") / 1024, 1
+                        ),
                         "relations_size_kb": round(
-                            paths["relations_path"].stat().st_size / 1024, 1
+                            sum(v for k, v in sizes.items() if k.startswith("relation")) / 1024, 1
                         ),
                     }
                 )
@@ -97,11 +99,7 @@ class ResourcesQueries:
         return record
 
     def _resource_file_map(self, info: dict[str, Any]) -> dict[str, Path | None]:
-        return {
-            "entities.parquet": info.get("entities_path"),
-            "relations.parquet": info.get("relations_path"),
-            "evidence_payloads.parquet": info.get("payloads_path"),
-        }
+        return {f"{name}.parquet": path for name, path in info["tables"].items()}
 
     def _download_file_map(
         self, info: dict[str, Any], *, include_evidence: bool = False
@@ -164,12 +162,12 @@ class ResourcesQueries:
             if not files:
                 continue
             entity_rows = next(
-                (item["rows"] for item in files if item["name"] == "entities.parquet"), 0
+                (item["rows"] for item in files if item["name"] == "entity.parquet"), 0
             )
             relation_rows = next(
-                (item["rows"] for item in files if item["name"] == "relations.parquet"), 0
+                (item["rows"] for item in files if item["name"] == "relation.parquet"), 0
             )
-            manifest_path = Path(info["entities_path"]).parent / "build_manifest.json"
+            manifest_path = Path(info["tables"]["entity"]).parent / "build_manifest.json"
             try:
                 manifest = json.loads(manifest_path.read_text())
             except FileNotFoundError:

@@ -9,6 +9,7 @@ import json
 import os
 import re
 import threading
+from collections import defaultdict
 from contextlib import contextmanager
 from contextvars import ContextVar
 from pathlib import Path
@@ -23,7 +24,10 @@ import pyarrow.parquet as pq
 from omnipath_api.store.inventory import ReleaseStore, InventorySnapshot
 from omnipath_api.store.query_cache import QueryCache
 from omnipath_api.store.query_pool import QueryPool
-from omnipath_api.store.connection import get_connection
+from omnipath_api.store.connection import get_connection, sql_literal
+from omnipath_core.measurements import QUANTITY_STRUCT
+from omnipath_core.schema import PUBLISHED_TABLES, RELATION_QUALIFIERS, SERVING_TABLES
+from omnipath_core.versioning import RESOURCE_FILES, SERVING_FILES
 
 
 from omnipath_api.queries.resources import ResourcesQueries
@@ -38,6 +42,17 @@ from omnipath_api.queries.stats import StatsQueries
 
 
 logger = logging.getLogger(__name__)
+
+_QUANTITY = [field.name for field in QUANTITY_STRUCT]
+
+
+def _nest_quantity(row):
+    """A table row's ``quantity_*`` columns as one ``quantity`` struct (None when empty)."""
+    if "quantity_" + _QUANTITY[0] not in row:
+        return row
+    quantity = {name: row.pop("quantity_" + name) for name in _QUANTITY}
+    row["quantity"] = quantity if any(v is not None for v in quantity.values()) else None
+    return row
 
 
 class ParquetServingEngine(
@@ -125,14 +140,10 @@ class ParquetServingEngine(
 
     @classmethod
     def _version_is_ready(cls, ver_dir: Path) -> bool:
-        """Skip versions still being written (streaming ingest leaves chunk sidecars)."""
-        ent_file = ver_dir / "entities.parquet"
-        rel_file = ver_dir / "relations.parquet"
-        if not ent_file.is_file() or not rel_file.is_file():
-            return False
+        """A published version has every resource and serving table."""
         if (ver_dir / cls._CHUNKS_FILE).exists():
             return False
-        return True
+        return all((ver_dir / name).is_file() for name in RESOURCE_FILES + SERVING_FILES)
 
     def _scan_inventory_fingerprint(self) -> tuple[tuple[Any, ...], ...]:
         """Cheap disk snapshot of complete resource versions (path, mtime, size)."""
@@ -146,8 +157,8 @@ class ParquetServingEngine(
             for ver_dir in res_dir.iterdir():
                 if not ver_dir.is_dir() or not self._version_is_ready(ver_dir):
                     continue
-                ent_file = ver_dir / "entities.parquet"
-                rel_file = ver_dir / "relations.parquet"
+                ent_file = ver_dir / "entity.parquet"
+                rel_file = ver_dir / "relation.parquet"
                 stats_file = ver_dir / "resolution_stats.json"
                 try:
                     ent_stat = ent_file.stat()
@@ -254,10 +265,11 @@ class ParquetServingEngine(
                 for ver_dir in res_dir.iterdir():
                     if not ver_dir.is_dir() or not self._version_is_ready(ver_dir):
                         continue
-                    ent_file = ver_dir / "entities.parquet"
-                    rel_file = ver_dir / "relations.parquet"
+                    tables = {
+                        name: ver_dir / f"{name}.parquet" for name in (*PUBLISHED_TABLES, *SERVING_TABLES)
+                    }
+                    ent_file, rel_file = tables["entity"], tables["relation"]
                     key = f"{res_name}/{ver_dir.name}"
-                    payload_file = ver_dir / "evidence_payloads.parquet"
                     try:
                         rel_rows = pq.read_metadata(rel_file).num_rows
                     except (OSError, pa.ArrowException):
@@ -266,7 +278,7 @@ class ParquetServingEngine(
                     try:
                         label_quality = float(
                             self._db.execute(
-                                f"SELECT coalesce(avg((label IS DISTINCT FROM identifier)::int), 0) FROM {self._read_expr([str(ent_file)])}"
+                                f"SELECT coalesce(avg((label IS DISTINCT FROM identifier)::int), 0) FROM read_parquet({sql_literal(str(ent_file))})"
                             ).fetchone()[0]
                             or 0
                         )
@@ -277,9 +289,8 @@ class ParquetServingEngine(
                     resources[key] = {
                         "resource": res_name,
                         "version": ver_dir.name,
-                        "entities_path": ent_file,
-                        "relations_path": rel_file,
-                        "payloads_path": payload_file if payload_file.exists() else None,
+                        "key": key,
+                        "tables": tables,
                         "relations_count": rel_rows,
                         "label_quality": label_quality,
                         "mtime": mtime,
@@ -317,7 +328,7 @@ class ParquetServingEngine(
             if manifest is not None:
                 for source, resource_version in manifest["resources"].items():
                     key = f"{source}/{resource_version}"
-                    if key not in self.resources or not self.resources[key].get("payloads_path"):
+                    if key not in self.resources:
                         raise ValueError(f"OmniPath {version} requires unavailable resource {key}")
             token = self._release_scope.set(manifest)
             taxonomy_token = self._taxonomy_scope.set(self._resolve_taxonomy_names())
@@ -403,38 +414,120 @@ class ParquetServingEngine(
                 )
             if info["resource"] in disabled:
                 raise ValueError(f"Resource {res!r} is disabled for queries")
-            marker = str(info["relations_path"])
+            marker = info["key"]
             if marker not in seen:
                 infos.append(info)
                 seen.add(marker)
         return infos
 
-    def _resolve_relation_paths(self, selected_resources: list[str] | None = None) -> list[str]:
-        """Resolve Parquet file paths for selected resources."""
-        return [
-            str(info["relations_path"])
+    def _table_paths(self, table: str, selected_resources: list[str] | None = None) -> dict:
+        """{resource key (source/version): path} of one table for the selected resources."""
+        return {
+            info["key"]: str(info["tables"][table])
             for info in self._selected_resource_infos(selected_resources)
-        ]
+        }
 
-    def _resolve_entity_paths(self, selected_resources: list[str] | None = None) -> list[str]:
-        """Resolve entity Parquet file paths."""
-        return [
-            str(info["entities_path"]) for info in self._selected_resource_infos(selected_resources)
-        ]
+    def _table(self, table: str, selected_resources: list[str] | None = None) -> str:
+        """SQL source of one table over the selected resources, with a ``resource`` column."""
+        paths = self._table_paths(table, selected_resources)
+        if not paths:
+            schema = {**PUBLISHED_TABLES, **SERVING_TABLES}[table]
+            columns = ", ".join(f"NULL AS {name}" for name in schema.names)
+            return f"(SELECT {columns}, NULL::VARCHAR AS resource WHERE FALSE)"
+        listed = ", ".join(sql_literal(path) for path in paths.values())
+        return (
+            f"(SELECT * EXCLUDE (filename), regexp_extract(filename, '([^/]+/[^/]+)/[^/]+$', 1) "
+            f"AS resource FROM read_parquet([{listed}], union_by_name=true, filename=true))"
+        )
 
-    def _resolve_payload_paths(self, selected_resources: list[str] | None = None) -> list[str]:
-        """Resolve evidence payload Parquet file paths."""
-        return [
-            str(info["payloads_path"])
-            for info in self._selected_resource_infos(selected_resources)
-            if info.get("payloads_path")
+    def _lookup(self, table, column, pairs, fields="*", extra="", params=()):
+        """Rows of ``table`` for (resource, value) pairs, one query per resource's file.
+
+        Keys are hashes spread over every file's range, so a multi-key filter across all
+        resources reads most files; per resource it reads only the matching row groups.
+        """
+        values: dict[str, list] = {}
+        for resource, value in pairs:
+            values.setdefault(resource, []).append(value)
+        rows = []
+        for resource, items in sorted(values.items()):
+            info = self.resources.get(resource)
+            if info is None:
+                continue
+            items = list(dict.fromkeys(items))
+            # Short lists stay literal: DuckDB then skips row groups by their min/max.
+            listed = (
+                ",".join("?" for _ in items) if len(items) <= 1000 else "SELECT unnest(?)"
+            )
+            rows += self._fetch_dicts(
+                f"SELECT {fields}, ? AS resource FROM read_parquet({sql_literal(str(info['tables'][table]))}) "
+                f"WHERE {column} IN ({listed}) {extra}",
+                [resource, *(items if len(items) <= 1000 else [items]), *params],
+            )
+        return rows
+
+    def _children(self, table, parents, field, extra=""):
+        """Attach each parent's rows of a child table, in ordinal order, as ``field``.
+
+        Parents are entity or relation rows with ``resource`` and their id. Child rows
+        drop the parent id and ordinal; a flattened quantity becomes one struct again.
+        """
+        column = "relation_id" if table.startswith("relation") else "entity_id"
+        found = defaultdict(list)
+        if parents:
+            for row in self._lookup(
+                table,
+                column,
+                [(p["resource"], p[column]) for p in parents],
+                extra=f"{extra} ORDER BY {column}, ordinal",
+            ):
+                found[(row.pop("resource"), row.pop(column))].append(_nest_quantity(row))
+                row.pop("ordinal")
+        for parent in parents:
+            parent[field] = found.get((parent["resource"], parent[column]), [])
+        return parents
+
+    def _with_entity_children(self, rows, *, evidence=False):
+        """Entity rows with their identifiers and annotations (and evidence) nested."""
+        self._children("entity_identifier", rows, "identifiers")
+        self._children("entity_annotation", rows, "annotations")
+        if evidence:
+            self._children("entity_evidence", rows, "evidence")
+        return rows
+
+    def _entity_rows(self, where, params=(), resources=None, *, nested=True, evidence=False):
+        """Every resource copy of the matching entities, ordered by resource."""
+        rows = self._fetch_dicts(
+            f"SELECT * FROM {self._table('entity', resources)} WHERE {where} ORDER BY resource, entity_id",
+            list(params),
+        )
+        return self._with_entity_children(rows, evidence=evidence) if nested else rows
+
+    def _endpoint_rows(self, relations, nested=False):
+        """{(resource, entity key): entity row} for both endpoints of relation rows.
+
+        A relation's endpoints are entities of its own resource, read there by key.
+        """
+        pairs = [
+            (r["resource"], r[side])
+            for r in relations
+            for side in ("subject_entity_key", "object_entity_key")
+            if r.get(side)
         ]
+        rows = self._lookup("entity", "entity_key", pairs) if pairs else []
+        if nested:
+            self._with_entity_children(rows)
+        return {(r["resource"], r["entity_key"]): r for r in rows}
 
     @staticmethod
-    def _read_expr(paths: list[str]) -> str:
-        from omnipath_api.molecular import read
-
-        return read(paths, union_by_name=True)
+    def _with_qualifiers(row):
+        """Relation-scope qualifier annotations from the relation's qualifier columns."""
+        row["annotations"] = [
+            dict(term=term, value=value, scope="relation")
+            for term in RELATION_QUALIFIERS
+            for value in row.get(term) or []
+        ]
+        return row
 
     @staticmethod
     def _jsonify(value: Any) -> Any:
@@ -473,5 +566,7 @@ class ParquetServingEngine(
         cols = [col[0] for col in cursor.description]
         return [self._jsonify(dict(zip(cols, row))) for row in cursor.fetchall()]
 
-    RESOURCE_PARQUET_FILES = ("entities.parquet", "relations.parquet", "evidence_payloads.parquet")
-    PUBLIC_DOWNLOAD_FILES = ("entities.parquet", "relations.parquet")
+    # Downloads are the published tables; serving tables are lookup indexes. Raw source
+    # payloads are downloaded on request.
+    RESOURCE_PARQUET_FILES = RESOURCE_FILES
+    PUBLIC_DOWNLOAD_FILES = tuple(f for f in RESOURCE_FILES if f != "evidence_payloads.parquet")

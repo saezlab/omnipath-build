@@ -7,7 +7,6 @@ import os
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
 
-import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 from fastapi.testclient import TestClient
@@ -15,15 +14,13 @@ from fastapi.testclient import TestClient
 from omnipath_api.engine import ParquetServingEngine
 from omnipath_api.releases import ReleaseStore
 from omnipath_api.server import create_app
-from omnipath_core.schema import RELATION_SCHEMA
+from omnipath_core.versioning import RESOURCE_FILES
+from table_fixture import write_resource as write_tables
 
 
 def write_resource(root, source, version, label):
     directory = root / "resources" / source / version
     directory.mkdir(parents=True)
-    pq.write_table(
-        pa.table({"identifier": [label], "label": [label]}), directory / "entities.parquet"
-    )
     row = {
         key: label
         for key in (
@@ -46,10 +43,9 @@ def write_resource(root, source, version, label):
         sources=[source],
         evidence_count=1,
     )
-    pq.write_table(
-        pa.Table.from_pylist([row], schema=RELATION_SCHEMA), directory / "relations.parquet"
-    )
-    pq.write_table(pa.table({"payload_json": [label]}), directory / "evidence_payloads.parquet")
+    entity = dict(entity_key=label, identifier=label, label=label)
+    payload = dict(relation_key=label, source=source, row_id="1", payload_json=label)
+    write_tables(directory, [entity], [row], [payload])
     return directory
 
 
@@ -98,7 +94,7 @@ def test_static_urls_pin_selected_resource_version(setup, monkeypatch):
         files = client.get(
             f"/resources/signor/files?release={release}&include_evidence=true"
         ).json()["files"]
-        assert len(files) == 3
+        assert len(files) == len(RESOURCE_FILES)
         for file in files:
             assert (
                 file["url"] == f"https://data.example.org/resources/signor/{version}/{file['name']}"
@@ -109,7 +105,7 @@ def test_static_urls_pin_selected_resource_version(setup, monkeypatch):
             f"https://data.example.org/resources/signor/{version}/"
         )
     # Existing API downloads and ZIPs remain available with static hosting enabled.
-    assert client.get("/resources/signor/files/entities.parquet?release=2026.08").status_code == 200
+    assert client.get("/resources/signor/files/entity.parquet?release=2026.08").status_code == 200
     assert client.get("/resources/signor/download?release=2026.08").status_code == 200
 
 
@@ -122,7 +118,7 @@ def test_static_hosting_optional_and_configurable(tmp_path, monkeypatch):
     engine = ParquetServingEngine(tmp_path)
     assert (
         engine.list_resource_files("signor")["files"][0]["url"]
-        == "https://data.example.org/artifacts/resources/signor/1/entities.parquet"
+        == "https://data.example.org/artifacts/resources/signor/1/entity.parquet"
     )
     for invalid in [
         "s3://bucket",
@@ -164,7 +160,7 @@ def test_downloads_and_parallel_request_isolation(setup):
 
     def read(version):
         response = client.get(
-            "/api/resources/signor/files/entities.parquet", headers={"X-OmniPath-Release": version}
+            "/api/resources/signor/files/entity.parquet", headers={"X-OmniPath-Release": version}
         )
         assert response.status_code == 200
         return pq.read_table(io.BytesIO(response.content))["label"][0].as_py()
@@ -187,31 +183,23 @@ def test_downloads_omit_evidence_by_default(setup):
     _, _, client, _, _ = setup
     catalog = client.get("/resources?shape=svelte").json()["resources"]
     signor = next(item for item in catalog if item["resource_id"] == "signor")
-    assert {item["name"] for item in signor["files"]} == {"entities.parquet", "relations.parquet"}
+    published = set(RESOURCE_FILES) - {"evidence_payloads.parquet"}
+    assert {item["name"] for item in signor["files"]} == published
 
     listing = client.get("/resources/signor/files").json()["files"]
-    assert {item["name"] for item in listing} == {"entities.parquet", "relations.parquet"}
+    assert {item["name"] for item in listing} == published
     with_evidence = client.get("/resources/signor/files?include_evidence=true").json()["files"]
-    assert {item["name"] for item in with_evidence} == {
-        "entities.parquet",
-        "relations.parquet",
-        "evidence_payloads.parquet",
-    }
+    assert {item["name"] for item in with_evidence} == set(RESOURCE_FILES)
 
-    assert _zip_names(client, "/resources/signor/download") == {
-        "entities.parquet",
-        "relations.parquet",
-    }
-    assert _zip_names(client, "/resources/signor/download?include_evidence=true") == {
-        "entities.parquet",
-        "relations.parquet",
-        "evidence_payloads.parquet",
-    }
+    assert _zip_names(client, "/resources/signor/download") == published
+    assert _zip_names(client, "/resources/signor/download?include_evidence=true") == set(
+        RESOURCE_FILES
+    )
 
     bundled = client.post("/resources/download", json={"resource_ids": ["signor"]})
     assert bundled.status_code == 200
     with zipfile.ZipFile(io.BytesIO(bundled.content)) as archive:
-        assert set(archive.namelist()) == {"entities.parquet", "relations.parquet"}
+        assert set(archive.namelist()) == published
 
     evidence = client.get("/resources/signor/files/evidence_payloads.parquet")
     assert evidence.status_code == 200
@@ -229,7 +217,7 @@ def test_invalid_releases_and_pinned_deletion(setup):
     assert response.status_code == 400
     assert "pinned" in response.text
     assert old.exists()
-    (old / "relations.parquet").unlink()
+    (old / "relation.parquet").unlink()
     response = client.get("/resources?release=2026.08")
     assert response.status_code == 400  # Never fall back to the newer resource.
 

@@ -3,19 +3,18 @@
 import io
 import shutil
 
-import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
 from omnipath_api.engine import ParquetServingEngine
-from omnipath_core.schema import ENTITY_SCHEMA, RELATION_SCHEMA
+from table_fixture import rewrite_resource
 
 
 @pytest.fixture
 def engine(tmp_path):
     directory = tmp_path / "resources/test/1"
     directory.mkdir(parents=True)
-    pq.write_table(pa.Table.from_pylist([], schema=ENTITY_SCHEMA), directory / "entities.parquet")
+    rewrite_resource(directory / "entity.parquet", entities=[])
     rows = []
     for key, aspect, direction, scope in [
         ("a", "activity", "increased", "relation"),
@@ -59,9 +58,7 @@ def engine(tmp_path):
                 evidence_count=1,
             )
         )
-    pq.write_table(
-        pa.Table.from_pylist(rows, schema=RELATION_SCHEMA), directory / "relations.parquet"
-    )
+    rewrite_resource(directory / "relation.parquet", relations=rows)
     return ParquetServingEngine(tmp_path)
 
 
@@ -121,16 +118,16 @@ def test_batched_qualifier_counts_match_independent_scans(engine, payload):
     source = engine.data_root / "resources/test/1"
     shutil.copytree(source, engine.data_root / "resources/duplicate/1")
     engine._refresh_inventory_if_stale()
-    paths = engine._resolve_relation_paths(payload.get("sources"))
     expected = {}
     for term in RELATION_QUALIFIER_FILTERS:
-        where, params = engine._build_relation_where({**payload, term: []})
+        selection, params = engine._relation_selection({**payload, term: []})
         rows = engine._db.execute(
             f"""
-            SELECT a.annotation.value, count(DISTINCT relation_key)
-            FROM {engine._read_expr(paths)}, UNNEST(annotations) AS a(annotation)
-            WHERE {where} AND a.annotation.scope = 'relation' AND a.annotation.term = ?
-            GROUP BY a.annotation.value
+            SELECT a.value, count(DISTINCT r.relation_key)
+            FROM ({selection}) r JOIN {engine._table("relation_annotation")} a
+              USING (resource, relation_id)
+            WHERE a.scope = 'relation' AND a.term = ?
+            GROUP BY a.value
         """,
             [*params, term],
         ).fetchall()

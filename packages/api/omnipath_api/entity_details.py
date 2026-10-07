@@ -1,24 +1,20 @@
 """Release-aware entity hydration and paged, resource-local relationship reads."""
 
 import json
-from omnipath_api.serving_index import (
-    adjacency_rows,
-    evidence_rows,
-    relation_rows_path,
-    signature,
-)
+
+# Structural relationships shown in an entity's dialog; other relations are paged
+# from relation search.
+STRUCTURAL = ("has_input", "has_output", "enabled_by", "has_member", "has_part")
 
 
 def cache_key(engine, kind, public_id, resources, *page):
-    paths = engine._resolve_entity_paths(resources)
-    if kind == "relationships":
-        paths += engine._resolve_relation_paths(resources)
     return json.dumps(
         [
             kind,
             public_id,
             page,
-            signature(paths),
+            [info["key"] for info in engine._selected_resource_infos(resources)],
+            engine._inventory_fingerprint,
             engine._release_scope.get(),
             engine._taxonomy_cache_version(),
             [r.get("references") for r in engine.releases.list()],
@@ -28,59 +24,54 @@ def cache_key(engine, kind, public_id, resources, *page):
     )
 
 
+def _copies(engine, public_id, resources):
+    """The entity's rows in each selected resource, by key (files are sorted by it)."""
+    return engine._entity_rows("entity_key = ?", [public_id], resources, nested=False)
+
+
 def core(engine, public_id, resources=None):
     def load():
-        # Evidence is paged from its own endpoint; the entity carries only its count.
-        rows = engine._fetch_entities_by_keys([public_id], resources, evidence=False)
-        if not rows:
+        copies = engine._with_entity_children(_copies(engine, public_id, resources))
+        if not copies:
             return None
-        entity = engine._to_entity_summary(rows[0])
-        entity["molecularEvidenceTotal"] = evidence_total(engine, entity, resources)
+        entity = engine._to_entity_summary(engine._merge_entity_row_group(copies))
+        # Evidence is paged from its own endpoint; the entity carries only its count.
+        entity["molecularEvidenceTotal"] = sum(int(c["evidence_count"] or 0) for c in copies)
         return {"entity": entity}
 
     return engine._detail_cache.get(cache_key(engine, "entity", public_id, resources), load)
 
 
-def _evidence_items(engine, entity, resources):
-    """SQL for the evidence items of an entity's source rows, ordered by source and position.
-
-    Every item names its source, and a source lists an item once, so items are not
-    compared (comparing nested items cost more than the rest of the details).
-    """
-    keys = list(dict.fromkeys(entity.get("sourceEntityPks") or [entity["entityPk"]]))
-    return evidence_rows(engine, engine._resolve_entity_paths(resources), keys)
-
-
-def evidence_total(engine, entity, resources=None):
-    items, params = _evidence_items(engine, entity, resources)
-    if items is None:
-        return 0
-    return int(engine._fetch_dicts(f"SELECT count(*) AS n FROM {items}", params)[0]["n"])
-
-
 def evidence(engine, public_id, resources=None, limit=20, offset=0):
-    """A page of an entity's evidence items, by source and position."""
+    """A page of an entity's evidence items, by resource and position."""
 
     def load():
-        found = core(engine, public_id, resources)
-        if not found:
+        copies = _copies(engine, public_id, resources)
+        if not copies:
             return None
-        items, params = _evidence_items(engine, found["entity"], resources)
-        empty = dict(evidence=[], evidenceTotal=0, nextCursor=None)
-        if items is None:
-            return empty
-        rows = engine._fetch_dicts(
-            f"SELECT item, count(*) OVER () AS total FROM {items} "
-            "ORDER BY filename, entity_key, evidence_index LIMIT ? OFFSET ?",
-            [*params, limit, offset],
-        )
-        if not rows:
-            return dict(empty, evidenceTotal=found["entity"].get("molecularEvidenceTotal", 0))
-        total = int(rows[0]["total"])
+        total = sum(int(c["evidence_count"] or 0) for c in copies)
+        items, start = [], 0
+        for copy in copies:
+            count = int(copy["evidence_count"] or 0)
+            first, last = max(offset - start, 0), min(offset + limit - start, count)
+            if first < last:
+                rows = engine._lookup(
+                    "entity_evidence",
+                    "entity_id",
+                    [(copy["resource"], copy["entity_id"])],
+                    extra="ORDER BY ordinal LIMIT ? OFFSET ?",
+                    params=[last - first, first],
+                )
+                for row in rows:
+                    for name in ("entity_id", "ordinal", "resource"):
+                        row.pop(name)
+                items += rows
+            start += count
+        end = offset + len(items)
         return dict(
-            evidence=[r["item"] for r in rows],
+            evidence=items,
             evidenceTotal=total,
-            nextCursor=str(offset + len(rows)) if offset + len(rows) < total else None,
+            nextCursor=str(end) if items and end < total else None,
         )
 
     return engine._detail_cache.get(
@@ -88,63 +79,43 @@ def evidence(engine, public_id, resources=None, limit=20, offset=0):
     )
 
 
+def _endpoint_page(engine, keys, resources, where="TRUE", params=(), limit=50, offset=0):
+    """A page of distinct (resource, relation_id, predicate) of relations with an
+    endpoint among ``keys``, ordered by predicate; each row carries the total."""
+    return engine._fetch_dicts(
+        f"""SELECT resource, relation_id, predicate, count(*) OVER () AS total FROM (
+            SELECT DISTINCT resource, relation_id, predicate
+            FROM {engine._table("relation_endpoint", resources)}
+            WHERE key IN (SELECT unnest(?::VARCHAR[])) AND key_kind = 'entity' AND {where})
+        ORDER BY predicate, resource, relation_id LIMIT ? OFFSET ?""",
+        [keys, *params, limit, offset],
+    )
+
+
+def _relations(engine, pairs):
+    """Relation rows for (resource, relation_id) pairs, in the pairs' order."""
+    found = {
+        (r["resource"], r["relation_id"]): r
+        for r in engine._lookup("relation", "relation_id", pairs)
+    }
+    return [found[pair] for pair in pairs if pair in found]
+
+
 def relationships(engine, public_id, resources=None, limit=50, offset=0):
     def load():
-        paths = engine._resolve_relation_paths(resources)
-        empty = dict(relationships=[], relationshipsTotal=0, nextCursor=None)
-        if not paths:
-            return empty
-        # Relation endpoints come from the per-resource adjacency projection, sorted
-        # by entity key; filename keeps source copies distinct and confines hydration.
         keys = list(dict.fromkeys(public_id if isinstance(public_id, list) else [public_id]))
+        empty = dict(relationships=[], relationshipsTotal=0, nextCursor=None)
         if not keys:
             return empty
-        adjacency, params = adjacency_rows(
-            engine,
-            paths,
-            keys,
-            "predicate IN ('has_input','has_output','enabled_by','has_member','has_part')",
-        )
-        rows = engine._fetch_dicts(
-            f"""SELECT filename, relation_row, relation_key, predicate, count(*) OVER () AS total
-            FROM (SELECT DISTINCT filename, relation_row, relation_key, predicate FROM {adjacency})
-            ORDER BY predicate, relation_key, filename LIMIT ? OFFSET ?""",
-            [*params, limit, offset],
+        marks = ",".join("?" for _ in STRUCTURAL)
+        rows = _endpoint_page(
+            engine, keys, resources, f"predicate IN ({marks})", STRUCTURAL, limit, offset
         )
         if not rows:
             return empty
-        # Relations are read by key (files are sorted by it) from the small-row-group
-        # copy, without their evidence: a page shows its count, not its items.
-        from omnipath_api.molecular import columns, read
-
-        hydrated = {}
-        for path in sorted({r["filename"] for r in rows}):
-            source = relation_rows_path(engine.data_root, path)
-            keys = [r["relation_key"] for r in rows if r["filename"] == path]
-            fields = "* EXCLUDE (evidence)" if "evidence" in columns([source]) else "*"
-            for record in engine._fetch_dicts(
-                f"SELECT {fields} FROM {read([source], union_by_name=True)} "
-                f"WHERE relation_key IN ({','.join('?' for _ in keys)})",
-                keys,
-            ):
-                hydrated[(path, record["relation_key"])] = record
-        records = [hydrated[(r["filename"], r["relation_key"])] for r in rows]
-        keys = sorted(
-            {r[side] for r in records for side in ("subject_entity_key", "object_entity_key")}
-        )
-        endpoints = {
-            r["entity_key"]: engine._to_entity_summary(r)
-            for r in engine._fetch_entities_by_keys(keys, resources, slim=True)
-        }
-        result = [
-            dict(
-                relation=engine._to_entity_relation(r),
-                subjectEntity=endpoints.get(r["subject_entity_key"]),
-                objectEntity=endpoints.get(r["object_entity_key"]),
-                annotations=r.get("annotations") or [],
-            )
-            for r in records
-        ]
+        records = _relations(engine, [(r["resource"], r["relation_id"]) for r in rows])
+        engine._children("relation_annotation", records, "annotations")
+        result = engine._relation_items(records, annotations=lambda r: r["annotations"])
         total = int(rows[0]["total"])
         return dict(
             relationships=result,
@@ -155,6 +126,40 @@ def relationships(engine, public_id, resources=None, limit=50, offset=0):
     return engine._relationship_cache.get(
         cache_key(engine, "relationships", public_id, resources, limit, offset), load
     )
+
+
+def details(engine, public_id, resources=None):
+    """The entity, its structural relationships, relation count and associations."""
+    found = core(engine, public_id, resources)
+    if not found:
+        return None
+    entity = found["entity"]
+    keys = list(dict.fromkeys([*(entity.get("sourceEntityPks") or []), entity["entityPk"]]))
+    counts = engine._fetch_dicts(
+        f"""SELECT count(*) AS n, count(*) FILTER (WHERE category = 'association') AS a FROM (
+            SELECT DISTINCT resource, relation_id, category
+            FROM {engine._table("relation_endpoint", resources)}
+            WHERE key IN (SELECT unnest(?::VARCHAR[])) AND key_kind = 'entity')""",
+        [keys],
+    )[0]
+    associations = []
+    if counts["a"]:
+        rows = _endpoint_page(engine, keys, resources, "category = 'association'", limit=100)
+        associations = [
+            {"relationPk": r["relation_key"], "predicate": r["predicate"]}
+            for r in sorted(
+                _relations(engine, [(r["resource"], r["relation_id"]) for r in rows]),
+                key=lambda r: (r["relation_key"], r["resource"]),
+            )
+        ]
+    page = relationships(engine, public_id, resources)
+    return {
+        "entity": entity,
+        "relationships": page["relationships"],
+        "relationshipsTotal": page["relationshipsTotal"],
+        "summary": {"interactionCount": int(counts["n"] or 0)},
+        "annotations": associations,
+    }
 
 
 def page_details(entity, limit=20, offset=0):

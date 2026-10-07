@@ -1,4 +1,4 @@
-"""Entities query service, including domain SQL and result shaping."""
+"""Entities query service: search, lookup by key and merging an entity's resource copies."""
 
 from __future__ import annotations
 
@@ -13,208 +13,193 @@ from typing import Any
 
 from omnipath_core.biolink import entity_type as biolink_entity_type
 
-from omnipath_api.serving_index import projected_paths
 from omnipath_api.models import normalize_filters, EntitySearchCursor
 from omnipath_api.shape import shape_entity_summary, shape_relation_summary
-from omnipath_api.annotations import (
-    normalize_identifier_type,
-)
 
 
 logger = logging.getLogger(__name__)
 
+# Term hits rank exact label, exact identifier, label prefix, identifier prefix;
+# label substring matches (the fallback phase) come after all of them.
+_TERM_RANK = (
+    "CASE WHEN term = ? THEN (CASE WHEN kind = 'label' THEN 1 ELSE 2 END) "
+    "ELSE (CASE WHEN kind = 'label' THEN 3 ELSE 4 END) END"
+)
+
+
+def _prefix_range(text):
+    """[low, high) bounds of the strings starting with ``text``."""
+    return text, text[:-1] + chr(ord(text[-1]) + 1)
+
+
+def _curie(query):
+    """(lowercase namespace, identifier) of a ``ns:id`` or ``ns|id`` query, else None."""
+    match = re.fullmatch(r"([A-Za-z][\w.-]*)[:|](.+)", query)
+    return (match.group(1).lower(), match.group(2)) if match else None
+
 
 class EntitiesQueries:
     """Entities queries over the engine storage and shaping contract."""
+
+    def _term_hits(self, query, resources=None):
+        """SQL and parameters of the prefix hits of a query: resource, entity_id,
+        match_rank, term and the namespace an entity must have (NULL for any).
+
+        Terms are lowercase labels and identifiers (``entity_term``). A ``ns:id`` query
+        also matches the identifier within that namespace, and an entity by its
+        reference key (``entity_group``).
+        """
+        q = query.strip().lower()
+        terms = self._table("entity_term", resources)
+        parts = [
+            f"SELECT resource, entity_id, {_TERM_RANK} AS match_rank, term, NULL::VARCHAR AS namespace "
+            f"FROM {terms} WHERE term >= ? AND term < ?"
+        ]
+        params = [q, *_prefix_range(q)]
+        if curie := _curie(query.strip()):
+            namespace, identifier = curie
+            parts.append(
+                f"SELECT resource, entity_id, {_TERM_RANK}, term, ? FROM {terms} "
+                "WHERE term >= ? AND term < ?"
+            )
+            params += [identifier.lower(), namespace, *_prefix_range(identifier.lower())]
+            parts.append(
+                f"SELECT resource, entity_id, 2, ?, NULL FROM {self._table('entity_group', resources)} "
+                "WHERE group_key = ? AND kind = 'reference'"
+            )
+            params += [q, f"{namespace}:{identifier}"]
+        return " UNION ALL ".join(parts), params
+
+    def _search_phases(self, query):
+        q = (query or "").strip()
+        if not q:
+            return ("all",)
+        if self._is_entity_key(q):
+            return ("key",)
+        return ("prefix", "contains")
+
+    def _phase_where(self, query, phase, resources=None):
+        """WHERE clause over the entity table selecting a query's matches in one phase."""
+        q = (query or "").strip()
+        if phase == "all":
+            return "TRUE", []
+        if phase == "key":
+            return "entity_key = ?", [q]
+        if phase == "contains":
+            return "contains(lower(label), ?)", [q.lower()]
+        hits, params = self._term_hits(q, resources)
+        return (
+            "((resource, entity_id) IN (SELECT resource, entity_id FROM hits WHERE namespace IS NULL) "
+            "OR (resource, entity_id, lower(namespace)) IN (SELECT resource, entity_id, namespace FROM hits))"
+        ).replace("hits", f"({hits})"), [*params, *params]
+
+    def _entity_match_where(self, query, clauses, params, resources=None):
+        """The first search phase with a match among filtered entities, as a WHERE clause.
+
+        Grouped views and facets select the same entities as the ungrouped search.
+        """
+        where = " AND ".join(clauses) or "TRUE"
+        phases = self._search_phases(query)
+        for phase in phases:
+            text, values = self._phase_where(query, phase, resources)
+            if len(phases) == 1 or self._fetch_dicts(
+                f"SELECT 1 FROM {self._table('entity', resources)} WHERE ({where}) AND {text} LIMIT 1",
+                [*params, *values],
+            ):
+                return f"({where}) AND {text}", [*params, *values]
+        return "FALSE", []
 
     def resolve_entity_keys(
         self,
         tokens: list[str] | None,
         resources: list[str] | None = None,
     ) -> list[str]:
-        """Map labels, identifiers, public ids, or keys to entity_key values."""
+        """Map labels, identifiers, ``ns:id`` / ``ns|id`` CURIEs, reference keys or entity
+        keys to entity keys, by exact (case-insensitive) match."""
         values = [str(t).strip() for t in (tokens or []) if str(t).strip()]
         if not values:
             return []
         keys, other = self._split_entity_tokens(values)
         found = list(keys)
-        if not other:
-            return list(dict.fromkeys(found))
-        paths = self._resolve_entity_paths(resources)
-        if not paths:
-            return list(dict.fromkeys(found))
-        read_expr = self._read_expr(paths)
-        placeholders = ", ".join("?" for _ in other)
-        upper_values = [v.upper() for v in other]
-        sql = f"""
-            SELECT DISTINCT entity_key
-            FROM {read_expr}
-            WHERE entity_key IN ({placeholders})
-               OR identifier IN ({placeholders})
-               OR UPPER(identifier) IN ({placeholders})
-               OR UPPER(label) IN ({placeholders})
-               OR UPPER(namespace || '|' || identifier) IN ({placeholders})
-               OR UPPER(namespace || ':' || identifier) IN ({placeholders})
-               OR UPPER(reference_entity_key) IN ({placeholders})
-               OR COALESCE(len(list_filter(identifiers, x -> upper(x.id) IN ({placeholders}))), 0) > 0
-        """
-        params = (
-            other
-            + other
-            + upper_values
-            + upper_values
-            + upper_values
-            + upper_values
-            + upper_values
-            + upper_values
-        )
-        rows = self._db.execute(sql, params).fetchall()
-        found.extend(str(row[0]) for row in rows if row and row[0])
+        if other:
+            terms = self._table("entity_term", resources)
+            # Exact keys (files are sorted by key), lowercase terms, and CURIEs below.
+            parts = [
+                f"SELECT resource, entity_id, NULL::VARCHAR AS namespace FROM {self._table('entity', resources)} "
+                f"WHERE entity_key IN ({','.join('?' for _ in other)})",
+                f"SELECT resource, entity_id, NULL FROM {terms} "
+                "WHERE term IN (SELECT unnest(?::VARCHAR[]))",
+            ]
+            params: list[Any] = [*other, [v.lower() for v in other]]
+            curies = [c for v in other if (c := _curie(v))]
+            if curies:
+                parts.append(
+                    f"SELECT resource, entity_id, namespace FROM {terms} JOIN "
+                    "(SELECT unnest(?::VARCHAR[]) AS namespace, unnest(?::VARCHAR[]) AS term) USING (term)"
+                )
+                params += [[ns for ns, _ in curies], [i.lower() for _, i in curies]]
+                parts.append(
+                    f"SELECT resource, entity_id, NULL FROM {self._table('entity_group', resources)} "
+                    "WHERE kind = 'reference' AND group_key IN (SELECT unnest(?::VARCHAR[]))"
+                )
+                params.append([f"{ns}:{i}" for ns, i in curies])
+            hits = self._fetch_dicts(" UNION ALL ".join(parts), params)
+            rows = self._lookup(
+                "entity",
+                "entity_id",
+                [(h["resource"], h["entity_id"]) for h in hits],
+                "entity_id, entity_key, namespace",
+            )
+            namespaces = defaultdict(set)
+            for hit in hits:
+                namespaces[(hit["resource"], hit["entity_id"])].add(hit["namespace"])
+            found += sorted(
+                row["entity_key"]
+                for row in rows
+                if namespaces[(row["resource"], row["entity_id"])]
+                & {None, str(row["namespace"] or "").lower()}
+            )
         return list(dict.fromkeys(found))
 
-    def search_entities(
-        self,
-        query: str = "",
-        resources: list[str] | None = None,
-        entity_types: list[str] | None = None,
-        taxon: str | None = None,
-        limit: int = 20,
-    ) -> dict[str, Any]:
-        """Fast autocomplete and entity search over entities.parquet."""
-        t0 = time.perf_counter()
-        paths = self._resolve_entity_paths(resources)
-        if not paths:
-            return {"rows": [], "elapsed_ms": 0.0, "total_scanned_files": 0}
-
-        read_expr = self._read_expr(paths)
-
-        where_clauses = ["1=1"]
-        params: list[Any] = []
-
-        if query:
-            clean_q = f"{query.strip()}%"
-            where_clauses.append("(label ILIKE ? OR identifier ILIKE ?)")
-            params.extend([clean_q, clean_q])
-
-        if entity_types:
-            placeholders = ", ".join("?" for _ in entity_types)
-            where_clauses.append(f"entity_type IN ({placeholders})")
-            params.extend(entity_types)
-
-        if taxon:
-            where_clauses.append("taxon = ?")
-            params.append(str(taxon))
-
-        where_sql = " AND ".join(where_clauses)
-        prefix = f"{query}%" if query else "%"
-        merged_rows = self._fetch_merged_entity_rows(
-            read_expr,
-            where_sql,
-            params,
-            rank_sql="MIN(CASE WHEN upper(label) = upper(?) THEN 1 WHEN label ILIKE ? THEN 2 ELSE 3 END)",
-            rank_params=[query, prefix],
-            limit=int(limit),
-            slim=True,
-        )
-        rows = [
-            {
-                "entity_key": row.get("entity_key"),
-                "label": row.get("label"),
-                "entity_type": row.get("entity_type"),
-                "namespace": row.get("namespace"),
-                "identifier": row.get("identifier"),
-                "taxon": row.get("taxon"),
-                "num_annotations": self._list_len(row.get("annotations")),
-            }
-            for row in merged_rows
-        ]
-        elapsed_ms = round((time.perf_counter() - t0) * 1000, 2)
-
-        return {
-            "rows": rows,
-            "count": len(rows),
-            "elapsed_ms": elapsed_ms,
-            "files_scanned": len(paths),
-        }
-
-    @staticmethod
-    def _list_len(value: Any) -> int:
-        return len(value) if isinstance(value, list) else 0
-
-    def _merge_duplicate_entity_rows(self, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        groups: dict[tuple[str, str, str], list[dict[str, Any]]] = defaultdict(list)
+    def _merge_by_key(self, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """One merged row per entity key, in the order keys first appear."""
+        groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
         for row in rows:
-            key = (
-                normalize_identifier_type(
-                    str(row.get("namespace") or ""), str(row.get("identifier") or "")
-                ),
-                str(row.get("identifier") or ""),
-                str(row.get("taxon") or ""),
-                str(row.get("entity_type") or ""),
-            )
-            groups[key].append(row)
+            groups[str(row["entity_key"])].append(row)
         return [self._merge_entity_row_group(members) for members in groups.values()]
 
     def _merge_entity_row_group(self, members: list[dict[str, Any]]) -> dict[str, Any]:
-        if len(members) == 1:
-            return members[0]
+        """One entity from its resource copies: the richest copy's scalars, the union of
+        their identifiers, annotations and evidence, and the keys and resources merged."""
+
+        def count(row, field):
+            nested = row.get(field)
+            return len(nested) if isinstance(nested, list) else int(row.get(f"{field[:-1]}_count") or 0)
 
         def rank(row: dict[str, Any]) -> tuple[Any, ...]:
             label = str(row.get("label") or "")
             ident = str(row.get("identifier") or "")
             gene_like = int(bool(re.fullmatch(r"[A-Z][A-Z0-9-]{1,14}", label)))
             return (
-                self._list_len(row.get("annotations")),
-                self._list_len(row.get("identifiers")),
+                count(row, "annotations"),
+                count(row, "identifiers"),
                 gene_like,
                 int(bool(label) and label != ident and not label.isdigit()),
                 # Equal-ranked resource copies must not depend on Parquet scan order.
                 label.casefold(),
                 label,
                 str(row.get("entity_key") or ""),
+                str(row.get("resource") or ""),
                 bool(row.get("has_hierarchy")),
                 int(row.get("parent_count") or 0),
                 int(row.get("child_count") or 0),
             )
 
         merged = dict(max(members, key=rank))
-        seen_ids: set[tuple[Any, Any]] = set()
-        identifiers: list[Any] = []
-        seen_anns: set[tuple[Any, ...]] = set()
-        annotations: list[Any] = []
-        for row in members:
-            for item in row.get("identifiers") or []:
-                if not isinstance(item, dict):
-                    continue
-                pair = (
-                    item.get("ns") or item.get("identifierType"),
-                    item.get("id") or item.get("identifier"),
-                )
-                if pair in seen_ids:
-                    continue
-                seen_ids.add(pair)
-                identifiers.append(item)
-            for item in row.get("annotations") or []:
-                if not isinstance(item, dict):
-                    continue
-                key = (
-                    item.get("term"),
-                    item.get("value"),
-                    json.dumps(item.get("quantity"), sort_keys=True),
-                    item.get("source"),
-                    item.get("dataset"),
-                    item.get("scope"),
-                )
-                if key in seen_anns:
-                    continue
-                seen_anns.add(key)
-                annotations.append(item)
-        merged["evidence"] = list(
-            {
-                json.dumps(item, sort_keys=True): item
-                for row in members
-                for item in row.get("evidence") or []
-            }.values()
+        merged["relation_count"] = sum(int(row.get("relation_count") or 0) for row in members)
+        merged["_resources"] = list(dict.fromkeys(row["resource"] for row in members if row.get("resource")))
+        merged["_source_entity_keys"] = list(
+            dict.fromkeys(str(row["entity_key"]) for row in members if row.get("entity_key"))
         )
         merged["gene_reference_keys"] = sorted(
             {ref for row in members for ref in row.get("gene_reference_keys") or []}
@@ -232,68 +217,20 @@ class EntitiesQueries:
             if references
             else None
         )
-        merged["identifiers"] = identifiers
-        merged["annotations"] = annotations
-        merged["_source_entity_keys"] = [
-            str(row.get("entity_key") or "") for row in members if row.get("entity_key")
-        ]
-        merged["_source_entity_keys"] = list(dict.fromkeys(merged["_source_entity_keys"]))
+        if len(members) == 1:
+            return merged
+        for field, identity in (
+            ("identifiers", lambda item: (item.get("ns"), item.get("id"))),
+            ("annotations", lambda item: json.dumps(item, sort_keys=True, default=str)),
+            ("evidence", lambda item: json.dumps(item, sort_keys=True, default=str)),
+        ):
+            if any(field in row for row in members):
+                items = {}
+                for row in members:
+                    for item in row.get(field) or []:
+                        items.setdefault(identity(item), item)
+                merged[field] = list(items.values())
         return merged
-
-    def _fetch_merged_entity_rows(
-        self,
-        read_expr: str,
-        where_sql: str,
-        params: list[Any],
-        *,
-        rank_sql: str = "MIN(0)",
-        rank_params: list[Any] | None = None,
-        limit: int | None = None,
-        slim: bool = False,
-        after: dict[str, Any] | None = None,
-    ) -> list[dict[str, Any]]:
-        """Load every resource copy of each matching identity, then merge them.
-
-        Search hits are grouped by (namespace, identifier, taxon). Copies that did
-        not themselves match the WHERE clause are still included so UniProt
-        annotations and SIGNOR identifiers land on the same entity.
-        """
-        limit_sql = f"LIMIT {int(limit)}" if limit is not None else ""
-        nested_cols = "" if slim else ", e.identifiers, e.annotations"
-        identities = f"""SELECT namespace, identifier, entity_type, coalesce(taxon, '') AS taxon,
-                                {rank_sql} AS match_rank, coalesce(MIN(label), '') AS sort_label
-            FROM {read_expr} WHERE {where_sql}
-            GROUP BY namespace, identifier, entity_type, coalesce(taxon, '')
-            """
-        query_params = list(rank_params or []) + list(params)
-        after_sql = ""
-        if after:
-            after_sql = "WHERE (match_rank, sort_label, namespace, identifier, taxon, entity_type) > (?, ?, ?, ?, ?, ?)"
-            query_params.extend(
-                after[key]
-                for key in (
-                    "matchRank",
-                    "sortLabel",
-                    "namespace",
-                    "identifier",
-                    "taxon",
-                    "entityType",
-                )
-            )
-        identities = f"SELECT * FROM ({identities}) identities {after_sql} ORDER BY match_rank, sort_label, namespace, identifier, taxon, entity_type {limit_sql}"
-        # SELECT placeholders precede WHERE placeholders in this query.
-        sql = f"""WITH identities AS ({identities})
-            SELECT e.entity_key, e.entity_type, e.namespace, e.identifier, e.taxon, e.label,
-                   e.has_hierarchy, e.parent_count, e.child_count, e.reference_entity_key, e.gene_reference_keys{nested_cols}, i.match_rank AS _match_rank, i.sort_label AS _sort_label
-            FROM {read_expr} e
-            INNER JOIN identities i
-              ON e.entity_type IS NOT DISTINCT FROM i.entity_type
-             AND e.namespace = i.namespace
-             AND e.identifier = i.identifier
-             AND COALESCE(e.taxon, '') = i.taxon
-            ORDER BY i.match_rank, i.sort_label, i.namespace, i.identifier, i.taxon, e.entity_key
-        """
-        return self._merge_duplicate_entity_rows(self._fetch_dicts(sql, query_params))
 
     def _taxonomy_names(self) -> dict[str, str]:
         scoped = self._taxonomy_scope.get()
@@ -340,53 +277,42 @@ class EntitiesQueries:
         return result
 
     def _to_entity_relation(self, row: dict[str, Any]) -> dict[str, Any]:
+        if "annotations" not in row:
+            self._with_qualifiers(row)
         return shape_relation_summary(row)
 
-    def _endpoint_entities_by_pk(
-        self,
-        rows: list[dict[str, Any]],
-        resources: list[str] | None = None,
-    ) -> dict[str, dict[str, Any]]:
-        keys: list[str] = []
-        for row in rows:
-            for side in ("subject_entity_key", "object_entity_key"):
-                key = str(row.get(side) or "").strip()
-                if key:
-                    keys.append(key)
-        if not keys:
-            return {}
-        found = self.get_entities_by_pks(keys, resources, slim=True).get("entities") or []
-        by_pk: dict[str, dict[str, Any]] = {}
-        for entity in found:
-            for pk in entity.get("sourceEntityPks") or [entity.get("entityPk")]:
-                key = str(pk or "").strip()
-                if key:
-                    by_pk[key] = entity
-        return by_pk
-
-    def _entity_from_relation_endpoint(self, row: dict[str, Any], side: str) -> dict[str, Any]:
-        prefix = "subject" if side == "subject" else "object"
+    def _endpoint_summary(self, row: dict[str, Any], side: str, endpoints) -> dict[str, Any]:
+        """A relation endpoint's entity from its resource, or from the relation's columns."""
+        found = endpoints.get((row.get("resource"), row.get(f"{side}_entity_key")))
+        if found is not None:
+            return self._to_entity_summary(found)
         return self._to_entity_summary(
             {
-                "entity_key": row.get(f"{prefix}_entity_key"),
-                "namespace": row.get(f"{prefix}_type") or "unknown",
-                "identifier": row.get(f"{prefix}_label") or row.get(f"{prefix}_entity_key"),
-                "label": row.get(f"{prefix}_label"),
-                "entity_type": row.get(f"{prefix}_type"),
+                "entity_key": row.get(f"{side}_entity_key"),
+                "namespace": row.get(f"{side}_type") or "unknown",
+                "identifier": row.get(f"{side}_label") or row.get(f"{side}_entity_key"),
+                "label": row.get(f"{side}_label"),
+                "entity_type": row.get(f"{side}_type"),
                 "taxon": row.get("taxon"),
-                "identifiers": [],
-                "annotations": [],
+                "reference_entity_key": row.get(f"{side}_reference_entity_key"),
             }
         )
 
-    def _hydrated_endpoint(
-        self, row: dict[str, Any], side: str, by_pk: dict[str, dict[str, Any]]
-    ) -> dict[str, Any]:
-        prefix = "subject" if side == "subject" else "object"
-        key = str(row.get(f"{prefix}_entity_key") or "")
-        if key and key in by_pk:
-            return by_pk[key]
-        return self._entity_from_relation_endpoint(row, side)
+    def _relation_items(self, rows: list[dict[str, Any]], **extra) -> list[dict[str, Any]]:
+        """Relation rows with their endpoint entities, as the API returns them.
+
+        ``extra`` maps response fields to functions of the relation row.
+        """
+        endpoints = self._endpoint_rows(rows)
+        return [
+            {
+                "relation": self._to_entity_relation(row),
+                "subjectEntity": self._endpoint_summary(row, "subject", endpoints),
+                "objectEntity": self._endpoint_summary(row, "object", endpoints),
+                **{name: value(row) for name, value in extra.items()},
+            }
+            for row in rows
+        ]
 
     def _entity_filter_clauses(
         self,
@@ -418,55 +344,12 @@ class EntitiesQueries:
             params.append(keys)
         return clauses, params
 
-    def _looks_like_accession(self, query: str) -> bool:
-        q = (query or "").strip()
-        if not q:
-            return False
-        if "|" in q or ":" in q:
-            return True
-        if len(q) >= 6 and any(ch.isdigit() for ch in q):
-            return True
-        return bool(re.fullmatch(r"[OPQ][0-9][A-Z0-9]{3}[0-9](?:-\d+)?", q, re.I))
-
-    def _entity_text_where(self, query: str, *, mode: str = "prefix") -> tuple[str, list[Any]]:
-        q = (query or "").strip()
-        if not q:
-            return "1=1", []
-        if self._is_entity_key(q):
-            return "entity_key = ?", [q]
-        prefix = f"{q}%"
-        if mode == "nested":
-            return (
-                "COALESCE(len(list_filter(identifiers, x -> x.id ILIKE ? OR upper(x.id) = ?)), 0) > 0",
-                [prefix, q.upper()],
-            )
-        if mode == "contains":
-            contains = f"%{q}%"
-            return ("label ILIKE ?", [contains])
-        clauses = ["label ILIKE ?"]
-        params: list[Any] = [prefix]
-        if self._looks_like_accession(q):
-            clauses.extend(
-                [
-                    "identifier ILIKE ?",
-                    "(namespace || '|' || identifier) ILIKE ?",
-                    "reference_entity_key ILIKE ?",
-                    "(namespace || ':' || identifier) ILIKE ?",
-                ]
-            )
-            params.extend([prefix, prefix, prefix, prefix])
-        return f"({' OR '.join(clauses)})", params
-
     def search_entity_groups(self, *, strategy="chemical_connectivity", **kwargs):
-        from omnipath_api.queries.connectivity import search_groups
-        from omnipath_api.queries.gene_reference import search_groups as gene_groups
+        from omnipath_api.queries.groups import search_groups
 
-        if strategy == "auto":
-            return gene_groups(self, mixed=True, **kwargs)
-        strategies = {"chemical_connectivity": search_groups, "gene_reference": gene_groups}
-        if strategy not in strategies:
+        if strategy not in {"auto", "chemical_connectivity", "gene_reference"}:
             raise ValueError(f"Unknown grouping strategy: {strategy}")
-        return strategies[strategy](self, **kwargs)
+        return search_groups(self, strategy=strategy, **kwargs)
 
     def search_connectivity_groups(self, **kwargs):
         return self.search_entity_groups(strategy="chemical_connectivity", **kwargs)
@@ -481,6 +364,62 @@ class EntitiesQueries:
 
         return get_examples(self)
 
+    def _search_page(self, query, phase, where, params, resources, count):
+        """Entity rows of the first ``count`` matching entity keys, grouped by key in
+        match order: rank, then shorter terms (or labels), then key."""
+        q = (query or "").strip()
+        if phase == "prefix":
+            return self._prefix_page(q, where, params, resources, count)
+        text, values = self._phase_where(q, phase, resources)
+        order = "length(sort_label), sort_label, entity_key" if phase == "contains" else "entity_key"
+        return self._fetch_dicts(
+            f"""WITH matched AS (
+                SELECT * FROM {self._table("entity", resources)} WHERE ({where}) AND {text}
+            ), page AS (
+                SELECT entity_key, row_number() OVER (ORDER BY {order}) AS position
+                FROM (SELECT entity_key, coalesce(min(label), '') AS sort_label FROM matched GROUP BY entity_key)
+                ORDER BY position LIMIT ?
+            ) SELECT matched.* FROM matched JOIN page USING (entity_key)
+            ORDER BY page.position, matched.resource""",
+            [*params, *values, count],
+        )
+
+    def _prefix_page(self, query, where, params, resources, count):
+        """Term hits in match order, read per resource until ``count`` keys pass the
+        filters. Hits are cheap (``entity_term`` is sorted by term); entity rows are read
+        only for the hits needed, at most doubling the number read each round."""
+        hits, values = self._term_hits(query, resources)
+        ordered = f"""SELECT resource, entity_id, min(match_rank) AS match_rank,
+              min(length(term)) AS term_length, min(term) AS term,
+              list(DISTINCT namespace) FILTER (WHERE namespace IS NOT NULL) AS namespaces,
+              bool_or(namespace IS NULL) AS any_namespace
+            FROM ({hits}) GROUP BY resource, entity_id
+            ORDER BY match_rank, term_length, term, resource, entity_id LIMIT ?"""
+        limit = max(4 * count, 64)
+        while True:
+            found = self._fetch_dicts(ordered, [*values, limit])
+            rows = self._lookup(
+                "entity",
+                "entity_id",
+                [(h["resource"], h["entity_id"]) for h in found],
+                extra=f"AND ({where})",
+                params=params,
+            )
+            by_hit = {(r["resource"], r["entity_id"]): r for r in rows}
+            ordered_rows = []
+            for hit in found:
+                row = by_hit.get((hit["resource"], hit["entity_id"]))
+                if row is not None and (
+                    hit["any_namespace"]
+                    or str(row["namespace"] or "").lower() in (hit["namespaces"] or [])
+                ):
+                    ordered_rows.append(row)
+            keys = list(dict.fromkeys(r["entity_key"] for r in ordered_rows))
+            if len(keys) >= count or len(found) < limit:
+                wanted = set(keys[:count])
+                return [r for r in ordered_rows if r["entity_key"] in wanted]
+            limit *= 4
+
     def search_entities_api(
         self,
         query: str = "",
@@ -491,96 +430,41 @@ class EntitiesQueries:
     ) -> dict[str, Any]:
         t0 = time.perf_counter()
         filters = normalize_filters(filters)
-        paths = self._resolve_entity_paths(resources or filters.get("sources"))
-        if not paths:
+        scope = resources or filters.get("sources") or None
+        infos = self._selected_resource_infos(scope)
+        if not infos:
             return {"entities": [], "nextCursor": None, "total": 0, "elapsed_ms": 0.0}
-
-        read_expr = self._read_expr(paths)
-        scalar_expr = self._read_expr(projected_paths(self.data_root, "entities", paths))
         q = (query or "").strip()
         query_key = hashlib.sha256(
-            json.dumps([q, filters, paths], sort_keys=True).encode()
+            json.dumps([q, filters, sorted(i["key"] for i in infos)], sort_keys=True).encode()
         ).hexdigest()
+        offset = 0
+        phases = self._search_phases(q)
         if cursor:
             cursor = EntitySearchCursor.model_validate(cursor).model_dump()
             if cursor["queryKey"] != query_key:
                 raise ValueError("Entity cursor belongs to another query")
-        filter_clauses, filter_params = self._entity_filter_clauses(filters, resources=resources)
-        fetch_limit = int(limit) + 1
-        prefix = f"{q}%"
-        rank_sql = """
-                MIN(CASE WHEN ? <> '' AND upper(label) = upper(?) THEN 1
-                         WHEN ? <> '' AND upper(identifier) = upper(?) THEN 2
-                         WHEN ? <> '' AND label ILIKE ? THEN 3
-                         WHEN ? <> '' AND identifier ILIKE ? THEN 4
-                         ELSE 5 END)
-            """
-        rank_params = [q, q, q, q, q, prefix, q, prefix]
-        if not q or self._is_entity_key(q):
-            modes = ("prefix",)
-        else:
-            modes = ("prefix", "contains", "nested")
-        if cursor:
-            modes = (cursor["phase"],)
-        rows: list[dict[str, Any]] = []
-        for mode in modes:
-            text_sql, text_params = self._entity_text_where(q, mode=mode)
-            rows = self._fetch_merged_entity_rows(
-                read_expr if mode == "nested" else scalar_expr,
-                " AND ".join([text_sql, *filter_clauses]),
-                [*text_params, *filter_params],
-                rank_sql=rank_sql,
-                rank_params=rank_params,
-                limit=fetch_limit,
-                slim=True,
-                after=cursor,
-            )
-            if rows:
+            offset, phases = cursor["offset"], (cursor["phase"],)
+        clauses, params = self._entity_filter_clauses(filters, resources=resources)
+        where = " AND ".join(clauses) or "TRUE"
+        merged: list[dict[str, Any]] = []
+        phase = phases[0]
+        for phase in phases:
+            rows = self._search_page(q, phase, where, params, scope, offset + int(limit) + 1)
+            merged = self._merge_by_key(rows)
+            if merged:
                 break
-        page = rows[: int(limit)]
-        from omnipath_api.name_index import lookup_names
-        from omnipath_core.display_names import CHEMICAL_TYPES, preferred_name
-
-        chemical_rows = [
-            row
-            for row in page
-            if str(row.get("entity_type") or "").replace("_", "").lower() in CHEMICAL_TYPES
-        ]
-        keys = list(
-            {
-                key
-                for row in chemical_rows
-                for key in row.get("_source_entity_keys", [row["entity_key"]])
-            }
+        page = merged[offset : offset + int(limit)]
+        more = len(merged) > offset + int(limit)
+        next_cursor = (
+            {"phase": phase, "offset": offset + int(limit), "queryKey": query_key} if more else None
         )
-        names = lookup_names(self, paths, keys)
-        for row in chemical_rows:
-            row["_display_name"] = preferred_name(
-                names.get(key) for key in row.get("_source_entity_keys", [row["entity_key"]])
-            )
         entities = [self._to_entity_summary(row) for row in page]
-        next_cursor = None
-        if len(rows) > int(limit) and page:
-            last = page[-1]
-            next_cursor = {
-                "relationCount": 0,
-                "entityPk": str(last["entity_key"]),
-                "phase": mode,
-                "matchRank": int(last["_match_rank"]),
-                "sortLabel": last["_sort_label"],
-                "namespace": last["namespace"],
-                "identifier": last["identifier"],
-                "entityType": last.get("entity_type") or "",
-                "taxon": last.get("taxon") or "",
-                "queryKey": query_key,
-            }
-
-        elapsed_ms = round((time.perf_counter() - t0) * 1000, 2)
         return {
             "entities": entities,
             "nextCursor": next_cursor,
-            "total": len(entities) if next_cursor is None else int(limit) + 1,
-            "elapsed_ms": elapsed_ms,
+            "total": offset + len(entities) + int(more),
+            "elapsed_ms": round((time.perf_counter() - t0) * 1000, 2),
         }
 
     def _fetch_entities_by_keys(
@@ -589,36 +473,21 @@ class EntitiesQueries:
         resources: list[str] | None = None,
         *,
         slim: bool = False,
-        evidence: bool = True,
+        evidence: bool = False,
     ) -> list[dict[str, Any]]:
-        paths = self._resolve_entity_paths(resources)
-        if not paths or not keys:
+        """Merged entities by key; ``slim`` leaves out identifiers and annotations."""
+        keys = list(dict.fromkeys(str(k) for k in keys if k))
+        if not keys:
             return []
-        from omnipath_api.serving_index import entity_rows_paths
-
-        if slim:
-            read_expr = self._read_expr(projected_paths(self.data_root, "entities", paths))
-        elif evidence:
-            read_expr = self._read_expr(paths)
-        else:
-            read_expr = self._read_expr(entity_rows_paths(self.data_root, paths))
-        placeholders = ", ".join("?" for _ in keys)
-        cols = self._ENTITY_SCALAR_COLS
-        if not slim:
-            cols = f"{cols}, identifiers, annotations"
-            from omnipath_api.molecular import columns
-
-            if evidence and "evidence" in columns(paths):
-                cols += ", evidence"
-        rows = self._fetch_dicts(
-            f"SELECT {cols} FROM {read_expr} WHERE entity_key IN ({placeholders})",
-            keys,
+        rows = self._entity_rows(
+            "entity_key IN (SELECT unnest(?::VARCHAR[]))",
+            [keys],
+            resources,
+            nested=not slim,
+            evidence=evidence,
         )
-        # A key-addressed lookup must not collapse distinct keys by accession.
-        groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
-        for row in rows:
-            groups[str(row["entity_key"])].append(row)
-        return [self._merge_entity_row_group(group) for group in groups.values()]
+        merged = {row["entity_key"]: row for row in self._merge_by_key(rows)}
+        return [merged[key] for key in keys if key in merged]
 
     def get_entities_by_pks(
         self,
@@ -630,31 +499,8 @@ class EntitiesQueries:
         values = [str(v).strip() for v in pks if str(v).strip()]
         if not values:
             return {"entities": []}
-        keys, other = self._split_entity_tokens(values)
-        rows: list[dict[str, Any]] = []
-        if keys:
-            rows.extend(self._fetch_entities_by_keys(keys, resources, slim=slim))
-        if other:
-            paths = self._resolve_entity_paths(resources)
-            if paths:
-                read_expr = self._read_expr(paths)
-                placeholders = ", ".join("?" for _ in other)
-                where_sql = f"""
-                    entity_key IN ({placeholders})
-                       OR identifier IN ({placeholders})
-                       OR UPPER(namespace || '|' || identifier) IN ({placeholders})
-                       OR COALESCE(len(list_filter(identifiers, x -> upper(x.id) IN ({placeholders}))), 0) > 0
-                """
-                upper_values = [v.upper() for v in other]
-                rows.extend(
-                    self._fetch_merged_entity_rows(
-                        read_expr,
-                        where_sql,
-                        other + other + upper_values + upper_values,
-                    )
-                )
-                if keys:
-                    rows = self._merge_duplicate_entity_rows(rows)
+        keys = self.resolve_entity_keys(values, resources)
+        rows = self._fetch_entities_by_keys(keys, resources, slim=slim)
         return {"entities": [self._to_entity_summary(row) for row in rows]}
 
     def get_entities_by_public_ids(
@@ -682,58 +528,9 @@ class EntitiesQueries:
     ) -> dict[str, Any] | None:
         # Details are addressed solely by the exact entity key. Identifier and
         # alias discovery belongs to search, never to single-entity hydration.
-        from omnipath_api.entity_details import evidence_total
+        from omnipath_api.entity_details import details
 
-        # Evidence is paged from its own endpoint; details carry only its count.
-        rows = self._fetch_entities_by_keys([public_id], resources, evidence=False)
-        if not rows:
-            return None
-        entity = self._to_entity_summary(rows[0])
-        entity["molecularEvidenceTotal"] = evidence_total(self, entity, resources)
-        rel_paths = self._resolve_relation_paths(resources)
-        interaction_count = 0
-        annotations: list[dict[str, Any]] = []
-        relationships: list[dict[str, Any]] = []
-        relationships_total = 0
-        if rel_paths:
-            from omnipath_api.serving_index import adjacency_rows
-
-            keys = [str(k) for k in (entity.get("sourceEntityPks") or []) if str(k).strip()]
-            if entity.get("entityPk") and str(entity["entityPk"]) not in keys:
-                keys.append(str(entity["entityPk"]))
-            if not keys:
-                keys = [str(entity.get("entityPk") or "")]
-            adjacency, params = adjacency_rows(self, rel_paths, keys)
-            # One relation counts once, also when both its endpoints are in ``keys``.
-            counts = self._fetch_dicts(
-                f"""SELECT count(*) AS n, count(*) FILTER (WHERE category = 'association') AS a
-                FROM (SELECT DISTINCT filename, relation_row, category FROM {adjacency})""",
-                params,
-            )[0]
-            interaction_count = int(counts["n"] or 0)
-            assoc_rows = []
-            if counts["a"]:
-                adjacency, params = adjacency_rows(
-                    self, rel_paths, keys, "category = 'association'"
-                )
-                assoc_rows = self._fetch_dicts(
-                    f"""SELECT DISTINCT filename, relation_row, relation_key, predicate
-                    FROM {adjacency} ORDER BY relation_key, filename, relation_row LIMIT 100""",
-                    params,
-                )
-            annotations = [
-                {"relationPk": r["relation_key"], "predicate": r["predicate"]} for r in assoc_rows
-            ]
-            page = self.get_entity_relationships(public_id, resources)
-            relationships = page["relationships"]
-            relationships_total = page["relationshipsTotal"]
-        return {
-            "entity": entity,
-            "relationships": relationships,
-            "relationshipsTotal": relationships_total,
-            "summary": {"interactionCount": interaction_count},
-            "annotations": annotations,
-        }
+        return details(self, public_id, resources)
 
     def resolve_identifiers(
         self, identifiers: list[str], resources: list[str] | None = None

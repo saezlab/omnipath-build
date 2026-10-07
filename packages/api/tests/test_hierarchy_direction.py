@@ -1,37 +1,38 @@
 """Ontology projection uses declared statement context, not resource/type lists."""
 
-import pyarrow as pa
-import pyarrow.parquet as pq
 from omnipath_api.engine import ParquetServingEngine
+from table_fixture import write_resource
 
 
 def test_composition_is_not_an_ontology_but_axioms_are(tmp_path):
-    target = tmp_path / "resources/arbitrary_source/1"
-    target.mkdir(parents=True)
-    pq.write_table(
-        pa.table(
-            {
-                "entity_key": ["food", "compound", "term", "class", "unrelated"],
-                "identifier": ["FOOD00005", "FDB1", "TERM", "CLASS", "OTHER"],
-                "label": ["Allium", "Compound", "Term", "Class", "Other"],
-                "namespace": ["arbitrary"] * 5,
-            }
-        ),
-        target / "entities.parquet",
-    )
-    pq.write_table(
-        pa.table(
-            {
-                "subject_entity_key": ["food", "class", "term"],
-                "subject_label": ["Allium", "Class", "Term"],
-                "object_entity_key": ["compound", "term", "unrelated"],
-                "object_label": ["Compound", "Term", "Other"],
-                "predicate": ["has_part", "has_part", "related_to"],
-                "statement_kind": ["relation", "ontology", "ontology"],
-            }
-        ),
-        target / "relations.parquet",
-    )
+    entities = [
+        dict(entity_key=key, identifier=identifier, label=label, namespace="arbitrary")
+        for key, identifier, label in [
+            ("food", "FOOD00005", "Allium"),
+            ("compound", "FDB1", "Compound"),
+            ("term", "TERM", "Term"),
+            ("class", "CLASS", "Class"),
+            ("unrelated", "OTHER", "Other"),
+        ]
+    ]
+    labels = {e["entity_key"]: e["label"] for e in entities}
+    relations = [
+        dict(
+            relation_key=f"{subject}-{obj}",
+            subject_entity_key=subject,
+            subject_label=labels[subject],
+            object_entity_key=obj,
+            object_label=labels[obj],
+            predicate=predicate,
+            statement_kind=kind,
+        )
+        for subject, obj, predicate, kind in [
+            ("food", "compound", "has_part", "relation"),
+            ("class", "term", "has_part", "ontology"),
+            ("term", "unrelated", "related_to", "ontology"),
+        ]
+    ]
+    write_resource(tmp_path / "resources/arbitrary_source/1", entities, relations)
     engine = ParquetServingEngine(data_root=tmp_path)
     food = engine.get_ontology_tree(["FOOD00005"])["root"]
     assert food is None

@@ -1,9 +1,7 @@
-import pyarrow as pa
-import pyarrow.parquet as pq
 from fastapi.testclient import TestClient
 from omnipath_api.engine import ParquetServingEngine
 from omnipath_api.server import create_app
-from omnipath_core.schema import ENTITY_SCHEMA, RELATION_SCHEMA
+from table_fixture import rewrite_resource, write_resource
 
 
 def test_details_never_resolve_accessions_aliases_or_text(tmp_path, monkeypatch):
@@ -27,16 +25,15 @@ def test_details_never_resolve_accessions_aliases_or_text(tmp_path, monkeypatch)
             ("trait-key", "ontology_class", "macdb_trait", "Acinar carcinoma"),
         ]
     ]
-    pq.write_table(pa.Table.from_pylist(rows, schema=ENTITY_SCHEMA), folder / "entities.parquet")
-    pq.write_table(pa.Table.from_pylist([], schema=RELATION_SCHEMA), folder / "relations.parquet")
+    write_resource(folder, rows, [])
     engine = ParquetServingEngine(data_root=tmp_path)
 
     def unexpected_search(*args, **kwargs):
         raise AssertionError("Details must never invoke identifier resolution or search")
 
     monkeypatch.setattr(engine, "get_entities_by_pks", unexpected_search)
+    monkeypatch.setattr(engine, "resolve_entity_keys", unexpected_search)
     monkeypatch.setattr(engine, "search_entities_api", unexpected_search)
-    monkeypatch.setattr(engine, "search_entities", unexpected_search)
     client = TestClient(create_app(engine=engine))
     for key, label in [("complex-key", "BCL6-HDAC4"), ("trait-key", "Acinar carcinoma")]:
         response = client.get("/entities/" + key)
@@ -72,9 +69,7 @@ def test_detail_composition_uses_exact_endpoint_keys_and_keeps_quantities(tmp_pa
             ("chemical-key", "chemical_entity", "Constituent"),
         ]
     ]
-    pq.write_table(
-        pa.Table.from_pylist(entities, schema=ENTITY_SCHEMA), folder / "entities.parquet"
-    )
+    rewrite_resource(folder / "entity.parquet", entities=entities)
     relation = dict(
         relation_key="composition",
         subject_entity_key="food-key",
@@ -93,9 +88,7 @@ def test_detail_composition_uses_exact_endpoint_keys_and_keeps_quantities(tmp_pa
             )
         ],
     )
-    pq.write_table(
-        pa.Table.from_pylist([relation], schema=RELATION_SCHEMA), folder / "relations.parquet"
-    )
+    rewrite_resource(folder / "relation.parquet", relations=[relation])
     engine = ParquetServingEngine(data_root=tmp_path)
     detail = TestClient(create_app(engine=engine)).get("/entities/food-key").json()
     assert detail["relationshipsTotal"] == 1
