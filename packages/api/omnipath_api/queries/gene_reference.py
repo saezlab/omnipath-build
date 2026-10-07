@@ -167,7 +167,7 @@ def _search_groups(
             by_key[row["entity_key"]].append(row)
         members = [engine._merge_entity_row_group(copies) for copies in by_key.values()]
         if include_details:
-            members = engine._fetch_entities_by_keys(list(by_key), scope)
+            members = engine._fetch_entities_by_keys(list(by_key), scope, evidence=False)
         members.sort(key=lambda row: row["entity_key"])
         chemical = bool(group["connectivity"])
         if chemical and include_details:

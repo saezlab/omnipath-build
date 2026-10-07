@@ -405,6 +405,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/entities/{entity_id}/evidence": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Entity Evidence
+         * @description A page of the entity's molecular evidence: where and how sources state it.
+         */
+        get: operations["entity_evidence_entities__entity_id__evidence_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/entities/{entity_id}/molecular-context": {
         parameters: {
             query?: never;
@@ -1473,6 +1493,11 @@ export interface components {
             label?: string | null;
             /** Molecularevidence */
             molecularEvidence?: components["schemas"]["EntityMolecularEvidence"][];
+            /**
+             * Molecularevidencetotal
+             * @default 0
+             */
+            molecularEvidenceTotal: number;
             /** Ontologyhierarchy */
             ontologyHierarchy?: {
                 [key: string]: unknown;
@@ -3262,6 +3287,49 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["EntityDetailsResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    entity_evidence_entities__entity_id__evidence_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path: {
+                entity_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
                 };
             };
             /** @description Validation Error */

@@ -194,6 +194,7 @@ class EntitySummary(APIModel):
     referenceEntityKey: str | None = None
     geneReferenceKeys: list[str] = Field(default_factory=list)
     molecularEvidence: list[EntityMolecularEvidence] = Field(default_factory=list)
+    molecularEvidenceTotal: int = 0
     canonicalIdentifier: str | None = None
     canonicalIdentifierType: str | None = None
     entityType: str | None = None

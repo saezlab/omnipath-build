@@ -18,7 +18,7 @@ import time
 from omnipath_api.store.connection import format_read_parquet, get_connection
 from omnipath_api.molecular import read, columns, occurrences_expression
 
-VERSION = "v4"
+VERSION = "v5"
 ENTITY_COLUMNS = "entity_key, entity_type, namespace, identifier, taxon, label, has_hierarchy, parent_count, child_count, reference_entity_key, gene_reference_keys"
 RELATION_COLUMNS = (
     "relation_key, subject_entity_key, subject_label, subject_type, predicate, "
@@ -81,6 +81,76 @@ def copy_rows(source, target, row_group_size):
     with pq.ParquetWriter(target, reader.schema_arrow, compression="zstd") as writer:
         for batch in reader.iter_batches(batch_size=row_group_size):
             writer.write_batch(batch, row_group_size=row_group_size)
+
+
+def explode_evidence(source, target, row_group_size=4096, batch_size=8192):
+    """One row per entity evidence item: entity_key, evidence_index, item.
+
+    Entity files are sorted by key, so the output is too. Streaming keeps memory
+    bounded; a common chemical carries thousands of items in one cell.
+    """
+    import pyarrow as pa
+    import pyarrow.compute as pc
+    import pyarrow.parquet as pq
+
+    reader = pq.ParquetFile(source)
+    names = reader.schema_arrow.names
+    item = (
+        reader.schema_arrow.field("evidence").type.value_type
+        if "evidence" in names
+        else pa.struct([("source", pa.string())])
+    )
+    schema = pa.schema(
+        [("entity_key", pa.string()), ("evidence_index", pa.int64()), ("item", item)]
+    )
+    with pq.ParquetWriter(target, schema, compression="zstd") as writer:
+        if "evidence" not in names:
+            writer.write_table(schema.empty_table())
+            return
+        for batch in reader.iter_batches(batch_size=batch_size, columns=["entity_key", "evidence"]):
+            lists = batch.column("evidence")
+            parents = pc.list_parent_indices(lists)
+            items = pc.list_flatten(lists)
+            if not len(items):
+                continue
+            # Position within its entity's list: the flat position minus the list's start.
+            starts = pc.take(lists.offsets, parents)
+            flat = pa.array(range(len(items)), pa.int64())
+            index = pc.subtract(pc.add(flat, lists.offsets[0].as_py()), pc.cast(starts, pa.int64()))
+            writer.write_table(
+                pa.table(
+                    [pc.take(batch.column("entity_key"), parents), index, items], schema=schema
+                ),
+                row_group_size=row_group_size,
+            )
+
+
+def evidence_rows(engine, paths, keys):
+    """Evidence items of ``keys``: filename (the original entity file), entity_key,
+    evidence_index and item, from the evidence projection or the original file."""
+    indexed, plain = _split(engine.data_root, "entity_evidence", paths)
+    marks = ",".join("?" for _ in keys)
+    parts, values = [], []
+    if indexed:
+        parts.append(
+            f"""SELECT m.filename, entity_key, evidence_index, item
+            FROM {format_read_parquet([p for p, _ in indexed], filename=True)} a
+            JOIN (SELECT unnest(?::VARCHAR[]) AS projection, unnest(?::VARCHAR[]) AS filename) m
+              ON a.filename = m.projection
+            WHERE entity_key IN ({marks})"""
+        )
+        values += [[p for p, _ in indexed], [o for _, o in indexed], *keys]
+    plain = [p for p in plain if "evidence" in columns([p])]
+    if plain:
+        parts.append(
+            f"""SELECT filename, entity_key, generate_subscripts(evidence, 1) - 1 AS evidence_index,
+              unnest(evidence) AS item
+            FROM {format_read_parquet(plain, filename=True)} WHERE entity_key IN ({marks})"""
+        )
+        values += keys
+    if not parts:
+        return None, []
+    return "(" + " UNION ALL ".join(parts) + ")", values
 
 
 def relation_rows_path(root, path):
@@ -211,6 +281,12 @@ def build_indexes(engine, *, threads=4, memory_limit="2GB", min_free_disk=20 * 1
                     list_distinct(list_transform(list_filter(annotations, a -> a.scope='relation' AND a.term IN ({terms})),
                         a -> struct_pack(term := a.term, value := a.value, scope := a.scope))) AS annotations
                     FROM {read([relations])}""",
+                )
+                build(
+                    "entity_evidence",
+                    [entities],
+                    None,
+                    write=lambda staging: explode_evidence(entities, staging),
                 )
                 # The relations in their original row order with small row groups: a page of
                 # relations reads a few rows by number, not whole 100k-row groups.

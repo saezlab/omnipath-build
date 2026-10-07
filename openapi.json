@@ -1290,6 +1290,11 @@
             "title": "Molecularevidence",
             "type": "array"
           },
+          "molecularEvidenceTotal": {
+            "default": 0,
+            "title": "Molecularevidencetotal",
+            "type": "integer"
+          },
           "ontologyHierarchy": {
             "anyOf": [
               {
@@ -5044,6 +5049,80 @@
           }
         },
         "summary": "Get Entity",
+        "tags": [
+          "entities"
+        ]
+      }
+    },
+    "/entities/{entity_id}/evidence": {
+      "get": {
+        "description": "A page of the entity's molecular evidence: where and how sources state it.",
+        "operationId": "entity_evidence_entities__entity_id__evidence_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "entity_id",
+            "required": true,
+            "schema": {
+              "title": "Entity Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "summary": "Entity Evidence",
         "tags": [
           "entities"
         ]

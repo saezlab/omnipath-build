@@ -1,3 +1,4 @@
+import json
 import io
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -140,7 +141,14 @@ def test_exact_occurrence_filters_and_projection(molecular_engine):
     )
     assert context["relationsTotal"] == 2
     assert len(context["standaloneEvidence"]) == 2
-    assert len(engine.get_entity_core("2" * 64)["entity"]["molecularEvidence"]) == 6
+    # The entity carries the count; its items are paged from their own endpoint.
+    core = engine.get_entity_core("2" * 64)["entity"]
+    assert core["molecularEvidence"] == [] and core["molecularEvidenceTotal"] == 6
+    first = engine.get_entity_evidence("2" * 64, limit=4)
+    rest = engine.get_entity_evidence("2" * 64, limit=4, offset=4)
+    assert first["evidenceTotal"] == 6 and first["nextCursor"] == "4"
+    assert len(first["evidence"]) == 4 and len(rest["evidence"]) == 2 and rest["nextCursor"] is None
+    assert len({json.dumps(e, sort_keys=True) for e in first["evidence"] + rest["evidence"]}) == 6
     assert all(len(r["evidence"]) == 1 for r in context["relations"])
     gene_context = engine.get_molecular_context("gene:entrez:1")
     assert len(gene_context["catalogueProducts"]) == 1

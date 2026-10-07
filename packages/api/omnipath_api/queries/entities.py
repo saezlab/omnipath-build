@@ -589,6 +589,7 @@ class EntitiesQueries:
         resources: list[str] | None = None,
         *,
         slim: bool = False,
+        evidence: bool = True,
     ) -> list[dict[str, Any]]:
         paths = self._resolve_entity_paths(resources)
         if not paths or not keys:
@@ -602,7 +603,7 @@ class EntitiesQueries:
             cols = f"{cols}, identifiers, annotations"
             from omnipath_api.molecular import columns
 
-            if "evidence" in columns(paths):
+            if evidence and "evidence" in columns(paths):
                 cols += ", evidence"
         rows = self._fetch_dicts(
             f"SELECT {cols} FROM {read_expr} WHERE entity_key IN ({placeholders})",
@@ -661,6 +662,11 @@ class EntitiesQueries:
 
         return core(self, public_id, resources)
 
+    def get_entity_evidence(self, public_id, resources=None, limit=20, offset=0):
+        from omnipath_api.entity_details import evidence
+
+        return evidence(self, public_id, resources, limit, offset)
+
     def get_entity_relationships(self, public_id, resources=None, limit=50, offset=0):
         from omnipath_api.entity_details import relationships
 
@@ -671,10 +677,14 @@ class EntitiesQueries:
     ) -> dict[str, Any] | None:
         # Details are addressed solely by the exact entity key. Identifier and
         # alias discovery belongs to search, never to single-entity hydration.
-        rows = self._fetch_entities_by_keys([public_id], resources)
+        from omnipath_api.entity_details import evidence_total
+
+        # Evidence is paged from its own endpoint; details carry only its count.
+        rows = self._fetch_entities_by_keys([public_id], resources, evidence=False)
         if not rows:
             return None
         entity = self._to_entity_summary(rows[0])
+        entity["molecularEvidenceTotal"] = evidence_total(self, entity, resources)
         rel_paths = self._resolve_relation_paths(resources)
         interaction_count = 0
         annotations: list[dict[str, Any]] = []

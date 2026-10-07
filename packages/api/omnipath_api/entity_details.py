@@ -1,7 +1,12 @@
 """Release-aware entity hydration and paged, resource-local relationship reads."""
 
 import json
-from omnipath_api.serving_index import adjacency_rows, relation_rows_path, signature
+from omnipath_api.serving_index import (
+    adjacency_rows,
+    evidence_rows,
+    relation_rows_path,
+    signature,
+)
 
 
 def cache_key(engine, kind, public_id, resources, *page):
@@ -25,10 +30,65 @@ def cache_key(engine, kind, public_id, resources, *page):
 
 def core(engine, public_id, resources=None):
     def load():
-        rows = engine._fetch_entities_by_keys([public_id], resources)
-        return {"entity": engine._to_entity_summary(rows[0])} if rows else None
+        # Evidence is paged from its own endpoint; the entity carries only its count.
+        rows = engine._fetch_entities_by_keys([public_id], resources, evidence=False)
+        if not rows:
+            return None
+        entity = engine._to_entity_summary(rows[0])
+        entity["molecularEvidenceTotal"] = evidence_total(engine, entity, resources)
+        return {"entity": entity}
 
     return engine._detail_cache.get(cache_key(engine, "entity", public_id, resources), load)
+
+
+def _evidence_items(engine, entity, resources):
+    """SQL for the distinct evidence items of an entity's source rows, in source order."""
+    keys = list(dict.fromkeys(entity.get("sourceEntityPks") or [entity["entityPk"]]))
+    rows, params = evidence_rows(engine, engine._resolve_entity_paths(resources), keys)
+    if rows is None:
+        return None, []
+    return (
+        f"SELECT item, min((filename, entity_key, evidence_index)) AS first FROM {rows} "
+        "GROUP BY item",
+        params,
+    )
+
+
+def evidence_total(engine, entity, resources=None):
+    items, params = _evidence_items(engine, entity, resources)
+    if items is None:
+        return 0
+    return int(engine._fetch_dicts(f"SELECT count(*) AS n FROM ({items})", params)[0]["n"])
+
+
+def evidence(engine, public_id, resources=None, limit=20, offset=0):
+    """A page of an entity's evidence items (identical items across sources once)."""
+
+    def load():
+        found = core(engine, public_id, resources)
+        if not found:
+            return None
+        items, params = _evidence_items(engine, found["entity"], resources)
+        empty = dict(evidence=[], evidenceTotal=0, nextCursor=None)
+        if items is None:
+            return empty
+        rows = engine._fetch_dicts(
+            f"SELECT item, count(*) OVER () AS total FROM ({items}) "
+            "ORDER BY first LIMIT ? OFFSET ?",
+            [*params, limit, offset],
+        )
+        if not rows:
+            return dict(empty, evidenceTotal=found["entity"].get("molecularEvidenceTotal", 0))
+        total = int(rows[0]["total"])
+        return dict(
+            evidence=[r["item"] for r in rows],
+            evidenceTotal=total,
+            nextCursor=str(offset + len(rows)) if offset + len(rows) < total else None,
+        )
+
+    return engine._detail_cache.get(
+        cache_key(engine, "evidence", public_id, resources, limit, offset), load
+    )
 
 
 def relationships(engine, public_id, resources=None, limit=50, offset=0):
@@ -112,6 +172,8 @@ def page_details(entity, limit=20, offset=0):
         "sourceEntityPks",
         "molecularEvidence",
     ):
+        if field == "molecularEvidence" and "molecularEvidenceTotal" in entity:
+            continue  # counted only; the items are paged from /entities/{id}/evidence
         rows = entity.get(field) or []
         longest = max(longest, len(rows))
         result[field] = rows[offset : offset + limit]

@@ -215,6 +215,20 @@ def entity_relationships(
     return _call(request, "get_entity_relationships", entity_id, limit=limit, offset=offset)
 
 
+@router.get("/entities/{entity_id}/evidence", tags=["entities"])
+def entity_evidence(
+    request: Request,
+    entity_id: str,
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+):
+    """A page of the entity's molecular evidence: where and how sources state it."""
+    result = _call(request, "get_entity_evidence", entity_id, limit=limit, offset=offset)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Entity not found")
+    return result
+
+
 @router.get("/entities/{entity_id}", response_model=EntityDetailsResponse, tags=["entities"])
 def get_entity(
     request: Request,
