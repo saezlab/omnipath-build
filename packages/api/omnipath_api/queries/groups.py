@@ -16,11 +16,60 @@ import time
 from omnipath_api.models import normalize_filters
 from omnipath_api.shape.display_name import display_name, preferred_name
 
-_FIELDS = (
-    "entity_key, entity_type, namespace, identifier, taxon, label, reference_entity_key, "
-    "gene_reference_keys, has_hierarchy, parent_count, child_count, identifier_count, "
-    "annotation_count, relation_count, resource, entity_id"
-)
+
+
+def _agreed(column):
+    """The value all non-null copies share, else NULL (compared by hash)."""
+    present = f"FILTER (WHERE {column} IS NOT NULL)"
+    return (
+        f"CASE WHEN min(hash({column})) {present} = max(hash({column})) {present} "
+        f"THEN any_value({column}) END"
+    )
+
+
+def _group_members(engine, scope, groups):
+    """(resource, entity_id) of the entities listed under (group_key, kind) pairs."""
+    if not groups:
+        return []
+    rows = engine._fetch_dicts(
+        f"""SELECT DISTINCT resource, entity_id FROM {engine._table("entity_group", scope)}
+        WHERE (group_key, kind) IN (SELECT unnest(?::VARCHAR[]), unnest(?::VARCHAR[]))""",
+        [[key for key, _ in groups], [kind for _, kind in groups]],
+    )
+    return [(r["resource"], r["entity_id"]) for r in rows]
+
+
+def _candidate_keys(engine, group_key, scope):
+    """Entity keys that may belong to one group: those listed under it."""
+    prefix, _, value = group_key.partition(":")
+    if prefix == "entity":
+        return [value]
+    kind = {"connectivity": "connectivity", "gene": "reference"}.get(prefix)
+    if kind is None:
+        return []
+    pairs = _group_members(engine, scope, [(value, kind)])
+    return sorted({r["entity_key"] for r in engine._lookup("entity", "entity_id", pairs, "entity_key")})
+
+
+def _member_rows(engine, page, scope):
+    """Every copy in scope of the page's member entities, found by group or key."""
+    groups = [
+        (group["connectivity"], "connectivity") if group["connectivity"]
+        else (group["reference_entity_key"], "reference")
+        for group in page
+        if group["connectivity"] or group["reference_entity_key"]
+    ]  # fmt: skip
+    rows = engine._lookup("entity", "entity_id", _group_members(engine, scope, groups))
+    singletons = [
+        key for group in page if not (group["connectivity"] or group["reference_entity_key"])
+        for key in group["member_keys"]
+    ]  # fmt: skip
+    if singletons:
+        rows += engine._entity_rows(
+            "entity_key IN (SELECT unnest(?::VARCHAR[]))", [singletons], scope, nested=False
+        )
+    members = {key for group in page for key in group["member_keys"]}
+    return [row for row in rows if row["entity_key"] in members]
 
 
 @lru_cache(maxsize=1)
@@ -74,35 +123,31 @@ def _search_groups(
     if not engine._selected_resource_infos(scope):
         return {"groups": [], "nextCursor": None}
     clauses, params = engine._entity_filter_clauses(filters, resources=resources)
+    if group_key:
+        # One group: its candidate entities, with all their copies in scope.
+        clauses.append("entity_key IN (SELECT unnest(?::VARCHAR[]))")
+        params.append(_candidate_keys(engine, group_key, scope))
     where, params = engine._entity_match_where(query, clauses, params, scope)
     types = chemical_types()
     marks = ",".join("?" for _ in types)
     chemical = strategy in {"auto", "chemical_connectivity"}
     gene = strategy in {"auto", "gene_reference"}
-    # One row per entity key, then one per group: the release-wide default page groups
-    # millions of keys, so each step aggregates once and avoids DISTINCT aggregates
-    # (min = max is "exactly one distinct non-null value").
-    cte = f"""WITH selected AS (
-        SELECT {_FIELDS}, group_connectivity FROM {engine._table("entity", scope)} WHERE {where}
-    ), keys AS (
-        SELECT entity_key, bool_or(coalesce(entity_type IN ({marks}), FALSE)) AS chemical,
-            CASE WHEN min(group_connectivity) = max(group_connectivity)
-                THEN min(group_connectivity) END AS connectivity,
-            CASE WHEN min(reference_entity_key) = max(reference_entity_key)
+    chemical_sql = f"bool_or(coalesce(entity_type IN ({marks}), FALSE))"
+    # One row per entity key (its copies agree on a group, or it is a singleton), then
+    # one per group. Release-wide pages aggregate millions of keys: hashes keep the
+    # aggregation on fixed-width values, and only the page's singletons get a key.
+    cte = f"""WITH keys AS MATERIALIZED (
+        SELECT any_value(entity_key) AS entity_key,
+            CASE WHEN {chemical} AND {chemical_sql} THEN {_agreed("group_connectivity")} END
+                AS connectivity,
+            CASE WHEN {gene} AND NOT {chemical_sql}
                 AND bool_and(coalesce(starts_with(reference_entity_key, 'entrez:'), FALSE))
-                THEN min(reference_entity_key) END AS gene_reference
-        FROM selected GROUP BY entity_key
-    ), assigned AS (
-        SELECT entity_key,
-            CASE WHEN chemical AND {chemical} THEN connectivity END AS connectivity,
-            CASE WHEN NOT chemical AND {gene} THEN gene_reference END AS reference_entity_key
-        FROM keys
-    ), grouped AS (
-        SELECT *, coalesce('connectivity:' || connectivity, 'gene:' || reference_entity_key,
-            'entity:' || entity_key) AS group_key
-        FROM assigned
+                THEN {_agreed("reference_entity_key")} END AS reference_entity_key
+        FROM (SELECT entity_key, entity_type, group_connectivity, reference_entity_key
+            FROM {engine._table("entity", scope)} WHERE {where})
+        GROUP BY hash(entity_key)
     )"""
-    params = [*params, *types]
+    params = [*types, *types, *params]
     extra, values = "TRUE", []
     if group_key:
         extra, values = "group_key = ?", [group_key]
@@ -117,21 +162,32 @@ def _search_groups(
             "(member_count < ? OR (member_count = ? AND group_key > ?))",
             [count, count, key],
         )
-    member_fields = ", ".join(f"{name} := s.{name}" for name in _FIELDS.split(", "))
-    # Members are collected only for the page's groups.
+    size = 1 if group_key else int(limit) + 1
     page = engine._fetch_dicts(
         cte
         + f""", counts AS (
-            SELECT group_key, min(connectivity) AS connectivity,
-                min(reference_entity_key) AS reference_entity_key, count(*) AS member_count
-            FROM grouped GROUP BY group_key
+            SELECT 'connectivity:' || connectivity AS group_key, connectivity,
+                NULL::VARCHAR AS reference_entity_key, member_count
+            FROM (SELECT any_value(connectivity) AS connectivity, count(*) AS member_count
+                FROM keys WHERE connectivity IS NOT NULL GROUP BY hash(connectivity))
+            UNION ALL SELECT 'gene:' || reference_entity_key, NULL, reference_entity_key, member_count
+            FROM (SELECT any_value(reference_entity_key) AS reference_entity_key, count(*) AS member_count
+                FROM keys WHERE reference_entity_key IS NOT NULL GROUP BY hash(reference_entity_key))
+            UNION ALL (SELECT * FROM (
+                SELECT 'entity:' || entity_key AS group_key, NULL, NULL, 1 AS member_count FROM keys
+                WHERE connectivity IS NULL AND reference_entity_key IS NULL)
+                WHERE {extra} ORDER BY group_key LIMIT {size})
         ), page AS (
-            SELECT * FROM counts WHERE {extra} ORDER BY member_count DESC, group_key LIMIT ?
-        ) SELECT page.*, list(struct_pack({member_fields}) ORDER BY s.entity_key, s.resource)
-            AS member_rows
-        FROM page JOIN grouped g USING (group_key) JOIN selected s USING (entity_key)
+            SELECT * FROM counts WHERE {extra} ORDER BY member_count DESC, group_key LIMIT {size}
+        ), members AS (
+            SELECT group_key, entity_key FROM page JOIN keys USING (connectivity)
+            UNION ALL SELECT group_key, entity_key FROM page JOIN keys USING (reference_entity_key)
+            UNION ALL SELECT p.group_key, k.entity_key FROM page p JOIN keys k
+                ON p.group_key = 'entity:' || k.entity_key
+        ) SELECT page.*, list(m.entity_key ORDER BY m.entity_key) AS member_keys
+        FROM page JOIN members m USING (group_key)
         GROUP BY ALL ORDER BY member_count DESC, group_key""",
-        [*params, *values, 1 if group_key else int(limit) + 1],
+        [*params, *values, *values],
     )
     next_cursor = (
         json.dumps([page[int(limit) - 1]["member_count"], page[int(limit) - 1]["group_key"]])
@@ -139,14 +195,16 @@ def _search_groups(
         else None
     )
     page = page[: int(limit)]
+    rows = _member_rows(engine, page, scope)
     if include_details:
-        engine._with_entity_children([row for group in page for row in group["member_rows"]])
+        engine._with_entity_children(rows)
+    by_key = defaultdict(list)
+    for row in rows:
+        by_key[row["entity_key"]].append(row)
     groups = []
     for group in page:
-        by_key = defaultdict(list)
-        for row in group.pop("member_rows"):
-            by_key[row["entity_key"]].append(row)
-        members = [engine._merge_entity_row_group(copies) for copies in by_key.values()]
+        keys = group.pop("member_keys")
+        members = [engine._merge_entity_row_group(by_key[key]) for key in keys if key in by_key]
         summaries = [engine._to_entity_summary(row) for row in members]
         visible = [s for s in summaries if s["entityPk"] > (member_cursor or "")]
         if group["connectivity"]:

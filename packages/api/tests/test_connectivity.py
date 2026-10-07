@@ -161,7 +161,8 @@ def test_group_cards_skip_hydration_until_opened(tmp_path, monkeypatch):
     summary = client.post("/entities/groups", json={"filters": {"sources": ["one"]}}).json()[
         "groups"
     ][0]["entity"]
-    assert len(queries) == 1  # One grouping query; no identifiers or annotations.
+    # Grouping, then member rows; no identifiers or annotations.
+    assert not any("entity_identifier" in q or "entity_annotation" in q for q in queries)
     assert summary["entityAttributes"] is None
     assert summary["groupDetailsLoaded"] is False
     assert len(summary["groupMemberKeys"]) == 5

@@ -46,8 +46,8 @@ class EntitiesQueries:
         match_rank, term and the namespace an entity must have (NULL for any).
 
         Terms are lowercase labels and identifiers (``entity_term``). A ``ns:id`` query
-        also matches the identifier within that namespace, and an entity by its
-        reference key (``entity_group``).
+        also matches exactly that identifier within that namespace, and an entity by
+        its reference key (``entity_group``).
         """
         q = query.strip().lower()
         terms = self._table("entity_term", resources)
@@ -59,10 +59,9 @@ class EntitiesQueries:
         if curie := _curie(query.strip()):
             namespace, identifier = curie
             parts.append(
-                f"SELECT resource, entity_id, {_TERM_RANK}, term, ? FROM {terms} "
-                "WHERE term >= ? AND term < ?"
+                f"SELECT resource, entity_id, {_TERM_RANK}, term, ? FROM {terms} WHERE term = ?"
             )
-            params += [identifier.lower(), namespace, *_prefix_range(identifier.lower())]
+            params += [identifier.lower(), namespace, identifier.lower()]
             parts.append(
                 f"SELECT resource, entity_id, 2, ?, NULL FROM {self._table('entity_group', resources)} "
                 "WHERE group_key = ? AND kind = 'reference'"
