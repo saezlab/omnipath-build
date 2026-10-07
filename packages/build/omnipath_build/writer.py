@@ -1,4 +1,4 @@
-"""Flat Arrow/DuckDB working tables; nested serving records are built once."""
+"""Flat Arrow/DuckDB working tables, written once as the normalized resource tables."""
 
 import ast
 from pathlib import Path
@@ -7,14 +7,16 @@ import shutil
 import duckdb
 import pyarrow as pa
 import pyarrow.parquet as pq
+from omnipath_core.measurements import QUANTITY_STRUCT
 from omnipath_core.schema import (
-    ENTITY_SCHEMA,
-    RELATION_SCHEMA,
     PAYLOAD_SCHEMA,
     ENTITY_EVIDENCE_STRUCT,
+    PUBLISHED_TABLES,
+    RELATION_QUALIFIERS,
+    ROW_GROUP_SIZE,
+    SERVING_TABLES,
 )
 from omnipath_core.molecular_forms import MOLECULAR_FORM_STRUCT, normalize_molecular_form
-from omnipath_core.display_names import preferred_name_sql
 
 from omnipath_core.biolink import (
     annotation_term,
@@ -111,7 +113,7 @@ ENTITY_INPUT = _schema(
 IDS_INPUT = _schema("old_key target_ns target_id ns id source")
 ENTITY_ANN = _schema(
     "old_key term value source dataset",
-    [("quantity", ENTITY_SCHEMA.field("annotations").type.value_type.field("quantity").type)],
+    [("quantity", QUANTITY_STRUCT)],
 )
 REL_INPUT = _schema(
     "old_key subject object predicate asserted_taxon qualified statement_kind category interaction_class source dataset row_id upstream_id",
@@ -122,7 +124,7 @@ REL_ANN = _schema(
     [
         ("event_id", pa.int64()),
         ("ordinal", pa.int64()),
-        ("quantity", ENTITY_SCHEMA.field("annotations").type.value_type.field("quantity").type),
+        ("quantity", QUANTITY_STRUCT),
     ],
 )
 ENTITY_EVIDENCE_INPUT = _schema(
@@ -214,9 +216,8 @@ class ParquetWriter:
         self.output_dir = Path(output_dir).resolve()
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.library_dir = pin_library(library_dir)
-        self.ent_path = self.output_dir / "entities.parquet"
-        self.rel_path = self.output_dir / "relations.parquet"
-        self.payload_path = self.output_dir / "evidence_payloads.parquet"
+        self.paths = {name: self.output_dir / f"{name}.parquet" for name in _TABLES}
+        self.payload_path = self.paths["evidence_payloads"]
         self._payload_writer = pq.ParquetWriter(
             self.payload_path,
             PAYLOAD_STORAGE_SCHEMA,
@@ -224,7 +225,7 @@ class ParquetWriter:
             dictionary_pagesize_limit=_PAYLOAD_CHUNK_BYTES,
             store_schema=False,
         )
-        self._total_entities = self._total_relations = self._total_payloads = 0
+        self._total_payloads = 0
         self.metrics = {"entity_chunk_rows": 0, "relation_chunk_rows": 0, "payload_rows": 0}
         self._work = self.output_dir / ".bulk"
         self._work.mkdir()
@@ -828,147 +829,310 @@ class ParquetWriter:
         for key, value in shard["metrics"].items():
             self.metrics[key] = self.metrics.get(key, 0) + value
 
-    def close(self):
+    def close(self) -> dict:
+        """Write the normalized resource tables; returns {"files": paths, "rows": counts}."""
         self._payload_writer.close()
         if not self._initialized:
-            # Preserve empty-resource schemas without special SQL inference.
             self._db.close()
-            pq.write_table(pa.Table.from_batches([], schema=ENTITY_SCHEMA), self.ent_path)
-            pq.write_table(pa.Table.from_batches([], schema=RELATION_SCHEMA), self.rel_path)
-            self._total_entities = self._total_relations = 0
+            for name, schema in _TABLES.items():
+                if name != "evidence_payloads":
+                    pq.write_table(schema.empty_table(), self.paths[name])
         else:
             from .complexes import resolve_complexes
 
             resolve_complexes(self._db, self.payload_path, self.metrics)
             self._reference_identifiers()
             self._prepare_display()
-            parts = {"entities": [], "relations": []}
-            tables = (
-                "display",
-                "identifiers",
-                "entity_annotations",
-                "entity_evidence",
-                "relations",
-                "relation_annotations",
-            )
-            # Buckets are key ranges (the key's first two characters), not hashes: each bucket
-            # is sorted on its own and the buckets are written in key order, so the output is
-            # sorted without one global sort of all rows, which no memory limit can bound.
-            for table in tables:
-                key = "relation_key" if table.startswith("relation") else "entity_key"
-                self._db.execute(
-                    f"CREATE TABLE sorted_{table} AS SELECT *, substr({key}, 1, 2) AS bucket FROM {table} ORDER BY bucket"
-                )
-                self._db.execute(f"DROP TABLE {table}")
-                self._db.execute(f"ALTER TABLE sorted_{table} RENAME TO {table}")
-            union = " UNION ".join(f"SELECT DISTINCT bucket FROM {table}" for table in tables)
-            buckets = [row[0] for row in self._db.execute(f"{union} ORDER BY 1").fetchall()]
-            for index, bucket in enumerate(buckets):
-                literal = "'" + bucket.replace("'", "''") + "'"
-                for table in tables:
-                    self._db.execute(
-                        f"CREATE OR REPLACE TEMP VIEW b_{table} AS SELECT * EXCLUDE(bucket) FROM {table} WHERE bucket={literal}"
-                    )
-                for kind, key, query in (
-                    ("entities", "entity_key", _entities_sql()),
-                    ("relations", "relation_key", _relations_sql()),
-                ):
-                    path = self._work / f"{kind}-{index:05d}.parquet"
-                    self._db.execute(
-                        f"COPY (SELECT * FROM ({query}) ORDER BY {key}) TO '{_sql_path(path)}' (FORMAT PARQUET, COMPRESSION ZSTD)"
-                    )
-                    parts[kind].append(path)
-            # Concatenating the sorted buckets in order needs insertion order kept.
-            self._db.execute("SET preserve_insertion_order=true")
-            for kind, key, dest in (
-                ("entities", "entity_key", self.ent_path),
-                ("relations", "relation_key", self.rel_path),
-            ):
-                scan = _read_parquet_sql(parts[kind])
-                count = self._db.execute(f"SELECT count(*) FROM {scan}").fetchone()[0]
-                setattr(self, f"_total_{kind}", count)
-                metadata = (
-                    ", KV_METADATA {omnipath_label_policy: 'preferred-name-v1'}"
-                    if kind == "entities"
-                    else ""
-                )
-                self._db.execute(
-                    f"COPY (SELECT * FROM {scan}) TO '{_sql_path(dest)}' (FORMAT PARQUET, COMPRESSION ZSTD{metadata})"
-                )
-            self._db.execute("SET preserve_insertion_order=false")
+            self._write_tables()
             self.metrics["temporary_chunk_bytes"] = sum(
                 p.stat().st_size for p in self._work.rglob("*") if p.is_file()
             )
             self._db.close()
         shutil.rmtree(self._work)
-        return (
-            self.ent_path,
-            self.rel_path,
-            self.payload_path,
-            self._total_entities,
-            self._total_relations,
-            self._total_payloads,
+        rows = {name: pq.read_metadata(path).num_rows for name, path in self.paths.items()}
+        for name, path in self.paths.items():
+            _check_schema(path, _TABLES[name])
+        return {"files": dict(self.paths), "rows": rows}
+
+    def _write_tables(self):
+        db = self._db
+        db.execute(
+            """CREATE TEMP TABLE relation_counts AS
+            SELECT key AS entity_key, count(DISTINCT relation_key) AS n FROM (
+                SELECT subject_entity_key AS key, relation_key FROM relations
+                UNION ALL SELECT object_entity_key, relation_key FROM relations) GROUP BY key"""
+        )
+        working = (
+            "display",
+            "identifiers",
+            "entity_annotations",
+            "entity_evidence",
+            "relations",
+            "relation_annotations",
+        )
+        # Buckets are key ranges (the key's first two characters), not hashes: each bucket
+        # is sorted on its own and the buckets are written in key order, so every table is
+        # sorted without one global sort of all rows, which no memory limit can bound.
+        for table in working:
+            key = "relation_key" if table.startswith("relation") else "entity_key"
+            db.execute(
+                f"CREATE TABLE sorted_{table} AS SELECT *, substr({key}, 1, 2) AS bucket FROM {table} ORDER BY bucket"
+            )
+            db.execute(f"DROP TABLE {table}")
+            db.execute(f"ALTER TABLE sorted_{table} RENAME TO {table}")
+        union = " UNION ".join(f"SELECT DISTINCT bucket FROM {table}" for table in working)
+        buckets = [row[0] for row in db.execute(f"{union} ORDER BY 1").fetchall()]
+        parts = {name: [] for name in _BUCKET_TABLES}
+        offsets = {"entity": 0, "relation": 0}
+        for index, bucket in enumerate(buckets):
+            literal = "'" + bucket.replace("'", "''") + "'"
+            for table in working:
+                db.execute(
+                    f"CREATE OR REPLACE TEMP VIEW b_{table} AS SELECT * EXCLUDE(bucket) FROM {table} WHERE bucket={literal}"
+                )
+            # Ids continue across buckets, which are in key order: id order is key order.
+            db.execute(
+                f"""CREATE OR REPLACE TEMP TABLE b_entity_ids AS
+                SELECT entity_key, ({offsets["entity"]} + row_number() OVER (ORDER BY entity_key) - 1)::INTEGER AS entity_id
+                FROM b_display SEMI JOIN b_identifiers USING (entity_key)"""
+            )
+            db.execute(
+                f"""CREATE OR REPLACE TEMP TABLE b_relation_ids AS
+                SELECT relation_key, ({offsets["relation"]} + row_number() OVER (ORDER BY relation_key) - 1)::INTEGER AS relation_id
+                FROM (SELECT DISTINCT relation_key FROM b_relations)"""
+            )
+            for name, query in _bucket_queries():
+                path = self._work / f"{name}-{index:05d}.parquet"
+                db.execute(f"COPY ({query}) TO '{_sql_path(path)}' (FORMAT PARQUET)")
+                parts[name].append(path)
+            offsets["entity"] += db.execute("SELECT count(*) FROM b_entity_ids").fetchone()[0]
+            offsets["relation"] += db.execute("SELECT count(*) FROM b_relation_ids").fetchone()[0]
+        # Concatenating the sorted buckets in order needs insertion order kept.
+        db.execute("SET preserve_insertion_order=true")
+        for name, files in parts.items():
+            db.execute(
+                f"COPY (SELECT * FROM {_read_parquet_sql(files)}) TO '{_sql_path(self.paths[name])}' {_COPY_OPTIONS}"
+            )
+        db.execute("SET preserve_insertion_order=false")
+        relations = _read_parquet_sql([self.paths["relation"]])
+        entities = _read_parquet_sql([self.paths["entity"]])
+        identifiers = _read_parquet_sql([self.paths["entity_identifier"]])
+        endpoints = " UNION ALL ".join(
+            f"SELECT {key} AS key, '{kind}' AS key_kind, '{side}' AS side, relation_id, predicate, category FROM {relations}"
+            for side in ("subject", "object")
+            for kind, key in (
+                ("entity", f"{side}_entity_key"),
+                ("reference", f"{side}_reference_entity_key"),
+            )
+        )
+        _sorted_copy(
+            db,
+            f"SELECT * FROM ({endpoints}) WHERE key IS NOT NULL",
+            "key, relation_id",
+            self.paths["relation_endpoint"],
+            self._work,
+        )
+        _sorted_copy(
+            db,
+            f"""SELECT * FROM (
+                SELECT reference_entity_key AS group_key, 'reference' AS kind, entity_id FROM {entities}
+                UNION ALL SELECT unnest(gene_reference_keys), 'gene', entity_id FROM {entities}
+                UNION ALL SELECT group_connectivity, 'connectivity', entity_id FROM {entities}
+            ) WHERE group_key IS NOT NULL""",
+            "group_key, entity_id",
+            self.paths["entity_group"],
+            self._work,
+        )
+        _sorted_copy(
+            db,
+            f"""SELECT DISTINCT term, kind, entity_id FROM (
+                SELECT lower(label) AS term, 'label' AS kind, entity_id FROM {entities}
+                UNION ALL SELECT lower(identifier), 'identifier', entity_id FROM {entities}
+                UNION ALL SELECT lower(id), 'identifier', entity_id FROM {identifiers}
+            ) WHERE term IS NOT NULL AND term <> ''""",
+            "term, entity_id",
+            self.paths["entity_term"],
+            self._work,
         )
 
 
-def _entities_sql():
-    nested = """WITH base AS (
-        SELECT * FROM b_display
-    ), ids AS (
-        SELECT entity_key, ns, id, source, bool_or(is_canonical) AS is_canonical
-        FROM b_identifiers GROUP BY entity_key, ns, id, source
-    ), grouped_ids AS (
-        SELECT entity_key, list(struct_pack(ns:=ns,id:=id,is_canonical:=is_canonical,source:=source)
-            ORDER BY is_canonical DESC,ns,id,source) AS identifiers FROM ids GROUP BY entity_key
-    ), anns AS (
-        SELECT entity_key, list(DISTINCT struct_pack(term:=term,value:=value,quantity:=quantity,source:=source,dataset:=dataset)
-            ORDER BY struct_pack(term:=term,value:=value,quantity:=quantity,source:=source,dataset:=dataset)) AS annotations
-        FROM b_entity_annotations GROUP BY entity_key
-    ), evidence AS (
-        SELECT entity_key, list(item ORDER BY item) AS evidence
-        FROM b_entity_evidence GROUP BY entity_key
-    ) SELECT base.*,
-        grouped_ids.identifiers, coalesce(anns.annotations, []) AS annotations,
-        coalesce(evidence.evidence, []) AS evidence
-        FROM base JOIN grouped_ids USING(entity_key) LEFT JOIN anns USING(entity_key)
-        LEFT JOIN evidence USING(entity_key)"""
-    columns = ",".join('"' + field.name + '"' for field in ENTITY_SCHEMA)
-    return f"""SELECT {columns} FROM (SELECT * REPLACE ({preferred_name_sql()} AS label,
-        CASE WHEN label IS NULL OR label = '' OR list_contains(list_transform(identifiers, x -> x.id), label)
-        THEN identifiers ELSE list_append(identifiers, struct_pack(ns := 'name', id := label, is_canonical := false, source := '')) END AS identifiers)
-        FROM ({nested}))"""
+_TABLES = {**PUBLISHED_TABLES, **SERVING_TABLES}
+_BUCKET_TABLES = (
+    "entity",
+    "entity_identifier",
+    "entity_annotation",
+    "entity_evidence",
+    "relation",
+    "relation_annotation",
+    "relation_evidence",
+)
+_COPY_OPTIONS = f"(FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE {ROW_GROUP_SIZE})"
+_QUANTITY = ", ".join(
+    f"quantity.{field.name} AS quantity_{field.name}" for field in QUANTITY_STRUCT
+)
+_ENTITY_ANNOTATION = (
+    "struct_pack(term:=term,value:=value,quantity:=quantity,source:=source,dataset:=dataset)"
+)
+_RELATION_ANNOTATION = "struct_pack(term:=term,value:=value,quantity:=quantity,source:=source,dataset:=dataset,scope:=scope)"
 
 
-def _relations_sql():
-    scalar = [
-        f.name
-        for f in RELATION_SCHEMA
-        if f.name not in {"relation_key", "sources", "evidence_count", "evidence", "annotations"}
-    ]
-    scalars = ",".join(
-        "CASE WHEN count(DISTINCT taxon)=1 THEN min(taxon) ELSE '' END AS taxon"
-        if n == "taxon"
-        else f'min("{n}") AS "{n}"'
-        for n in scalar
+def _bucket_queries():
+    """(table, query) for one key bucket. Item ordinals follow one deterministic order:
+    identifiers canonical first, annotations and evidence by their full content."""
+    qualifiers = ", ".join(
+        f"list(DISTINCT value ORDER BY value) FILTER (WHERE term='{name}') AS {name}"
+        for name in RELATION_QUALIFIERS
     )
-    ann = "struct_pack(term:=term,value:=value,quantity:=quantity,source:=source,dataset:=dataset,scope:=scope)"
-    columns = ",".join('"' + field.name + '"' for field in RELATION_SCHEMA)
-    return f"""WITH base AS (
-        SELECT relation_key, {scalars}, list(DISTINCT source ORDER BY source) AS sources
-        FROM b_relations GROUP BY relation_key
-    ), occurrence_anns AS (
-        SELECT relation_key, event_id, list({ann} ORDER BY ordinal) AS annotations
-        FROM b_relation_annotations GROUP BY relation_key, event_id
-    ), evidence AS (
-        SELECT r.relation_key, struct_pack(source:=r.source,dataset:=r.dataset,row_id:=r.row_id,
-            upstream_id:=r.upstream_id,annotations:=coalesce(a.annotations,[]),
-            subject_molecular_form:=r.subject_molecular_form,object_molecular_form:=r.object_molecular_form) AS item
-        FROM b_relations r LEFT JOIN occurrence_anns a USING(relation_key, event_id)
-    ), grouped_evidence AS (
-        SELECT relation_key, count(*) AS evidence_count, list(item ORDER BY item) AS evidence
-        FROM evidence GROUP BY relation_key
-    ), anns AS (
-        SELECT relation_key, list(DISTINCT {ann} ORDER BY {ann}) AS annotations
-        FROM b_relation_annotations GROUP BY relation_key
-    ) SELECT {columns} FROM (SELECT base.*, grouped_evidence.evidence_count, grouped_evidence.evidence, coalesce(anns.annotations,[]) AS annotations
-        FROM base JOIN grouped_evidence USING(relation_key) LEFT JOIN anns USING(relation_key))"""
+    yield (
+        "entity",
+        """WITH ids AS (SELECT DISTINCT entity_key, ns, id, source FROM b_identifiers),
+        id_counts AS (SELECT entity_key, count(*) AS n FROM ids GROUP BY entity_key),
+        ann_counts AS (SELECT entity_key, count(*) AS n FROM (SELECT DISTINCT * FROM b_entity_annotations) GROUP BY entity_key),
+        evidence_counts AS (SELECT entity_key, count(*) AS n FROM b_entity_evidence GROUP BY entity_key)
+        SELECT b.entity_id, d.entity_key, d.entity_type, d.namespace, d.identifier, d.taxon, d.label,
+            d.has_hierarchy, d.parent_count, d.child_count, d.reference_entity_key, d.gene_reference_keys,
+            CASE WHEN starts_with(d.reference_entity_key, 'inchikey:')
+                THEN left(substr(d.reference_entity_key, 10), 14) END AS group_connectivity,
+            coalesce(i.n, 0) AS identifier_count, coalesce(a.n, 0) AS annotation_count,
+            coalesce(e.n, 0) AS evidence_count, coalesce(r.n, 0) AS relation_count
+        FROM b_display d JOIN b_entity_ids b USING (entity_key)
+        LEFT JOIN id_counts i USING (entity_key) LEFT JOIN ann_counts a USING (entity_key)
+        LEFT JOIN evidence_counts e USING (entity_key) LEFT JOIN relation_counts r USING (entity_key)
+        ORDER BY b.entity_id""",
+    )
+    yield (
+        "entity_identifier",
+        """SELECT b.entity_id,
+            (row_number() OVER (PARTITION BY i.entity_key ORDER BY i.is_canonical DESC, i.ns, i.id, i.source) - 1)::INTEGER AS ordinal,
+            i.ns, i.id, i.is_canonical, i.source
+        FROM (SELECT entity_key, ns, id, source, bool_or(is_canonical) AS is_canonical
+              FROM b_identifiers GROUP BY ALL) i JOIN b_entity_ids b USING (entity_key)
+        ORDER BY b.entity_id, ordinal""",
+    )
+    yield (
+        "entity_annotation",
+        f"""SELECT b.entity_id,
+            (row_number() OVER (PARTITION BY a.entity_key ORDER BY {_ENTITY_ANNOTATION}) - 1)::INTEGER AS ordinal,
+            term, value, {_QUANTITY}, source, dataset
+        FROM (SELECT DISTINCT entity_key, term, value, quantity, source, dataset FROM b_entity_annotations) a
+        JOIN b_entity_ids b USING (entity_key) ORDER BY b.entity_id, ordinal""",
+    )
+    yield (
+        "entity_evidence",
+        """SELECT b.entity_id,
+            (row_number() OVER (PARTITION BY e.entity_key ORDER BY e.item) - 1)::INTEGER AS ordinal,
+            e.item.source AS source, e.item.dataset AS dataset, e.item.row_id AS row_id,
+            e.item.upstream_id AS upstream_id, e.item.annotations AS annotations,
+            e.item.molecular_form AS molecular_form
+        FROM b_entity_evidence e JOIN b_entity_ids b USING (entity_key) ORDER BY b.entity_id, ordinal""",
+    )
+    yield (
+        "relation",
+        f"""WITH base AS (
+            SELECT relation_key, min(statement_kind) AS statement_kind,
+                min(subject_entity_key) AS subject_entity_key,
+                min(subject_reference_entity_key) AS subject_reference_entity_key,
+                min(subject_label) AS subject_label, min(subject_type) AS subject_type,
+                min(predicate) AS predicate, min(object_entity_key) AS object_entity_key,
+                min(object_reference_entity_key) AS object_reference_entity_key,
+                min(object_label) AS object_label, min(object_type) AS object_type,
+                CASE WHEN count(DISTINCT taxon)=1 THEN min(taxon) ELSE '' END AS taxon,
+                min(is_directed) AS is_directed, min(sign) AS sign, min(category) AS category,
+                min(interaction_class) AS interaction_class,
+                list(DISTINCT source ORDER BY source) AS sources, count(*) AS evidence_count
+            FROM b_relations GROUP BY relation_key
+        ), annotations AS (
+            SELECT DISTINCT relation_key, term, value, quantity, source, dataset, scope FROM b_relation_annotations
+        ), counts AS (
+            SELECT relation_key, count(*) AS n FROM annotations GROUP BY relation_key
+        ), qualifiers AS (
+            SELECT relation_key, {qualifiers} FROM annotations WHERE scope='relation' GROUP BY relation_key
+        ) SELECT b.relation_id, base.relation_key, statement_kind, subject_entity_key,
+            subject_reference_entity_key, subject_label, subject_type, predicate, object_entity_key,
+            object_reference_entity_key, object_label, object_type, taxon, is_directed, sign, category,
+            interaction_class, sources, evidence_count, coalesce(c.n, 0) AS annotation_count,
+            {", ".join(f"coalesce(q.{name}, []::VARCHAR[]) AS {name}" for name in RELATION_QUALIFIERS)}
+        FROM base JOIN b_relation_ids b USING (relation_key) LEFT JOIN counts c USING (relation_key)
+        LEFT JOIN qualifiers q USING (relation_key) ORDER BY b.relation_id""",
+    )
+    yield (
+        "relation_annotation",
+        f"""SELECT b.relation_id,
+            (row_number() OVER (PARTITION BY a.relation_key ORDER BY {_RELATION_ANNOTATION}) - 1)::INTEGER AS ordinal,
+            term, value, {_QUANTITY}, source, dataset, scope
+        FROM (SELECT DISTINCT relation_key, term, value, quantity, source, dataset, scope
+              FROM b_relation_annotations) a
+        JOIN b_relation_ids b USING (relation_key) ORDER BY b.relation_id, ordinal""",
+    )
+    yield (
+        "relation_evidence",
+        f"""WITH occurrence_annotations AS (
+            SELECT relation_key, event_id, list({_RELATION_ANNOTATION} ORDER BY ordinal) AS annotations
+            FROM b_relation_annotations GROUP BY relation_key, event_id
+        ), items AS (
+            SELECT r.relation_key, struct_pack(source:=r.source, dataset:=r.dataset, row_id:=r.row_id,
+                upstream_id:=r.upstream_id, annotations:=coalesce(a.annotations, []),
+                subject_molecular_form:=r.subject_molecular_form,
+                object_molecular_form:=r.object_molecular_form) AS item
+            FROM b_relations r LEFT JOIN occurrence_annotations a USING (relation_key, event_id)
+        ) SELECT b.relation_id,
+            (row_number() OVER (PARTITION BY i.relation_key ORDER BY i.item) - 1)::INTEGER AS ordinal,
+            item.source AS source, item.dataset AS dataset, item.row_id AS row_id,
+            item.upstream_id AS upstream_id, item.annotations AS annotations,
+            item.subject_molecular_form AS subject_molecular_form,
+            item.object_molecular_form AS object_molecular_form
+        FROM items i JOIN b_relation_ids b USING (relation_key) ORDER BY b.relation_id, ordinal""",
+    )
+
+
+def _sorted_copy(db, query, order, target, work, max_rows=2_000_000):
+    """Write ``query`` sorted by ``order``, in key ranges of at most ``max_rows`` rows
+    (boundaries from a sample) appended in order: one global sort of tens of millions
+    of rows with long string keys does not fit a build's memory limit."""
+    unsorted = work / f"{Path(target).stem}.unsorted.parquet"
+    db.execute(f"COPY ({query}) TO '{_sql_path(unsorted)}' (FORMAT PARQUET)")
+    key = order.split(",")[0].strip()
+    source = _read_parquet_sql([unsorted])
+    total = pq.read_metadata(unsorted).num_rows
+    parts = -(-total // max_rows)
+    if parts <= 1:
+        db.execute(
+            f"COPY (SELECT * FROM {source} ORDER BY {order}) TO '{_sql_path(target)}' {_COPY_OPTIONS}"
+        )
+    else:
+        sample = sorted(
+            row[0]
+            for row in db.execute(
+                f"SELECT {key} FROM (SELECT {key} FROM {source}) USING SAMPLE 200000 ROWS"
+            ).fetchall()
+        )
+        bounds = sorted({sample[len(sample) * i // parts] for i in range(1, parts)})
+        writer = None
+        try:
+            for low, high in zip([None, *bounds], [*bounds, None]):
+                where = " AND ".join(
+                    [f"{key} >= ?"] * (low is not None) + [f"{key} < ?"] * (high is not None)
+                )
+                batches = db.execute(
+                    f"SELECT * FROM {source} WHERE {where} ORDER BY {order}",
+                    [v for v in (low, high) if v is not None],
+                ).fetch_record_batch(ROW_GROUP_SIZE)
+                for batch in batches:
+                    if writer is None:
+                        writer = pq.ParquetWriter(target, batch.schema, compression="zstd")
+                    writer.write_batch(batch, row_group_size=ROW_GROUP_SIZE)
+        finally:
+            if writer is not None:
+                writer.close()
+    unsorted.unlink()
+
+
+def _check_schema(path, expected):
+    """Column names and types of a written table, ignoring list item field names."""
+    actual = pq.read_schema(path)
+
+    def shape(schema):
+        return [(f.name, str(f.type).replace("element:", "item:")) for f in schema]
+
+    if shape(actual) != shape(expected):
+        raise ValueError(f"{Path(path).name} does not match its table schema")

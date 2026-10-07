@@ -25,6 +25,8 @@ from typing import Any
 
 import psutil
 
+from omnipath_core.versioning import RESOURCE_FILES, SERVING_FILES
+
 from .versioning import validate_source, validate_version
 
 GIB = 1024**3
@@ -475,10 +477,7 @@ def orchestrate(
             if (
                 manifest.get("resource") != name
                 or manifest.get("version") != selected[name]
-                or not all(
-                    (target / f"{table}.parquet").is_file()
-                    for table in ("entities", "relations", "evidence_payloads")
-                )
+                or not all((target / file).is_file() for file in RESOURCE_FILES + SERVING_FILES)
             ):
                 raise ValueError(f"Cannot skip incomplete resource version {target}")
         estimate = history.get(profile_key(name), {})
@@ -676,19 +675,17 @@ def orchestrate(
                             or manifest.get("version") != job.version
                         ):
                             raise ValueError("Worker manifest identity does not match its job")
-                        for table in ("entities", "relations", "evidence_payloads"):
-                            if not (built / f"{table}.parquet").is_file():
-                                raise ValueError(f"Worker output is missing {table}.parquet")
+                        for name in RESOURCE_FILES + SERVING_FILES:
+                            if not (built / name).is_file():
+                                raise ValueError(f"Worker output is missing {name}")
                         if target.exists():
                             raise FileExistsError(f"{target} already exists")
                         built.rename(target)
-                        for key in (
-                            "entities_path",
-                            "relations_path",
-                            "payloads_path",
-                            "resolution_stats_path",
-                            "manifest_path",
-                        ):
+                        result["files"] = {
+                            name: str(target / Path(path).name)
+                            for name, path in result.get("files", {}).items()
+                        }
+                        for key in ("resolution_stats_path", "manifest_path"):
                             if key in result:
                                 result[key] = str(target / Path(result[key]).name)
                         job.status, job.message = (

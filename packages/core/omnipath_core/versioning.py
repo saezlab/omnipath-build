@@ -12,10 +12,14 @@ from pathlib import Path
 import re
 from typing import Any
 
+from .schema import PUBLISHED_TABLES, SERVING_TABLES
+
 BUILD_SCHEMA_VERSION = 1
-SERVING_SCHEMA_VERSION = 4
+SERVING_SCHEMA_VERSION = 5
 RELEASE_SCHEMA_VERSION = 1
-RESOURCE_FILES = ("entities.parquet", "relations.parquet", "evidence_payloads.parquet")
+# Published tables are the resource download; serving tables are derived lookup indexes.
+RESOURCE_FILES = tuple(f"{table}.parquet" for table in PUBLISHED_TABLES)
+SERVING_FILES = tuple(f"{table}.parquet" for table in SERVING_TABLES)
 
 
 def validate_version(version: str | None) -> str:
@@ -164,15 +168,15 @@ def validate_build_manifest(value: Any, *, strict_fields: bool = False) -> Build
     if "created_at" in value and not isinstance(value["created_at"], str):
         raise ValueError("Build created_at must be a string")
     entries = _object(value["files"], "Build files")
-    if entries.keys() != set(RESOURCE_FILES):
-        raise ValueError("Build manifest must describe exactly the three serving tables")
+    if entries.keys() != set(RESOURCE_FILES + SERVING_FILES):
+        raise ValueError("Build manifest must describe exactly the resource and serving tables")
     return BuildManifest(
         resource=resource,
         version=version,
         created_at=value.get("created_at"),
         files={
             name: ManifestFile.from_dict(entries[name], context=f"artifact metadata for {name}")
-            for name in RESOURCE_FILES
+            for name in RESOURCE_FILES + SERVING_FILES
         },
         metadata={
             key: item for key, item in value.items() if key not in _BUILD_FIELDS | {"created_at"}
@@ -312,13 +316,7 @@ def manifest_path(data_root: str | Path, source: str, version: str) -> Path:
     return resource_dir(data_root, source, version) / "build_manifest.json"
 
 
-def entities_path(data_root: str | Path, source: str, version: str) -> Path:
-    return resource_dir(data_root, source, version) / "entities.parquet"
-
-
-def relations_path(data_root: str | Path, source: str, version: str) -> Path:
-    return resource_dir(data_root, source, version) / "relations.parquet"
-
-
-def payloads_path(data_root: str | Path, source: str, version: str) -> Path:
-    return resource_dir(data_root, source, version) / "evidence_payloads.parquet"
+def table_path(data_root: str | Path, source: str, version: str, table: str) -> Path:
+    if table not in PUBLISHED_TABLES and table not in SERVING_TABLES:
+        raise ValueError(f"Unknown resource table: {table}")
+    return resource_dir(data_root, source, version) / f"{table}.parquet"

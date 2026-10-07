@@ -24,6 +24,7 @@ from omnipath_resolver import locate_library_dir
 from omnipath_core.versioning import (
     BUILD_SCHEMA_VERSION,
     RESOURCE_FILES,
+    SERVING_FILES,
     SERVING_SCHEMA_VERSION,
     validate_build_manifest,
     validate_source,
@@ -67,7 +68,7 @@ def build_resource(
                 raise ValueError("Discovered resource name differs from requested source")
             staged = Path(staging) / "resources" / source / version
             files = {}
-            for name in RESOURCE_FILES:
+            for name in RESOURCE_FILES + SERVING_FILES:
                 path = staged / name
                 rows = pq.read_metadata(path).num_rows
                 digest = hashlib.sha256()
@@ -110,13 +111,10 @@ def build_resource(
             (staged / "build_manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
             check_cancel(kwargs.get("should_cancel"))
             staged.rename(target)
-            for key in (
-                "entities_path",
-                "relations_path",
-                "payloads_path",
-                "resolution_stats_path",
-            ):
-                result[key] = target / Path(result[key]).name
+            result["files"] = {
+                name: target / Path(path).name for name, path in result["files"].items()
+            }
+            result["resolution_stats_path"] = target / Path(result["resolution_stats_path"]).name
             result["manifest_path"] = target / "build_manifest.json"
             return result
 

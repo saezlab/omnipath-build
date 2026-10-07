@@ -52,12 +52,8 @@ class WorkerResult(TypedDict):
 
 class BuildResult(TypedDict):
     resource: str
-    entities_path: Path
-    relations_path: Path
-    payloads_path: Path
-    entities_count: int
-    relations_count: int
-    payloads_count: int
+    files: dict[str, Path]  # table name -> Parquet path (resource and serving tables)
+    rows: dict[str, int]
     resolution_stats_path: Path
     resolution_stats: dict[str, Any]
     elapsed_seconds: float

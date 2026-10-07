@@ -1,11 +1,9 @@
 """OmniPath Full-Parquet Build Pipeline.
 
 This package provides a small, source-neutral pipeline that ingests datasets
-from inputs_v2, resolves canonical entity identities, consolidates nested
-structures, and directly generates the three required Parquet files for serving:
-- entities.parquet
-- relations.parquet
-- evidence_payloads.parquet
+from inputs_v2, resolves canonical entity identities and writes each resource version
+as normalized Parquet tables (``omnipath_core.schema.PUBLISHED_TABLES``) plus derived
+serving lookup tables (``SERVING_TABLES``).
 """
 
 from __future__ import annotations
