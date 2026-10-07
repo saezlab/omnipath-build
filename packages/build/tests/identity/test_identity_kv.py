@@ -34,11 +34,16 @@ def test_value_codec_prefix_and_compression():
 def test_duckdb_varchar_order_is_lmdb_byte_order():
     c = duckdb.connect()
     c.execute("CREATE TABLE t(ns VARCHAR, identifier VARCHAR)")
-    c.executemany("INSERT INTO t VALUES (?, ?)", [(ns, i) for ns in ("a", "a-b", "ab", "é") for i in TRICKY])
+    c.executemany(
+        "INSERT INTO t VALUES (?, ?)", [(ns, i) for ns in ("a", "a-b", "ab", "é") for i in TRICKY]
+    )
     rows = c.execute("SELECT ns, identifier FROM t ORDER BY ns, identifier").fetchall()
     keys = [ns.encode() + b"\0" + i.encode() for ns, i in rows]
     assert keys == sorted(keys) and len(set(keys)) == len(keys)
-    values = [r[0] for r in c.execute("SELECT x FROM (SELECT unnest(?) x) ORDER BY x", [TRICKY]).fetchall()]
+    values = [
+        r[0]
+        for r in c.execute("SELECT x FROM (SELECT unnest(?) x) ORDER BY x", [TRICKY]).fetchall()
+    ]
     assert [v.encode() for v in values] == sorted(v.encode() for v in TRICKY)
 
 
@@ -50,7 +55,11 @@ def hub(directory: Path, records):
 def tricky_records():
     records = {}
     for n, local in enumerate(TRICKY):
-        rows = [("chebi", local), ("name", f"name {n}"), ("synonym", "x" * 400 if n % 3 == 0 else "s")]
+        rows = [
+            ("chebi", local),
+            ("name", f"name {n}"),
+            ("synonym", "x" * 400 if n % 3 == 0 else "s"),
+        ]
         rows += [("cas", f"{n}-0-0"), ("hmdb", TRICKY[(n + 1) % len(TRICKY)])]
         if n == 2:
             rows.append(("kegg", "y" * 600))  # too long for an LMDB key: counted, not stored
@@ -63,7 +72,13 @@ def tricky_records():
 def test_hub_kv_holds_every_parquet_row(tmp_path, shards, workers):
     directory = hub(tmp_path / "chebi" / "0123456789ab", tricky_records())
     manifest = build_hub_kv_dir(
-        directory, id_shards=shards, rec_shards=shards, memory="256MB", threads=1, workers=workers, min_free_gib=0.01
+        directory,
+        id_shards=shards,
+        rec_shards=shards,
+        memory="256MB",
+        threads=1,
+        workers=workers,
+        min_free_gib=0.01,
     )
     assert manifest["totals"]["rec"]["keys"] == len(tricky_records())
     assert manifest["totals"]["id"]["skipped_long_keys"] > 0  # the 300-character identifier
@@ -71,15 +86,21 @@ def test_hub_kv_holds_every_parquet_row(tmp_path, shards, workers):
     assert not (directory / "kv.building").exists()
     kv = HubKv("chebi", directory)
     try:
-        by_id = pq.read_table(list(directory.glob("by_id/part=*/data.parquet"))[0].parent.parent).to_pylist()
+        by_id = pq.read_table(
+            list(directory.glob("by_id/part=*/data.parquet"))[0].parent.parent
+        ).to_pylist()
         expected = {}
         for row in by_id:
-            expected.setdefault((row["ns"], row["identifier"]), []).append((row["local_id"], row["tag"]))
+            expected.setdefault((row["ns"], row["identifier"]), []).append(
+                (row["local_id"], row["tag"])
+            )
         pairs = [p for p in expected if identity_kv.id_key(*p) is not None]
         found = kv.ids(pairs + [("chebi", "nope")])
         assert set(found) == set(pairs)
         assert all(sorted(found[p]) == sorted(expected[p]) for p in pairs)
-        records = {r["local_id"]: r for r in pq.read_table(directory / "records.parquet").to_pylist()}
+        records = {
+            r["local_id"]: r for r in pq.read_table(directory / "records.parquet").to_pylist()
+        }
         by_record = {}
         for path in directory.glob("by_record/part=*/data.parquet"):
             for r in pq.read_table(path).to_pylist():

@@ -52,7 +52,7 @@ def test_reactome_opposite_controls_survive_separate_parquet_chunks(tmp_path):
     finally:
         resolver.close()
     writer.close()
-    rows = pq.read_table(tmp_path / "out" / "relations.parquet").to_pylist()
+    rows = pq.read_table(tmp_path / "out" / "relation.parquet").to_pylist()
     assert len(rows) == 2
     assert {row["sign"] for row in rows} == {-1, 1}
     assert len({row["relation_key"] for row in rows}) == 2
@@ -88,11 +88,11 @@ def test_complex_composition_preserves_species_but_merges_sources(tmp_path):
         cellchat._protein_group_entity(name="same complex", genes=["A", "B"], taxon_id=t)
         for t in ("9606", "10090")
     ]
-    entities, _, _ = final(records, tmp_path, "cellchat")
+    entities = final(records, tmp_path, "cellchat")["entity"]
     groups = [e for e in entities if e["entity_type"] == "macromolecular_complex"]
     assert len(groups) == 2
     assert {g["taxon"] for g in groups} == {"9606", "10090"}
-    other, _, _ = final([records[0]], tmp_path, "another_resource")
+    other = final([records[0]], tmp_path, "another_resource")["entity"]
     assert next(
         e["entity_key"] for e in other if e["entity_type"] == "macromolecular_complex"
     ) == next(g["entity_key"] for g in groups if g["taxon"] == "9606")
@@ -101,7 +101,7 @@ def test_complex_composition_preserves_species_but_merges_sources(tmp_path):
 def test_cellphonedb_complex_reference_and_definition_join(tmp_path):
     interaction = cellphonedb.interactions_schema({"partner_a": "complex A", "partner_b": "P00533"})
     definition = cellphonedb.complexes_schema({"complex_name": "complex A", "uniprot_1": "P04637"})
-    entities, _, _ = final([interaction, definition], tmp_path, "cellphonedb")
+    entities = final([interaction, definition], tmp_path, "cellphonedb")["entity"]
     assert len([e for e in entities if e["entity_type"] == "macromolecular_complex"]) == 1
 
 

@@ -1,7 +1,6 @@
 import json
 from pathlib import Path
 
-import pyarrow.parquet as pq
 
 from library_fixture import build_fixture_library
 from omnipath_resolver import EntityResolver
@@ -9,6 +8,10 @@ from omnipath_build.silver import RawEntityObservation, SilverExtractor
 from omnipath_build.writer import ParquetWriter
 from test_partition_contract import records, entity
 from test_resolver import obs
+from tables_fixture import read_tables
+
+# Nested lists of the frozen contract live in their own tables now.
+NESTED = {"identifiers", "annotations", "evidence"}
 
 
 def test_resolution_contract_across_batches(tmp_path):
@@ -71,16 +74,16 @@ def test_flat_pipeline_matches_nested_contract_across_partitions(tmp_path):
                     )
                 writer.append_observations(extractor, resolver)
             resolver.close()
-            paths = writer.close()[:3]
-            actual = [
-                sorted(pq.read_table(p).to_pylist(), key=lambda r: json.dumps(r, sort_keys=True))
-                for p in paths
-            ]
+            tables = read_tables(writer.close()["files"])
             if baseline is None:
-                baseline = actual
+                baseline = tables.comparable()
             else:
-                assert actual == baseline
-            entities, relations, payloads = actual
+                assert tables.comparable() == baseline
+            entities, relations, payloads = (
+                tables["entity"],
+                tables["relation"],
+                tables["evidence_payloads"],
+            )
             # Existing native entities and statements retain their exact frozen fields.
             native = {
                 e["entity_key"]
@@ -91,6 +94,7 @@ def test_flat_pipeline_matches_nested_contract_across_partitions(tmp_path):
             for row in entities:
                 if row["entity_key"] in native:
                     expected = legacy_entities[row["entity_key"]]
+                    expected = {k: v for k, v in expected.items() if k not in NESTED}
                     assert {k: row[k] for k in expected} == expected
             legacy_relations = {
                 r["relation_key"]: r
@@ -100,18 +104,23 @@ def test_flat_pipeline_matches_nested_contract_across_partitions(tmp_path):
             for row in relations:
                 if row["relation_key"] in legacy_relations:
                     expected = legacy_relations[row["relation_key"]]
-                    projected = {k: row[k] for k in expected}
-                    projected["evidence"] = [
+                    scalars = {k: v for k, v in expected.items() if k not in NESTED}
+                    assert {k: row[k] for k in scalars} == scalars
+                    evidence = tables.children("relation_evidence", row)
+                    assert [
                         {k: ev[k] for k in old}
-                        for ev, old in zip(row["evidence"], expected["evidence"], strict=True)
-                    ]
-                    assert projected == expected
+                        for ev, old in zip(evidence, expected["evidence"], strict=True)
+                    ] == expected["evidence"]
             assert len(entities) == 9 and len(relations) == 6 and len(payloads) == 10
             assert {
                 r["relation_key"] for r in relations if r["relation_key"] in legacy_relations
             } == set(legacy_relations)
             by_key = {e["entity_key"]: e for e in entities}
-            matched = next(r for r in relations if r["evidence"][0]["row_id"] == "matched")
+            matched = next(
+                r
+                for r in relations
+                if tables.children("relation_evidence", r)[0]["row_id"] == "matched"
+            )
             assert (
                 matched["subject_reference_entity_key"],
                 matched["object_reference_entity_key"],
@@ -120,7 +129,7 @@ def test_flat_pipeline_matches_nested_contract_across_partitions(tmp_path):
                 by_key[matched["subject_entity_key"]]["namespace"],
                 by_key[matched["subject_entity_key"]]["identifier"],
             ) == ("entrez", "7157")
-            evidence = matched["evidence"][0]
+            evidence = tables.children("relation_evidence", matched)[0]
             assert (
                 by_key[evidence["subject_molecular_form"]["protein_entity_key"]]["identifier"]
                 == "P04637"

@@ -31,23 +31,25 @@ def test_quantity_survives_batch_merges_with_context(tmp_path):
             "annotations": [annotation],
         }
         rows.append((str(i), record))
-    all_rows = run_rows(tmp_path / "all", rows, len(rows))
-    split_rows = run_rows(tmp_path / "split", rows, 1)
-    assert all_rows == split_rows
-    (relation,) = all_rows[1]
+    tables = run_rows(tmp_path / "all", rows, len(rows))
+    assert run_rows(tmp_path / "split", rows, 1).comparable() == tables.comparable()
+    (relation,) = tables["relation"]
     assert relation["evidence_count"] == 4
-    assert len(relation["annotations"]) == 3
-    assert {a["quantity"]["has_unit"] for a in relation["annotations"]} == {"nM", "uM"}
-    assert all(a["quantity"]["comparator"] == "<" for a in relation["annotations"])
-    assert all(ev["annotations"][0]["quantity"] for ev in relation["evidence"])
+    annotations = tables.children("relation_annotation", relation)
+    assert len(annotations) == relation["annotation_count"] == 3
+    assert {a["quantity_has_unit"] for a in annotations} == {"nM", "uM"}
+    assert all(a["quantity_comparator"] == "<" for a in annotations)
+    evidence = tables.children("relation_evidence", relation)
+    assert all(ev["annotations"][0]["quantity"] for ev in evidence)
 
 
 def test_entity_quantity_survives_projection(tmp_path):
     subject = entity("P1")
     subject["annotations"].append(measured(3.2))
-    entities, relations, _ = run_rows(tmp_path, [("1", subject)], 1)
-    (annotation,) = next(e for e in entities if e["identifier"] == "P1")["annotations"]
-    assert annotation["quantity"]["has_numeric_value"] == 3.2
+    tables = run_rows(tmp_path, [("1", subject)], 1)
+    row = next(e for e in tables["entity"] if e["identifier"] == "P1")
+    (annotation,) = tables.children("entity_annotation", row)
+    assert annotation["quantity_has_numeric_value"] == 3.2
 
 
 def test_quantity_json_is_canonical_and_rejects_nonfinite():
@@ -78,19 +80,20 @@ def test_bindingdb_ic50_reaches_final_typed_parquet(tmp_path):
         "Ki (nM)": "20",
     }
     record = interactions_schema(row)
-    _, relations, _ = run_rows(tmp_path, [("1", record)], 1)
-    (relation,) = relations
-    attrs = {a["term"]: a for a in relation["annotations"]}
-    assert attrs["BAO:0000190"]["quantity"]["has_numeric_value"] == 10
-    assert attrs["BAO:0000190"]["quantity"]["has_unit"] == "nM"
-    assert attrs["BAO:0000190"]["quantity"]["comparator"] == "<="
-    assert attrs["BAO:0000192"]["quantity"]["has_numeric_value"] == 20
+    tables = run_rows(tmp_path, [("1", record)], 1)
+    (relation,) = tables["relation"]
+    attrs = {a["term"]: a for a in tables.children("relation_annotation", relation)}
+    assert attrs["BAO:0000190"]["quantity_has_numeric_value"] == 10
+    assert attrs["BAO:0000190"]["quantity_has_unit"] == "nM"
+    assert attrs["BAO:0000190"]["quantity_comparator"] == "<="
+    assert attrs["BAO:0000192"]["quantity_has_numeric_value"] == 20
     import duckdb
 
+    # Typed quantities are plain columns: filterable without unnesting.
     with duckdb.connect() as conn:
         count = conn.execute(
-            "SELECT count(*) FROM read_parquet(?) r, UNNEST(r.annotations) a(item) WHERE item.term='BAO:0000190' AND item.quantity.has_numeric_value <= 10 AND item.quantity.has_unit='nM'",
-            [str(tmp_path / "relations.parquet")],
+            "SELECT count(*) FROM read_parquet(?) WHERE term='BAO:0000190' AND quantity_has_numeric_value <= 10 AND quantity_has_unit='nM'",
+            [str(tmp_path / "relation_annotation.parquet")],
         ).fetchone()[0]
         assert count == 1
 
@@ -146,6 +149,6 @@ def test_standalone_entity_keeps_original_fields_in_payload(tmp_path):
     assert payload["relation_key"] is None
     assert (
         payload["entity_key"]
-        == pq.read_table(tmp_path / "entities.parquet").to_pylist()[0]["entity_key"]
+        == pq.read_table(tmp_path / "entity.parquet").to_pylist()[0]["entity_key"]
     )
     assert json.loads(payload["payload_json"]) == source

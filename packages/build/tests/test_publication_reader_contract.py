@@ -9,7 +9,7 @@ import pyarrow.parquet as pq
 import pytest
 
 from omnipath_build import pipeline
-from omnipath_core import ENTITY_SCHEMA, RELATION_SCHEMA, PAYLOAD_SCHEMA, validate_build_manifest
+from omnipath_core import PUBLISHED_TABLES, SERVING_TABLES, validate_build_manifest
 
 
 def test_publisher_output_is_the_shared_and_pinned_reader_contract(tmp_path, monkeypatch):
@@ -18,15 +18,11 @@ def test_publisher_output_is_the_shared_and_pinned_reader_contract(tmp_path, mon
     def build(source, *, version, output_dir, **options):
         directory = Path(output_dir) / "resources" / source / version
         directory.mkdir(parents=True)
-        result = {"resource": source, "version": version}
-        for name, key, schema in (
-            ("entities.parquet", "entities_path", ENTITY_SCHEMA),
-            ("relations.parquet", "relations_path", RELATION_SCHEMA),
-            ("evidence_payloads.parquet", "payloads_path", PAYLOAD_SCHEMA),
-        ):
-            path = directory / name
+        result = {"resource": source, "version": version, "files": {}}
+        for name, schema in {**PUBLISHED_TABLES, **SERVING_TABLES}.items():
+            path = directory / f"{name}.parquet"
             pq.write_table(pa.Table.from_pylist([], schema=schema), path)
-            result[key] = path
+            result["files"][name] = path
         result["resolution_stats_path"] = directory / "resolution_stats.json"
         result["resolution_stats_path"].write_text("{}")
         return result

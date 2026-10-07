@@ -3,12 +3,12 @@
 import hashlib
 import json
 
-import pyarrow.parquet as pq
 import pytest
 
 from omnipath_resolver import EntityResolver
 from omnipath_build.silver import SilverExtractor
 from omnipath_build.writer import ParquetWriter
+from tables_fixture import read_tables
 from omnipath_core.biolink import qualifiers
 from omnipath_core.keys import relation_key
 from omnipath_core.source_attributes import (
@@ -63,24 +63,25 @@ def test_evidence_hashes_survive_parquet_merge_as_separate_source_occurrences(tm
                 reaction(), {"value": 1}, f"reactions:{number}", number, payload_json=payload
             )
             writer.append_observations(extractor, resolver)
-        _, relations_path, raw_path, *_ = writer.close()
+        files = writer.close()["files"]
     finally:
         resolver.close()
+    tables = read_tables(files)
     expected = {
         SOURCE_RECORD_SHA256_PREFIX + hashlib.sha256(p.encode()).hexdigest() for p in payloads
     }
-    compiled = pq.read_table(relations_path).to_pylist()
-    assert len(compiled) == 3
-    for row in compiled:
+    assert len(tables["relation"]) == 3
+    for row in tables["relation"]:
         assert row["evidence_count"] == 2
+        evidence = tables.children("relation_evidence", row)
         assert {
             a["value"]
-            for ev in row["evidence"]
+            for ev in evidence
             for a in ev["annotations"]
             if a["term"] == SOURCE_RECORD_REFERENCE
         } == expected
-        assert {ev["row_id"] for ev in row["evidence"]} == {"reactions:0", "reactions:1"}
-    assert {p["payload_json"] for p in pq.read_table(raw_path).to_pylist()} == set(payloads)
+        assert {ev["row_id"] for ev in evidence} == {"reactions:0", "reactions:1"}
+    assert {p["payload_json"] for p in tables["evidence_payloads"]} == set(payloads)
 
 
 def test_nonreaction_edges_do_not_gain_reaction_provenance():

@@ -50,7 +50,15 @@ from .common import (
 )
 
 CODE_FILES = ("hubindex.py", "common.py")
-NOT_IDENTIFIERS = ("name", "synonym", "lipid_shorthand", "systematic_name", "smiles", "inchi", "formula")
+NOT_IDENTIFIERS = (
+    "name",
+    "synonym",
+    "lipid_shorthand",
+    "systematic_name",
+    "smiles",
+    "inchi",
+    "formula",
+)
 PRODUCT_RE = "(AP|NP|XP|YP|WP|ZP)_[0-9]+"
 GENBANK_RE = "[A-Z]{3}[0-9]{5,}"
 RNA_RE = "(NM|NR|XM|XR)_[0-9]+"
@@ -99,13 +107,17 @@ def stage_goslin(ctx, directory, hub, path):
     c = ctx.connect("goslin")
     ctx.copy(
         c,
-        f"""SELECT DISTINCT {norm(quote(hub), 'hub_id')} local_id,goslin,level,
-          substr(md5({quote(hub + ':')} || {norm(quote(hub), 'hub_id')}),1,2) part
-        FROM read_parquet({quote(directory / 'claims.parquet')})""",
+        f"""SELECT DISTINCT {norm(quote(hub), "hub_id")} local_id,goslin,level,
+          substr(md5({quote(hub + ":")} || {norm(quote(hub), "hub_id")}),1,2) part
+        FROM read_parquet({quote(directory / "claims.parquet")})""",
         directory / "names.parquet",
     )
-    n = c.execute(f"SELECT count(*),count(DISTINCT local_id) FROM read_parquet({quote(directory / 'names.parquet')})").fetchone()
-    levels = c.execute(f"SELECT level,count(*) FROM read_parquet({quote(directory / 'names.parquet')}) GROUP BY 1").fetchall()
+    n = c.execute(
+        f"SELECT count(*),count(DISTINCT local_id) FROM read_parquet({quote(directory / 'names.parquet')})"
+    ).fetchone()
+    levels = c.execute(
+        f"SELECT level,count(*) FROM read_parquet({quote(directory / 'names.parquet')}) GROUP BY 1"
+    ).fetchall()
     return dict(names=n[0], records=n[1], levels=dict(levels))
 
 
@@ -146,7 +158,7 @@ def stage_parts(ctx, directory, hub):
             UNION ALL SELECT local_id,'goslin',goslin,'0' FROM gn WHERE part={quote(p)}"""
         )
         c.execute(
-            f"""CREATE OR REPLACE TEMP TABLE rec AS SELECT local_id,{quote(hub + ':')} || local_id record_id,
+            f"""CREATE OR REPLACE TEMP TABLE rec AS SELECT local_id,{quote(hub + ":")} || local_id record_id,
               nullif(min(taxon) FILTER (WHERE taxon NOT IN ('','0')),'') taxon,
               coalesce(bool_or(source_type='uniprot_entry' AND split_part(value,'_',1)<>local_id),false) reviewed,
               {count_sql} anchor_count,
@@ -208,12 +220,14 @@ def stage_by_id(ctx, directory):
         ctx.copy(
             c,
             f"""SELECT DISTINCT ns,identifier,local_id,tag,taxon,anchor,anchor_count
-            FROM {files(str(source / '*.parquet'))} ORDER BY ns,identifier,local_id,tag""",
+            FROM {files(str(source / "*.parquet"))} ORDER BY ns,identifier,local_id,tag""",
             ctx.out / "by_id" / f"part={p}" / "data.parquet",
             ", ROW_GROUP_SIZE 65536",
         )
         finish_part(directory, p)
-    rows = c.execute(f"SELECT count(*) FROM {files(str(ctx.out / 'by_id' / '*' / 'data.parquet'))}").fetchone()[0]
+    rows = c.execute(
+        f"SELECT count(*) FROM {files(str(ctx.out / 'by_id' / '*' / 'data.parquet'))}"
+    ).fetchone()[0]
     return dict(rows=rows)
 
 
@@ -235,13 +249,24 @@ def stage_final(ctx, directory):
     anchored = c.execute(
         f"SELECT anchor_count,count(*) FROM read_parquet({quote(ctx.out / 'records.parquet')}) GROUP BY 1 ORDER BY 1"
     ).fetchall()
-    br = c.execute(f"SELECT count(*) FROM {files(str(ctx.out / 'by_record' / '*' / 'data.parquet'))}").fetchone()[0]
-    return dict(records=n, xrefs=x, by_record=br, records_by_anchor_count={str(k): v for k, v in anchored})
+    br = c.execute(
+        f"SELECT count(*) FROM {files(str(ctx.out / 'by_record' / '*' / 'data.parquet'))}"
+    ).fetchone()[0]
+    return dict(
+        records=n, xrefs=x, by_record=br, records_by_anchor_count={str(k): v for k, v in anchored}
+    )
 
 
 # ----------------------------------------------------------------------- entrypoint
 def build_hub_index(
-    hub, hubs_dir, output_root, memory="7GB", threads=6, goslin_cache=None, min_free_gib=50, keep_work=False
+    hub,
+    hubs_dir,
+    output_root,
+    memory="7GB",
+    threads=6,
+    goslin_cache=None,
+    min_free_gib=50,
+    keep_work=False,
 ):
     if hub not in HUBS:
         raise ValueError(f"Unknown hub {hub}")
@@ -264,14 +289,18 @@ def build_hub_index(
     w = ctx.work
     ctx.stage("rows", [w / "rows" / "rows"], lambda c, d: stage_rows(c, d, hub, path))
     if hub in GOSLIN_HUBS:
-        ctx.stage("goslin", [w / "goslin" / "names.parquet"], lambda c, d: stage_goslin(c, d, hub, path))
+        ctx.stage(
+            "goslin", [w / "goslin" / "names.parquet"], lambda c, d: stage_goslin(c, d, hub, path)
+        )
     ctx.stage("parts", [w / "parts" / "records"], lambda c, d: stage_parts(c, d, hub))
     ctx.stage("by_id", [building / "by_id"], stage_by_id)
     ctx.stage("final", [building / "records.parquet", building / "xrefs.parquet"], stage_final)
     sizes = {}
     for name in ("records.parquet", "xrefs.parquet", "by_id", "by_record"):
         p = building / name
-        sizes[name] = p.stat().st_size if p.is_file() else sum(f.stat().st_size for f in p.rglob("*.parquet"))
+        sizes[name] = (
+            p.stat().st_size if p.is_file() else sum(f.stat().st_size for f in p.rglob("*.parquet"))
+        )
     manifest = dict(
         hub=hub,
         input=source,

@@ -6,6 +6,7 @@ from pathlib import Path
 import subprocess
 import sys
 import time
+from omnipath_core.versioning import RESOURCE_FILES, SERVING_FILES
 
 spec = json.loads(Path(sys.argv[1]).read_text())
 source = spec["build"]["source"]
@@ -33,8 +34,8 @@ output = Path(spec["build"]["output_dir"]) / "resources" / source / spec["build"
 output.mkdir(parents=True)
 manifest = {"resource": source, "version": spec["build"]["version"]}
 (output / "build_manifest.json").write_text(json.dumps(manifest))
-for name in ("entities", "relations", "evidence_payloads"):
-    (output / f"{name}.parquet").write_bytes(b"fixture")
+for name in RESOURCE_FILES + SERVING_FILES:
+    (output / name).write_bytes(b"fixture")
 Path(spec["result"]).write_text(
     json.dumps(
         {

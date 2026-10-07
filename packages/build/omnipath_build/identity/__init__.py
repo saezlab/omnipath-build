@@ -5,4 +5,10 @@ from .hubindex import build_hub_index
 from .hubkv import build_hub_kv, build_hub_kv_dir
 from .identitykv import build_identity_kv
 
-__all__ = ["build_hub_index", "build_hub_kv", "build_hub_kv_dir", "build_identity", "build_identity_kv"]
+__all__ = [
+    "build_hub_index",
+    "build_hub_kv",
+    "build_hub_kv_dir",
+    "build_identity",
+    "build_identity_kv",
+]

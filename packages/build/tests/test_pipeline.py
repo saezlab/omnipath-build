@@ -53,23 +53,15 @@ class TestBuildPipelineEndToEnd(unittest.TestCase):
             writer = ParquetWriter(target)
             writer.append_observations(extractor, resolver)
             resolver.close()
-            ent_p, rel_p, pay_p, _, _, _ = writer.close()
-            (relation,) = pq.read_table(rel_p).to_pylist()
+            result = writer.close()
+            (relation,) = pq.read_table(result["files"]["relation"]).to_pylist()
             self.assertEqual(relation["predicate"], "affects")
             self.assertEqual(relation["category"], "interaction")
             self.assertEqual(relation["sign"], 1)
-
-            self.assertTrue(ent_p.exists())
-            self.assertTrue(rel_p.exists())
-            self.assertTrue(pay_p.exists())
-
-            ent_meta = pq.read_metadata(ent_p)
-            rel_meta = pq.read_metadata(rel_p)
-            pay_meta = pq.read_metadata(pay_p)
-
-            self.assertEqual(ent_meta.num_rows, 2)
-            self.assertEqual(rel_meta.num_rows, 1)
-            self.assertEqual(pay_meta.num_rows, 1)
+            self.assertTrue(all(path.exists() for path in result["files"].values()))
+            self.assertEqual(result["rows"]["entity"], 2)
+            self.assertEqual(result["rows"]["relation"], 1)
+            self.assertEqual(result["rows"]["evidence_payloads"], 1)
 
 
 if __name__ == "__main__":
@@ -104,4 +96,4 @@ def test_record_limit_reaches_parser_without_reading_an_extra_row(
     pipeline.build_resource(
         "fixture", batch_workers=1, version="1", output_dir=tmp_path, max_records=10, progress=False
     )
-    assert pq.read_metadata(tmp_path / "resources/fixture/1/entities.parquet").num_rows == 10
+    assert pq.read_metadata(tmp_path / "resources/fixture/1/entity.parquet").num_rows == 10

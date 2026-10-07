@@ -70,17 +70,19 @@ def test_relation_taxon_keeps_assertions_and_projects_consensus(tmp_path):
             "annotations": [{"term": "in_taxon", "value": f"NCBITaxon:{taxon}"}],
         }
 
-    _, relations, _ = run_rows(
+    tables = run_rows(
         tmp_path / "mixed", [("human", relation("9606")), ("mouse", relation("10090"))], 1
     )
-    (row,) = relations
+    (row,) = tables["relation"]
     assert row["taxon"] == ""
     assert row["evidence_count"] == 2
-    assert {
-        a["value"] for e in row["evidence"] for a in e["annotations"] if a["term"] == "in_taxon"
-    } == {"NCBITaxon:9606", "NCBITaxon:10090"}
-    _, relations, _ = run_rows(tmp_path / "human", [("human", relation("9606"))], 1)
-    assert relations[0]["taxon"] == "9606"
+    evidence = tables.children("relation_evidence", row)
+    assert {a["value"] for e in evidence for a in e["annotations"] if a["term"] == "in_taxon"} == {
+        "NCBITaxon:9606",
+        "NCBITaxon:10090",
+    }
+    tables = run_rows(tmp_path / "human", [("human", relation("9606"))], 1)
+    assert tables["relation"][0]["taxon"] == "9606"
 
 
 def test_reference_refresh_pins_matcher_and_finalizer(tmp_path, monkeypatch):

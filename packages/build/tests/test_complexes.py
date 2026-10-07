@@ -5,7 +5,7 @@ from test_partition_contract import entity, run_rows
 from omnipath_resolver import EntityResolver
 from omnipath_build.silver import SilverExtractor
 from omnipath_build.writer import ParquetWriter
-import pyarrow.parquet as pq
+from tables_fixture import read_tables
 
 
 def complex_entity(name, members=()):
@@ -47,12 +47,20 @@ def records():
 
 
 def check_output(tables):
-    entities, relations, payloads = tables
+    entities, relations, payloads = (
+        tables["entity"],
+        tables["relation"],
+        tables["evidence_payloads"],
+    )
     complexes = [e for e in entities if e["entity_type"] == "macromolecular_complex"]
     assert len(complexes) == 2
     assert {e["namespace"] for e in complexes} == {"complex"}
-    merged = next(e for e in complexes if {"A", "B"} <= {i["id"] for i in e["identifiers"]})
-    assert all(i["ns"] == "complex" for i in merged["identifiers"] if i["is_canonical"])
+
+    def ids(row):
+        return tables.children("entity_identifier", row)
+
+    merged = next(e for e in complexes if {"A", "B"} <= {i["id"] for i in ids(e)})
+    assert all(i["ns"] == "complex" for i in ids(merged) if i["is_canonical"])
     keys = {e["entity_key"] for e in entities}
     relkeys = {r["relation_key"] for r in relations}
     assert all(
@@ -71,9 +79,9 @@ def check_output(tables):
 
 def test_composition_finalizes_across_batches_and_shards(tmp_path):
     rows = records()
-    expected = run_rows(tmp_path / "all", rows, len(rows))
-    check_output(expected)
-    assert run_rows(tmp_path / "split", rows[::-1], 1) == expected
+    tables = run_rows(tmp_path / "all", rows, len(rows))
+    check_output(tables)
+    assert run_rows(tmp_path / "split", rows[::-1], 1).comparable() == tables.comparable()
     resolver = EntityResolver(tmp_path / "absent")
     final = ParquetWriter(tmp_path / "final")
     try:
@@ -83,8 +91,7 @@ def test_composition_finalizes_across_batches_and_shards(tmp_path):
             extractor.process_record(record, record, locator, 0)
             shard.append_observations(extractor, resolver)
             final.import_observation_shard(shard.seal_observation_shard())
-        paths = final.close()[:3]
-        check_output([pq.read_table(p).to_pylist() for p in paths])
+        check_output(read_tables(final.close()["files"]))
     finally:
         resolver.close()
 
@@ -97,16 +104,22 @@ def test_members_use_resolved_accessions(tmp_path):
         ("primary", complex_entity("A", [entity("P04637")])),
         ("secondary", complex_entity("B", [entity("Q15086")])),
     ]
-    expected = run_rows(tmp_path / "out", rows, 1, library)
-    assert run_rows(tmp_path / "all", rows[::-1], len(rows), library) == expected
-    entities, relations, payloads = expected
+    tables = run_rows(tmp_path / "out", rows, 1, library)
+    assert run_rows(tmp_path / "all", rows[::-1], len(rows), library).comparable() == (
+        tables.comparable()
+    )
+    entities, relations, payloads = (
+        tables["entity"],
+        tables["relation"],
+        tables["evidence_payloads"],
+    )
     complexes = [e for e in entities if e["entity_type"] == "macromolecular_complex"]
     assert len(complexes) == 1
-    assert {"A", "B"} <= {i["id"] for i in complexes[0]["identifiers"]}
+    assert {"A", "B"} <= {i["id"] for i in tables.children("entity_identifier", complexes[0])}
     by_key = {e["entity_key"]: e for e in entities}
     assert len(relations) == 1 and relations[0]["evidence_count"] == 2
     assert relations[0]["object_reference_entity_key"] == "entrez:7157"
-    for evidence in relations[0]["evidence"]:
+    for evidence in tables.children("relation_evidence", relations[0]):
         product = by_key[evidence["object_molecular_form"]["protein_entity_key"]]
         assert (product["namespace"], product["identifier"]) == ("uniprot", "P04637")
     assert len(payloads) == 2
@@ -122,9 +135,13 @@ def test_same_gene_products_and_gene_only_members_have_distinct_compositions(tmp
         ("other_product", complex_entity("B", [entity("A0A0U1RQF1")])),
         ("gene_only", complex_entity("C", [gene])),
     ]
-    expected = run_rows(tmp_path / "out", rows, len(rows), library)
-    assert run_rows(tmp_path / "split", rows[::-1], 1, library) == expected
-    entities, relations, payloads = expected
+    tables = run_rows(tmp_path / "out", rows, len(rows), library)
+    assert run_rows(tmp_path / "split", rows[::-1], 1, library).comparable() == tables.comparable()
+    entities, relations, payloads = (
+        tables["entity"],
+        tables["relation"],
+        tables["evidence_payloads"],
+    )
     complexes = [e for e in entities if e["entity_type"] == "macromolecular_complex"]
     assert len(complexes) == 3
     by_key = {e["entity_key"]: e for e in entities}
@@ -133,7 +150,7 @@ def test_same_gene_products_and_gene_only_members_have_distinct_compositions(tmp
         assert relation["predicate"] == "has_member"
         assert relation["subject_entity_key"] in by_key and relation["object_entity_key"] in by_key
         assert relation["object_reference_entity_key"] == "entrez:7157"
-        form = relation["evidence"][0]["object_molecular_form"]
+        form = tables.children("relation_evidence", relation)[0]["object_molecular_form"]
         if relation["object_type"] == "gene":
             assert form is None
         else:

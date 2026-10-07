@@ -6,8 +6,13 @@ import pyarrow.parquet as pq
 from omnipath_resolver import EntityResolver
 from omnipath_build.silver import SilverExtractor
 from omnipath_build.writer import ParquetWriter
-from omnipath_core.schema import ENTITY_SCHEMA, RELATION_SCHEMA, PAYLOAD_SCHEMA
+from omnipath_core.schema import PAYLOAD_SCHEMA, PUBLISHED_TABLES, SERVING_TABLES
+from tables_fixture import read_tables
 from test_partition_contract import entity, run_rows
+
+
+def shape(schema):
+    return [(f.name, str(f.type).replace("element:", "item:")) for f in schema]
 
 
 def test_evidence_occurrences_survive_batches(tmp_path):
@@ -29,50 +34,54 @@ def test_evidence_occurrences_survive_batches(tmp_path):
         "annotations": [{"term": "object_direction_qualifier", "value": "decreased"}],
     }
     source = [("1", forward), ("2", later), ("1", forward), ("3", opposite)]
-    expected = run_rows(tmp_path / "all", source, len(source))
+    tables = run_rows(tmp_path / "all", source, len(source))
     for name, rows in [("split", source), ("reverse", source[::-1])]:
-        assert run_rows(tmp_path / name, rows, 1) == expected
-    _, relations, payloads = expected
+        assert run_rows(tmp_path / name, rows, 1).comparable() == tables.comparable()
+    relations, payloads = tables["relation"], tables["evidence_payloads"]
     assert len(relations) == 2 and len(payloads) == 4
     merged = next(r for r in relations if r["sign"] == 1)
-    assert merged["evidence_count"] == 3
-    assert [e["row_id"] for e in merged["evidence"]].count("1") == 2
-    assert {a["value"] for a in merged["annotations"] if a["term"] == "description"} == {
-        "first",
-        "later",
-    }
-    assert any(any(a["value"] == "later" for a in e["annotations"]) for e in merged["evidence"])
+    evidence = tables.children("relation_evidence", merged)
+    assert merged["evidence_count"] == len(evidence) == 3
+    assert [e["row_id"] for e in evidence].count("1") == 2
+    annotations = tables.children("relation_annotation", merged)
+    assert {a["value"] for a in annotations if a["term"] == "description"} == {"first", "later"}
+    assert any(any(a["value"] == "later" for a in e["annotations"]) for e in evidence)
 
 
 def test_empty_writer_keeps_all_schemas(tmp_path):
     writer = ParquetWriter(tmp_path)
     result = writer.close()
-    assert result[3:] == (0, 0, 0)
-    for path, schema in zip(result[:3], (ENTITY_SCHEMA, RELATION_SCHEMA, PAYLOAD_SCHEMA)):
-        assert pq.read_table(path).schema == schema
+    assert set(result["rows"].values()) == {0}
+    for name, schema in {**PUBLISHED_TABLES, **SERVING_TABLES}.items():
+        assert shape(pq.read_schema(result["files"][name])) == shape(schema)
     assert not (tmp_path / ".bulk").exists()
 
 
 def test_aliases_and_label_merge_across_batches(tmp_path):
     source = [("first", entity("P1")), ("later", entity("P1", label="CDKN2A", aliases=("CDKN2A",)))]
-    entities, _, _ = run_rows(tmp_path, source, 1)
-    (row,) = entities
+    tables = run_rows(tmp_path, source, 1)
+    (row,) = tables["entity"]
     assert row["label"] == "CDKN2A"
-    assert ("genesymbol", "CDKN2A") in {(i["ns"], i["id"]) for i in row["identifiers"]}
+    identifiers = tables.children("entity_identifier", row)
+    assert ("genesymbol", "CDKN2A") in {(i["ns"], i["id"]) for i in identifiers}
+    assert row["identifier_count"] == len(identifiers)
 
 
 def test_nonempty_output_schemas_and_payload_links(tmp_path):
     source = [("1", {"subject": entity("P1"), "predicate": "affects", "object": entity("P1")})]
-    entities, relations, payloads = run_rows(tmp_path, source, 1)
+    tables = run_rows(tmp_path, source, 1)
+    entities, relations, payloads = (
+        tables["entity"],
+        tables["relation"],
+        tables["evidence_payloads"],
+    )
     assert (len(entities), len(relations), len(payloads)) == (1, 1, 1)
     assert payloads[0]["relation_key"] == relations[0]["relation_key"]
     assert relations[0]["subject_entity_key"] == entities[0]["entity_key"]
-    for name, schema in [
-        ("entities", ENTITY_SCHEMA),
-        ("relations", RELATION_SCHEMA),
-        ("evidence_payloads", PAYLOAD_SCHEMA),
-    ]:
-        assert pq.read_schema(tmp_path / f"{name}.parquet") == schema
+    # A self-loop counts as one relation of its entity.
+    assert entities[0]["relation_count"] == 1
+    for name, schema in {**PUBLISHED_TABLES, **SERVING_TABLES}.items():
+        assert shape(pq.read_schema(tmp_path / f"{name}.parquet")) == shape(schema)
 
 
 def test_payload_arrow_batches_preserve_shared_source_rows(tmp_path):
@@ -210,7 +219,7 @@ def test_private_shards_match_single_writer_with_overlapping_event_ids(tmp_path)
             },
         ),
     ]
-    expected = run_rows(tmp_path / "single", source, 3)
+    expected = run_rows(tmp_path / "single", source, 3).comparable()
     shards = []
     for i, (row_id, record) in enumerate(source):
         resolver = EntityResolver()
@@ -223,29 +232,11 @@ def test_private_shards_match_single_writer_with_overlapping_event_ids(tmp_path)
     writer = ParquetWriter(tmp_path / "merged")
     for shard in shards[::-1]:
         writer.import_observation_shard(shard)
-    result = writer.close()
-    import json
-
-    actual = [pq.read_table(p).to_pylist() for p in result[:3]]
-
-    # Ignore table row order; preserve every nested field and duplicate row.
-    def ordered(rows):
-        return sorted(json.dumps(r, sort_keys=True) for r in rows)
-
-    assert [ordered(t) for t in actual] == [ordered(t) for t in expected]
+    # Shards hold identical work in another order: every table matches the single writer.
+    assert read_tables(writer.close()["files"]).comparable() == expected
 
 
-def test_writer_marks_preferred_label_policy(tmp_path):
-    entities, _, _ = run_rows(tmp_path, [("one", entity("P1", label="CDKN2A"))], 1)
-    assert entities[0]["label"] == "CDKN2A"
-    assert "preferred_name" not in pq.read_schema(tmp_path / "entities.parquet").names
-    assert (
-        pq.read_metadata(tmp_path / "entities.parquet").metadata[b"omnipath_label_policy"]
-        == b"preferred-name-v1"
-    )
-
-
-def test_preferred_chemical_label_keeps_other_names(tmp_path):
+def test_chemical_names_stay_identifiers_and_group_by_structure(tmp_path):
     chemical = {
         "type": "chemical_entity",
         "identifiers": [
@@ -254,9 +245,17 @@ def test_preferred_chemical_label_keeps_other_names(tmp_path):
             {"type": "name", "value": "Alanine"},
         ],
     }
-    rows, _, _ = run_rows(tmp_path, [("one", chemical)], 1)
-    assert rows[0]["label"] == "Alanine"
-    assert {"alanine-d7", "Alanine"} <= {i["id"] for i in rows[0]["identifiers"]}
+    tables = run_rows(tmp_path, [("one", chemical)], 1)
+    (row,) = tables["entity"]
+    names = {i["id"] for i in tables.children("entity_identifier", row)}
+    assert {"alanine-d7", "Alanine"} <= names
+    # The structure group is the first InChIKey block of the reference.
+    assert row["reference_entity_key"] == "inchikey:QNAYBMKLOCPYGJ-UQEXSWPGSA-N"
+    assert row["group_connectivity"] == "QNAYBMKLOCPYGJ"
+    groups = {(g["kind"], g["group_key"]) for g in tables["entity_group"]}
+    assert ("connectivity", "QNAYBMKLOCPYGJ") in groups
+    terms = {t["term"] for t in tables["entity_term"]}
+    assert {"alanine", "alanine-d7", "qnaybmklocpygj-uqexswpgsa-n"} <= terms
 
 
 def test_outputs_are_sorted_by_key_across_buckets(tmp_path):
@@ -265,11 +264,17 @@ def test_outputs_are_sorted_by_key_across_buckets(tmp_path):
         (str(i), {"subject": entity(f"P{i}"), "predicate": "affects", "object": entity(f"Q{i}")})
         for i in range(120)
     ]
-    run_rows(tmp_path, source, 7)
-    # Read the files as written; run_rows returns rows re-sorted for comparison.
-    entity_keys = pq.read_table(tmp_path / "entities.parquet")["entity_key"].to_pylist()
-    relation_keys = pq.read_table(tmp_path / "relations.parquet")["relation_key"].to_pylist()
+    tables = run_rows(tmp_path, source, 7)
+    entity_keys = [row["entity_key"] for row in tables["entity"]]
+    relation_keys = [row["relation_key"] for row in tables["relation"]]
     assert len(entity_keys) == 240 and len(relation_keys) == 120
     assert len({key[:2] for key in entity_keys}) > 10
     assert entity_keys == sorted(entity_keys)
     assert relation_keys == sorted(relation_keys)
+    # Ids are row positions, continuing across buckets.
+    assert [row["entity_id"] for row in tables["entity"]] == list(range(240))
+    assert [row["relation_id"] for row in tables["relation"]] == list(range(120))
+    # Each relation under both endpoints' entity keys and reference keys.
+    endpoints = [(row["key"], row["relation_id"]) for row in tables["relation_endpoint"]]
+    assert endpoints == sorted(endpoints) and len(endpoints) == 480
+    assert sum(row["key_kind"] == "entity" for row in tables["relation_endpoint"]) == 240

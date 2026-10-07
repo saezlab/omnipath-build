@@ -104,7 +104,12 @@ def test_projected_relations_keep_payloads(resolver):
         0,
     )
     try:
-        entities, relations, payloads = write_observations(r, x.entities, x.relations, x.payloads)
+        tables = write_observations(r, x.entities, x.relations, x.payloads)
+        entities, relations, payloads = (
+            tables["entity"],
+            tables["relation"],
+            tables["evidence_payloads"],
+        )
         by_key = {e["entity_key"]: e for e in entities}
         assert {(e["entity_type"], e["namespace"], e["identifier"]) for e in entities} == {
             ("chemical_entity", "pubchem", "1"),
@@ -115,7 +120,7 @@ def test_projected_relations_keep_payloads(resolver):
         relation = relations[0]
         assert relation["evidence_count"] == 1
         assert relation["subject_entity_key"] in by_key and relation["object_entity_key"] in by_key
-        evidence = relation["evidence"][0]
+        (evidence,) = tables.children("relation_evidence", relation)
         forms = [evidence[side + "_molecular_form"] for side in ("subject", "object")]
         assert sum(form is None for form in forms) == 1
         product = by_key[next(form for form in forms if form)["protein_entity_key"]]

@@ -68,7 +68,11 @@ def emit(
             return
         if len(fields) < 5:
             continue
-        master, value, source_type = fields[2].strip(), fields[3].strip(), XREF_TYPES.get(fields[4].strip())
+        master, value, source_type = (
+            fields[2].strip(),
+            fields[3].strip(),
+            XREF_TYPES.get(fields[4].strip()),
+        )
         if master in masters and value and source_type:
             if not writer.add(source_type, value, master, CHEMICAL_TAXON, "rhea"):
                 return

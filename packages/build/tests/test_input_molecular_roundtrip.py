@@ -5,12 +5,12 @@ import io
 import json
 from types import SimpleNamespace
 
-import pyarrow.parquet as pq
 
 from library_fixture import build_fixture_library
 from omnipath_api.engine import ParquetServingEngine
 from omnipath_build.silver import SilverExtractor
 from omnipath_build.writer import ParquetWriter
+from tables_fixture import read_tables
 from omnipath_resolver.resolver import EntityResolver
 from pypath.inputs_v2 import bindingdb, brenda, chembl, mirbase, uniprot
 from pypath.inputs_v2.parsers import brenda as brenda_parser
@@ -96,10 +96,10 @@ def test_molecular_inputs_roundtrip_without_combinatorial_entities(tmp_path):
             extractor = SilverExtractor("fixture", "molecular")
             extractor.process_record(record, {"source_row": number}, str(number), number)
             writer.append_observations(extractor, resolver)
-        entities_path, relations_path, _ = writer.close()[:3]
+        tables = read_tables(writer.close()["files"])
     finally:
         resolver.close()
-    entities = pq.read_table(entities_path).to_pylist()
+    entities = tables["entity"]
     (anchor,) = [
         entity
         for entity in entities
@@ -107,7 +107,8 @@ def test_molecular_inputs_roundtrip_without_combinatorial_entities(tmp_path):
     ]
     assert anchor["reference_entity_key"] == "entrez:7157"
     assert not any(
-        identifier["ns"].endswith("_sequence_sha256") for identifier in anchor["identifiers"]
+        identifier["ns"].endswith("_sequence_sha256")
+        for identifier in tables.children("entity_identifier", anchor)
     )
     (product,) = [
         entity
@@ -117,18 +118,19 @@ def test_molecular_inputs_roundtrip_without_combinatorial_entities(tmp_path):
     assert product["reference_entity_key"] == anchor["reference_entity_key"]
     assert not any(
         "-" in identifier["id"]
-        for identifier in anchor["identifiers"]
+        for identifier in tables.children("entity_identifier", anchor)
         if identifier["ns"] == "uniprot"
     )
     alternatives = [
-        evidence["molecular_form"] for evidence in anchor["evidence"] if evidence["molecular_form"]
+        evidence["molecular_form"]
+        for evidence in tables.children("entity_evidence", anchor)
+        if evidence["molecular_form"]
     ]
     assert len(alternatives) == 7
     assert sorted(len(form["variants"] or []) for form in alternatives) == [0, 0, 0, 1, 1, 1, 2]
     assert all(form["protein_entity_key"] == product["entity_key"] for form in alternatives)
-    relations = pq.read_table(relations_path).to_pylist()
-    mutant = next(relation for relation in relations if relation["predicate"] == "interacts_with")
-    form = mutant["evidence"][0]["object_molecular_form"]
+    mutant = next(r for r in tables["relation"] if r["predicate"] == "interacts_with")
+    form = tables.children("relation_evidence", mutant)[0]["object_molecular_form"]
     assert form["protein_entity_key"] == product["entity_key"]
     assert len(form["variants"]) == 2
     assert {identifier["ns"] for identifier in form["sequence_identifiers"]} >= {
@@ -138,7 +140,7 @@ def test_molecular_inputs_roundtrip_without_combinatorial_entities(tmp_path):
     engine = ParquetServingEngine(tmp_path)
     try:
         served = engine.get_entity_core(anchor["entity_key"])["entity"]
-        assert len(served["molecularEvidence"]) == 7
+        assert served["molecularEvidenceTotal"] == 7
         evidence = engine.get_relation_evidence(mutant["relation_key"])["evidence"]
         assert len(evidence) == 1
         assert len(evidence[0]["objectMolecularForm"]["variants"]) == 2

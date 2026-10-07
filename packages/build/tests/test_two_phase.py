@@ -80,8 +80,8 @@ def test_worker_counts_preserve_outputs_statistics_and_row_limits(tmp_path, data
     ):
         assert results[0]["resolution_stats"][key] == results[1]["resolution_stats"][key]
     with duckdb.connect() as db:
-        for key in ("entities_path", "relations_path", "payloads_path"):
-            a, b = (str(r[key]) for r in results)
+        for name in results[0]["files"]:
+            a, b = (str(r["files"][name]) for r in results)
             assert (
                 db.execute(
                     """SELECT count(*) FROM (
@@ -93,7 +93,8 @@ def test_worker_counts_preserve_outputs_statistics_and_row_limits(tmp_path, data
             )
         assert (
             db.execute(
-                "SELECT count(*) FROM read_parquet(?)", [str(results[1]["payloads_path"])]
+                "SELECT count(*) FROM read_parquet(?)",
+                [str(results[1]["files"]["evidence_payloads"])],
             ).fetchone()[0]
             == 95
         )

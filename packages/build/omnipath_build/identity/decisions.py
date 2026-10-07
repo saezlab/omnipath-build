@@ -92,10 +92,14 @@ def decide(ctx, c, indexes):
     for hub in chem + prot + reac:
         domain = sql_list(CHEMICAL if hub in CHEMICAL else PROTEIN if hub in PROTEIN else REACTION)
         gene_link = (
-            "AND ns<>'entrez'" if hub == "uniprot" else "AND ns<>'uniprot'" if hub == "entrez" else ""
+            "AND ns<>'entrez'"
+            if hub == "uniprot"
+            else "AND ns<>'uniprot'"
+            if hub == "entrez"
+            else ""
         )
         edges.append(
-            f"""SELECT {quote(hub + ':')} || local_id a,ns || ':' || identifier b
+            f"""SELECT {quote(hub + ":")} || local_id a,ns || ':' || identifier b
             FROM {xrefs_of(indexes, hub)} WHERE ns IN {domain} {gene_link}"""
         )
     c.execute(f"CREATE TABLE xref AS SELECT DISTINCT * FROM ({' UNION ALL '.join(edges)})")
@@ -103,7 +107,7 @@ def decide(ctx, c, indexes):
     c.execute("CREATE TABLE ends AS SELECT DISTINCT rec record_id FROM nb")
     # Goslin names of chemical records without an InChIKey (rule 1).
     gl = [
-        f"""SELECT {quote(h + ':')} || local_id record_id,identifier goslin FROM {by_id_of(indexes, h)}
+        f"""SELECT {quote(h + ":")} || local_id record_id,identifier goslin FROM {by_id_of(indexes, h)}
         WHERE ns='goslin' AND anchor_count=0"""
         for h in GOSLIN_HUBS
         if h in indexes
@@ -192,7 +196,7 @@ def decide(ctx, c, indexes):
     c.execute(
         f"""CREATE TABLE grouped AS SELECT k.record_id,gc.* FROM components k JOIN (
           SELECT k.comp,count(*) n,count(DISTINCT g.hub) hubs,
-            arg_min(g.record_id,struct_pack(r:={hub_rank('g.hub')},l:=g.local_id)) preferred
+            arg_min(g.record_id,struct_pack(r:={hub_rank("g.hub")},l:=g.local_id)) preferred
           FROM components k JOIN cand g USING(record_id) GROUP BY k.comp) gc USING(comp)"""
     )
     c.execute(
@@ -213,9 +217,15 @@ def decide(ctx, c, indexes):
         WHERE s.count0<>1 AND s.hub<>'entrez'"""
     )
     return dict(
-        decisions=dict(c.execute("SELECT decision,count(*) FROM exceptions GROUP BY 1 ORDER BY 1").fetchall()),
-        groups_accepted=c.execute("SELECT count(DISTINCT comp) FROM grouped WHERE n=hubs").fetchone()[0],
-        groups_rejected=c.execute("SELECT count(DISTINCT comp) FROM grouped WHERE n<>hubs").fetchone()[0],
+        decisions=dict(
+            c.execute("SELECT decision,count(*) FROM exceptions GROUP BY 1 ORDER BY 1").fetchall()
+        ),
+        groups_accepted=c.execute(
+            "SELECT count(DISTINCT comp) FROM grouped WHERE n=hubs"
+        ).fetchone()[0],
+        groups_rejected=c.execute(
+            "SELECT count(DISTINCT comp) FROM grouped WHERE n<>hubs"
+        ).fetchone()[0],
         lipid_name_records_with_inchikey_edge=c.execute(
             """SELECT count(DISTINCT n.rec) FROM nb n JOIN st s ON s.record_id=n.rec AND s.anchor_kind='goslin'
             JOIN st o ON o.record_id=n.other AND o.anchor_kind='inchikey'"""
@@ -234,10 +244,10 @@ def stage_gene_products(ctx, directory, indexes):
         up = records_of(indexes, "uniprot")
         en = records_of(indexes, "entrez")
         c.execute(
-            f"""CREATE TABLE ge AS SELECT local_id,ns,identifier FROM {xrefs_of(indexes, 'uniprot')} WHERE ns='entrez'"""
+            f"""CREATE TABLE ge AS SELECT local_id,ns,identifier FROM {xrefs_of(indexes, "uniprot")} WHERE ns='entrez'"""
         )
         c.execute(
-            f"""CREATE TABLE gf AS SELECT local_id,ns,identifier FROM {xrefs_of(indexes, 'entrez')} WHERE ns='uniprot'"""
+            f"""CREATE TABLE gf AS SELECT local_id,ns,identifier FROM {xrefs_of(indexes, "entrez")} WHERE ns='uniprot'"""
         )
         query = f"""SELECT DISTINCT protein_entity_id,entrez_id,taxon FROM (
             SELECT s.anchor protein_entity_id,e.identifier entrez_id,s.taxon
@@ -249,7 +259,10 @@ def stage_gene_products(ctx, directory, indexes):
             JOIN {up} t ON t.local_id=e.identifier AND t.anchor_count=1
             WHERE s.taxon IS NULL OR t.taxon IS NULL OR s.taxon=t.taxon)"""
     n = ctx.copy(
-        c, query + " ORDER BY protein_entity_id,entrez_id", out / "gene_products_by_protein.parquet", ", ROW_GROUP_SIZE 65536"
+        c,
+        query + " ORDER BY protein_entity_id,entrez_id",
+        out / "gene_products_by_protein.parquet",
+        ", ROW_GROUP_SIZE 65536",
     )
     ctx.copy(
         c,
@@ -270,7 +283,7 @@ def ramp_genes(ctx, c, indexes):
         return dict(mappings=0)
     gp = quote(ctx.out / "gene_products_by_protein.parquet")
     c.execute(
-        f"""CREATE TABLE src AS SELECT local_id,ns,identifier source_value,taxon FROM {by_id_of(indexes, 'ramp_gene')}
+        f"""CREATE TABLE src AS SELECT local_id,ns,identifier source_value,taxon FROM {by_id_of(indexes, "ramp_gene")}
         WHERE ns IN {sql_list(RAMP_TYPES)} AND tag='claim'"""
     )
     if "uniprot" in indexes:
@@ -336,7 +349,7 @@ def stage_structures(ctx, directory, indexes):
     ]
     levels = sql_list(STRUCTURE_LEVELS)
     query = (
-        f"""SELECT goslin,substr(min(anchor),10) inchikey FROM ({' UNION ALL '.join(gl)})
+        f"""SELECT goslin,substr(min(anchor),10) inchikey FROM ({" UNION ALL ".join(gl)})
         WHERE split_part(goslin,':',1) IN {levels} GROUP BY goslin
         HAVING count(DISTINCT anchor) FILTER (WHERE anchor_count=1)=1 AND NOT bool_or(anchor_count>1) ORDER BY goslin"""
         if gl
@@ -350,7 +363,7 @@ def quarantined_key_entities(ctx, c, indexes):
     keys = []
     for hub in (h for h in CHEMICAL if h in indexes):
         c.execute(
-            f"""CREATE OR REPLACE TEMP TABLE q AS SELECT local_id,substr(md5({quote(hub + ':')} || local_id),1,2) part
+            f"""CREATE OR REPLACE TEMP TABLE q AS SELECT local_id,substr(md5({quote(hub + ":")} || local_id),1,2) part
             FROM exceptions WHERE decision='quarantined' AND hub={quote(hub)} AND count0>1"""
         )
         parts = [r[0] for r in c.execute("SELECT DISTINCT part FROM q").fetchall()]
@@ -361,7 +374,7 @@ def quarantined_key_entities(ctx, c, indexes):
         ]
         if sources:
             c.execute(
-                f"""CREATE TEMP TABLE k_{hub} AS SELECT DISTINCT {quote(hub + ':')} || local_id record_id,value
+                f"""CREATE TEMP TABLE k_{hub} AS SELECT DISTINCT {quote(hub + ":")} || local_id record_id,value
                 FROM {files(*sources)}
                 WHERE source_type='inchikey' AND local_id IN (SELECT local_id FROM q)
                   AND regexp_matches(value,{quote(INCHIKEY_RE)}) AND value NOT IN {sql_list(EMPTY_KEYS)}"""
@@ -379,7 +392,9 @@ def quarantined_key_entities(ctx, c, indexes):
         c.execute("CREATE TABLE qkeys(entity_id VARCHAR)")
         return
     c.execute("CREATE TABLE cand_keys AS SELECT DISTINCT substr(entity_id,10) k FROM qrec")
-    parts = [r[0] for r in c.execute("SELECT DISTINCT substr(md5(k),1,2) FROM cand_keys").fetchall()]
+    parts = [
+        r[0] for r in c.execute("SELECT DISTINCT substr(md5(k),1,2) FROM cand_keys").fetchall()
+    ]
     anchored = []
     for hub in (h for h in CHEMICAL if h in indexes):
         sources = [
@@ -407,7 +422,9 @@ def write_outputs(ctx, c, indexes):
         """CREATE TABLE final AS SELECT record_id,entity_id,decision,hub,local_id,taxon,count0
         FROM exceptions WHERE hub<>'ramp_gene' UNION ALL SELECT * FROM ramp_rows"""
     )
-    dup = c.execute("SELECT count(*) FROM (SELECT record_id FROM final GROUP BY 1 HAVING count(*)>1)").fetchone()[0]
+    dup = c.execute(
+        "SELECT count(*) FROM (SELECT record_id FROM final GROUP BY 1 HAVING count(*)>1)"
+    ).fetchone()[0]
     if dup:
         raise RuntimeError(f"{dup} records have more than one exception row")
     n = ctx.copy(
@@ -467,7 +484,9 @@ def write_outputs(ctx, c, indexes):
     return dict(exceptions=n, entities_extra=extra, record_candidates=candidates)
 
 
-def build_identity(hub_index_root, output_dir, memory="7GB", threads=6, min_free_gib=50, keep_work=False):
+def build_identity(
+    hub_index_root, output_dir, memory="7GB", threads=6, min_free_gib=50, keep_work=False
+):
     started = time.monotonic()
     indexes = find_indexes(hub_index_root)
     rules = code_sha256(*CODE_FILES)
@@ -486,7 +505,9 @@ def build_identity(hub_index_root, output_dir, memory="7GB", threads=6, min_free
         lambda c, d: stage_gene_products(c, d, indexes),
     )
     ctx.stage(
-        "structures", [building / "lipid_structures.parquet"], lambda c, d: stage_structures(c, d, indexes)
+        "structures",
+        [building / "lipid_structures.parquet"],
+        lambda c, d: stage_structures(c, d, indexes),
     )
 
     def decisions(ctx, directory):
@@ -497,7 +518,9 @@ def build_identity(hub_index_root, output_dir, memory="7GB", threads=6, min_free
         return info
 
     ctx.stage(
-        "decisions", [building / "exceptions.parquet", building / "entities_extra.parquet"], decisions
+        "decisions",
+        [building / "exceptions.parquet", building / "entities_extra.parquet"],
+        decisions,
     )
     manifest = dict(
         format=FORMAT,
@@ -515,5 +538,3 @@ def build_identity(hub_index_root, output_dir, memory="7GB", threads=6, min_free
     os.replace(building, out)
     log("identity_complete", path=str(out), seconds=manifest["timings"]["total"])
     return manifest
-
-

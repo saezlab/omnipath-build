@@ -2,13 +2,13 @@
 
 import json
 
-import pyarrow.parquet as pq
 import pytest
 
 from omnipath_resolver.resolver import ResolvedEntityTarget
 from omnipath_build.silver import SilverExtractor
 from omnipath_build.writer import ParquetWriter
 from omnipath_core.keys import entity_key
+from tables_fixture import read_tables
 
 
 class MappedResolver:
@@ -65,8 +65,7 @@ def build(path, rows, *, shards=False):
             writer.import_observation_shard(shard.seal_observation_shard())
         else:
             writer.append_observations(extractor, resolver)
-    paths = writer.close()[:3]
-    return [pq.read_table(p).to_pylist() for p in paths]
+    return read_tables(writer.close()["files"])
 
 
 def test_different_products_and_forms_share_gene_without_losing_occurrences(tmp_path):
@@ -87,7 +86,8 @@ def test_different_products_and_forms_share_gene_without_losing_occurrences(tmp_
             "object": protein("P67890"),
         },
     ]
-    entities, relations, payloads = build(tmp_path / "direct", rows)
+    tables = build(tmp_path / "direct", rows)
+    entities, relations = tables["entity"], tables["relation"]
     assert len(relations) == 2
     by_key = {e["entity_key"]: e for e in entities}
     protein_relation = next(r for r in relations if r["subject_type"] == "protein")
@@ -98,10 +98,10 @@ def test_different_products_and_forms_share_gene_without_losing_occurrences(tmp_
         == protein_relation["subject_reference_entity_key"]
         == "entrez:1"
     )
-    assert gene_relation["evidence"][0]["subject_molecular_form"] is None
+    assert tables.children("relation_evidence", gene_relation)[0]["subject_molecular_form"] is None
     assert protein_relation["evidence_count"] == 2
     observed = {}
-    for evidence in protein_relation["evidence"]:
+    for evidence in tables.children("relation_evidence", protein_relation):
         form = evidence["subject_molecular_form"]
         product = by_key[form["protein_entity_key"]]
         assert product["reference_entity_key"] == "entrez:1"
@@ -110,15 +110,15 @@ def test_different_products_and_forms_share_gene_without_losing_occurrences(tmp_
     assert observed == {"P12345": ["X", "Y"], "Q12345": ["X", "Z"]}
     anchor = by_key[protein_relation["subject_entity_key"]]
     assert anchor["namespace"] == "entrez" and anchor["entity_type"] == "protein"
-    assert not any(i["id"] == "P12345-2" for i in anchor["identifiers"])
+    assert not any(i["id"] == "P12345-2" for i in tables.children("entity_identifier", anchor))
     assert (
-        next(e for e in protein_relation["evidence"] if e["row_id"] == "0")[
-            "subject_molecular_form"
-        ]["isoform_identifier"]["id"]
+        next(
+            e for e in tables.children("relation_evidence", protein_relation) if e["row_id"] == "0"
+        )["subject_molecular_form"]["isoform_identifier"]["id"]
         == "P12345-2"
     )
     sharded = build(tmp_path / "sharded", rows, shards=True)
-    assert sharded == [entities, relations, payloads]
+    assert sharded.comparable() == tables.comparable()
 
 
 def test_explicit_forms_do_not_collide_before_resolution(tmp_path):
@@ -133,11 +133,11 @@ def test_explicit_forms_do_not_collide_before_resolution(tmp_path):
     assert len(extractor.entities) == 3
     writer = ParquetWriter(tmp_path)
     writer.append_observations(extractor, MappedResolver())
-    path = writer.close()[1]
-    (relation,) = pq.read_table(path).to_pylist()
+    tables = read_tables(writer.close()["files"])
+    (relation,) = tables["relation"]
     combinations = {
         tuple(v["description"] for v in e["subject_molecular_form"]["variants"])
-        for e in relation["evidence"]
+        for e in tables.children("relation_evidence", relation)
     }
     assert combinations == {("X", "Y"), ("X", "Z")}
 
@@ -149,18 +149,19 @@ def test_standalone_forms_and_unknown_coordinates_remain_evidence(tmp_path):
         ),
         protein("P12345-2", variants=("X",)),
     ]
-    entities, relations, payloads = build(tmp_path, rows)
-    assert relations == []
+    tables = build(tmp_path, rows)
+    entities, payloads = tables["entity"], tables["evidence_payloads"]
+    assert tables["relation"] == []
     anchor = next(e for e in entities if e["namespace"] == "entrez")
-    assert len(anchor["evidence"]) == 2
-    first = anchor["evidence"][0]["molecular_form"]
+    assert len(tables.children("entity_evidence", anchor)) == 2
+    first = tables.children("entity_evidence", anchor)[0]["molecular_form"]
     assert first["modifications"][0]["coordinate_reference"] == {
         "identifier": None,
         "coordinate_system": "unknown",
         "position_base": None,
     }
     assert first["variants"] is None
-    assert anchor["evidence"][1]["molecular_form"]["modifications"] is None
+    assert tables.children("entity_evidence", anchor)[1]["molecular_form"]["modifications"] is None
     assert all(p["entity_key"] == anchor["entity_key"] for p in payloads)
 
 
@@ -170,7 +171,8 @@ def test_symmetric_relation_keeps_each_form_with_its_endpoint(tmp_path):
         {"subject": a, "predicate": "interacts_with", "object": b},
         {"subject": b, "predicate": "interacts_with", "object": a},
     ]
-    _, (relation,), _ = build(tmp_path, rows)
+    tables = build(tmp_path, rows)
+    (relation,) = tables["relation"]
     assert relation["evidence_count"] == 2
     sides = {
         "entrez:1": ("A", entity_key("protein", "uniprot", "P12345")),
@@ -178,7 +180,7 @@ def test_symmetric_relation_keeps_each_form_with_its_endpoint(tmp_path):
     }
     for side in ("subject", "object"):
         label, product = sides[relation[f"{side}_reference_entity_key"]]
-        for occurrence in relation["evidence"]:
+        for occurrence in tables.children("relation_evidence", relation):
             form = occurrence[f"{side}_molecular_form"]
             assert form["variants"][0]["description"] == label
             assert form["protein_entity_key"] == product
@@ -208,9 +210,10 @@ def test_primary_sequence_survives_an_explicit_feature_form(
         "identifiers": [{"type": namespace, "value": identifier}],
         "molecular_form": {"variants": [{"description": "reported variant"}]},
     }
-    entities, _, _ = build(tmp_path, [item])
+    tables = build(tmp_path, [item])
+    entities = tables["entity"]
     anchor = next(e for e in entities if e["namespace"] == "entrez")
-    form = anchor["evidence"][0]["molecular_form"]
+    form = tables.children("entity_evidence", anchor)[0]["molecular_form"]
     assert {"ns": namespace, "id": identifier} in form["sequence_identifiers"]
     assert form["variants"][0]["description"] == "reported variant"
     if source_type == "protein":
@@ -236,12 +239,12 @@ def test_explicit_gene_variant_is_retained_without_inferred_product(tmp_path):
             ]
         },
     }
-    entities, relations, _ = build(tmp_path, [item])
-    assert relations == []
-    (entity,) = entities
+    tables = build(tmp_path, [item])
+    assert tables["relation"] == []
+    (entity,) = tables["entity"]
     assert entity["entity_type"] == "gene"
     assert entity["reference_entity_key"] == "entrez:1"
-    form = entity["evidence"][0]["molecular_form"]
+    form = tables.children("entity_evidence", entity)[0]["molecular_form"]
     assert form["protein_entity_key"] is None
     assert form["transcript_entity_key"] is None
     assert form["variants"][0]["coordinate_reference"]["identifier"]["id"] == "NC_000001.11"
@@ -276,12 +279,8 @@ def test_complexes_with_distinct_member_forms_do_not_merge(tmp_path):
         }
         extractor.process_record(item, item, str(i), i)
     writer.append_observations(extractor, ComplexResolver())
-    paths = writer.close()
-    complexes = [
-        row
-        for row in pq.read_table(paths[0]).to_pylist()
-        if row["entity_type"] == "macromolecular_complex"
-    ]
+    tables = read_tables(writer.close()["files"])
+    complexes = [row for row in tables["entity"] if row["entity_type"] == "macromolecular_complex"]
     assert len(complexes) == 2
     assert len({row["entity_key"] for row in complexes}) == 2
     assert all(row["namespace"] == "complex" for row in complexes)
@@ -318,14 +317,14 @@ def test_conflicting_source_keeps_native_reference_and_occurrence_diagnostics(tm
     extractor.process_record(relation, relation, "relation", 1)
     writer = ParquetWriter(tmp_path)
     writer.append_observations(extractor, ConflictResolver())
-    entity_path, relation_path, *_ = writer.close()
-    (entity,) = pq.read_table(entity_path).to_pylist()
-    (relation,) = pq.read_table(relation_path).to_pylist()
+    tables = read_tables(writer.close()["files"])
+    (entity,) = tables["entity"]
+    (relation,) = tables["relation"]
     assert entity["reference_entity_key"] == "uniprot:P04637"
     assert entity["gene_reference_keys"] == ["entrez:7157"]
     assert relation["subject_reference_entity_key"] == entity["reference_entity_key"]
     assert relation["object_reference_entity_key"] == entity["reference_entity_key"]
-    annotations = entity["evidence"][0]["annotations"]
+    annotations = tables.children("entity_evidence", entity)[0]["annotations"]
     assert {a["value"] for a in annotations if a["term"] == "omnipath:gene_mapping_candidate"} == {
         "entrez:55",
         "entrez:7157",
@@ -334,7 +333,7 @@ def test_conflicting_source_keeps_native_reference_and_occurrence_diagnostics(tm
         a["term"] == "omnipath:gene_mapping_status" and a["value"] == "conflict"
         for a in annotations
     )
-    annotations = relation["evidence"][0]["annotations"]
+    annotations = tables.children("relation_evidence", relation)[0]["annotations"]
     assert {a["scope"] for a in annotations if a["term"] == "omnipath:gene_mapping_status"} == {
         "subject",
         "object",
@@ -376,36 +375,38 @@ def test_reported_native_product_is_retained_without_catalogue_links(
     writer = ParquetWriter(tmp_path / "output", library_dir=library)
     try:
         writer.append_observations(extractor, resolver)
-        entity_path, relation_path, *_ = writer.close()
+        tables = read_tables(writer.close()["files"])
     finally:
         resolver.close()
-    entities = {row["entity_key"]: row for row in pq.read_table(entity_path).to_pylist()}
-    (relation,) = pq.read_table(relation_path).to_pylist()
+    entities = {row["entity_key"]: row for row in tables["entity"]}
+    (relation,) = tables["relation"]
     product_key = entity_key("protein", product_namespace, identifier)
     product = entities[product_key]
     assert product["reference_entity_key"] == f"{product_namespace}:{identifier}"
     assert product["gene_reference_keys"] == []
     assert product["label"] == identifier
-    form = relation["evidence"][0]["subject_molecular_form"]
+    form = tables.children("relation_evidence", relation)[0]["subject_molecular_form"]
     assert form["protein_entity_key"] == product_key
     assert any(
         annotation["term"] == "omnipath:protein_mapping_status"
         and annotation["value"] == "reported"
         and annotation["scope"] == "subject"
-        for annotation in relation["evidence"][0]["annotations"]
+        for annotation in tables.children("relation_evidence", relation)[0]["annotations"]
     )
     source_endpoint = entities[relation["subject_entity_key"]]
     assert any(
         annotation["term"] == "omnipath:protein_mapping_status"
         and annotation["value"] == "reported"
-        for annotation in source_endpoint["evidence"][0]["annotations"]
+        for annotation in tables.children("entity_evidence", source_endpoint)[0]["annotations"]
     )
     assert any(
         alias["ns"] == product_namespace and alias["id"] == identifier and alias["source"] == "raw"
-        for alias in product["identifiers"]
+        for alias in tables.children("entity_identifier", product)
     )
     if with_gene:
-        assert not any(alias["source"] == "resolver" for alias in product["identifiers"])
+        assert not any(
+            alias["source"] == "resolver" for alias in tables.children("entity_identifier", product)
+        )
     if namespace == "uniprot" and identifier.endswith("-2"):
         assert form["isoform_identifier"]["id"] == identifier
     if namespace != "uniprot" or "-" in identifier:
@@ -415,7 +416,10 @@ def test_reported_native_product_is_retained_without_catalogue_links(
         assert anchor["namespace"] == "entrez"
         assert anchor["identifier"] == "7157"
         assert relation["subject_entity_key"] != product_key
-        assert anchor["evidence"][0]["molecular_form"]["protein_entity_key"] == product_key
+        assert (
+            tables.children("entity_evidence", anchor)[0]["molecular_form"]["protein_entity_key"]
+            == product_key
+        )
         assert product["label"] != anchor["label"]
 
 
@@ -440,14 +444,14 @@ def test_gene_symbol_or_generic_source_does_not_create_native_product(
     writer = ParquetWriter(tmp_path / "output")
     try:
         writer.append_observations(extractor, resolver)
-        entity_path, *_ = writer.close()
+        tables = read_tables(writer.close()["files"])
     finally:
         resolver.close()
-    (entity,) = pq.read_table(entity_path).to_pylist()
-    assert entity["evidence"][0]["molecular_form"] is None
+    (entity,) = tables["entity"]
+    assert tables.children("entity_evidence", entity)[0]["molecular_form"] is None
     assert not any(
         annotation["term"] == "omnipath:protein_mapping_status"
-        for annotation in entity["evidence"][0]["annotations"]
+        for annotation in tables.children("entity_evidence", entity)[0]["annotations"]
     )
 
 
@@ -470,14 +474,14 @@ def test_reported_protein_diagnostics_are_endpoint_scoped_and_catalogue_aliases_
     writer = ParquetWriter(tmp_path / "output", library_dir=library)
     try:
         writer.append_observations(extractor, resolver)
-        entity_path, relation_path, *_ = writer.close()
+        tables = read_tables(writer.close()["files"])
     finally:
         resolver.close()
-    entities = {row["entity_key"]: row for row in pq.read_table(entity_path).to_pylist()}
-    (relation,) = pq.read_table(relation_path).to_pylist()
+    entities = {row["entity_key"]: row for row in tables["entity"]}
+    (relation,) = tables["relation"]
     reported_status = [
         annotation
-        for annotation in relation["evidence"][0]["annotations"]
+        for annotation in tables.children("relation_evidence", relation)[0]["annotations"]
         if annotation["term"] == "omnipath:protein_mapping_status"
     ]
     assert [(annotation["value"], annotation["scope"]) for annotation in reported_status] == [
@@ -486,15 +490,18 @@ def test_reported_protein_diagnostics_are_endpoint_scoped_and_catalogue_aliases_
     known_endpoint = entities[relation["subject_entity_key"]]
     assert not any(
         annotation["term"] == "omnipath:protein_mapping_status"
-        for evidence in known_endpoint["evidence"]
+        for evidence in tables.children("entity_evidence", known_endpoint)
         for annotation in evidence["annotations"]
     )
     known_product = entities[entity_key("protein", "uniprot", known_accession)]
-    assert any(alias["source"] == "resolver" for alias in known_product["identifiers"])
+    assert any(
+        alias["source"] == "resolver"
+        for alias in tables.children("entity_identifier", known_product)
+    )
     reported_endpoint = entities[relation["object_entity_key"]]
     assert any(
         annotation["term"] == "omnipath:protein_mapping_status"
         and annotation["value"] == "reported"
-        for evidence in reported_endpoint["evidence"]
+        for evidence in tables.children("entity_evidence", reported_endpoint)
         for annotation in evidence["annotations"]
     )

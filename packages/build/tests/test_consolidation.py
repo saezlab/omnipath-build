@@ -71,8 +71,11 @@ class TestConsolidation(unittest.TestCase):
             },
         ]
 
-        entities, relations, payloads = write_observations(
-            resolver, raw_entities, raw_relations, raw_payloads
+        tables = write_observations(resolver, raw_entities, raw_relations, raw_payloads)
+        entities, relations, payloads = (
+            tables["entity"],
+            tables["relation"],
+            tables["evidence_payloads"],
         )
 
         resolver.close()
@@ -90,7 +93,7 @@ class TestConsolidation(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             library = build_fixture_library(Path(tmpdir))
             resolver = EntityResolver(library_dir=library)
-            entities, _, _ = write_observations(
+            tables = write_observations(
                 resolver,
                 {
                     "e1": RawEntityObservation(
@@ -108,6 +111,7 @@ class TestConsolidation(unittest.TestCase):
                 [],
             )
             resolver.close()
+            entities = tables["entity"]
             self.assertEqual(len(entities), 2)
             ent = next(e for e in entities if e["namespace"] == "entrez")
             product = next(e for e in entities if e["namespace"] == "uniprot")
@@ -119,7 +123,8 @@ class TestConsolidation(unittest.TestCase):
             self.assertNotEqual(product["entity_key"], ent["entity_key"])
             self.assertEqual(ent["label"], "TP53")
             self.assertEqual(ent["taxon"], "9606")
-            pairs = {(item["ns"], item["id"]) for item in ent["identifiers"]}
+            identifiers = tables.children("entity_identifier", ent)
+            pairs = {(item["ns"], item["id"]) for item in identifiers}
             self.assertIn(("entrez", "7157"), pairs)
             self.assertIn(("uniprot", "P04637"), pairs)
             self.assertIn(("genesymbol", "TP53"), pairs)
@@ -127,7 +132,7 @@ class TestConsolidation(unittest.TestCase):
             self.assertTrue(
                 any(
                     item["ns"] == "genesymbol" and item["source"] == "resolver"
-                    for item in ent["identifiers"]
+                    for item in identifiers
                 )
             )
 

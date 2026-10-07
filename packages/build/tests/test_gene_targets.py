@@ -83,9 +83,13 @@ def test_writer_gene_references_are_partition_invariant(library, tmp_path):
             },
         ),
     ]
-    expected = run_rows(tmp_path / "all", rows, 3, library)
-    assert run_rows(tmp_path / "split", rows[::-1], 1, library) == expected
-    entities, relations, payloads = expected
+    tables = run_rows(tmp_path / "all", rows, 3, library)
+    assert run_rows(tmp_path / "split", rows[::-1], 1, library).comparable() == tables.comparable()
+    entities, relations, payloads = (
+        tables["entity"],
+        tables["relation"],
+        tables["evidence_payloads"],
+    )
     assert {(e["entity_type"], e["namespace"], e["identifier"]) for e in entities} == {
         ("gene", "entrez", "7157"),
         ("gene", "entrez", "999"),
@@ -97,7 +101,7 @@ def test_writer_gene_references_are_partition_invariant(library, tmp_path):
     assert sum(r["evidence_count"] for r in relations) == 3
     products = {e["entity_key"]: e for e in entities if e["namespace"] == "uniprot"}
     for relation in relations:
-        evidence = relation["evidence"][0]
+        evidence = tables.children("relation_evidence", relation)[0]
         if relation["subject_type"] == "gene":
             assert evidence["subject_molecular_form"] is None
         else:
@@ -107,14 +111,14 @@ def test_writer_gene_references_are_partition_invariant(library, tmp_path):
             )
         assert relation["subject_reference_entity_key"] == "entrez:7157"
     assert len({r["subject_entity_key"] for r in relations}) == 2
-    for r in relations:
-        for ev in r["evidence"]:
-            if ev["row_id"] == "hpo":
-                assert len(ev["annotations"]) == 1
+    for ev in tables["relation_evidence"]:
+        if ev["row_id"] == "hpo":
+            assert len(ev["annotations"]) == 1
     for e in entities:
         if e["identifier"] == "P04637":
             assert not any(
-                i["ns"] == "uniprot" and i["id"] == "A0A0U1RQF1" for i in e["identifiers"]
+                i["ns"] == "uniprot" and i["id"] == "A0A0U1RQF1"
+                for i in tables.children("entity_identifier", e)
             )
 
 
@@ -131,13 +135,19 @@ def test_symmetric_gene_reference_keeps_one_occurrence(library, tmp_path):
             },
         )
     ]
-    entities, relations, payloads = run_rows(tmp_path / "symmetric", rows, 1, library)
+    tables = run_rows(tmp_path / "symmetric", rows, 1, library)
+    entities, relations, payloads = (
+        tables["entity"],
+        tables["relation"],
+        tables["evidence_payloads"],
+    )
     assert len(entities) == len(relations) == len(payloads) == 1
     assert entities[0]["entity_type"] == "gene"
     assert relations[0]["subject_entity_key"] == relations[0]["object_entity_key"]
-    assert relations[0]["evidence"][0]["subject_molecular_form"] is None
-    assert all(r["evidence_count"] == 1 for r in relations)
-    assert all(len(r["evidence"][0]["annotations"]) == 1 for r in relations)
+    (evidence,) = tables["relation_evidence"]
+    assert evidence["subject_molecular_form"] is None
+    assert relations[0]["evidence_count"] == 1
+    assert len(evidence["annotations"]) == 1
 
 
 def test_incomplete_compact_library_requires_rebuild(library):
@@ -168,7 +178,12 @@ def test_shared_protein_and_unmapped_gene_keep_all_evidence(library, tmp_path):
         )
         for gene in ["801", "805", "55"]
     ]
-    entities, relations, payloads = run_rows(tmp_path / "shared", rows, 3, library)
+    tables = run_rows(tmp_path / "shared", rows, 3, library)
+    entities, relations, payloads = (
+        tables["entity"],
+        tables["relation"],
+        tables["evidence_payloads"],
+    )
     assert {(e["entity_type"], e["identifier"]) for e in entities} == {
         ("gene", "801"),
         ("gene", "805"),

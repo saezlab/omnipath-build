@@ -7,7 +7,9 @@ from pathlib import Path
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-SCHEMA = pa.schema([(n, pa.string()) for n in ("source_type", "source_id", "hub_id", "taxonomy_id", "backend")])
+SCHEMA = pa.schema(
+    [(n, pa.string()) for n in ("source_type", "source_id", "hub_id", "taxonomy_id", "backend")]
+)
 
 
 def key(letter: str) -> str:
@@ -52,7 +54,9 @@ def chemical_hubs():
     pubchem.record("100", ("inchikey", key("A")), ("smiles", "CC"))
     # An excluded "empty" InChIKey is not an anchor.
     pubchem.record("101", ("inchikey", "MOSFIJXAXDLOML-UHFFFAOYSA-N"))
-    hmdb.record("HMDB4", ("inchikey", key("D")), ("name", "Delta from HMDB"), ("drugbank", "DB00001"))
+    hmdb.record(
+        "HMDB4", ("inchikey", key("D")), ("name", "Delta from HMDB"), ("drugbank", "DB00001")
+    )
 
     # Rule 2: two InChIKeys quarantine the record; its keys still get their own entities.
     hmdb.record("HMDB2", ("inchikey", key("B")), ("inchikey", key("C")), ("name", "Twin"))
@@ -136,8 +140,12 @@ def protein_hubs():
     )
     uniprot.record("A0A000", ("uniprot", "A0A000"), ("uniprot_entry", "A0A000_HUMAN"), **human)
     # Known and different organisms: no gene-product link; an unknown gene: link without record.
-    uniprot.record("Q00002", ("uniprot", "Q00002"), ("entrez", "9999"), ("genesymbol", "MOUSEY"), **human)
-    uniprot.record("Q00003", ("uniprot", "Q00003"), ("entrez", "5555"), ("hgnc", "HGNC:5555"), **human)
+    uniprot.record(
+        "Q00002", ("uniprot", "Q00002"), ("entrez", "9999"), ("genesymbol", "MOUSEY"), **human
+    )
+    uniprot.record(
+        "Q00003", ("uniprot", "Q00003"), ("entrez", "5555"), ("hgnc", "HGNC:5555"), **human
+    )
     # More than ten genes behind one symbol: every gene stays a candidate.
     for n in range(12):
         entrez.record(str(100 + n), **human)
@@ -176,7 +184,9 @@ def reaction_hubs():
     )
     rhea.record("20000", ("kegg_reaction", "R00002"), ("metacyc_reaction", "RXN-1"))
     # MetaNetX reactions: attach to the one Rhea master they name.
-    mnx.record("MNXR1", ("rhea", "10000"), ("bigg_reaction", "AMIDASE"), ("kegg_reaction", "R00001"))
+    mnx.record(
+        "MNXR1", ("rhea", "10000"), ("bigg_reaction", "AMIDASE"), ("kegg_reaction", "R00001")
+    )
     # No Rhea reaction: a model reaction keeps MetaNetX's reconciled identity.
     mnx.record("MNXR2", ("bigg_reaction", "MODELONLY"), ("vmh_reaction", "MODELONLY"))
     # Same KEGG id as Rhea 20000 but no Rhea link: Rhea's own cross-reference wins.

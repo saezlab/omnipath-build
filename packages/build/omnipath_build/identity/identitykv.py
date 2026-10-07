@@ -36,8 +36,18 @@ MAP_SIZE = 64 * 1024**3
 SOURCES = {
     "exc": ("exceptions.parquet", "record_id", ("entity_id", "decision", "quarantined"), False),
     "exc_members": ("exception_members.parquet", "entity_id", ("record_id",), True),
-    "extra": ("entities_extra.parquet", "entity_id", ("kind", "taxon", "quarantined", "preferred_record"), False),
-    "gp_protein": ("gene_products_by_protein.parquet", "protein_entity_id", ("entrez_id", "taxon"), True),
+    "extra": (
+        "entities_extra.parquet",
+        "entity_id",
+        ("kind", "taxon", "quarantined", "preferred_record"),
+        False,
+    ),
+    "gp_protein": (
+        "gene_products_by_protein.parquet",
+        "protein_entity_id",
+        ("entrez_id", "taxon"),
+        True,
+    ),
     "gp_gene": ("gene_products_by_gene.parquet", "entrez_id", ("protein_entity_id", "taxon"), True),
     "lipid": ("lipid_structures.parquet", "goslin", ("inchikey",), False),
     "cand": ("record_candidates.parquet", "record_id", ("entity_id",), True),

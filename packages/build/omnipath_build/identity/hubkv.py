@@ -99,8 +99,10 @@ def _connect(spill: Path, memory: str, threads: int):
 
 def _sorted(table: pa.Table, keys: list[str]) -> pa.Table:
     """The partition files are written sorted; sort only if one is not (cheap, in memory)."""
-    key = table.column(keys[0]) if len(keys) == 1 else pc.binary_join_element_wise(
-        *[table.column(k) for k in keys[:2]], "\x00"
+    key = (
+        table.column(keys[0])
+        if len(keys) == 1
+        else pc.binary_join_element_wise(*[table.column(k) for k in keys[:2]], "\x00")
     )
     key = key.combine_chunks() if hasattr(key, "combine_chunks") else key
     if len(key) < 2 or pc.all(pc.less_equal(key[:-1], key[1:])).as_py():
@@ -110,9 +112,7 @@ def _sorted(table: pa.Table, keys: list[str]) -> pa.Table:
 
 def join(*columns, sep: str) -> pa.Array:
     """Element-wise ``sep.join`` of string columns; nulls become ''."""
-    return pc.binary_join_element_wise(
-        *columns, sep, null_handling="replace", null_replacement=""
-    )
+    return pc.binary_join_element_wise(*columns, sep, null_handling="replace", null_replacement="")
 
 
 def group(keys: pa.Array, frags: pa.Array):
@@ -161,7 +161,9 @@ class Writer:
                 )
             )
             if pairs[0][0] <= self.last:
-                raise AssertionError(f"Keys not ascending at {pairs[0][0][:60]!r} after {self.last[:60]!r}")
+                raise AssertionError(
+                    f"Keys not ascending at {pairs[0][0][:60]!r} after {self.last[:60]!r}"
+                )
             self._put(pairs)
             self.last = pairs[-1][0]
             self.keys += len(pairs)
@@ -219,7 +221,9 @@ def build_rec_shard(directory, building, target, shard, shards, hub, min_free):
         ).combine_chunks()
         files = _files(directory / "by_record", part)
         if files:
-            body = _sorted(pq.read_table(files, columns=["local_id", "source_type", "value"]), ["local_id"])
+            body = _sorted(
+                pq.read_table(files, columns=["local_id", "source_type", "value"]), ["local_id"]
+            )
             rows += body.num_rows
             keys, joined = group(
                 body.column("local_id").combine_chunks(),
@@ -282,7 +286,9 @@ def _run_shard(args):
     return name, stats
 
 
-def partition_records(directory: Path, building: Path, hub: str, memory: str, threads: int) -> float:
+def partition_records(
+    directory: Path, building: Path, hub: str, memory: str, threads: int
+) -> float:
     """Rewrite records.parquet once into the by_record partitions (md5 of '<hub>:<local_id>')."""
     target = building / "records_parts"
     done = building / "records_parts.done"
@@ -295,8 +301,8 @@ def partition_records(directory: Path, building: Path, hub: str, memory: str, th
     c.execute("SET partitioned_write_max_open_files=256")
     c.execute(
         f"""COPY (SELECT local_id,taxon,anchor,anchor_count,reviewed,
-              substr(md5({quote(hub + ':')} || local_id),1,2) part
-            FROM read_parquet({quote(directory / 'records.parquet')}))
+              substr(md5({quote(hub + ":")} || local_id),1,2) part
+            FROM read_parquet({quote(directory / "records.parquet")}))
         TO {quote(target)} (FORMAT PARQUET,COMPRESSION ZSTD,PARTITION_BY(part))"""
     )
     c.close()

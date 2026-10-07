@@ -8,19 +8,16 @@ import pyarrow.parquet as pq
 import pytest
 
 from omnipath_build import pipeline
+from omnipath_core.schema import PUBLISHED_TABLES, SERVING_TABLES
 
 
 def fake_build(source, *, version, output_dir, **kwargs):
     directory = Path(output_dir) / "resources" / source / version
     directory.mkdir(parents=True)
-    result = {"resource": source, "version": version}
-    for key, name in [
-        ("entities_path", "entities.parquet"),
-        ("relations_path", "relations.parquet"),
-        ("payloads_path", "evidence_payloads.parquet"),
-    ]:
-        pq.write_table(pa.table({"value": [1]}), directory / name)
-        result[key] = directory / name
+    result = {"resource": source, "version": version, "files": {}}
+    for name in (*PUBLISHED_TABLES, *SERVING_TABLES):
+        pq.write_table(pa.table({"value": [1]}), directory / f"{name}.parquet")
+        result["files"][name] = directory / f"{name}.parquet"
     result["resolution_stats_path"] = directory / "resolution_stats.json"
     result["resolution_stats_path"].write_text("{}")
     return result
@@ -33,13 +30,12 @@ def test_explicit_immutable_atomic_build(tmp_path, monkeypatch):
 
     monkeypatch.setattr(pipeline, "_build_resource", build)
     result = pipeline.build_resource("signor", version="1.0.0", output_dir=tmp_path)
-    assert all(
-        result[key].exists()
-        for key in ("entities_path", "relations_path", "payloads_path", "manifest_path")
-    )
+    assert all(path.exists() for path in result["files"].values())
+    assert result["manifest_path"].exists()
     manifest = json.loads(result["manifest_path"].read_text())
     assert manifest["version"] == "1.0.0"
-    assert len(manifest["files"]["entities.parquet"]["sha256"]) == 64
+    assert len(manifest["files"]) == len(PUBLISHED_TABLES) + len(SERVING_TABLES)
+    assert len(manifest["files"]["entity.parquet"]["sha256"]) == 64
     original = result["manifest_path"].read_bytes()
     with pytest.raises(FileExistsError):
         pipeline.build_resource("signor", version="1.0.0", output_dir=tmp_path)
@@ -64,8 +60,8 @@ def test_failed_build_is_invisible_and_retryable(tmp_path, monkeypatch):
         with BuildLock(path):
             pass
     monkeypatch.setattr(pipeline, "_build_resource", fake_build)
-    assert pipeline.build_resource("signor", version="1", output_dir=tmp_path)[
-        "entities_path"
+    assert pipeline.build_resource("signor", version="1", output_dir=tmp_path)["files"][
+        "entity"
     ].exists()
 
 

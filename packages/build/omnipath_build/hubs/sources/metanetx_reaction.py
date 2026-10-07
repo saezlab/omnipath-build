@@ -43,7 +43,9 @@ def emit(
     lines: Iterable[str] | None = None,
     directions: Iterable[str] | None = None,
 ) -> None:
-    master_of = rhea_masters(directions if directions is not None else iter_url_lines(DIRECTIONS_URL))
+    master_of = rhea_masters(
+        directions if directions is not None else iter_url_lines(DIRECTIONS_URL)
+    )
     seen: set[str] = set()
     for line in lines if lines is not None else iter_url_lines(URL):
         if writer.full:

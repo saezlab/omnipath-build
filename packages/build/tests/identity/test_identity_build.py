@@ -84,13 +84,17 @@ def test_hub_index_records(q):
     assert q("SELECT * FROM $entrez.records WHERE local_id='9999'") == [
         ("9999", "entrez:9999", "10090", None, 0, False)
     ]
-    assert q("SELECT local_id FROM $chebi.records") == sorted(q("SELECT local_id FROM $chebi.records"))
+    assert q("SELECT local_id FROM $chebi.records") == sorted(
+        q("SELECT local_id FROM $chebi.records")
+    )
 
 
 def test_hub_index_by_id_tags_and_expansions(q):
     cols = "ns,identifier,tag,taxon,anchor,anchor_count"
     p = "uniprot:P04637"
-    rows = q(f"SELECT {cols} FROM $uniprot.by_id WHERE local_id='P04637' ORDER BY ns,identifier,tag")
+    rows = q(
+        f"SELECT {cols} FROM $uniprot.by_id WHERE local_id='P04637' ORDER BY ns,identifier,tag"
+    )
     assert rows == [
         ("ensg", "ENSG00000141510", "claim", "9606", p, 1),
         ("ensp", "ENSP00000269305", "claim", "9606", p, 1),
@@ -111,40 +115,54 @@ def test_hub_index_by_id_tags_and_expansions(q):
         ("uniprot_entry", "P53_HUMAN", "claim", "9606", p, 1),
     ]
     # Chemical: native id, cross-references and aliases; names are not lookup keys.
-    assert q(f"SELECT {cols} FROM $chebi.by_id WHERE local_id='CHEBI:1' ORDER BY ns,identifier") == [
+    assert q(
+        f"SELECT {cols} FROM $chebi.by_id WHERE local_id='CHEBI:1' ORDER BY ns,identifier"
+    ) == [
         ("cas", "50-00-0", "claim", None, "inchikey:" + KA, 1),
         ("chebi", "CHEBI:1", "native", None, "inchikey:" + KA, 1),
         ("chebi", "CHEBI:99", "claim", None, "inchikey:" + KA, 1),
         ("inchikey", KA, "claim", None, "inchikey:" + KA, 1),
         ("kegg", "C00001", "claim", None, "inchikey:" + KA, 1),
     ]
-    assert q("SELECT ns,tag,anchor,anchor_count FROM $hmdb.by_id WHERE ns='inchikey' AND local_id='HMDB0000002' ORDER BY identifier") == [
+    assert q(
+        "SELECT ns,tag,anchor,anchor_count FROM $hmdb.by_id WHERE ns='inchikey' AND local_id='HMDB0000002' ORDER BY identifier"
+    ) == [
         ("inchikey", "claim", None, 2),
         ("inchikey", "claim", None, 2),
     ]
 
 
 def test_hub_index_goslin_rows(q):
-    assert q("SELECT ns,identifier,local_id,tag,anchor_count FROM $swisslipids.by_id WHERE ns='goslin' ORDER BY identifier") == [
+    assert q(
+        "SELECT ns,identifier,local_id,tag,anchor_count FROM $swisslipids.by_id WHERE ns='goslin' ORDER BY identifier"
+    ) == [
         ("goslin", "full_structure:FA 18:0;5Me", "SLM:5", "claim", 0),
         ("goslin", "sn_position:PC 16:0/18:1", "SLM:1", "claim", 0),
     ]
     # Only the most specific level of a record is kept (PC 34:1 is species level).
-    assert q("SELECT source_type,value FROM $swisslipids.by_record WHERE local_id='SLM:1' ORDER BY 1,2") == [
+    assert q(
+        "SELECT source_type,value FROM $swisslipids.by_record WHERE local_id='SLM:1' ORDER BY 1,2"
+    ) == [
         ("goslin", "sn_position:PC 16:0/18:1"),
         ("lipid_shorthand", "PC 16:0/18:1"),
         ("name", "PC 34:1"),
         ("swisslipids", "SLM:1"),
     ]
-    assert q("SELECT identifier FROM $chebi.by_id WHERE ns='goslin' AND local_id='CHEBI:7'") == [("species:PC 34:1",)]
-    assert q("SELECT identifier FROM $lipidmaps.by_id WHERE ns='goslin' AND local_id='LMQ' ORDER BY 1") == [
+    assert q("SELECT identifier FROM $chebi.by_id WHERE ns='goslin' AND local_id='CHEBI:7'") == [
+        ("species:PC 34:1",)
+    ]
+    assert q(
+        "SELECT identifier FROM $lipidmaps.by_id WHERE ns='goslin' AND local_id='LMQ' ORDER BY 1"
+    ) == [
         ("sn_position:PE 16:0/18:1",),
         ("sn_position:PE 18:1/16:0",),
     ]
 
 
 def test_hub_index_by_record_and_xrefs(q):
-    assert q("SELECT source_type,value FROM $chebi.by_record WHERE local_id='CHEBI:1' ORDER BY 1,2") == [
+    assert q(
+        "SELECT source_type,value FROM $chebi.by_record WHERE local_id='CHEBI:1' ORDER BY 1,2"
+    ) == [
         ("cas", "50-00-0"),
         ("chebi", "CHEBI:1"),
         ("chebi", "CHEBI:99"),
@@ -160,7 +178,9 @@ def test_hub_index_by_record_and_xrefs(q):
         ("CHEBI:1", "chebi", "CHEBI:99"),
         ("CHEBI:3", "metanetx", "MNXM3"),
     ]
-    assert q("SELECT ns,identifier FROM $uniprot.xrefs WHERE local_id='P04637' ORDER BY 1") == [("entrez", "7157")]
+    assert q("SELECT ns,identifier FROM $uniprot.xrefs WHERE local_id='P04637' ORDER BY 1") == [
+        ("entrez", "7157")
+    ]
 
 
 def test_hub_index_layout_manifest_and_sorting(built):
@@ -169,23 +189,37 @@ def test_hub_index_layout_manifest_and_sorting(built):
     assert set(m) >= {"hub", "input", "code_sha256", "counts", "timings"} and m["hub"] == "uniprot"
     assert len(m["input"]["sha256"]) == 64 and m["input"]["bytes"] > 0
     d = root / "hubindex" / "uniprot" / m["input"]["sha256"][:12]
-    assert (d / "manifest.json").is_file() and not list((root / "hubindex" / "uniprot").glob("*.building"))
+    assert (d / "manifest.json").is_file() and not list(
+        (root / "hubindex" / "uniprot").glob("*.building")
+    )
     for path in (d / "by_id").glob("part=*/data.parquet"):
         t = pq.read_table(path)
-        keys = list(zip(t.column("ns").to_pylist(), t.column("identifier").to_pylist(), t.column("local_id").to_pylist()))
+        keys = list(
+            zip(
+                t.column("ns").to_pylist(),
+                t.column("identifier").to_pylist(),
+                t.column("local_id").to_pylist(),
+            )
+        )
         assert keys == sorted(keys)
-        assert {hashlib.md5(i.encode()).hexdigest()[:2] for i in t.column("identifier").to_pylist()} == {path.parent.name[5:]}
+        assert {
+            hashlib.md5(i.encode()).hexdigest()[:2] for i in t.column("identifier").to_pylist()
+        } == {path.parent.name[5:]}
         assert pq.ParquetFile(path).metadata.row_group(0).column(0).statistics is not None
     for path in (d / "by_record").glob("part=*/data.parquet"):
         t = pq.read_table(path)
         ids = t.column("local_id").to_pylist()
         assert ids == sorted(ids)
-        assert {hashlib.md5(f"uniprot:{i}".encode()).hexdigest()[:2] for i in ids} == {path.parent.name[5:]}
+        assert {hashlib.md5(f"uniprot:{i}".encode()).hexdigest()[:2] for i in ids} == {
+            path.parent.name[5:]
+        }
 
 
 def test_hub_index_is_reused_unchanged(built):
     root, manifests, _ = built
-    again = build_hub_index("chebi", root / "hubs", root / "hubindex", goslin_cache=root / "goslin", **ARGS)
+    again = build_hub_index(
+        "chebi", root / "hubs", root / "hubindex", goslin_cache=root / "goslin", **ARGS
+    )
     assert again == manifests["chebi"]
 
 
@@ -220,9 +254,13 @@ ROUTE2 = ("explicit_source_gene", "source_gene_only")
 
 
 def test_exceptions_are_the_non_trivial_decisions(q):
-    rows = q("SELECT record_id,entity_id,decision FROM $exceptions WHERE NOT starts_with(record_id,'ramp_gene:') ORDER BY 1,2,3")
+    rows = q(
+        "SELECT record_id,entity_id,decision FROM $exceptions WHERE NOT starts_with(record_id,'ramp_gene:') ORDER BY 1,2,3"
+    )
     assert rows == sorted(EXPECTED_ENTITY_DEFINING)
-    assert q("SELECT record_id,entity_id,decision,quarantined FROM $exceptions WHERE decision='quarantined' ORDER BY 1") == [
+    assert q(
+        "SELECT record_id,entity_id,decision,quarantined FROM $exceptions WHERE decision='quarantined' ORDER BY 1"
+    ) == [
         ("hmdb:HMDB0000002", "hmdb:HMDB0000002", "quarantined", True),
         ("lipidmaps:LMQ", "lipidmaps:LMQ", "quarantined", True),
     ]
@@ -240,12 +278,15 @@ def test_anchored_records_are_never_exceptions_unless_quarantined(q):
     assert not exceptions & {r[0] for r in anchored}
     # No entrez record is an exception either (its entity is entrez:<local_id>).
     assert not {r for r in exceptions if r.startswith("entrez:")}
-    assert q("SELECT count(*) FROM $exceptions WHERE decision='quarantined' AND record_id IN (SELECT record_id FROM $hmdb.records WHERE anchor_count=2)") == [(1,)]
+    assert q(
+        "SELECT count(*) FROM $exceptions WHERE decision='quarantined' AND record_id IN (SELECT record_id FROM $hmdb.records WHERE anchor_count=2)"
+    ) == [(1,)]
 
 
 def test_exception_members_and_entities_extra(q):
     assert q("SELECT entity_id,record_id FROM $exception_members ORDER BY 1,2") == sorted(
-        [(e, r) for r, e, _ in EXPECTED_ENTITY_DEFINING] + [(e, r) for r, e, _ in EXPECTED_RAMP_GENES]
+        [(e, r) for r, e, _ in EXPECTED_ENTITY_DEFINING]
+        + [(e, r) for r, e, _ in EXPECTED_RAMP_GENES]
     )
     assert q("SELECT * FROM $entities_extra ORDER BY entity_id") == [
         ("bigg:b1", "chemical", None, False, "bigg:b1"),
@@ -286,8 +327,15 @@ EXPECTED_RAMP_GENES = [
 
 def test_ramp_gene_source_gene_mappings(q):
     # Exactly one row per ramp_gene record.
-    assert q("SELECT record_id,entity_id,decision FROM $exceptions WHERE starts_with(record_id,'ramp_gene:') ORDER BY 1") == EXPECTED_RAMP_GENES
-    assert q("SELECT count(*) FROM (SELECT record_id FROM $exceptions GROUP BY 1 HAVING count(*)>1)") == [(0,)]
+    assert (
+        q(
+            "SELECT record_id,entity_id,decision FROM $exceptions WHERE starts_with(record_id,'ramp_gene:') ORDER BY 1"
+        )
+        == EXPECTED_RAMP_GENES
+    )
+    assert q(
+        "SELECT count(*) FROM (SELECT record_id FROM $exceptions GROUP BY 1 HAVING count(*)>1)"
+    ) == [(0,)]
 
 
 def test_gene_products(q):
@@ -317,12 +365,18 @@ def test_manifest_and_resume(built):
     again = build_identity(root / "hubindex", root / "identity", **ARGS)
     assert again["fingerprint"] == snapshot["fingerprint"]
     assert (root / "identity" / snapshot["fingerprint"] / "manifest.json").is_file()
-    assert json.loads((root / "identity" / snapshot["fingerprint"] / "manifest.json").read_text())["rules_sha256"]
+    assert json.loads((root / "identity" / snapshot["fingerprint"] / "manifest.json").read_text())[
+        "rules_sha256"
+    ]
 
 
 def test_record_candidates_for_unmerged_records(q):
     # Records that point to several anchors are not merged but stay evidence for each anchor.
-    rows = q("SELECT record_id,entity_id FROM read_parquet('" + str(q.out / "record_candidates.parquet") + "') ORDER BY 1,2")
+    rows = q(
+        "SELECT record_id,entity_id FROM read_parquet('"
+        + str(q.out / "record_candidates.parquet")
+        + "') ORDER BY 1,2"
+    )
     assert rows == sorted(rows)
     by_record = {}
     for record_id, entity_id in rows:
@@ -330,7 +384,9 @@ def test_record_candidates_for_unmerged_records(q):
     # A record claiming two InChIKeys: both keys.
     assert by_record["hmdb:HMDB0000002"] == ["inchikey:" + KB, "inchikey:" + KC]
     # A lipid record claiming two names at its most specific level: both names.
-    assert len(by_record["lipidmaps:LMQ"]) == 2 and all(e.startswith("goslin:") for e in by_record["lipidmaps:LMQ"])
+    assert len(by_record["lipidmaps:LMQ"]) == 2 and all(
+        e.startswith("goslin:") for e in by_record["lipidmaps:LMQ"]
+    )
     # A record cross-referencing two anchored records: both anchors.
     assert by_record["bigg:b1"] == ["inchikey:" + KA, "inchikey:" + KD]
     # A record reaching a quarantined record: that record's keys.

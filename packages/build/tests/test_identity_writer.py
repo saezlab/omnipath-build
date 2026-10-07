@@ -3,7 +3,6 @@
 import sys
 from pathlib import Path
 
-import pyarrow.parquet as pq
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parents[2] / "resolver" / "tests"))
@@ -11,6 +10,7 @@ from identity_snapshot import ETHANOL, WATER, build_snapshot  # noqa: E402
 
 from omnipath_build.silver import SilverExtractor  # noqa: E402
 from omnipath_build.writer import ParquetWriter, _reference_records  # noqa: E402
+from tables_fixture import read_tables  # noqa: E402
 from omnipath_resolver.identity_runtime import IdentityRuntime  # noqa: E402
 from omnipath_resolver.resolver import EntityResolver  # noqa: E402
 
@@ -53,11 +53,12 @@ def test_writer_attaches_resolver_aliases_from_an_identity_snapshot(snapshot, tm
     try:
         assert isinstance(resolver.matcher.runtime, IdentityRuntime)
         writer.append_observations(extractor, resolver)
-        entity_path, *_ = writer.close()
+        tables = read_tables(writer.close()["files"])
     finally:
         resolver.close()
-    (entity,) = pq.read_table(entity_path).to_pylist()
+    (entity,) = tables["entity"]
     assert entity["reference_entity_key"] == f"inchikey:{WATER}"
-    aliases = {(a["ns"], a["id"]) for a in entity["identifiers"] if a["source"] == "resolver"}
+    identifiers = tables.children("entity_identifier", entity)
+    aliases = {(a["ns"], a["id"]) for a in identifiers if a["source"] == "resolver"}
     assert {("inchikey", WATER), ("chebi", "CHEBI:15377"), ("hmdb", "HMDB0002111")} <= aliases
     assert ("name", "water") in aliases

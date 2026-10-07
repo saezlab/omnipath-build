@@ -219,11 +219,7 @@ def test_real_native_mapper_worker_preserves_original_ids_hashes_and_zero_datase
     assert two_phase.pickle is native_pickle
     assert two_phase.prepare_worker is native_worker
     compiled = output / "resources" / "rhea" / "2026.09.2"
-    evidence = [
-        ev
-        for row in pq.read_table(compiled / "relations.parquet").to_pylist()
-        for ev in row["evidence"]
-    ]
+    evidence = pq.read_table(compiled / "relation_evidence.parquet").to_pylist()
     assert {ev["row_id"] for ev in evidence} == {"reactions:2", "reactions:9"}
     expected = {
         f"reactions:{i}": SOURCE_RECORD_SHA256_PREFIX + hashlib.sha256(text.encode()).hexdigest()
@@ -305,7 +301,7 @@ def test_mixed_valid_and_null_output_payloads_are_rejected(tmp_path):
         }
         output = write_payloads(tmp_path / "output.parquet", [records[0], null_copy])
         with pytest.raises(ValueError, match="exact raw text changed"):
-            rows.verify_output({"payloads_path": output})
+            rows.verify_output({"files": {"evidence_payloads": output}})
     finally:
         rows.close()
 

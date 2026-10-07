@@ -187,7 +187,9 @@ def main(args: list[str] | None = None) -> int:
         "build-hub-index", help="Build the rule-independent index of one hub (identity layer)"
     )
     hub_index_parser.add_argument("--hub", required=True, help="Hub name, e.g. pubchem")
-    hub_index_parser.add_argument("--hubs-dir", required=True, help="Directory of <hub>.parquet files")
+    hub_index_parser.add_argument(
+        "--hubs-dir", required=True, help="Directory of <hub>.parquet files"
+    )
     hub_index_parser.add_argument("--output-root", required=True, help="Hub index root directory")
     hub_index_parser.add_argument("--memory", default="7GB", help="DuckDB memory limit")
     hub_index_parser.add_argument("--threads", type=int, default=6, help="DuckDB threads")
@@ -200,7 +202,9 @@ def main(args: list[str] | None = None) -> int:
         help="Build the identity decisions (exceptions, gene products, ...) from the hub indexes",
     )
     identity_parser.add_argument("--hub-index-root", required=True, help="Hub index root directory")
-    identity_parser.add_argument("--output-dir", required=True, help="Root of <fingerprint>/ snapshots")
+    identity_parser.add_argument(
+        "--output-dir", required=True, help="Root of <fingerprint>/ snapshots"
+    )
     identity_parser.add_argument("--memory", default="7GB", help="DuckDB memory limit")
     identity_parser.add_argument("--threads", type=int, default=6, help="DuckDB threads")
     identity_parser.add_argument("--min-free-gib", type=float, default=50)
@@ -212,7 +216,9 @@ def main(args: list[str] | None = None) -> int:
     )
     hub_kv_parser.add_argument("--hub", required=True, help="Hub name, e.g. pubchem")
     hub_kv_parser.add_argument("--hub-index-root", required=True, help="Hub index root directory")
-    hub_kv_parser.add_argument("--memory", default="5GB", help="DuckDB memory limit (split over workers)")
+    hub_kv_parser.add_argument(
+        "--memory", default="5GB", help="DuckDB memory limit (split over workers)"
+    )
     hub_kv_parser.add_argument("--threads", type=int, default=2, help="DuckDB threads per worker")
     hub_kv_parser.add_argument("--workers", type=int, default=2, help="Shards built in parallel")
     hub_kv_parser.add_argument("--min-free-gib", type=float, default=20)
@@ -221,8 +227,12 @@ def main(args: list[str] | None = None) -> int:
         "build-identity-kv",
         help="Write the LMDB point-lookup store (<identity dir>/kv) of existing identity decisions",
     )
-    identity_kv_parser.add_argument("--identity-dir", required=True, help="<output-dir>/<fingerprint>")
-    identity_kv_parser.add_argument("--force", action="store_true", help="Rebuild an existing kv store")
+    identity_kv_parser.add_argument(
+        "--identity-dir", required=True, help="<output-dir>/<fingerprint>"
+    )
+    identity_kv_parser.add_argument(
+        "--force", action="store_true", help="Rebuild an existing kv store"
+    )
 
     from .regression import cli as regression_cli
 

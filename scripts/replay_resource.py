@@ -238,7 +238,7 @@ class ReplayRows:
                       min(payload_json) <> max(payload_json) AS conflict,
                       bool_or(payload_json IS NULL) AS missing_payload
                FROM read_parquet(?) GROUP BY row_id,source""",
-            [str(result["payloads_path"])],
+            [str(result["files"]["evidence_payloads"])],
         )
         altered = self.conn.execute(
             """SELECT o.row_id FROM output_rows o LEFT JOIN selected_rows s USING (row_id)
@@ -459,8 +459,8 @@ def replay_resource(
             )
 
             invalid_hash = rows.conn.execute(
-                """SELECT r.relation_key,ev.row_id FROM read_parquet(?) r,
-                   unnest(r.evidence) AS evidence(ev)
+                """SELECT r.relation_key,ev.row_id FROM read_parquet(?) r
+                   JOIN read_parquet(?) ev USING (relation_id)
                    LEFT JOIN selected_rows s ON s.row_id=ev.row_id
                    WHERE r.statement_kind='relation' AND r.subject_type='molecular_activity'
                      AND r.predicate IN ('has_input','has_output','enabled_by')
@@ -470,7 +470,8 @@ def replay_resource(
                                           a -> a.value)) IS DISTINCT FROM [concat(?,sha256(s.payload_json))])
                    LIMIT 1""",
                 [
-                    str(result["relations_path"]),
+                    str(result["files"]["relation"]),
+                    str(result["files"]["relation_evidence"]),
                     original["source"],
                     SOURCE_RECORD_REFERENCE,
                     SOURCE_RECORD_SHA256_PREFIX,
