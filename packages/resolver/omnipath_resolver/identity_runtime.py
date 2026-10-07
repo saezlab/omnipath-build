@@ -364,7 +364,17 @@ class IdentityRuntime:
             target = ":memory:"  # read-only location: still correct, just not shared
         con = sqlite3.connect(target, timeout=120, check_same_thread=False, isolation_level=None)
         if target != ":memory:":
-            con.execute("PRAGMA journal_mode=WAL")
+            # Switching a new cache to WAL needs an exclusive lock, and SQLite answers
+            # "locked" at once, without waiting, when several workers try it together.
+            deadline = time.monotonic() + 120
+            while True:
+                try:
+                    con.execute("PRAGMA journal_mode=WAL")
+                    break
+                except sqlite3.OperationalError as exc:
+                    if "locked" not in str(exc) or time.monotonic() > deadline:
+                        raise
+                    time.sleep(0.05)
         con.execute("PRAGMA synchronous=NORMAL")
         con.execute("PRAGMA busy_timeout=120000")
         con.execute("BEGIN IMMEDIATE")

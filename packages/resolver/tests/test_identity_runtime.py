@@ -819,3 +819,32 @@ def test_gene_label_falls_back_to_gene_info_name():
     rows = [("entrez", "genesymbol", "TP53"), ("entrez", "name", "tumor protein")]
     assert choose_label(3, "entrez:7157", rows) == "TP53"
     assert choose_label(3, "entrez:42", []) == "42"
+
+
+def test_workers_opening_a_new_cache_together(runtime):
+    import threading
+
+    # Switching a new cache to WAL needs an exclusive lock, and SQLite answers "locked"
+    # at once instead of waiting when several workers try it together.
+    path = runtime.cache_dir / str(runtime.fingerprint) / "entities.sqlite"
+    errors = []
+    for _ in range(10):
+        runtime._cache.close()
+        for suffix in ("", "-wal", "-shm"):
+            path.with_name(path.name + suffix).unlink(missing_ok=True)
+        start = threading.Barrier(8)
+
+        def open_cache():
+            start.wait()
+            try:
+                runtime._open_cache().close()
+            except sqlite3.OperationalError as exc:
+                errors.append(exc)
+
+        threads = [threading.Thread(target=open_cache) for _ in range(8)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        runtime._cache = runtime._open_cache()
+    assert errors == []
