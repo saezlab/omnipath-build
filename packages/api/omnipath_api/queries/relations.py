@@ -143,7 +143,9 @@ class RelationsQueries:
 
         return " AND ".join(where_clauses), params
 
-    def _resolve_relation_where(self, filters, resources=None):
+    def _resolve_relation_where(self, filters, resources=None, *, split=False):
+        """WHERE clause and parameters. With ``split``, the molecular form condition comes
+        back separately as (match over ``ev``, values), so it can run on fewer rows."""
         filters = normalize_filters(filters)
         tokens = filters["entity_ids"] + filters["entity_pks"]
         scope = filters["scope_entity_ids"]
@@ -155,11 +157,13 @@ class RelationsQueries:
         if filters["reference_entity_keys"]:
             where += " AND (subject_reference_entity_key IN (SELECT unnest(?::VARCHAR[])) OR object_reference_entity_key IN (SELECT unnest(?::VARCHAR[])))"
             params.extend([filters["reference_entity_keys"], filters["reference_entity_keys"]])
-        if has_form_filters(filters):
+        form = form_match_sql(filters) if has_form_filters(filters) else None
+        if split:
+            return where, params, form
+        if form:
             expr = occurrences_expression(columns(self._resolve_relation_paths(resources)))
-            match, values = form_match_sql(filters)
-            where += f" AND len(list_filter({expr}, ev -> {match})) > 0"
-            params.extend(values)
+            where += f" AND len(list_filter({expr}, ev -> {form[0]})) > 0"
+            params.extend(form[1])
         return where, params
 
     def search_relations(
@@ -184,7 +188,7 @@ class RelationsQueries:
         filters = normalize_filters(filters)
         entity_tokens = filters["entity_ids"] + filters["entity_pks"]
         scope_tokens = filters["scope_entity_ids"]
-        where_sql, params = self._resolve_relation_where(filters, resources)
+        where_sql, params, form = self._resolve_relation_where(filters, resources, split=True)
 
         # Sort/count only lightweight rows, then read payload columns for the page's files.
         page_read = read(
@@ -192,19 +196,22 @@ class RelationsQueries:
             filename=True,
             file_row_number=True,
         )
-        if has_form_filters(filters) and "molecular_occurrences" in columns(
-            projected_paths(self.data_root, "relations", paths)
-        ):
-            where_sql = where_sql.replace(
-                occurrences_expression(columns(paths)),
-                occurrences_expression(
-                    columns(projected_paths(self.data_root, "relations", paths))
-                ),
-            )
+        projected_names = columns(scalar_paths)
+        occurrences = occurrences_expression(
+            projected_names if "molecular_occurrences" in projected_names else columns(paths)
+        )
+        # Endpoint and reference filters narrow the scan first; the molecular form match
+        # over nested occurrences then runs on those rows only.
+        narrowed = bool(scope_tokens or entity_tokens or filters["reference_entity_keys"])
+        form_sql = f"len(list_filter(occurrences, ev -> {form[0]})) > 0" if form else "TRUE"
         page_sql = f"""
-            WITH matched AS MATERIALIZED (
-                SELECT filename, file_row_number, category, predicate, subject_label, object_label
+            WITH candidates AS MATERIALIZED (
+                SELECT filename, file_row_number, category, predicate, subject_label,
+                  object_label{f", {occurrences} AS occurrences" if form else ""}
                 FROM {page_read} WHERE {where_sql}
+            ), matched AS MATERIALIZED (
+                SELECT filename, file_row_number, category, predicate, subject_label, object_label
+                FROM candidates WHERE {form_sql}
             ), page AS (
                 SELECT filename, file_row_number, category, predicate, subject_label, object_label FROM matched
                 ORDER BY category, predicate, subject_label, object_label
@@ -213,12 +220,17 @@ class RelationsQueries:
             CROSS JOIN (SELECT count(*) AS matching_total FROM matched) totals
             ORDER BY category, predicate, subject_label, object_label
         """
-        if not (scope_tokens or entity_tokens):
+        page_params = [*params, *(form[1] if form else [])]
+        if form:
+            # Counts outside the paged query (and the unscoped browse) filter in one pass.
+            where_sql += f" AND len(list_filter({occurrences}, ev -> {form[0]})) > 0"
+            params = page_params
+        if not narrowed:
             # Avoid materializing the entire collection for an unscoped browse.
             page_sql = f"""SELECT filename, file_row_number FROM {page_read}
                 WHERE {where_sql} ORDER BY category, predicate, subject_label, object_label
                 LIMIT {int(limit)} OFFSET {int(offset)}"""
-        page = self._fetch_dicts(page_sql, params)
+        page = self._fetch_dicts(page_sql, page_params)
         rows = []
         if page:
             if "matching_total" in page[0]:
