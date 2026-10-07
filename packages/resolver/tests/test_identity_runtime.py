@@ -15,6 +15,8 @@ from identity_snapshot import (
     FINGERPRINT,
     LIPID,
     LIPID3,
+    NADH,
+    NADH_2,
     NAMELESS,
     ONLY_PC,
     OTHERS,
@@ -614,7 +616,8 @@ def test_chemical_stated_vs_derived_inchikey(matcher):
         matcher,
         # a stated InChIKey decides alone, overriding the conflicting ChEBI id
         stated=chemical([("inchikey", ETHANOL)], namespace="chebi", identifier="CHEBI:15377"),
-        # the same structure derived from SMILES is an ordinary vote: it now conflicts with ChEBI
+        # the same structure derived from SMILES is an ordinary vote: it conflicts with ChEBI,
+        # and the source's own structure then decides
         derived=chemical([("smiles", "CCO")], namespace="chebi", identifier="CHEBI:15377"),
         # alone, a derived key still resolves
         alone=chemical([("smiles", "CCO")]),
@@ -627,7 +630,7 @@ def test_chemical_stated_vs_derived_inchikey(matcher):
     (stated,) = out["stated"]
     assert stated.matched and stated.node_id == f"inchikey:{ETHANOL}" and stated.label == "ethanol"
     (derived,) = out["derived"]
-    assert not derived.matched
+    assert derived.node_id == f"inchikey:{ETHANOL}"
     (alone,) = out["alone"]
     assert alone.node_id == f"inchikey:{ETHANOL}"
     (agreeing,) = out["agreeing"]
@@ -782,7 +785,26 @@ def test_coarse_cross_references_do_not_veto_specific_identifiers(matcher):
     assert out["agreeing"][0].node_id == water
     assert out["alone"][0].node_id == ethanol
     assert not out["primary"][0].matched
-    assert not out["specific"][0].matched
+    # the conflict among specific identifiers is decided by the source's structure
+    assert out["specific"][0].node_id == ethanol
+
+
+def test_conflicting_structures_and_protonation_states(matcher):
+    nadh, nadh_2 = f"inchikey:{NADH}", f"inchikey:{NADH_2}"
+    out = run(
+        matcher,
+        # two SMILES that disagree are no structure to decide by
+        structures=chemical([("smiles", "CCO"), ("smiles", "O")], namespace="chebi", identifier="CHEBI:15365"),
+        # one molecule in two protonation states: the source's primary id decides
+        neutral=chemical([("chebi", "CHEBI:80002")], namespace="chebi", identifier="CHEBI:80001"),
+        charged=chemical([("chebi", "CHEBI:80001")], namespace="chebi", identifier="CHEBI:80002"),
+        # different molecules are no protonation states: still a conflict
+        different=chemical([("chebi", "CHEBI:16236")], namespace="chebi", identifier="CHEBI:80001"),
+    )  # fmt: skip
+    assert not out["structures"][0].matched
+    assert out["neutral"][0].node_id == nadh
+    assert out["charged"][0].node_id == nadh_2
+    assert not out["different"][0].matched
 
 
 def test_gene_label_falls_back_to_gene_info_name():

@@ -37,7 +37,7 @@ REACTION_HUBS = ("rhea", "metanetx_reaction")
 RHEA_XREF_NAMESPACES = frozenset({"kegg_reaction", "reactome", "metacyc_reaction", "ecocyc_reaction", "macie"})
 MNX_XREF_NAMESPACES = frozenset({"bigg_reaction", "vmh_reaction", "seed_reaction", "sabiork_reaction"})
 # Coarse chemical cross-references: generic stereo or protonation states, model-specific ids.
-# A source's secondary one must not veto its specific identifiers (see ``resolve``).
+# A source's secondary one must not veto its specific identifiers (see ``_fallbacks``).
 COARSE_CHEMICAL_NAMESPACES = frozenset({"kegg", "bigg", "metanetx"})
 GENE_NAMESPACES = frozenset({"hgnc", "ensg", "enst", "refseq", "genesymbol", "genesymbol-syn"})
 SYMBOL_NAMESPACES = frozenset({"genesymbol", "genesymbol-syn"})
@@ -989,23 +989,7 @@ class IdentityRuntime:
         batches = [(q["input_id"], q["target"], grouped[q["input_id"]]) for q in queries]
         fetched = time.perf_counter()
         result, molecular = self._decide(batches, postings, metadata, decision_batch_size)
-        # A chemical left unaccepted is decided again without its secondary coarse
-        # cross-references. Accepted results never change; the rest must still agree.
-        coarse = defaultdict(set)
-        for v in votes:
-            if v["target"] == 1 and v["ns"] in COARSE_CHEMICAL_NAMESPACES and not v.get("primary"):
-                coarse[v["input_id"]].add(v["ordinal"])
-        unaccepted = {i for i, _, ids, _ in result if not ids and coarse.get(i)}
-        retry = [
-            (i, t, [vote for vote in group if vote[3] not in coarse[i]])
-            for i, t, group in batches
-            if i in unaccepted
-        ]
-        retry = [b for b in retry if b[2]]
-        if retry:
-            second, _ = self._decide(retry, postings, metadata, decision_batch_size)
-            better = {row[0]: row for row in second if row[2]}
-            result = [better.get(row[0], row) for row in result]
+        result = self._fallbacks(result, batches, votes, postings, metadata, decision_batch_size)
         decided = time.perf_counter()
         accepted = {eid for _, _, ids, _ in result for eid in ids}
         accepted.update(
@@ -1034,6 +1018,55 @@ class IdentityRuntime:
             candidate_records=len(metadata),
             entity_records=len(records),
         )
+
+    def _fallbacks(self, result, batches, votes, postings, metadata, decision_batch_size):
+        """Decide unaccepted chemicals again on narrower evidence, in this order:
+
+        1. without secondary coarse cross-references (KEGG, BiGG, MetaNetX compounds), which
+           must not veto the specific identifiers;
+        2. on the source's own structure (a stated InChIKey or one derived from its SMILES),
+           which decides when the source's identifiers contradict each other;
+        3. on the primary identifier, when every candidate is one molecule in different
+           protonation states (InChIKeys equal but for the last character).
+
+        Accepted results never change, and the narrower evidence must still be unique.
+        """
+        by_vote = {(v["input_id"], v["ordinal"]): v for v in votes if v["target"] == 1}
+        groups = {i: (t, group) for i, t, group in batches if t == 1}
+        entities = {key: [metadata[n][1] for n in nums] for key, nums in postings}
+
+        def specific(i, vote):
+            v = by_vote[(i, vote[3])]
+            return v.get("primary") or v["ns"] not in COARSE_CHEMICAL_NAMESPACES
+
+        def structure(i, vote):
+            return by_vote[(i, vote[3])]["ns"] == "inchikey"
+
+        def primary(i, vote):
+            return bool(by_vote[(i, vote[3])].get("primary"))
+
+        def protonation_states(i):
+            ids = {e for vote in groups[i][1] for e in entities.get(vote[0], ())}
+            return (
+                len(ids) > 1
+                and all(e.startswith("inchikey:") for e in ids)
+                and len({e[:-1] for e in ids}) == 1
+            )
+
+        for keep, eligible in ((specific, None), (structure, None), (primary, protonation_states)):
+            retry = []
+            for i, _, ids, _ in result:
+                if ids or i not in groups or (eligible and not eligible(i)):
+                    continue
+                t, group = groups[i]
+                narrowed = [vote for vote in group if keep(i, vote)]
+                if narrowed and len(narrowed) < len(group):
+                    retry.append((i, t, narrowed))
+            if retry:
+                second, _ = self._decide(retry, postings, metadata, decision_batch_size)
+                better = {row[0]: row for row in second if row[2]}
+                result = [better.get(row[0], row) for row in result]
+        return result
 
     @staticmethod
     def _decide(batches, postings, metadata, decision_batch_size):

@@ -30,6 +30,7 @@ OTHERS = "DDDDDDDDDDDDDD-EEEEEEEEEE-N"
 SYSTEMATIC = "EEEEEEEEEEEEEE-FFFFFFFFFF-N"
 TWO_A, TWO_B = "FFFFFFFFFFFFFF-GGGGGGGGGG-N", "FFFFFFFFFFFFFF-HHHHHHHHHH-N"
 TWO_C, TWO_D = "IIIIIIIIIIIIII-JJJJJJJJJJ-N", "IIIIIIIIIIIIII-KKKKKKKKKK-N"
+NADH, NADH_2 = "PPPPPPPPPPPPPP-QQQQQQQQQQ-N", "PPPPPPPPPPPPPP-QQQQQQQQQQ-L"  # protonation states
 FINGERPRINT = "synthetic-v2-0001"
 LONG_NAME = "x" * 81
 
@@ -91,6 +92,8 @@ def hub_records():
     rec("chebi", "CHEBI:99999", [("name", "multi"), ("inchikey", TWO_A), ("inchikey", TWO_B)])
     rec("pubchem", "P2", [("name", "points to two anchors"), ("inchikey", TWO_C), ("inchikey", TWO_D)])
     rec("hmdb", "HMDB0088888", [("name", "second anchor holder"), ("inchikey", TWO_C)])
+    rec("chebi", "CHEBI:80001", [("name", "NADH"), ("inchikey", NADH)])
+    rec("chebi", "CHEBI:80002", [("name", "NADH(2-)"), ("inchikey", NADH_2)])
     rec("chebi", "CHEBI:70001", [("name", "grouped-chebi")])
     rec("hmdb", "HMDB0070001", [("name", "grouped-hmdb")])
     for n in range(12):  # twelve structure-less records behind one cas number
