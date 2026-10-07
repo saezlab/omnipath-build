@@ -60,6 +60,7 @@ test('wire entity adapters normalize optional API values and retain exact identi
     childCount: 0,
     hasHierarchy: false,
     identifiersTotal: 0,
+    molecularEvidenceTotal: 0,
     parentCount: 0,
     relationCount: 0,
     sourceCount: 0,
