@@ -83,6 +83,10 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(_app):
+        if settings.warm_cache:
+            from omnipath_api.warm import start
+
+            start(serving_engine)
         yield
         if hasattr(serving_engine, "close"):
             serving_engine.close()

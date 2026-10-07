@@ -326,3 +326,18 @@ def test_auto_groups_with_one_resource_unindexed(mixed_engine):
     )
     engine._detail_cache.clear()
     assert engine.search_entity_groups(**args)["groups"] == expected
+
+
+def test_warming_fills_the_cache_the_explorer_reads(mixed_engine):
+    from omnipath_api.warm import warm
+
+    engine, _ = mixed_engine
+    client = TestClient(create_app(engine=engine))
+    warm(engine)
+    engine._fetch_dicts = lambda *a, **kw: (_ for _ in ()).throw(AssertionError("not warmed"))
+    # The body EntityGroups.svelte sends for the first page.
+    response = client.post(
+        "/entities/groups",
+        json={"strategy": "auto", "query": "", "filters": {}, "member_limit": 1},
+    )
+    assert response.status_code == 200 and response.json()["groups"]

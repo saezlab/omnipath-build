@@ -56,21 +56,22 @@ def relationships(engine, public_id, resources=None, limit=50, offset=0):
         )
         if not rows:
             return empty
-        # The adjacency rows carry each relation's row in its file: reading rows by
-        # number skips the other row groups, unlike a key filter on hashed keys.
-        from omnipath_api.molecular import read
+        # Relations are read by key (files are sorted by it) from the small-row-group
+        # copy, without their evidence: a page shows its count, not its items.
+        from omnipath_api.molecular import columns, read
 
         hydrated = {}
         for path in sorted({r["filename"] for r in rows}):
-            numbers = [r["relation_row"] for r in rows if r["filename"] == path]
             source = relation_rows_path(engine.data_root, path)
+            keys = [r["relation_key"] for r in rows if r["filename"] == path]
+            fields = "* EXCLUDE (evidence)" if "evidence" in columns([source]) else "*"
             for record in engine._fetch_dicts(
-                f"SELECT * FROM {read([source], union_by_name=True, file_row_number=True)} "
-                f"WHERE file_row_number IN ({','.join('?' for _ in numbers)})",
-                numbers,
+                f"SELECT {fields} FROM {read([source], union_by_name=True)} "
+                f"WHERE relation_key IN ({','.join('?' for _ in keys)})",
+                keys,
             ):
-                hydrated[(path, record.pop("file_row_number"))] = record
-        records = [hydrated[(r["filename"], r["relation_row"])] for r in rows]
+                hydrated[(path, record["relation_key"])] = record
+        records = [hydrated[(r["filename"], r["relation_key"])] for r in rows]
         keys = sorted(
             {r[side] for r in records for side in ("subject_entity_key", "object_entity_key")}
         )
