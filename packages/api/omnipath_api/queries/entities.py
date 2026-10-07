@@ -594,9 +594,14 @@ class EntitiesQueries:
         paths = self._resolve_entity_paths(resources)
         if not paths or not keys:
             return []
-        read_expr = self._read_expr(
-            projected_paths(self.data_root, "entities", paths) if slim else paths
-        )
+        from omnipath_api.serving_index import entity_rows_paths
+
+        if slim:
+            read_expr = self._read_expr(projected_paths(self.data_root, "entities", paths))
+        elif evidence:
+            read_expr = self._read_expr(paths)
+        else:
+            read_expr = self._read_expr(entity_rows_paths(self.data_root, paths))
         placeholders = ", ".join("?" for _ in keys)
         cols = self._ENTITY_SCALAR_COLS
         if not slim:

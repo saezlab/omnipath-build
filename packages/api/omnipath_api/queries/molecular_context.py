@@ -4,6 +4,76 @@ import json
 from typing import Literal
 
 from omnipath_api.molecular import columns, matching_evidence, read
+from omnipath_api.serving_index import entity_rows_paths, evidence_rows, projected_paths
+
+_ISOFORM = (
+    "json_extract_string(to_json(ev), '$.molecular_form.isoform_identifier.ns') || ':' || "
+    "json_extract_string(to_json(ev), '$.molecular_form.isoform_identifier.id') = ?"
+)
+
+
+def _matching_rows(engine, paths, where, values):
+    """(original entity file, entity key) of rows matching ``where``, from the projections."""
+    projected = projected_paths(engine.data_root, "entities", paths)
+    original = dict(zip(projected, paths))
+    rows = engine._fetch_dicts(
+        f"SELECT DISTINCT filename, entity_key FROM {read(projected, filename=True)} WHERE {where}",
+        values,
+    )
+    return [(original[r["filename"]], r["entity_key"]) for r in rows]
+
+
+def _product_rows(engine, paths, reference):
+    """Catalogue product rows of a gene: keys from the projections, rows without evidence."""
+    where = "list_contains(gene_reference_keys, ?) AND namespace <> 'entrez'"
+    keys = sorted({key for _, key in _matching_rows(engine, paths, where, [reference])})
+    if not keys:
+        return []
+    sources = entity_rows_paths(engine.data_root, paths)
+    fields = "* EXCLUDE (evidence)" if "evidence" in columns(sources) else "*"
+    return engine._fetch_dicts(
+        f"SELECT {fields} FROM {read(sources)} WHERE entity_key IN ({','.join('?' for _ in keys)}) "
+        f"AND {where}",
+        [*keys, reference],
+    )
+
+
+def _entity_evidence(engine, paths, selector, isoform_identifier, limit, offset):
+    """Evidence items of the rows whose ``column`` equals ``value``, from entity_evidence."""
+    column, value = selector
+    pairs = _matching_rows(engine, paths, f"{column} = ?", [value])
+    if not pairs:
+        return []
+    rows, params = evidence_rows(engine, paths, sorted({key for _, key in pairs}))
+    if rows is None:
+        return []
+    predicates, values = ["TRUE"], []
+    if isoform_identifier:
+        predicates, values = [_ISOFORM], [isoform_identifier]
+    return engine._fetch_dicts(
+        f"""SELECT r.entity_key AS entityPk, ev AS occurrence
+        FROM (SELECT *, item AS ev FROM {rows}) r
+        JOIN (SELECT unnest(?::VARCHAR[]) AS f, unnest(?::VARCHAR[]) AS k) p
+          ON r.filename = p.f AND r.entity_key = p.k
+        WHERE {" AND ".join(predicates)}
+        ORDER BY r.filename, r.entity_key, r.evidence_index LIMIT ? OFFSET ?""",
+        [*params, [f for f, _ in pairs], [k for _, k in pairs], *values, limit + 1, offset],
+    )
+
+
+def _product_evidence(engine, paths, product_kind, entity_id, isoform_identifier, limit, offset):
+    # An asserted native product can be named by observations on a gene row
+    # without having any catalogue gene links: every row's evidence is read.
+    field = product_kind + "_entity_key"
+    predicates = [f"json_extract_string(to_json(ev), '$.molecular_form.{field}') = ?"]
+    values = [entity_id]
+    if isoform_identifier:
+        predicates.append(_ISOFORM)
+        values.append(isoform_identifier)
+    return engine._fetch_dicts(
+        f"SELECT entity_key AS entityPk, ev AS occurrence FROM {read(paths, filename=True, file_row_number=True)}, UNNEST(evidence) WITH ORDINALITY AS occurrences(ev, occurrence_index) WHERE {' AND '.join(predicates)} ORDER BY filename, file_row_number, occurrence_index LIMIT ? OFFSET ?",
+        [*values, limit + 1, offset],
+    )
 
 
 def _product_kind(summary):
@@ -123,36 +193,30 @@ def context(
     paths = engine._resolve_entity_paths(resources)
     if paths:
         if reference:
-            rows = engine._fetch_dicts(
-                f"SELECT * FROM {engine._read_expr(paths)} WHERE list_contains(gene_reference_keys, ?) AND namespace <> 'entrez'",
-                [reference],
-            )
             products = [
-                engine._to_entity_summary(r) for r in engine._merge_duplicate_entity_rows(rows)
+                engine._to_entity_summary(r)
+                for r in engine._merge_duplicate_entity_rows(
+                    _product_rows(engine, paths, reference)
+                )
             ]
         # Standalone evidence can predate stored references; native typed-key
         # selection still applies, and product view keeps its exact form filter.
         if "evidence" in columns(paths):
-            predicates, values = (
-                (["reference_entity_key = ?"], [reference])
-                if gene_reference
-                else (["entity_key = ?"], [entity_id])
-            )
             if is_product:
-                # An asserted native product can be named by observations
-                # on a gene row without having any catalogue gene links.
-                field = product_kind + "_entity_key"
-                predicates = [f"json_extract_string(to_json(ev), '$.molecular_form.{field}') = ?"]
-                values = [entity_id]
-            if isoform_identifier:
-                predicates.append(
-                    "json_extract_string(to_json(ev), '$.molecular_form.isoform_identifier.ns') || ':' || json_extract_string(to_json(ev), '$.molecular_form.isoform_identifier.id') = ?"
+                standalone = _product_evidence(
+                    engine, paths, product_kind, entity_id, isoform_identifier, limit, offset
                 )
-                values.append(isoform_identifier)
-            standalone = engine._fetch_dicts(
-                f"SELECT entity_key AS entityPk, ev AS occurrence FROM {read(paths, filename=True, file_row_number=True)}, UNNEST(evidence) WITH ORDINALITY AS occurrences(ev, occurrence_index) WHERE {' AND '.join(predicates)} ORDER BY filename, file_row_number, occurrence_index LIMIT ? OFFSET ?",
-                [*values, limit + 1, offset],
-            )
+            else:
+                standalone = _entity_evidence(
+                    engine,
+                    paths,
+                    ("reference_entity_key", reference)
+                    if gene_reference
+                    else ("entity_key", entity_id),
+                    isoform_identifier,
+                    limit,
+                    offset,
+                )
             standalone_more = len(standalone) > limit
             standalone = standalone[:limit]
             for record in standalone:

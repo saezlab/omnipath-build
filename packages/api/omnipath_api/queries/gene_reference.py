@@ -214,6 +214,22 @@ def _search_groups(
             if len({m.get("taxon") for m in members}) > 1:
                 entity.update(taxonomyId=None, taxonomyName=None, taxon=None)
         elif group["reference_entity_key"]:
+            # Annotations, identifiers and sources of every member: a gene's function
+            # text sits on the protein record resolved to it, not on the first member.
+            attributes = {
+                json.dumps(item, sort_keys=True, default=str): item
+                for summary in summaries
+                for item in summary.get("entityAttributes") or []
+            }
+            entity["entityAttributes"] = list(attributes.values())
+            identifiers = {
+                (item["identifierType"], item["identifier"]): item
+                for summary in summaries
+                for item in summary["identifiers"]
+            }
+            entity["identifiers"] = list(identifiers.values())
+            entity["identifiersTotal"] = len(identifiers)
+            entity["sources"] = sorted({s for summary in summaries for s in summary["sources"]})
             entity.update(
                 referenceEntityKey=group["reference_entity_key"],
                 entityType="gene",

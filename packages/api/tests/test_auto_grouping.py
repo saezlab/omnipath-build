@@ -341,3 +341,14 @@ def test_warming_fills_the_cache_the_explorer_reads(mixed_engine):
         json={"strategy": "auto", "query": "", "filters": {}, "member_limit": 1},
     )
     assert response.status_code == 200 and response.json()["groups"]
+
+
+def test_gene_group_details_combine_their_members_annotations(mixed_engine):
+    # A gene's function text sits on the protein record resolved to it, not the first member.
+    engine, _ = mixed_engine
+    (group,) = engine.search_entity_groups(
+        strategy="auto", group_key="gene:entrez:1", include_details=True
+    )["groups"]
+    values = {a.get("value") for a in group["entity"]["entityAttributes"]}
+    members = {m["primaryIdentifier"] for m in group["members"]}
+    assert {f"Detail {identifier}" for identifier in members} <= values

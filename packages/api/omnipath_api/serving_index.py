@@ -18,7 +18,7 @@ import time
 from omnipath_api.store.connection import format_read_parquet, get_connection
 from omnipath_api.molecular import read, columns, occurrences_expression
 
-VERSION = "v6"
+VERSION = "v7"
 ENTITY_COLUMNS = "entity_key, entity_type, namespace, identifier, taxon, label, has_hierarchy, parent_count, child_count, reference_entity_key, gene_reference_keys"
 RELATION_COLUMNS = (
     "relation_key, subject_entity_key, subject_label, subject_type, predicate, "
@@ -85,16 +85,19 @@ def _split(root, kind, paths):
     return indexed, plain
 
 
-def copy_rows(source, target, row_group_size):
+def copy_rows(source, target, row_group_size, exclude=()):
     """Copy a Parquet file in row order with smaller row groups, one batch at a time.
 
     Streaming keeps memory bounded; DuckDB holds nested rows to preserve their order.
     """
+    import pyarrow as pa
     import pyarrow.parquet as pq
 
     reader = pq.ParquetFile(source)
-    with pq.ParquetWriter(target, reader.schema_arrow, compression="zstd") as writer:
-        for batch in reader.iter_batches(batch_size=row_group_size):
+    names = [n for n in reader.schema_arrow.names if n not in exclude]
+    schema = pa.schema([reader.schema_arrow.field(n) for n in names])
+    with pq.ParquetWriter(target, schema, compression="zstd") as writer:
+        for batch in reader.iter_batches(batch_size=row_group_size, columns=names):
             writer.write_batch(batch, row_group_size=row_group_size)
 
 
@@ -166,6 +169,14 @@ def evidence_rows(engine, paths, keys):
     if not parts:
         return None, []
     return "(" + " UNION ALL ".join(parts) + ")", values
+
+
+def entity_rows_paths(root, paths):
+    """Small-row-group copies of entity files without evidence, where built."""
+    return [
+        str(target) if (target := index_path(root, "entity_rows", [path])).is_file() else str(path)
+        for path in paths
+    ]
 
 
 def relation_rows_path(root, path):
@@ -296,6 +307,14 @@ def build_indexes(engine, *, threads=4, memory_limit="2GB", min_free_disk=20 * 1
                     list_distinct(list_transform(list_filter(annotations, a -> a.scope='relation' AND a.term IN ({terms})),
                         a -> struct_pack(term := a.term, value := a.value, scope := a.scope))) AS annotations
                     FROM {read([relations])}""",
+                )
+                # Entity rows without evidence (paged from entity_evidence) in small row
+                # groups: hydrating a few keys reads a few groups of identifiers and annotations.
+                build(
+                    "entity_rows",
+                    [entities],
+                    None,
+                    write=lambda staging: copy_rows(entities, staging, 2048, exclude={"evidence"}),
                 )
                 build(
                     "entity_evidence",
