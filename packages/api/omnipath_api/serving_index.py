@@ -18,7 +18,7 @@ import time
 from omnipath_api.store.connection import format_read_parquet, get_connection
 from omnipath_api.molecular import read, columns, occurrences_expression
 
-VERSION = "v5"
+VERSION = "v6"
 ENTITY_COLUMNS = "entity_key, entity_type, namespace, identifier, taxon, label, has_hierarchy, parent_count, child_count, reference_entity_key, gene_reference_keys"
 RELATION_COLUMNS = (
     "relation_key, subject_entity_key, subject_label, subject_type, predicate, "
@@ -39,19 +39,34 @@ GROUP_AMBIGUOUS = f"""CASE WHEN namespace = 'inchikey' AND {_VALID} THEN FALSE
 ADJACENCY_COLUMNS = "entity_key, relation_key, predicate, category, relation_row"
 
 
-def signature(paths):
+def signature(paths, root=None):
+    """Identity of input files: path, size and modification time.
+
+    With ``root``, paths inside it count relative to it, so a projection built on the
+    host is found when the same directory is mounted elsewhere (``/data`` in the API
+    container).
+    """
+
+    def name(path):
+        # As given first: a symlinked resource file keeps its place in the tree.
+        if root is not None:
+            for base, file in (
+                (Path(root).absolute(), Path(path).absolute()),
+                (Path(root).resolve(), Path(path).resolve()),
+            ):
+                if file.is_relative_to(base):
+                    return file.relative_to(base).as_posix()
+        return str(Path(path).resolve())
+
     return hashlib.sha256(
         json.dumps(
-            sorted(
-                (str(Path(p).resolve()), Path(p).stat().st_size, Path(p).stat().st_mtime_ns)
-                for p in paths
-            )
+            sorted((name(p), Path(p).stat().st_size, Path(p).stat().st_mtime_ns) for p in paths)
         ).encode()
     ).hexdigest()
 
 
 def index_path(root, kind, paths):
-    return Path(root) / ".serving" / VERSION / kind / (signature(paths) + ".parquet")
+    return Path(root) / ".serving" / VERSION / kind / (signature(paths, root) + ".parquet")
 
 
 def projected_paths(root, kind, paths):

@@ -294,3 +294,16 @@ def test_relation_rows_copy_keeps_row_order_in_small_groups(engine, tmp_path):
     copy_rows(source, target, 7)
     assert pq.read_table(target).equals(pq.read_table(source))
     assert pq.ParquetFile(target).metadata.num_row_groups == 5  # 30 rows in groups of 7
+
+
+def test_projections_are_found_when_the_data_directory_is_mounted_elsewhere(engine, tmp_path):
+    # Indexes are built on the host; the API container mounts the same files at /data.
+    build_indexes(engine, threads=2, memory_limit="128MB", min_free_disk=0)
+    moved = tmp_path.parent / (tmp_path.name + "-mounted")
+    tmp_path.rename(moved)
+    try:
+        mounted = ParquetServingEngine(moved)
+        paths = mounted._resolve_entity_paths()
+        assert all(".serving" in p for p in projected_paths(moved, "entities", paths))
+    finally:
+        moved.rename(tmp_path)
