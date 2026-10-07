@@ -178,10 +178,17 @@ class RelationsQueries:
         t0 = time.perf_counter()
         filters = normalize_filters(filters)
         selection, params = self._relation_selection(filters, resources)
-        rows = self._fetch_dicts(
-            f"SELECT * FROM ({selection}) ORDER BY {RELATION_ORDER} LIMIT ? OFFSET ?",
+        # The page is ordered on its sort columns only; then its rows are read in full.
+        page = self._fetch_dicts(
+            f"SELECT resource, relation_id FROM ({selection}) ORDER BY {RELATION_ORDER} LIMIT ? OFFSET ?",
             [*params, int(limit), int(offset)],
         )
+        pairs = [(r["resource"], r["relation_id"]) for r in page]
+        found = {
+            (r["resource"], r["relation_id"]): r
+            for r in self._lookup("relation", "relation_id", pairs)
+        }
+        rows = [found[pair] for pair in pairs]
         if rows and (offset or len(rows) == limit) or not rows and offset:
             total = self._fetch_dicts(f"SELECT count(*) AS n FROM ({selection})", params)[0]["n"]
         else:
