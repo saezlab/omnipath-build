@@ -34,7 +34,7 @@ def main():
             assert client.related(seed, resources="signor").limit(1).fetchall()
             print(f"Lookup and related: passed ({len(matches)} seed matches)", flush=True)
             joined = client.sql(
-                """SELECT r.relation_key FROM relations r JOIN entities e
+                """SELECT r.relation_key FROM relation r JOIN entity e
                 ON r.subject_entity_key = e.entity_key AND r._resource = e._resource
                 WHERE r.relation_key = ?""",
                 resources="signor",

@@ -15,39 +15,41 @@ from omnipath_client import Client, ClientError
 def service():
     requests, artifacts, catalog = [], {}, []
     for resource, version in [("alpha", "1.0"), ("beta", "2.0")]:
-        entities = pa.Table.from_pylist(
+        entity = pa.Table.from_pylist(
             [
                 {
+                    "entity_id": 0,
                     "entity_key": "key-a",
                     "identifier": "P04637",
                     "label": "TP53",
                     "taxon": "9606",
                     "entity_type": "protein",
-                    "identifiers": [
-                        {"ns": "hgnc", "id": "11998", "is_canonical": False, "source": resource}
-                    ],
                 },
                 {
+                    "entity_id": 1,
                     "entity_key": "key-b",
                     "identifier": "CHEBI:27732",
                     "label": "caffeine",
                     "taxon": None,
                     "entity_type": "small_molecule",
-                    "identifiers": [],
                 },
                 {
+                    "entity_id": 2,
                     "entity_key": "key-c",
                     "identifier": "quote",
                     "label": "O'Brien",
                     "taxon": "9606",
                     "entity_type": "protein",
-                    "identifiers": [],
                 },
             ]
         )
-        relations = pa.Table.from_pylist(
+        identifiers = pa.Table.from_pylist(
+            [{"entity_id": 0, "ordinal": 0, "ns": "hgnc", "id": "11998", "source": resource}]
+        )
+        relation = pa.Table.from_pylist(
             [
                 {
+                    "relation_id": 0,
                     "relation_key": "r1",
                     "subject_entity_key": "key-a",
                     "object_entity_key": "key-b",
@@ -57,6 +59,7 @@ def service():
                     "taxon": "9606",
                 },
                 {
+                    "relation_id": 1,
                     "relation_key": "r2",
                     "subject_entity_key": "key-c",
                     "object_entity_key": "key-a",
@@ -69,14 +72,28 @@ def service():
         )
         # Union-by-name must tolerate additive schema changes across resources.
         if resource == "beta":
-            entities = entities.append_column("new_field", pa.array(["x", "x", "x"]))
+            entity = entity.append_column("new_field", pa.array(["x", "x", "x"]))
         evidence = pa.table(
             {"relation_key": ["r1"], "source": [resource], "row_id": ["0"], "payload_json": ["{}"]}
         )
         files = []
+        children = {
+            name: pa.table({parent: pa.array([], pa.int32()), "ordinal": pa.array([], pa.int32())})
+            for name, parent in [
+                ("entity_annotation", "entity_id"),
+                ("entity_evidence", "entity_id"),
+                ("relation_annotation", "relation_id"),
+                ("relation_evidence", "relation_id"),
+            ]
+        }
         for name, table in [
-            ("entities", entities),
-            ("relations", relations),
+            ("entity", entity),
+            ("entity_identifier", identifiers),
+            ("entity_annotation", children["entity_annotation"]),
+            ("entity_evidence", children["entity_evidence"]),
+            ("relation", relation),
+            ("relation_annotation", children["relation_annotation"]),
+            ("relation_evidence", children["relation_evidence"]),
             ("evidence_payloads", evidence),
         ]:
             buffer = pa.BufferOutputStream()
@@ -93,7 +110,7 @@ def service():
                 }
             )
         catalog.append(
-            {"resource_id": resource, "version": version, "files": files[:2], "all_files": files}
+            {"resource_id": resource, "version": version, "files": files[:7], "all_files": files}
         )
 
     def respond(request):
@@ -133,7 +150,7 @@ def test_discovery_is_lazy_and_pinned(service):
     result[0]["files"].clear()
     catalog[0]["version"] = "9.0"
     assert client.resources()[0]["version"] == "1.0"
-    assert len(client.files("alpha")) == 2
+    assert len(client.files("alpha")) == 7
     assert len(requests) == 1
     assert requests[0].url.params["release"] == "2026.09"
     assert client.releases()[0]["version"] == "2026.09"
@@ -155,10 +172,10 @@ def test_offline_queries_and_provenance(service, tmp_path, monkeypatch):
         ).fetchall()
         assert len(rows) == 6
         assert {row[1:] for row in rows} == {("alpha", "1.0"), ("beta", "2.0")}
-        assert offline.entities("alpha", filters={"label": "O'Brien"}).fetchone()[2] == "O'Brien"
+        assert offline.entities("alpha", filters={"label": "O'Brien"}).fetchone()[3] == "O'Brien"
         assert offline.entities("alpha", filters={"label": "' OR TRUE --"}).fetchall() == []
         assert offline.entities("alpha", filters={"taxon": []}).fetchall() == []
-        assert offline.entities("alpha", filters={"taxon": None}).fetchone()[2] == "caffeine"
+        assert offline.entities("alpha", filters={"taxon": None}).fetchone()[3] == "caffeine"
         assert offline.entities(["alpha", "alpha"]).count("*").fetchone() == (3,)
         assert offline.entities().filter("new_field IS NULL").count("*").fetchone() == (3,)
         assert not offline._httpfs_loaded
@@ -173,9 +190,9 @@ def test_sql_joins_and_lookup(service, tmp_path):
     snapshot = client.download(tmp_path / "snapshot", include_evidence=True)
     with Client.from_snapshot(snapshot) as offline:
         assert offline.lookup("tp53").count("*").fetchone() == (2,)
-        assert offline.lookup("11998", resources="alpha").fetchone()[2] == "TP53"
+        assert offline.lookup("11998", resources="alpha").fetchone()[3] == "TP53"
         assert offline.lookup("O'Brien", resources="alpha").count("*").fetchone() == (1,)
-        assert offline.lookup("key-b", resources="alpha").fetchone()[2] == "caffeine"
+        assert offline.lookup("key-b", resources="alpha").fetchone()[3] == "caffeine"
         assert offline.related("TP53", resources="alpha").count("*").fetchone() == (2,)
         assert offline.related(subject="TP53", resources="alpha").count("*").fetchone() == (1,)
         assert offline.related(
@@ -185,8 +202,8 @@ def test_sql_joins_and_lookup(service, tmp_path):
             offline.related(subject="caffeine", object="TP53", resources="alpha").fetchall() == []
         )
         joined = offline.sql(
-            """SELECT e.label, r._resource FROM entities e
-            JOIN relations r ON e.entity_key = r.subject_entity_key AND e._resource = r._resource
+            """SELECT e.label, r._resource FROM entity e
+            JOIN relation r ON e.entity_key = r.subject_entity_key AND e._resource = r._resource
             WHERE e.identifier = ?""",
             resources=["alpha", "beta"],
             parameters=["P04637"],
@@ -198,9 +215,9 @@ def test_sql_joins_and_lookup(service, tmp_path):
         ).fetchone() == (1,)
         with pytest.raises(duckdb.CatalogException):
             offline.sql("SELECT * FROM evidence_payloads", resources="alpha")
-        alpha = offline.sql("SELECT DISTINCT _resource FROM entities;", resources="alpha")
+        alpha = offline.sql("SELECT DISTINCT _resource FROM entity;", resources="alpha")
         beta = offline.sql(
-            "WITH selected AS (SELECT * FROM entities) SELECT DISTINCT _resource FROM selected",
+            "WITH selected AS (SELECT * FROM entity) SELECT DISTINCT _resource FROM selected",
             resources="beta",
         )
         assert alpha.fetchall() == [("alpha",)]
@@ -231,7 +248,7 @@ def test_corruption_and_existing_destination(service, tmp_path):
     snapshot = client.download(tmp_path / "snapshot", resources="alpha")
     with pytest.raises(FileExistsError):
         client.download(snapshot)
-    path = snapshot / "resources/alpha/1.0/entities.parquet"
+    path = snapshot / "resources/alpha/1.0/entity.parquet"
     data = bytearray(path.read_bytes())
     data[10] ^= 1
     path.write_bytes(data)
@@ -297,7 +314,7 @@ def test_snapshot_survives_move_and_rejects_symlinks(service, tmp_path):
     snapshot.rename(moved)
     with Client.from_snapshot(moved) as offline:
         assert offline.entities().count("*").fetchone() == (3,)
-    artifact = moved / "resources/alpha/1.0/entities.parquet"
+    artifact = moved / "resources/alpha/1.0/entity.parquet"
     outside = tmp_path / "outside.parquet"
     artifact.rename(outside)
     artifact.symlink_to(outside)

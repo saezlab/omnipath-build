@@ -37,30 +37,10 @@ def _identifier(value: str) -> str:
     return '"' + value.replace('"', '""') + '"'
 
 
-def _molecular_field_sql(evidence_type: Any, path: Sequence[str]) -> str:
-    """Read nested evidence structs directly, without serializing the whole occurrence."""
-    if evidence_type.id == "list":
-        field_type = evidence_type.children[0][1]
-        expression = "ev"
-        for field in path:
-            if field_type.id == "struct":
-                children = dict(field_type.children)
-                if field not in children:
-                    return "NULL::VARCHAR"
-                field_type = children[field]
-                expression += f".{_identifier(field)}"
-            elif field_type.id in {"null", "integer"}:
-                # Parquet can infer entirely missing form context as a null/INTEGER column.
-                return "NULL::VARCHAR"
-            else:
-                break
-        else:
-            if field_type.id == "varchar":
-                return expression
-            # Match the previous JSON text semantics for atypical scalar field types.
-            return f"json_extract_string(to_json({expression}), '$')"
-    # Older/custom artifacts may store JSON rather than typed nested structs.
-    return f"json_extract_string(to_json(ev), {_literal('$.' + '.'.join(path))})"
+def _sides(endpoint: str) -> tuple[str, ...]:
+    if endpoint not in {"any", "source", "target", "both"}:
+        raise ValueError("endpoint must be any, source, target or both")
+    return {"source": ("subject",), "target": ("object",)}.get(endpoint, ("subject", "object"))
 
 
 class Client:
@@ -259,23 +239,6 @@ class Client:
         if table not in TABLES:
             raise ValueError(f"table must be one of {TABLES}")
         sql = self._table_sql(table, resources)
-        defaults = {
-            "entities": {
-                "reference_entity_key": "NULL::VARCHAR",
-                "gene_reference_keys": "[]::VARCHAR[]",
-            },
-            "relations": {
-                "subject_reference_entity_key": "NULL::VARCHAR",
-                "object_reference_entity_key": "NULL::VARCHAR",
-            },
-        }
-        if table in defaults:
-            names = set(self._db().sql(sql).columns)
-            extra = [
-                f"{value} AS {name}" for name, value in defaults[table].items() if name not in names
-            ]
-            if extra:
-                sql = f"SELECT *, {', '.join(extra)} FROM ({sql})"
         predicates, parameters = [], []
         for column, value in (filters or {}).items():
             values = list(value) if isinstance(value, (list, tuple, set)) else [value]
@@ -299,13 +262,13 @@ class Client:
         self, resources: str | Sequence[str] | None = None, **kwargs: Any
     ) -> duckdb.DuckDBPyRelation:
         """Query entity records; accepts table() filters and columns."""
-        return self.table("entities", resources, **kwargs)
+        return self.table("entity", resources, **kwargs)
 
     def relations(
         self, resources: str | Sequence[str] | None = None, **kwargs: Any
     ) -> duckdb.DuckDBPyRelation:
         """Query relation records without cross-resource deduplication."""
-        return self.table("relations", resources, **kwargs)
+        return self.table("relation", resources, **kwargs)
 
     def evidence(self, resources: str | Sequence[str], **kwargs: Any) -> duckdb.DuckDBPyRelation:
         """Explicitly query raw evidence payloads for selected resources."""
@@ -319,10 +282,11 @@ class Client:
             raise ValueError("Provide at least one non-empty name, identifier or entity key")
         terms = ", ".join(_literal(q.lower()) for q in queries)
         return (
-            f"SELECT * FROM ({self._table_sql('entities', resources)}) AS e WHERE "
+            f"SELECT * FROM ({self._table_sql('entity', resources)}) AS e WHERE "
             f"lower(label) IN ({terms}) OR lower(identifier) IN ({terms}) OR "
-            f"lower(entity_key) IN ({terms}) OR EXISTS (SELECT 1 FROM "
-            f"UNNEST(identifiers) AS ids(item) WHERE lower(item.id) IN ({terms}))"
+            f"lower(entity_key) IN ({terms}) OR (_resource, entity_id) IN (SELECT _resource, "
+            f"entity_id FROM ({self._table_sql('entity_identifier', resources)}) "
+            f"WHERE lower(id) IN ({terms}))"
         )
 
     def lookup(
@@ -352,7 +316,7 @@ class Client:
 
         A positional query matches either endpoint. Subject and object constrain
         their respective endpoints; multiple constraints are ANDed. Returns the
-        original nested relation rows with provenance, without identifier pivots.
+        relation rows with provenance, without identifier pivots.
         """
         if query is None and subject is None and object is None:
             raise ValueError(
@@ -374,7 +338,7 @@ class Client:
                 f"EXISTS (SELECT 1 FROM ({matches}) AS e WHERE e._resource = r._resource AND ({endpoint_clause}))"
             )
         sql = (
-            f"SELECT r.* FROM ({self._table_sql('relations', resources)}) AS r WHERE "
+            f"SELECT r.* FROM ({self._table_sql('relation', resources)}) AS r WHERE "
             + " AND ".join(clauses)
         )
         return self._db().sql(sql)
@@ -382,25 +346,14 @@ class Client:
     def related_reference(
         self, reference_entity_key: str, *, resources: str | Sequence[str], endpoint: str = "any"
     ) -> duckdb.DuckDBPyRelation:
-        """Browse a stored gene reference across source types; legacy identity stays unknown."""
-        if endpoint not in {"any", "source", "target", "both"}:
-            raise ValueError("endpoint must be any, source, target or both")
-        table = self.relations(resources)
-        columns = set(table.columns)
-        sides = (
-            ("subject",)
-            if endpoint == "source"
-            else ("object",)
-            if endpoint == "target"
-            else ("subject", "object")
-        )
+        """Browse a stored gene reference across source types."""
+        sides = _sides(endpoint)
         clauses = [
-            f"{side}_reference_entity_key = {_literal(reference_entity_key)}"
-            if f"{side}_reference_entity_key" in columns
-            else "FALSE"
-            for side in sides
+            f"{side}_reference_entity_key = {_literal(reference_entity_key)}" for side in sides
         ]
-        return table.filter((" AND " if endpoint == "both" else " OR ").join(clauses))
+        return self.relations(resources).filter(
+            (" AND " if endpoint == "both" else " OR ").join(clauses)
+        )
 
     def related_product(
         self,
@@ -411,65 +364,59 @@ class Client:
         endpoint: str = "any",
         product_type: str = "protein",
     ) -> duckdb.DuckDBPyRelation:
-        """Select and retain only evidence naming this exact product/isoform on one endpoint.
+        """Relations with the evidence that names this exact product/isoform on one endpoint.
 
-        Missing form context does not match. The original source-typed endpoint
-        keys remain intact. All constraints apply to the same evidence occurrence.
+        Each row carries the matching ``relation_evidence`` rows as ``evidence`` (in
+        source order) and their number as ``evidence_count``. Missing form context
+        does not match. All constraints apply to the same evidence occurrence.
         """
-        if endpoint not in {"any", "source", "target", "both"}:
-            raise ValueError("endpoint must be any, source, target or both")
         if product_type not in {"protein", "transcript"}:
             raise ValueError("product_type must be protein or transcript")
-        table = self.relations(resources)
-        if "evidence" not in table.columns:
-            return table.filter("FALSE")
-        evidence_type = table.types[table.columns.index("evidence")]
-        sides = (
-            ("subject",)
-            if endpoint == "source"
-            else ("object",)
-            if endpoint == "target"
-            else ("subject", "object")
-        )
         clauses = []
-        for side in sides:
+        for side in _sides(endpoint):
             form = f"{side}_molecular_form"
-            product = _molecular_field_sql(evidence_type, (form, f"{product_type}_entity_key"))
-            clause = f"{product} = {_literal(product_entity_key)}"
+            clause = f"{form}.{product_type}_entity_key = {_literal(product_entity_key)}"
             if isoform_identifier:
-                namespace = _molecular_field_sql(evidence_type, (form, "isoform_identifier", "ns"))
-                identifier = _molecular_field_sql(evidence_type, (form, "isoform_identifier", "id"))
                 clause += (
-                    f" AND {namespace} || ':' || {identifier} = {_literal(isoform_identifier)}"
+                    f" AND {form}.isoform_identifier.ns || ':' || {form}.isoform_identifier.id"
+                    f" = {_literal(isoform_identifier)}"
                 )
             clauses.append(f"({clause})")
         match = (" AND " if endpoint == "both" else " OR ").join(clauses)
-        trim = f"list_filter(evidence, ev -> {match})"
-        exclude = "evidence, evidence_count" if "evidence_count" in table.columns else "evidence"
+        evidence = self._table_sql("relation_evidence", resources)
         return self._db().sql(
-            f"SELECT *, len(evidence) AS evidence_count FROM "
-            f"(SELECT * EXCLUDE({exclude}), {trim} AS evidence FROM ({table.sql_query()})) "
-            "WHERE len(evidence) > 0"
+            f"""SELECT r.* EXCLUDE (evidence_count), m.evidence, len(m.evidence) AS evidence_count
+            FROM ({self._table_sql("relation", resources)}) AS r JOIN (
+                SELECT _resource, relation_id, list(struct_pack(source, dataset, row_id,
+                    upstream_id, annotations, subject_molecular_form, object_molecular_form)
+                    ORDER BY ordinal) AS evidence
+                FROM ({evidence}) WHERE {match}
+                GROUP BY _resource, relation_id
+            ) AS m USING (_resource, relation_id)"""
         )
 
     def referenced_products(
         self, relations: duckdb.DuckDBPyRelation, *, resources: str | Sequence[str]
     ) -> duckdb.DuckDBPyRelation:
-        """Return reusable product rows needed to interpret selected nested evidence."""
-        entities = self.entities(resources)
-        if "evidence" not in relations.columns:
-            return entities.filter("FALSE")
-        evidence_type = relations.types[relations.columns.index("evidence")]
+        """Return product entity rows named by the molecular forms of relations' evidence:
+        the selected ``evidence`` (from related_product) or all of their evidence."""
+        if "evidence" in relations.columns:
+            occurrences = f"SELECT _resource, unnest(evidence) AS ev FROM ({relations.sql_query()})"
+        else:
+            occurrences = (
+                f"SELECT _resource, struct_pack(subject_molecular_form, object_molecular_form) AS ev "
+                f"FROM ({self._table_sql('relation_evidence', resources)}) "
+                f"SEMI JOIN ({relations.sql_query()}) USING (_resource, relation_id)"
+            )
         fields = ", ".join(
-            _molecular_field_sql(evidence_type, (f"{side}_molecular_form", f"{kind}_entity_key"))
+            f"ev.{side}_molecular_form.{kind}_entity_key"
             for side in ("subject", "object")
             for kind in ("protein", "transcript")
         )
         return self._db().sql(
-            f"WITH occurrences AS (SELECT _resource, unnest(evidence) AS ev "
-            f"FROM ({relations.sql_query()})), "
+            f"WITH occurrences AS ({occurrences}), "
             f"product_keys AS (SELECT _resource, unnest([{fields}]) AS entity_key FROM occurrences) "
-            f"SELECT e.* FROM ({entities.sql_query()}) e SEMI JOIN product_keys p "
+            f"SELECT e.* FROM ({self._table_sql('entity', resources)}) e SEMI JOIN product_keys p "
             "ON p.entity_key=e.entity_key AND p._resource=e._resource"
         )
 
@@ -483,11 +430,12 @@ class Client:
     ) -> duckdb.DuckDBPyRelation:
         """Run a SELECT/CTE query over selected resources.
 
-        Each query has its own entities/relations CTEs, so subsequent selections
-        cannot change an earlier lazy result. Evidence requires an explicit opt-in.
-        This executes caller-supplied local SQL and is not a sandbox.
+        Each query has its own CTE per published table (entity, entity_identifier, ...,
+        relation_evidence), so subsequent selections cannot change an earlier lazy
+        result. Raw evidence payloads require an explicit opt-in. This executes
+        caller-supplied local SQL and is not a sandbox.
         """
-        tables = TABLES if include_evidence else TABLES[:2]
+        tables = [t for t in TABLES if include_evidence or t != "evidence_payloads"]
         ctes = ", ".join(f"{table} AS ({self._table_sql(table, resources)})" for table in tables)
         query = query.rstrip().removesuffix(";")
         return self._db().sql(

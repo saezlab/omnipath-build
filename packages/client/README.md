@@ -1,6 +1,6 @@
 # OmniPath DuckDB client
 
-A first client for the current nested Parquet schema. Discover immutable resource
+A first client for the OmniPath Parquet tables. Discover immutable resource
 versions through the API, then query their HTTPS files with local DuckDB. Download
 a portable snapshot when you need offline access.
 
@@ -51,7 +51,28 @@ public HTTPS access needs no S3 credentials. DuckDB loads `httpfs` on first remo
 use and attempts installation if necessary. The initial extension installation
 requires network access to DuckDB's extension service.
 
-`entities`, `relations`, `evidence`, `lookup`, `related` and `sql` return native
+## Tables
+
+Each resource version publishes these tables:
+
+| Table | One row per | Refers to |
+|---|---|---|
+| `entity` | entity, with its label, type, taxon and references | |
+| `entity_identifier` | identifier of an entity | `entity_id` |
+| `entity_annotation` | annotation of an entity (quantities as `quantity_*` columns) | `entity_id` |
+| `entity_evidence` | source record stating an entity | `entity_id` |
+| `relation` | relation, with its endpoints, sign, sources and qualifiers | |
+| `relation_annotation` | annotation of a relation | `relation_id` |
+| `relation_evidence` | source record stating a relation, with molecular forms | `relation_id` |
+| `evidence_payloads` | raw source record (opt-in) | `relation_key`, `entity_key` |
+
+`entity_id` and `relation_id` number the rows of `entity` and `relation` within one
+resource version; join child tables on them together with `_resource`. The 64-character
+`entity_key` and `relation_key` identify the same entity or relation across resources.
+`table(name, ...)` reads any of them; `entities()`, `relations()` and `evidence()` are
+shortcuts for `entity`, `relation` and `evidence_payloads`.
+
+`table`, `entities`, `relations`, `evidence`, `lookup`, `related` and `sql` return native
 `DuckDBPyRelation` objects. Query construction can read file metadata, but does not
 materialize the entire dataset. Rows are evaluated when you fetch or export them.
 Select columns and add filters before fetching. Broad scans and joins can still
@@ -78,8 +99,7 @@ versions. Use a numbered release for a stable full snapshot.
 Every query adds `_resource` and `_resource_version`. Combining resources uses
 `UNION ALL BY NAME`: additive columns are filled with NULL, incompatible types may
 raise a DuckDB error, and shared entities/relations are **not deduplicated**.
-Nested identifiers, annotations, quantities and evidence retain their Parquet
-structure. Catalog metadata includes source licensing information from the API.
+Catalog metadata includes source licensing information from the API.
 Resources excluded by the hosted API's live query policy remain accessible as
 Parquet here; choose `resources` explicitly when limiting your analysis.
 
@@ -102,12 +122,12 @@ matches no rows. Values are parameterized and column names are quoted. Invalid
 column names raise DuckDB errors. More complex filters can use the returned
 relation's `.filter(...)` method.
 
-`lookup` matches exact labels, canonical identifiers, nested alias identifiers and
+`lookup` matches exact labels, canonical identifiers, alias identifiers and
 entity keys, ignoring case. It returns all matches, including ambiguous names
 across taxa and resources. It performs no fuzzy matching, identifier translation
 or automatic pivoting. `related(query)` matches either endpoint;
 `related(subject=..., object=...)` applies both endpoint constraints. Joins match
-entity keys within each resource. Results are original nested relation records.
+entity keys within each resource. Results are `relation` rows.
 Omitting `resources` on table methods selects every resource in the catalog;
 explicit selection is recommended for large deployments.
 
@@ -117,8 +137,8 @@ explicit selection is recommended for large deployments.
 with Client(release='2026.9.6.2') as op:
     result = op.sql('''
         SELECT e.label, r.predicate, r.object_label, r._resource
-        FROM entities AS e
-        JOIN relations AS r
+        FROM entity AS e
+        JOIN relation AS r
           ON e.entity_key = r.subject_entity_key
          AND e._resource = r._resource
         WHERE e.identifier = ?
@@ -127,8 +147,8 @@ with Client(release='2026.9.6.2') as op:
     print(result.fetchall())
 ```
 
-`sql` exposes `entities` and `relations` for the supplied resources within that
-query. It accepts SELECT/CTE queries and preserves earlier lazy results when you
+`sql` exposes every published table (`entity`, `entity_identifier`, ...,
+`relation_evidence`) for the supplied resources within that query. It accepts SELECT/CTE queries and preserves earlier lazy results when you
 select different resources later. It executes local SQL; it is not a sandbox.
 Raw payloads are opt-in: use `op.evidence('signor')`, or
 `op.sql(..., resources='signor', include_evidence=True)` to include the
@@ -177,8 +197,7 @@ an offline snapshot. No deployment is required for client changes.
 ## Gene references and exact products
 
 `entity_key` identifies a source-typed record; `reference_entity_key` is its
-shared gene reference. `entities()` and `relations()` read older snapshots with
-missing scalar reference fields as null, without inferring molecular context.
+shared gene reference.
 
 ```python
 # Shared gene knowledge across protein/gene/RNA source types.
@@ -193,8 +212,8 @@ product_relations = op.related_product(
 products = op.referenced_products(product_relations, resources='signor')
 ```
 
-`related_product()` keeps source-typed relation endpoints and trims nested
-`evidence` to matching occurrences. Product and isoform constraints apply to
+`related_product()` keeps source-typed relation endpoints and adds the matching
+`relation_evidence` rows as an `evidence` list (and their number as `evidence_count`). Product and isoform constraints apply to
 the same endpoint of the same observation; unknown forms do not match.
 `product_type='transcript'` selects transcript references. An absent isoform,
 modification or variant never asserts canonical isoform or wild type.

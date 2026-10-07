@@ -39,14 +39,14 @@ def _serve(parquet, ready, transfers, stop):
                                 "version": "1",
                                 "files": [
                                     {
-                                        "name": "entities.parquet",
+                                        "name": "entity.parquet",
                                         "size_bytes": len(parquet),
-                                        "url": f"http://127.0.0.1:{self.server.server_port}/entities.parquet",
+                                        "url": f"http://127.0.0.1:{self.server.server_port}/entity.parquet",
                                     },
                                     {
-                                        "name": "relations.parquet",
+                                        "name": "relation.parquet",
                                         "size_bytes": len(relations),
-                                        "url": f"http://127.0.0.1:{self.server.server_port}/relations.parquet",
+                                        "url": f"http://127.0.0.1:{self.server.server_port}/relation.parquet",
                                     },
                                 ],
                             }
@@ -54,10 +54,10 @@ def _serve(parquet, ready, transfers, stop):
                     }
                 ).encode()
                 self.send_response(200)
-            elif self.path == "/relations.parquet":
+            elif self.path == "/relation.parquet":
                 payload = relations
                 self.send_response(200)
-            elif self.path == "/entities.parquet":
+            elif self.path == "/entity.parquet":
                 start, end = 0, len(parquet) - 1
                 value = self.headers.get("Range")
                 if value:

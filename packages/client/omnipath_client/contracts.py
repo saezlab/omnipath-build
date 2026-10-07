@@ -9,7 +9,18 @@ from urllib.parse import urlsplit
 
 from .errors import ClientError
 
-TABLES = ("entities", "relations", "evidence_payloads")
+# The published tables of a resource version; entity_* and relation_* rows refer to
+# their entity or relation by ``entity_id`` / ``relation_id``.
+TABLES = (
+    "entity",
+    "entity_identifier",
+    "entity_annotation",
+    "entity_evidence",
+    "relation",
+    "relation_annotation",
+    "relation_evidence",
+    "evidence_payloads",
+)
 
 
 class Artifact(TypedDict):
@@ -82,8 +93,8 @@ def validate_resource(value: Any, *, snapshot: bool = False) -> ResourceRecord:
         if rows is not None and (type(rows) is not int or rows < 0):
             raise ClientError("Invalid artifact row count")
         names.add(name)
-    if not {"entities.parquet", "relations.parquet"} <= names:
-        raise ClientError("Resource must contain entities.parquet and relations.parquet")
+    if not {"entity.parquet", "relation.parquet"} <= names:
+        raise ClientError("Resource must contain entity.parquet and relation.parquet")
     return cast(ResourceRecord, deepcopy(value))
 
 

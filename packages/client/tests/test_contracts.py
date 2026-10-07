@@ -17,7 +17,7 @@ def resource():
         "description": "Additive metadata",
         "files": [
             {"name": f"{table}.parquet", "size_bytes": 100, "sha256": "a" * 64}
-            for table in ("entities", "relations")
+            for table in ("entity", "relation")
         ],
     }
 
@@ -54,7 +54,7 @@ def test_invalid_catalog_rejected_by_public_client(field, value, tmp_path):
         ("sha256", "invalid"),
         ("url", 123),
         ("url", "file:///tmp/test"),
-        ("name", "../entities.parquet"),
+        ("name", "../entity.parquet"),
     ],
 )
 def test_invalid_artifact_metadata_rejected(field, value):

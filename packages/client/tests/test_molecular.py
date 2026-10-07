@@ -7,16 +7,54 @@ import pyarrow.parquet as pq
 import pytest
 from omnipath_client import Client
 
+_IDENTIFIER = pa.struct([("ns", pa.string()), ("id", pa.string())])
+_FORM = pa.struct(
+    [
+        ("protein_entity_key", pa.string()),
+        ("transcript_entity_key", pa.string()),
+        ("isoform_identifier", _IDENTIFIER),
+    ]
+)
+EVIDENCE = pa.schema(
+    [
+        ("relation_id", pa.int32()),
+        ("ordinal", pa.int32()),
+        ("source", pa.string()),
+        ("dataset", pa.string()),
+        ("row_id", pa.string()),
+        ("upstream_id", pa.string()),
+        ("annotations", pa.list_(pa.struct([("term", pa.string()), ("value", pa.string())]))),
+        ("subject_molecular_form", _FORM),
+        ("object_molecular_form", _FORM),
+    ]
+)
+
 
 def resource_snapshot(tmp_path, resources):
+    """A snapshot from nested fixture rows: each relation's ``evidence`` becomes its
+    ``relation_evidence`` rows."""
     records = []
     for resource, (entities, relations) in resources.items():
         folder = tmp_path / "resources" / resource / "1"
         folder.mkdir(parents=True)
+        entity = [dict(row, entity_id=i) for i, row in enumerate(entities)]
+        relation, evidence = [], []
+        for i, row in enumerate(relations):
+            items = row.get("evidence") or []
+            relation.append(
+                {k: v for k, v in row.items() if k != "evidence"} | {"relation_id": i}
+            )
+            evidence += [
+                dict(item, relation_id=i, ordinal=n) for n, item in enumerate(items) if item
+            ]
         files = []
-        for name, rows in [("entities", entities), ("relations", relations)]:
+        for name, table in [
+            ("entity", pa.Table.from_pylist(entity)),
+            ("relation", pa.Table.from_pylist(relation)),
+            ("relation_evidence", pa.Table.from_pylist(evidence, schema=EVIDENCE)),
+        ]:
             path = folder / f"{name}.parquet"
-            pq.write_table(pa.Table.from_pylist(rows), path)
+            pq.write_table(table, path)
             files.append(
                 dict(
                     name=path.name,
@@ -38,7 +76,7 @@ def resource_snapshot(tmp_path, resources):
     return Client.from_snapshot(tmp_path)
 
 
-def snapshot(tmp_path, *, legacy=False):
+def snapshot(tmp_path):
     entities = [
         dict(
             entity_key=k,
@@ -73,14 +111,6 @@ def snapshot(tmp_path, *, legacy=False):
             evidence_count=2,
         )
     ]
-    if legacy:
-        for row in entities:
-            row.pop("reference_entity_key")
-            row.pop("gene_reference_keys")
-        for row in relations:
-            row.pop("subject_reference_entity_key")
-            row.pop("object_reference_entity_key")
-            row.pop("evidence")
     return resource_snapshot(tmp_path, {"test": (entities, relations)})
 
 
@@ -105,13 +135,6 @@ def test_exact_product_helpers_and_closure(tmp_path):
         assert client.referenced_products(selected, resources="test").project(
             "entity_key"
         ).fetchall() == [("product",)]
-
-
-def test_legacy_molecular_identity_is_unknown(tmp_path):
-    with snapshot(tmp_path, legacy=True) as client:
-        assert client.entities("test", columns=["reference_entity_key"]).fetchall() == [(None,)] * 3
-        assert client.related_reference("entrez:1", resources="test").fetchall() == []
-        assert client.related_product("product", resources="test").fetchall() == []
 
 
 def molecular_snapshot(tmp_path):
@@ -172,7 +195,14 @@ def molecular_snapshot(tmp_path):
             ("null", None),
         ]
     ]
-    legacy = [dict(relation_key="legacy", subject_entity_key="anchor", object_entity_key="gene")]
+    legacy = [
+        dict(
+            relation_key="legacy",
+            subject_entity_key="anchor",
+            object_entity_key="gene",
+            evidence_count=0,
+        )
+    ]
     contextless = [dict(**legacy[0], evidence=[dict(source="contextless", row_id="1")])]
     return resource_snapshot(
         tmp_path,
@@ -214,6 +244,7 @@ def test_mixed_schemas_preserve_occurrence_endpoint_and_isoform_identity(
             (row["subject_entity_key"], row["object_entity_key"]) == ("anchor", "gene")
             for row in rows
         )
+        assert all("relation_id" not in ev for row in rows for ev in row["evidence"])
         closure = (
             client.referenced_products(
                 selected, resources=["current", "legacy", "contextless", "unselected"]
@@ -257,44 +288,4 @@ def test_product_closure_plan_expands_selected_evidence_once(tmp_path):
                 yield item
                 yield from nodes(item["children"])
 
-        operators = list(nodes(plan))
-        assert sum(node["name"].strip() == "READ_PARQUET" for node in operators) == 2
-        assert not any("DELIM" in node["name"] for node in operators)
-
-
-@pytest.mark.parametrize(
-    ("evidence_sql", "product", "isoform", "closure_keys"),
-    [
-        (
-            "[{'subject_molecular_form': {'protein_entity_key': 123, "
-            "'isoform_identifier': {'ns': 1, 'id': 2}}}]",
-            "123",
-            "1:2",
-            [],
-        ),
-        (
-            '[json(\'{"subject_molecular_form": {"protein_entity_key": "product", '
-            '"isoform_identifier": {"ns": "uniprot", "id": "P1-2"}}}\')]',
-            "product",
-            "uniprot:P1-2",
-            [("product",)],
-        ),
-    ],
-)
-def test_json_and_numeric_context_preserve_text_matching(
-    tmp_path, monkeypatch, evidence_sql, product, isoform, closure_keys
-):
-    with snapshot(tmp_path) as client:
-        table = client._db().sql(
-            f"SELECT 'r' AS relation_key, 'test' AS _resource, {evidence_sql} AS evidence"
-        )
-        monkeypatch.setattr(client, "relations", lambda resources: table)
-        selected = client.related_product(
-            product, resources="test", isoform_identifier=isoform, endpoint="source"
-        )
-        assert selected.project("evidence_count").fetchall() == [(1,)]
-        assert client.related_product("non-numeric", resources="test").fetchall() == []
-        assert (
-            client.referenced_products(selected, resources="test").project("entity_key").fetchall()
-            == closure_keys
-        )
+        assert not any("DELIM" in node["name"] for node in nodes(plan))
