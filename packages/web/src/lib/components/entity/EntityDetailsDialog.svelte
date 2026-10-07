@@ -170,7 +170,7 @@
   });
 
   const FIRST_PAGE_SIZE = 50;
-  const NEXT_PAGE_SIZE = 100;
+  const NEXT_PAGE_SIZE = 200;
   // Values shown per identifier type or annotation before "+N more".
   const GROUP_PREVIEW = 8;
   const DESCRIPTION_PREVIEW = 2;
@@ -835,7 +835,7 @@
                   >{formatNumber(detailIdentifierTotal)}</span
                 ></Tabs.Trigger
               >{/if}
-            {#if detailNonPubmedAnnotations.length > 0}<Tabs.Trigger
+            {#if detailNonPubmedAnnotations.length > 0 || moreAttributesPending}<Tabs.Trigger
                 value="annotations"
                 class="flex-none"
                 >Annotations <span class="text-xs text-muted-foreground tabular-nums"
@@ -1130,6 +1130,9 @@
             {:else}<p class="text-sm text-muted-foreground">
                 No annotations match the filter.
               </p>{/if}
+          {:else if moreAttributesPending}<p role="status" class="text-sm text-muted-foreground">
+              Loading annotations…
+            </p>
           {:else}<p class="text-muted-foreground">
               No annotations are available for this entity.
             </p>{/if}

@@ -274,7 +274,7 @@ class EntityGroupsRequest(APIModel):
     member_cursor: str | None = None
     member_limit: int = Field(default=5, ge=1, le=100)
     include_details: bool = False
-    detail_limit: int = Field(default=20, ge=1, le=100)
+    detail_limit: int = Field(default=20, ge=1, le=500)
     detail_offset: int = Field(default=0, ge=0)
     detail_field: DetailField | None = None
 

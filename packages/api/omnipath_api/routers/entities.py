@@ -235,7 +235,7 @@ def get_entity(
     request: Request,
     entity_id: str,
     includeRelationships: bool = True,
-    detail_limit: int = Query(20, ge=1, le=100),
+    detail_limit: int = Query(20, ge=1, le=500),
     detail_offset: int = Query(0, ge=0),
     detail_field: DetailField | None = None,
 ) -> dict[str, Any]:
