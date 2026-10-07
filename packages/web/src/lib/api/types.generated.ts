@@ -395,6 +395,8 @@ export interface paths {
         /**
          * Get Entity
          * @description Fetch one entity by its exact entity key. No identifier or text fallback.
+         *
+         *     ``detail_field`` pages one collection (identifiers or attributes) on its own.
          */
         get: operations["get_entity_entities__entity_id__get"];
         put?: never;
@@ -1226,6 +1228,8 @@ export interface components {
         EntityGroupsRequest: {
             /** Cursor */
             cursor?: string | null;
+            /** Detail Field */
+            detail_field?: ("identifiers" | "entityAttributes") | null;
             /**
              * Detail Limit
              * @default 20
@@ -3268,6 +3272,7 @@ export interface operations {
                 includeRelationships?: boolean;
                 detail_limit?: number;
                 detail_offset?: number;
+                detail_field?: ("identifiers" | "entityAttributes") | null;
             };
             header?: never;
             path: {

@@ -4,6 +4,7 @@ from fastapi import HTTPException, Query, Request
 from fastapi.responses import Response
 
 from omnipath_api.models import (
+    DetailField,
     EntityGroupsRequest,
     GroupRelationshipsRequest,
     EntityDetailsResponse,
@@ -236,8 +237,12 @@ def get_entity(
     includeRelationships: bool = True,
     detail_limit: int = Query(20, ge=1, le=100),
     detail_offset: int = Query(0, ge=0),
+    detail_field: DetailField | None = None,
 ) -> dict[str, Any]:
-    """Fetch one entity by its exact entity key. No identifier or text fallback."""
+    """Fetch one entity by its exact entity key. No identifier or text fallback.
+
+    ``detail_field`` pages one collection (identifiers or attributes) on its own.
+    """
     result = _call(
         request, "get_entity_details" if includeRelationships else "get_entity_core", entity_id
     )
@@ -245,5 +250,5 @@ def get_entity(
         raise HTTPException(status_code=404, detail="Entity not found")
     from omnipath_api.entity_details import page_details
 
-    result["entity"] = page_details(result["entity"], detail_limit, detail_offset)
+    result["entity"] = page_details(result["entity"], detail_limit, detail_offset, detail_field)
     return result

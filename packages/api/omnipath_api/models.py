@@ -28,6 +28,10 @@ class ErrorResponse(APIModel):
     detail: str | None = None
 
 
+# Entity collections a detail tab can page on its own.
+DetailField = Literal["identifiers", "entityAttributes"]
+
+
 class EntitySearchCursor(APIModel):
     """Where a search continues: its match phase and the entities already returned."""
 
@@ -272,6 +276,7 @@ class EntityGroupsRequest(APIModel):
     include_details: bool = False
     detail_limit: int = Field(default=20, ge=1, le=100)
     detail_offset: int = Field(default=0, ge=0)
+    detail_field: DetailField | None = None
 
 
 class EntityPksRequest(APIModel):

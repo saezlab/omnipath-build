@@ -89,6 +89,7 @@ def search_groups(engine, *, strategy="chemical_connectivity", **kwargs):
     start = time.perf_counter()
     detail_limit = kwargs.pop("detail_limit", 20)
     detail_offset = kwargs.pop("detail_offset", 0)
+    detail_field = kwargs.pop("detail_field", None)
     resources = kwargs.get("resources") or (kwargs.get("filters") or {}).get("sources")
     key = cache_key(
         engine, "groups", json.dumps([strategy, kwargs], sort_keys=True, default=str), resources
@@ -97,7 +98,7 @@ def search_groups(engine, *, strategy="chemical_connectivity", **kwargs):
     groups = [dict(group) for group in result["groups"]]
     if kwargs.get("include_details"):
         for group in groups:
-            group["entity"] = page_details(group["entity"], detail_limit, detail_offset)
+            group["entity"] = page_details(group["entity"], detail_limit, detail_offset, detail_field)
     return dict(result, groups=groups, elapsed_ms=round((time.perf_counter() - start) * 1000, 2))
 
 

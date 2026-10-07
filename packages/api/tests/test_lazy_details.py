@@ -166,3 +166,30 @@ def test_descriptions_lead_the_first_attribute_page():
     first = page_details(entity)["entityAttributes"]
     assert first[0]["term"] == "up:Function_Annotation"
     assert len(first) == 20
+
+
+def test_one_collection_pages_on_its_own():
+    from omnipath_api.entity_details import page_details
+
+    entity = dict(
+        entityPk="a",
+        identifiers=[dict(id=str(i), type="x") for i in range(5)],
+        entityAttributes=[dict(term="in_taxon", value=str(i)) for i in range(30)],
+        sources=["s"],
+    )
+    page = page_details(entity, limit=20, offset=20, field="entityAttributes")
+    assert [a["value"] for a in page["entityAttributes"]] == [str(i) for i in range(20, 30)]
+    assert page["entityAttributesTotal"] == 30 and page["entityAttributesNextCursor"] is None
+    # other collections are left out, so a client keeps what it has
+    assert "identifiers" not in page and "sources" not in page and "detailNextCursor" not in page
+
+
+def test_attributes_beyond_descriptions_are_grouped_by_term():
+    from omnipath_api.entity_details import page_details
+
+    terms = ["in_taxon", "has_role", "in_taxon", "description", "has_role"]
+    entity = dict(entityAttributes=[dict(term=t, value=str(i)) for i, t in enumerate(terms)])
+    assert [(a["term"], a["value"]) for a in page_details(entity)["entityAttributes"]] == [
+        ("description", "3"), ("has_role", "1"), ("has_role", "4"),
+        ("in_taxon", "0"), ("in_taxon", "2"),
+    ]  # fmt: skip

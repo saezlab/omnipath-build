@@ -182,33 +182,47 @@ _DESCRIPTIVE_RANK = {term: rank for rank, term in enumerate(DESCRIPTIVE_TERMS)}
 
 
 def _descriptions_first(attributes):
+    """Descriptions lead; the rest is grouped by term so a page continues a group."""
+
     def rank(item):
         term = str(item.get("term") or "").lower().removeprefix("biolink:")
-        return _DESCRIPTIVE_RANK.get(term, len(DESCRIPTIVE_TERMS))
+        position = _DESCRIPTIVE_RANK.get(term, len(DESCRIPTIVE_TERMS))
+        return position, term if position == len(DESCRIPTIVE_TERMS) else ""
 
     return sorted(attributes, key=rank)  # stable: otherwise in source order
 
 
-def page_details(entity, limit=20, offset=0):
-    """Bound each nested collection in an entity response."""
+PAGED_FIELDS = (
+    "identifiers",
+    "entityAttributes",
+    "sources",
+    "resources",
+    "sourceEntityPks",
+    "molecularEvidence",
+)
+
+
+def page_details(entity, limit=20, offset=0, field=None):
+    """Bound each nested collection in an entity response.
+
+    With ``field``, only that collection is paged from ``offset``; the other
+    collections are left out, so a tab can load more of its own list.
+    """
     if entity.get("entityAttributes"):
         entity = dict(entity, entityAttributes=_descriptions_first(entity["entityAttributes"]))
     result = dict(entity)
     longest = 0
-    for field in (
-        "identifiers",
-        "entityAttributes",
-        "sources",
-        "resources",
-        "sourceEntityPks",
-        "molecularEvidence",
-    ):
-        if field == "molecularEvidence" and "molecularEvidenceTotal" in entity:
+    for name in PAGED_FIELDS:
+        if name == "molecularEvidence" and "molecularEvidenceTotal" in entity:
             continue  # counted only; the items are paged from /entities/{id}/evidence
-        rows = entity.get(field) or []
+        if field and name != field:
+            result.pop(name, None)
+            continue
+        rows = entity.get(name) or []
         longest = max(longest, len(rows))
-        result[field] = rows[offset : offset + limit]
-        result[field + "Total"] = len(rows)
-        result[field + "NextCursor"] = str(offset + limit) if offset + limit < len(rows) else None
-    result["detailNextCursor"] = str(offset + limit) if offset + limit < longest else None
+        result[name] = rows[offset : offset + limit]
+        result[name + "Total"] = len(rows)
+        result[name + "NextCursor"] = str(offset + limit) if offset + limit < len(rows) else None
+    if not field:
+        result["detailNextCursor"] = str(offset + limit) if offset + limit < longest else None
     return result

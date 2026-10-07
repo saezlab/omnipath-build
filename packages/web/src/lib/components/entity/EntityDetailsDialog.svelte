@@ -37,6 +37,7 @@
     DialogTitle,
   } from '$lib/components/ui/dialog/index.js';
   import { Button } from '$lib/components/ui/button/index.js';
+  import { Input } from '$lib/components/ui/input/index.js';
   import * as Table from '$lib/components/ui/table/index.js';
   import * as Tabs from '$lib/components/ui/tabs/index.js';
   import MoleculeStructure from '$lib/components/entity/MoleculeStructure.svelte';
@@ -87,6 +88,14 @@
     rows: IdentifierRow[];
   };
 
+  type AnnotationGroup = {
+    label: string;
+    rows: AnnotationRow[];
+  };
+
+  // Collections a tab pages on its own (the API's detail_field).
+  type DetailField = 'identifiers' | 'entityAttributes';
+
   type EntityOntologyHierarchyLike = {
     termId: string;
     ontologyPrefix: string | null;
@@ -102,7 +111,11 @@
   let loadingDetails = $state(false);
   let detailsError = $state<string | null>(null);
 
-  let identifierLimit = $state(20);
+  let loadingField = $state<DetailField | null>(null);
+  let identifierFilter = $state('');
+  let annotationFilter = $state('');
+  // Groups whose values are all shown, by tab and group label.
+  let expandedGroups = $state<Record<string, boolean>>({});
   let descriptionExpanded = $state(false);
   let relationScopeList = $state<RelationScope[]>([]);
   let relationScopeId = $state(ALL_SCOPE);
@@ -144,7 +157,10 @@
     if (available.length && !available.includes(activeTab)) activeTab = available[0];
   });
 
-  const IDENTIFIER_PAGE_SIZE = 20;
+  const FIRST_PAGE_SIZE = 50;
+  const NEXT_PAGE_SIZE = 100;
+  // Values shown per identifier type or annotation before "+N more".
+  const GROUP_PREVIEW = 8;
 
   function normalizeIdentifierEntries(
     entityLike: EntityLike | null | undefined,
@@ -160,23 +176,14 @@
     return Array.from(identifiers.values());
   }
 
-  function mergeEntityDetails(
-    fallbackEntity: EntityLike,
-    nextEntity: EntityLike | null | undefined,
-    previousEntity: EntityLike | null,
-  ): EntityLike {
-    const merged = {
-      ...fallbackEntity,
-      ...(previousEntity ?? {}),
-      ...(nextEntity ?? {}),
-    } as EntityLike & {
+  // The first detail page, with identifiers and sources the search result already had.
+  function mergeEntityDetails(fallbackEntity: EntityLike, nextEntity: EntityLike): EntityLike {
+    const merged = { ...fallbackEntity, ...nextEntity } as EntityLike & {
       identifiers?: EntityIdentifierLike[];
-      entityAttributes?: unknown;
       sources?: string[];
     };
-
     const identifiers = new Map<string, EntityIdentifierLike>();
-    for (const entityLike of [fallbackEntity, previousEntity, nextEntity]) {
+    for (const entityLike of [fallbackEntity, nextEntity]) {
       for (const identifier of normalizeIdentifierEntries(entityLike)) {
         identifiers.set(
           `${identifier.key.toLowerCase()}\u0000${identifier.value.toLowerCase()}`,
@@ -184,41 +191,27 @@
         );
       }
     }
-
-    if (identifiers.size > 0) {
-      merged.identifiers = Array.from(identifiers.values());
-    }
-
-    const nextAttributes = Array.isArray(nextEntity?.entityAttributes)
-      ? nextEntity.entityAttributes
-      : null;
-    const previousAttributes = Array.isArray(previousEntity?.entityAttributes)
-      ? previousEntity.entityAttributes
-      : null;
-    const fallbackAttributes = Array.isArray(fallbackEntity.entityAttributes)
-      ? fallbackEntity.entityAttributes
-      : null;
-    merged.entityAttributes =
-      previousAttributes && nextAttributes
-        ? [
-            ...new Map(
-              [...previousAttributes, ...nextAttributes].map((row) => [JSON.stringify(row), row]),
-            ).values(),
-          ]
-        : (nextAttributes ?? previousAttributes ?? fallbackAttributes ?? null);
-
-    const sourceValues = [fallbackEntity, previousEntity, nextEntity].flatMap((entityLike) =>
-      Array.isArray(entityLike?.sources) ? entityLike.sources.filter(Boolean) : [],
+    if (identifiers.size > 0) merged.identifiers = Array.from(identifiers.values());
+    if (!Array.isArray(nextEntity.entityAttributes))
+      merged.entityAttributes = fallbackEntity.entityAttributes;
+    const sources = [fallbackEntity, nextEntity].flatMap((entityLike) =>
+      Array.isArray(entityLike.sources) ? entityLike.sources.filter(Boolean) : [],
     );
-    if (sourceValues.length > 0) {
-      merged.sources = Array.from(new Set(sourceValues));
-    }
-
+    if (sources.length > 0) merged.sources = Array.from(new Set(sources));
     return merged;
   }
 
-  async function fetchDetailPage(fallback: EntityLike, offset: number, signal?: AbortSignal) {
+  async function fetchDetailPage(
+    fallback: EntityLike,
+    signal?: AbortSignal,
+    next?: { field: DetailField; offset: number },
+  ) {
     const publicId = getEntityPublicId(fallback);
+    const detail = {
+      detail_limit: next ? NEXT_PAGE_SIZE : FIRST_PAGE_SIZE,
+      detail_offset: next?.offset ?? 0,
+      ...(next ? { detail_field: next.field } : {}),
+    };
     const response = fallback.groupMemberKeys
       ? await releaseFetch('/app-api/entities/groups', {
           method: 'POST',
@@ -231,38 +224,68 @@
             filters: fallback.groupFilters,
             resources: fallback.groupResources,
             include_details: true,
-            detail_limit: 20,
-            detail_offset: offset,
+            ...detail,
           }),
         })
       : await releaseFetch(
-          `/app-api/entities/${encodeURIComponent(publicId)}?includeRelationships=false&detail_limit=20&detail_offset=${offset}`,
+          `/app-api/entities/${encodeURIComponent(publicId)}?${new URLSearchParams({
+            includeRelationships: 'false',
+            ...Object.fromEntries(Object.entries(detail).map(([k, v]) => [k, String(v)])),
+          })}`,
           { signal },
         );
     if (!response.ok) throw new Error('Entity details could not be loaded.');
     const body = await response.json();
-    const next = fallback.groupMemberKeys ? body.groups?.[0]?.entity : body.entity;
-    if (next?.entityPk !== publicId)
+    const page = fallback.groupMemberKeys ? body.groups?.[0]?.entity : body.entity;
+    if (page?.entityPk !== publicId)
       throw new Error('The response did not match the requested entity.');
-    return entityFromWire(next);
+    return page as Record<string, unknown>;
   }
 
-  async function moreDetails() {
-    if (!entity || loadingDetails || !hydratedEntity?.detailNextCursor) return;
+  function nextCursor(entityLike: EntityLike | null, field: DetailField): string | null {
+    const cursor = (entityLike as Record<string, unknown> | null)?.[`${field}NextCursor`];
+    return typeof cursor === 'string' ? cursor : null;
+  }
+
+  function fieldTotal(entityLike: EntityLike, field: DetailField): number {
+    const total = Number((entityLike as Record<string, unknown>)[`${field}Total`]);
+    const rows = (entityLike as Record<string, unknown>)[field];
+    return Number.isFinite(total) ? total : Array.isArray(rows) ? rows.length : 0;
+  }
+
+  async function loadMore(field: DetailField) {
+    const cursor = nextCursor(hydratedEntity, field);
+    if (!entity || loadingField || !cursor) return;
     const key = detailKey;
-    const fallback = entity;
-    loadingDetails = true;
+    loadingField = field;
     detailsError = null;
     try {
-      const next = await fetchDetailPage(fallback, Number(hydratedEntity.detailNextCursor));
-      if (key !== detailKey) return;
-      hydratedEntity = mergeEntityDetails(fallback, next, hydratedEntity);
-      identifierLimit += IDENTIFIER_PAGE_SIZE;
+      const page = await fetchDetailPage(entity, undefined, { field, offset: Number(cursor) });
+      if (key !== detailKey || !hydratedEntity) return;
+      const current = hydratedEntity as Record<string, unknown>;
+      const rows = page[field];
+      hydratedEntity = {
+        ...hydratedEntity,
+        [field]: [
+          ...(Array.isArray(current[field]) ? (current[field] as unknown[]) : []),
+          ...(Array.isArray(rows) ? rows : []),
+        ],
+        [`${field}NextCursor`]: page[`${field}NextCursor`] ?? null,
+      } as EntityLike;
     } catch (error) {
       if (key === detailKey) detailsError = (error as Error).message;
     } finally {
-      if (key === detailKey) loadingDetails = false;
+      if (key === detailKey) loadingField = null;
     }
+  }
+
+  function toggleGroup(id: string) {
+    expandedGroups = { ...expandedGroups, [id]: !expandedGroups[id] };
+  }
+
+  function matches(filter: string, ...values: string[]) {
+    const needle = filter.trim().toLowerCase();
+    return !needle || values.some((value) => value.toLowerCase().includes(needle));
   }
 
   $effect(() => {
@@ -273,14 +296,18 @@
     descriptionExpanded = false;
     activeTab = restoreTab ?? 'overview';
     restoreTab = null;
-    identifierLimit = IDENTIFIER_PAGE_SIZE;
+    loadingField = null;
+    identifierFilter = '';
+    annotationFilter = '';
+    expandedGroups = {};
     loadingDetails = false;
     if (!isOpen || !fallback || !publicId) return;
     const controller = new AbortController();
     loadingDetails = true;
-    untrack(() => fetchDetailPage(fallback, 0, controller.signal))
+    untrack(() => fetchDetailPage(fallback, controller.signal))
       .then((next) => {
-        if (!controller.signal.aborted) hydratedEntity = mergeEntityDetails(fallback, next, null);
+        if (!controller.signal.aborted)
+          hydratedEntity = mergeEntityDetails(fallback, entityFromWire(next as never));
       })
       .catch((error) => {
         if (!controller.signal.aborted) detailsError = error.message;
@@ -473,7 +500,12 @@
     );
   }
 
-  function formatAnnotationValue(row: AnnotationRow): string {
+  function formatAnnotationValue(row: AnnotationRow, entityLike: EntityLike): string {
+    const taxon = /^ncbitaxon:(\d+)$/i.exec(row.value)?.[1];
+    if (taxon && row.term.replace(/^biolink:/, '') === 'in_taxon') {
+      const own = String(entityLike.taxonomyId ?? '') === taxon;
+      return formatTaxonomy(taxon, own ? entityLike.taxonomyName : null) ?? row.value;
+    }
     const rawValue = row.value
       ? `${annotationValueText(row.term, row.value)}${row.unit ? ` ${row.unit}` : ''}`
       : '';
@@ -485,6 +517,16 @@
     );
     const cleaned = plainText(withoutPrefix).replace(/\s+/g, ' ').trim();
     return cleaned || rawValue;
+  }
+
+  function groupAnnotations(rows: AnnotationRow[]): AnnotationGroup[] {
+    const groups = new Map<string, AnnotationGroup>();
+    for (const row of rows) {
+      const group = groups.get(row.label) ?? { label: row.label, rows: [] };
+      group.rows.push(row);
+      groups.set(row.label, group);
+    }
+    return Array.from(groups.values());
   }
 
   function getEntityIdentifierTotal(entity: EntityLike): number {
@@ -605,6 +647,26 @@
   }
 </script>
 
+{#snippet moreAttributes(detailEntity: EntityLike)}
+  {#if nextCursor(detailEntity, 'entityAttributes')}<div
+      class="mt-4 flex flex-wrap items-center gap-3"
+    >
+      <Button
+        variant="outline"
+        size="sm"
+        disabled={loadingField !== null}
+        onclick={() => loadMore('entityAttributes')}
+        >{loadingField === 'entityAttributes' ? 'Loading…' : 'Load more'}</Button
+      >
+      <span class="text-xs text-muted-foreground tabular-nums"
+        >{formatNumber(
+          (Array.isArray(detailEntity.entityAttributes) ? detailEntity.entityAttributes : [])
+            .length,
+        )} of {formatNumber(fieldTotal(detailEntity, 'entityAttributes'))} source annotations loaded</span
+      >
+    </div>{/if}
+{/snippet}
+
 <Dialog bind:open>
   <DialogContent
     class="flex h-[min(720px,90dvh)] max-h-[90dvh] flex-col gap-0 overflow-hidden p-0 sm:max-w-5xl"
@@ -614,7 +676,7 @@
       {@const displayName = getEntityDisplayName(detailEntity)}
       {@const detailSections = getDescriptionSections(detailEntity)}
       {@const detailIdentifiers = normalizeIdentifierEntries(detailEntity)}
-      {@const detailIdentifierRows = getIdentifierRows(detailIdentifiers.slice(0, identifierLimit))}
+      {@const detailIdentifierRows = getIdentifierRows(detailIdentifiers)}
       {@const detailIdentifierGroups = getIdentifierGroups(detailIdentifierRows)}
       {@const detailIdentifierTotal = getEntityIdentifierTotal(detailEntity)}
       {@const detailSmiles = getEntitySmiles(detailEntity)}
@@ -649,6 +711,8 @@
           (row) => !isPublicationTerm(row.term) && !isNarrative(row.term),
         ),
       )}
+      {@const detailAnnotationGroups = groupAnnotations(detailNonPubmedAnnotations)}
+      {@const moreAttributesPending = nextCursor(detailEntity, 'entityAttributes') !== null}
       {@const relationTotal = relationTotals[ALL_SCOPE]}
       {@const partScopes = relationScopeList.filter((scope) => scope.kind !== 'all')}
       {@const longDescription = detailSections.some((section) =>
@@ -747,19 +811,19 @@
                 value="identifiers"
                 class="flex-none"
                 >Identifiers <span class="text-xs text-muted-foreground tabular-nums"
-                  >{detailIdentifierTotal}</span
+                  >{formatNumber(detailIdentifierTotal)}</span
                 ></Tabs.Trigger
               >{/if}
             {#if detailNonPubmedAnnotations.length > 0}<Tabs.Trigger
                 value="annotations"
                 class="flex-none"
                 >Annotations <span class="text-xs text-muted-foreground tabular-nums"
-                  >{detailNonPubmedAnnotations.length}</span
+                  >{detailNonPubmedAnnotations.length}{moreAttributesPending ? '+' : ''}</span
                 ></Tabs.Trigger
               >{/if}
             {#if detailPublications.length > 0}<Tabs.Trigger value="publications" class="flex-none"
                 >Publications <span class="text-xs text-muted-foreground tabular-nums"
-                  >{detailPublications.length}</span
+                  >{detailPublications.length}{moreAttributesPending ? '+' : ''}</span
                 ></Tabs.Trigger
               >{/if}
             {#if ontologyHierarchy}<Tabs.Trigger value="ontology" class="flex-none"
@@ -867,109 +931,168 @@
         </Tabs.Content>
         <Tabs.Content value="identifiers" class="min-h-0 overflow-y-auto overscroll-contain p-6">
           {#if detailIdentifierRows.length}
-            <Table.Root>
-              <Table.Header class="sticky top-0 z-10 bg-muted/80 backdrop-blur">
-                <Table.Row>
-                  <Table.Head>Value</Table.Head>
-                </Table.Row>
-              </Table.Header>
-              <Table.Body>
-                {#each detailIdentifierGroups as group}
-                  <Table.Row class="bg-muted/45 hover:bg-muted/45">
-                    <Table.Cell
-                      class="whitespace-normal py-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground"
-                    >
-                      <div class="flex items-center justify-between gap-3">
-                        <span>{group.type}</span>
-                        <span class="font-normal tabular-nums">{group.rows.length}</span>
-                      </div>
-                    </Table.Cell>
-                  </Table.Row>
-                  {#each group.rows as row}
-                    <Table.Row>
-                      <Table.Cell
-                        class={`max-w-lg whitespace-normal align-top text-foreground ${row.section === 'Identifier' ? 'break-all font-mono' : 'break-words font-medium'}`}
-                      >
+            {@const groups = detailIdentifierGroups
+              .map((group) => ({
+                ...group,
+                rows: group.rows.filter((row) => matches(identifierFilter, group.type, row.value)),
+              }))
+              .filter((group) => group.rows.length)}
+            {#if detailIdentifierRows.length > GROUP_PREVIEW}<Input
+                bind:value={identifierFilter}
+                placeholder="Filter identifiers"
+                aria-label="Filter identifiers"
+                class="mb-4 h-8 max-w-xs"
+              />{/if}
+            {#if groups.length}
+              <dl class="divide-y rounded-lg border text-sm">
+                {#each groups as group (group.type)}
+                  {@const expanded = expandedGroups[`id:${group.type}`] || identifierFilter.trim()}
+                  {@const shown = expanded ? group.rows : group.rows.slice(0, GROUP_PREVIEW)}
+                  <div
+                    class="grid gap-x-4 gap-y-1.5 px-3 py-2.5 sm:grid-cols-[10rem_minmax(0,1fr)]"
+                  >
+                    <dt class="text-xs font-medium text-muted-foreground sm:pt-0.5">
+                      {group.type}
+                      <span class="ml-1 font-normal tabular-nums">{group.rows.length}</span>
+                    </dt>
+                    <dd class="flex min-w-0 flex-wrap items-center gap-1.5">
+                      {#each shown as row}
                         {#if row.href}
                           <a
                             href={row.href}
                             target="_blank"
                             rel="noreferrer"
-                            class="inline-flex items-center gap-1 text-foreground underline decoration-muted-foreground/50 underline-offset-4 hover:decoration-foreground"
+                            class={`inline-flex max-w-full items-center gap-1 rounded-md border px-1.5 py-0.5 text-xs text-foreground hover:bg-muted ${row.section === 'Identifier' ? 'break-all font-mono' : 'break-words'}`}
                           >
                             {row.value}
-                            <ExternalLink class="size-3 shrink-0" />
+                            <ExternalLink class="size-3 shrink-0 text-muted-foreground" />
                           </a>
                         {:else}
-                          {row.value}
+                          <span
+                            class={`max-w-full rounded-md bg-muted px-1.5 py-0.5 text-xs text-foreground ${row.section === 'Identifier' ? 'break-all font-mono' : 'break-words'}`}
+                            >{row.value}</span
+                          >
                         {/if}
-                      </Table.Cell>
-                    </Table.Row>
-                  {/each}
+                      {/each}
+                      {#if group.rows.length > GROUP_PREVIEW && !identifierFilter.trim()}
+                        <Button
+                          variant="link"
+                          size="sm"
+                          class="h-auto px-1 py-0 text-xs"
+                          onclick={() => toggleGroup(`id:${group.type}`)}
+                          >{expanded
+                            ? 'Show less'
+                            : `+${group.rows.length - GROUP_PREVIEW} more`}</Button
+                        >
+                      {/if}
+                    </dd>
+                  </div>
                 {/each}
-              </Table.Body>
-            </Table.Root>
+              </dl>
+            {:else}<p class="text-sm text-muted-foreground">
+                No identifiers match the filter.
+              </p>{/if}
           {:else}<p class="text-muted-foreground">No identifiers are available.</p>{/if}
-          {#if detailEntity.identifiersNextCursor || detailIdentifiers.length > identifierLimit}<div
+          {#if nextCursor(detailEntity, 'identifiers')}<div
               class="mt-4 flex flex-wrap items-center gap-3"
             >
               <Button
                 variant="outline"
                 size="sm"
-                disabled={loadingDetails}
-                onclick={() => {
-                  if (detailIdentifiers.length > identifierLimit)
-                    identifierLimit += IDENTIFIER_PAGE_SIZE;
-                  else void moreDetails();
-                }}>Load more identifiers</Button
+                disabled={loadingField !== null}
+                onclick={() => loadMore('identifiers')}
+                >{loadingField === 'identifiers' ? 'Loading…' : 'Load more identifiers'}</Button
               >
-              <span class="text-xs text-muted-foreground"
-                >Showing {Math.min(identifierLimit, detailIdentifiers.length)} of {detailIdentifierTotal}</span
+              <span class="text-xs text-muted-foreground tabular-nums"
+                >{formatNumber(detailIdentifiers.length)} of {formatNumber(detailIdentifierTotal)} loaded</span
               >
             </div>{/if}
         </Tabs.Content>
         <Tabs.Content value="annotations" class="min-h-0 overflow-y-auto overscroll-contain p-6">
-          {#if detailNonPubmedAnnotations.length}
-            <Table.Root>
-              <Table.Header class="sticky top-0 z-10 bg-muted/80 backdrop-blur">
-                <Table.Row>
-                  <Table.Head class="w-48">Annotation</Table.Head>
-                  <Table.Head>Value</Table.Head>
-                  <Table.Head class="w-36">Source</Table.Head>
-                </Table.Row>
-              </Table.Header>
-              <Table.Body>
-                {#each detailNonPubmedAnnotations as annotation}
+          {#if detailAnnotationGroups.length}
+            {@const groups = detailAnnotationGroups
+              .map((group) => ({
+                ...group,
+                rows: group.rows.filter((row) =>
+                  matches(
+                    annotationFilter,
+                    group.label,
+                    formatAnnotationValue(row, detailEntity),
+                    row.source,
+                  ),
+                ),
+              }))
+              .filter((group) => group.rows.length)}
+            {#if detailNonPubmedAnnotations.length > GROUP_PREVIEW}<Input
+                bind:value={annotationFilter}
+                placeholder="Filter annotations"
+                aria-label="Filter annotations"
+                class="mb-4 h-8 max-w-xs"
+              />{/if}
+            {#if groups.length}
+              <Table.Root>
+                <Table.Header class="sticky top-0 z-10 bg-muted/80 backdrop-blur">
                   <Table.Row>
-                    <Table.Cell class="whitespace-normal align-top font-medium text-foreground">
-                      {annotation.label}
-                    </Table.Cell>
-                    <Table.Cell
-                      class="max-w-lg whitespace-normal break-words align-top text-foreground"
-                    >
-                      {#if annotation.term.replace(/^biolink:/, '') === 'has_biological_sequence'}
-                        <details>
-                          <summary>Sequence ({annotation.value.length} residues)</summary>
-                          <pre
-                            class="whitespace-pre-wrap break-all text-xs">{annotation.value}</pre>
-                        </details>
-                      {:else}{formatAnnotationValue(annotation)}{/if}
-                    </Table.Cell>
-                    <Table.Cell class="whitespace-normal align-top text-muted-foreground">
-                      {annotation.source || 'Unknown'}
-                    </Table.Cell>
+                    <Table.Head class="w-48">Annotation</Table.Head>
+                    <Table.Head>Value</Table.Head>
+                    <Table.Head class="w-36">Source</Table.Head>
                   </Table.Row>
-                {/each}
-              </Table.Body>
-            </Table.Root>
+                </Table.Header>
+                <Table.Body>
+                  {#each groups as group (group.label)}
+                    {@const expanded =
+                      expandedGroups[`annotation:${group.label}`] || annotationFilter.trim()}
+                    {@const shown = expanded ? group.rows : group.rows.slice(0, GROUP_PREVIEW)}
+                    {@const more = group.rows.length - shown.length}
+                    {@const toggle = group.rows.length > GROUP_PREVIEW && !annotationFilter.trim()}
+                    {#each shown as annotation, index}
+                      <Table.Row class={index < shown.length - 1 || toggle ? 'border-b-0' : ''}>
+                        <Table.Cell class="whitespace-normal align-top font-medium text-foreground">
+                          {#if index === 0}{group.label}{#if group.rows.length > 1}<span
+                                class="ml-1.5 text-xs font-normal text-muted-foreground tabular-nums"
+                                >{group.rows.length}</span
+                              >{/if}{/if}
+                        </Table.Cell>
+                        <Table.Cell
+                          class="max-w-lg whitespace-normal break-words align-top text-foreground"
+                        >
+                          {#if annotation.term.replace(/^biolink:/, '') === 'has_biological_sequence'}
+                            <details>
+                              <summary>Sequence ({annotation.value.length} residues)</summary>
+                              <pre
+                                class="whitespace-pre-wrap break-all text-xs">{annotation.value}</pre>
+                            </details>
+                          {:else}{formatAnnotationValue(annotation, detailEntity)}{/if}
+                        </Table.Cell>
+                        <Table.Cell class="whitespace-normal align-top text-muted-foreground">
+                          {annotation.source || 'Unknown'}
+                        </Table.Cell>
+                      </Table.Row>
+                    {/each}
+                    {#if toggle}
+                      <Table.Row class="hover:bg-transparent">
+                        <Table.Cell></Table.Cell>
+                        <Table.Cell colspan={2} class="pt-0">
+                          <Button
+                            variant="link"
+                            size="sm"
+                            class="h-auto px-0 py-0 text-xs"
+                            onclick={() => toggleGroup(`annotation:${group.label}`)}
+                            >{expanded ? 'Show less' : `Show ${more} more`}</Button
+                          >
+                        </Table.Cell>
+                      </Table.Row>
+                    {/if}
+                  {/each}
+                </Table.Body>
+              </Table.Root>
+            {:else}<p class="text-sm text-muted-foreground">
+                No annotations match the filter.
+              </p>{/if}
           {:else}<p class="text-muted-foreground">
               No annotations are available for this entity.
             </p>{/if}
-          {#if detailEntity.detailNextCursor}<div class="mt-4">
-              <Button variant="outline" size="sm" disabled={loadingDetails} onclick={moreDetails}
-                >{loadingDetails ? 'Loading…' : 'Load more'}</Button
-              >
-            </div>{/if}
+          {@render moreAttributes(detailEntity)}
         </Tabs.Content>
         <Tabs.Content value="publications" class="min-h-0 overflow-y-auto overscroll-contain p-6">
           {#if detailPublications.length}
@@ -1007,11 +1130,7 @@
               </Table.Body>
             </Table.Root>
           {:else}<p class="text-muted-foreground">No publications are available.</p>{/if}
-          {#if detailEntity.detailNextCursor}<div class="mt-4">
-              <Button variant="outline" size="sm" disabled={loadingDetails} onclick={moreDetails}
-                >{loadingDetails ? 'Loading…' : 'Load more'}</Button
-              >
-            </div>{/if}
+          {@render moreAttributes(detailEntity)}
         </Tabs.Content>
         {#if ontologyHierarchy}
           <Tabs.Content value="ontology" class="min-h-0 overflow-y-auto overscroll-contain p-6"

@@ -530,6 +530,21 @@
             ],
             "title": "Cursor"
           },
+          "detail_field": {
+            "anyOf": [
+              {
+                "enum": [
+                  "identifiers",
+                  "entityAttributes"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail Field"
+          },
           "detail_limit": {
             "default": 20,
             "maximum": 100.0,
@@ -5016,7 +5031,7 @@
     },
     "/entities/{entity_id}": {
       "get": {
-        "description": "Fetch one entity by its exact entity key. No identifier or text fallback.",
+        "description": "Fetch one entity by its exact entity key. No identifier or text fallback.\n\n``detail_field`` pages one collection (identifiers or attributes) on its own.",
         "operationId": "get_entity_entities__entity_id__get",
         "parameters": [
           {
@@ -5059,6 +5074,26 @@
               "minimum": 0,
               "title": "Detail Offset",
               "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "detail_field",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "identifiers",
+                    "entityAttributes"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Detail Field"
             }
           }
         ],
