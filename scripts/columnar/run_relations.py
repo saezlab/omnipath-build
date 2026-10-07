@@ -13,7 +13,7 @@ from pathlib import Path
 
 import duckdb
 
-from omnipath_build.columnar.raw import load_raw
+from omnipath_build.columnar.raw import add_payloads, load_raw
 from omnipath_build.columnar.relations import PLACEHOLDER, RelationExecutor
 
 
@@ -112,6 +112,7 @@ def main():
     parser.add_argument("--workers", type=int)
     parser.add_argument("--threads", type=int, default=16)
     parser.add_argument("--param", action="append", default=[])
+    parser.add_argument("--reuse-raw", action="store_true", help="keep the raw table of a previous run")
     args = parser.parse_args()
 
     from omnipath_build.discovery import discover_datasets
@@ -126,11 +127,22 @@ def main():
     timings = {}
 
     started = time.perf_counter()
-    raw_info = load_raw(
-        db,
-        ds.raw_dataset.raw(source=args.source, dataset=args.dataset, max_records=args.max_records, **params),
-        max_records=args.max_records,
-    )
+    info_path = args.work / "raw.json"
+    if args.reuse_raw and info_path.exists():
+        raw_info = json.loads(info_path.read_text())
+    elif ds.raw_dataset.has_table and not args.max_records:
+        rows = ds.raw_dataset.table(db, "raw", source=args.source, dataset=args.dataset, **params)
+        add_payloads(db, "raw")
+        columns = [r[0] for r in db.execute("DESCRIBE raw").fetchall() if r[0] not in ("rid", "payload_json")]
+        raw_info = dict(rows=rows, columns=columns, json_columns=[], parser="sql")
+        info_path.write_text(json.dumps(raw_info))
+    else:
+        raw_info = load_raw(
+            db,
+            ds.raw_dataset.raw(source=args.source, dataset=args.dataset, max_records=args.max_records, **params),
+            max_records=args.max_records,
+        )
+        info_path.write_text(json.dumps(raw_info))
     timings["parse + load raw"] = time.perf_counter() - started
     print(f"raw: {raw_info['rows']:,} rows, {len(raw_info['columns'])} columns in {timings['parse + load raw']:.1f}s", flush=True)
 
