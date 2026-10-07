@@ -162,8 +162,38 @@ def details(engine, public_id, resources=None):
     }
 
 
+# Descriptive annotations, in the order the explorer shows them; they lead the
+# attribute pages, so the first page carries the entity's description.
+DESCRIPTIVE_TERMS = (
+    "up:function_annotation",
+    "function",
+    "description",
+    "iao:0000115",
+    "up:disease_annotation",
+    "disease_involvement",
+    "up:subcellular_location_annotation",
+    "subcellular_location",
+    "up:pathway_annotation",
+    "up:activity_regulation_annotation",
+    "up:ptm_annotation",
+    "up:mutagenesis_annotation",
+    "up:transmembrane_annotation",
+)
+_DESCRIPTIVE_RANK = {term: rank for rank, term in enumerate(DESCRIPTIVE_TERMS)}
+
+
+def _descriptions_first(attributes):
+    def rank(item):
+        term = str(item.get("term") or "").lower().removeprefix("biolink:")
+        return _DESCRIPTIVE_RANK.get(term, len(DESCRIPTIVE_TERMS))
+
+    return sorted(attributes, key=rank)  # stable: otherwise in source order
+
+
 def page_details(entity, limit=20, offset=0):
     """Bound each nested collection in an entity response."""
+    if entity.get("entityAttributes"):
+        entity = dict(entity, entityAttributes=_descriptions_first(entity["entityAttributes"]))
     result = dict(entity)
     longest = 0
     for field in (

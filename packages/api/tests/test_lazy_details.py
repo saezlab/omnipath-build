@@ -154,3 +154,15 @@ def test_relationships_and_counts_span_resources(tmp_path):
     assert [r["relation"]["relationPk"] for p in pages for r in p["relationships"]] == [
         "s0", "s1", "r0", "r1", "r2",
     ]  # fmt: skip
+
+
+def test_descriptions_lead_the_first_attribute_page():
+    from omnipath_api.entity_details import page_details
+
+    entity = dict(
+        entityAttributes=[dict(term="in_taxon", value=str(i)) for i in range(30)]
+        + [dict(term="up:Function_Annotation", value="Regulates the pump.")]
+    )
+    first = page_details(entity)["entityAttributes"]
+    assert first[0]["term"] == "up:Function_Annotation"
+    assert len(first) == 20
