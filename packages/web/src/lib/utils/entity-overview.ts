@@ -171,10 +171,17 @@ export function keyIdentifiers(
   return picked;
 }
 
+// First match wins: specific types precede their family; '' means no link.
 const IDENTIFIERS_ORG_NAMESPACES: Array<[string, string]> = [
+  ['uniprot entry', ''],
+  ['uniprot keyword', ''],
   ['uniprot', 'uniprot'],
   ['chebi', 'chebi'],
+  ['chembl target component', ''],
+  ['chembl target', 'chembl.target'],
+  ['chembl variant', ''],
   ['chembl', 'chembl.compound'],
+  ['pubchem substance', 'pubchem.substance'],
   ['hmdb', 'hmdb'],
   ['pubchem', 'pubchem.compound'],
   ['ensembl', 'ensembl'],

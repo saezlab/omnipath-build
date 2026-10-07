@@ -85,4 +85,9 @@ test('identifiers.org links use known namespaces or existing CURIEs', () => {
   );
   assert.equal(identifiersOrgHref('hgnc', 'HGNC:11998'), 'https://identifiers.org/HGNC:11998');
   assert.equal(identifiersOrgHref('genesymbol', 'TP53'), null);
+  assert.equal(
+    identifiersOrgHref('chembl target chembl target', 'CHEMBL203'),
+    'https://identifiers.org/chembl.target:CHEMBL203',
+  );
+  assert.equal(identifiersOrgHref('chembl component chembl target component', '147'), null);
 });

@@ -148,7 +148,8 @@
       ...(getEntityIdentifierTotal(current) || normalizeIdentifierEntries(current).length
         ? ['identifiers']
         : []),
-      ...(rows.some((row) => !isPublicationTerm(row.term) && !isNarrative(row.term))
+      ...(rows.some((row) => !isPublicationTerm(row.term) && !isNarrative(row.term)) ||
+      nextCursor(current, 'entityAttributes')
         ? ['annotations']
         : []),
       ...(groupPublications(rows).length ? ['publications'] : []),
@@ -157,10 +158,22 @@
     if (available.length && !available.includes(activeTab)) activeTab = available[0];
   });
 
+  // Descriptions lead the attribute pages; an annotations tab opened before any
+  // annotation arrived keeps loading pages until one does.
+  $effect(() => {
+    if (activeTab !== 'annotations' || !hydratedEntity || loadingField || detailsError) return;
+    const rows = normalizeAnnotationRows(
+      Array.isArray(hydratedEntity.entityAttributes) ? hydratedEntity.entityAttributes : [],
+    );
+    if (rows.some((row) => !isPublicationTerm(row.term) && !isNarrative(row.term))) return;
+    if (nextCursor(hydratedEntity, 'entityAttributes')) void loadMore('entityAttributes');
+  });
+
   const FIRST_PAGE_SIZE = 50;
   const NEXT_PAGE_SIZE = 100;
   // Values shown per identifier type or annotation before "+N more".
   const GROUP_PREVIEW = 8;
+  const DESCRIPTION_PREVIEW = 2;
 
   function normalizeIdentifierEntries(
     entityLike: EntityLike | null | undefined,
@@ -437,11 +450,19 @@
   }
 
   function getDescriptionSections(entity: EntityLike) {
-    return normalizeAnnotationRows(
+    const sections = new Map<
+      string,
+      { label: string; items: { text: string; source: string }[] }
+    >();
+    for (const row of normalizeAnnotationRows(
       Array.isArray(entity.entityAttributes) ? entity.entityAttributes : [],
-    )
-      .filter((row) => isNarrative(row.term) && row.value)
-      .map((row) => ({ label: row.label, items: [plainText(row.value)], source: row.source }));
+    )) {
+      if (!isNarrative(row.term) || !row.value) continue;
+      const section = sections.get(row.label) ?? { label: row.label, items: [] };
+      section.items.push({ text: plainText(row.value), source: row.source });
+      sections.set(row.label, section);
+    }
+    return Array.from(sections.values());
   }
 
   function normalizeAnnotationRows(attributes: unknown[]): AnnotationRow[] {
@@ -716,7 +737,7 @@
       {@const relationTotal = relationTotals[ALL_SCOPE]}
       {@const partScopes = relationScopeList.filter((scope) => scope.kind !== 'all')}
       {@const longDescription = detailSections.some((section) =>
-        section.items.some((item) => item.length > 420),
+        section.items.some((item) => item.text.length > 420),
       )}
 
       <DialogHeader class="shrink-0 gap-3 px-6 pt-5 pb-4 pr-14 text-left">
@@ -837,19 +858,39 @@
           >
             <div class="min-w-0 space-y-6">
               {#if detailSections.length}
-                {#each detailSections as section}
+                {#each detailSections as section (section.label)}
+                  {@const expanded = expandedGroups[`description:${section.label}`]}
                   <section class="space-y-1.5">
                     <h3 class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                       {section.label}
+                      {#if section.items.length > 1}<span
+                          class="ml-1 font-normal normal-case tracking-normal tabular-nums"
+                          >{section.items.length}</span
+                        >{/if}
                     </h3>
-                    {#each section.items as item}<p
-                        class={`break-words text-sm leading-6 ${descriptionExpanded ? '' : 'line-clamp-5'}`}
-                      >
-                        {item}
-                      </p>{/each}
-                    {#if section.source}<p class="text-xs text-muted-foreground">
-                        Source: {section.source}
-                      </p>{/if}
+                    <div class="space-y-3">
+                      {#each expanded ? section.items : section.items.slice(0, DESCRIPTION_PREVIEW) as item}
+                        <div>
+                          <p
+                            class={`break-words text-sm leading-6 ${descriptionExpanded ? '' : 'line-clamp-5'}`}
+                          >
+                            {item.text}
+                          </p>
+                          {#if item.source}<p class="text-xs text-muted-foreground">
+                              Source: {item.source}
+                            </p>{/if}
+                        </div>
+                      {/each}
+                    </div>
+                    {#if section.items.length > DESCRIPTION_PREVIEW}<Button
+                        variant="link"
+                        size="sm"
+                        class="h-auto px-0 text-xs"
+                        onclick={() => toggleGroup(`description:${section.label}`)}
+                        >{expanded
+                          ? 'Show fewer'
+                          : `Show ${section.items.length - DESCRIPTION_PREVIEW} more`}</Button
+                      >{/if}
                   </section>
                 {/each}
                 {#if longDescription}<Button
