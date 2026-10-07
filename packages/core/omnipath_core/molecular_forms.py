@@ -45,6 +45,15 @@ class MolecularVariant(NamedTuple):
     description: str | None = None
 
 
+class MolecularRegion(NamedTuple):
+    type: str | None = None
+    identifier: SequenceIdentifier | None = None
+    position: int | None = None
+    end_position: int | None = None
+    coordinate_reference: CoordinateReference | None = None
+    description: str | None = None
+
+
 class MolecularForm(NamedTuple):
     protein_entity_key: str | None = None
     transcript_entity_key: str | None = None
@@ -52,6 +61,7 @@ class MolecularForm(NamedTuple):
     sequence_identifiers: list[SequenceIdentifier] | None = None
     modifications: list[MolecularModification] | None = None
     variants: list[MolecularVariant] | None = None
+    regions: list[MolecularRegion] | None = None
 
 
 SEQUENCE_IDENTIFIER_STRUCT = pa.struct([("ns", pa.string()), ("id", pa.string())])
@@ -83,6 +93,20 @@ VARIANT_STRUCT = pa.struct(
         ("description", pa.string()),
     ]
 )
+# A source-reported sequence segment: the extent of a processed chain, fragment
+# or mature product within its precursor, or an annotated segment such as a
+# signal peptide. ``type`` keeps the source's region kind; position fields share
+# the feature semantics, so an unknown start or end stays unspecified.
+REGION_STRUCT = pa.struct(
+    [
+        ("type", pa.string()),
+        ("identifier", SEQUENCE_IDENTIFIER_STRUCT),
+        ("position", pa.int64()),
+        ("end_position", pa.int64()),
+        ("coordinate_reference", COORDINATE_REFERENCE_STRUCT),
+        ("description", pa.string()),
+    ]
+)
 MOLECULAR_FORM_STRUCT = pa.struct(
     [
         ("protein_entity_key", pa.string()),
@@ -91,6 +115,7 @@ MOLECULAR_FORM_STRUCT = pa.struct(
         ("sequence_identifiers", pa.list_(SEQUENCE_IDENTIFIER_STRUCT)),
         ("modifications", pa.list_(MODIFICATION_STRUCT)),
         ("variants", pa.list_(VARIANT_STRUCT)),
+        ("regions", pa.list_(REGION_STRUCT)),
     ]
 )
 
@@ -186,6 +211,7 @@ def normalize_molecular_form(value: Any, *, allow_resolved: bool = True) -> dict
     ] or None
     result["modifications"] = _features(result["modifications"], MODIFICATION_STRUCT)
     result["variants"] = _features(result["variants"], VARIANT_STRUCT)
+    result["regions"] = _features(result["regions"], REGION_STRUCT)
     return result if any(item is not None for item in result.values()) else None
 
 

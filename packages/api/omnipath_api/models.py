@@ -154,6 +154,15 @@ class MolecularVariant(APIModel):
     description: str | None = None
 
 
+class MolecularRegion(APIModel):
+    type: str | None = None
+    identifier: MolecularIdentifier | None = None
+    position: int | None = None
+    end_position: int | None = None
+    coordinate_reference: MolecularCoordinateReference | None = None
+    description: str | None = None
+
+
 class MolecularForm(APIModel):
     """Occurrence context. Missing fields assert neither canonical isoform nor wild type."""
 
@@ -162,7 +171,7 @@ class MolecularForm(APIModel):
     def unspecified_lists(cls, value):
         if isinstance(value, dict):
             value = dict(value)
-            for field in ("sequence_identifiers", "modifications", "variants"):
+            for field in ("sequence_identifiers", "modifications", "variants", "regions"):
                 if value.get(field) is None:
                     value[field] = []
         return value
@@ -173,6 +182,7 @@ class MolecularForm(APIModel):
     sequence_identifiers: list[MolecularIdentifier] = Field(default_factory=list)
     modifications: list[MolecularModification] = Field(default_factory=list)
     variants: list[MolecularVariant] = Field(default_factory=list)
+    regions: list[MolecularRegion] = Field(default_factory=list)
 
 
 class EntityMolecularEvidence(APIModel):

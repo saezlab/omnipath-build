@@ -1633,6 +1633,8 @@ export interface components {
             modifications?: components["schemas"]["MolecularModification"][];
             /** Protein Entity Key */
             protein_entity_key?: string | null;
+            /** Regions */
+            regions?: components["schemas"]["MolecularRegion"][];
             /** Sequence Identifiers */
             sequence_identifiers?: components["schemas"]["MolecularIdentifier"][];
             /** Transcript Entity Key */
@@ -1664,6 +1666,21 @@ export interface components {
             residue?: string | null;
             /** Term */
             term?: string | null;
+        } & {
+            [key: string]: unknown;
+        };
+        /** MolecularRegion */
+        MolecularRegion: {
+            coordinate_reference?: components["schemas"]["MolecularCoordinateReference"] | null;
+            /** Description */
+            description?: string | null;
+            /** End Position */
+            end_position?: number | null;
+            identifier?: components["schemas"]["MolecularIdentifier"] | null;
+            /** Position */
+            position?: number | null;
+            /** Type */
+            type?: string | null;
         } & {
             [key: string]: unknown;
         };

@@ -24,3 +24,12 @@ test('loaded matching evidence supplies summary across resources sharing a relat
   assert.deepEqual(observationSummary(relation), relation);
   assert.deepEqual(observationSummary(relation, []), { evidenceCount: 0, sources: [] });
 });
+
+test('feature ranges show unknown endpoints as question marks', async () => {
+  const { featureRange } = await import('../src/lib/utils/molecular-presentation.ts');
+  assert.equal(featureRange(15), '15');
+  assert.equal(featureRange(15, 15), '15');
+  assert.equal(featureRange(1, 52), '1–52');
+  assert.equal(featureRange(null, 155), '?–155');
+  assert.equal(featureRange(null), '');
+});

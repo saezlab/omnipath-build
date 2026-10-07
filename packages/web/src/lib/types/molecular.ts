@@ -5,4 +5,5 @@ export type MolecularFormRecord = {
   sequence_identifiers?: Array<{ ns: string; id: string }> | null;
   modifications?: Array<Record<string, unknown>> | null;
   variants?: Array<Record<string, unknown>> | null;
+  regions?: Array<Record<string, unknown>> | null;
 };

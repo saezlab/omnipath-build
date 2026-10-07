@@ -25,3 +25,11 @@ export function observationSummary(
     sources: [...new Set(evidence.map((row) => row.source || 'Unknown'))].sort(),
   };
 }
+
+/** A sequence position or range; an unknown endpoint shows as "?". */
+export function featureRange(position: unknown, end?: unknown): string {
+  const start = typeof position === 'number' ? String(position) : '?';
+  const stop = typeof end === 'number' ? String(end) : end == null ? start : '?';
+  if (start === '?' && stop === '?') return '';
+  return start === stop ? start : `${start}–${stop}`;
+}

@@ -1,6 +1,10 @@
 <script lang="ts">
   import type { MolecularFormRecord } from '$lib/types/molecular';
-  import { productLabel, type ProductSummary } from '$lib/utils/molecular-presentation';
+  import {
+    featureRange,
+    productLabel,
+    type ProductSummary,
+  } from '$lib/utils/molecular-presentation';
   let {
     form,
     products = [],
@@ -16,6 +20,14 @@
     const identifier = value as Record<string, unknown>;
     if (typeof identifier.ns !== 'string' || typeof identifier.id !== 'string') return undefined;
     return `${identifier.ns}:${identifier.id}`;
+  }
+
+  /** A modification's name: its source description when the term is an accession. */
+  function modificationLabel(item: Record<string, unknown>): string {
+    const term = typeof item.term === 'string' ? item.term : '';
+    const description = typeof item.description === 'string' ? item.description : '';
+    if (/^MOD:\d+$/.test(term) && description) return `${description} · ${term}`;
+    return term || description || 'Unspecified modification';
   }
 
   function coordinateLabel(value: unknown): string {
@@ -70,9 +82,10 @@
     {#if form.modifications?.length}<div>
         <dt class="text-muted-foreground">Reported modifications</dt>
         {#each form.modifications as item}<dd class="break-words">
-            {String(item.term || item.description || 'Unspecified modification')}
-            {String(item.residue || '')}{String(
-              item.position ?? '',
+            {modificationLabel(item)}
+            {String(item.residue || '')}{featureRange(
+              item.position,
+              item.end_position,
             )}{#if item.coordinate_reference}<span class="block text-xs text-muted-foreground"
                 >{coordinateLabel(item.coordinate_reference)}</span
               >{/if}
@@ -82,10 +95,26 @@
         <dt class="text-muted-foreground">Reported variants</dt>
         {#each form.variants as item}<dd class="break-words">
             {String(item.description || '')}
-            {String(item.reference || '')}{String(item.position ?? '')}{String(
-              item.alternate || '',
-            )}{#if item.identifier}<span class="block text-xs"
+            {String(item.reference || '')}{featureRange(
+              item.position,
+              item.end_position,
+            )}{item.alternate === ''
+              ? ' deleted'
+              : String(item.alternate || '')}{#if item.identifier}<span class="block text-xs"
                 >{identifierLabel(item.identifier) || 'Variant identifier reported'}</span
+              >{/if}{#if item.coordinate_reference}<span class="block text-xs text-muted-foreground"
+                >{coordinateLabel(item.coordinate_reference)}</span
+              >{/if}
+          </dd>{/each}
+      </div>{/if}
+    {#if form.regions?.length}<div>
+        <dt class="text-muted-foreground">Reported regions</dt>
+        {#each form.regions as item}<dd class="break-words">
+            {String(item.type || 'Unspecified region')}
+            {featureRange(item.position, item.end_position)}{#if item.identifier}<span
+                class="block text-xs">{identifierLabel(item.identifier)}</span
+              >{/if}{#if item.description}<span class="block text-xs"
+                >{String(item.description)}</span
               >{/if}{#if item.coordinate_reference}<span class="block text-xs text-muted-foreground"
                 >{coordinateLabel(item.coordinate_reference)}</span
               >{/if}

@@ -35,7 +35,10 @@ def catalogue_rows():
     writer.writerow(row)
     return [
         uniprot.catalogue_features_schema(r)
-        for r in uniprot._catalogue_feature_rows(opener(data.getvalue()))
+        for r in uniprot._catalogue_feature_rows(
+            opener(data.getvalue()),
+            ptmlist=opener("ID   Phosphoserine\nFT   MOD_RES\nDR   PSI-MOD; MOD:00046.\n//\n"),
+        )
     ]
 
 
@@ -85,7 +88,18 @@ def test_molecular_inputs_roundtrip_without_combinatorial_entities(tmp_path):
                 "name": "a mature RNA",
                 "sequence": "ACGU",
                 "precursors": ["MI1"],
-                "precursor_regions": [{"position": 2, "end_position": 5}],
+                "precursor_regions": [
+                    {
+                        "location": "2..5",
+                        "position": 2,
+                        "end_position": 5,
+                        "coordinate_reference": {
+                            "identifier": {"ns": "mirbase_precursor_release", "id": "MI1@22"},
+                            "coordinate_system": "transcript",
+                            "position_base": 1,
+                        },
+                    }
+                ],
             }
         )
     )
@@ -129,6 +143,14 @@ def test_molecular_inputs_roundtrip_without_combinatorial_entities(tmp_path):
     assert len(alternatives) == 7
     assert sorted(len(form["variants"] or []) for form in alternatives) == [0, 0, 0, 1, 1, 1, 2]
     assert all(form["protein_entity_key"] == product["entity_key"] for form in alternatives)
+    assert any(
+        modification["term"] == "MOD:00046"
+        for form in alternatives
+        for modification in form["modifications"] or []
+    )
+    (mature,) = [entity for entity in entities if entity["namespace"] == "mirbase_mature"]
+    (region,) = tables.children("entity_evidence", mature)[0]["molecular_form"]["regions"]
+    assert (region["type"], region["position"], region["end_position"]) == ("Mature miRNA", 2, 5)
     mutant = next(r for r in tables["relation"] if r["predicate"] == "interacts_with")
     form = tables.children("relation_evidence", mutant)[0]["object_molecular_form"]
     assert form["protein_entity_key"] == product["entity_key"]

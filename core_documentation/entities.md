@@ -195,7 +195,34 @@ Each `relation_evidence` row is one source occurrence:
 | `sequence_identifiers[]` | Other identifiers that pin the exact sequence |
 | `modifications[]` | `{term, residue, position, end_position, coordinate_reference, description}` |
 | `variants[]` | `{identifier, reference, alternate, position, end_position, coordinate_reference, description}` |
+| `regions[]` | `{type, identifier, position, end_position, coordinate_reference, description}` |
 
 Positions keep the coordinate reference the source used (identifier and
 version, coordinate system, position base). An unknown reference stays unknown;
-it is not replaced with the selected primary protein.
+it is not replaced with the selected primary protein. Each endpoint is known or
+unknown on its own: a UniProt chain at `?..155` has no `position` and
+`end_position` 155, and the source location stays in `description`.
+`description` is readable source text, never a serialized source record.
+
+- **`term`** is a PSI-MOD accession when the source gives one (Reactome) or
+  UniProt's PTM vocabulary maps the feature name to exactly one (`MOD:00046`
+  for *Phosphoserine*); otherwise it is the source's own name, and the full
+  source note stays in `description`.
+- A UniProt disulfide bond or intrachain crosslink at `a..b` links two
+  residues, so it becomes two single-residue modifications in one form, not a
+  modified range.
+- An empty `alternate` is an explicit deletion (UniProt *Missing*); a null
+  `alternate` is unknown.
+- **`regions`** hold sequence segments the source reports: the extent of a
+  processed chain, fragment or mature product within its reference (UniProt
+  `CHAIN`, `PEPTIDE`, `PROPEP`; Reactome `FragmentFeature`; a miRBase mature
+  product within its precursor) or an annotated segment (`SIGNAL`, `TRANSMEM`).
+  `type` is the source's region kind (`Chain`, `Signal peptide`, `Fragment`,
+  `Mature miRNA`), and `identifier` the source's feature ID (`PRO_…`).
+
+> **Decision: regions are a separate list with feature coordinates.** A region
+> is neither a modification nor a sequence change, so it gets its own list. It
+> reuses `position`/`end_position` and `coordinate_reference`, so all three
+> feature lists share one validation and one reading of partial ranges. *Why:*
+> sequence ranges were otherwise dropped or published as raw JSON annotations
+> (`uniprot:catalogue_feature`, `mirbase:precursor_region`). (7 October 2026)

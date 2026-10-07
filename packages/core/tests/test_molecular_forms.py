@@ -15,6 +15,7 @@ from omnipath_core import (
     Identifier,
     MolecularForm,
     MolecularModification,
+    MolecularRegion,
     MolecularVariant,
     SequenceIdentifier,
     CoordinateReference,
@@ -170,3 +171,42 @@ def test_occurrence_pairing_and_standalone_forms_round_trip(tmp_path):
     assert SILVER_RELATION_SCHEMA.field("subject").type.field("molecular_form").type == (
         RELATION_EVIDENCE_TABLE.field("subject_molecular_form").type
     )
+
+
+def test_regions_keep_partial_extent_and_round_trip(tmp_path):
+    reference = CoordinateReference(SequenceIdentifier("uniprot", "P01308"), "protein", 1)
+    form = normalize_molecular_form(
+        MolecularForm(
+            sequence_identifiers=[SequenceIdentifier("uniprot", "P01308-PRO_0000015819")],
+            regions=[
+                MolecularRegion(
+                    type="Chain",
+                    identifier=SequenceIdentifier("uniprot_feature", "PRO_0000015819"),
+                    position=25,
+                    end_position=54,
+                    coordinate_reference=reference,
+                    description="Insulin B chain",
+                ),
+                # '?..30': an unknown start stays unknown.
+                MolecularRegion(type="Chain", end_position=30, coordinate_reference=reference),
+            ],
+        ),
+        allow_resolved=False,
+    )
+    assert form["regions"][0]["identifier"] == {"ns": "uniprot_feature", "id": "PRO_0000015819"}
+    assert form["regions"][1]["position"] is None
+    assert form["regions"][1]["end_position"] == 30
+    assert form["modifications"] is None and form["variants"] is None
+    unreferenced = normalize_molecular_form({"regions": [{"type": "Fragment", "position": 3}]})
+    assert unreferenced["regions"][0]["coordinate_reference"]["coordinate_system"] == "unknown"
+    with pytest.raises(ValueError, match="end_position"):
+        normalize_molecular_form({"regions": [{"position": 9, "end_position": 2}]})
+    with pytest.raises(ValueError, match="Unknown molecular feature fields"):
+        normalize_molecular_form({"regions": [{"start": 1}]})
+    table = pa.Table.from_pylist(
+        [{"entity_id": 0, "ordinal": 0, "row_id": "chain", "molecular_form": form}],
+        schema=ENTITY_EVIDENCE_TABLE,
+    )
+    path = tmp_path / "entity_evidence.parquet"
+    pq.write_table(table, path)
+    assert pq.read_table(path).to_pylist()[0]["molecular_form"] == form

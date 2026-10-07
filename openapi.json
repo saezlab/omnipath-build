@@ -1690,6 +1690,13 @@
             ],
             "title": "Protein Entity Key"
           },
+          "regions": {
+            "items": {
+              "$ref": "#/components/schemas/MolecularRegion"
+            },
+            "title": "Regions",
+            "type": "array"
+          },
           "sequence_identifiers": {
             "items": {
               "$ref": "#/components/schemas/MolecularIdentifier"
@@ -1808,6 +1815,77 @@
           }
         },
         "title": "MolecularModification",
+        "type": "object"
+      },
+      "MolecularRegion": {
+        "additionalProperties": true,
+        "properties": {
+          "coordinate_reference": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MolecularCoordinateReference"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "end_position": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "End Position"
+          },
+          "identifier": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MolecularIdentifier"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "position": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Position"
+          },
+          "type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Type"
+          }
+        },
+        "title": "MolecularRegion",
         "type": "object"
       },
       "MolecularVariant": {
