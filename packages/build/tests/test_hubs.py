@@ -410,10 +410,20 @@ class TestEntrezHub(unittest.TestCase):
             rows = pq.read_table(path).to_pylist()
         records = {(r["hub_id"], r["taxonomy_id"]) for r in rows if r["source_type"] == "entrez"}
         self.assertEqual(records, {("7157", "9606"), ("100189199", "9606"), ("115487553", "10090")})
-        # A gene gene2ensembl already lists is not added twice, and gets no name row.
+        # A gene gene2ensembl already lists is not added twice, but gets its symbol too.
         self.assertEqual(
             sum(r["hub_id"] == "7157" and r["source_type"] == "entrez" for r in rows), 1
         )
-        self.assertFalse(any(r["hub_id"] == "7157" and r["source_type"] == "name" for r in rows))
-        names = {r["hub_id"]: r["source_id"] for r in rows if r["source_type"] == "name"}
-        self.assertEqual(names, {"100189199": "TRL-CAA6-1", "115487553": "Gm25354"})
+        symbols = {
+            (r["hub_id"], r["source_id"], r["taxonomy_id"])
+            for r in rows
+            if r["source_type"] == "genesymbol"
+        }
+        self.assertEqual(
+            symbols,
+            {
+                ("7157", "TP53", "9606"),
+                ("100189199", "TRL-CAA6-1", "9606"),
+                ("115487553", "Gm25354", "10090"),
+            },
+        )
