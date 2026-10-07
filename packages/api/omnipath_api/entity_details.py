@@ -42,27 +42,24 @@ def core(engine, public_id, resources=None):
 
 
 def _evidence_items(engine, entity, resources):
-    """SQL for the distinct evidence items of an entity's source rows, in source order."""
+    """SQL for the evidence items of an entity's source rows, ordered by source and position.
+
+    Every item names its source, and a source lists an item once, so items are not
+    compared (comparing nested items cost more than the rest of the details).
+    """
     keys = list(dict.fromkeys(entity.get("sourceEntityPks") or [entity["entityPk"]]))
-    rows, params = evidence_rows(engine, engine._resolve_entity_paths(resources), keys)
-    if rows is None:
-        return None, []
-    return (
-        f"SELECT item, min((filename, entity_key, evidence_index)) AS first FROM {rows} "
-        "GROUP BY item",
-        params,
-    )
+    return evidence_rows(engine, engine._resolve_entity_paths(resources), keys)
 
 
 def evidence_total(engine, entity, resources=None):
     items, params = _evidence_items(engine, entity, resources)
     if items is None:
         return 0
-    return int(engine._fetch_dicts(f"SELECT count(*) AS n FROM ({items})", params)[0]["n"])
+    return int(engine._fetch_dicts(f"SELECT count(*) AS n FROM {items}", params)[0]["n"])
 
 
 def evidence(engine, public_id, resources=None, limit=20, offset=0):
-    """A page of an entity's evidence items (identical items across sources once)."""
+    """A page of an entity's evidence items, by source and position."""
 
     def load():
         found = core(engine, public_id, resources)
@@ -73,8 +70,8 @@ def evidence(engine, public_id, resources=None, limit=20, offset=0):
         if items is None:
             return empty
         rows = engine._fetch_dicts(
-            f"SELECT item, count(*) OVER () AS total FROM ({items}) "
-            "ORDER BY first LIMIT ? OFFSET ?",
+            f"SELECT item, count(*) OVER () AS total FROM {items} "
+            "ORDER BY filename, entity_key, evidence_index LIMIT ? OFFSET ?",
             [*params, limit, offset],
         )
         if not rows:
