@@ -25,6 +25,52 @@ export function isNarrativeAnnotation(term: string): boolean {
   );
 }
 
+// Relation Ontology and related relations kept as annotation terms, or reported as
+// a statement's original_predicate (keys are lowercase CURIEs).
+const ontologyRelations: Record<string, string> = {
+  'ro:0002211': 'Regulates',
+  'ro:0002212': 'Negatively regulates',
+  'ro:0002213': 'Positively regulates',
+  'ro:0002007': 'Bounding layer of',
+  'ro:0002572': 'Has origin in',
+  'ro:0002551': 'Has skeleton',
+  'ro:0002087': 'Immediately preceded by',
+  'ro:0002216': 'Capable of part of',
+  'ro:0018036': 'Is tautomer of',
+  'ro:0018039': 'Is enantiomer of',
+  'ro:0018038': 'Has functional parent',
+  'ro:0018033': 'Is deprotonated form of',
+  'ro:0018034': 'Is protonated form of',
+  'ro:0018040': 'Has parent hydride',
+  'ro:0018037': 'Is substituent group from',
+  'ro:0002433': 'Contributes to morphology of',
+  'ro:0002309': 'Has exposure stimulus',
+  'ro:0002176': 'Connects',
+  'ro:0002220': 'Adjacent to',
+  'ro:0002387': 'Has potential to develop into',
+  'mondo:0100332': 'Disease has primary infectious agent',
+  'ro:0000086': 'Has quality',
+  'ro:0002254': 'Has developmental contribution from',
+  'ro:0002170': 'Connected to',
+  'ro:0020101': 'Vessel supplies blood to',
+  'ro:0002371': 'Attached to',
+  'ro:0002150': 'Continuous with',
+  'ro:0020102': 'Vessel drains blood from',
+  'ro:0002134': 'Innervates',
+  'ro:0002573': 'Has modifier',
+  'ro:0004001': 'Has material basis in gain of function germline mutation in',
+  'ro:0004004': 'Has material basis in somatic mutation in',
+  'cl:4030046': 'Lacks plasma membrane part',
+};
+
+/** An annotation value for display: a known relation CURIE gets its name. */
+export function annotationValueText(term: string, value: string): string {
+  const key = term.replace(/^biolink:/i, '').toLowerCase();
+  const name =
+    key === 'original_predicate' ? ontologyRelations[value.trim().toLowerCase()] : undefined;
+  return name ? `${name} (${value.trim()})` : value;
+}
+
 /** Shared presentation only: source semantics and stored values remain intact. */
 const labels: Record<string, string> = {
   ...uniprotNarratives,
@@ -80,6 +126,10 @@ const labels: Record<string, string> = {
   'brenda:molecular_observation': 'BRENDA observation',
   'brenda:protein_note': 'BRENDA protein note',
   in_taxon_label: 'Organism',
+  'rdfs:comment': 'Comment',
+  'rhea:transport_side': 'Membrane side',
+  url: 'Website',
+  ...ontologyRelations,
   'psi_mi:participant_feature': 'Participant feature',
   'psi_mi:experimental_role': 'Experimental role',
   'psi_mi:biological_role': 'Biological role',

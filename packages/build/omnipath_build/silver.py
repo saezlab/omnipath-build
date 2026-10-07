@@ -353,8 +353,8 @@ class SilverExtractor:
                 path=o_path,
                 persist_annotations=False,
             )
-            o_rel_k = relation_key(key, pred, o_key, statement_kind="ontology")
-            o_anns: list[dict[str, Any]] = []
+            o_anns = self._annotations(ont_rel, "relation")
+            o_rel_k = relation_key(key, pred, o_key, o_anns, statement_kind="ontology")
             self.relations.append(
                 RawRelationObservation(
                     relation_key=o_rel_k,

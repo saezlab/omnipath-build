@@ -21,6 +21,7 @@
   import {
     annotationDefaultUnit,
     annotationLabelFor,
+    annotationValueText,
     collapseListedAnnotations,
     safeSourceUrl,
   } from '$lib/utils/annotation-presentation';
@@ -270,7 +271,9 @@
                   >{annotation.value} <ExternalLink class="inline size-3" /></a
                 >
               {:else if annotation.value && annotation.value !== 'None' && annotation.value !== 'null'}
-                {annotation.value}{annotation.unit ? ` ${annotation.unit}` : ''}
+                {annotationValueText(annotation.term, annotation.value)}{annotation.unit
+                  ? ` ${annotation.unit}`
+                  : ''}
               {:else}<span class="text-muted-foreground">Recorded without a value</span>{/if}
             </dd>
           </div>

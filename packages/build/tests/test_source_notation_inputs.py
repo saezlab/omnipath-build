@@ -198,15 +198,19 @@ def test_intact_columns_have_distinct_terms_and_readable_features():
         "psi_mi:experimental_role": ["MI:0496"],
         "psi_mi:participant_identification_method": ["MI:0396"],
     }
+    # Binding regions and the mutation with no effect are in the molecular form.
     assert object_ == {
-        "psi_mi:participant_feature": [
-            "binding-associated region (702-715)",
-            "sufficient binding region (634-913; IPR000242)",
-            "mutation with no effect (315)",
-        ],
         "in_taxon": ["NCBITaxon:9606"],
         "psi_mi:biological_role": ["MI:0501"],
         "psi_mi:experimental_role": ["MI:0498"],
         "stoichiometry": ["2"],
     }
+    form = relation.object.molecular_form
+    assert [(r["type"], r["position"], r["end_position"]) for r in form["regions"]] == [
+        ("binding-associated region", 702, 715),
+        ("sufficient binding region", 634, 913),
+    ]
+    assert [(v["position"], v["description"]) for v in form["variants"]] == [
+        (315, "mutation with no effect:315-315")
+    ]
     assert "has_topic" not in subject and "description" not in subject

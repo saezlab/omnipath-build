@@ -149,11 +149,16 @@ class Membership(NamedTuple):
 
 
 class OntologyRelation(NamedTuple):
-    """Ontology hierarchy edge from enclosing entity to an object entity."""
+    """Ontology edge from enclosing entity to an object entity.
+
+    ``annotations`` describe the axiom, e.g. the ontology's own predicate when
+    the Biolink predicate is broader than it.
+    """
 
     predicate: str
     object: EntityRef
     ontology_id: str | None = None
+    annotations: list[Annotation] | None = None
 
 
 class Entity(NamedTuple):
@@ -329,6 +334,7 @@ ONTOLOGY_RELATION_FIELDS = [
     pa.field("predicate", pa.string()),
     pa.field("object", pa.struct(ENTITY_REF_FIELDS)),
     pa.field("ontology_id", pa.string()),
+    pa.field("annotations", pa.list_(pa.struct(ANNOTATION_FIELDS))),
 ]
 
 ASSOCIATION_FIELDS = [

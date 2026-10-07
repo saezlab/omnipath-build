@@ -10,6 +10,7 @@
   import {
     annotationDefaultUnit,
     annotationLabelFor,
+    annotationValueText,
     plainText,
     isNarrativeAnnotation,
   } from '$lib/utils/annotation-presentation';
@@ -473,7 +474,9 @@
   }
 
   function formatAnnotationValue(row: AnnotationRow): string {
-    const rawValue = row.value ? `${row.value}${row.unit ? ` ${row.unit}` : ''}` : '';
+    const rawValue = row.value
+      ? `${annotationValueText(row.term, row.value)}${row.unit ? ` ${row.unit}` : ''}`
+      : '';
     if (!rawValue) return 'No value';
 
     const withoutPrefix = rawValue.replace(

@@ -24,6 +24,7 @@ def test_chebi_properties_and_relations():
             {"type": "BFO:0000051", "target": "CHEBI:3"},
             {"type": "RO:0018033", "target": "CHEBI:4"},
             {"type": "RO:0000087", "target": "CHEBI:5"},
+            {"type": "RO:0018039", "target": "CHEBI:6"},
         ],
     }
     record = chebi.molecules_schema(row)
@@ -31,10 +32,17 @@ def test_chebi_properties_and_relations():
     annotations = {format_term(a.term): a.value for a in record.annotations}
     assert annotations["has_chemical_formula"] == "H2O"
     assert annotations["chemrof:mass"] == "18"
+    # A conjugate base relation is directional; no Biolink predicate keeps that.
     assert annotations["RO:0018033"] == "CHEBI:4"
-    assert annotations["RO:0000087"] == "CHEBI:5"
-    assert {r.predicate for r in extract(record).relations} == {"subclass_of", "has_part"}
-    assert {r.statement_kind for r in extract(record).relations} == {"ontology"}
+    assert "RO:0000087" not in annotations and "RO:0018039" not in annotations
+    relations = extract(record).relations
+    assert {r.predicate: [(a["term"], a["value"]) for a in r.annotations] for r in relations} == {
+        "subclass_of": [],
+        "has_part": [],
+        "has_chemical_role": [],
+        "chemically_similar_to": [("original_predicate", "RO:0018039")],
+    }
+    assert {r.statement_kind for r in relations} == {"ontology"}
     assert (
         list(chebi._id_translation_rows({"chebi_id": "CHEBI:1", "inchi": "InChI=1S/test"}))[0][
             "key_type"

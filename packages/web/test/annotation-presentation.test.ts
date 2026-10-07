@@ -33,3 +33,14 @@ test('gene mapping candidates collapse into one row', () => {
   assert.equal(collapsed.length, 2);
   assert.equal(collapsed[1].value, 'entrez:0, entrez:1, entrez:2, entrez:3, entrez:4 and 2 more');
 });
+
+test('relation ontology CURIEs read as names', async () => {
+  const { annotationLabelFor, annotationValueText } =
+    await import('../src/lib/utils/annotation-presentation.ts');
+  assert.equal(annotationLabelFor('RO:0018038'), 'Has functional parent');
+  assert.equal(
+    annotationValueText('original_predicate', 'RO:0002007'),
+    'Bounding layer of (RO:0002007)',
+  );
+  assert.equal(annotationValueText('description', 'RO:0002007'), 'RO:0002007');
+});
