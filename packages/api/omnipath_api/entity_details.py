@@ -49,31 +49,27 @@ def relationships(engine, public_id, resources=None, limit=50, offset=0):
             "predicate IN ('has_input','has_output','enabled_by','has_member','has_part')",
         )
         rows = engine._fetch_dicts(
-            f"""SELECT filename, relation_key, predicate, count(*) OVER () AS total
+            f"""SELECT filename, relation_row, relation_key, predicate, count(*) OVER () AS total
             FROM (SELECT DISTINCT filename, relation_row, relation_key, predicate FROM {adjacency})
             ORDER BY predicate, relation_key, filename LIMIT ? OFFSET ?""",
             [*params, limit, offset],
         )
         if not rows:
             return empty
-        # One read over the matching files; each keeps only its own columns.
-        from omnipath_api.molecular import columns, read
+        # The adjacency rows carry each relation's row in its file: reading rows by
+        # number skips the other row groups, unlike a key filter on hashed keys.
+        from omnipath_api.molecular import read
 
-        files = sorted({r["filename"] for r in rows})
-        keys = sorted({r["relation_key"] for r in rows})
-        own = {path: columns([path]) for path in files}
         hydrated = {}
-        for record in engine._fetch_dicts(
-            f"SELECT * FROM {read(files, union_by_name=True, filename=True)} "
-            f"WHERE relation_key IN ({','.join('?' for _ in keys)})",
-            keys,
-        ):
-            path = record.pop("filename")
-            names = own[path] | {"subject_reference_entity_key", "object_reference_entity_key"}
-            hydrated[(path, record["relation_key"])] = {
-                k: v for k, v in record.items() if k in names
-            }
-        records = [hydrated[(r["filename"], r["relation_key"])] for r in rows]
+        for path in sorted({r["filename"] for r in rows}):
+            numbers = [r["relation_row"] for r in rows if r["filename"] == path]
+            for record in engine._fetch_dicts(
+                f"SELECT * FROM {read([path], union_by_name=True, file_row_number=True)} "
+                f"WHERE file_row_number IN ({','.join('?' for _ in numbers)})",
+                numbers,
+            ):
+                hydrated[(path, record.pop("file_row_number"))] = record
+        records = [hydrated[(r["filename"], r["relation_row"])] for r in rows]
         keys = sorted(
             {r[side] for r in records for side in ("subject_entity_key", "object_entity_key")}
         )
