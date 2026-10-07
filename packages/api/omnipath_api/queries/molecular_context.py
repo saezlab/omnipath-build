@@ -62,10 +62,7 @@ def _entity_evidence(engine, resources, pairs, isoform_identifier, limit, offset
     condition, values = "TRUE", []
     if isoform_identifier:
         condition, values = _ISOFORM, [isoform_identifier]
-    sql = f"""SELECT * FROM {engine._table("entity_evidence", resources)}
-        WHERE (resource, entity_id) IN (SELECT unnest(?::VARCHAR[]), unnest(?::INTEGER[]))
-        AND {condition}"""
-    params = [[r for r, _ in keys], [i for _, i in keys], *values]
+    sql, params = engine._lookup_sql("entity_evidence", "entity_id", list(keys), condition, values)
     return _occurrences(engine, sql, params, keys, limit, offset)
 
 

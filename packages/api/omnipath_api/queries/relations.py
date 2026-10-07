@@ -15,7 +15,6 @@ from omnipath_core.biolink import (
 
 from omnipath_api.molecular import form_match_sql, has_form_filters, matching_evidence
 from omnipath_api.models import normalize_filters
-from omnipath_api.store.connection import sql_literal
 
 
 from omnipath_api.queries.constants import RELATION_QUALIFIER_FILTERS
@@ -157,28 +156,15 @@ class RelationsQueries:
                 )
                 params += form[1]
             return sql, params
-        parts, values = [], []
-        for info in self._selected_resource_infos(resources):
-            ids = candidates.get(info["key"])
-            if not ids:
-                continue
-            tables = info["tables"]
-            part = (
-                f"SELECT *, ?::VARCHAR AS resource FROM read_parquet({sql_literal(str(tables['relation']))}) "
-                f"WHERE relation_id IN (SELECT unnest(?::INTEGER[])) AND {where}"
-            )
-            values += [info["key"], ids, *params]
-            if form:
-                part += (
-                    " AND relation_id IN (SELECT relation_id FROM "
-                    f"read_parquet({sql_literal(str(tables['relation_evidence']))}) "
-                    f"WHERE relation_id IN (SELECT unnest(?::INTEGER[])) AND {form[0]})"
-                )
-                values += [ids, *form[1]]
-            parts.append(part)
-        if not parts:
-            return f"SELECT * FROM {self._table('relation', resources)} WHERE FALSE", []
-        return " UNION ALL ".join(parts), values
+        pairs = [(resource, i) for resource, ids in candidates.items() for i in ids]
+        if form:
+            # Relations with a matching evidence row, read by relation id per resource.
+            sql, values = self._lookup_sql("relation_evidence", "relation_id", pairs, *form)
+            pairs = [
+                (r["resource"], r["relation_id"])
+                for r in self._fetch_dicts(f"SELECT DISTINCT resource, relation_id FROM ({sql})", values)
+            ]
+        return self._lookup_sql("relation", "relation_id", pairs, where, params)
 
     def search_relations(
         self,

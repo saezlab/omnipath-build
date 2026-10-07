@@ -440,29 +440,55 @@ class ParquetServingEngine(
             f"AS resource FROM read_parquet([{listed}], union_by_name=true, filename=true))"
         )
 
+    @staticmethod
+    def _in(column, values):
+        """``column IN values`` that keeps row-group skipping on a sorted column: a
+        literal list when short, else the values' range around an unnested list."""
+        values = list(dict.fromkeys(values))
+        if len(values) <= 1000:
+            return f"{column} IN ({','.join('?' for _ in values)})", values
+        return (
+            f"{column} BETWEEN ? AND ? AND {column} IN (SELECT unnest(?))",
+            [min(values), max(values), values],
+        )
+
+    def _by_resource(self, pairs):
+        """{resource: values} of (resource, value) pairs, for resources in the inventory."""
+        values: dict[str, list] = {}
+        for resource, value in pairs:
+            if resource in self.resources:
+                values.setdefault(resource, []).append(value)
+        return dict(sorted(values.items()))
+
+    def _lookup_sql(self, table, column, pairs, where="TRUE", params=()):
+        """SQL and parameters of the ``table`` rows (with ``resource``) for (resource,
+        value) pairs, reading each resource's file by its sorted ``column``."""
+        parts, values = [], []
+        for resource, items in self._by_resource(pairs).items():
+            condition, items = self._in(column, items)
+            path = sql_literal(str(self.resources[resource]["tables"][table]))
+            parts.append(
+                f"SELECT *, ?::VARCHAR AS resource FROM read_parquet({path}) "
+                f"WHERE {condition} AND {where}"
+            )
+            values += [resource, *items, *params]
+        if not parts:
+            return f"SELECT * FROM {self._table(table, [])} WHERE FALSE", []
+        return " UNION ALL ".join(parts), values
+
     def _lookup(self, table, column, pairs, fields="*", extra="", params=()):
         """Rows of ``table`` for (resource, value) pairs, one query per resource's file.
 
         Keys are hashes spread over every file's range, so a multi-key filter across all
         resources reads most files; per resource it reads only the matching row groups.
         """
-        values: dict[str, list] = {}
-        for resource, value in pairs:
-            values.setdefault(resource, []).append(value)
         rows = []
-        for resource, items in sorted(values.items()):
-            info = self.resources.get(resource)
-            if info is None:
-                continue
-            items = list(dict.fromkeys(items))
-            # Short lists stay literal: DuckDB then skips row groups by their min/max.
-            listed = (
-                ",".join("?" for _ in items) if len(items) <= 1000 else "SELECT unnest(?)"
-            )
+        for resource, items in self._by_resource(pairs).items():
+            condition, items = self._in(column, items)
+            path = sql_literal(str(self.resources[resource]["tables"][table]))
             rows += self._fetch_dicts(
-                f"SELECT {fields}, ? AS resource FROM read_parquet({sql_literal(str(info['tables'][table]))}) "
-                f"WHERE {column} IN ({listed}) {extra}",
-                [resource, *(items if len(items) <= 1000 else [items]), *params],
+                f"SELECT {fields}, ? AS resource FROM read_parquet({path}) WHERE {condition} {extra}",
+                [resource, *items, *params],
             )
         return rows
 
