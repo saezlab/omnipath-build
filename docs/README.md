@@ -30,3 +30,8 @@ Dated reports record specific experiments and deployments. Their paths, producer
 revisions and numbers describe those runs. Earlier exploratory artifacts are
 listed in [history](history/README.md); the numbered [pipeline notes](pipeline/README.md)
 describe the previous implementation.
+
+## Build performance
+
+- [Postgres memory and parallelism](build-tuning.md)
+- [Columnar build spike: where build time goes, and a faster executor](reports/columnar-build-spike-20261008.md)
