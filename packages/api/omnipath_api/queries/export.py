@@ -33,13 +33,29 @@ class ExportQueries:
         filters: dict[str, Any] | None = None,
         resources: list[str] | None = None,
         limit: int = RELATION_EXPORT_LIMIT,
+        query: str = "",
+        entity_filters: dict[str, Any] | None = None,
     ) -> tuple[bytes, str]:
-        """A filtered relation slice as Parquet, with its annotations and evidence."""
+        """A filtered relation slice as Parquet, with its annotations and evidence.
+
+        ``query`` selects the relations of the entities an entity search for it matches
+        (under ``entity_filters``), as the relations page does.
+        """
         from omnipath_api.molecular import form_match_sql, has_form_filters
         from omnipath_api.models import normalize_filters
         from omnipath_core.measurements import QUANTITY_STRUCT
 
         filters = normalize_filters(filters)
+        if query.strip():
+            searched = normalize_filters(entity_filters)
+            clauses, values = self._entity_filter_clauses(searched, resources=resources)
+            where, values = self._entity_match_where(query, clauses, values, searched["sources"] or None)
+            keys = self._db.execute(
+                f"SELECT DISTINCT entity_key FROM {self._table('entity', searched['sources'] or None)} WHERE {where}",
+                values,
+            ).fetchall()
+            # A search without matches selects no relations, not every relation.
+            filters["entity_ids"] = [*filters["entity_ids"], *(key for (key,) in keys)] or ["\x00"]
         scope = resources or filters["sources"] or None
         selection, params = self._relation_selection(filters, resources)
         # Two phases, like the relation pages: the matching relations first, then only

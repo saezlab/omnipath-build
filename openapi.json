@@ -1527,7 +1527,11 @@
       },
       "ExportRequest": {
         "additionalProperties": true,
+        "description": "A relation slice: its filters and, like the relations page, an entity search whose\nentities' relations it keeps.",
         "properties": {
+          "entity_filters": {
+            "$ref": "#/components/schemas/SearchFilters"
+          },
           "filters": {
             "$ref": "#/components/schemas/SearchFilters"
           },
@@ -1543,6 +1547,11 @@
             "minimum": 1.0,
             "title": "Limit",
             "type": "integer"
+          },
+          "query": {
+            "default": "",
+            "title": "Query",
+            "type": "string"
           },
           "resources": {
             "anyOf": [

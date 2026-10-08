@@ -576,6 +576,11 @@ class BuildManifest(APIModel):
 
 
 class ExportRequest(APIModel):
+    """A relation slice: its filters and, like the relations page, an entity search whose
+    entities' relations it keeps."""
+
+    query: str = ""
+    entity_filters: SearchFilters = Field(default_factory=SearchFilters)
     filters: SearchFilters = Field(default_factory=SearchFilters)
     resources: list[str] | None = None
     format: Literal["parquet"] = "parquet"

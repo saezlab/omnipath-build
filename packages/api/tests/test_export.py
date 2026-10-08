@@ -60,3 +60,9 @@ def test_exports_are_parquet_and_relation_exports_are_bounded(tmp_path):
     assert len(rows(api.post("/export", json={"limit": 2}))) == 2
     assert api.post("/export", json={"limit": 100_001}).status_code == 422
     assert api.post("/export", json={"format": "csv"}).status_code == 422
+
+
+def test_relation_export_resolves_a_search_like_the_relations_page(tmp_path):
+    api = client(tmp_path)
+    assert len(rows(api.post("/export", json={"query": "MDM2"}))) == 3
+    assert rows(api.post("/export", json={"query": "no such entity"})) == []

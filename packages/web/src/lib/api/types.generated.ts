@@ -1605,8 +1605,13 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
-        /** ExportRequest */
+        /**
+         * ExportRequest
+         * @description A relation slice: its filters and, like the relations page, an entity search whose
+         *     entities' relations it keeps.
+         */
         ExportRequest: {
+            entity_filters?: components["schemas"]["SearchFilters"];
             filters?: components["schemas"]["SearchFilters"];
             /**
              * Format
@@ -1619,6 +1624,11 @@ export interface components {
              * @default 100000
              */
             limit: number;
+            /**
+             * Query
+             * @default
+             */
+            query: string;
             /** Resources */
             resources?: string[] | null;
         } & {

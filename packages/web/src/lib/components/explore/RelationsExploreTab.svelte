@@ -86,6 +86,15 @@
     }, 0),
   );
 
+  // The export resolves the search text on the server, so the API command stays short.
+  const exportBody = $derived.by(() => {
+    const { entity_ids: _resolved, ...rest } = effectiveFilters as SearchFilters & {
+      entity_ids?: string[];
+    };
+    return query.trim()
+      ? { query: query.trim(), entity_filters: entitySearchFilters, filters: rest }
+      : { filters: rest };
+  });
   const effectiveFilters = $derived({
     ...filters,
     ...(query.trim() && queryEntityIds.length > 0 ? { entity_ids: queryEntityIds } : {}),
@@ -341,12 +350,7 @@
 {/snippet}
 
 {#snippet resultsActions()}
-  <ExportMenu
-    endpoint="/export"
-    body={{ filters: effectiveFilters }}
-    name="relations"
-    limit={100_000}
-  />
+  <ExportMenu endpoint="/export" body={exportBody} name="relations" limit={100_000} />
 {/snippet}
 
 {#snippet desktopSidebar()}

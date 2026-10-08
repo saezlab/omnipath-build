@@ -31,6 +31,8 @@ def export_slice(request: Request, payload: ExportRequest) -> Response:
         filters=body.get("filters") or {},
         resources=body.get("resources"),
         limit=body["limit"],
+        query=body.get("query") or "",
+        entity_filters=body.get("entity_filters") or {},
     )
     return _attachment(data, content_type, "omnipath_relations")
 
