@@ -23,8 +23,9 @@
 
   onMount(() => {
     const sync = () => (document.visibilityState === 'visible' ? poller.start() : poller.stop());
-    void poller.refresh(); // once even in a background tab, so it never shows only "…"
-    sync();
+    // A background tab reads the status once, so it never shows only "…"; it polls once seen.
+    if (document.visibilityState === 'visible') poller.start();
+    else void poller.refresh();
     document.addEventListener('visibilitychange', sync);
     return () => {
       document.removeEventListener('visibilitychange', sync);
