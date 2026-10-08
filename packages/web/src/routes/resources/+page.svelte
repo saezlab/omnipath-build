@@ -128,7 +128,11 @@
 <svelte:window onkeydown={keydown} />
 
 <h1 class="sr-only">Resources</h1>
-<div class="flex flex-col gap-3 pt-2 pb-6">
+<!-- Fits the viewport on large screens (the table and the filters scroll on their own); a
+     single scrolling page on small ones. -->
+<div
+  class="flex h-full min-h-0 flex-col gap-3 overflow-y-auto pt-2 pb-6 lg:overflow-hidden lg:pb-0"
+>
   <div class="flex items-center gap-2">
     <form
       class="flex min-w-0 flex-1 items-center gap-2 rounded-md border border-border/60 bg-background px-3 focus-within:border-ring"
@@ -174,10 +178,14 @@
     </p>
   {/if}
 
-  <div class="grid items-start gap-3 lg:grid-cols-[minmax(0,1fr)_260px]">
-    <section class="min-w-0 overflow-hidden rounded-xl border bg-background">
+  <div
+    class="grid items-start gap-3 lg:min-h-0 lg:flex-1 lg:grid-cols-[minmax(0,1fr)_260px] lg:grid-rows-[minmax(0,1fr)] lg:items-stretch"
+  >
+    <section
+      class="min-w-0 overflow-hidden rounded-xl border bg-background lg:flex lg:min-h-0 lg:flex-col"
+    >
       <header
-        class="flex items-center justify-between gap-3 border-b bg-muted/20 px-3 py-2 text-sm font-medium"
+        class="flex shrink-0 items-center justify-between gap-3 border-b bg-muted/20 px-3 py-2 text-sm font-medium"
       >
         <span>Resources</span>
         <span class="flex items-center gap-3 text-xs font-normal text-muted-foreground">
@@ -191,50 +199,52 @@
         </span>
       </header>
       {#if filtered.length}
-        <Table.Root class="table-fixed">
-          <Table.Header>
-            <Table.Row class="hover:bg-transparent">
-              {#each columns as column (column.key)}
-                <Table.Head
-                  class={column.key === 'name' ? 'pl-3' : 'w-24 text-right'}
-                  aria-sort={sort === column.key
-                    ? order === 'asc'
-                      ? 'ascending'
-                      : 'descending'
-                    : undefined}
-                >
-                  <button
-                    type="button"
-                    class={`inline-flex items-center gap-1 transition-colors hover:text-foreground ${
-                      sort === column.key ? 'font-semibold text-foreground' : ''
-                    }`}
-                    onclick={() => setSort(column.key)}
+        <div class="resource-table lg:min-h-0 lg:flex-1">
+          <Table.Root class="table-fixed">
+            <Table.Header class="sticky top-0 z-10 bg-background">
+              <Table.Row class="hover:bg-transparent">
+                {#each columns as column (column.key)}
+                  <Table.Head
+                    class={column.key === 'name' ? 'pl-3' : 'w-24 text-right'}
+                    aria-sort={sort === column.key
+                      ? order === 'asc'
+                        ? 'ascending'
+                        : 'descending'
+                      : undefined}
                   >
-                    {column.label}
-                    {#if sort === column.key}{#if order === 'asc'}<ArrowUp
-                          class="size-3"
-                        />{:else}<ArrowDown class="size-3" />{/if}{/if}
-                  </button>
-                </Table.Head>
-              {/each}
-              <Table.Head class="hidden w-44 xl:table-cell">Topic</Table.Head>
-              <Table.Head class="w-14"><span class="sr-only">Download</span></Table.Head>
-            </Table.Row>
-          </Table.Header>
-          <Table.Body>
-            {#each filtered as resource (resource.resource_id)}<ResourceRow
-                {resource}
-                {selectedTags}
-                onTagClick={(id) => toggle('tag', id)}
-                onOpen={(next) => {
-                  detailsResource = next;
-                  detailsOpen = true;
-                }}
-              />{/each}
-          </Table.Body>
-        </Table.Root>
+                    <button
+                      type="button"
+                      class={`inline-flex items-center gap-1 transition-colors hover:text-foreground ${
+                        sort === column.key ? 'font-semibold text-foreground' : ''
+                      }`}
+                      onclick={() => setSort(column.key)}
+                    >
+                      {column.label}
+                      {#if sort === column.key}{#if order === 'asc'}<ArrowUp
+                            class="size-3"
+                          />{:else}<ArrowDown class="size-3" />{/if}{/if}
+                    </button>
+                  </Table.Head>
+                {/each}
+                <Table.Head class="hidden w-44 xl:table-cell">Topic</Table.Head>
+                <Table.Head class="w-14"><span class="sr-only">Download</span></Table.Head>
+              </Table.Row>
+            </Table.Header>
+            <Table.Body>
+              {#each filtered as resource (resource.resource_id)}<ResourceRow
+                  {resource}
+                  {selectedTags}
+                  onTagClick={(id) => toggle('tag', id)}
+                  onOpen={(next) => {
+                    detailsResource = next;
+                    detailsOpen = true;
+                  }}
+                />{/each}
+            </Table.Body>
+          </Table.Root>
+        </div>
         <footer
-          class="flex flex-wrap gap-x-4 gap-y-1 border-t px-3 py-2 text-xs text-muted-foreground tabular-nums"
+          class="flex shrink-0 flex-wrap gap-x-4 gap-y-1 border-t px-3 py-2 text-xs text-muted-foreground tabular-nums"
         >
           <span class="inline-flex items-center gap-1.5 font-medium text-foreground"
             ><Database class="size-3.5" />{filtered.length} resources</span
@@ -264,12 +274,12 @@
     <aside
       id="resource-filters"
       aria-label="Resource filters"
-      class={`order-first overflow-hidden rounded-xl border bg-background lg:sticky lg:top-2 lg:order-none lg:block ${
+      class={`order-first overflow-hidden rounded-xl border bg-background lg:order-none lg:flex lg:min-h-0 lg:flex-col ${
         showFilters ? '' : 'hidden'
       }`}
     >
       <header
-        class="flex items-center justify-between gap-2 border-b bg-muted/20 px-3 py-2 text-sm font-medium"
+        class="flex shrink-0 items-center justify-between gap-2 border-b bg-muted/20 px-3 py-2 text-sm font-medium"
       >
         <span>Filters</span>
         {#if activeCount || query}<Button
@@ -279,48 +289,50 @@
             onclick={clear}>Clear all</Button
           >{/if}
       </header>
-      {#each dimensions as dimension (dimension.id)}
-        {@const options = tags
-          .filter((tag) => tag.dimension === dimension.id)
-          .map((tag) => ({ tag, count: tagCount(tag.id, tag.dimension) }))
-          .filter(({ tag, count }) => count > 0 || selectedTags.includes(tag.id))
-          .sort((a, b) => b.count - a.count || a.tag.label.localeCompare(b.tag.label))}
-        {#if options.length}
-          <div
-            role="group"
-            aria-label={dimension.label}
-            class="space-y-1 border-b px-3 py-2.5 last:border-b-0"
-          >
-            <h3
-              class="mb-1 text-[11px] font-semibold tracking-wide text-muted-foreground uppercase"
+      <div class="lg:min-h-0 lg:flex-1 lg:overflow-y-auto">
+        {#each dimensions as dimension (dimension.id)}
+          {@const options = tags
+            .filter((tag) => tag.dimension === dimension.id)
+            .map((tag) => ({ tag, count: tagCount(tag.id, tag.dimension) }))
+            .filter(({ tag, count }) => count > 0 || selectedTags.includes(tag.id))
+            .sort((a, b) => b.count - a.count || a.tag.label.localeCompare(b.tag.label))}
+          {#if options.length}
+            <div
+              role="group"
+              aria-label={dimension.label}
+              class="space-y-1 border-b px-3 py-2.5 last:border-b-0"
             >
-              {dimension.label}
-            </h3>
-            {#each options as { tag, count } (tag.id)}
-              {@render option(
-                `tag-${tag.id}`,
-                tag.label,
-                count,
-                selectedTags.includes(tag.id),
-                () => toggle('tag', tag.id),
-              )}
-            {/each}
-          </div>
-        {/if}
-      {/each}
-      <div role="group" aria-label="License use" class="space-y-1 px-3 py-2.5">
-        <h3 class="mb-1 text-[11px] font-semibold tracking-wide text-muted-foreground uppercase">
-          License use
-        </h3>
-        {#each ['academic', 'commercial'] as audience}
-          {@render option(
-            `use-${audience}`,
-            audience === 'academic' ? 'Academic use' : 'Commercial use',
-            licenseCount(audience),
-            licenses.includes(audience),
-            () => toggle('use', audience),
-          )}
+              <h3
+                class="mb-1 text-[11px] font-semibold tracking-wide text-muted-foreground uppercase"
+              >
+                {dimension.label}
+              </h3>
+              {#each options as { tag, count } (tag.id)}
+                {@render option(
+                  `tag-${tag.id}`,
+                  tag.label,
+                  count,
+                  selectedTags.includes(tag.id),
+                  () => toggle('tag', tag.id),
+                )}
+              {/each}
+            </div>
+          {/if}
         {/each}
+        <div role="group" aria-label="License use" class="space-y-1 px-3 py-2.5">
+          <h3 class="mb-1 text-[11px] font-semibold tracking-wide text-muted-foreground uppercase">
+            License use
+          </h3>
+          {#each ['academic', 'commercial'] as audience}
+            {@render option(
+              `use-${audience}`,
+              audience === 'academic' ? 'Academic use' : 'Commercial use',
+              licenseCount(audience),
+              licenses.includes(audience),
+              () => toggle('use', audience),
+            )}
+          {/each}
+        </div>
       </div>
     </aside>
   </div>
@@ -357,6 +369,13 @@
   :global(.dark) {
     --resource-entities: #22d3ee;
     --resource-relations: #4ade80;
+  }
+  /* On large screens the table scrolls inside its panel, under a sticky header. */
+  @media (min-width: 1024px) {
+    .resource-table :global([data-slot='table-container']) {
+      height: 100%;
+      overflow: auto;
+    }
   }
   .legend-dot {
     display: inline-block;
