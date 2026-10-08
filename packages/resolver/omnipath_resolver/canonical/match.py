@@ -169,7 +169,7 @@ def votes_for(obs: Any, policy: EntityPolicy) -> tuple[list[Vote], dict[str, lis
 class LibraryMatcher:
     """Batch resolution against one pinned immutable compact reference."""
 
-    def __init__(self, library_dir, *, defer_aliases=False, memory_limit=None):
+    def __init__(self, library_dir, *, defer_aliases=False, memory_limit=None, memo_size=200_000):
         self.library_dir = pin_library(library_dir)
         self.defer_aliases = defer_aliases
         self.memory_limit = memory_limit
@@ -177,6 +177,8 @@ class LibraryMatcher:
         # worker reuses the result when the same observation recurs in later batches
         # (FooDB repeats ~70k compounds across ~5M content rows).
         self._memo: OrderedDict[str, tuple[list, list]] = OrderedDict()
+        # 0 when every observation is resolved once anyway (columnar builds).
+        self.memo_size = memo_size
         self.metrics = {
             "batches": 0,
             "observations": 0,
@@ -305,8 +307,9 @@ class LibraryMatcher:
         self.metrics["observations"] += len(queries)
         return self._remember(results, cached, signatures, entities)
 
-    def _remember(self, results, cached, signatures, entities, limit=200_000):
-        for key, signature in signatures.items():
+    def _remember(self, results, cached, signatures, entities):
+        limit = self.memo_size
+        for key, signature in signatures.items() if limit else ():
             self._memo[signature] = (
                 copy.deepcopy(results[key]),
                 copy.deepcopy(entities[key].structure_derivations),

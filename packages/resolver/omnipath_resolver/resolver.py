@@ -94,10 +94,14 @@ class EntityResolver:
         data_root: str | Path | None = None,
         defer_aliases: bool = False,
         memory_limit: str | None = None,
+        memo_size: int = 200_000,
     ) -> None:
         self.library_dir = locate_library_dir(library_dir, data_root)
         self.matcher = LibraryMatcher(
-            self.library_dir, defer_aliases=defer_aliases, memory_limit=memory_limit
+            self.library_dir,
+            defer_aliases=defer_aliases,
+            memory_limit=memory_limit,
+            memo_size=memo_size,
         )
         if self.library_dir is not None and not self.matcher.libraries:
             logger.warning(

@@ -32,7 +32,7 @@ def export_inputs(db, work: Path, dataset: str, predicate: str) -> dict:
             FROM (SELECT result FROM side_subject UNION ALL SELECT result FROM side_object)
             WHERE result IS NOT NULL)
         QUALIFY row_number() OVER (PARTITION BY key ORDER BY entity) = 1
-    ) TO '{work}/entities.parquet' (FORMAT PARQUET)""")
+    ) TO '{work}/entities.parquet' (FORMAT PARQUET, ROW_GROUP_SIZE {ENTITY_CHUNK})""")
     db.execute(f"""COPY (
         WITH up AS (SELECT rid, arg_min(x->>'id', ((x->>'p')::INT, ordinal)) AS upstream_id
                     FROM obs_id GROUP BY rid),
@@ -69,20 +69,24 @@ def _write(rows, schema, path):
     pq.write_table(pa.Table.from_pylist(rows, schema=schema), path)
 
 
+# Entities per resolution task; entities.parquet has one row group per task.
+ENTITY_CHUNK = 4096
+
+
 def _resolve_chunk(args):
-    index, keys, entities_path, source, library_dir, out = args
+    index, entities_path, source, library_dir, out = args
     from omnipath_resolver import EntityResolver
     from omnipath_build.writer import (
         ENTITY_ANN, ENTITY_EVIDENCE_INPUT, ENTITY_INPUT, IDS_INPUT,
         _resolution_annotations, entity_rows,
     )  # fmt: skip
 
-    table = pq.read_table(entities_path, filters=[("key", "in", keys)])
+    table = pq.ParquetFile(entities_path).read_row_group(index)
     observations = {
         k: _observation(json.loads(e), source)
         for k, e in zip(table["key"].to_pylist(), table["entity"].to_pylist())
     }
-    resolver = EntityResolver(library_dir, defer_aliases=True)
+    resolver = EntityResolver(library_dir, defer_aliases=True, memo_size=0)
     try:
         targets = resolver.resolve_entity_targets(observations, progress=False)
         keys_path = Path(out) / f"resolution_keys-{index:05d}.parquet"
@@ -108,18 +112,18 @@ def _resolve_chunk(args):
     return str(keys_path)
 
 
-def resolve_distinct(work: Path, source: str, library_dir, *, workers: int, chunk: int = 4096):
+def resolve_distinct(work: Path, source: str, library_dir, *, workers: int):
     """Resolve every distinct entity observation once and write its working-table rows."""
     out = work / "resolution"
     out.mkdir(exist_ok=True)
-    keys = pq.read_table(work / "entities.parquet", columns=["key"])["key"].to_pylist()
+    entities = pq.ParquetFile(work / "entities.parquet")
     tasks = [
-        (i, keys[o : o + chunk], str(work / "entities.parquet"), source, str(library_dir), str(out))
-        for i, o in enumerate(range(0, len(keys), chunk))
+        (i, str(work / "entities.parquet"), source, str(library_dir), str(out))
+        for i in range(entities.num_row_groups)
     ]
     with mp.get_context("spawn").Pool(workers) as pool:
         paths = pool.map(_resolve_chunk, tasks, chunksize=1)
-    return [Path(p) for p in paths], len(keys)
+    return [Path(p) for p in paths], entities.metadata.num_rows
 
 
 # -- relations -------------------------------------------------------------------
