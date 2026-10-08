@@ -123,7 +123,7 @@
 
 {#if error}<p role="alert" class="p-4 text-destructive">{error}</p>{/if}
 {#if loading && !groups.length}<p role="status" class="p-4 text-sm text-muted-foreground">
-    Loading groups…
+    Loading results…
   </p>{/if}
 {#if groups.length}
   <EntityResultsList>

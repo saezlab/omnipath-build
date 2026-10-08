@@ -389,7 +389,7 @@
       title="Results"
       bodyClass=""
       actions={groupToggle}
-      busy={groupResults && !showExamples ? groupsLoading : loading && results.length > 0}
+      busy={groupResults && !showExamples ? groupsLoading : loading}
       >{@render resultsPane()}</WorkspacePanel
     >
     <WorkspacePanel id="entity_types" title="Entity types" busy={facetCountsLoading}
@@ -536,7 +536,7 @@
       <h4 class="mb-3 text-[11px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
         {title}
       </h4>
-      <p class="text-sm text-muted-foreground">Loading filters...</p>
+      <p class="text-sm text-muted-foreground">Loading filters…</p>
     </div>
   {/if}
 {/snippet}
@@ -559,11 +559,8 @@
         bind:loading={groupsLoading}
       />
     {:else if loading && results.length === 0}
-      <EntityResultsList>
-        {#each Array.from({ length: 6 }) as _, _i}
-          <div class="h-12 animate-pulse bg-muted/30"></div>
-        {/each}
-      </EntityResultsList>
+      <!-- the panel's progress bar shows the loading, as for the filters -->
+      <p role="status" class="p-4 text-sm text-muted-foreground">Loading results…</p>
     {:else if results.length > 0}
       <EntityResultsList>
         {#each results as result}

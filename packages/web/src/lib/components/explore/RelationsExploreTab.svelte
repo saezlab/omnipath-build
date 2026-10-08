@@ -332,14 +332,8 @@
         </Alert>
       </div>
     {:else if loading && results.length === 0}
-      <div class="flex items-center justify-center h-full">
-        <div class="flex items-center gap-2">
-          <div
-            class="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent"
-          ></div>
-          <span class="text-sm text-muted-foreground">Loading relations...</span>
-        </div>
-      </div>
+      <!-- the panel's progress bar shows the loading, as for the filters -->
+      <p role="status" class="p-4 text-sm text-muted-foreground">Loading relations…</p>
     {:else if results.length > 0}
       <RelationsTable
         rows={results}
@@ -378,11 +372,8 @@
     name="relations"
     panels={['results', 'filters', 'effect', 'interaction_types', 'sources', 'ncbi_tax_id']}
   >
-    <WorkspacePanel
-      id="results"
-      title="Results"
-      busy={loading && results.length > 0}
-      actions={resultsActions}>{@render searchPanel()}</WorkspacePanel
+    <WorkspacePanel id="results" title="Results" busy={loading} actions={resultsActions}
+      >{@render searchPanel()}</WorkspacePanel
     >
     <InteractionFilterSidebar
       filters={effectiveFilters}
