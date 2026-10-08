@@ -86,3 +86,14 @@ test('saved trees validate duplicate leaves and removed panels, add new panels, 
   const visible = prune(initial.tree, new Set(['results', 'taxonomy']));
   assert.deepEqual(leaves(visible!).sort(), ['results', 'taxonomy']);
 });
+
+test('relation workspace defaults to filters and effect over three filter columns', () => {
+  const ids = ['results', 'filters', 'effect', 'interaction_types', 'sources', 'ncbi_tax_id'];
+  const { panels } = geometry(defaultLayout(ids).tree, { x: 0, y: 0, width: 2000, height: 1400 });
+  assert.ok(panels.results.width > 1000 && panels.results.height === 1400);
+  assert.equal(panels.filters.y, panels.effect.y);
+  assert.ok(panels.filters.width > panels.effect.width);
+  const columns = ['sources', 'interaction_types', 'ncbi_tax_id'].map((id) => panels[id]);
+  assert.ok(columns.every((rect) => rect.y > panels.filters.y + panels.filters.height));
+  assert.ok(columns.every((rect) => Math.abs(rect.width - columns[0].width) < 5));
+});

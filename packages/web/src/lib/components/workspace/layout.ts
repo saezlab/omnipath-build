@@ -57,6 +57,55 @@ export function defaultLayout(ids: string[]): Layout {
       },
     };
   }
+  // Default relation workspace: results; relation filters and effect side by side over
+  // sources, participant types and taxonomy in three equal columns.
+  if (
+    ids.length === 6 &&
+    ['results', 'filters', 'effect', 'interaction_types', 'sources', 'ncbi_tax_id'].every((id) =>
+      ids.includes(id),
+    )
+  ) {
+    return {
+      version: 3,
+      collapsed: [],
+      tree: {
+        type: 'split',
+        id: 'root',
+        axis: 'x',
+        ratio: 0.535,
+        first: leaf('results'),
+        second: {
+          type: 'split',
+          id: 'filter-rows',
+          axis: 'y',
+          ratio: 0.49,
+          first: {
+            type: 'split',
+            id: 'relation-filters',
+            axis: 'x',
+            ratio: 0.54,
+            first: leaf('filters'),
+            second: leaf('effect'),
+          },
+          second: {
+            type: 'split',
+            id: 'filter-columns',
+            axis: 'x',
+            ratio: 1 / 3,
+            first: leaf('sources'),
+            second: {
+              type: 'split',
+              id: 'types-taxonomy',
+              axis: 'x',
+              ratio: 0.5,
+              first: leaf('interaction_types'),
+              second: leaf('ncbi_tax_id'),
+            },
+          },
+        },
+      },
+    };
+  }
   const others = ids.filter((id) => id !== 'results');
   return {
     version: 3,

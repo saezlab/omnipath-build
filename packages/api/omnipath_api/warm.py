@@ -11,8 +11,15 @@ logger = logging.getLogger(__name__)
 
 def default_requests():
     """(engine method, arguments) as the explorer's routes pass them, so the cache matches."""
-    # The explorer's landing page: curated examples, as entities and as groups.
-    return [("get_entity_examples", {})]
+    from omnipath_api.models import ScopedRelationFacetsRequest
+
+    # The explorer's landing page: curated examples, as entities and as groups; and the
+    # relation filters' counts without a scope (the taxonomy limit is not part of the key).
+    facets = ScopedRelationFacetsRequest(taxonomyLimit=16).model_dump()
+    return [
+        ("get_entity_examples", {}),
+        ("get_scoped_relation_facets", {"payload": facets, "resources": None}),
+    ]
 
 
 def warm(engine):

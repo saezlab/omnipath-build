@@ -312,6 +312,11 @@ def test_warming_fills_the_cache_the_explorer_reads(mixed_engine):
     # The explorer's landing page reads the curated examples.
     response = client.get("/entities/examples")
     assert response.status_code == 200 and response.json()["kind"] == "examples"
+    # The body InteractionFilterSidebar.svelte sends without a scope.
+    response = client.post(
+        "/relations/scoped-facets", json={"entityIds": [], "taxonomyLimit": 16, "taxonomyQuery": ""}
+    )
+    assert response.status_code == 200 and response.json()
 
 
 def test_gene_group_details_combine_their_members_annotations(mixed_engine):
