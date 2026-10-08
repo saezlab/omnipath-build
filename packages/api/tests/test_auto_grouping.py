@@ -112,12 +112,15 @@ def mixed_engine(tmp_path):
 def test_auto_combines_groups_and_preserves_all_singletons(mixed_engine):
     engine, records = mixed_engine
     groups = engine.search_entity_groups(strategy="auto", include_member_keys=True)["groups"]
-    assert [(g["group_key"], g["member_count"]) for g in groups[:3]] == [
+    # Most studied first (members' relations), then by key: the structure group and
+    # gene 2 have two relations, gene 1 one.
+    assert [(g["group_key"], g["member_count"]) for g in groups[:2]] == [
         ("connectivity:" + CONNECTIVITY, 3),
-        ("gene:entrez:1", 3),
         ("gene:entrez:2", 2),
     ]
-    chemical, gene = groups[:2]
+    by_key = {g["group_key"]: g for g in groups}
+    chemical, gene = by_key["connectivity:" + CONNECTIVITY], by_key["gene:entrez:1"]
+    assert gene["member_count"] == 3
     assert chemical["entity"]["groupStrategy"] == "chemical_connectivity"
     assert chemical["entity"]["canonicalIdentifierType"] == "connectivity"
     assert chemical["entity"]["entityType"] == "small_molecule"
@@ -179,7 +182,7 @@ def test_auto_group_and_member_cursors_cover_each_key_once(mixed_engine):
         if not cursor:
             break
     assert [g["group_key"] for g in collected] == [g["group_key"] for g in expected]
-    for group in expected[:3]:
+    for group in [g for g in expected if g["is_group"]][:3]:
         members, cursor = [], None
         while True:
             result = engine.search_entity_groups(
@@ -194,7 +197,7 @@ def test_auto_group_and_member_cursors_cover_each_key_once(mixed_engine):
                 break
         assert members == sorted({m["entityPk"] for m in group["members"]})
     with pytest.raises(ValueError, match="Invalid group cursor"):
-        engine.search_entity_groups(strategy="auto", cursor=json.dumps([0, "bad"]))
+        engine.search_entity_groups(strategy="auto", cursor=json.dumps([-1, 1, "bad"]))
 
 
 def test_auto_scope_text_resources_and_filters(mixed_engine):
@@ -263,7 +266,8 @@ def test_auto_api_hydration_concrete_strategies_and_relationships(mixed_engine):
         ).json()["groups"][0]["entity"]
         assert scoped["sources"] == ["a"] and len(scoped["entityAttributes"]) == 4
         assert all(a["source"] == "a" for a in scoped["entityAttributes"])
-        for group in groups[:2]:
+        by_key = {g["entity"]["entityPk"]: g for g in groups}
+        for group in (by_key[chemical["entityPk"]], by_key["gene:entrez:1"]):
             entity = group["entity"]
             # Card followups use concrete strategies, including every member.
             hydrated = client.post(

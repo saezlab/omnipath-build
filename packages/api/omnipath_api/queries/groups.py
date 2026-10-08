@@ -99,7 +99,9 @@ def search_groups(engine, *, strategy="chemical_connectivity", **kwargs):
     groups = [dict(group) for group in result["groups"]]
     if kwargs.get("include_details"):
         for group in groups:
-            group["entity"] = page_details(group["entity"], detail_limit, detail_offset, detail_field)
+            group["entity"] = page_details(
+                group["entity"], detail_limit, detail_offset, detail_field
+            )
     return dict(result, groups=groups, elapsed_ms=round((time.perf_counter() - start) * 1000, 2))
 
 
@@ -143,8 +145,10 @@ def _search_groups(
                 AS connectivity,
             CASE WHEN {gene} AND NOT {chemical_sql}
                 AND bool_and(coalesce(starts_with(reference_entity_key, 'entrez:'), FALSE))
-                THEN {_agreed("reference_entity_key")} END AS reference_entity_key
-        FROM (SELECT entity_key, entity_type, group_connectivity, reference_entity_key
+                THEN {_agreed("reference_entity_key")} END AS reference_entity_key,
+            sum(coalesce(relation_count, 0))::BIGINT AS relations
+        FROM (SELECT entity_key, entity_type, group_connectivity, reference_entity_key,
+                relation_count
             FROM {engine._table("entity", scope)} WHERE {where})
         GROUP BY hash(entity_key)
     )"""
@@ -154,32 +158,46 @@ def _search_groups(
         extra, values = "group_key = ?", [group_key]
     elif cursor:
         try:
-            count, key = json.loads(cursor)
-            if not isinstance(count, int) or count < 1 or not isinstance(key, str):
+            relations, members, key = json.loads(cursor)
+            if (
+                not isinstance(relations, int)
+                or not isinstance(members, int)
+                or relations < 0
+                or members < 1
+                or not isinstance(key, str)
+            ):
                 raise ValueError("Invalid group cursor")
         except (TypeError, ValueError) as exc:
             raise ValueError("Invalid group cursor") from exc
         extra, values = (
-            "(member_count < ? OR (member_count = ? AND group_key > ?))",
-            [count, count, key],
+            "(relations < ? OR (relations = ? AND (member_count < ?"
+            " OR (member_count = ? AND group_key > ?))))",
+            [relations, relations, members, members, key],
         )
     size = 1 if group_key else int(limit) + 1
     page = engine._fetch_dicts(
         cte
         + f""", counts AS (
             SELECT 'connectivity:' || connectivity AS group_key, connectivity,
-                NULL::VARCHAR AS reference_entity_key, member_count
-            FROM (SELECT any_value(connectivity) AS connectivity, count(*) AS member_count
+                NULL::VARCHAR AS reference_entity_key, member_count, relations
+            FROM (SELECT any_value(connectivity) AS connectivity, count(*) AS member_count,
+                    sum(relations) AS relations
                 FROM keys WHERE connectivity IS NOT NULL GROUP BY hash(connectivity))
-            UNION ALL SELECT 'gene:' || reference_entity_key, NULL, reference_entity_key, member_count
-            FROM (SELECT any_value(reference_entity_key) AS reference_entity_key, count(*) AS member_count
+            UNION ALL SELECT 'gene:' || reference_entity_key, NULL, reference_entity_key,
+                member_count, relations
+            FROM (SELECT any_value(reference_entity_key) AS reference_entity_key,
+                    count(*) AS member_count, sum(relations) AS relations
                 FROM keys WHERE reference_entity_key IS NOT NULL GROUP BY hash(reference_entity_key))
             UNION ALL (SELECT * FROM (
-                SELECT 'entity:' || entity_key AS group_key, NULL, NULL, 1 AS member_count FROM keys
+                SELECT 'entity:' || entity_key AS group_key, NULL, NULL, 1 AS member_count,
+                    relations FROM keys
                 WHERE connectivity IS NULL AND reference_entity_key IS NULL)
-                WHERE {extra} ORDER BY group_key LIMIT {size})
+                WHERE {extra} ORDER BY relations DESC, member_count DESC, group_key LIMIT {size})
         ), page AS (
-            SELECT * FROM counts WHERE {extra} ORDER BY member_count DESC, group_key LIMIT {size}
+            -- Most studied first, as the ungrouped search ranks equal matches: a search
+            -- for EGFR leads with the human gene, not the group with the most members.
+            -- Member count only breaks ties.
+            SELECT * FROM counts WHERE {extra} ORDER BY relations DESC, member_count DESC, group_key LIMIT {size}
         ), members AS (
             SELECT group_key, entity_key FROM page JOIN keys USING (connectivity)
             UNION ALL SELECT group_key, entity_key FROM page JOIN keys USING (reference_entity_key)
@@ -187,12 +205,13 @@ def _search_groups(
                 ON p.group_key = 'entity:' || k.entity_key
         ) SELECT page.*, list(m.entity_key ORDER BY m.entity_key) AS member_keys
         FROM page JOIN members m USING (group_key)
-        GROUP BY ALL ORDER BY member_count DESC, group_key""",
+        GROUP BY ALL ORDER BY relations DESC, member_count DESC, group_key""",
         [*params, *values, *values],
     )
+    last = page[int(limit) - 1] if not group_key and len(page) > int(limit) else None
     next_cursor = (
-        json.dumps([page[int(limit) - 1]["member_count"], page[int(limit) - 1]["group_key"]])
-        if not group_key and len(page) > int(limit)
+        json.dumps([int(last["relations"]), int(last["member_count"]), last["group_key"]])
+        if last
         else None
     )
     page = page[: int(limit)]
