@@ -205,7 +205,11 @@
               <Table.Row class="hover:bg-transparent">
                 {#each columns as column (column.key)}
                   <Table.Head
-                    class={column.key === 'name' ? 'pl-3' : 'w-24 text-right'}
+                    class={column.key === 'name'
+                      ? 'pl-3'
+                      : column.key === 'entities'
+                        ? 'w-24 text-right'
+                        : 'hidden w-24 text-right sm:table-cell'}
                     aria-sort={sort === column.key
                       ? order === 'asc'
                         ? 'ascending'

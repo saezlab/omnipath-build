@@ -63,13 +63,16 @@
       class="block text-[11px] text-muted-foreground">{entityPercent.toFixed(0)}%</span
     ></Table.Cell
   >
-  <Table.Cell class="text-right tabular-nums"
+  <!-- Relations and size need the width a phone does not have; the dialog shows them. -->
+  <Table.Cell class="hidden text-right tabular-nums sm:table-cell"
     >{countFormatter.format(resource.interaction_count)}<span
       class="block text-[11px] text-muted-foreground"
       >{totalRecords ? (100 - entityPercent).toFixed(0) : 0}%</span
     ></Table.Cell
   >
-  <Table.Cell class="text-right tabular-nums">{formatBytes(totalBytes)}</Table.Cell>
+  <Table.Cell class="hidden text-right tabular-nums sm:table-cell"
+    >{formatBytes(totalBytes)}</Table.Cell
+  >
   <Table.Cell class="hidden xl:table-cell">
     <div class="flex flex-wrap gap-1">
       {#each topics as tag (tag.id)}<button
