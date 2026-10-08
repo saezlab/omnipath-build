@@ -77,15 +77,11 @@ try {
   ).toBeVisible();
 
   const exported = await page.request.post(base + "/app-api/export", {
-    data: { resources: ["signor"], format: "json", filters: {} },
+    data: { resources: ["signor"], filters: {} },
   });
   assert.equal(exported.status(), 200);
-  const rows = await exported.json();
-  assert.equal(rows.length, 2);
-  assert.equal(
-    rows.reduce((count, row) => count + row.evidence_count, 0),
-    20,
-  );
+  // Exports are Parquet: the file starts with its magic bytes.
+  assert.equal((await exported.body()).subarray(0, 4).toString(), "PAR1");
   assert.deepEqual(errors, []);
   if (process.env.OMNIPATH_SMOKE_SCREENSHOT) {
     await page.screenshot({

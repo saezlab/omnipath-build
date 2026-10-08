@@ -2,14 +2,11 @@
 
 from __future__ import annotations
 
-import io
 import logging
-import json
 from pathlib import Path
 from typing import Any
 
 
-import pyarrow as pa
 from omnipath_api.store.connection import sql_literal
 
 
@@ -22,8 +19,10 @@ def copy_parquet_command(select_sql: str, target_path: Path) -> str:
     )
 
 
-def copy_csv_command(select_sql: str, target_path: Path, delimiter: str = ",") -> str:
-    return f"COPY ({select_sql}) TO {sql_literal(str(target_path))} (HEADER, DELIMITER {sql_literal(delimiter)})"
+# Rows a single export returns; whole resources are downloads of their published tables.
+RELATION_EXPORT_LIMIT = 100_000
+ENTITY_EXPORT_LIMIT = 500_000
+PARQUET = "application/vnd.apache.parquet"
 
 
 class ExportQueries:
@@ -33,11 +32,9 @@ class ExportQueries:
         self,
         filters: dict[str, Any] | None = None,
         resources: list[str] | None = None,
-        format: str = "parquet",
+        limit: int = RELATION_EXPORT_LIMIT,
     ) -> tuple[bytes, str]:
-        """Export custom filtered network as Parquet, Arrow IPC, CSV, or JSON."""
-        import tempfile
-
+        """A filtered relation slice as Parquet, with its annotations and evidence."""
         from omnipath_api.molecular import form_match_sql, has_form_filters
         from omnipath_api.models import normalize_filters
         from omnipath_core.measurements import QUANTITY_STRUCT
@@ -56,7 +53,7 @@ class ExportQueries:
         # Rows as the published tables nest them: each relation with its annotations and
         # evidence (only the matching occurrences under a molecular form filter), and
         # the product entities its evidence names.
-        sql = f"""WITH selected AS MATERIALIZED ({selection}),
+        sql = f"""WITH selected AS MATERIALIZED (SELECT * FROM ({selection}) LIMIT {int(limit)}),
         annotations AS (
             SELECT resource, relation_id, list(struct_pack(term := term, value := value,
                 quantity := {quantity}, source := source, dataset := dataset, scope := scope)
@@ -87,33 +84,39 @@ class ExportQueries:
         ) SELECT rows.*, (SELECT list(e ORDER BY e.entity_key, e.resource) FROM {self._table("entity", resources)} e
             WHERE e.entity_key IN (SELECT entity_key FROM product_keys)) AS referenced_product_records
         FROM rows"""
-        params = [*params, *form_params]
+        return self._write_parquet(sql, [*params, *form_params]), PARQUET
 
-        if format == "parquet":
-            with tempfile.NamedTemporaryFile(suffix=".parquet", delete=False) as tmp:
-                tmp_path = Path(tmp.name)
-            try:
-                self._db.execute(copy_parquet_command(sql, tmp_path), params)
-                data = tmp_path.read_bytes()
-            finally:
-                tmp_path.unlink(missing_ok=True)
-            return data, "application/vnd.apache.parquet"
-        elif format == "csv":
-            with tempfile.NamedTemporaryFile(suffix=".csv", delete=False) as tmp:
-                tmp_path = Path(tmp.name)
-            try:
-                self._db.execute(copy_csv_command(sql, tmp_path), params)
-                data = tmp_path.read_bytes()
-            finally:
-                tmp_path.unlink(missing_ok=True)
-            return data, "text/csv"
-        else:
-            arrow_table = self._db.execute(sql, params).fetch_arrow_table()
-            if format == "arrow":
-                buf = io.BytesIO()
-                with pa.ipc.new_stream(buf, arrow_table.schema) as writer:
-                    writer.write_table(arrow_table)
-                return buf.getvalue(), "application/vnd.apache.arrow.stream"
-            else:
-                data = arrow_table.to_pylist()
-                return json.dumps(data, default=str).encode("utf-8"), "application/json"
+    def export_entities(
+        self,
+        query: str = "",
+        filters: dict[str, Any] | None = None,
+        resources: list[str] | None = None,
+        limit: int = ENTITY_EXPORT_LIMIT,
+    ) -> tuple[bytes, str]:
+        """The entities an entity search matches as Parquet, one row each, most connected
+        first."""
+        from omnipath_api.models import normalize_filters
+
+        filters = normalize_filters(filters)
+        scope = resources or filters["sources"] or None
+        clauses, params = self._entity_filter_clauses(filters, resources=resources)
+        where, params = self._entity_match_where(query, clauses, params, scope)
+        sources = "list(DISTINCT split_part(resource, '/', 1) ORDER BY split_part(resource, '/', 1))"
+        sql = f"""SELECT entity_key, arg_max(label, relation_count) AS label,
+                min(entity_type) AS entity_type, min(namespace) AS namespace,
+                min(identifier) AS identifier, min(taxon) AS taxon, {sources} AS sources,
+                sum(relation_count)::BIGINT AS relation_count
+            FROM {self._table("entity", scope)} WHERE {where}
+            GROUP BY entity_key ORDER BY relation_count DESC, entity_key LIMIT {int(limit)}"""
+        return self._write_parquet(sql, params), PARQUET
+
+    def _write_parquet(self, sql: str, params: list[Any]) -> bytes:
+        import tempfile
+
+        with tempfile.NamedTemporaryFile(suffix=".parquet", delete=False) as tmp:
+            tmp_path = Path(tmp.name)
+        try:
+            self._db.execute(copy_parquet_command(sql, tmp_path), params)
+            return tmp_path.read_bytes()
+        finally:
+            tmp_path.unlink(missing_ok=True)

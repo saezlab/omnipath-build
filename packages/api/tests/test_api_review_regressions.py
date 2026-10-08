@@ -39,7 +39,7 @@ def test_zero_match_filters_never_broaden_relations(engine, field):
     assert engine.search_relations(filters)["total"] == 0
     assert engine.get_facets(filters)["categories"] == {}
     assert engine.get_scoped_relation_facets(filters) == []
-    exported, _ = engine.export_slice(filters, format="parquet")
+    exported, _ = engine.export_slice(filters)
     assert pq.read_table(io.BytesIO(exported)).num_rows == 0
 
 
@@ -51,7 +51,7 @@ def test_short_accession_label_and_public_id_resolve_consistently(engine, token)
     assert any(
         item["facetValue"] == "affects" for item in engine.get_scoped_relation_facets(filters)
     )
-    exported, _ = engine.export_slice(filters, format="parquet")
+    exported, _ = engine.export_slice(filters)
     assert pq.read_table(io.BytesIO(exported))["relation_key"].to_pylist() == [key("relation")]
 
 

@@ -1,34 +1,51 @@
 from __future__ import annotations
-from fastapi import Request
+
+from fastapi import APIRouter, Request
 from fastapi.responses import Response
 
-from omnipath_api.models import (
-    ExportRequest,
-)
-from fastapi import APIRouter
+from omnipath_api.models import EntityExportRequest, ExportRequest
 from omnipath_api.routers.common import _call, _dump
 
 router = APIRouter()
 
 
+def _attachment(data: bytes, content_type: str, name: str) -> Response:
+    return Response(
+        content=data,
+        media_type=content_type,
+        headers={
+            "Content-Disposition": f'attachment; filename="{name}.parquet"',
+            "Access-Control-Allow-Origin": "*",
+        },
+    )
+
+
 @router.post("/export", tags=["export"], response_model=None)
 def export_slice(request: Request, payload: ExportRequest) -> Response:
-    """Stream a filtered relation slice as Parquet, Arrow, CSV, TSV, or JSON."""
+    """A filtered relation slice as Parquet: at most 100,000 relations, with their
+    annotations and evidence."""
     body = _dump(payload)
-    fmt = str(body.get("format") or "parquet").lower()
     data, content_type = _call(
         request,
         "export_slice",
         filters=body.get("filters") or {},
         resources=body.get("resources"),
-        format=fmt,
+        limit=body["limit"],
     )
-    filename = f"omnipath_slice.{fmt if fmt != 'arrow' else 'arrow'}"
-    return Response(
-        content=data,
-        media_type=content_type,
-        headers={
-            "Content-Disposition": f'attachment; filename="{filename}"',
-            "Access-Control-Allow-Origin": "*",
-        },
+    return _attachment(data, content_type, "omnipath_relations")
+
+
+@router.post("/entities/export", tags=["export"], response_model=None)
+def export_entities(request: Request, payload: EntityExportRequest) -> Response:
+    """The entities an entity search matches as Parquet: at most 500,000, one row each,
+    most connected first."""
+    body = _dump(payload)
+    data, content_type = _call(
+        request,
+        "export_entities",
+        query=body.get("query") or "",
+        filters=body.get("filters") or {},
+        resources=body.get("resources"),
+        limit=body["limit"],
     )
+    return _attachment(data, content_type, "omnipath_entities")

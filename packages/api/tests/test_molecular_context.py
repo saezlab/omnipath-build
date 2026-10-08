@@ -143,7 +143,7 @@ def test_exact_occurrence_filters_and_projection(molecular_engine):
     assert gene_context["relationsTotal"] == 2
     assert len(gene_context["standaloneEvidence"]) == 6
     assert engine.get_molecular_context("1" * 64)["relationsTotal"] == 2
-    data, _ = engine.export_slice(filters, format="parquet")
+    data, _ = engine.export_slice(filters)
     exported = pq.read_table(io.BytesIO(data)).to_pylist()
     assert len(exported) == 2
     assert all(len(r["evidence"]) == 1 for r in exported)

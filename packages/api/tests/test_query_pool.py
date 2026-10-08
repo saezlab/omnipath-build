@@ -115,7 +115,7 @@ def test_concurrent_search_facets_and_export_match_sequential(tmp_path):
     calls = (
         lambda: engine.search_entities_api(query="TP53", limit=10)["entities"],
         lambda: {k: v for k, v in engine.get_facets(filters={}).items() if k != "elapsed_ms"},
-        lambda: engine.export_slice(filters={"genes": ["TP53"]}, format="csv"),
+        lambda: engine.export_slice(filters={"genes": ["TP53"]}),
     )
 
     def run(call):

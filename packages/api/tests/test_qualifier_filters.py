@@ -89,8 +89,7 @@ def test_facets_ignore_own_selection_but_keep_other_filters(engine):
 
 def test_export_uses_same_qualifier_filter(engine):
     data, _ = engine.export_slice(
-        filters={"object_direction_qualifier": ["decreased"]}, format="parquet"
-    )
+        filters={"object_direction_qualifier": ["decreased"]})
     assert pq.read_table(io.BytesIO(data))["relation_key"].to_pylist() == ["b"]
 
 

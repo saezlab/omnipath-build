@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ExportMenu from '$lib/components/explore/ExportMenu.svelte';
   import ExplorerWorkspace from '$lib/components/workspace/ExplorerWorkspace.svelte';
   import WorkspacePanel from '$lib/components/workspace/WorkspacePanel.svelte';
   import { untrack } from 'svelte';
@@ -249,11 +250,12 @@
 {#snippet searchPanel()}
   <div class="relative">
     {#if isMobile.current}
-      <div class="lg:hidden p-4 border-b">
+      <div class="lg:hidden flex items-center gap-2 p-4 border-b">
+        {@render resultsActions()}
         <Sheet>
           <SheetTrigger>
             {#snippet child({ props })}
-              <Button {...props} variant="outline" class="w-full">
+              <Button {...props} variant="outline" class="flex-1">
                 <Filter class="h-4 w-4 mr-2" />
                 Filters
                 {#if activeFilterCount > 0}
@@ -338,13 +340,25 @@
   </div>
 {/snippet}
 
+{#snippet resultsActions()}
+  <ExportMenu
+    endpoint="/export"
+    body={{ filters: effectiveFilters }}
+    name="relations"
+    limit={100_000}
+  />
+{/snippet}
+
 {#snippet desktopSidebar()}
   <ExplorerWorkspace
     name="relations"
     panels={['results', 'filters', 'effect', 'interaction_types', 'sources', 'ncbi_tax_id']}
   >
-    <WorkspacePanel id="results" title="Results" busy={loading && results.length > 0}
-      >{@render searchPanel()}</WorkspacePanel
+    <WorkspacePanel
+      id="results"
+      title="Results"
+      busy={loading && results.length > 0}
+      actions={resultsActions}>{@render searchPanel()}</WorkspacePanel
     >
     <InteractionFilterSidebar
       filters={effectiveFilters}

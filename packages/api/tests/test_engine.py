@@ -72,13 +72,8 @@ class TestParquetServingEngine(unittest.TestCase):
         self.assertIn("elapsed_ms", facets)
 
     def test_05_export_parquet(self):
-        data, mime = self.engine.export_slice(filters={"genes": ["TP53"]}, format="parquet")
+        data, mime = self.engine.export_slice(filters={"genes": ["TP53"]})
         self.assertEqual(mime, "application/vnd.apache.parquet")
-        self.assertGreater(len(data), 0)
-
-    def test_06_export_csv(self):
-        data, mime = self.engine.export_slice(filters={"genes": ["TP53"]}, format="csv")
-        self.assertTrue(mime.startswith("text/csv"))
         self.assertGreater(len(data), 0)
 
     def test_07_svelte_entity_search(self):

@@ -578,7 +578,18 @@ class BuildManifest(APIModel):
 class ExportRequest(APIModel):
     filters: SearchFilters = Field(default_factory=SearchFilters)
     resources: list[str] | None = None
-    format: Literal["parquet", "arrow", "csv", "tsv", "json"] = "parquet"
+    format: Literal["parquet"] = "parquet"
+    limit: int = Field(default=100_000, ge=1, le=100_000)
+
+
+class EntityExportRequest(APIModel):
+    """The entities an entity search matches; one row each."""
+
+    query: str = ""
+    filters: SearchFilters = Field(default_factory=SearchFilters)
+    resources: list[str] | None = None
+    format: Literal["parquet"] = "parquet"
+    limit: int = Field(default=500_000, ge=1, le=500_000)
 
 
 class RelationMolecularEvidence(APIModel):

@@ -188,17 +188,12 @@ def test_migrated_schema_search_details_evidence_filters_and_exports(tmp_path):
                 },
             }
         ]
-        for format in ("parquet", "json"):
-            exported = client.post("/api/export", json={"filters": filters, "format": format})
-            assert exported.status_code == 200, exported.text
-            rows = (
-                pq.read_table(io.BytesIO(exported.content)).to_pylist()
-                if format == "parquet"
-                else exported.json()
-            )
-            assert [row["relation_key"] for row in rows] == [relation_key]
-            assert rows[0]["evidence"][0]["upstream_id"] == "SOURCE-1"
-            assert rows[0]["evidence"][0]["annotations"][-1]["quantity"]["comparator"] == "<="
+        exported = client.post("/api/export", json={"filters": filters})
+        assert exported.status_code == 200, exported.text
+        rows = pq.read_table(io.BytesIO(exported.content)).to_pylist()
+        assert [row["relation_key"] for row in rows] == [relation_key]
+        assert rows[0]["evidence"][0]["upstream_id"] == "SOURCE-1"
+        assert rows[0]["evidence"][0]["annotations"][-1]["quantity"]["comparator"] == "<="
         empty_filters = {**filters, "entity_ids": ["no-such-identifier"]}
         assert (
             client.post("/api/relations/search", json={"filters": empty_filters}).json()["total"]
