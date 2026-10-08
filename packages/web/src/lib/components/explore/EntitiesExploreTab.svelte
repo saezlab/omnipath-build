@@ -537,15 +537,6 @@
 
 {#snippet resultsPane()}
   <div>
-    {#if showExamples}
-      <div class="px-4 pt-4 pb-3">
-        <h2 class="text-lg font-semibold">Explore some examples</h2>
-        <p class="text-sm text-muted-foreground">
-          Start with a gene, molecule, pathway, disease or reaction, or search and filter the full
-          collection.
-        </p>
-      </div>
-    {/if}
     {#if groupResults && !showExamples}
       <EntityGroups {query} filters={effectiveFilters} renderMember={resultCard} />
     {:else if loading && results.length === 0}
